@@ -40,6 +40,7 @@ fn fixed(mtm: MainThreadMarker) -> &'static Fixed {
             UIUserInterfaceIdiom::Pad => DeviceKind::Tablet,
             UIUserInterfaceIdiom::TV => DeviceKind::Tv,
             UIUserInterfaceIdiom::Mac => DeviceKind::Desktop,
+            UIUserInterfaceIdiom::Vision => DeviceKind::Headset,
             _ => DeviceKind::Unknown,
         };
         let model = prism_native::apple::model_id();
@@ -49,6 +50,7 @@ fn fixed(mtm: MainThreadMarker) -> &'static Fixed {
                 name: match kind {
                     DeviceKind::Tablet => OsName::Ipados,
                     DeviceKind::Tv => OsName::Tvos,
+                    DeviceKind::Headset => OsName::Visionos,
                     _ => OsName::Ios,
                 },
                 version: prism_native::apple::os_version(),
@@ -141,14 +143,34 @@ fn division_regions(view: &UIView) -> Vec<CGRect> {
 pub(crate) fn current(root: &UIView, mtm: MainThreadMarker) -> Option<DeviceInfo> {
     let window = root.window()?;
     let scene = window.windowScene()?;
-    let screen = scene.screen();
     let f = fixed(mtm);
 
-    // Points in the current orientation.
-    let bounds = screen.bounds().size;
-    let (sw, sh) = (bounds.width as f32, bounds.height as f32);
-    let native = screen.nativeBounds().size;
-    let (pw, ph) = (native.width as f32, native.height as f32);
+    // Points in the current orientation, pixels, scale, refresh rate.
+    #[cfg(not(target_os = "visionos"))]
+    let (sw, sh, pw, ph, scale, refresh) = {
+        let screen = scene.screen();
+        let bounds = screen.bounds().size;
+        let native = screen.nativeBounds().size;
+        (
+            bounds.width as f32,
+            bounds.height as f32,
+            native.width as f32,
+            native.height as f32,
+            screen.scale() as f32,
+            Some(screen.maximumFramesPerSecond() as f32),
+        )
+    };
+    // visionOS has no screen (UIScreen is unavailable): the window is the
+    // display, and its scale comes from the traits.
+    #[cfg(target_os = "visionos")]
+    let (sw, sh, pw, ph, scale, refresh) = {
+        let size = window.bounds().size;
+        let traits = objc2_ui_kit::UITraitEnvironment::traitCollection(&*window);
+        // SAFETY: a plain property read on the main thread.
+        let scale = unsafe { traits.displayScale() } as f32;
+        let (w, h) = (size.width as f32, size.height as f32);
+        (w, h, w * scale, h * scale, scale, None)
+    };
     // Which built-in display shows the app (foldables have two) and its ppi.
     let display = f
         .known
@@ -229,10 +251,10 @@ pub(crate) fn current(root: &UIView, mtm: MainThreadMarker) -> Option<DeviceInfo
         screen: ScreenInfo {
             width: sw,
             height: sh,
-            scale: screen.scale() as f32,
+            scale,
             diagonal,
             ppi,
-            refresh_rate: Some(screen.maximumFramesPerSecond() as f32),
+            refresh_rate: refresh,
             cutout,
         },
         posture,

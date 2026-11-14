@@ -480,9 +480,10 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
 
     let path = std::env::var("PRISM_PATH").unwrap_or_else(|_| "/".into());
     // Dynamic Island iPhones have a taller status bar (≥ 54 pt).
-    let island = scene
-        .statusBarManager()
-        .is_some_and(|m| m.statusBarFrame().size.height >= 54.);
+    let island = !cfg!(target_os = "visionos")
+        && scene
+            .statusBarManager()
+            .is_some_and(|m| m.statusBarFrame().size.height >= 54.);
     let services =
         crate::services::IosServices::new(island, Retained::into_super(controller.clone()));
     // Launched in the background for a task earlier? Keep that app state.

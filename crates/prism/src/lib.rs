@@ -96,6 +96,8 @@ pub const BACKEND: &str = if cfg!(feature = "web") {
     "ios"
 } else if cfg!(all(feature = "native", target_os = "tvos")) {
     "tvos"
+} else if cfg!(all(feature = "native", target_os = "visionos")) {
+    "visionos"
 } else if cfg!(all(feature = "native", target_os = "watchos")) {
     "watchos"
 } else if cfg!(all(feature = "native", target_os = "linux")) {
@@ -212,7 +214,7 @@ impl Application {
         #[cfg(all(
             not(feature = "web"),
             feature = "native",
-            any(target_os = "ios", target_os = "tvos")
+            any(target_os = "ios", target_os = "tvos", target_os = "visionos")
         ))]
         {
             prism_ios::run(config, init);
@@ -237,6 +239,7 @@ impl Application {
                     target_os = "macos",
                     target_os = "ios",
                     target_os = "tvos",
+                    target_os = "visionos",
                     target_os = "watchos",
                     target_os = "linux",
                     target_os = "android"

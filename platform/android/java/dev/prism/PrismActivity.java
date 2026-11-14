@@ -24,6 +24,12 @@ public class PrismActivity extends Activity {
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         PrismHost.load(this);
+        android.content.res.Configuration conf = getResources().getConfiguration();
+        PrismHost.watch = (conf.uiMode & android.content.res.Configuration.UI_MODE_TYPE_MASK)
+                == android.content.res.Configuration.UI_MODE_TYPE_WATCH;
+        PrismHost.round = conf.isScreenRound();
+        PrismHost.tv = (conf.uiMode & android.content.res.Configuration.UI_MODE_TYPE_MASK)
+                == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION;
         // Prism draws its own navigation bars.
         if (getActionBar() != null) getActionBar().hide();
         PrismHost.activity = this;
@@ -34,9 +40,21 @@ public class PrismActivity extends Activity {
         android.widget.FrameLayout outer = new android.widget.FrameLayout(this);
         outer.setOnApplyWindowInsetsListener((v, insets) -> {
             android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.ime() | WindowInsets.Type.displayCutout());
-            v.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+            // A round watch: the corners are outside the screen.
+            if (PrismHost.tv) return insets; // The safe area above already covers it.
+            int side = PrismHost.round ? Math.round(getResources().getDisplayMetrics().widthPixels * 0.09f) : 0;
+            v.setPadding(bars.left + side, bars.top, bars.right + side, bars.bottom);
             return insets;
         });
+        if (PrismHost.round) {
+            // Before any insets arrive (watches have no system bars to report).
+            int side = Math.round(getResources().getDisplayMetrics().widthPixels * 0.09f);
+            outer.setPadding(side, 0, side, 0);
+        } else if (PrismHost.tv) {
+            // Android TV's safe area: TVs may crop the picture's edges (overscan).
+            float d = getResources().getDisplayMetrics().density;
+            outer.setPadding(Math.round(48 * d), Math.round(27 * d), Math.round(48 * d), Math.round(27 * d));
+        }
         outer.addView(PrismHost.root, new android.widget.FrameLayout.LayoutParams(-1, -1));
         setContentView(outer);
         PrismHost.root.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
@@ -142,6 +160,13 @@ public class PrismActivity extends Activity {
             o.put("refresh", getDisplay() != null ? getDisplay().getRefreshRate() : 60);
             o.put("smallestWidthDp", getResources().getConfiguration().smallestScreenWidthDp);
             o.put("multiWindow", isInMultiWindowMode());
+            // Form factor: phone/tablet, watch (Wear OS), TV (Android TV), car (Automotive).
+            int type = getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_TYPE_MASK;
+            o.put("uiType", type == android.content.res.Configuration.UI_MODE_TYPE_WATCH ? "watch"
+                    : type == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION ? "tv"
+                    : type == android.content.res.Configuration.UI_MODE_TYPE_CAR ? "car" : "normal");
+            o.put("round", getResources().getConfiguration().isScreenRound());
+            o.put("touch", pm.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN));
             o.put("cutout", getDisplay() != null && getDisplay().getCutout() != null);
             o.put("location", pm.hasSystemFeature(PackageManager.FEATURE_LOCATION));
             o.put("gyroscope", sensors != null && sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE) != null);

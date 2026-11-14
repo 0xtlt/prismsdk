@@ -130,9 +130,16 @@ for n in dict.fromkeys(names):
 ')"
 ICON_ATTR=""
 if [[ -n "${PRISM_ICON:-}" && -f "$PRISM_ICON" ]]; then
-  mkdir -p "$OUT/res/mipmap-xxxhdpi"
+  mkdir -p "$OUT/res/mipmap-xxxhdpi" "$OUT/res/drawable"
   cp "$PRISM_ICON" "$OUT/res/mipmap-xxxhdpi/ic_launcher.png"
-  ICON_ATTR='android:icon="@mipmap/ic_launcher"'
+  # Android TV's launcher shows a 16:9 banner: the icon on a neutral card.
+  cat > "$OUT/res/drawable/prism_banner.xml" <<'BANNER'
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+  <item><shape><size android:width="320dp" android:height="180dp"/><solid android:color="#FF1C1C1E"/></shape></item>
+  <item android:width="120dp" android:height="120dp" android:gravity="center" android:drawable="@mipmap/ic_launcher"/>
+</layer-list>
+BANNER
+  ICON_ATTR='android:icon="@mipmap/ic_launcher" android:banner="@drawable/prism_banner"'
 fi
 # Layouts for widgets and Live Activities (RemoteViews only inflate resources;
 # PrismSurface.java nests them): prism_<kind>_<size>.xml.
@@ -163,6 +170,10 @@ cat > "$OUT/AndroidManifest.xml" <<XML
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="$APP_ID">
 $PERMS
+  <!-- Also for TVs (no touch screen) and watches. -->
+  <uses-feature android:name="android.hardware.touchscreen" android:required="false"/>
+  <uses-feature android:name="android.software.leanback" android:required="false"/>
+  <uses-feature android:name="android.hardware.type.watch" android:required="false"/>
   <application android:label="$APP_NAME" $ICON_ATTR android:extractNativeLibs="false" android:supportsRtl="true"
       android:theme="@android:style/Theme.DeviceDefault.DayNight">
     <activity android:name="dev.prism.PrismActivity" android:exported="true" android:launchMode="singleTop"
@@ -171,6 +182,7 @@ $PERMS
       <intent-filter>
         <action android:name="android.intent.action.MAIN"/>
         <category android:name="android.intent.category.LAUNCHER"/>
+        <category android:name="android.intent.category.LEANBACK_LAUNCHER"/>
       </intent-filter>
       <intent-filter>
         <action android:name="android.intent.action.VIEW"/>
@@ -179,6 +191,8 @@ $PERMS
         <data android:scheme="$SCHEME"/>
       </intent-filter>
     </activity>
+    <!-- Wear OS: runs without a phone. -->
+    <meta-data android:name="com.google.android.wearable.standalone" android:value="true"/>
 $RECEIVERS
     <service android:name="dev.prism.PrismJob" android:exported="false"
         android:permission="android.permission.BIND_JOB_SERVICE"/>

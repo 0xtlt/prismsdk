@@ -66,6 +66,22 @@ fn build_swift(dirs: &[&str], module: &str) {
                 env_or("TVOS_DEPLOYMENT_TARGET", "17.0")
             ),
         ),
+        "aarch64-apple-visionos-sim" => (
+            "xrsimulator",
+            "xrsimulator",
+            format!(
+                "arm64-apple-xros{}-simulator",
+                env_or("XROS_DEPLOYMENT_TARGET", "26.0")
+            ),
+        ),
+        "aarch64-apple-visionos" => (
+            "xros",
+            "xros",
+            format!(
+                "arm64-apple-xros{}",
+                env_or("XROS_DEPLOYMENT_TARGET", "26.0")
+            ),
+        ),
         "aarch64-apple-watchos-sim" => (
             "watchsimulator",
             "watchsimulator",

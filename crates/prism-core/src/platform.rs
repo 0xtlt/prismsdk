@@ -25,31 +25,38 @@ pub enum Platform {
     Web,
     Tvos,
     Watchos,
+    /// Apple Vision Pro.
+    Visionos,
 }
 
 impl Platform {
     pub const MOBILE: Platforms =
-        Platforms(1 << Platform::Ios as u8 | 1 << Platform::Android as u8);
+        Platforms(1 << Platform::Ios as u16 | 1 << Platform::Android as u16);
     pub const DESKTOP: Platforms = Platforms(
-        1 << Platform::Macos as u8 | 1 << Platform::Windows as u8 | 1 << Platform::Linux as u8,
+        1 << Platform::Macos as u16 | 1 << Platform::Windows as u16 | 1 << Platform::Linux as u16,
     );
     pub const APPLE: Platforms = Platforms(
-        1 << Platform::Ios as u8
-            | 1 << Platform::Macos as u8
-            | 1 << Platform::Tvos as u8
-            | 1 << Platform::Watchos as u8,
+        1 << Platform::Ios as u16
+            | 1 << Platform::Macos as u16
+            | 1 << Platform::Tvos as u16
+            | 1 << Platform::Watchos as u16
+            | 1 << Platform::Visionos as u16,
     );
     /// TVs (a remote, no touch): tvOS.
-    pub const TV: Platforms = Platforms(1 << Platform::Tvos as u8);
+    pub const TV: Platforms = Platforms(1 << Platform::Tvos as u16);
     /// Watches: watchOS.
-    pub const WEARABLE: Platforms = Platforms(1 << Platform::Watchos as u8);
-    pub const ALL: Platforms = Platforms(0xff);
+    pub const WEARABLE: Platforms = Platforms(1 << Platform::Watchos as u16);
+    /// Headsets: visionOS.
+    pub const SPATIAL: Platforms = Platforms(1 << Platform::Visionos as u16);
+    pub const ALL: Platforms = Platforms((1 << 9) - 1);
     /// Everything but the web.
-    pub const NATIVE: Platforms = Platforms(!(1 << Platform::Web as u8));
+    pub const NATIVE: Platforms = Platforms(Platform::ALL.0 & !(1 << Platform::Web as u16));
 
     /// The platform this binary was compiled for (native backends).
     pub const fn compiled() -> Platform {
-        if cfg!(target_os = "tvos") {
+        if cfg!(target_os = "visionos") {
+            Platform::Visionos
+        } else if cfg!(target_os = "tvos") {
             Platform::Tvos
         } else if cfg!(target_os = "watchos") {
             Platform::Watchos
@@ -89,17 +96,18 @@ impl Platform {
             Platform::Web => "web",
             Platform::Tvos => "tvos",
             Platform::Watchos => "watchos",
+            Platform::Visionos => "visionos",
         }
     }
 }
 
 /// A set of platforms: `Platform::Ios | Platform::Web`, `Platform::MOBILE`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
-pub struct Platforms(u8);
+pub struct Platforms(u16);
 
 impl Platforms {
     pub fn contains(self, p: Platform) -> bool {
-        self.0 & (1 << p as u8) != 0
+        self.0 & (1 << p as u16) != 0
     }
     /// Every platform except these.
     pub fn complement(self) -> Platforms {
@@ -109,7 +117,7 @@ impl Platforms {
 
 impl From<Platform> for Platforms {
     fn from(p: Platform) -> Self {
-        Platforms(1 << p as u8)
+        Platforms(1 << p as u16)
     }
 }
 

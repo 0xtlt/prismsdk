@@ -12,7 +12,7 @@ import UserNotifications
 #if canImport(CoreMotion)
 import CoreMotion
 #endif
-#if os(iOS) || os(tvOS)
+#if os(iOS) || os(visionOS) || os(tvOS)
 import PhotosUI
 #endif
 #if canImport(UIKit)
@@ -72,7 +72,7 @@ private func string(_ p: UnsafePointer<CChar>?) -> String? { p.map { String(cStr
 // MARK: Location
 
 private let locationUsageKey: String = {
-    #if os(iOS) || os(tvOS)
+    #if os(iOS) || os(visionOS) || os(tvOS)
     return "NSLocationWhenInUseUsageDescription"
     #else
     return "NSLocationUsageDescription"
@@ -220,7 +220,7 @@ public func prismDevicePermission(_ id: UInt64, _ name: UnsafePointer<CChar>, _ 
         PHPhotoLibrary.requestAuthorization(for: .readWrite) { reply($0) }
     #endif
     case "motion":
-        #if os(iOS) || os(watchOS)
+        #if os(iOS) || os(visionOS) || os(watchOS)
         // Gyroscope and accelerometer need no permission (only activity does).
         permissionReply(id, CMMotionManager().isDeviceMotionAvailable ? "granted" : "unavailable")
         #else
@@ -253,13 +253,13 @@ public func prismDeviceLocation(_ id: UInt64, _ accuracy: Int32, _ stream: Bool)
     PrismLocation(id: id, mode: stream ? .stream : .once, accuracy: accuracy).start()
 }
 
-#if os(iOS) || os(watchOS)
+#if os(iOS) || os(visionOS) || os(watchOS)
 private var motionManagers: [UInt64: CMMotionManager] = [:]
 #endif
 
 @_cdecl("prism_device_motion_start")
 public func prismDeviceMotionStart(_ id: UInt64, _ interval: Double) {
-    #if os(iOS) || os(watchOS)
+    #if os(iOS) || os(visionOS) || os(watchOS)
     let m = CMMotionManager()
     guard m.isDeviceMotionAvailable else { return fail(id, "unavailable", event: true) }
     m.deviceMotionUpdateInterval = max(interval, 0.01)
@@ -280,7 +280,7 @@ public func prismDeviceMotionStart(_ id: UInt64, _ interval: Double) {
 @_cdecl("prism_device_stop")
 public func prismDeviceStop(_ id: UInt64) {
     if let l = PrismLocation.active.removeValue(forKey: id) { l.manager.stopUpdatingLocation() }
-    #if os(iOS) || os(watchOS)
+    #if os(iOS) || os(visionOS) || os(watchOS)
     motionManagers.removeValue(forKey: id)?.stopDeviceMotionUpdates()
     #endif
 }
@@ -310,7 +310,7 @@ private func replyFiles(_ id: UInt64, _ lines: [String]) {
     }
 }
 
-#if os(iOS)
+#if os(iOS) || os(visionOS)
 private var pickers: [UInt64: NSObject] = [:]
 
 private func topController() -> UIViewController? {
@@ -375,8 +375,11 @@ public func prismDevicePickImages(_ id: UInt64, _ limit: UInt32, _ camera: Bool)
     prismWatchPickImages(id, limit)
     #elseif os(tvOS)
     fail(id, "unavailable") // no photo picker or camera on tvOS
-    #elseif os(iOS)
+    #elseif os(iOS) || os(visionOS)
     guard let top = topController() else { return fail(id, "no window to present the picker") }
+    #if os(visionOS)
+    if camera { return fail(id, "unavailable") } // UIImagePickerController has no camera on visionOS
+    #else
     if camera {
         guard UIImagePickerController.isSourceTypeAvailable(.camera) else { return fail(id, "unavailable") }
         if usageMissing(id, "NSCameraUsageDescription", "camera") { return }
@@ -388,6 +391,7 @@ public func prismDevicePickImages(_ id: UInt64, _ limit: UInt32, _ camera: Bool)
         top.present(picker, animated: true)
         return
     }
+    #endif
     // PHPicker runs out of process: no photo library permission needed.
     var config = PHPickerConfiguration()
     config.filter = .images
@@ -428,8 +432,8 @@ public func prismDeviceHaptic(_ kind: UnsafePointer<CChar>) {
     default: haptic = .click // selection, light
     }
     WKInterfaceDevice.current().play(haptic)
-    #elseif os(tvOS)
-    _ = kind // no haptics on a TV
+    #elseif os(tvOS) || os(visionOS)
+    _ = kind // no haptics on a TV or a headset (UIFeedbackGenerator is unavailable)
     #elseif os(iOS)
     switch kind {
     case "selection": UISelectionFeedbackGenerator().selectionChanged()
@@ -451,7 +455,7 @@ public func prismDeviceCopy(_ text: UnsafePointer<CChar>) {
     let text = String(cString: text)
     #if os(tvOS) || os(watchOS)
     _ = text // no clipboard on tvOS or watchOS
-    #elseif os(iOS)
+    #elseif os(iOS) || os(visionOS)
     UIPasteboard.general.string = text
     #else
     NSPasteboard.general.clearContents()
@@ -463,7 +467,7 @@ public func prismDeviceCopy(_ text: UnsafePointer<CChar>) {
 public func prismDevicePaste(_ id: UInt64) {
     #if os(tvOS) || os(watchOS)
     let text: String? = nil
-    #elseif os(iOS)
+    #elseif os(iOS) || os(visionOS)
     let text = UIPasteboard.general.string
     #else
     let text = NSPasteboard.general.string(forType: .string)
@@ -487,7 +491,7 @@ public func prismDeviceShare(_ text: UnsafePointer<CChar>?, _ url: UnsafePointer
     withOptional(shared) { t in withOptional(link) { u in prismWatchShare(t, u) } }
     #elseif os(tvOS)
     return // no share sheet on tvOS
-    #elseif os(iOS)
+    #elseif os(iOS) || os(visionOS)
     guard let top = topController() else { return }
     let sheet = UIActivityViewController(activityItems: items, applicationActivities: nil)
     // iPad: a popover anchored to the middle of the screen.
@@ -505,7 +509,7 @@ public func prismDeviceOpenURL(_ url: UnsafePointer<CChar>) {
     guard let url = URL(string: String(cString: url)) else { return }
     #if os(watchOS)
     WKApplication.shared().openSystemURL(url)
-    #elseif os(iOS) || os(tvOS)
+    #elseif os(iOS) || os(visionOS) || os(tvOS)
     UIApplication.shared.open(url)
     #else
     NSWorkspace.shared.open(url)

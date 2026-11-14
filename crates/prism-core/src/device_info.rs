@@ -39,6 +39,8 @@ pub enum DeviceKind {
     Desktop,
     Tv,
     Watch,
+    /// Headsets (Apple Vision Pro): windows in space.
+    Headset,
     #[default]
     Unknown,
 }
@@ -51,6 +53,7 @@ impl DeviceKind {
             DeviceKind::Desktop => "desktop",
             DeviceKind::Tv => "tv",
             DeviceKind::Watch => "watch",
+            DeviceKind::Headset => "headset",
             DeviceKind::Unknown => "unknown",
         }
     }
@@ -62,6 +65,7 @@ impl DeviceKind {
             "desktop" => DeviceKind::Desktop,
             "tv" => DeviceKind::Tv,
             "watch" => DeviceKind::Watch,
+            "headset" => DeviceKind::Headset,
             _ => DeviceKind::Unknown,
         }
     }
@@ -249,6 +253,7 @@ pub enum OsName {
     ChromeOs,
     Tvos,
     Watchos,
+    Visionos,
     #[default]
     Unknown,
 }
@@ -265,6 +270,7 @@ impl OsName {
             OsName::ChromeOs => "ChromeOS",
             OsName::Tvos => "tvOS",
             OsName::Watchos => "watchOS",
+            OsName::Visionos => "visionOS",
             OsName::Unknown => "Unknown",
         }
     }
@@ -280,6 +286,7 @@ impl OsName {
             "chromeos" | "chrome os" => OsName::ChromeOs,
             "tvos" => OsName::Tvos,
             "watchos" => OsName::Watchos,
+            "visionos" | "xros" => OsName::Visionos,
             _ => OsName::Unknown,
         }
     }
@@ -396,6 +403,8 @@ impl DeviceInfo {
             Platform::Web => (DeviceKind::Unknown, OsName::Unknown, false),
             Platform::Tvos => (DeviceKind::Tv, OsName::Tvos, false),
             Platform::Watchos => (DeviceKind::Watch, OsName::Watchos, true),
+            // Eyes and pinches: UIKit sees them as touches.
+            Platform::Visionos => (DeviceKind::Headset, OsName::Visionos, true),
         };
         DeviceInfo {
             kind,

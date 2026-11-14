@@ -227,6 +227,7 @@
       "desktop": "Ordinateur",
       "tv": "Télévision",
       "watch": "Montre",
+      "headset": "Casque",
       "unknown": "Appareil"
     }
   }

@@ -488,6 +488,15 @@ watchOS has no UIKit views (`UIView` is `API_UNAVAILABLE(watchos)` in the SDK), 
 - What the watch lacks (SDK): camera, clipboard. `capabilities` says so.
 - Dev hooks: `PRISM_CLICK`, `PRISM_SNAPSHOT` (SwiftUI `ImageRenderer`: text fields render as a placeholder), `PRISM_DEBUG_LAYOUT=1` (logs text frames).
 
+## visionOS
+
+`prism run visionos` (simulator) / `prism build visionos`: the UIKit backend in a window, like an iPad app. `cx.platform()` is `Platform::Visionos` and `cx.device_info().kind` is `Headset`; `Platform::SPATIAL` selects it in `.only()`.
+
+- Eyes and pinches arrive as touches, so controls, gestures and menus work as on iOS.
+- Widgets (WidgetKit, visionOS 26+): the minimum version is 26 (`XROS_DEPLOYMENT_TARGET`).
+- Not on visionOS (unavailable in the SDK): `UIScreen` (so the window gives the size and scale), haptics, the camera for apps, Live Activities (no ActivityKit), lock-screen widget families, and "always" location.
+- The simulator runtime comes from Xcode › Settings › Components, or `xcodebuild -downloadPlatform visionOS`.
+
 ## Linux (GTK 4)
 
 `cargo run` on Linux opens a native GTK 4 window: `GtkLabel`, `GtkButton`, `GtkEntry`, `GtkSwitch`, `GtkProgressBar`, `GtkPicture` and `GtkScrolledWindow`. Navigation stacks get a header with a Back button, tabs a tab bar, and modals their own window.
@@ -528,10 +537,14 @@ The app runs in Rust, and a small Java host (`platform/android`) creates real An
 - **Live Activities:** an ongoing notification drawing the lock-screen content, with timers counting natively (`Chronometer`).
 - **Widgets:** home-screen widgets (`AppWidgetProvider`), one per `register_widget`, with small/medium layouts chosen by size (Android 12+). They are redrawn from the last snapshot while the app is closed. Both surfaces render `SNode` snapshots with `RemoteViews` (`PrismSurface.java`).
 - **Release:** `PRISM_RELEASE=1` or `prism build android`. Sign with `PRISM_ANDROID_KEYSTORE`, `PRISM_ANDROID_KEYSTORE_PASS` and `PRISM_ANDROID_KEY_ALIAS`; the default is the SDK's debug key. Libraries are aligned for 16 KB pages.
+- **Wear OS and Android TV:** the same APK runs there; `cx.device_info().kind` says `Watch` or `Tv`.
+  - *Watches:* dark, compact header, icon-only tabs, margins inside a round screen. Back is the swipe to the right. The app is standalone (no phone needed).
+  - *TVs:* the remote moves the focus; the focused view rises with a ring. Select clicks, and holding it opens the context menu. Android TV's safe area applies, and the app gets a launcher banner made from the icon.
+  - *Emulators:* `system-images;android-34;android-wear;arm64-v8a` (device `wearos_large_round`) and `system-images;android-34;android-tv;arm64-v8a` (device `tv_1080p`).
 - **Not on Android:** tray and menu bar (desktop surfaces).
 
 ## Status
 
 Primitives: `div`, `text`, `button`, `text_input`, `toggle`, `scroll`, `picture`, `VirtualList`, `screen`, `Router` (stacks, tabs, sheets). Component library `prism::ui`. Accessibility on all backends. Light/dark appearance.
 Widgets, Live Activities (Dynamic Island), notifications with actions, background tasks, device APIs (location, motion, photos, camera, haptics, clipboard, share), alerts, context menus, tray and app menus, async tasks, HTTP, storage, i18n/RTL, Dynamic Type, animations, `prism` CLI.
-Platforms: web, macOS, iOS/iPadOS, tvOS, watchOS, Linux (GTK 4), Android. Not yet: Windows (the `Widgets` trait and `PlatformServices` are the extension points).
+Platforms: web, macOS, iOS/iPadOS, tvOS, watchOS, visionOS, Linux (GTK 4), Android (phones, tablets, Wear OS, Android TV). Not yet: Windows (the `Widgets` trait and `PlatformServices` are the extension points).

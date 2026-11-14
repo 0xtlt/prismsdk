@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Generates the WidgetKit entry point for an app's registered widgets.
 
-    generate_widgets.py widgets.json ios|macos > Generated.swift
+    generate_widgets.py widgets.json ios|visionos|macos > Generated.swift
 
 `widgets.json` comes from `PRISM_DESCRIBE=widgets <app>`. Each Prism widget
 becomes a StaticConfiguration rendered by the generic PrismWidgetView; on iOS
 the Live Activity configuration (lock screen + Dynamic Island) is added too.
+visionOS has neither lock-screen families nor Live Activities (no ActivityKit).
 """
 import json
 import re

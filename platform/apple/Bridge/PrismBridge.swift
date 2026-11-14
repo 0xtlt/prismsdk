@@ -216,7 +216,7 @@ public func prismActivityEnd(_ key: UnsafePointer<CChar>, _ json: UnsafePointer<
     let c = json.map { content($0, 0) }
     Task { await activity.end(c, dismissalPolicy: immediately ? .immediate : .default) }
 }
-#elseif os(tvOS)
+#elseif os(tvOS) || os(visionOS)
 // No Live Activities on tvOS (no ActivityKit).
 @_cdecl("prism_activity_supported")
 public func prismActivitySupported() -> Bool { false }
@@ -237,7 +237,7 @@ func prismRustBackgroundRun(_ id: UnsafePointer<CChar>)
 @_silgen_name("prism_background_expired")
 func prismRustBackgroundExpired(_ id: UnsafePointer<CChar>)
 
-#if os(iOS) || os(tvOS)
+#if os(iOS) || os(visionOS) || os(tvOS)
 import BackgroundTasks
 
 private var prismBackgroundTasks: [String: BGTask] = [:]

@@ -7,7 +7,7 @@
 #   scripts/ios-run.sh <package> [--no-launch]
 #
 # Environment:
-#   PRISM_OS         ios (default), tvos or watchos
+#   PRISM_OS         ios (default), tvos, watchos or visionos
 #   PRISM_SIM        simulator name or UDID (default: first available iPhone / Apple TV)
 #   PRISM_DEVICE     real device name or UDID (signs and installs with devicectl)
 #   PRISM_TEAM       Apple team id (default: the team of a matching profile)
@@ -39,6 +39,15 @@ if [[ "$OS" == watchos ]]; then
     TARGET=aarch64-apple-watchos SDK=watchos PLATFORM_NAME=WatchOS SWIFT_TRIPLE_SUFFIX=""
   else
     TARGET=aarch64-apple-watchos-sim SDK=watchsimulator PLATFORM_NAME=WatchSimulator SWIFT_TRIPLE_SUFFIX="-simulator"
+  fi
+elif [[ "$OS" == visionos ]]; then
+  # visionOS: the UIKit app in a window (iPad-like); widgets need visionOS 26.
+  RUNTIME_NAME=xrOS DEVICE_PREFIX="Apple Vision Pro" DEVICE_FAMILY="<integer>7</integer>" WIDGETS=1
+  MIN_IOS="${XROS_DEPLOYMENT_TARGET:-26.0}" SWIFT_OS=xros
+  if [[ -n "$DEVICE" ]]; then
+    TARGET=aarch64-apple-visionos SDK=xros PLATFORM_NAME=XROS SWIFT_TRIPLE_SUFFIX=""
+  else
+    TARGET=aarch64-apple-visionos-sim SDK=xrsimulator PLATFORM_NAME=XRSimulator SWIFT_TRIPLE_SUFFIX="-simulator"
   fi
 elif [[ "$OS" == tvos ]]; then
   # tvOS: no WidgetKit, Live Activities or iPhone-only keys.
@@ -110,7 +119,7 @@ cargo build -q -p "$PKG"
 HOST_BIN="$TARGET_DIR/debug/$PKG"
 if [[ $WIDGETS == 1 ]]; then
   PRISM_DESCRIBE=widgets "$HOST_BIN" > "$GEN/widgets.json"
-  python3 "$PLATFORM/apple/generate_widgets.py" "$GEN/widgets.json" ios > "$GEN/Generated.swift"
+  python3 "$PLATFORM/apple/generate_widgets.py" "$GEN/widgets.json" "$OS" > "$GEN/Generated.swift"
 fi
 
 # 3. Signing (device) or simulator entitlements: an App Group shared by the

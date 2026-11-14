@@ -33,12 +33,12 @@ USAGE:
     prism devices                           List simulators, emulators and devices
 
 TARGETS:
-    web, macos, ios, tvos, watchos, android
+    web, macos, ios, tvos, watchos, visionos, android
 
 OPTIONS:
     --device <name|udid>    iOS: a real iPhone/iPad (signed with your team);
                             Android: an adb serial (emulator-5554, a phone)
-    --sim <name|udid>       iOS/tvOS/watchOS: a simulator
+    --sim <name|udid>       iOS/tvOS/watchOS/visionOS: a simulator
     --release               Optimized build
     --path </route>         Start on this screen
     --bundle                macOS: run as a full .app (widgets, notifications)
@@ -52,6 +52,7 @@ enum Target {
     Ios,
     Tvos,
     Watchos,
+    Visionos,
     Android,
 }
 
@@ -94,10 +95,11 @@ fn run(args: &[String]) -> Result<(), String> {
                 Some("ios") => Target::Ios,
                 Some("tvos" | "tv") => Target::Tvos,
                 Some("watchos" | "watch") => Target::Watchos,
+                Some("visionos" | "vision") => Target::Visionos,
                 Some("android") => Target::Android,
                 _ => {
                     return Err(format!(
-                        "usage: prism {cmd} <web|macos|ios|tvos|watchos|android>"
+                        "usage: prism {cmd} <web|macos|ios|tvos|watchos|visionos|android>"
                     ));
                 }
             };
@@ -139,6 +141,7 @@ fn run_target(p: &Project, target: Target, o: &Options) -> Result<(), String> {
         Target::Ios => apple_script(p, "ios-run.sh", o, false),
         Target::Tvos => apple_script_os(p, o, false, "tvos"),
         Target::Watchos => apple_script_os(p, o, false, "watchos"),
+        Target::Visionos => apple_script_os(p, o, false, "visionos"),
         Target::Android => apple_script(p, "android-run.sh", o, false),
         Target::Macos if o.bundle => apple_script(p, "macos-app.sh", o, false),
         _ => {
@@ -190,6 +193,7 @@ fn build_target(p: &Project, target: Target, o: &Options) -> Result<(), String> 
         Target::Ios => apple_script(p, "ios-run.sh", o, true),
         Target::Tvos => apple_script_os(p, o, true, "tvos"),
         Target::Watchos => apple_script_os(p, o, true, "watchos"),
+        Target::Visionos => apple_script_os(p, o, true, "visionos"),
         Target::Android => apple_script(p, "android-run.sh", o, true),
     }
 }

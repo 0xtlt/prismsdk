@@ -85,9 +85,11 @@ fn device_info(v: &Value, w: f32, h: f32, density: f32) -> DeviceInfo {
         }
         _ => None,
     };
-    // Android's own rule: 600dp and wider is a tablet layout.
-    let kind = match n("smallestWidthDp") {
-        Some(sw) if sw >= 600. => DeviceKind::Tablet,
+    // The form factor, then Android's own rule: 600dp and wider is a tablet.
+    let kind = match (s("uiType").as_deref(), n("smallestWidthDp")) {
+        (Some("watch"), _) => DeviceKind::Watch,
+        (Some("tv"), _) => DeviceKind::Tv,
+        (_, Some(sw)) if sw >= 600. => DeviceKind::Tablet,
         _ => DeviceKind::Phone,
     };
     DeviceInfo {
@@ -121,7 +123,7 @@ fn device_info(v: &Value, w: f32, h: f32, density: f32) -> DeviceInfo {
         } else {
             WindowMode::Fullscreen
         },
-        touch: true,
+        touch: v.get("touch").and_then(Value::as_bool).unwrap_or(true),
         ..Default::default()
     }
 }

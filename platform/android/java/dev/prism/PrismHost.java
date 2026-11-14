@@ -119,6 +119,12 @@ public final class PrismHost {
     static long rootId = -1;
 
     static final float HEADER_DP = 56, TAB_BAR_DP = 64;
+    /** Wear OS: compact chrome, icon-only tabs; round screens keep content inside the circle. */
+    static boolean watch, round, tv;
+
+    static float headerDp() { return watch ? 38 : HEADER_DP; }
+
+    static float tabBarDp() { return watch ? 40 : TAB_BAR_DP; }
 
     /** One Prism node and its views. */
     static final class Node {
@@ -375,10 +381,18 @@ public final class PrismHost {
                 n.title = new TextView(activity);
                 n.title.setGravity(Gravity.CENTER);
                 n.title.setTypeface(Typeface.DEFAULT_BOLD);
-                n.title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+                n.title.setTextSize(TypedValue.COMPLEX_UNIT_SP, watch ? 14 : 18);
+                if (watch) {
+                    // The top of a watch is narrow: one line, inside the circle.
+                    // Back is the swipe to the right (the system's back gesture).
+                    int inset = Math.round(activity.getResources().getDisplayMetrics().widthPixels * 0.16f);
+                    n.title.setPadding(inset, Math.round(6 * density), inset, 0);
+                    n.title.setSingleLine(true);
+                    n.title.setEllipsize(TextUtils.TruncateAt.END);
+                }
                 header.addView(n.title, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
                 header.addView(n.back, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START));
-                col.addView(header, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Math.round(HEADER_DP * density)));
+                col.addView(header, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Math.round(headerDp() * density)));
                 n.host = new PrismLayout(activity);
                 col.addView(n.host, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
                 reportViewport(n, n.host);
@@ -393,7 +407,13 @@ public final class PrismHost {
                 col.addView(n.host, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
                 n.bar = new LinearLayout(activity);
                 n.bar.setOrientation(LinearLayout.HORIZONTAL);
-                col.addView(n.bar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Math.round(TAB_BAR_DP * density)));
+                col.addView(n.bar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Math.round(tabBarDp() * density)));
+                // On a round watch the bottom of the circle is narrow: keep the icons inside.
+                if (round) {
+                    // (The screen's sides are already 9% in.)
+                    int inset = Math.round(activity.getResources().getDisplayMetrics().widthPixels * 0.11f);
+                    n.bar.setPadding(inset, 0, inset, 0);
+                }
                 reportViewport(n, n.host);
                 n.view = col;
                 styleChrome(n);
@@ -504,7 +524,7 @@ public final class PrismHost {
         for (int i = 0; i < screens.size(); i++) {
             screens.get(i).view.setVisibility(i == screens.size() - 1 ? View.VISIBLE : View.GONE);
         }
-        n.back.setVisibility(screens.size() > 1 ? View.VISIBLE : View.GONE);
+        n.back.setVisibility(screens.size() > 1 && !watch ? View.VISIBLE : View.GONE);
         n.title.setText(screens.isEmpty() ? "" : screens.get(screens.size() - 1).text);
     }
 
@@ -556,13 +576,20 @@ public final class PrismHost {
             b.setAllCaps(false);
             if (TextUtils.isEmpty(tab.glyph)) {
                 b.setText(tab.text);
+            } else if (watch) {
+                // Too narrow for labels: the icon, read aloud with its name.
+                b.setText(tab.glyph);
+                b.setContentDescription(tab.text);
+                b.setPadding(0, 0, 0, 0);
+                b.setMinWidth(0);
+                b.setMinimumWidth(0);
             } else {
                 SpannableString label = new SpannableString(tab.glyph + "\n" + tab.text);
                 label.setSpan(new RelativeSizeSpan(1.8f), 0, tab.glyph.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
                 b.setText(label);
                 b.setContentDescription(tab.text);
             }
-            b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+            b.setTextSize(TypedValue.COMPLEX_UNIT_SP, watch && !TextUtils.isEmpty(tab.glyph) ? 18 : 12);
             b.setTextColor(i == selected ? accent() : (dark() ? 0xFF98989F : 0xFF6C6C72));
             b.setLineSpacing(0, 0.9f);
             b.setTypeface(i == selected ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
@@ -644,6 +671,8 @@ public final class PrismHost {
     static boolean dark() {
         if (appearance.equals("dark")) return true;
         if (appearance.equals("light")) return false;
+        // Watches are dark (Wear OS and watchOS alike).
+        if (watch) return true;
         return (activity.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
                 == Configuration.UI_MODE_NIGHT_YES;
     }
@@ -677,7 +706,8 @@ public final class PrismHost {
     /** Header and tab bar colors, the status and navigation bars behind them. */
     static void styleChrome(Node n) {
         boolean d = dark();
-        int bg = d ? 0xFF1C1C1E : 0xFFF2F2F7, fg = d ? 0xFFF2F2F7 : 0xFF1C1C1E;
+        // Watches: black, so the screen's edge disappears (Wear OS's convention).
+        int bg = watch ? 0xFF000000 : d ? 0xFF1C1C1E : 0xFFF2F2F7, fg = d ? 0xFFF2F2F7 : 0xFF1C1C1E;
         if (n.header != null) n.header.setBackgroundColor(bg);
         if (n.bar != null) n.bar.setBackgroundColor(bg);
         if (n.title != null) n.title.setTextColor(fg);
@@ -761,7 +791,31 @@ public final class PrismHost {
         });
         v.setOnTouchListener((view, e) -> g.onTouchEvent(e));
         v.setClickable(true);
-        v.setFocusable(n.clickable);
+        // Remotes and keyboards (Android TV, D-pad): select clicks, holding it
+        // opens the menu. Touches never get here (the gesture detector takes them).
+        v.setOnClickListener(n.clickable ? x -> send(event("click", n.id)) : null);
+        v.setOnLongClickListener(n.menu != null ? x -> { showMenu(n); return true; } : null);
+        v.setFocusable(n.clickable || n.menu != null);
+        v.setOnFocusChangeListener((view, focused) -> focusEffect(n, focused));
+    }
+
+    /** The focused view rises, like tvOS: visible from the sofa. */
+    static void focusEffect(Node n, boolean focused) {
+        View v = n.view;
+        if (v.isInTouchMode()) return;
+        // At most 8%, and no more than 24dp wider (full-width rows stay on screen).
+        float grow = v.getWidth() > 0 ? Math.min(1.08f, 1 + 24 * density / v.getWidth()) : 1.08f;
+        v.animate().scaleX(focused ? grow : 1f).scaleY(focused ? grow : 1f)
+                .translationZ(focused ? 12 * density : 0).setDuration(150).start();
+        // A ring in the view's own shape, light on dark and dark on light.
+        android.graphics.drawable.GradientDrawable ring = null;
+        if (focused) {
+            ring = new android.graphics.drawable.GradientDrawable();
+            // Styles arrive in pixels (zoomed by Rust).
+            ring.setCornerRadius((float) n.style.optDouble("radius", 8 * density));
+            ring.setStroke(Math.round(3 * density), dark() ? 0xEEFFFFFF : 0xEE1C1C1E);
+        }
+        v.setForeground(ring);
     }
 
     /** The context menu (press and hold), submenus flattened. */

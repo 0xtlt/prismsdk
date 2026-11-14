@@ -347,24 +347,20 @@ impl Render for TodoList {
                     ))),
             )
             // Gestures differ: swipe on phones, press and hold on watches
-            // and TVs, right-click on computers and the web.
+            // and TVs (watchOS, Wear OS, tvOS, Android TV), right-click on
+            // computers and the web.
             .child(
-                text(strings::todos_hint_mobile(cx))
-                    .text_size(13.)
-                    .text_color(t.muted)
-                    .only(Platform::MOBILE),
-            )
-            .child(
-                text(strings::todos_hint_hold(cx))
-                    .text_size(13.)
-                    .text_color(t.muted)
-                    .only(Platform::WEARABLE | Platform::TV),
-            )
-            .child(
-                text(strings::todos_hint_desktop(cx))
-                    .text_size(13.)
-                    .text_color(t.muted)
-                    .except(Platform::MOBILE | Platform::WEARABLE | Platform::TV),
+                text(match cx.device_info().kind {
+                    _ if cx.platform() == Platform::Web => strings::todos_hint_desktop(cx),
+                    // Watches, TVs, headsets (pinch and hold): press and hold.
+                    DeviceKind::Watch | DeviceKind::Tv | DeviceKind::Headset => {
+                        strings::todos_hint_hold(cx)
+                    }
+                    DeviceKind::Phone | DeviceKind::Tablet => strings::todos_hint_mobile(cx),
+                    _ => strings::todos_hint_desktop(cx),
+                })
+                .text_size(13.)
+                .text_color(t.muted),
             )
             .children(store.todos.iter().map(|todo| {
                 let status = if todo.done {

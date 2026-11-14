@@ -18,6 +18,7 @@ fn kind(cx: &App, d: &DeviceInfo) -> String {
         DeviceKind::Desktop => strings::about_kind_desktop(cx),
         DeviceKind::Tv => strings::about_kind_tv(cx),
         DeviceKind::Watch => strings::about_kind_watch(cx),
+        DeviceKind::Headset => strings::about_kind_headset(cx),
         DeviceKind::Unknown => strings::about_kind_unknown(cx),
     }
 }
