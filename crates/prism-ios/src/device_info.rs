@@ -1,12 +1,23 @@
-//! `cx.device_info()` on iOS and iPadOS: idiom, OS version, model (inches
-//! from a model table), screen, interface orientation, Split View.
+//! `cx.device_info()` on iOS and iPadOS: idiom, OS version, model, screen
+//! (inches from the screen's pixels and the model's ppi), interface
+//! orientation, Split View, and foldables (iOS 27.1+): hinge state from
+//! `UIHingeInteraction`, hinge position from the view's division reserved
+//! regions.
 
+use std::cell::Cell;
 use std::sync::OnceLock;
 
-use objc2::MainThreadMarker;
+use block2::RcBlock;
+use objc2::rc::Retained;
+use objc2::runtime::{AnyClass, AnyObject};
+use objc2::{MainThreadMarker, msg_send, sel};
+use objc2_core_foundation::CGRect;
+use objc2_foundation::{NSArray, NSObjectProtocol};
 use objc2_ui_kit::{UIDevice, UIInterfaceOrientation, UIUserInterfaceIdiom, UIView};
+use prism_core::device_info::{AppleModel, apple_model, diagonal_inches};
 use prism_core::{
-    DeviceInfo, DeviceKind, Orientation, Os, OsName, Rotation, ScreenInfo, WindowMode,
+    DeviceInfo, DeviceKind, Fold, Orientation, Os, OsName, Posture, Rotation, ScreenInfo,
+    WindowMode,
 };
 
 /// What never changes while the app runs.
@@ -14,8 +25,7 @@ struct Fixed {
     kind: DeviceKind,
     os: Os,
     model: Option<String>,
-    model_name: Option<String>,
-    diagonal: Option<f32>,
+    known: Option<AppleModel>,
     simulator: bool,
 }
 
@@ -31,9 +41,6 @@ fn fixed(mtm: MainThreadMarker) -> &'static Fixed {
             _ => DeviceKind::Unknown,
         };
         let model = prism_native::apple::model_id();
-        let known = model
-            .as_deref()
-            .and_then(prism_core::device_info::apple_model);
         Fixed {
             kind,
             os: Os {
@@ -44,13 +51,88 @@ fn fixed(mtm: MainThreadMarker) -> &'static Fixed {
                 },
                 version: prism_native::apple::os_version(),
             },
-            model_name: known.map(|(name, _)| name.to_string()),
-            diagonal: known.map(|(_, inches)| inches),
+            known: model.as_deref().and_then(apple_model),
             model,
             simulator: prism_native::apple::is_simulator(),
         }
     })
 }
+
+// --- Hinge (iOS 27.1+) -------------------------------------------------------------------
+
+/// `UIHingeStatus` (UIHinge.h).
+const HINGE_CLOSED: isize = 1;
+const HINGE_PARTIALLY_OPEN: isize = 2;
+const HINGE_FULLY_OPEN: isize = 3;
+
+thread_local! {
+    /// The last hinge update: status and angle in radians.
+    static HINGE: Cell<Option<(isize, f64)>> = const { Cell::new(None) };
+    static OBSERVING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Observes the hinge of a foldable from `root`; `changed` runs on each
+/// update. Does nothing before iOS 27.1.
+pub(crate) fn observe_hinge(root: &UIView, changed: fn()) {
+    if OBSERVING.get() {
+        return;
+    }
+    let Some(class) = AnyClass::get(c"UIHingeInteraction") else {
+        return;
+    };
+    OBSERVING.set(true);
+    let handler = RcBlock::new(
+        move |_interaction: *mut AnyObject, update: *mut AnyObject| {
+            // SAFETY: UIKit passes a live UIHingeInteractionUpdate; `hinge` is a
+            // nullable UIHinge with `status` (NSInteger) and `angle` (CGFloat).
+            let state = unsafe {
+                let hinge: Option<Retained<AnyObject>> = msg_send![update, hinge];
+                hinge.map(|h| {
+                    let status: isize = msg_send![&*h, status];
+                    let angle: f64 = msg_send![&*h, angle];
+                    (status, angle)
+                })
+            };
+            HINGE.set(state);
+            changed();
+        },
+    );
+    // SAFETY: documented initializer and UIView's `addInteraction:`.
+    unsafe {
+        let interaction: Retained<AnyObject> =
+            msg_send![msg_send![class, alloc], initWithUpdateHandler: &*handler];
+        let _: () = msg_send![root, addInteraction: &*interaction];
+    }
+}
+
+/// Active division regions of `view` (where content should split in two),
+/// in its coordinates.
+fn division_regions(view: &UIView) -> Vec<CGRect> {
+    let Some(kind_class) = AnyClass::get(c"UIViewReservedRegionKind") else {
+        return Vec::new();
+    };
+    if !view.respondsToSelector(sel!(reservedRegionsOfKind:)) {
+        return Vec::new();
+    }
+    // SAFETY: iOS 27.1 API (UIViewReservedRegion.h, UIView.h), checked above.
+    unsafe {
+        let kind: Retained<AnyObject> = msg_send![kind_class, divisionRegionKind];
+        let regions: Retained<NSArray<AnyObject>> = msg_send![view, reservedRegionsOfKind: &*kind];
+        regions
+            .iter()
+            .filter(|r| {
+                let active: bool = msg_send![&**r, isActive];
+                active
+            })
+            .map(|r| {
+                let frame: CGRect = msg_send![&*r, frame];
+                frame
+            })
+            .collect()
+    }
+}
+
+// --- Device info -------------------------------------------------------------------------
 
 /// The device as seen from `root` (the window's root view), or `None`
 /// before it is in a window.
@@ -64,10 +146,18 @@ pub(crate) fn current(root: &UIView, mtm: MainThreadMarker) -> Option<DeviceInfo
     let bounds = screen.bounds().size;
     let (sw, sh) = (bounds.width as f32, bounds.height as f32);
     let native = screen.nativeBounds().size;
-    let pixels = ((native.width * native.width + native.height * native.height) as f32).sqrt();
+    let (pw, ph) = (native.width as f32, native.height as f32);
+    // Which built-in display shows the app (foldables have two) and its ppi.
+    let display = f
+        .known
+        .and_then(|m| m.screen(pw.round() as u32, ph.round() as u32));
+    let ppi = display.map(|(_, ppi)| ppi);
+    let diagonal = ppi.and_then(|ppi| diagonal_inches(pw, ph, ppi));
+
+    // UIOrientation.h: interface LandscapeLeft = device LandscapeRight (home
+    // button on the left), i.e. the device turned clockwise.
     let rotation = match scene.effectiveGeometry().interfaceOrientation() {
         UIInterfaceOrientation::PortraitUpsideDown => 180,
-        // Home indicator on the left: the device turned clockwise.
         UIInterfaceOrientation::LandscapeLeft => 90,
         UIInterfaceOrientation::LandscapeRight => 270,
         _ => 0,
@@ -78,28 +168,55 @@ pub(crate) fn current(root: &UIView, mtm: MainThreadMarker) -> Option<DeviceInfo
     let window_mode = if f.kind != DeviceKind::Tablet {
         WindowMode::Fullscreen
     } else if wh + 1. < sh {
-        // Stage Manager, or the iPadOS 26 windows.
+        // Shorter than the screen: a movable window.
         WindowMode::Windowed
     } else if ww + 1. < sw {
-        // Full height but narrower: Split View or Slide Over.
-        if ww <= 400. && ww * 2.5 < sw {
-            WindowMode::SlideOver
-        } else {
-            WindowMode::Split
-        }
+        // Full height but narrower: next to another app.
+        WindowMode::Split
     } else {
         WindowMode::Fullscreen
     };
 
-    // Phones with a notch or Dynamic Island have a tall top (or side) inset.
+    // A notch or camera cutout makes the top (or side) safe area taller than
+    // a plain status bar.
     let insets = window.safeAreaInsets();
     let cutout = f.kind == DeviceKind::Phone && insets.top.max(insets.left).max(insets.right) > 24.;
+
+    // Foldables: the hinge region in window coordinates, and its state.
+    let fold = division_regions(root).first().map(|r| {
+        let vertical = r.size.height > r.size.width;
+        Fold {
+            x: r.origin.x as f32,
+            y: r.origin.y as f32,
+            width: r.size.width as f32,
+            height: r.size.height as f32,
+            vertical,
+            occluding: false,
+        }
+    });
+    let hinge = HINGE.get();
+    let foldable = f.known.is_some_and(|m| m.is_foldable());
+    let posture = match hinge.map(|(status, _)| status) {
+        Some(HINGE_CLOSED) => Posture::Closed,
+        Some(HINGE_PARTIALLY_OPEN) => match fold {
+            Some(fold) if !fold.vertical => Posture::Tabletop,
+            _ => Posture::Book,
+        },
+        Some(HINGE_FULLY_OPEN) => Posture::Flat,
+        // No hinge report: a foldable showing its smallest display is closed.
+        _ if foldable
+            && display.is_some_and(|(i, _)| f.known.is_some_and(|m| m.is_smallest(i))) =>
+        {
+            Posture::Closed
+        }
+        _ => Posture::Flat,
+    };
 
     Some(DeviceInfo {
         kind: f.kind,
         os: f.os,
         model: f.model.clone(),
-        model_name: f.model_name.clone(),
+        model_name: f.known.map(|m| m.name.to_string()),
         simulator: f.simulator,
         orientation: Orientation::of(sw, sh),
         rotation: Rotation(rotation),
@@ -107,11 +224,14 @@ pub(crate) fn current(root: &UIView, mtm: MainThreadMarker) -> Option<DeviceInfo
             width: sw,
             height: sh,
             scale: screen.scale() as f32,
-            diagonal: f.diagonal,
-            ppi: f.diagonal.map(|d| (pixels / d).round()),
+            diagonal,
+            ppi,
             refresh_rate: Some(screen.maximumFramesPerSecond() as f32),
             cutout,
         },
+        posture,
+        hinge_angle: hinge.map(|(_, angle)| angle.to_degrees() as f32),
+        fold,
         window_mode,
         touch: true,
         ..Default::default()

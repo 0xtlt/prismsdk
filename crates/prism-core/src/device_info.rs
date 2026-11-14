@@ -19,9 +19,9 @@
 //! |---|---|---|---|
 //! | kind | idiom | desktop | user agent + touch |
 //! | os / model | `systemVersion`, `hw.machine` | `operatingSystemVersion`, `hw.model` | user agent (client hints when available) |
-//! | inches / ppi | model table | `CGDisplayScreenSize` | estimated (CSS px are 1/96 in) |
+//! | inches / ppi | screen pixels and the model's ppi (table from Xcode's simulator profiles) | `CGDisplayScreenSize` | estimated |
 //! | orientation | interface orientation | screen shape | `screen.orientation` |
-//! | posture / fold | – (no foldable iPhone) | – | `devicePosture`, viewport segments |
+//! | posture / fold | `UIHingeInteraction` (iOS 27.1+), division reserved regions | – | `devicePosture`, viewport segments |
 //! | window mode | split view / slide over | fullscreen or windowed | standalone (installed) or browser |
 
 use std::fmt;
@@ -103,12 +103,12 @@ pub enum Posture {
     /// Not foldable, or fully open.
     #[default]
     Flat,
-    /// Half open with a vertical hinge, like a book (Galaxy Z Fold, Surface Duo).
+    /// Half open with a vertical hinge, like a book.
     Book,
-    /// Half open with a horizontal hinge, standing like a laptop (Galaxy Z
-    /// Flip on a table): content on top, controls below.
+    /// Half open with a horizontal hinge, standing like a laptop: content on
+    /// top, controls below.
     Tabletop,
-    /// Folded: the app is on the outer screen.
+    /// Folded shut: the app is on the outer screen.
     Closed,
 }
 
@@ -366,6 +366,9 @@ pub struct DeviceInfo {
     pub rotation: Rotation,
     pub screen: ScreenInfo,
     pub posture: Posture,
+    /// How far a foldable's hinge is open, in degrees (0 closed, 180 flat),
+    /// when the platform reports it.
+    pub hinge_angle: Option<f32>,
     /// The hinge of a foldable, when the window spans it.
     pub fold: Option<Fold>,
     pub window_mode: WindowMode,
@@ -685,73 +688,51 @@ pub fn estimate_diagonal(kind: DeviceKind, width: f32, height: f32) -> Option<f3
     (d > 0.).then_some((d * 10.).round() / 10.)
 }
 
-/// Marketing name and diagonal (inches) of Apple devices, by model id.
-/// Simulators report the simulated model.
-pub fn apple_model(id: &str) -> Option<(&'static str, f32)> {
-    const MODELS: &[(&str, &str, f32)] = &[
-        ("iPhone12,1", "iPhone 11", 6.1),
-        ("iPhone12,3", "iPhone 11 Pro", 5.8),
-        ("iPhone12,5", "iPhone 11 Pro Max", 6.5),
-        ("iPhone12,8", "iPhone SE (2nd generation)", 4.7),
-        ("iPhone13,1", "iPhone 12 mini", 5.4),
-        ("iPhone13,2", "iPhone 12", 6.1),
-        ("iPhone13,3", "iPhone 12 Pro", 6.1),
-        ("iPhone13,4", "iPhone 12 Pro Max", 6.7),
-        ("iPhone14,2", "iPhone 13 Pro", 6.1),
-        ("iPhone14,3", "iPhone 13 Pro Max", 6.7),
-        ("iPhone14,4", "iPhone 13 mini", 5.4),
-        ("iPhone14,5", "iPhone 13", 6.1),
-        ("iPhone14,6", "iPhone SE (3rd generation)", 4.7),
-        ("iPhone14,7", "iPhone 14", 6.1),
-        ("iPhone14,8", "iPhone 14 Plus", 6.7),
-        ("iPhone15,2", "iPhone 14 Pro", 6.1),
-        ("iPhone15,3", "iPhone 14 Pro Max", 6.7),
-        ("iPhone15,4", "iPhone 15", 6.1),
-        ("iPhone15,5", "iPhone 15 Plus", 6.7),
-        ("iPhone16,1", "iPhone 15 Pro", 6.1),
-        ("iPhone16,2", "iPhone 15 Pro Max", 6.7),
-        ("iPhone17,1", "iPhone 16 Pro", 6.3),
-        ("iPhone17,2", "iPhone 16 Pro Max", 6.9),
-        ("iPhone17,3", "iPhone 16", 6.1),
-        ("iPhone17,4", "iPhone 16 Plus", 6.7),
-        ("iPhone17,5", "iPhone 16e", 6.1),
-        ("iPhone18,1", "iPhone 17 Pro", 6.3),
-        ("iPhone18,2", "iPhone 17 Pro Max", 6.9),
-        ("iPhone18,3", "iPhone 17", 6.3),
-        ("iPhone18,4", "iPhone Air", 6.5),
-        ("iPad13,18", "iPad (10th generation)", 10.9),
-        ("iPad13,19", "iPad (10th generation)", 10.9),
-        ("iPad14,1", "iPad mini (6th generation)", 8.3),
-        ("iPad14,2", "iPad mini (6th generation)", 8.3),
-        ("iPad16,1", "iPad mini (A17 Pro)", 8.3),
-        ("iPad16,2", "iPad mini (A17 Pro)", 8.3),
-        ("iPad13,16", "iPad Air (5th generation)", 10.9),
-        ("iPad13,17", "iPad Air (5th generation)", 10.9),
-        ("iPad14,8", "iPad Air 11-inch (M2)", 11.0),
-        ("iPad14,9", "iPad Air 11-inch (M2)", 11.0),
-        ("iPad14,10", "iPad Air 13-inch (M2)", 13.0),
-        ("iPad14,11", "iPad Air 13-inch (M2)", 13.0),
-        ("iPad15,3", "iPad Air 11-inch (M3)", 11.0),
-        ("iPad15,4", "iPad Air 11-inch (M3)", 11.0),
-        ("iPad15,5", "iPad Air 13-inch (M3)", 13.0),
-        ("iPad15,6", "iPad Air 13-inch (M3)", 13.0),
-        ("iPad15,7", "iPad (A16)", 11.0),
-        ("iPad15,8", "iPad (A16)", 11.0),
-        ("iPad14,3", "iPad Pro 11-inch (4th generation)", 11.0),
-        ("iPad14,4", "iPad Pro 11-inch (4th generation)", 11.0),
-        ("iPad14,5", "iPad Pro 12.9-inch (6th generation)", 12.9),
-        ("iPad14,6", "iPad Pro 12.9-inch (6th generation)", 12.9),
-        ("iPad16,3", "iPad Pro 11-inch (M4)", 11.1),
-        ("iPad16,4", "iPad Pro 11-inch (M4)", 11.1),
-        ("iPad16,5", "iPad Pro 13-inch (M4)", 13.0),
-        ("iPad16,6", "iPad Pro 13-inch (M4)", 13.0),
-        ("iPad17,1", "iPad Pro 11-inch (M5)", 11.1),
-        ("iPad17,2", "iPad Pro 11-inch (M5)", 11.1),
-        ("iPad17,3", "iPad Pro 13-inch (M5)", 13.0),
-        ("iPad17,4", "iPad Pro 13-inch (M5)", 13.0),
-    ];
-    MODELS
+/// An Apple device, from the table generated out of Xcode's simulator
+/// profiles (`scripts/apple-models.py`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AppleModel {
+    /// `iPhone 16 Pro`, `iPhone Duo`.
+    pub name: &'static str,
+    /// Built-in displays: (width px, height px, pixels per inch). Foldables
+    /// have more than one.
+    pub screens: &'static [(u32, u32, f32)],
+}
+
+impl AppleModel {
+    pub fn is_foldable(&self) -> bool {
+        self.screens.len() > 1
+    }
+
+    /// Whether display `index` is the smallest (a foldable's outer screen).
+    pub fn is_smallest(&self, index: usize) -> bool {
+        let area = |&(w, h, _): &(u32, u32, f32)| u64::from(w) * u64::from(h);
+        let min = self.screens.iter().map(area).min();
+        self.screens.get(index).map(area) == min
+    }
+
+    /// The built-in display of `width`×`height` pixels (either orientation):
+    /// its index and pixels per inch.
+    pub fn screen(&self, width: u32, height: u32) -> Option<(usize, f32)> {
+        let (a, b) = (width.min(height), width.max(height));
+        self.screens
+            .iter()
+            .position(|&(w, h, _)| (w.min(h), w.max(h)) == (a, b))
+            .map(|i| (i, self.screens[i].2))
+    }
+}
+
+/// Looks up an Apple model id (`iPhone17,1`). Simulators report the
+/// simulated model.
+pub fn apple_model(id: &str) -> Option<AppleModel> {
+    crate::apple_models::MODELS
         .iter()
         .find(|(m, _, _)| *m == id)
-        .map(|(_, name, inches)| (*name, *inches))
+        .map(|&(_, name, screens)| AppleModel { name, screens })
+}
+
+/// The diagonal in inches of `width`×`height` pixels at `ppi`, rounded to a tenth.
+pub fn diagonal_inches(width: f32, height: f32, ppi: f32) -> Option<f32> {
+    let d = (width * width + height * height).sqrt() / ppi;
+    (ppi > 0. && d > 0.).then_some((d * 10.).round() / 10.)
 }

@@ -1622,8 +1622,16 @@ fn user_agents_describe_the_visitor_device() {
 
     assert_eq!(Version::parse("10_15_7").to_string(), "10.15.7");
     assert!(Version::parse("18.10") > Version::parse("18.9"));
+    // The model table comes from Xcode's simulator profiles.
+    let pro = crate::device_info::apple_model("iPhone17,1").unwrap();
+    assert_eq!(pro.name, "iPhone 16 Pro");
+    let (_, ppi) = pro.screen(2622, 1206).unwrap();
     assert_eq!(
-        crate::device_info::apple_model("iPhone17,1"),
-        Some(("iPhone 16 Pro", 6.3))
+        crate::device_info::diagonal_inches(1206., 2622., ppi),
+        Some(6.3)
     );
+    let duo = crate::device_info::apple_model("iPhone19,4").unwrap();
+    assert!(duo.is_foldable() && !pro.is_foldable());
+    let (outer, _) = duo.screen(1398, 2034).unwrap();
+    assert!(duo.is_smallest(outer));
 }

@@ -120,9 +120,9 @@ cx.on_device_info_change(|d, cx| …);   // the tree already re-renders on rotat
 |---|---|---|---|
 | `kind` (phone, tablet, desktop, tv) | idiom | desktop | user agent + touch (iPads in desktop mode included) |
 | `os`, `model`, `model_name` | `iOS 18.2`, `iPhone17,1`, `iPhone 16 Pro` | `macOS 15.1`, `Mac15,6` | the visitor's OS, Android model, client hints |
-| `screen` (pt, scale, inches, ppi, Hz, cutout) | model table, `maximumFramesPerSecond` | `CGDisplayScreenSize` | estimated inches |
+| `screen` (pt, scale, inches, ppi, Hz, cutout) | screen pixels ÷ the model's ppi (table generated from Xcode's simulator profiles: `scripts/apple-models.py`) | `CGDisplayScreenSize` | estimated inches |
 | `orientation`, `rotation` | interface orientation | screen shape | `screen.orientation` |
-| `posture`, `fold` (Flat, Book, Tabletop, Closed) | – | – | `devicePosture`, viewport segments |
+| `posture`, `hinge_angle`, `fold` (Flat, Book, Tabletop, Closed) | `UIHingeInteraction` + division reserved regions (iOS 27.1+, iPhone Duo) | – | `devicePosture`, viewport segments |
 | `window_mode` (fullscreen, split, slide over, windowed) | Split View / Stage Manager | fullscreen or windowed | installed app or browser tab |
 | `browser` | `None` | `None` | always set |
 

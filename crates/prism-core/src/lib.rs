@@ -7,6 +7,7 @@
 
 mod a11y;
 mod app;
+mod apple_models;
 pub mod background;
 pub mod device;
 pub mod device_info;

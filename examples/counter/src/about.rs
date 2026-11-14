@@ -82,6 +82,10 @@ fn posture(cx: &App, d: &DeviceInfo) -> String {
         Posture::Tabletop => strings::about_tabletop(cx),
         Posture::Closed => strings::about_closed(cx),
     };
+    let posture = match d.hinge_angle {
+        Some(angle) => format!("{posture} · {angle:.0}°"),
+        None => posture,
+    };
     match d.fold {
         Some(f) => {
             let at = if f.vertical { f.x } else { f.y };

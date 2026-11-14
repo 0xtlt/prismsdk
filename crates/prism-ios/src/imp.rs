@@ -505,6 +505,11 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
     state.commit(first);
     STATE.with(|cell| *cell.borrow_mut() = Some(state));
     prism_native::apple::set_device_sink(on_device);
+    STATE.with(|cell| {
+        if let Some(s) = cell.borrow().as_ref() {
+            crate::device_info::observe_hinge(&s.renderer.widgets.root, hinge_changed);
+        }
+    });
     flush_responses();
     // Development: `PRISM_RUN_BACKGROUND=sync` runs a background task now.
     if let Ok(id) = std::env::var("PRISM_RUN_BACKGROUND") {
@@ -2088,6 +2093,17 @@ fn observe_lifecycle(mtm: MainThreadMarker) {
 /// Answers from the device bridge (on the main thread). An answer given
 /// while the app is busy (synchronously, during the call) is handled on the
 /// next turn of the main loop.
+/// A foldable opened, closed or bent: report `cx.device_info()` again (on
+/// the next turn: UIKit may call while views are being changed).
+fn hinge_changed() {
+    dispatch2::DispatchQueue::main().exec_async(|| {
+        with_state(|s| {
+            s.device_size = None;
+            s.relayout();
+        })
+    });
+}
+
 fn on_device(message: prism_native::apple::DeviceMessage) {
     let mut message = Some(message);
     with_state(|s| {
