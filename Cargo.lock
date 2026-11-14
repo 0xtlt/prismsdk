@@ -1061,6 +1061,7 @@ dependencies = [
  "prism-ios",
  "prism-macos",
  "prism-ui",
+ "prism-watchos",
  "prism-web",
 ]
 
@@ -1150,6 +1151,17 @@ name = "prism-ui"
 version = "0.1.0"
 dependencies = [
  "prism-core",
+]
+
+[[package]]
+name = "prism-watchos"
+version = "0.1.0"
+dependencies = [
+ "dispatch2",
+ "prism-apple-build",
+ "prism-core",
+ "prism-native",
+ "serde_json",
 ]
 
 [[package]]

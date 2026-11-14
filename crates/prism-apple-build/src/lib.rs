@@ -20,6 +20,17 @@ fn xcrun(args: &[&str]) -> String {
 
 /// Compiles and links the bridge. No-op for non-Apple targets.
 pub fn build_bridge() {
+    build_swift(&["Shared", "Bridge"], "PrismBridge");
+}
+
+/// Compiles and links the watchOS SwiftUI host (`platform/apple/Watch`).
+pub fn build_watch_host() {
+    build_swift(&["Watch"], "PrismWatch");
+}
+
+/// Compiles the Swift sources of `dirs` (under `platform/apple`) into a
+/// static library named `module` and links it, for the cargo target.
+fn build_swift(dirs: &[&str], module: &str) {
     let target = std::env::var("TARGET").unwrap_or_default();
     let (sdk, platform, triple) = match target.as_str() {
         "aarch64-apple-ios-sim" => (
@@ -54,6 +65,22 @@ pub fn build_bridge() {
                 env_or("TVOS_DEPLOYMENT_TARGET", "17.0")
             ),
         ),
+        "aarch64-apple-watchos-sim" => (
+            "watchsimulator",
+            "watchsimulator",
+            format!(
+                "arm64-apple-watchos{}-simulator",
+                env_or("WATCHOS_DEPLOYMENT_TARGET", "10.0")
+            ),
+        ),
+        "aarch64-apple-watchos" => (
+            "watchos",
+            "watchos",
+            format!(
+                "arm64-apple-watchos{}",
+                env_or("WATCHOS_DEPLOYMENT_TARGET", "10.0")
+            ),
+        ),
         "aarch64-apple-darwin" | "x86_64-apple-darwin" => (
             "macosx",
             "macosx",
@@ -74,7 +101,7 @@ pub fn build_bridge() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let apple = manifest.join("../../platform/apple");
     let mut sources: Vec<PathBuf> = Vec::new();
-    for dir in ["Shared", "Bridge"] {
+    for dir in dirs {
         let dir = apple.join(dir);
         println!("cargo:rerun-if-changed={}", dir.display());
         for entry in std::fs::read_dir(&dir).expect("platform/apple sources") {
@@ -85,7 +112,7 @@ pub fn build_bridge() {
         }
     }
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    let lib = out.join("libPrismBridge.a");
+    let lib = out.join(format!("lib{module}.a"));
     let status = Command::new("xcrun")
         .args([
             "--sdk",
@@ -102,7 +129,7 @@ pub fn build_bridge() {
             "-emit-library",
             "-static",
             "-module-name",
-            "PrismBridge",
+            module,
         ])
         .arg("-o")
         .arg(&lib)
@@ -119,7 +146,7 @@ pub fn build_bridge() {
         .join("../lib/swift")
         .join(platform);
     println!("cargo:rustc-link-search=native={}", out.display());
-    println!("cargo:rustc-link-lib=static=PrismBridge");
+    println!("cargo:rustc-link-lib=static={module}");
     println!("cargo:rustc-link-search=native={}", toolchain_lib.display());
     println!("cargo:rustc-link-search=native={sdk_path}/usr/lib/swift");
     println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");

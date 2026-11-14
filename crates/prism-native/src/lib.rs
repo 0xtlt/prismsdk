@@ -37,6 +37,11 @@ pub trait Widgets {
     fn destroy(&mut self, view: &Self::View);
     /// Natural size of a leaf (text, button, input) given an optional width limit.
     fn measure(&mut self, view: &Self::View, max_width: Option<f32>) -> (f32, f32);
+    /// Narrowest width a leaf can take (CSS min-content: the longest word of
+    /// a text). Default: its natural single-line width.
+    fn measure_min_content(&mut self, view: &Self::View) -> f32 {
+        self.measure(view, None).0
+    }
     /// Place a view in its parent's coordinate space (top-left origin).
     fn set_frame(&mut self, view: &Self::View, x: f32, y: f32, w: f32, h: f32);
     /// For platform-managed containers (stacks, tab bars): where `container`
@@ -286,7 +291,8 @@ impl<W: Widgets> NativeRenderer<W> {
                         };
                         let max_width = known.width.or(match available.width {
                             AvailableSpace::Definite(w) => Some(w),
-                            _ => None,
+                            AvailableSpace::MinContent => Some(widgets.measure_min_content(view)),
+                            AvailableSpace::MaxContent => None,
                         });
                         let (w, h) = widgets.measure(view, max_width);
                         Size {

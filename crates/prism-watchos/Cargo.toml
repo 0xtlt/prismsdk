@@ -1,0 +1,15 @@
+[package]
+name = "prism-watchos"
+description = "Prism backend for watchOS: the app runs in Rust, a SwiftUI host draws it."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[target.'cfg(target_os = "watchos")'.dependencies]
+prism-core.workspace = true
+prism-native.workspace = true
+serde_json.workspace = true
+dispatch2.workspace = true
+
+[build-dependencies]
+prism-apple-build.workspace = true

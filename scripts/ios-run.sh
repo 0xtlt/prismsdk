@@ -7,7 +7,7 @@
 #   scripts/ios-run.sh <package> [--no-launch]
 #
 # Environment:
-#   PRISM_OS         ios (default) or tvos
+#   PRISM_OS         ios (default), tvos or watchos
 #   PRISM_SIM        simulator name or UDID (default: first available iPhone / Apple TV)
 #   PRISM_DEVICE     real device name or UDID (signs and installs with devicectl)
 #   PRISM_TEAM       Apple team id (default: the team of a matching profile)
@@ -31,7 +31,16 @@ cd "$ROOT"
 TARGET_DIR="$(cargo metadata --format-version 1 --no-deps 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
 DEVICE="${PRISM_DEVICE:-}"
 OS="${PRISM_OS:-ios}"
-if [[ "$OS" == tvos ]]; then
+if [[ "$OS" == watchos ]]; then
+  # watchOS: a watch-only SwiftUI app (WKApplication, WKWatchOnly), no widgets.
+  RUNTIME_NAME=watchOS DEVICE_PREFIX="Apple Watch" DEVICE_FAMILY="<integer>4</integer>" WIDGETS=0
+  MIN_IOS="${WATCHOS_DEPLOYMENT_TARGET:-10.0}" SWIFT_OS=watchos
+  if [[ -n "$DEVICE" ]]; then
+    TARGET=aarch64-apple-watchos SDK=watchos PLATFORM_NAME=WatchOS SWIFT_TRIPLE_SUFFIX=""
+  else
+    TARGET=aarch64-apple-watchos-sim SDK=watchsimulator PLATFORM_NAME=WatchSimulator SWIFT_TRIPLE_SUFFIX="-simulator"
+  fi
+elif [[ "$OS" == tvos ]]; then
   # tvOS: no WidgetKit, Live Activities or iPhone-only keys.
   RUNTIME_NAME=tvOS DEVICE_PREFIX="Apple TV" DEVICE_FAMILY="<integer>3</integer>" WIDGETS=0
   MIN_IOS="${TVOS_DEPLOYMENT_TARGET:-17.0}" SWIFT_OS=tvos
@@ -237,8 +246,8 @@ for line in os.environ.get("PRISM_PERMISSIONS", "").splitlines():
         print("  <key>" + key + "</key><string>" + escape(text) + "</string>")
 ')"
 ICON_PLIST=""
-if [[ -n "${PRISM_ICON:-}" && "$OS" == tvos ]]; then
-  echo "note: tvOS icons are layered (brand assets): no icon yet" >&2
+if [[ -n "${PRISM_ICON:-}" && "$OS" != ios ]]; then
+  echo "note: $RUNTIME_NAME app icons are not generated yet" >&2
 elif [[ -n "${PRISM_ICON:-}" ]]; then
   bash "$PLATFORM/apple/app-icon.sh" "$PRISM_ICON" "$SDK" "$MIN_IOS" "$APP" "$GEN"
   ICON_PLIST="$(cat "$GEN/icon-info.xml")"
@@ -281,6 +290,11 @@ $( [[ "$OS" == ios ]] && printf '%s\n' "  <key>LSRequiresIPhoneOS</key><true/>" 
     <key>CFBundleURLName</key><string>$BUNDLE_ID</string>
     <key>CFBundleURLSchemes</key><array><string>$SCHEME</string></array>
   </dict></array>
+$( if [[ "$OS" == watchos ]]; then cat <<'WATCH'
+  <key>WKApplication</key><true/>
+  <key>WKWatchOnly</key><true/>
+WATCH
+else cat <<'SCENE'
   <key>UIApplicationSceneManifest</key>
   <dict>
     <key>UIApplicationSupportsMultipleScenes</key><false/>
@@ -293,6 +307,8 @@ $( [[ "$OS" == ios ]] && printf '%s\n' "  <key>LSRequiresIPhoneOS</key><true/>" 
       </dict></array>
     </dict>
   </dict>
+SCENE
+fi )
 </dict>
 </plist>
 PLIST

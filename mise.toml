@@ -14,6 +14,7 @@ run = [
   "cargo check -p counter --no-default-features --features web",
   "cargo check -p counter --target aarch64-apple-ios-sim",
   "cargo check -p counter --target aarch64-apple-tvos-sim",
+  "cargo check -p counter --target aarch64-apple-watchos-sim",
 ]
 
 [tasks.test]

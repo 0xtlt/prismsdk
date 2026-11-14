@@ -56,11 +56,13 @@ fn restart(
     env: &[(&str, String)],
     child: &mut Option<Child>,
 ) -> Result<(), String> {
-    if matches!(target, Target::Ios | Target::Tvos) {
+    if matches!(target, Target::Ios | Target::Tvos | Target::Watchos) {
         // Builds, reinstalls and relaunches (the simulator terminates the old process).
         let mut env = env.to_vec();
-        if target == Target::Tvos {
-            env.push(("PRISM_OS", "tvos".into()));
+        match target {
+            Target::Tvos => env.push(("PRISM_OS", "tvos".into())),
+            Target::Watchos => env.push(("PRISM_OS", "watchos".into())),
+            _ => {}
         }
         let status = crate::apple_command(p, "ios-run.sh", o, false, &env)?
             .status()

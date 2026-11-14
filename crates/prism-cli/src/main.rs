@@ -27,14 +27,14 @@ prism — Rust UI for the web, macOS and iOS
 
 USAGE:
     prism new <name> [--prism <path>]       Create a project
-    prism run <web|macos|ios|tvos> [options]    Build and run
-    prism dev <web|macos|ios|tvos> [options]    Run, rebuild and restart on save (keeps the screen)
-    prism build <web|macos|ios|tvos> [options]  Build release artifacts
+    prism run <web|macos|ios|tvos|watchos> [options]    Build and run
+    prism dev <web|macos|ios|tvos|watchos> [options]    Run, rebuild and restart on save (keeps the screen)
+    prism build <web|macos|ios|tvos|watchos> [options]  Build release artifacts
     prism devices                           List simulators and paired iOS devices
 
 OPTIONS:
     --device <name|udid>    iOS: a real iPhone/iPad (signed with your team)
-    --sim <name|udid>       iOS/tvOS: a simulator
+    --sim <name|udid>       iOS/tvOS/watchOS: a simulator
     --release               Optimized build
     --path </route>         Start on this screen
     --bundle                macOS: run as a full .app (widgets, notifications)
@@ -47,6 +47,7 @@ enum Target {
     Macos,
     Ios,
     Tvos,
+    Watchos,
 }
 
 #[derive(Default, Debug)]
@@ -87,7 +88,8 @@ fn run(args: &[String]) -> Result<(), String> {
                 Some("macos" | "mac") => Target::Macos,
                 Some("ios") => Target::Ios,
                 Some("tvos" | "tv") => Target::Tvos,
-                _ => return Err(format!("usage: prism {cmd} <web|macos|ios|tvos>")),
+                Some("watchos" | "watch") => Target::Watchos,
+                _ => return Err(format!("usage: prism {cmd} <web|macos|ios|tvos|watchos>")),
             };
             let opts = Options {
                 device: flag(args, "--device"),
@@ -126,6 +128,7 @@ fn run_target(p: &Project, target: Target, o: &Options) -> Result<(), String> {
     match target {
         Target::Ios => apple_script(p, "ios-run.sh", o, false),
         Target::Tvos => apple_script_os(p, o, false, "tvos"),
+        Target::Watchos => apple_script_os(p, o, false, "watchos"),
         Target::Macos if o.bundle => apple_script(p, "macos-app.sh", o, false),
         _ => {
             build(p, target, o)?;
@@ -175,6 +178,7 @@ fn build_target(p: &Project, target: Target, o: &Options) -> Result<(), String> 
         Target::Macos => apple_script(p, "macos-app.sh", o, true),
         Target::Ios => apple_script(p, "ios-run.sh", o, true),
         Target::Tvos => apple_script_os(p, o, true, "tvos"),
+        Target::Watchos => apple_script_os(p, o, true, "watchos"),
     }
 }
 

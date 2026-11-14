@@ -14,6 +14,7 @@ prism-native = { path = "crates/prism-native" }
 prism-web = { path = "crates/prism-web" }
 prism-macos = { path = "crates/prism-macos" }
 prism-ios = { path = "crates/prism-ios" }
+prism-watchos = { path = "crates/prism-watchos" }
 prism-ui = { path = "crates/prism-ui" }
 prism-http = { path = "crates/prism-http" }
 prism-apple-build = { path = "crates/prism-apple-build" }

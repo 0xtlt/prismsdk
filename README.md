@@ -462,8 +462,20 @@ mise run web        # the example, restarting on save (also: macos, ios, macos-a
 - Not on tvOS (the SDK marks them unavailable): notifications with text, widgets, Live Activities, motion, photo/camera pickers, haptics, clipboard, share sheet, pull to refresh. Location gives one position at a time. `cx.capabilities()` reports all of this, and `.only(Platform::TV)` / `Platform::Tvos` adapt the UI.
 - Dev hooks on iOS and tvOS: `PRISM_CLICK="+1|Save"` presses by title or label, `PRISM_SNAPSHOT=/abs/out.png` saves the window and quits.
 
+## watchOS
+
+`prism run watchos` (simulator) / `prism build watchos`: a watch-only app (`WKApplication`, `WKWatchOnly`).
+
+watchOS has no UIKit views (`UIView` is `API_UNAVAILABLE(watchos)` in the SDK), so the app runs in Rust and a SwiftUI host draws it (`platform/apple/Watch`).
+
+- Layout is prism-native's flexbox, as on iOS and macOS. Swift measures text (UIKit string drawing) and places each node at its frame, so layouts match the other platforms.
+- Navigation stacks are `NavigationStack`, tabs are vertical pages (Digital Crown), toggles are SwiftUI toggles.
+- Styles are zoomed like tvOS (body text size ÷ 17); `cx.device_info()` reports the watch (model and screen from Xcode's profiles).
+- Not yet on the watch: device APIs, notifications, context menus, swipes.
+- Dev hooks: `PRISM_CLICK`, `PRISM_SNAPSHOT` (SwiftUI `ImageRenderer`: text fields render as a placeholder), `PRISM_DEBUG_LAYOUT=1` (logs text frames).
+
 ## Status
 
 Primitives: `div`, `text`, `button`, `text_input`, `toggle`, `scroll`, `picture`, `VirtualList`, `screen`, `Router` (stacks, tabs, sheets). Component library `prism::ui`. Accessibility on all backends. Light/dark appearance.
 Widgets, Live Activities (Dynamic Island), notifications with actions, background tasks, device APIs (location, motion, photos, camera, haptics, clipboard, share), alerts, context menus, tray and app menus, async tasks, HTTP, storage, i18n/RTL, Dynamic Type, animations, `prism` CLI.
-Platforms: web, macOS, iOS/iPadOS, tvOS. Not yet: watchOS, Android, Windows, Linux backends (the `Widgets` trait and `PlatformServices` are the extension points).
+Platforms: web, macOS, iOS/iPadOS, tvOS, watchOS. Not yet: Android, Windows, Linux backends (the `Widgets` trait and `PlatformServices` are the extension points).

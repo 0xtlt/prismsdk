@@ -20,7 +20,7 @@ for path in sorted(glob.glob(f"{ROOT}/*.simdevicetype")):
         caps = plistlib.load(open(os.path.join(res, "capabilities.plist"), "rb"))
     except OSError:
         continue
-    if not set(profile.get("supportedProductFamilyIDs", [])) & {1, 2}:  # iPhone, iPad
+    if not set(profile.get("supportedProductFamilyIDs", [])) & {1, 2, 4}:  # iPhone, iPad, Watch
         continue
     displays = caps.get("capabilities", caps).get("displays", [])
     screens = [(int(d["width"]), int(d["height"]), float(d.get("hdpi", 0))) for d in displays
