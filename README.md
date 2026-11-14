@@ -393,6 +393,15 @@ Other servers (actix, hyper, …): `prism-web` without default features has no s
 
 `prism build web` also writes `public/` (hashed files plus `manifest.json`). Upload it to a CDN and set `PRISM_ASSET_URL=https://cdn.example.com`, or let the CDN cache `/_prism/*` and `/assets/*` from the server. Settings: `PRISM_HOST`, `PRISM_PORT`, `PRISM_BASE_PATH`, `PRISM_ASSET_URL`, `PRISM_DATA_DIR` (or `WebApp::base_path` / `asset_url` / `data_dir`).
 
+### Docker (Linux)
+
+```sh
+docker build -f docker/web.Dockerfile --build-arg PACKAGE=my-app -t my-app .
+docker run -p 3000:3000 -v my-app-data:/data my-app
+```
+
+This is a multi-stage build on Rust 1.99 / Debian bookworm. It produces the server binary, `public/` (the hashed files for a CDN) and the app's assets, in about 160 MB with the counter example. The image is tested with the same jsdom suites as the macOS build.
+
 ## Performance
 
 Measured on the example app (release build, Apple silicon):
