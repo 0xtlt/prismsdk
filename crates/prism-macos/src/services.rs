@@ -14,7 +14,7 @@ use objc2_app_kit::{
     NSVariableStatusItemLength,
 };
 use objc2_foundation::NSString;
-use prism_core::surfaces::{ActivityContent, PlatformRequest, json_str};
+use prism_core::surfaces::{ActivityContent, PlatformRequest};
 use prism_core::{ActivityId, Capabilities, NodeKind, PlatformServices, SNode, format_remaining};
 
 unsafe extern "C" {
@@ -207,20 +207,7 @@ impl PlatformServices for MacServices {
                     );
                     return;
                 }
-                let opt = |s: &Option<String>| s.as_deref().map_or("null".into(), json_str);
-                let json = format!(
-                    r#"{{"id":{},"title":{},"subtitle":{},"body":{},"link":{},"delay":{},"sound":{},"badge":{},"thread":{}}}"#,
-                    json_str(&n.id),
-                    json_str(&n.title),
-                    opt(&n.subtitle),
-                    json_str(&n.body),
-                    opt(&n.link),
-                    n.delay.map_or(0., |d| d.as_secs_f64()),
-                    n.sound,
-                    n.badge.map_or("null".into(), |b| b.to_string()),
-                    opt(&n.thread),
-                );
-                unsafe { prism_notify(c(&json).as_ptr()) }
+                unsafe { prism_notify(c(&n.to_json()).as_ptr()) }
             }
             PlatformRequest::CancelNotification(id) => {
                 if self.caps.notifications {
@@ -287,4 +274,25 @@ pub extern "C" fn prism_open_link(path: *const c_char) {
         .to_string_lossy()
         .into_owned();
     crate::imp::open_link(&path);
+}
+
+/// Called by the Swift bridge when a notification is tapped or one of its
+/// actions chosen (`action`, `text`, `link` may be null).
+#[unsafe(no_mangle)]
+pub extern "C" fn prism_notification_response(
+    id: *const c_char,
+    action: *const c_char,
+    text: *const c_char,
+    link: *const c_char,
+) {
+    let s = |p: *const c_char| {
+        (!p.is_null()).then(|| unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned())
+    };
+    let Some(id) = s(id) else { return };
+    let response = prism_core::NotificationResponse {
+        id,
+        action: s(action),
+        text: s(text),
+    };
+    crate::imp::notification_response(response, s(link));
 }

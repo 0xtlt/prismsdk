@@ -1114,3 +1114,46 @@ fn swipes_refresh_and_pictures() {
         Some("A cat")
     );
 }
+
+#[test]
+fn notification_actions_reach_the_handler_and_open_links() {
+    use crate::surfaces::{NotificationAction, NotificationResponse};
+    use std::sync::Mutex;
+    struct Plain;
+    impl Render for Plain {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            screen("Plain")
+        }
+    }
+    let got: Arc<Mutex<Vec<NotificationResponse>>> = Default::default();
+    let seen = got.clone();
+    let init: AppInit = Arc::new(move |cx: &mut App| {
+        let seen = seen.clone();
+        cx.on_notification_response(move |r, _| seen.lock().unwrap().push(r.clone()));
+        let r = Router::new()
+            .route("/", |cx, _| cx.new_entity(|_| Plain))
+            .route("/later", |cx, _| cx.new_entity(|_| Plain))
+            .build(cx);
+        cx.set_root(r);
+    });
+    let n = crate::Notification::new("Timer done")
+        .id("focus")
+        .action(NotificationAction::new("snooze", "Snooze"))
+        .action(NotificationAction::new("reply", "Reply").reply("Message…"))
+        .action(NotificationAction::new("open", "Open").link("/later"));
+    let json = n.to_json();
+    assert!(json.contains(r#""actions":[{"id":"snooze""#), "{json}");
+    assert!(json.contains(r#""reply":"Message…""#));
+    assert!(json.contains(r#""link":"/later","#) || json.contains(r#""link":"/later"}"#));
+
+    let mut rt = Runtime::new(&init);
+    rt.render();
+    let response = NotificationResponse {
+        id: "focus".into(),
+        action: Some("open".into()),
+        text: None,
+    };
+    rt.notification_response(response.clone(), Some("/later".into()));
+    assert_eq!(got.lock().unwrap().as_slice(), &[response]);
+    assert_eq!(rt.app.current_path(), Some("/later"));
+}

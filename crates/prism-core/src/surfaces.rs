@@ -682,6 +682,103 @@ pub struct Notification {
     pub badge: Option<u32>,
     /// Groups related notifications.
     pub thread: Option<String>,
+    /// Buttons shown with the notification (long press / expand).
+    pub actions: Vec<NotificationAction>,
+}
+
+/// A button on a notification. Choosing it calls the app's
+/// [`App::on_notification_response`] handler (and opens `link`, if any).
+#[derive(Clone, Debug, PartialEq)]
+pub struct NotificationAction {
+    pub id: String,
+    pub title: String,
+    pub destructive: bool,
+    /// Brings the app to the foreground (otherwise handled in the background).
+    pub foreground: bool,
+    /// Shows a text field (quick reply); the text arrives in the response.
+    pub reply: Option<String>,
+    pub link: Option<String>,
+}
+
+impl NotificationAction {
+    pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
+        NotificationAction {
+            id: id.into(),
+            title: title.into(),
+            destructive: false,
+            foreground: false,
+            reply: None,
+            link: None,
+        }
+    }
+    pub fn destructive(mut self) -> Self {
+        self.destructive = true;
+        self
+    }
+    pub fn opens_app(mut self) -> Self {
+        self.foreground = true;
+        self
+    }
+    /// A quick-reply text field with this placeholder.
+    pub fn reply(mut self, placeholder: impl Into<String>) -> Self {
+        self.reply = Some(placeholder.into());
+        self
+    }
+    /// Opens `path` in the app (implies [`opens_app`](Self::opens_app)).
+    pub fn link(mut self, path: impl Into<String>) -> Self {
+        self.link = Some(path.into());
+        self.foreground = true;
+        self
+    }
+}
+
+/// What the user did with a notification.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NotificationResponse {
+    /// The notification's id.
+    pub id: String,
+    /// The chosen action, or `None` for a tap on the notification itself.
+    pub action: Option<String>,
+    /// Text typed in a reply action.
+    pub text: Option<String>,
+}
+
+impl Notification {
+    /// JSON for platform bridges (Swift, browser).
+    pub fn to_json(&self) -> String {
+        fn s(v: &str) -> String {
+            json_str(v)
+        }
+        let opt = |v: &Option<String>| v.as_deref().map_or("null".into(), s);
+        let actions: Vec<String> = self
+            .actions
+            .iter()
+            .map(|a| {
+                format!(
+                    r#"{{"id":{},"title":{},"destructive":{},"foreground":{},"reply":{},"link":{}}}"#,
+                    s(&a.id),
+                    s(&a.title),
+                    a.destructive,
+                    a.foreground,
+                    opt(&a.reply),
+                    opt(&a.link),
+                )
+            })
+            .collect();
+        format!(
+            r#"{{"id":{},"title":{},"subtitle":{},"body":{},"link":{},"delay":{},"sound":{},"badge":{},"thread":{},"actions":[{}]}}"#,
+            s(&self.id),
+            s(&self.title),
+            opt(&self.subtitle),
+            s(&self.body),
+            opt(&self.link),
+            self.delay.map_or(0., |d| d.as_secs_f64()),
+            self.sound,
+            self.badge.map_or("null".into(), |b| b.to_string()),
+            opt(&self.thread),
+            actions.join(","),
+        )
+    }
 }
 
 impl Notification {
@@ -696,7 +793,14 @@ impl Notification {
             sound: true,
             badge: None,
             thread: None,
+            actions: Vec::new(),
         }
+    }
+
+    /// Adds a button (iOS and macOS show up to 4 in the expanded notification).
+    pub fn action(mut self, action: NotificationAction) -> Self {
+        self.actions.push(action);
+        self
     }
 
     pub fn id(mut self, id: impl Into<String>) -> Self {
@@ -752,7 +856,10 @@ pub(crate) struct Surfaces {
     pub widgets_dirty: bool,
     pub requests: Vec<PlatformRequest>,
     pub next_activity: u64,
+    pub notification_handler: Option<NotificationHandler>,
 }
+
+type NotificationHandler = std::rc::Rc<dyn Fn(&NotificationResponse, &mut App)>;
 
 impl App {
     /// What the current platform supports (set by the backend).
@@ -807,6 +914,26 @@ impl App {
             content,
             immediately,
         });
+    }
+
+    /// Handles taps and action buttons on the app's notifications. Register it
+    /// at startup: the app may have been launched by the notification.
+    pub fn on_notification_response(
+        &mut self,
+        f: impl Fn(&NotificationResponse, &mut App) + 'static,
+    ) {
+        self.surfaces.notification_handler = Some(std::rc::Rc::new(f));
+    }
+
+    /// Called by backends: opens the action's (or notification's) link and
+    /// runs the response handler.
+    pub fn notification_response(&mut self, response: NotificationResponse, link: Option<String>) {
+        if let Some(link) = link {
+            self.navigate(link);
+        }
+        if let Some(handler) = self.surfaces.notification_handler.clone() {
+            handler(&response, self);
+        }
     }
 
     /// Posts a local notification (asks for permission first if needed).

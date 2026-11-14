@@ -35,8 +35,8 @@ pub use router::{Params, Router, RouterBuilder, go_back, navigate_to, normalize_
 pub use storage::{FileStorage, MemoryStorage, Storage};
 pub use style::*;
 pub use surfaces::{
-    Activity, ActivityId, Capabilities, Notification, PlatformRequest, PlatformServices, SNode,
-    Widget, WidgetFamily,
+    Activity, ActivityId, Capabilities, Notification, NotificationAction, NotificationResponse,
+    PlatformRequest, PlatformServices, SNode, Widget, WidgetFamily,
 };
 pub use task::{AsyncApp, Background, Sleep, TaskHandle, WakeUi};
 
@@ -246,6 +246,19 @@ impl Runtime {
         self.reconciler.render(&mut self.app)
     }
 
+    /// A notification was tapped or one of its actions chosen (`link`: the
+    /// action's or notification's deep link). Returns the resulting patches.
+    pub fn notification_response(
+        &mut self,
+        response: surfaces::NotificationResponse,
+        link: Option<String>,
+    ) -> Vec<Patch> {
+        self.app.notification_response(response, link);
+        task::poll_tasks(&mut self.app);
+        self.app.flush_effects();
+        self.reconciler.render(&mut self.app)
+    }
+
     /// Entity renders performed by the last render (for tests and profiling).
     pub fn last_render_count(&self) -> usize {
         self.reconciler.last_render_count()
@@ -257,10 +270,11 @@ pub mod prelude {
     pub use crate::{
         Accessible, Activity, Alert, App, AsyncApp, ChangeEvent, ClickEvent, Context, DateStyle,
         Entity, FluentBuilder, Handler, InputEvent, IntoElement, Locale, Menu, MenuItem,
-        Notification, Params, ParentElement, Render, Role, Router, ScrollEvent, Styled,
-        SwipeDirection, Transition, Translations, Tray, VirtualList, Widget, WidgetFamily,
-        adaptive, button, div, go_back, image, lazy, navigate_to, picture, progress, px, relative,
-        rgb, rgba, screen, scroll, text, text_input, timer, toggle,
+        Notification, NotificationAction, NotificationResponse, Params, ParentElement, Render,
+        Role, Router, ScrollEvent, Styled, SwipeDirection, Transition, Translations, Tray,
+        VirtualList, Widget, WidgetFamily, adaptive, button, div, go_back, image, lazy,
+        navigate_to, picture, progress, px, relative, rgb, rgba, screen, scroll, text, text_input,
+        timer, toggle,
     };
 }
 

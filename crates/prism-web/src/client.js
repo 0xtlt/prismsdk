@@ -673,21 +673,60 @@
   // --- Notifications: browser notifications, or an in-page toast ---------------
   const toasts = document.getElementById("prism-toasts");
   const pending = new Map();
+  // Reports a tap (action null) or an action button to the app.
+  const respond = (n, action, text, link) =>
+    send({ t: "notif", id: n.id, action, text, link: link ?? (action ? null : n.link) });
   function toast(n) {
-    const el = document.createElement("button");
-    el.type = "button";
+    const actions = n.actions || [];
+    const el = document.createElement(actions.length ? "div" : "button");
     el.className = "prism-toast";
+    el.setAttribute("role", actions.length ? "group" : "button");
+    if (!actions.length) el.type = "button";
     el.innerHTML = "<strong></strong><span></span>";
-    el.firstChild.textContent = n.title;
-    el.lastChild.textContent = [n.subtitle, n.body].filter(Boolean).join(" — ");
-    el.addEventListener("click", () => { el.remove(); if (n.link) openLink(n.link); });
+    el.children[0].textContent = n.title;
+    el.children[1].textContent = [n.subtitle, n.body].filter(Boolean).join(" — ");
+    el.setAttribute("aria-label", n.title);
+    let timer = setTimeout(() => el.remove(), actions.length ? 20000 : 8000);
+    const done = () => { clearTimeout(timer); el.remove(); };
+    el.addEventListener("click", (e) => {
+      if (e.target.closest(".prism-toast-actions")) return;
+      done(); respond(n, null, null);
+    });
+    if (actions.length) {
+      const bar = document.createElement("div");
+      bar.className = "prism-toast-actions";
+      for (const a of actions) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.textContent = a.title;
+        if (a.destructive) b.dataset.role = "destructive";
+        b.addEventListener("click", () => {
+          if (a.reply == null) { done(); return respond(n, a.id, null, a.link); }
+          // Quick reply: swap the buttons for a text field.
+          clearTimeout(timer);
+          const input = document.createElement("input");
+          input.placeholder = a.reply;
+          input.setAttribute("aria-label", a.title);
+          const sendBtn = document.createElement("button");
+          sendBtn.type = "button";
+          sendBtn.textContent = a.title;
+          const submit = () => { done(); respond(n, a.id, input.value, a.link); };
+          sendBtn.addEventListener("click", submit);
+          input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); if (e.key === "Escape") done(); });
+          bar.replaceChildren(input, sendBtn);
+          input.focus();
+        });
+        bar.appendChild(b);
+      }
+      el.appendChild(bar);
+    }
     toasts.appendChild(el);
-    setTimeout(() => el.remove(), 8000);
   }
   function notify(n) {
-    if ("Notification" in window && Notification.permission === "granted" && document.hidden) {
+    // Page notifications have no buttons: notifications with actions stay in-page.
+    if ("Notification" in window && Notification.permission === "granted" && document.hidden && !(n.actions || []).length) {
       const sys = new Notification(n.title, { body: [n.subtitle, n.body].filter(Boolean).join("\n"), tag: n.id });
-      sys.onclick = () => { window.focus(); if (n.link) openLink(n.link); };
+      sys.onclick = () => { window.focus(); respond(n, null, null); };
     } else {
       toast(n);
     }

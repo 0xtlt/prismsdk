@@ -32,6 +32,7 @@ fn main() {
             let store = cx.new_entity(|cx| Store::load(cx));
             widgets::register(cx, store);
             menus::install(cx, store);
+            let focus = focus::install(cx, store);
             Router::new()
                 .tab("Todos", "checklist", "/")
                 .tab("Focus", "timer", "/focus")
@@ -50,7 +51,7 @@ fn main() {
                 })
                 .route("/components", |cx, _| cx.new_entity(|_| Gallery::default()))
                 .route("/settings", |cx, _| cx.new_entity(|_| Settings))
-                .route("/focus", |cx, _| cx.new_entity(|_| focus::Focus::default()))
+                .route("/focus", move |_, _| focus)
                 .route("/components/list", |cx, _| cx.new_entity(LongList::new))
                 .build(cx)
         });

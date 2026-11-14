@@ -282,6 +282,10 @@ pub fn page(
   #prism-toasts {{ position: fixed; bottom: 80px; right: 16px; z-index: 1000; display: flex; flex-direction: column; gap: 8px; }}
   .prism-toast {{ max-width: 340px; padding: 12px 14px; border-radius: 14px; background: Canvas; color: CanvasText; border: 1px solid rgba(128,128,128,.3); box-shadow: 0 6px 24px rgba(0,0,0,.18); cursor: pointer; text-align: left; font: inherit; }}
   .prism-toast strong {{ display: block; }}
+  .prism-toast-actions {{ display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }}
+  .prism-toast-actions button {{ padding: 5px 10px; border-radius: 8px; border: 1px solid rgba(128,128,128,.35); background: none; color: inherit; font: inherit; font-size: .875rem; cursor: pointer; }}
+  .prism-toast-actions button[data-role=destructive] {{ color: #d93636; }}
+  .prism-toast-actions input {{ flex: 1 1 140px; min-width: 0; padding: 5px 8px; border-radius: 8px; border: 1px solid rgba(128,128,128,.35); font: inherit; font-size: .875rem; background: Field; color: FieldText; }}
   .prism-menu {{ position: fixed; z-index: 2000; min-width: 200px; padding: 6px; border-radius: 12px; background: Canvas; color: CanvasText; border: 1px solid rgba(128,128,128,.3); box-shadow: 0 10px 30px rgba(0,0,0,.2); display: flex; flex-direction: column; }}
   .prism-menu [role^=menuitem] {{ display: flex; gap: 10px; align-items: center; padding: 8px 10px; border: 0; border-radius: 8px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }}
   .prism-menu [role^=menuitem]:hover, .prism-menu [role^=menuitem]:focus {{ background: rgba(128,128,128,.15); outline: none; }}
@@ -439,6 +443,23 @@ fn session(stream: TcpStream, init: &AppInit) {
             }
             continue;
         }
+        // A notification's body or action button was chosen.
+        if let Ok(v) = serde_json::from_str::<Value>(&msg)
+            && v.get("t").and_then(Value::as_str) == Some("notif")
+            && let Some(id) = v.get("id").and_then(Value::as_str)
+        {
+            let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+            let response = prism_core::NotificationResponse {
+                id: id.to_string(),
+                action: s("action"),
+                text: s("text"),
+            };
+            let patches = runtime.notification_response(response, s("link"));
+            if !patches.is_empty() && send(&mut ws, &mut encoder, "patch", &patches).is_err() {
+                return;
+            }
+            continue;
+        }
         let Some(event) = parse_event(&msg) else {
             continue;
         };
@@ -492,6 +513,10 @@ impl PlatformServices for WebServices {
                 "t": "notify", "id": n.id, "title": n.title, "subtitle": n.subtitle,
                 "body": n.body, "link": n.link,
                 "delay": n.delay.map(|d| d.as_millis() as u64),
+                "actions": n.actions.iter().map(|a| json!({
+                    "id": a.id, "title": a.title, "destructive": a.destructive,
+                    "reply": a.reply, "link": a.link,
+                })).collect::<Vec<_>>(),
             }),
             PlatformRequest::CancelNotification(id) => json!({ "t": "notify_cancel", "id": id }),
             PlatformRequest::RequestNotificationPermission => json!({ "t": "notify_permission" }),

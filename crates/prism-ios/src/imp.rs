@@ -325,7 +325,15 @@ define_class!(
     pub struct AppDelegate;
 
     unsafe impl NSObjectProtocol for AppDelegate {}
-    unsafe impl UIApplicationDelegate for AppDelegate {}
+    unsafe impl UIApplicationDelegate for AppDelegate {
+        /// The notification delegate must be set before launch finishes, or
+        /// a tap that launched the app is lost.
+        #[unsafe(method(application:didFinishLaunchingWithOptions:))]
+        fn did_finish_launching(&self, _app: &UIApplication, _options: Option<&AnyObject>) -> bool {
+            crate::services::init_bridge();
+            true
+        }
+    }
 );
 
 #[derive(Default)]
@@ -434,6 +442,7 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
     };
     state.commit(first);
     STATE.with(|cell| *cell.borrow_mut() = Some(state));
+    flush_responses();
     start_ticker(mtm);
     observe_system(mtm);
 
@@ -1443,6 +1452,7 @@ fn poll_now() {
         let patches = s.runtime.poll();
         s.commit(patches);
     });
+    flush_responses();
 }
 
 thread_local! {
@@ -1695,5 +1705,40 @@ fn set_semantic(v: &UIView, attr: objc2_ui_kit::UISemanticContentAttribute) {
     }
     for child in v.subviews().iter() {
         set_semantic(&child, attr);
+    }
+}
+
+thread_local! {
+    /// Notification responses that arrived before the app was ready (launch
+    /// from a notification).
+    static PENDING_RESPONSES: RefCell<Vec<(prism_core::NotificationResponse, Option<String>)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+pub(crate) fn notification_response(
+    response: prism_core::NotificationResponse,
+    link: Option<String>,
+) {
+    PENDING_RESPONSES.with(|p| p.borrow_mut().push((response, link)));
+    flush_responses();
+}
+
+fn flush_responses() {
+    let pending = PENDING_RESPONSES.with(|p| std::mem::take(&mut *p.borrow_mut()));
+    if pending.is_empty() {
+        return;
+    }
+    let mut handled = false;
+    with_state(|s| {
+        for (response, link) in pending.iter().cloned() {
+            let patches = s.runtime.notification_response(response, link);
+            s.commit(patches);
+        }
+        handled = true;
+    });
+    if !handled {
+        PENDING_RESPONSES.with(|p| {
+            p.borrow_mut().splice(0..0, pending);
+        });
     }
 }

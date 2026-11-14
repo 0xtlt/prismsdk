@@ -1,7 +1,8 @@
 //! Focus timer: a Live Activity on the lock screen and in the Dynamic Island,
 //! plus a notification when the session ends. On platforms without Live
 //! Activities it falls back automatically (menu bar on macOS, live banner on
-//! the web).
+//! the web). The notification has buttons: five more minutes, or a quick
+//! reply that becomes a todo.
 
 use std::time::{Duration, SystemTime};
 
@@ -88,19 +89,47 @@ fn activity(ends: SystemTime, total: Duration, accent: Color) -> Activity {
         )
 }
 
+/// Creates the Focus tab (shared, so notification actions can reach it) and
+/// handles the notification's buttons.
+pub fn install(cx: &mut App, store: Entity<crate::Store>) -> Entity<Focus> {
+    let focus = cx.new_entity(|_| Focus::default());
+    cx.on_notification_response(move |r, app| match r.action.as_deref() {
+        Some("again") => focus.update(app, |f, cx| {
+            if f.running.is_none() {
+                f.minutes = 5;
+                f.start(cx);
+                cx.notify();
+            }
+        }),
+        Some("note") => {
+            let title = r.text.clone().unwrap_or_default();
+            if !title.trim().is_empty() {
+                store.update(app, |s, cx| s.add(title.trim().to_string(), cx));
+            }
+        }
+        _ => {}
+    });
+    focus
+}
+
+/// "Session complete", delivered after `delay`.
+fn done_notification(delay: Duration) -> Notification {
+    Notification::new("Focus session complete")
+        .id("focus-done")
+        .body("Nice work. Time for a short break.")
+        .link("/focus")
+        .after(delay)
+        .action(NotificationAction::new("again", "5 more minutes").link("/focus"))
+        .action(NotificationAction::new("note", "Add a todo…").reply("What's next?"))
+}
+
 impl Focus {
     fn start(&mut self, cx: &mut Context<Self>) {
         let total = Duration::from_secs(self.minutes * 60);
         let ends = SystemTime::now() + total;
         let accent = Theme::of(cx).accent;
         let id = cx.start_activity(activity(ends, total, accent));
-        cx.send_notification(
-            Notification::new("Focus session complete")
-                .id("focus-done")
-                .body("Nice work. Time for a short break.")
-                .link("/focus")
-                .after(total),
-        );
+        cx.send_notification(done_notification(total));
         let timer = Self::finish_after(total, cx);
         self.running = Some(Session {
             activity: id,
@@ -151,13 +180,7 @@ impl Focus {
             let left = s.ends.duration_since(SystemTime::now()).unwrap_or_default();
             s.timer = Self::finish_after(left, cx);
             cx.update_activity(s.activity, activity(s.ends, s.total, accent));
-            cx.send_notification(
-                Notification::new("Focus session complete")
-                    .id("focus-done")
-                    .body("Nice work. Time for a short break.")
-                    .link("/focus")
-                    .after(left),
-            );
+            cx.send_notification(done_notification(left));
             self.running = Some(s);
         }
     }
