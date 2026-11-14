@@ -12,6 +12,7 @@ pub mod background;
 pub mod device;
 pub mod device_info;
 mod element;
+pub mod glyphs;
 pub mod i18n;
 pub mod list;
 pub mod menu;

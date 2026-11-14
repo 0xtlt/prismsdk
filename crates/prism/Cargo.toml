@@ -8,7 +8,7 @@ license.workspace = true
 [features]
 default = ["native"]
 # Native widgets for the compilation target (AppKit on macOS, UIKit on iOS).
-native = ["dep:prism-macos", "dep:prism-ios", "dep:prism-watchos"]
+native = ["dep:prism-macos", "dep:prism-ios", "dep:prism-watchos", "dep:prism-linux"]
 # Server-driven web UI: plain HTML/CSS + a tiny JS client, no WASM.
 web = ["dep:prism-web"]
 # SQL (sqlx + SQLite): on the device natively, on the server for the web.
@@ -29,3 +29,6 @@ prism-ios = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "watchos")'.dependencies]
 prism-watchos = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+prism-linux = { workspace = true, optional = true }

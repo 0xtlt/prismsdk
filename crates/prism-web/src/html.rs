@@ -175,7 +175,7 @@ impl HtmlBackend {
                 let _ = write!(
                     out,
                     r#"<span {attrs} class="prism-symbol">{}</span>"#,
-                    crate::glyphs::glyph(&n.icon)
+                    prism_core::glyphs::glyph(&n.icon)
                 );
             }
             NodeKind::Picture => {

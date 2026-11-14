@@ -31,7 +31,7 @@ mod app;
 mod assets;
 mod css;
 mod device_info;
-mod glyphs;
+use prism_core::glyphs;
 mod html;
 #[cfg(feature = "server")]
 mod server;

@@ -1,4 +1,5 @@
-//! SF Symbol names → glyphs, so the same `image("…")` works on the web.
+//! SF Symbol names → glyphs, so the same `image("…")` works where SF
+//! Symbols do not exist (web, Linux).
 //! Decorative only: meaning must come from labels, never from the glyph.
 
 pub const GLYPHS: &[(&str, &str)] = &[
@@ -59,8 +60,8 @@ pub fn js_table() -> String {
         .map(|(s, g)| {
             format!(
                 "{}:{}",
-                prism_core::surfaces::json_str(s),
-                prism_core::surfaces::json_str(g)
+                crate::surfaces::json_str(s),
+                crate::surfaces::json_str(g)
             )
         })
         .collect();

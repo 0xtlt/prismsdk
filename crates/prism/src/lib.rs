@@ -73,6 +73,8 @@ pub const BACKEND: &str = if cfg!(feature = "web") {
     "tvos"
 } else if cfg!(all(feature = "native", target_os = "watchos")) {
     "watchos"
+} else if cfg!(all(feature = "native", target_os = "linux")) {
+    "linux"
 } else {
     "none"
 };
@@ -192,6 +194,10 @@ impl Application {
         {
             prism_watchos::run(config, init);
         }
+        #[cfg(all(not(feature = "web"), feature = "native", target_os = "linux"))]
+        {
+            prism_linux::run(config, init);
+        }
         #[cfg(not(any(
             feature = "web",
             all(
@@ -200,7 +206,8 @@ impl Application {
                     target_os = "macos",
                     target_os = "ios",
                     target_os = "tvos",
-                    target_os = "watchos"
+                    target_os = "watchos",
+                    target_os = "linux"
                 )
             )
         )))]

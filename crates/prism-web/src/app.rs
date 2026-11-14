@@ -47,7 +47,7 @@ impl WebApp {
         let assets_dir = env("PRISM_ASSETS_DIR")
             .or_else(|| config.assets.clone())
             .unwrap_or_else(|| "assets".into());
-        let client = crate::CLIENT_JS.replace("__GLYPHS__", &crate::glyphs::js_table());
+        let client = crate::CLIENT_JS.replace("__GLYPHS__", &prism_core::glyphs::js_table());
         let assets = Assets::new(
             client,
             crate::PRISM_CSS.into(),

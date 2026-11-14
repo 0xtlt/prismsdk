@@ -483,8 +483,19 @@ watchOS has no UIKit views (`UIView` is `API_UNAVAILABLE(watchos)` in the SDK), 
 - Not yet on the watch: device APIs, notifications, context menus, swipes.
 - Dev hooks: `PRISM_CLICK`, `PRISM_SNAPSHOT` (SwiftUI `ImageRenderer`: text fields render as a placeholder), `PRISM_DEBUG_LAYOUT=1` (logs text frames).
 
+## Linux (GTK 4)
+
+`cargo run` on Linux opens a native GTK 4 window: `GtkLabel`, `GtkButton`, `GtkEntry`, `GtkSwitch`, `GtkProgressBar`, `GtkPicture` and `GtkScrolledWindow`. Navigation stacks get a header with a Back button, tabs a tab bar, and modals their own window.
+
+- Layout is prism-native's flexbox: a small GTK layout manager puts each widget at its frame, so screens look like on macOS. Styles become generated CSS.
+- Wrapping labels report their longest word as minimum width.
+- Storage goes to `$XDG_DATA_HOME/<title>`; the language comes from `LANG`. `cx.device_info()` reports the distribution's `VERSION_ID` and the monitor (size in mm, refresh rate).
+- Develop and test in Docker: `docker build -f docker/linux-dev.Dockerfile -t prism-linux-dev docker`, then run the app under `xvfb-run` with `PRISM_SNAPSHOT`/`PRISM_CLICK` (see CI).
+- Accessibility labels use GTK's C API (`gtk_accessible_update_property_value`, available in every GTK 4); gtk-rs only binds it from 4.10.
+- Not yet: device APIs, notifications, tray, menus, context menus.
+
 ## Status
 
 Primitives: `div`, `text`, `button`, `text_input`, `toggle`, `scroll`, `picture`, `VirtualList`, `screen`, `Router` (stacks, tabs, sheets). Component library `prism::ui`. Accessibility on all backends. Light/dark appearance.
 Widgets, Live Activities (Dynamic Island), notifications with actions, background tasks, device APIs (location, motion, photos, camera, haptics, clipboard, share), alerts, context menus, tray and app menus, async tasks, HTTP, storage, i18n/RTL, Dynamic Type, animations, `prism` CLI.
-Platforms: web, macOS, iOS/iPadOS, tvOS, watchOS. Not yet: Android, Windows, Linux backends (the `Widgets` trait and `PlatformServices` are the extension points).
+Platforms: web, macOS, iOS/iPadOS, tvOS, watchOS, Linux (GTK 4). Not yet: Android, Windows backends (the `Widgets` trait and `PlatformServices` are the extension points).
