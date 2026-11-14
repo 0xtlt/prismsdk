@@ -60,6 +60,19 @@ $4
 PLIST
 }
 
+RESOURCES="$APP/Contents/Resources"
+# Languages (locales/*.json): declared to the system, so iOS Settings
+# offers a per-app language and the App Store lists them.
+LOC_PLIST=""
+if [[ -n "${PRISM_LOCALES:-}" ]]; then
+  LOC_PLIST="  <key>CFBundleLocalizations</key><array>"
+  for l in ${PRISM_LOCALES//,/ }; do
+    LOC_PLIST+="<string>$l</string>"
+    mkdir -p "$RESOURCES/$l.lproj"
+    printf '/* Prism: %s */\n' "$l" > "$RESOURCES/$l.lproj/InfoPlist.strings"
+  done
+  LOC_PLIST+="</array>"
+fi
 ICON_PLIST=""
 if [[ -n "${PRISM_ICON:-}" ]]; then
   bash "$PLATFORM/apple/app-icon.sh" "$PRISM_ICON" macosx 14.0 "$APP/Contents/Resources" "$GEN"
@@ -67,6 +80,7 @@ if [[ -n "${PRISM_ICON:-}" ]]; then
 fi
 
 plist "$PKG" "$BUNDLE_ID" APPL "$ICON_PLIST
+$LOC_PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>CFBundleURLTypes</key>
   <array><dict>

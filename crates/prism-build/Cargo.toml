@@ -1,0 +1,9 @@
+[package]
+name = "prism-build"
+description = "Build-time helpers for Prism apps: checked, typed translations from locales/*.json."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json.workspace = true

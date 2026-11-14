@@ -50,7 +50,32 @@ pub fn create(name: &str, prism: Option<PathBuf>) -> Result<(), String> {
     };
     let slug = package.replace('_', "-");
 
-    let files: [(&str, String); 6] = [
+    let files: [(&str, String); 9] = [
+        (
+            "build.rs",
+            "fn main() {\n    // locales/*.json → typed `strings::…` functions, checked at build time.\n    prism_build::translations(\"locales\").fallback(\"en\").generate();\n}\n"
+                .to_string(),
+        ),
+        (
+            "locales/en.json",
+            r#"{
+  "hello": "Hello from Rust",
+  "taps": { "one": "You tapped once.", "other": "You tapped {count} times." },
+  "tap": "Tap me"
+}
+"#
+            .to_string(),
+        ),
+        (
+            "locales/fr.json",
+            r#"{
+  "hello": "Bonjour depuis Rust",
+  "taps": { "one": "Tu as tapé {count} fois.", "other": "Tu as tapé {count} fois." },
+  "tap": "Tape ici"
+}
+"#
+            .to_string(),
+        ),
         (
             "Cargo.toml",
             format!(
@@ -67,6 +92,9 @@ web = ["prism/web"]
 
 [dependencies]
 prism = {{ path = "{prism}/crates/prism", default-features = false }}
+
+[build-dependencies]
+prism-build = {{ path = "{prism}/crates/prism-build" }}
 "#,
                 prism = prism.display()
             ),
@@ -118,11 +146,17 @@ ios = "prism dev ios"
 const MAIN_RS: &str = r#"use prism::prelude::*;
 use prism::ui::{self, Theme};
 
+/// One function per key of locales/*.json (a typo is a compile error).
+mod strings {
+    prism::include_strings!();
+}
+
 fn main() {
     Application::new()
         .title("{title}")
         .assets(concat!(env!("CARGO_MANIFEST_DIR"), "/assets"))
         .run(|cx| {
+            cx.set_translations(strings::translations());
             Router::new()
                 .route("/", |cx, _| cx.new_entity(|_| Home::default()))
                 .build(cx)
@@ -131,7 +165,7 @@ fn main() {
 
 #[derive(Default)]
 struct Home {
-    count: i32,
+    count: i64,
 }
 
 impl Render for Home {
@@ -140,9 +174,9 @@ impl Render for Home {
         screen("{title}").bg(t.background).child(
             scroll().p(20.).gap(16.).child(
                 ui::card()
-                    .child(ui::heading("Hello from Rust"))
-                    .child(text(format!("You tapped {} time(s).", self.count)).text_color(t.muted))
-                    .child(ui::button("Tap me").on_click(cx.listener(|this, _, _| this.count += 1))),
+                    .child(ui::heading(strings::hello(cx)))
+                    .child(text(strings::taps(cx, self.count)).text_color(t.muted))
+                    .child(ui::button(strings::tap(cx)).on_click(cx.listener(|this, _, _| this.count += 1))),
             ),
         )
     }

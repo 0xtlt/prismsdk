@@ -1,0 +1,29 @@
+{
+  "language": { "name": "العربية" },
+  "home": {
+    "info": "واجهة Rust · تعمل على {backend}",
+    "open": {
+      "zero": "لا توجد مهام مفتوحة",
+      "one": "مهمة واحدة مفتوحة",
+      "two": "مهمتان مفتوحتان",
+      "few": "{count} مهام مفتوحة",
+      "many": "{count} مهمة مفتوحة",
+      "other": "{count} مهمة مفتوحة"
+    },
+    "synced": "تمت المزامنة {count}×",
+    "today": "اليوم {date}"
+  },
+  "todos": {
+    "heading": "المهام",
+    "placeholder": "ما الذي يجب فعله؟",
+    "new": "جديدة…",
+    "add": "إضافة"
+  },
+  "todo": { "done": "منجزة", "open": "مفتوحة" },
+  "counter": { "label": "العدد: {count}" },
+  "settings": {
+    "language": "اللغة",
+    "system": "النظام",
+    "sample": "{number} · {date} · {time}"
+  }
+}

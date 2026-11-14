@@ -1,0 +1,22 @@
+{
+  "language": { "name": "Français" },
+  "home": {
+    "info": "Interface Rust · sur {backend}",
+    "open": { "one": "{count} tâche ouverte", "other": "{count} tâches ouvertes" },
+    "synced": "Synchronisé {count}×",
+    "today": "Nous sommes le {date}"
+  },
+  "todos": {
+    "heading": "Tâches",
+    "placeholder": "Que faut-il faire ?",
+    "new": "Nouvelle…",
+    "add": "Ajouter"
+  },
+  "todo": { "done": "Terminée", "open": "À faire" },
+  "counter": { "label": "Compteur : {count}" },
+  "settings": {
+    "language": "Langue",
+    "system": "Système",
+    "sample": "{number} · {date} · {time}"
+  }
+}

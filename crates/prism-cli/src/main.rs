@@ -242,6 +242,9 @@ fn apple_command(
     if let Some(icon) = &p.icon {
         cmd.env("PRISM_ICON", icon);
     }
+    if !p.languages.is_empty() {
+        cmd.env("PRISM_LOCALES", p.languages.join(","));
+    }
     if o.release {
         cmd.env("PRISM_RELEASE", "1");
     }

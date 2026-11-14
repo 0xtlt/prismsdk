@@ -125,7 +125,10 @@ fn done_notification(delay: Duration) -> Notification {
 
 impl Focus {
     fn start(&mut self, cx: &mut Context<Self>) {
-        let total = Duration::from_secs(self.minutes * 60);
+        self.start_for(Duration::from_secs(self.minutes * 60), cx);
+    }
+
+    fn start_for(&mut self, total: Duration, cx: &mut Context<Self>) {
         let ends = SystemTime::now() + total;
         let accent = Theme::of(cx).accent;
         let id = cx.start_activity(activity(ends, total, accent));
@@ -257,6 +260,15 @@ impl Render for Focus {
                             .large()
                             .full_width()
                             .on_click(cx.listener(|this, _, cx| this.start(cx))),
+                    )
+                    .child(
+                        ui::button("Try the notification (10 s)")
+                            .ghost()
+                            .small()
+                            .hint("Starts a 10-second session; its notification has buttons")
+                            .on_click(cx.listener(|this, _, cx| {
+                                this.start_for(Duration::from_secs(10), cx)
+                            })),
                     )
                     .when(self.completed > 0, |d| {
                         d.child(

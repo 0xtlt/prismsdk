@@ -183,11 +183,11 @@ impl Render for Home {
         let (screen, body) = page("Prism", cx);
         let mut info = format!(
             "{} · {}",
-            cx.t_with("home.info", &[("backend", &prism::BACKEND)]),
-            cx.t_count("home.open", open as i64)
+            strings::home_info(cx, prism::BACKEND),
+            strings::home_open(cx, open as i64)
         );
         if self.synced > 0 {
-            info = format!("{info} · {}", cx.t_count("home.synced", self.synced as i64));
+            info = format!("{info} · {}", strings::home_synced(cx, self.synced));
         }
         let today = cx.format_date(strings::now(), DateStyle::Long);
         screen.child(
@@ -206,7 +206,7 @@ impl Render for Home {
                 }))
                 .child(text(info).text_size(14.).text_color(t.muted))
                 .child(
-                    text(cx.t_with("home.today", &[("date", &today)]))
+                    text(strings::home_today(cx, &today))
                         .text_size(14.)
                         .text_color(t.muted),
                 )
@@ -250,7 +250,7 @@ impl Render for CounterCard {
                         .text_size(40.)
                         .bold()
                         .text_color(t.accent)
-                        .accessibility_label(cx.t_with("counter.label", &[("count", &self.count)]))
+                        .accessibility_label(strings::counter_label(cx, self.count))
                         .min_w(px(64.)),
                 )
                 .child(
@@ -281,7 +281,7 @@ impl Render for TodoList {
         let t = Theme::of(cx);
         let store = self.store.read(cx);
         ui::card()
-            .child(ui::heading(cx.t("todos.heading")))
+            .child(ui::heading(strings::todos_heading(cx)))
             .child(
                 div()
                     .flex_row()
@@ -292,35 +292,35 @@ impl Render for TodoList {
                         text_input()
                             .flex_1()
                             .value(self.draft.clone())
-                            .placeholder(cx.t("todos.placeholder"))
+                            .placeholder(strings::todos_placeholder(cx))
                             .accessibility_label("New todo")
                             .on_input(
                                 cx.listener(|this, e: &InputEvent, _| this.draft = e.value.clone()),
                             ),
                     )
                     .child(
-                        ui::button(cx.t("todos.new"))
+                        ui::button(strings::todos_new(cx))
                             .secondary()
                             .hint("Opens a form in a sheet")
                             .on_click(std::rc::Rc::new(|_: &ClickEvent, app: &mut App| {
                                 app.present("/todos/new")
                             })),
                     )
-                    .child(
-                        ui::button(cx.t("todos.add")).on_click(cx.listener(|this, _, cx| {
+                    .child(ui::button(strings::todos_add(cx)).on_click(cx.listener(
+                        |this, _, cx| {
                             let title = this.draft.trim().to_string();
                             if !title.is_empty() {
                                 this.store.update(cx, |s, cx| s.add(title, cx));
                                 this.draft.clear();
                             }
-                        })),
-                    ),
+                        },
+                    ))),
             )
             .children(store.todos.iter().map(|todo| {
                 let status = if todo.done {
-                    cx.t("todo.done")
+                    strings::todo_done(cx)
                 } else {
-                    cx.t("todo.open")
+                    strings::todo_open(cx)
                 };
                 let (id, store_e, done) = (todo.id, self.store, todo.done);
                 ui::list_row(todo.title.clone())
@@ -696,28 +696,29 @@ fn language_card(cx: &App) -> ui::Card {
     let t = Theme::of(cx);
     let current = cx.locale_choice().map(|l| l.language().to_string());
     let now = strings::now();
-    let sample = cx.t_with(
-        "settings.sample",
-        &[
-            ("number", &cx.format_number(1234567.891, 2)),
-            ("date", &cx.format_date(now, DateStyle::Medium)),
-            ("time", &cx.format_time(now)),
-        ],
+    let sample = strings::settings_sample(
+        cx,
+        cx.format_number(1234567.891, 2),
+        cx.format_date(now, DateStyle::Medium),
+        cx.format_time(now),
     );
-    let choices = std::iter::once((None, cx.t("settings.system"))).chain(
-        strings::LANGUAGES
-            .iter()
-            .map(|(tag, name)| (Some(*tag), name.to_string())),
+    // The reference language first, each in its own language.
+    let mut langs = strings::LANGUAGES.to_vec();
+    langs.sort_by_key(|l| (*l != strings::FALLBACK, *l));
+    let choices = std::iter::once((None, strings::settings_system(cx))).chain(
+        langs
+            .into_iter()
+            .map(|l| (Some(l), strings::native_name(cx, l))),
     );
     ui::card()
-        .child(ui::heading(cx.t("settings.language")))
+        .child(ui::heading(strings::settings_language(cx)))
         .child(
             div()
                 .flex_row()
                 .flex_wrap()
                 .gap(8.)
                 .accessibility_role(Role::Group)
-                .accessibility_label(cx.t("settings.language"))
+                .accessibility_label(strings::settings_language(cx))
                 .children(choices.map(move |(tag, name)| {
                     ui::button(name)
                         .variant(if tag == current.as_deref() {

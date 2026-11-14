@@ -155,6 +155,19 @@ rm -rf "$APP" && mkdir -p "$APPEX"
 cp "$TARGET_DIR/$TARGET/$PROFILE_DIR/$PKG" "$APP/$PKG"
 ASSETS="$(PRISM_DESCRIBE=assets "$HOST_BIN")"
 [[ -n "$ASSETS" && -d "$ASSETS" ]] && cp -R "$ASSETS" "$APP/assets"
+RESOURCES="$APP"
+# Languages (locales/*.json): declared to the system, so iOS Settings
+# offers a per-app language and the App Store lists them.
+LOC_PLIST=""
+if [[ -n "${PRISM_LOCALES:-}" ]]; then
+  LOC_PLIST="  <key>CFBundleLocalizations</key><array>"
+  for l in ${PRISM_LOCALES//,/ }; do
+    LOC_PLIST+="<string>$l</string>"
+    mkdir -p "$RESOURCES/$l.lproj"
+    printf '/* Prism: %s */\n' "$l" > "$RESOURCES/$l.lproj/InfoPlist.strings"
+  done
+  LOC_PLIST+="</array>"
+fi
 ICON_PLIST=""
 if [[ -n "${PRISM_ICON:-}" ]]; then
   bash "$PLATFORM/apple/app-icon.sh" "$PRISM_ICON" "$SDK" "$MIN_IOS" "$APP" "$GEN"
@@ -188,6 +201,7 @@ cat > "$APP/Info.plist" <<PLIST
 <dict>
 $(plist_common "$PKG" "$BUNDLE_ID" APPL)
 $ICON_PLIST
+$LOC_PLIST
   <key>LSRequiresIPhoneOS</key><true/>
   <key>UILaunchScreen</key><dict/>
   <key>NSSupportsLiveActivities</key><true/>

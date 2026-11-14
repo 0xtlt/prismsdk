@@ -26,6 +26,8 @@ pub struct Project {
     pub bundle_id: String,
     pub version: String,
     pub icon: Option<PathBuf>,
+    /// Languages with a catalog in `locales/` (`[app] locales` to move it).
+    pub languages: Vec<String>,
     pub team: Option<String>,
     pub simulator: Option<String>,
     pub device: Option<String>,
@@ -93,6 +95,10 @@ impl Project {
                 .filter(|v| !v.contains("workspace"))
                 .unwrap_or_else(|| "0.1.0".into()),
             icon: get("app.icon").map(|i| crate::resolve(root, &i)),
+            languages: languages(&crate::resolve(
+                root,
+                &get("app.locales").unwrap_or_else(|| "locales".into()),
+            )),
             team: get("ios.team"),
             simulator: get("ios.simulator"),
             device: get("ios.device"),
@@ -103,6 +109,20 @@ impl Project {
             workspace_root,
         })
     }
+}
+
+fn languages(dir: &Path) -> Vec<String> {
+    let mut langs: Vec<String> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            (p.extension()? == "json").then(|| p.file_stem()?.to_str().map(str::to_string))?
+        })
+        .collect();
+    langs.sort();
+    langs
 }
 
 fn cargo_dirs(root: &Path) -> Result<(PathBuf, PathBuf), String> {

@@ -11,3 +11,6 @@ web = ["prism/web"]
 
 [dependencies]
 prism.workspace = true
+
+[build-dependencies]
+prism-build.workspace = true

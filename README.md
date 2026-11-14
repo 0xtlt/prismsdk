@@ -85,15 +85,25 @@ div().on_swipe(SwipeDirection::Left, handler)           // swipe gestures
 
 ## Languages, text size, motion
 
+One JSON file per language in `locales/` (`en.json`, `fr.json`, `ar.json`…), flat or nested, plurals as `{"one": …, "other": …}`. `build.rs` turns them into one function per key:
+
 ```rust
-cx.set_translations(Translations::new().parse("en", EN).parse("fr", FR).parse("ar", AR));
-text(cx.t_with("greeting", &[("name", &name)]));
-text(cx.t_count("todos", n));                    // CLDR plurals: one/few/many/other…
+// build.rs
+prism_build::translations("locales").fallback("en").generate();   // .strict() to fail instead of warn
+
+// src/main.rs
+mod strings { prism::include_strings!(); }
+cx.set_translations(strings::translations());
+text(strings::home_title(cx, &name));            // {name} → argument; a typo is a compile error
+text(strings::todos(cx, n));                     // CLDR plurals: one/few/many/other…
 text(cx.format_date(now, DateStyle::Long));      // Foundation formatters on Apple, Accept-Language on the web
 cx.set_locale(Some(Locale::new("ar")));          // or follow the system
 div().w(relative(fill)).animate(250)             // UIView/NSAnimationContext/CSS transitions
 ```
 
+- **Build-time checks**: a key missing in a language, an unknown key, a placeholder the reference text lacks, or a plural without `other` is a cargo warning (`warning: counter: fr.json: missing "todos.add"`).
+- **Native packaging**: `prism build/run` declares the languages to iOS/macOS (`CFBundleLocalizations` + `.lproj`), so iOS Settings offers a per-app language.
+- `cx.t("key")` / `cx.t_with` / `cx.t_count` remain for dynamic keys.
 - **Right-to-left** languages mirror layouts on every backend (native frames and chrome, `dir=rtl` + logical CSS).
 - **Dynamic Type**: native text follows the iOS text size live; the web uses `rem`.
 - **Reduce Motion** turns transitions off. **iOS keyboard**: screens shrink above it and the focused field stays visible.

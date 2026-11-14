@@ -1,0 +1,22 @@
+{
+  "language": { "name": "English" },
+  "home": {
+    "info": "Rust UI · running on {backend}",
+    "open": { "one": "{count} open todo", "other": "{count} open todos" },
+    "synced": "Synced {count}×",
+    "today": "Today is {date}"
+  },
+  "todos": {
+    "heading": "Todos",
+    "placeholder": "What needs doing?",
+    "new": "New…",
+    "add": "Add"
+  },
+  "todo": { "done": "Done", "open": "Open" },
+  "counter": { "label": "Count: {count}" },
+  "settings": {
+    "language": "Language",
+    "system": "System",
+    "sample": "{number} · {date} · {time}"
+  }
+}
