@@ -905,3 +905,61 @@ mod tests {
         );
     }
 }
+
+// --- Dual pane --------------------------------------------------------------------------
+
+/// Two panes (list and detail, map and controls) placed for the device:
+///
+/// - a foldable spanning its hinge: one pane on each side, nothing under it
+///   (side by side for a book, top and bottom on a table);
+/// - tablets and wide windows: side by side;
+/// - phones: one above the other.
+///
+/// ```ignore
+/// ui::dual_pane(list, detail)
+/// ```
+pub struct DualPane {
+    pub primary: Element,
+    pub secondary: Element,
+    refine: Refine,
+}
+
+pub fn dual_pane(primary: impl IntoElement, secondary: impl IntoElement) -> DualPane {
+    DualPane {
+        primary: primary.into_element(),
+        secondary: secondary.into_element(),
+        refine: Refine::default(),
+    }
+}
+
+refinable!(DualPane);
+
+impl Component for DualPane {
+    fn render(self, cx: &mut App) -> Element {
+        let device = cx.device_info();
+        let el = match device.fold {
+            Some(fold) if fold.vertical => div()
+                .flex_row()
+                .flex_1()
+                .child(div().w(px(fold.x)).child(self.primary))
+                .child(div().w(px(fold.width)).accessibility_hidden())
+                .child(div().flex_1().child(self.secondary)),
+            Some(fold) => div()
+                .flex_col()
+                .flex_1()
+                .child(div().h(px(fold.y)).child(self.primary))
+                .child(div().h(px(fold.height)).accessibility_hidden())
+                .child(div().flex_1().child(self.secondary)),
+            None => div()
+                .flex_col()
+                .flex_1()
+                .gap(16.)
+                .md(|s| s.flex_row().gap(24.))
+                .child(div().flex_1().child(self.primary))
+                .child(div().flex_1().child(self.secondary)),
+        };
+        self.refine.apply(el).into_element()
+    }
+}
+
+component!(DualPane);

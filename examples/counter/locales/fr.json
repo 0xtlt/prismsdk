@@ -193,5 +193,38 @@
     "paste": "Coller",
     "empty": "(presse-papiers vide)",
     "share": "Partager"
+  },
+  "about": {
+    "title": "À propos de cet appareil",
+    "model": "Modèle",
+    "system": "Système",
+    "screen": "Écran",
+    "orientation": "Orientation",
+    "window": "Fenêtre",
+    "foldable": "Pliable",
+    "browser": "Navigateur",
+    "portrait": "Portrait",
+    "landscape": "Paysage",
+    "rotated": "{orientation}, tourné de {degrees}°",
+    "flat": "Non plié",
+    "book": "Entrouvert, comme un livre",
+    "tabletop": "Entrouvert, posé sur une table",
+    "closed": "Fermé",
+    "hinge": "Charnière à {position} pt",
+    "fullscreen": "Plein écran",
+    "split": "Split View",
+    "slide_over": "Slide Over",
+    "windowed": "En fenêtre",
+    "installed": "{browser}, installé comme une app",
+    "simulator": "{model} (simulateur)",
+    "unknown": "Inconnu",
+    "kind": {
+      "phone": "Téléphone",
+      "tablet": "Tablette",
+      "desktop": "Ordinateur",
+      "tv": "Télévision",
+      "watch": "Montre",
+      "unknown": "Appareil"
+    }
   }
 }

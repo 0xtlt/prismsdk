@@ -9,6 +9,7 @@ mod a11y;
 mod app;
 pub mod background;
 pub mod device;
+pub mod device_info;
 mod element;
 pub mod i18n;
 pub mod list;
@@ -28,6 +29,10 @@ pub use background::{BackgroundKind, BackgroundTask, Lifecycle};
 pub use device::{
     Accuracy, DeviceCall, DeviceError, DeviceEvent, DeviceValue, Haptic, Location, Motion,
     Permission, PermissionState, PickImages, PickedFile, Share, Watch,
+};
+pub use device_info::{
+    Browser, DeviceInfo, DeviceKind, Engine, Fold, Orientation, Os, OsName, Posture, Rotation,
+    ScreenInfo, Version, WindowMode,
 };
 pub use element::{
     BackEvent, Button, ChangeEvent, ClickEvent, Div, Element, FluentBuilder, Handler, Image,
@@ -82,6 +87,8 @@ pub struct RuntimeOptions {
     /// Where the app runs (the compilation target if `None`; the web backend
     /// says `Web`).
     pub platform: Option<Platform>,
+    /// What the device is (guessed from the platform and viewport if `None`).
+    pub device_info: Option<DeviceInfo>,
 }
 
 /// Window/page settings shared by every backend.
@@ -169,6 +176,9 @@ impl Runtime {
         }
         if let Some(size) = options.viewport {
             app.set_viewport(size);
+        }
+        if let Some(info) = options.device_info {
+            app.set_device_info(info);
         }
         init(&mut app);
         Runtime {
@@ -335,6 +345,13 @@ impl Runtime {
         self.poll()
     }
 
+    /// The device changed (rotation, fold, split view, browser report).
+    /// Re-renders everything if anything differs. Returns the resulting patches.
+    pub fn set_device_info(&mut self, info: DeviceInfo) -> Vec<Patch> {
+        self.app.set_device_info(info);
+        self.poll()
+    }
+
     /// Another device changed these synced keys. Returns the resulting patches.
     pub fn cloud_changed(&mut self, keys: &[String]) -> Vec<Patch> {
         self.app.cloud_changed(keys);
@@ -390,13 +407,14 @@ impl Runtime {
 pub mod prelude {
     pub use crate::{
         Accessible, Accuracy, Activity, Alert, App, AsyncApp, BackgroundTask, Breakpoint,
-        ChangeEvent, ClickEvent, Context, DateStyle, Entity, FluentBuilder, Handler, Haptic,
-        InputEvent, IntoElement, Lifecycle, Locale, Location, Menu, MenuItem, Motion, Notification,
-        NotificationAction, NotificationResponse, Params, ParentElement, Permission,
-        PermissionState, PickImages, PickedFile, Platform, Render, Role, Router, ScrollEvent,
-        Share, Styled, SwipeDirection, Transition, Translations, Tray, VirtualList, Watch, Widget,
-        WidgetFamily, adaptive, button, div, go_back, image, lazy, navigate_to, picture, progress,
-        px, relative, rgb, rgba, screen, scroll, text, text_input, timer, toggle,
+        ChangeEvent, ClickEvent, Context, DateStyle, DeviceInfo, DeviceKind, Entity, FluentBuilder,
+        Handler, Haptic, InputEvent, IntoElement, Lifecycle, Locale, Location, Menu, MenuItem,
+        Motion, Notification, NotificationAction, NotificationResponse, Orientation, Params,
+        ParentElement, Permission, PermissionState, PickImages, PickedFile, Platform, Posture,
+        Render, Role, Router, ScrollEvent, Share, Styled, SwipeDirection, Transition, Translations,
+        Tray, VirtualList, Watch, Widget, WidgetFamily, adaptive, button, div, go_back, image,
+        lazy, navigate_to, picture, progress, px, relative, rgb, rgba, screen, scroll, text,
+        text_input, timer, toggle,
     };
 }
 

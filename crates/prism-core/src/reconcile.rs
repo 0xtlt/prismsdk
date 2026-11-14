@@ -432,7 +432,7 @@ impl Reconciler {
             on_swipe_right,
             ..
         } = *vnode;
-        let style = style.resolve(app.breakpoint(), app.platform());
+        let style = style.resolve(app.style_context());
         {
             let swipe = (on_swipe_left.is_some(), on_swipe_right.is_some());
             let scroll_events = on_scroll.is_some();

@@ -11,6 +11,7 @@
 //! - Settings:   live theming (system/light/dark, accent, shape, native controls)
 //!   and language (English, French, Arabic right-to-left).
 
+mod about;
 mod background;
 mod device;
 mod focus;
@@ -651,6 +652,7 @@ impl Render for Gallery {
                             })),
                     ),
             )
+            .child(about::card(cx))
             .child(self.device)
             .child(
                 ui::card()

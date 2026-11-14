@@ -6,6 +6,8 @@
 //! `scripts/ios-run.sh`).
 
 #[cfg(target_os = "ios")]
+mod device_info;
+#[cfg(target_os = "ios")]
 mod imp;
 #[cfg(target_os = "ios")]
 mod menus;

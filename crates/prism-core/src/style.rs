@@ -334,6 +334,32 @@ pub enum Condition {
     From(Breakpoint),
     /// The app runs on one of these platforms.
     On(crate::platform::Platforms),
+    /// The screen is in this orientation.
+    Orientation(crate::device_info::Orientation),
+    /// A foldable is in this posture.
+    Posture(crate::device_info::Posture),
+    /// The device is of this kind.
+    Kind(crate::device_info::DeviceKind),
+}
+
+/// What responsive rules are resolved against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct StyleContext {
+    pub breakpoint: Breakpoint,
+    pub platform: Option<crate::platform::Platform>,
+    pub orientation: crate::device_info::Orientation,
+    pub posture: crate::device_info::Posture,
+    pub kind: crate::device_info::DeviceKind,
+}
+
+impl StyleContext {
+    pub fn new(breakpoint: Breakpoint, platform: crate::platform::Platform) -> Self {
+        StyleContext {
+            breakpoint,
+            platform: Some(platform),
+            ..Default::default()
+        }
+    }
 }
 
 /// Style changes by breakpoint or platform; resolved for the current window
@@ -364,23 +390,27 @@ impl PartialEq for Responsive {
 }
 
 impl Style {
-    /// This style at `breakpoint` on `platform`: platform rules first, then
-    /// width rules from the smallest breakpoint up.
-    pub fn resolve(&self, breakpoint: Breakpoint, platform: crate::platform::Platform) -> Style {
+    /// This style in `cx`: device rules (platform, kind, orientation,
+    /// posture) first, in the order they were written, then width rules from
+    /// the smallest breakpoint up.
+    pub fn resolve(&self, cx: StyleContext) -> Style {
         if self.responsive.is_empty() {
             return self.clone();
         }
         let mut rules = self.responsive.0.clone();
         rules.sort_by_key(|(c, _)| match c {
-            Condition::On(_) => None,
             Condition::From(b) => Some(*b),
+            _ => None,
         });
         let mut s = self.clone();
         s.responsive = Responsive::default();
         for (condition, rule) in rules {
             let applies = match condition {
-                Condition::From(b) => b <= breakpoint,
-                Condition::On(set) => set.contains(platform),
+                Condition::From(b) => b <= cx.breakpoint,
+                Condition::On(set) => cx.platform.is_some_and(|p| set.contains(p)),
+                Condition::Orientation(o) => o == cx.orientation,
+                Condition::Posture(p) => p == cx.posture,
+                Condition::Kind(k) => k == cx.kind,
             };
             if applies {
                 s = rule(s);
@@ -731,6 +761,45 @@ pub trait Styled: Sized {
                 .push((Condition::On(set), std::rc::Rc::new(f)))
         })
     }
+
+    // Device
+    /// Style changes while the screen is landscape.
+    fn landscape(self, f: impl Fn(Style) -> Style + 'static) -> Self {
+        self.style_when(
+            Condition::Orientation(crate::device_info::Orientation::Landscape),
+            f,
+        )
+    }
+    /// Style changes while the screen is portrait.
+    fn portrait(self, f: impl Fn(Style) -> Style + 'static) -> Self {
+        self.style_when(
+            Condition::Orientation(crate::device_info::Orientation::Portrait),
+            f,
+        )
+    }
+    /// Style changes while a foldable is in `posture`
+    /// (`.posture(Posture::Tabletop, |s| s.justify_end())`).
+    fn posture(
+        self,
+        posture: crate::device_info::Posture,
+        f: impl Fn(Style) -> Style + 'static,
+    ) -> Self {
+        self.style_when(Condition::Posture(posture), f)
+    }
+    /// Style changes on this kind of device
+    /// (`.on_device(DeviceKind::Tablet, |s| s.p(32.))`).
+    fn on_device(
+        self,
+        kind: crate::device_info::DeviceKind,
+        f: impl Fn(Style) -> Style + 'static,
+    ) -> Self {
+        self.style_when(Condition::Kind(kind), f)
+    }
+    /// Style changes when `condition` holds.
+    fn style_when(self, condition: Condition, f: impl Fn(Style) -> Style + 'static) -> Self {
+        self.with_style(|s| s.responsive.0.push((condition, std::rc::Rc::new(f))))
+    }
+
     /// Tablets and up (≥ 600).
     fn md(self, f: impl Fn(Style) -> Style + 'static) -> Self {
         self.at(Breakpoint::Medium, f)

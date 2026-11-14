@@ -915,6 +915,48 @@
     }
   }
 
+  // --- Device info: touch, installed app, screen, orientation, foldables ------------
+  let hints = null;
+  const media = (q) => (window.matchMedia ? matchMedia(q) : null);
+  const standalone = () => !!(media("(display-mode: standalone)")?.matches
+    || media("(display-mode: fullscreen)")?.matches || navigator.standalone === true);
+  const segments = () => {
+    const segs = (window.viewport && window.viewport.segments) || (window.getWindowSegments && window.getWindowSegments()) || null;
+    return segs && segs.length > 1 ? Array.from(segs, (r) => [r.x ?? r.left, r.y ?? r.top, r.width, r.height]) : null;
+  };
+  const deviceReport = () => {
+    const o = screen.orientation;
+    const touch = navigator.maxTouchPoints > 0;
+    const r = {
+      t: "device", ua: navigator.userAgent, touch, standalone: standalone(),
+      sw: screen.width, sh: screen.height, dpr: devicePixelRatio || 1,
+      orientation: o ? o.type : (media("(orientation: landscape)")?.matches || screen.width > screen.height ? "landscape" : "portrait"),
+      angle: o ? o.angle : (typeof window.orientation === "number" ? window.orientation : 0),
+      posture: navigator.devicePosture ? navigator.devicePosture.type : null,
+      segments: segments(),
+    };
+    if (hints) r.hints = hints;
+    document.cookie = `prism_dev=${touch ? 1 : 0}_${r.standalone ? 1 : 0}_${r.sw}_${r.sh}_${r.dpr}; Path=/; Max-Age=31536000; SameSite=Lax`;
+    return r;
+  };
+  const reportDevice = () => send(deviceReport());
+  if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
+    navigator.userAgentData.getHighEntropyValues(["platformVersion", "model", "fullVersionList"])
+      .then((h) => { hints = { platform: h.platform, platformVersion: h.platformVersion, model: h.model, mobile: h.mobile, fullVersionList: h.fullVersionList }; reportDevice(); })
+      .catch(() => {});
+  }
+  if (screen.orientation) screen.orientation.addEventListener("change", reportDevice);
+  else addEventListener("orientationchange", reportDevice);
+  if (navigator.devicePosture) navigator.devicePosture.addEventListener("change", reportDevice);
+  media("(display-mode: standalone)")?.addEventListener?.("change", reportDevice);
+  // Spanning a hinge or not changes with the window size.
+  let lastSegments = JSON.stringify(segments());
+  addEventListener("resize", () => {
+    const now = JSON.stringify(segments());
+    if (now !== lastSegments) { lastSegments = now; reportDevice(); }
+  });
+  deviceReport();
+
   function connect() {
     const path = encodeURIComponent(location.pathname);
     ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?path=${path}&tz=${tz}&w=${innerWidth}&h=${innerHeight}`);
@@ -927,6 +969,7 @@
     };
     ws.onclose = () => setTimeout(connect, 1000);
     ws.addEventListener("open", reportLifecycle);
+    ws.addEventListener("open", reportDevice);
   }
   connect();
 })();

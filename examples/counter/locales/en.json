@@ -193,5 +193,38 @@
     "paste": "Paste",
     "empty": "(clipboard empty)",
     "share": "Share"
+  },
+  "about": {
+    "title": "About this device",
+    "model": "Model",
+    "system": "System",
+    "screen": "Screen",
+    "orientation": "Orientation",
+    "window": "Window",
+    "foldable": "Foldable",
+    "browser": "Browser",
+    "portrait": "Portrait",
+    "landscape": "Landscape",
+    "rotated": "{orientation}, turned {degrees}°",
+    "flat": "Not folded",
+    "book": "Half open, like a book",
+    "tabletop": "Half open, on a table",
+    "closed": "Closed",
+    "hinge": "Hinge at {position} pt",
+    "fullscreen": "Full screen",
+    "split": "Split View",
+    "slide_over": "Slide Over",
+    "windowed": "Windowed",
+    "installed": "{browser}, installed as an app",
+    "simulator": "{model} (simulator)",
+    "unknown": "Unknown",
+    "kind": {
+      "phone": "Phone",
+      "tablet": "Tablet",
+      "desktop": "Computer",
+      "tv": "TV",
+      "watch": "Watch",
+      "unknown": "Device"
+    }
   }
 }

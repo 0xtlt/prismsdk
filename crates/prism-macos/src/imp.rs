@@ -35,6 +35,8 @@ struct State {
     runtime: Runtime,
     renderer: NativeRenderer<AppKit>,
     services: crate::services::MacServices,
+    /// The window size `device_info` was last reported for.
+    device_size: Option<(f32, f32)>,
 }
 
 thread_local! {
@@ -107,6 +109,19 @@ impl State {
         let (w, h) = (size.width as f32, size.height as f32);
         if w > 0. && (w, h) != self.runtime.app.viewport() {
             let patches = self.runtime.set_viewport(w, h);
+            if !patches.is_empty() {
+                self.renderer.apply(&patches);
+            }
+        }
+        // Fullscreen, another screen: `cx.device_info()`.
+        if w > 0.
+            && self.device_size != Some((w, h))
+            && let Some(window) = self.renderer.widgets.root.window()
+        {
+            self.device_size = Some((w, h));
+            let patches = self
+                .runtime
+                .set_device_info(crate::device_info::current(&window));
             if !patches.is_empty() {
                 self.renderer.apply(&patches);
             }
@@ -487,6 +502,14 @@ define_class!(
         #[unsafe(method(windowDidResize:))]
         fn window_did_resize(&self, _n: &NSNotification) {
             with_state(State::relayout);
+        }
+
+        #[unsafe(method(windowDidChangeScreen:))]
+        fn window_did_change_screen(&self, _n: &NSNotification) {
+            with_state(|s| {
+                s.device_size = None;
+                s.relayout();
+            });
         }
 
         #[unsafe(method(windowWillClose:))]
@@ -1511,6 +1534,7 @@ pub fn run(config: AppConfig, init: AppInit) {
             platform: None,
             data_dir: Some(data_dir(&config.title)),
             shared_data_dir: None,
+            device_info: Some(crate::device_info::current(&window)),
         },
     );
     let renderer = NativeRenderer::new(AppKit {
@@ -1534,6 +1558,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         runtime,
         renderer,
         services,
+        device_size: None,
     };
     state.commit(first);
     state.relayout();

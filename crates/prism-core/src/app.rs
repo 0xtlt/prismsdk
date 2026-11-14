@@ -155,6 +155,7 @@ pub struct App {
     pub(crate) menus: crate::menu::Menus,
     pub(crate) background: crate::background::Background,
     pub(crate) device: crate::device::Device,
+    pub(crate) device_info: crate::device_info::DeviceInfoState,
     storage: Box<dyn crate::storage::Storage>,
     pub(crate) cloud: crate::storage::Cloud,
     pub(crate) window: crate::window::Window,
@@ -185,6 +186,7 @@ impl Default for App {
             storage: Box::new(crate::storage::MemoryStorage::default()),
             cloud: Default::default(),
             window: Default::default(),
+            device_info: Default::default(),
         }
     }
 }

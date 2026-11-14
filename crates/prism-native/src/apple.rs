@@ -70,6 +70,80 @@ pub fn utc_offset() -> i32 {
     NSTimeZone::localTimeZone().secondsFromGMT() as i32
 }
 
+unsafe extern "C" {
+    fn sysctlbyname(
+        name: *const std::ffi::c_char,
+        oldp: *mut std::ffi::c_void,
+        oldlenp: *mut usize,
+        newp: *mut std::ffi::c_void,
+        newlen: usize,
+    ) -> std::ffi::c_int;
+}
+
+/// A string `sysctl` value (`hw.machine`, `hw.model`).
+pub fn sysctl_string(name: &str) -> Option<String> {
+    let name = std::ffi::CString::new(name).ok()?;
+    let mut len = 0usize;
+    // SAFETY: a size query, then a read into a buffer of that size.
+    unsafe {
+        if sysctlbyname(
+            name.as_ptr(),
+            std::ptr::null_mut(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        ) != 0
+            || len == 0
+        {
+            return None;
+        }
+        let mut buf = vec![0u8; len];
+        if sysctlbyname(
+            name.as_ptr(),
+            buf.as_mut_ptr().cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        ) != 0
+        {
+            return None;
+        }
+        buf.truncate(len);
+        let s = String::from_utf8_lossy(&buf)
+            .trim_end_matches('\0')
+            .to_string();
+        (!s.is_empty()).then_some(s)
+    }
+}
+
+/// The OS version (`18.2`, `26.1`).
+pub fn os_version() -> prism_core::Version {
+    let v = objc2_foundation::NSProcessInfo::processInfo().operatingSystemVersion();
+    prism_core::Version::new(
+        v.majorVersion as u32,
+        v.minorVersion as u32,
+        v.patchVersion as u32,
+    )
+}
+
+/// Running in the iOS Simulator.
+pub fn is_simulator() -> bool {
+    cfg!(target_abi = "sim") || std::env::var_os("SIMULATOR_MODEL_IDENTIFIER").is_some()
+}
+
+/// The hardware model (`iPhone17,1`, `Mac15,6`); simulators report the
+/// simulated device.
+pub fn model_id() -> Option<String> {
+    if let Ok(id) = std::env::var("SIMULATOR_MODEL_IDENTIFIER") {
+        return Some(id);
+    }
+    if cfg!(target_os = "macos") {
+        sysctl_string("hw.model")
+    } else {
+        sysctl_string("hw.machine")
+    }
+}
+
 #[cfg(feature = "apple-bridge")]
 pub use bridge::{DeviceMessage, device_call, set_device_sink};
 

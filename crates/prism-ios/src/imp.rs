@@ -42,6 +42,8 @@ struct State {
     runtime: Runtime,
     renderer: NativeRenderer<UiKit>,
     services: crate::services::IosServices,
+    /// The window size `device_info` was last reported for.
+    device_size: Option<(f32, f32)>,
 }
 
 thread_local! {
@@ -107,6 +109,18 @@ impl State {
         let (w, h) = (size.width as f32, size.height as f32);
         if w > 0. && (w, h) != self.runtime.app.viewport() {
             let patches = self.runtime.set_viewport(w, h);
+            if !patches.is_empty() {
+                self.renderer.apply(&patches);
+            }
+        }
+        // Rotation, Split View: `cx.device_info()` (re-renders if it changed).
+        if w > 0.
+            && self.device_size != Some((w, h))
+            && let Some(mtm) = MainThreadMarker::new()
+            && let Some(info) = crate::device_info::current(&self.renderer.widgets.root, mtm)
+        {
+            self.device_size = Some((w, h));
+            let patches = self.runtime.set_device_info(info);
             if !patches.is_empty() {
                 self.renderer.apply(&patches);
             }
@@ -486,6 +500,7 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
         runtime,
         renderer,
         services,
+        device_size: None,
     };
     state.commit(first);
     STATE.with(|cell| *cell.borrow_mut() = Some(state));
@@ -1887,6 +1902,8 @@ fn make_runtime(
             platform: None,
             data_dir: Some(data_dir()),
             shared_data_dir: None,
+            // Reported from the window at the first layout too.
+            device_info: None,
         },
     )
 }

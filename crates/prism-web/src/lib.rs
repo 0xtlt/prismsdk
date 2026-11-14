@@ -11,6 +11,7 @@
 //! No WASM: the app logic stays in native Rust on the server.
 
 mod css;
+mod device_info;
 mod glyphs;
 mod html;
 
@@ -70,6 +71,8 @@ fn handle(stream: TcpStream, config: &AppConfig, init: &AppInit) -> std::io::Res
     let mut language = None;
     let mut tz = None;
     let mut viewport = None;
+    let mut user_agent = String::new();
+    let mut cookie_header = None;
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line)? == 0 || line == "\r\n" {
@@ -80,7 +83,13 @@ fn handle(stream: TcpStream, config: &AppConfig, init: &AppInit) -> std::io::Res
         {
             cookie = session_id(value);
             tz = time_zone(value);
+            cookie_header = Some(value.trim().to_string());
             viewport = viewport.or(viewport_cookie(value));
+        }
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("user-agent")
+        {
+            user_agent = value.trim().to_string();
         }
         if let Some((name, value)) = line.split_once(':')
             && name.eq_ignore_ascii_case("user-agent")
@@ -127,10 +136,16 @@ fn handle(stream: TcpStream, config: &AppConfig, init: &AppInit) -> std::io::Res
                 config,
                 init,
                 &percent_decode(path),
-                &sid,
-                language,
-                tz,
-                viewport,
+                Visitor {
+                    sid: &sid,
+                    language,
+                    tz,
+                    viewport,
+                    device: Some(device_info::from_request(
+                        &user_agent,
+                        cookie_header.as_deref(),
+                    )),
+                },
             ),
             "text/html; charset=utf-8",
         ),
@@ -396,16 +411,25 @@ fn environment(language: Option<prism_core::Locale>, tz: Option<i32>) -> prism_c
     }
 }
 
+/// Who asked for a page (from the request headers and cookies).
+pub struct Visitor<'a> {
+    pub sid: &'a str,
+    pub language: Option<prism_core::Locale>,
+    /// UTC offset in seconds.
+    pub tz: Option<i32>,
+    pub viewport: Option<(f32, f32)>,
+    pub device: Option<prism_core::DeviceInfo>,
+}
+
 /// Server-side render of a fresh session opened on `path`, as a full HTML document.
-pub fn page(
-    config: &AppConfig,
-    init: &AppInit,
-    path: &str,
-    sid: &str,
-    language: Option<prism_core::Locale>,
-    tz: Option<i32>,
-    viewport: Option<(f32, f32)>,
-) -> String {
+pub fn page(config: &AppConfig, init: &AppInit, path: &str, visitor: Visitor) -> String {
+    let Visitor {
+        sid,
+        language,
+        tz,
+        viewport,
+        device,
+    } = visitor;
     let mut runtime = Runtime::with_options(
         init,
         prism_core::RuntimeOptions {
@@ -420,6 +444,7 @@ pub fn page(
             shared_data_dir: Some(data_root()),
             viewport,
             platform: Some(prism_core::Platform::Web),
+            device_info: device,
         },
     );
     let mut html = HtmlBackend::default();
@@ -533,14 +558,16 @@ fn session(stream: TcpStream, init: &AppInit) {
     let mut language = None;
     let mut tz = None;
     let mut viewport = None;
+    let mut device = None;
     let handshake = tungstenite::accept_hdr(
         stream,
         |req: &tungstenite::handshake::server::Request, resp| {
-            sid = req
-                .headers()
-                .get("cookie")
-                .and_then(|c| c.to_str().ok())
-                .and_then(session_id);
+            let header = |name: &str| req.headers().get(name).and_then(|c| c.to_str().ok());
+            sid = header("cookie").and_then(session_id);
+            device = Some(device_info::from_request(
+                header("user-agent").unwrap_or(""),
+                header("cookie"),
+            ));
             tz = req
                 .uri()
                 .query()
@@ -592,8 +619,10 @@ fn session(stream: TcpStream, init: &AppInit) {
             shared_data_dir: Some(data_root()),
             viewport,
             platform: Some(prism_core::Platform::Web),
+            device_info: device.clone(),
         },
     );
+    let mut device = device.unwrap_or_else(|| runtime.app.device_info());
     let mut encoder = Encoder::default();
     let first = runtime.render();
     if send(&mut ws, &mut encoder, "reset", &first).is_err() {
@@ -727,6 +756,17 @@ fn session(stream: TcpStream, init: &AppInit) {
             )
         {
             let patches = runtime.set_viewport(w as f32, h as f32);
+            if !patches.is_empty() && send(&mut ws, &mut encoder, "patch", &patches).is_err() {
+                return;
+            }
+            continue;
+        }
+        // The page described its device (on connect, rotation, fold).
+        if let Ok(v) = serde_json::from_str::<Value>(&msg)
+            && v.get("t").and_then(Value::as_str) == Some("device")
+        {
+            device_info::apply_report(&mut device, &v);
+            let patches = runtime.set_device_info(device.clone());
             if !patches.is_empty() && send(&mut ws, &mut encoder, "patch", &patches).is_err() {
                 return;
             }

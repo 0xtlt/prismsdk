@@ -217,5 +217,38 @@
     "paste": "لصق",
     "empty": "(الحافظة فارغة)",
     "share": "مشاركة"
+  },
+  "about": {
+    "title": "حول هذا الجهاز",
+    "model": "الطراز",
+    "system": "النظام",
+    "screen": "الشاشة",
+    "orientation": "الاتجاه",
+    "window": "النافذة",
+    "foldable": "قابل للطي",
+    "browser": "المتصفح",
+    "portrait": "عمودي",
+    "landscape": "أفقي",
+    "rotated": "{orientation}، مُدار {degrees}°",
+    "flat": "غير مطوي",
+    "book": "نصف مفتوح، مثل كتاب",
+    "tabletop": "نصف مفتوح، على طاولة",
+    "closed": "مغلق",
+    "hinge": "المفصل عند {position} نقطة",
+    "fullscreen": "ملء الشاشة",
+    "split": "تقسيم الشاشة",
+    "slide_over": "نافذة منزلقة",
+    "windowed": "في نافذة",
+    "installed": "{browser}، مثبت كتطبيق",
+    "simulator": "{model} (محاكي)",
+    "unknown": "غير معروف",
+    "kind": {
+      "phone": "هاتف",
+      "tablet": "جهاز لوحي",
+      "desktop": "حاسوب",
+      "tv": "تلفاز",
+      "watch": "ساعة",
+      "unknown": "جهاز"
+    }
   }
 }

@@ -1476,3 +1476,154 @@ fn platform_specific_elements_and_styles() {
     assert!((Platform::Ios | Platform::Web).contains(Platform::Web));
     assert!(!Platform::NATIVE.contains(Platform::Web));
 }
+
+#[test]
+fn device_info_drives_rendering_and_styles() {
+    use crate::style::FlexDirection;
+    use crate::{DeviceInfo, DeviceKind, Fold, Orientation, Posture};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Page;
+    impl Render for Page {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            let d = cx.device_info();
+            div()
+                .flex_col()
+                .landscape(|s| s.flex_row())
+                .posture(Posture::Tabletop, |s| s.gap(40.))
+                .on_device(DeviceKind::Tablet, |s| s.p(32.))
+                .child(text(format!("{} {}", d.kind.name(), d.orientation.name())))
+                .child(text(if d.fold.is_some() { "hinge" } else { "flat" }))
+        }
+    }
+    let changes = Arc::new(AtomicUsize::new(0));
+    let seen = changes.clone();
+    let init: AppInit = Arc::new(move |cx: &mut App| {
+        let seen = seen.clone();
+        cx.on_device_info_change(move |_, _| {
+            seen.fetch_add(1, Ordering::SeqCst);
+        });
+        let root = cx.new_entity(|_| Page);
+        cx.set_root(root);
+    });
+    let mut rt = Runtime::with_options(
+        &init,
+        crate::RuntimeOptions {
+            platform: Some(crate::Platform::Ios),
+            ..Default::default()
+        },
+    );
+    let first = rt.render();
+    // Before the platform reports: guessed from the platform and window.
+    find_text(&first, "phone portrait");
+    let style = |patches: &[Patch], f: &dyn Fn(&crate::Style) -> bool| {
+        patches
+            .iter()
+            .any(|p| matches!(p, Patch::SetStyle { style, .. } if f(style)))
+    };
+    assert!(style(&first, &|s| s.direction == FlexDirection::Column));
+
+    // An iPad in landscape: the row layout and the tablet padding apply.
+    let mut ipad = DeviceInfo::guess(crate::Platform::Ios, (1180., 820.));
+    ipad.kind = DeviceKind::Tablet;
+    let patches = rt.set_device_info(ipad.clone());
+    find_text(&patches, "tablet landscape");
+    assert!(style(&patches, &|s| s.direction == FlexDirection::Row
+        && s.padding.top == 32.));
+    assert_eq!(changes.load(Ordering::SeqCst), 1);
+    // The same report again changes nothing.
+    assert!(rt.set_device_info(ipad.clone()).is_empty());
+    assert_eq!(changes.load(Ordering::SeqCst), 1);
+
+    // A foldable half open on a table.
+    let mut fold = ipad;
+    fold.kind = DeviceKind::Phone;
+    fold.orientation = Orientation::Portrait;
+    fold.posture = Posture::Tabletop;
+    fold.fold = Some(Fold {
+        y: 400.,
+        width: 400.,
+        height: 20.,
+        ..Default::default()
+    });
+    let patches = rt.set_device_info(fold);
+    find_text(&patches, "hinge");
+    assert!(style(&patches, &|s| s.gap == 40. && s.padding.top == 0.));
+    assert!(rt.app.device_info().is_folded());
+    assert_eq!(changes.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn user_agents_describe_the_visitor_device() {
+    use crate::DeviceKind;
+    use crate::device_info::{Engine, OsName, Version, parse_user_agent};
+    let iphone = parse_user_agent(
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/131.0.6778.73 Mobile/15E148 Safari/604.1",
+        None,
+    );
+    assert_eq!(iphone.kind, DeviceKind::Phone);
+    assert_eq!(iphone.os.name, OsName::Ios);
+    assert_eq!(iphone.os.version, Version::new(18, 2, 0));
+    let b = iphone.browser.as_ref().unwrap();
+    // Chrome on iOS still uses WebKit.
+    assert_eq!(
+        (b.name.as_str(), b.version.major, b.engine),
+        ("Chrome", 131, Engine::WebKit)
+    );
+    assert!(iphone.touch && iphone.is_browser());
+
+    let mac_ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15";
+    let mac = parse_user_agent(mac_ua, Some(false));
+    assert_eq!(
+        (mac.kind, mac.os.name),
+        (DeviceKind::Desktop, OsName::Macos)
+    );
+    assert_eq!(mac.browser.as_ref().unwrap().name, "Safari");
+    // An iPad asks for the desktop site: touch gives it away.
+    let ipad = parse_user_agent(mac_ua, Some(true));
+    assert_eq!(
+        (ipad.kind, ipad.os.name),
+        (DeviceKind::Tablet, OsName::Ipados)
+    );
+    assert!(ipad.os.version.at_least(18, 1));
+
+    let fold = parse_user_agent(
+        "Mozilla/5.0 (Linux; Android 14; SM-F956B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/26.0 Chrome/122.0.0.0 Mobile Safari/537.36",
+        None,
+    );
+    assert_eq!(
+        (fold.kind, fold.os.name),
+        (DeviceKind::Phone, OsName::Android)
+    );
+    assert_eq!(fold.model.as_deref(), Some("SM-F956B"));
+    assert_eq!(fold.browser.as_ref().unwrap().name, "Samsung Internet");
+
+    let tab = parse_user_agent(
+        "Mozilla/5.0 (Linux; Android 13; SM-X710) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        None,
+    );
+    assert_eq!(tab.kind, DeviceKind::Tablet);
+
+    let edge = parse_user_agent(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.2903.70",
+        None,
+    );
+    let b = edge.browser.as_ref().unwrap();
+    assert_eq!(
+        (edge.os.name, b.name.as_str(), b.engine),
+        (OsName::Windows, "Edge", Engine::Blink)
+    );
+    assert!(!edge.touch);
+
+    let firefox = parse_user_agent(
+        "Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0",
+        None,
+    );
+    assert_eq!(firefox.browser.unwrap().engine, Engine::Gecko);
+
+    assert_eq!(Version::parse("10_15_7").to_string(), "10.15.7");
+    assert!(Version::parse("18.10") > Version::parse("18.9"));
+    assert_eq!(
+        crate::device_info::apple_model("iPhone17,1"),
+        Some(("iPhone 16 Pro", 6.3))
+    );
+}
