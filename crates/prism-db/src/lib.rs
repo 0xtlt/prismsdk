@@ -67,8 +67,35 @@ impl Db {
         Self::open_path(&dir.join(name), migrations)
     }
 
-    /// Opens a SQLite file at `path`.
+    /// Opens a SQLite file at `path`. One pool per file is shared by the
+    /// whole process (every web session, every window): opening it again is
+    /// free and runs the migrations only once.
     pub fn open_path(path: &Path, migrations: &[&str]) -> Result<Db, sqlx::Error> {
+        static POOLS: OnceLock<
+            std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, Db>>,
+        > = OnceLock::new();
+        let pools = POOLS.get_or_init(Default::default);
+        let key = path
+            .parent()
+            .and_then(|dir| dir.canonicalize().ok())
+            .map_or_else(
+                || path.to_path_buf(),
+                |dir| dir.join(path.file_name().unwrap_or_default()),
+            );
+        let mut pools = pools.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(db) = pools.get(&key) {
+            // New migrations (an app update while the server runs) still apply.
+            let migrations: Vec<String> = migrations.iter().map(|m| m.to_string()).collect();
+            let pool = db.pool.clone();
+            runtime().block_on(async move { migrate(&pool, &migrations).await })?;
+            return Ok(db.clone());
+        }
+        let db = Self::connect_path(&key, migrations)?;
+        pools.insert(key, db.clone());
+        Ok(db)
+    }
+
+    fn connect_path(path: &Path, migrations: &[&str]) -> Result<Db, sqlx::Error> {
         let options = sqlx::sqlite::SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)

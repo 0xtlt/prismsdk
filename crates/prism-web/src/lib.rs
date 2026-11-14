@@ -609,18 +609,41 @@ fn session(stream: TcpStream, init: &AppInit) {
                 return;
             }
         }
-        // While tasks run, wake up at their next timer (or every 25 ms).
-        let timeout = runtime.has_tasks().then(|| {
-            let until_timer = runtime
-                .next_timer()
-                .map(|t| t.saturating_duration_since(std::time::Instant::now()));
-            until_timer
-                .unwrap_or(std::time::Duration::from_millis(25))
-                .clamp(
-                    std::time::Duration::from_millis(1),
-                    std::time::Duration::from_millis(25),
-                )
+        // Order matters: "busy" first, then the wake flag (background work
+        // wakes before it stops counting as in flight).
+        let busy = runtime.has_background_work();
+        if woken.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            let patches = runtime.poll();
+            if !patches.is_empty() && send(&mut ws, &mut encoder, "patch", &patches).is_err() {
+                return;
+            }
+            for request in runtime.take_requests() {
+                services.handle(request);
+            }
+            for msg in services.outbox.drain(..) {
+                if ws.send(Message::text(msg.to_string())).is_err() {
+                    return;
+                }
+            }
+            // The poll may have started more background work: look again.
+            continue;
+        }
+        // Wake at the next timer; poll every 25 ms only while background
+        // work (HTTP, database) runs on other threads, since it cannot
+        // interrupt the socket read. Otherwise sleep until a message.
+        let until_timer = runtime.next_timer().map(|t| {
+            t.saturating_duration_since(std::time::Instant::now())
+                .max(std::time::Duration::from_millis(1))
         });
+        let timeout = if busy {
+            Some(
+                until_timer.map_or(std::time::Duration::from_millis(25), |t| {
+                    t.min(std::time::Duration::from_millis(25))
+                }),
+            )
+        } else {
+            until_timer
+        };
         // …and at the next background task.
         let until_background = services.next_background().map(|t| {
             t.saturating_duration_since(std::time::Instant::now())

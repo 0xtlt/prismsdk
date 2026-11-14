@@ -30,3 +30,9 @@ objc2-app-kit = "0.3"
 objc2-ui-kit = "0.3"
 objc2-quartz-core = "0.3"
 objc2-core-foundation = "0.3"
+
+# Smaller, faster release builds (apps ship these).
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = "symbols"

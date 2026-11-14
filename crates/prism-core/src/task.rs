@@ -34,6 +34,8 @@ pub type WakeUi = Arc<dyn Fn() + Send + Sync>;
 struct Shared {
     ready: Mutex<Vec<u64>>,
     wake_ui: Mutex<Option<WakeUi>>,
+    /// `background` work running on other threads.
+    in_flight: std::sync::atomic::AtomicUsize,
 }
 
 struct TaskWaker {
@@ -96,6 +98,13 @@ impl Executor {
 
     pub(crate) fn has_tasks(&self) -> bool {
         !self.tasks.borrow().is_empty()
+    }
+
+    pub(crate) fn has_background_work(&self) -> bool {
+        self.shared
+            .in_flight
+            .load(std::sync::atomic::Ordering::SeqCst)
+            > 0
     }
 
     pub(crate) fn next_timer(&self) -> Option<Instant> {
@@ -215,6 +224,10 @@ impl AsyncApp {
     ) -> Background<R> {
         let slot: Arc<Mutex<(Option<R>, Option<Waker>)>> = Arc::new(Mutex::new((None, None)));
         let worker = slot.clone();
+        let shared = self.exec.shared.clone();
+        shared
+            .in_flight
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         std::thread::spawn(move || {
             let result = work();
             let waker = {
@@ -225,6 +238,11 @@ impl AsyncApp {
             if let Some(w) = waker {
                 w.wake();
             }
+            // After the wake: a backend that sees no work in flight knows its
+            // wake signal is already set.
+            shared
+                .in_flight
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
         });
         Background { slot }
     }

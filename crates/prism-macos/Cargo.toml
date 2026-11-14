@@ -11,6 +11,7 @@ prism-native = { workspace = true, features = ["apple-bridge"] }
 objc2.workspace = true
 objc2-foundation.workspace = true
 objc2-app-kit.workspace = true
+objc2-quartz-core.workspace = true
 block2.workspace = true
 dispatch2.workspace = true
 

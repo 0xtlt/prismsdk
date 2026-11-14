@@ -158,32 +158,45 @@ define_class!(
             true
         }
 
-        #[unsafe(method(drawRect:))]
-        fn draw_rect(&self, _dirty: NSRect) {
+        /// Backgrounds, borders, corners and pictures are layer properties
+        /// composited by the GPU: no per-view bitmap to draw or keep.
+        #[unsafe(method(wantsUpdateLayer))]
+        fn wants_update_layer(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(updateLayer))]
+        fn update_layer(&self) {
+            let Some(layer) = self.layer() else { return };
             let iv = self.ivars();
-            let bounds = self.bounds();
-            let r = iv.radius.get();
-            if let Some(bg) = iv.background.borrow().as_ref() {
-                bg.setFill();
-                NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(bounds, r, r).fill();
+            // Called within the view's appearance: dynamic colors resolve to
+            // light or dark here.
+            let cg = |c: &NSColor| c.CGColor();
+            layer.setBackgroundColor(iv.background.borrow().as_deref().map(cg).as_deref());
+            // A radius over half the size draws garbage: clamp (pills).
+            let b = self.bounds().size;
+            layer.setCornerRadius(iv.radius.get().min(b.width.min(b.height) / 2.).max(0.));
+            let bw = if iv.border_color.borrow().is_some() { iv.border.get() } else { 0. };
+            layer.setBorderWidth(bw);
+            layer.setBorderColor(iv.border_color.borrow().as_deref().map(cg).as_deref());
+            let image = iv.image.borrow();
+            unsafe {
+                // A CGImage: what Core Animation composites directly.
+                let cg = image.as_deref().and_then(|i| {
+                    i.CGImageForProposedRect_context_hints(std::ptr::null_mut(), None, None)
+                });
+                layer.setContents(cg.as_deref().map(|c| {
+                    let any: &AnyObject = &*(c as *const _ as *const AnyObject);
+                    any
+                }));
+                layer.setContentsGravity(if iv.fit.get() {
+                    objc2_quartz_core::kCAGravityResizeAspect
+                } else {
+                    objc2_quartz_core::kCAGravityResizeAspectFill
+                });
             }
-            let bw = iv.border.get();
-            if bw > 0.
-                && let Some(c) = iv.border_color.borrow().as_ref()
-            {
-                let inset = NSRect::new(
-                    NSPoint::new(bounds.origin.x + bw / 2., bounds.origin.y + bw / 2.),
-                    NSSize::new(bounds.size.width - bw, bounds.size.height - bw),
-                );
-                let ri = (r - bw / 2.).max(0.);
-                let path = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(inset, ri, ri);
-                path.setLineWidth(bw);
-                c.setStroke();
-                path.stroke();
-            }
-            if let Some(img) = iv.image.borrow().as_ref() {
-                draw_picture(img, bounds, r, iv.fit.get());
-            }
+            // Pictures are cropped to their rounded frame.
+            layer.setMasksToBounds(image.is_some());
         }
 
         /// Three-finger (or two-finger, per System Settings) swipes.
@@ -299,38 +312,6 @@ define_class!(
     }
 );
 
-/// Draws `img` in `bounds`, cropped (fill) or letterboxed (fit), clipped to the corner radius.
-fn draw_picture(img: &NSImage, bounds: NSRect, radius: f64, fit: bool) {
-    let size = img.size();
-    if size.width <= 0. || size.height <= 0. {
-        return;
-    }
-    let (bw, bh) = (bounds.size.width, bounds.size.height);
-    let scale = if fit {
-        (bw / size.width).min(bh / size.height)
-    } else {
-        (bw / size.width).max(bh / size.height)
-    };
-    let (w, h) = (size.width * scale, size.height * scale);
-    let rect = NSRect::new(
-        NSPoint::new((bw - w) / 2., (bh - h) / 2.),
-        NSSize::new(w, h),
-    );
-    objc2_app_kit::NSGraphicsContext::saveGraphicsState_class();
-    NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(bounds, radius, radius).addClip();
-    unsafe {
-        img.drawInRect_fromRect_operation_fraction_respectFlipped_hints(
-            rect,
-            NSRect::ZERO,
-            objc2_app_kit::NSCompositingOperation::SourceOver,
-            1.,
-            true,
-            None,
-        )
-    };
-    objc2_app_kit::NSGraphicsContext::restoreGraphicsState_class();
-}
-
 impl PrismView {
     fn context_menu(&self) -> Option<Retained<NSMenu>> {
         let spec = self.ivars().menu.borrow().clone()?;
@@ -345,7 +326,12 @@ impl PrismView {
             id: Cell::new(id),
             ..Default::default()
         });
-        unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
+        let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
+        view.setWantsLayer(true);
+        view.setLayerContentsRedrawPolicy(
+            objc2_app_kit::NSViewLayerContentsRedrawPolicy::DuringViewResize,
+        );
+        view
     }
 }
 

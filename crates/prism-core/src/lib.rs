@@ -265,6 +265,12 @@ impl Runtime {
         self.app.executor.has_tasks()
     }
 
+    /// Whether `background` work (HTTP, database, files) is running on
+    /// other threads: backends that cannot be woken directly poll meanwhile.
+    pub fn has_background_work(&self) -> bool {
+        self.app.executor.has_background_work()
+    }
+
     /// Platform work requested by the app (widgets, Live Activities,
     /// notifications). Backends call this after each render or dispatch.
     pub fn take_requests(&mut self) -> Vec<PlatformRequest> {

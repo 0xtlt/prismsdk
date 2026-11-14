@@ -194,6 +194,10 @@ impl<W: Widgets> NativeRenderer<W> {
         };
         let frame = (x, y, w, h);
         let previous = e.frame.replace(frame);
+        // Unchanged: no native call (big trees relayout on every change).
+        if previous == Some(frame) {
+            return;
+        }
         let transition = e.style.transition.filter(|_| !self.env.reduce_motion);
         match (transition, previous) {
             (Some(t), Some(p)) if p != frame && p.2 > 0. && p.3 > 0. => {
@@ -827,5 +831,120 @@ mod tests {
         // tab (viewport below a fake 44pt bar) → stack fills it → screen.
         assert_eq!(f[&2], (0., 44., 400., 756.), "tab");
         assert_eq!(f[&3], (0., 0., 400., 756.), "stack inside tab");
+    }
+}
+
+/// `cargo test -p prism-native --release -- --ignored --nocapture bench`
+#[cfg(test)]
+mod bench {
+    use super::*;
+    use prism_core::{
+        App, AppInit, Context, Entity, IntoElement, ParentElement, Render, Runtime, Styled, div,
+        scroll, text,
+    };
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    #[derive(Default)]
+    struct Null {
+        frames: usize,
+    }
+    impl Widgets for Null {
+        type View = NodeId;
+        fn create(&mut self, id: NodeId, _: NodeKind) -> NodeId {
+            id
+        }
+        fn set_style(&mut self, _: &NodeId, _: &Style) {}
+        fn set_text(&mut self, _: &NodeId, _: &str) {}
+        fn set_placeholder(&mut self, _: &NodeId, _: &str) {}
+        fn set_clickable(&mut self, _: &NodeId, _: bool) {}
+        fn set_children(&mut self, _: &NodeId, _: &[NodeId]) {}
+        fn set_root(&mut self, _: &NodeId) {}
+        fn destroy(&mut self, _: &NodeId) {}
+        fn measure(&mut self, _: &NodeId, w: Option<f32>) -> (f32, f32) {
+            (w.unwrap_or(200.).min(200.), 20.)
+        }
+        fn set_frame(&mut self, _: &NodeId, _: f32, _: f32, _: f32, _: f32) {
+            self.frames += 1;
+        }
+        fn set_accessibility(&mut self, _: &NodeId, _: &Accessibility) {}
+        fn set_value(&mut self, _: &NodeId, _: f64) {}
+        fn screen_viewport(&mut self, _: &NodeId, _: &NodeId) -> Viewport {
+            Viewport::default()
+        }
+    }
+
+    struct Row {
+        n: usize,
+        hits: u32,
+    }
+    impl Render for Row {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .flex_row()
+                .gap(8.)
+                .p(8.)
+                .child(text(format!("Row {}", self.n)))
+                .child(text(format!("{} hits", self.hits)))
+        }
+    }
+    struct List {
+        rows: Vec<Entity<Row>>,
+    }
+    impl Render for List {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            scroll().p(16.).gap(4.).children(self.rows.iter().copied())
+        }
+    }
+
+    fn run(n: usize) {
+        let rows: Arc<std::sync::Mutex<Vec<Entity<Row>>>> = Default::default();
+        let out = rows.clone();
+        let init: AppInit = Arc::new(move |cx: &mut App| {
+            let list = cx.new_entity(|cx: &mut Context<List>| List {
+                rows: (0..n).map(|n| cx.new(|_| Row { n, hits: 0 })).collect(),
+            });
+            *out.lock().unwrap() = list.read(cx).rows.clone();
+            cx.set_root(list);
+        });
+        let t = Instant::now();
+        let mut rt = Runtime::new(&init);
+        let patches = rt.render();
+        let render = t.elapsed();
+        let mut r = NativeRenderer::new(Null::default());
+        let t = Instant::now();
+        r.apply(&patches);
+        let apply = t.elapsed();
+        let t = Instant::now();
+        r.layout(400., 800., Insets::default());
+        let layout = t.elapsed();
+        // One row changes.
+        let row = rows.lock().unwrap()[n / 2];
+        let t = Instant::now();
+        row.update(&mut rt.app, |r, cx| {
+            r.hits += 1;
+            cx.notify();
+        });
+        let patches = rt.poll();
+        r.apply(&patches);
+        let t_update = t.elapsed();
+        let before = r.widgets.frames;
+        let t = Instant::now();
+        r.layout(400., 800., Insets::default());
+        let relayout = t.elapsed();
+        let moved = r.widgets.frames - before;
+        println!(
+            "{n:>5} rows ({} nodes): render {render:?} · apply {apply:?} · layout {layout:?} | 1 row changed: render+apply {t_update:?} ({} patches) · relayout {relayout:?} ({moved} native frame updates)",
+            r.nodes.len(),
+            patches.len()
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn bench() {
+        for n in [100, 1000, 5000] {
+            run(n);
+        }
     }
 }
