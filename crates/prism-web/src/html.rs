@@ -28,6 +28,7 @@ pub struct HtmlBackend {
     nodes: HashMap<NodeId, HtmlNode>,
     root: Option<NodeId>,
     appearance: Appearance,
+    pub env: prism_core::RenderEnvironment,
 }
 
 impl Backend for HtmlBackend {
@@ -56,6 +57,7 @@ impl Backend for HtmlBackend {
                     self.with(*id, |n| n.clickable = *clickable)
                 }
                 Patch::SetAppearance { appearance } => self.appearance = *appearance,
+                Patch::SetEnvironment { env } => self.env = env.clone(),
                 // Menus open on interaction, once the client runs.
                 Patch::SetMenu { .. } | Patch::SetSwipe { .. } | Patch::SetScrollEvents { .. } => {}
                 Patch::SetValue { id, value } => self.with(*id, |n| n.value = *value),

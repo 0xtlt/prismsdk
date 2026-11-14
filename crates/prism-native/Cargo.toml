@@ -9,3 +9,7 @@ license.workspace = true
 prism-core.workspace = true
 taffy.workspace = true
 prism-http.workspace = true
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+objc2.workspace = true
+objc2-foundation.workspace = true

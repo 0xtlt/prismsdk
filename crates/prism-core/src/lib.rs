@@ -8,6 +8,7 @@
 mod a11y;
 mod app;
 mod element;
+pub mod i18n;
 pub mod list;
 pub mod menu;
 mod reconcile;
@@ -18,7 +19,7 @@ pub mod surfaces;
 mod task;
 
 pub use a11y::{Accessibility, Accessible, Role};
-pub use app::{AnyEntity, App, Appearance, Context, Entity, EntityId, Render};
+pub use app::{AnyEntity, App, Appearance, Context, Entity, EntityId, Environment, Render};
 pub use element::{
     BackEvent, Button, ChangeEvent, ClickEvent, Div, Element, FluentBuilder, Handler, Image,
     InputEvent, IntoElement, Modal, NavigateEvent, NodeKind, ParentElement, Picture, Progress,
@@ -26,9 +27,10 @@ pub use element::{
     VNode, button, div, format_remaining, image, lazy, modal, picture, progress, screen, scroll,
     stack, tab, tabs, text, text_input, timer, toggle,
 };
+pub use i18n::{BasicFormatter, DateStyle, Direction, Formatter, Locale, Translations};
 pub use list::VirtualList;
 pub use menu::{ActionRole, Alert, AlertStyle, Menu, MenuItem, Tray};
-pub use reconcile::{NodeId, Patch, Reconciler, UiEvent};
+pub use reconcile::{NodeId, Patch, Reconciler, RenderEnvironment, UiEvent};
 pub use router::{Params, Router, RouterBuilder, go_back, navigate_to, normalize_path};
 pub use storage::{FileStorage, MemoryStorage, Storage};
 pub use style::*;
@@ -55,6 +57,10 @@ pub struct RuntimeOptions {
     /// Called from any thread when async work is ready; the backend must then
     /// call [`Runtime::poll`] on the UI thread.
     pub wake_ui: Option<WakeUi>,
+    /// System locale, text size, reduce motion.
+    pub environment: Environment,
+    /// Platform number/date formatting (portable fallback if `None`).
+    pub formatter: Option<Box<dyn Formatter>>,
 }
 
 /// Window/page settings shared by every backend.
@@ -126,6 +132,10 @@ impl Runtime {
         }
         if let Some(wake) = options.wake_ui {
             app.executor.set_wake_ui(wake);
+        }
+        app.set_environment(options.environment);
+        if let Some(formatter) = options.formatter {
+            app.set_formatter(formatter);
         }
         init(&mut app);
         Runtime {
@@ -245,12 +255,12 @@ impl Runtime {
 /// Everything an app usually needs.
 pub mod prelude {
     pub use crate::{
-        Accessible, Activity, Alert, App, AsyncApp, ChangeEvent, ClickEvent, Context, Entity,
-        FluentBuilder, Handler, InputEvent, IntoElement, Menu, MenuItem, Notification, Params,
-        ParentElement, Render, Role, Router, ScrollEvent, Styled, SwipeDirection, Tray,
-        VirtualList, Widget, WidgetFamily, adaptive, button, div, go_back, image, lazy,
-        navigate_to, picture, progress, px, relative, rgb, rgba, screen, scroll, text, text_input,
-        timer, toggle,
+        Accessible, Activity, Alert, App, AsyncApp, ChangeEvent, ClickEvent, Context, DateStyle,
+        Entity, FluentBuilder, Handler, InputEvent, IntoElement, Locale, Menu, MenuItem,
+        Notification, Params, ParentElement, Render, Role, Router, ScrollEvent, Styled,
+        SwipeDirection, Transition, Translations, Tray, VirtualList, Widget, WidgetFamily,
+        adaptive, button, div, go_back, image, lazy, navigate_to, picture, progress, px, relative,
+        rgb, rgba, screen, scroll, text, text_input, timer, toggle,
     };
 }
 

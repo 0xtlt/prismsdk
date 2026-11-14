@@ -8,11 +8,13 @@
 
 use std::collections::HashMap;
 
+#[cfg(target_vendor = "apple")]
+pub mod apple;
 pub mod images;
 
 use prism_core::{
-    Accessibility, Align, Appearance, Backend, FlexDirection, Justify, Length, NodeId, NodeKind,
-    Patch, Style,
+    Accessibility, Align, Appearance, Backend, Direction, FlexDirection, Justify, Length, NodeId,
+    NodeKind, Patch, RenderEnvironment, Style, TextAlign, Transition,
 };
 use taffy::prelude::{
     AvailableSpace, Dimension, LengthPercentage, LengthPercentageAuto, Rect, Size, TaffyTree,
@@ -60,6 +62,24 @@ pub trait Widgets {
     fn set_appearance(&mut self, _appearance: Appearance) {}
     /// Scrollable extent of a scroll view's content.
     fn set_content_size(&mut self, _view: &Self::View, _width: f32, _height: f32) {}
+    /// Like `set_frame`, animated (only called when the frame changes).
+    fn set_frame_animated(
+        &mut self,
+        view: &Self::View,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        _transition: Transition,
+    ) {
+        self.set_frame(view, x, y, w, h);
+    }
+    /// Like `set_style`, animating opacity and colors.
+    fn set_style_animated(&mut self, view: &Self::View, style: &Style, _transition: Transition) {
+        self.set_style(view, style);
+    }
+    /// Language and layout direction of native chrome (navigation bars…).
+    fn set_environment(&mut self, _env: &RenderEnvironment) {}
 }
 
 /// Containers whose children are positioned by the platform, not by flexbox.
@@ -104,6 +124,8 @@ struct Entry<V> {
     kind: NodeKind,
     style: Style,
     layout: taffy::NodeId,
+    /// Last frame given to the platform (animations only run on changes).
+    frame: Option<(f32, f32, f32, f32)>,
 }
 
 /// Applies patches to native widgets and lays them out.
@@ -118,6 +140,7 @@ pub struct NativeRenderer<W: Widgets> {
     /// Screens of each stack. Screens are separate layout roots: their size
     /// comes from the platform's navigation container, not from flexbox.
     stack_screens: HashMap<NodeId, Vec<NodeId>>,
+    env: RenderEnvironment,
 }
 
 impl<W: Widgets> NativeRenderer<W> {
@@ -135,7 +158,52 @@ impl<W: Widgets> NativeRenderer<W> {
             root: None,
             insets: Insets::default(),
             stack_screens: HashMap::new(),
+            env: RenderEnvironment {
+                text_scale: 1.,
+                ..Default::default()
+            },
         }
+    }
+
+    /// The style handed to the platform: Dynamic Type scaling and
+    /// right-to-left text alignment applied.
+    fn effective_style(&self, style: &Style, kind: NodeKind) -> Style {
+        let mut s = style.clone();
+        if kind != NodeKind::View && self.env.text_scale != 1. {
+            s.font_size = (s.font_size * self.env.text_scale).round();
+        }
+        if self.env.direction == Direction::Rtl {
+            s.text_align = match s.text_align {
+                TextAlign::Left => TextAlign::Right,
+                TextAlign::Right => TextAlign::Left,
+                TextAlign::Center => TextAlign::Center,
+            };
+        }
+        if self.env.reduce_motion {
+            s.transition = None;
+        }
+        s
+    }
+
+    /// Places a view, animating if its style asks for it.
+    fn set_frame(&mut self, id: NodeId, x: f32, y: f32, w: f32, h: f32) {
+        let Some(e) = self.nodes.get_mut(&id) else {
+            return;
+        };
+        let frame = (x, y, w, h);
+        let previous = e.frame.replace(frame);
+        let transition = e.style.transition.filter(|_| !self.env.reduce_motion);
+        match (transition, previous) {
+            (Some(t), Some(p)) if p != frame && p.2 > 0. && p.3 > 0. => {
+                self.widgets.set_frame_animated(&e.view, x, y, w, h, t)
+            }
+            _ => self.widgets.set_frame(&e.view, x, y, w, h),
+        }
+    }
+
+    /// The current layout environment.
+    pub fn environment(&self) -> &RenderEnvironment {
+        &self.env
     }
 
     /// Lays the tree out in a `width` × `height` viewport and moves every view.
@@ -161,7 +229,7 @@ impl<W: Widgets> NativeRenderer<W> {
         if self.compute(self.viewport, width, height)
             && let Some(root) = self.root
         {
-            self.place(root);
+            self.place(root, width);
         }
     }
 
@@ -239,11 +307,10 @@ impl<W: Widgets> NativeRenderer<W> {
             width: Dimension::length(vp.width),
             height: Dimension::length(vp.height),
         };
-        let (layout, view) = (sc.layout, sc.view.clone());
+        let layout = sc.layout;
         let _ = self.taffy.set_style(layout, style);
         if self.compute(layout, vp.width, vp.height) {
-            self.widgets
-                .set_frame(&view, vp.x, vp.y, vp.width, vp.height);
+            self.set_frame(screen, vp.x, vp.y, vp.width, vp.height);
             self.place_children(screen);
         }
     }
@@ -275,20 +342,19 @@ impl<W: Widgets> NativeRenderer<W> {
         let _ = self.taffy.set_style(e.layout, style);
     }
 
-    fn place(&mut self, id: NodeId) {
+    /// Places `id` inside a parent `parent_width` wide (mirrored in RTL).
+    fn place(&mut self, id: NodeId, parent_width: f32) {
         let Some(entry) = self.nodes.get(&id) else {
             return;
         };
         let Ok(l) = self.taffy.layout(entry.layout) else {
             return;
         };
-        self.widgets.set_frame(
-            &entry.view,
-            l.location.x,
-            l.location.y,
-            l.size.width,
-            l.size.height,
-        );
+        let (mut x, y, w, h) = (l.location.x, l.location.y, l.size.width, l.size.height);
+        if self.env.direction == Direction::Rtl {
+            x = parent_width - x - w;
+        }
+        self.set_frame(id, x, y, w, h);
         match self.stack_screens.get(&id).cloned() {
             Some(screens) => {
                 for screen in screens {
@@ -328,13 +394,14 @@ impl<W: Widgets> NativeRenderer<W> {
         let Some(entry) = self.nodes.get(&id) else {
             return;
         };
+        let width = self.taffy.layout(entry.layout).map_or(0., |l| l.size.width);
         let children = self.taffy.children(entry.layout).unwrap_or_default();
         let ids: Vec<NodeId> = children
             .iter()
             .filter_map(|c| self.by_layout.get(c).copied())
             .collect();
         for child in ids {
-            self.place(child);
+            self.place(child, width);
         }
     }
 }
@@ -361,15 +428,40 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                             kind: *kind,
                             style: Style::default(),
                             layout,
+                            frame: None,
                         },
                     );
                 }
                 Patch::SetStyle { id, style } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        let s = self.effective_style(style, e.kind);
+                        match s.transition {
+                            Some(t) if e.frame.is_some() => {
+                                self.widgets.set_style_animated(&e.view, &s, t)
+                            }
+                            _ => self.widgets.set_style(&e.view, &s),
+                        }
+                    }
                     if let Some(e) = self.nodes.get_mut(id) {
-                        self.widgets.set_style(&e.view, style);
                         e.style = style.clone();
                     }
                     self.sync_layout_style(*id);
+                }
+                Patch::SetEnvironment { env } => {
+                    let changed_text = env.text_scale != self.env.text_scale
+                        || env.direction != self.env.direction;
+                    self.env = env.clone();
+                    self.widgets.set_environment(env);
+                    if changed_text {
+                        // Restyle every node at the new scale/direction.
+                        let ids: Vec<NodeId> = self.nodes.keys().copied().collect();
+                        for id in ids {
+                            let e = &self.nodes[&id];
+                            let s = self.effective_style(&e.style, e.kind);
+                            self.widgets.set_style(&e.view, &s);
+                        }
+                        self.mark_all_dirty();
+                    }
                 }
                 Patch::SetText { id, text } => {
                     if let Some(e) = self.nodes.get(id) {
@@ -668,6 +760,42 @@ mod tests {
         );
         // 50 rows × 20pt + 10pt padding top and bottom.
         assert_eq!(w.content[&2], (400., 1020.));
+    }
+
+    struct Row;
+    impl Render for Row {
+        fn render(&mut self, _: &mut prism_core::Context<Self>) -> impl IntoElement {
+            div().flex_row().child(text("a")).child(text("b"))
+        }
+    }
+
+    #[test]
+    fn right_to_left_mirrors_rows_and_text_scale_restyles() {
+        let init: AppInit = Arc::new(|cx: &mut prism_core::App| {
+            let r = cx.new_entity(|_| Row);
+            cx.set_root(r);
+        });
+        let mut rt = Runtime::new(&init);
+        let mut renderer = NativeRenderer::new(Fake::default());
+        renderer.apply(&rt.render());
+        renderer.layout(400., 300., Insets::default());
+        assert_eq!(
+            renderer.widgets.frames[&2].0, 0.,
+            "LTR: first item on the left"
+        );
+
+        rt.app.set_locale(Some(prism_core::Locale::new("ar")));
+        rt.app.set_environment(prism_core::Environment {
+            text_scale: 1.5,
+            ..Default::default()
+        });
+        renderer.apply(&rt.render());
+        assert_eq!(renderer.environment().direction, prism_core::Direction::Rtl);
+        assert_eq!(renderer.environment().text_scale, 1.5);
+        renderer.layout(400., 300., Insets::default());
+        let f = &renderer.widgets.frames;
+        assert_eq!(f[&2].0, 350., "RTL: first item on the right");
+        assert_eq!(f[&3].0, 300.);
     }
 
     #[test]

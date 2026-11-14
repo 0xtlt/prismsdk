@@ -138,6 +138,27 @@ define_class!(
             dispatch(UiEvent::Input(sender.tag() as NodeId, text));
         }
 
+        /// Text size, reduce motion or language changed in Settings.
+        #[unsafe(method(onEnvironment:))]
+        fn on_environment(&self, _n: &objc2_foundation::NSNotification) {
+            with_state(|s| {
+                s.runtime.app.set_environment(ios_environment());
+                let patches = s.runtime.render();
+                s.commit(patches);
+            });
+        }
+
+        /// The keyboard moves: shrink the safe area so content stays visible.
+        #[unsafe(method(onKeyboard:))]
+        fn on_keyboard(&self, n: &objc2_foundation::NSNotification) {
+            keyboard_changed(n);
+        }
+
+        #[unsafe(method(onBeginEditing:))]
+        fn on_begin_editing(&self, sender: &UITextField) {
+            scroll_into_view(sender);
+        }
+
         #[unsafe(method(onRefresh:))]
         fn on_refresh(&self, sender: &objc2_ui_kit::UIRefreshControl) {
             dispatch(UiEvent::Click(sender.tag() as NodeId));
@@ -384,6 +405,8 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
             capabilities: prism_core::PlatformServices::capabilities(&services),
             storage: Some(Box::new(prism_core::FileStorage::new(data_dir()))),
             wake_ui: Some(wake_ui()),
+            environment: ios_environment(),
+            formatter: Some(Box::new(prism_native::apple::FoundationFormatter)),
         },
     );
     let renderer = NativeRenderer::new(UiKit {
@@ -401,6 +424,7 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
         pictures: HashMap::new(),
         image_cache: HashMap::new(),
         image_sources: image_sources(_config.assets.as_deref()),
+        semantic: None,
     });
     let first = runtime.render();
     let mut state = State {
@@ -411,9 +435,16 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
     state.commit(first);
     STATE.with(|cell| *cell.borrow_mut() = Some(state));
     start_ticker(mtm);
+    observe_system(mtm);
 
     window.setRootViewController(Some(&controller));
     window.makeKeyAndVisible();
+    // Bars attached by UIKit after creation follow the app's direction too.
+    with_state(|s| {
+        if let Some(attr) = s.renderer.widgets.semantic {
+            set_semantic(&window, attr);
+        }
+    });
     window
 }
 
@@ -515,6 +546,8 @@ pub struct UiKit {
     /// Decoded images by source.
     image_cache: HashMap<String, Retained<UIImage>>,
     image_sources: prism_native::images::ImageSources,
+    /// Layout direction of native chrome (set once the locale is known).
+    semantic: Option<objc2_ui_kit::UISemanticContentAttribute>,
     /// Sheets currently presented, by modal id.
     presented: Vec<NodeId>,
 }
@@ -818,12 +851,20 @@ impl Widgets for UiKit {
                         Some(target),
                         sel!(onEditing:),
                         UIControlEvents::EditingChanged,
-                    )
+                    );
+                    f.addTarget_action_forControlEvents(
+                        Some(target),
+                        sel!(onBeginEditing:),
+                        UIControlEvents::EditingDidBegin,
+                    );
                 };
                 View::Input(f)
             }
         };
         view.ui().setTag(id as isize);
+        if let Some(attr) = self.semantic {
+            set_semantic(view.ui(), attr);
+        }
         view
     }
 
@@ -1105,6 +1146,52 @@ impl Widgets for UiKit {
             CGPoint::new(x as f64, y as f64),
             CGSize::new(w as f64, h as f64),
         ));
+    }
+
+    fn set_frame_animated(
+        &mut self,
+        view: &View,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        t: prism_core::Transition,
+    ) {
+        let v: Retained<UIView> = view.ui().retain();
+        let old = v.frame();
+        self.set_frame(view, x, y, w, h);
+        let new = v.frame();
+        v.setFrame(old);
+        animate(self.mtm, t, move || v.setFrame(new));
+    }
+
+    fn set_style_animated(&mut self, view: &View, style: &Style, t: prism_core::Transition) {
+        let v: Retained<UIView> = view.ui().retain();
+        let (alpha, bg) = (v.alpha(), v.backgroundColor());
+        self.set_style(view, style);
+        let (new_alpha, new_bg) = (v.alpha(), v.backgroundColor());
+        v.setAlpha(alpha);
+        v.setBackgroundColor(bg.as_deref());
+        animate(self.mtm, t, move || {
+            v.setAlpha(new_alpha);
+            v.setBackgroundColor(new_bg.as_deref());
+        });
+    }
+
+    fn set_environment(&mut self, env: &prism_core::RenderEnvironment) {
+        use objc2_ui_kit::UISemanticContentAttribute as A;
+        let attr = if env.direction == prism_core::Direction::Rtl {
+            A::ForceRightToLeft
+        } else {
+            A::ForceLeftToRight
+        };
+        // Navigation bars, tab bars, back buttons and swipe-back follow it;
+        // views created later get it in `create`.
+        self.semantic = Some(attr);
+        match self.controller.view().and_then(|v| v.window()) {
+            Some(window) => set_semantic(&window, attr),
+            None => set_semantic(&self.root, attr),
+        }
     }
 
     fn set_value(&mut self, view: &View, value: f64) {
@@ -1433,5 +1520,180 @@ fn image_sources(dev_assets: Option<&str>) -> prism_native::images::ImageSources
     prism_native::images::ImageSources {
         asset_dirs,
         cache_dir: Some(std::path::PathBuf::from(home).join("Library/Caches/prism-images")),
+    }
+}
+
+/// Locale, Dynamic Type and Reduce Motion (`PRISM_TEXT_SCALE` overrides the
+/// text size, e.g. for screenshots).
+fn ios_environment() -> prism_core::Environment {
+    let scale = objc2_ui_kit::UIFontMetrics::defaultMetrics().scaledValueForValue(17.) / 17.;
+    prism_core::Environment {
+        locale: prism_native::apple::system_locale(),
+        text_scale: std::env::var("PRISM_TEXT_SCALE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(scale as f32),
+        reduce_motion: objc2_ui_kit::UIAccessibilityIsReduceMotionEnabled(),
+        utc_offset: prism_native::apple::utc_offset(),
+    }
+}
+
+/// Settings changes and keyboard moves.
+fn observe_system(mtm: MainThreadMarker) {
+    let target = Target::new(mtm);
+    let center = objc2_foundation::NSNotificationCenter::defaultCenter();
+    unsafe {
+        for name in [
+            objc2_ui_kit::UIContentSizeCategoryDidChangeNotification,
+            objc2_ui_kit::UIAccessibilityReduceMotionStatusDidChangeNotification,
+            objc2_foundation::NSCurrentLocaleDidChangeNotification,
+        ] {
+            center.addObserver_selector_name_object(
+                &target,
+                sel!(onEnvironment:),
+                Some(name),
+                None,
+            );
+        }
+        for name in [
+            objc2_ui_kit::UIKeyboardWillChangeFrameNotification,
+            objc2_ui_kit::UIKeyboardWillHideNotification,
+        ] {
+            center.addObserver_selector_name_object(&target, sel!(onKeyboard:), Some(name), None);
+        }
+    }
+    // Observers are weak: keep the target alive for the app's lifetime.
+    std::mem::forget(target);
+}
+
+/// Runs `f` in a UIKit animation shaped like `t`.
+fn animate(mtm: MainThreadMarker, t: prism_core::Transition, f: impl Fn() + 'static) {
+    use objc2_ui_kit::UIViewAnimationOptions as O;
+    let block = block2::RcBlock::new(f);
+    let duration = t.duration as f64;
+    let options = O::AllowUserInteraction | O::BeginFromCurrentState;
+    match t.curve {
+        prism_core::Curve::Spring => UIView::animateWithSpringDuration_bounce_initialSpringVelocity_delay_options_animations_completion(
+            duration, 0.25, 0., 0., options, &block, None, mtm,
+        ),
+        prism_core::Curve::Linear => UIView::animateWithDuration_delay_options_animations_completion(
+            duration, 0., options | O::CurveLinear, &block, None, mtm,
+        ),
+        prism_core::Curve::EaseInOut => UIView::animateWithDuration_delay_options_animations_completion(
+            duration, 0., options | O::CurveEaseInOut, &block, None, mtm,
+        ),
+    }
+}
+
+/// Raises the bottom of the safe area of each visible screen above the
+/// keyboard, animated like it. Tab bars stay put under the keyboard.
+fn keyboard_changed(n: &objc2_foundation::NSNotification) {
+    let hiding = &*n.name() == unsafe { objc2_ui_kit::UIKeyboardWillHideNotification };
+    let info = n.userInfo();
+    let get = |key: &NSString| info.as_ref().and_then(|i| i.objectForKey(key));
+    let duration: f64 = get(unsafe { objc2_ui_kit::UIKeyboardAnimationDurationUserInfoKey })
+        .map_or(0.25, |d| unsafe { msg_send![&*d, doubleValue] });
+    let keyboard: Option<CGRect> = get(unsafe { objc2_ui_kit::UIKeyboardFrameEndUserInfoKey })
+        .map(|v| unsafe { msg_send![&*v, CGRectValue] });
+    // Screens in a stack, or the root controller when there is none.
+    let mut controllers: Vec<Retained<UIViewController>> = Vec::new();
+    with_state(|s| {
+        let w = &s.renderer.widgets;
+        controllers.extend(
+            w.screens
+                .values()
+                .map(|c| Retained::into_super(c.clone()))
+                .filter(|c: &Retained<UIViewController>| {
+                    c.isViewLoaded() && c.view().is_some_and(|v| v.window().is_some())
+                }),
+        );
+        if controllers.is_empty() {
+            controllers.push(Retained::into_super(w.controller.clone()));
+        }
+    });
+    let Some(mtm) = controllers.first().map(|c| c.mtm()) else {
+        return;
+    };
+    let mut changes = Vec::new();
+    let mut window = None;
+    for vc in controllers {
+        let Some(view) = vc.view() else { continue };
+        let frame = view.convertRect_toView(view.bounds(), None);
+        let overlap = match (hiding, keyboard) {
+            (false, Some(kb)) => {
+                (frame.origin.y + frame.size.height - kb.origin.y).clamp(0., frame.size.height)
+            }
+            _ => 0.,
+        };
+        let current = vc.additionalSafeAreaInsets().bottom;
+        // Tab bar and home indicator already count in the safe area.
+        let base = view.safeAreaInsets().bottom - current;
+        let extra = (overlap - base).max(0.);
+        if (extra - current).abs() >= 0.5 {
+            changes.push((vc, extra));
+        }
+        window = window.or(view.window());
+    }
+    if !changes.is_empty() {
+        let block = block2::RcBlock::new(move || {
+            for (vc, extra) in &changes {
+                vc.setAdditionalSafeAreaInsets(objc2_ui_kit::UIEdgeInsets {
+                    top: 0.,
+                    left: 0.,
+                    bottom: *extra,
+                    right: 0.,
+                });
+                if let Some(v) = vc.view() {
+                    v.layoutIfNeeded();
+                }
+            }
+        });
+        UIView::animateWithDuration_delay_options_animations_completion(
+            duration,
+            0.,
+            objc2_ui_kit::UIViewAnimationOptions::BeginFromCurrentState,
+            &block,
+            None,
+            mtm,
+        );
+    }
+    if !hiding && let Some(field) = window.as_deref().and_then(|w| first_responder(w)) {
+        scroll_into_view(&field);
+    }
+}
+
+fn first_responder(v: &UIView) -> Option<Retained<UIView>> {
+    if v.isFirstResponder() {
+        return Some(v.retain());
+    }
+    v.subviews().iter().find_map(|c| first_responder(&c))
+}
+
+/// Scrolls the nearest scroll view so `view` sits above the keyboard.
+fn scroll_into_view(view: &UIView) {
+    let mut parent = view.superview();
+    while let Some(p) = parent {
+        if let Ok(scroll) = p.clone().downcast::<UIScrollView>() {
+            let r = scroll.convertRect_fromView(view.bounds(), Some(view));
+            let padded = CGRect::new(
+                CGPoint::new(r.origin.x, r.origin.y - 16.),
+                CGSize::new(r.size.width, r.size.height + 32.),
+            );
+            scroll.scrollRectToVisible_animated(padded, true);
+            return;
+        }
+        parent = p.superview();
+    }
+}
+
+/// Applies a layout direction to a view and everything inside it.
+fn set_semantic(v: &UIView, attr: objc2_ui_kit::UISemanticContentAttribute) {
+    if v.semanticContentAttribute() != attr {
+        v.setSemanticContentAttribute(attr);
+        // Bars cache their layout (large titles, back buttons).
+        v.setNeedsLayout();
+    }
+    for child in v.subviews().iter() {
+        set_semantic(&child, attr);
     }
 }

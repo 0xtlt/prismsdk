@@ -9,14 +9,14 @@ use objc2_app_kit::{
     NSAccessibility, NSAccessibilityButtonRole, NSAccessibilityCheckBoxRole,
     NSAccessibilityGroupRole, NSAccessibilityHeadingRole, NSAccessibilityImageRole,
     NSAccessibilityLinkRole, NSAccessibilityListRole, NSAccessibilityRadioButtonRole,
-    NSAccessibilityStaticTextRole, NSAccessibilityTabGroupRole, NSAppearance, NSApplication,
-    NSApplicationActivationPolicy, NSBackingStoreType, NSBezierPath, NSButton, NSColor,
-    NSControlStateValueOff, NSControlStateValueOn, NSControlTextEditingDelegate, NSEvent, NSFont,
-    NSFontWeightBold, NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold, NSImage,
-    NSImageSymbolConfiguration, NSImageView, NSMenu, NSMenuItem, NSProgressIndicator,
-    NSProgressIndicatorStyle, NSResponder, NSScrollView, NSSegmentedControl, NSSwitch,
-    NSTextAlignment, NSTextField, NSTextFieldDelegate, NSView, NSWindow, NSWindowDelegate,
-    NSWindowStyleMask,
+    NSAccessibilityStaticTextRole, NSAccessibilityTabGroupRole, NSAnimatablePropertyContainer,
+    NSAppearance, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSBezierPath,
+    NSButton, NSColor, NSControlStateValueOff, NSControlStateValueOn, NSControlTextEditingDelegate,
+    NSEvent, NSFont, NSFontWeightBold, NSFontWeightMedium, NSFontWeightRegular,
+    NSFontWeightSemibold, NSImage, NSImageSymbolConfiguration, NSImageView, NSMenu, NSMenuItem,
+    NSProgressIndicator, NSProgressIndicatorStyle, NSResponder, NSScrollView, NSSegmentedControl,
+    NSSwitch, NSTextAlignment, NSTextField, NSTextFieldDelegate, NSView, NSWindow,
+    NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_foundation::{
     NSArray, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
@@ -393,6 +393,16 @@ define_class!(
             }
         }
 
+        /// Reduce Motion or the language changed in System Settings.
+        #[unsafe(method(onEnvironment:))]
+        fn on_environment(&self, _n: &NSNotification) {
+            with_state(|s| {
+                s.runtime.app.set_environment(mac_environment());
+                let patches = s.runtime.render();
+                s.commit(patches);
+            });
+        }
+
         /// A scroll view moved (virtualized lists follow it).
         #[unsafe(method(onScrollBounds:))]
         fn on_scroll_bounds(&self, n: &NSNotification) {
@@ -581,6 +591,8 @@ pub struct AppKit {
     /// Decoded images by source.
     image_cache: HashMap<String, Retained<NSImage>>,
     image_sources: prism_native::images::ImageSources,
+    /// Right-to-left language: header buttons swap sides.
+    rtl: bool,
 }
 
 impl AppKit {
@@ -772,6 +784,8 @@ impl AppKit {
         stack.back.setHidden(screens.len() <= 1 && !close);
         stack.back.setTitle(&NSString::from_str(if close {
             "Close"
+        } else if self.rtl {
+            "Back ›"
         } else {
             "‹ Back"
         }));
@@ -1181,7 +1195,7 @@ impl Widgets for AppKit {
             st.separator.setFrame(rect(0., HEADER_HEIGHT - 1., w, 1.));
             let b = st.back.fittingSize();
             st.back.setFrame(rect(
-                8.,
+                if self.rtl { w - 8. - b.width } else { 8. },
                 ((HEADER_HEIGHT - 1. - b.height) / 2.).round(),
                 b.width,
                 b.height,
@@ -1271,6 +1285,45 @@ impl Widgets for AppKit {
     fn set_swipe(&mut self, view: &View, left: bool, right: bool) {
         if let View::Container(v) | View::Screen(v) | View::Tab(v) = view {
             v.ivars().swipe.set((left, right));
+        }
+    }
+
+    fn set_frame_animated(
+        &mut self,
+        view: &View,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        t: prism_core::Transition,
+    ) {
+        let v: Retained<NSView> = objc2::Message::retain(view.ns());
+        let old = v.frame();
+        self.set_frame(view, x, y, w, h);
+        let new = v.frame();
+        v.setFrame(old);
+        animate(t, move || v.animator().setFrame(new));
+    }
+
+    fn set_style_animated(&mut self, view: &View, style: &Style, t: prism_core::Transition) {
+        let v: Retained<NSView> = objc2::Message::retain(view.ns());
+        let alpha = v.alphaValue();
+        self.set_style(view, style);
+        let new = v.alphaValue();
+        v.setAlphaValue(alpha);
+        animate(t, move || v.animator().setAlphaValue(new));
+    }
+
+    fn set_environment(&mut self, env: &prism_core::RenderEnvironment) {
+        self.rtl = env.direction == prism_core::Direction::Rtl;
+        let dir = if self.rtl {
+            objc2_app_kit::NSUserInterfaceLayoutDirection::RightToLeft
+        } else {
+            objc2_app_kit::NSUserInterfaceLayoutDirection::LeftToRight
+        };
+        self.root.setUserInterfaceLayoutDirection(dir);
+        for stack in self.stacks.clone() {
+            self.refresh_stack(&stack);
         }
     }
 
@@ -1416,6 +1469,8 @@ pub fn run(config: AppConfig, init: AppInit) {
                 &config.title,
             )))),
             wake_ui: Some(wake_ui()),
+            environment: mac_environment(),
+            formatter: Some(Box::new(prism_native::apple::FoundationFormatter)),
         },
     );
     let renderer = NativeRenderer::new(AppKit {
@@ -1431,6 +1486,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         pictures: HashMap::new(),
         image_cache: HashMap::new(),
         image_sources: image_sources(config.assets.as_deref()),
+        rtl: false,
     });
     let first = runtime.render();
     let mut state = State {
@@ -1451,6 +1507,7 @@ pub fn run(config: AppConfig, init: AppInit) {
     };
     STATE.with(|cell| *cell.borrow_mut() = Some(state));
 
+    observe_system(&target);
     window.makeKeyAndOrderFront(None);
     app.activate();
     if std::env::var_os("PRISM_SNAPSHOT").is_some() || std::env::var_os("PRISM_CLICK").is_some() {
@@ -1697,4 +1754,57 @@ fn image_sources(dev_assets: Option<&str>) -> prism_native::images::ImageSources
         asset_dirs,
         cache_dir: Some(std::path::PathBuf::from(home).join("Library/Caches/prism-images")),
     }
+}
+
+/// Locale and Reduce Motion (`PRISM_TEXT_SCALE` scales text, macOS has no
+/// Dynamic Type).
+fn mac_environment() -> prism_core::Environment {
+    let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
+    prism_core::Environment {
+        locale: prism_native::apple::system_locale(),
+        text_scale: std::env::var("PRISM_TEXT_SCALE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1.),
+        reduce_motion: workspace.accessibilityDisplayShouldReduceMotion(),
+        utc_offset: prism_native::apple::utc_offset(),
+    }
+}
+
+fn observe_system(target: &Target) {
+    let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
+    unsafe {
+        workspace
+            .notificationCenter()
+            .addObserver_selector_name_object(
+                target,
+                sel!(onEnvironment:),
+                Some(objc2_app_kit::NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification),
+                None,
+            );
+        objc2_foundation::NSNotificationCenter::defaultCenter().addObserver_selector_name_object(
+            target,
+            sel!(onEnvironment:),
+            Some(objc2_foundation::NSCurrentLocaleDidChangeNotification),
+            None,
+        );
+    }
+}
+
+/// Runs `f` (which changes `animator()` proxies) in an animation group.
+fn animate(t: prism_core::Transition, f: impl Fn() + 'static) {
+    let block = block2::RcBlock::new(
+        move |ctx: std::ptr::NonNull<objc2_app_kit::NSAnimationContext>| {
+            let ctx = unsafe { ctx.as_ref() };
+            // Springs overshoot: approximate with a slightly longer ease.
+            let duration = match t.curve {
+                prism_core::Curve::Spring => t.duration * 1.2,
+                _ => t.duration,
+            };
+            ctx.setDuration(duration as f64);
+            ctx.setAllowsImplicitAnimation(true);
+            f();
+        },
+    );
+    objc2_app_kit::NSAnimationContext::runAnimationGroup(&block);
 }

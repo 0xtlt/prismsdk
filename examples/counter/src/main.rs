@@ -8,10 +8,12 @@
 //! - Focus:      a timer as a Live Activity (lock screen + Dynamic Island),
 //!   and a notification when it ends.
 //! - Components: the `prism::ui` gallery, custom vs native controls.
-//! - Settings:   live theming (system/light/dark, accent, shape, native controls).
+//! - Settings:   live theming (system/light/dark, accent, shape, native controls)
+//!   and language (English, French, Arabic right-to-left).
 
 mod focus;
 mod menus;
+mod strings;
 mod widgets;
 
 use prism::prelude::*;
@@ -24,6 +26,7 @@ fn main() {
         .size(460., 720.)
         .assets(concat!(env!("CARGO_MANIFEST_DIR"), "/assets"))
         .run(|cx| {
+            strings::install(cx);
             let theme = load_theme(cx);
             ui::set_theme(cx, theme);
             let store = cx.new_entity(|cx| Store::load(cx));
@@ -177,11 +180,15 @@ impl Render for Home {
         let t = Theme::of(cx);
         let open = self.store.read(cx).open();
         let (screen, body) = page("Prism", cx);
-        let synced = if self.synced == 0 {
-            String::new()
-        } else {
-            format!(" · synced {}×", self.synced)
-        };
+        let mut info = format!(
+            "{} · {}",
+            cx.t_with("home.info", &[("backend", &prism::BACKEND)]),
+            cx.t_count("home.open", open as i64)
+        );
+        if self.synced > 0 {
+            info = format!("{info} · {}", cx.t_count("home.synced", self.synced as i64));
+        }
+        let today = cx.format_date(strings::now(), DateStyle::Long);
         screen.child(
             body
                 // Pull down to "sync" (a fake one-second task).
@@ -196,13 +203,11 @@ impl Render for Home {
                         });
                     });
                 }))
+                .child(text(info).text_size(14.).text_color(t.muted))
                 .child(
-                    text(format!(
-                        "Rust UI · running on {} · {open} open todo(s){synced}",
-                        prism::BACKEND
-                    ))
-                    .text_size(14.)
-                    .text_color(t.muted),
+                    text(cx.t_with("home.today", &[("date", &today)]))
+                        .text_size(14.)
+                        .text_color(t.muted),
                 )
                 .child(self.counter)
                 .child(self.todos),
@@ -218,7 +223,23 @@ struct CounterCard {
 impl Render for CounterCard {
     fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::of(cx);
-        ui::card().child(
+        // 0…10 fills the bar; it slides to its new width (skipped with Reduce Motion).
+        let fill = (self.count.clamp(0, 10) as f32) / 10.;
+        let bar = div()
+            .h(px(6.))
+            .rounded(3.)
+            .bg(t.border)
+            .flex_row()
+            .child(
+                div()
+                    .h(px(6.))
+                    .w(relative(fill))
+                    .rounded(3.)
+                    .bg(t.accent)
+                    .transition(Transition::spring(350)),
+            )
+            .accessibility_hidden();
+        ui::card().child(bar).child(
             div()
                 .flex_row()
                 .items_center()
@@ -228,7 +249,7 @@ impl Render for CounterCard {
                         .text_size(40.)
                         .bold()
                         .text_color(t.accent)
-                        .accessibility_label(format!("Count: {}", self.count))
+                        .accessibility_label(cx.t_with("counter.label", &[("count", &self.count)]))
                         .min_w(px(64.)),
                 )
                 .child(
@@ -259,43 +280,51 @@ impl Render for TodoList {
         let t = Theme::of(cx);
         let store = self.store.read(cx);
         ui::card()
-            .child(ui::heading("Todos"))
+            .child(ui::heading(cx.t("todos.heading")))
             .child(
                 div()
                     .flex_row()
+                    .flex_wrap()
                     .gap(8.)
                     .items_center()
                     .child(
                         text_input()
                             .flex_1()
                             .value(self.draft.clone())
-                            .placeholder("What needs doing?")
+                            .placeholder(cx.t("todos.placeholder"))
                             .accessibility_label("New todo")
                             .on_input(
                                 cx.listener(|this, e: &InputEvent, _| this.draft = e.value.clone()),
                             ),
                     )
                     .child(
-                        ui::button("New…")
+                        ui::button(cx.t("todos.new"))
                             .secondary()
                             .hint("Opens a form in a sheet")
                             .on_click(std::rc::Rc::new(|_: &ClickEvent, app: &mut App| {
                                 app.present("/todos/new")
                             })),
                     )
-                    .child(ui::button("Add").on_click(cx.listener(|this, _, cx| {
-                        let title = this.draft.trim().to_string();
-                        if !title.is_empty() {
-                            this.store.update(cx, |s, cx| s.add(title, cx));
-                            this.draft.clear();
-                        }
-                    }))),
+                    .child(
+                        ui::button(cx.t("todos.add")).on_click(cx.listener(|this, _, cx| {
+                            let title = this.draft.trim().to_string();
+                            if !title.is_empty() {
+                                this.store.update(cx, |s, cx| s.add(title, cx));
+                                this.draft.clear();
+                            }
+                        })),
+                    ),
             )
             .children(store.todos.iter().map(|todo| {
+                let status = if todo.done {
+                    cx.t("todo.done")
+                } else {
+                    cx.t("todo.open")
+                };
                 let (id, store_e, done) = (todo.id, self.store, todo.done);
                 ui::list_row(todo.title.clone())
                     .leading(if todo.done { "✓" } else { "○" })
-                    .subtitle(if todo.done { "Done" } else { "Open" })
+                    .subtitle(status)
                     .on_click(navigate_to(format!("/todos/{}", todo.id)))
                     .on_swipe_left(std::rc::Rc::new(move |_: &ClickEvent, app: &mut App| {
                         confirm_delete(app, store_e, id)
@@ -651,6 +680,7 @@ impl Render for Settings {
                         },
                     ))),
             )
+            .child(language_card(cx))
             .child(
                 text("Every control here is exposed to VoiceOver and to screen readers on the web, and works with the keyboard.")
                     .text_size(13.)
@@ -658,6 +688,49 @@ impl Render for Settings {
             ),
         )
     }
+}
+
+/// System / English / Français / العربية, plus formatting samples.
+fn language_card(cx: &App) -> ui::Card {
+    let t = Theme::of(cx);
+    let current = cx.locale_choice().map(|l| l.language().to_string());
+    let now = strings::now();
+    let sample = cx.t_with(
+        "settings.sample",
+        &[
+            ("number", &cx.format_number(1234567.891, 2)),
+            ("date", &cx.format_date(now, DateStyle::Medium)),
+            ("time", &cx.format_time(now)),
+        ],
+    );
+    let choices = std::iter::once((None, cx.t("settings.system"))).chain(
+        strings::LANGUAGES
+            .iter()
+            .map(|(tag, name)| (Some(*tag), name.to_string())),
+    );
+    ui::card()
+        .child(ui::heading(cx.t("settings.language")))
+        .child(
+            div()
+                .flex_row()
+                .flex_wrap()
+                .gap(8.)
+                .accessibility_role(Role::Group)
+                .accessibility_label(cx.t("settings.language"))
+                .children(choices.map(move |(tag, name)| {
+                    ui::button(name)
+                        .variant(if tag == current.as_deref() {
+                            ui::Variant::Primary
+                        } else {
+                            ui::Variant::Secondary
+                        })
+                        .small()
+                        .on_click(std::rc::Rc::new(move |_: &ClickEvent, app: &mut App| {
+                            strings::choose(app, tag)
+                        }))
+                })),
+        )
+        .child(text(sample).text_size(13.).text_color(t.muted))
 }
 
 /// System / Light / Dark, as a group of toggle buttons.

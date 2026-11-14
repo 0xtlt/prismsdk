@@ -109,6 +109,30 @@ pub enum Appearance {
     Dark,
 }
 
+/// What the platform tells the app about the user's settings.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Environment {
+    /// System language and region.
+    pub locale: crate::i18n::Locale,
+    /// Text size multiplier (iOS Dynamic Type; 1.0 = default size).
+    pub text_scale: f32,
+    /// The user asked for less motion: animations are skipped.
+    pub reduce_motion: bool,
+    /// Seconds east of UTC (for formatting dates without a platform formatter).
+    pub utc_offset: i32,
+}
+
+impl Default for Environment {
+    fn default() -> Self {
+        Environment {
+            locale: Default::default(),
+            text_scale: 1.,
+            reduce_motion: false,
+            utc_offset: 0,
+        }
+    }
+}
+
 /// Owns every entity and tracks which ones must be re-rendered.
 pub struct App {
     entities: HashMap<EntityId, Option<Box<dyn Any>>>,
@@ -123,6 +147,9 @@ pub struct App {
     nav_queue: Vec<NavOp>,
     globals: HashMap<TypeId, Box<dyn Any>>,
     appearance: Appearance,
+    environment: Environment,
+    pub(crate) locale_override: Option<crate::i18n::Locale>,
+    formatter: Option<Box<dyn crate::i18n::Formatter>>,
     pub(crate) surfaces: crate::surfaces::Surfaces,
     pub(crate) executor: Rc<crate::task::Executor>,
     pub(crate) menus: crate::menu::Menus,
@@ -143,6 +170,9 @@ impl Default for App {
             nav_queue: Vec::new(),
             globals: HashMap::new(),
             appearance: Appearance::System,
+            environment: Environment::default(),
+            locale_override: None,
+            formatter: None,
             surfaces: Default::default(),
             executor: Default::default(),
             menus: Default::default(),
@@ -190,6 +220,42 @@ impl App {
 
     pub fn appearance(&self) -> Appearance {
         self.appearance
+    }
+
+    /// Locale, text size and motion settings of the platform.
+    pub fn environment(&self) -> &Environment {
+        &self.environment
+    }
+
+    /// Called by backends at startup and when a system setting changes.
+    pub fn set_environment(&mut self, environment: Environment) {
+        if self.environment != environment {
+            self.environment = environment;
+            self.refresh();
+        }
+    }
+
+    /// Dynamic Type multiplier (native text is scaled automatically).
+    pub fn text_scale(&self) -> f32 {
+        self.environment.text_scale
+    }
+
+    pub fn reduce_motion(&self) -> bool {
+        self.environment.reduce_motion
+    }
+
+    /// Platform number/date formatting (Foundation on Apple platforms).
+    pub fn set_formatter(&mut self, formatter: Box<dyn crate::i18n::Formatter>) {
+        self.formatter = Some(formatter);
+    }
+
+    pub(crate) fn formatter(&self) -> Box<dyn crate::i18n::Formatter + '_> {
+        match &self.formatter {
+            Some(f) => Box::new(FormatterRef(&**f)),
+            None => Box::new(crate::i18n::BasicFormatter {
+                utc_offset: self.environment.utc_offset,
+            }),
+        }
     }
 
     // --- Globals: app-wide singletons such as a theme ---
@@ -468,5 +534,19 @@ impl<T> Deref for Context<'_, T> {
 impl<T> DerefMut for Context<'_, T> {
     fn deref_mut(&mut self) -> &mut App {
         self.app
+    }
+}
+
+struct FormatterRef<'a>(&'a dyn crate::i18n::Formatter);
+
+impl crate::i18n::Formatter for FormatterRef<'_> {
+    fn number(&self, l: &crate::i18n::Locale, v: f64, d: usize) -> String {
+        self.0.number(l, v, d)
+    }
+    fn date(&self, l: &crate::i18n::Locale, u: f64, s: crate::i18n::DateStyle) -> String {
+        self.0.date(l, u, s)
+    }
+    fn time(&self, l: &crate::i18n::Locale, u: f64) -> String {
+        self.0.time(l, u)
     }
 }

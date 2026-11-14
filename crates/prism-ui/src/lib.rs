@@ -753,10 +753,14 @@ impl Component for ListRow {
             .when_some(self.detail, |d, s| d.child(text(s).text_color(t.muted)))
             .when(clickable, |d| {
                 d.child(
-                    text("›")
-                        .text_color(t.muted)
-                        .text_size(20.)
-                        .accessibility_hidden(),
+                    text(if cx.direction() == prism_core::Direction::Rtl {
+                        "‹"
+                    } else {
+                        "›"
+                    })
+                    .text_color(t.muted)
+                    .text_size(20.)
+                    .accessibility_hidden(),
                 )
             });
         if let Some(h) = self.on_click {

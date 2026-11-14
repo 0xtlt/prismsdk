@@ -66,18 +66,20 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
             | NodeKind::Tabs
             | NodeKind::Tab
     );
+    // Logical sides: left/right are leading/trailing, so `dir=rtl` mirrors
+    // them like native backends do.
     if container && (p.top, p.right, p.bottom, p.left) != (0., 0., 0., 0.) {
         let _ = write!(
             w,
-            "padding:{}px {}px {}px {}px;",
-            p.top, p.right, p.bottom, p.left
+            "padding-block:{}px {}px;padding-inline:{}px {}px;",
+            p.top, p.bottom, p.left, p.right
         );
     }
     let m = s.margin;
     let _ = write!(
         w,
-        "margin:{}px {}px {}px {}px;",
-        m.top, m.right, m.bottom, m.left
+        "margin-block:{}px {}px;margin-inline:{}px {}px;",
+        m.top, m.bottom, m.left, m.right
     );
     for (prop, v) in [
         ("width", s.width),
@@ -107,21 +109,30 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
     if s.opacity < 1. {
         let _ = write!(w, "opacity:{};", s.opacity);
     }
+    if let Some(t) = s.transition {
+        let curve = match t.curve {
+            prism_core::Curve::EaseInOut => "ease-in-out",
+            prism_core::Curve::Linear => "linear",
+            prism_core::Curve::Spring => "cubic-bezier(.34,1.56,.64,1)",
+        };
+        let _ = write!(w, "transition:all {}s {curve};", t.duration);
+    }
 
     if kind != NodeKind::View {
+        // rem: follows the browser's text size setting (web Dynamic Type).
         let _ = write!(
             w,
-            "font-size:{}px;font-weight:{};",
-            s.font_size,
+            "font-size:{}rem;font-weight:{};",
+            s.font_size / 16.,
             s.font_weight.css()
         );
         if let Some(c) = s.text_color {
             let _ = write!(w, "color:{};", c.to_css());
         }
         let ta = match s.text_align {
-            TextAlign::Left => "left",
+            TextAlign::Left => "start",
             TextAlign::Center => "center",
-            TextAlign::Right => "right",
+            TextAlign::Right => "end",
         };
         let _ = write!(w, "text-align:{ta};");
     }

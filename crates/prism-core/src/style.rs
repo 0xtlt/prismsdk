@@ -211,6 +211,8 @@ impl FontWeight {
     }
 }
 
+/// `Left` and `Right` are the leading and trailing edges: they swap in
+/// right-to-left languages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum TextAlign {
     #[default]
@@ -272,6 +274,47 @@ pub struct Style {
     pub font_size: f32,
     pub font_weight: FontWeight,
     pub text_align: TextAlign,
+
+    /// Animates frame, opacity and color changes (skipped with reduce motion).
+    pub transition: Option<Transition>,
+}
+
+/// How style and layout changes animate.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Transition {
+    /// Seconds.
+    pub duration: f32,
+    pub curve: Curve,
+}
+
+impl Transition {
+    pub fn ease(ms: u32) -> Self {
+        Transition {
+            duration: ms as f32 / 1000.,
+            curve: Curve::EaseInOut,
+        }
+    }
+    pub fn linear(ms: u32) -> Self {
+        Transition {
+            duration: ms as f32 / 1000.,
+            curve: Curve::Linear,
+        }
+    }
+    pub fn spring(ms: u32) -> Self {
+        Transition {
+            duration: ms as f32 / 1000.,
+            curve: Curve::Spring,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Curve {
+    #[default]
+    EaseInOut,
+    Linear,
+    /// Slight overshoot, like iOS springs.
+    Spring,
 }
 
 impl Default for Style {
@@ -303,6 +346,7 @@ impl Default for Style {
             font_size: DEFAULT_FONT_SIZE,
             font_weight: FontWeight::Regular,
             text_align: TextAlign::Left,
+            transition: None,
         }
     }
 }
@@ -517,5 +561,14 @@ pub trait Styled: Sized {
     }
     fn text_right(self) -> Self {
         self.with_style(|s| s.text_align = TextAlign::Right)
+    }
+
+    // Motion
+    /// Animates changes of this element over `ms` milliseconds.
+    fn animate(self, ms: u32) -> Self {
+        self.transition(Transition::ease(ms))
+    }
+    fn transition(self, t: Transition) -> Self {
+        self.with_style(|s| s.transition = Some(t))
     }
 }

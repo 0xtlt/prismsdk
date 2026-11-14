@@ -67,6 +67,7 @@ fn handle(stream: TcpStream, config: &AppConfig, init: &AppInit) -> std::io::Res
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
     let mut cookie = None;
+    let mut language = None;
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line)? == 0 || line == "\r\n" {
@@ -76,6 +77,11 @@ fn handle(stream: TcpStream, config: &AppConfig, init: &AppInit) -> std::io::Res
             && name.eq_ignore_ascii_case("cookie")
         {
             cookie = session_id(value);
+        }
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("accept-language")
+        {
+            language = prism_core::Locale::from_accept_language(value.trim());
         }
     }
     // Each browser gets a stable id: its data lives in its own directory.
@@ -98,7 +104,7 @@ fn handle(stream: TcpStream, config: &AppConfig, init: &AppInit) -> std::io::Res
         // Every other path is an app route: render it on the server.
         path => (
             "200 OK",
-            page(config, init, &percent_decode(path), &sid),
+            page(config, init, &percent_decode(path), &sid, language),
             "text/html; charset=utf-8",
         ),
     };
@@ -198,8 +204,27 @@ fn storage_for(sid: &str) -> Box<dyn prism_core::Storage> {
     ))
 }
 
+/// The browser's environment: `Accept-Language` (`PRISM_LOCALE` overrides it).
+fn environment(language: Option<prism_core::Locale>) -> prism_core::Environment {
+    let locale = std::env::var("PRISM_LOCALE")
+        .ok()
+        .map(|l| prism_core::Locale::new(&l))
+        .or(language)
+        .unwrap_or_default();
+    prism_core::Environment {
+        locale,
+        ..Default::default()
+    }
+}
+
 /// Server-side render of a fresh session opened on `path`, as a full HTML document.
-pub fn page(config: &AppConfig, init: &AppInit, path: &str, sid: &str) -> String {
+pub fn page(
+    config: &AppConfig,
+    init: &AppInit,
+    path: &str,
+    sid: &str,
+    language: Option<prism_core::Locale>,
+) -> String {
     let mut runtime = Runtime::with_options(
         init,
         prism_core::RuntimeOptions {
@@ -207,6 +232,8 @@ pub fn page(config: &AppConfig, init: &AppInit, path: &str, sid: &str) -> String
             capabilities: WebServices::default().capabilities(),
             storage: Some(storage_for(sid)),
             wake_ui: None,
+            environment: environment(language),
+            formatter: None,
         },
     );
     let mut html = HtmlBackend::default();
@@ -218,7 +245,7 @@ pub fn page(config: &AppConfig, init: &AppInit, path: &str, sid: &str) -> String
     };
     format!(
         r#"<!doctype html>
-<html lang="en" style="color-scheme: {scheme}">
+<html lang="{lang}" dir="{dir}" style="color-scheme: {scheme}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -226,7 +253,7 @@ pub fn page(config: &AppConfig, init: &AppInit, path: &str, sid: &str) -> String
 <style>
   :root {{ color-scheme: light dark; }}
   html, body {{ margin: 0; height: 100%; }}
-  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; font-size: 16px; background: Canvas; color: CanvasText; }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; font-size: 1rem; background: Canvas; color: CanvasText; }}
   #prism-root {{ display: flex; flex-direction: column; min-height: 100%; }}
   #prism-root > * {{ flex-grow: 1; }}
   #prism-root:has(> .prism-tabs) {{ height: 100%; }}
@@ -291,6 +318,12 @@ pub fn page(config: &AppConfig, init: &AppInit, path: &str, sid: &str) -> String
 </html>"#,
         title = html::escape(&title),
         scheme = html.color_scheme(),
+        lang = html::escape(&html.env.lang),
+        dir = if html.env.direction == prism_core::Direction::Rtl {
+            "rtl"
+        } else {
+            "ltr"
+        },
         body = html.to_html(),
         js = CLIENT_JS.replace("__GLYPHS__", &glyphs::js_table()),
     )
@@ -301,6 +334,7 @@ fn session(stream: TcpStream, init: &AppInit) {
     // The client passes its current URL: `/ws?path=/todos/1`.
     let mut path = String::from("/");
     let mut sid = None;
+    let mut language = None;
     let handshake = tungstenite::accept_hdr(
         stream,
         |req: &tungstenite::handshake::server::Request, resp| {
@@ -309,6 +343,11 @@ fn session(stream: TcpStream, init: &AppInit) {
                 .get("cookie")
                 .and_then(|c| c.to_str().ok())
                 .and_then(session_id);
+            language = req
+                .headers()
+                .get("accept-language")
+                .and_then(|c| c.to_str().ok())
+                .and_then(prism_core::Locale::from_accept_language);
             if let Some(p) = req
                 .uri()
                 .query()
@@ -334,6 +373,8 @@ fn session(stream: TcpStream, init: &AppInit) {
             wake_ui: Some(std::sync::Arc::new(move || {
                 flag.store(true, std::sync::atomic::Ordering::SeqCst)
             })),
+            environment: environment(language),
+            formatter: None,
         },
     );
     let mut encoder = Encoder::default();
@@ -545,6 +586,11 @@ impl Encoder {
                 }})
             }
             Patch::SetValue { id, value } => json!({ "op": "value", "id": id, "value": value }),
+            Patch::SetEnvironment { env } => json!({
+                "op": "env",
+                "lang": env.lang,
+                "dir": if env.direction == prism_core::Direction::Rtl { "rtl" } else { "ltr" },
+            }),
             Patch::SetSwipe { id, left, right } => {
                 json!({ "op": "swipe", "id": id, "left": left, "right": right })
             }

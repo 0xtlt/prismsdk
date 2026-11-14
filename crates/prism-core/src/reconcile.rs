@@ -24,6 +24,16 @@ use crate::style::Style;
 
 pub type NodeId = u64;
 
+/// What backends need to know about the environment to render.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct RenderEnvironment {
+    /// BCP 47 tag (`lang` attribute on the web).
+    pub lang: String,
+    pub direction: crate::i18n::Direction,
+    pub text_scale: f32,
+    pub reduce_motion: bool,
+}
+
 /// A mutation of the host tree.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Patch {
@@ -42,6 +52,10 @@ pub enum Patch {
     SetMenu {
         id: NodeId,
         menu: Option<crate::menu::MenuSpec>,
+    },
+    /// Language, layout direction, text scale and motion settings.
+    SetEnvironment {
+        env: RenderEnvironment,
     },
     /// Light/dark appearance of native chrome.
     SetAppearance {
@@ -168,6 +182,7 @@ pub struct Reconciler {
     destroyed: Vec<NodeId>,
     rendered: usize,
     appearance: Appearance,
+    environment: Option<RenderEnvironment>,
 }
 
 impl Reconciler {
@@ -257,6 +272,17 @@ impl Reconciler {
 
         let mut patches = std::mem::take(&mut self.patches);
         patches.extend(self.destroyed.drain(..).map(|id| Patch::Destroy { id }));
+        let env = RenderEnvironment {
+            lang: app.locale().tag().to_string(),
+            direction: app.direction(),
+            text_scale: app.text_scale(),
+            reduce_motion: app.reduce_motion(),
+        };
+        if self.environment.as_ref() != Some(&env) {
+            // Before any node patch: text is created at the right scale/direction.
+            patches.insert(0, Patch::SetEnvironment { env: env.clone() });
+            self.environment = Some(env);
+        }
         if app.appearance() != self.appearance {
             self.appearance = app.appearance();
             patches.push(Patch::SetAppearance {

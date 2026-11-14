@@ -279,6 +279,7 @@
         return applyA11y(el, p.a11y);
       case "menu": return setMenu(el, p.id, p.menu);
       case "appearance": document.documentElement.style.colorScheme = p.value; return;
+      case "env": document.documentElement.lang = p.lang; document.documentElement.dir = p.dir; return;
       case "children":
         if (el.dataset.kind === "stack" || el.dataset.kind === "tabs") {
           // Sheets attached to a root container are presented as dialogs.
