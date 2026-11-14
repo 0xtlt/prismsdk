@@ -88,6 +88,14 @@ impl Application {
         });
         let config = self.config;
 
+        // Build tooling: `PRISM_DESCRIBE=widgets` prints the registered widgets
+        // (used to generate the WidgetKit extension) and exits.
+        if std::env::var("PRISM_DESCRIBE").as_deref() == Ok("widgets") {
+            let runtime = Runtime::new(&init);
+            println!("{}", runtime.app.describe_widgets());
+            return;
+        }
+
         #[cfg(feature = "web")]
         {
             prism_web::run(config, init);

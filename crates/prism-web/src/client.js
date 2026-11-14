@@ -8,13 +8,10 @@
   const tags = {
     view: "div", text: "div", button: "button", text_input: "input",
     stack: "div", screen: "section", toggle: "input", scroll: "div", tabs: "div", tab: "div",
+    image: "span", progress: "progress", timer: "span",
   };
-  // SF Symbol names → web glyphs (decorative; the tab title is the label).
-  const glyphs = {
-    house: "⌂", "house.fill": "⌂", gear: "⚙", gearshape: "⚙", checklist: "☑", "list.bullet": "☰",
-    star: "★", "star.fill": "★", person: "☺", "person.crop.circle": "☺", magnifyingglass: "⌕",
-    bell: "🔔", heart: "♥", "square.grid.2x2": "▦", paintbrush: "🖌", paintpalette: "🎨",
-  };
+  // SF Symbol names → glyphs (table generated from Rust: glyphs.rs).
+  const glyphs = __GLYPHS__;
   let stacks = [];
   let ws;
   let userNavigated = false;
@@ -73,6 +70,12 @@
       });
     } else if (kind === "scroll") {
       el.className = "prism-scroll";
+    } else if (kind === "image") {
+      el.className = "prism-symbol";
+    } else if (kind === "progress") {
+      el.max = 1;
+    } else if (kind === "timer") {
+      el.className = "prism-timer";
     } else if (kind === "view") {
       el.addEventListener("click", (e) => {
         if (el.dataset.clickable !== "1") return;
@@ -151,7 +154,7 @@
       btn.setAttribute("aria-controls", `prism-panel-${pid}`);
       btn.setAttribute("aria-selected", String(selected));
       btn.tabIndex = selected ? 0 : -1;
-      const glyph = glyphs[panel._icon] || "";
+      const glyph = panel._glyph || glyphs[panel._icon] || "";
       btn.innerHTML = `<span class="prism-tab-icon" aria-hidden="true">${glyph}</span><span></span>`;
       btn.lastChild.textContent = panel._titleText || "";
       panel.id = `prism-panel-${pid}`;
@@ -225,10 +228,14 @@
         return;
       case "value":
         if (el.dataset.kind === "toggle") el.checked = p.value !== 0;
+        if (el.dataset.kind === "progress") el.value = p.value;
+        if (el.dataset.kind === "timer") { el.dataset.end = p.value; tick(); }
         if (el.dataset.kind === "tabs") { el._selected = p.value; refreshTabs(el); }
         return;
       case "icon": {
         el._icon = p.icon;
+        el._glyph = p.glyph;
+        if (el.dataset.kind === "image") el.textContent = p.glyph;
         const owner = el.parentElement && el.parentElement.parentElement;
         if (owner && owner._tabs) refreshTabs(owner);
         return;
@@ -323,11 +330,155 @@
     }
   });
 
+  // --- Timers: count down by themselves --------------------------------------
+  function remaining(end) {
+    const left = Math.max(0, Math.round(end - Date.now() / 1000));
+    const h = Math.floor(left / 3600), m = Math.floor(left / 60) % 60, sec = left % 60;
+    const pad = (n) => String(n).padStart(2, "0");
+    return h ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
+  }
+  function tick() {
+    document.querySelectorAll("[data-end]").forEach((el) => {
+      const text = remaining(Number(el.dataset.end));
+      if (el.dataset.kind === "timer") {
+        let t = el.firstChild && el.firstChild.nodeType === 3 ? el.firstChild : null;
+        if (!t) { t = document.createTextNode(""); el.prepend(t); }
+        if (t.data !== text) t.data = text;
+      } else if (el.textContent !== text) {
+        el.textContent = text;
+      }
+    });
+  }
+  setInterval(tick, 1000);
+
+  // --- Static snapshots (Live Activities on the web) --------------------------
+  // Mirrors the SwiftUI renderer used by widgets and the Dynamic Island.
+  const color = (c) => (Array.isArray(c) ? `light-dark(${c[0]}, ${c[1]})` : c);
+  function snode(n) {
+    const tag = { t: "span", i: "span", m: "span", p: "progress" }[n.k] || "div";
+    const el = document.createElement(tag);
+    const st = el.style;
+    if (n.k === "v") { st.display = "flex"; st.flexDirection = n.d ? "row" : "column"; }
+    else st.display = n.k === "p" ? "block" : "inline-block";
+    if (n.g) st.gap = n.g + "px";
+    if (n.pd) st.padding = n.pd.map((v) => v + "px").join(" ");
+    if (n.w) st.width = n.w === "f" ? "100%" : n.w + "px";
+    if (n.h) st.height = n.h === "f" ? "100%" : n.h + "px";
+    if (n.f) st.flexGrow = n.f;
+    if (n.ai) st.alignItems = { s: "flex-start", c: "center", e: "flex-end" }[n.ai];
+    if (n.jc) st.justifyContent = { c: "center", e: "flex-end", b: "space-between", a: "space-around", v: "space-evenly" }[n.jc];
+    if (n.bg) st.background = color(n.bg);
+    if (n.fg) { st.color = color(n.fg); st.accentColor = color(n.fg); }
+    if (n.bw) st.border = `${n.bw}px solid ${color(n.bc || "currentColor")}`;
+    if (n.r) st.borderRadius = n.r + "px";
+    if (n.fs) st.fontSize = n.fs + "px";
+    if (n.fw) st.fontWeight = [400, 500, 600, 700][n.fw];
+    if (n.ta) st.textAlign = n.ta === "c" ? "center" : "right";
+    if (n.o !== undefined) st.opacity = n.o;
+    if (n.k === "t") el.textContent = n.s || "";
+    if (n.k === "i") { el.textContent = glyphs[n.s] || "•"; el.className = "prism-symbol"; }
+    if (n.k === "m") { el.dataset.end = n.v; st.fontVariantNumeric = "tabular-nums"; el.textContent = remaining(n.v); }
+    if (n.k === "p") { el.max = 1; el.value = n.v || 0; }
+    if (n.al) el.setAttribute("aria-label", n.al);
+    if (n.ah) el.setAttribute("aria-hidden", "true");
+    if (n.hd) { el.setAttribute("role", "heading"); el.setAttribute("aria-level", "2"); }
+    if (n.l) { st.cursor = "pointer"; el.addEventListener("click", (e) => { e.stopPropagation(); openLink(n.l); }); }
+    (n.c || []).forEach((c) => el.appendChild(snode(c)));
+    return el;
+  }
+
+  function openLink(path) {
+    userNavigated = true;
+    send({ t: "link", path });
+  }
+
+  // --- Live Activities: an island-like live banner ----------------------------
+  const island = document.getElementById("prism-island");
+  const activities = new Map();
+  function showActivity(id, c) {
+    let el = activities.get(id);
+    if (!el) {
+      el = document.createElement("button");
+      el.type = "button";
+      el.className = "prism-island";
+      el.setAttribute("aria-expanded", "false");
+      el.addEventListener("click", () => {
+        const open = el.getAttribute("aria-expanded") !== "true";
+        el.setAttribute("aria-expanded", String(open));
+        render();
+      });
+      activities.set(id, el);
+      island.appendChild(el);
+    }
+    const render = () => {
+      el.replaceChildren();
+      el.setAttribute("aria-label", el._c.sm || "Live activity");
+      if (el.getAttribute("aria-expanded") === "true" && el._c.ls) {
+        el.appendChild(snode(el._c.ls));
+        if (el._c.l) {
+          const open = document.createElement("div");
+          open.textContent = "Open ›";
+          open.style.cssText = "margin-top:8px;opacity:.8;font-size:13px";
+          open.addEventListener("click", (e) => { e.stopPropagation(); openLink(el._c.l); });
+          el.appendChild(open);
+        }
+      } else {
+        const row = document.createElement("div");
+        row.className = "prism-island-compact";
+        if (el._c.cl) row.appendChild(snode(el._c.cl));
+        if (el._c.ct) row.appendChild(snode(el._c.ct));
+        el.appendChild(row);
+      }
+    };
+    el._c = c;
+    render();
+  }
+
+  // --- Notifications: browser notifications, or an in-page toast ---------------
+  const toasts = document.getElementById("prism-toasts");
+  const pending = new Map();
+  function toast(n) {
+    const el = document.createElement("button");
+    el.type = "button";
+    el.className = "prism-toast";
+    el.innerHTML = "<strong></strong><span></span>";
+    el.firstChild.textContent = n.title;
+    el.lastChild.textContent = [n.subtitle, n.body].filter(Boolean).join(" — ");
+    el.addEventListener("click", () => { el.remove(); if (n.link) openLink(n.link); });
+    toasts.appendChild(el);
+    setTimeout(() => el.remove(), 8000);
+  }
+  function notify(n) {
+    if ("Notification" in window && Notification.permission === "granted" && document.hidden) {
+      const sys = new Notification(n.title, { body: [n.subtitle, n.body].filter(Boolean).join("\n"), tag: n.id });
+      sys.onclick = () => { window.focus(); if (n.link) openLink(n.link); };
+    } else {
+      toast(n);
+    }
+  }
+
+  function service(msg) {
+    switch (msg.t) {
+      case "activity": return showActivity(msg.id, msg.c);
+      case "activity_end": activities.get(msg.id)?.remove(); activities.delete(msg.id); return;
+      case "notify":
+        clearTimeout(pending.get(msg.id));
+        if (msg.delay) pending.set(msg.id, setTimeout(() => notify(msg), msg.delay));
+        else notify(msg);
+        return;
+      case "notify_cancel": clearTimeout(pending.get(msg.id)); pending.delete(msg.id); return;
+      case "notify_permission":
+        if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
+        return;
+    }
+  }
+
   function connect() {
     const path = encodeURIComponent(location.pathname);
     ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?path=${path}`);
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
+      if (!msg.p) return service(msg);
       if (msg.t === "reset") { nodes.clear(); stacks = []; hist = null; userNavigated = false; }
       msg.p.forEach(apply);
       syncHistory();

@@ -123,6 +123,7 @@ pub struct App {
     nav_queue: Vec<NavOp>,
     globals: HashMap<TypeId, Box<dyn Any>>,
     appearance: Appearance,
+    pub(crate) surfaces: crate::surfaces::Surfaces,
 }
 
 impl Default for App {
@@ -139,6 +140,7 @@ impl Default for App {
             nav_queue: Vec::new(),
             globals: HashMap::new(),
             appearance: Appearance::System,
+            surfaces: Default::default(),
         }
     }
 }
@@ -146,6 +148,12 @@ impl Default for App {
 impl App {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Re-renders widgets whenever `entity` is notified.
+    pub fn reload_widgets_on<T: 'static>(&mut self, entity: &Entity<T>) {
+        let observer: Observer = Rc::new(|app: &mut App| app.reload_widgets());
+        self.observers.entry(entity.id).or_default().push(observer);
     }
 
     /// Forces light or dark native chrome (or follows the system).

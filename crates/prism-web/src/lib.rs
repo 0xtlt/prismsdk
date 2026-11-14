@@ -11,6 +11,7 @@
 //! No WASM: the app logic stays in native Rust on the server.
 
 mod css;
+mod glyphs;
 mod html;
 
 use std::collections::HashMap;
@@ -18,7 +19,11 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread;
 
-use prism_core::{AppConfig, AppInit, Backend, NodeId, NodeKind, Patch, Runtime, UiEvent};
+use prism_core::surfaces::{ActivityContent, PlatformRequest};
+use prism_core::{
+    AppConfig, AppInit, Backend, Capabilities, NodeId, NodeKind, Patch, PlatformServices, Runtime,
+    UiEvent,
+};
 use serde_json::{Value, json};
 use tungstenite::Message;
 
@@ -126,6 +131,15 @@ pub fn page(config: &AppConfig, init: &AppInit, path: &str) -> String {
   .prism-switch::after {{ content: ""; position: absolute; top: 2px; left: 2px; width: 22px; height: 22px; border-radius: 50%; background: white; box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform .15s; }}
   .prism-switch:checked {{ background: #34c759; }}
   .prism-switch:checked::after {{ transform: translateX(18px); }}
+  .prism-symbol {{ display: inline-flex; align-items: center; justify-content: center; line-height: 1; }}
+  progress {{ width: 100%; accent-color: currentColor; }}
+  #prism-island {{ position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 1000; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }}
+  .prism-island {{ pointer-events: auto; min-width: 180px; max-width: min(92vw, 420px); padding: 8px 14px; border-radius: 22px; background: #000; color: #fff; box-shadow: 0 6px 24px rgba(0,0,0,.25); cursor: pointer; border: 0; font: inherit; text-align: left; }}
+  .prism-island-compact {{ display: flex; justify-content: space-between; align-items: center; gap: 16px; }}
+  .prism-island[aria-expanded="true"] {{ border-radius: 28px; padding: 14px 16px; }}
+  #prism-toasts {{ position: fixed; bottom: 80px; right: 16px; z-index: 1000; display: flex; flex-direction: column; gap: 8px; }}
+  .prism-toast {{ max-width: 340px; padding: 12px 14px; border-radius: 14px; background: Canvas; color: CanvasText; border: 1px solid rgba(128,128,128,.3); box-shadow: 0 6px 24px rgba(0,0,0,.18); cursor: pointer; text-align: left; font: inherit; }}
+  .prism-toast strong {{ display: block; }}
   @media (prefers-reduced-motion: reduce) {{ * {{ transition: none !important; }} }}
   .prism-header {{ position: relative; flex: 0 0 44px; display: flex; align-items: center; justify-content: center; border-bottom: 1px solid rgba(128,128,128,.25); background: Canvas; font-size: 15px; font-weight: 600; }}
   .prism-back {{ position: absolute; left: 8px; top: 50%; transform: translateY(-50%); font: inherit; font-size: 14px; font-weight: 400; cursor: pointer; }}
@@ -134,13 +148,15 @@ pub fn page(config: &AppConfig, init: &AppInit, path: &str) -> String {
 </head>
 <body>
 <main id="prism-root">{body}</main>
+<div id="prism-island" role="status" aria-live="polite"></div>
+<div id="prism-toasts" role="status" aria-live="polite"></div>
 <script>{js}</script>
 </body>
 </html>"#,
         title = html::escape(&title),
         scheme = html.color_scheme(),
         body = html.to_html(),
-        js = CLIENT_JS,
+        js = CLIENT_JS.replace("__GLYPHS__", &glyphs::js_table()),
     )
 }
 
@@ -164,18 +180,39 @@ fn session(stream: TcpStream, init: &AppInit) {
     let Ok(mut ws) = handshake else {
         return;
     };
-    let mut runtime = Runtime::with_path(init, &path);
+    let mut runtime =
+        Runtime::with_capabilities(init, &path, WebServices::default().capabilities());
     let mut encoder = Encoder::default();
     let first = runtime.render();
     if send(&mut ws, &mut encoder, "reset", &first).is_err() {
         return;
     }
+    let mut services = WebServices::default();
     loop {
+        for request in runtime.take_requests() {
+            services.handle(request);
+        }
+        for msg in services.outbox.drain(..) {
+            if ws.send(Message::text(msg.to_string())).is_err() {
+                return;
+            }
+        }
         let msg = match ws.read() {
             Ok(Message::Text(t)) => t,
             Ok(Message::Close(_)) | Err(_) => return,
             Ok(_) => continue,
         };
+        // A notification or live banner was tapped: open its deep link.
+        if let Ok(v) = serde_json::from_str::<Value>(&msg)
+            && v.get("t").and_then(Value::as_str) == Some("link")
+            && let Some(path) = v.get("path").and_then(Value::as_str)
+        {
+            let patches = runtime.open_link(path);
+            if !patches.is_empty() && send(&mut ws, &mut encoder, "patch", &patches).is_err() {
+                return;
+            }
+            continue;
+        }
         let Some(event) = parse_event(&msg) else {
             continue;
         };
@@ -183,6 +220,48 @@ fn session(stream: TcpStream, init: &AppInit) {
         if !patches.is_empty() && send(&mut ws, &mut encoder, "patch", &patches).is_err() {
             return;
         }
+    }
+}
+
+/// Web implementation of system surfaces: browser notifications (with an
+/// in-page toast fallback) and Live Activities as an in-page live banner.
+/// Widgets do not exist on the web.
+#[derive(Default)]
+struct WebServices {
+    outbox: Vec<Value>,
+}
+
+fn activity_json(content: &ActivityContent) -> Value {
+    serde_json::from_str(&content.to_json()).unwrap_or(Value::Null)
+}
+
+impl PlatformServices for WebServices {
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            widgets: false,
+            live_activities: true,
+            dynamic_island: false,
+            notifications: true,
+        }
+    }
+
+    fn handle(&mut self, request: PlatformRequest) {
+        let msg = match request {
+            PlatformRequest::ReloadWidgets(_) => return,
+            PlatformRequest::StartActivity { id, content, .. }
+            | PlatformRequest::UpdateActivity { id, content } => {
+                json!({ "t": "activity", "id": id.0, "c": activity_json(&content) })
+            }
+            PlatformRequest::EndActivity { id, .. } => json!({ "t": "activity_end", "id": id.0 }),
+            PlatformRequest::Notify(n) => json!({
+                "t": "notify", "id": n.id, "title": n.title, "subtitle": n.subtitle,
+                "body": n.body, "link": n.link,
+                "delay": n.delay.map(|d| d.as_millis() as u64),
+            }),
+            PlatformRequest::CancelNotification(id) => json!({ "t": "notify_cancel", "id": id }),
+            PlatformRequest::RequestNotificationPermission => json!({ "t": "notify_permission" }),
+        };
+        self.outbox.push(msg);
     }
 }
 
@@ -249,7 +328,9 @@ impl Encoder {
                 }})
             }
             Patch::SetValue { id, value } => json!({ "op": "value", "id": id, "value": value }),
-            Patch::SetIcon { id, icon } => json!({ "op": "icon", "id": id, "icon": icon }),
+            Patch::SetIcon { id, icon } => {
+                json!({ "op": "icon", "id": id, "icon": icon, "glyph": glyphs::glyph(icon) })
+            }
             Patch::SetAccessibility { id, a11y } => {
                 let level = match a11y.role {
                     Some(prism_core::Role::Heading(l)) => Some(l),

@@ -1,0 +1,8 @@
+[package]
+name = "prism-apple-build"
+description = "Build-script helper: compiles Prism's Swift bridge (WidgetKit, ActivityKit, UserNotifications) and links it."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

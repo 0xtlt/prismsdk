@@ -348,8 +348,22 @@ impl Reconciler {
             on_back,
             on_navigate,
             on_change,
+            link,
             ..
         } = *vnode;
+        // A link navigates when activated in the app.
+        let on_click = on_click.or_else(|| {
+            link.clone().map(|path| -> Handler<ClickEvent> {
+                std::rc::Rc::new(move |_: &ClickEvent, app: &mut App| app.navigate(path.clone()))
+            })
+        });
+        let a11y = {
+            let mut a = a11y;
+            if link.is_some() && a.role.is_none() {
+                a.role = Some(Role::Link);
+            }
+            a
+        };
         let clickable = kind == NodeKind::Button || on_click.is_some();
         {
             let m = self.nodes.get_mut(&id).expect("node exists");

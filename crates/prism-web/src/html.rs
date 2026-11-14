@@ -162,6 +162,20 @@ impl HtmlBackend {
                     escape(&n.placeholder)
                 );
             }
+            NodeKind::Image => {
+                let _ = write!(
+                    out,
+                    r#"<span {attrs} class="prism-symbol">{}</span>"#,
+                    crate::glyphs::glyph(&n.icon)
+                );
+            }
+            NodeKind::Progress => {
+                let _ = write!(
+                    out,
+                    r#"<progress {attrs} max="1" value="{}"></progress>"#,
+                    n.value
+                );
+            }
             NodeKind::Toggle => {
                 let checked = if n.value != 0. { " checked" } else { "" };
                 let _ = write!(

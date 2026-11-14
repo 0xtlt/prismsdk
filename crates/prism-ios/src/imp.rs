@@ -17,11 +17,12 @@ use objc2_ui_kit::{
     UIAccessibilityTraitTabBar, UIAccessibilityTraitToggleButton, UIApplication,
     UIApplicationDelegate, UIButton, UIButtonType, UIColor, UIControlEvents, UIControlState,
     UIFont, UIFontWeightBold, UIFontWeightMedium, UIFontWeightRegular, UIFontWeightSemibold,
-    UIImage, UILabel, UINavigationController, UINavigationControllerDelegate, UIResponder, UIScene,
-    UISceneConnectionOptions, UISceneDelegate, UISceneSession, UIScrollView,
-    UIScrollViewContentInsetAdjustmentBehavior, UIScrollViewKeyboardDismissMode, UISwitch,
-    UITabBarController, UITabBarControllerDelegate, UITapGestureRecognizer, UITextBorderStyle,
-    UITextField, UIView, UIViewController, UIWindow, UIWindowScene, UIWindowSceneDelegate,
+    UIImage, UIImageSymbolConfiguration, UIImageView, UILabel, UINavigationController,
+    UINavigationControllerDelegate, UIProgressView, UIResponder, UIScene, UISceneConnectionOptions,
+    UISceneDelegate, UISceneSession, UIScrollView, UIScrollViewContentInsetAdjustmentBehavior,
+    UIScrollViewKeyboardDismissMode, UISwitch, UITabBarController, UITabBarControllerDelegate,
+    UITapGestureRecognizer, UITextBorderStyle, UITextField, UITraitCollection,
+    UIUserInterfaceStyle, UIView, UIViewController, UIWindow, UIWindowScene, UIWindowSceneDelegate,
 };
 use prism_core::{
     Accessibility, AppConfig, AppInit, Appearance, Backend, Color, FontWeight, NodeId, NodeKind,
@@ -38,6 +39,7 @@ static APP: OnceLock<(AppConfig, AppInit)> = OnceLock::new();
 struct State {
     runtime: Runtime,
     renderer: NativeRenderer<UiKit>,
+    services: crate::services::IosServices,
 }
 
 thread_local! {
@@ -60,14 +62,41 @@ fn with_state(f: impl FnOnce(&mut State)) {
 fn dispatch(event: UiEvent) {
     with_state(|s| {
         let patches = s.runtime.dispatch(event);
-        if !patches.is_empty() {
-            s.renderer.apply(&patches);
-            s.relayout();
-        }
+        s.commit(patches);
     });
 }
 
+/// Opens a deep link (widget, Live Activity or notification tap).
+pub(crate) fn open_link(path: &str) {
+    with_state(|s| {
+        let patches = s.runtime.open_link(path);
+        s.commit(patches);
+    });
+}
+
+/// `prism-counter:/todos/1` → `/todos/1`.
+fn link_from_url(url: &objc2_foundation::NSURL) -> Option<String> {
+    let s = url.absoluteString()?.to_string();
+    let path = s.split_once(':')?.1.trim_start_matches("//");
+    Some(if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    })
+}
+
 impl State {
+    /// Applies patches, lays out, and hands platform requests to the OS.
+    fn commit(&mut self, patches: Vec<prism_core::Patch>) {
+        if !patches.is_empty() {
+            self.renderer.apply(&patches);
+            self.relayout();
+        }
+        for request in self.runtime.take_requests() {
+            prism_core::PlatformServices::handle(&mut self.services, request);
+        }
+    }
+
     fn relayout(&mut self) {
         let root = &self.renderer.widgets.root;
         let size = root.bounds().size;
@@ -104,6 +133,11 @@ define_class!(
         fn on_editing(&self, sender: &UITextField) {
             let text = sender.text().map(|t| t.to_string()).unwrap_or_default();
             dispatch(UiEvent::Input(sender.tag() as NodeId, text));
+        }
+
+        #[unsafe(method(onTick:))]
+        fn on_tick(&self, _timer: &AnyObject) {
+            with_state(|s| s.renderer.widgets.tick());
         }
 
         #[unsafe(method(onToggle:))]
@@ -244,6 +278,24 @@ define_class!(
             let Ok(scene) = scene.retain().downcast::<UIWindowScene>() else { return };
             let window = connect(self.mtm(), &scene);
             *self.ivars().window.borrow_mut() = Some(window);
+            // Cold launch from a widget or Live Activity.
+            // `URLContexts` is nil on a normal launch (objc2 declares it non-null).
+            let contexts: Option<Retained<objc2_foundation::NSSet<objc2_ui_kit::UIOpenURLContext>>> =
+                unsafe { msg_send![_options, URLContexts] };
+            for ctx in contexts.iter().flat_map(|c| c.iter()) {
+                if let Some(path) = link_from_url(&ctx.URL()) {
+                    open_link(&path);
+                }
+            }
+        }
+
+        #[unsafe(method(scene:openURLContexts:))]
+        fn open_urls(&self, _scene: &UIScene, contexts: &objc2_foundation::NSSet<objc2_ui_kit::UIOpenURLContext>) {
+            for ctx in contexts.iter() {
+                if let Some(path) = link_from_url(&ctx.URL()) {
+                    open_link(&path);
+                }
+            }
         }
     }
 
@@ -258,8 +310,17 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
     root.setBackgroundColor(Some(&UIColor::systemBackgroundColor()));
 
     let path = std::env::var("PRISM_PATH").unwrap_or_else(|_| "/".into());
-    let mut runtime = Runtime::with_path(init, &path);
-    let mut renderer = NativeRenderer::new(UiKit {
+    // Dynamic Island iPhones have a taller status bar (≥ 54 pt).
+    let island = scene
+        .statusBarManager()
+        .is_some_and(|m| m.statusBarFrame().size.height >= 54.);
+    let services = crate::services::IosServices::new(island);
+    let mut runtime = Runtime::with_capabilities(
+        init,
+        &path,
+        prism_core::PlatformServices::capabilities(&services),
+    );
+    let renderer = NativeRenderer::new(UiKit {
         mtm,
         target: Target::new(mtm),
         root,
@@ -268,9 +329,17 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
         titles: HashMap::new(),
         icons: HashMap::new(),
         selected: HashMap::new(),
+        timers: HashMap::new(),
     });
-    renderer.apply(&runtime.render());
-    STATE.with(|cell| *cell.borrow_mut() = Some(State { runtime, renderer }));
+    let first = runtime.render();
+    let mut state = State {
+        runtime,
+        renderer,
+        services,
+    };
+    state.commit(first);
+    STATE.with(|cell| *cell.borrow_mut() = Some(state));
+    start_ticker(mtm);
 
     window.setRootViewController(Some(&controller));
     window.makeKeyAndVisible();
@@ -318,6 +387,9 @@ pub enum View {
     Tab(Retained<UIView>),
     Scroll(Retained<UIScrollView>),
     Toggle(Retained<UISwitch>),
+    Image(Retained<UIImageView>),
+    Progress(Retained<UIProgressView>),
+    Timer(Retained<UILabel>),
     Label(Retained<UILabel>),
     Button(Retained<UIButton>),
     Input(Retained<UITextField>),
@@ -331,6 +403,9 @@ impl View {
             View::Tabs(t) => &t.view,
             View::Scroll(v) => v,
             View::Toggle(v) => v,
+            View::Image(v) => v,
+            View::Progress(v) => v,
+            View::Timer(v) => v,
             View::Label(v) => v,
             View::Button(v) => v,
             View::Input(v) => v,
@@ -353,6 +428,33 @@ pub struct UiKit {
     icons: HashMap<NodeId, String>,
     /// Selected index of each tab bar, applied once its tabs exist.
     selected: HashMap<NodeId, usize>,
+    /// Countdown labels and their end time (Unix seconds).
+    timers: HashMap<NodeId, (Retained<UILabel>, f64)>,
+}
+
+impl UiKit {
+    fn tick(&self) {
+        for (label, end) in self.timers.values() {
+            let text = NSString::from_str(&prism_core::format_remaining(*end));
+            if label.text().as_deref() != Some(&*text) {
+                label.setText(Some(&text));
+            }
+        }
+    }
+}
+
+/// Ticks countdowns every second.
+fn start_ticker(mtm: MainThreadMarker) {
+    let target = Target::new(mtm);
+    let _timer = unsafe {
+        objc2_foundation::NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+            1.0,
+            &target,
+            sel!(onTick:),
+            None,
+            true,
+        )
+    };
 }
 
 impl UiKit {
@@ -379,8 +481,49 @@ impl UiKit {
     }
 }
 
-fn ui_color(c: Color) -> Retained<UIColor> {
+fn plain_color(c: Color) -> Retained<UIColor> {
     UIColor::colorWithRed_green_blue_alpha(c.r as f64, c.g as f64, c.b as f64, c.a as f64)
+}
+
+/// Adaptive colors become dynamic `UIColor`s, resolved live by UIKit.
+fn ui_color(c: Color) -> Retained<UIColor> {
+    if c.dark.is_none() {
+        return plain_color(c);
+    }
+    let (light, dark) = (c.light_variant(), c.dark_variant());
+    let provider = block2::RcBlock::new(move |traits: std::ptr::NonNull<UITraitCollection>| {
+        let traits = unsafe { traits.as_ref() };
+        let style = unsafe { traits.userInterfaceStyle() };
+        let pick = if style == UIUserInterfaceStyle::Dark {
+            dark
+        } else {
+            light
+        };
+        let color = plain_color(pick);
+        std::ptr::NonNull::new(Retained::autorelease_return(color)).expect("color")
+    });
+    unsafe { UIColor::colorWithDynamicProvider(&provider) }
+}
+
+fn font_weight(style: &Style) -> objc2_ui_kit::UIFontWeight {
+    unsafe {
+        match style.font_weight {
+            FontWeight::Regular => UIFontWeightRegular,
+            FontWeight::Medium => UIFontWeightMedium,
+            FontWeight::Semibold => UIFontWeightSemibold,
+            FontWeight::Bold => UIFontWeightBold,
+        }
+    }
+}
+
+fn symbol_weight(style: &Style) -> objc2_ui_kit::UIImageSymbolWeight {
+    use objc2_ui_kit::UIImageSymbolWeight as W;
+    match style.font_weight {
+        FontWeight::Regular => W::Regular,
+        FontWeight::Medium => W::Medium,
+        FontWeight::Semibold => W::Semibold,
+        FontWeight::Bold => W::Bold,
+    }
 }
 
 fn font(style: &Style) -> Retained<UIFont> {
@@ -436,6 +579,16 @@ impl Widgets for UiKit {
                     UIScrollViewContentInsetAdjustmentBehavior::Automatic,
                 );
                 View::Scroll(s)
+            }
+            NodeKind::Image => {
+                let v = UIImageView::new(mtm);
+                v.setContentMode(objc2_ui_kit::UIViewContentMode::Center);
+                View::Image(v)
+            }
+            NodeKind::Progress => View::Progress(UIProgressView::new(mtm)),
+            NodeKind::Timer => {
+                let l = UILabel::new(mtm);
+                View::Timer(l)
             }
             NodeKind::Toggle => {
                 let t = UISwitch::new(mtm);
@@ -504,8 +657,30 @@ impl Widgets for UiKit {
             | View::Tab(_)
             | View::Scroll(_)
             | View::Toggle(_) => {}
-            View::Label(l) => {
-                unsafe { l.setFont(Some(&font(style))) };
+            View::Image(v) => {
+                let config = UIImageSymbolConfiguration::configurationWithPointSize_weight(
+                    style.font_size as f64,
+                    symbol_weight(style),
+                );
+                v.setPreferredSymbolConfiguration(Some(&config));
+                unsafe {
+                    v.setTintColor(Some(
+                        &text_color.clone().unwrap_or_else(UIColor::labelColor),
+                    ))
+                };
+            }
+            View::Progress(p) => p.setProgressTintColor(text_color.as_deref()),
+            View::Label(l) | View::Timer(l) => {
+                let f = if matches!(view, View::Timer(_)) {
+                    // Digits keep a fixed width while the countdown ticks.
+                    UIFont::monospacedDigitSystemFontOfSize_weight(
+                        style.font_size as f64,
+                        font_weight(style),
+                    )
+                } else {
+                    font(style)
+                };
+                unsafe { l.setFont(Some(&f)) };
                 unsafe { l.setTextColor(Some(&text_color.unwrap_or_else(UIColor::labelColor))) };
                 l.setTextAlignment(alignment(style.text_align));
             }
@@ -526,7 +701,7 @@ impl Widgets for UiKit {
     fn set_text(&mut self, view: &View, text: &str) {
         let s = NSString::from_str(text);
         match view {
-            View::Label(l) => l.setText(Some(&s)),
+            View::Label(l) | View::Timer(l) => l.setText(Some(&s)),
             View::Input(f) => {
                 if f.text().map(|t| t.to_string()).unwrap_or_default() != text {
                     f.setText(Some(&s));
@@ -646,6 +821,7 @@ impl Widgets for UiKit {
         self.titles.remove(&id);
         self.icons.remove(&id);
         self.selected.remove(&id);
+        self.timers.remove(&id);
         view.ui().removeFromSuperview();
     }
 
@@ -653,6 +829,10 @@ impl Widgets for UiKit {
         let limit = CGSize::new(max_width.map_or(f64::MAX / 4., |w| w as f64), f64::MAX / 4.);
         let size = match view {
             View::Toggle(t) => t.sizeThatFits(limit),
+            View::Image(v) => v.sizeThatFits(limit),
+            View::Timer(l) => l.sizeThatFits(limit),
+            // A progress bar takes the width it is given.
+            View::Progress(_) => CGSize::new(max_width.unwrap_or(120.) as f64, 4.),
             View::Container(_)
             | View::Screen(_)
             | View::Stack(_)
@@ -682,6 +862,13 @@ impl Widgets for UiKit {
 
     fn set_value(&mut self, view: &View, value: f64) {
         match view {
+            View::Progress(p) => p.setProgress_animated(value as f32, true),
+            View::Timer(l) => {
+                self.timers.insert(view.id(), (l.clone(), value));
+                l.setText(Some(&NSString::from_str(&prism_core::format_remaining(
+                    value,
+                ))));
+            }
             View::Toggle(t) => {
                 if t.isOn() != (value != 0.) {
                     t.setOn_animated(value != 0., true);
@@ -699,6 +886,10 @@ impl Widgets for UiKit {
     }
 
     fn set_icon(&mut self, view: &View, icon: &str) {
+        if let View::Image(v) = view {
+            v.setImage(UIImage::systemImageNamed(&NSString::from_str(icon)).as_deref());
+            return;
+        }
         let id = view.id();
         self.icons.insert(id, icon.to_string());
         if let Some(item) = self.screens.get(&id).and_then(|vc| vc.tabBarItem()) {

@@ -28,3 +28,7 @@ run = "cargo run -p counter"
 [tasks.ios]
 description = "Build, bundle and launch the example on an iOS simulator (PRISM_SIM=<name|udid>)"
 run = "scripts/ios-run.sh counter"
+
+[tasks.macos-app]
+description = "Bundle the example as a macOS .app (widgets, notifications, deep links) and open it"
+run = "scripts/macos-app.sh counter"

@@ -5,7 +5,7 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use prism_core::{App, Appearance, Color, Element, rgb};
+use prism_core::{App, Appearance, Color, Element, adaptive, rgb};
 
 use crate::Component;
 
@@ -30,7 +30,10 @@ pub struct Theme {
     /// Render `Button`/`Switch` as the platform's native controls instead of
     /// custom-drawn ones (per instance: `.native()`).
     pub prefer_native: bool,
+    /// A fixed dark theme (see [`Theme::system`] for one that follows the OS).
     pub dark: bool,
+    /// Colors are adaptive and native chrome follows the system appearance.
+    pub follows_system: bool,
     overrides: HashMap<TypeId, Rc<dyn Any>>,
 }
 
@@ -60,6 +63,7 @@ impl Theme {
             font_size: 16.,
             prefer_native: false,
             dark: false,
+            follows_system: false,
             overrides: HashMap::new(),
         }
     }
@@ -81,6 +85,27 @@ impl Theme {
         }
     }
 
+    /// Follows the system light/dark setting live: every color is adaptive,
+    /// in the app, in widgets and in Live Activities.
+    pub fn system() -> Self {
+        let (l, d) = (Theme::light(), Theme::dark());
+        Theme {
+            accent: adaptive(l.accent, d.accent),
+            on_accent: adaptive(l.on_accent, d.on_accent),
+            background: adaptive(l.background, d.background),
+            surface: adaptive(l.surface, d.surface),
+            surface_alt: adaptive(l.surface_alt, d.surface_alt),
+            text: adaptive(l.text, d.text),
+            muted: adaptive(l.muted, d.muted),
+            border: adaptive(l.border, d.border),
+            danger: adaptive(l.danger, d.danger),
+            success: adaptive(l.success, d.success),
+            follows_system: true,
+            ..l
+        }
+    }
+
+    /// Sets the accent; on a system theme, `accent` may itself be adaptive.
     pub fn accent(mut self, accent: Color) -> Self {
         self.accent = accent;
         self
@@ -133,7 +158,9 @@ impl Theme {
 /// Installs `theme` app-wide and matches native chrome (bars, native controls)
 /// to its light/dark appearance.
 pub fn set_theme(cx: &mut App, theme: Theme) {
-    cx.set_appearance(if theme.dark {
+    cx.set_appearance(if theme.follows_system {
+        Appearance::System
+    } else if theme.dark {
         Appearance::Dark
     } else {
         Appearance::Light

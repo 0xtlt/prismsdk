@@ -9,12 +9,14 @@ use objc2_app_kit::{
     NSAccessibility, NSAccessibilityButtonRole, NSAccessibilityCheckBoxRole,
     NSAccessibilityGroupRole, NSAccessibilityHeadingRole, NSAccessibilityImageRole,
     NSAccessibilityLinkRole, NSAccessibilityListRole, NSAccessibilityRadioButtonRole,
-    NSAccessibilityStaticTextRole, NSAccessibilityTabGroupRole, NSApplication,
+    NSAccessibilityStaticTextRole, NSAccessibilityTabGroupRole, NSAppearance, NSApplication,
     NSApplicationActivationPolicy, NSBackingStoreType, NSBezierPath, NSButton, NSColor,
     NSControlStateValueOff, NSControlStateValueOn, NSControlTextEditingDelegate, NSEvent, NSFont,
     NSFontWeightBold, NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold, NSImage,
-    NSMenu, NSMenuItem, NSResponder, NSScrollView, NSSegmentedControl, NSSwitch, NSTextAlignment,
-    NSTextField, NSTextFieldDelegate, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+    NSImageSymbolConfiguration, NSImageView, NSMenu, NSMenuItem, NSProgressIndicator,
+    NSProgressIndicatorStyle, NSResponder, NSScrollView, NSSegmentedControl, NSSwitch,
+    NSTextAlignment, NSTextField, NSTextFieldDelegate, NSView, NSWindow, NSWindowDelegate,
+    NSWindowStyleMask,
 };
 use objc2_foundation::{
     NSArray, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
@@ -32,6 +34,7 @@ use prism_native::{Insets, NativeRenderer, Viewport, Widgets};
 struct State {
     runtime: Runtime,
     renderer: NativeRenderer<AppKit>,
+    services: crate::services::MacServices,
 }
 
 thread_local! {
@@ -55,6 +58,14 @@ fn dispatch(event: UiEvent) {
     with_state(|s| s.dispatch(event));
 }
 
+/// Opens a deep link (notification or menu bar activity).
+pub(crate) fn open_link(path: &str) {
+    with_state(|s| {
+        let patches = s.runtime.open_link(path);
+        s.commit(patches);
+    });
+}
+
 /// Pops one screen: from a specific stack's Back button, or (⌘[) from the
 /// innermost stack that can go back.
 fn go_back(stack: Option<NodeId>) {
@@ -74,9 +85,17 @@ fn go_back(stack: Option<NodeId>) {
 impl State {
     fn dispatch(&mut self, event: UiEvent) {
         let patches = self.runtime.dispatch(event);
+        self.commit(patches);
+    }
+
+    /// Applies patches, lays out, and hands platform requests to the OS.
+    fn commit(&mut self, patches: Vec<prism_core::Patch>) {
         if !patches.is_empty() {
             self.renderer.apply(&patches);
             self.relayout();
+        }
+        for request in self.runtime.take_requests() {
+            prism_core::PlatformServices::handle(&mut self.services, request);
         }
     }
 
@@ -249,6 +268,26 @@ define_class!(
             dispatch(UiEvent::Change(sender.tag() as NodeId, index));
         }
 
+        /// Every second: countdowns in the window and the menu bar.
+        #[unsafe(method(onTick:))]
+        fn on_tick(&self, _timer: &AnyObject) {
+            with_state(|s| {
+                s.renderer.widgets.tick();
+                s.services.tick();
+            });
+        }
+
+        /// "Open" in a menu bar activity (tag = activity id).
+        #[unsafe(method(onStatusItem:))]
+        fn on_status_item(&self, sender: &NSMenuItem) {
+            let mut link = None;
+            with_state(|s| link = s.services.link_for(sender.tag()));
+            if let Some(link) = link {
+                NSApplication::sharedApplication(self.mtm()).activate();
+                open_link(&link);
+            }
+        }
+
         /// A stack's header Back button (tag = stack id).
         #[unsafe(method(onBack:))]
         fn on_back(&self, sender: &NSButton) {
@@ -350,6 +389,9 @@ pub enum View {
     Tabs(Rc<MacTabs>),
     Scroll(Rc<MacScroll>),
     Toggle(Retained<NSSwitch>),
+    Image(Retained<NSImageView>),
+    Progress(Retained<NSProgressIndicator>),
+    Timer(Retained<NSTextField>),
     Label(Retained<NSTextField>),
     Button(Retained<NSButton>),
     Input(Retained<NSTextField>),
@@ -363,6 +405,9 @@ impl View {
             View::Tabs(t) => &t.container,
             View::Scroll(s) => &s.scroll,
             View::Toggle(t) => t,
+            View::Image(v) => v,
+            View::Progress(v) => v,
+            View::Timer(v) => v,
             View::Label(v) | View::Input(v) => v,
             View::Button(v) => v,
         }
@@ -375,6 +420,10 @@ impl View {
             View::Tabs(t) => t.id,
             View::Scroll(s) => s.document.ivars().id.get(),
             View::Toggle(t) => t.tag() as NodeId,
+            View::Image(v) => v.tag() as NodeId,
+            // Progress bars need no id (no events, no per-node state).
+            View::Progress(_) => 0,
+            View::Timer(v) => v.tag() as NodeId,
             View::Label(v) | View::Input(v) => v.tag() as NodeId,
             View::Button(v) => v.tag() as NodeId,
         }
@@ -389,6 +438,19 @@ pub struct AppKit {
     tab_bars: Vec<Rc<MacTabs>>,
     titles: HashMap<NodeId, String>,
     icons: HashMap<NodeId, String>,
+    /// Countdown labels and their end time (Unix seconds).
+    timers: HashMap<NodeId, (Retained<NSTextField>, f64)>,
+}
+
+impl AppKit {
+    fn tick(&self) {
+        for (label, end) in self.timers.values() {
+            let text = prism_core::format_remaining(*end);
+            if label.stringValue().to_string() != text {
+                label.setStringValue(&NSString::from_str(&text));
+            }
+        }
+    }
 }
 
 impl AppKit {
@@ -500,8 +562,42 @@ impl AppKit {
     }
 }
 
-fn ns_color(c: Color) -> Retained<NSColor> {
+fn plain_color(c: Color) -> Retained<NSColor> {
     NSColor::colorWithSRGBRed_green_blue_alpha(c.r as f64, c.g as f64, c.b as f64, c.a as f64)
+}
+
+/// Adaptive colors become dynamic `NSColor`s, resolved per appearance.
+fn ns_color(c: Color) -> Retained<NSColor> {
+    if c.dark.is_none() {
+        return plain_color(c);
+    }
+    let (light, dark) = (c.light_variant(), c.dark_variant());
+    let provider = block2::RcBlock::new(move |appearance: std::ptr::NonNull<NSAppearance>| {
+        let appearance = unsafe { appearance.as_ref() };
+        let names = unsafe {
+            NSArray::from_slice(&[
+                objc2_app_kit::NSAppearanceNameAqua,
+                objc2_app_kit::NSAppearanceNameDarkAqua,
+            ])
+        };
+        let is_dark = appearance
+            .bestMatchFromAppearancesWithNames(&names)
+            .is_some_and(|n| &*n == unsafe { objc2_app_kit::NSAppearanceNameDarkAqua });
+        let color = plain_color(if is_dark { dark } else { light });
+        std::ptr::NonNull::new(Retained::autorelease_return(color)).expect("color")
+    });
+    unsafe { NSColor::colorWithName_dynamicProvider(None, &provider) }
+}
+
+fn font_weight(style: &Style) -> objc2_app_kit::NSFontWeight {
+    unsafe {
+        match style.font_weight {
+            FontWeight::Regular => NSFontWeightRegular,
+            FontWeight::Medium => NSFontWeightMedium,
+            FontWeight::Semibold => NSFontWeightSemibold,
+            FontWeight::Bold => NSFontWeightBold,
+        }
+    }
 }
 
 fn font(style: &Style) -> Retained<NSFont> {
@@ -546,6 +642,23 @@ impl Widgets for AppKit {
                 let document = PrismView::new(mtm, id);
                 scroll.setDocumentView(Some(&document));
                 View::Scroll(Rc::new(MacScroll { scroll, document }))
+            }
+            NodeKind::Image => {
+                let v = NSImageView::new(mtm);
+                v.setTag(id as isize);
+                View::Image(v)
+            }
+            NodeKind::Progress => {
+                let p = NSProgressIndicator::new(mtm);
+                p.setStyle(NSProgressIndicatorStyle::Bar);
+                p.setIndeterminate(false);
+                p.setMaxValue(1.);
+                View::Progress(p)
+            }
+            NodeKind::Timer => {
+                let l = NSTextField::labelWithString(&empty, mtm);
+                l.setTag(id as isize);
+                View::Timer(l)
             }
             NodeKind::Toggle => {
                 let t = NSSwitch::new(mtm);
@@ -601,7 +714,27 @@ impl Widgets for AppKit {
                 *sc.document.ivars().background.borrow_mut() = style.background.map(ns_color);
                 sc.document.setNeedsDisplay(true);
             }
-            View::Toggle(_) => {}
+            View::Toggle(_) | View::Progress(_) => {}
+            View::Image(v) => {
+                let config = NSImageSymbolConfiguration::configurationWithPointSize_weight(
+                    style.font_size as f64,
+                    font_weight(style),
+                );
+                v.setSymbolConfiguration(Some(&config));
+                v.setContentTintColor(Some(
+                    &style.text_color.map_or_else(NSColor::labelColor, ns_color),
+                ));
+            }
+            View::Timer(l) => {
+                l.setFont(Some(&NSFont::monospacedDigitSystemFontOfSize_weight(
+                    style.font_size as f64,
+                    font_weight(style),
+                )));
+                l.setTextColor(Some(
+                    &style.text_color.map_or_else(NSColor::labelColor, ns_color),
+                ));
+                l.setAlignment(alignment(style.text_align));
+            }
             View::Container(v) | View::Screen(v) | View::Tab(v) => {
                 let iv = v.ivars();
                 *iv.background.borrow_mut() = style.background.map(ns_color);
@@ -627,7 +760,7 @@ impl Widgets for AppKit {
     fn set_text(&mut self, view: &View, text: &str) {
         let s = NSString::from_str(text);
         match view {
-            View::Label(l) => l.setStringValue(&s),
+            View::Label(l) | View::Timer(l) => l.setStringValue(&s),
             View::Input(f) => {
                 // Don't reset the caret when the value already matches (controlled input echo).
                 if f.stringValue().to_string() != text {
@@ -695,6 +828,9 @@ impl Widgets for AppKit {
             View::Input(f) => unsafe { f.setDelegate(None) },
             View::Stack(st) => self.stacks.retain(|s| s.id != st.id),
             View::Tabs(t) => self.tab_bars.retain(|b| b.id != t.id),
+            View::Timer(_) => {
+                self.timers.remove(&view.id());
+            }
             View::Tab(_) => {
                 self.titles.remove(&view.id());
                 self.icons.remove(&view.id());
@@ -721,6 +857,9 @@ impl Widgets for AppKit {
             }
             View::Button(b) => b.fittingSize(),
             View::Toggle(t) => t.fittingSize(),
+            View::Image(v) => v.fittingSize(),
+            View::Timer(l) => l.fittingSize(),
+            View::Progress(_) => NSSize::new(max_width.unwrap_or(120.) as f64, 6.),
             View::Container(_)
             | View::Screen(_)
             | View::Tab(_)
@@ -771,6 +910,11 @@ impl Widgets for AppKit {
 
     fn set_value(&mut self, view: &View, value: f64) {
         match view {
+            View::Progress(p) => p.setDoubleValue(value),
+            View::Timer(l) => {
+                self.timers.insert(view.id(), (l.clone(), value));
+                l.setStringValue(&NSString::from_str(&prism_core::format_remaining(value)));
+            }
             View::Toggle(t) => t.setState(if value != 0. {
                 NSControlStateValueOn
             } else {
@@ -785,6 +929,14 @@ impl Widgets for AppKit {
     }
 
     fn set_icon(&mut self, view: &View, icon: &str) {
+        if let View::Image(v) = view {
+            let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                &NSString::from_str(icon),
+                None,
+            );
+            v.setImage(image.as_deref());
+            return;
+        }
         self.icons.insert(view.id(), icon.to_string());
         for bar in &self.tab_bars {
             self.refresh_tabs(bar);
@@ -961,8 +1113,16 @@ pub fn run(config: AppConfig, init: AppInit) {
     window.center();
 
     let path = std::env::var("PRISM_PATH").unwrap_or_else(|_| "/".into());
-    let mut runtime = Runtime::with_path(&init, &path);
-    let mut renderer = NativeRenderer::new(AppKit {
+    let services = crate::services::MacServices::new(
+        mtm,
+        Retained::into_super(Retained::into_super(target.clone())),
+    );
+    let mut runtime = Runtime::with_capabilities(
+        &init,
+        &path,
+        prism_core::PlatformServices::capabilities(&services),
+    );
+    let renderer = NativeRenderer::new(AppKit {
         mtm,
         target: target.clone(),
         root,
@@ -970,10 +1130,25 @@ pub fn run(config: AppConfig, init: AppInit) {
         tab_bars: Vec::new(),
         titles: HashMap::new(),
         icons: HashMap::new(),
+        timers: HashMap::new(),
     });
-    renderer.apply(&runtime.render());
-    let mut state = State { runtime, renderer };
+    let first = runtime.render();
+    let mut state = State {
+        runtime,
+        renderer,
+        services,
+    };
+    state.commit(first);
     state.relayout();
+    let _ticker = unsafe {
+        objc2_foundation::NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+            1.0,
+            &target,
+            sel!(onTick:),
+            None,
+            true,
+        )
+    };
     STATE.with(|cell| *cell.borrow_mut() = Some(state));
 
     window.makeKeyAndOrderFront(None);
@@ -1041,6 +1216,11 @@ fn run_automation(mtm: MainThreadMarker) {
         }
     }
 
+    with_state(|s| {
+        for title in s.services.status_titles() {
+            println!("prism-macos: menu bar item: {title:?}");
+        }
+    });
     if let Ok(path) = std::env::var("PRISM_SNAPSHOT") {
         root.displayIfNeeded();
         let bounds = root.bounds();

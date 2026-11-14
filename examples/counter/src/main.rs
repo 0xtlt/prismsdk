@@ -3,10 +3,15 @@
 //!   mise run macos   → native AppKit window
 //!   mise run ios     → native UIKit app in the simulator
 //!
-//! Three tabs, each with its own navigation stack:
-//! - Todos:      `/` and `/todos/:id`, a shared `Store` entity.
+//! Four tabs, each with its own navigation stack:
+//! - Todos:      `/` and `/todos/:id`, a shared `Store` entity, plus a widget.
+//! - Focus:      a timer as a Live Activity (lock screen + Dynamic Island),
+//!   and a notification when it ends.
 //! - Components: the `prism::ui` gallery, custom vs native controls.
-//! - Settings:   live theme changes (dark mode, accent, shape, native controls).
+//! - Settings:   live theming (system/light/dark, accent, shape, native controls).
+
+mod focus;
+mod widgets;
 
 use prism::prelude::*;
 use prism::ui::{self, Theme};
@@ -16,10 +21,12 @@ fn main() {
         .title("Prism")
         .size(460., 720.)
         .run(|cx| {
-            ui::set_theme(cx, Theme::light());
+            ui::set_theme(cx, Theme::system());
             let store = cx.new_entity(|_| Store::new());
+            widgets::register(cx, store);
             Router::new()
                 .tab("Todos", "checklist", "/")
+                .tab("Focus", "timer", "/focus")
                 .tab("Components", "square.grid.2x2", "/components")
                 .tab("Settings", "gearshape", "/settings")
                 .route("/", move |cx, _| cx.new_entity(|cx| Home::new(store, cx)))
@@ -29,6 +36,7 @@ fn main() {
                 })
                 .route("/components", |cx, _| cx.new_entity(|_| Gallery::default()))
                 .route("/settings", |cx, _| cx.new_entity(|_| Settings))
+                .route("/focus", |cx, _| cx.new_entity(|_| focus::Focus::default()))
                 .build(cx)
         });
 }
@@ -41,15 +49,15 @@ fn page(title: impl Into<String>, cx: &App) -> (prism::Screen, prism::Scroll) {
 
 // --- Shared state ---------------------------------------------------------------------
 
-struct Todo {
-    id: u64,
-    title: String,
-    done: bool,
+pub(crate) struct Todo {
+    pub id: u64,
+    pub title: String,
+    pub done: bool,
 }
 
 /// App data, shared by every screen. Not a view: it never renders.
-struct Store {
-    todos: Vec<Todo>,
+pub(crate) struct Store {
+    pub todos: Vec<Todo>,
     next_id: u64,
 }
 
@@ -69,7 +77,7 @@ impl Store {
         self.todos.iter().find(|t| t.id == id)
     }
 
-    fn open(&self) -> usize {
+    pub fn open(&self) -> usize {
         self.todos.iter().filter(|t| !t.done).count()
     }
 
@@ -450,11 +458,7 @@ impl Render for Settings {
             body.child(
                 ui::card()
                     .child(ui::heading("Appearance"))
-                    .child(ui::switch("Dark mode", t.dark).on_change(update(|th, v| {
-                        let keep = (th.accent, th.radius, th.prefer_native);
-                        *th = if v != 0. { Theme::dark() } else { Theme::light() };
-                        (th.accent, th.radius, th.prefer_native) = keep;
-                    })))
+                    .child(appearance_picker(&t))
                     .child(ui::divider())
                     .child(
                         ui::switch("Use native controls", t.prefer_native)
@@ -492,4 +496,54 @@ impl Render for Settings {
             ),
         )
     }
+}
+
+/// System / Light / Dark, as a group of toggle buttons.
+fn appearance_picker(t: &Theme) -> prism::Div {
+    let current = if t.follows_system {
+        0
+    } else if t.dark {
+        2
+    } else {
+        1
+    };
+    div()
+        .flex_row()
+        .gap(8.)
+        .accessibility_role(Role::Group)
+        .accessibility_label("Appearance")
+        .children(
+            ["System", "Light", "Dark"]
+                .into_iter()
+                .enumerate()
+                .map(move |(i, name)| {
+                    ui::button(name)
+                        .variant(if i == current {
+                            ui::Variant::Primary
+                        } else {
+                            ui::Variant::Secondary
+                        })
+                        .small()
+                        .on_click(std::rc::Rc::new(move |_: &ClickEvent, app: &mut App| {
+                            ui::update_theme(app, |th| {
+                                let keep =
+                                    (th.accent, th.radius, th.prefer_native, th.follows_system);
+                                *th = match i {
+                                    0 => Theme::system(),
+                                    1 => Theme::light(),
+                                    _ => Theme::dark(),
+                                };
+                                th.radius = keep.1;
+                                th.prefer_native = keep.2;
+                                // Keep a custom accent, unless it was the theme default.
+                                if !keep.3
+                                    && keep.0 != Theme::light().accent
+                                    && keep.0 != Theme::dark().accent
+                                {
+                                    th.accent = keep.0;
+                                }
+                            })
+                        }))
+                }),
+        )
 }

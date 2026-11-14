@@ -27,6 +27,7 @@ pub enum Role {
     Navigation,
     Main,
     Alert,
+    ProgressBar,
 }
 
 impl Role {
@@ -49,6 +50,7 @@ impl Role {
             Role::Navigation => "navigation",
             Role::Main => "main",
             Role::Alert => "alert",
+            Role::ProgressBar => "progressbar",
         }
     }
 

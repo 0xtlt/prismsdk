@@ -1,0 +1,207 @@
+//! Focus timer: a Live Activity on the lock screen and in the Dynamic Island,
+//! plus a notification when the session ends. On platforms without Live
+//! Activities it falls back automatically (menu bar on macOS, live banner on
+//! the web).
+
+use std::time::{Duration, SystemTime};
+
+use prism::prelude::*;
+use prism::ui::{self, Theme};
+use prism::{ActivityId, Color};
+
+pub struct Focus {
+    minutes: u64,
+    running: Option<Session>,
+}
+
+struct Session {
+    activity: ActivityId,
+    ends: SystemTime,
+    total: Duration,
+}
+
+impl Default for Focus {
+    fn default() -> Self {
+        Focus {
+            minutes: 25,
+            running: None,
+        }
+    }
+}
+
+/// Describes the activity for a session ending at `ends`.
+fn activity(ends: SystemTime, total: Duration, accent: Color) -> Activity {
+    let minutes = total.as_secs() / 60;
+    Activity::new("focus")
+        .summary(format!("Focus session, {minutes} minutes"))
+        .link("/focus")
+        .tint(adaptive(rgb(0xFFFFFF), rgb(0x1C1C22)))
+        .stale_after(ends)
+        // Lock screen / banner.
+        .lock_screen(
+            div()
+                .flex_row()
+                .items_center()
+                .gap(12.)
+                .p(16.)
+                .child(
+                    image("brain.head.profile")
+                        .text_size(28.)
+                        .text_color(accent),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .gap(2.)
+                        .child(
+                            text("Focus")
+                                .semibold()
+                                .text_color(adaptive(rgb(0x1C1C28), rgb(0xF2F2F7))),
+                        )
+                        .child(
+                            text(format!("{minutes}-minute session"))
+                                .text_size(13.)
+                                .text_color(adaptive(rgb(0x6E6E80), rgb(0x9A9AA8))),
+                        ),
+                )
+                .child(timer(ends).text_size(28.).bold().text_color(accent)),
+        )
+        // Dynamic Island: compact, minimal, expanded.
+        .compact(
+            image("brain.head.profile").text_color(accent),
+            timer(ends).semibold().text_color(accent),
+        )
+        .minimal(image("timer").text_color(accent))
+        .expanded(
+            image("brain.head.profile")
+                .text_size(24.)
+                .text_color(accent),
+            timer(ends).text_size(24.).bold().text_color(accent),
+            text("Focus").semibold().text_color(rgb(0xFFFFFF)),
+            text(format!("Stay on task — {minutes} min session"))
+                .text_size(13.)
+                .text_color(rgb(0xB0B0BC)),
+        )
+}
+
+impl Focus {
+    fn start(&mut self, cx: &mut Context<Self>) {
+        let total = Duration::from_secs(self.minutes * 60);
+        let ends = SystemTime::now() + total;
+        let accent = Theme::of(cx).accent;
+        let id = cx.start_activity(activity(ends, total, accent));
+        cx.send_notification(
+            Notification::new("Focus session complete")
+                .id("focus-done")
+                .body("Nice work. Time for a short break.")
+                .link("/focus")
+                .after(total),
+        );
+        self.running = Some(Session {
+            activity: id,
+            ends,
+            total,
+        });
+    }
+
+    fn extend(&mut self, cx: &mut Context<Self>) {
+        let accent = Theme::of(cx).accent;
+        if let Some(s) = &mut self.running {
+            s.ends += Duration::from_secs(5 * 60);
+            s.total += Duration::from_secs(5 * 60);
+            cx.update_activity(s.activity, activity(s.ends, s.total, accent));
+            let left = s.ends.duration_since(SystemTime::now()).unwrap_or_default();
+            cx.send_notification(
+                Notification::new("Focus session complete")
+                    .id("focus-done")
+                    .body("Nice work. Time for a short break.")
+                    .link("/focus")
+                    .after(left),
+            );
+        }
+    }
+
+    fn stop(&mut self, cx: &mut Context<Self>) {
+        if let Some(s) = self.running.take() {
+            cx.end_activity(s.activity, None, true);
+            cx.cancel_notification("focus-done");
+        }
+    }
+}
+
+impl Render for Focus {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = Theme::of(cx);
+        let caps = cx.capabilities();
+        let where_ = if caps.dynamic_island {
+            "Lock screen and Dynamic Island"
+        } else if caps.live_activities {
+            "Outside the app (menu bar or live banner)"
+        } else {
+            "In the app"
+        };
+        let body = scroll().p(20.).gap(20.);
+        let body = match &self.running {
+            Some(s) => body.child(
+                ui::card()
+                    .child(ui::heading("Focusing"))
+                    .child(timer(s.ends).text_size(56.).bold().text_color(t.accent))
+                    .child(
+                        text(format!("Shown live: {where_}"))
+                            .text_size(13.)
+                            .text_color(t.muted),
+                    )
+                    .child(
+                        div()
+                            .flex_row()
+                            .gap(8.)
+                            .child(
+                                ui::button("+5 min")
+                                    .secondary()
+                                    .on_click(cx.listener(|this, _, cx| this.extend(cx))),
+                            )
+                            .child(
+                                ui::button("Stop")
+                                    .danger()
+                                    .on_click(cx.listener(|this, _, cx| this.stop(cx))),
+                            ),
+                    ),
+            ),
+            None => body.child(
+                ui::card()
+                    .child(ui::heading("New session"))
+                    .child(
+                        div()
+                            .flex_row()
+                            .gap(8.)
+                            .accessibility_role(Role::Group)
+                            .accessibility_label("Duration")
+                            .children([1u64, 5, 25, 50].into_iter().map(|m| {
+                                ui::button(format!("{m} min"))
+                                    .small()
+                                    .variant(if m == self.minutes {
+                                        ui::Variant::Primary
+                                    } else {
+                                        ui::Variant::Secondary
+                                    })
+                                    .on_click(cx.listener(move |this, _, _| this.minutes = m))
+                            })),
+                    )
+                    .child(
+                        ui::button("Start focus")
+                            .large()
+                            .full_width()
+                            .on_click(cx.listener(|this, _, cx| this.start(cx))),
+                    )
+                    .child(
+                        text(format!(
+                            "Live Activity: {where_}. A notification arrives when it ends."
+                        ))
+                        .text_size(13.)
+                        .text_color(t.muted),
+                    ),
+            ),
+        };
+        screen("Focus").bg(t.background).child(body)
+    }
+}

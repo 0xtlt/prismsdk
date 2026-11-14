@@ -26,6 +26,9 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
     let w = &mut c;
     match kind {
         NodeKind::Text => w.push_str("display:block;white-space:pre-wrap;overflow-wrap:anywhere;"),
+        NodeKind::Timer => w.push_str("display:block;font-variant-numeric:tabular-nums;"),
+        NodeKind::Image => w.push_str("display:inline-flex;"),
+        NodeKind::Progress => w.push_str("display:block;"),
         _ => {
             let dir = match s.direction {
                 FlexDirection::Row => "row",
@@ -121,6 +124,9 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
             TextAlign::Right => "right",
         };
         let _ = write!(w, "text-align:{ta};");
+    }
+    if let (NodeKind::Progress, Some(c)) = (kind, s.text_color) {
+        let _ = write!(w, "accent-color:{};", c.to_css());
     }
     match kind {
         NodeKind::Button => {

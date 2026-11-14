@@ -5,12 +5,19 @@
 //! node they are set on (no inheritance), so the web and native backends agree.
 
 /// An sRGB color with straight alpha, components in `0.0..=1.0`.
+///
+/// A color can be **adaptive**: `Color::adaptive(rgb(0xFFFFFF), rgb(0x1C1C22))`
+/// carries a dark-mode variant that every backend resolves natively (CSS
+/// `light-dark()`, dynamic `UIColor`/`NSColor`, SwiftUI `colorScheme` in
+/// widgets and Live Activities), so it follows the system appearance live.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Color {
     pub r: f32,
     pub g: f32,
     pub b: f32,
     pub a: f32,
+    /// Dark-mode variant `[r, g, b, a]`, if the color adapts.
+    pub dark: Option<[f32; 4]>,
 }
 
 impl Color {
@@ -19,29 +26,90 @@ impl Color {
         g: 0.,
         b: 0.,
         a: 1.,
+        dark: None,
     };
     pub const WHITE: Color = Color {
         r: 1.,
         g: 1.,
         b: 1.,
         a: 1.,
+        dark: None,
     };
     pub const TRANSPARENT: Color = Color {
         r: 0.,
         g: 0.,
         b: 0.,
         a: 0.,
+        dark: None,
     };
 
     pub fn with_alpha(self, a: f32) -> Color {
-        Color { a, ..self }
+        Color {
+            a,
+            dark: self.dark.map(|[r, g, b, _]| [r, g, b, a]),
+            ..self
+        }
     }
 
-    /// CSS `rgba(...)` notation.
-    pub fn to_css(self) -> String {
-        let c = |v: f32| (v.clamp(0., 1.) * 255.).round() as u8;
-        format!("rgba({},{},{},{})", c(self.r), c(self.g), c(self.b), self.a)
+    /// A color with a light and a dark variant, resolved by the platform.
+    pub fn adaptive(light: Color, dark: Color) -> Color {
+        Color {
+            dark: Some([dark.r, dark.g, dark.b, dark.a]),
+            ..light
+        }
     }
+
+    /// The light (or only) variant.
+    pub fn light_variant(self) -> Color {
+        Color { dark: None, ..self }
+    }
+
+    /// The dark variant (the color itself if it does not adapt).
+    pub fn dark_variant(self) -> Color {
+        match self.dark {
+            Some([r, g, b, a]) => Color {
+                r,
+                g,
+                b,
+                a,
+                dark: None,
+            },
+            None => self,
+        }
+    }
+
+    /// CSS notation; adaptive colors use `light-dark()`.
+    pub fn to_css(self) -> String {
+        let one = |c: Color| {
+            let v = |v: f32| (v.clamp(0., 1.) * 255.).round() as u8;
+            format!("rgba({},{},{},{})", v(c.r), v(c.g), v(c.b), c.a)
+        };
+        match self.dark {
+            Some(_) => format!(
+                "light-dark({}, {})",
+                one(self.light_variant()),
+                one(self.dark_variant())
+            ),
+            None => one(self),
+        }
+    }
+
+    /// `#RRGGBBAA` of one variant.
+    pub fn hex(self) -> String {
+        let v = |v: f32| (v.clamp(0., 1.) * 255.).round() as u8;
+        format!(
+            "#{:02X}{:02X}{:02X}{:02X}",
+            v(self.r),
+            v(self.g),
+            v(self.b),
+            v(self.a)
+        )
+    }
+}
+
+/// `adaptive(light, dark)`: shorthand for [`Color::adaptive`].
+pub fn adaptive(light: Color, dark: Color) -> Color {
+    Color::adaptive(light, dark)
 }
 
 /// `rgb(0xRRGGBB)`.
@@ -57,6 +125,7 @@ pub fn rgba(hex: u32, a: f32) -> Color {
         g: ch(8),
         b: ch(0),
         a,
+        dark: None,
     }
 }
 

@@ -36,6 +36,14 @@ pub enum NodeKind {
     Tabs,
     /// One tab: its text is the title, its icon an SF Symbol name.
     Tab,
+    /// A symbol image: its icon is an SF Symbol name (a glyph on the web).
+    /// Size from `text_size`, tint from `text_color`.
+    Image,
+    /// A determinate progress bar, value in `0.0..=1.0`.
+    Progress,
+    /// A countdown to a moment (value: Unix seconds), ticking by itself —
+    /// even in widgets and Live Activities, where the app is not running.
+    Timer,
 }
 
 impl NodeKind {
@@ -51,6 +59,9 @@ impl NodeKind {
             NodeKind::Scroll => "scroll",
             NodeKind::Tabs => "tabs",
             NodeKind::Tab => "tab",
+            NodeKind::Image => "image",
+            NodeKind::Progress => "progress",
+            NodeKind::Timer => "timer",
         }
     }
 
@@ -61,7 +72,8 @@ impl NodeKind {
             NodeKind::Toggle => Some(Role::Switch),
             NodeKind::Tabs => Some(Role::TabList),
             NodeKind::Tab => Some(Role::TabPanel),
-            NodeKind::Text => Some(Role::Text),
+            NodeKind::Text | NodeKind::Timer => Some(Role::Text),
+            NodeKind::Progress => Some(Role::ProgressBar),
             _ => None,
         }
     }
@@ -138,6 +150,9 @@ pub struct VNode {
     /// Numeric value: toggle state (0/1), selected tab index.
     pub value: Option<f64>,
     pub a11y: Accessibility,
+    /// Deep link (`/todos/1`): navigates in the app, opens it from widgets,
+    /// Live Activities and notifications.
+    pub link: Option<String>,
     pub key: Option<String>,
     pub children: Vec<Element>,
     pub on_click: Option<Handler<ClickEvent>>,
@@ -157,6 +172,7 @@ impl VNode {
             icon: String::new(),
             value: None,
             a11y: Accessibility::default(),
+            link: None,
             key: None,
             children: Vec::new(),
             on_click: None,
@@ -318,6 +334,18 @@ builder!(
     /// One tab of a [`Tabs`] bar. See [`tab`].
     Tab
 );
+builder!(
+    /// A symbol image. See [`image`].
+    Image
+);
+builder!(
+    /// A progress bar. See [`progress`].
+    Progress
+);
+builder!(
+    /// A self-updating countdown. See [`timer`].
+    Timer
+);
 
 /// A flex container, laid out as a column by default.
 pub fn div() -> Div {
@@ -347,6 +375,13 @@ impl ParentElement for Div {
 }
 
 impl Div {
+    /// Makes the container a link to an app path. Works everywhere: in the app
+    /// (navigates), in widgets and Live Activities (opens the app there).
+    pub fn link(mut self, path: impl Into<String>) -> Self {
+        self.0.link = Some(path.into());
+        self
+    }
+
     /// Makes the whole container clickable.
     pub fn on_click(mut self, handler: Handler<ClickEvent>) -> Self {
         self.0.on_click = Some(handler);
@@ -501,5 +536,57 @@ pub fn tab(title: impl Into<String>, icon: impl Into<String>) -> Tab {
 impl ParentElement for Tab {
     fn children_mut(&mut self) -> &mut Vec<Element> {
         &mut self.0.children
+    }
+}
+
+/// An SF Symbol (`"checkmark.circle.fill"`). Decorative unless given an
+/// `accessibility_label`. On the web, common symbols map to glyphs.
+pub fn image(symbol: impl Into<String>) -> Image {
+    let mut n = VNode::new(NodeKind::Image);
+    n.icon = symbol.into();
+    n.a11y.hidden = true;
+    Image(n)
+}
+
+impl Image {
+    /// Announces the image (it is decorative by default).
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.0.a11y.hidden = false;
+        self.0.a11y.role = Some(Role::Image);
+        self.0.a11y.label = Some(label.into());
+        self
+    }
+}
+
+/// A progress bar, `fraction` in `0.0..=1.0`.
+pub fn progress(fraction: f64) -> Progress {
+    let mut n = VNode::new(NodeKind::Progress);
+    n.value = Some(fraction.clamp(0., 1.));
+    n.a11y.value = Some(format!("{}%", (fraction.clamp(0., 1.) * 100.).round()));
+    Progress(n)
+}
+
+/// A countdown to `until` that keeps ticking on its own (`12:34`).
+pub fn timer(until: std::time::SystemTime) -> Timer {
+    let secs = until
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0., |d| d.as_secs_f64());
+    let mut n = VNode::new(NodeKind::Timer);
+    n.value = Some(secs);
+    n.text = format_remaining(secs);
+    Timer(n)
+}
+
+/// `m:ss` (or `h:mm:ss`) until the Unix time `end`.
+pub fn format_remaining(end: f64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0., |d| d.as_secs_f64());
+    let left = (end - now).max(0.).round() as u64;
+    let (h, m, s) = (left / 3600, (left / 60) % 60, left % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
     }
 }

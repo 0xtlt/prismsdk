@@ -605,3 +605,132 @@ fn deep_link_selects_the_matching_tab_and_navigating_to_a_root_switches_tab() {
     rt.render();
     assert_eq!(rt.app.current_path(), Some("/"));
 }
+
+// --- Surfaces: widgets, live activities, notifications, links ----------------
+
+use crate::{
+    Activity, Notification, PlatformRequest, Widget, WidgetFamily, adaptive, image, progress,
+    surfaces::snapshot_one,
+};
+
+#[test]
+fn snapshots_serialize_compact_json_with_adaptive_colors() {
+    let mut app = App::new();
+    let node = snapshot_one(
+        &mut app,
+        div()
+            .flex_row()
+            .gap(8.)
+            .bg(adaptive(rgb(0xFFFFFF), rgb(0x000000)))
+            .link("/todos/1")
+            .child(image("checkmark.circle.fill").text_color(rgb(0x00FF00)))
+            .child(text("Hi \"you\"").bold())
+            .child(progress(0.5)),
+    );
+    let json = node.to_json();
+    assert_eq!(
+        json,
+        r##"{"k":"v","d":1,"g":8,"bg":["#FFFFFFFF","#000000FF"],"l":"/todos/1","c":[{"k":"i","fg":"#00FF00FF","s":"checkmark.circle.fill","ah":1},{"k":"t","fw":3,"s":"Hi \"you\""},{"k":"p","v":0.5}]}"##
+    );
+}
+
+struct Counter2 {
+    n: u32,
+}
+
+impl Render for Counter2 {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        div().child(button("+").on_click(cx.listener(|this, _, _| this.n += 1)))
+    }
+}
+
+#[test]
+fn widgets_rerender_from_state_once_per_event() {
+    let (mut rt, first) = boot(|cx| {
+        let root = cx.new_entity(|_| Counter2 { n: 0 });
+        cx.register_widget(
+            Widget::new("count", "Count")
+                .families(&[WidgetFamily::Small])
+                .render(move |cx, _| text(format!("n={}", root.read(cx).n))),
+        );
+        cx.reload_widgets_on(&root);
+        cx.set_root(root);
+    });
+    let reqs = rt.take_requests();
+    assert!(
+        matches!(&reqs[..], [PlatformRequest::ReloadWidgets(w)] if w[0].families[0].1.contains("n=0"))
+    );
+    assert!(rt.take_requests().is_empty(), "nothing new");
+    rt.dispatch(UiEvent::Click(find_text(&first, "+")));
+    let reqs = rt.take_requests();
+    assert!(
+        matches!(&reqs[..], [PlatformRequest::ReloadWidgets(w)] if w[0].families[0].1.contains("n=1"))
+    );
+}
+
+#[test]
+fn activities_and_notifications_become_requests() {
+    let mut app = App::new();
+    let id = app.start_activity(
+        Activity::new("focus")
+            .summary("Focus · 25:00")
+            .compact(image("timer"), text("25:00"))
+            .lock_screen(text("Focus")),
+    );
+    app.send_notification(Notification::new("Done").body("Take a break").link("/"));
+    app.end_activity(id, None, true);
+    let reqs = app.take_requests();
+    match &reqs[0] {
+        PlatformRequest::StartActivity { kind, content, .. } => {
+            assert_eq!(kind, "focus");
+            let json = content.to_json();
+            assert!(
+                json.contains(r#""cl":{"k":"i""#) && json.contains(r#""sm":"Focus · 25:00""#),
+                "{json}"
+            );
+            assert!(json.len() < 4096, "fits ActivityKit's 4 KB limit");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(&reqs[1], PlatformRequest::Notify(n) if n.link.as_deref() == Some("/")));
+    assert!(matches!(
+        &reqs[2],
+        PlatformRequest::EndActivity {
+            immediately: true,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn links_navigate_in_app_and_deep_links_open_screens() {
+    struct Linker;
+    impl Render for Linker {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            screen("Home").child(div().link("/items/4").child(text("go")))
+        }
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let r = Router::new()
+            .route("/", |cx, _| cx.new_entity(|_| Linker))
+            .route("/items/:id", |cx, p| {
+                let id = p.parse("id").unwrap_or(0);
+                cx.new_entity(move |_| Item(id))
+            })
+            .build(cx);
+        cx.set_root(r);
+    });
+    let mut rt = Runtime::new(&init);
+    let first = rt.render();
+    let row = first
+        .iter()
+        .find_map(|p| match p {
+            Patch::SetAccessibility { id, a11y } if a11y.role == Some(Role::Link) => Some(*id),
+            _ => None,
+        })
+        .expect("a link role");
+    rt.dispatch(UiEvent::Click(row));
+    assert_eq!(rt.app.current_path(), Some("/items/4"));
+    rt.open_link("/items/9");
+    assert_eq!(rt.app.current_path(), Some("/items/9"));
+}

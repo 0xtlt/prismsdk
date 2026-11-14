@@ -5,6 +5,8 @@
 
 #[cfg(target_os = "macos")]
 mod imp;
+#[cfg(target_os = "macos")]
+mod services;
 
 #[cfg(target_os = "macos")]
 pub use imp::run;

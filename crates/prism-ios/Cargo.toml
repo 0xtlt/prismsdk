@@ -13,3 +13,7 @@ objc2-foundation.workspace = true
 objc2-ui-kit.workspace = true
 objc2-quartz-core.workspace = true
 objc2-core-foundation.workspace = true
+block2.workspace = true
+
+[build-dependencies]
+prism-apple-build.workspace = true

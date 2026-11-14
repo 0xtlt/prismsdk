@@ -6,7 +6,7 @@ Write a UI once in Rust (GPUI-style API), ship it as:
 |---|---|---|
 | **Web** | Server-side Rust → HTML/CSS + ~100 lines of JS receiving DOM patches over a WebSocket. **No WASM.** | `mise run web` → http://localhost:3000 |
 | **macOS** | Real AppKit views (`NSView`, `NSTextField`, `NSButton`) | `mise run macos` |
-| **iOS** | Real UIKit views (`UIView`, `UILabel`, `UIButton`, `UITextField`), UIScene lifecycle | `mise run ios` |
+| **iOS** | Real UIKit views (`UIView`, `UILabel`, `UIButton`, `UITextField`), UIScene lifecycle, widgets + Dynamic Island | `mise run ios` |
 
 ```rust
 use prism::prelude::*;
@@ -63,6 +63,45 @@ Three levels of customization:
 3. **Replace a component app-wide**: `Theme::light().override_component(|b: ui::Button, cx| my_button(b, cx))`, or implement `ui::Component` for your own and register it with `prism_ui::component!(MyThing)`.
 
 Custom or native: `ui::button("Save").native()` / `ui::switch(..).native()` per instance, or `Theme::prefer_native(true)` everywhere (UIButton/UISwitch, NSButton/NSSwitch, `<button>`/`<input role=switch>`). Raw native primitives remain available: `button()`, `toggle()`, `text_input()`.
+
+## Widgets, Live Activities, Dynamic Island, notifications
+
+System surfaces are described with the **same elements as the UI**, plus `image("sf.symbol")`, `progress(0.4)`, `timer(until)` (counts down by itself, even when the app is not running) and `div().link("/path")` (deep link everywhere):
+
+```rust
+// A home-screen widget, re-rendered whenever `store` changes.
+cx.register_widget(
+    Widget::new("todos", "Todos")
+        .families(&[WidgetFamily::Small, WidgetFamily::Medium])
+        .link("/")
+        .render(move |cx, family| text(format!("{} open", store.read(cx).open()))),
+);
+cx.reload_widgets_on(&store);
+
+// A Live Activity: lock screen + Dynamic Island (compact, minimal, expanded).
+let id = cx.start_activity(
+    Activity::new("focus")
+        .summary("Focus session, 25 minutes")
+        .compact(image("brain.head.profile"), timer(ends))
+        .minimal(image("timer"))
+        .lock_screen(div().flex_row().child(text("Focus")).child(timer(ends)))
+        .link("/focus"),
+);
+cx.update_activity(id, …);  cx.end_activity(id, None, true);
+
+// A local notification that opens a screen when tapped.
+cx.send_notification(Notification::new("Done").body("Take a break").link("/focus").after(total));
+```
+
+| | iOS | macOS | Web | Android (planned) |
+|---|---|---|---|---|
+| Widgets | WidgetKit | WidgetKit (`mise run macos-app`) | — | Glance |
+| Live Activities | lock screen + **Dynamic Island** | menu bar item with live countdown | in-page live banner (`aria-live`) | Live Updates notification |
+| Notifications | UserNotifications | UserNotifications (bundled app) | Notification API / toast | NotificationCompat |
+
+How it works: Prism resolves the elements into a static snapshot (compact JSON, under ActivityKit's 4 KB limit). A **generic SwiftUI renderer** shipped with Prism (`platform/apple/Extension`) draws it in a WidgetKit extension. `scripts/ios-run.sh` generates that extension from the app's registered widgets, then builds and signs it with the App Group. The Rust app talks to WidgetKit/ActivityKit/UserNotifications through a small Swift bridge linked automatically (`crates/prism-apple-build`). Platforms implement `PlatformServices`; apps query `cx.capabilities()` instead of checking the OS.
+
+**Light & dark**: colors can be adaptive, `adaptive(rgb(0xFFFFFF), rgb(0x1C1C22))`, resolved natively everywhere: CSS `light-dark()`, dynamic `UIColor`/`NSColor`, SwiftUI color scheme in widgets and Live Activities. `Theme::system()` makes the whole component library follow the system appearance live.
 
 ## Navigation
 
@@ -145,4 +184,5 @@ mise run check      # type-check host, web and iOS-simulator builds
 ## Status (v0.1)
 
 Primitives: `div`, `text`, `button`, `text_input`, `toggle`, `scroll`, `screen`, `Router` (stacks + tabs). Component library `prism::ui`. Accessibility on all backends. Light/dark appearance.
-Not yet: modals/sheets, images, timers/async, animations, Android/Windows/Linux backends.
+Widgets, Live Activities (Dynamic Island), notifications, adaptive light/dark colors, SF Symbols, progress bars, self-updating timers.
+Not yet: modals/sheets, bitmap images, app timers/async tasks (an activity is not ended automatically when its countdown reaches zero), animations, Android/Windows/Linux backends.
