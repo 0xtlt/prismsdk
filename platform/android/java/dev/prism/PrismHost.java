@@ -61,6 +61,8 @@ public final class PrismHost {
     static native void nativeWake();
     static native void nativeBackground(String task, String info);
     static native void nativeBackgroundExpired(String task);
+    /** The car (PrismCarService): `connected` (1/0), `select` (id), `back` (depth). */
+    static native void nativeCarEvent(String kind, long value, String info);
 
     /** The application (also set when a background job starts without the Activity). */
     static android.content.Context context;
@@ -101,6 +103,14 @@ public final class PrismHost {
         } catch (JSONException ignored) {
         }
         return o;
+    }
+
+    /** The car's templates: PrismCarService exists only in apps with car screens. */
+    static void car(String json) {
+        try {
+            Class.forName("dev.prism.PrismCarService").getDeclaredMethod("set", String.class).invoke(null, json);
+        } catch (ReflectiveOperationException ignored) {
+        }
     }
 
     /** From Rust: background task `task` is done. */
@@ -240,6 +250,7 @@ public final class PrismHost {
             case "bg_schedule": PrismJob.schedule(context, p); return;
             case "activity": PrismSurface.activity(context, p, false); return;
             case "widgets": PrismWidget.reload(context, p.getJSONArray("snaps")); return;
+            case "car": car(p.getString("json")); return;
             case "activity_end": PrismSurface.activity(context, p, true); return;
             case "env": setEnvironment(p); return;
             case "appearance": appearance = p.optString("mode", "system"); restyle(); return;

@@ -117,6 +117,12 @@ fi
 # 2. Describe the app's widgets (host build) and generate the extension entry point.
 cargo build -q -p "$PKG"
 HOST_BIN="$TARGET_DIR/debug/$PKG"
+# CarPlay (cx.register_car): a template scene. CarPlay only shows apps with an
+# entitlement Apple grants on request (com.apple.developer.carplay-driving-task):
+# devices get it from the provisioning profile; the simulator refuses to launch
+# an app claiming it without one.
+CAR=0
+[[ "$OS" == ios ]] && CAR="$(PRISM_DESCRIBE=car "$HOST_BIN" 2>/dev/null || echo 0)"
 if [[ $WIDGETS == 1 ]]; then
   PRISM_DESCRIBE=widgets "$HOST_BIN" > "$GEN/widgets.json"
   python3 "$PLATFORM/apple/generate_widgets.py" "$GEN/widgets.json" "$OS" > "$GEN/Generated.swift"
@@ -314,9 +320,21 @@ else cat <<'SCENE'
         <key>UISceneConfigurationName</key><string>Default</string>
         <key>UISceneDelegateClassName</key><string>PrismSceneDelegate</string>
       </dict></array>
+SCENE
+if [[ "$CAR" == 1 ]]; then cat <<'CARPLAY'
+      <key>CPTemplateApplicationSceneSessionRoleApplication</key>
+      <array><dict>
+        <key>UISceneConfigurationName</key><string>CarPlay</string>
+        <key>UISceneClassName</key><string>CPTemplateApplicationScene</string>
+        <key>UISceneDelegateClassName</key><string>PrismCarPlaySceneDelegate</string>
+      </dict></array>
+CARPLAY
+fi
+cat <<'SCENE_END'
     </dict>
   </dict>
-SCENE
+SCENE_END
+[[ "$CAR" == 1 ]] && echo "  <key>PrismCarPlay</key><true/>"
 fi )
 </dict>
 </plist>

@@ -13,6 +13,7 @@ const FILES: &[(&str, &str)] = files![
     "scripts/ios-run.sh",
     "scripts/macos-app.sh",
     "scripts/android-run.sh",
+    "scripts/android-deps.py",
     "platform/apple/app-icon.sh",
     "platform/apple/generate_widgets.py",
     "platform/apple/Bridge/PrismBridge.swift",
@@ -27,6 +28,7 @@ const FILES: &[(&str, &str)] = files![
     "platform/android/java/dev/prism/PrismLayout.java",
     "platform/android/java/dev/prism/PrismSurface.java",
     "platform/android/java/dev/prism/PrismWidget.java",
+    "platform/android/car/dev/prism/PrismCarService.java",
 ];
 
 /// Writes the files (if needed) and returns the platform directory, laid out

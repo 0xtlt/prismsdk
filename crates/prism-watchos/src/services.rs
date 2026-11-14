@@ -31,6 +31,7 @@ impl WatchServices {
         let notifications = unsafe { prism_bridge_init() };
         WatchServices {
             caps: Capabilities {
+                car: false,
                 notifications,
                 location: true,
                 motion: true,
@@ -85,7 +86,8 @@ impl PlatformServices for WatchServices {
             | PlatformRequest::EndActivity { .. }
             | PlatformRequest::SetTray(_)
             | PlatformRequest::RemoveTray(_)
-            | PlatformRequest::SetAppMenu(_) => {}
+            | PlatformRequest::SetAppMenu(_)
+            | PlatformRequest::SetCar(_) => {}
         }
     }
 }

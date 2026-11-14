@@ -167,6 +167,7 @@ public class PrismActivity extends Activity {
                     : type == android.content.res.Configuration.UI_MODE_TYPE_CAR ? "car" : "normal");
             o.put("round", getResources().getConfiguration().isScreenRound());
             o.put("touch", pm.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN));
+            o.put("car", hasClass("dev.prism.PrismCarService"));
             o.put("cutout", getDisplay() != null && getDisplay().getCutout() != null);
             o.put("location", pm.hasSystemFeature(PackageManager.FEATURE_LOCATION));
             o.put("gyroscope", sensors != null && sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE) != null);
@@ -178,5 +179,14 @@ public class PrismActivity extends Activity {
         } catch (JSONException ignored) {
         }
         return o.toString();
+    }
+
+    private static boolean hasClass(String name) {
+        try {
+            Class.forName(name);
+            return true;
+        } catch (ClassNotFoundException e) {
+            return false;
+        }
     }
 }

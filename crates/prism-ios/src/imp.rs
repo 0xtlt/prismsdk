@@ -2000,6 +2000,36 @@ fn poll_headless() {
     });
 }
 
+/// The app without a window: iOS launched it for a background task, or only
+/// CarPlay shows it.
+fn new_headless() -> Headless {
+    let mtm = MainThreadMarker::new().expect("main thread");
+    let (_, init) = APP.get().expect("prism-ios: run() was not called");
+    let services = crate::services::IosServices::new(false, UIViewController::new(mtm));
+    let runtime = make_runtime(init, "/".into(), &services);
+    Headless { runtime, services }
+}
+
+/// Runs `f` on the app's runtime: the window's, or one without a window
+/// (CarPlay can launch the app alone).
+pub(crate) fn with_runtime(f: impl FnOnce(&mut Runtime) -> Vec<prism_core::Patch>) {
+    let mut f = Some(f);
+    with_state(|s| {
+        if let Some(f) = f.take() {
+            let patches = f(&mut s.runtime);
+            s.commit(patches);
+        }
+    });
+    if let Some(f) = f {
+        HEADLESS.with(|h| {
+            let mut h = h.borrow_mut();
+            let headless = h.get_or_insert_with(new_headless);
+            let _ = f(&mut headless.runtime);
+        });
+        poll_headless();
+    }
+}
+
 /// Runs background task `id` in the window's runtime, or in a headless one
 /// when iOS launched the app just for it.
 pub(crate) fn run_background(id: &str, completion: Completion) {
@@ -2014,13 +2044,7 @@ pub(crate) fn run_background(id: &str, completion: Completion) {
     if !has_ui {
         HEADLESS.with(|h| {
             let mut h = h.borrow_mut();
-            let headless = h.get_or_insert_with(|| {
-                let mtm = MainThreadMarker::new().expect("main thread");
-                let (_, init) = APP.get().expect("prism-ios: run() was not called");
-                let services = crate::services::IosServices::new(false, UIViewController::new(mtm));
-                let runtime = make_runtime(init, "/".into(), &services);
-                Headless { runtime, services }
-            });
+            let headless = h.get_or_insert_with(new_headless);
             started = headless.runtime.run_background_task(id);
         });
         poll_headless();

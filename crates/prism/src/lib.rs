@@ -195,6 +195,12 @@ impl Application {
                 println!("{}", runtime.app.describe_background());
                 return;
             }
+            // Bundlers declare a CarPlay scene / Android Auto service.
+            Ok("car") => {
+                let runtime = Runtime::new(&init);
+                println!("{}", u8::from(runtime.app.has_car()));
+                return;
+            }
             // Bundlers copy this directory into the app's resources.
             Ok("assets") => {
                 println!("{}", config.assets.as_deref().unwrap_or(""));

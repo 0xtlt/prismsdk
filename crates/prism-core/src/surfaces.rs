@@ -33,6 +33,8 @@ use crate::style::{Align, Color, FlexDirection, FontWeight, Justify, Length, Tex
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Capabilities {
     pub widgets: bool,
+    /// CarPlay / Android Auto templates.
+    pub car: bool,
     pub live_activities: bool,
     /// Live Activities also appear in a Dynamic Island (iPhone 14 Pro and later).
     pub dynamic_island: bool,
@@ -81,6 +83,8 @@ pub enum PlatformRequest {
     SetAppMenu(Vec<crate::menu::MenuSpec>),
     CancelNotification(String),
     RequestNotificationPermission,
+    /// The car's template stack changed (JSON, see [`crate::car`]).
+    SetCar(String),
     /// Run this task periodically (see [`crate::background`]); re-sent after
     /// each run.
     ScheduleBackgroundTask(crate::background::BackgroundTask),
@@ -981,6 +985,9 @@ impl App {
             self.surfaces
                 .requests
                 .push(PlatformRequest::ReloadWidgets(snaps));
+        }
+        if let Some(json) = self.car_update() {
+            self.surfaces.requests.push(PlatformRequest::SetCar(json));
         }
         std::mem::take(&mut self.surfaces.requests)
     }

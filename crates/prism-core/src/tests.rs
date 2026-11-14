@@ -1635,3 +1635,62 @@ fn user_agents_describe_the_visitor_device() {
     let (outer, _) = duo.screen(1398, 2034).unwrap();
     assert!(duo.is_smallest(outer));
 }
+
+#[test]
+fn car_templates_stack_select_and_back() {
+    use crate::PlatformRequest;
+    struct Plain;
+    impl Render for Plain {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+    struct Count(i32);
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        cx.set_global(Count(0));
+        cx.register_car(|cx| {
+            let n = cx.global::<Count>().0;
+            CarTemplate::list("Home").section(
+                CarSection::new()
+                    .item(CarItem::new(format!("Count {n}")).on_select(|cx| {
+                        let n = cx.global::<Count>().0;
+                        cx.set_global(Count(n + 1));
+                    }))
+                    .item(CarItem::new("Details").browsable().on_select(|cx| {
+                        cx.car_push(|_| CarTemplate::pane("Details").row("Speed", "Fast"));
+                    })),
+            )
+        });
+        let root = cx.new_entity(|_| Plain);
+        cx.set_root(root);
+    });
+    let mut rt = Runtime::new(&init);
+    rt.render();
+    let car = |rt: &mut Runtime| {
+        rt.take_requests().into_iter().find_map(|r| match r {
+            PlatformRequest::SetCar(json) => Some(json),
+            _ => None,
+        })
+    };
+    // Nothing until a car screen shows the app.
+    assert!(car(&mut rt).is_none());
+    rt.car_connected(true);
+    let json = car(&mut rt).expect("templates when connected");
+    assert!(json.contains(r#""title":"Count 0""#), "{json}");
+    assert!(json.contains(r#""browsable":true"#), "{json}");
+    // Unchanged: nothing new.
+    assert!(car(&mut rt).is_none());
+    // Item 0 increments; the list is rebuilt.
+    rt.car_select(0);
+    assert!(car(&mut rt).unwrap().contains("Count 1"));
+    // Item 1 pushes a pane.
+    rt.car_select(1);
+    let json = car(&mut rt).unwrap();
+    assert!(
+        json.contains(r#""t":"pane""#) && json.contains(r#"["Speed","Fast"]"#),
+        "{json}"
+    );
+    // The host went back to the root.
+    rt.car_back(0);
+    assert!(!car(&mut rt).unwrap().contains("pane"));
+}

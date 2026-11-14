@@ -14,6 +14,7 @@
 
 mod about;
 mod background;
+mod car;
 mod device;
 mod focus;
 mod menus;
@@ -39,6 +40,7 @@ pub fn run() {
             ui::set_theme(cx, theme);
             let store = cx.new_entity(|cx| Store::load(cx));
             widgets::register(cx, store);
+            car::register(cx, store);
             menus::install(cx, store);
             let focus = focus::install(cx, store);
             Router::new()
@@ -81,6 +83,7 @@ fn page(title: impl Into<String>, cx: &App) -> (prism::Screen, prism::Scroll) {
 
 // --- Shared state ---------------------------------------------------------------------
 
+#[derive(Clone)]
 pub(crate) struct Todo {
     pub id: u64,
     pub title: String,

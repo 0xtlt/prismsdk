@@ -78,6 +78,7 @@ impl LinuxServices {
         });
         LinuxServices {
             caps: Capabilities {
+                car: false,
                 notifications: session,
                 app_menu: true,
                 tray: session,
@@ -460,6 +461,8 @@ impl PlatformServices for LinuxServices {
             }
             PlatformRequest::SetTray(spec) => crate::tray::set(self, spec),
             PlatformRequest::RemoveTray(id) => crate::tray::remove(&id),
+            // No car screens on Linux.
+            PlatformRequest::SetCar(_) => {}
             // No widgets or Live Activities on Linux desktops.
             PlatformRequest::ReloadWidgets(_)
             | PlatformRequest::StartActivity { .. }

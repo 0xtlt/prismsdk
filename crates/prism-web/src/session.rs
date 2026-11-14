@@ -421,6 +421,7 @@ fn activity_json(content: &ActivityContent) -> Value {
 impl PlatformServices for WebServices {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
+            car: false,
             widgets: false,
             live_activities: true,
             dynamic_island: false,
@@ -481,7 +482,8 @@ impl PlatformServices for WebServices {
             // No tray or menu bar in a browser tab (capabilities say so).
             PlatformRequest::SetTray(_)
             | PlatformRequest::RemoveTray(_)
-            | PlatformRequest::SetAppMenu(_) => return,
+            | PlatformRequest::SetAppMenu(_)
+            | PlatformRequest::SetCar(_) => return,
         };
         self.outbox.push(msg);
     }

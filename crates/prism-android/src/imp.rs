@@ -324,6 +324,49 @@ pub extern "system" fn Java_dev_prism_PrismHost_nativeBackground(
     check_jobs();
 }
 
+/// The car (Car App Library): connected, an item selected, Back. In the
+/// open app's runtime, or one without a screen (the car can start the app).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_prism_PrismHost_nativeCarEvent(
+    env: *mut JNIEnv,
+    _class: jclass,
+    kind: jstring,
+    value: jni_sys::jlong,
+    info: jstring,
+) {
+    jni::init_host(env);
+    let kind = unsafe { jni::rust_string(env, kind) };
+    let event = move |rt: &mut Runtime| match kind.as_str() {
+        "connected" => rt.car_connected(value != 0),
+        "select" => rt.car_select(value as u64),
+        "back" => rt.car_back(value as usize),
+        _ => Vec::new(),
+    };
+    let mut event = Some(event);
+    with_state(|s| {
+        if let Some(f) = event.take() {
+            let patches = f(&mut s.runtime);
+            commit(s, &patches);
+        }
+    });
+    let Some(f) = event else { return };
+    let Some((_, init)) = APP.get() else { return };
+    let info: Value =
+        serde_json::from_str(&unsafe { jni::rust_string(env, info) }).unwrap_or_default();
+    HEADLESS.with(|h| {
+        let mut h = h.borrow_mut();
+        let headless = h.get_or_insert_with(|| {
+            let mut info = info.clone();
+            info["car"] = Value::Bool(true);
+            let services = crate::services::AndroidServices::new(&info);
+            let runtime = make_runtime(init, &info, &services, None, None);
+            Headless { runtime, services }
+        });
+        let _ = f(&mut headless.runtime);
+    });
+    poll_headless();
+}
+
 /// The system stopped the job (its time ran out): stop the task.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_prism_PrismHost_nativeBackgroundExpired(

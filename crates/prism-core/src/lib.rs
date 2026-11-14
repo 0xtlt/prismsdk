@@ -9,6 +9,7 @@ mod a11y;
 mod app;
 mod apple_models;
 pub mod background;
+pub mod car;
 pub mod device;
 pub mod device_info;
 mod element;
@@ -28,6 +29,7 @@ mod window;
 pub use a11y::{Accessibility, Accessible, Role};
 pub use app::{AnyEntity, App, Appearance, Context, Entity, EntityId, Environment, Render};
 pub use background::{BackgroundKind, BackgroundTask, Lifecycle};
+pub use car::{CarButton, CarButtonStyle, CarItem, CarSection, CarTab, CarTemplate};
 pub use device::{
     Accuracy, DeviceCall, DeviceError, DeviceEvent, DeviceValue, Haptic, Location, Motion,
     Permission, PermissionState, PickImages, PickedFile, Share, Watch,
@@ -298,6 +300,28 @@ impl Runtime {
         self.render_dirty()
     }
 
+    /// A car screen (CarPlay, Android Auto) shows the app, or stopped.
+    pub fn car_connected(&mut self, connected: bool) -> Vec<Patch> {
+        self.app.set_car_connected(connected);
+        self.app.flush_effects();
+        self.render_dirty()
+    }
+
+    /// An item or button of the car's templates was selected (its `id`).
+    pub fn car_select(&mut self, id: u64) -> Vec<Patch> {
+        self.app.car_select(id);
+        task::poll_tasks(&mut self.app);
+        self.app.flush_effects();
+        self.render_dirty()
+    }
+
+    /// The car went back to screen `depth` (0: the root).
+    pub fn car_back(&mut self, depth: usize) -> Vec<Patch> {
+        self.app.car_back(depth);
+        self.app.flush_effects();
+        self.render_dirty()
+    }
+
     /// A notification was tapped or one of its actions chosen (`link`: the
     /// action's or notification's deep link). Returns the resulting patches.
     pub fn notification_response(
@@ -409,14 +433,15 @@ impl Runtime {
 pub mod prelude {
     pub use crate::{
         Accessible, Accuracy, Activity, Alert, App, AsyncApp, BackgroundTask, Breakpoint,
-        ChangeEvent, ClickEvent, Context, DateStyle, DeviceInfo, DeviceKind, Entity, FluentBuilder,
-        Handler, Haptic, InputEvent, IntoElement, Lifecycle, Locale, Location, Menu, MenuItem,
-        Motion, Notification, NotificationAction, NotificationResponse, Orientation, Params,
-        ParentElement, Permission, PermissionState, PickImages, PickedFile, Platform, Posture,
-        Render, Role, Router, ScrollEvent, Share, Styled, SwipeDirection, Transition, Translations,
-        Tray, VirtualList, Watch, Widget, WidgetFamily, adaptive, button, div, go_back, image,
-        lazy, navigate_to, picture, progress, px, relative, rgb, rgba, screen, scroll, text,
-        text_input, timer, toggle,
+        CarButton, CarButtonStyle, CarItem, CarSection, CarTab, CarTemplate, ChangeEvent,
+        ClickEvent, Context, DateStyle, DeviceInfo, DeviceKind, Entity, FluentBuilder, Handler,
+        Haptic, InputEvent, IntoElement, Lifecycle, Locale, Location, Menu, MenuItem, Motion,
+        Notification, NotificationAction, NotificationResponse, Orientation, Params, ParentElement,
+        Permission, PermissionState, PickImages, PickedFile, Platform, Posture, Render, Role,
+        Router, ScrollEvent, Share, Styled, SwipeDirection, Transition, Translations, Tray,
+        VirtualList, Watch, Widget, WidgetFamily, adaptive, button, div, go_back, image, lazy,
+        navigate_to, picture, progress, px, relative, rgb, rgba, screen, scroll, text, text_input,
+        timer, toggle,
     };
 }
 

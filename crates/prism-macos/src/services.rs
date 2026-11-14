@@ -76,6 +76,7 @@ impl MacServices {
             trays: HashMap::new(),
             schedulers: HashMap::new(),
             caps: Capabilities {
+                car: false,
                 widgets: bundled && has_group,
                 // Rendered as a menu bar item.
                 live_activities: true,
@@ -264,6 +265,8 @@ impl PlatformServices for MacServices {
                     &self.target,
                 )));
             }
+            // No car screens on the Mac.
+            PlatformRequest::SetCar(_) => {}
             PlatformRequest::RemoveTray(id) => {
                 if let Some(item) = self.trays.remove(&id) {
                     NSStatusBar::systemStatusBar().removeStatusItem(&item);

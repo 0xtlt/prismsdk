@@ -19,6 +19,8 @@
 #   PRISM_PATH         first screen (deep link)
 #   PRISM_RELEASE=1    release build
 #   PRISM_NO_INSTALL=1 build only
+#   PRISM_ANDROID_AUTOMOTIVE=1  a build for cars running Android (default:
+#                      when the device is one); car screens need cx.register_car
 #   PRISM_ANDROID_KEYSTORE, PRISM_ANDROID_KEYSTORE_PASS, PRISM_ANDROID_KEY_ALIAS
 #                      signing key for store builds (default: the debug key)
 set -euo pipefail
@@ -106,11 +108,41 @@ if strings:
         f.write("<resources>\n" + "\n".join(strings) + "\n</resources>\n")
 ')"
 
-# 3. The Java host (and the widget providers) → dex.
-rm -rf "$OUT/classes" && mkdir -p "$OUT/classes"
-javac --release 17 -nowarn -classpath "$ANDROID_JAR" -d "$OUT/classes" \
-  $(find "$PLATFORM/android/java" "$OUT/gen" -name '*.java')
-"$BUILD_TOOLS/d8" --min-api "$MIN_SDK" --lib "$ANDROID_JAR" --output "$STAGE" $(find "$OUT/classes" -name '*.class')
+# 3. The car (cx.register_car): Google's Car App Library, fetched from Maven
+#    (android-deps.py) for Android Auto; for cars running Android, its
+#    Automotive part too (PRISM_ANDROID_AUTOMOTIVE=1, or such a device).
+CAR="$(PRISM_DESCRIBE=car "$HOST_BIN" 2>/dev/null || echo 0)"
+SERIAL="${PRISM_SERIAL:-$("$ADB" devices 2>/dev/null | awk 'NR>1 && $2=="device" {print $1; exit}')}"
+AUTOMOTIVE="${PRISM_ANDROID_AUTOMOTIVE:-}"
+if [[ -z "$AUTOMOTIVE" && -n "$SERIAL" && "${PRISM_NO_INSTALL:-}" != 1 ]]; then
+  "$ADB" -s "$SERIAL" shell pm has-feature android.hardware.type.automotive 2>/dev/null | grep -q true && AUTOMOTIVE=1
+fi
+LIB_JARS="" LIB_RES=() LIB_PKGS=""
+if [[ "$CAR" == 1 ]]; then
+  ROOTS=(androidx.car.app:app:1.7.0)
+  [[ "$AUTOMOTIVE" == 1 ]] && ROOTS+=(androidx.car.app:app-automotive:1.7.0)
+  CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/prism/maven"
+  mkdir -p "$OUT/libres"
+  while IFS=$'\t' read -r kind a b; do
+    case $kind in
+      jar) LIB_JARS="$LIB_JARS:$a" ;;
+      res)
+        zip="$OUT/libres/${b//./_}.zip"
+        "$BUILD_TOOLS/aapt2" compile --dir "$a" -o "$zip"
+        LIB_RES+=(-R "$zip") LIB_PKGS="${LIB_PKGS:+$LIB_PKGS:}$b" ;;
+    esac
+  done < <(python3 "$(dirname "$0")/android-deps.py" "$CACHE" "${ROOTS[@]}" | python3 -c '
+import json, sys
+for e in json.load(sys.stdin):
+    for j in e["jars"]:
+        print(f"jar\t{j}\t")
+    res, package = e["res"], e["package"]
+    if res and package:
+        print(f"res\t{res}\t{package}")
+')
+  mkdir -p "$OUT/res/xml"
+  printf '<automotiveApp><uses name="template"/></automotiveApp>\n' > "$OUT/res/xml/automotive_app_desc.xml"
+fi
 
 # 4. Manifest: permissions from Prism.toml, deep links, the file provider.
 PERMS="$(python3 -c '
@@ -166,10 +198,60 @@ for kind in col row text chrono progress space; do
 done
 "$BUILD_TOOLS/aapt2" compile --dir "$OUT/res" -o "$OUT/res.zip"
 RES_ARGS=("$OUT/res.zip")
+# The phone app's launcher entry; a car's launcher opens the car screens instead.
+LAUNCHER='      <intent-filter>
+        <action android:name="android.intent.action.MAIN"/>
+        <category android:name="android.intent.category.LAUNCHER"/>
+        <category android:name="android.intent.category.LEANBACK_LAUNCHER"/>
+      </intent-filter>'
+CAR_FEATURES="" CAR_APP=""
+if [[ "$CAR" == 1 ]]; then
+  # The libraries' own manifest entries (Gradle would merge them).
+  CAR_FEATURES='  <queries>
+    <provider android:name="androidx.car.app.connection.provider" android:authorities="androidx.car.app.connection"/>
+    <intent><action android:name="android.car.template.host.RendererService"/></intent>
+  </queries>'
+  CAR_APP='    <service android:name="dev.prism.PrismCarService" android:exported="true">
+      <intent-filter>
+        <action android:name="androidx.car.app.CarAppService"/>
+        <category android:name="androidx.car.app.category.IOT"/>
+      </intent-filter>
+    </service>
+    <meta-data android:name="androidx.car.app.minCarApiLevel" android:value="1"/>
+    <activity android:name="androidx.car.app.CarAppPermissionActivity" android:exported="false"
+        android:theme="@android:style/Theme.Translucent.NoTitleBar"/>
+    <receiver android:name="androidx.car.app.notification.CarAppNotificationBroadcastReceiver" android:exported="false"/>'
+  if [[ "$AUTOMOTIVE" == 1 ]]; then
+    CAR_FEATURES="$CAR_FEATURES
+  <uses-feature android:name=\"android.hardware.type.automotive\" android:required=\"true\"/>
+  <uses-feature android:name=\"android.software.car.templates_host\" android:required=\"true\"/>"
+    LAUNCHER=""
+    CAR_APP="$CAR_APP
+    <meta-data android:name=\"com.android.automotive\" android:resource=\"@xml/automotive_app_desc\"/>
+    <activity android:name=\"androidx.car.app.activity.CarAppActivity\" android:exported=\"true\"
+        android:theme=\"@android:style/Theme.DeviceDefault.NoActionBar\" android:launchMode=\"singleTask\" android:label=\"$APP_NAME\">
+      <intent-filter>
+        <action android:name=\"android.intent.action.MAIN\"/>
+        <category android:name=\"android.intent.category.LAUNCHER\"/>
+      </intent-filter>
+      <meta-data android:name=\"distractionOptimized\" android:value=\"true\"/>
+    </activity>
+    <service android:name=\"androidx.car.app.CarAppMetadataHolderService\" android:enabled=\"false\" android:exported=\"false\">
+      <meta-data android:name=\"androidx.car.app.CarAppMetadataHolderService.CAR_HARDWARE_MANAGER\"
+          android:value=\"androidx.car.app.hardware.AutomotiveCarHardwareManager\"/>
+      <meta-data android:name=\"androidx.car.app.CarAppMetadataHolderService.RESULT_MANAGER\"
+          android:value=\"androidx.car.app.activity.ResultManagerAutomotive\"/>
+    </service>"
+  else
+    CAR_APP="$CAR_APP
+    <meta-data android:name=\"com.google.android.gms.car.application\" android:resource=\"@xml/automotive_app_desc\"/>"
+  fi
+fi
 cat > "$OUT/AndroidManifest.xml" <<XML
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="$APP_ID">
 $PERMS
+$CAR_FEATURES
   <!-- Also for TVs (no touch screen) and watches. -->
   <uses-feature android:name="android.hardware.touchscreen" android:required="false"/>
   <uses-feature android:name="android.software.leanback" android:required="false"/>
@@ -179,11 +261,7 @@ $PERMS
     <activity android:name="dev.prism.PrismActivity" android:exported="true" android:launchMode="singleTop"
         android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|locale|layoutDirection">
       <meta-data android:name="prism.lib" android:value="$LIB"/>
-      <intent-filter>
-        <action android:name="android.intent.action.MAIN"/>
-        <category android:name="android.intent.category.LAUNCHER"/>
-        <category android:name="android.intent.category.LEANBACK_LAUNCHER"/>
-      </intent-filter>
+$LAUNCHER
       <intent-filter>
         <action android:name="android.intent.action.VIEW"/>
         <category android:name="android.intent.category.DEFAULT"/>
@@ -194,6 +272,7 @@ $PERMS
     <!-- Wear OS: runs without a phone. -->
     <meta-data android:name="com.google.android.wearable.standalone" android:value="true"/>
 $RECEIVERS
+$CAR_APP
     <service android:name="dev.prism.PrismJob" android:exported="false"
         android:permission="android.permission.BIND_JOB_SERVICE"/>
     <provider android:name="dev.prism.PrismFiles" android:authorities="$APP_ID.prism.files"
@@ -202,11 +281,31 @@ $RECEIVERS
 </manifest>
 XML
 
-# 5. Link, add code and libraries, align (16 KB pages), sign.
+# 5. Link resources (the libraries' too, with their R classes), then the Java
+#    host, widget providers and libraries → dex.
+rm -rf "$OUT/rjava" && mkdir -p "$OUT/rjava"
 "$BUILD_TOOLS/aapt2" link -o "$OUT/base.apk" -I "$ANDROID_JAR" --manifest "$OUT/AndroidManifest.xml" \
   -A "$STAGE/assets" --min-sdk-version "$MIN_SDK" --target-sdk-version "$TARGET_SDK" \
-  --version-code "${PRISM_BUILD:-1}" --version-name "${PRISM_VERSION:-0.1.0}" ${RES_ARGS[@]+"${RES_ARGS[@]}"}
+  --version-code "${PRISM_BUILD:-1}" --version-name "${PRISM_VERSION:-0.1.0}" ${RES_ARGS[@]+"${RES_ARGS[@]}"} \
+  ${LIB_RES[@]+"${LIB_RES[@]}"} --auto-add-overlay --java "$OUT/rjava" ${LIB_PKGS:+--extra-packages "$LIB_PKGS"}
+rm -rf "$OUT/classes" && mkdir -p "$OUT/classes"
+SOURCES=("$PLATFORM/android/java" "$OUT/gen")
+[[ "$CAR" == 1 ]] && SOURCES+=("$PLATFORM/android/car" "$OUT/rjava")
+javac --release 17 -nowarn -classpath "$ANDROID_JAR$LIB_JARS" -d "$OUT/classes" $(find "${SOURCES[@]}" -name '*.java')
+"$BUILD_TOOLS/d8" --min-api "$MIN_SDK" --lib "$ANDROID_JAR" --output "$STAGE" \
+  $(find "$OUT/classes" -name '*.class') ${LIB_JARS//:/ }
+
+# 6. Add code and native libraries, align (16 KB pages), sign.
 (cd "$STAGE" && zip -q "$OUT/base.apk" classes.dex && zip -q -0 -r "$OUT/base.apk" lib)
+# The libraries' Java resources (car-app-api.level…), as Gradle packages them.
+if [[ -n "$LIB_JARS" ]]; then
+  rm -rf "$OUT/javares" && mkdir -p "$OUT/javares"
+  for jar in ${LIB_JARS//:/ }; do
+    unzip -qo "$jar" -x '*.class' 'META-INF/MANIFEST.MF' 'META-INF/*.SF' 'META-INF/*.RSA' 'META-INF/*.DSA' \
+      'META-INF/versions/*' 'module-info.class' -d "$OUT/javares" 2>/dev/null || true
+  done
+  (cd "$OUT/javares" && find . -type f | sed 's|^\./||' | zip -q "$OUT/base.apk" -@)
+fi
 "$BUILD_TOOLS/zipalign" -f -P 16 4 "$OUT/base.apk" "$OUT/aligned.apk"
 if [[ -n "${PRISM_ANDROID_KEYSTORE:-}" ]]; then
   KEYSTORE="$PRISM_ANDROID_KEYSTORE" PASS="${PRISM_ANDROID_KEYSTORE_PASS:?set PRISM_ANDROID_KEYSTORE_PASS}"
@@ -227,14 +326,15 @@ APK="$OUT/$APP_NAME.apk"
 echo "Built $APK"
 [[ "${PRISM_NO_INSTALL:-}" == 1 ]] && exit 0
 
-# 6. Install and launch.
-SERIAL="${PRISM_SERIAL:-$("$ADB" devices | awk 'NR>1 && $2=="device" {print $1; exit}')}"
+# 7. Install and launch.
 [[ -n "$SERIAL" ]] || { echo "No Android device or emulator running (start one: emulator -avd <name>)" >&2; exit 1; }
 "$ADB" -s "$SERIAL" install -r "$APK" >/dev/null
 echo "Installed $APP_ID on $SERIAL"
 if [[ $LAUNCH == 1 ]]; then
   if [[ -n "${PRISM_PATH:-}" ]]; then
     "$ADB" -s "$SERIAL" shell am start -W -a android.intent.action.VIEW -d "$SCHEME:${PRISM_PATH}" "$APP_ID" >/dev/null
+  elif [[ "$AUTOMOTIVE" == 1 && "$CAR" == 1 ]]; then
+    "$ADB" -s "$SERIAL" shell am start -W -n "$APP_ID/androidx.car.app.activity.CarAppActivity" >/dev/null
   else
     "$ADB" -s "$SERIAL" shell am start -W -n "$APP_ID/dev.prism.PrismActivity" >/dev/null
   fi

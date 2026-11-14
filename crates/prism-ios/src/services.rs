@@ -20,6 +20,8 @@ unsafe extern "C" {
     ) -> bool;
     fn prism_activity_update(key: *const c_char, json: *const c_char, stale: f64);
     fn prism_activity_end(key: *const c_char, json: *const c_char, immediately: bool);
+    /// The car's template stack (JSON, prism-core `car`).
+    fn prism_car_set(json: *const c_char);
     fn prism_notify(json: *const c_char);
     fn prism_notify_cancel(id: *const c_char);
     fn prism_notify_permission();
@@ -68,6 +70,8 @@ impl IosServices {
         let vision = cfg!(target_os = "visionos");
         IosServices {
             caps: Capabilities {
+                // The bundle declares a CarPlay scene (Prism.toml / register_car).
+                car: info("PrismCarPlay"),
                 widgets: !tv && info("PrismAppGroup"),
                 live_activities: live,
                 dynamic_island: live && dynamic_island,
@@ -186,6 +190,7 @@ impl PlatformServices for IosServices {
             PlatformRequest::SetTray(_)
             | PlatformRequest::RemoveTray(_)
             | PlatformRequest::SetAppMenu(_) => {}
+            PlatformRequest::SetCar(json) => unsafe { prism_car_set(c(&json).as_ptr()) },
         }
     }
 }
@@ -221,6 +226,22 @@ pub extern "C" fn prism_notification_response(
         text: s(text),
     };
     crate::imp::notification_response(response, s(link));
+}
+
+/// CarPlay (PrismCarPlay.swift): connected or not, a selection, Back.
+#[unsafe(no_mangle)]
+pub extern "C" fn prism_car_connected(connected: bool) {
+    crate::imp::with_runtime(|rt| rt.car_connected(connected));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn prism_car_select(id: u64) {
+    crate::imp::with_runtime(|rt| rt.car_select(id));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn prism_car_back(depth: u64) {
+    crate::imp::with_runtime(|rt| rt.car_back(depth as usize));
 }
 
 /// Installs the notification delegate (idempotent).

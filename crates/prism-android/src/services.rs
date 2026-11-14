@@ -22,6 +22,7 @@ impl AndroidServices {
         let has = |k: &str| info.get(k).and_then(Value::as_bool).unwrap_or(false);
         AndroidServices {
             caps: Capabilities {
+                car: has("car"),
                 widgets: true,
                 notifications: true,
                 live_activities: true,
@@ -116,6 +117,8 @@ impl PlatformServices for AndroidServices {
                 "op": "widgets",
                 "snaps": snaps.iter().map(|s| surface(&s.to_json())).collect::<Vec<_>>(),
             }),
+            // Android Auto / Automotive templates (PrismCarService.java).
+            PlatformRequest::SetCar(json) => json!({ "op": "car", "json": json }),
             // Trays and menu bars are desktop surfaces.
             PlatformRequest::SetTray(_)
             | PlatformRequest::RemoveTray(_)
