@@ -66,13 +66,13 @@ impl Runtime {
         }
     }
 
-    /// Renders unconditionally and returns the patches.
+    /// Renders what is dirty (everything on first call) and returns the patches.
     pub fn render(&mut self) -> Vec<Patch> {
-        self.app.take_dirty();
+        self.app.flush_effects();
         self.reconciler.render(&mut self.app)
     }
 
-    /// Runs the handler for `event`, then re-renders if any entity notified.
+    /// Runs the handler for `event`, then re-renders the entities it touched.
     pub fn dispatch(&mut self, event: UiEvent) -> Vec<Patch> {
         match event {
             UiEvent::Click(id) => {
@@ -86,11 +86,17 @@ impl Runtime {
                 }
             }
         }
-        if self.app.take_dirty() {
+        self.app.flush_effects();
+        if self.app.has_dirty() {
             self.reconciler.render(&mut self.app)
         } else {
             Vec::new()
         }
+    }
+
+    /// Entity renders performed by the last render (for tests and profiling).
+    pub fn last_render_count(&self) -> usize {
+        self.reconciler.last_render_count()
     }
 }
 

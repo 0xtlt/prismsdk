@@ -17,10 +17,7 @@ impl Render for Counter {
     fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         div().p(24.).gap(12.)
             .child(text(format!("Count: {}", self.count)).text_size(32.).bold())
-            .child(button("+1").on_click(cx.listener(|this, _, cx| {
-                this.count += 1;
-                cx.notify();
-            })))
+            .child(button("+1").on_click(cx.listener(|this, _, _| this.count += 1)))
     }
 }
 
@@ -28,6 +25,14 @@ fn main() {
     Application::new().title("Counter").run(|cx| cx.new_entity(|_| Counter { count: 0 }));
 }
 ```
+
+## Updating state
+
+- State lives in **entities** (`cx.new(|_| MyView { .. })`), GPUI-style.
+- Mutate it in a `cx.listener`: the entity re-renders automatically. Elsewhere, call `cx.notify()`.
+- Only notified entities re-render. A clean child entity is neither rendered nor diffed: its mounted views are reused as-is. So split your UI into entities where updates are frequent (an input, a live counter, a list row).
+- Derived state: `cx.observe(&other, |this, other, cx| this.total = other.read(cx).total())` runs when `other` changes, then re-renders `this`.
+- Each entity renders one root node (a fragment gets wrapped in a `div`).
 
 ## Architecture
 

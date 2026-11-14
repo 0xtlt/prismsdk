@@ -1,19 +1,24 @@
 //! State model: GPUI-style entities owned by an [`App`].
+//!
+//! Updates are entity-granular: `cx.notify()` marks only that entity dirty, and
+//! the reconciler re-renders just the dirty entities, in place, reusing the
+//! previous output of every other entity untouched.
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
 use crate::element::{Element, Handler, IntoElement};
 
-/// A stateful view. `render` is called whenever the app is notified.
+/// A stateful view. `render` runs on first mount and whenever the entity is
+/// notified; other entities' output is reused as-is.
 pub trait Render: 'static + Sized {
     fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct EntityId(u64);
 
 /// A typed handle to state owned by the [`App`].
@@ -31,6 +36,14 @@ impl<T> Clone for Entity<T> {
 impl<T> Copy for Entity<T> {}
 
 impl<T: 'static> Entity<T> {
+    #[cfg(test)]
+    pub(crate) fn from_id(id: EntityId) -> Self {
+        Entity {
+            id,
+            _marker: PhantomData,
+        }
+    }
+
     pub fn id(&self) -> EntityId {
         self.id
     }
@@ -41,6 +54,11 @@ impl<T: 'static> Entity<T> {
 
     pub fn update<R>(&self, app: &mut App, f: impl FnOnce(&mut T, &mut Context<T>) -> R) -> R {
         app.update(self, f)
+    }
+
+    /// Marks this entity for re-render (and wakes its observers).
+    pub fn notify(&self, app: &mut App) {
+        app.notify_entity(self.id);
     }
 }
 
@@ -61,6 +79,10 @@ pub struct AnyEntity {
 }
 
 impl AnyEntity {
+    pub fn id(&self) -> EntityId {
+        self.id
+    }
+
     pub(crate) fn render(&self, app: &mut App) -> Element {
         (self.render)(app, self.id)
     }
@@ -74,12 +96,17 @@ fn render_entity<T: Render>(app: &mut App, id: EntityId) -> Element {
     app.update(&entity, |this, cx| this.render(cx).into_element())
 }
 
-/// Owns every entity and tracks whether the UI must be re-rendered.
+type Observer = Rc<dyn Fn(&mut App)>;
+
+/// Owns every entity and tracks which ones must be re-rendered.
 #[derive(Default)]
 pub struct App {
     entities: HashMap<EntityId, Option<Box<dyn Any>>>,
     next_entity: u64,
-    dirty: bool,
+    dirty: HashSet<EntityId>,
+    /// Notifications not yet delivered to observers.
+    pending: Vec<EntityId>,
+    observers: HashMap<EntityId, Vec<Observer>>,
     root: Option<AnyEntity>,
 }
 
@@ -135,26 +162,55 @@ impl App {
         result
     }
 
-    /// Drops an entity's state.
+    pub fn contains(&self, id: EntityId) -> bool {
+        self.entities.contains_key(&id)
+    }
+
+    /// Drops an entity's state and its observers.
     pub fn release<T>(&mut self, entity: Entity<T>) {
         self.entities.remove(&entity.id);
+        self.observers.remove(&entity.id);
+        self.dirty.remove(&entity.id);
     }
 
-    /// Schedules a re-render after the current event.
-    pub fn notify(&mut self) {
-        self.dirty = true;
+    /// Marks one entity for re-render and queues its observers.
+    pub fn notify_entity(&mut self, id: EntityId) {
+        self.dirty.insert(id);
+        self.pending.push(id);
     }
 
-    pub fn is_dirty(&self) -> bool {
-        self.dirty
+    /// Re-renders every entity on the next frame.
+    pub fn refresh(&mut self) {
+        let ids: Vec<EntityId> = self.entities.keys().copied().collect();
+        self.dirty.extend(ids);
+    }
+
+    pub fn has_dirty(&self) -> bool {
+        !self.dirty.is_empty()
     }
 
     pub fn set_root<T: Render>(&mut self, entity: Entity<T>) {
         self.root = Some(entity.into_any());
-        self.dirty = true;
+        self.dirty.insert(entity.id);
     }
 
-    pub(crate) fn take_dirty(&mut self) -> bool {
+    /// Delivers queued notifications to observers. Each entity's observers run
+    /// at most once per flush, so observer cycles terminate.
+    pub(crate) fn flush_effects(&mut self) {
+        let mut delivered = HashSet::new();
+        while let Some(id) = self.pending.pop() {
+            if !delivered.insert(id) {
+                continue;
+            }
+            if let Some(observers) = self.observers.get(&id).cloned() {
+                for observer in observers {
+                    observer(self);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn take_dirty(&mut self) -> HashSet<EntityId> {
         std::mem::take(&mut self.dirty)
     }
 
@@ -182,10 +238,16 @@ impl<T: 'static> Context<'_, T> {
         self.app.new_entity(build)
     }
 
+    /// Re-renders this entity on the next frame. Listeners call it for you.
+    pub fn notify(&mut self) {
+        self.app.notify_entity(self.entity.id);
+    }
+
     /// Wraps a closure into an event handler bound to this entity.
+    /// The entity is re-rendered after the handler runs.
     ///
     /// ```ignore
-    /// button("+").on_click(cx.listener(|this, _, cx| { this.count += 1; cx.notify(); }))
+    /// button("+").on_click(cx.listener(|this, _, _| this.count += 1))
     /// ```
     pub fn listener<E: 'static>(
         &self,
@@ -193,8 +255,37 @@ impl<T: 'static> Context<'_, T> {
     ) -> Handler<E> {
         let entity = self.entity;
         Rc::new(move |event: &E, app: &mut App| {
-            app.update(&entity, |this, cx| f(this, event, cx));
+            if app.contains(entity.id) {
+                app.update(&entity, |this, cx| {
+                    f(this, event, cx);
+                    cx.notify();
+                });
+            }
         })
+    }
+
+    /// Runs `f` whenever `other` is notified, then re-renders this entity.
+    /// Use it for derived state (totals, filters) that depends on another entity.
+    pub fn observe<U: 'static>(
+        &mut self,
+        other: &Entity<U>,
+        f: impl Fn(&mut T, Entity<U>, &mut Context<T>) + 'static,
+    ) {
+        let this = self.entity;
+        let other = *other;
+        let observer: Observer = Rc::new(move |app: &mut App| {
+            if app.contains(this.id) {
+                app.update(&this, |t, cx| {
+                    f(t, other, cx);
+                    cx.notify();
+                });
+            }
+        });
+        self.app
+            .observers
+            .entry(other.id)
+            .or_default()
+            .push(observer);
     }
 }
 

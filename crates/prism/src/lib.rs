@@ -21,10 +21,8 @@
 //!     fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
 //!         div().p(24.).gap(12.)
 //!             .child(text(format!("Count: {}", self.count)).text_size(32.))
-//!             .child(button("+1").on_click(cx.listener(|this, _, cx| {
-//!                 this.count += 1;
-//!                 cx.notify();
-//!             })))
+//!             // Listeners re-render their entity automatically.
+//!             .child(button("+1").on_click(cx.listener(|this, _, _| this.count += 1)))
 //!     }
 //! }
 //!

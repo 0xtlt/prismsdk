@@ -67,7 +67,7 @@ pub struct VNode {
 }
 
 impl VNode {
-    fn new(kind: NodeKind) -> Self {
+    pub(crate) fn new(kind: NodeKind) -> Self {
         VNode {
             kind,
             style: Style::default(),
