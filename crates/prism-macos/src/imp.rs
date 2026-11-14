@@ -54,7 +54,7 @@ fn with_state(f: impl FnOnce(&mut State)) {
     });
 }
 
-fn dispatch(event: UiEvent) {
+pub(crate) fn dispatch(event: UiEvent) {
     with_state(|s| s.dispatch(event));
 }
 
@@ -119,6 +119,10 @@ pub struct ViewIvars {
     border_color: RefCell<Option<Retained<NSColor>>>,
     radius: Cell<f64>,
     border: Cell<f64>,
+    /// Context menu (right-click, ⌃-click, VoiceOver "show menu").
+    menu: RefCell<Option<prism_core::menu::MenuSpec>>,
+    /// Root of a sheet: Escape dismisses it.
+    sheet_root: Cell<bool>,
 }
 
 define_class!(
@@ -178,7 +182,35 @@ define_class!(
         // ring, and activate with Space or Return.
         #[unsafe(method(acceptsFirstResponder))]
         fn accepts_first_responder(&self) -> bool {
-            self.ivars().clickable.get()
+            self.ivars().clickable.get() || self.ivars().sheet_root.get()
+        }
+
+        /// Right-click / ⌃-click.
+        #[unsafe(method(menuForEvent:))]
+        fn menu_for_event(&self, _event: &NSEvent) -> *mut NSMenu {
+            match self.context_menu() {
+                Some(menu) => Retained::autorelease_return(menu),
+                None => std::ptr::null_mut(),
+            }
+        }
+
+        /// VoiceOver / Full Keyboard Access "show menu".
+        #[unsafe(method(accessibilityPerformShowMenu))]
+        fn accessibility_perform_show_menu(&self) -> objc2::runtime::Bool {
+            let Some(menu) = self.context_menu() else { return objc2::runtime::Bool::NO };
+            let at = NSPoint::new(8., self.bounds().size.height.min(24.));
+            menu.popUpMenuPositioningItem_atLocation_inView(None, at, Some(self));
+            objc2::runtime::Bool::YES
+        }
+
+        /// Escape in a sheet.
+        #[unsafe(method(cancelOperation:))]
+        fn cancel_operation(&self, sender: Option<&AnyObject>) {
+            if self.ivars().sheet_root.get() {
+                dispatch(UiEvent::Back(self.ivars().id.get(), 0));
+            } else {
+                unsafe { msg_send![super(self), cancelOperation: sender] }
+            }
         }
 
         /// Like native buttons: reachable with Tab only when the user enabled
@@ -232,6 +264,14 @@ define_class!(
 );
 
 impl PrismView {
+    fn context_menu(&self) -> Option<Retained<NSMenu>> {
+        let spec = self.ivars().menu.borrow().clone()?;
+        let mut target = None;
+        with_state(|s| target = Some(s.renderer.widgets.target.clone()));
+        let target: Retained<AnyObject> = Retained::into_super(Retained::into_super(target?));
+        Some(crate::menus::build_menu(self.mtm(), &spec, &target))
+    }
+
     fn new(mtm: MainThreadMarker, id: NodeId) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(ViewIvars {
             id: Cell::new(id),
@@ -267,6 +307,12 @@ define_class!(
         fn on_segment(&self, sender: &NSSegmentedControl) {
             let index = sender.selectedSegment().max(0) as f64;
             dispatch(UiEvent::Change(sender.tag() as NodeId, index));
+        }
+
+        /// Any Prism menu item (context menus, tray, app menus).
+        #[unsafe(method(onMenuItem:))]
+        fn on_menu_item(&self, sender: &NSMenuItem) {
+            dispatch(UiEvent::MenuSelect(sender.tag() as u64));
         }
 
         /// Every second: countdowns in the window and the menu bar.
@@ -362,6 +408,15 @@ pub struct MacStack {
     back: Retained<NSButton>,
     title: Retained<NSTextField>,
     screens: RefCell<Vec<View>>,
+    /// Shows "Close" on the first screen (stacks inside sheets).
+    closable: Cell<bool>,
+}
+
+/// A sheet window presenting a modal stack over the main window.
+pub struct MacSheet {
+    window: Retained<NSWindow>,
+    content: Retained<PrismView>,
+    presented: Cell<bool>,
 }
 
 /// A tab bar: a segmented control above the selected tab.
@@ -389,6 +444,7 @@ pub enum View {
     Stack(Rc<MacStack>),
     Tabs(Rc<MacTabs>),
     Scroll(Rc<MacScroll>),
+    Sheet(Rc<MacSheet>),
     Toggle(Retained<NSSwitch>),
     Image(Retained<NSImageView>),
     Progress(Retained<NSProgressIndicator>),
@@ -405,6 +461,7 @@ impl View {
             View::Stack(s) => &s.container,
             View::Tabs(t) => &t.container,
             View::Scroll(s) => &s.scroll,
+            View::Sheet(s) => &s.content,
             View::Toggle(t) => t,
             View::Image(v) => v,
             View::Progress(v) => v,
@@ -420,6 +477,7 @@ impl View {
             View::Stack(s) => s.id,
             View::Tabs(t) => t.id,
             View::Scroll(s) => s.document.ivars().id.get(),
+            View::Sheet(s) => s.content.ivars().id.get(),
             View::Toggle(t) => t.tag() as NodeId,
             View::Image(v) => v.tag() as NodeId,
             // Progress bars need no id (no events, no per-node state).
@@ -441,6 +499,8 @@ pub struct AppKit {
     icons: HashMap<NodeId, String>,
     /// Countdown labels and their end time (Unix seconds).
     timers: HashMap<NodeId, (Retained<NSTextField>, f64)>,
+    /// Presented sheets.
+    sheets: Vec<Rc<MacSheet>>,
 }
 
 impl AppKit {
@@ -485,6 +545,7 @@ impl AppKit {
             back,
             title,
             screens: RefCell::new(Vec::new()),
+            closable: Cell::new(false),
         }
     }
 
@@ -539,6 +600,42 @@ impl AppKit {
         bar.container.setSubviews(&NSArray::from_slice(&subviews));
     }
 
+    fn present_sheets(&mut self, sheets: &[View]) {
+        for s in sheets {
+            if let View::Sheet(sheet) = s
+                && !sheet.presented.get()
+                && let Some(main) = self.root.window()
+            {
+                sheet.presented.set(true);
+                main.beginSheet_completionHandler(&sheet.window, None);
+                sheet.window.makeFirstResponder(Some(&sheet.content));
+                self.sheets.push(sheet.clone());
+            }
+        }
+        // Sheets no longer listed are dismissed.
+        let keep: Vec<NodeId> = sheets.iter().map(View::id).collect();
+        let gone: Vec<Rc<MacSheet>> = self
+            .sheets
+            .iter()
+            .filter(|s| !keep.contains(&s.content.ivars().id.get()))
+            .cloned()
+            .collect();
+        for sheet in gone {
+            self.dismiss_sheet(&sheet);
+        }
+    }
+
+    fn dismiss_sheet(&mut self, sheet: &MacSheet) {
+        if sheet.presented.replace(false)
+            && let Some(main) = self.root.window()
+        {
+            main.endSheet(&sheet.window);
+            sheet.window.orderOut(None);
+        }
+        let id = sheet.content.ivars().id.get();
+        self.sheets.retain(|s| s.content.ivars().id.get() != id);
+    }
+
     /// Shows the top screen, its title, and Back when there is somewhere to go.
     fn refresh_stack(&self, stack: &MacStack) {
         let screens = stack.screens.borrow();
@@ -547,7 +644,13 @@ impl AppKit {
             subviews.push(top.ns());
         }
         stack.container.setSubviews(&NSArray::from_slice(&subviews));
-        stack.back.setHidden(screens.len() <= 1);
+        let close = stack.closable.get() && screens.len() <= 1;
+        stack.back.setHidden(screens.len() <= 1 && !close);
+        stack.back.setTitle(&NSString::from_str(if close {
+            "Close"
+        } else {
+            "‹ Back"
+        }));
         let title = screens
             .last()
             .and_then(|t| self.titles.get(&t.id()))
@@ -636,6 +739,28 @@ impl Widgets for AppKit {
                 self.tab_bars.push(tabs.clone());
                 View::Tabs(tabs)
             }
+            NodeKind::Modal => {
+                let content = PrismView::new(mtm, id);
+                content.ivars().sheet_root.set(true);
+                let host = PrismView::new(mtm, 0);
+                let window = unsafe {
+                    NSWindow::initWithContentRect_styleMask_backing_defer(
+                        NSWindow::alloc(mtm),
+                        NSRect::new(NSPoint::ZERO, NSSize::new(520., 620.)),
+                        NSWindowStyleMask::Titled | NSWindowStyleMask::Resizable,
+                        NSBackingStoreType::Buffered,
+                        false,
+                    )
+                };
+                unsafe { window.setReleasedWhenClosed(false) };
+                window.setContentView(Some(&host));
+                host.setSubviews(&NSArray::from_slice(&[&*content as &NSView]));
+                View::Sheet(Rc::new(MacSheet {
+                    window,
+                    content,
+                    presented: Cell::new(false),
+                }))
+            }
             NodeKind::Scroll => {
                 let scroll = NSScrollView::new(mtm);
                 scroll.setHasVerticalScroller(true);
@@ -703,6 +828,10 @@ impl Widgets for AppKit {
     fn set_style(&mut self, view: &View, style: &Style) {
         view.ns().setAlphaValue(style.opacity as f64);
         match view {
+            View::Sheet(sheet) => {
+                *sheet.content.ivars().background.borrow_mut() = style.background.map(ns_color);
+                sheet.content.setNeedsDisplay(true);
+            }
             View::Stack(st) => {
                 *st.container.ivars().background.borrow_mut() = style.background.map(ns_color);
                 st.container.setNeedsDisplay(true);
@@ -798,6 +927,15 @@ impl Widgets for AppKit {
     }
 
     fn set_children(&mut self, parent: &View, children: &[View]) {
+        // Sheets attached to a root container are presented, not laid out inline.
+        let (sheets, children): (Vec<View>, Vec<View>) = children
+            .iter()
+            .cloned()
+            .partition(|c| matches!(c, View::Sheet(_)));
+        if matches!(parent, View::Stack(_) | View::Tabs(_)) {
+            self.present_sheets(&sheets);
+        }
+        let children = &children[..];
         match parent {
             View::Stack(stack) => {
                 *stack.screens.borrow_mut() = children.to_vec();
@@ -829,6 +967,7 @@ impl Widgets for AppKit {
             View::Input(f) => unsafe { f.setDelegate(None) },
             View::Stack(st) => self.stacks.retain(|s| s.id != st.id),
             View::Tabs(t) => self.tab_bars.retain(|b| b.id != t.id),
+            View::Sheet(sheet) => self.dismiss_sheet(sheet),
             View::Timer(_) => {
                 self.timers.remove(&view.id());
             }
@@ -858,6 +997,7 @@ impl Widgets for AppKit {
             }
             View::Button(b) => b.fittingSize(),
             View::Toggle(t) => t.fittingSize(),
+            View::Sheet(_) => NSSize::ZERO,
             View::Image(v) => v.fittingSize(),
             View::Timer(l) => l.fittingSize(),
             View::Progress(_) => NSSize::new(max_width.unwrap_or(120.) as f64, 6.),
@@ -911,6 +1051,10 @@ impl Widgets for AppKit {
 
     fn set_value(&mut self, view: &View, value: f64) {
         match view {
+            View::Stack(st) => {
+                st.closable.set(value != 0.);
+                self.refresh_stack(st);
+            }
             View::Progress(p) => p.setDoubleValue(value),
             View::Timer(l) => {
                 self.timers.insert(view.id(), (l.clone(), value));
@@ -952,6 +1096,12 @@ impl Widgets for AppKit {
         };
         let appearance = name.and_then(objc2_app_kit::NSAppearance::appearanceNamed);
         NSApplication::sharedApplication(self.mtm).setAppearance(appearance.as_deref());
+    }
+
+    fn set_menu(&mut self, view: &View, menu: Option<&prism_core::menu::MenuSpec>) {
+        if let View::Container(v) | View::Screen(v) | View::Tab(v) = view {
+            *v.ivars().menu.borrow_mut() = menu.cloned();
+        }
     }
 
     fn set_content_size(&mut self, view: &View, width: f32, height: f32) {
@@ -1013,7 +1163,20 @@ impl Widgets for AppKit {
         v.setAccessibilityEnabled(!a.disabled);
     }
 
-    fn screen_viewport(&mut self, stack: &View, _screen: &View) -> Viewport {
+    fn screen_viewport(&mut self, stack: &View, screen: &View) -> Viewport {
+        if let View::Sheet(sheet) = screen {
+            let size = sheet
+                .window
+                .contentView()
+                .map_or(NSSize::new(520., 620.), |v| v.frame().size);
+            return Viewport {
+                x: 0.,
+                y: 0.,
+                width: size.width as f32,
+                height: size.height as f32,
+                insets: Insets::default(),
+            };
+        }
         let size = stack.ns().frame().size;
         Viewport {
             x: 0.,
@@ -1029,58 +1192,6 @@ impl Widgets for AppKit {
 // Entry point
 // ---------------------------------------------------------------------------
 
-fn menu_item(
-    mtm: MainThreadMarker,
-    title: &str,
-    action: objc2::runtime::Sel,
-    key: &str,
-) -> Retained<NSMenuItem> {
-    unsafe {
-        NSMenuItem::initWithTitle_action_keyEquivalent(
-            NSMenuItem::alloc(mtm),
-            &NSString::from_str(title),
-            Some(action),
-            &NSString::from_str(key),
-        )
-    }
-}
-
-fn install_menu(app: &NSApplication, mtm: MainThreadMarker, title: &str, target: &Target) {
-    let bar = NSMenu::new(mtm);
-    let submenu = |name: &str, items: Vec<Retained<NSMenuItem>>| {
-        let item = NSMenuItem::new(mtm);
-        let menu = NSMenu::new(mtm);
-        menu.setTitle(&NSString::from_str(name));
-        for i in items {
-            menu.addItem(&i);
-        }
-        item.setSubmenu(Some(&menu));
-        bar.addItem(&item);
-    };
-    submenu(
-        title,
-        vec![menu_item(
-            mtm,
-            &format!("Quit {title}"),
-            sel!(terminate:),
-            "q",
-        )],
-    );
-    submenu(
-        "Edit",
-        vec![
-            menu_item(mtm, "Cut", sel!(cut:), "x"),
-            menu_item(mtm, "Copy", sel!(copy:), "c"),
-            menu_item(mtm, "Paste", sel!(paste:), "v"),
-            menu_item(mtm, "Select All", sel!(selectAll:), "a"),
-        ],
-    );
-    let back = menu_item(mtm, "Back", sel!(onBackMenu:), "[");
-    unsafe { back.setTarget(Some(target)) };
-    submenu("Go", vec![back]);
-    app.setMainMenu(Some(&bar));
-}
-
 /// Opens a window and runs the AppKit event loop. Must be called on the main thread.
 pub fn run(config: AppConfig, init: AppInit) {
     let mtm =
@@ -1088,7 +1199,7 @@ pub fn run(config: AppConfig, init: AppInit) {
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
     let target = Target::new(mtm);
-    install_menu(&app, mtm, &config.title, &target);
+    crate::menus::install_main_menu(mtm, &config.title, &target, &[]);
     let root = PrismView::new(mtm, 0);
     let frame = NSRect::new(
         NSPoint::ZERO,
@@ -1117,6 +1228,8 @@ pub fn run(config: AppConfig, init: AppInit) {
     let services = crate::services::MacServices::new(
         mtm,
         Retained::into_super(Retained::into_super(target.clone())),
+        window.clone(),
+        config.title.clone(),
     );
     let mut runtime = Runtime::with_options(
         &init,
@@ -1138,6 +1251,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         titles: HashMap::new(),
         icons: HashMap::new(),
         timers: HashMap::new(),
+        sheets: Vec::new(),
     });
     let first = runtime.render();
     let mut state = State {
@@ -1209,10 +1323,24 @@ fn run_automation(mtm: MainThreadMarker) {
     let mut root = None;
     with_state(|s| root = Some(s.renderer.widgets.root.clone()));
     let Some(root) = root else { return };
+    let sheet_roots = || {
+        let mut roots: Vec<Retained<NSView>> = Vec::new();
+        with_state(|s| {
+            for sheet in &s.renderer.widgets.sheets {
+                roots.push(Retained::into_super(sheet.content.clone()));
+            }
+        });
+        roots
+    };
 
     if let Ok(clicks) = std::env::var("PRISM_CLICK") {
         for title in clicks.split('|').filter(|t| !t.is_empty()) {
-            match find_pressable(&root, title) {
+            // Sheets first: they are in front.
+            let found = sheet_roots()
+                .iter()
+                .find_map(|r| find_pressable(r, title))
+                .or_else(|| find_pressable(&root, title));
+            match found {
                 Some(Pressable::Native(b)) => unsafe { b.performClick(None) },
                 Some(Pressable::Custom(p)) => {
                     let _: objc2::runtime::Bool =
@@ -1227,8 +1355,23 @@ fn run_automation(mtm: MainThreadMarker) {
         for title in s.services.status_titles() {
             println!("prism-macos: menu bar item: {title:?}");
         }
+        if let Some(sheet) = s
+            .renderer
+            .widgets
+            .root
+            .window()
+            .and_then(|w| w.attachedSheet())
+        {
+            println!(
+                "prism-macos: attached sheet: {}",
+                sheet.class().name().to_str().unwrap_or("?")
+            );
+        }
     });
     if let Ok(path) = std::env::var("PRISM_SNAPSHOT") {
+        for (i, sheet) in sheet_roots().iter().enumerate() {
+            write_png(sheet, &format!("{path}.sheet{i}.png"));
+        }
         root.displayIfNeeded();
         let bounds = root.bounds();
         if let Some(rep) = root.bitmapImageRepForCachingDisplayInRect(bounds) {
@@ -1248,7 +1391,9 @@ fn run_automation(mtm: MainThreadMarker) {
                 None => eprintln!("prism-macos: PNG encoding failed"),
             }
         }
-        NSApplication::sharedApplication(mtm).terminate(None);
+        // `terminate:` is refused while a sheet is attached; this is a dev hook.
+        let _ = mtm;
+        std::process::exit(0);
     }
 }
 
@@ -1313,4 +1458,21 @@ fn data_dir(title: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(home)
         .join("Library/Application Support")
         .join(id)
+}
+
+fn write_png(view: &NSView, path: &str) {
+    view.displayIfNeeded();
+    let bounds = view.bounds();
+    if let Some(rep) = view.bitmapImageRepForCachingDisplayInRect(bounds) {
+        view.cacheDisplayInRect_toBitmapImageRep(bounds, &rep);
+        let props = objc2_foundation::NSDictionary::new();
+        if let Some(data) = unsafe {
+            rep.representationUsingType_properties(
+                objc2_app_kit::NSBitmapImageFileType::PNG,
+                &props,
+            )
+        } {
+            let _ = std::fs::write(path, data.to_vec());
+        }
+    }
 }

@@ -8,6 +8,7 @@
 mod a11y;
 mod app;
 mod element;
+pub mod menu;
 mod reconcile;
 mod router;
 pub mod storage;
@@ -23,6 +24,7 @@ pub use element::{
     Stack, Tab, Tabs, Text, TextInput, Timer, Toggle, VNode, button, div, format_remaining, image,
     lazy, progress, screen, scroll, stack, tab, tabs, text, text_input, timer, toggle,
 };
+pub use menu::{ActionRole, Alert, AlertStyle, Menu, MenuItem, Tray};
 pub use reconcile::{NodeId, Patch, Reconciler, UiEvent};
 pub use router::{Params, Router, RouterBuilder, go_back, navigate_to, normalize_path};
 pub use storage::{FileStorage, MemoryStorage, Storage};
@@ -155,6 +157,14 @@ impl Runtime {
                     h(&ChangeEvent { value }, &mut self.app);
                 }
             }
+            UiEvent::MenuSelect(item) => {
+                if item >= menu::APP_MENU_BASE {
+                    self.app.select_menu(item);
+                } else if let Some(h) = self.reconciler.menu_handler(item) {
+                    h(&ClickEvent, &mut self.app);
+                }
+            }
+            UiEvent::AlertAction(alert, index) => self.app.alert_action(alert, index),
             UiEvent::Navigate(id, path) => {
                 if let Some(h) = self.reconciler.navigate_handler(id) {
                     h(&NavigateEvent { path }, &mut self.app);
@@ -218,11 +228,11 @@ impl Runtime {
 /// Everything an app usually needs.
 pub mod prelude {
     pub use crate::{
-        Accessible, Activity, App, AsyncApp, ChangeEvent, ClickEvent, Context, Entity,
-        FluentBuilder, InputEvent, IntoElement, Notification, Params, ParentElement, Render, Role,
-        Router, Styled, Widget, WidgetFamily, adaptive, button, div, go_back, image, lazy,
-        navigate_to, progress, px, relative, rgb, rgba, screen, scroll, text, text_input, timer,
-        toggle,
+        Accessible, Activity, Alert, App, AsyncApp, ChangeEvent, ClickEvent, Context, Entity,
+        FluentBuilder, Handler, InputEvent, IntoElement, Menu, MenuItem, Notification, Params,
+        ParentElement, Render, Role, Router, Styled, Tray, Widget, WidgetFamily, adaptive, button,
+        div, go_back, image, lazy, navigate_to, progress, px, relative, rgb, rgba, screen, scroll,
+        text, text_input, timer, toggle,
     };
 }
 

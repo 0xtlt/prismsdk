@@ -40,6 +40,10 @@ struct StatusActivity {
 pub struct MacServices {
     mtm: MainThreadMarker,
     target: Retained<AnyObject>,
+    window: Retained<objc2_app_kit::NSWindow>,
+    title: String,
+    /// Tray items by id.
+    trays: HashMap<String, Retained<NSStatusItem>>,
     caps: Capabilities,
     activities: HashMap<ActivityId, StatusActivity>,
 }
@@ -52,7 +56,12 @@ fn first(node: &SNode, kind: NodeKind) -> Option<&SNode> {
 }
 
 impl MacServices {
-    pub fn new(mtm: MainThreadMarker, target: Retained<AnyObject>) -> Self {
+    pub fn new(
+        mtm: MainThreadMarker,
+        target: Retained<AnyObject>,
+        window: Retained<objc2_app_kit::NSWindow>,
+        title: String,
+    ) -> Self {
         let bundled = unsafe { prism_bridge_init() };
         let has_group = objc2_foundation::NSBundle::mainBundle()
             .objectForInfoDictionaryKey(&NSString::from_str("PrismAppGroup"))
@@ -60,12 +69,17 @@ impl MacServices {
         MacServices {
             mtm,
             target,
+            window,
+            title,
+            trays: HashMap::new(),
             caps: Capabilities {
                 widgets: bundled && has_group,
                 // Rendered as a menu bar item.
                 live_activities: true,
                 dynamic_island: false,
                 notifications: bundled,
+                tray: true,
+                app_menu: true,
             },
             activities: HashMap::new(),
         }
@@ -80,7 +94,9 @@ impl MacServices {
     pub fn status_titles(&self) -> Vec<String> {
         self.activities
             .values()
-            .filter_map(|a| a.item.button(self.mtm))
+            .map(|a| &a.item)
+            .chain(self.trays.values())
+            .filter_map(|i| i.button(self.mtm))
             .map(|b| b.title().to_string())
             .collect()
     }
@@ -209,6 +225,47 @@ impl PlatformServices for MacServices {
             PlatformRequest::CancelNotification(id) => {
                 if self.caps.notifications {
                     unsafe { prism_notify_cancel(c(&id).as_ptr()) }
+                }
+            }
+            PlatformRequest::ShowAlert(spec) => {
+                crate::menus::show_alert(self.mtm, &self.window, &spec, crate::imp::dispatch)
+            }
+            PlatformRequest::SetAppMenu(menus) => {
+                crate::menus::install_main_menu(self.mtm, &self.title, &self.target, &menus)
+            }
+            PlatformRequest::SetTray(tray) => {
+                let mtm = self.mtm;
+                let item = self.trays.entry(tray.id.clone()).or_insert_with(|| {
+                    NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength)
+                });
+                if let Some(button) = item.button(mtm) {
+                    let image = tray.icon.as_deref().and_then(|s| {
+                        NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                            &NSString::from_str(s),
+                            tray.tooltip.as_deref().map(NSString::from_str).as_deref(),
+                        )
+                    });
+                    button.setImage(image.as_deref());
+                    let title = tray
+                        .title
+                        .as_deref()
+                        .map(|t| format!(" {t}"))
+                        .unwrap_or_default();
+                    button.setTitle(&NSString::from_str(&title));
+                    button.setToolTip(tray.tooltip.as_deref().map(NSString::from_str).as_deref());
+                    button.setAccessibilityLabel(
+                        tray.tooltip.as_deref().map(NSString::from_str).as_deref(),
+                    );
+                }
+                item.setMenu(Some(&crate::menus::build_menu(
+                    mtm,
+                    &tray.menu,
+                    &self.target,
+                )));
+            }
+            PlatformRequest::RemoveTray(id) => {
+                if let Some(item) = self.trays.remove(&id) {
+                    NSStatusBar::systemStatusBar().removeStatusItem(&item);
                 }
             }
             PlatformRequest::RequestNotificationPermission => {

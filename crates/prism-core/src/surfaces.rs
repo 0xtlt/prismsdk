@@ -37,6 +37,10 @@ pub struct Capabilities {
     /// Live Activities also appear in a Dynamic Island (iPhone 14 Pro and later).
     pub dynamic_island: bool,
     pub notifications: bool,
+    /// Tray / menu bar extras (`cx.set_tray`).
+    pub tray: bool,
+    /// A menu bar for app menus (`cx.set_app_menu`).
+    pub app_menu: bool,
 }
 
 /// Work the app asked the platform to do. Backends drain these with
@@ -60,6 +64,10 @@ pub enum PlatformRequest {
         immediately: bool,
     },
     Notify(Notification),
+    ShowAlert(crate::menu::AlertSpec),
+    SetTray(crate::menu::TraySpec),
+    RemoveTray(String),
+    SetAppMenu(Vec<crate::menu::MenuSpec>),
     CancelNotification(String),
     RequestNotificationPermission,
 }

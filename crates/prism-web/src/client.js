@@ -8,7 +8,7 @@
   const tags = {
     view: "div", text: "div", button: "button", text_input: "input",
     stack: "div", screen: "section", toggle: "input", scroll: "div", tabs: "div", tab: "div",
-    image: "span", progress: "progress", timer: "span",
+    image: "span", progress: "progress", timer: "span", modal: "dialog",
   };
   // SF Symbol names → glyphs (table generated from Rust: glyphs.rs).
   const glyphs = __GLYPHS__;
@@ -68,6 +68,11 @@
         e.preventDefault();
         selectTab(el, next, true);
       });
+    } else if (kind === "modal") {
+      el.className = "prism-sheet";
+      el.setAttribute("aria-modal", "true");
+      // Escape: let the app decide (it removes the sheet).
+      el.addEventListener("cancel", (e) => { e.preventDefault(); send({ t: "back", id, depth: 0 }); });
     } else if (kind === "scroll") {
       el.className = "prism-scroll";
     } else if (kind === "image") {
@@ -115,7 +120,11 @@
     screens.forEach((s, i) => (s.hidden = i !== screens.length - 1));
     const top = screens[screens.length - 1];
     const title = (top && top._titleText) || "";
-    st._back.hidden = screens.length <= 1;
+    // Stacks inside sheets show Close on their first screen.
+    const closable = st._closable && screens.length <= 1;
+    st._back.hidden = screens.length <= 1 && !closable;
+    st._back.textContent = closable ? "Close" : "‹ Back";
+    st._back.setAttribute("aria-label", closable ? "Close" : "Back");
     st._title.textContent = title;
     if (top) top.setAttribute("aria-label", title);
     if (isMainStack(st)) {
@@ -229,6 +238,7 @@
       case "value":
         if (el.dataset.kind === "toggle") el.checked = p.value !== 0;
         if (el.dataset.kind === "progress") el.value = p.value;
+        if (el.dataset.kind === "stack") { el._closable = p.value === 1; refreshStack(el); }
         if (el.dataset.kind === "timer") { el.dataset.end = p.value; tick(); }
         if (el.dataset.kind === "tabs") { el._selected = p.value; refreshTabs(el); }
         return;
@@ -241,8 +251,20 @@
         return;
       }
       case "a11y": return applyA11y(el, p.a11y);
+      case "menu": return setMenu(el, p.id, p.menu);
       case "appearance": document.documentElement.style.colorScheme = p.value; return;
       case "children":
+        if (el.dataset.kind === "stack" || el.dataset.kind === "tabs") {
+          // Sheets attached to a root container are presented as dialogs.
+          const sheets = p.children.filter((i) => nodes.get(i)?.dataset.kind === "modal");
+          p.children = p.children.filter((i) => !sheets.includes(i));
+          (el._sheets || []).filter((i) => !sheets.includes(i)).forEach((i) => nodes.get(i)?.remove());
+          sheets.forEach((i) => {
+            const d = nodes.get(i);
+            if (!d.isConnected) { document.body.appendChild(d); d.showModal(); userNavigated = true; }
+          });
+          el._sheets = sheets;
+        }
         if (el.dataset.kind === "stack") {
           const changed = el._screens.length !== p.children.length;
           el._screens = p.children;
@@ -329,6 +351,128 @@
       send({ t: "navigate", id, path: location.pathname });
     }
   });
+
+  // --- Context menus: right-click, long touch, Menu key / Shift+F10 ----------
+  let openMenu = null;
+  function closeMenu(restore) {
+    if (!openMenu) return;
+    openMenu.el.remove();
+    if (restore) openMenu.owner.focus?.();
+    openMenu = null;
+  }
+  document.addEventListener("pointerdown", (e) => { if (openMenu && !openMenu.el.contains(e.target)) closeMenu(false); }, true);
+
+  function showMenu(owner, spec, x, y) {
+    closeMenu(false);
+    const menu = document.createElement("div");
+    menu.className = "prism-menu";
+    menu.setAttribute("role", "menu");
+    if (owner.getAttribute("aria-label")) menu.setAttribute("aria-label", owner.getAttribute("aria-label"));
+    const add = (items, depth) => items.forEach((it) => {
+      if (it.t === "sep") {
+        const s = document.createElement("div");
+        s.setAttribute("role", "separator");
+        menu.appendChild(s);
+      } else if (it.t === "sub") {
+        const g = document.createElement("div");
+        g.className = "prism-menu-group";
+        g.textContent = it.title;
+        menu.appendChild(g);
+        add(it.menu.items, depth + 1);
+      } else {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.setAttribute("role", it.checked === null ? "menuitem" : "menuitemcheckbox");
+        if (it.checked !== null) b.setAttribute("aria-checked", String(it.checked));
+        b.dataset.role = it.role;
+        b.disabled = !it.enabled;
+        b.tabIndex = -1;
+        b.innerHTML = '<span aria-hidden="true"></span><span></span>';
+        b.firstChild.textContent = it.icon ? glyphs[it.icon] || "" : it.checked ? "✓" : "";
+        b.lastChild.textContent = it.title;
+        if (depth) b.style.paddingLeft = 10 + depth * 12 + "px";
+        b.addEventListener("click", () => { closeMenu(true); send({ t: "menu", id: it.id }); });
+        menu.appendChild(b);
+      }
+    });
+    add(spec.items, 0);
+    menu.addEventListener("keydown", (e) => {
+      const items = [...menu.querySelectorAll("[role^=menuitem]:not(:disabled)")];
+      const i = items.indexOf(document.activeElement);
+      if (e.key === "Escape") { e.preventDefault(); closeMenu(true); }
+      else if (e.key === "ArrowDown") { e.preventDefault(); items[(i + 1) % items.length]?.focus(); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); items[(i - 1 + items.length) % items.length]?.focus(); }
+      else if (e.key === "Tab") { closeMenu(false); }
+    });
+    document.body.appendChild(menu);
+    const r = menu.getBoundingClientRect();
+    menu.style.left = Math.max(8, Math.min(x, innerWidth - r.width - 8)) + "px";
+    menu.style.top = Math.max(8, Math.min(y, innerHeight - r.height - 8)) + "px";
+    openMenu = { el: menu, owner };
+    menu.querySelector("[role^=menuitem]:not(:disabled)")?.focus();
+  }
+
+  function setMenu(el, id, spec) {
+    el._menuSpec = spec;
+    if (spec) el.setAttribute("aria-haspopup", "menu"); else el.removeAttribute("aria-haspopup");
+    if (el._menuBound) return;
+    el._menuBound = true;
+    el.addEventListener("contextmenu", (e) => {
+      if (!el._menuSpec) return;
+      e.preventDefault();
+      e.stopPropagation();
+      showMenu(el, el._menuSpec, e.clientX, e.clientY);
+    });
+    el.addEventListener("keydown", (e) => {
+      if (!el._menuSpec || e.target !== el) return;
+      if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
+        e.preventDefault();
+        const r = el.getBoundingClientRect();
+        showMenu(el, el._menuSpec, r.left + 12, r.bottom);
+      }
+    });
+    // Long touch opens the menu too.
+    let timer;
+    el.addEventListener("pointerdown", (e) => {
+      if (e.pointerType !== "touch" || !el._menuSpec) return;
+      timer = setTimeout(() => showMenu(el, el._menuSpec, e.clientX, e.clientY), 500);
+    });
+    ["pointerup", "pointercancel", "pointermove"].forEach((t) => el.addEventListener(t, () => clearTimeout(timer)));
+  }
+
+  // --- Alerts: an accessible modal dialog --------------------------------------
+  function showAlert(a) {
+    const d = document.createElement("dialog");
+    d.className = "prism-alert";
+    d.setAttribute("role", "alertdialog");
+    d.setAttribute("aria-labelledby", `prism-alert-${a.id}-t`);
+    if (a.message) d.setAttribute("aria-describedby", `prism-alert-${a.id}-m`);
+    d.innerHTML = `<h2 id="prism-alert-${a.id}-t"></h2>${a.message ? `<p id="prism-alert-${a.id}-m"></p>` : ""}<div class="prism-alert-actions"></div>`;
+    d.querySelector("h2").textContent = a.title;
+    if (a.message) d.querySelector("p").textContent = a.message;
+    const actions = d.querySelector(".prism-alert-actions");
+    const previous = document.activeElement;
+    const close = (index) => {
+      d.close();
+      d.remove();
+      previous?.focus?.();
+      if (index !== null) send({ t: "alert", id: a.id, index });
+    };
+    a.actions.forEach((act, i) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = act.title;
+      b.dataset.role = act.role;
+      b.addEventListener("click", () => close(i));
+      actions.appendChild(b);
+    });
+    const cancel = a.actions.findIndex((x) => x.role === "cancel");
+    d.addEventListener("cancel", (e) => { e.preventDefault(); close(cancel >= 0 ? cancel : null); });
+    document.body.appendChild(d);
+    d.showModal();
+    // Safest default focus: Cancel when there is one.
+    (cancel >= 0 ? actions.children[cancel] : actions.firstChild)?.focus();
+  }
 
   // --- Timers: count down by themselves --------------------------------------
   function remaining(end) {
@@ -475,6 +619,7 @@
         else notify(msg);
         return;
       case "notify_cancel": clearTimeout(pending.get(msg.id)); pending.delete(msg.id); return;
+      case "alert": return showAlert(msg.a);
       case "notify_permission":
         if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
         return;

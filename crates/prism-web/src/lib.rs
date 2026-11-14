@@ -203,6 +203,23 @@ pub fn page(config: &AppConfig, init: &AppInit, path: &str, sid: &str) -> String
   #prism-toasts {{ position: fixed; bottom: 80px; right: 16px; z-index: 1000; display: flex; flex-direction: column; gap: 8px; }}
   .prism-toast {{ max-width: 340px; padding: 12px 14px; border-radius: 14px; background: Canvas; color: CanvasText; border: 1px solid rgba(128,128,128,.3); box-shadow: 0 6px 24px rgba(0,0,0,.18); cursor: pointer; text-align: left; font: inherit; }}
   .prism-toast strong {{ display: block; }}
+  .prism-menu {{ position: fixed; z-index: 2000; min-width: 200px; padding: 6px; border-radius: 12px; background: Canvas; color: CanvasText; border: 1px solid rgba(128,128,128,.3); box-shadow: 0 10px 30px rgba(0,0,0,.2); display: flex; flex-direction: column; }}
+  .prism-menu [role^=menuitem] {{ display: flex; gap: 10px; align-items: center; padding: 8px 10px; border: 0; border-radius: 8px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }}
+  .prism-menu [role^=menuitem]:hover, .prism-menu [role^=menuitem]:focus {{ background: rgba(128,128,128,.15); outline: none; }}
+  .prism-menu [data-role=destructive] {{ color: #d93636; }}
+  .prism-menu [role=separator] {{ height: 1px; margin: 4px 6px; background: rgba(128,128,128,.25); }}
+  .prism-menu .prism-menu-group {{ padding: 6px 10px 2px; font-size: 12px; opacity: .6; }}
+  dialog.prism-alert {{ border: 0; border-radius: 16px; padding: 20px; width: min(340px, 90vw); background: Canvas; color: CanvasText; box-shadow: 0 20px 50px rgba(0,0,0,.3); }}
+  dialog.prism-alert h2 {{ margin: 0 0 6px; font-size: 17px; }}
+  dialog.prism-alert p {{ margin: 0 0 16px; opacity: .8; }}
+  dialog.prism-alert .prism-alert-actions {{ display: flex; flex-direction: column; gap: 8px; }}
+  dialog.prism-alert button {{ padding: 10px; border-radius: 10px; border: 1px solid rgba(128,128,128,.3); background: none; color: inherit; font: inherit; cursor: pointer; }}
+  dialog.prism-alert button[data-role=destructive] {{ color: #fff; background: #d93636; border-color: #d93636; }}
+  dialog.prism-alert button[data-role=cancel] {{ font-weight: 600; }}
+  dialog.prism-sheet {{ border: 0; padding: 0; width: min(560px, 100vw); height: min(720px, 92vh); border-radius: 18px; background: Canvas; color: CanvasText; box-shadow: 0 20px 60px rgba(0,0,0,.35); }}
+  dialog.prism-sheet[open] {{ display: flex; flex-direction: column; }}
+  dialog.prism-sheet > * {{ flex: 1; }}
+  dialog::backdrop {{ background: rgba(0,0,0,.35); }}
   @media (prefers-reduced-motion: reduce) {{ * {{ transition: none !important; }} }}
   .prism-header {{ position: relative; flex: 0 0 44px; display: flex; align-items: center; justify-content: center; border-bottom: 1px solid rgba(128,128,128,.25); background: Canvas; font-size: 15px; font-weight: 600; }}
   .prism-back {{ position: absolute; left: 8px; top: 50%; transform: translateY(-50%); font: inherit; font-size: 14px; font-weight: 400; cursor: pointer; }}
@@ -354,6 +371,8 @@ impl PlatformServices for WebServices {
             live_activities: true,
             dynamic_island: false,
             notifications: true,
+            tray: false,
+            app_menu: false,
         }
     }
 
@@ -379,6 +398,14 @@ impl PlatformServices for WebServices {
             }),
             PlatformRequest::CancelNotification(id) => json!({ "t": "notify_cancel", "id": id }),
             PlatformRequest::RequestNotificationPermission => json!({ "t": "notify_permission" }),
+            PlatformRequest::ShowAlert(a) => json!({
+                "t": "alert",
+                "a": serde_json::from_str::<Value>(&a.to_json()).unwrap_or(Value::Null),
+            }),
+            // No tray or menu bar in a browser tab (capabilities say so).
+            PlatformRequest::SetTray(_)
+            | PlatformRequest::RemoveTray(_)
+            | PlatformRequest::SetAppMenu(_) => return,
         };
         self.outbox.push(msg);
     }
@@ -392,6 +419,8 @@ fn parse_event(msg: &str) -> Option<UiEvent> {
         "input" => Some(UiEvent::Input(id, v.get("v")?.as_str()?.to_string())),
         "back" => Some(UiEvent::Back(id, v.get("depth")?.as_u64()? as usize)),
         "change" => Some(UiEvent::Change(id, v.get("v")?.as_f64()?)),
+        "menu" => Some(UiEvent::MenuSelect(id)),
+        "alert" => Some(UiEvent::AlertAction(id, v.get("index")?.as_u64()? as usize)),
         "navigate" => Some(UiEvent::Navigate(id, v.get("path")?.as_str()?.to_string())),
         _ => None,
     }
@@ -447,6 +476,10 @@ impl Encoder {
                 }})
             }
             Patch::SetValue { id, value } => json!({ "op": "value", "id": id, "value": value }),
+            Patch::SetMenu { id, menu } => json!({
+                "op": "menu", "id": id,
+                "menu": menu.as_ref().map(|m| serde_json::from_str::<Value>(&m.to_json()).unwrap_or(Value::Null)),
+            }),
             Patch::SetIcon { id, icon } => {
                 json!({ "op": "icon", "id": id, "icon": icon, "glyph": glyphs::glyph(icon) })
             }

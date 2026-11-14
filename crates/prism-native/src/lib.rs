@@ -47,6 +47,9 @@ pub trait Widgets {
     fn set_value(&mut self, view: &Self::View, value: f64);
     /// Tab icon (SF Symbol name on Apple platforms).
     fn set_icon(&mut self, _view: &Self::View, _icon: &str) {}
+    /// Context menu of a view (`None` removes it). Items report
+    /// `UiEvent::MenuSelect(id)`.
+    fn set_menu(&mut self, _view: &Self::View, _menu: Option<&prism_core::menu::MenuSpec>) {}
     /// Light/dark native chrome.
     fn set_appearance(&mut self, _appearance: Appearance) {}
     /// Scrollable extent of a scroll view's content.
@@ -67,6 +70,7 @@ fn is_container(kind: NodeKind) -> bool {
             | NodeKind::Scroll
             | NodeKind::Tabs
             | NodeKind::Tab
+            | NodeKind::Modal
     )
 }
 
@@ -393,6 +397,11 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                     }
                 }
                 Patch::SetAppearance { appearance } => self.widgets.set_appearance(*appearance),
+                Patch::SetMenu { id, menu } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.set_menu(&e.view, menu.as_ref());
+                    }
+                }
                 Patch::SetValue { id, value } => {
                     if let Some(e) = self.nodes.get(id) {
                         self.widgets.set_value(&e.view, *value);

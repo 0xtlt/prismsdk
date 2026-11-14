@@ -14,8 +14,9 @@ use objc2_ui_kit::{
     NSObjectUIAccessibility, NSTextAlignment, UIAccessibilityTraitButton,
     UIAccessibilityTraitHeader, UIAccessibilityTraitImage, UIAccessibilityTraitLink,
     UIAccessibilityTraitNotEnabled, UIAccessibilityTraitSelected, UIAccessibilityTraitStaticText,
-    UIAccessibilityTraitTabBar, UIAccessibilityTraitToggleButton, UIApplication,
-    UIApplicationDelegate, UIButton, UIButtonType, UIColor, UIControlEvents, UIControlState,
+    UIAccessibilityTraitTabBar, UIAccessibilityTraitToggleButton,
+    UIAdaptivePresentationControllerDelegate, UIApplication, UIApplicationDelegate, UIButton,
+    UIButtonType, UIColor, UIContextMenuInteractionDelegate, UIControlEvents, UIControlState,
     UIFont, UIFontWeightBold, UIFontWeightMedium, UIFontWeightRegular, UIFontWeightSemibold,
     UIImage, UIImageSymbolConfiguration, UIImageView, UILabel, UINavigationController,
     UINavigationControllerDelegate, UIProgressView, UIResponder, UIScene, UISceneConnectionOptions,
@@ -59,7 +60,7 @@ fn with_state(f: impl FnOnce(&mut State)) {
     });
 }
 
-fn dispatch(event: UiEvent) {
+pub(crate) fn dispatch(event: UiEvent) {
     with_state(|s| {
         let patches = s.runtime.dispatch(event);
         s.commit(patches);
@@ -162,6 +163,38 @@ define_class!(
         fn did_select(&self, tabs: &UITabBarController, _controller: &UIViewController) {
             if let Some(view) = tabs.viewIfLoaded() {
                 dispatch(UiEvent::Change(view.tag() as NodeId, tabs.selectedIndex() as f64));
+            }
+        }
+    }
+
+    impl Target {
+        /// Close button of a stack inside a sheet (tag = stack id).
+        #[unsafe(method(onCloseStack:))]
+        fn on_close_stack(&self, sender: &objc2_ui_kit::UIBarButtonItem) {
+            dispatch(UiEvent::Back(sender.tag() as NodeId, 0));
+        }
+    }
+
+    unsafe impl UIContextMenuInteractionDelegate for Target {
+        #[unsafe(method_id(contextMenuInteraction:configurationForMenuAtLocation:))]
+        fn context_menu_configuration(
+            &self,
+            interaction: &objc2_ui_kit::UIContextMenuInteraction,
+            _location: objc2_core_foundation::CGPoint,
+        ) -> Option<Retained<objc2_ui_kit::UIContextMenuConfiguration>> {
+            menu_configuration(self.mtm(), interaction)
+        }
+    }
+
+    unsafe impl UIAdaptivePresentationControllerDelegate for Target {
+        /// A sheet was swiped down: tell its Modal node.
+        #[unsafe(method(presentationControllerDidDismiss:))]
+        fn presentation_did_dismiss(&self, pc: &objc2_ui_kit::UIPresentationController) {
+            let host = pc.presentedViewController();
+            if let Some(content) = host.view().and_then(|v| v.subviews().firstObject()) {
+                let id = content.tag() as NodeId;
+                with_state(|s| s.renderer.widgets.presented.retain(|p| *p != id));
+                dispatch(UiEvent::Back(id, 0));
             }
         }
     }
@@ -315,7 +348,8 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
     let island = scene
         .statusBarManager()
         .is_some_and(|m| m.statusBarFrame().size.height >= 54.);
-    let services = crate::services::IosServices::new(island);
+    let services =
+        crate::services::IosServices::new(island, Retained::into_super(controller.clone()));
     let mut runtime = Runtime::with_options(
         init,
         prism_core::RuntimeOptions {
@@ -335,6 +369,8 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
         icons: HashMap::new(),
         selected: HashMap::new(),
         timers: HashMap::new(),
+        menus: HashMap::new(),
+        presented: Vec::new(),
     });
     let first = runtime.render();
     let mut state = State {
@@ -358,6 +394,8 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
 pub struct NavStack {
     nav: Retained<UINavigationController>,
     view: Retained<UIView>,
+    /// Shows a Close button on the first screen (stacks inside sheets).
+    closable: std::cell::Cell<bool>,
 }
 
 pub struct TabBar {
@@ -388,6 +426,8 @@ pub enum View {
     Container(Retained<UIView>),
     Screen(Retained<UIView>),
     Stack(Rc<NavStack>),
+    /// The content of a sheet (hosted by a presented view controller).
+    Sheet(Retained<UIView>),
     Tabs(Rc<TabBar>),
     Tab(Retained<UIView>),
     Scroll(Retained<UIScrollView>),
@@ -405,6 +445,7 @@ impl View {
         match self {
             View::Container(v) | View::Screen(v) | View::Tab(v) => v,
             View::Stack(s) => &s.view,
+            View::Sheet(v) => v,
             View::Tabs(t) => &t.view,
             View::Scroll(v) => v,
             View::Toggle(v) => v,
@@ -435,6 +476,65 @@ pub struct UiKit {
     selected: HashMap<NodeId, usize>,
     /// Countdown labels and their end time (Unix seconds).
     timers: HashMap<NodeId, (Retained<UILabel>, f64)>,
+    /// Context menus by view id (read by the interaction delegate).
+    menus: HashMap<NodeId, prism_core::menu::MenuSpec>,
+    /// Sheets currently presented, by modal id.
+    presented: Vec<NodeId>,
+}
+
+impl UiKit {
+    fn present_sheets(&mut self, sheets: &[View]) {
+        for sheet in sheets {
+            let id = sheet.id();
+            if self.presented.contains(&id) {
+                continue;
+            }
+            let vc = self.screen_controller(sheet);
+            if let Some(pc) = vc.presentationController() {
+                unsafe { pc.setDelegate(Some(ProtocolObject::from_ref(&*self.target))) };
+            }
+            crate::menus::top_controller(&self.controller)
+                .presentViewController_animated_completion(&vc, true, None);
+            self.presented.push(id);
+        }
+        let keep: Vec<NodeId> = sheets.iter().map(View::id).collect();
+        let gone: Vec<NodeId> = self
+            .presented
+            .iter()
+            .copied()
+            .filter(|id| !keep.contains(id))
+            .collect();
+        for id in gone {
+            self.presented.retain(|p| *p != id);
+            if let Some(vc) = self.screens.get(&id)
+                && vc.presentingViewController().is_some()
+            {
+                vc.dismissViewControllerAnimated_completion(true, None);
+            }
+        }
+    }
+
+    /// The Close button of a stack inside a sheet.
+    fn apply_close_button(&self, stack: &NavStack, stack_id: NodeId) {
+        let Some(first) = stack.nav.viewControllers().firstObject() else {
+            return;
+        };
+        if stack.closable.get() {
+            let target: &AnyObject = &self.target;
+            let item = unsafe {
+                objc2_ui_kit::UIBarButtonItem::initWithBarButtonSystemItem_target_action(
+                    objc2_ui_kit::UIBarButtonItem::alloc(self.mtm),
+                    objc2_ui_kit::UIBarButtonSystemItem::Close,
+                    Some(target),
+                    Some(sel!(onCloseStack:)),
+                )
+            };
+            item.setTag(stack_id as isize);
+            first.navigationItem().setLeftBarButtonItem(Some(&item));
+        } else {
+            first.navigationItem().setLeftBarButtonItem(None);
+        }
+    }
 }
 
 impl UiKit {
@@ -560,12 +660,17 @@ impl Widgets for UiKit {
         let view = match kind {
             NodeKind::View => View::Container(UIView::new(mtm)),
             NodeKind::Screen => View::Screen(UIView::new(mtm)),
+            NodeKind::Modal => View::Sheet(UIView::new(mtm)),
             NodeKind::Stack => {
                 let nav = UINavigationController::new(mtm);
                 nav.navigationBar().setPrefersLargeTitles(true);
                 unsafe { nav.setDelegate(Some(ProtocolObject::from_ref(&*self.target))) };
                 let view = nav.view().expect("navigation controller has a view");
-                View::Stack(Rc::new(NavStack { nav, view }))
+                View::Stack(Rc::new(NavStack {
+                    nav,
+                    view,
+                    closable: std::cell::Cell::new(false),
+                }))
             }
             NodeKind::Tabs => {
                 let controller = UITabBarController::new(mtm);
@@ -657,6 +762,7 @@ impl Widgets for UiKit {
         match view {
             View::Container(_)
             | View::Screen(_)
+            | View::Sheet(_)
             | View::Stack(_)
             | View::Tabs(_)
             | View::Tab(_)
@@ -751,6 +857,15 @@ impl Widgets for UiKit {
     }
 
     fn set_children(&mut self, parent: &View, children: &[View]) {
+        // Sheets attached to a root container are presented modally.
+        let (sheets, children): (Vec<View>, Vec<View>) = children
+            .iter()
+            .cloned()
+            .partition(|c| matches!(c, View::Sheet(_)));
+        if matches!(parent, View::Stack(_) | View::Tabs(_)) {
+            self.present_sheets(&sheets);
+        }
+        let children = &children[..];
         if let View::Stack(stack) = parent {
             let controllers: Vec<Retained<UIViewController>> = children
                 .iter()
@@ -767,6 +882,7 @@ impl Widgets for UiKit {
                     animated,
                 );
             }
+            self.apply_close_button(stack, parent.id());
             return;
         }
         if let View::Tabs(bar) = parent {
@@ -867,6 +983,10 @@ impl Widgets for UiKit {
 
     fn set_value(&mut self, view: &View, value: f64) {
         match view {
+            View::Stack(st) => {
+                st.closable.set(value != 0.);
+                self.apply_close_button(st, view.id());
+            }
             View::Progress(p) => p.setProgress_animated(value as f32, true),
             View::Timer(l) => {
                 self.timers.insert(view.id(), (l.clone(), value));
@@ -909,6 +1029,30 @@ impl Widgets for UiKit {
             Appearance::Dark => objc2_ui_kit::UIUserInterfaceStyle::Dark,
         };
         self.controller.setOverrideUserInterfaceStyle(style);
+    }
+
+    fn set_menu(&mut self, view: &View, menu: Option<&prism_core::menu::MenuSpec>) {
+        let id = view.id();
+        let v = view.ui();
+        let has = self.menus.contains_key(&id);
+        match menu {
+            Some(spec) => {
+                self.menus.insert(id, spec.clone());
+                if !has {
+                    let interaction = objc2_ui_kit::UIContextMenuInteraction::initWithDelegate(
+                        objc2_ui_kit::UIContextMenuInteraction::alloc(self.mtm),
+                        ProtocolObject::from_ref(&*self.target),
+                    );
+                    v.addInteraction(ProtocolObject::from_ref(&*interaction));
+                }
+            }
+            None => {
+                self.menus.remove(&id);
+                for i in v.interactions().iter() {
+                    v.removeInteraction(&i);
+                }
+            }
+        }
     }
 
     fn set_content_size(&mut self, view: &View, width: f32, height: f32) {
@@ -981,7 +1125,8 @@ impl Widgets for UiKit {
 
     fn screen_viewport(&mut self, stack: &View, screen: &View) -> Viewport {
         // A tab hosts a navigation stack, which handles the safe area itself.
-        let own_insets = !matches!(screen, View::Tab(_));
+        // Tabs and sheets host a navigation stack, which handles the safe area.
+        let own_insets = !matches!(screen, View::Tab(_) | View::Sheet(_));
         let host = self
             .screens
             .get(&screen.id())
@@ -1074,4 +1219,28 @@ fn data_dir() -> std::path::PathBuf {
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     std::path::PathBuf::from(home).join("Library/Application Support/prism-data")
+}
+
+/// The context menu of the view hosting `interaction`, if it has one.
+fn menu_configuration(
+    mtm: MainThreadMarker,
+    interaction: &objc2_ui_kit::UIContextMenuInteraction,
+) -> Option<Retained<objc2_ui_kit::UIContextMenuConfiguration>> {
+    let id = objc2_ui_kit::UIInteraction::view(interaction)?.tag() as NodeId;
+    let mut spec = None;
+    with_state(|s| spec = s.renderer.widgets.menus.get(&id).cloned());
+    let spec = spec?;
+    let provider = block2::RcBlock::new(
+        move |_: std::ptr::NonNull<NSArray<objc2_ui_kit::UIMenuElement>>| {
+            Retained::autorelease_return(crate::menus::build_menu(mtm, &spec, dispatch))
+        },
+    );
+    Some(unsafe {
+        objc2_ui_kit::UIContextMenuConfiguration::configurationWithIdentifier_previewProvider_actionProvider(
+            None,
+            std::ptr::null_mut(),
+            &*provider as *const _ as *mut _,
+            mtm,
+        )
+    })
 }

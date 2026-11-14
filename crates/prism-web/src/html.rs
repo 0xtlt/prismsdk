@@ -56,6 +56,8 @@ impl Backend for HtmlBackend {
                     self.with(*id, |n| n.clickable = *clickable)
                 }
                 Patch::SetAppearance { appearance } => self.appearance = *appearance,
+                // Menus open on interaction, once the client runs.
+                Patch::SetMenu { .. } => {}
                 Patch::SetValue { id, value } => self.with(*id, |n| n.value = *value),
                 Patch::SetIcon { id, icon } => self.with(*id, |n| n.icon = icon.clone()),
                 Patch::SetAccessibility { id, a11y } => self.with(*id, |n| n.a11y = a11y.clone()),

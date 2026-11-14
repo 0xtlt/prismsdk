@@ -657,6 +657,7 @@ pub fn divider() -> Element {
 
 /// A tappable list row: title, optional subtitle and trailing detail, chevron.
 pub struct ListRow {
+    pub context_menu: Option<prism_core::Menu>,
     pub title: String,
     pub subtitle: Option<String>,
     pub detail: Option<String>,
@@ -667,6 +668,7 @@ pub struct ListRow {
 
 pub fn list_row(title: impl Into<String>) -> ListRow {
     ListRow {
+        context_menu: None,
         title: title.into(),
         subtitle: None,
         detail: None,
@@ -692,6 +694,11 @@ impl ListRow {
     }
     pub fn on_click(mut self, handler: Handler<ClickEvent>) -> Self {
         self.on_click = Some(handler);
+        self
+    }
+    /// Long press / right-click menu.
+    pub fn context_menu(mut self, menu: prism_core::Menu) -> Self {
+        self.context_menu = Some(menu);
         self
     }
 }
@@ -748,6 +755,9 @@ impl Component for ListRow {
             el = el.on_click(h);
         } else {
             el = el.accessibility_role(Role::Group);
+        }
+        if let Some(menu) = self.context_menu {
+            el = el.context_menu(menu);
         }
         self.refine.apply(el).into_element()
     }

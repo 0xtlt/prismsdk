@@ -21,7 +21,7 @@ use std::str::FromStr;
 use crate::app::{AnyEntity, App, Context, Entity, Render};
 use crate::element::{
     BackEvent, ChangeEvent, ClickEvent, Element, Handler, IntoElement, NavigateEvent,
-    ParentElement, div, screen, stack, tab, tabs, text,
+    ParentElement, div, modal, screen, stack, tab, tabs, text,
 };
 use crate::style::Styled;
 
@@ -94,6 +94,8 @@ pub(crate) enum NavOp {
     Replace(String),
     Reset(String),
     Back,
+    Present(String),
+    Dismiss,
 }
 
 struct Entry {
@@ -117,6 +119,8 @@ pub struct Router {
     tabs: Vec<TabState>,
     selected: usize,
     tab_bar: bool,
+    /// Screens presented modally (a sheet with its own stack), if any.
+    modal: Vec<Entry>,
 }
 
 /// Declares the routes (and optionally tabs), then [`build`](RouterBuilder::build)s the router.
@@ -154,6 +158,26 @@ impl Router {
 
     pub(crate) fn apply(&mut self, op: NavOp, cx: &mut Context<Self>) {
         match op {
+            NavOp::Present(path) => {
+                let path = normalize_path(&path);
+                self.dismiss(cx);
+                let entity = self.open(&path, cx);
+                self.modal.push(Entry { path, entity });
+            }
+            NavOp::Dismiss => self.dismiss(cx),
+            // While a sheet is up, navigation happens inside it.
+            NavOp::Push(path) if !self.modal.is_empty() => {
+                let path = normalize_path(&path);
+                if self.modal.last().is_some_and(|e| e.path == path) {
+                    return;
+                }
+                let entity = self.open(&path, cx);
+                self.modal.push(Entry { path, entity });
+            }
+            NavOp::Back if !self.modal.is_empty() => {
+                let depth = self.modal.len() - 1;
+                self.truncate_modal(depth, cx);
+            }
             NavOp::Push(path) => self.push(&path, cx),
             NavOp::Replace(path) => {
                 let path = normalize_path(&path);
@@ -200,6 +224,26 @@ impl Router {
             let old = t.entries.pop().expect("non-empty");
             cx.release_any(old.entity);
         }
+    }
+
+    /// Closes the sheet, releasing its screens.
+    fn dismiss(&mut self, cx: &mut Context<Self>) {
+        for old in self.modal.drain(..) {
+            cx.release_any(old.entity);
+        }
+    }
+
+    /// Keeps the first `depth` screens of the sheet; 0 closes it.
+    fn truncate_modal(&mut self, depth: usize, cx: &mut Context<Self>) {
+        while self.modal.len() > depth {
+            let old = self.modal.pop().expect("non-empty");
+            cx.release_any(old.entity);
+        }
+    }
+
+    /// Whether a sheet is presented.
+    pub fn is_presenting(&self) -> bool {
+        !self.modal.is_empty()
     }
 
     fn select(&mut self, index: usize) {
@@ -329,6 +373,7 @@ impl RouterBuilder {
             tabs,
             selected: 0,
             tab_bar,
+            modal: Vec::new(),
         });
         app.set_navigator(router);
         router.update(app, |r, cx| r.reset(&initial, cx));
@@ -344,10 +389,32 @@ fn tab_stack(t: &TabState, index: usize, cx: &Context<Router>) -> crate::element
         .children(t.entries.iter().map(|e| Element::Entity(e.entity)))
 }
 
+/// The sheet: a closable stack; closing it (button, swipe, Escape) dismisses.
+fn modal_sheet(entries: &[Entry], cx: &Context<Router>) -> Element {
+    if entries.is_empty() {
+        return Element::Empty;
+    }
+    modal()
+        .key("modal")
+        .on_dismiss(cx.listener(|this, _: &BackEvent, cx| this.dismiss(cx)))
+        .child(
+            stack()
+                .closable(true)
+                .path(entries.last().map_or("/", |e| e.path.as_str()))
+                .on_back(cx.listener(|this, e: &BackEvent, cx| this.truncate_modal(e.depth, cx)))
+                .on_navigate(cx.listener(|this, e: &NavigateEvent, cx| {
+                    this.apply(NavOp::Push(e.path.clone()), cx)
+                }))
+                .children(entries.iter().map(|e| Element::Entity(e.entity))),
+        )
+        .into_element()
+}
+
 impl Render for Router {
     fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let sheet = modal_sheet(&self.modal, cx);
         if !self.tab_bar {
-            return tab_stack(&self.tabs[0], 0, cx).into_element();
+            return tab_stack(&self.tabs[0], 0, cx).child(sheet).into_element();
         }
         tabs(self.selected)
             .path(self.current_path())
@@ -357,6 +424,7 @@ impl Render for Router {
                     .key(i.to_string())
                     .child(tab_stack(t, i, cx))
             }))
+            .child(sheet)
             .into_element()
     }
 }

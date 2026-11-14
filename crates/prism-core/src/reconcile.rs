@@ -27,6 +27,11 @@ pub type NodeId = u64;
 /// A mutation of the host tree.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Patch {
+    /// Context menu of a node (`None` removes it).
+    SetMenu {
+        id: NodeId,
+        menu: Option<crate::menu::MenuSpec>,
+    },
     /// Light/dark appearance of native chrome.
     SetAppearance {
         appearance: Appearance,
@@ -95,6 +100,10 @@ pub enum UiEvent {
     Navigate(NodeId, String),
     /// A toggle was flipped (0/1) or a tab selected (index).
     Change(NodeId, f64),
+    /// A menu item was chosen (context menu, tray, app menu).
+    MenuSelect(u64),
+    /// An alert button was chosen: (alert id, button index).
+    AlertAction(u64, usize),
 }
 
 /// A mounted host node.
@@ -109,6 +118,7 @@ struct MNode {
     icon: String,
     value: Option<f64>,
     a11y: Accessibility,
+    menu: Option<crate::menu::MenuSpec>,
     clickable: bool,
     parent: Option<NodeId>,
     children: Vec<NodeId>,
@@ -132,6 +142,8 @@ pub struct Reconciler {
     back: HashMap<NodeId, Handler<BackEvent>>,
     navigate: HashMap<NodeId, Handler<NavigateEvent>>,
     change: HashMap<NodeId, Handler<ChangeEvent>>,
+    /// Context menu items: (node id << 16 | n) → handler.
+    menu_items: HashMap<u64, Handler<ClickEvent>>,
     // Per-frame scratch state.
     dirty: HashSet<EntityId>,
     patches: Vec<Patch>,
@@ -159,6 +171,10 @@ impl Reconciler {
 
     pub fn navigate_handler(&self, id: NodeId) -> Option<Handler<NavigateEvent>> {
         self.navigate.get(&id).cloned()
+    }
+
+    pub fn menu_handler(&self, item: u64) -> Option<Handler<ClickEvent>> {
+        self.menu_items.get(&item).cloned()
     }
 
     pub fn change_handler(&self, id: NodeId) -> Option<Handler<ChangeEvent>> {
@@ -349,8 +365,30 @@ impl Reconciler {
             on_navigate,
             on_change,
             link,
+            context_menu,
             ..
         } = *vnode;
+        // Context menu: ids derived from the node id stay stable across renders.
+        let menu_spec = context_menu.map(|m| {
+            let mut handlers = Vec::new();
+            let spec = m.compile(id << 16, &mut handlers);
+            self.menu_items.retain(|k, _| k >> 16 != id);
+            self.menu_items.extend(handlers);
+            spec
+        });
+        if menu_spec.is_none() {
+            self.menu_items.retain(|k, _| k >> 16 != id);
+        }
+        {
+            let m = self.nodes.get_mut(&id).expect("node exists");
+            if m.menu != menu_spec {
+                self.patches.push(Patch::SetMenu {
+                    id,
+                    menu: menu_spec.clone(),
+                });
+                m.menu = menu_spec;
+            }
+        }
         // A link navigates when activated in the app.
         let on_click = on_click.or_else(|| {
             link.clone().map(|path| -> Handler<ClickEvent> {
@@ -579,6 +617,7 @@ impl Reconciler {
                 icon: String::new(),
                 value: None,
                 a11y: Accessibility::default(),
+                menu: None,
                 clickable: false,
                 parent: None,
                 children: Vec::new(),
@@ -604,6 +643,7 @@ impl Reconciler {
         self.back.remove(&id);
         self.navigate.remove(&id);
         self.change.remove(&id);
+        self.menu_items.retain(|k, _| k >> 16 != id);
         self.destroyed.push(id);
     }
 }

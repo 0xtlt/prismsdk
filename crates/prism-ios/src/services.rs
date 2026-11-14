@@ -38,10 +38,14 @@ fn stale(content: &ActivityContent) -> f64 {
 
 pub struct IosServices {
     caps: Capabilities,
+    controller: objc2::rc::Retained<objc2_ui_kit::UIViewController>,
 }
 
 impl IosServices {
-    pub fn new(dynamic_island: bool) -> Self {
+    pub fn new(
+        dynamic_island: bool,
+        controller: objc2::rc::Retained<objc2_ui_kit::UIViewController>,
+    ) -> Self {
         let notifications = unsafe { prism_bridge_init() };
         let live = unsafe { prism_activity_supported() };
         let info = |key: &str| {
@@ -55,7 +59,10 @@ impl IosServices {
                 live_activities: live,
                 dynamic_island: live && dynamic_island,
                 notifications,
+                tray: false,
+                app_menu: false,
             },
+            controller,
         }
     }
 }
@@ -140,6 +147,14 @@ impl PlatformServices for IosServices {
                 prism_notify_cancel(c(&id).as_ptr())
             },
             PlatformRequest::RequestNotificationPermission => unsafe { prism_notify_permission() },
+            PlatformRequest::ShowAlert(spec) => {
+                let mtm = objc2::MainThreadMarker::new().expect("main thread");
+                crate::menus::show_alert(mtm, &self.controller, &spec, crate::imp::dispatch)
+            }
+            // No menu bar or tray on iOS (capabilities say so).
+            PlatformRequest::SetTray(_)
+            | PlatformRequest::RemoveTray(_)
+            | PlatformRequest::SetAppMenu(_) => {}
         }
     }
 }

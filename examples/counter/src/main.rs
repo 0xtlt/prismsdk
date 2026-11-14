@@ -11,10 +11,12 @@
 //! - Settings:   live theming (system/light/dark, accent, shape, native controls).
 
 mod focus;
+mod menus;
 mod widgets;
 
 use prism::prelude::*;
 use prism::ui::{self, Theme};
+use prism::{Alert, Menu, MenuItem};
 
 fn main() {
     Application::new()
@@ -25,12 +27,19 @@ fn main() {
             ui::set_theme(cx, theme);
             let store = cx.new_entity(|cx| Store::load(cx));
             widgets::register(cx, store);
+            menus::install(cx, store);
             Router::new()
                 .tab("Todos", "checklist", "/")
                 .tab("Focus", "timer", "/focus")
                 .tab("Components", "square.grid.2x2", "/components")
                 .tab("Settings", "gearshape", "/settings")
                 .route("/", move |cx, _| cx.new_entity(|cx| Home::new(store, cx)))
+                .route("/todos/new", move |cx, _| {
+                    cx.new_entity(|_| NewTodo {
+                        store,
+                        title: String::new(),
+                    })
+                })
                 .route("/todos/:id", move |cx, p| {
                     let id = p.parse("id").unwrap_or(0);
                     cx.new_entity(|cx| TodoDetail::new(store, id, cx))
@@ -109,7 +118,7 @@ impl Store {
         self.todos.iter().filter(|t| !t.done).count()
     }
 
-    fn add(&mut self, title: String, cx: &mut Context<Self>) {
+    pub fn add(&mut self, title: String, cx: &mut Context<Self>) {
         self.todos.push(Todo {
             id: self.next_id,
             title,
@@ -119,14 +128,14 @@ impl Store {
         self.save(cx);
     }
 
-    fn toggle(&mut self, id: u64, cx: &mut Context<Self>) {
+    pub fn toggle(&mut self, id: u64, cx: &mut Context<Self>) {
         if let Some(t) = self.todos.iter_mut().find(|t| t.id == id) {
             t.done = !t.done;
             self.save(cx);
         }
     }
 
-    fn delete(&mut self, id: u64, cx: &mut Context<Self>) {
+    pub fn delete(&mut self, id: u64, cx: &mut Context<Self>) {
         self.todos.retain(|t| t.id != id);
         self.save(cx);
     }
@@ -242,6 +251,14 @@ impl Render for TodoList {
                                 cx.listener(|this, e: &InputEvent, _| this.draft = e.value.clone()),
                             ),
                     )
+                    .child(
+                        ui::button("New…")
+                            .secondary()
+                            .hint("Opens a form in a sheet")
+                            .on_click(std::rc::Rc::new(|_: &ClickEvent, app: &mut App| {
+                                app.present("/todos/new")
+                            })),
+                    )
                     .child(ui::button("Add").on_click(cx.listener(|this, _, cx| {
                         let title = this.draft.trim().to_string();
                         if !title.is_empty() {
@@ -251,10 +268,39 @@ impl Render for TodoList {
                     }))),
             )
             .children(store.todos.iter().map(|todo| {
+                let (id, store_e, done) = (todo.id, self.store, todo.done);
                 ui::list_row(todo.title.clone())
                     .leading(if todo.done { "✓" } else { "○" })
                     .subtitle(if todo.done { "Done" } else { "Open" })
                     .on_click(navigate_to(format!("/todos/{}", todo.id)))
+                    .context_menu(
+                        Menu::new()
+                            .item(
+                                MenuItem::new("Open")
+                                    .icon("arrow.up.forward.square")
+                                    .on_select(navigate_to(format!("/todos/{id}"))),
+                            )
+                            .item(
+                                MenuItem::new(if done { "Mark as open" } else { "Mark as done" })
+                                    .icon(if done { "circle" } else { "checkmark.circle" })
+                                    .on_select(std::rc::Rc::new(
+                                        move |_: &ClickEvent, app: &mut App| {
+                                            store_e.update(app, |s, cx| s.toggle(id, cx))
+                                        },
+                                    )),
+                            )
+                            .separator()
+                            .item(
+                                MenuItem::new("Delete…")
+                                    .icon("trash")
+                                    .destructive()
+                                    .on_select(std::rc::Rc::new(
+                                        move |_: &ClickEvent, app: &mut App| {
+                                            confirm_delete(app, store_e, id)
+                                        },
+                                    )),
+                            ),
+                    )
                     .style({
                         let border = t.border;
                         move |s| {
@@ -323,12 +369,9 @@ impl Render for TodoDetail {
                             this.store.update(cx, |s, cx| s.toggle(id, cx))
                         })),
                     )
-                    .child(ui::button("Delete").danger().on_click(cx.listener(
-                        move |this, _, cx| {
-                            this.store.update(cx, |s, cx| s.delete(id, cx));
-                            cx.back();
-                        },
-                    ))),
+                    .child(ui::button("Delete").danger().on_click(
+                        cx.listener(move |this, _, cx| confirm_delete(cx, this.store, id)),
+                    )),
             ),
         )
     }
@@ -664,4 +707,63 @@ fn update_and_save_theme(cx: &mut App, f: impl FnOnce(&mut Theme)) {
         if t.prefer_native { 1 } else { 0 }
     );
     cx.storage().set("theme", &value);
+}
+
+/// Asks before deleting (a native alert), then goes back if needed.
+fn confirm_delete(cx: &mut App, store: Entity<Store>, id: u64) {
+    let title = store
+        .read(cx)
+        .get(id)
+        .map(|t| t.title.clone())
+        .unwrap_or_default();
+    cx.show_alert(
+        Alert::new(format!("Delete “{title}”?"))
+            .message("This cannot be undone.")
+            .destructive(
+                "Delete",
+                std::rc::Rc::new(move |_: &ClickEvent, app: &mut App| {
+                    store.update(app, |s, cx| s.delete(id, cx));
+                    if app.current_path() == Some(&format!("/todos/{id}")) {
+                        app.back();
+                    }
+                }),
+            )
+            .cancel("Cancel"),
+    );
+}
+
+// --- Sheet: new todo -----------------------------------------------------------------
+
+struct NewTodo {
+    store: Entity<Store>,
+    title: String,
+}
+
+impl Render for NewTodo {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let (screen, body) = page("New todo", cx);
+        let empty = self.title.trim().is_empty();
+        screen.child(
+            body.child(
+                ui::card()
+                    .child(
+                        ui::text_field("Title", self.title.clone())
+                            .placeholder("What needs doing?")
+                            .on_input(
+                                cx.listener(|this, e: &InputEvent, _| this.title = e.value.clone()),
+                            ),
+                    )
+                    .child(
+                        ui::button("Add todo")
+                            .full_width()
+                            .disabled(empty)
+                            .on_click(cx.listener(|this, _, cx| {
+                                let title = this.title.trim().to_string();
+                                this.store.update(cx, |s, cx| s.add(title, cx));
+                                cx.dismiss();
+                            })),
+                    ),
+            ),
+        )
+    }
 }

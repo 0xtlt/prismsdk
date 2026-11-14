@@ -8,6 +8,8 @@
 #[cfg(target_os = "ios")]
 mod imp;
 #[cfg(target_os = "ios")]
+mod menus;
+#[cfg(target_os = "ios")]
 mod services;
 
 #[cfg(target_os = "ios")]

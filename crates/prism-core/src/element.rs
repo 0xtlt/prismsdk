@@ -44,6 +44,10 @@ pub enum NodeKind {
     /// A countdown to a moment (value: Unix seconds), ticking by itself —
     /// even in widgets and Live Activities, where the app is not running.
     Timer,
+    /// A modal presentation (sheet) of its child stack, attached to a root
+    /// stack or tab bar. Reports `UiEvent::Back(id, 0)` when dismissed by the
+    /// user (swipe down, Escape).
+    Modal,
 }
 
 impl NodeKind {
@@ -62,6 +66,7 @@ impl NodeKind {
             NodeKind::Image => "image",
             NodeKind::Progress => "progress",
             NodeKind::Timer => "timer",
+            NodeKind::Modal => "modal",
         }
     }
 
@@ -153,6 +158,8 @@ pub struct VNode {
     /// Deep link (`/todos/1`): navigates in the app, opens it from widgets,
     /// Live Activities and notifications.
     pub link: Option<String>,
+    /// Long press (iOS), right-click (macOS, web) menu.
+    pub context_menu: Option<crate::menu::Menu>,
     pub key: Option<String>,
     pub children: Vec<Element>,
     pub on_click: Option<Handler<ClickEvent>>,
@@ -173,6 +180,7 @@ impl VNode {
             value: None,
             a11y: Accessibility::default(),
             link: None,
+            context_menu: None,
             key: None,
             children: Vec::new(),
             on_click: None,
@@ -346,6 +354,10 @@ builder!(
     /// A self-updating countdown. See [`timer`].
     Timer
 );
+builder!(
+    /// A sheet. Usually created by [`Router`](crate::Router) (`cx.present`).
+    Modal
+);
 
 /// A flex container, laid out as a column by default.
 pub fn div() -> Div {
@@ -379,6 +391,13 @@ impl Div {
     /// (navigates), in widgets and Live Activities (opens the app there).
     pub fn link(mut self, path: impl Into<String>) -> Self {
         self.0.link = Some(path.into());
+        self
+    }
+
+    /// A context menu: long press on iOS, right-click on macOS and the web
+    /// (plus the Menu key / Shift+F10). Exposed to assistive technologies.
+    pub fn context_menu(mut self, menu: crate::menu::Menu) -> Self {
+        self.0.context_menu = Some(menu);
         self
     }
 
@@ -588,5 +607,34 @@ pub fn format_remaining(end: f64) -> String {
         format!("{h}:{m:02}:{s:02}")
     } else {
         format!("{m}:{s:02}")
+    }
+}
+
+/// A modal sheet presenting `content` (usually a stack).
+pub fn modal() -> Modal {
+    let mut n = VNode::new(NodeKind::Modal);
+    n.style.flex_grow = 1.;
+    Modal(n)
+}
+
+impl ParentElement for Modal {
+    fn children_mut(&mut self) -> &mut Vec<Element> {
+        &mut self.0.children
+    }
+}
+
+impl Modal {
+    /// Called when the user dismisses the sheet natively.
+    pub fn on_dismiss(mut self, handler: Handler<BackEvent>) -> Self {
+        self.0.on_back = Some(handler);
+        self
+    }
+}
+
+impl Stack {
+    /// Shows a Close button on the first screen (stacks inside sheets).
+    pub fn closable(mut self, closable: bool) -> Self {
+        self.0.value = Some(if closable { 1. } else { 0. });
+        self
     }
 }

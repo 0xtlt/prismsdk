@@ -125,6 +125,7 @@ pub struct App {
     appearance: Appearance,
     pub(crate) surfaces: crate::surfaces::Surfaces,
     pub(crate) executor: Rc<crate::task::Executor>,
+    pub(crate) menus: crate::menu::Menus,
     storage: Box<dyn crate::storage::Storage>,
 }
 
@@ -144,6 +145,7 @@ impl Default for App {
             appearance: Appearance::System,
             surfaces: Default::default(),
             executor: Default::default(),
+            menus: Default::default(),
             storage: Box::new(crate::storage::MemoryStorage::default()),
         }
     }
@@ -161,6 +163,15 @@ impl App {
 
     pub fn set_storage(&mut self, storage: Box<dyn crate::storage::Storage>) {
         self.storage = storage;
+    }
+
+    /// Runs `f` whenever `entity` is notified (app-level observer: trays,
+    /// app menus, anything outside a view).
+    pub fn on_notify<T: 'static>(&mut self, entity: &Entity<T>, f: impl Fn(&mut App) + 'static) {
+        self.observers
+            .entry(entity.id)
+            .or_default()
+            .push(Rc::new(f));
     }
 
     /// Re-renders widgets whenever `entity` is notified.
@@ -220,6 +231,16 @@ impl App {
     /// Pops the top screen.
     pub fn back(&mut self) {
         self.nav_queue.push(NavOp::Back);
+    }
+
+    /// Presents `path` as a sheet (modal) over the current screen.
+    pub fn present(&mut self, path: impl Into<String>) {
+        self.nav_queue.push(NavOp::Present(path.into()));
+    }
+
+    /// Closes the presented sheet.
+    pub fn dismiss(&mut self) {
+        self.nav_queue.push(NavOp::Dismiss);
     }
 
     /// Replaces the top screen.

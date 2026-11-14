@@ -827,3 +827,147 @@ fn file_storage_round_trips_odd_keys() {
     assert!(s.get("todos/v1 é").is_none());
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// --- Menus, alerts, tray, sheets ----------------------------------------------
+
+use crate::{Alert, Menu, MenuItem, Tray, menu::MenuItemSpec};
+
+struct Menus2 {
+    picked: Vec<&'static str>,
+}
+
+impl Render for Menus2 {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .child(
+                div().child(text("row")).context_menu(
+                    Menu::new()
+                        .item(
+                            MenuItem::new("Pin")
+                                .icon("pin")
+                                .on_select(cx.listener(|t, _, _| t.picked.push("pin"))),
+                        )
+                        .separator()
+                        .item(
+                            MenuItem::new("Delete")
+                                .destructive()
+                                .on_select(cx.listener(|t, _, _| t.picked.push("delete"))),
+                        ),
+                ),
+            )
+            .child(button("ask").on_click(cx.listener(|_, _, cx| {
+                let root = cx.entity();
+                cx.show_alert(
+                    Alert::new("Delete?")
+                        .message("This cannot be undone.")
+                        .destructive(
+                            "Delete",
+                            std::rc::Rc::new(move |_: &ClickEvent, app: &mut App| {
+                                root.update(app, |t, cx| {
+                                    t.picked.push("alert-delete");
+                                    cx.notify();
+                                })
+                            }),
+                        )
+                        .cancel("Cancel"),
+                );
+            })))
+    }
+}
+
+#[test]
+fn context_menus_alerts_and_trays_dispatch_to_handlers() {
+    let (mut rt, first) = boot(|cx| {
+        let root = cx.new_entity(|_| Menus2 { picked: vec![] });
+        cx.set_root(root);
+        cx.set_tray(Tray::new("status").icon("bolt").menu(Menu::new().action(
+            "Quit",
+            std::rc::Rc::new(move |_: &ClickEvent, app: &mut App| {
+                root.update(app, |t, _| t.picked.push("tray-quit"))
+            }),
+        )));
+    });
+    let root: Entity<Menus2> = first_root(&rt);
+
+    // Context menu.
+    let spec = first
+        .iter()
+        .find_map(|p| match p {
+            Patch::SetMenu { menu: Some(m), .. } => Some(m.clone()),
+            _ => None,
+        })
+        .expect("a context menu");
+    let ids: Vec<u64> = spec
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            MenuItemSpec::Action { id, .. } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids.len(), 2);
+    rt.dispatch(UiEvent::MenuSelect(ids[1]));
+    assert_eq!(rt.app.read(&root).picked, vec!["delete"]);
+
+    // Tray menu.
+    let reqs = rt.take_requests();
+    let tray_id = reqs
+        .iter()
+        .find_map(|r| match r {
+            PlatformRequest::SetTray(t) => match &t.menu.items[0] {
+                MenuItemSpec::Action { id, .. } => Some(*id),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("a tray");
+    rt.dispatch(UiEvent::MenuSelect(tray_id));
+    assert_eq!(rt.app.read(&root).picked, vec!["delete", "tray-quit"]);
+
+    // Alert: index 0 = Delete.
+    rt.dispatch(UiEvent::Click(find_text(&first, "ask")));
+    let alert = rt
+        .take_requests()
+        .into_iter()
+        .find_map(|r| match r {
+            PlatformRequest::ShowAlert(a) => Some(a),
+            _ => None,
+        })
+        .expect("an alert");
+    assert_eq!(alert.actions.len(), 2);
+    rt.dispatch(UiEvent::AlertAction(alert.id, 0));
+    assert_eq!(rt.app.read(&root).picked.last(), Some(&"alert-delete"));
+}
+
+#[test]
+fn sheets_present_navigate_and_dismiss() {
+    let (mut rt, first) = routed("/");
+    rt.app.present("/items/1");
+    let patches = rt.render();
+    let modal_id = patches
+        .iter()
+        .find_map(|p| match p {
+            Patch::Create {
+                id,
+                kind: NodeKind::Modal,
+            } => Some(*id),
+            _ => None,
+        })
+        .expect("a sheet");
+    find_text(&patches, "Item 1");
+    // Navigation inside the sheet, then back.
+    rt.app.navigate("/items/2");
+    let pushed = rt.render();
+    find_text(&pushed, "Item 2");
+    assert_eq!(
+        rt.app.current_path(),
+        Some("/"),
+        "the main stack did not move"
+    );
+    rt.app.back();
+    rt.render();
+    // Swipe-down / Escape: the platform reports a dismissal.
+    let closed = rt.dispatch(UiEvent::Back(modal_id, 0));
+    assert!(closed.contains(&Patch::Destroy { id: modal_id }));
+    let _ = first;
+}
