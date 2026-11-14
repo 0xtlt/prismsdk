@@ -4,9 +4,23 @@ Write a UI once in Rust (GPUI-style API), ship it as:
 
 | Target | How it renders | Command |
 |---|---|---|
-| **Web** | Server-side Rust → HTML/CSS + ~100 lines of JS receiving DOM patches over a WebSocket. **No WASM.** | `mise run web` → http://localhost:3000 |
-| **macOS** | Real AppKit views (`NSView`, `NSTextField`, `NSButton`) | `mise run macos` |
-| **iOS** | Real UIKit views (`UIView`, `UILabel`, `UIButton`, `UITextField`), UIScene lifecycle, widgets + Dynamic Island | `mise run ios` |
+| **Web** | Server-side Rust → HTML/CSS + a small JS client receiving DOM patches over a WebSocket. **No WASM.** | `prism dev web` → http://localhost:3000 |
+| **macOS** | Real AppKit views (`NSView`, `NSTextField`, `NSButton`), menu bar, tray | `prism dev macos` |
+| **iOS** | Real UIKit views (`UIView`, `UILabel`, `UIButton`, `UITextField`), widgets + Dynamic Island | `prism dev ios` (simulator) / `prism run ios --device "My iPhone"` |
+
+## Quick start
+
+```sh
+mise run cli                 # installs the `prism` command
+prism new my-app && cd my-app
+prism dev web                # rebuilds and restarts on every save, on the same screen
+prism dev ios                # same, in the iOS simulator
+prism run ios --device "My iPhone"
+prism build macos            # release .app with widgets and icon
+prism devices                # simulators and paired iPhones
+```
+
+`Prism.toml` configures the app: name, `bundle_id`, `version`, `icon` (one 1024×1024 PNG, compiled with `actool` for iOS and macOS), and `[ios] team` / `device` / `simulator`. Real devices are signed with your Apple Development identity and a matching provisioning profile (found automatically, or `PRISM_PROFILE`), then installed with `devicectl`. The bundling scripts and Apple sources are embedded in the CLI, so projects don't need this repository's scripts.
 
 ```rust
 use prism::prelude::*;
@@ -33,6 +47,56 @@ fn main() {
 - Only notified entities re-render. A clean child entity is neither rendered nor diffed: its mounted views are reused as-is. So split your UI into entities where updates are frequent (an input, a live counter, a list row).
 - Derived state: `cx.observe(&other, |this, other, cx| this.total = other.read(cx).total())` runs when `other` changes, then re-renders `this`.
 - Each entity renders one root node (a fragment gets wrapped in a `div`).
+
+## Async, network, storage
+
+```rust
+// Runs on the UI thread; await timers or background work in between.
+cx.spawn(async move |this, cx| {
+    cx.sleep(Duration::from_secs(1)).await;
+    let quote = cx.background(|| prism::http::Request::get("https://api.github.com/zen").send_blocking()).await;
+    cx.update_entity(&this, |this, _| this.quote = quote.ok().map(|r| r.text()));
+});
+
+cx.storage().set("todos", &data);   // App Group (iOS), Application Support (macOS), per browser (web)
+```
+
+## Dialogs, menus, tray
+
+```rust
+cx.show_alert(Alert::new("Delete “Milk”?").message("This cannot be undone.")
+    .destructive("Delete", on_delete).cancel("Cancel"));          // UIAlertController, NSAlert, <dialog>
+cx.present("/todos/new");                                          // sheet: page sheet, NSWindow sheet, <dialog>
+div().context_menu(Menu::new().item(MenuItem::new("Open").icon("arrow.up.forward.square")))
+cx.set_tray(Tray::new("focus").title("25:00").menu(menu));         // macOS menu bar (NSStatusItem)
+cx.set_app_menu(vec![Menu::titled("File").item(MenuItem::new("New").shortcut("cmd+n"))]);
+```
+
+Context menus open with a long press (iOS), right click or ⌃-click (macOS), right click / Shift+F10 (web), and from VoiceOver.
+
+## Images, long lists, gestures
+
+```rust
+picture("https://…/photo.jpg").alt("A river").fill()   // cached on disk; or picture("logo.png") from assets/
+VirtualList::new(10_000, 56., |i| row(i))               // only the visible rows exist
+scroll().on_refresh(handler).refreshing(self.loading)   // pull to refresh (UIRefreshControl)
+div().on_swipe(SwipeDirection::Left, handler)           // swipe gestures
+```
+
+## Languages, text size, motion
+
+```rust
+cx.set_translations(Translations::new().parse("en", EN).parse("fr", FR).parse("ar", AR));
+text(cx.t_with("greeting", &[("name", &name)]));
+text(cx.t_count("todos", n));                    // CLDR plurals: one/few/many/other…
+text(cx.format_date(now, DateStyle::Long));      // Foundation formatters on Apple, Accept-Language on the web
+cx.set_locale(Some(Locale::new("ar")));          // or follow the system
+div().w(relative(fill)).animate(250)             // UIView/NSAnimationContext/CSS transitions
+```
+
+- **Right-to-left** languages mirror layouts on every backend (native frames and chrome, `dir=rtl` + logical CSS).
+- **Dynamic Type**: native text follows the iOS text size live; the web uses `rem`.
+- **Reduce Motion** turns transitions off. **iOS keyboard**: screens shrink above it and the focused field stays visible.
 
 ## Accessibility
 
@@ -89,8 +153,13 @@ let id = cx.start_activity(
 );
 cx.update_activity(id, …);  cx.end_activity(id, None, true);
 
-// A local notification that opens a screen when tapped.
-cx.send_notification(Notification::new("Done").body("Take a break").link("/focus").after(total));
+// A local notification that opens a screen when tapped, with action buttons.
+cx.send_notification(
+    Notification::new("Done").body("Take a break").link("/focus").after(total)
+        .action(NotificationAction::new("again", "5 more minutes").link("/focus"))
+        .action(NotificationAction::new("note", "Add a todo…").reply("What's next?")),
+);
+cx.on_notification_response(|r, app| match r.action.as_deref() { Some("note") => add(app, r.text.clone()), _ => {} });
 ```
 
 | | iOS | macOS | Web | Android (planned) |
@@ -175,14 +244,16 @@ Layout is a flexbox subset (column by default, like React Native) and maps 1:1 t
 mise install        # Rust 1.99 + macOS/iOS targets
 mise run test       # unit tests
 mise run check      # type-check host, web and iOS-simulator builds
+mise run web        # the example, restarting on save (also: macos, ios, macos-app, device)
 ```
 
-- `PRISM_PORT=8080 mise run web` changes the port.
-- `PRISM_SIM="iPhone 17" mise run ios` picks a simulator (slimmed with `simslim` when installed).
-- macOS dev hooks: `PRISM_CLICK="+1|Dark mode" PRISM_SNAPSHOT=out.png cargo run -p counter` presses controls by title or accessibility label (`|`-separated), writes a PNG of the window, and quits.
+- `prism dev` keeps the current screen across restarts (`PRISM_DEV_STATE`); the web client reconnects by itself.
+- `PRISM_PORT=8080`, `PRISM_SIM="iPhone 17"` (simulators are slimmed with `simslim` when installed), `PRISM_LOCALE=ar`, `PRISM_TEXT_SCALE=1.5`.
+- macOS dev hooks: `PRISM_CLICK="+1|Dark mode" PRISM_SCROLL=600 PRISM_DELAY=2 PRISM_SNAPSHOT=out.png cargo run -p counter` presses controls by title or accessibility label, scrolls, waits, writes a PNG of the window, and quits.
+- CI (`.github/workflows/ci.yml`): format, tests, clippy for macOS / iOS simulator / iOS device / web, then release bundles and a web smoke test.
 
-## Status (v0.1)
+## Status
 
-Primitives: `div`, `text`, `button`, `text_input`, `toggle`, `scroll`, `screen`, `Router` (stacks + tabs). Component library `prism::ui`. Accessibility on all backends. Light/dark appearance.
-Widgets, Live Activities (Dynamic Island), notifications, adaptive light/dark colors, SF Symbols, progress bars, self-updating timers.
-Not yet: modals/sheets, bitmap images, app timers/async tasks (an activity is not ended automatically when its countdown reaches zero), animations, Android/Windows/Linux backends.
+Primitives: `div`, `text`, `button`, `text_input`, `toggle`, `scroll`, `picture`, `VirtualList`, `screen`, `Router` (stacks, tabs, sheets). Component library `prism::ui`. Accessibility on all backends. Light/dark appearance.
+Widgets, Live Activities (Dynamic Island), notifications with actions, alerts, context menus, tray and app menus, async tasks, HTTP, storage, i18n/RTL, Dynamic Type, animations, `prism` CLI.
+Not yet: Android, Windows, Linux backends (the `Widgets` trait and `PlatformServices` are the extension points).

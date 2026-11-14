@@ -1,0 +1,14 @@
+# Read by the `prism` command (prism run / build / dev).
+[app]
+name = "Counter"
+package = "counter"
+bundle_id = "dev.prism.counter"
+version = "0.1.0"
+icon = "icon.png"
+
+[ios]
+# Apple team for real devices (default: the team of a matching profile).
+# team = "ABCDE12345"
+# Default destinations.
+# simulator = "iPhone 17"
+# device = "My iPhone"

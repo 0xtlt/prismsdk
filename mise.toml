@@ -17,18 +17,31 @@ run = [
 description = "Run the unit tests"
 run = "cargo test --workspace"
 
+[tasks.cli]
+description = "Install the `prism` command (prism new / run / dev / build / devices)"
+run = "cargo install --path crates/prism-cli --locked"
+
 [tasks.web]
-description = "Serve the example as a web app (HTML/CSS/JS, no WASM) on http://localhost:3000"
-run = "cargo run -p counter --no-default-features --features web"
+description = "Serve the example as a web app (HTML/CSS/JS, no WASM) on http://localhost:3000, restarting on save"
+dir = "examples/counter"
+run = "cargo run -q -p prism-cli -- dev web"
 
 [tasks.macos]
-description = "Run the example as a native macOS (AppKit) app"
-run = "cargo run -p counter"
+description = "Run the example as a native macOS (AppKit) app, restarting on save"
+dir = "examples/counter"
+run = "cargo run -q -p prism-cli -- dev macos"
 
 [tasks.ios]
-description = "Build, bundle and launch the example on an iOS simulator (PRISM_SIM=<name|udid>)"
-run = "scripts/ios-run.sh counter"
+description = "Run the example in the iOS simulator, restarting on save (PRISM_SIM=<name|udid>)"
+dir = "examples/counter"
+run = "cargo run -q -p prism-cli -- dev ios"
 
 [tasks.macos-app]
-description = "Bundle the example as a macOS .app (widgets, notifications, deep links) and open it"
-run = "scripts/macos-app.sh counter"
+description = "Bundle the example as a macOS .app (widgets, notifications, deep links, icon) and open it"
+dir = "examples/counter"
+run = "cargo run -q -p prism-cli -- run macos --bundle"
+
+[tasks.device]
+description = "Run the example on a paired iPhone: mise run device -- \"My iPhone\""
+dir = "examples/counter"
+run = "cargo run -q -p prism-cli -- run ios --device"

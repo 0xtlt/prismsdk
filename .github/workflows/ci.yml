@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+  MACOSX_DEPLOYMENT_TARGET: "13.0"
+
+jobs:
+  # Everything runs on macOS: the Apple backends link Swift (Xcode required).
+  check:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Tests
+        run: cargo test --workspace
+      - name: Clippy (macOS)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy (iOS simulator)
+        run: cargo clippy -p counter --target aarch64-apple-ios-sim -- -D warnings
+      - name: Clippy (iOS device)
+        run: cargo clippy -p counter --target aarch64-apple-ios -- -D warnings
+      - name: Clippy (web)
+        run: cargo clippy -p counter --no-default-features --features web --target-dir target/web -- -D warnings
+
+  bundles:
+    runs-on: macos-15
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+      - name: Install the prism CLI
+        run: cargo install --path crates/prism-cli --locked
+      - name: Web server (release)
+        working-directory: examples/counter
+        run: prism build web
+      - name: macOS app (widgets, icon)
+        working-directory: examples/counter
+        run: prism build macos
+      - name: iOS app for the simulator
+        working-directory: examples/counter
+        run: prism build ios
+      - name: Smoke test the web server
+        run: |
+          target/web/release/counter &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:3000/ >/dev/null && break; sleep 1; done
+          curl -sf http://127.0.0.1:3000/ | grep -q 'id="prism-root"'
+          curl -sf -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/assets/prism.png | grep -q 200

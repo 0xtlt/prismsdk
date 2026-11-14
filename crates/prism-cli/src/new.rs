@@ -1,0 +1,150 @@
+//! `prism new <name>`: a ready-to-run project (web, macOS, iOS).
+
+use std::path::{Path, PathBuf};
+
+/// The Prism checkout this CLI was built from, if it is still there.
+fn default_prism() -> Option<PathBuf> {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    repo.join("crates/prism/Cargo.toml")
+        .exists()
+        .then(|| repo.canonicalize().ok())
+        .flatten()
+}
+
+pub fn create(name: &str, prism: Option<PathBuf>) -> Result<(), String> {
+    let dir = PathBuf::from(name);
+    if dir.exists() {
+        return Err(format!("{} already exists", dir.display()));
+    }
+    let package = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("invalid name")?
+        .replace('-', "_")
+        .to_lowercase();
+    if !package
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic())
+        || !package
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return Err(format!("{name:?}: use letters, digits, - and _"));
+    }
+    let prism = prism
+        .or_else(default_prism)
+        .ok_or("where is Prism? pass --prism <path to the Prism repository>")?;
+    let prism = prism
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", prism.display()))?;
+    let title = {
+        let mut c = package.split('_').map(|w| {
+            let mut ch = w.chars();
+            ch.next()
+                .map(|f| f.to_uppercase().collect::<String>() + ch.as_str())
+                .unwrap_or_default()
+        });
+        let first = c.next().unwrap_or_default();
+        c.fold(first, |acc, w| acc + " " + &w)
+    };
+    let slug = package.replace('_', "-");
+
+    let files: [(&str, String); 6] = [
+        (
+            "Cargo.toml",
+            format!(
+                r#"[package]
+name = "{package}"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+default = ["native"]
+native = ["prism/native"]
+web = ["prism/web"]
+
+[dependencies]
+prism = {{ path = "{prism}/crates/prism", default-features = false }}
+"#,
+                prism = prism.display()
+            ),
+        ),
+        (
+            "Prism.toml",
+            format!(
+                r#"[app]
+name = "{title}"
+bundle_id = "dev.prism.{slug}"
+version = "0.1.0"
+# icon = "icon.png"   # 1024×1024 PNG
+
+[ios]
+# team = "ABCDE12345"        # Apple team for real devices
+# device = "My iPhone"       # default to a device instead of a simulator
+"#
+            ),
+        ),
+        ("src/main.rs", MAIN_RS.replace("{title}", &title)),
+        (
+            "mise.toml",
+            r#"[tools]
+rust = { version = "1.99", targets = "aarch64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim" }
+
+[tasks]
+web = "prism dev web"
+macos = "prism dev macos"
+ios = "prism dev ios"
+"#
+            .to_string(),
+        ),
+        (".gitignore", "/target\n.prism-data/\n".to_string()),
+        ("assets/.keep", String::new()),
+    ];
+    for (path, contents) in files {
+        let dest = dir.join(path);
+        std::fs::create_dir_all(dest.parent().unwrap()).map_err(|e| e.to_string())?;
+        std::fs::write(&dest, contents).map_err(|e| format!("{}: {e}", dest.display()))?;
+    }
+    println!("Created {title} in {}/\n", dir.display());
+    println!("  cd {name}");
+    println!("  prism dev web      # http://localhost:3000, restarts on save");
+    println!("  prism dev macos    # native window");
+    println!("  prism dev ios      # iOS simulator (--device <name> for an iPhone)");
+    Ok(())
+}
+
+const MAIN_RS: &str = r#"use prism::prelude::*;
+use prism::ui::{self, Theme};
+
+fn main() {
+    Application::new()
+        .title("{title}")
+        .assets(concat!(env!("CARGO_MANIFEST_DIR"), "/assets"))
+        .run(|cx| {
+            Router::new()
+                .route("/", |cx, _| cx.new_entity(|_| Home::default()))
+                .build(cx)
+        });
+}
+
+#[derive(Default)]
+struct Home {
+    count: i32,
+}
+
+impl Render for Home {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = Theme::of(cx);
+        screen("{title}").bg(t.background).child(
+            scroll().p(20.).gap(16.).child(
+                ui::card()
+                    .child(ui::heading("Hello from Rust"))
+                    .child(text(format!("You tapped {} time(s).", self.count)).text_color(t.muted))
+                    .child(ui::button("Tap me").on_click(cx.listener(|this, _, _| this.count += 1))),
+            ),
+        )
+    }
+}
+"#;

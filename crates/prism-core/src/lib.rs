@@ -97,6 +97,8 @@ pub trait Backend {
 pub struct Runtime {
     pub app: App,
     reconciler: Reconciler,
+    /// `prism dev`: where the current route is saved, so a restart reopens it.
+    dev_state: Option<(std::path::PathBuf, String)>,
 }
 
 impl Runtime {
@@ -141,6 +143,7 @@ impl Runtime {
         Runtime {
             app,
             reconciler: Reconciler::new(),
+            dev_state: std::env::var_os("PRISM_DEV_STATE").map(|p| (p.into(), String::new())),
         }
     }
 
@@ -148,7 +151,7 @@ impl Runtime {
     pub fn render(&mut self) -> Vec<Patch> {
         task::poll_tasks(&mut self.app);
         self.app.flush_effects();
-        self.reconciler.render(&mut self.app)
+        self.render_dirty()
     }
 
     /// Runs the handler for `event`, then re-renders the entities it touched.
@@ -202,7 +205,7 @@ impl Runtime {
         task::poll_tasks(&mut self.app);
         self.app.flush_effects();
         if self.app.has_dirty() {
-            self.reconciler.render(&mut self.app)
+            self.render_dirty()
         } else {
             Vec::new()
         }
@@ -215,7 +218,7 @@ impl Runtime {
         task::poll_tasks(&mut self.app);
         self.app.flush_effects();
         if self.app.has_dirty() {
-            self.reconciler.render(&mut self.app)
+            self.render_dirty()
         } else {
             Vec::new()
         }
@@ -243,7 +246,7 @@ impl Runtime {
         self.app.navigate(path);
         task::poll_tasks(&mut self.app);
         self.app.flush_effects();
-        self.reconciler.render(&mut self.app)
+        self.render_dirty()
     }
 
     /// A notification was tapped or one of its actions chosen (`link`: the
@@ -256,7 +259,20 @@ impl Runtime {
         self.app.notification_response(response, link);
         task::poll_tasks(&mut self.app);
         self.app.flush_effects();
-        self.reconciler.render(&mut self.app)
+        self.render_dirty()
+    }
+
+    /// Renders dirty entities, then remembers the route for `prism dev`.
+    fn render_dirty(&mut self) -> Vec<Patch> {
+        let patches = self.reconciler.render(&mut self.app);
+        if let Some((file, saved)) = &mut self.dev_state
+            && let Some(path) = self.app.current_path()
+            && path != saved
+        {
+            *saved = path.to_string();
+            let _ = std::fs::write(file, path);
+        }
+        patches
     }
 
     /// Entity renders performed by the last render (for tests and profiling).

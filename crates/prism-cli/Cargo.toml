@@ -1,0 +1,13 @@
+[package]
+name = "prism-cli"
+description = "The `prism` command: create, run, build and live-restart Prism apps."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "prism"
+path = "src/main.rs"
+
+[dependencies]
+serde_json.workspace = true

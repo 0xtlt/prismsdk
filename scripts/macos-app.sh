@@ -3,28 +3,38 @@
 # notifications and deep links — then open it.
 #
 #   scripts/macos-app.sh <package> [--no-open]
+#
+# Environment: PRISM_BUNDLE_ID, PRISM_APP_NAME, PRISM_ICON (1024×1024 PNG),
+# PRISM_IDENTITY (default: ad hoc), PRISM_RELEASE=1, PRISM_PROJECT, PRISM_PLATFORM.
 set -euo pipefail
 
 PKG="${1:?usage: macos-app.sh <package> [--no-open]}"
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="${PRISM_PROJECT:-$(cd "$(dirname "$0")/.." && pwd)}"
+PLATFORM="${PRISM_PLATFORM:-$ROOT/platform}"
+cd "$ROOT"
+TARGET_DIR="$(cargo metadata --format-version 1 --no-deps 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+PROFILE_DIR=debug CARGO_FLAGS=()
+if [[ "${PRISM_RELEASE:-}" == 1 ]]; then PROFILE_DIR=release CARGO_FLAGS=(--release); fi
 SLUG="${PKG//_/-}"
-BUNDLE_ID="dev.prism.$SLUG"
+BUNDLE_ID="${PRISM_BUNDLE_ID:-dev.prism.$SLUG}"
 GROUP="group.$BUNDLE_ID"
 SCHEME="prism-$SLUG"
-APP_NAME="$(tr '[:lower:]' '[:upper:]' <<< "${PKG:0:1}")${PKG:1}"
-OUT="$ROOT/target/macos"
+APP_NAME="${PRISM_APP_NAME:-$(tr '[:lower:]' '[:upper:]' <<< "${PKG:0:1}")${PKG:1}}"
+SIGN="${PRISM_IDENTITY:--}"
+OUT="$TARGET_DIR/macos"
 APP="$OUT/$APP_NAME.app"
 APPEX="$APP/Contents/PlugIns/PrismWidgets.appex"
 GEN="$OUT/generated"
 mkdir -p "$GEN"
 
-cargo build -p "$PKG"
-PRISM_DESCRIBE=widgets "$ROOT/target/debug/$PKG" > "$GEN/widgets.json"
-python3 "$ROOT/platform/apple/generate_widgets.py" "$GEN/widgets.json" macos > "$GEN/Generated.swift"
+cargo build -p "$PKG" ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"}
+BIN="$TARGET_DIR/$PROFILE_DIR/$PKG"
+PRISM_DESCRIBE=widgets "$BIN" > "$GEN/widgets.json"
+python3 "$PLATFORM/apple/generate_widgets.py" "$GEN/widgets.json" macos > "$GEN/Generated.swift"
 
 rm -rf "$APP" && mkdir -p "$APP/Contents/MacOS" "$APPEX/Contents/MacOS"
-cp "$ROOT/target/debug/$PKG" "$APP/Contents/MacOS/$PKG"
-ASSETS="$(PRISM_DESCRIBE=assets "$ROOT/target/debug/$PKG")"
+cp "$BIN" "$APP/Contents/MacOS/$PKG"
+ASSETS="$(PRISM_DESCRIBE=assets "$BIN")"
 [[ -n "$ASSETS" && -d "$ASSETS" ]] && mkdir -p "$APP/Contents/Resources" && cp -R "$ASSETS" "$APP/Contents/Resources/assets"
 
 plist() { # $1 executable, $2 bundle id, $3 package type, $4 extra
@@ -39,8 +49,8 @@ plist() { # $1 executable, $2 bundle id, $3 package type, $4 extra
   <key>CFBundleDisplayName</key><string>$APP_NAME</string>
   <key>CFBundlePackageType</key><string>$3</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>${PRISM_VERSION:-0.1.0}</string>
+  <key>CFBundleVersion</key><string>${PRISM_BUILD:-1}</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>PrismAppGroup</key><string>$GROUP</string>
   <key>PrismURLScheme</key><string>$SCHEME</string>
@@ -50,7 +60,14 @@ $4
 PLIST
 }
 
-plist "$PKG" "$BUNDLE_ID" APPL "  <key>NSHighResolutionCapable</key><true/>
+ICON_PLIST=""
+if [[ -n "${PRISM_ICON:-}" ]]; then
+  bash "$PLATFORM/apple/app-icon.sh" "$PRISM_ICON" macosx 14.0 "$APP/Contents/Resources" "$GEN"
+  ICON_PLIST="$(cat "$GEN/icon-info.xml")"
+fi
+
+plist "$PKG" "$BUNDLE_ID" APPL "$ICON_PLIST
+  <key>NSHighResolutionCapable</key><true/>
   <key>CFBundleURLTypes</key>
   <array><dict>
     <key>CFBundleURLName</key><string>$BUNDLE_ID</string>
@@ -61,7 +78,7 @@ xcrun --sdk macosx swiftc -target arm64-apple-macos14.0 -swift-version 5 -O \
   -parse-as-library -application-extension -module-name PrismWidgets \
   -Xlinker -e -Xlinker _NSExtensionMain \
   -o "$APPEX/Contents/MacOS/PrismWidgets" \
-  "$ROOT"/platform/apple/Shared/*.swift "$ROOT"/platform/apple/Extension/*.swift "$GEN/Generated.swift"
+  "$PLATFORM"/apple/Shared/*.swift "$PLATFORM"/apple/Extension/*.swift "$GEN/Generated.swift"
 plist PrismWidgets "$BUNDLE_ID.widgets" XPC! "  <key>NSExtension</key>
   <dict><key>NSExtensionPointIdentifier</key><string>com.apple.widgetkit-extension</string></dict>" \
   > "$APPEX/Contents/Info.plist"
@@ -82,7 +99,7 @@ cat > "$GEN/appex.entitlements" <<PLIST
   <key>com.apple.security.application-groups</key><array><string>$GROUP</string></array>
 </dict></plist>
 PLIST
-codesign --force --sign - --entitlements "$GEN/appex.entitlements" "$APPEX"
-codesign --force --sign - --entitlements "$GEN/app.entitlements" "$APP"
+codesign --force --sign "$SIGN" --entitlements "$GEN/appex.entitlements" "$APPEX"
+codesign --force --sign "$SIGN" --entitlements "$GEN/app.entitlements" "$APP"
 echo "Built $APP (widgets: $(python3 -c "import json;print(len(json.load(open('$GEN/widgets.json'))))"))"
 [[ "${2:-}" == "--no-open" ]] || open "$APP"
