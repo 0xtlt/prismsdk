@@ -1522,6 +1522,7 @@ pub fn run(config: AppConfig, init: AppInit) {
             formatter: Some(Box::new(prism_native::apple::FoundationFormatter)),
             cloud_storage: Some(cloud_storage(&data_dir(&config.title))),
             viewport: Some(window_size(&config)),
+            platform: None,
             data_dir: Some(data_dir(&config.title)),
             shared_data_dir: None,
         },

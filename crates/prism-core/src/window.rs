@@ -19,6 +19,7 @@ type ResizeHandler = Rc<dyn Fn((f32, f32), &mut App)>;
 
 pub(crate) struct Window {
     pub size: (f32, f32),
+    pub platform: crate::platform::Platform,
     pub handlers: Vec<ResizeHandler>,
 }
 
@@ -27,6 +28,7 @@ impl Default for Window {
         // A phone until the platform says otherwise.
         Window {
             size: (390., 844.),
+            platform: crate::platform::Platform::compiled(),
             handlers: Vec::new(),
         }
     }

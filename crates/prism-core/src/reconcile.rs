@@ -348,6 +348,8 @@ impl Reconciler {
     fn flatten(&mut self, app: &mut App, element: Element, out: &mut Vec<Item>) {
         match element {
             Element::Empty => {}
+            // `.only(…)` / `.except(…)`: absent from other platforms' trees.
+            Element::Node(vnode) if !vnode.style.exists_on(app.platform()) => {}
             Element::Node(vnode) => out.push(Item::Node(vnode, None)),
             Element::Lazy(build) => {
                 let element = build(app);
@@ -365,7 +367,9 @@ impl Reconciler {
                     out.push(Item::Cached(entity));
                 } else {
                     let vnode = self.render_entity(app, entity);
-                    out.push(Item::Node(vnode, Some(entity)));
+                    if vnode.style.exists_on(app.platform()) {
+                        out.push(Item::Node(vnode, Some(entity)));
+                    }
                 }
             }
         }
@@ -428,7 +432,7 @@ impl Reconciler {
             on_swipe_right,
             ..
         } = *vnode;
-        let style = style.resolve(app.breakpoint());
+        let style = style.resolve(app.breakpoint(), app.platform());
         {
             let swipe = (on_swipe_left.is_some(), on_swipe_right.is_some());
             let scroll_events = on_scroll.is_some();

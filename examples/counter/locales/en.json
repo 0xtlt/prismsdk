@@ -20,7 +20,9 @@
     "add": "Add",
     "new_hint": "Opens a form in a sheet",
     "title_label": "Title",
-    "add_todo": "Add todo"
+    "add_todo": "Add todo",
+    "hint_mobile": "Swipe left on a todo to delete it, or touch and hold it for more.",
+    "hint_desktop": "Right-click a todo for more actions."
   },
   "todo": {
     "done": "Done",

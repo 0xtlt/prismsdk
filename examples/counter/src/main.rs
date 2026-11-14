@@ -331,6 +331,19 @@ impl Render for TodoList {
                         },
                     ))),
             )
+            // Gestures differ: swipe on phones, right-click elsewhere.
+            .child(
+                text(strings::todos_hint_mobile(cx))
+                    .text_size(13.)
+                    .text_color(t.muted)
+                    .only(Platform::MOBILE),
+            )
+            .child(
+                text(strings::todos_hint_desktop(cx))
+                    .text_size(13.)
+                    .text_color(t.muted)
+                    .except(Platform::MOBILE),
+            )
             .children(store.todos.iter().map(|todo| {
                 let status = if todo.done {
                     strings::todo_done(cx)

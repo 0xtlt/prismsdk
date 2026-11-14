@@ -419,6 +419,7 @@ pub fn page(
             data_dir: Some(data_root().join(sid)),
             shared_data_dir: Some(data_root()),
             viewport,
+            platform: Some(prism_core::Platform::Web),
         },
     );
     let mut html = HtmlBackend::default();
@@ -590,6 +591,7 @@ fn session(stream: TcpStream, init: &AppInit) {
             data_dir: Some(data_root().join(&sid)),
             shared_data_dir: Some(data_root()),
             viewport,
+            platform: Some(prism_core::Platform::Web),
         },
     );
     let mut encoder = Encoder::default();

@@ -13,6 +13,7 @@ mod element;
 pub mod i18n;
 pub mod list;
 pub mod menu;
+pub mod platform;
 mod reconcile;
 mod router;
 pub mod storage;
@@ -38,6 +39,7 @@ pub use element::{
 pub use i18n::{BasicFormatter, DateStyle, Direction, Formatter, Locale, Translations};
 pub use list::VirtualList;
 pub use menu::{ActionRole, Alert, AlertStyle, Menu, MenuItem, Tray};
+pub use platform::{Platform, Platforms};
 pub use reconcile::{NodeId, Patch, Reconciler, RenderEnvironment, UiEvent};
 pub use router::{Params, Router, RouterBuilder, go_back, navigate_to, normalize_path};
 pub use storage::{FileStorage, MemoryStorage, Storage};
@@ -77,6 +79,9 @@ pub struct RuntimeOptions {
     pub shared_data_dir: Option<std::path::PathBuf>,
     /// Window or viewport size at startup (a phone if unknown).
     pub viewport: Option<(f32, f32)>,
+    /// Where the app runs (the compilation target if `None`; the web backend
+    /// says `Web`).
+    pub platform: Option<Platform>,
 }
 
 /// Window/page settings shared by every backend.
@@ -159,6 +164,9 @@ impl Runtime {
             app.set_cloud_storage(cloud);
         }
         app.set_data_dirs(options.data_dir, options.shared_data_dir);
+        if let Some(platform) = options.platform {
+            app.window.platform = platform;
+        }
         if let Some(size) = options.viewport {
             app.set_viewport(size);
         }
@@ -379,10 +387,10 @@ pub mod prelude {
         ChangeEvent, ClickEvent, Context, DateStyle, Entity, FluentBuilder, Handler, Haptic,
         InputEvent, IntoElement, Lifecycle, Locale, Location, Menu, MenuItem, Motion, Notification,
         NotificationAction, NotificationResponse, Params, ParentElement, Permission,
-        PermissionState, PickImages, PickedFile, Render, Role, Router, ScrollEvent, Share, Styled,
-        SwipeDirection, Transition, Translations, Tray, VirtualList, Watch, Widget, WidgetFamily,
-        adaptive, button, div, go_back, image, lazy, navigate_to, picture, progress, px, relative,
-        rgb, rgba, screen, scroll, text, text_input, timer, toggle,
+        PermissionState, PickImages, PickedFile, Platform, Render, Role, Router, ScrollEvent,
+        Share, Styled, SwipeDirection, Transition, Translations, Tray, VirtualList, Watch, Widget,
+        WidgetFamily, adaptive, button, div, go_back, image, lazy, navigate_to, picture, progress,
+        px, relative, rgb, rgba, screen, scroll, text, text_input, timer, toggle,
     };
 }
 

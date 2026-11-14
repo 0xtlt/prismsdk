@@ -69,6 +69,13 @@ pub const BACKEND: &str = if cfg!(feature = "web") {
     "none"
 };
 
+/// The platform this build targets (`Web` with the `web` feature).
+pub const PLATFORM: Platform = if cfg!(feature = "web") {
+    Platform::Web
+} else {
+    Platform::compiled()
+};
+
 /// Entry point: configure, then [`run`](Application::run).
 #[derive(Clone, Debug, Default)]
 pub struct Application {

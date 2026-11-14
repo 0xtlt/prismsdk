@@ -280,8 +280,11 @@ pub struct Style {
     /// Animates frame, opacity and color changes (skipped with reduce motion).
     pub transition: Option<Transition>,
 
-    /// Changes applied from a window width up (`.md(|s| s.flex_row())`).
+    /// Changes applied from a window width up (`.md(|s| s.flex_row())`) or
+    /// on some platforms (`.on(Platform::Web, |s| …)`).
     pub responsive: Responsive,
+    /// Platforms where the element exists (`.only(…)`, `.except(…)`).
+    pub platforms: Option<crate::platform::Platforms>,
 }
 
 /// Window size classes, by width in points (CSS pixels on the web).
@@ -324,10 +327,19 @@ impl Breakpoint {
 
 type Rule = std::rc::Rc<dyn Fn(Style) -> Style>;
 
-/// Style changes by breakpoint; resolved for the current window when the
-/// tree is rendered.
+/// When a rule applies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Condition {
+    /// The window is at least this wide.
+    From(Breakpoint),
+    /// The app runs on one of these platforms.
+    On(crate::platform::Platforms),
+}
+
+/// Style changes by breakpoint or platform; resolved for the current window
+/// and platform when the tree is rendered.
 #[derive(Clone, Default)]
-pub struct Responsive(Vec<(Breakpoint, Rule)>);
+pub struct Responsive(Vec<(Condition, Rule)>);
 
 impl Responsive {
     pub fn is_empty(&self) -> bool {
@@ -352,22 +364,34 @@ impl PartialEq for Responsive {
 }
 
 impl Style {
-    /// This style at `breakpoint`: rules for it and smaller ones applied,
-    /// smallest first.
-    pub fn resolve(&self, breakpoint: Breakpoint) -> Style {
+    /// This style at `breakpoint` on `platform`: platform rules first, then
+    /// width rules from the smallest breakpoint up.
+    pub fn resolve(&self, breakpoint: Breakpoint, platform: crate::platform::Platform) -> Style {
         if self.responsive.is_empty() {
             return self.clone();
         }
         let mut rules = self.responsive.0.clone();
-        rules.sort_by_key(|(b, _)| *b);
+        rules.sort_by_key(|(c, _)| match c {
+            Condition::On(_) => None,
+            Condition::From(b) => Some(*b),
+        });
         let mut s = self.clone();
         s.responsive = Responsive::default();
-        for (b, rule) in rules {
-            if b <= breakpoint {
+        for (condition, rule) in rules {
+            let applies = match condition {
+                Condition::From(b) => b <= breakpoint,
+                Condition::On(set) => set.contains(platform),
+            };
+            if applies {
                 s = rule(s);
             }
         }
         s
+    }
+
+    /// Whether the element exists on `platform`.
+    pub fn exists_on(&self, platform: crate::platform::Platform) -> bool {
+        self.platforms.is_none_or(|set| set.contains(platform))
     }
 }
 
@@ -448,6 +472,7 @@ impl Default for Style {
             text_align: TextAlign::Left,
             transition: None,
             responsive: Responsive::default(),
+            platforms: None,
         }
     }
 }
@@ -675,7 +700,36 @@ pub trait Styled: Sized {
     // Responsive: applied when the window is at least this wide.
     /// From `breakpoint` up.
     fn at(self, breakpoint: Breakpoint, f: impl Fn(Style) -> Style + 'static) -> Self {
-        self.with_style(|s| s.responsive.0.push((breakpoint, std::rc::Rc::new(f))))
+        self.with_style(|s| {
+            s.responsive
+                .0
+                .push((Condition::From(breakpoint), std::rc::Rc::new(f)))
+        })
+    }
+
+    // Platforms
+    /// Only on these platforms (`.only(Platform::Ios)`, `.only(Platform::MOBILE)`).
+    fn only(self, platforms: impl Into<crate::platform::Platforms>) -> Self {
+        let set = platforms.into();
+        self.with_style(|s| s.platforms = Some(set))
+    }
+    /// Everywhere but these platforms.
+    fn except(self, platforms: impl Into<crate::platform::Platforms>) -> Self {
+        let set = platforms.into().complement();
+        self.with_style(|s| s.platforms = Some(set))
+    }
+    /// Style changes on these platforms (`.on(Platform::Web, |s| s.p(24.))`).
+    fn on(
+        self,
+        platforms: impl Into<crate::platform::Platforms>,
+        f: impl Fn(Style) -> Style + 'static,
+    ) -> Self {
+        let set = platforms.into();
+        self.with_style(|s| {
+            s.responsive
+                .0
+                .push((Condition::On(set), std::rc::Rc::new(f)))
+        })
     }
     /// Tablets and up (≥ 600).
     fn md(self, f: impl Fn(Style) -> Style + 'static) -> Self {

@@ -1884,6 +1884,7 @@ fn make_runtime(
             cloud_storage: Some(cloud_storage(&data_dir())),
             // Set from the window at the first layout.
             viewport: None,
+            platform: None,
             data_dir: Some(data_dir()),
             shared_data_dir: None,
         },

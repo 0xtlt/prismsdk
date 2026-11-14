@@ -1423,3 +1423,56 @@ fn responsive_styles_follow_the_window() {
     find_text(&patches, "Medium");
     assert_eq!(rt.app.viewport(), (820., 1180.));
 }
+
+#[test]
+fn platform_specific_elements_and_styles() {
+    use crate::Platform;
+    struct Page;
+    impl Render for Page {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .child(text("swipe").only(Platform::MOBILE))
+                .child(text("right-click").except(Platform::MOBILE))
+                .child(text("ios only").only(Platform::Ios))
+                .child(
+                    text(cx.platform().name())
+                        .p(4.)
+                        .on(Platform::Web, |s| s.p(24.)),
+                )
+        }
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Page);
+        cx.set_root(root);
+    });
+    let texts = |platform| {
+        let mut rt = Runtime::with_options(
+            &init,
+            crate::RuntimeOptions {
+                path: "/".into(),
+                platform: Some(platform),
+                ..Default::default()
+            },
+        );
+        rt.render()
+    };
+    let has = |patches: &[Patch], t: &str| {
+        patches
+            .iter()
+            .any(|p| matches!(p, Patch::SetText { text, .. } if text == t))
+    };
+    let web = texts(Platform::Web);
+    assert!(has(&web, "right-click") && has(&web, "web"));
+    assert!(!has(&web, "swipe") && !has(&web, "ios only"));
+    let padded = |patches: &[Patch], v: f32| {
+        patches
+            .iter()
+            .any(|p| matches!(p, Patch::SetStyle { style, .. } if style.padding.top == v))
+    };
+    assert!(padded(&web, 24.) && !padded(&web, 4.));
+    let ios = texts(Platform::Ios);
+    assert!(has(&ios, "swipe") && has(&ios, "ios only") && !has(&ios, "right-click"));
+    assert!(padded(&ios, 4.));
+    assert!((Platform::Ios | Platform::Web).contains(Platform::Web));
+    assert!(!Platform::NATIVE.contains(Platform::Web));
+}
