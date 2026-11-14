@@ -1,32 +1,45 @@
-//! `Widgets` for the SwiftUI host: the same flexbox layout as iOS and macOS
-//! (prism-native's taffy), computed in Rust. SwiftUI only measures text and
-//! draws each node at the frame it is given, so layouts match the other
-//! platforms. Changes are queued as JSON and sent once per commit.
+//! `Widgets` for hosts in another language (the watchOS SwiftUI host, the
+//! Android Java host): the same flexbox layout as iOS and macOS, computed in
+//! Rust. The host only measures text and draws each node at the frame it is
+//! given, so layouts match the other platforms. Changes are queued as JSON
+//! (`ops`) for the backend to send once per commit:
+//!
+//! | op | fields |
+//! |---|---|
+//! | `create` / `destroy` | `id`, `kind` |
+//! | `style` | `s`: `bg`, `radius`, `bw`, `bc`, `opacity`, `color`, `font`, `weight`, `talign` (colors `[r,g,b,a, dark r,g,b,a]`) |
+//! | `text`, `placeholder`, `icon`, `value`, `clickable`, `display`, `a11y` | the value |
+//! | `children` | `children`: ids in order |
+//! | `frame` | `f`: `[x, y, w, h]` in the parent |
+//! | `content` | `size`: a scroll view's content size |
+//! | `menu`, `swipe`, `scrollev`, `root` | context menu JSON, swipe sides, scroll events, root id |
 
 use std::collections::HashMap;
-use std::ffi::{CString, c_char};
 
 use prism_core::{
     Accessibility, Color, FontWeight, NodeId, NodeKind, RenderEnvironment, Style, TextAlign,
 };
-use prism_native::{Insets, Viewport, Widgets};
 use serde_json::{Value, json};
 
-unsafe extern "C" {
-    /// Natural size of a leaf, measured by UIKit/SwiftUI.
-    fn prism_watch_measure(
-        kind: *const c_char,
-        text: *const c_char,
-        font: f64,
-        weight: i32,
-        max_width: f64,
-        out_w: *mut f64,
-        out_h: *mut f64,
-    );
+use crate::{Insets, Viewport, Widgets};
+
+/// What the host is asked to measure.
+#[derive(Clone, Debug)]
+pub struct MeasureRequest<'a> {
+    /// `text`, `button`, `text_input`, `toggle`, `progress`, `image`, `timer`…
+    pub kind: &'a str,
+    /// The text, or the icon name of an `image`.
+    pub text: &'a str,
+    pub font_size: f32,
+    /// 400, 500, 600, 700.
+    pub weight: i32,
+    pub max_width: Option<f32>,
 }
 
-#[derive(Default)]
-pub(crate) struct WatchWidgets {
+/// Measures a leaf in the host (synchronously, on the UI thread).
+pub type Measure = fn(&MeasureRequest) -> (f32, f32);
+
+pub struct RemoteWidgets {
     /// Changes for the host, in order.
     pub ops: Vec<Value>,
     kinds: HashMap<NodeId, NodeKind>,
@@ -35,6 +48,21 @@ pub(crate) struct WatchWidgets {
     /// Content size of each stack or tab container, reported by the host.
     pub viewports: HashMap<NodeId, (f32, f32)>,
     frames: HashMap<NodeId, (f32, f32)>,
+    measure: Measure,
+}
+
+impl RemoteWidgets {
+    pub fn new(measure: Measure) -> Self {
+        RemoteWidgets {
+            ops: Vec::new(),
+            kinds: HashMap::new(),
+            texts: HashMap::new(),
+            styles: HashMap::new(),
+            viewports: HashMap::new(),
+            frames: HashMap::new(),
+            measure,
+        }
+    }
 }
 
 fn color(c: Option<Color>) -> Value {
@@ -56,7 +84,7 @@ fn weight(w: FontWeight) -> i32 {
     }
 }
 
-impl Widgets for WatchWidgets {
+impl Widgets for RemoteWidgets {
     type View = NodeId;
 
     fn create(&mut self, id: NodeId, kind: NodeKind) -> NodeId {
@@ -123,21 +151,13 @@ impl Widgets for WatchWidgets {
             NodeKind::Timer => "00:00".to_string(),
             _ => self.texts.get(id).cloned().unwrap_or_default(),
         };
-        let kind = CString::new(kind.name()).unwrap_or_default();
-        let text = CString::new(text).unwrap_or_default();
-        let (mut w, mut h) = (0f64, 0f64);
-        unsafe {
-            prism_watch_measure(
-                kind.as_ptr(),
-                text.as_ptr(),
-                style.font_size as f64,
-                weight(style.font_weight),
-                max_width.map_or(f64::INFINITY, f64::from),
-                &mut w,
-                &mut h,
-            )
-        };
-        (w as f32, h as f32)
+        (self.measure)(&MeasureRequest {
+            kind: kind.name(),
+            text: &text,
+            font_size: style.font_size,
+            weight: weight(style.font_weight),
+            max_width,
+        })
     }
 
     /// The longest word: texts wrap down to it, like CSS min-content.

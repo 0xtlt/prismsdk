@@ -13,9 +13,19 @@ use serde_json::Value;
 use prism_core::Backend;
 use prism_native::{Insets, NativeRenderer};
 
-use crate::widgets::WatchWidgets;
+use prism_native::remote::{MeasureRequest, RemoteWidgets};
 
 unsafe extern "C" {
+    /// Natural size of a leaf, measured by UIKit (string drawing) / SwiftUI.
+    fn prism_watch_measure(
+        kind: *const c_char,
+        text: *const c_char,
+        font: f64,
+        weight: i32,
+        max_width: f64,
+        out_w: *mut f64,
+        out_h: *mut f64,
+    );
     /// Runs the SwiftUI app; never returns.
     fn prism_watch_main();
     fn prism_watch_apply(json: *const c_char);
@@ -28,13 +38,31 @@ struct State {
     services: crate::services::WatchServices,
     /// Background tasks running for WatchKit: (task id, runtime task).
     background: Vec<(String, u64)>,
-    renderer: NativeRenderer<WatchWidgets>,
+    renderer: NativeRenderer<RemoteWidgets>,
     /// The root's size in watch points (reported by the host).
     size: (f32, f32),
 }
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
+}
+
+fn measure(r: &MeasureRequest) -> (f32, f32) {
+    let kind = CString::new(r.kind).unwrap_or_default();
+    let text = CString::new(r.text).unwrap_or_default();
+    let (mut w, mut h) = (0f64, 0f64);
+    unsafe {
+        prism_watch_measure(
+            kind.as_ptr(),
+            text.as_ptr(),
+            r.font_size as f64,
+            r.weight,
+            r.max_width.map_or(f64::INFINITY, f64::from),
+            &mut w,
+            &mut h,
+        )
+    };
+    (w as f32, h as f32)
 }
 
 /// Starts the app (call from `main`).
@@ -136,7 +164,7 @@ pub extern "C" fn prism_watch_ready(
             ..Default::default()
         },
     );
-    let mut renderer = NativeRenderer::new(WatchWidgets::default());
+    let mut renderer = NativeRenderer::new(RemoteWidgets::new(measure));
     renderer.set_zoom(zoom);
     STATE.with(|s| {
         *s.borrow_mut() = Some(State {

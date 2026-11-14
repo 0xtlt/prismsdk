@@ -11,6 +11,7 @@ use std::collections::HashMap;
 #[cfg(target_vendor = "apple")]
 pub mod apple;
 pub mod images;
+pub mod remote;
 
 use prism_core::{
     Accessibility, Align, Appearance, Backend, Direction, FlexDirection, Justify, Length, NodeId,
