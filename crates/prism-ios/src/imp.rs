@@ -95,6 +95,7 @@ impl State {
         for request in self.runtime.take_requests() {
             prism_core::PlatformServices::handle(&mut self.services, request);
         }
+        schedule_timer(self.runtime.next_timer());
     }
 
     fn relayout(&mut self) {
@@ -315,10 +316,14 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
         .statusBarManager()
         .is_some_and(|m| m.statusBarFrame().size.height >= 54.);
     let services = crate::services::IosServices::new(island);
-    let mut runtime = Runtime::with_capabilities(
+    let mut runtime = Runtime::with_options(
         init,
-        &path,
-        prism_core::PlatformServices::capabilities(&services),
+        prism_core::RuntimeOptions {
+            path,
+            capabilities: prism_core::PlatformServices::capabilities(&services),
+            storage: Some(Box::new(prism_core::FileStorage::new(data_dir()))),
+            wake_ui: Some(wake_ui()),
+        },
     );
     let renderer = NativeRenderer::new(UiKit {
         mtm,
@@ -1016,4 +1021,57 @@ pub fn run(config: AppConfig, init: AppInit) {
     let _ = (AppDelegate::class(), SceneDelegate::class());
     let delegate = NSString::from_str("PrismAppDelegate");
     UIApplication::main(None, Some(&delegate), mtm);
+}
+
+// ---------------------------------------------------------------------------
+// Async: wake the UI thread through GCD, and schedule the next timer.
+// ---------------------------------------------------------------------------
+
+fn wake_ui() -> prism_core::WakeUi {
+    std::sync::Arc::new(|| dispatch2::DispatchQueue::main().exec_async(poll_now))
+}
+
+/// Runs ready tasks and applies what they changed.
+fn poll_now() {
+    with_state(|s| {
+        let patches = s.runtime.poll();
+        s.commit(patches);
+    });
+}
+
+thread_local! {
+    static NEXT_WAKE: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+}
+
+/// Makes sure the UI thread wakes up when the next timer is due.
+fn schedule_timer(at: Option<std::time::Instant>) {
+    let Some(at) = at else { return };
+    if NEXT_WAKE.with(|w| w.get().is_some_and(|w| w <= at)) {
+        return;
+    }
+    NEXT_WAKE.with(|w| w.set(Some(at)));
+    let delay = at.saturating_duration_since(std::time::Instant::now());
+    let when = dispatch2::DispatchTime::try_from(delay).unwrap_or(dispatch2::DispatchTime::NOW);
+    let _ = dispatch2::DispatchQueue::main().after(when, || {
+        NEXT_WAKE.with(|w| w.set(None));
+        poll_now();
+    });
+}
+
+/// App data: the App Group container when the app has one (widgets can read
+/// it), else Application Support.
+fn data_dir() -> std::path::PathBuf {
+    let bundle = objc2_foundation::NSBundle::mainBundle();
+    let group = bundle
+        .objectForInfoDictionaryKey(&NSString::from_str("PrismAppGroup"))
+        .and_then(|g| g.downcast::<NSString>().ok());
+    if let Some(group) = group
+        && let Some(url) = objc2_foundation::NSFileManager::defaultManager()
+            .containerURLForSecurityApplicationGroupIdentifier(&group)
+        && let Some(path) = url.path()
+    {
+        return std::path::PathBuf::from(path.to_string()).join("prism-data");
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    std::path::PathBuf::from(home).join("Library/Application Support/prism-data")
 }

@@ -97,6 +97,7 @@ impl State {
         for request in self.runtime.take_requests() {
             prism_core::PlatformServices::handle(&mut self.services, request);
         }
+        schedule_timer(self.runtime.next_timer());
     }
 
     fn relayout(&mut self) {
@@ -1117,10 +1118,16 @@ pub fn run(config: AppConfig, init: AppInit) {
         mtm,
         Retained::into_super(Retained::into_super(target.clone())),
     );
-    let mut runtime = Runtime::with_capabilities(
+    let mut runtime = Runtime::with_options(
         &init,
-        &path,
-        prism_core::PlatformServices::capabilities(&services),
+        prism_core::RuntimeOptions {
+            path,
+            capabilities: prism_core::PlatformServices::capabilities(&services),
+            storage: Some(Box::new(prism_core::FileStorage::new(data_dir(
+                &config.title,
+            )))),
+            wake_ui: Some(wake_ui()),
+        },
     );
     let renderer = NativeRenderer::new(AppKit {
         mtm,
@@ -1243,4 +1250,67 @@ fn run_automation(mtm: MainThreadMarker) {
         }
         NSApplication::sharedApplication(mtm).terminate(None);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Async: wake the UI thread through GCD, and schedule the next timer.
+// ---------------------------------------------------------------------------
+
+fn wake_ui() -> prism_core::WakeUi {
+    std::sync::Arc::new(|| dispatch2::DispatchQueue::main().exec_async(poll_now))
+}
+
+/// Runs ready tasks and applies what they changed.
+fn poll_now() {
+    with_state(|s| {
+        let patches = s.runtime.poll();
+        s.commit(patches);
+    });
+}
+
+thread_local! {
+    static NEXT_WAKE: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+}
+
+/// Makes sure the UI thread wakes up when the next timer is due.
+fn schedule_timer(at: Option<std::time::Instant>) {
+    let Some(at) = at else { return };
+    if NEXT_WAKE.with(|w| w.get().is_some_and(|w| w <= at)) {
+        return;
+    }
+    NEXT_WAKE.with(|w| w.set(Some(at)));
+    let delay = at.saturating_duration_since(std::time::Instant::now());
+    let when = dispatch2::DispatchTime::try_from(delay).unwrap_or(dispatch2::DispatchTime::NOW);
+    let _ = dispatch2::DispatchQueue::main().after(when, || {
+        NEXT_WAKE.with(|w| w.set(None));
+        poll_now();
+    });
+}
+
+/// `~/Library/Application Support/<bundle id>` (or `prism.<title>` when run
+/// unbundled with `cargo run`). `PRISM_DATA_DIR` overrides it.
+fn data_dir(title: &str) -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("PRISM_DATA_DIR") {
+        return dir.into();
+    }
+    let id = objc2_foundation::NSBundle::mainBundle()
+        .bundleIdentifier()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            let slug: String = title
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() {
+                        c.to_ascii_lowercase()
+                    } else {
+                        '-'
+                    }
+                })
+                .collect();
+            format!("prism.{slug}")
+        });
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    std::path::PathBuf::from(home)
+        .join("Library/Application Support")
+        .join(id)
 }

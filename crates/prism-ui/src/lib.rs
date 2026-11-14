@@ -87,6 +87,8 @@ impl Refine {
 
 macro_rules! refinable {
     ($ty:ty) => {
+        impl FluentBuilder for $ty {}
+
         impl $ty {
             /// Adjusts the rendered root's style after theming.
             pub fn style(mut self, f: impl FnOnce(&mut Style) + 'static) -> Self {

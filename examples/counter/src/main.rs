@@ -21,8 +21,9 @@ fn main() {
         .title("Prism")
         .size(460., 720.)
         .run(|cx| {
-            ui::set_theme(cx, Theme::system());
-            let store = cx.new_entity(|_| Store::new());
+            let theme = load_theme(cx);
+            ui::set_theme(cx, theme);
+            let store = cx.new_entity(|cx| Store::load(cx));
             widgets::register(cx, store);
             Router::new()
                 .tab("Todos", "checklist", "/")
@@ -62,15 +63,42 @@ pub(crate) struct Store {
 }
 
 impl Store {
-    fn new() -> Self {
-        Store {
-            todos: vec![Todo {
+    /// Loads saved todos (one per line: `id<TAB>done<TAB>title`).
+    fn load(cx: &mut App) -> Self {
+        let todos: Vec<Todo> = match cx.storage().get("todos") {
+            Some(saved) => saved
+                .lines()
+                .filter_map(|line| {
+                    let mut parts = line.splitn(3, '\t');
+                    Some(Todo {
+                        id: parts.next()?.parse().ok()?,
+                        done: parts.next()? == "1",
+                        title: parts.next()?.to_string(),
+                    })
+                })
+                .collect(),
+            None => vec![Todo {
                 id: 1,
                 title: "Try Prism on the web".into(),
                 done: true,
             }],
-            next_id: 2,
-        }
+        };
+        let next_id = todos.iter().map(|t| t.id).max().unwrap_or(0) + 1;
+        Store { todos, next_id }
+    }
+
+    /// Persists and re-renders everything that observes the store.
+    fn save(&self, cx: &mut Context<Self>) {
+        let data: Vec<String> = self
+            .todos
+            .iter()
+            .map(|t| {
+                let title = t.title.replace(['\t', '\n'], " ");
+                format!("{}\t{}\t{title}", t.id, if t.done { 1 } else { 0 })
+            })
+            .collect();
+        cx.storage().set("todos", &data.join("\n"));
+        cx.notify();
     }
 
     fn get(&self, id: u64) -> Option<&Todo> {
@@ -88,19 +116,19 @@ impl Store {
             done: false,
         });
         self.next_id += 1;
-        cx.notify();
+        self.save(cx);
     }
 
     fn toggle(&mut self, id: u64, cx: &mut Context<Self>) {
         if let Some(t) = self.todos.iter_mut().find(|t| t.id == id) {
             t.done = !t.done;
-            cx.notify();
+            self.save(cx);
         }
     }
 
     fn delete(&mut self, id: u64, cx: &mut Context<Self>) {
         self.todos.retain(|t| t.id != id);
-        cx.notify();
+        self.save(cx);
     }
 }
 
@@ -310,6 +338,8 @@ impl Render for TodoDetail {
 
 #[derive(Default)]
 struct Gallery {
+    quote: Option<Result<String, String>>,
+    loading: bool,
     wifi: bool,
     bluetooth: bool,
     terms: bool,
@@ -408,6 +438,45 @@ impl Render for Gallery {
             )
             .child(
                 ui::card()
+                    .child(ui::heading("Network"))
+                    .child(match (&self.quote, self.loading) {
+                        (_, true) => text("Loading…").text_color(t.muted).into_element(),
+                        (Some(Ok(q)), _) => text(format!("“{q}”")).into_element(),
+                        (Some(Err(e)), _) => text(format!("Failed: {e}"))
+                            .text_color(t.danger)
+                            .into_element(),
+                        (None, _) => text("Fetch a line of GitHub wisdom over HTTPS.")
+                            .text_color(t.muted)
+                            .into_element(),
+                    })
+                    .child(
+                        ui::button("Fetch")
+                            .secondary()
+                            .disabled(self.loading)
+                            .on_click(cx.listener(|this, _, cx| {
+                                this.loading = true;
+                                cx.spawn(async move |this, cx| {
+                                    use prism::http::{Fetch, Request};
+                                    let res = cx
+                                        .fetch(
+                                            Request::get("https://api.github.com/zen")
+                                                .header("user-agent", "prism-example"),
+                                        )
+                                        .await;
+                                    cx.update_entity(&this, |g, _| {
+                                        g.loading = false;
+                                        g.quote = Some(match res {
+                                            Ok(r) if r.ok() => Ok(r.text()),
+                                            Ok(r) => Err(format!("HTTP {}", r.status)),
+                                            Err(e) => Err(e.to_string()),
+                                        });
+                                    });
+                                });
+                            })),
+                    ),
+            )
+            .child(
+                ui::card()
                     .child(ui::heading("Badges & rows"))
                     .child(
                         div()
@@ -451,7 +520,7 @@ impl Render for Settings {
         // Globals re-render the whole app when they change.
         let update = |f: fn(&mut Theme, f64)| {
             std::rc::Rc::new(move |e: &ChangeEvent, app: &mut App| {
-                ui::update_theme(app, |th| f(th, e.value))
+                update_and_save_theme(app, |th| f(th, e.value))
             })
         };
         screen.child(
@@ -484,7 +553,7 @@ impl Render for Settings {
                                 .accessibility_label(name)
                                 .accessibility_checked(selected)
                                 .on_click(std::rc::Rc::new(move |_: &ClickEvent, app: &mut App| {
-                                    ui::update_theme(app, |th| th.accent = rgb(hex))
+                                    update_and_save_theme(app, |th| th.accent = rgb(hex))
                                 }))
                         },
                     ))),
@@ -525,7 +594,7 @@ fn appearance_picker(t: &Theme) -> prism::Div {
                         })
                         .small()
                         .on_click(std::rc::Rc::new(move |_: &ClickEvent, app: &mut App| {
-                            ui::update_theme(app, |th| {
+                            update_and_save_theme(app, |th| {
                                 let keep =
                                     (th.accent, th.radius, th.prefer_native, th.follows_system);
                                 *th = match i {
@@ -546,4 +615,53 @@ fn appearance_picker(t: &Theme) -> prism::Div {
                         }))
                 }),
         )
+}
+
+/// Theme saved as `mode;accent;radius;native` (mode: system | light | dark).
+fn load_theme(cx: &mut App) -> Theme {
+    let saved = cx.storage().get("theme").unwrap_or_default();
+    let mut parts = saved.split(';');
+    let mut theme = match parts.next() {
+        Some("light") => Theme::light(),
+        Some("dark") => Theme::dark(),
+        _ => Theme::system(),
+    };
+    if let Some(hex) = parts.next().and_then(|h| u32::from_str_radix(h, 16).ok()) {
+        theme.accent = rgb(hex);
+    }
+    if let Some(r) = parts.next().and_then(|r| r.parse().ok()) {
+        theme.radius = r;
+    }
+    theme.prefer_native = parts.next() == Some("1");
+    theme
+}
+
+/// Edits the theme and remembers it.
+fn update_and_save_theme(cx: &mut App, f: impl FnOnce(&mut Theme)) {
+    ui::update_theme(cx, f);
+    let t = Theme::of(cx);
+    let mode = if t.follows_system {
+        "system"
+    } else if t.dark {
+        "dark"
+    } else {
+        "light"
+    };
+    // Only fixed (non-adaptive) accents are custom choices worth saving.
+    let accent = if t.accent.dark.is_none() {
+        format!(
+            "{:06x}",
+            ((t.accent.r * 255.) as u32) << 16
+                | ((t.accent.g * 255.) as u32) << 8
+                | (t.accent.b * 255.) as u32
+        )
+    } else {
+        String::new()
+    };
+    let value = format!(
+        "{mode};{accent};{};{}",
+        t.radius,
+        if t.prefer_native { 1 } else { 0 }
+    );
+    cx.storage().set("theme", &value);
 }

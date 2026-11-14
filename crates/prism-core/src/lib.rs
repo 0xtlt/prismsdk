@@ -10,8 +10,10 @@ mod app;
 mod element;
 mod reconcile;
 mod router;
+pub mod storage;
 mod style;
 pub mod surfaces;
+mod task;
 
 pub use a11y::{Accessibility, Accessible, Role};
 pub use app::{AnyEntity, App, Appearance, Context, Entity, EntityId, Render};
@@ -23,17 +25,32 @@ pub use element::{
 };
 pub use reconcile::{NodeId, Patch, Reconciler, UiEvent};
 pub use router::{Params, Router, RouterBuilder, go_back, navigate_to, normalize_path};
+pub use storage::{FileStorage, MemoryStorage, Storage};
 pub use style::*;
 pub use surfaces::{
     Activity, ActivityId, Capabilities, Notification, PlatformRequest, PlatformServices, SNode,
     Widget, WidgetFamily,
 };
+pub use task::{AsyncApp, Background, Sleep, TaskHandle, WakeUi};
 
 use std::sync::Arc;
 
 /// Builds the initial app state. Called once per window (native) or once per
 /// browser session (web), so it must be shareable across threads.
 pub type AppInit = Arc<dyn Fn(&mut App) + Send + Sync>;
+
+/// What a backend provides to the app at startup.
+#[derive(Default)]
+pub struct RuntimeOptions {
+    /// Initial path (deep link, request URL).
+    pub path: String,
+    pub capabilities: Capabilities,
+    /// Where `cx.storage()` persists data (in memory if `None`).
+    pub storage: Option<Box<dyn Storage>>,
+    /// Called from any thread when async work is ready; the backend must then
+    /// call [`Runtime::poll`] on the UI thread.
+    pub wake_ui: Option<WakeUi>,
+}
 
 /// Window/page settings shared by every backend.
 #[derive(Clone, Debug)]
@@ -80,9 +97,27 @@ impl Runtime {
     /// Like [`Runtime::with_path`], telling the app what the platform supports
     /// before it initializes.
     pub fn with_capabilities(init: &AppInit, path: &str, caps: Capabilities) -> Self {
+        Self::with_options(
+            init,
+            RuntimeOptions {
+                path: path.into(),
+                capabilities: caps,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Full control over the environment a backend gives the app.
+    pub fn with_options(init: &AppInit, options: RuntimeOptions) -> Self {
         let mut app = App::new();
-        app.set_initial_path(path);
-        app.set_capabilities(caps);
+        app.set_initial_path(&options.path);
+        app.set_capabilities(options.capabilities);
+        if let Some(storage) = options.storage {
+            app.set_storage(storage);
+        }
+        if let Some(wake) = options.wake_ui {
+            app.executor.set_wake_ui(wake);
+        }
         init(&mut app);
         Runtime {
             app,
@@ -92,6 +127,7 @@ impl Runtime {
 
     /// Renders what is dirty (everything on first call) and returns the patches.
     pub fn render(&mut self) -> Vec<Patch> {
+        task::poll_tasks(&mut self.app);
         self.app.flush_effects();
         self.reconciler.render(&mut self.app)
     }
@@ -125,12 +161,37 @@ impl Runtime {
                 }
             }
         }
+        // Tasks spawned by the handler start right away.
+        task::poll_tasks(&mut self.app);
         self.app.flush_effects();
         if self.app.has_dirty() {
             self.reconciler.render(&mut self.app)
         } else {
             Vec::new()
         }
+    }
+
+    /// Runs ready async tasks and due timers, then re-renders what changed.
+    /// Backends call it when woken (see `RuntimeOptions::wake_ui`) and at
+    /// [`next_timer`](Runtime::next_timer).
+    pub fn poll(&mut self) -> Vec<Patch> {
+        task::poll_tasks(&mut self.app);
+        self.app.flush_effects();
+        if self.app.has_dirty() {
+            self.reconciler.render(&mut self.app)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// When the earliest pending timer is due, if any.
+    pub fn next_timer(&self) -> Option<std::time::Instant> {
+        self.app.executor.next_timer()
+    }
+
+    /// Whether async tasks are alive (e.g. waiting on the network).
+    pub fn has_tasks(&self) -> bool {
+        self.app.executor.has_tasks()
     }
 
     /// Platform work requested by the app (widgets, Live Activities,
@@ -143,6 +204,7 @@ impl Runtime {
     /// and returns the resulting patches.
     pub fn open_link(&mut self, path: &str) -> Vec<Patch> {
         self.app.navigate(path);
+        task::poll_tasks(&mut self.app);
         self.app.flush_effects();
         self.reconciler.render(&mut self.app)
     }
@@ -156,10 +218,11 @@ impl Runtime {
 /// Everything an app usually needs.
 pub mod prelude {
     pub use crate::{
-        Accessible, Activity, App, ChangeEvent, ClickEvent, Context, Entity, FluentBuilder,
-        InputEvent, IntoElement, Notification, Params, ParentElement, Render, Role, Router, Styled,
-        Widget, WidgetFamily, adaptive, button, div, go_back, image, lazy, navigate_to, progress,
-        px, relative, rgb, rgba, screen, scroll, text, text_input, timer, toggle,
+        Accessible, Activity, App, AsyncApp, ChangeEvent, ClickEvent, Context, Entity,
+        FluentBuilder, InputEvent, IntoElement, Notification, Params, ParentElement, Render, Role,
+        Router, Styled, Widget, WidgetFamily, adaptive, button, div, go_back, image, lazy,
+        navigate_to, progress, px, relative, rgb, rgba, screen, scroll, text, text_input, timer,
+        toggle,
     };
 }
 

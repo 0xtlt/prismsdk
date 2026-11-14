@@ -36,6 +36,9 @@ pub use prism_core::*;
 /// The component library: themed, accessible, overridable, native on demand.
 pub use prism_ui as ui;
 
+/// HTTP: `cx.fetch(http::Request::get(url)).await`.
+pub use prism_http as http;
+
 use std::sync::Arc;
 
 /// Which backend [`Application::run`] will use for this build.

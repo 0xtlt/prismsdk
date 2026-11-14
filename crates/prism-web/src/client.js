@@ -460,7 +460,15 @@
   function service(msg) {
     switch (msg.t) {
       case "activity": return showActivity(msg.id, msg.c);
-      case "activity_end": activities.get(msg.id)?.remove(); activities.delete(msg.id); return;
+      case "activity_end": {
+        // Show the final state for a moment, like the lock screen does.
+        const remove = () => { activities.get(msg.id)?.remove(); activities.delete(msg.id); };
+        if (msg.c && !msg.immediately && activities.has(msg.id)) {
+          showActivity(msg.id, msg.c);
+          setTimeout(remove, 4000);
+        } else remove();
+        return;
+      }
       case "notify":
         clearTimeout(pending.get(msg.id));
         if (msg.delay) pending.set(msg.id, setTimeout(() => notify(msg), msg.delay));

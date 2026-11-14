@@ -124,6 +124,8 @@ pub struct App {
     globals: HashMap<TypeId, Box<dyn Any>>,
     appearance: Appearance,
     pub(crate) surfaces: crate::surfaces::Surfaces,
+    pub(crate) executor: Rc<crate::task::Executor>,
+    storage: Box<dyn crate::storage::Storage>,
 }
 
 impl Default for App {
@@ -141,6 +143,8 @@ impl Default for App {
             globals: HashMap::new(),
             appearance: Appearance::System,
             surfaces: Default::default(),
+            executor: Default::default(),
+            storage: Box::new(crate::storage::MemoryStorage::default()),
         }
     }
 }
@@ -148,6 +152,15 @@ impl Default for App {
 impl App {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Persistent key-value storage (see [`Storage`](crate::storage::Storage)).
+    pub fn storage(&mut self) -> &mut dyn crate::storage::Storage {
+        &mut *self.storage
+    }
+
+    pub fn set_storage(&mut self, storage: Box<dyn crate::storage::Storage>) {
+        self.storage = storage;
     }
 
     /// Re-renders widgets whenever `entity` is notified.
@@ -324,7 +337,7 @@ impl App {
 
     /// Delivers queued notifications to observers. Each entity's observers run
     /// at most once per flush, so observer cycles terminate.
-    pub(crate) fn flush_effects(&mut self) {
+    pub fn flush_effects(&mut self) {
         if let Some(router) = self.navigator.filter(|r| self.contains(r.id())) {
             for op in std::mem::take(&mut self.nav_queue) {
                 router.update(self, |r, cx| r.apply(op, cx));
@@ -357,7 +370,7 @@ impl App {
 /// The context handed to `render`, `new_entity` builders and listeners.
 /// Dereferences to [`App`].
 pub struct Context<'a, T> {
-    app: &'a mut App,
+    pub(crate) app: &'a mut App,
     entity: Entity<T>,
 }
 

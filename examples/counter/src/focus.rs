@@ -7,17 +7,20 @@ use std::time::{Duration, SystemTime};
 
 use prism::prelude::*;
 use prism::ui::{self, Theme};
-use prism::{ActivityId, Color};
+use prism::{ActivityId, Color, TaskHandle};
 
 pub struct Focus {
     minutes: u64,
     running: Option<Session>,
+    completed: u32,
 }
 
 struct Session {
     activity: ActivityId,
     ends: SystemTime,
     total: Duration,
+    /// Ends the session when the countdown reaches zero.
+    timer: TaskHandle,
 }
 
 impl Default for Focus {
@@ -25,6 +28,7 @@ impl Default for Focus {
         Focus {
             minutes: 25,
             running: None,
+            completed: 0,
         }
     }
 }
@@ -97,20 +101,56 @@ impl Focus {
                 .link("/focus")
                 .after(total),
         );
+        let timer = Self::finish_after(total, cx);
         self.running = Some(Session {
             activity: id,
             ends,
             total,
+            timer,
         });
+    }
+
+    /// Ends the session (and its Live Activity) when the time is up.
+    fn finish_after(delay: Duration, cx: &mut Context<Self>) -> TaskHandle {
+        cx.spawn(async move |this, cx| {
+            cx.sleep(delay).await;
+            cx.update_entity(&this, |focus, cx| {
+                if let Some(s) = focus.running.take() {
+                    // Leave a final "done" state on the lock screen for a while.
+                    let done = Activity::new("focus")
+                        .summary("Focus session complete")
+                        .link("/focus")
+                        .lock_screen(
+                            div()
+                                .flex_row()
+                                .items_center()
+                                .gap(12.)
+                                .p(16.)
+                                .child(
+                                    image("checkmark.circle.fill")
+                                        .text_size(28.)
+                                        .text_color(rgb(0x2E9E5B)),
+                                )
+                                .child(text("Focus session complete").semibold()),
+                        )
+                        .compact(image("checkmark.circle.fill"), text("Done"))
+                        .minimal(image("checkmark"));
+                    cx.end_activity(s.activity, Some(done), false);
+                    focus.completed += 1;
+                }
+            });
+        })
     }
 
     fn extend(&mut self, cx: &mut Context<Self>) {
         let accent = Theme::of(cx).accent;
-        if let Some(s) = &mut self.running {
+        if let Some(mut s) = self.running.take() {
             s.ends += Duration::from_secs(5 * 60);
             s.total += Duration::from_secs(5 * 60);
-            cx.update_activity(s.activity, activity(s.ends, s.total, accent));
+            s.timer.cancel();
             let left = s.ends.duration_since(SystemTime::now()).unwrap_or_default();
+            s.timer = Self::finish_after(left, cx);
+            cx.update_activity(s.activity, activity(s.ends, s.total, accent));
             cx.send_notification(
                 Notification::new("Focus session complete")
                     .id("focus-done")
@@ -118,11 +158,13 @@ impl Focus {
                     .link("/focus")
                     .after(left),
             );
+            self.running = Some(s);
         }
     }
 
     fn stop(&mut self, cx: &mut Context<Self>) {
         if let Some(s) = self.running.take() {
+            s.timer.cancel();
             cx.end_activity(s.activity, None, true);
             cx.cancel_notification("focus-done");
         }
@@ -193,6 +235,12 @@ impl Render for Focus {
                             .full_width()
                             .on_click(cx.listener(|this, _, cx| this.start(cx))),
                     )
+                    .when(self.completed > 0, |d| {
+                        d.child(
+                            ui::badge(format!("{} session(s) completed", self.completed))
+                                .tone(ui::Variant::Primary),
+                        )
+                    })
                     .child(
                         text(format!(
                             "Live Activity: {where_}. A notification arrives when it ends."

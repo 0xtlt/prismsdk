@@ -66,34 +66,97 @@ fn handle(stream: TcpStream, config: &AppConfig, init: &AppInit) -> std::io::Res
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
+    let mut cookie = None;
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line)? == 0 || line == "\r\n" {
             break;
         }
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("cookie")
+        {
+            cookie = session_id(value);
+        }
     }
+    // Each browser gets a stable id: its data lives in its own directory.
+    let (sid, set_cookie) = match cookie {
+        Some(sid) => (sid, String::new()),
+        None => {
+            let sid = new_session_id();
+            let header = format!(
+                "Set-Cookie: prism_sid={sid}; Path=/; Max-Age=31536000; SameSite=Lax; HttpOnly\r\n"
+            );
+            (sid, header)
+        }
+    };
     let path = request_line.split_whitespace().nth(1).unwrap_or("/");
     let (status, body, ctype) = match path {
         "/favicon.ico" => ("404 Not Found", "not found".to_string(), "text/plain"),
         // Every other path is an app route: render it on the server.
         path => (
             "200 OK",
-            page(config, init, &percent_decode(path)),
+            page(config, init, &percent_decode(path), &sid),
             "text/html; charset=utf-8",
         ),
     };
     let mut stream = stream;
     write!(
         stream,
-        "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\n{set_cookie}Cache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )?;
     stream.flush()
 }
 
+/// `prism_sid` from a Cookie header, if well-formed.
+fn session_id(cookie_header: &str) -> Option<String> {
+    cookie_header
+        .split(';')
+        .filter_map(|kv| kv.trim().strip_prefix("prism_sid="))
+        .find(|v| v.len() == 32 && v.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(str::to_string)
+}
+
+/// A random 128-bit id (process-random SipHash keys + time + counter).
+fn new_session_id() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let seed = std::collections::hash_map::RandomState::new();
+    let part = |salt: u64| {
+        let mut h = seed.build_hasher();
+        h.write_u64(salt);
+        h.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));
+        h.write_u128(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+        );
+        h.finish()
+    };
+    format!("{:016x}{:016x}", part(1), part(2))
+}
+
+/// Where a browser's `cx.storage()` lives (`PRISM_DATA_DIR`, default `.prism-data`).
+fn storage_for(sid: &str) -> Box<dyn prism_core::Storage> {
+    let base = std::env::var("PRISM_DATA_DIR").unwrap_or_else(|_| ".prism-data".into());
+    Box::new(prism_core::FileStorage::new(
+        std::path::Path::new(&base).join(sid),
+    ))
+}
+
 /// Server-side render of a fresh session opened on `path`, as a full HTML document.
-pub fn page(config: &AppConfig, init: &AppInit, path: &str) -> String {
-    let mut runtime = Runtime::with_path(init, path);
+pub fn page(config: &AppConfig, init: &AppInit, path: &str, sid: &str) -> String {
+    let mut runtime = Runtime::with_options(
+        init,
+        prism_core::RuntimeOptions {
+            path: path.into(),
+            capabilities: WebServices::default().capabilities(),
+            storage: Some(storage_for(sid)),
+            wake_ui: None,
+        },
+    );
     let mut html = HtmlBackend::default();
     html.apply(&runtime.render());
     let title = match html.screen_title() {
@@ -164,9 +227,15 @@ pub fn page(config: &AppConfig, init: &AppInit, path: &str) -> String {
 fn session(stream: TcpStream, init: &AppInit) {
     // The client passes its current URL: `/ws?path=/todos/1`.
     let mut path = String::from("/");
+    let mut sid = None;
     let handshake = tungstenite::accept_hdr(
         stream,
         |req: &tungstenite::handshake::server::Request, resp| {
+            sid = req
+                .headers()
+                .get("cookie")
+                .and_then(|c| c.to_str().ok())
+                .and_then(session_id);
             if let Some(p) = req
                 .uri()
                 .query()
@@ -180,8 +249,20 @@ fn session(stream: TcpStream, init: &AppInit) {
     let Ok(mut ws) = handshake else {
         return;
     };
-    let mut runtime =
-        Runtime::with_capabilities(init, &path, WebServices::default().capabilities());
+    // Async work wakes this loop (the socket read times out while tasks run).
+    let woken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = woken.clone();
+    let mut runtime = Runtime::with_options(
+        init,
+        prism_core::RuntimeOptions {
+            path,
+            capabilities: WebServices::default().capabilities(),
+            storage: Some(storage_for(&sid.unwrap_or_else(new_session_id))),
+            wake_ui: Some(std::sync::Arc::new(move || {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst)
+            })),
+        },
+    );
     let mut encoder = Encoder::default();
     let first = runtime.render();
     if send(&mut ws, &mut encoder, "reset", &first).is_err() {
@@ -197,8 +278,39 @@ fn session(stream: TcpStream, init: &AppInit) {
                 return;
             }
         }
-        let msg = match ws.read() {
+        // While tasks run, wake up at their next timer (or every 25 ms).
+        let timeout = runtime.has_tasks().then(|| {
+            let until_timer = runtime
+                .next_timer()
+                .map(|t| t.saturating_duration_since(std::time::Instant::now()));
+            until_timer
+                .unwrap_or(std::time::Duration::from_millis(25))
+                .clamp(
+                    std::time::Duration::from_millis(1),
+                    std::time::Duration::from_millis(25),
+                )
+        });
+        let _ = ws.get_ref().set_read_timeout(timeout);
+        let read = ws.read();
+        let due = runtime
+            .next_timer()
+            .is_some_and(|t| t <= std::time::Instant::now());
+        if woken.swap(false, std::sync::atomic::Ordering::SeqCst) || due {
+            let patches = runtime.poll();
+            if !patches.is_empty() && send(&mut ws, &mut encoder, "patch", &patches).is_err() {
+                return;
+            }
+        }
+        let msg = match read {
             Ok(Message::Text(t)) => t,
+            Err(tungstenite::Error::Io(e))
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                continue;
+            }
             Ok(Message::Close(_)) | Err(_) => return,
             Ok(_) => continue,
         };
@@ -252,7 +364,14 @@ impl PlatformServices for WebServices {
             | PlatformRequest::UpdateActivity { id, content } => {
                 json!({ "t": "activity", "id": id.0, "c": activity_json(&content) })
             }
-            PlatformRequest::EndActivity { id, .. } => json!({ "t": "activity_end", "id": id.0 }),
+            PlatformRequest::EndActivity {
+                id,
+                content,
+                immediately,
+            } => json!({
+                "t": "activity_end", "id": id.0, "immediately": immediately,
+                "c": content.as_ref().map(activity_json),
+            }),
             PlatformRequest::Notify(n) => json!({
                 "t": "notify", "id": n.id, "title": n.title, "subtitle": n.subtitle,
                 "body": n.body, "link": n.link,

@@ -734,3 +734,96 @@ fn links_navigate_in_app_and_deep_links_open_screens() {
     rt.open_link("/items/9");
     assert_eq!(rt.app.current_path(), Some("/items/9"));
 }
+
+// --- Async tasks, timers, background work, storage ---------------------------
+
+use crate::{FileStorage, Storage};
+use std::time::{Duration, Instant};
+
+struct Ticker {
+    ticks: u32,
+    loaded: Option<String>,
+}
+
+impl Render for Ticker {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .child(text(format!("ticks {}", self.ticks)))
+            .child(text(self.loaded.clone().unwrap_or_default()))
+            .child(button("go").on_click(cx.listener(|_, _, cx| {
+                cx.spawn(async move |this, cx| {
+                    for _ in 0..2 {
+                        cx.sleep(Duration::from_millis(20)).await;
+                        cx.update_entity(&this, |t, _| t.ticks += 1);
+                    }
+                    let data = cx.background(|| "from a thread".to_string()).await;
+                    cx.update_entity(&this, |t, _| t.loaded = Some(data));
+                });
+            })))
+    }
+}
+
+/// Drives the runtime like a backend would: poll when work is due.
+fn run_until(rt: &mut Runtime, mut done: impl FnMut(&Runtime) -> bool) -> Vec<Patch> {
+    let start = Instant::now();
+    let mut all = Vec::new();
+    while !done(rt) {
+        assert!(start.elapsed() < Duration::from_secs(2), "timed out");
+        std::thread::sleep(Duration::from_millis(5));
+        all.extend(rt.poll());
+    }
+    all
+}
+
+#[test]
+fn tasks_sleep_update_state_and_await_background_work() {
+    let (mut rt, first) = boot(|cx| {
+        let root = cx.new_entity(|_| Ticker {
+            ticks: 0,
+            loaded: None,
+        });
+        cx.set_root(root);
+    });
+    let root: Entity<Ticker> = first_root(&rt);
+    rt.dispatch(UiEvent::Click(find_text(&first, "go")));
+    assert!(rt.next_timer().is_some(), "a timer is pending");
+    let patches = run_until(&mut rt, |rt| rt.app.read(&root).loaded.is_some());
+    assert_eq!(rt.app.read(&root).ticks, 2);
+    assert!(patches.contains(&Patch::SetText {
+        id: find_text(&first, "ticks 0"),
+        text: "ticks 2".into()
+    }));
+    assert!(
+        patches
+            .iter()
+            .any(|p| matches!(p, Patch::SetText { text, .. } if text == "from a thread"))
+    );
+    assert!(!rt.has_tasks());
+}
+
+#[test]
+fn cancelled_tasks_never_run() {
+    let mut app = App::new();
+    let flag = std::rc::Rc::new(std::cell::Cell::new(false));
+    let f = flag.clone();
+    let handle = app.spawn(|cx| async move {
+        cx.sleep(Duration::from_millis(1)).await;
+        f.set(true);
+    });
+    handle.cancel();
+    std::thread::sleep(Duration::from_millis(5));
+    crate::task::poll_tasks(&mut app);
+    assert!(!flag.get());
+}
+
+#[test]
+fn file_storage_round_trips_odd_keys() {
+    let dir = std::env::temp_dir().join(format!("prism-storage-{}", std::process::id()));
+    let mut s = FileStorage::new(&dir);
+    s.set("todos/v1 é", "a\nb");
+    assert_eq!(s.get("todos/v1 é").as_deref(), Some("a\nb"));
+    assert_eq!(s.keys(), vec!["todos/v1 é".to_string()]);
+    s.remove("todos/v1 é");
+    assert!(s.get("todos/v1 é").is_none());
+    let _ = std::fs::remove_dir_all(dir);
+}
