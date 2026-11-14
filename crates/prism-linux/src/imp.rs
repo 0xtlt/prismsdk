@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::sync::OnceLock;
 
 use gtk::prelude::*;
-use gtk::{gdk, glib};
+use gtk::{gdk, gio, glib};
 use prism_core::{
     Accessibility, AppConfig, AppInit, Appearance, Backend, Color, FontWeight, NodeId, NodeKind,
     Runtime, Style, TextAlign, UiEvent,
@@ -110,6 +110,7 @@ impl View {
 struct State {
     runtime: Runtime,
     renderer: NativeRenderer<Gtk>,
+    services: crate::services::LinuxServices,
 }
 
 thread_local! {
@@ -129,7 +130,7 @@ fn with_state(f: impl FnOnce(&mut State)) {
 }
 
 /// A UI event from GTK, handled on the next turn (GTK may be mid-update).
-fn dispatch(event: UiEvent) {
+pub(crate) fn dispatch(event: UiEvent) {
     if UPDATING.get() {
         return;
     }
@@ -149,7 +150,9 @@ fn commit(s: &mut State, patches: Vec<prism_core::Patch>) {
     s.renderer.widgets.flush_css();
     relayout(s);
     UPDATING.set(false);
-    let _ = s.runtime.take_requests();
+    for request in s.runtime.take_requests() {
+        prism_core::PlatformServices::handle(&mut s.services, request);
+    }
     if let Some(at) = s.runtime.next_timer() {
         let delay = at.saturating_duration_since(std::time::Instant::now());
         glib::timeout_add_local_once(delay, poll);
@@ -171,6 +174,31 @@ fn relayout(s: &mut State) {
     s.renderer.layout(w, h, Insets::default());
 }
 
+pub(crate) fn device_reply(
+    id: u64,
+    result: Result<prism_core::DeviceValue, prism_core::DeviceError>,
+) {
+    with_state(|s| {
+        let patches = s.runtime.device_reply(id, result);
+        commit(s, patches);
+    });
+}
+
+pub(crate) fn device_event(id: u64, event: prism_core::DeviceEvent) {
+    with_state(|s| {
+        let patches = s.runtime.device_event(id, event);
+        commit(s, patches);
+    });
+}
+
+/// `PRISM_BACKGROUND_INTERVAL=<seconds>` shortens background intervals (development).
+pub(crate) fn background_interval(every: std::time::Duration) -> std::time::Duration {
+    std::env::var("PRISM_BACKGROUND_INTERVAL")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .map_or(every, std::time::Duration::from_secs_f64)
+}
+
 fn poll() {
     with_state(|s| {
         let patches = s.runtime.poll();
@@ -185,6 +213,15 @@ fn poll() {
 pub struct Gtk {
     root: gtk::Box,
     window: gtk::ApplicationWindow,
+    app: gtk::Application,
+    /// Context menus by node (right-click / press and hold).
+    menus: Rc<RefCell<HashMap<NodeId, gtk::PopoverMenu>>>,
+    swipes: Rc<RefCell<HashMap<NodeId, (bool, bool)>>>,
+    scroll_events: Rc<RefCell<HashSet<NodeId>>>,
+    /// Refreshable scroll views (F5 / Ctrl+R).
+    refreshable: Rc<RefCell<HashSet<NodeId>>>,
+    /// Each node's size from the last layout (GTK's own lags behind).
+    sizes: HashMap<NodeId, (f32, f32)>,
     css: gtk::CssProvider,
     /// Per-node CSS rules, rebuilt into one stylesheet after each change.
     rules: HashMap<NodeId, String>,
@@ -278,6 +315,52 @@ impl Gtk {
     }
 }
 
+impl Gtk {
+    /// Right-click and press-and-hold open the node's context menu; a
+    /// horizontal swipe (touchpad, touch screen) reports `Swipe`.
+    fn attach_gestures(&self, id: NodeId, w: &gtk::Widget) {
+        let menus = self.menus.clone();
+        let open = move |x: f64, y: f64| {
+            if let Some(p) = menus.borrow().get(&id) {
+                p.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+                p.popup();
+                return true;
+            }
+            false
+        };
+        let right = gtk::GestureClick::new();
+        right.set_button(gdk::BUTTON_SECONDARY);
+        let open_right = open.clone();
+        right.connect_pressed(move |g, _, x, y| {
+            if open_right(x, y) {
+                g.set_state(gtk::EventSequenceState::Claimed);
+            }
+        });
+        w.add_controller(right);
+        let hold = gtk::GestureLongPress::new();
+        hold.connect_pressed(move |g, x, y| {
+            if open(x, y) {
+                g.set_state(gtk::EventSequenceState::Claimed);
+            }
+        });
+        w.add_controller(hold);
+        let swipes = self.swipes.clone();
+        let swipe = gtk::GestureSwipe::new();
+        swipe.connect_swipe(move |_, vx, vy| {
+            let (left, right) = swipes.borrow().get(&id).copied().unwrap_or_default();
+            if vx.abs() < 300. || vx.abs() < vy.abs() * 2. {
+                return;
+            }
+            if vx < 0. && left {
+                dispatch(UiEvent::Swipe(id, prism_core::SwipeDirection::Left));
+            } else if vx > 0. && right {
+                dispatch(UiEvent::Swipe(id, prism_core::SwipeDirection::Right));
+            }
+        });
+        w.add_controller(swipe);
+    }
+}
+
 fn tabs_id(tabs: &Rc<TabBar>) -> NodeId {
     tabs.root
         .widget_name()
@@ -343,6 +426,13 @@ impl Widgets for Gtk {
                 let s = gtk::ScrolledWindow::new();
                 s.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
                 s.set_child(Some(&content));
+                let events = self.scroll_events.clone();
+                let adj = s.vadjustment();
+                adj.connect_value_changed(move |a| {
+                    if events.borrow().contains(&id) {
+                        dispatch(UiEvent::Scroll(id, a.value() as f32, a.page_size() as f32));
+                    }
+                });
                 View::Scroll(id, s, content)
             }
             NodeKind::Stack => {
@@ -420,6 +510,7 @@ impl Widgets for Gtk {
         };
         let w = view.widget();
         w.add_css_class(&format!("p{id}"));
+        self.attach_gestures(id, &w);
         view
     }
 
@@ -523,6 +614,15 @@ impl Widgets for Gtk {
     }
 
     fn set_clickable(&mut self, view: &View, clickable: bool) {
+        // A "clickable" scroll view refreshes (F5 / Ctrl+R on desktops).
+        if let View::Scroll(id, ..) = view {
+            if clickable {
+                self.refreshable.borrow_mut().insert(*id);
+            } else {
+                self.refreshable.borrow_mut().remove(id);
+            }
+            return;
+        }
         if let View::Container(id, _, c) = view {
             if clickable {
                 self.clickable.borrow_mut().insert(*id);
@@ -568,7 +668,8 @@ impl Widgets for Gtk {
         let mut child = host.first_child();
         while let Some(c) = child {
             child = c.next_sibling();
-            if !keep.contains(&c) {
+            // Context-menu popovers are children too: they stay.
+            if !keep.contains(&c) && !c.is::<gtk::Popover>() {
                 c.unparent();
             }
         }
@@ -578,6 +679,11 @@ impl Widgets for Gtk {
                 w.unparent();
             }
             w.set_parent(&host);
+        }
+        // The header and the tab bar draw over the screens.
+        for bar in &keep {
+            bar.unparent();
+            bar.set_parent(&host);
         }
         match parent {
             View::Stack(_, st) => {
@@ -607,8 +713,15 @@ impl Widgets for Gtk {
         self.css_dirty = true;
         self.clickable.borrow_mut().remove(&id);
         self.timers.remove(&id);
+        if let Some(p) = self.menus.borrow_mut().remove(&id) {
+            p.unparent();
+        }
+        self.swipes.borrow_mut().remove(&id);
+        self.scroll_events.borrow_mut().remove(&id);
+        self.refreshable.borrow_mut().remove(&id);
         self.titles.remove(&id);
         self.icons.remove(&id);
+        self.sizes.remove(&id);
         if let View::Stack(_, st) = view {
             self.stacks.retain(|s| !Rc::ptr_eq(s, st));
         }
@@ -649,6 +762,7 @@ impl Widgets for Gtk {
     }
 
     fn set_frame(&mut self, view: &View, x: f32, y: f32, w: f32, h: f32) {
+        self.sizes.insert(view.id(), (w, h));
         match view {
             View::Sheet(..) => {}
             View::Stack(_, st) => {
@@ -674,11 +788,11 @@ impl Widgets for Gtk {
                 insets: Insets::default(),
             };
         }
-        let (w, h) = (
-            container.widget().width() as f32,
-            container.widget().height() as f32,
-        );
-        let (w, h) = if w > 0. { (w, h) } else { self.size };
+        let (w, h) = self
+            .sizes
+            .get(&container.id())
+            .copied()
+            .unwrap_or(self.size);
         match container {
             View::Tabs(..) => Viewport {
                 x: 0.,
@@ -736,6 +850,32 @@ impl Widgets for Gtk {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn set_menu(&mut self, view: &View, menu: Option<&prism_core::menu::MenuSpec>) {
+        let id = view.id();
+        if let Some(old) = self.menus.borrow_mut().remove(&id) {
+            old.unparent();
+        }
+        if let Some(spec) = menu {
+            let model = crate::services::menu_model(&self.app, spec);
+            let popover = gtk::PopoverMenu::from_model(Some(&model));
+            popover.set_has_arrow(false);
+            popover.set_parent(&view.widget());
+            self.menus.borrow_mut().insert(id, popover);
+        }
+    }
+
+    fn set_swipe(&mut self, view: &View, left: bool, right: bool) {
+        self.swipes.borrow_mut().insert(view.id(), (left, right));
+    }
+
+    fn set_scroll_events(&mut self, view: &View, on: bool) {
+        if on {
+            self.scroll_events.borrow_mut().insert(view.id());
+        } else {
+            self.scroll_events.borrow_mut().remove(&view.id());
         }
     }
 
@@ -801,6 +941,64 @@ fn data_dir(title: &str) -> std::path::PathBuf {
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".local/share")))
         .unwrap_or_else(|| ".".into());
     base.join(title.replace('/', "-"))
+}
+
+/// Active, inactive (another window focused) or background (minimized).
+fn report_lifecycle(window: &gtk::ApplicationWindow) {
+    let minimized = window
+        .surface()
+        .and_downcast::<gdk::Toplevel>()
+        .is_some_and(|t| t.state().contains(gdk::ToplevelState::MINIMIZED));
+    let phase = if minimized {
+        prism_core::Lifecycle::Background
+    } else if window.is_active() {
+        prism_core::Lifecycle::Active
+    } else {
+        prism_core::Lifecycle::Inactive
+    };
+    with_state(|s| {
+        let patches = s.runtime.set_lifecycle(phase);
+        commit(s, patches);
+    });
+}
+
+/// Locale, text size (GNOME's text scaling factor, else the font DPI over
+/// the 96 default) and reduced motion (animations off).
+fn environment() -> prism_core::Environment {
+    let settings = gtk::Settings::default();
+    let gnome = gio::SettingsSchemaSource::default()
+        .and_then(|src| src.lookup("org.gnome.desktop.interface", true))
+        .filter(|schema| schema.has_key("text-scaling-factor"))
+        .map(|_| gio::Settings::new("org.gnome.desktop.interface"));
+    let text_scale = gnome
+        .map(|g| g.double("text-scaling-factor"))
+        .filter(|f| *f > 0.)
+        .or_else(|| {
+            settings
+                .as_ref()
+                .map(|s| s.gtk_xft_dpi())
+                .filter(|dpi| *dpi > 0)
+                .map(|dpi| dpi as f64 / 1024. / 96.)
+        })
+        .unwrap_or(1.);
+    let text_scale = std::env::var("PRISM_TEXT_SCALE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(text_scale as f32);
+    prism_core::Environment {
+        locale: locale(),
+        text_scale,
+        reduce_motion: settings.is_some_and(|s| !s.is_gtk_enable_animations()),
+        ..Default::default()
+    }
+}
+
+fn environment_changed() {
+    with_state(|s| {
+        s.runtime.app.set_environment(environment());
+        let patches = s.runtime.poll();
+        commit(s, patches);
+    });
 }
 
 fn locale() -> prism_core::Locale {
@@ -910,6 +1108,31 @@ fn activate(app: &gtk::Application) {
     let dark = gtk::Settings::default().is_some_and(|s| s.is_gtk_application_prefer_dark_theme());
 
     let data = data_dir(&config.title);
+    let services = crate::services::LinuxServices::new(app.clone(), window.clone());
+    // Notification clicks and buttons: (id, action, link).
+    let respond = gio::SimpleAction::new(
+        "prism-notification",
+        Some(glib::VariantTy::new("(sss)").expect("type")),
+    );
+    respond.connect_activate(|_, param| {
+        let Some((id, action, link)) = param.and_then(|p| p.get::<(String, String, String)>())
+        else {
+            return;
+        };
+        let response = prism_core::NotificationResponse {
+            id,
+            action: (!action.is_empty()).then_some(action),
+            text: None,
+        };
+        let link = (!link.is_empty()).then_some(link);
+        glib::idle_add_local_once(move || {
+            with_state(|s| {
+                let patches = s.runtime.notification_response(response, link);
+                commit(s, patches);
+            })
+        });
+    });
+    app.add_action(&respond);
     let runtime = Runtime::with_options(
         init,
         prism_core::RuntimeOptions {
@@ -918,10 +1141,8 @@ fn activate(app: &gtk::Application) {
             wake_ui: Some(std::sync::Arc::new(|| {
                 glib::MainContext::default().invoke(poll);
             })),
-            environment: prism_core::Environment {
-                locale: locale(),
-                ..Default::default()
-            },
+            capabilities: prism_core::PlatformServices::capabilities(&services),
+            environment: environment(),
             data_dir: Some(data),
             viewport: Some((width as f32, height as f32)),
             device_info: Some(device_info(&window)),
@@ -931,6 +1152,12 @@ fn activate(app: &gtk::Application) {
     let renderer = NativeRenderer::new(Gtk {
         root: root.clone(),
         window: window.clone(),
+        app: app.clone(),
+        menus: Rc::new(RefCell::new(HashMap::new())),
+        swipes: Rc::new(RefCell::new(HashMap::new())),
+        scroll_events: Rc::new(RefCell::new(HashSet::new())),
+        refreshable: Rc::new(RefCell::new(HashSet::new())),
+        sizes: HashMap::new(),
         css,
         rules: HashMap::new(),
         css_dirty: false,
@@ -947,7 +1174,13 @@ fn activate(app: &gtk::Application) {
         tab_bars: Vec::new(),
         size: (width as f32, height as f32),
     });
-    STATE.with(|s| *s.borrow_mut() = Some(State { runtime, renderer }));
+    STATE.with(|s| {
+        *s.borrow_mut() = Some(State {
+            runtime,
+            renderer,
+            services,
+        })
+    });
     layout::watch_root(&root, |w, h| {
         with_state(|s| {
             s.renderer.widgets.size = (w as f32, h as f32);
@@ -960,15 +1193,56 @@ fn activate(app: &gtk::Application) {
         let first = s.runtime.render();
         commit(s, first);
     });
-    // Timers count down every second.
+    // Timers count down every second; background tasks run while the app
+    // is open.
     glib::timeout_add_seconds_local(1, || {
         with_state(|s| {
             for (l, end) in s.renderer.widgets.timers.values() {
                 l.set_text(&prism_core::format_remaining(*end));
             }
+            let due = s.services.due_background();
+            for id in &due {
+                s.runtime.run_background_task(id);
+            }
+            if !due.is_empty() {
+                let patches = s.runtime.poll();
+                commit(s, patches);
+            }
         });
         glib::ControlFlow::Continue
     });
+    // Lifecycle: focused, unfocused, minimized.
+    window.connect_is_active_notify(report_lifecycle);
+    window.connect_realize(|w| {
+        if let Some(surface) = w.surface() {
+            let window = w.clone();
+            surface.connect_notify_local(Some("state"), move |_, _| report_lifecycle(&window));
+        }
+    });
+    // Refresh (pull to refresh elsewhere): F5 or Ctrl+R.
+    let keys = gtk::EventControllerKey::new();
+    keys.connect_key_pressed(|_, key, _, modifiers| {
+        let refresh = key == gdk::Key::F5
+            || (modifiers.contains(gdk::ModifierType::CONTROL_MASK) && key == gdk::Key::r);
+        if !refresh {
+            return glib::Propagation::Proceed;
+        }
+        let mut ids = Vec::new();
+        with_state(|s| {
+            let w = &s.renderer.widgets;
+            ids = w.refreshable.borrow().iter().copied().collect();
+        });
+        for id in ids {
+            dispatch(UiEvent::Click(id));
+        }
+        glib::Propagation::Stop
+    });
+    window.add_controller(keys);
+    // The system's text size and animation settings.
+    if let Some(settings) = gtk::Settings::default() {
+        settings.connect_gtk_enable_animations_notify(|_| environment_changed());
+        settings.connect_gtk_xft_dpi_notify(|_| environment_changed());
+    }
     window.present();
     automation(window);
 }
@@ -996,13 +1270,47 @@ fn automation(window: gtk::ApplicationWindow) {
             .flat_map(|c| c.split('|'))
             .filter(|t| !t.is_empty())
         {
-            if !press(&window.clone().upcast(), title) {
+            // `menu:Title` opens the context menu of the view showing Title.
+            let found = match title.strip_prefix("menu:") {
+                Some(t) => open_menu(&window.clone().upcast(), t),
+                None => press(&window.clone().upcast(), title),
+            };
+            if !found {
                 eprintln!("prism-linux: PRISM_CLICK: nothing labelled {title:?}");
             }
         }
         let Some(path) = snapshot else { return };
-        glib::timeout_add_local_once(std::time::Duration::from_millis(700), move || {
-            save_png(&window, &path);
+        // `PRISM_AFTER` (seconds, default 0.7): time for async work first.
+        let after: f64 = std::env::var("PRISM_AFTER")
+            .ok()
+            .and_then(|d| d.parse().ok())
+            .unwrap_or(0.7);
+        glib::timeout_add_local_once(std::time::Duration::from_secs_f64(after), move || {
+            save_png(&window.clone().upcast(), &path);
+            // Dialogs (alerts, modals) and open menus: out-2.png, out-3.png…
+            let mut n = 2;
+            let mut extra = |w: &gtk::Widget| {
+                save_png(w, &path.replace(".png", &format!("-{n}.png")));
+                n += 1;
+            };
+            for w in gtk::Window::list_toplevels() {
+                if w != window.clone().upcast::<gtk::Widget>() && w.is_visible() {
+                    extra(&w);
+                }
+            }
+            with_state(|s| {
+                let menus: Vec<gtk::PopoverMenu> = s
+                    .renderer
+                    .widgets
+                    .menus
+                    .borrow()
+                    .values()
+                    .cloned()
+                    .collect();
+                for p in menus.iter().filter(|p| p.is_visible()) {
+                    extra(&p.clone().upcast());
+                }
+            });
             if let Some(app) = window.application() {
                 app.quit();
             }
@@ -1068,7 +1376,49 @@ fn press(w: &gtk::Widget, title: &str) -> bool {
     false
 }
 
-fn save_png(window: &gtk::ApplicationWindow, path: &str) {
+/// Opens the context menu of the view showing `title`.
+fn open_menu(w: &gtk::Widget, title: &str) -> bool {
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        if open_menu(&c, title) {
+            return true;
+        }
+        child = c.next_sibling();
+    }
+    let Some(id) = w
+        .css_classes()
+        .iter()
+        .find_map(|c| c.strip_prefix('p').and_then(|n| n.parse::<NodeId>().ok()))
+    else {
+        return false;
+    };
+    fn shows(w: &gtk::Widget, title: &str) -> bool {
+        if label_of(w).is_some_and(|l| l == title) {
+            return true;
+        }
+        let mut child = w.first_child();
+        while let Some(c) = child {
+            if shows(&c, title) {
+                return true;
+            }
+            child = c.next_sibling();
+        }
+        false
+    }
+    if !shows(w, title) {
+        return false;
+    }
+    let mut opened = false;
+    with_state(|s| {
+        if let Some(p) = s.renderer.widgets.menus.borrow().get(&id) {
+            p.popup();
+            opened = true;
+        }
+    });
+    opened
+}
+
+fn save_png(window: &gtk::Widget, path: &str) {
     let (w, h) = (window.width() as f64, window.height() as f64);
     let paintable = gtk::WidgetPaintable::new(Some(window));
     let snapshot = gtk::Snapshot::new();
@@ -1077,7 +1427,7 @@ fn save_png(window: &gtk::ApplicationWindow, path: &str) {
         eprintln!("prism-linux: snapshot: nothing drawn");
         return;
     };
-    let Some(renderer) = window.renderer() else {
+    let Some(renderer) = window.native().and_then(|n| n.renderer()) else {
         eprintln!("prism-linux: snapshot: no renderer");
         return;
     };

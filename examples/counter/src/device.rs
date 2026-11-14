@@ -209,35 +209,40 @@ impl Render for DeviceDemo {
                     .flex_row()
                     .flex_wrap()
                     .gap(8.)
-                    .child(
-                        ui::button(strings::device_haptic(cx))
-                            .small()
-                            .ghost()
-                            .on_click(cx.listener(|_, _, cx| cx.haptic(Haptic::Success))),
-                    )
-                    .child(
-                        ui::button(strings::device_copy(cx))
-                            .small()
-                            .ghost()
-                            .on_click(cx.listener(|this, _, cx| {
-                                cx.copy_text("Prism ♥ Rust");
-                                this.status = Some(strings::device_copied(cx));
-                            })),
-                    )
-                    .child(
-                        ui::button(strings::device_paste(cx))
-                            .small()
-                            .ghost()
-                            .on_click(cx.listener(|_, _, cx| {
-                                cx.spawn(async move |this, cx| {
-                                    let text = cx.read_clipboard().await;
-                                    cx.update_entity(&this, |d, cx| {
-                                        d.status =
-                                            Some(text.unwrap_or_else(|| strings::device_empty(cx)))
+                    .when(caps.haptics, |d| {
+                        d.child(
+                            ui::button(strings::device_haptic(cx))
+                                .small()
+                                .ghost()
+                                .on_click(cx.listener(|_, _, cx| cx.haptic(Haptic::Success))),
+                        )
+                    })
+                    .when(caps.clipboard, |d| {
+                        d.child(
+                            ui::button(strings::device_copy(cx))
+                                .small()
+                                .ghost()
+                                .on_click(cx.listener(|this, _, cx| {
+                                    cx.copy_text("Prism ♥ Rust");
+                                    this.status = Some(strings::device_copied(cx));
+                                })),
+                        )
+                        .child(
+                            ui::button(strings::device_paste(cx))
+                                .small()
+                                .ghost()
+                                .on_click(cx.listener(|_, _, cx| {
+                                    cx.spawn(async move |this, cx| {
+                                        let text = cx.read_clipboard().await;
+                                        cx.update_entity(&this, |d, cx| {
+                                            d.status = Some(
+                                                text.unwrap_or_else(|| strings::device_empty(cx)),
+                                            )
+                                        });
                                     });
-                                });
-                            })),
-                    )
+                                })),
+                        )
+                    })
                     .when(caps.share, |d| {
                         d.child(
                             ui::button(strings::device_share(cx))

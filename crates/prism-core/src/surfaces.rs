@@ -48,6 +48,8 @@ pub struct Capabilities {
     pub photos: bool,
     pub haptics: bool,
     pub share: bool,
+    /// `copy_text` / `read_clipboard` (none on tvOS and watchOS).
+    pub clipboard: bool,
     /// `cloud_storage` syncs between devices (otherwise it is local).
     pub cloud_sync: bool,
 }

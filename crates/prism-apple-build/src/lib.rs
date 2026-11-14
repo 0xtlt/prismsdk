@@ -23,9 +23,10 @@ pub fn build_bridge() {
     build_swift(&["Shared", "Bridge"], "PrismBridge");
 }
 
-/// Compiles and links the watchOS SwiftUI host (`platform/apple/Watch`).
+/// Compiles and links the watchOS SwiftUI host (`platform/apple/Watch`) with
+/// the shared bridge (device APIs, notifications).
 pub fn build_watch_host() {
-    build_swift(&["Watch"], "PrismWatch");
+    build_swift(&["Shared", "Bridge", "Watch"], "PrismWatch");
 }
 
 /// Compiles the Swift sources of `dirs` (under `platform/apple`) into a

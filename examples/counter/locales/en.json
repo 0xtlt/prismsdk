@@ -22,7 +22,8 @@
     "title_label": "Title",
     "add_todo": "Add todo",
     "hint_mobile": "Swipe left on a todo to delete it, or touch and hold it for more.",
-    "hint_desktop": "Right-click a todo for more actions."
+    "hint_desktop": "Right-click a todo for more actions.",
+    "hint_hold": "Press and hold a task for more actions."
   },
   "todo": {
     "done": "Done",

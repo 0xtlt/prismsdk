@@ -210,5 +210,21 @@ impl Widgets for WatchWidgets {
             .push(json!({ "op": "content", "id": id, "size": [width, height] }));
     }
 
+    fn set_menu(&mut self, id: &NodeId, menu: Option<&prism_core::menu::MenuSpec>) {
+        let menu = menu.and_then(|m| serde_json::from_str::<Value>(&m.to_json()).ok());
+        self.ops
+            .push(json!({ "op": "menu", "id": id, "menu": menu }));
+    }
+
+    fn set_swipe(&mut self, id: &NodeId, left: bool, right: bool) {
+        self.ops
+            .push(json!({ "op": "swipe", "id": id, "left": left, "right": right }));
+    }
+
+    fn set_scroll_events(&mut self, id: &NodeId, on: bool) {
+        self.ops
+            .push(json!({ "op": "scrollev", "id": id, "on": on }));
+    }
+
     fn set_environment(&mut self, _env: &RenderEnvironment) {}
 }

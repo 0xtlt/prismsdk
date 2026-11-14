@@ -11,6 +11,10 @@
 mod imp;
 #[cfg(target_os = "linux")]
 mod layout;
+#[cfg(target_os = "linux")]
+mod services;
+#[cfg(target_os = "linux")]
+mod tray;
 
 #[cfg(target_os = "linux")]
 pub use imp::run;

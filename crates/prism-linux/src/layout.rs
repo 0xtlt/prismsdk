@@ -68,6 +68,12 @@ mod imp {
         fn allocate(&self, widget: &gtk::Widget, width: i32, height: i32, _baseline: i32) {
             let mut child = widget.first_child();
             while let Some(c) = child {
+                // Popovers (context menus) place themselves.
+                if let Some(p) = c.downcast_ref::<gtk::Popover>() {
+                    p.present();
+                    child = c.next_sibling();
+                    continue;
+                }
                 let (x, y, w, h) = FRAMES
                     .with(|f| f.borrow().get(&key(&c)).copied())
                     .unwrap_or_default();

@@ -434,6 +434,7 @@ impl PlatformServices for WebServices {
             photos: true,
             haptics: true,
             share: true,
+            clipboard: true,
             // Cloud storage is the server's, per browser.
             cloud_sync: false,
         }

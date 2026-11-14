@@ -7,7 +7,7 @@ license.workspace = true
 
 [target.'cfg(target_os = "watchos")'.dependencies]
 prism-core.workspace = true
-prism-native.workspace = true
+prism-native = { workspace = true, features = ["apple-bridge"] }
 serde_json.workspace = true
 dispatch2.workspace = true
 

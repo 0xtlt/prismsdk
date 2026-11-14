@@ -22,7 +22,8 @@
     "title_label": "Titre",
     "add_todo": "Ajouter la tâche",
     "hint_mobile": "Balaie une tâche vers la gauche pour la supprimer, ou appuie longuement pour plus d'options.",
-    "hint_desktop": "Clic droit sur une tâche pour plus d'actions."
+    "hint_desktop": "Clic droit sur une tâche pour plus d'actions.",
+    "hint_hold": "Appuie longuement sur une tâche pour plus d'actions."
   },
   "todo": {
     "done": "Terminée",

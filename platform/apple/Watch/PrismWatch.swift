@@ -1,17 +1,20 @@
-// watchOS host: watchOS apps have no UIKit views (UIView.h:
+// watchOS host (compiled with platform/apple/Shared and Bridge: device
+// APIs and notifications come from there). watchOS apps have no UIKit views (UIView.h:
 // API_UNAVAILABLE(watchos)), so Prism's tree is drawn with SwiftUI.
 //
 // Rust runs the app and sends patches as JSON (`prism_watch_apply`); this
 // file keeps the node tree and renders it. Events go back as JSON
 // (`prism_watch_event`). Layout is SwiftUI's: rows/columns, padding, sizes,
 // grow, backgrounds and borders map to stacks and modifiers.
+import PhotosUI
 import SwiftUI
+import UniformTypeIdentifiers
 import WatchKit
 
 // MARK: Rust side
 
 @_silgen_name("prism_watch_ready")
-func prismReady(_ width: Double, _ height: Double, _ scale: Double, _ zoom: Double)
+func prismReady(_ width: Double, _ height: Double, _ scale: Double, _ zoom: Double, _ textScale: Double)
 @_silgen_name("prism_watch_event")
 func prismEvent(_ json: UnsafePointer<CChar>)
 
@@ -104,6 +107,11 @@ struct Node {
     var frame = CGRect.zero
     /// Scroll views: the extent of their content.
     var content = CGSize.zero
+    /// Context menu (long press): Prism's menu JSON.
+    var menu: [String: Any]?
+    var swipeLeft = false
+    var swipeRight = false
+    var scrollEvents = false
 
     func num(_ k: String, _ d: Double = 0) -> Double { (style[k] as? NSNumber)?.doubleValue ?? d }
     func str(_ k: String) -> String? { style[k] as? String }
@@ -116,6 +124,12 @@ final class PrismStore: ObservableObject {
     @Published var root: UInt64?
     /// Snapshots draw scroll views as plain views (ImageRenderer cannot).
     var snapshotting = false
+    /// Presented over the app: an alert, a long-press menu, the photo
+    /// picker, the share sheet.
+    @Published var alert: [String: Any]?
+    @Published var menuNode: UInt64?
+    @Published var picker: (id: UInt64, limit: Int)?
+    @Published var share: (text: String?, url: String?)?
 
     func apply(_ json: String) {
         guard let data = json.data(using: .utf8),
@@ -143,6 +157,12 @@ final class PrismStore: ObservableObject {
                 if let f = p["f"] as? [Double], f.count == 4 { nodes[id]?.frame = CGRect(x: f[0], y: f[1], width: f[2], height: f[3]) }
             case "content":
                 if let c = p["size"] as? [Double], c.count == 2 { nodes[id]?.content = CGSize(width: c[0], height: c[1]) }
+            case "menu": nodes[id]?.menu = p["menu"] as? [String: Any]
+            case "swipe":
+                nodes[id]?.swipeLeft = p["left"] as? Bool ?? false
+                nodes[id]?.swipeRight = p["right"] as? Bool ?? false
+            case "scrollev": nodes[id]?.scrollEvents = p["on"] as? Bool ?? false
+            case "alert": alert = p["alert"] as? [String: Any]
             default: break
             }
         }
@@ -185,6 +205,15 @@ struct NodeView: View {
                 .opacity(n.num("opacity", 1))
                 .contentShape(Rectangle())
                 .onTapGesture { if n.clickable { send(["t": "click", "id": id]) } }
+                // Context menus: a long press opens them as a dialog (SwiftUI's
+                // contextMenu is deprecated on watchOS).
+                .onLongPressGesture { if n.menu != nil { store.menuNode = id } }
+                .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { g in
+                    let dx = g.translation.width
+                    guard abs(dx) > abs(g.translation.height) * 2 else { return }
+                    if dx < 0 && n.swipeLeft { send(["t": "swipe", "id": id, "dir": "left"]) }
+                    if dx > 0 && n.swipeRight { send(["t": "swipe", "id": id, "dir": "right"]) }
+                }, including: n.swipeLeft || n.swipeRight ? .all : .subviews)
                 .accessibilityLabel(n.label ?? "")
                 .accessibilityHidden(n.a11yHidden)
         }
@@ -223,7 +252,17 @@ struct NodeView: View {
             if store.snapshotting {
                 placed(n.children)
             } else {
-                ScrollView { placed(n.children).frame(width: n.content.width, height: n.content.height, alignment: .topLeading) }
+                ScrollView {
+                    placed(n.children)
+                        .frame(width: n.content.width, height: n.content.height, alignment: .topLeading)
+                        .background(GeometryReader { g in
+                            Color.clear.onChange(of: g.frame(in: .named("s\(id)")).minY) { _, y in
+                                if n.scrollEvents { send(["t": "scroll", "id": id, "o": -y, "v": n.frame.height]) }
+                            }
+                        })
+                }
+                .coordinateSpace(name: "s\(id)")
+                .modifier(Refresh(id: id, on: n.clickable))
             }
         case "stack":
             StackView(id: id, node: n)
@@ -269,6 +308,134 @@ struct RoundedClip: ViewModifier {
     func body(content: Content) -> some View {
         if radius > 0 { content.clipShape(RoundedRectangle(cornerRadius: radius)) } else { content }
     }
+}
+
+/// Pull to refresh (a "clickable" scroll view): the app sets the value
+/// back to 0 when done.
+struct Refresh: ViewModifier {
+    let id: UInt64
+    let on: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if on {
+            content.refreshable {
+                send(["t": "click", "id": id])
+                for _ in 0..<300 {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    if (PrismStore.shared.nodes[id]?.value ?? 0) == 0 { break }
+                }
+            }
+        } else {
+            content
+        }
+    }
+}
+
+/// Alerts, long-press menus, the photo picker and the share sheet.
+struct Presented: ViewModifier {
+    @ObservedObject var store = PrismStore.shared
+    @State private var photos: [PhotosPickerItem] = []
+
+    func body(content: Content) -> some View {
+        content
+            .alert(store.alert?["title"] as? String ?? "", isPresented: Binding(
+                get: { store.alert != nil }, set: { if !$0 { store.alert = nil } }
+            )) {
+                ForEach(Array(actions.enumerated()), id: \.offset) { i, a in
+                    Button(a["title"] as? String ?? "", role: role(a["role"] as? String)) {
+                        send(["t": "alert", "id": store.alert?["id"] ?? 0, "index": i])
+                        store.alert = nil
+                    }
+                }
+            } message: {
+                Text(store.alert?["message"] as? String ?? "")
+            }
+            .confirmationDialog(menu?["title"] as? String ?? "", isPresented: Binding(
+                get: { store.menuNode != nil }, set: { if !$0 { store.menuNode = nil } }
+            ), titleVisibility: .hidden) {
+                ForEach(Array(menuActions.enumerated()), id: \.offset) { _, a in
+                    Button(a["title"] as? String ?? "", role: role(a["role"] as? String)) {
+                        send(["t": "menu", "id": a["id"] ?? 0])
+                    }
+                    .disabled((a["enabled"] as? Bool) == false)
+                }
+            }
+            .sheet(isPresented: Binding(get: { store.picker != nil }, set: { if !$0 { cancelPicker() } })) {
+                PhotosPicker(selection: $photos, maxSelectionCount: store.picker.map { $0.limit > 0 ? $0.limit : nil } ?? nil,
+                             matching: .images) { Label("Photos", systemImage: "photo") }
+                    .onChange(of: photos) { _, items in finishPicker(items) }
+            }
+            .sheet(isPresented: Binding(get: { store.share != nil }, set: { if !$0 { store.share = nil } })) {
+                if let url = store.share?.url.flatMap(URL.init(string:)) {
+                    ShareLink(item: url, message: store.share?.text.map { Text($0) })
+                } else {
+                    ShareLink(item: store.share?.text ?? "")
+                }
+            }
+    }
+
+    private var actions: [[String: Any]] { store.alert?["actions"] as? [[String: Any]] ?? [] }
+    private var menu: [String: Any]? { store.menuNode.flatMap { store.nodes[$0]?.menu } }
+
+    /// Actions of the menu, submenus flattened.
+    private var menuActions: [[String: Any]] {
+        func flatten(_ items: [[String: Any]]) -> [[String: Any]] {
+            items.flatMap { i -> [[String: Any]] in
+                switch i["t"] as? String {
+                case "act": return [i]
+                case "sub": return flatten((i["menu"] as? [String: Any])?["items"] as? [[String: Any]] ?? [])
+                default: return []
+                }
+            }
+        }
+        return flatten(menu?["items"] as? [[String: Any]] ?? [])
+    }
+
+    private func role(_ r: String?) -> ButtonRole? {
+        r == "destructive" ? .destructive : r == "cancel" ? .cancel : nil
+    }
+
+    private func cancelPicker() {
+        guard let p = store.picker else { return }
+        store.picker = nil
+        "cancelled".withCString { prismReplyError(p.id, false, $0) }
+    }
+
+    /// Copies the picked photos where the app can read them.
+    private func finishPicker(_ items: [PhotosPickerItem]) {
+        guard let p = store.picker, !items.isEmpty else { return }
+        store.picker = nil
+        photos = []
+        Task {
+            var lines: [String] = []
+            let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("prism-picked")
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            for item in items {
+                guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
+                let type = item.supportedContentTypes.first
+                let file = dir.appendingPathComponent(UUID().uuidString).appendingPathExtension(type?.preferredFilenameExtension ?? "jpg")
+                guard (try? data.write(to: file)) != nil else { continue }
+                lines.append([file.path, file.lastPathComponent, type?.preferredMIMEType ?? "image/jpeg", String(data.count)].joined(separator: "\t"))
+            }
+            await MainActor.run {
+                if lines.isEmpty { "cancelled".withCString { prismReplyError(p.id, false, $0) } }
+                else { lines.joined(separator: "\n").withCString { prismReplyFiles(p.id, $0) } }
+            }
+        }
+    }
+}
+
+@_cdecl("prism_watch_pick_images")
+public func prismWatchPickImagesHost(_ id: UInt64, _ limit: UInt32) {
+    DispatchQueue.main.async { PrismStore.shared.picker = (id, Int(limit)) }
+}
+
+@_cdecl("prism_watch_share")
+public func prismWatchShareHost(_ text: UnsafePointer<CChar>?, _ url: UnsafePointer<CChar>?) {
+    let t = text.map { String(cString: $0) }
+    let u = url.map { String(cString: $0) }
+    DispatchQueue.main.async { PrismStore.shared.share = (t, u) }
 }
 
 /// Reports the size SwiftUI gives a container's content, for Rust's layout.
@@ -370,6 +537,7 @@ private func textAlign(_ a: String?) -> TextAlignment {
 
 struct PrismRootView: View {
     @ObservedObject var store = PrismStore.shared
+    @Environment(\.scenePhase) var phase
 
     var body: some View {
         Color.clear
@@ -377,12 +545,17 @@ struct PrismRootView: View {
                 if let root = store.root { NodeView(id: root) } else { ProgressView() }
             }
             .modifier(ReportSize(event: ["t": "resize"]))
+            .modifier(Presented())
+            .onChange(of: phase) { _, p in
+                send(["t": "lifecycle", "state": p == .active ? "active" : p == .inactive ? "inactive" : "background"])
+            }
         .onAppear {
             // Prism's styles are phone-sized: zoom by the watch's body text
             // size over Prism's (17 pt), like tvOS.
             let bounds = WKInterfaceDevice.current().screenBounds
             let body = UIFont.preferredFont(forTextStyle: .body).pointSize
-            prismReady(bounds.width, bounds.height, WKInterfaceDevice.current().screenScale, body / 17)
+            prismReady(bounds.width, bounds.height, WKInterfaceDevice.current().screenScale, body / 17,
+                       UIFontMetrics.default.scaledValue(for: 17) / 17)
             snapshotIfAsked(size: bounds.size)
         }
     }
@@ -453,7 +626,44 @@ private func snapshotIfAsked(size: CGSize) {
     }
 }
 
+// MARK: Background refresh (WatchKit: BGTaskScheduler is unavailable on watchOS)
+
+final class PrismWatchDelegate: NSObject, WKApplicationDelegate {
+    static var running: [String: WKRefreshBackgroundTask] = [:]
+
+    func handle(_ backgroundTasks: Set<WKRefreshBackgroundTask>) {
+        for task in backgroundTasks {
+            if let refresh = task as? WKApplicationRefreshBackgroundTask,
+               let id = (refresh.userInfo as? [String: Any])?["prism"] as? String {
+                PrismWatchDelegate.running[id] = refresh
+                id.withCString { prismRustBackgroundRun($0) }
+            } else {
+                task.setTaskCompletedWithSnapshot(false)
+            }
+        }
+    }
+}
+
+/// Asks watchOS to wake the app for task `id` in `seconds` (at the earliest).
+@_cdecl("prism_watch_bg_schedule")
+public func prismWatchBgSchedule(_ id: UnsafePointer<CChar>, _ seconds: Double) {
+    let id = String(cString: id)
+    WKApplication.shared().scheduleBackgroundRefresh(
+        withPreferredDate: Date(timeIntervalSinceNow: seconds),
+        userInfo: ["prism": id] as NSDictionary
+    ) { error in
+        if let error { NSLog("prism: background refresh %@ not scheduled: %@", id, "\(error)") }
+    }
+}
+
+@_cdecl("prism_watch_bg_complete")
+public func prismWatchBgComplete(_ id: UnsafePointer<CChar>) {
+    PrismWatchDelegate.running.removeValue(forKey: String(cString: id))?.setTaskCompletedWithSnapshot(false)
+}
+
 struct PrismWatchApp: App {
+    @WKApplicationDelegateAdaptor(PrismWatchDelegate.self) var delegate
+
     var body: some Scene {
         WindowGroup { PrismRootView() }
     }

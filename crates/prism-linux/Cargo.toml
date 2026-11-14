@@ -9,3 +9,5 @@ license.workspace = true
 prism-core.workspace = true
 prism-native.workspace = true
 gtk = { package = "gtk4", version = "0.11", features = ["v4_8"] }
+# Tray icons (StatusNotifierItem), on their own thread.
+ksni = { version = "0.3.7", default-features = false, features = ["blocking", "async-io"] }

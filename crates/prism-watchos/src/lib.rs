@@ -12,6 +12,8 @@
 #[cfg(target_os = "watchos")]
 mod imp;
 #[cfg(target_os = "watchos")]
+mod services;
+#[cfg(target_os = "watchos")]
 mod widgets;
 
 #[cfg(target_os = "watchos")]

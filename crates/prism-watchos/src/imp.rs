@@ -25,6 +25,9 @@ static APP: OnceLock<(AppConfig, AppInit)> = OnceLock::new();
 
 struct State {
     runtime: Runtime,
+    services: crate::services::WatchServices,
+    /// Background tasks running for WatchKit: (task id, runtime task).
+    background: Vec<(String, u64)>,
     renderer: NativeRenderer<WatchWidgets>,
     /// The root's size in watch points (reported by the host).
     size: (f32, f32),
@@ -81,7 +84,13 @@ fn device_info(width: f32, height: f32, scale: f32) -> DeviceInfo {
 
 /// The host is on screen: start the app.
 #[unsafe(no_mangle)]
-pub extern "C" fn prism_watch_ready(width: f64, height: f64, scale: f64, zoom: f64) {
+pub extern "C" fn prism_watch_ready(
+    width: f64,
+    height: f64,
+    scale: f64,
+    zoom: f64,
+    text_scale: f64,
+) {
     let (config, init) = APP.get().expect("prism-watchos: run() was not called");
     let _ = config;
     let zoom = std::env::var("PRISM_ZOOM")
@@ -90,9 +99,11 @@ pub extern "C" fn prism_watch_ready(width: f64, height: f64, scale: f64, zoom: f
         .unwrap_or(zoom as f32)
         .max(0.1);
     let (w, h) = (width as f32, height as f32);
+    // Dynamic Type (the watch's text size setting).
     let mut environment = prism_core::Environment {
         locale: prism_native::apple::system_locale(),
         utc_offset: prism_native::apple::utc_offset(),
+        text_scale: text_scale as f32,
         ..Default::default()
     };
     if let Some(scale) = std::env::var("PRISM_TEXT_SCALE")
@@ -101,9 +112,16 @@ pub extern "C" fn prism_watch_ready(width: f64, height: f64, scale: f64, zoom: f
     {
         environment.text_scale = scale;
     }
+    let services = crate::services::WatchServices::new();
+    let cloud: Box<dyn prism_core::Storage> = match prism_native::apple::ICloudStorage::new() {
+        Some(icloud) => Box::new(icloud),
+        None => Box::new(prism_core::FileStorage::new(data_dir().join("cloud"))),
+    };
     let runtime = Runtime::with_options(
         init,
         prism_core::RuntimeOptions {
+            capabilities: prism_core::PlatformServices::capabilities(&services),
+            cloud_storage: Some(cloud),
             path: std::env::var("PRISM_PATH").unwrap_or_else(|_| "/".into()),
             storage: Some(Box::new(prism_core::FileStorage::new(data_dir()))),
             wake_ui: Some(std::sync::Arc::new(|| {
@@ -123,14 +141,72 @@ pub extern "C" fn prism_watch_ready(width: f64, height: f64, scale: f64, zoom: f
     STATE.with(|s| {
         *s.borrow_mut() = Some(State {
             runtime,
+            services,
+            background: Vec::new(),
             renderer,
             size: (w, h),
         })
     });
+    prism_native::apple::set_device_sink(on_device);
     with_state(|s| {
         let patches = s.runtime.render();
         commit(s, &patches);
     });
+}
+
+/// Answers and sensor events from the bridge (location, motion, photos…).
+fn on_device(message: prism_native::apple::DeviceMessage) {
+    dispatch2::DispatchQueue::main().exec_async(move || {
+        with_state(|s| {
+            let patches = match message {
+                prism_native::apple::DeviceMessage::Reply(id, result) => {
+                    s.runtime.device_reply(id, result)
+                }
+                prism_native::apple::DeviceMessage::Event(id, event) => {
+                    s.runtime.device_event(id, event)
+                }
+            };
+            commit(s, &patches);
+        })
+    });
+}
+
+pub(crate) fn notification_response(
+    response: prism_core::NotificationResponse,
+    link: Option<String>,
+) {
+    dispatch2::DispatchQueue::main().exec_async(move || {
+        with_state(|s| {
+            let patches = s.runtime.notification_response(response, link);
+            commit(s, &patches);
+        })
+    });
+}
+
+/// `PRISM_BACKGROUND_INTERVAL=<seconds>` shortens background intervals (development).
+pub(crate) fn background_interval(every: std::time::Duration) -> std::time::Duration {
+    std::env::var("PRISM_BACKGROUND_INTERVAL")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .map_or(every, std::time::Duration::from_secs_f64)
+}
+
+/// WatchKit woke the app for task `id`: run it, tell WatchKit when done.
+pub(crate) fn run_background(id: String) {
+    dispatch2::DispatchQueue::main().exec_async(move || {
+        let mut started = false;
+        with_state(|s| {
+            if let Some(task) = s.runtime.run_background_task(&id) {
+                s.background.push((id.clone(), task));
+                started = true;
+            }
+            let patches = s.runtime.poll();
+            commit(s, &patches);
+        });
+        if !started {
+            crate::services::complete_background(&id);
+        }
+    })
 }
 
 fn with_state(f: impl FnOnce(&mut State)) {
@@ -149,9 +225,22 @@ fn commit(s: &mut State, patches: &[prism_core::Patch]) {
     if !patches.is_empty() {
         s.renderer.apply(patches);
     }
+    for request in s.runtime.take_requests() {
+        prism_core::PlatformServices::handle(&mut s.services, request);
+    }
+    s.renderer.widgets.ops.append(&mut s.services.ops);
     relayout(s);
-    // Platform requests (notifications…) are not supported on the watch yet.
-    let _ = s.runtime.take_requests();
+    // Background tasks that finished.
+    let done: Vec<String> = s
+        .background
+        .iter()
+        .filter(|(_, task)| !s.runtime.is_task_running(*task))
+        .map(|(id, _)| id.clone())
+        .collect();
+    s.background.retain(|(id, _)| !done.contains(id));
+    for id in done {
+        crate::services::complete_background(&id);
+    }
     if let Some(at) = s.runtime.next_timer() {
         let delay = at.saturating_duration_since(std::time::Instant::now());
         let when = dispatch2::DispatchTime::try_from(delay).unwrap_or(dispatch2::DispatchTime::NOW);
@@ -222,6 +311,21 @@ pub extern "C" fn prism_watch_event(json: *const c_char) {
             }
             return;
         }
+        // On screen, interrupted, in the background (SwiftUI scene phase).
+        Some("lifecycle") => {
+            let phase = match v.get("state").and_then(Value::as_str) {
+                Some("background") => prism_core::Lifecycle::Background,
+                Some("inactive") => prism_core::Lifecycle::Inactive,
+                _ => prism_core::Lifecycle::Active,
+            };
+            dispatch2::DispatchQueue::main().exec_async(move || {
+                with_state(|s| {
+                    let patches = s.runtime.set_lifecycle(phase);
+                    commit(s, &patches);
+                })
+            });
+            return;
+        }
         _ => {}
     }
     let Some(event) = parse(&v) else { return };
@@ -241,6 +345,21 @@ fn parse(v: &Value) -> Option<UiEvent> {
         "input" => UiEvent::Input(id, v.get("v")?.as_str()?.to_string()),
         "change" => UiEvent::Change(id, v.get("v")?.as_f64()?),
         "back" => UiEvent::Back(id, v.get("depth")?.as_u64()? as usize),
+        "menu" => UiEvent::MenuSelect(id),
+        "alert" => UiEvent::AlertAction(id, v.get("index")?.as_u64()? as usize),
+        "scroll" => UiEvent::Scroll(
+            id,
+            v.get("o")?.as_f64()? as f32,
+            v.get("v")?.as_f64()? as f32,
+        ),
+        "swipe" => UiEvent::Swipe(
+            id,
+            if v.get("dir")?.as_str()? == "left" {
+                prism_core::SwipeDirection::Left
+            } else {
+                prism_core::SwipeDirection::Right
+            },
+        ),
         _ => return None,
     })
 }

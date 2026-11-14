@@ -65,7 +65,14 @@ fn main() {
 /// A screen with the theme's background and a scrollable body.
 fn page(title: impl Into<String>, cx: &App) -> (prism::Screen, prism::Scroll) {
     let t = Theme::of(cx);
-    (screen(title).bg(t.background), scroll().p(20.).gap(20.))
+    (
+        screen(title).bg(t.background),
+        // Watches: every point counts.
+        scroll()
+            .p(20.)
+            .gap(20.)
+            .on_device(DeviceKind::Watch, |s| s.p(6.).gap(10.)),
+    )
 }
 
 // --- Shared state ---------------------------------------------------------------------
@@ -261,9 +268,12 @@ impl Render for CounterCard {
                 .flex_row()
                 .items_center()
                 .justify_between()
+                // On a watch the number sits above the buttons.
+                .on_device(DeviceKind::Watch, |s| s.flex_col().items_start().gap(6.))
                 .child(
                     text(self.count.to_string())
                         .text_size(40.)
+                        .on_device(DeviceKind::Watch, |s| s.text_size(30.))
                         .bold()
                         .text_color(t.accent)
                         .accessibility_label(strings::counter_label(cx, self.count))
@@ -332,7 +342,8 @@ impl Render for TodoList {
                         },
                     ))),
             )
-            // Gestures differ: swipe on phones, right-click elsewhere.
+            // Gestures differ: swipe on phones, press and hold on watches
+            // and TVs, right-click on computers and the web.
             .child(
                 text(strings::todos_hint_mobile(cx))
                     .text_size(13.)
@@ -340,10 +351,16 @@ impl Render for TodoList {
                     .only(Platform::MOBILE),
             )
             .child(
+                text(strings::todos_hint_hold(cx))
+                    .text_size(13.)
+                    .text_color(t.muted)
+                    .only(Platform::WEARABLE | Platform::TV),
+            )
+            .child(
                 text(strings::todos_hint_desktop(cx))
                     .text_size(13.)
                     .text_color(t.muted)
-                    .except(Platform::MOBILE),
+                    .except(Platform::MOBILE | Platform::WEARABLE | Platform::TV),
             )
             .children(store.todos.iter().map(|todo| {
                 let status = if todo.done {
@@ -660,6 +677,7 @@ impl Render for Gallery {
                     .child(
                         div()
                             .flex_row()
+                            .flex_wrap()
                             .gap(6.)
                             .child(ui::badge(strings::gallery_new(cx)).tone(ui::Variant::Primary))
                             .child(ui::badge(strings::gallery_beta(cx)))
