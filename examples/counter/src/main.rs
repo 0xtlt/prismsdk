@@ -34,10 +34,11 @@ fn main() {
             menus::install(cx, store);
             let focus = focus::install(cx, store);
             Router::new()
-                .tab("Todos", "checklist", "/")
-                .tab("Focus", "timer", "/focus")
-                .tab("Components", "square.grid.2x2", "/components")
-                .tab("Settings", "gearshape", "/settings")
+                // Titles follow the language (recomputed on every render).
+                .tab_with(strings::tabs_todos, "checklist", "/")
+                .tab_with(strings::tabs_focus, "timer", "/focus")
+                .tab_with(strings::tabs_components, "square.grid.2x2", "/components")
+                .tab_with(strings::tabs_settings, "gearshape", "/settings")
                 .route("/", move |cx, _| cx.new_entity(|cx| Home::new(store, cx)))
                 .route("/todos/new", move |cx, _| {
                     cx.new_entity(|_| NewTodo {
@@ -389,7 +390,7 @@ impl Render for TodoDetail {
         let id = self.id;
         let t = Theme::of(cx);
         let Some(todo) = self.store.read(cx).get(id) else {
-            let (screen, body) = page("Not found", cx);
+            let (screen, body) = page(strings::screens_not_found(cx), cx);
             return screen.child(
                 body.child(text(format!("Todo #{id} does not exist.")).text_color(t.muted)),
             );
@@ -452,7 +453,7 @@ impl Render for Gallery {
         let t = Theme::of(cx);
         let email_error = (!self.email.is_empty() && !self.email.contains('@'))
             .then_some("Enter a valid email address");
-        let (screen, body) = page("Components", cx);
+        let (screen, body) = page(strings::screens_components(cx), cx);
         screen.child(
             body.child(
                 ui::card()
@@ -639,7 +640,7 @@ const ACCENTS: [(&str, u32); 4] = [
 impl Render for Settings {
     fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::of(cx);
-        let (screen, body) = page("Settings", cx);
+        let (screen, body) = page(strings::screens_settings(cx), cx);
         // Globals re-render the whole app when they change.
         let update = |f: fn(&mut Theme, f64)| {
             std::rc::Rc::new(move |e: &ChangeEvent, app: &mut App| {
@@ -649,21 +650,22 @@ impl Render for Settings {
         screen.child(
             body.child(
                 ui::card()
-                    .child(ui::heading("Appearance"))
-                    .child(appearance_picker(&t))
+                    .child(ui::heading(strings::settings_appearance(cx)))
+                    .child(appearance_picker(&t, cx))
                     .child(ui::divider())
                     .child(
-                        ui::switch("Use native controls", t.prefer_native)
+                        ui::switch(strings::settings_native(cx), t.prefer_native)
                             .on_change(update(|th, v| th.prefer_native = v != 0.)),
                     )
                     .child(ui::divider())
-                    .child(ui::switch("Square corners", t.radius == 0.).on_change(update(
-                        |th, v| th.radius = if v != 0. { 0. } else { 10. },
-                    ))),
+                    .child(
+                        ui::switch(strings::settings_square(cx), t.radius == 0.)
+                            .on_change(update(|th, v| th.radius = if v != 0. { 0. } else { 10. })),
+                    ),
             )
             .child(
                 ui::card()
-                    .child(ui::heading("Accent color"))
+                    .child(ui::heading(strings::settings_accent(cx)))
                     .child(div().flex_row().gap(12.).children(ACCENTS.iter().map(
                         |&(name, hex)| {
                             let selected = t.accent == rgb(hex);
@@ -683,7 +685,7 @@ impl Render for Settings {
             )
             .child(language_card(cx))
             .child(
-                text("Every control here is exposed to VoiceOver and to screen readers on the web, and works with the keyboard.")
+                text(strings::settings_a11y_note(cx))
                     .text_size(13.)
                     .text_color(t.muted),
             ),
@@ -736,7 +738,7 @@ fn language_card(cx: &App) -> ui::Card {
 }
 
 /// System / Light / Dark, as a group of toggle buttons.
-fn appearance_picker(t: &Theme) -> prism::Div {
+fn appearance_picker(t: &Theme, cx: &App) -> prism::Div {
     let current = if t.follows_system {
         0
     } else if t.dark {
@@ -748,40 +750,43 @@ fn appearance_picker(t: &Theme) -> prism::Div {
         .flex_row()
         .gap(8.)
         .accessibility_role(Role::Group)
-        .accessibility_label("Appearance")
+        .accessibility_label(strings::settings_appearance(cx))
         .children(
-            ["System", "Light", "Dark"]
-                .into_iter()
-                .enumerate()
-                .map(move |(i, name)| {
-                    ui::button(name)
-                        .variant(if i == current {
-                            ui::Variant::Primary
-                        } else {
-                            ui::Variant::Secondary
+            [
+                strings::settings_system(cx),
+                strings::settings_light(cx),
+                strings::settings_dark(cx),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(move |(i, name)| {
+                ui::button(name)
+                    .variant(if i == current {
+                        ui::Variant::Primary
+                    } else {
+                        ui::Variant::Secondary
+                    })
+                    .small()
+                    .on_click(std::rc::Rc::new(move |_: &ClickEvent, app: &mut App| {
+                        update_and_save_theme(app, |th| {
+                            let keep = (th.accent, th.radius, th.prefer_native, th.follows_system);
+                            *th = match i {
+                                0 => Theme::system(),
+                                1 => Theme::light(),
+                                _ => Theme::dark(),
+                            };
+                            th.radius = keep.1;
+                            th.prefer_native = keep.2;
+                            // Keep a custom accent, unless it was the theme default.
+                            if !keep.3
+                                && keep.0 != Theme::light().accent
+                                && keep.0 != Theme::dark().accent
+                            {
+                                th.accent = keep.0;
+                            }
                         })
-                        .small()
-                        .on_click(std::rc::Rc::new(move |_: &ClickEvent, app: &mut App| {
-                            update_and_save_theme(app, |th| {
-                                let keep =
-                                    (th.accent, th.radius, th.prefer_native, th.follows_system);
-                                *th = match i {
-                                    0 => Theme::system(),
-                                    1 => Theme::light(),
-                                    _ => Theme::dark(),
-                                };
-                                th.radius = keep.1;
-                                th.prefer_native = keep.2;
-                                // Keep a custom accent, unless it was the theme default.
-                                if !keep.3
-                                    && keep.0 != Theme::light().accent
-                                    && keep.0 != Theme::dark().accent
-                                {
-                                    th.accent = keep.0;
-                                }
-                            })
-                        }))
-                }),
+                    }))
+            }),
         )
 }
 
@@ -866,7 +871,7 @@ struct NewTodo {
 
 impl Render for NewTodo {
     fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let (screen, body) = page("New todo", cx);
+        let (screen, body) = page(strings::screens_new_todo(cx), cx);
         let empty = self.title.trim().is_empty();
         screen.child(
             body.child(
@@ -924,6 +929,8 @@ impl LongList {
 impl Render for LongList {
     fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::of(cx);
-        screen("10,000 rows").bg(t.background).child(self.list)
+        screen(strings::screens_rows(cx, cx.format_number(10_000., 0)))
+            .bg(t.background)
+            .child(self.list)
     }
 }

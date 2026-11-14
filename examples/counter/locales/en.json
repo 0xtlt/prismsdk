@@ -1,8 +1,13 @@
 {
-  "language": { "name": "English" },
+  "language": {
+    "name": "English"
+  },
   "home": {
     "info": "Rust UI · running on {backend}",
-    "open": { "one": "{count} open todo", "other": "{count} open todos" },
+    "open": {
+      "one": "{count} open todo",
+      "other": "{count} open todos"
+    },
     "synced": "Synced {count}×",
     "today": "Today is {date}"
   },
@@ -12,11 +17,67 @@
     "new": "New…",
     "add": "Add"
   },
-  "todo": { "done": "Done", "open": "Open" },
-  "counter": { "label": "Count: {count}" },
+  "todo": {
+    "done": "Done",
+    "open": "Open"
+  },
+  "counter": {
+    "label": "Count: {count}"
+  },
   "settings": {
     "language": "Language",
     "system": "System",
-    "sample": "{number} · {date} · {time}"
+    "sample": "{number} · {date} · {time}",
+    "appearance": "Appearance",
+    "light": "Light",
+    "dark": "Dark",
+    "native": "Use native controls",
+    "square": "Square corners",
+    "accent": "Accent color",
+    "a11y_note": "Every control here is exposed to VoiceOver and to screen readers on the web, and works with the keyboard."
+  },
+  "tabs": {
+    "todos": "Todos",
+    "focus": "Focus",
+    "components": "Components",
+    "settings": "Settings"
+  },
+  "screens": {
+    "components": "Components",
+    "settings": "Settings",
+    "focus": "Focus",
+    "new_todo": "New todo",
+    "rows": "{count} rows",
+    "not_found": "Not found"
+  },
+  "focus": {
+    "focusing": "Focusing",
+    "shown_live": "Shown live: {where}",
+    "plus5": "+5 min",
+    "stop": "Stop",
+    "new_session": "New session",
+    "duration": "Duration",
+    "minutes": "{count} min",
+    "start": "Start focus",
+    "try": "Try the notification (10 s)",
+    "try_hint": "Starts a 10-second session; its notification has buttons",
+    "completed": {
+      "one": "{count} session completed",
+      "other": "{count} sessions completed"
+    },
+    "live_note": "Live Activity: {where}. A notification arrives when it ends.",
+    "where_island": "Lock screen and Dynamic Island",
+    "where_outside": "Outside the app (menu bar or live banner)",
+    "where_app": "In the app",
+    "title": "Focus",
+    "session": "{minutes}-minute session",
+    "summary": "Focus session, {minutes} minutes",
+    "stay": "Stay on task — {minutes} min session",
+    "complete": "Focus session complete",
+    "done": "Done",
+    "body": "Nice work. Time for a short break.",
+    "again": "5 more minutes",
+    "note": "Add a todo…",
+    "note_placeholder": "What's next?"
   }
 }

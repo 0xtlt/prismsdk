@@ -1,5 +1,7 @@
 {
-  "language": { "name": "العربية" },
+  "language": {
+    "name": "العربية"
+  },
   "home": {
     "info": "واجهة Rust · تعمل على {backend}",
     "open": {
@@ -19,11 +21,71 @@
     "new": "جديدة…",
     "add": "إضافة"
   },
-  "todo": { "done": "منجزة", "open": "مفتوحة" },
-  "counter": { "label": "العدد: {count}" },
+  "todo": {
+    "done": "منجزة",
+    "open": "مفتوحة"
+  },
+  "counter": {
+    "label": "العدد: {count}"
+  },
   "settings": {
     "language": "اللغة",
     "system": "النظام",
-    "sample": "{number} · {date} · {time}"
+    "sample": "{number} · {date} · {time}",
+    "appearance": "المظهر",
+    "light": "فاتح",
+    "dark": "داكن",
+    "native": "عناصر تحكم أصلية",
+    "square": "زوايا مربعة",
+    "accent": "لون التمييز",
+    "a11y_note": "كل عنصر تحكم هنا متاح لـ VoiceOver ولقارئات الشاشة على الويب، ويعمل بلوحة المفاتيح."
+  },
+  "tabs": {
+    "todos": "المهام",
+    "focus": "تركيز",
+    "components": "المكونات",
+    "settings": "الإعدادات"
+  },
+  "screens": {
+    "components": "المكونات",
+    "settings": "الإعدادات",
+    "focus": "تركيز",
+    "new_todo": "مهمة جديدة",
+    "rows": "{count} صف",
+    "not_found": "غير موجود"
+  },
+  "focus": {
+    "focusing": "تركيز",
+    "shown_live": "معروض مباشرة: {where}",
+    "plus5": "+5 دقائق",
+    "stop": "إيقاف",
+    "new_session": "جلسة جديدة",
+    "duration": "المدة",
+    "minutes": "{count} د",
+    "start": "ابدأ التركيز",
+    "try": "جرّب الإشعار (10 ث)",
+    "try_hint": "يبدأ جلسة مدتها 10 ثوانٍ؛ إشعارها يحتوي على أزرار",
+    "completed": {
+      "zero": "لا توجد جلسات مكتملة",
+      "one": "جلسة واحدة مكتملة",
+      "two": "جلستان مكتملتان",
+      "few": "{count} جلسات مكتملة",
+      "many": "{count} جلسة مكتملة",
+      "other": "{count} جلسة مكتملة"
+    },
+    "live_note": "النشاط المباشر: {where}. يصل إشعار عند الانتهاء.",
+    "where_island": "شاشة القفل و Dynamic Island",
+    "where_outside": "خارج التطبيق (شريط القوائم أو لافتة)",
+    "where_app": "داخل التطبيق",
+    "title": "تركيز",
+    "session": "جلسة {minutes} دقيقة",
+    "summary": "جلسة تركيز، {minutes} دقيقة",
+    "stay": "ابقَ مركزًا — جلسة {minutes} دقيقة",
+    "complete": "اكتملت جلسة التركيز",
+    "done": "تم",
+    "body": "عمل رائع. حان وقت استراحة قصيرة.",
+    "again": "5 دقائق إضافية",
+    "note": "أضف مهمة…",
+    "note_placeholder": "ما التالي؟"
   }
 }

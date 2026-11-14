@@ -959,6 +959,12 @@ impl Widgets for UiKit {
                 self.titles.insert(id, text.to_string());
                 if let Some(vc) = self.screens.get(&id) {
                     vc.setTitle(Some(&s));
+                    // A tab's item keeps its first title otherwise (language changes).
+                    if matches!(view, View::Tab(_))
+                        && let Some(item) = vc.tabBarItem()
+                    {
+                        item.setTitle(Some(&s));
+                    }
                 }
             }
             _ => {}

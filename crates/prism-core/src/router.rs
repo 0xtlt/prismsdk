@@ -103,9 +103,25 @@ struct Entry {
     entity: AnyEntity,
 }
 
+/// A tab's title: fixed, or computed at each render (translations).
+#[derive(Clone)]
+enum TabTitle {
+    Fixed(String),
+    Dynamic(Rc<dyn Fn(&App) -> String>),
+}
+
+impl TabTitle {
+    fn resolve(&self, app: &App) -> String {
+        match self {
+            TabTitle::Fixed(s) => s.clone(),
+            TabTitle::Dynamic(f) => f(app),
+        }
+    }
+}
+
 /// A tab and its own navigation stack.
 struct TabState {
-    title: String,
+    title: TabTitle,
     icon: String,
     root: String,
     entries: Vec<Entry>,
@@ -128,7 +144,7 @@ pub struct Router {
 pub struct RouterBuilder {
     routes: Vec<Route>,
     not_found: Option<Build>,
-    tabs: Vec<(String, String, String)>,
+    tabs: Vec<(TabTitle, String, String)>,
 }
 
 impl Router {
@@ -330,8 +346,27 @@ impl RouterBuilder {
     /// platforms); `root` is the path of the tab's first screen. Each tab keeps
     /// its own navigation stack.
     pub fn tab(mut self, title: impl Into<String>, icon: impl Into<String>, root: &str) -> Self {
-        self.tabs
-            .push((title.into(), icon.into(), normalize_path(root)));
+        self.tabs.push((
+            TabTitle::Fixed(title.into()),
+            icon.into(),
+            normalize_path(root),
+        ));
+        self
+    }
+
+    /// Like [`tab`](Self::tab), with a title computed at each render, so it
+    /// follows the language: `.tab_with(|cx| strings::tabs_todos(cx), "checklist", "/")`.
+    pub fn tab_with(
+        mut self,
+        title: impl Fn(&App) -> String + 'static,
+        icon: impl Into<String>,
+        root: &str,
+    ) -> Self {
+        self.tabs.push((
+            TabTitle::Dynamic(Rc::new(title)),
+            icon.into(),
+            normalize_path(root),
+        ));
         self
     }
 
@@ -361,7 +396,7 @@ impl RouterBuilder {
                 .collect()
         } else {
             vec![TabState {
-                title: String::new(),
+                title: TabTitle::Fixed(String::new()),
                 icon: String::new(),
                 root: "/".into(),
                 entries: Vec::new(),
@@ -420,7 +455,7 @@ impl Render for Router {
             .path(self.current_path())
             .on_change(cx.listener(|this, e: &ChangeEvent, _| this.select(e.index())))
             .children(self.tabs.iter().enumerate().map(|(i, t)| {
-                tab(t.title.clone(), t.icon.clone())
+                tab(t.title.resolve(cx), t.icon.clone())
                     .key(i.to_string())
                     .child(tab_stack(t, i, cx))
             }))

@@ -10,6 +10,8 @@ use prism::prelude::*;
 use prism::ui::{self, Theme};
 use prism::{ActivityId, Color, TaskHandle};
 
+use crate::strings;
+
 pub struct Focus {
     minutes: u64,
     running: Option<Session>,
@@ -35,10 +37,10 @@ impl Default for Focus {
 }
 
 /// Describes the activity for a session ending at `ends`.
-fn activity(ends: SystemTime, total: Duration, accent: Color) -> Activity {
-    let minutes = total.as_secs() / 60;
+fn activity(cx: &App, ends: SystemTime, total: Duration, accent: Color) -> Activity {
+    let minutes = total.as_secs().div_ceil(60);
     Activity::new("focus")
-        .summary(format!("Focus session, {minutes} minutes"))
+        .summary(strings::focus_summary(cx, minutes))
         .link("/focus")
         .tint(adaptive(rgb(0xFFFFFF), rgb(0x1C1C22)))
         .stale_after(ends)
@@ -59,12 +61,12 @@ fn activity(ends: SystemTime, total: Duration, accent: Color) -> Activity {
                         .flex_1()
                         .gap(2.)
                         .child(
-                            text("Focus")
+                            text(strings::focus_title(cx))
                                 .semibold()
                                 .text_color(adaptive(rgb(0x1C1C28), rgb(0xF2F2F7))),
                         )
                         .child(
-                            text(format!("{minutes}-minute session"))
+                            text(strings::focus_session(cx, minutes))
                                 .text_size(13.)
                                 .text_color(adaptive(rgb(0x6E6E80), rgb(0x9A9AA8))),
                         ),
@@ -82,8 +84,10 @@ fn activity(ends: SystemTime, total: Duration, accent: Color) -> Activity {
                 .text_size(24.)
                 .text_color(accent),
             timer(ends).text_size(24.).bold().text_color(accent),
-            text("Focus").semibold().text_color(rgb(0xFFFFFF)),
-            text(format!("Stay on task — {minutes} min session"))
+            text(strings::focus_title(cx))
+                .semibold()
+                .text_color(rgb(0xFFFFFF)),
+            text(strings::focus_stay(cx, minutes))
                 .text_size(13.)
                 .text_color(rgb(0xB0B0BC)),
         )
@@ -113,14 +117,17 @@ pub fn install(cx: &mut App, store: Entity<crate::Store>) -> Entity<Focus> {
 }
 
 /// "Session complete", delivered after `delay`.
-fn done_notification(delay: Duration) -> Notification {
-    Notification::new("Focus session complete")
+fn done_notification(cx: &App, delay: Duration) -> Notification {
+    Notification::new(strings::focus_complete(cx))
         .id("focus-done")
-        .body("Nice work. Time for a short break.")
+        .body(strings::focus_body(cx))
         .link("/focus")
         .after(delay)
-        .action(NotificationAction::new("again", "5 more minutes").link("/focus"))
-        .action(NotificationAction::new("note", "Add a todo…").reply("What's next?"))
+        .action(NotificationAction::new("again", strings::focus_again(cx)).link("/focus"))
+        .action(
+            NotificationAction::new("note", strings::focus_note(cx))
+                .reply(strings::focus_note_placeholder(cx)),
+        )
 }
 
 impl Focus {
@@ -131,8 +138,10 @@ impl Focus {
     fn start_for(&mut self, total: Duration, cx: &mut Context<Self>) {
         let ends = SystemTime::now() + total;
         let accent = Theme::of(cx).accent;
-        let id = cx.start_activity(activity(ends, total, accent));
-        cx.send_notification(done_notification(total));
+        let a = activity(cx, ends, total, accent);
+        let id = cx.start_activity(a);
+        let n = done_notification(cx, total);
+        cx.send_notification(n);
         let timer = Self::finish_after(total, cx);
         self.running = Some(Session {
             activity: id,
@@ -150,7 +159,7 @@ impl Focus {
                 if let Some(s) = focus.running.take() {
                     // Leave a final "done" state on the lock screen for a while.
                     let done = Activity::new("focus")
-                        .summary("Focus session complete")
+                        .summary(strings::focus_complete(cx))
                         .link("/focus")
                         .lock_screen(
                             div()
@@ -163,9 +172,12 @@ impl Focus {
                                         .text_size(28.)
                                         .text_color(rgb(0x2E9E5B)),
                                 )
-                                .child(text("Focus session complete").semibold()),
+                                .child(text(strings::focus_complete(cx)).semibold()),
                         )
-                        .compact(image("checkmark.circle.fill"), text("Done"))
+                        .compact(
+                            image("checkmark.circle.fill"),
+                            text(strings::focus_done(cx)),
+                        )
                         .minimal(image("checkmark"));
                     cx.end_activity(s.activity, Some(done), false);
                     focus.completed += 1;
@@ -182,8 +194,10 @@ impl Focus {
             s.timer.cancel();
             let left = s.ends.duration_since(SystemTime::now()).unwrap_or_default();
             s.timer = Self::finish_after(left, cx);
-            cx.update_activity(s.activity, activity(s.ends, s.total, accent));
-            cx.send_notification(done_notification(left));
+            let a = activity(cx, s.ends, s.total, accent);
+            cx.update_activity(s.activity, a);
+            let n = done_notification(cx, left);
+            cx.send_notification(n);
             self.running = Some(s);
         }
     }
@@ -202,20 +216,20 @@ impl Render for Focus {
         let t = Theme::of(cx);
         let caps = cx.capabilities();
         let where_ = if caps.dynamic_island {
-            "Lock screen and Dynamic Island"
+            strings::focus_where_island(cx)
         } else if caps.live_activities {
-            "Outside the app (menu bar or live banner)"
+            strings::focus_where_outside(cx)
         } else {
-            "In the app"
+            strings::focus_where_app(cx)
         };
         let body = scroll().p(20.).gap(20.);
         let body = match &self.running {
             Some(s) => body.child(
                 ui::card()
-                    .child(ui::heading("Focusing"))
+                    .child(ui::heading(strings::focus_focusing(cx)))
                     .child(timer(s.ends).text_size(56.).bold().text_color(t.accent))
                     .child(
-                        text(format!("Shown live: {where_}"))
+                        text(strings::focus_shown_live(cx, &where_))
                             .text_size(13.)
                             .text_color(t.muted),
                     )
@@ -224,12 +238,12 @@ impl Render for Focus {
                             .flex_row()
                             .gap(8.)
                             .child(
-                                ui::button("+5 min")
+                                ui::button(strings::focus_plus5(cx))
                                     .secondary()
                                     .on_click(cx.listener(|this, _, cx| this.extend(cx))),
                             )
                             .child(
-                                ui::button("Stop")
+                                ui::button(strings::focus_stop(cx))
                                     .danger()
                                     .on_click(cx.listener(|this, _, cx| this.stop(cx))),
                             ),
@@ -237,15 +251,15 @@ impl Render for Focus {
             ),
             None => body.child(
                 ui::card()
-                    .child(ui::heading("New session"))
+                    .child(ui::heading(strings::focus_new_session(cx)))
                     .child(
                         div()
                             .flex_row()
                             .gap(8.)
                             .accessibility_role(Role::Group)
-                            .accessibility_label("Duration")
+                            .accessibility_label(strings::focus_duration(cx))
                             .children([1u64, 5, 25, 50].into_iter().map(|m| {
-                                ui::button(format!("{m} min"))
+                                ui::button(strings::focus_minutes(cx, m))
                                     .small()
                                     .variant(if m == self.minutes {
                                         ui::Variant::Primary
@@ -256,35 +270,35 @@ impl Render for Focus {
                             })),
                     )
                     .child(
-                        ui::button("Start focus")
+                        ui::button(strings::focus_start(cx))
                             .large()
                             .full_width()
                             .on_click(cx.listener(|this, _, cx| this.start(cx))),
                     )
                     .child(
-                        ui::button("Try the notification (10 s)")
+                        ui::button(strings::focus_try(cx))
                             .ghost()
                             .small()
-                            .hint("Starts a 10-second session; its notification has buttons")
+                            .hint(strings::focus_try_hint(cx))
                             .on_click(cx.listener(|this, _, cx| {
                                 this.start_for(Duration::from_secs(10), cx)
                             })),
                     )
                     .when(self.completed > 0, |d| {
                         d.child(
-                            ui::badge(format!("{} session(s) completed", self.completed))
+                            ui::badge(strings::focus_completed(cx, self.completed as i64))
                                 .tone(ui::Variant::Primary),
                         )
                     })
                     .child(
-                        text(format!(
-                            "Live Activity: {where_}. A notification arrives when it ends."
-                        ))
-                        .text_size(13.)
-                        .text_color(t.muted),
+                        text(strings::focus_live_note(cx, &where_))
+                            .text_size(13.)
+                            .text_color(t.muted),
                     ),
             ),
         };
-        screen("Focus").bg(t.background).child(body)
+        screen(strings::focus_title(cx))
+            .bg(t.background)
+            .child(body)
     }
 }

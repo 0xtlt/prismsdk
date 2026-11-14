@@ -1157,3 +1157,40 @@ fn notification_actions_reach_the_handler_and_open_links() {
     assert_eq!(got.lock().unwrap().as_slice(), &[response]);
     assert_eq!(rt.app.current_path(), Some("/later"));
 }
+
+#[test]
+fn tab_titles_follow_the_language() {
+    struct Page;
+    impl Render for Page {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            screen("Page")
+        }
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        cx.set_translations(
+            crate::Translations::new()
+                .add("en", &[("tab", "Settings")])
+                .add("fr", &[("tab", "Réglages")]),
+        );
+        let r = Router::new()
+            .tab_with(|cx| cx.t("tab"), "gearshape", "/")
+            .route("/", |cx, _| cx.new_entity(|_| Page))
+            .build(cx);
+        cx.set_root(r);
+    });
+    let mut rt = Runtime::new(&init);
+    let first = rt.render();
+    assert!(
+        first
+            .iter()
+            .any(|p| matches!(p, Patch::SetText { text, .. } if text == "Settings"))
+    );
+    rt.app.set_locale(Some(crate::Locale::new("fr")));
+    let patches = rt.render();
+    assert!(
+        patches
+            .iter()
+            .any(|p| matches!(p, Patch::SetText { text, .. } if text == "Réglages")),
+        "{patches:?}"
+    );
+}

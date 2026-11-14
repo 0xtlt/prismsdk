@@ -1,8 +1,13 @@
 {
-  "language": { "name": "Français" },
+  "language": {
+    "name": "Français"
+  },
   "home": {
     "info": "Interface Rust · sur {backend}",
-    "open": { "one": "{count} tâche ouverte", "other": "{count} tâches ouvertes" },
+    "open": {
+      "one": "{count} tâche ouverte",
+      "other": "{count} tâches ouvertes"
+    },
     "synced": "Synchronisé {count}×",
     "today": "Nous sommes le {date}"
   },
@@ -12,11 +17,67 @@
     "new": "Nouvelle…",
     "add": "Ajouter"
   },
-  "todo": { "done": "Terminée", "open": "À faire" },
-  "counter": { "label": "Compteur : {count}" },
+  "todo": {
+    "done": "Terminée",
+    "open": "À faire"
+  },
+  "counter": {
+    "label": "Compteur : {count}"
+  },
   "settings": {
     "language": "Langue",
     "system": "Système",
-    "sample": "{number} · {date} · {time}"
+    "sample": "{number} · {date} · {time}",
+    "appearance": "Apparence",
+    "light": "Clair",
+    "dark": "Sombre",
+    "native": "Contrôles natifs",
+    "square": "Coins carrés",
+    "accent": "Couleur d'accent",
+    "a11y_note": "Chaque contrôle est exposé à VoiceOver et aux lecteurs d'écran sur le web, et fonctionne au clavier."
+  },
+  "tabs": {
+    "todos": "Tâches",
+    "focus": "Focus",
+    "components": "Composants",
+    "settings": "Réglages"
+  },
+  "screens": {
+    "components": "Composants",
+    "settings": "Réglages",
+    "focus": "Focus",
+    "new_todo": "Nouvelle tâche",
+    "rows": "{count} lignes",
+    "not_found": "Introuvable"
+  },
+  "focus": {
+    "focusing": "Concentration",
+    "shown_live": "Affiché en direct : {where}",
+    "plus5": "+5 min",
+    "stop": "Arrêter",
+    "new_session": "Nouvelle session",
+    "duration": "Durée",
+    "minutes": "{count} min",
+    "start": "Démarrer",
+    "try": "Tester la notification (10 s)",
+    "try_hint": "Lance une session de 10 secondes ; sa notification a des boutons",
+    "completed": {
+      "one": "{count} session terminée",
+      "other": "{count} sessions terminées"
+    },
+    "live_note": "Live Activity : {where}. Une notification arrive à la fin.",
+    "where_island": "écran verrouillé et Dynamic Island",
+    "where_outside": "hors de l'app (barre des menus ou bandeau)",
+    "where_app": "dans l'app",
+    "title": "Focus",
+    "session": "Session de {minutes} minutes",
+    "summary": "Session de concentration, {minutes} minutes",
+    "stay": "Reste concentré — session de {minutes} min",
+    "complete": "Session de concentration terminée",
+    "done": "Fini",
+    "body": "Bien joué. C'est l'heure d'une petite pause.",
+    "again": "5 minutes de plus",
+    "note": "Ajouter une tâche…",
+    "note_placeholder": "Et ensuite ?"
   }
 }
