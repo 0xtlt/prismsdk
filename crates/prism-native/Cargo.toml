@@ -1,0 +1,10 @@
+[package]
+name = "prism-native"
+description = "Shared machinery for native Prism backends: patch handling and flexbox layout (taffy)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+prism-core.workspace = true
+taffy.workspace = true

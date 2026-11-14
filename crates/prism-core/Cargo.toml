@@ -1,0 +1,8 @@
+[package]
+name = "prism-core"
+description = "Platform-agnostic core of Prism: elements, styles, entities and the reconciler."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

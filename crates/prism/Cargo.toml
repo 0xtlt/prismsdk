@@ -1,0 +1,23 @@
+[package]
+name = "prism"
+description = "Write a UI once in Rust; ship it as a web server (HTML/CSS/JS) or a native app."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["native"]
+# Native widgets for the compilation target (AppKit on macOS, UIKit on iOS).
+native = ["dep:prism-macos", "dep:prism-ios"]
+# Server-driven web UI: plain HTML/CSS + a tiny JS client, no WASM.
+web = ["dep:prism-web"]
+
+[dependencies]
+prism-core.workspace = true
+prism-web = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+prism-macos = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+prism-ios = { workspace = true, optional = true }

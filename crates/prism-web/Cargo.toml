@@ -1,0 +1,11 @@
+[package]
+name = "prism-web"
+description = "Prism web backend: server-side rendering + DOM patches over a WebSocket. No WASM."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+prism-core.workspace = true
+tungstenite.workspace = true
+serde_json.workspace = true

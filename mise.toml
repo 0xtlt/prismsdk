@@ -1,0 +1,30 @@
+[tools]
+rust = { version = "1.99", targets = "aarch64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim", components = "clippy,rustfmt" }
+
+[env]
+IPHONEOS_DEPLOYMENT_TARGET = "17.0"
+MACOSX_DEPLOYMENT_TARGET = "13.0"
+
+[tasks.check]
+description = "Type-check every crate on every supported target"
+run = [
+  "cargo check --workspace",
+  "cargo check -p counter --no-default-features --features web",
+  "cargo check -p counter --target aarch64-apple-ios-sim",
+]
+
+[tasks.test]
+description = "Run the unit tests"
+run = "cargo test --workspace"
+
+[tasks.web]
+description = "Serve the example as a web app (HTML/CSS/JS, no WASM) on http://localhost:3000"
+run = "cargo run -p counter --no-default-features --features web"
+
+[tasks.macos]
+description = "Run the example as a native macOS (AppKit) app"
+run = "cargo run -p counter"
+
+[tasks.ios]
+description = "Build, bundle and launch the example on an iOS simulator (PRISM_SIM=<name|udid>)"
+run = "scripts/ios-run.sh counter"
