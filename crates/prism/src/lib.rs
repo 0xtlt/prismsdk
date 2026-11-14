@@ -76,6 +76,12 @@ impl Application {
         self
     }
 
+    /// Directory of app assets (images…) for `picture("name.png")`.
+    pub fn assets(mut self, dir: impl Into<String>) -> Self {
+        self.config.assets = Some(dir.into());
+        self
+    }
+
     /// Web server port (default 3000, `PRISM_PORT` overrides).
     pub fn port(mut self, port: u16) -> Self {
         self.config.port = port;
@@ -93,10 +99,18 @@ impl Application {
 
         // Build tooling: `PRISM_DESCRIBE=widgets` prints the registered widgets
         // (used to generate the WidgetKit extension) and exits.
-        if std::env::var("PRISM_DESCRIBE").as_deref() == Ok("widgets") {
-            let runtime = Runtime::new(&init);
-            println!("{}", runtime.app.describe_widgets());
-            return;
+        match std::env::var("PRISM_DESCRIBE").as_deref() {
+            Ok("widgets") => {
+                let runtime = Runtime::new(&init);
+                println!("{}", runtime.app.describe_widgets());
+                return;
+            }
+            // Bundlers copy this directory into the app's resources.
+            Ok("assets") => {
+                println!("{}", config.assets.as_deref().unwrap_or(""));
+                return;
+            }
+            _ => {}
         }
 
         #[cfg(feature = "web")]

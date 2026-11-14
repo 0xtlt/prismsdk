@@ -67,6 +67,8 @@ cargo build -p "$PKG" --target "$TARGET"
 # 4. Bundle.
 rm -rf "$APP" && mkdir -p "$APPEX"
 cp "$ROOT/target/$TARGET/debug/$PKG" "$APP/$PKG"
+ASSETS="$(PRISM_DESCRIBE=assets "$ROOT/target/debug/$PKG")"
+[[ -n "$ASSETS" && -d "$ASSETS" ]] && cp -R "$ASSETS" "$APP/assets"
 
 plist_common() { # $1 executable, $2 bundle id, $3 package type
   cat <<PLIST

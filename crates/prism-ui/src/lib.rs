@@ -658,6 +658,7 @@ pub fn divider() -> Element {
 /// A tappable list row: title, optional subtitle and trailing detail, chevron.
 pub struct ListRow {
     pub context_menu: Option<prism_core::Menu>,
+    pub swipe_left: Option<Handler<ClickEvent>>,
     pub title: String,
     pub subtitle: Option<String>,
     pub detail: Option<String>,
@@ -669,6 +670,7 @@ pub struct ListRow {
 pub fn list_row(title: impl Into<String>) -> ListRow {
     ListRow {
         context_menu: None,
+        swipe_left: None,
         title: title.into(),
         subtitle: None,
         detail: None,
@@ -696,6 +698,12 @@ impl ListRow {
         self.on_click = Some(handler);
         self
     }
+    /// Swipe left (e.g. delete). Also offer it in the context menu.
+    pub fn on_swipe_left(mut self, handler: Handler<ClickEvent>) -> Self {
+        self.swipe_left = Some(handler);
+        self
+    }
+
     /// Long press / right-click menu.
     pub fn context_menu(mut self, menu: prism_core::Menu) -> Self {
         self.context_menu = Some(menu);
@@ -758,6 +766,9 @@ impl Component for ListRow {
         }
         if let Some(menu) = self.context_menu {
             el = el.context_menu(menu);
+        }
+        if let Some(h) = self.swipe_left {
+            el = el.on_swipe(prism_core::SwipeDirection::Left, h);
         }
         self.refine.apply(el).into_element()
     }

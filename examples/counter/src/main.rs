@@ -22,6 +22,7 @@ fn main() {
     Application::new()
         .title("Prism")
         .size(460., 720.)
+        .assets(concat!(env!("CARGO_MANIFEST_DIR"), "/assets"))
         .run(|cx| {
             let theme = load_theme(cx);
             ui::set_theme(cx, theme);
@@ -47,6 +48,7 @@ fn main() {
                 .route("/components", |cx, _| cx.new_entity(|_| Gallery::default()))
                 .route("/settings", |cx, _| cx.new_entity(|_| Settings))
                 .route("/focus", |cx, _| cx.new_entity(|_| focus::Focus::default()))
+                .route("/components/list", |cx, _| cx.new_entity(LongList::new))
                 .build(cx)
         });
 }
@@ -144,6 +146,8 @@ impl Store {
 // --- Tab 1: todos -----------------------------------------------------------------------
 
 struct Home {
+    refreshing: bool,
+    synced: u32,
     counter: Entity<CounterCard>,
     todos: Entity<TodoList>,
     store: Entity<Store>,
@@ -153,6 +157,8 @@ impl Home {
     fn new(store: Entity<Store>, cx: &mut Context<Self>) -> Self {
         cx.observe(&store, |_: &mut Home, _, _| {});
         Home {
+            refreshing: false,
+            synced: 0,
             counter: cx.new(|_| CounterCard::default()),
             todos: cx.new(|cx| {
                 cx.observe(&store, |_: &mut TodoList, _, _| {});
@@ -171,17 +177,35 @@ impl Render for Home {
         let t = Theme::of(cx);
         let open = self.store.read(cx).open();
         let (screen, body) = page("Prism", cx);
+        let synced = if self.synced == 0 {
+            String::new()
+        } else {
+            format!(" · synced {}×", self.synced)
+        };
         screen.child(
-            body.child(
-                text(format!(
-                    "Rust UI · running on {} · {open} open todo(s)",
-                    prism::BACKEND
-                ))
-                .text_size(14.)
-                .text_color(t.muted),
-            )
-            .child(self.counter)
-            .child(self.todos),
+            body
+                // Pull down to "sync" (a fake one-second task).
+                .refreshing(self.refreshing)
+                .on_refresh(cx.listener(|this, _, cx| {
+                    this.refreshing = true;
+                    cx.spawn(async move |this, cx| {
+                        cx.sleep(std::time::Duration::from_secs(1)).await;
+                        cx.update_entity(&this, |h, _| {
+                            h.refreshing = false;
+                            h.synced += 1;
+                        });
+                    });
+                }))
+                .child(
+                    text(format!(
+                        "Rust UI · running on {} · {open} open todo(s){synced}",
+                        prism::BACKEND
+                    ))
+                    .text_size(14.)
+                    .text_color(t.muted),
+                )
+                .child(self.counter)
+                .child(self.todos),
         )
     }
 }
@@ -273,6 +297,9 @@ impl Render for TodoList {
                     .leading(if todo.done { "✓" } else { "○" })
                     .subtitle(if todo.done { "Done" } else { "Open" })
                     .on_click(navigate_to(format!("/todos/{}", todo.id)))
+                    .on_swipe_left(std::rc::Rc::new(move |_: &ClickEvent, app: &mut App| {
+                        confirm_delete(app, store_e, id)
+                    }))
                     .context_menu(
                         Menu::new()
                             .item(
@@ -478,6 +505,29 @@ impl Render for Gallery {
                             cx.listener(|this, e: &InputEvent, _| this.email = e.value.clone()),
                         ),
                 ),
+            )
+            .child(
+                ui::card()
+                    .child(ui::heading("Images"))
+                    .child(
+                        div()
+                            .flex_row()
+                            .gap(12.)
+                            .child(
+                                picture("https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=600&q=70")
+                                    .alt("A river between mountains")
+                                    .w(px(180.))
+                                    .h(px(120.))
+                                    .rounded(12.),
+                            )
+                            .child(picture("prism.png").alt("Prism logo").fit().size(px(120.)).rounded(24.)),
+                    )
+                    .child(
+                        ui::list_row("A list of 10,000 rows")
+                            .subtitle("Virtualized: only visible rows exist")
+                            .leading("☰")
+                            .on_click(navigate_to("/components/list")),
+                    ),
             )
             .child(
                 ui::card()
@@ -765,5 +815,40 @@ impl Render for NewTodo {
                     ),
             ),
         )
+    }
+}
+
+// --- Screen: 10,000-row virtualized list ---------------------------------------------
+
+struct LongList {
+    list: Entity<VirtualList>,
+}
+
+impl LongList {
+    fn new(cx: &mut Context<Self>) -> Self {
+        let list = VirtualList::new(cx, 10_000, 56., |i, cx| {
+            let t = Theme::of(cx);
+            div()
+                .flex_row()
+                .items_center()
+                .gap(12.)
+                .px(20.)
+                .h_full()
+                .child(
+                    text(format!("{}", i + 1))
+                        .text_color(t.accent)
+                        .bold()
+                        .min_w(px(56.)),
+                )
+                .child(text(format!("Row number {} of 10,000", i + 1)).text_color(t.text))
+        });
+        LongList { list }
+    }
+}
+
+impl Render for LongList {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = Theme::of(cx);
+        screen("10,000 rows").bg(t.background).child(self.list)
     }
 }

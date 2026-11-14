@@ -24,6 +24,8 @@ python3 "$ROOT/platform/apple/generate_widgets.py" "$GEN/widgets.json" macos > "
 
 rm -rf "$APP" && mkdir -p "$APP/Contents/MacOS" "$APPEX/Contents/MacOS"
 cp "$ROOT/target/debug/$PKG" "$APP/Contents/MacOS/$PKG"
+ASSETS="$(PRISM_DESCRIBE=assets "$ROOT/target/debug/$PKG")"
+[[ -n "$ASSETS" && -d "$ASSETS" ]] && mkdir -p "$APP/Contents/Resources" && cp -R "$ASSETS" "$APP/Contents/Resources/assets"
 
 plist() { # $1 executable, $2 bundle id, $3 package type, $4 extra
   cat <<PLIST

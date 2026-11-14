@@ -123,6 +123,11 @@ pub struct ViewIvars {
     menu: RefCell<Option<prism_core::menu::MenuSpec>>,
     /// Root of a sheet: Escape dismisses it.
     sheet_root: Cell<bool>,
+    /// Picture content, drawn aspect-fill (or aspect-fit).
+    image: RefCell<Option<Retained<NSImage>>>,
+    fit: Cell<bool>,
+    /// Trackpad swipes (left, right) reported to Prism.
+    swipe: Cell<(bool, bool)>,
 }
 
 define_class!(
@@ -165,6 +170,27 @@ define_class!(
                 path.setLineWidth(bw);
                 c.setStroke();
                 path.stroke();
+            }
+            if let Some(img) = iv.image.borrow().as_ref() {
+                draw_picture(img, bounds, r, iv.fit.get());
+            }
+        }
+
+        /// Three-finger (or two-finger, per System Settings) swipes.
+        #[unsafe(method(swipeWithEvent:))]
+        fn swipe_with_event(&self, event: &NSEvent) {
+            let (left, right) = self.ivars().swipe.get();
+            let dx = event.deltaX();
+            let dir = if dx > 0. && left {
+                Some(prism_core::SwipeDirection::Left)
+            } else if dx < 0. && right {
+                Some(prism_core::SwipeDirection::Right)
+            } else {
+                None
+            };
+            match dir {
+                Some(dir) => dispatch(UiEvent::Swipe(self.ivars().id.get(), dir)),
+                None => unsafe { msg_send![super(self), swipeWithEvent: event] },
             }
         }
 
@@ -263,6 +289,38 @@ define_class!(
     }
 );
 
+/// Draws `img` in `bounds`, cropped (fill) or letterboxed (fit), clipped to the corner radius.
+fn draw_picture(img: &NSImage, bounds: NSRect, radius: f64, fit: bool) {
+    let size = img.size();
+    if size.width <= 0. || size.height <= 0. {
+        return;
+    }
+    let (bw, bh) = (bounds.size.width, bounds.size.height);
+    let scale = if fit {
+        (bw / size.width).min(bh / size.height)
+    } else {
+        (bw / size.width).max(bh / size.height)
+    };
+    let (w, h) = (size.width * scale, size.height * scale);
+    let rect = NSRect::new(
+        NSPoint::new((bw - w) / 2., (bh - h) / 2.),
+        NSSize::new(w, h),
+    );
+    objc2_app_kit::NSGraphicsContext::saveGraphicsState_class();
+    NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(bounds, radius, radius).addClip();
+    unsafe {
+        img.drawInRect_fromRect_operation_fraction_respectFlipped_hints(
+            rect,
+            NSRect::ZERO,
+            objc2_app_kit::NSCompositingOperation::SourceOver,
+            1.,
+            true,
+            None,
+        )
+    };
+    objc2_app_kit::NSGraphicsContext::restoreGraphicsState_class();
+}
+
 impl PrismView {
     fn context_menu(&self) -> Option<Retained<NSMenu>> {
         let spec = self.ivars().menu.borrow().clone()?;
@@ -333,6 +391,20 @@ define_class!(
                 NSApplication::sharedApplication(self.mtm()).activate();
                 open_link(&link);
             }
+        }
+
+        /// A scroll view moved (virtualized lists follow it).
+        #[unsafe(method(onScrollBounds:))]
+        fn on_scroll_bounds(&self, n: &NSNotification) {
+            let Some(clip) = n.object().and_then(|o| o.downcast::<objc2_app_kit::NSClipView>().ok())
+            else {
+                return;
+            };
+            let Some(doc) = clip.documentView().and_then(|d| d.downcast::<PrismView>().ok()) else {
+                return;
+            };
+            let b = clip.bounds();
+            dispatch(UiEvent::Scroll(doc.ivars().id.get(), b.origin.y as f32, b.size.height as f32));
         }
 
         /// A stack's header Back button (tag = stack id).
@@ -449,6 +521,7 @@ pub enum View {
     Image(Retained<NSImageView>),
     Progress(Retained<NSProgressIndicator>),
     Timer(Retained<NSTextField>),
+    Picture(Retained<PrismView>),
     Label(Retained<NSTextField>),
     Button(Retained<NSButton>),
     Input(Retained<NSTextField>),
@@ -466,6 +539,7 @@ impl View {
             View::Image(v) => v,
             View::Progress(v) => v,
             View::Timer(v) => v,
+            View::Picture(v) => v,
             View::Label(v) | View::Input(v) => v,
             View::Button(v) => v,
         }
@@ -483,6 +557,7 @@ impl View {
             // Progress bars need no id (no events, no per-node state).
             View::Progress(_) => 0,
             View::Timer(v) => v.tag() as NodeId,
+            View::Picture(v) => v.ivars().id.get(),
             View::Label(v) | View::Input(v) => v.tag() as NodeId,
             View::Button(v) => v.tag() as NodeId,
         }
@@ -501,9 +576,58 @@ pub struct AppKit {
     timers: HashMap<NodeId, (Retained<NSTextField>, f64)>,
     /// Presented sheets.
     sheets: Vec<Rc<MacSheet>>,
+    /// Pictures waiting for their image, by source.
+    pictures: HashMap<String, Vec<(NodeId, Retained<PrismView>)>>,
+    /// Decoded images by source.
+    image_cache: HashMap<String, Retained<NSImage>>,
+    image_sources: prism_native::images::ImageSources,
 }
 
 impl AppKit {
+    /// Shows `src` in `view`: from memory, or loaded on a background thread.
+    fn load_picture(&mut self, id: NodeId, view: &Retained<PrismView>, src: &str) {
+        if let Some(img) = self.image_cache.get(src) {
+            *view.ivars().image.borrow_mut() = Some(img.clone());
+            view.setNeedsDisplay(true);
+            return;
+        }
+        *view.ivars().image.borrow_mut() = None;
+        view.setNeedsDisplay(true);
+        let waiting = self.pictures.entry(src.to_string()).or_default();
+        waiting.retain(|(i, _)| *i != id);
+        waiting.push((id, view.clone()));
+        if waiting.len() > 1 {
+            return; // already loading
+        }
+        let (src, sources) = (src.to_string(), self.image_sources.clone());
+        std::thread::spawn(move || {
+            let bytes = prism_native::images::load(&src, &sources);
+            dispatch2::DispatchQueue::main().exec_async(move || {
+                with_state(|s| {
+                    s.renderer.widgets.picture_loaded(&src, bytes);
+                    s.renderer.mark_all_dirty();
+                    s.relayout();
+                })
+            });
+        });
+    }
+
+    fn picture_loaded(&mut self, src: &str, bytes: Option<Vec<u8>>) {
+        let waiting = self.pictures.remove(src).unwrap_or_default();
+        let data = bytes.map(objc2_foundation::NSData::from_vec);
+        let Some(img) =
+            data.and_then(|d| NSImage::initWithData(objc2::AllocAnyThread::alloc(), &d))
+        else {
+            eprintln!("prism-macos: could not load image {src:?}");
+            return;
+        };
+        for (_, view) in waiting {
+            *view.ivars().image.borrow_mut() = Some(img.clone());
+            view.setNeedsDisplay(true);
+        }
+        self.image_cache.insert(src.to_string(), img);
+    }
+
     fn tick(&self) {
         for (label, end) in self.timers.values() {
             let text = prism_core::format_remaining(*end);
@@ -781,6 +905,7 @@ impl Widgets for AppKit {
                 p.setMaxValue(1.);
                 View::Progress(p)
             }
+            NodeKind::Picture => View::Picture(PrismView::new(mtm, id)),
             NodeKind::Timer => {
                 let l = NSTextField::labelWithString(&empty, mtm);
                 l.setTag(id as isize);
@@ -865,7 +990,7 @@ impl Widgets for AppKit {
                 ));
                 l.setAlignment(alignment(style.text_align));
             }
-            View::Container(v) | View::Screen(v) | View::Tab(v) => {
+            View::Container(v) | View::Screen(v) | View::Tab(v) | View::Picture(v) => {
                 let iv = v.ivars();
                 *iv.background.borrow_mut() = style.background.map(ns_color);
                 *iv.border_color.borrow_mut() = style.border_color.map(ns_color);
@@ -891,6 +1016,7 @@ impl Widgets for AppKit {
         let s = NSString::from_str(text);
         match view {
             View::Label(l) | View::Timer(l) => l.setStringValue(&s),
+            View::Picture(v) => self.load_picture(view.id(), v, text),
             View::Input(f) => {
                 // Don't reset the caret when the value already matches (controlled input echo).
                 if f.stringValue().to_string() != text {
@@ -971,6 +1097,13 @@ impl Widgets for AppKit {
             View::Timer(_) => {
                 self.timers.remove(&view.id());
             }
+            View::Picture(_) => {
+                let id = view.id();
+                self.pictures.retain(|_, ids| {
+                    ids.retain(|(i, _)| *i != id);
+                    !ids.is_empty()
+                });
+            }
             View::Tab(_) => {
                 self.titles.remove(&view.id());
                 self.icons.remove(&view.id());
@@ -1000,6 +1133,20 @@ impl Widgets for AppKit {
             View::Sheet(_) => NSSize::ZERO,
             View::Image(v) => v.fittingSize(),
             View::Timer(l) => l.fittingSize(),
+            // Natural size of the loaded image, scaled to the available width.
+            View::Picture(v) => match v.ivars().image.borrow().as_ref() {
+                Some(img) => {
+                    let size = img.size();
+                    let w = max_width.map_or(size.width, |m| (m as f64).min(size.width));
+                    let h = if size.width > 0. {
+                        w * size.height / size.width
+                    } else {
+                        0.
+                    };
+                    NSSize::new(w, h)
+                }
+                None => NSSize::ZERO,
+            },
             View::Progress(_) => NSSize::new(max_width.unwrap_or(120.) as f64, 6.),
             View::Container(_)
             | View::Screen(_)
@@ -1056,6 +1203,10 @@ impl Widgets for AppKit {
                 self.refresh_stack(st);
             }
             View::Progress(p) => p.setDoubleValue(value),
+            View::Picture(v) => {
+                v.ivars().fit.set(value == 1.);
+                v.setNeedsDisplay(true);
+            }
             View::Timer(l) => {
                 self.timers.insert(view.id(), (l.clone(), value));
                 l.setStringValue(&NSString::from_str(&prism_core::format_remaining(value)));
@@ -1096,6 +1247,31 @@ impl Widgets for AppKit {
         };
         let appearance = name.and_then(objc2_app_kit::NSAppearance::appearanceNamed);
         NSApplication::sharedApplication(self.mtm).setAppearance(appearance.as_deref());
+    }
+
+    fn set_scroll_events(&mut self, view: &View, on: bool) {
+        let View::Scroll(sc) = view else { return };
+        let clip = sc.scroll.contentView();
+        let center = objc2_foundation::NSNotificationCenter::defaultCenter();
+        let name = unsafe { objc2_app_kit::NSViewBoundsDidChangeNotification };
+        unsafe { center.removeObserver_name_object(&self.target, Some(name), Some(&clip)) };
+        if on {
+            clip.setPostsBoundsChangedNotifications(true);
+            unsafe {
+                center.addObserver_selector_name_object(
+                    &self.target,
+                    sel!(onScrollBounds:),
+                    Some(name),
+                    Some(&clip),
+                )
+            };
+        }
+    }
+
+    fn set_swipe(&mut self, view: &View, left: bool, right: bool) {
+        if let View::Container(v) | View::Screen(v) | View::Tab(v) = view {
+            v.ivars().swipe.set((left, right));
+        }
     }
 
     fn set_menu(&mut self, view: &View, menu: Option<&prism_core::menu::MenuSpec>) {
@@ -1252,6 +1428,9 @@ pub fn run(config: AppConfig, init: AppInit) {
         icons: HashMap::new(),
         timers: HashMap::new(),
         sheets: Vec::new(),
+        pictures: HashMap::new(),
+        image_cache: HashMap::new(),
+        image_sources: image_sources(config.assets.as_deref()),
     });
     let first = runtime.render();
     let mut state = State {
@@ -1276,8 +1455,13 @@ pub fn run(config: AppConfig, init: AppInit) {
     app.activate();
     if std::env::var_os("PRISM_SNAPSHOT").is_some() || std::env::var_os("PRISM_CLICK").is_some() {
         let none: Option<&AnyObject> = None;
+        // `PRISM_DELAY` (seconds) leaves time for images or network to load.
+        let delay: f64 = std::env::var("PRISM_DELAY")
+            .ok()
+            .and_then(|d| d.parse().ok())
+            .unwrap_or(0.5);
         let _: () = unsafe {
-            msg_send![&*target, performSelector: sel!(prismAutomation:), withObject: none, afterDelay: 0.5f64]
+            msg_send![&*target, performSelector: sel!(prismAutomation:), withObject: none, afterDelay: delay]
         };
     }
     app.run();
@@ -1349,6 +1533,27 @@ fn run_automation(mtm: MainThreadMarker) {
                 None => eprintln!("prism-macos: PRISM_CLICK: nothing labelled {title:?}"),
             }
         }
+    }
+
+    // `PRISM_SCROLL=<y>` scrolls the visible scroll views.
+    if let Some(y) = std::env::var("PRISM_SCROLL")
+        .ok()
+        .and_then(|y| y.parse::<f64>().ok())
+    {
+        fn scroll_all(view: &NSView, y: f64) {
+            if view.isHiddenOrHasHiddenAncestor() || view.window().is_none() {
+                return;
+            }
+            if let Some(sv) = view.downcast_ref::<NSScrollView>() {
+                let clip = sv.contentView();
+                clip.scrollToPoint(NSPoint::new(0., y));
+                sv.reflectScrolledClipView(&clip);
+            }
+            for child in view.subviews().iter() {
+                scroll_all(&child, y);
+            }
+        }
+        scroll_all(&root, y);
     }
 
     with_state(|s| {
@@ -1474,5 +1679,22 @@ fn write_png(view: &NSView, path: &str) {
         } {
             let _ = std::fs::write(path, data.to_vec());
         }
+    }
+}
+
+/// Assets: the bundle's Resources/assets, then the dev directory; downloads
+/// are cached in ~/Library/Caches.
+fn image_sources(dev_assets: Option<&str>) -> prism_native::images::ImageSources {
+    let mut asset_dirs = Vec::new();
+    if let Some(res) = objc2_foundation::NSBundle::mainBundle().resourcePath() {
+        asset_dirs.push(std::path::PathBuf::from(res.to_string()).join("assets"));
+    }
+    if let Some(dev) = dev_assets {
+        asset_dirs.push(dev.into());
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    prism_native::images::ImageSources {
+        asset_dirs,
+        cache_dir: Some(std::path::PathBuf::from(home).join("Library/Caches/prism-images")),
     }
 }

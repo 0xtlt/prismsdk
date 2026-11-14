@@ -8,6 +8,7 @@
 mod a11y;
 mod app;
 mod element;
+pub mod list;
 pub mod menu;
 mod reconcile;
 mod router;
@@ -20,10 +21,12 @@ pub use a11y::{Accessibility, Accessible, Role};
 pub use app::{AnyEntity, App, Appearance, Context, Entity, EntityId, Render};
 pub use element::{
     BackEvent, Button, ChangeEvent, ClickEvent, Div, Element, FluentBuilder, Handler, Image,
-    InputEvent, IntoElement, NavigateEvent, NodeKind, ParentElement, Progress, Screen, Scroll,
-    Stack, Tab, Tabs, Text, TextInput, Timer, Toggle, VNode, button, div, format_remaining, image,
-    lazy, progress, screen, scroll, stack, tab, tabs, text, text_input, timer, toggle,
+    InputEvent, IntoElement, Modal, NavigateEvent, NodeKind, ParentElement, Picture, Progress,
+    Screen, Scroll, ScrollEvent, Stack, SwipeDirection, Tab, Tabs, Text, TextInput, Timer, Toggle,
+    VNode, button, div, format_remaining, image, lazy, modal, picture, progress, screen, scroll,
+    stack, tab, tabs, text, text_input, timer, toggle,
 };
+pub use list::VirtualList;
 pub use menu::{ActionRole, Alert, AlertStyle, Menu, MenuItem, Tray};
 pub use reconcile::{NodeId, Patch, Reconciler, UiEvent};
 pub use router::{Params, Router, RouterBuilder, go_back, navigate_to, normalize_path};
@@ -62,6 +65,9 @@ pub struct AppConfig {
     pub height: f32,
     /// TCP port used by the web backend (`PRISM_PORT` overrides it).
     pub port: u16,
+    /// Directory of app assets (`picture("logo.png")`), used in development;
+    /// bundles copy it into their resources.
+    pub assets: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -71,6 +77,7 @@ impl Default for AppConfig {
             width: 480.,
             height: 640.,
             port: 3000,
+            assets: None,
         }
     }
 }
@@ -165,6 +172,16 @@ impl Runtime {
                 }
             }
             UiEvent::AlertAction(alert, index) => self.app.alert_action(alert, index),
+            UiEvent::Scroll(id, offset, viewport) => {
+                if let Some(h) = self.reconciler.scroll_handler(id) {
+                    h(&ScrollEvent { offset, viewport }, &mut self.app);
+                }
+            }
+            UiEvent::Swipe(id, dir) => {
+                if let Some(h) = self.reconciler.swipe_handler(id, dir) {
+                    h(&ClickEvent, &mut self.app);
+                }
+            }
             UiEvent::Navigate(id, path) => {
                 if let Some(h) = self.reconciler.navigate_handler(id) {
                     h(&NavigateEvent { path }, &mut self.app);
@@ -230,9 +247,10 @@ pub mod prelude {
     pub use crate::{
         Accessible, Activity, Alert, App, AsyncApp, ChangeEvent, ClickEvent, Context, Entity,
         FluentBuilder, Handler, InputEvent, IntoElement, Menu, MenuItem, Notification, Params,
-        ParentElement, Render, Role, Router, Styled, Tray, Widget, WidgetFamily, adaptive, button,
-        div, go_back, image, lazy, navigate_to, progress, px, relative, rgb, rgba, screen, scroll,
-        text, text_input, timer, toggle,
+        ParentElement, Render, Role, Router, ScrollEvent, Styled, SwipeDirection, Tray,
+        VirtualList, Widget, WidgetFamily, adaptive, button, div, go_back, image, lazy,
+        navigate_to, picture, progress, px, relative, rgb, rgba, screen, scroll, text, text_input,
+        timer, toggle,
     };
 }
 

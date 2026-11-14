@@ -971,3 +971,146 @@ fn sheets_present_navigate_and_dismiss() {
     assert!(closed.contains(&Patch::Destroy { id: modal_id }));
     let _ = first;
 }
+
+// --- Virtual lists, swipes, refresh, pictures --------------------------------
+
+use crate::{SwipeDirection, VirtualList, picture};
+
+struct Big {
+    list: Entity<VirtualList>,
+    swiped: u32,
+    refreshing: bool,
+}
+
+impl Render for Big {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .child(self.list)
+            .child(
+                div()
+                    .child(text("swipe me"))
+                    .on_swipe(SwipeDirection::Left, cx.listener(|t, _, _| t.swiped += 1)),
+            )
+            .child(
+                scroll()
+                    .refreshing(self.refreshing)
+                    .on_refresh(cx.listener(|t, _, _| t.refreshing = true))
+                    .child(picture("https://example.com/a.png").alt("A cat")),
+            )
+    }
+}
+
+#[test]
+fn virtual_lists_render_only_visible_rows() {
+    let (mut rt, first) = boot(|cx| {
+        let list = VirtualList::new(cx, 100_000, 50., |i, _| text(format!("Row {i}")));
+        let root = cx.new_entity(|_| Big {
+            list,
+            swiped: 0,
+            refreshing: false,
+        });
+        cx.set_root(root);
+    });
+    let rows = |p: &[Patch]| {
+        p.iter()
+            .filter(|p| matches!(p, Patch::SetText { text, .. } if text.starts_with("Row ")))
+            .count()
+    };
+    let initial = rows(&first);
+    assert!(
+        initial > 10 && initial < 40,
+        "{initial} rows rendered of 100 000"
+    );
+    let scroll_id = first
+        .iter()
+        .find_map(|p| match p {
+            Patch::SetScrollEvents { id, on: true } => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    // The platform reports the real viewport; then a tiny scroll inside the
+    // same window renders nothing.
+    rt.dispatch(UiEvent::Scroll(scroll_id, 0., 800.));
+    assert!(
+        rt.dispatch(UiEvent::Scroll(scroll_id, 10., 800.))
+            .is_empty()
+    );
+    // Jump far down: new rows appear, the far ones are destroyed.
+    let patches = rt.dispatch(UiEvent::Scroll(scroll_id, 2_500_000., 800.));
+    assert!(
+        patches
+            .iter()
+            .any(|p| matches!(p, Patch::SetText { text, .. } if text == "Row 50000"))
+    );
+    assert!(patches.iter().any(|p| matches!(p, Patch::Destroy { .. })));
+}
+
+#[test]
+fn swipes_refresh_and_pictures() {
+    let (mut rt, first) = boot(|cx| {
+        let list = VirtualList::new(cx, 0, 50., |i, _| text(format!("Row {i}")));
+        let root = cx.new_entity(|_| Big {
+            list,
+            swiped: 0,
+            refreshing: false,
+        });
+        cx.set_root(root);
+    });
+    let root: Entity<Big> = first_root(&rt);
+    let swipe_id = first
+        .iter()
+        .find_map(|p| match p {
+            Patch::SetSwipe {
+                id,
+                left: true,
+                right: false,
+            } => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    rt.dispatch(UiEvent::Swipe(swipe_id, SwipeDirection::Left));
+    rt.dispatch(UiEvent::Swipe(swipe_id, SwipeDirection::Right));
+    assert_eq!(rt.app.read(&root).swiped, 1);
+
+    // The refreshable scroll is the one marked clickable.
+    let refresh_id = first
+        .iter()
+        .filter_map(|p| match p {
+            Patch::Create {
+                id,
+                kind: NodeKind::Scroll,
+            } => Some(*id),
+            _ => None,
+        })
+        .find(|id| {
+            first.contains(&Patch::SetClickable {
+                id: *id,
+                clickable: true,
+            })
+        })
+        .unwrap();
+    let patches = rt.dispatch(UiEvent::Click(refresh_id));
+    assert!(patches.contains(&Patch::SetValue {
+        id: refresh_id,
+        value: 1.
+    }));
+
+    let pic = first
+        .iter()
+        .find_map(|p| match p {
+            Patch::Create {
+                id,
+                kind: NodeKind::Picture,
+            } => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    assert!(first.contains(&Patch::SetText {
+        id: pic,
+        text: "https://example.com/a.png".into()
+    }));
+    assert_eq!(
+        a11y_of(&first, pic).unwrap().label.as_deref(),
+        Some("A cat")
+    );
+}

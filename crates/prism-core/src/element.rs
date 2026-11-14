@@ -48,6 +48,9 @@ pub enum NodeKind {
     /// stack or tab bar. Reports `UiEvent::Back(id, 0)` when dismissed by the
     /// user (swipe down, Escape).
     Modal,
+    /// A bitmap image from a URL or an app asset (text = source; value 0 =
+    /// fill/cover, 1 = fit/contain). Loaded asynchronously and cached.
+    Picture,
 }
 
 impl NodeKind {
@@ -67,6 +70,7 @@ impl NodeKind {
             NodeKind::Progress => "progress",
             NodeKind::Timer => "timer",
             NodeKind::Modal => "modal",
+            NodeKind::Picture => "picture",
         }
     }
 
@@ -79,6 +83,7 @@ impl NodeKind {
             NodeKind::Tab => Some(Role::TabPanel),
             NodeKind::Text | NodeKind::Timer => Some(Role::Text),
             NodeKind::Progress => Some(Role::ProgressBar),
+            NodeKind::Picture => Some(Role::Image),
             _ => None,
         }
     }
@@ -121,6 +126,19 @@ impl ChangeEvent {
     pub fn index(&self) -> usize {
         self.value.max(0.) as usize
     }
+}
+
+/// A scroll view moved: offset of the content and size of the viewport (pt).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScrollEvent {
+    pub offset: f32,
+    pub viewport: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SwipeDirection {
+    Left,
+    Right,
 }
 
 /// An event handler. Handlers receive the whole `App` so they can update any entity.
@@ -167,6 +185,9 @@ pub struct VNode {
     pub on_back: Option<Handler<BackEvent>>,
     pub on_navigate: Option<Handler<NavigateEvent>>,
     pub on_change: Option<Handler<ChangeEvent>>,
+    pub on_scroll: Option<Handler<ScrollEvent>>,
+    pub on_swipe_left: Option<Handler<ClickEvent>>,
+    pub on_swipe_right: Option<Handler<ClickEvent>>,
 }
 
 impl VNode {
@@ -188,6 +209,9 @@ impl VNode {
             on_back: None,
             on_navigate: None,
             on_change: None,
+            on_scroll: None,
+            on_swipe_left: None,
+            on_swipe_right: None,
         }
     }
 }
@@ -358,6 +382,10 @@ builder!(
     /// A sheet. Usually created by [`Router`](crate::Router) (`cx.present`).
     Modal
 );
+builder!(
+    /// A bitmap image. See [`picture`].
+    Picture
+);
 
 /// A flex container, laid out as a column by default.
 pub fn div() -> Div {
@@ -398,6 +426,16 @@ impl Div {
     /// (plus the Menu key / Shift+F10). Exposed to assistive technologies.
     pub fn context_menu(mut self, menu: crate::menu::Menu) -> Self {
         self.0.context_menu = Some(menu);
+        self
+    }
+
+    /// A horizontal swipe (touch, trackpad). Not reachable by every user:
+    /// also offer the action elsewhere (context menu, button).
+    pub fn on_swipe(mut self, direction: SwipeDirection, handler: Handler<ClickEvent>) -> Self {
+        match direction {
+            SwipeDirection::Left => self.0.on_swipe_left = Some(handler),
+            SwipeDirection::Right => self.0.on_swipe_right = Some(handler),
+        }
         self
     }
 
@@ -508,6 +546,27 @@ pub fn scroll() -> Scroll {
     n.style.flex_shrink = 1.;
     n.style.flex_basis = crate::style::Length::Px(0.);
     Scroll(n)
+}
+
+impl Scroll {
+    /// Called as the content scrolls (virtualized lists, parallax…).
+    pub fn on_scroll(mut self, handler: Handler<ScrollEvent>) -> Self {
+        self.0.on_scroll = Some(handler);
+        self
+    }
+
+    /// Pull to refresh (iOS refresh control; pull gesture and a Refresh
+    /// button on the web). Show progress with [`Scroll::refreshing`].
+    pub fn on_refresh(mut self, handler: Handler<ClickEvent>) -> Self {
+        self.0.on_click = Some(handler);
+        self
+    }
+
+    /// Whether a refresh is in progress (spinner visible).
+    pub fn refreshing(mut self, on: bool) -> Self {
+        self.0.value = Some(if on { 1. } else { 0. });
+        self
+    }
 }
 
 impl ParentElement for Scroll {
@@ -635,6 +694,35 @@ impl Stack {
     /// Shows a Close button on the first screen (stacks inside sheets).
     pub fn closable(mut self, closable: bool) -> Self {
         self.0.value = Some(if closable { 1. } else { 0. });
+        self
+    }
+}
+
+/// An image from a URL (`https://…`) or an app asset (`"logo.png"`, served
+/// from `assets/`). Decorative unless given [`Picture::alt`].
+pub fn picture(src: impl Into<String>) -> Picture {
+    let mut n = VNode::new(NodeKind::Picture);
+    n.text = src.into();
+    n.value = Some(0.);
+    n.a11y.hidden = true;
+    Picture(n)
+}
+
+impl Picture {
+    /// Describes the image for screen readers (and makes it non-decorative).
+    pub fn alt(mut self, alt: impl Into<String>) -> Self {
+        self.0.a11y.hidden = false;
+        self.0.a11y.label = Some(alt.into());
+        self
+    }
+    /// Scales to fit inside the frame (letterboxed).
+    pub fn fit(mut self) -> Self {
+        self.0.value = Some(1.);
+        self
+    }
+    /// Scales to fill the frame, cropping (default).
+    pub fn fill(mut self) -> Self {
+        self.0.value = Some(0.);
         self
     }
 }

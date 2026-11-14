@@ -21,9 +21,10 @@ use objc2_ui_kit::{
     UIImage, UIImageSymbolConfiguration, UIImageView, UILabel, UINavigationController,
     UINavigationControllerDelegate, UIProgressView, UIResponder, UIScene, UISceneConnectionOptions,
     UISceneDelegate, UISceneSession, UIScrollView, UIScrollViewContentInsetAdjustmentBehavior,
-    UIScrollViewKeyboardDismissMode, UISwitch, UITabBarController, UITabBarControllerDelegate,
-    UITapGestureRecognizer, UITextBorderStyle, UITextField, UITraitCollection,
-    UIUserInterfaceStyle, UIView, UIViewController, UIWindow, UIWindowScene, UIWindowSceneDelegate,
+    UIScrollViewDelegate, UIScrollViewKeyboardDismissMode, UISwitch, UITabBarController,
+    UITabBarControllerDelegate, UITapGestureRecognizer, UITextBorderStyle, UITextField,
+    UITraitCollection, UIUserInterfaceStyle, UIView, UIViewController, UIWindow, UIWindowScene,
+    UIWindowSceneDelegate,
 };
 use prism_core::{
     Accessibility, AppConfig, AppInit, Appearance, Backend, Color, FontWeight, NodeId, NodeKind,
@@ -137,6 +138,23 @@ define_class!(
             dispatch(UiEvent::Input(sender.tag() as NodeId, text));
         }
 
+        #[unsafe(method(onRefresh:))]
+        fn on_refresh(&self, sender: &objc2_ui_kit::UIRefreshControl) {
+            dispatch(UiEvent::Click(sender.tag() as NodeId));
+        }
+
+        #[unsafe(method(onSwipe:))]
+        fn on_swipe(&self, sender: &objc2_ui_kit::UISwipeGestureRecognizer) {
+            let dir = if sender.direction().contains(objc2_ui_kit::UISwipeGestureRecognizerDirection::Left) {
+                prism_core::SwipeDirection::Left
+            } else {
+                prism_core::SwipeDirection::Right
+            };
+            if let Some(view) = sender.view() {
+                dispatch(UiEvent::Swipe(view.tag() as NodeId, dir));
+            }
+        }
+
         #[unsafe(method(onTick:))]
         fn on_tick(&self, _timer: &AnyObject) {
             with_state(|s| s.renderer.widgets.tick());
@@ -172,6 +190,15 @@ define_class!(
         #[unsafe(method(onCloseStack:))]
         fn on_close_stack(&self, sender: &objc2_ui_kit::UIBarButtonItem) {
             dispatch(UiEvent::Back(sender.tag() as NodeId, 0));
+        }
+    }
+
+    unsafe impl UIScrollViewDelegate for Target {
+        /// Virtualized lists follow the scroll position.
+        #[unsafe(method(scrollViewDidScroll:))]
+        fn scroll_view_did_scroll(&self, s: &UIScrollView) {
+            let y = s.contentOffset().y + s.adjustedContentInset().top;
+            dispatch(UiEvent::Scroll(s.tag() as NodeId, y as f32, s.bounds().size.height as f32));
         }
     }
 
@@ -371,6 +398,9 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
         timers: HashMap::new(),
         menus: HashMap::new(),
         presented: Vec::new(),
+        pictures: HashMap::new(),
+        image_cache: HashMap::new(),
+        image_sources: image_sources(_config.assets.as_deref()),
     });
     let first = runtime.render();
     let mut state = State {
@@ -435,6 +465,7 @@ pub enum View {
     Image(Retained<UIImageView>),
     Progress(Retained<UIProgressView>),
     Timer(Retained<UILabel>),
+    Picture(Retained<UIImageView>),
     Label(Retained<UILabel>),
     Button(Retained<UIButton>),
     Input(Retained<UITextField>),
@@ -452,6 +483,7 @@ impl View {
             View::Image(v) => v,
             View::Progress(v) => v,
             View::Timer(v) => v,
+            View::Picture(v) => v,
             View::Label(v) => v,
             View::Button(v) => v,
             View::Input(v) => v,
@@ -478,11 +510,56 @@ pub struct UiKit {
     timers: HashMap<NodeId, (Retained<UILabel>, f64)>,
     /// Context menus by view id (read by the interaction delegate).
     menus: HashMap<NodeId, prism_core::menu::MenuSpec>,
+    /// Pictures waiting for their image, by source.
+    pictures: HashMap<String, Vec<(NodeId, Retained<UIImageView>)>>,
+    /// Decoded images by source.
+    image_cache: HashMap<String, Retained<UIImage>>,
+    image_sources: prism_native::images::ImageSources,
     /// Sheets currently presented, by modal id.
     presented: Vec<NodeId>,
 }
 
 impl UiKit {
+    /// Shows `src` in `view`: from memory, or loaded on a background thread.
+    fn load_picture(&mut self, id: NodeId, view: &Retained<UIImageView>, src: &str) {
+        if let Some(img) = self.image_cache.get(src) {
+            view.setImage(Some(img));
+            return;
+        }
+        view.setImage(None);
+        let waiting = self.pictures.entry(src.to_string()).or_default();
+        waiting.retain(|(i, _)| *i != id);
+        waiting.push((id, view.clone()));
+        if waiting.len() > 1 {
+            return; // already loading
+        }
+        let (src, sources) = (src.to_string(), self.image_sources.clone());
+        std::thread::spawn(move || {
+            let bytes = prism_native::images::load(&src, &sources);
+            dispatch2::DispatchQueue::main().exec_async(move || {
+                with_state(|s| {
+                    s.renderer.widgets.picture_loaded(&src, bytes);
+                    s.renderer.mark_all_dirty();
+                    s.relayout();
+                })
+            });
+        });
+    }
+
+    fn picture_loaded(&mut self, src: &str, bytes: Option<Vec<u8>>) {
+        let waiting = self.pictures.remove(src).unwrap_or_default();
+        let Some(img) =
+            bytes.and_then(|b| UIImage::imageWithData(&objc2_foundation::NSData::from_vec(b)))
+        else {
+            eprintln!("prism-ios: could not load image {src:?}");
+            return;
+        };
+        for (_, view) in waiting {
+            view.setImage(Some(&img));
+        }
+        self.image_cache.insert(src.to_string(), img);
+    }
+
     fn present_sheets(&mut self, sheets: &[View]) {
         for sheet in sheets {
             let id = sheet.id();
@@ -696,6 +773,12 @@ impl Widgets for UiKit {
                 View::Image(v)
             }
             NodeKind::Progress => View::Progress(UIProgressView::new(mtm)),
+            NodeKind::Picture => {
+                let v = UIImageView::new(mtm);
+                v.setClipsToBounds(true);
+                v.setContentMode(objc2_ui_kit::UIViewContentMode::ScaleAspectFill);
+                View::Picture(v)
+            }
             NodeKind::Timer => {
                 let l = UILabel::new(mtm);
                 View::Timer(l)
@@ -767,6 +850,7 @@ impl Widgets for UiKit {
             | View::Tabs(_)
             | View::Tab(_)
             | View::Scroll(_)
+            | View::Picture(_)
             | View::Toggle(_) => {}
             View::Image(v) => {
                 let config = UIImageSymbolConfiguration::configurationWithPointSize_weight(
@@ -813,6 +897,7 @@ impl Widgets for UiKit {
         let s = NSString::from_str(text);
         match view {
             View::Label(l) | View::Timer(l) => l.setText(Some(&s)),
+            View::Picture(v) => self.load_picture(view.id(), v, text),
             View::Input(f) => {
                 if f.text().map(|t| t.to_string()).unwrap_or_default() != text {
                     f.setText(Some(&s));
@@ -837,10 +922,31 @@ impl Widgets for UiKit {
     }
 
     fn set_clickable(&mut self, view: &View, clickable: bool) {
+        // A "clickable" scroll view is refreshable: pull to refresh.
+        if let View::Scroll(s) = view {
+            if clickable {
+                let rc = objc2_ui_kit::UIRefreshControl::new(self.mtm);
+                rc.setTag(s.tag());
+                let target: &AnyObject = &self.target;
+                unsafe {
+                    rc.addTarget_action_forControlEvents(
+                        Some(target),
+                        sel!(onRefresh:),
+                        UIControlEvents::ValueChanged,
+                    )
+                };
+                s.setRefreshControl(Some(&rc));
+            } else {
+                s.setRefreshControl(None);
+            }
+            return;
+        }
         let View::Container(v) = view else { return };
         if let Some(existing) = v.gestureRecognizers() {
             for g in existing.iter() {
-                v.removeGestureRecognizer(&g);
+                if g.isKindOfClass(UITapGestureRecognizer::class()) {
+                    v.removeGestureRecognizer(&g);
+                }
             }
         }
         if clickable {
@@ -943,6 +1049,10 @@ impl Widgets for UiKit {
         self.icons.remove(&id);
         self.selected.remove(&id);
         self.timers.remove(&id);
+        self.pictures.retain(|_, ids| {
+            ids.retain(|(i, _)| *i != id);
+            !ids.is_empty()
+        });
         view.ui().removeFromSuperview();
     }
 
@@ -954,6 +1064,22 @@ impl Widgets for UiKit {
             View::Timer(l) => l.sizeThatFits(limit),
             // A progress bar takes the width it is given.
             View::Progress(_) => CGSize::new(max_width.unwrap_or(120.) as f64, 4.),
+            // Natural size of the loaded image, scaled to the available width.
+            View::Picture(v) => match v.image() {
+                Some(img) => {
+                    let size = unsafe { img.size() };
+                    let w = max_width.map_or(size.width, |m| (m as f64).min(size.width));
+                    CGSize::new(
+                        w,
+                        if size.width > 0. {
+                            w * size.height / size.width
+                        } else {
+                            0.
+                        },
+                    )
+                }
+                None => CGSize::ZERO,
+            },
             View::Container(_)
             | View::Screen(_)
             | View::Stack(_)
@@ -988,6 +1114,20 @@ impl Widgets for UiKit {
                 self.apply_close_button(st, view.id());
             }
             View::Progress(p) => p.setProgress_animated(value as f32, true),
+            View::Picture(v) => v.setContentMode(if value == 1. {
+                objc2_ui_kit::UIViewContentMode::ScaleAspectFit
+            } else {
+                objc2_ui_kit::UIViewContentMode::ScaleAspectFill
+            }),
+            View::Scroll(s) => {
+                if let Some(rc) = s.refreshControl() {
+                    if value != 0. && !rc.isRefreshing() {
+                        rc.beginRefreshing();
+                    } else if value == 0. && rc.isRefreshing() {
+                        rc.endRefreshing();
+                    }
+                }
+            }
             View::Timer(l) => {
                 self.timers.insert(view.id(), (l.clone(), value));
                 l.setText(Some(&NSString::from_str(&prism_core::format_remaining(
@@ -1029,6 +1169,40 @@ impl Widgets for UiKit {
             Appearance::Dark => objc2_ui_kit::UIUserInterfaceStyle::Dark,
         };
         self.controller.setOverrideUserInterfaceStyle(style);
+    }
+
+    fn set_scroll_events(&mut self, view: &View, on: bool) {
+        if let View::Scroll(s) = view {
+            let delegate = on.then(|| ProtocolObject::from_ref(&*self.target));
+            unsafe { s.setDelegate(delegate) };
+        }
+    }
+
+    fn set_swipe(&mut self, view: &View, left: bool, right: bool) {
+        let v = view.ui();
+        if let Some(existing) = v.gestureRecognizers() {
+            for g in existing.iter() {
+                if g.isKindOfClass(objc2_ui_kit::UISwipeGestureRecognizer::class()) {
+                    v.removeGestureRecognizer(&g);
+                }
+            }
+        }
+        use objc2_ui_kit::UISwipeGestureRecognizerDirection as D;
+        for (on, dir) in [(left, D::Left), (right, D::Right)] {
+            if !on {
+                continue;
+            }
+            let target: &AnyObject = &self.target;
+            let swipe = unsafe {
+                objc2_ui_kit::UISwipeGestureRecognizer::initWithTarget_action(
+                    objc2_ui_kit::UISwipeGestureRecognizer::alloc(self.mtm),
+                    Some(target),
+                    Some(sel!(onSwipe:)),
+                )
+            };
+            swipe.setDirection(dir);
+            v.addGestureRecognizer(&swipe);
+        }
     }
 
     fn set_menu(&mut self, view: &View, menu: Option<&prism_core::menu::MenuSpec>) {
@@ -1243,4 +1417,21 @@ fn menu_configuration(
             mtm,
         )
     })
+}
+
+/// Assets: the bundle's `assets/` folder, then the dev directory; downloads
+/// are cached in Library/Caches.
+fn image_sources(dev_assets: Option<&str>) -> prism_native::images::ImageSources {
+    let mut asset_dirs = Vec::new();
+    if let Some(res) = objc2_foundation::NSBundle::mainBundle().resourcePath() {
+        asset_dirs.push(std::path::PathBuf::from(res.to_string()).join("assets"));
+    }
+    if let Some(dev) = dev_assets {
+        asset_dirs.push(dev.into());
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    prism_native::images::ImageSources {
+        asset_dirs,
+        cache_dir: Some(std::path::PathBuf::from(home).join("Library/Caches/prism-images")),
+    }
 }

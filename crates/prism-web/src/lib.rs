@@ -90,6 +90,9 @@ fn handle(stream: TcpStream, config: &AppConfig, init: &AppInit) -> std::io::Res
         }
     };
     let path = request_line.split_whitespace().nth(1).unwrap_or("/");
+    if let Some(asset) = path.strip_prefix("/assets/") {
+        return serve_asset(stream, &percent_decode(asset), config.assets.as_deref());
+    }
     let (status, body, ctype) = match path {
         "/favicon.ico" => ("404 Not Found", "not found".to_string(), "text/plain"),
         // Every other path is an app route: render it on the server.
@@ -105,6 +108,55 @@ fn handle(stream: TcpStream, config: &AppConfig, init: &AppInit) -> std::io::Res
         "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\n{set_cookie}Cache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )?;
+    stream.flush()
+}
+
+/// Serves `assets/<path>` (`PRISM_ASSETS_DIR` overrides the directory).
+fn serve_asset(mut stream: TcpStream, path: &str, configured: Option<&str>) -> std::io::Result<()> {
+    let dir = std::env::var("PRISM_ASSETS_DIR")
+        .ok()
+        .or(configured.map(str::to_string))
+        .unwrap_or_else(|| "assets".into());
+    // No escaping the assets directory.
+    let safe = !path.split('/').any(|seg| seg == ".." || seg.is_empty());
+    let file = std::path::Path::new(&dir).join(path);
+    let body = if safe {
+        std::fs::read(&file).ok()
+    } else {
+        None
+    };
+    let ext = file
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let ctype = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "ico" => "image/x-icon",
+        "css" => "text/css",
+        "js" => "text/javascript",
+        "json" => "application/json",
+        "woff2" => "font/woff2",
+        _ => "application/octet-stream",
+    };
+    match body {
+        Some(body) => {
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nCache-Control: public, max-age=3600\r\nConnection: close\r\n\r\n",
+                body.len()
+            )?;
+            stream.write_all(&body)?;
+        }
+        None => write!(
+            stream,
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )?,
+    }
     stream.flush()
 }
 
@@ -219,6 +271,10 @@ pub fn page(config: &AppConfig, init: &AppInit, path: &str, sid: &str) -> String
   dialog.prism-sheet {{ border: 0; padding: 0; width: min(560px, 100vw); height: min(720px, 92vh); border-radius: 18px; background: Canvas; color: CanvasText; box-shadow: 0 20px 60px rgba(0,0,0,.35); }}
   dialog.prism-sheet[open] {{ display: flex; flex-direction: column; }}
   dialog.prism-sheet > * {{ flex: 1; }}
+  .prism-picture {{ display: block; min-width: 0; min-height: 0; background: rgba(128,128,128,.12); }}
+  .prism-refresh {{ position: absolute; left: -9999px; }}
+  .prism-refresh:focus {{ position: static; margin: 8px auto; padding: 6px 12px; border-radius: 8px; }}
+  .prism-refreshing {{ text-align: center; padding: 10px; font-size: 13px; opacity: .7; }}
   dialog::backdrop {{ background: rgba(0,0,0,.35); }}
   @media (prefers-reduced-motion: reduce) {{ * {{ transition: none !important; }} }}
   .prism-header {{ position: relative; flex: 0 0 44px; display: flex; align-items: center; justify-content: center; border-bottom: 1px solid rgba(128,128,128,.25); background: Canvas; font-size: 15px; font-weight: 600; }}
@@ -420,6 +476,19 @@ fn parse_event(msg: &str) -> Option<UiEvent> {
         "back" => Some(UiEvent::Back(id, v.get("depth")?.as_u64()? as usize)),
         "change" => Some(UiEvent::Change(id, v.get("v")?.as_f64()?)),
         "menu" => Some(UiEvent::MenuSelect(id)),
+        "scroll" => Some(UiEvent::Scroll(
+            id,
+            v.get("o")?.as_f64()? as f32,
+            v.get("v")?.as_f64()? as f32,
+        )),
+        "swipe" => Some(UiEvent::Swipe(
+            id,
+            if v.get("dir")?.as_str()? == "left" {
+                prism_core::SwipeDirection::Left
+            } else {
+                prism_core::SwipeDirection::Right
+            },
+        )),
         "alert" => Some(UiEvent::AlertAction(id, v.get("index")?.as_u64()? as usize)),
         "navigate" => Some(UiEvent::Navigate(id, v.get("path")?.as_str()?.to_string())),
         _ => None,
@@ -476,6 +545,10 @@ impl Encoder {
                 }})
             }
             Patch::SetValue { id, value } => json!({ "op": "value", "id": id, "value": value }),
+            Patch::SetSwipe { id, left, right } => {
+                json!({ "op": "swipe", "id": id, "left": left, "right": right })
+            }
+            Patch::SetScrollEvents { id, on } => json!({ "op": "scrollev", "id": id, "on": on }),
             Patch::SetMenu { id, menu } => json!({
                 "op": "menu", "id": id,
                 "menu": menu.as_ref().map(|m| serde_json::from_str::<Value>(&m.to_json()).unwrap_or(Value::Null)),

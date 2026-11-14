@@ -57,7 +57,7 @@ impl Backend for HtmlBackend {
                 }
                 Patch::SetAppearance { appearance } => self.appearance = *appearance,
                 // Menus open on interaction, once the client runs.
-                Patch::SetMenu { .. } => {}
+                Patch::SetMenu { .. } | Patch::SetSwipe { .. } | Patch::SetScrollEvents { .. } => {}
                 Patch::SetValue { id, value } => self.with(*id, |n| n.value = *value),
                 Patch::SetIcon { id, icon } => self.with(*id, |n| n.icon = icon.clone()),
                 Patch::SetAccessibility { id, a11y } => self.with(*id, |n| n.a11y = a11y.clone()),
@@ -169,6 +169,16 @@ impl HtmlBackend {
                     out,
                     r#"<span {attrs} class="prism-symbol">{}</span>"#,
                     crate::glyphs::glyph(&n.icon)
+                );
+            }
+            NodeKind::Picture => {
+                let alt = n.a11y.label.clone().unwrap_or_default();
+                let fit = if n.value == 1. { "contain" } else { "cover" };
+                let _ = write!(
+                    out,
+                    r#"<img {attrs} class="prism-picture" src="{}" alt="{}" loading="lazy" decoding="async" style="object-fit:{fit}">"#,
+                    escape(&picture_url(&n.text)),
+                    escape(&alt)
                 );
             }
             NodeKind::Progress => {
@@ -297,4 +307,17 @@ pub fn escape(s: &str) -> String {
         }
     }
     o
+}
+
+/// Remote URLs as-is; anything else is an app asset under `/assets/`.
+pub fn picture_url(src: &str) -> String {
+    if src.starts_with("http://")
+        || src.starts_with("https://")
+        || src.starts_with("data:")
+        || src.starts_with('/')
+    {
+        src.to_string()
+    } else {
+        format!("/assets/{src}")
+    }
 }

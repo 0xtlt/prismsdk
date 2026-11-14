@@ -8,7 +8,7 @@
   const tags = {
     view: "div", text: "div", button: "button", text_input: "input",
     stack: "div", screen: "section", toggle: "input", scroll: "div", tabs: "div", tab: "div",
-    image: "span", progress: "progress", timer: "span", modal: "dialog",
+    image: "span", progress: "progress", timer: "span", modal: "dialog", picture: "img",
   };
   // SF Symbol names → glyphs (table generated from Rust: glyphs.rs).
   const glyphs = __GLYPHS__;
@@ -75,6 +75,11 @@
       el.addEventListener("cancel", (e) => { e.preventDefault(); send({ t: "back", id, depth: 0 }); });
     } else if (kind === "scroll") {
       el.className = "prism-scroll";
+    } else if (kind === "picture") {
+      el.className = "prism-picture";
+      el.loading = "lazy";
+      el.decoding = "async";
+      el.alt = "";
     } else if (kind === "image") {
       el.className = "prism-symbol";
     } else if (kind === "progress") {
@@ -106,13 +111,22 @@
     nodes.set(id, el);
   }
 
+  // Orders Prism children; helper elements (no data-pid) are left in place.
   function setChildren(el, ids) {
     const kids = ids.map((i) => nodes.get(i)).filter(Boolean);
-    kids.forEach((kid, i) => {
-      if (el.children[i] !== kid) el.insertBefore(kid, el.children[i] || null);
+    const keep = new Set(kids);
+    [...el.children].forEach((c) => { if (c.dataset.pid && !keep.has(c)) c.remove(); });
+    let anchor = [...el.children].find((c) => c.dataset.pid) || null;
+    kids.forEach((kid) => {
+      if (kid === anchor) {
+        anchor = nextPrism(anchor);
+      } else {
+        el.insertBefore(kid, anchor);
+      }
     });
-    while (el.children.length > kids.length) el.lastElementChild.remove();
   }
+  const nextPrism = (n) => { let c = n.nextElementSibling; while (c && !c.dataset.pid) c = c.nextElementSibling; return c; };
+
 
   // --- Stacks: header (Back + title), only the top screen visible -------------
   function refreshStack(st) {
@@ -221,6 +235,11 @@
           if (owner && owner._tabs) refreshTabs(owner);
           return;
         }
+        if (kind === "picture") {
+          const src = /^(https?:|data:|\/)/.test(p.text) ? p.text : "/assets/" + p.text;
+          if (el.getAttribute("src") !== src) el.src = src;
+          return;
+        }
         if (el.tagName === "INPUT") {
           // Never fight the user's typing: a focused field owns its value.
           if (el.value !== p.text && document.activeElement !== el) el.value = p.text;
@@ -234,10 +253,15 @@
       case "placeholder": el.placeholder = p.text; return;
       case "clickable":
         el.dataset.clickable = p.on ? "1" : "0";
+        if (el.dataset.kind === "scroll") setRefreshable(el, p.id, p.on);
         return;
+      case "scrollev": return setScrollEvents(el, p.id, p.on);
+      case "swipe": el._swipe = { left: p.left, right: p.right }; return bindSwipe(el, p.id);
       case "value":
         if (el.dataset.kind === "toggle") el.checked = p.value !== 0;
         if (el.dataset.kind === "progress") el.value = p.value;
+        if (el.dataset.kind === "picture") el.style.objectFit = p.value === 1 ? "contain" : "cover";
+        if (el.dataset.kind === "scroll") setRefreshing(el, p.value === 1);
         if (el.dataset.kind === "stack") { el._closable = p.value === 1; refreshStack(el); }
         if (el.dataset.kind === "timer") { el.dataset.end = p.value; tick(); }
         if (el.dataset.kind === "tabs") { el._selected = p.value; refreshTabs(el); }
@@ -250,7 +274,9 @@
         if (owner && owner._tabs) refreshTabs(owner);
         return;
       }
-      case "a11y": return applyA11y(el, p.a11y);
+      case "a11y":
+        if (el.dataset.kind === "picture") { el.alt = p.a11y.hidden ? "" : p.a11y.label || ""; return; }
+        return applyA11y(el, p.a11y);
       case "menu": return setMenu(el, p.id, p.menu);
       case "appearance": document.documentElement.style.colorScheme = p.value; return;
       case "children":
@@ -351,6 +377,71 @@
       send({ t: "navigate", id, path: location.pathname });
     }
   });
+
+  // --- Scroll events (virtualized lists) -------------------------------------
+  function setScrollEvents(el, id, on) {
+    el._scrollEvents = on;
+    if (el._scrollBound) return;
+    el._scrollBound = true;
+    let queued = false;
+    const report = () => {
+      queued = false;
+      if (el._scrollEvents) send({ t: "scroll", id, o: el.scrollTop, v: el.clientHeight });
+    };
+    el.addEventListener("scroll", () => { if (!queued) { queued = true; requestAnimationFrame(report); } }, { passive: true });
+    // Report the real viewport once laid out.
+    requestAnimationFrame(() => requestAnimationFrame(report));
+  }
+
+  // --- Pull to refresh: touch pull at the top, or a Refresh button ------------
+  function setRefreshable(el, id, on) {
+    el._refreshable = on;
+    if (!on || el._refreshBound) return;
+    el._refreshBound = true;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "prism-refresh";
+    button.textContent = "Refresh";
+    button.addEventListener("click", () => send({ t: "click", id }));
+    el.prepend(button);
+    let startY = null;
+    el.addEventListener("touchstart", (e) => { startY = el.scrollTop <= 0 ? e.touches[0].clientY : null; }, { passive: true });
+    el.addEventListener("touchmove", (e) => {
+      if (startY !== null && e.touches[0].clientY - startY > 80 && el._refreshable) {
+        startY = null;
+        send({ t: "click", id });
+      }
+    }, { passive: true });
+  }
+
+  function setRefreshing(el, on) {
+    let bar = el.querySelector(":scope > .prism-refreshing");
+    if (on && !bar) {
+      bar = document.createElement("div");
+      bar.className = "prism-refreshing";
+      bar.setAttribute("role", "status");
+      bar.textContent = "Refreshing…";
+      el.prepend(bar);
+    } else if (!on && bar) {
+      bar.remove();
+    }
+  }
+
+  // --- Swipes (touch and pen) -------------------------------------------------
+  function bindSwipe(el, id) {
+    if (el._swipeBound) return;
+    el._swipeBound = true;
+    let start = null;
+    el.addEventListener("pointerdown", (e) => { if (e.pointerType !== "mouse") start = { x: e.clientX, y: e.clientY }; });
+    el.addEventListener("pointerup", (e) => {
+      if (!start) return;
+      const dx = e.clientX - start.x, dy = e.clientY - start.y;
+      start = null;
+      if (Math.abs(dx) < 60 || Math.abs(dy) > 40) return;
+      const dir = dx < 0 ? "left" : "right";
+      if (el._swipe && el._swipe[dir]) send({ t: "swipe", id, dir });
+    });
+  }
 
   // --- Context menus: right-click, long touch, Menu key / Shift+F10 ----------
   let openMenu = null;

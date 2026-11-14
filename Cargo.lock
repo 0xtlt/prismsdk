@@ -532,6 +532,7 @@ name = "prism-native"
 version = "0.1.0"
 dependencies = [
  "prism-core",
+ "prism-http",
  "taffy",
 ]
 

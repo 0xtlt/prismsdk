@@ -18,7 +18,7 @@ use crate::a11y::{Accessibility, Role};
 use crate::app::{AnyEntity, App, Appearance, EntityId};
 use crate::element::{
     BackEvent, ChangeEvent, ClickEvent, Element, Handler, InputEvent, NavigateEvent, NodeKind,
-    VNode,
+    ScrollEvent, SwipeDirection, VNode,
 };
 use crate::style::Style;
 
@@ -27,6 +27,17 @@ pub type NodeId = u64;
 /// A mutation of the host tree.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Patch {
+    /// Which swipe directions a node listens to.
+    SetSwipe {
+        id: NodeId,
+        left: bool,
+        right: bool,
+    },
+    /// Whether a scroll view reports scroll events.
+    SetScrollEvents {
+        id: NodeId,
+        on: bool,
+    },
     /// Context menu of a node (`None` removes it).
     SetMenu {
         id: NodeId,
@@ -104,6 +115,9 @@ pub enum UiEvent {
     MenuSelect(u64),
     /// An alert button was chosen: (alert id, button index).
     AlertAction(u64, usize),
+    /// A scroll view moved: (id, content offset, viewport height).
+    Scroll(NodeId, f32, f32),
+    Swipe(NodeId, SwipeDirection),
 }
 
 /// A mounted host node.
@@ -119,6 +133,8 @@ struct MNode {
     value: Option<f64>,
     a11y: Accessibility,
     menu: Option<crate::menu::MenuSpec>,
+    swipe: (bool, bool),
+    scroll_events: bool,
     clickable: bool,
     parent: Option<NodeId>,
     children: Vec<NodeId>,
@@ -142,6 +158,8 @@ pub struct Reconciler {
     back: HashMap<NodeId, Handler<BackEvent>>,
     navigate: HashMap<NodeId, Handler<NavigateEvent>>,
     change: HashMap<NodeId, Handler<ChangeEvent>>,
+    scroll: HashMap<NodeId, Handler<ScrollEvent>>,
+    swipe: HashMap<(NodeId, SwipeDirection), Handler<ClickEvent>>,
     /// Context menu items: (node id << 16 | n) → handler.
     menu_items: HashMap<u64, Handler<ClickEvent>>,
     // Per-frame scratch state.
@@ -171,6 +189,14 @@ impl Reconciler {
 
     pub fn navigate_handler(&self, id: NodeId) -> Option<Handler<NavigateEvent>> {
         self.navigate.get(&id).cloned()
+    }
+
+    pub fn scroll_handler(&self, id: NodeId) -> Option<Handler<ScrollEvent>> {
+        self.scroll.get(&id).cloned()
+    }
+
+    pub fn swipe_handler(&self, id: NodeId, dir: SwipeDirection) -> Option<Handler<ClickEvent>> {
+        self.swipe.get(&(id, dir)).cloned()
     }
 
     pub fn menu_handler(&self, item: u64) -> Option<Handler<ClickEvent>> {
@@ -366,8 +392,44 @@ impl Reconciler {
             on_change,
             link,
             context_menu,
+            on_scroll,
+            on_swipe_left,
+            on_swipe_right,
             ..
         } = *vnode;
+        {
+            let swipe = (on_swipe_left.is_some(), on_swipe_right.is_some());
+            let scroll_events = on_scroll.is_some();
+            let m = self.nodes.get_mut(&id).expect("node exists");
+            if m.swipe != swipe {
+                self.patches.push(Patch::SetSwipe {
+                    id,
+                    left: swipe.0,
+                    right: swipe.1,
+                });
+                m.swipe = swipe;
+            }
+            if m.scroll_events != scroll_events {
+                self.patches.push(Patch::SetScrollEvents {
+                    id,
+                    on: scroll_events,
+                });
+                m.scroll_events = scroll_events;
+            }
+        }
+        match on_scroll {
+            Some(h) => self.scroll.insert(id, h),
+            None => self.scroll.remove(&id),
+        };
+        for (dir, h) in [
+            (SwipeDirection::Left, on_swipe_left),
+            (SwipeDirection::Right, on_swipe_right),
+        ] {
+            match h {
+                Some(h) => self.swipe.insert((id, dir), h),
+                None => self.swipe.remove(&(id, dir)),
+            };
+        }
         // Context menu: ids derived from the node id stay stable across renders.
         let menu_spec = context_menu.map(|m| {
             let mut handlers = Vec::new();
@@ -618,6 +680,8 @@ impl Reconciler {
                 value: None,
                 a11y: Accessibility::default(),
                 menu: None,
+                swipe: (false, false),
+                scroll_events: false,
                 clickable: false,
                 parent: None,
                 children: Vec::new(),
@@ -644,6 +708,8 @@ impl Reconciler {
         self.navigate.remove(&id);
         self.change.remove(&id);
         self.menu_items.retain(|k, _| k >> 16 != id);
+        self.scroll.remove(&id);
+        self.swipe.retain(|(n, _), _| *n != id);
         self.destroyed.push(id);
     }
 }

@@ -8,6 +8,8 @@
 
 use std::collections::HashMap;
 
+pub mod images;
+
 use prism_core::{
     Accessibility, Align, Appearance, Backend, FlexDirection, Justify, Length, NodeId, NodeKind,
     Patch, Style,
@@ -50,6 +52,10 @@ pub trait Widgets {
     /// Context menu of a view (`None` removes it). Items report
     /// `UiEvent::MenuSelect(id)`.
     fn set_menu(&mut self, _view: &Self::View, _menu: Option<&prism_core::menu::MenuSpec>) {}
+    /// Which horizontal swipes a view reports (`UiEvent::Swipe`).
+    fn set_swipe(&mut self, _view: &Self::View, _left: bool, _right: bool) {}
+    /// Whether a scroll view reports `UiEvent::Scroll`.
+    fn set_scroll_events(&mut self, _view: &Self::View, _on: bool) {}
     /// Light/dark native chrome.
     fn set_appearance(&mut self, _appearance: Appearance) {}
     /// Scrollable extent of a scroll view's content.
@@ -242,6 +248,13 @@ impl<W: Widgets> NativeRenderer<W> {
         }
     }
 
+    /// Forces leaves to be measured again (e.g. an image finished loading).
+    pub fn mark_all_dirty(&mut self) {
+        for e in self.nodes.values() {
+            let _ = self.taffy.mark_dirty(e.layout);
+        }
+    }
+
     fn sync_layout_style(&mut self, id: NodeId) {
         let Some(e) = self.nodes.get(&id) else { return };
         let mut style = to_taffy(&e.style, e.kind);
@@ -397,6 +410,16 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                     }
                 }
                 Patch::SetAppearance { appearance } => self.widgets.set_appearance(*appearance),
+                Patch::SetSwipe { id, left, right } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.set_swipe(&e.view, *left, *right);
+                    }
+                }
+                Patch::SetScrollEvents { id, on } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.set_scroll_events(&e.view, *on);
+                    }
+                }
                 Patch::SetMenu { id, menu } => {
                     if let Some(e) = self.nodes.get(id) {
                         self.widgets.set_menu(&e.view, menu.as_ref());
