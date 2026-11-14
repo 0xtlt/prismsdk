@@ -102,6 +102,16 @@ impl State {
 
     fn relayout(&mut self) {
         let size = self.renderer.widgets.root.frame().size;
+        // Responsive layouts: tell the app its window size (re-renders when
+        // it crosses a breakpoint: rotation, split view, resize).
+        let (w, h) = (size.width as f32, size.height as f32);
+        if w > 0. && (w, h) != self.runtime.app.viewport() {
+            let patches = self.runtime.set_viewport(w, h);
+            if !patches.is_empty() {
+                self.renderer.apply(&patches);
+            }
+        }
+
         self.renderer
             .layout(size.width as f32, size.height as f32, Insets::default());
     }
@@ -1000,6 +1010,10 @@ impl Widgets for AppKit {
         }
     }
 
+    fn set_hidden(&mut self, view: &View, hidden: bool) {
+        view.ns().setHidden(hidden);
+    }
+
     fn set_style(&mut self, view: &View, style: &Style) {
         view.ns().setAlphaValue(style.opacity as f64);
         match view {
@@ -1467,10 +1481,8 @@ pub fn run(config: AppConfig, init: AppInit) {
     let target = Target::new(mtm);
     crate::menus::install_main_menu(mtm, &config.title, &target, &[]);
     let root = PrismView::new(mtm, 0);
-    let frame = NSRect::new(
-        NSPoint::ZERO,
-        NSSize::new(config.width as f64, config.height as f64),
-    );
+    let (width, height) = window_size(&config);
+    let frame = NSRect::new(NSPoint::ZERO, NSSize::new(width as f64, height as f64));
     let style = NSWindowStyleMask::Titled
         | NSWindowStyleMask::Closable
         | NSWindowStyleMask::Miniaturizable
@@ -1509,6 +1521,7 @@ pub fn run(config: AppConfig, init: AppInit) {
             environment: mac_environment(),
             formatter: Some(Box::new(prism_native::apple::FoundationFormatter)),
             cloud_storage: Some(cloud_storage(&data_dir(&config.title))),
+            viewport: Some(window_size(&config)),
             data_dir: Some(data_dir(&config.title)),
             shared_data_dir: None,
         },
@@ -2020,4 +2033,15 @@ fn cloud_storage(dir: &std::path::Path) -> Box<dyn prism_core::Storage> {
         Some(icloud) => Box::new(icloud),
         None => Box::new(prism_core::FileStorage::new(dir.join("cloud"))),
     }
+}
+
+/// The configured window size; `PRISM_WINDOW=1200x800` overrides it.
+fn window_size(config: &AppConfig) -> (f32, f32) {
+    std::env::var("PRISM_WINDOW")
+        .ok()
+        .and_then(|s| {
+            let (w, h) = s.split_once('x')?;
+            Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+        })
+        .unwrap_or((config.width, config.height))
 }

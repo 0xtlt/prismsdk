@@ -219,8 +219,14 @@ impl Render for Home {
                         .text_size(14.)
                         .text_color(t.muted),
                 )
-                .child(self.counter)
-                .child(self.todos),
+                // Laptops and up: the counter beside the todo list.
+                .child(
+                    div()
+                        .gap(20.)
+                        .lg(|s| s.flex_row().items_start())
+                        .child(div().lg(|s| s.w(px(340.))).child(self.counter))
+                        .child(div().lg(|s| s.flex_1()).child(self.todos)),
+                ),
         )
     }
 }
@@ -684,43 +690,52 @@ impl Render for Settings {
                 update_and_save_theme(app, |th| f(th, e.value))
             })
         };
+        // Phones: one column. Tablets and up: a two-column grid.
+        let grid = div()
+            .gap(20.)
+            .md(|s| s.flex_row().flex_wrap().items_start());
         screen.child(
             body.child(
-                ui::card()
-                    .child(ui::heading(strings::settings_appearance(cx)))
-                    .child(appearance_picker(&t, cx))
-                    .child(ui::divider())
-                    .child(
-                        ui::switch(strings::settings_native(cx), t.prefer_native)
-                            .on_change(update(|th, v| th.prefer_native = v != 0.)),
-                    )
-                    .child(ui::divider())
-                    .child(
-                        ui::switch(strings::settings_square(cx), t.radius == 0.)
-                            .on_change(update(|th, v| th.radius = if v != 0. { 0. } else { 10. })),
-                    ),
+                grid.child(cell(
+                    ui::card()
+                        .child(ui::heading(strings::settings_appearance(cx)))
+                        .child(appearance_picker(&t, cx))
+                        .child(ui::divider())
+                        .child(
+                            ui::switch(strings::settings_native(cx), t.prefer_native)
+                                .on_change(update(|th, v| th.prefer_native = v != 0.)),
+                        )
+                        .child(ui::divider())
+                        .child(
+                            ui::switch(strings::settings_square(cx), t.radius == 0.).on_change(
+                                update(|th, v| th.radius = if v != 0. { 0. } else { 10. }),
+                            ),
+                        ),
+                ))
+                .child(cell(
+                    ui::card()
+                        .child(ui::heading(strings::settings_accent(cx)))
+                        .child(div().flex_row().gap(12.).children(ACCENTS.iter().map(
+                            |&(name, hex)| {
+                                let selected = t.accent == rgb(hex);
+                                div()
+                                    .size(px(40.))
+                                    .rounded(20.)
+                                    .bg(rgb(hex))
+                                    .when(selected, |d| d.border(3.).border_color(t.text))
+                                    .accessibility_role(Role::Button)
+                                    .accessibility_label(name(cx))
+                                    .accessibility_checked(selected)
+                                    .on_click(std::rc::Rc::new(
+                                        move |_: &ClickEvent, app: &mut App| {
+                                            update_and_save_theme(app, |th| th.accent = rgb(hex))
+                                        },
+                                    ))
+                            },
+                        ))),
+                ))
+                .child(cell(language_card(cx))),
             )
-            .child(
-                ui::card()
-                    .child(ui::heading(strings::settings_accent(cx)))
-                    .child(div().flex_row().gap(12.).children(ACCENTS.iter().map(
-                        |&(name, hex)| {
-                            let selected = t.accent == rgb(hex);
-                            div()
-                                .size(px(40.))
-                                .rounded(20.)
-                                .bg(rgb(hex))
-                                .when(selected, |d| d.border(3.).border_color(t.text))
-                                .accessibility_role(Role::Button)
-                                .accessibility_label(name(cx))
-                                .accessibility_checked(selected)
-                                .on_click(std::rc::Rc::new(move |_: &ClickEvent, app: &mut App| {
-                                    update_and_save_theme(app, |th| th.accent = rgb(hex))
-                                }))
-                        },
-                    ))),
-            )
-            .child(language_card(cx))
             .child(
                 text(strings::settings_a11y_note(cx))
                     .text_size(13.)
@@ -728,6 +743,18 @@ impl Render for Settings {
             ),
         )
     }
+}
+
+/// A grid cell: full width on phones, half a row from tablets up.
+fn cell(content: impl IntoElement) -> prism::Div {
+    div()
+        .md(|s| {
+            s.with_style(|s| {
+                s.flex_basis = relative(0.4);
+                s.flex_grow = 1.;
+            })
+        })
+        .child(content)
 }
 
 /// System / English / Français / العربية, plus formatting samples.

@@ -1384,3 +1384,42 @@ fn cloud_storage_and_external_changes() {
     rt.cloud_changed(&["theme".to_string()]);
     assert_eq!(*seen.lock().unwrap(), ["theme=light"]);
 }
+
+#[test]
+fn responsive_styles_follow_the_window() {
+    use crate::style::{Breakpoint, FlexDirection};
+    struct Page;
+    impl Render for Page {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .flex_col()
+                .gap(8.)
+                .md(|s| s.flex_row().gap(24.))
+                .child(text(format!("{:?}", cx.breakpoint())))
+                .child(text("phones only").hidden_from(Breakpoint::Medium))
+        }
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Page);
+        cx.set_root(root);
+    });
+    let mut rt = Runtime::new(&init);
+    let first = rt.render();
+    let style_of = |patches: &[Patch], dir: FlexDirection| {
+        patches.iter().any(|p| matches!(p, Patch::SetStyle { style, .. } if style.direction == dir && style.responsive.is_empty()))
+    };
+    assert!(style_of(&first, FlexDirection::Column));
+    find_text(&first, "Compact");
+    // Same class: nothing to re-render.
+    assert!(rt.set_viewport(500., 800.).is_empty());
+    // A tablet: the row layout applies, the phone-only text hides.
+    let patches = rt.set_viewport(820., 1180.);
+    assert!(style_of(&patches, FlexDirection::Row), "{patches:?}");
+    assert!(
+        patches
+            .iter()
+            .any(|p| matches!(p, Patch::SetStyle { style, .. } if style.display_none))
+    );
+    find_text(&patches, "Medium");
+    assert_eq!(rt.app.viewport(), (820., 1180.));
+}

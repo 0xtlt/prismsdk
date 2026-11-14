@@ -101,8 +101,17 @@ impl State {
     }
 
     fn relayout(&mut self) {
+        let size = self.renderer.widgets.root.bounds().size;
+        // Responsive layouts: tell the app its window size (re-renders when
+        // it crosses a breakpoint: rotation, split view, resize).
+        let (w, h) = (size.width as f32, size.height as f32);
+        if w > 0. && (w, h) != self.runtime.app.viewport() {
+            let patches = self.runtime.set_viewport(w, h);
+            if !patches.is_empty() {
+                self.renderer.apply(&patches);
+            }
+        }
         let root = &self.renderer.widgets.root;
-        let size = root.bounds().size;
         let i = root.safeAreaInsets();
         let insets = Insets {
             top: i.top as f32,
@@ -920,6 +929,10 @@ impl Widgets for UiKit {
             set_semantic(view.ui(), attr);
         }
         view
+    }
+
+    fn set_hidden(&mut self, view: &View, hidden: bool) {
+        view.ui().setHidden(hidden);
     }
 
     fn set_style(&mut self, view: &View, style: &Style) {
@@ -1869,6 +1882,8 @@ fn make_runtime(
             environment: ios_environment(),
             formatter: Some(Box::new(prism_native::apple::FoundationFormatter)),
             cloud_storage: Some(cloud_storage(&data_dir())),
+            // Set from the window at the first layout.
+            viewport: None,
             data_dir: Some(data_dir()),
             shared_data_dir: None,
         },

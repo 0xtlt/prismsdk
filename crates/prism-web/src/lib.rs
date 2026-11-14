@@ -69,6 +69,7 @@ fn handle(stream: TcpStream, config: &AppConfig, init: &AppInit) -> std::io::Res
     let mut cookie = None;
     let mut language = None;
     let mut tz = None;
+    let mut viewport = None;
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line)? == 0 || line == "\r\n" {
@@ -79,6 +80,17 @@ fn handle(stream: TcpStream, config: &AppConfig, init: &AppInit) -> std::io::Res
         {
             cookie = session_id(value);
             tz = time_zone(value);
+            viewport = viewport.or(viewport_cookie(value));
+        }
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("user-agent")
+            && viewport.is_none()
+        {
+            // First visit: a phone or a desktop, until the page reports.
+            let mobile = ["Mobile", "Android", "iPhone"]
+                .iter()
+                .any(|m| value.contains(m));
+            viewport = Some(if mobile { (390., 844.) } else { (1280., 800.) });
         }
         if let Some((name, value)) = line.split_once(':')
             && name.eq_ignore_ascii_case("accept-language")
@@ -111,7 +123,15 @@ fn handle(stream: TcpStream, config: &AppConfig, init: &AppInit) -> std::io::Res
         // Every other path is an app route: render it on the server.
         path => (
             "200 OK",
-            page(config, init, &percent_decode(path), &sid, language, tz),
+            page(
+                config,
+                init,
+                &percent_decode(path),
+                &sid,
+                language,
+                tz,
+                viewport,
+            ),
             "text/html; charset=utf-8",
         ),
     };
@@ -236,6 +256,15 @@ fn time_zone(cookie_header: &str) -> Option<i32> {
         .find_map(|kv| kv.trim().strip_prefix("prism_tz="))
         .and_then(|v| v.parse().ok())
         .filter(|v: &i32| v.abs() <= 14 * 3600)
+}
+
+/// The last viewport the page reported (`prism_vw=1280x800`).
+fn viewport_cookie(cookie_header: &str) -> Option<(f32, f32)> {
+    let v = cookie_header
+        .split(';')
+        .find_map(|kv| kv.trim().strip_prefix("prism_vw="))?;
+    let (w, h) = v.split_once('x')?;
+    Some((w.parse().ok()?, h.parse().ok()?))
 }
 
 /// Where a browser's picked files are stored.
@@ -375,6 +404,7 @@ pub fn page(
     sid: &str,
     language: Option<prism_core::Locale>,
     tz: Option<i32>,
+    viewport: Option<(f32, f32)>,
 ) -> String {
     let mut runtime = Runtime::with_options(
         init,
@@ -388,6 +418,7 @@ pub fn page(
             cloud_storage: Some(cloud_storage_for(sid)),
             data_dir: Some(data_root().join(sid)),
             shared_data_dir: Some(data_root()),
+            viewport,
         },
     );
     let mut html = HtmlBackend::default();
@@ -423,6 +454,12 @@ pub fn page(
   .prism-tab {{ flex: 0 1 140px; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px 8px; border: 0; border-radius: 8px; background: none; color: GrayText; font: inherit; font-size: 12px; cursor: pointer; }}
   .prism-tab[aria-selected="true"] {{ color: LinkText; background: rgba(128,128,128,.12); }}
   .prism-tab-icon {{ font-size: 18px; line-height: 1; }}
+  /* Wide screens: the tab bar becomes a sidebar. */
+  @media (min-width: 1024px) {{
+    .prism-tabs {{ flex-direction: row; }}
+    .prism-tabbar {{ order: -1; flex-direction: column; justify-content: flex-start; width: 220px; padding: 12px 8px; border-top: 0; border-inline-end: 1px solid rgba(128,128,128,.25); }}
+    .prism-tab {{ flex: 0 0 auto; flex-direction: row; gap: 10px; padding: 8px 12px; font-size: 14px; }}
+  }}
   .prism-switch {{ appearance: none; width: 44px; height: 26px; margin: 0; border-radius: 13px; background: rgba(128,128,128,.35); position: relative; cursor: pointer; transition: background .15s; flex-shrink: 0; }}
   .prism-switch::after {{ content: ""; position: absolute; top: 2px; left: 2px; width: 22px; height: 22px; border-radius: 50%; background: white; box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform .15s; }}
   .prism-switch:checked {{ background: #34c759; }}
@@ -494,6 +531,7 @@ fn session(stream: TcpStream, init: &AppInit) {
     let mut sid = None;
     let mut language = None;
     let mut tz = None;
+    let mut viewport = None;
     let handshake = tungstenite::accept_hdr(
         stream,
         |req: &tungstenite::handshake::server::Request, resp| {
@@ -507,6 +545,14 @@ fn session(stream: TcpStream, init: &AppInit) {
                 .query()
                 .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("tz=")))
                 .and_then(|v| v.parse().ok());
+            viewport = req.uri().query().and_then(|q| {
+                let get = |k: &str| {
+                    q.split('&')
+                        .find_map(|kv| kv.strip_prefix(k))
+                        .and_then(|v| v.parse::<f32>().ok())
+                };
+                Some((get("w=")?, get("h=")?))
+            });
             language = req
                 .headers()
                 .get("accept-language")
@@ -543,6 +589,7 @@ fn session(stream: TcpStream, init: &AppInit) {
             cloud_storage: Some(cloud_storage_for(&sid)),
             data_dir: Some(data_root().join(&sid)),
             shared_data_dir: Some(data_root()),
+            viewport,
         },
     );
     let mut encoder = Encoder::default();
@@ -641,6 +688,20 @@ fn session(stream: TcpStream, init: &AppInit) {
             } else {
                 runtime.device_event(id, prism_core::DeviceEvent::Motion(motion_from(&v)))
             };
+            if !patches.is_empty() && send(&mut ws, &mut encoder, "patch", &patches).is_err() {
+                return;
+            }
+            continue;
+        }
+        // The browser window was resized.
+        if let Ok(v) = serde_json::from_str::<Value>(&msg)
+            && v.get("t").and_then(Value::as_str) == Some("viewport")
+            && let (Some(w), Some(h)) = (
+                v.get("w").and_then(Value::as_f64),
+                v.get("h").and_then(Value::as_f64),
+            )
+        {
+            let patches = runtime.set_viewport(w as f32, h as f32);
             if !patches.is_empty() && send(&mut ws, &mut encoder, "patch", &patches).is_err() {
                 return;
             }

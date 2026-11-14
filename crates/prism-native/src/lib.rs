@@ -60,6 +60,8 @@ pub trait Widgets {
     fn set_scroll_events(&mut self, _view: &Self::View, _on: bool) {}
     /// Light/dark native chrome.
     fn set_appearance(&mut self, _appearance: Appearance) {}
+    /// `display: none` (also hides it from assistive technologies).
+    fn set_hidden(&mut self, _view: &Self::View, _hidden: bool) {}
     /// Scrollable extent of a scroll view's content.
     fn set_content_size(&mut self, _view: &Self::View, _width: f32, _height: f32) {}
     /// Like `set_frame`, animated (only called when the frame changes).
@@ -435,6 +437,9 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                 Patch::SetStyle { id, style } => {
                     if let Some(e) = self.nodes.get(id) {
                         let s = self.effective_style(style, e.kind);
+                        if e.style.display_none != s.display_none || s.display_none {
+                            self.widgets.set_hidden(&e.view, s.display_none);
+                        }
                         match s.transition {
                             Some(t) if e.frame.is_some() => {
                                 self.widgets.set_style_animated(&e.view, &s, t)
@@ -592,7 +597,11 @@ pub fn to_taffy(s: &Style, kind: NodeKind) -> taffy::Style {
     };
     let container = is_container(kind);
     taffy::Style {
-        display: taffy::Display::Flex,
+        display: if s.display_none {
+            taffy::Display::None
+        } else {
+            taffy::Display::Flex
+        },
         flex_direction: match s.direction {
             FlexDirection::Row => taffy::FlexDirection::Row,
             FlexDirection::Column => taffy::FlexDirection::Column,

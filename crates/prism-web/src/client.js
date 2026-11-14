@@ -740,6 +740,15 @@
     }
   }
 
+  // Window size → responsive layouts (the server re-renders across breakpoints).
+  let resizeTimer = null;
+  const reportViewport = () => {
+    document.cookie = `prism_vw=${innerWidth}x${innerHeight}; Path=/; Max-Age=31536000; SameSite=Lax`;
+    send({ t: "viewport", w: innerWidth, h: innerHeight });
+  };
+  addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(reportViewport, 120); });
+  document.cookie = `prism_vw=${innerWidth}x${innerHeight}; Path=/; Max-Age=31536000; SameSite=Lax`;
+
   // Page visibility → app lifecycle (background tasks keep running server-side).
   const reportLifecycle = () => send({ t: "lifecycle", state: document.hidden ? "background" : document.hasFocus() ? "active" : "inactive" });
   document.addEventListener("visibilitychange", reportLifecycle);
@@ -908,7 +917,7 @@
 
   function connect() {
     const path = encodeURIComponent(location.pathname);
-    ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?path=${path}&tz=${tz}`);
+    ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?path=${path}&tz=${tz}&w=${innerWidth}&h=${innerHeight}`);
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
       if (!msg.p) return service(msg);

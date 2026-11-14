@@ -246,6 +246,8 @@ pub const DEFAULT_FONT_SIZE: f32 = 16.;
 /// The complete style of a node.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Style {
+    /// Removed from layout and hidden (`display: none`).
+    pub display_none: bool,
     pub direction: FlexDirection,
     pub wrap: bool,
     pub align_items: Align,
@@ -277,6 +279,103 @@ pub struct Style {
 
     /// Animates frame, opacity and color changes (skipped with reduce motion).
     pub transition: Option<Transition>,
+
+    /// Changes applied from a window width up (`.md(|s| s.flex_row())`).
+    pub responsive: Responsive,
+}
+
+/// Window size classes, by width in points (CSS pixels on the web).
+///
+/// | | Width | Typically |
+/// |---|---|---|
+/// | `Compact` | < 600 | phones |
+/// | `Medium` | 600 – 1023 | tablets portrait, small windows |
+/// | `Expanded` | 1024 – 1439 | tablets landscape, laptops |
+/// | `Large` | ≥ 1440 | desktops |
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub enum Breakpoint {
+    #[default]
+    Compact,
+    Medium,
+    Expanded,
+    Large,
+}
+
+impl Breakpoint {
+    pub fn for_width(width: f32) -> Self {
+        match width {
+            w if w >= 1440. => Breakpoint::Large,
+            w if w >= 1024. => Breakpoint::Expanded,
+            w if w >= 600. => Breakpoint::Medium,
+            _ => Breakpoint::Compact,
+        }
+    }
+
+    /// The smallest width of this class.
+    pub fn min_width(self) -> f32 {
+        match self {
+            Breakpoint::Compact => 0.,
+            Breakpoint::Medium => 600.,
+            Breakpoint::Expanded => 1024.,
+            Breakpoint::Large => 1440.,
+        }
+    }
+}
+
+type Rule = std::rc::Rc<dyn Fn(Style) -> Style>;
+
+/// Style changes by breakpoint; resolved for the current window when the
+/// tree is rendered.
+#[derive(Clone, Default)]
+pub struct Responsive(Vec<(Breakpoint, Rule)>);
+
+impl Responsive {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::fmt::Debug for Responsive {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(self.0.iter().map(|(b, _)| b))
+            .finish()
+    }
+}
+
+/// Rules are closures: two styles with rules are never equal (resolved
+/// styles, which have none, compare normally).
+impl PartialEq for Responsive {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.is_empty() && other.0.is_empty()
+    }
+}
+
+impl Style {
+    /// This style at `breakpoint`: rules for it and smaller ones applied,
+    /// smallest first.
+    pub fn resolve(&self, breakpoint: Breakpoint) -> Style {
+        if self.responsive.is_empty() {
+            return self.clone();
+        }
+        let mut rules = self.responsive.0.clone();
+        rules.sort_by_key(|(b, _)| *b);
+        let mut s = self.clone();
+        s.responsive = Responsive::default();
+        for (b, rule) in rules {
+            if b <= breakpoint {
+                s = rule(s);
+            }
+        }
+        s
+    }
+}
+
+/// Lets responsive rules use the usual builders: `.md(|s| s.flex_row().gap(24.))`.
+impl Styled for Style {
+    fn style_mut(&mut self) -> &mut Style {
+        self
+    }
 }
 
 /// How style and layout changes animate.
@@ -320,6 +419,7 @@ pub enum Curve {
 impl Default for Style {
     fn default() -> Self {
         Style {
+            display_none: false,
             direction: FlexDirection::Column,
             wrap: false,
             align_items: Align::Stretch,
@@ -347,6 +447,7 @@ impl Default for Style {
             font_weight: FontWeight::Regular,
             text_align: TextAlign::Left,
             transition: None,
+            responsive: Responsive::default(),
         }
     }
 }
@@ -569,6 +670,33 @@ pub trait Styled: Sized {
     }
     fn text_right(self) -> Self {
         self.with_style(|s| s.text_align = TextAlign::Right)
+    }
+
+    // Responsive: applied when the window is at least this wide.
+    /// From `breakpoint` up.
+    fn at(self, breakpoint: Breakpoint, f: impl Fn(Style) -> Style + 'static) -> Self {
+        self.with_style(|s| s.responsive.0.push((breakpoint, std::rc::Rc::new(f))))
+    }
+    /// Tablets and up (≥ 600).
+    fn md(self, f: impl Fn(Style) -> Style + 'static) -> Self {
+        self.at(Breakpoint::Medium, f)
+    }
+    /// Laptops and up (≥ 1024).
+    fn lg(self, f: impl Fn(Style) -> Style + 'static) -> Self {
+        self.at(Breakpoint::Expanded, f)
+    }
+    /// Desktops (≥ 1440).
+    fn xl(self, f: impl Fn(Style) -> Style + 'static) -> Self {
+        self.at(Breakpoint::Large, f)
+    }
+    /// Hidden from `breakpoint` up (`hidden_from(Medium)`: phones only).
+    fn hidden_from(self, breakpoint: Breakpoint) -> Self {
+        self.at(breakpoint, |s| s.with_style(|s| s.display_none = true))
+    }
+    /// Hidden below `breakpoint` (`visible_from(Expanded)`: large screens only).
+    fn visible_from(self, breakpoint: Breakpoint) -> Self {
+        self.with_style(|s| s.display_none = true)
+            .at(breakpoint, |s| s.with_style(|s| s.display_none = false))
     }
 
     // Motion

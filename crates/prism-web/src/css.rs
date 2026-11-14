@@ -24,6 +24,9 @@ fn align(a: Align) -> &'static str {
 pub fn css(kind: NodeKind, s: &Style) -> String {
     let mut c = String::from("box-sizing:border-box;min-width:0;");
     let w = &mut c;
+    if s.display_none {
+        w.push_str("display:none !important;");
+    }
     match kind {
         NodeKind::Text => w.push_str("display:block;white-space:pre-wrap;overflow-wrap:anywhere;"),
         NodeKind::Timer => w.push_str("display:block;font-variant-numeric:tabular-nums;"),
