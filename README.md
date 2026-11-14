@@ -452,8 +452,18 @@ mise run web        # the example, restarting on save (also: macos, ios, macos-a
 - macOS dev hooks: `PRISM_CLICK="+1|Dark mode" PRISM_SCROLL=600 PRISM_DELAY=2 PRISM_SNAPSHOT=out.png cargo run -p counter` presses controls by title or accessibility label, scrolls, waits, writes a PNG of the window, and quits.
 - CI (`.github/workflows/ci.yml`): format, tests, clippy for macOS / iOS simulator / iOS device / web, then release bundles and a web smoke test.
 
+## tvOS
+
+`prism run tvos` (simulator) / `prism build tvos`: the UIKit backend, adapted to the Siri Remote.
+
+- Clickable views take the focus (raised with a shadow) and react to the select press; buttons use the primary action.
+- Toggles are check-mark buttons (`UISwitch` does not exist on tvOS).
+- The whole UI is zoomed by the system's body text size ÷ 17, so phone-sized styles read from a sofa. The app sees the viewport in Prism points (1920 ÷ zoom), so breakpoints keep working. `PRISM_ZOOM` overrides it.
+- Not on tvOS (the SDK marks them unavailable): notifications with text, widgets, Live Activities, motion, photo/camera pickers, haptics, clipboard, share sheet, pull to refresh. Location gives one position at a time. `cx.capabilities()` reports all of this, and `.only(Platform::TV)` / `Platform::Tvos` adapt the UI.
+- Dev hooks on iOS and tvOS: `PRISM_CLICK="+1|Save"` presses by title or label, `PRISM_SNAPSHOT=/abs/out.png` saves the window and quits.
+
 ## Status
 
 Primitives: `div`, `text`, `button`, `text_input`, `toggle`, `scroll`, `picture`, `VirtualList`, `screen`, `Router` (stacks, tabs, sheets). Component library `prism::ui`. Accessibility on all backends. Light/dark appearance.
 Widgets, Live Activities (Dynamic Island), notifications with actions, background tasks, device APIs (location, motion, photos, camera, haptics, clipboard, share), alerts, context menus, tray and app menus, async tasks, HTTP, storage, i18n/RTL, Dynamic Type, animations, `prism` CLI.
-Not yet: Android, Windows, Linux backends (the `Widgets` trait and `PlatformServices` are the extension points).
+Platforms: web, macOS, iOS/iPadOS, tvOS. Not yet: watchOS, Android, Windows, Linux backends (the `Widgets` trait and `PlatformServices` are the extension points).

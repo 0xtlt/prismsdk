@@ -23,6 +23,8 @@ pub enum Platform {
     Windows,
     Linux,
     Web,
+    Tvos,
+    Watchos,
 }
 
 impl Platform {
@@ -31,14 +33,27 @@ impl Platform {
     pub const DESKTOP: Platforms = Platforms(
         1 << Platform::Macos as u8 | 1 << Platform::Windows as u8 | 1 << Platform::Linux as u8,
     );
-    pub const APPLE: Platforms = Platforms(1 << Platform::Ios as u8 | 1 << Platform::Macos as u8);
+    pub const APPLE: Platforms = Platforms(
+        1 << Platform::Ios as u8
+            | 1 << Platform::Macos as u8
+            | 1 << Platform::Tvos as u8
+            | 1 << Platform::Watchos as u8,
+    );
+    /// TVs (a remote, no touch): tvOS.
+    pub const TV: Platforms = Platforms(1 << Platform::Tvos as u8);
+    /// Watches: watchOS.
+    pub const WEARABLE: Platforms = Platforms(1 << Platform::Watchos as u8);
+    pub const ALL: Platforms = Platforms(0xff);
     /// Everything but the web.
-    pub const NATIVE: Platforms = Platforms(0b011111);
-    pub const ALL: Platforms = Platforms(0b111111);
+    pub const NATIVE: Platforms = Platforms(!(1 << Platform::Web as u8));
 
     /// The platform this binary was compiled for (native backends).
     pub const fn compiled() -> Platform {
-        if cfg!(target_os = "ios") {
+        if cfg!(target_os = "tvos") {
+            Platform::Tvos
+        } else if cfg!(target_os = "watchos") {
+            Platform::Watchos
+        } else if cfg!(target_os = "ios") {
             Platform::Ios
         } else if cfg!(target_os = "android") {
             Platform::Android
@@ -72,6 +87,8 @@ impl Platform {
             Platform::Windows => "windows",
             Platform::Linux => "linux",
             Platform::Web => "web",
+            Platform::Tvos => "tvos",
+            Platform::Watchos => "watchos",
         }
     }
 }

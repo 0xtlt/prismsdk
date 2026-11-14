@@ -143,6 +143,8 @@ pub struct NativeRenderer<W: Widgets> {
     /// comes from the platform's navigation container, not from flexbox.
     stack_screens: HashMap<NodeId, Vec<NodeId>>,
     env: RenderEnvironment,
+    /// Every length is multiplied by this (TVs: bigger than phone sizes).
+    zoom: f32,
 }
 
 impl<W: Widgets> NativeRenderer<W> {
@@ -164,13 +166,36 @@ impl<W: Widgets> NativeRenderer<W> {
                 text_scale: 1.,
                 ..Default::default()
             },
+            zoom: 1.,
         }
+    }
+
+    /// Zooms the whole UI: styles are in Prism points, views get
+    /// `points × zoom`. The app sees a viewport of `window / zoom` (see
+    /// [`zoom`](Self::zoom)).
+    pub fn set_zoom(&mut self, zoom: f32) {
+        if zoom == self.zoom || zoom <= 0. {
+            return;
+        }
+        self.zoom = zoom;
+        let ids: Vec<NodeId> = self.nodes.keys().copied().collect();
+        for id in ids {
+            let e = &self.nodes[&id];
+            let s = self.effective_style(&e.style, e.kind);
+            self.widgets.set_style(&e.view, &s);
+            self.sync_layout_style(id);
+        }
+        self.mark_all_dirty();
+    }
+
+    pub fn zoom(&self) -> f32 {
+        self.zoom
     }
 
     /// The style handed to the platform: Dynamic Type scaling and
     /// right-to-left text alignment applied.
     fn effective_style(&self, style: &Style, kind: NodeKind) -> Style {
-        let mut s = style.clone();
+        let mut s = style.scaled(self.zoom);
         if kind != NodeKind::View && self.env.text_scale != 1. {
             s.font_size = (s.font_size * self.env.text_scale).round();
         }
@@ -287,8 +312,9 @@ impl<W: Widgets> NativeRenderer<W> {
             return;
         };
         let vp = self.widgets.screen_viewport(&st.view, &sc.view);
-        let mut style = to_taffy(&sc.style, NodeKind::View);
-        let (p, mut i) = (sc.style.padding, vp.insets);
+        let zoomed = sc.style.scaled(self.zoom);
+        let mut style = to_taffy(&zoomed, NodeKind::View);
+        let (p, mut i) = (zoomed.padding, vp.insets);
         // A screen that starts with a scroll view lets it run under the bars,
         // like native apps: the platform insets its content (and collapses
         // large titles) itself.
@@ -330,14 +356,15 @@ impl<W: Widgets> NativeRenderer<W> {
 
     fn sync_layout_style(&mut self, id: NodeId) {
         let Some(e) = self.nodes.get(&id) else { return };
-        let mut style = to_taffy(&e.style, e.kind);
+        let zoomed = e.style.scaled(self.zoom);
+        let mut style = to_taffy(&zoomed, e.kind);
         if self.root == Some(id) {
             // Like `#prism-root > *` on the web: the root fills the viewport.
             style.flex_grow = 1.;
         }
         // A root stack handles the safe area itself (navigation bar, screens).
         if self.root == Some(id) && !is_managed(e.kind) {
-            let (p, i) = (e.style.padding, self.insets);
+            let (p, i) = (zoomed.padding, self.insets);
             style.padding = Rect {
                 top: LengthPercentage::length(p.top + i.top),
                 right: LengthPercentage::length(p.right + i.right),

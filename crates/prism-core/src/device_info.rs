@@ -247,6 +247,8 @@ pub enum OsName {
     Windows,
     Linux,
     ChromeOs,
+    Tvos,
+    Watchos,
     #[default]
     Unknown,
 }
@@ -261,6 +263,8 @@ impl OsName {
             OsName::Windows => "Windows",
             OsName::Linux => "Linux",
             OsName::ChromeOs => "ChromeOS",
+            OsName::Tvos => "tvOS",
+            OsName::Watchos => "watchOS",
             OsName::Unknown => "Unknown",
         }
     }
@@ -274,6 +278,8 @@ impl OsName {
             "windows" => OsName::Windows,
             "linux" => OsName::Linux,
             "chromeos" | "chrome os" => OsName::ChromeOs,
+            "tvos" => OsName::Tvos,
+            "watchos" => OsName::Watchos,
             _ => OsName::Unknown,
         }
     }
@@ -388,6 +394,8 @@ impl DeviceInfo {
             Platform::Windows => (DeviceKind::Desktop, OsName::Windows, false),
             Platform::Linux => (DeviceKind::Desktop, OsName::Linux, false),
             Platform::Web => (DeviceKind::Unknown, OsName::Unknown, false),
+            Platform::Tvos => (DeviceKind::Tv, OsName::Tvos, false),
+            Platform::Watchos => (DeviceKind::Watch, OsName::Watchos, true),
         };
         DeviceInfo {
             kind,

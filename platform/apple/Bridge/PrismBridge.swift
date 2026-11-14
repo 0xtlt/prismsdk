@@ -3,8 +3,10 @@
 // the app binary by prism-ios / prism-macos build scripts.
 import Foundation
 import UserNotifications
+#if canImport(WidgetKit)
 import WidgetKit
-#if os(iOS)
+#endif
+#if canImport(ActivityKit)
 import ActivityKit
 #endif
 
@@ -20,6 +22,18 @@ private func info(_ key: String) -> String? { Bundle.main.object(forInfoDictiona
 
 // MARK: Notifications
 
+#if os(tvOS)
+// tvOS notifications have no title or body (UNNotificationContent): only
+// the badge. Capabilities say `notifications: false` there.
+@_cdecl("prism_bridge_init")
+public func prismBridgeInit() -> Bool { false }
+@_cdecl("prism_notify_permission")
+public func prismNotifyPermission() {}
+@_cdecl("prism_notify")
+public func prismNotify(_ json: UnsafePointer<CChar>) {}
+@_cdecl("prism_notify_cancel")
+public func prismNotifyCancel(_ id: UnsafePointer<CChar>) {}
+#else
 final class PrismNotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     static let shared = PrismNotificationDelegate()
 
@@ -135,6 +149,7 @@ public func prismNotifyCancel(_ id: UnsafePointer<CChar>) {
     UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [id])
     UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [id])
 }
+#endif
 
 // MARK: Widgets
 
@@ -153,8 +168,12 @@ public func prismWidgetsWrite(_ kind: UnsafePointer<CChar>, _ json: UnsafePointe
         NSLog("prism: cannot write widget %@: %@", kind, "\(error)")
         return false
     }
+    #if canImport(WidgetKit)
     WidgetCenter.shared.reloadTimelines(ofKind: kind)
     return true
+    #else
+    return false
+    #endif
 }
 
 // MARK: Live Activities
@@ -197,9 +216,20 @@ public func prismActivityEnd(_ key: UnsafePointer<CChar>, _ json: UnsafePointer<
     let c = json.map { content($0, 0) }
     Task { await activity.end(c, dismissalPolicy: immediately ? .immediate : .default) }
 }
+#elseif os(tvOS)
+// No Live Activities on tvOS (no ActivityKit).
+@_cdecl("prism_activity_supported")
+public func prismActivitySupported() -> Bool { false }
+@_cdecl("prism_activity_start")
+public func prismActivityStart(_ key: UnsafePointer<CChar>, _ kind: UnsafePointer<CChar>,
+                               _ json: UnsafePointer<CChar>, _ stale: Double) -> Bool { false }
+@_cdecl("prism_activity_update")
+public func prismActivityUpdate(_ key: UnsafePointer<CChar>, _ json: UnsafePointer<CChar>, _ stale: Double) {}
+@_cdecl("prism_activity_end")
+public func prismActivityEnd(_ key: UnsafePointer<CChar>, _ json: UnsafePointer<CChar>?, _ immediately: Bool) {}
 #endif
 
-// MARK: Background tasks (iOS: BGTaskScheduler)
+// MARK: Background tasks (iOS, tvOS: BGTaskScheduler)
 
 /// Implemented in Rust: run / stop the app's background task `id` (full identifier).
 @_silgen_name("prism_background_run")
@@ -207,7 +237,7 @@ func prismRustBackgroundRun(_ id: UnsafePointer<CChar>)
 @_silgen_name("prism_background_expired")
 func prismRustBackgroundExpired(_ id: UnsafePointer<CChar>)
 
-#if os(iOS)
+#if os(iOS) || os(tvOS)
 import BackgroundTasks
 
 private var prismBackgroundTasks: [String: BGTask] = [:]

@@ -34,6 +34,13 @@ use prism_native::{Insets, NativeRenderer, Viewport, Widgets};
 
 static APP: OnceLock<(AppConfig, AppInit)> = OnceLock::new();
 
+/// Toggles: a switch on iOS; tvOS has none (UISwitch.h: API_UNAVAILABLE(tvos)),
+/// so a button showing a check mark, operated with the remote.
+#[cfg(not(target_os = "tvos"))]
+type ToggleView = UISwitch;
+#[cfg(target_os = "tvos")]
+type ToggleView = UIButton;
+
 // ---------------------------------------------------------------------------
 // Main-thread state
 // ---------------------------------------------------------------------------
@@ -61,6 +68,11 @@ fn with_state(f: impl FnOnce(&mut State)) {
             f(state)
         }
     });
+}
+
+/// For the development hooks.
+pub(crate) fn dispatch_event(event: UiEvent) {
+    dispatch(event);
 }
 
 pub(crate) fn dispatch(event: UiEvent) {
@@ -106,7 +118,9 @@ impl State {
         let size = self.renderer.widgets.root.bounds().size;
         // Responsive layouts: tell the app its window size (re-renders when
         // it crosses a breakpoint: rotation, split view, resize).
-        let (w, h) = (size.width as f32, size.height as f32);
+        // The app sees Prism points (window ÷ zoom: TVs).
+        let zoom = self.renderer.zoom();
+        let (w, h) = (size.width as f32 / zoom, size.height as f32 / zoom);
         if w > 0. && (w, h) != self.runtime.app.viewport() {
             let patches = self.runtime.set_viewport(w, h);
             if !patches.is_empty() {
@@ -239,6 +253,14 @@ define_class!(
         fn on_toggle(&self, sender: &UISwitch) {
             let value = if sender.isOn() { 1. } else { 0. };
             dispatch(UiEvent::Change(sender.tag() as NodeId, value));
+        }
+
+        /// tvOS toggles (buttons): flip and report.
+        #[unsafe(method(onToggleButton:))]
+        fn on_toggle_button(&self, sender: &UIButton) {
+            let on = !sender.isSelected();
+            sender.setSelected(on);
+            dispatch(UiEvent::Change(sender.tag() as NodeId, if on { 1. } else { 0. }));
         }
 
         #[unsafe(method(onTap:))]
@@ -477,7 +499,8 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
         }
         None => make_runtime(init, path, &services),
     };
-    let renderer = NativeRenderer::new(UiKit {
+    #[allow(unused_mut)]
+    let mut renderer = NativeRenderer::new(UiKit {
         mtm,
         target: Target::new(mtm),
         root,
@@ -495,6 +518,8 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
         semantic: None,
         radii: HashMap::new(),
     });
+    #[cfg(target_os = "tvos")]
+    renderer.set_zoom(crate::tv::zoom());
     let first = runtime.render();
     let mut state = State {
         runtime,
@@ -510,6 +535,7 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
             crate::device_info::observe_hinge(&s.renderer.widgets.root, hinge_changed);
         }
     });
+    crate::automation::schedule();
     flush_responses();
     // Development: `PRISM_RUN_BACKGROUND=sync` runs a background task now.
     if let Ok(id) = std::env::var("PRISM_RUN_BACKGROUND") {
@@ -573,7 +599,7 @@ pub enum View {
     Tabs(Rc<TabBar>),
     Tab(Retained<UIView>),
     Scroll(Retained<UIScrollView>),
-    Toggle(Retained<UISwitch>),
+    Toggle(Retained<ToggleView>),
     Image(Retained<UIImageView>),
     Progress(Retained<UIProgressView>),
     Timer(Retained<UILabel>),
@@ -717,7 +743,12 @@ impl UiKit {
             let item = unsafe {
                 objc2_ui_kit::UIBarButtonItem::initWithBarButtonSystemItem_target_action(
                     objc2_ui_kit::UIBarButtonItem::alloc(self.mtm),
-                    objc2_ui_kit::UIBarButtonSystemItem::Close,
+                    // No "Close" item on tvOS (UIBarButtonItem.h).
+                    if cfg!(target_os = "tvos") {
+                        objc2_ui_kit::UIBarButtonSystemItem::Done
+                    } else {
+                        objc2_ui_kit::UIBarButtonSystemItem::Close
+                    },
                     Some(target),
                     Some(sel!(onCloseStack:)),
                 )
@@ -851,11 +882,16 @@ impl Widgets for UiKit {
         let mtm = self.mtm;
         let target: &AnyObject = &self.target;
         let view = match kind {
+            #[cfg(not(target_os = "tvos"))]
             NodeKind::View => View::Container(UIView::new(mtm)),
+            // tvOS: containers can take the remote's focus when clickable.
+            #[cfg(target_os = "tvos")]
+            NodeKind::View => View::Container(crate::tv::focus_view(mtm)),
             NodeKind::Screen => View::Screen(UIView::new(mtm)),
             NodeKind::Modal => View::Sheet(UIView::new(mtm)),
             NodeKind::Stack => {
                 let nav = UINavigationController::new(mtm);
+                #[cfg(not(target_os = "tvos"))]
                 nav.navigationBar().setPrefersLargeTitles(true);
                 unsafe { nav.setDelegate(Some(ProtocolObject::from_ref(&*self.target))) };
                 let view = nav.view().expect("navigation controller has a view");
@@ -899,6 +935,7 @@ impl Widgets for UiKit {
                 let l = UILabel::new(mtm);
                 View::Timer(l)
             }
+            #[cfg(not(target_os = "tvos"))]
             NodeKind::Toggle => {
                 let t = UISwitch::new(mtm);
                 unsafe {
@@ -910,6 +947,8 @@ impl Widgets for UiKit {
                 };
                 View::Toggle(t)
             }
+            #[cfg(target_os = "tvos")]
+            NodeKind::Toggle => View::Toggle(crate::tv::toggle(mtm, target)),
             NodeKind::Text => {
                 let l = UILabel::new(mtm);
                 l.setNumberOfLines(0);
@@ -917,12 +956,14 @@ impl Widgets for UiKit {
             }
             NodeKind::Button => {
                 let b = UIButton::buttonWithType(UIButtonType::System, mtm);
+                // tvOS: the remote's select press (there is no touch).
+                let event = if cfg!(target_os = "tvos") {
+                    UIControlEvents::PrimaryActionTriggered
+                } else {
+                    UIControlEvents::TouchUpInside
+                };
                 unsafe {
-                    b.addTarget_action_forControlEvents(
-                        Some(target),
-                        sel!(onAction:),
-                        UIControlEvents::TouchUpInside,
-                    )
+                    b.addTarget_action_forControlEvents(Some(target), sel!(onAction:), event)
                 };
                 View::Button(b)
             }
@@ -1064,7 +1105,13 @@ impl Widgets for UiKit {
     }
 
     fn set_clickable(&mut self, view: &View, clickable: bool) {
-        // A "clickable" scroll view is refreshable: pull to refresh.
+        // A "clickable" scroll view is refreshable: pull to refresh (no
+        // UIRefreshControl on tvOS).
+        #[cfg(target_os = "tvos")]
+        if let View::Scroll(_) = view {
+            return;
+        }
+        #[cfg(not(target_os = "tvos"))]
         if let View::Scroll(s) = view {
             if clickable {
                 let rc = objc2_ui_kit::UIRefreshControl::new(self.mtm);
@@ -1100,8 +1147,12 @@ impl Widgets for UiKit {
                     Some(sel!(onTap:)),
                 )
             };
+            #[cfg(target_os = "tvos")]
+            crate::tv::select_press_only(&tap);
             v.addGestureRecognizer(&tap);
         }
+        #[cfg(target_os = "tvos")]
+        crate::tv::set_focusable(v, clickable);
     }
 
     fn set_children(&mut self, parent: &View, children: &[View]) {
@@ -1314,6 +1365,7 @@ impl Widgets for UiKit {
             } else {
                 objc2_ui_kit::UIViewContentMode::ScaleAspectFill
             }),
+            #[cfg(not(target_os = "tvos"))]
             View::Scroll(s) => {
                 if let Some(rc) = s.refreshControl() {
                     if value != 0. && !rc.isRefreshing() {
@@ -1329,11 +1381,14 @@ impl Widgets for UiKit {
                     value,
                 ))));
             }
+            #[cfg(not(target_os = "tvos"))]
             View::Toggle(t) => {
                 if t.isOn() != (value != 0.) {
                     t.setOn_animated(value != 0., true);
                 }
             }
+            #[cfg(target_os = "tvos")]
+            View::Toggle(t) => crate::tv::set_toggle(t, value != 0.),
             View::Tabs(bar) => {
                 let i = value.max(0.) as usize;
                 self.selected.insert(view.id(), i);
@@ -1666,6 +1721,8 @@ fn observe_system(mtm: MainThreadMarker) {
                 None,
             );
         }
+        // tvOS: the keyboard is a full-screen page, nothing to make room for.
+        #[cfg(not(target_os = "tvos"))]
         for name in [
             objc2_ui_kit::UIKeyboardWillChangeFrameNotification,
             objc2_ui_kit::UIKeyboardWillHideNotification,
@@ -1698,6 +1755,10 @@ fn animate(mtm: MainThreadMarker, t: prism_core::Transition, f: impl Fn() + 'sta
 
 /// Raises the bottom of the safe area of each visible screen above the
 /// keyboard, animated like it. Tab bars stay put under the keyboard.
+#[cfg(target_os = "tvos")]
+fn keyboard_changed(_: &objc2_foundation::NSNotification) {}
+
+#[cfg(not(target_os = "tvos"))]
 fn keyboard_changed(n: &objc2_foundation::NSNotification) {
     let hiding = &*n.name() == unsafe { objc2_ui_kit::UIKeyboardWillHideNotification };
     let info = n.userInfo();
@@ -1773,6 +1834,7 @@ fn keyboard_changed(n: &objc2_foundation::NSNotification) {
     }
 }
 
+#[cfg(not(target_os = "tvos"))]
 fn first_responder(v: &UIView) -> Option<Retained<UIView>> {
     if v.isFirstResponder() {
         return Some(v.retain());

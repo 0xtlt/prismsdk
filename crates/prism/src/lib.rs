@@ -69,6 +69,8 @@ pub const BACKEND: &str = if cfg!(feature = "web") {
     "macos"
 } else if cfg!(all(feature = "native", target_os = "ios")) {
     "ios"
+} else if cfg!(all(feature = "native", target_os = "tvos")) {
+    "tvos"
 } else {
     "none"
 };
@@ -176,13 +178,20 @@ impl Application {
         {
             prism_macos::run(config, init);
         }
-        #[cfg(all(not(feature = "web"), feature = "native", target_os = "ios"))]
+        #[cfg(all(
+            not(feature = "web"),
+            feature = "native",
+            any(target_os = "ios", target_os = "tvos")
+        ))]
         {
             prism_ios::run(config, init);
         }
         #[cfg(not(any(
             feature = "web",
-            all(feature = "native", any(target_os = "macos", target_os = "ios"))
+            all(
+                feature = "native",
+                any(target_os = "macos", target_os = "ios", target_os = "tvos")
+            )
         )))]
         {
             let _ = (config, init);

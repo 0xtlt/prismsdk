@@ -419,6 +419,41 @@ impl Style {
         s
     }
 
+    /// Every length multiplied by `factor` (points, text, radii, borders;
+    /// fractions unchanged): native backends zoom the whole UI with it, e.g.
+    /// to TV size.
+    pub fn scaled(&self, factor: f32) -> Style {
+        if factor == 1. {
+            return self.clone();
+        }
+        let len = |l: Length| match l {
+            Length::Px(v) => Length::Px(v * factor),
+            other => other,
+        };
+        let edges = |e: Edges| Edges {
+            top: e.top * factor,
+            right: e.right * factor,
+            bottom: e.bottom * factor,
+            left: e.left * factor,
+        };
+        Style {
+            gap: self.gap * factor,
+            padding: edges(self.padding),
+            margin: edges(self.margin),
+            width: len(self.width),
+            height: len(self.height),
+            min_width: len(self.min_width),
+            min_height: len(self.min_height),
+            max_width: len(self.max_width),
+            max_height: len(self.max_height),
+            flex_basis: len(self.flex_basis),
+            corner_radius: self.corner_radius * factor,
+            border_width: self.border_width * factor,
+            font_size: (self.font_size * factor).round(),
+            ..self.clone()
+        }
+    }
+
     /// Whether the element exists on `platform`.
     pub fn exists_on(&self, platform: crate::platform::Platform) -> bool {
         self.platforms.is_none_or(|set| set.contains(platform))

@@ -5,7 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[target.'cfg(target_os = "ios")'.dependencies]
+[target.'cfg(any(target_os = "ios", target_os = "tvos"))'.dependencies]
 prism-core.workspace = true
 prism-native = { workspace = true, features = ["apple-bridge"] }
 objc2.workspace = true

@@ -7,9 +7,13 @@ import Foundation
 import Photos
 import UniformTypeIdentifiers
 import UserNotifications
-#if os(iOS)
+#if canImport(CoreMotion)
 import CoreMotion
+#endif
+#if os(iOS) || os(tvOS)
 import PhotosUI
+#endif
+#if canImport(UIKit)
 import UIKit
 #else
 import AppKit
@@ -56,7 +60,7 @@ private func string(_ p: UnsafePointer<CChar>?) -> String? { p.map { String(cStr
 // MARK: Location
 
 private let locationUsageKey: String = {
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     return "NSLocationWhenInUseUsageDescription"
     #else
     return "NSLocationUsageDescription"
@@ -108,7 +112,12 @@ final class PrismLocation: NSObject, CLLocationManagerDelegate {
     private func proceed() {
         switch mode {
         case .once: manager.requestLocation()
-        case .stream: manager.startUpdatingLocation()
+        case .stream:
+            #if os(tvOS)
+            error("unavailable") // tvOS: one location at a time
+            #else
+            manager.startUpdatingLocation()
+            #endif
         case .permission: finishPermission()
         }
     }
@@ -330,7 +339,9 @@ final class PrismCamera: NSObject, UIImagePickerControllerDelegate, UINavigation
 
 @_cdecl("prism_device_pick_images")
 public func prismDevicePickImages(_ id: UInt64, _ limit: UInt32, _ camera: Bool) {
-    #if os(iOS)
+    #if os(tvOS)
+    fail(id, "unavailable") // no photo picker or camera on tvOS
+    #elseif os(iOS)
     guard let top = topController() else { return fail(id, "no window to present the picker") }
     if camera {
         guard UIImagePickerController.isSourceTypeAvailable(.camera) else { return fail(id, "unavailable") }
@@ -372,7 +383,9 @@ public func prismDevicePickImages(_ id: UInt64, _ limit: UInt32, _ camera: Bool)
 @_cdecl("prism_device_haptic")
 public func prismDeviceHaptic(_ kind: UnsafePointer<CChar>) {
     let kind = String(cString: kind)
-    #if os(iOS)
+    #if os(tvOS)
+    _ = kind // no haptics on a TV
+    #elseif os(iOS)
     switch kind {
     case "selection": UISelectionFeedbackGenerator().selectionChanged()
     case "success": UINotificationFeedbackGenerator().notificationOccurred(.success)
@@ -391,7 +404,9 @@ public func prismDeviceHaptic(_ kind: UnsafePointer<CChar>) {
 @_cdecl("prism_device_copy")
 public func prismDeviceCopy(_ text: UnsafePointer<CChar>) {
     let text = String(cString: text)
-    #if os(iOS)
+    #if os(tvOS)
+    _ = text // no clipboard on tvOS
+    #elseif os(iOS)
     UIPasteboard.general.string = text
     #else
     NSPasteboard.general.clearContents()
@@ -401,7 +416,9 @@ public func prismDeviceCopy(_ text: UnsafePointer<CChar>) {
 
 @_cdecl("prism_device_paste")
 public func prismDevicePaste(_ id: UInt64) {
-    #if os(iOS)
+    #if os(tvOS)
+    let text: String? = nil
+    #elseif os(iOS)
     let text = UIPasteboard.general.string
     #else
     let text = NSPasteboard.general.string(forType: .string)
@@ -418,7 +435,9 @@ public func prismDeviceShare(_ text: UnsafePointer<CChar>?, _ url: UnsafePointer
         items.append(URL(fileURLWithPath: String(path)))
     }
     guard !items.isEmpty else { return }
-    #if os(iOS)
+    #if os(tvOS)
+    return // no share sheet on tvOS
+    #elseif os(iOS)
     guard let top = topController() else { return }
     let sheet = UIActivityViewController(activityItems: items, applicationActivities: nil)
     // iPad: a popover anchored to the middle of the screen.
@@ -434,7 +453,7 @@ public func prismDeviceShare(_ text: UnsafePointer<CChar>?, _ url: UnsafePointer
 @_cdecl("prism_device_open_url")
 public func prismDeviceOpenURL(_ url: UnsafePointer<CChar>) {
     guard let url = URL(string: String(cString: url)) else { return }
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     UIApplication.shared.open(url)
     #else
     NSWorkspace.shared.open(url)

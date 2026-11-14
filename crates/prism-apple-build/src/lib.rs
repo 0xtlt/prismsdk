@@ -38,6 +38,22 @@ pub fn build_bridge() {
                 env_or("IPHONEOS_DEPLOYMENT_TARGET", "17.0")
             ),
         ),
+        "aarch64-apple-tvos-sim" => (
+            "appletvsimulator",
+            "appletvsimulator",
+            format!(
+                "arm64-apple-tvos{}-simulator",
+                env_or("TVOS_DEPLOYMENT_TARGET", "17.0")
+            ),
+        ),
+        "aarch64-apple-tvos" => (
+            "appletvos",
+            "appletvos",
+            format!(
+                "arm64-apple-tvos{}",
+                env_or("TVOS_DEPLOYMENT_TARGET", "17.0")
+            ),
+        ),
         "aarch64-apple-darwin" | "x86_64-apple-darwin" => (
             "macosx",
             "macosx",
@@ -144,11 +160,14 @@ pub fn build_bridge() {
         assert!(ok, "prism: archiving entitlements failed");
         println!("cargo:rustc-link-lib=static:+whole-archive=PrismEntitlements");
     }
-    for fw in ["WidgetKit", "UserNotifications", "SwiftUI"] {
-        println!("cargo:rustc-link-lib=framework={fw}");
-    }
-    if sdk != "macosx" {
-        println!("cargo:rustc-link-lib=framework=ActivityKit");
+    // Only what this SDK has (tvOS: no WidgetKit or ActivityKit).
+    let frameworks = Path::new(&sdk_path).join("System/Library/Frameworks");
+    for fw in ["WidgetKit", "UserNotifications", "SwiftUI", "ActivityKit"] {
+        if frameworks.join(format!("{fw}.framework")).exists()
+            && !(fw == "ActivityKit" && sdk == "macosx")
+        {
+            println!("cargo:rustc-link-lib=framework={fw}");
+        }
     }
 }
 

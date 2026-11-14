@@ -13,7 +13,9 @@ use objc2::runtime::{AnyClass, AnyObject};
 use objc2::{MainThreadMarker, msg_send, sel};
 use objc2_core_foundation::CGRect;
 use objc2_foundation::{NSArray, NSObjectProtocol};
-use objc2_ui_kit::{UIDevice, UIInterfaceOrientation, UIUserInterfaceIdiom, UIView};
+#[cfg(not(target_os = "tvos"))]
+use objc2_ui_kit::UIInterfaceOrientation;
+use objc2_ui_kit::{UIDevice, UIUserInterfaceIdiom, UIView};
 use prism_core::device_info::{AppleModel, apple_model, diagonal_inches};
 use prism_core::{
     DeviceInfo, DeviceKind, Fold, Orientation, Os, OsName, Posture, Rotation, ScreenInfo,
@@ -44,10 +46,10 @@ fn fixed(mtm: MainThreadMarker) -> &'static Fixed {
         Fixed {
             kind,
             os: Os {
-                name: if kind == DeviceKind::Tablet {
-                    OsName::Ipados
-                } else {
-                    OsName::Ios
+                name: match kind {
+                    DeviceKind::Tablet => OsName::Ipados,
+                    DeviceKind::Tv => OsName::Tvos,
+                    _ => OsName::Ios,
                 },
                 version: prism_native::apple::os_version(),
             },
@@ -156,6 +158,10 @@ pub(crate) fn current(root: &UIView, mtm: MainThreadMarker) -> Option<DeviceInfo
 
     // UIOrientation.h: interface LandscapeLeft = device LandscapeRight (home
     // button on the left), i.e. the device turned clockwise.
+    // (tvOS: no interface orientation, UIWindowScene.h.)
+    #[cfg(target_os = "tvos")]
+    let rotation = 0;
+    #[cfg(not(target_os = "tvos"))]
     let rotation = match scene.effectiveGeometry().interfaceOrientation() {
         UIInterfaceOrientation::PortraitUpsideDown => 180,
         UIInterfaceOrientation::LandscapeLeft => 90,
@@ -233,7 +239,7 @@ pub(crate) fn current(root: &UIView, mtm: MainThreadMarker) -> Option<DeviceInfo
         hinge_angle: hinge.map(|(_, angle)| angle.to_degrees() as f32),
         fold,
         window_mode,
-        touch: true,
+        touch: f.kind != DeviceKind::Tv,
         ..Default::default()
     })
 }

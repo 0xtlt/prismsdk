@@ -5,14 +5,18 @@
 //! the app bundle's Info.plist must declare `PrismSceneDelegate` (see
 //! `scripts/ios-run.sh`).
 
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "tvos"))]
+mod automation;
+#[cfg(any(target_os = "ios", target_os = "tvos"))]
 mod device_info;
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "tvos"))]
 mod imp;
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "tvos"))]
 mod menus;
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "tvos"))]
 mod services;
+#[cfg(target_os = "tvos")]
+mod tv;
 
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "tvos"))]
 pub use imp::run;

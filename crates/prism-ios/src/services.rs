@@ -62,21 +62,23 @@ impl IosServices {
                 .objectForInfoDictionaryKey(&objc2_foundation::NSString::from_str(key))
                 .is_some()
         };
+        // tvOS has no widgets, sensors, pickers, haptics or share sheet.
+        let tv = cfg!(target_os = "tvos");
         IosServices {
             caps: Capabilities {
-                widgets: info("PrismAppGroup"),
+                widgets: !tv && info("PrismAppGroup"),
                 live_activities: live,
                 dynamic_island: live && dynamic_island,
                 notifications,
                 tray: false,
                 app_menu: false,
                 location: true,
-                motion: true,
+                motion: !tv,
                 // Simulators have no camera.
-                camera: !cfg!(target_abi = "sim"),
-                photos: true,
-                haptics: true,
-                share: true,
+                camera: !tv && !cfg!(target_abi = "sim"),
+                photos: !tv,
+                haptics: !tv,
+                share: !tv,
                 cloud_sync: prism_native::apple::ICloudStorage::new().is_some()
                     && prism_native::apple::ICloudStorage::signed_in(),
             },

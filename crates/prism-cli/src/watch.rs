@@ -56,9 +56,13 @@ fn restart(
     env: &[(&str, String)],
     child: &mut Option<Child>,
 ) -> Result<(), String> {
-    if target == Target::Ios {
+    if matches!(target, Target::Ios | Target::Tvos) {
         // Builds, reinstalls and relaunches (the simulator terminates the old process).
-        let status = crate::apple_command(p, "ios-run.sh", o, false, env)?
+        let mut env = env.to_vec();
+        if target == Target::Tvos {
+            env.push(("PRISM_OS", "tvos".into()));
+        }
+        let status = crate::apple_command(p, "ios-run.sh", o, false, &env)?
             .status()
             .map_err(|e| e.to_string())?;
         return status.success().then_some(()).ok_or("build failed".into());

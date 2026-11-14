@@ -27,14 +27,14 @@ prism — Rust UI for the web, macOS and iOS
 
 USAGE:
     prism new <name> [--prism <path>]       Create a project
-    prism run <web|macos|ios> [options]     Build and run
-    prism dev <web|macos|ios> [options]     Run, rebuild and restart on save (keeps the screen)
-    prism build <web|macos|ios> [options]   Build release artifacts
+    prism run <web|macos|ios|tvos> [options]    Build and run
+    prism dev <web|macos|ios|tvos> [options]    Run, rebuild and restart on save (keeps the screen)
+    prism build <web|macos|ios|tvos> [options]  Build release artifacts
     prism devices                           List simulators and paired iOS devices
 
 OPTIONS:
     --device <name|udid>    iOS: a real iPhone/iPad (signed with your team)
-    --sim <name|udid>       iOS: a simulator
+    --sim <name|udid>       iOS/tvOS: a simulator
     --release               Optimized build
     --path </route>         Start on this screen
     --bundle                macOS: run as a full .app (widgets, notifications)
@@ -46,6 +46,7 @@ enum Target {
     Web,
     Macos,
     Ios,
+    Tvos,
 }
 
 #[derive(Default, Debug)]
@@ -85,7 +86,8 @@ fn run(args: &[String]) -> Result<(), String> {
                 Some("web") => Target::Web,
                 Some("macos" | "mac") => Target::Macos,
                 Some("ios") => Target::Ios,
-                _ => return Err(format!("usage: prism {cmd} <web|macos|ios>")),
+                Some("tvos" | "tv") => Target::Tvos,
+                _ => return Err(format!("usage: prism {cmd} <web|macos|ios|tvos>")),
             };
             let opts = Options {
                 device: flag(args, "--device"),
@@ -123,6 +125,7 @@ fn flag(args: &[String], name: &str) -> Option<String> {
 fn run_target(p: &Project, target: Target, o: &Options) -> Result<(), String> {
     match target {
         Target::Ios => apple_script(p, "ios-run.sh", o, false),
+        Target::Tvos => apple_script_os(p, o, false, "tvos"),
         Target::Macos if o.bundle => apple_script(p, "macos-app.sh", o, false),
         _ => {
             build(p, target, o)?;
@@ -171,6 +174,7 @@ fn build_target(p: &Project, target: Target, o: &Options) -> Result<(), String> 
         }
         Target::Macos => apple_script(p, "macos-app.sh", o, true),
         Target::Ios => apple_script(p, "ios-run.sh", o, true),
+        Target::Tvos => apple_script_os(p, o, true, "tvos"),
     }
 }
 
@@ -234,6 +238,23 @@ fn apple_script(p: &Project, script: &str, o: &Options, build_only: bool) -> Res
         .success()
         .then_some(())
         .ok_or_else(|| format!("{script} failed"))
+}
+
+/// The iOS script for another UIKit platform (`PRISM_OS=tvos`).
+fn apple_script_os(p: &Project, o: &Options, build_only: bool, os: &str) -> Result<(), String> {
+    let status = apple_command(
+        p,
+        "ios-run.sh",
+        o,
+        build_only,
+        &[("PRISM_OS", os.to_string())],
+    )?
+    .status()
+    .map_err(|e| e.to_string())?;
+    status
+        .success()
+        .then_some(())
+        .ok_or_else(|| format!("ios-run.sh ({os}) failed"))
 }
 
 fn apple_command(

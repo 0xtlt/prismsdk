@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Build a Prism app for iOS — app + WidgetKit extension (widgets, Live
-# Activities, Dynamic Island) — then install and launch it on a simulator or
-# a real iPhone. Used by `prism run ios` / `prism build ios` and `mise run ios`.
+# Activities, Dynamic Island) — or tvOS (PRISM_OS=tvos: the app alone), then
+# install and launch it on a simulator or a real device. Used by
+# `prism run ios|tvos` / `prism build ios|tvos` and `mise run ios`.
 #
 #   scripts/ios-run.sh <package> [--no-launch]
 #
 # Environment:
-#   PRISM_SIM        simulator name or UDID (default: first available iPhone)
+#   PRISM_OS         ios (default) or tvos
+#   PRISM_SIM        simulator name or UDID (default: first available iPhone / Apple TV)
 #   PRISM_DEVICE     real device name or UDID (signs and installs with devicectl)
 #   PRISM_TEAM       Apple team id (default: the team of a matching profile)
 #   PRISM_PROFILE    .mobileprovision to use (default: best match for the bundle id)
@@ -28,20 +30,33 @@ PLATFORM="${PRISM_PLATFORM:-$ROOT/platform}"
 cd "$ROOT"
 TARGET_DIR="$(cargo metadata --format-version 1 --no-deps 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
 DEVICE="${PRISM_DEVICE:-}"
-if [[ -n "$DEVICE" ]]; then
-  TARGET=aarch64-apple-ios SDK=iphoneos PLATFORM_NAME=iPhoneOS SWIFT_TRIPLE_SUFFIX=""
+OS="${PRISM_OS:-ios}"
+if [[ "$OS" == tvos ]]; then
+  # tvOS: no WidgetKit, Live Activities or iPhone-only keys.
+  RUNTIME_NAME=tvOS DEVICE_PREFIX="Apple TV" DEVICE_FAMILY="<integer>3</integer>" WIDGETS=0
+  MIN_IOS="${TVOS_DEPLOYMENT_TARGET:-17.0}" SWIFT_OS=tvos
+  if [[ -n "$DEVICE" ]]; then
+    TARGET=aarch64-apple-tvos SDK=appletvos PLATFORM_NAME=AppleTVOS SWIFT_TRIPLE_SUFFIX=""
+  else
+    TARGET=aarch64-apple-tvos-sim SDK=appletvsimulator PLATFORM_NAME=AppleTVSimulator SWIFT_TRIPLE_SUFFIX="-simulator"
+  fi
 else
-  TARGET=aarch64-apple-ios-sim SDK=iphonesimulator PLATFORM_NAME=iPhoneSimulator SWIFT_TRIPLE_SUFFIX="-simulator"
+  RUNTIME_NAME=iOS DEVICE_PREFIX=iPhone DEVICE_FAMILY="<integer>1</integer><integer>2</integer>" WIDGETS=1
+  MIN_IOS="${IPHONEOS_DEPLOYMENT_TARGET:-17.0}" SWIFT_OS=ios
+  if [[ -n "$DEVICE" ]]; then
+    TARGET=aarch64-apple-ios SDK=iphoneos PLATFORM_NAME=iPhoneOS SWIFT_TRIPLE_SUFFIX=""
+  else
+    TARGET=aarch64-apple-ios-sim SDK=iphonesimulator PLATFORM_NAME=iPhoneSimulator SWIFT_TRIPLE_SUFFIX="-simulator"
+  fi
 fi
 PROFILE_DIR=debug CARGO_FLAGS=()
 if [[ "${PRISM_RELEASE:-}" == 1 ]]; then PROFILE_DIR=release CARGO_FLAGS=(--release); fi
-MIN_IOS="${IPHONEOS_DEPLOYMENT_TARGET:-17.0}"
 SLUG="${PKG//_/-}"
 BUNDLE_ID="${PRISM_BUNDLE_ID:-dev.prism.$SLUG}"
 GROUP="group.$BUNDLE_ID"
 SCHEME="prism-$SLUG"
 APP_NAME="${PRISM_APP_NAME:-$(tr '[:lower:]' '[:upper:]' <<< "${PKG:0:1}")${PKG:1}}"
-OUT="$TARGET_DIR/ios/$SDK"
+OUT="$TARGET_DIR/$OS/$SDK"
 APP="$OUT/$APP_NAME.app"
 APPEX="$APP/PlugIns/PrismWidgets.appex"
 GEN="$OUT/generated"
@@ -53,29 +68,30 @@ if [[ "${PRISM_NO_INSTALL:-}" == 1 ]]; then
   UDID=""
 elif [[ -n "$DEVICE" ]]; then
   xcrun devicectl list devices --json-output "$GEN/devices.json" >/dev/null
-  UDID="$(PRISM_DEVICE="$DEVICE" GEN="$GEN" python3 -c '
+  UDID="$(PRISM_DEVICE="$DEVICE" GEN="$GEN" RUNTIME_NAME="$RUNTIME_NAME" python3 -c '
 import json, os
 want = os.environ["PRISM_DEVICE"]
 devs = json.load(open(os.environ["GEN"] + "/devices.json"))["result"]["devices"]
 for d in devs:
     p, h = d.get("deviceProperties", {}), d.get("hardwareProperties", {})
-    if h.get("platform") == "iOS" and want in (d.get("identifier"), h.get("udid"), p.get("name")):
+    if h.get("platform") == os.environ["RUNTIME_NAME"] and want in (d.get("identifier"), h.get("udid"), p.get("name")):
         print(d["identifier"]); break
 ')"
-  [[ -n "$UDID" ]] || { echo "No paired iOS device named or with id $DEVICE (xcrun devicectl list devices)" >&2; exit 1; }
+  [[ -n "$UDID" ]] || { echo "No paired $RUNTIME_NAME device named or with id $DEVICE (xcrun devicectl list devices)" >&2; exit 1; }
 else
-  UDID="$(xcrun simctl list devices available -j | python3 -c '
+  UDID="$(xcrun simctl list devices available -j | RUNTIME_NAME="$RUNTIME_NAME" DEVICE_PREFIX="$DEVICE_PREFIX" python3 -c '
 import json, os, sys
 want = os.environ.get("PRISM_SIM", "")
-devices = [d for runtime, ds in json.load(sys.stdin)["devices"].items() if "iOS" in runtime for d in ds]
-pick = [d for d in devices if want in (d["udid"], d["name"])] if want else [d for d in devices if d["name"].startswith("iPhone")]
+runtime = "SimRuntime." + os.environ["RUNTIME_NAME"] + "-"
+devices = [d for r, ds in json.load(sys.stdin)["devices"].items() if runtime in r for d in ds]
+pick = [d for d in devices if want in (d["udid"], d["name"])] if want else [d for d in devices if d["name"].startswith(os.environ["DEVICE_PREFIX"])]
 booted = [d for d in pick if d["state"] == "Booted"]
 print((booted or pick)[0]["udid"] if pick else "")
 ')"
-  [[ -n "$UDID" ]] || { echo "No matching iOS simulator (PRISM_SIM=${PRISM_SIM:-})" >&2; exit 1; }
+  [[ -n "$UDID" ]] || { echo "No matching $RUNTIME_NAME simulator (PRISM_SIM=${PRISM_SIM:-}; create one with xcrun simctl create)" >&2; exit 1; }
   if command -v simslim >/dev/null && ! simslim list --booted 2>/dev/null | grep -q "$UDID"; then
     # Prism apps ship widgets and Live Activities: keep their daemons running.
-    simslim on "$UDID" --except widgets
+    if [[ $WIDGETS == 1 ]]; then simslim on "$UDID" --except widgets; else simslim on "$UDID"; fi
   fi
   xcrun simctl bootstatus "$UDID" -b >/dev/null
 fi
@@ -83,8 +99,10 @@ fi
 # 2. Describe the app's widgets (host build) and generate the extension entry point.
 cargo build -q -p "$PKG"
 HOST_BIN="$TARGET_DIR/debug/$PKG"
-PRISM_DESCRIBE=widgets "$HOST_BIN" > "$GEN/widgets.json"
-python3 "$PLATFORM/apple/generate_widgets.py" "$GEN/widgets.json" ios > "$GEN/Generated.swift"
+if [[ $WIDGETS == 1 ]]; then
+  PRISM_DESCRIBE=widgets "$HOST_BIN" > "$GEN/widgets.json"
+  python3 "$PLATFORM/apple/generate_widgets.py" "$GEN/widgets.json" ios > "$GEN/Generated.swift"
+fi
 
 # 3. Signing (device) or simulator entitlements: an App Group shared by the
 #    app and its widget extension.
@@ -169,7 +187,8 @@ fi
 cargo build -p "$PKG" --target "$TARGET" ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"}
 
 # 5. Bundle: binary, assets, icon.
-rm -rf "$APP" && mkdir -p "$APPEX"
+rm -rf "$APP" && mkdir -p "$APP"
+[[ $WIDGETS == 1 ]] && mkdir -p "$APPEX"
 cp "$TARGET_DIR/$TARGET/$PROFILE_DIR/$PKG" "$APP/$PKG"
 ASSETS="$(PRISM_DESCRIBE=assets "$HOST_BIN")"
 [[ -n "$ASSETS" && -d "$ASSETS" ]] && cp -R "$ASSETS" "$APP/assets"
@@ -218,7 +237,9 @@ for line in os.environ.get("PRISM_PERMISSIONS", "").splitlines():
         print("  <key>" + key + "</key><string>" + escape(text) + "</string>")
 ')"
 ICON_PLIST=""
-if [[ -n "${PRISM_ICON:-}" ]]; then
+if [[ -n "${PRISM_ICON:-}" && "$OS" == tvos ]]; then
+  echo "note: tvOS icons are layered (brand assets): no icon yet" >&2
+elif [[ -n "${PRISM_ICON:-}" ]]; then
   bash "$PLATFORM/apple/app-icon.sh" "$PRISM_ICON" "$SDK" "$MIN_IOS" "$APP" "$GEN"
   ICON_PLIST="$(cat "$GEN/icon-info.xml")"
 fi
@@ -237,7 +258,7 @@ plist_common() { # $1 executable, $2 bundle id, $3 package type
   <key>CFBundleVersion</key><string>${PRISM_BUILD:-1}</string>
   <key>CFBundleSupportedPlatforms</key><array><string>$PLATFORM_NAME</string></array>
   <key>MinimumOSVersion</key><string>$MIN_IOS</string>
-  <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>
+  <key>UIDeviceFamily</key><array>$DEVICE_FAMILY</array>
   <key>PrismAppGroup</key><string>$GROUP</string>
   <key>PrismURLScheme</key><string>$SCHEME</string>
 PLIST
@@ -254,9 +275,7 @@ $LOC_PLIST
 $BG_PLIST
 $USAGE_PLIST
 $( [[ "${PRISM_ICLOUD:-}" == 1 ]] && echo "  <key>PrismICloud</key><true/>" )
-  <key>LSRequiresIPhoneOS</key><true/>
-  <key>UILaunchScreen</key><dict/>
-  <key>NSSupportsLiveActivities</key><true/>
+$( [[ "$OS" == ios ]] && printf '%s\n' "  <key>LSRequiresIPhoneOS</key><true/>" "  <key>UILaunchScreen</key><dict/>" "  <key>NSSupportsLiveActivities</key><true/>" )
   <key>CFBundleURLTypes</key>
   <array><dict>
     <key>CFBundleURLName</key><string>$BUNDLE_ID</string>
@@ -278,13 +297,14 @@ $( [[ "${PRISM_ICLOUD:-}" == 1 ]] && echo "  <key>PrismICloud</key><true/>" )
 </plist>
 PLIST
 
-# 6. Widget extension: Prism's generic SwiftUI renderer + the generated entry point.
+# 6. Widget extension (iOS): Prism's generic SwiftUI renderer + the generated entry point.
 SIM_SECTIONS=()
 if [[ -z "$DEVICE" ]]; then
   SIM_SECTIONS=(-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __entitlements -Xlinker "$GEN/entitlements.plist")
   [[ -f "$GEN/entitlements.plist.der" ]] && SIM_SECTIONS+=(-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __ents_der -Xlinker "$GEN/entitlements.plist.der")
 fi
-xcrun --sdk "$SDK" swiftc -target "arm64-apple-ios$MIN_IOS$SWIFT_TRIPLE_SUFFIX" -swift-version 5 -O \
+if [[ $WIDGETS == 1 ]]; then
+xcrun --sdk "$SDK" swiftc -target "arm64-apple-$SWIFT_OS$MIN_IOS$SWIFT_TRIPLE_SUFFIX" -swift-version 5 -O \
   -parse-as-library -application-extension -module-name PrismWidgets \
   -o "$APPEX/PrismWidgets" \
   -Xlinker -e -Xlinker _NSExtensionMain \
@@ -301,16 +321,19 @@ $(plist_common PrismWidgets "$BUNDLE_ID.widgets" XPC!)
 </dict>
 </plist>
 PLIST
+fi
 
 # 7. Sign: ad hoc on the simulator, with the profile on a device.
 if [[ -n "$DEVICE" ]]; then
   cp "$PROFILE" "$APP/embedded.mobileprovision"
-  cp "$PROFILE" "$APPEX/embedded.mobileprovision"
-  codesign --force --sign "$IDENTITY" --timestamp=none --entitlements "$GEN/appex.entitlements.plist" "$APPEX" >/dev/null
+  if [[ $WIDGETS == 1 ]]; then
+    cp "$PROFILE" "$APPEX/embedded.mobileprovision"
+    codesign --force --sign "$IDENTITY" --timestamp=none --entitlements "$GEN/appex.entitlements.plist" "$APPEX" >/dev/null
+  fi
   codesign --force --sign "$IDENTITY" --timestamp=none --entitlements "$GEN/entitlements.plist" "$APP" >/dev/null
   codesign --verify --deep --strict "$APP"
 else
-  codesign --force --sign - --entitlements "$GEN/appex.entitlements.plist" "$APPEX" >/dev/null
+  [[ $WIDGETS == 1 ]] && codesign --force --sign - --entitlements "$GEN/appex.entitlements.plist" "$APPEX" >/dev/null
   codesign --force --sign - --entitlements "$GEN/entitlements.plist" "$APP" >/dev/null
 fi
 echo "Built $APP"
@@ -325,7 +348,7 @@ if [[ -n "$DEVICE" ]]; then
   fi
 else
   xcrun simctl install "$UDID" "$APP"
-  echo "Installed $BUNDLE_ID (+ widgets, Live Activities) on $UDID"
+  echo "Installed $BUNDLE_ID$( [[ $WIDGETS == 1 ]] && echo " (+ widgets, Live Activities)") on $UDID"
   if [[ $LAUNCH == 1 ]]; then
     open -a Simulator --args -CurrentDeviceUDID "$UDID" 2>/dev/null || true
     # Prism variables (PRISM_PATH, PRISM_DEV_STATE…) reach the app.
