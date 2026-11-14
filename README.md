@@ -34,6 +34,36 @@ fn main() {
 - Derived state: `cx.observe(&other, |this, other, cx| this.total = other.read(cx).total())` runs when `other` changes, then re-renders `this`.
 - Each entity renders one root node (a fragment gets wrapped in a `div`).
 
+## Accessibility
+
+Accessibility is built in, not opt-in. The core resolves one description per node (role, label, hint, value, checked, disabled, hidden) and each backend maps it to the platform API:
+
+| | Web | iOS | macOS |
+|---|---|---|---|
+| API | ARIA + semantic HTML (`<main>`, `<h1>`, `<button>`, `role=switch`, `tablist`) | `UIAccessibility` traits, labels, values | `NSAccessibility` roles, labels, press action |
+| Keyboard | Tab/Enter/Space on custom buttons, arrow keys in tab bars, visible focus | — | Full Keyboard Access, Space/Return, focus ring |
+| Navigation | focus moves to the new screen's title; document title follows | native | window title follows |
+
+Defaults are automatic: a clickable `div` becomes a button named after its text ("Try Prism on the web, Done"), inputs use their placeholder, toggles expose their state. Refine with:
+
+```rust
+text("Settings").heading(1)
+div().on_click(..).accessibility_label("Open profile").accessibility_hint("Shows your account")
+text("›").accessibility_hidden()
+```
+
+## Components (`prism::ui`)
+
+A themed, accessible component library: `button`, `switch`, `checkbox`, `text_field`, `card`, `heading`, `badge`, `list_row`, `divider`.
+
+Three levels of customization:
+
+1. **Theme**: `ui::set_theme(cx, Theme::dark().accent(rgb(0x0A84FF)).radius(0.))`. It also switches the native chrome (bars, native controls) to dark.
+2. **Per instance**: `ui::button("Delete").danger().large()`, plus `.style(|s| s.corner_radius = 0.)` for anything else.
+3. **Replace a component app-wide**: `Theme::light().override_component(|b: ui::Button, cx| my_button(b, cx))`, or implement `ui::Component` for your own and register it with `prism_ui::component!(MyThing)`.
+
+Custom or native: `ui::button("Save").native()` / `ui::switch(..).native()` per instance, or `Theme::prefer_native(true)` everywhere (UIButton/UISwitch, NSButton/NSSwitch, `<button>`/`<input role=switch>`). Raw native primitives remain available: `button()`, `toggle()`, `text_input()`.
+
 ## Navigation
 
 A URL-style router, rendered with each platform's native navigation:
@@ -64,6 +94,10 @@ div().on_click(navigate_to("/todos/2"))   // handler helpers: navigate_to, go_ba
 | **macOS** | header bar (title, Back button) | Back button, Go ▸ Back ⌘[ | `PRISM_PATH=/todos/1` |
 | **Web** | header bar | header button + browser Back/Forward (History API) | any URL, server-rendered |
 
+**Tabs**: `.tab("Todos", "checklist", "/")` per tab (SF Symbol name; a glyph on the web). Each tab keeps its own stack. `navigate()` to a tab's root path switches tab. iOS: `UITabBarController`. macOS: segmented control. Web: ARIA tablist, URL follows the tab.
+
+**Scrolling**: `scroll()` (`UIScrollView` / `NSScrollView` / `overflow:auto`). A screen starting with a scroll view lets it run under the bars, so iOS large titles collapse natively.
+
 Patterns: `/`, `/todos`, `/todos/:id`, `/files/*rest`. Unknown paths show a "Not found" screen (or `.not_found(...)`). Opening a deep link puts `/` underneath so Back works.
 
 ## Architecture
@@ -85,6 +119,7 @@ Patterns: `/`, `/todos`, `/todos/:id`, `/files/*rest`. Unknown paths show a "Not
 - **`prism-native`**: turns patches into calls on a 10-method `Widgets` trait and runs flexbox layout with taffy. Shared by every native backend.
 - **`prism-web`**: std-only HTTP server + tungstenite. One `Runtime` per browser session (LiveView model).
 - **`prism-macos`** / **`prism-ios`**: `Widgets` implementations over objc2.
+- **`prism-ui`**: component library on top of the core (themes, overrides, native escape hatch).
 - **`prism`**: facade; picks the backend from features (`web`, `native`) and the target OS.
 
 Layout is a flexbox subset (column by default, like React Native) and maps 1:1 to CSS on the web and to taffy on native, so all targets lay out the same way.
@@ -105,9 +140,9 @@ mise run check      # type-check host, web and iOS-simulator builds
 
 - `PRISM_PORT=8080 mise run web` changes the port.
 - `PRISM_SIM="iPhone 17" mise run ios` picks a simulator (slimmed with `simslim` when installed).
-- macOS dev hooks: `PRISM_CLICK="+1,+1" PRISM_SNAPSHOT=out.png cargo run -p counter` presses buttons by title, writes a PNG of the window, and quits.
+- macOS dev hooks: `PRISM_CLICK="+1|Dark mode" PRISM_SNAPSHOT=out.png cargo run -p counter` presses controls by title or accessibility label (`|`-separated), writes a PNG of the window, and quits.
 
 ## Status (v0.1)
 
-Primitives: `div`, `text`, `button`, `text_input`, `screen`, `Router`. Keyed lists, entity-granular updates, observers, controlled inputs, native navigation.
-Not yet: tabs, modals, scrolling, images, timers/async, animations, Android/Windows/Linux backends.
+Primitives: `div`, `text`, `button`, `text_input`, `toggle`, `scroll`, `screen`, `Router` (stacks + tabs). Component library `prism::ui`. Accessibility on all backends. Light/dark appearance.
+Not yet: modals/sheets, images, timers/async, animations, Android/Windows/Linux backends.

@@ -1,0 +1,9 @@
+[package]
+name = "prism-ui"
+description = "Prism's customizable component library: themed, accessible, overridable, with a native escape hatch."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+prism-core.workspace = true

@@ -4,7 +4,7 @@
 //! the reconciler re-renders just the dirty entities, in place, reusing the
 //! previous output of every other entity untouched.
 
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
@@ -99,6 +99,16 @@ fn render_entity<T: Render>(app: &mut App, id: EntityId) -> Element {
 
 type Observer = Rc<dyn Fn(&mut App)>;
 
+/// Light/dark appearance of native chrome (bars, native controls, scrollbars).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Appearance {
+    /// Follow the system setting.
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
 /// Owns every entity and tracks which ones must be re-rendered.
 pub struct App {
     entities: HashMap<EntityId, Option<Box<dyn Any>>>,
@@ -111,6 +121,8 @@ pub struct App {
     initial_path: String,
     navigator: Option<Entity<Router>>,
     nav_queue: Vec<NavOp>,
+    globals: HashMap<TypeId, Box<dyn Any>>,
+    appearance: Appearance,
 }
 
 impl Default for App {
@@ -125,6 +137,8 @@ impl Default for App {
             initial_path: "/".into(),
             navigator: None,
             nav_queue: Vec::new(),
+            globals: HashMap::new(),
+            appearance: Appearance::System,
         }
     }
 }
@@ -132,6 +146,47 @@ impl Default for App {
 impl App {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Forces light or dark native chrome (or follows the system).
+    pub fn set_appearance(&mut self, appearance: Appearance) {
+        if self.appearance != appearance {
+            self.appearance = appearance;
+            self.refresh();
+        }
+    }
+
+    pub fn appearance(&self) -> Appearance {
+        self.appearance
+    }
+
+    // --- Globals: app-wide singletons such as a theme ---
+
+    /// Stores an app-wide value (one per type) and re-renders everything.
+    pub fn set_global<T: 'static>(&mut self, value: T) {
+        self.globals.insert(TypeId::of::<T>(), Box::new(value));
+        self.refresh();
+    }
+
+    pub fn try_global<T: 'static>(&self) -> Option<&T> {
+        self.globals.get(&TypeId::of::<T>())?.downcast_ref()
+    }
+
+    /// Reads a global. Panics if it was never set; see [`App::try_global`].
+    pub fn global<T: 'static>(&self) -> &T {
+        self.try_global()
+            .unwrap_or_else(|| panic!("no global of type {}", std::any::type_name::<T>()))
+    }
+
+    /// Mutates a global (inserting its default first) and re-renders everything.
+    pub fn update_global<T: Default + 'static, R>(&mut self, f: impl FnOnce(&mut T) -> R) -> R {
+        let slot = self
+            .globals
+            .entry(TypeId::of::<T>())
+            .or_insert_with(|| Box::new(T::default()));
+        let r = f(slot.downcast_mut().expect("global type"));
+        self.refresh();
+        r
     }
 
     // --- Navigation (applied after the current event, by the active Router) ---

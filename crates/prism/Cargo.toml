@@ -14,6 +14,7 @@ web = ["dep:prism-web"]
 
 [dependencies]
 prism-core.workspace = true
+prism-ui.workspace = true
 prism-web = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]

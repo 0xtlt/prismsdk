@@ -6,17 +6,22 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSBezierPath, NSButton,
-    NSColor, NSControlTextEditingDelegate, NSEvent, NSFont, NSFontWeightBold, NSFontWeightMedium,
-    NSFontWeightRegular, NSFontWeightSemibold, NSMenu, NSMenuItem, NSResponder, NSTextAlignment,
+    NSAccessibility, NSAccessibilityButtonRole, NSAccessibilityCheckBoxRole,
+    NSAccessibilityGroupRole, NSAccessibilityHeadingRole, NSAccessibilityImageRole,
+    NSAccessibilityLinkRole, NSAccessibilityListRole, NSAccessibilityRadioButtonRole,
+    NSAccessibilityStaticTextRole, NSAccessibilityTabGroupRole, NSApplication,
+    NSApplicationActivationPolicy, NSBackingStoreType, NSBezierPath, NSButton, NSColor,
+    NSControlStateValueOff, NSControlStateValueOn, NSControlTextEditingDelegate, NSEvent, NSFont,
+    NSFontWeightBold, NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold, NSImage,
+    NSMenu, NSMenuItem, NSResponder, NSScrollView, NSSegmentedControl, NSSwitch, NSTextAlignment,
     NSTextField, NSTextFieldDelegate, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_foundation::{
     NSArray, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
 };
 use prism_core::{
-    AppConfig, AppInit, Backend, Color, FontWeight, NodeId, NodeKind, Runtime, Style, TextAlign,
-    UiEvent,
+    Accessibility, AppConfig, AppInit, Appearance, Backend, Color, FontWeight, NodeId, NodeKind,
+    Role, Runtime, Style, TextAlign, UiEvent,
 };
 use prism_native::{Insets, NativeRenderer, Viewport, Widgets};
 
@@ -139,6 +144,52 @@ define_class!(
             }
         }
 
+        /// VoiceOver "press" on a clickable view.
+        #[unsafe(method(accessibilityPerformPress))]
+        fn accessibility_perform_press(&self) -> objc2::runtime::Bool {
+            if !self.ivars().clickable.get() {
+                return objc2::runtime::Bool::NO;
+            }
+            dispatch(UiEvent::Click(self.ivars().id.get()));
+            objc2::runtime::Bool::YES
+        }
+
+        // Full keyboard access: clickable views take focus, show a focus
+        // ring, and activate with Space or Return.
+        #[unsafe(method(acceptsFirstResponder))]
+        fn accepts_first_responder(&self) -> bool {
+            self.ivars().clickable.get()
+        }
+
+        /// Like native buttons: reachable with Tab only when the user enabled
+        /// Keyboard Navigation (System Settings › Keyboard).
+        #[unsafe(method(canBecomeKeyView))]
+        fn can_become_key_view(&self) -> bool {
+            self.ivars().clickable.get()
+                && NSApplication::sharedApplication(self.mtm()).isFullKeyboardAccessEnabled()
+        }
+
+        #[unsafe(method(keyDown:))]
+        fn key_down(&self, event: &NSEvent) {
+            let code = event.keyCode();
+            if self.ivars().clickable.get() && (code == 49 || code == 36 || code == 76) {
+                dispatch(UiEvent::Click(self.ivars().id.get()));
+            } else {
+                unsafe { msg_send![super(self), keyDown: event] }
+            }
+        }
+
+        #[unsafe(method(focusRingMaskBounds))]
+        fn focus_ring_mask_bounds(&self) -> NSRect {
+            self.bounds()
+        }
+
+        #[unsafe(method(drawFocusRingMask))]
+        fn draw_focus_ring_mask(&self) {
+            let r = self.ivars().radius.get();
+            NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(self.bounds(), r, r).fill();
+        }
+
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
             if !self.ivars().clickable.get() {
@@ -186,6 +237,18 @@ define_class!(
             dispatch(UiEvent::Click(sender.tag() as NodeId));
         }
 
+        #[unsafe(method(onToggle:))]
+        fn on_toggle(&self, sender: &NSSwitch) {
+            let on = sender.state() == NSControlStateValueOn;
+            dispatch(UiEvent::Change(sender.tag() as NodeId, if on { 1. } else { 0. }));
+        }
+
+        #[unsafe(method(onSegment:))]
+        fn on_segment(&self, sender: &NSSegmentedControl) {
+            let index = sender.selectedSegment().max(0) as f64;
+            dispatch(UiEvent::Change(sender.tag() as NodeId, index));
+        }
+
         /// A stack's header Back button (tag = stack id).
         #[unsafe(method(onBack:))]
         fn on_back(&self, sender: &NSButton) {
@@ -200,7 +263,7 @@ define_class!(
     }
 
     impl Target {
-        /// Dev hook: `PRISM_CLICK="+1,+1"` presses buttons by title, then
+        /// Dev hook: `PRISM_CLICK="+1|Save"` presses controls by title or accessibility label, then
         /// `PRISM_SNAPSHOT=out.png` writes the window to a PNG and quits.
         #[unsafe(method(prismAutomation:))]
         fn automation(&self, _sender: Option<&AnyObject>) {
@@ -261,11 +324,32 @@ pub struct MacStack {
     screens: RefCell<Vec<View>>,
 }
 
+/// A tab bar: a segmented control above the selected tab.
+pub struct MacTabs {
+    id: NodeId,
+    container: Retained<PrismView>,
+    bar: Retained<PrismView>,
+    separator: Retained<PrismView>,
+    segments: Retained<NSSegmentedControl>,
+    tabs: RefCell<Vec<View>>,
+    selected: Cell<usize>,
+}
+
+/// A scroll view; Prism children live in its flipped document view.
+pub struct MacScroll {
+    scroll: Retained<NSScrollView>,
+    document: Retained<PrismView>,
+}
+
 #[derive(Clone)]
 pub enum View {
     Container(Retained<PrismView>),
     Screen(Retained<PrismView>),
+    Tab(Retained<PrismView>),
     Stack(Rc<MacStack>),
+    Tabs(Rc<MacTabs>),
+    Scroll(Rc<MacScroll>),
+    Toggle(Retained<NSSwitch>),
     Label(Retained<NSTextField>),
     Button(Retained<NSButton>),
     Input(Retained<NSTextField>),
@@ -274,8 +358,11 @@ pub enum View {
 impl View {
     fn ns(&self) -> &NSView {
         match self {
-            View::Container(v) | View::Screen(v) => v,
+            View::Container(v) | View::Screen(v) | View::Tab(v) => v,
             View::Stack(s) => &s.container,
+            View::Tabs(t) => &t.container,
+            View::Scroll(s) => &s.scroll,
+            View::Toggle(t) => t,
             View::Label(v) | View::Input(v) => v,
             View::Button(v) => v,
         }
@@ -283,8 +370,11 @@ impl View {
 
     fn id(&self) -> NodeId {
         match self {
-            View::Container(v) | View::Screen(v) => v.ivars().id.get(),
+            View::Container(v) | View::Screen(v) | View::Tab(v) => v.ivars().id.get(),
             View::Stack(s) => s.id,
+            View::Tabs(t) => t.id,
+            View::Scroll(s) => s.document.ivars().id.get(),
+            View::Toggle(t) => t.tag() as NodeId,
             View::Label(v) | View::Input(v) => v.tag() as NodeId,
             View::Button(v) => v.tag() as NodeId,
         }
@@ -296,7 +386,9 @@ pub struct AppKit {
     target: Retained<Target>,
     root: Retained<PrismView>,
     stacks: Vec<Rc<MacStack>>,
+    tab_bars: Vec<Rc<MacTabs>>,
     titles: HashMap<NodeId, String>,
+    icons: HashMap<NodeId, String>,
 }
 
 impl AppKit {
@@ -331,6 +423,57 @@ impl AppKit {
             title,
             screens: RefCell::new(Vec::new()),
         }
+    }
+
+    fn new_tabs(&self, id: NodeId) -> MacTabs {
+        let mtm = self.mtm;
+        let bar = PrismView::new(mtm, 0);
+        *bar.ivars().background.borrow_mut() = Some(NSColor::windowBackgroundColor());
+        let separator = PrismView::new(mtm, 0);
+        *separator.ivars().background.borrow_mut() = Some(NSColor::separatorColor());
+        let segments = NSSegmentedControl::new(mtm);
+        segments.setTag(id as isize);
+        let target: &AnyObject = &self.target;
+        unsafe {
+            segments.setTarget(Some(target));
+            segments.setAction(Some(sel!(onSegment:)));
+        }
+        bar.setSubviews(&NSArray::from_slice(&[&*segments as &NSView]));
+        MacTabs {
+            id,
+            container: PrismView::new(mtm, id),
+            bar,
+            separator,
+            segments,
+            tabs: RefCell::new(Vec::new()),
+            selected: Cell::new(0),
+        }
+    }
+
+    /// Syncs segments (titles, SF Symbols) and shows the selected tab.
+    fn refresh_tabs(&self, bar: &MacTabs) {
+        let tabs = bar.tabs.borrow();
+        bar.segments.setSegmentCount(tabs.len() as isize);
+        for (i, t) in tabs.iter().enumerate() {
+            let title = self.titles.get(&t.id()).map(String::as_str).unwrap_or("");
+            bar.segments
+                .setLabel_forSegment(&NSString::from_str(title), i as isize);
+            let image = self.icons.get(&t.id()).and_then(|icon| {
+                NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                    &NSString::from_str(icon),
+                    None,
+                )
+            });
+            bar.segments
+                .setImage_forSegment(image.as_deref(), i as isize);
+        }
+        let selected = bar.selected.get().min(tabs.len().saturating_sub(1));
+        bar.segments.setSelectedSegment(selected as isize);
+        let mut subviews: Vec<&NSView> = vec![&bar.bar, &bar.separator];
+        if let Some(t) = tabs.get(selected) {
+            subviews.push(t.ns());
+        }
+        bar.container.setSubviews(&NSArray::from_slice(&subviews));
     }
 
     /// Shows the top screen, its title, and Back when there is somewhere to go.
@@ -390,6 +533,30 @@ impl Widgets for AppKit {
         match kind {
             NodeKind::View => View::Container(PrismView::new(mtm, id)),
             NodeKind::Screen => View::Screen(PrismView::new(mtm, id)),
+            NodeKind::Tab => View::Tab(PrismView::new(mtm, id)),
+            NodeKind::Tabs => {
+                let tabs = Rc::new(self.new_tabs(id));
+                self.tab_bars.push(tabs.clone());
+                View::Tabs(tabs)
+            }
+            NodeKind::Scroll => {
+                let scroll = NSScrollView::new(mtm);
+                scroll.setHasVerticalScroller(true);
+                scroll.setDrawsBackground(false);
+                let document = PrismView::new(mtm, id);
+                scroll.setDocumentView(Some(&document));
+                View::Scroll(Rc::new(MacScroll { scroll, document }))
+            }
+            NodeKind::Toggle => {
+                let t = NSSwitch::new(mtm);
+                t.setTag(id as isize);
+                let target: &AnyObject = &self.target;
+                unsafe {
+                    t.setTarget(Some(target));
+                    t.setAction(Some(sel!(onToggle:)));
+                }
+                View::Toggle(t)
+            }
             NodeKind::Stack => {
                 let stack = Rc::new(self.new_stack(id));
                 self.stacks.push(stack.clone());
@@ -426,7 +593,16 @@ impl Widgets for AppKit {
                 *st.container.ivars().background.borrow_mut() = style.background.map(ns_color);
                 st.container.setNeedsDisplay(true);
             }
-            View::Container(v) | View::Screen(v) => {
+            View::Tabs(t) => {
+                *t.container.ivars().background.borrow_mut() = style.background.map(ns_color);
+                t.container.setNeedsDisplay(true);
+            }
+            View::Scroll(sc) => {
+                *sc.document.ivars().background.borrow_mut() = style.background.map(ns_color);
+                sc.document.setNeedsDisplay(true);
+            }
+            View::Toggle(_) => {}
+            View::Container(v) | View::Screen(v) | View::Tab(v) => {
                 let iv = v.ivars();
                 *iv.background.borrow_mut() = style.background.map(ns_color);
                 *iv.border_color.borrow_mut() = style.border_color.map(ns_color);
@@ -465,7 +641,13 @@ impl Widgets for AppKit {
                     self.refresh_stack(stack);
                 }
             }
-            View::Container(_) | View::Stack(_) => {}
+            View::Tab(_) => {
+                self.titles.insert(view.id(), text.to_string());
+                for bar in &self.tab_bars {
+                    self.refresh_tabs(bar);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -482,10 +664,23 @@ impl Widgets for AppKit {
     }
 
     fn set_children(&mut self, parent: &View, children: &[View]) {
-        if let View::Stack(stack) = parent {
-            *stack.screens.borrow_mut() = children.to_vec();
-            self.refresh_stack(stack);
-            return;
+        match parent {
+            View::Stack(stack) => {
+                *stack.screens.borrow_mut() = children.to_vec();
+                self.refresh_stack(stack);
+                return;
+            }
+            View::Tabs(bar) => {
+                *bar.tabs.borrow_mut() = children.to_vec();
+                self.refresh_tabs(bar);
+                return;
+            }
+            View::Scroll(sc) => {
+                let views: Vec<&NSView> = children.iter().map(View::ns).collect();
+                sc.document.setSubviews(&NSArray::from_slice(&views));
+                return;
+            }
+            _ => {}
         }
         let views: Vec<&NSView> = children.iter().map(View::ns).collect();
         parent.ns().setSubviews(&NSArray::from_slice(&views));
@@ -499,6 +694,11 @@ impl Widgets for AppKit {
         match view {
             View::Input(f) => unsafe { f.setDelegate(None) },
             View::Stack(st) => self.stacks.retain(|s| s.id != st.id),
+            View::Tabs(t) => self.tab_bars.retain(|b| b.id != t.id),
+            View::Tab(_) => {
+                self.titles.remove(&view.id());
+                self.icons.remove(&view.id());
+            }
             View::Screen(_) => {
                 self.titles.remove(&view.id());
             }
@@ -520,7 +720,13 @@ impl Widgets for AppKit {
                 NSSize::new(s.width.max(120.), s.height)
             }
             View::Button(b) => b.fittingSize(),
-            View::Container(_) | View::Screen(_) | View::Stack(_) => NSSize::ZERO,
+            View::Toggle(t) => t.fittingSize(),
+            View::Container(_)
+            | View::Screen(_)
+            | View::Tab(_)
+            | View::Stack(_)
+            | View::Tabs(_)
+            | View::Scroll(_) => NSSize::ZERO,
         };
         (size.width.ceil() as f32, size.height.ceil() as f32)
     }
@@ -530,6 +736,18 @@ impl Widgets for AppKit {
             |x: f64, y: f64, w: f64, h: f64| NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));
         view.ns()
             .setFrame(rect(x as f64, y as f64, w as f64, h as f64));
+        if let View::Tabs(t) = view {
+            let w = w as f64;
+            t.bar.setFrame(rect(0., 0., w, HEADER_HEIGHT - 1.));
+            t.separator.setFrame(rect(0., HEADER_HEIGHT - 1., w, 1.));
+            let sz = t.segments.fittingSize();
+            t.segments.setFrame(rect(
+                ((w - sz.width) / 2.).round(),
+                ((HEADER_HEIGHT - 1. - sz.height) / 2.).round(),
+                sz.width,
+                sz.height,
+            ));
+        }
         if let View::Stack(st) = view {
             let w = w as f64;
             st.header.setFrame(rect(0., 0., w, HEADER_HEIGHT - 1.));
@@ -549,6 +767,97 @@ impl Widgets for AppKit {
                 t.height,
             ));
         }
+    }
+
+    fn set_value(&mut self, view: &View, value: f64) {
+        match view {
+            View::Toggle(t) => t.setState(if value != 0. {
+                NSControlStateValueOn
+            } else {
+                NSControlStateValueOff
+            }),
+            View::Tabs(bar) => {
+                bar.selected.set(value.max(0.) as usize);
+                self.refresh_tabs(bar);
+            }
+            _ => {}
+        }
+    }
+
+    fn set_icon(&mut self, view: &View, icon: &str) {
+        self.icons.insert(view.id(), icon.to_string());
+        for bar in &self.tab_bars {
+            self.refresh_tabs(bar);
+        }
+    }
+
+    fn set_appearance(&mut self, appearance: Appearance) {
+        let name = match appearance {
+            Appearance::System => None,
+            Appearance::Light => Some(unsafe { objc2_app_kit::NSAppearanceNameAqua }),
+            Appearance::Dark => Some(unsafe { objc2_app_kit::NSAppearanceNameDarkAqua }),
+        };
+        let appearance = name.and_then(objc2_app_kit::NSAppearance::appearanceNamed);
+        NSApplication::sharedApplication(self.mtm).setAppearance(appearance.as_deref());
+    }
+
+    fn set_content_size(&mut self, view: &View, width: f32, height: f32) {
+        if let View::Scroll(sc) = view {
+            sc.document
+                .setFrameSize(NSSize::new(width as f64, height as f64));
+        }
+    }
+
+    fn set_accessibility(&mut self, view: &View, a: &Accessibility) {
+        let v = view.ns();
+        if matches!(view, View::Stack(_) | View::Tabs(_) | View::Scroll(_)) {
+            return;
+        }
+        v.setAccessibilityHidden(a.hidden);
+        let ns = |s: &Option<String>| s.as_deref().map(NSString::from_str);
+        let native = matches!(view, View::Button(_) | View::Input(_) | View::Toggle(_));
+        if !native {
+            let role = unsafe {
+                match a.role {
+                    Some(Role::Button) => Some(NSAccessibilityButtonRole),
+                    Some(Role::Link) => Some(NSAccessibilityLinkRole),
+                    Some(Role::Heading(_)) => Some(NSAccessibilityHeadingRole),
+                    Some(Role::Image) => Some(NSAccessibilityImageRole),
+                    Some(Role::Text) => Some(NSAccessibilityStaticTextRole),
+                    Some(Role::Switch | Role::Checkbox) => Some(NSAccessibilityCheckBoxRole),
+                    Some(Role::Tab) => Some(NSAccessibilityRadioButtonRole),
+                    Some(Role::TabList) => Some(NSAccessibilityTabGroupRole),
+                    Some(Role::List) => Some(NSAccessibilityListRole),
+                    Some(Role::Group | Role::ListItem | Role::TabPanel) => {
+                        Some(NSAccessibilityGroupRole)
+                    }
+                    _ => None,
+                }
+            };
+            if let View::Container(_) | View::Screen(_) | View::Tab(_) = view {
+                v.setAccessibilityElement(role.is_some() && !a.hidden);
+                v.setAccessibilityRole(role);
+                if a.role == Some(Role::Switch) {
+                    v.setAccessibilityRoleDescription(Some(&NSString::from_str("switch")));
+                }
+            } else if let Some(role) = role
+                && matches!(a.role, Some(Role::Heading(_)))
+            {
+                v.setAccessibilityRole(Some(role));
+            }
+            if let Some(checked) = a.checked {
+                let value = NSString::from_str(if checked { "1" } else { "0" });
+                unsafe { v.setAccessibilityValue(Some(&value)) };
+            }
+        }
+        if a.label.is_some() || !native {
+            v.setAccessibilityLabel(ns(&a.label).as_deref());
+        }
+        v.setAccessibilityHelp(ns(&a.hint).as_deref());
+        if let Some(value) = &a.value {
+            unsafe { v.setAccessibilityValue(Some(&NSString::from_str(value))) };
+        }
+        v.setAccessibilityEnabled(!a.disabled);
     }
 
     fn screen_viewport(&mut self, stack: &View, _screen: &View) -> Viewport {
@@ -658,7 +967,9 @@ pub fn run(config: AppConfig, init: AppInit) {
         target: target.clone(),
         root,
         stacks: Vec::new(),
+        tab_bars: Vec::new(),
         titles: HashMap::new(),
+        icons: HashMap::new(),
     });
     renderer.apply(&runtime.render());
     let mut state = State { runtime, renderer };
@@ -681,13 +992,35 @@ pub fn run(config: AppConfig, init: AppInit) {
 // Dev automation (env-driven, used by `mise run macos-snapshot`)
 // ---------------------------------------------------------------------------
 
-fn find_buttons(view: &NSView, out: &mut Vec<Retained<NSButton>>) {
+/// Something `PRISM_CLICK` can press: a native button by title, or any
+/// clickable Prism view by its accessibility label (what VoiceOver reads).
+enum Pressable {
+    Native(Retained<NSButton>),
+    Custom(Retained<PrismView>),
+}
+
+fn find_pressable(view: &NSView, title: &str) -> Option<Pressable> {
     for sub in view.subviews().iter() {
-        if let Ok(b) = sub.clone().downcast::<NSButton>() {
-            out.push(b);
+        if sub.isHiddenOrHasHiddenAncestor() {
+            continue;
         }
-        find_buttons(&sub, out);
+        if let Ok(b) = sub.clone().downcast::<NSButton>()
+            && b.title().to_string() == title
+        {
+            return Some(Pressable::Native(b));
+        }
+        if let Ok(p) = sub.clone().downcast::<PrismView>()
+            && p.ivars().clickable.get()
+            && p.accessibilityLabel()
+                .is_some_and(|l| l.to_string() == title)
+        {
+            return Some(Pressable::Custom(p));
+        }
+        if let Some(found) = find_pressable(&sub, title) {
+            return Some(found);
+        }
     }
+    None
 }
 
 fn run_automation(mtm: MainThreadMarker) {
@@ -696,12 +1029,14 @@ fn run_automation(mtm: MainThreadMarker) {
     let Some(root) = root else { return };
 
     if let Ok(clicks) = std::env::var("PRISM_CLICK") {
-        for title in clicks.split(',').filter(|t| !t.is_empty()) {
-            let mut buttons = Vec::new();
-            find_buttons(&root, &mut buttons);
-            match buttons.iter().find(|b| b.title().to_string() == title) {
-                Some(b) => unsafe { b.performClick(None) },
-                None => eprintln!("prism-macos: PRISM_CLICK: no button titled {title:?}"),
+        for title in clicks.split('|').filter(|t| !t.is_empty()) {
+            match find_pressable(&root, title) {
+                Some(Pressable::Native(b)) => unsafe { b.performClick(None) },
+                Some(Pressable::Custom(p)) => {
+                    let _: objc2::runtime::Bool =
+                        unsafe { msg_send![&*p, accessibilityPerformPress] };
+                }
+                None => eprintln!("prism-macos: PRISM_CLICK: nothing labelled {title:?}"),
             }
         }
     }

@@ -1,10 +1,12 @@
 //! A [`Backend`] that keeps the tree in memory and serializes it to HTML,
-//! used for server-side rendering of the first paint.
+//! used for server-side rendering of the first paint. The markup and ARIA
+//! attributes match what `client.js` builds, so the page is accessible before
+//! any script runs.
 
 use std::collections::HashMap;
 use std::fmt::Write;
 
-use prism_core::{Backend, NodeId, NodeKind, Patch};
+use prism_core::{Accessibility, Appearance, Backend, NodeId, NodeKind, Patch, Role};
 
 use crate::css::css;
 
@@ -14,6 +16,9 @@ struct HtmlNode {
     css: String,
     text: String,
     placeholder: String,
+    icon: String,
+    value: f64,
+    a11y: Accessibility,
     clickable: bool,
     children: Vec<NodeId>,
 }
@@ -22,6 +27,7 @@ struct HtmlNode {
 pub struct HtmlBackend {
     nodes: HashMap<NodeId, HtmlNode>,
     root: Option<NodeId>,
+    appearance: Appearance,
 }
 
 impl Backend for HtmlBackend {
@@ -49,6 +55,10 @@ impl Backend for HtmlBackend {
                 Patch::SetClickable { id, clickable } => {
                     self.with(*id, |n| n.clickable = *clickable)
                 }
+                Patch::SetAppearance { appearance } => self.appearance = *appearance,
+                Patch::SetValue { id, value } => self.with(*id, |n| n.value = *value),
+                Patch::SetIcon { id, icon } => self.with(*id, |n| n.icon = icon.clone()),
+                Patch::SetAccessibility { id, a11y } => self.with(*id, |n| n.a11y = a11y.clone()),
                 Patch::SetChildren { id, children } => {
                     self.with(*id, |n| n.children = children.clone())
                 }
@@ -61,6 +71,63 @@ impl Backend for HtmlBackend {
     }
 }
 
+/// ARIA attributes for a node (mirrors `applyA11y` in client.js).
+pub fn a11y_attrs(kind: NodeKind, a: &Accessibility) -> String {
+    let mut out = String::new();
+    if a.hidden {
+        out.push_str(r#" aria-hidden="true""#);
+    }
+    if matches!(
+        kind,
+        NodeKind::Stack | NodeKind::Tabs | NodeKind::Tab | NodeKind::Screen
+    ) {
+        return out;
+    }
+    let native = match kind {
+        NodeKind::Button => Some(Role::Button),
+        NodeKind::Toggle => Some(Role::Switch),
+        _ => None,
+    };
+    if let Some(role) = a.role.filter(|r| *r != Role::Text && Some(*r) != native) {
+        let _ = write!(out, r#" role="{}""#, role.aria());
+        if let Role::Heading(level) = role {
+            let _ = write!(out, r#" aria-level="{level}""#);
+        }
+    }
+    if let Some(label) = &a.label {
+        let _ = write!(out, r#" aria-label="{}""#, escape(label));
+    }
+    if let Some(hint) = &a.hint {
+        let _ = write!(out, r#" aria-description="{}""#, escape(hint));
+    }
+    if kind != NodeKind::Toggle && matches!(a.role, Some(Role::Switch | Role::Checkbox)) {
+        let _ = write!(out, r#" aria-checked="{}""#, a.checked.unwrap_or(false));
+    }
+    if let (Some(Role::Button), Some(pressed)) = (a.role, a.checked) {
+        let _ = write!(out, r#" aria-pressed="{pressed}""#);
+    }
+    if a.role == Some(Role::Tab) {
+        let _ = write!(out, r#" aria-selected="{}""#, a.checked.unwrap_or(false));
+    }
+    if a.disabled {
+        out.push_str(r#" aria-disabled="true""#);
+        if matches!(
+            kind,
+            NodeKind::Button | NodeKind::TextInput | NodeKind::Toggle
+        ) {
+            out.push_str(" disabled");
+        }
+    }
+    if kind == NodeKind::View
+        && a.role.is_some_and(Role::is_interactive)
+        && !a.hidden
+        && !a.disabled
+    {
+        out.push_str(r#" tabindex="0""#);
+    }
+    out
+}
+
 impl HtmlBackend {
     fn with(&mut self, id: NodeId, f: impl FnOnce(&mut HtmlNode)) {
         if let Some(n) = self.nodes.get_mut(&id) {
@@ -71,28 +138,20 @@ impl HtmlBackend {
     pub fn to_html(&self) -> String {
         let mut out = String::new();
         if let Some(root) = self.root {
-            self.write(root, &mut out);
+            self.write(root, false, &mut out);
         }
         out
     }
 
-    fn write(&self, id: NodeId, out: &mut String) {
+    fn write(&self, id: NodeId, hidden: bool, out: &mut String) {
         let Some(n) = self.nodes.get(&id) else { return };
-        self.write_with(id, n, false, out);
-    }
-
-    fn write_with(&self, id: NodeId, n: &HtmlNode, hidden: bool, out: &mut String) {
         let kind = n.kind.unwrap_or(NodeKind::View);
-        let cursor = if n.clickable && kind == NodeKind::View {
-            "cursor:pointer;"
-        } else {
-            ""
-        };
         let hidden = if hidden { " hidden" } else { "" };
         let attrs = format!(
-            r#"data-pid="{id}" data-kind="{}" style="{}{cursor}"{hidden}"#,
+            r#"data-pid="{id}" data-kind="{}" style="{}"{hidden}{}"#,
             kind.name(),
-            escape(&n.css)
+            escape(&n.css),
+            a11y_attrs(kind, &n.a11y)
         );
         match kind {
             NodeKind::TextInput => {
@@ -103,6 +162,13 @@ impl HtmlBackend {
                     escape(&n.placeholder)
                 );
             }
+            NodeKind::Toggle => {
+                let checked = if n.value != 0. { " checked" } else { "" };
+                let _ = write!(
+                    out,
+                    r#"<input type="checkbox" role="switch" class="prism-switch" {attrs}{checked}>"#
+                );
+            }
             NodeKind::Stack => {
                 // Same markup as the JS client builds: header bar + body.
                 let top = n.children.last().and_then(|c| self.nodes.get(c));
@@ -110,22 +176,58 @@ impl HtmlBackend {
                 let back_hidden = if n.children.len() <= 1 { " hidden" } else { "" };
                 let _ = write!(
                     out,
-                    r#"<div {attrs} class="prism-stack"><div class="prism-header"><button class="prism-back"{back_hidden}>‹ Back</button><div class="prism-title">{}</div></div><div class="prism-body">"#,
+                    r#"<div {attrs} class="prism-stack"><div class="prism-header"><button class="prism-back" aria-label="Back"{back_hidden}>‹ Back</button><h1 class="prism-title" tabindex="-1">{}</h1></div><div class="prism-body">"#,
                     escape(title)
                 );
                 let last = n.children.len().saturating_sub(1);
                 for (i, c) in n.children.iter().enumerate() {
-                    if let Some(child) = self.nodes.get(c) {
-                        self.write_with(*c, child, i != last, out);
-                    }
+                    self.write(*c, i != last, out);
                 }
                 out.push_str("</div></div>");
             }
+            NodeKind::Tabs => {
+                let selected = n.value as usize;
+                let _ = write!(
+                    out,
+                    r#"<div {attrs} class="prism-tabs"><div class="prism-panels">"#
+                );
+                for (i, c) in n.children.iter().enumerate() {
+                    self.write(*c, i != selected, out);
+                }
+                out.push_str(r#"</div><div class="prism-tabbar" role="tablist">"#);
+                for (i, c) in n.children.iter().enumerate() {
+                    let title = self.nodes.get(c).map(|t| t.text.as_str()).unwrap_or("");
+                    let sel = i == selected;
+                    let _ = write!(
+                        out,
+                        r#"<button type="button" role="tab" class="prism-tab" id="prism-tab-{c}" aria-controls="prism-panel-{c}" aria-selected="{sel}" tabindex="{}"><span>{}</span></button>"#,
+                        if sel { 0 } else { -1 },
+                        escape(title)
+                    );
+                }
+                out.push_str("</div></div>");
+            }
+            NodeKind::Tab => {
+                let _ = write!(
+                    out,
+                    r#"<div {attrs} id="prism-panel-{id}" role="tabpanel" aria-labelledby="prism-tab-{id}">"#
+                );
+                for c in &n.children {
+                    self.write(*c, false, out);
+                }
+                out.push_str("</div>");
+            }
             kind => {
-                let tag = if kind == NodeKind::Button {
-                    "button"
+                let (tag, class) = match kind {
+                    NodeKind::Button => ("button", ""),
+                    NodeKind::Screen => ("section", ""),
+                    NodeKind::Scroll => ("div", r#" class="prism-scroll""#),
+                    _ => ("div", ""),
+                };
+                let label = if kind == NodeKind::Screen {
+                    format!(r#" aria-label="{}""#, escape(&n.text))
                 } else {
-                    "div"
+                    String::new()
                 };
                 // A screen's text is its title (shown in the header), not content.
                 let content = if kind == NodeKind::Screen {
@@ -133,22 +235,35 @@ impl HtmlBackend {
                 } else {
                     n.text.as_str()
                 };
-                let _ = write!(out, "<{tag} {attrs}>{}", escape(content));
+                let _ = write!(out, "<{tag} {attrs}{class}{label}>{}", escape(content));
                 for c in &n.children {
-                    self.write(*c, out);
+                    self.write(*c, false, out);
                 }
                 let _ = write!(out, "</{tag}>");
             }
         }
     }
 
-    /// Title of the visible screen of the root stack, if any.
+    /// CSS `color-scheme` for the page.
+    pub fn color_scheme(&self) -> &'static str {
+        match self.appearance {
+            Appearance::System => "light dark",
+            Appearance::Light => "light",
+            Appearance::Dark => "dark",
+        }
+    }
+
+    /// Title of the visible screen (root stack or selected tab), if any.
     pub fn screen_title(&self) -> Option<String> {
-        let root = self.nodes.get(&self.root?)?;
-        if root.kind != Some(NodeKind::Stack) {
+        let mut node = self.nodes.get(&self.root?)?;
+        if node.kind == Some(NodeKind::Tabs) {
+            let tab = self.nodes.get(node.children.get(node.value as usize)?)?;
+            node = self.nodes.get(tab.children.first()?)?;
+        }
+        if node.kind != Some(NodeKind::Stack) {
             return None;
         }
-        let top = self.nodes.get(root.children.last()?)?;
+        let top = self.nodes.get(node.children.last()?)?;
         Some(top.text.clone()).filter(|t| !t.is_empty())
     }
 }

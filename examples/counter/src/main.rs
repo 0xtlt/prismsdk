@@ -3,34 +3,43 @@
 //!   mise run macos   → native AppKit window
 //!   mise run ios     → native UIKit app in the simulator
 //!
-//! Two routes, `/` and `/todos/:id`, rendered as a native navigation stack:
-//! UINavigationController on iOS, a header bar on macOS, real URLs on the web.
-//! A shared `Store` entity holds the todos; screens observe it.
+//! Three tabs, each with its own navigation stack:
+//! - Todos:      `/` and `/todos/:id`, a shared `Store` entity.
+//! - Components: the `prism::ui` gallery, custom vs native controls.
+//! - Settings:   live theme changes (dark mode, accent, shape, native controls).
 
 use prism::prelude::*;
-
-const ACCENT: u32 = 0x5B5BD6;
-const INK: u32 = 0x1C1C28;
-const MUTED: u32 = 0x6E6E80;
-const PAGE: u32 = 0xF4F4F8;
+use prism::ui::{self, Theme};
 
 fn main() {
     Application::new()
         .title("Prism")
-        .size(440., 680.)
+        .size(460., 720.)
         .run(|cx| {
+            ui::set_theme(cx, Theme::light());
             let store = cx.new_entity(|_| Store::new());
             Router::new()
+                .tab("Todos", "checklist", "/")
+                .tab("Components", "square.grid.2x2", "/components")
+                .tab("Settings", "gearshape", "/settings")
                 .route("/", move |cx, _| cx.new_entity(|cx| Home::new(store, cx)))
                 .route("/todos/:id", move |cx, p| {
                     let id = p.parse("id").unwrap_or(0);
                     cx.new_entity(|cx| TodoDetail::new(store, id, cx))
                 })
+                .route("/components", |cx, _| cx.new_entity(|_| Gallery::default()))
+                .route("/settings", |cx, _| cx.new_entity(|_| Settings))
                 .build(cx)
         });
 }
 
-// --- Shared state -----------------------------------------------------------------
+/// A screen with the theme's background and a scrollable body.
+fn page(title: impl Into<String>, cx: &App) -> (prism::Screen, prism::Scroll) {
+    let t = Theme::of(cx);
+    (screen(title).bg(t.background), scroll().p(20.).gap(20.))
+}
+
+// --- Shared state ---------------------------------------------------------------------
 
 struct Todo {
     id: u64,
@@ -87,63 +96,48 @@ impl Store {
     }
 }
 
-// --- Screen: home ----------------------------------------------------------------
+// --- Tab 1: todos -----------------------------------------------------------------------
 
 struct Home {
-    header: Entity<Header>,
     counter: Entity<CounterCard>,
     todos: Entity<TodoList>,
+    store: Entity<Store>,
 }
 
 impl Home {
     fn new(store: Entity<Store>, cx: &mut Context<Self>) -> Self {
+        cx.observe(&store, |_: &mut Home, _, _| {});
         Home {
-            header: cx.new(|cx| {
-                cx.observe(&store, |this: &mut Header, store, cx| {
-                    this.open_todos = store.read(cx).open();
-                });
-                Header {
-                    open_todos: store.read(cx).open(),
-                }
-            }),
             counter: cx.new(|_| CounterCard::default()),
             todos: cx.new(|cx| {
-                // Re-render the list whenever the store changes.
                 cx.observe(&store, |_: &mut TodoList, _, _| {});
                 TodoList {
                     store,
                     draft: String::new(),
                 }
             }),
+            store,
         }
     }
 }
 
 impl Render for Home {
-    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
-        screen("Prism")
-            .bg(rgb(PAGE))
-            .p(20.)
-            .gap(20.)
-            .child(self.header)
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = Theme::of(cx);
+        let open = self.store.read(cx).open();
+        let (screen, body) = page("Prism", cx);
+        screen.child(
+            body.child(
+                text(format!(
+                    "Rust UI · running on {} · {open} open todo(s)",
+                    prism::BACKEND
+                ))
+                .text_size(14.)
+                .text_color(t.muted),
+            )
             .child(self.counter)
-            .child(self.todos)
-    }
-}
-
-struct Header {
-    open_todos: usize,
-}
-
-impl Render for Header {
-    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
-        text(format!(
-            "Rust UI · running on {} · {} open todo(s)",
-            prism::BACKEND,
-            self.open_todos
-        ))
-        .text_size(14.)
-        .text_color(rgb(MUTED))
+            .child(self.todos),
+        )
     }
 }
 
@@ -154,26 +148,35 @@ struct CounterCard {
 
 impl Render for CounterCard {
     fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        card()
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .child(
-                text(self.count.to_string())
-                    .text_size(40.)
-                    .bold()
-                    .text_color(rgb(ACCENT))
-                    .min_w(px(64.)),
-            )
-            .child(
-                div()
-                    .flex_row()
-                    .gap(8.)
-                    // Listeners re-render their entity automatically: no notify().
-                    .child(button("−1").on_click(cx.listener(|this, _, _| this.count -= 1)))
-                    .child(button("+1").on_click(cx.listener(|this, _, _| this.count += 1)))
-                    .child(button("Reset").on_click(cx.listener(|this, _, _| this.count = 0))),
-            )
+        let t = Theme::of(cx);
+        ui::card().child(
+            div()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .child(
+                    text(self.count.to_string())
+                        .text_size(40.)
+                        .bold()
+                        .text_color(t.accent)
+                        .accessibility_label(format!("Count: {}", self.count))
+                        .min_w(px(64.)),
+                )
+                .child(
+                    div()
+                        .flex_row()
+                        .gap(8.)
+                        .child(
+                            ui::button("−1")
+                                .secondary()
+                                .hint("Decrements the counter")
+                                .on_click(cx.listener(|this, _, _| this.count -= 1)),
+                        )
+                        .child(
+                            ui::button("+1").on_click(cx.listener(|this, _, _| this.count += 1)),
+                        ),
+                ),
+        )
     }
 }
 
@@ -184,10 +187,10 @@ struct TodoList {
 
 impl Render for TodoList {
     fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = Theme::of(cx);
         let store = self.store.read(cx);
-        card()
-            .gap(12.)
-            .child(text("Todos").text_size(17.).semibold().text_color(rgb(INK)))
+        ui::card()
+            .child(ui::heading("Todos"))
             .child(
                 div()
                     .flex_row()
@@ -198,11 +201,12 @@ impl Render for TodoList {
                             .flex_1()
                             .value(self.draft.clone())
                             .placeholder("What needs doing?")
+                            .accessibility_label("New todo")
                             .on_input(
                                 cx.listener(|this, e: &InputEvent, _| this.draft = e.value.clone()),
                             ),
                     )
-                    .child(button("Add").on_click(cx.listener(|this, _, cx| {
+                    .child(ui::button("Add").on_click(cx.listener(|this, _, cx| {
                         let title = this.draft.trim().to_string();
                         if !title.is_empty() {
                             this.store.update(cx, |s, cx| s.add(title, cx));
@@ -211,40 +215,23 @@ impl Render for TodoList {
                     }))),
             )
             .children(store.todos.iter().map(|todo| {
-                let id = todo.id;
-                div()
-                    .key(id.to_string())
-                    .flex_row()
-                    .items_center()
-                    .gap(10.)
-                    .py(8.)
-                    .px(10.)
-                    .rounded(8.)
-                    .bg(if todo.done {
-                        rgb(0xEDEDF7)
-                    } else {
-                        rgb(0xFFFFFF)
+                ui::list_row(todo.title.clone())
+                    .leading(if todo.done { "✓" } else { "○" })
+                    .subtitle(if todo.done { "Done" } else { "Open" })
+                    .on_click(navigate_to(format!("/todos/{}", todo.id)))
+                    .style({
+                        let border = t.border;
+                        move |s| {
+                            s.border_width = 1.;
+                            s.border_color = Some(border);
+                            s.corner_radius = 8.;
+                            s.padding.left = 12.;
+                            s.padding.right = 12.;
+                        }
                     })
-                    .border(1.)
-                    .border_color(rgb(0xE2E2EA))
-                    // Tapping a row opens its detail screen.
-                    .on_click(navigate_to(format!("/todos/{id}")))
-                    .child(
-                        text(if todo.done { "✓" } else { "○" })
-                            .text_color(rgb(ACCENT))
-                            .bold(),
-                    )
-                    .child(text(todo.title.clone()).flex_1().text_color(if todo.done {
-                        rgb(0x8E8EA0)
-                    } else {
-                        rgb(INK)
-                    }))
-                    .child(text("›").text_color(rgb(MUTED)))
             }))
     }
 }
-
-// --- Screen: todo detail -------------------------------------------------------------
 
 struct TodoDetail {
     store: Entity<Store>,
@@ -261,34 +248,29 @@ impl TodoDetail {
 impl Render for TodoDetail {
     fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let id = self.id;
+        let t = Theme::of(cx);
         let Some(todo) = self.store.read(cx).get(id) else {
-            return screen("Not found")
-                .bg(rgb(PAGE))
-                .p(20.)
-                .child(text(format!("Todo #{id} does not exist.")).text_color(rgb(MUTED)));
+            let (screen, body) = page("Not found", cx);
+            return screen.child(
+                body.child(text(format!("Todo #{id} does not exist.")).text_color(t.muted)),
+            );
         };
-        screen(todo.title.clone())
-            .bg(rgb(PAGE))
-            .p(20.)
-            .gap(16.)
-            .child(
-                card()
-                    .gap(6.)
+        let (screen, body) = page(todo.title.clone(), cx);
+        screen.child(
+            body.child(
+                ui::card()
                     .child(
                         text(format!("Todo #{id}"))
                             .text_size(13.)
-                            .text_color(rgb(MUTED)),
+                            .text_color(t.muted),
                     )
+                    .child(ui::heading(todo.title.clone()).level(1))
                     .child(
-                        text(todo.title.clone())
-                            .text_size(22.)
-                            .bold()
-                            .text_color(rgb(INK)),
-                    )
-                    .child(
-                        text(if todo.done { "✓ Done" } else { "○ Open" })
-                            .text_color(rgb(ACCENT))
-                            .semibold(),
+                        ui::badge(if todo.done { "Done" } else { "Open" }).tone(if todo.done {
+                            ui::Variant::Primary
+                        } else {
+                            ui::Variant::Secondary
+                        }),
                     ),
             )
             .child(
@@ -296,7 +278,7 @@ impl Render for TodoDetail {
                     .flex_row()
                     .gap(8.)
                     .child(
-                        button(if todo.done {
+                        ui::button(if todo.done {
                             "Mark as open"
                         } else {
                             "Mark as done"
@@ -305,19 +287,209 @@ impl Render for TodoDetail {
                             this.store.update(cx, |s, cx| s.toggle(id, cx))
                         })),
                     )
-                    .child(button("Delete").on_click(cx.listener(move |this, _, cx| {
-                        this.store.update(cx, |s, cx| s.delete(id, cx));
-                        cx.back();
-                    }))),
-            )
+                    .child(ui::button("Delete").danger().on_click(cx.listener(
+                        move |this, _, cx| {
+                            this.store.update(cx, |s, cx| s.delete(id, cx));
+                            cx.back();
+                        },
+                    ))),
+            ),
+        )
     }
 }
 
-fn card() -> prism::Div {
-    div()
-        .bg(rgb(0xFFFFFF))
-        .rounded(14.)
-        .p(16.)
-        .border(1.)
-        .border_color(rgb(0xE2E2EA))
+// --- Tab 2: component gallery ---------------------------------------------------------------
+
+#[derive(Default)]
+struct Gallery {
+    wifi: bool,
+    bluetooth: bool,
+    terms: bool,
+    email: String,
+    taps: u32,
+}
+
+impl Render for Gallery {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = Theme::of(cx);
+        let email_error = (!self.email.is_empty() && !self.email.contains('@'))
+            .then_some("Enter a valid email address");
+        let (screen, body) = page("Components", cx);
+        screen.child(
+            body.child(
+                ui::card()
+                    .child(ui::heading("Buttons"))
+                    .child(
+                        div()
+                            .flex_row()
+                            .flex_wrap()
+                            .gap(8.)
+                            .child(
+                                ui::button("Primary")
+                                    .on_click(cx.listener(|this, _, _| this.taps += 1)),
+                            )
+                            .child(
+                                ui::button("Secondary")
+                                    .secondary()
+                                    .on_click(cx.listener(|this, _, _| this.taps += 1)),
+                            )
+                            .child(
+                                ui::button("Ghost")
+                                    .ghost()
+                                    .on_click(cx.listener(|this, _, _| this.taps += 1)),
+                            )
+                            .child(
+                                ui::button("Danger")
+                                    .danger()
+                                    .on_click(cx.listener(|this, _, _| this.taps += 1)),
+                            )
+                            .child(ui::button("Disabled").disabled(true)),
+                    )
+                    .child(
+                        div()
+                            .flex_row()
+                            .gap(8.)
+                            .items_center()
+                            .child(
+                                ui::button("Native")
+                                    .native()
+                                    .on_click(cx.listener(|this, _, _| this.taps += 1)),
+                            )
+                            .child(
+                                ui::button("Square, large")
+                                    .large()
+                                    .style(|s| s.corner_radius = 0.)
+                                    .on_click(cx.listener(|this, _, _| this.taps += 1)),
+                            ),
+                    )
+                    .child(text(format!("Tapped {} time(s)", self.taps)).text_color(t.muted)),
+            )
+            .child(
+                ui::card()
+                    .child(ui::heading("Switches"))
+                    .child(
+                        ui::switch("Wi-Fi (custom)", self.wifi).on_change(
+                            cx.listener(|this, e: &ChangeEvent, _| this.wifi = e.checked()),
+                        ),
+                    )
+                    .child(ui::divider())
+                    .child(
+                        ui::switch("Bluetooth (native)", self.bluetooth)
+                            .native()
+                            .on_change(
+                                cx.listener(|this, e: &ChangeEvent, _| {
+                                    this.bluetooth = e.checked()
+                                }),
+                            ),
+                    )
+                    .child(ui::divider())
+                    .child(ui::checkbox("I accept the terms", self.terms).on_change(
+                        cx.listener(|this, e: &ChangeEvent, _| this.terms = e.checked()),
+                    )),
+            )
+            .child(
+                ui::card().child(ui::heading("Text field")).child(
+                    ui::text_field("Email", self.email.clone())
+                        .placeholder("you@example.com")
+                        .helper("We never share it.")
+                        .error(email_error)
+                        .on_input(
+                            cx.listener(|this, e: &InputEvent, _| this.email = e.value.clone()),
+                        ),
+                ),
+            )
+            .child(
+                ui::card()
+                    .child(ui::heading("Badges & rows"))
+                    .child(
+                        div()
+                            .flex_row()
+                            .gap(6.)
+                            .child(ui::badge("New").tone(ui::Variant::Primary))
+                            .child(ui::badge("Beta"))
+                            .child(ui::badge("Deprecated").tone(ui::Variant::Danger)),
+                    )
+                    .child(
+                        ui::list_row("Storage")
+                            .subtitle("12.4 GB used")
+                            .detail("64 GB"),
+                    )
+                    .child(ui::divider())
+                    .child(
+                        ui::list_row("Open settings")
+                            .leading("⚙")
+                            .on_click(navigate_to("/settings")),
+                    ),
+            ),
+        )
+    }
+}
+
+// --- Tab 3: settings (live theming) ---------------------------------------------------------
+
+struct Settings;
+
+const ACCENTS: [(&str, u32); 4] = [
+    ("Indigo", 0x5B5BD6),
+    ("Blue", 0x0A84FF),
+    ("Green", 0x2E9E5B),
+    ("Orange", 0xE8730C),
+];
+
+impl Render for Settings {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = Theme::of(cx);
+        let (screen, body) = page("Settings", cx);
+        // Globals re-render the whole app when they change.
+        let update = |f: fn(&mut Theme, f64)| {
+            std::rc::Rc::new(move |e: &ChangeEvent, app: &mut App| {
+                ui::update_theme(app, |th| f(th, e.value))
+            })
+        };
+        screen.child(
+            body.child(
+                ui::card()
+                    .child(ui::heading("Appearance"))
+                    .child(ui::switch("Dark mode", t.dark).on_change(update(|th, v| {
+                        let keep = (th.accent, th.radius, th.prefer_native);
+                        *th = if v != 0. { Theme::dark() } else { Theme::light() };
+                        (th.accent, th.radius, th.prefer_native) = keep;
+                    })))
+                    .child(ui::divider())
+                    .child(
+                        ui::switch("Use native controls", t.prefer_native)
+                            .on_change(update(|th, v| th.prefer_native = v != 0.)),
+                    )
+                    .child(ui::divider())
+                    .child(ui::switch("Square corners", t.radius == 0.).on_change(update(
+                        |th, v| th.radius = if v != 0. { 0. } else { 10. },
+                    ))),
+            )
+            .child(
+                ui::card()
+                    .child(ui::heading("Accent color"))
+                    .child(div().flex_row().gap(12.).children(ACCENTS.iter().map(
+                        |&(name, hex)| {
+                            let selected = t.accent == rgb(hex);
+                            div()
+                                .size(px(40.))
+                                .rounded(20.)
+                                .bg(rgb(hex))
+                                .when(selected, |d| d.border(3.).border_color(t.text))
+                                .accessibility_role(Role::Button)
+                                .accessibility_label(name)
+                                .accessibility_checked(selected)
+                                .on_click(std::rc::Rc::new(move |_: &ClickEvent, app: &mut App| {
+                                    ui::update_theme(app, |th| th.accent = rgb(hex))
+                                }))
+                        },
+                    ))),
+            )
+            .child(
+                text("Every control here is exposed to VoiceOver and to screen readers on the web, and works with the keyboard.")
+                    .text_size(13.)
+                    .text_color(t.muted),
+            ),
+        )
+    }
 }

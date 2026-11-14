@@ -8,7 +8,10 @@
 
 use std::collections::HashMap;
 
-use prism_core::{Align, Backend, FlexDirection, Justify, Length, NodeId, NodeKind, Patch, Style};
+use prism_core::{
+    Accessibility, Align, Appearance, Backend, FlexDirection, Justify, Length, NodeId, NodeKind,
+    Patch, Style,
+};
 use taffy::prelude::{
     AvailableSpace, Dimension, LengthPercentage, LengthPercentageAuto, Rect, Size, TaffyTree,
 };
@@ -32,10 +35,39 @@ pub trait Widgets {
     fn measure(&mut self, view: &Self::View, max_width: Option<f32>) -> (f32, f32);
     /// Place a view in its parent's coordinate space (top-left origin).
     fn set_frame(&mut self, view: &Self::View, x: f32, y: f32, w: f32, h: f32);
-    /// Where `stack` shows `screen` (in the coordinates of the screen's
-    /// superview) and what its content must avoid (navigation bar, safe area).
-    /// Called after the stack got its frame.
-    fn screen_viewport(&mut self, stack: &Self::View, screen: &Self::View) -> Viewport;
+    /// For platform-managed containers (stacks, tab bars): where `container`
+    /// shows `child` (in the coordinates of the child's superview) and what its
+    /// content must avoid (navigation bar, tab bar, safe area). Called after
+    /// the container got its frame.
+    fn screen_viewport(&mut self, container: &Self::View, child: &Self::View) -> Viewport;
+    /// Apply the resolved accessibility description (role, label, state…).
+    /// Required: every backend must expose its views to assistive technologies.
+    fn set_accessibility(&mut self, view: &Self::View, a11y: &Accessibility);
+    /// Toggle state (0/1) or selected tab index.
+    fn set_value(&mut self, view: &Self::View, value: f64);
+    /// Tab icon (SF Symbol name on Apple platforms).
+    fn set_icon(&mut self, _view: &Self::View, _icon: &str) {}
+    /// Light/dark native chrome.
+    fn set_appearance(&mut self, _appearance: Appearance) {}
+    /// Scrollable extent of a scroll view's content.
+    fn set_content_size(&mut self, _view: &Self::View, _width: f32, _height: f32) {}
+}
+
+/// Containers whose children are positioned by the platform, not by flexbox.
+fn is_managed(kind: NodeKind) -> bool {
+    matches!(kind, NodeKind::Stack | NodeKind::Tabs)
+}
+
+fn is_container(kind: NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::View
+            | NodeKind::Stack
+            | NodeKind::Screen
+            | NodeKind::Scroll
+            | NodeKind::Tabs
+            | NodeKind::Tab
+    )
 }
 
 /// The area a navigation stack gives to one of its screens.
@@ -172,7 +204,21 @@ impl<W: Widgets> NativeRenderer<W> {
         };
         let vp = self.widgets.screen_viewport(&st.view, &sc.view);
         let mut style = to_taffy(&sc.style, NodeKind::View);
-        let (p, i) = (sc.style.padding, vp.insets);
+        let (p, mut i) = (sc.style.padding, vp.insets);
+        // A screen that starts with a scroll view lets it run under the bars,
+        // like native apps: the platform insets its content (and collapses
+        // large titles) itself.
+        let first_child = self
+            .taffy
+            .children(sc.layout)
+            .ok()
+            .and_then(|c| c.first().copied())
+            .and_then(|c| self.by_layout.get(&c))
+            .and_then(|c| self.nodes.get(c));
+        if first_child.is_some_and(|c| c.kind == NodeKind::Scroll) {
+            i.top = 0.;
+            i.bottom = 0.;
+        }
         style.padding = Rect {
             top: LengthPercentage::length(p.top + i.top),
             right: LengthPercentage::length(p.right + i.right),
@@ -200,7 +246,7 @@ impl<W: Widgets> NativeRenderer<W> {
             style.flex_grow = 1.;
         }
         // A root stack handles the safe area itself (navigation bar, screens).
-        if self.root == Some(id) && e.kind != NodeKind::Stack {
+        if self.root == Some(id) && !is_managed(e.kind) {
             let (p, i) = (e.style.padding, self.insets);
             style.padding = Rect {
                 top: LengthPercentage::length(p.top + i.top),
@@ -232,8 +278,33 @@ impl<W: Widgets> NativeRenderer<W> {
                     self.layout_screen(id, screen);
                 }
             }
-            None => self.place_children(id),
+            None => {
+                self.place_children(id);
+                self.update_content_size(id);
+            }
         }
+    }
+
+    /// Tells a scroll view how far its content extends.
+    fn update_content_size(&mut self, id: NodeId) {
+        let Some(entry) = self.nodes.get(&id) else {
+            return;
+        };
+        if entry.kind != NodeKind::Scroll {
+            return;
+        }
+        let Ok(frame) = self.taffy.layout(entry.layout).map(|l| l.size) else {
+            return;
+        };
+        let mut bottom: f32 = 0.;
+        for child in self.taffy.children(entry.layout).unwrap_or_default() {
+            if let Ok(l) = self.taffy.layout(child) {
+                bottom = bottom.max(l.location.y + l.size.height);
+            }
+        }
+        let height = (bottom + entry.style.padding.bottom).max(frame.height);
+        self.widgets
+            .set_content_size(&entry.view, frame.width, height);
     }
 
     fn place_children(&mut self, id: NodeId) {
@@ -257,8 +328,7 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
             match patch {
                 Patch::Create { id, kind } => {
                     let view = self.widgets.create(*id, *kind);
-                    let container =
-                        matches!(kind, NodeKind::View | NodeKind::Stack | NodeKind::Screen);
+                    let container = is_container(*kind);
                     let layout = if container {
                         self.taffy.new_leaf(taffy::Style::default())
                     } else {
@@ -310,11 +380,27 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                     let views: Vec<W::View> = kids.iter().map(|e| e.view.clone()).collect();
                     let layouts: Vec<taffy::NodeId> = kids.iter().map(|e| e.layout).collect();
                     self.widgets.set_children(&parent.view, &views);
-                    if parent.kind == NodeKind::Stack {
+                    if is_managed(parent.kind) {
                         let _ = self.taffy.set_children(parent.layout, &[]);
                         self.stack_screens.insert(*id, children.clone());
                     } else {
                         let _ = self.taffy.set_children(parent.layout, &layouts);
+                    }
+                }
+                Patch::SetAccessibility { id, a11y } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.set_accessibility(&e.view, a11y);
+                    }
+                }
+                Patch::SetAppearance { appearance } => self.widgets.set_appearance(*appearance),
+                Patch::SetValue { id, value } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.set_value(&e.view, *value);
+                    }
+                }
+                Patch::SetIcon { id, icon } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.set_icon(&e.view, icon);
                     }
                 }
                 Patch::SetRoot { id } => {
@@ -380,7 +466,7 @@ pub fn to_taffy(s: &Style, kind: NodeKind) -> taffy::Style {
         bottom: LengthPercentageAuto::length(s.margin.bottom),
         left: LengthPercentageAuto::length(s.margin.left),
     };
-    let container = matches!(kind, NodeKind::View | NodeKind::Stack | NodeKind::Screen);
+    let container = is_container(kind);
     taffy::Style {
         display: taffy::Display::Flex,
         flex_direction: match s.direction {
@@ -429,6 +515,19 @@ pub fn to_taffy(s: &Style, kind: NodeKind) -> taffy::Style {
         flex_grow: s.flex_grow,
         flex_shrink: s.flex_shrink,
         flex_basis: dim(s.flex_basis),
+        // A scroll view's content may be taller than the view itself.
+        overflow: if kind == NodeKind::Scroll {
+            taffy::Point {
+                x: taffy::Overflow::Hidden,
+                y: taffy::Overflow::Scroll,
+            }
+        } else {
+            taffy::Point {
+                x: taffy::Overflow::Visible,
+                y: taffy::Overflow::Visible,
+            }
+        },
+        scrollbar_width: 0.,
         ..Default::default()
     }
 }
@@ -436,13 +535,17 @@ pub fn to_taffy(s: &Style, kind: NodeKind) -> taffy::Style {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prism_core::{AppInit, IntoElement, ParentElement, Render, Router, Runtime, screen, text};
+    use prism_core::{
+        AppInit, IntoElement, ParentElement, Render, Router, Runtime, Styled, div, screen, scroll,
+        text,
+    };
     use std::sync::Arc;
 
     /// Records frames; screens get the stack's area minus a 44pt header.
     #[derive(Default)]
     struct Fake {
         frames: HashMap<NodeId, (f32, f32, f32, f32)>,
+        content: HashMap<NodeId, (f32, f32)>,
     }
 
     impl Widgets for Fake {
@@ -462,6 +565,11 @@ mod tests {
         }
         fn set_frame(&mut self, v: &NodeId, x: f32, y: f32, w: f32, h: f32) {
             self.frames.insert(*v, (x, y, w, h));
+        }
+        fn set_accessibility(&mut self, _: &NodeId, _: &Accessibility) {}
+        fn set_value(&mut self, _: &NodeId, _: f64) {}
+        fn set_content_size(&mut self, v: &NodeId, w: f32, h: f32) {
+            self.content.insert(*v, (w, h));
         }
         fn screen_viewport(&mut self, stack: &NodeId, _: &NodeId) -> Viewport {
             let (_, _, w, h) = self.frames[stack];
@@ -498,5 +606,57 @@ mod tests {
         assert_eq!(f[&1], (0., 0., 400., 800.), "stack");
         assert_eq!(f[&2], (0., 44., 400., 756.), "screen");
         assert_eq!(f[&3], (0., 0., 400., 20.), "text in screen");
+    }
+
+    struct Long;
+    impl Render for Long {
+        fn render(&mut self, _: &mut prism_core::Context<Self>) -> impl IntoElement {
+            div().child(
+                scroll()
+                    .p(10.)
+                    .children((0..50).map(|i| text(format!("row {i}")))),
+            )
+        }
+    }
+
+    #[test]
+    fn scroll_views_report_their_content_height() {
+        let init: AppInit = Arc::new(|cx: &mut prism_core::App| {
+            let r = cx.new_entity(|_| Long);
+            cx.set_root(r);
+        });
+        let mut rt = Runtime::new(&init);
+        let mut renderer = NativeRenderer::new(Fake::default());
+        renderer.apply(&rt.render());
+        renderer.layout(400., 300., Insets::default());
+        let w = &renderer.widgets;
+        assert_eq!(
+            w.frames[&2].3, 300.,
+            "scroll view keeps the viewport height"
+        );
+        // 50 rows × 20pt + 10pt padding top and bottom.
+        assert_eq!(w.content[&2], (400., 1020.));
+    }
+
+    #[test]
+    fn tab_contents_are_laid_out_in_their_viewport() {
+        let init: AppInit = Arc::new(|cx: &mut prism_core::App| {
+            let r = Router::new()
+                .tab("A", "a", "/")
+                .tab("B", "b", "/b")
+                .route("/", |cx, _| cx.new_entity(|_| Page))
+                .route("/b", |cx, _| cx.new_entity(|_| Page))
+                .build(cx);
+            cx.set_root(r);
+        });
+        let mut rt = Runtime::new(&init);
+        let mut renderer = NativeRenderer::new(Fake::default());
+        renderer.apply(&rt.render());
+        renderer.layout(400., 800., Insets::default());
+        let f = &renderer.widgets.frames;
+        assert_eq!(f[&1], (0., 0., 400., 800.), "tabs");
+        // tab (viewport below a fake 44pt bar) → stack fills it → screen.
+        assert_eq!(f[&2], (0., 44., 400., 756.), "tab");
+        assert_eq!(f[&3], (0., 0., 400., 756.), "stack inside tab");
     }
 }

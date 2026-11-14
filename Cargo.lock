@@ -393,6 +393,7 @@ dependencies = [
  "prism-core",
  "prism-ios",
  "prism-macos",
+ "prism-ui",
  "prism-web",
 ]
 
@@ -430,6 +431,13 @@ version = "0.1.0"
 dependencies = [
  "prism-core",
  "taffy",
+]
+
+[[package]]
+name = "prism-ui"
+version = "0.1.0"
+dependencies = [
+ "prism-core",
 ]
 
 [[package]]

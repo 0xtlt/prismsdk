@@ -14,9 +14,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::app::{AnyEntity, App, EntityId};
+use crate::a11y::{Accessibility, Role};
+use crate::app::{AnyEntity, App, Appearance, EntityId};
 use crate::element::{
-    BackEvent, ClickEvent, Element, Handler, InputEvent, NavigateEvent, NodeKind, VNode,
+    BackEvent, ChangeEvent, ClickEvent, Element, Handler, InputEvent, NavigateEvent, NodeKind,
+    VNode,
 };
 use crate::style::Style;
 
@@ -25,6 +27,25 @@ pub type NodeId = u64;
 /// A mutation of the host tree.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Patch {
+    /// Light/dark appearance of native chrome.
+    SetAppearance {
+        appearance: Appearance,
+    },
+    /// Toggle state (0/1), selected tab index.
+    SetValue {
+        id: NodeId,
+        value: f64,
+    },
+    /// Icon name (SF Symbol on Apple platforms).
+    SetIcon {
+        id: NodeId,
+        icon: String,
+    },
+    /// The effective accessibility description (defaults already applied).
+    SetAccessibility {
+        id: NodeId,
+        a11y: Accessibility,
+    },
     /// Create a detached node.
     Create {
         id: NodeId,
@@ -72,6 +93,8 @@ pub enum UiEvent {
     Back(NodeId, usize),
     /// A stack was asked to show `path` (e.g. browser forward).
     Navigate(NodeId, String),
+    /// A toggle was flipped (0/1) or a tab selected (index).
+    Change(NodeId, f64),
 }
 
 /// A mounted host node.
@@ -83,6 +106,9 @@ struct MNode {
     style: Style,
     text: String,
     placeholder: String,
+    icon: String,
+    value: Option<f64>,
+    a11y: Accessibility,
     clickable: bool,
     parent: Option<NodeId>,
     children: Vec<NodeId>,
@@ -105,11 +131,13 @@ pub struct Reconciler {
     input: HashMap<NodeId, Handler<InputEvent>>,
     back: HashMap<NodeId, Handler<BackEvent>>,
     navigate: HashMap<NodeId, Handler<NavigateEvent>>,
+    change: HashMap<NodeId, Handler<ChangeEvent>>,
     // Per-frame scratch state.
     dirty: HashSet<EntityId>,
     patches: Vec<Patch>,
     destroyed: Vec<NodeId>,
     rendered: usize,
+    appearance: Appearance,
 }
 
 impl Reconciler {
@@ -131,6 +159,10 @@ impl Reconciler {
 
     pub fn navigate_handler(&self, id: NodeId) -> Option<Handler<NavigateEvent>> {
         self.navigate.get(&id).cloned()
+    }
+
+    pub fn change_handler(&self, id: NodeId) -> Option<Handler<ChangeEvent>> {
+        self.change.get(&id).cloned()
     }
 
     /// Number of entity renders performed by the last [`render`](Self::render).
@@ -183,6 +215,12 @@ impl Reconciler {
 
         let mut patches = std::mem::take(&mut self.patches);
         patches.extend(self.destroyed.drain(..).map(|id| Patch::Destroy { id }));
+        if app.appearance() != self.appearance {
+            self.appearance = app.appearance();
+            patches.push(Patch::SetAppearance {
+                appearance: self.appearance,
+            });
+        }
         patches
     }
 
@@ -220,7 +258,11 @@ impl Reconciler {
     fn render_entity(&mut self, app: &mut App, entity: AnyEntity) -> Box<VNode> {
         self.dirty.remove(&entity.id());
         self.rendered += 1;
-        match entity.render(app) {
+        let mut element = entity.render(app);
+        while let Element::Lazy(build) = element {
+            element = build(app);
+        }
+        match element {
             Element::Node(vnode) => vnode,
             other => {
                 let mut wrapper = VNode::new(NodeKind::View);
@@ -234,6 +276,10 @@ impl Reconciler {
         match element {
             Element::Empty => {}
             Element::Node(vnode) => out.push(Item::Node(vnode, None)),
+            Element::Lazy(build) => {
+                let element = build(app);
+                self.flatten(app, element, out);
+            }
             Element::Fragment(items) => {
                 for item in items {
                     self.flatten(app, item, out);
@@ -293,11 +339,15 @@ impl Reconciler {
             style,
             text,
             placeholder,
+            icon,
+            value,
+            a11y,
             children,
             on_click,
             on_input,
             on_back,
             on_navigate,
+            on_change,
             ..
         } = *vnode;
         let clickable = kind == NodeKind::Button || on_click.is_some();
@@ -330,6 +380,19 @@ impl Reconciler {
                 self.patches.push(Patch::SetClickable { id, clickable });
                 m.clickable = clickable;
             }
+            if m.icon != icon {
+                self.patches.push(Patch::SetIcon {
+                    id,
+                    icon: icon.clone(),
+                });
+                m.icon = icon;
+            }
+            if let Some(v) = value
+                && m.value != Some(v)
+            {
+                self.patches.push(Patch::SetValue { id, value: v });
+                m.value = Some(v);
+            }
         }
         match on_click {
             Some(h) => self.click.insert(id, h),
@@ -346,6 +409,10 @@ impl Reconciler {
         match on_navigate {
             Some(h) => self.navigate.insert(id, h),
             None => self.navigate.remove(&id),
+        };
+        match on_change {
+            Some(h) => self.change.insert(id, h),
+            None => self.change.remove(&id),
         };
 
         // Children.
@@ -409,7 +476,73 @@ impl Reconciler {
             });
         }
         self.nodes.get_mut(&id).unwrap().children = new_children;
+
+        // Accessibility, with defaults resolved here once for every backend.
+        let effective = self.effective_a11y(id, a11y, clickable, value);
+        let m = self.nodes.get_mut(&id).unwrap();
+        if m.a11y != effective {
+            self.patches.push(Patch::SetAccessibility {
+                id,
+                a11y: effective.clone(),
+            });
+            m.a11y = effective;
+        }
         id
+    }
+
+    fn effective_a11y(
+        &self,
+        id: NodeId,
+        mut a: Accessibility,
+        clickable: bool,
+        value: Option<f64>,
+    ) -> Accessibility {
+        let m = &self.nodes[&id];
+        if a.role.is_none() {
+            a.role = match m.kind {
+                NodeKind::View if clickable => Some(Role::Button),
+                kind => kind.default_role(),
+            };
+        }
+        if m.kind == NodeKind::Toggle && a.checked.is_none() {
+            a.checked = value.map(|v| v != 0.);
+        }
+        if a.label.is_none() {
+            a.label = match m.kind {
+                // A clickable container reads as one button named by its text.
+                NodeKind::View if clickable => {
+                    Some(self.collect_text(id)).filter(|t| !t.is_empty())
+                }
+                NodeKind::TextInput if !m.placeholder.is_empty() => Some(m.placeholder.clone()),
+                NodeKind::Tab | NodeKind::Screen if !m.text.is_empty() => Some(m.text.clone()),
+                _ => None,
+            };
+        }
+        a
+    }
+
+    /// The visible text of a subtree, for automatic labels.
+    fn collect_text(&self, id: NodeId) -> String {
+        fn walk(r: &Reconciler, id: NodeId, out: &mut Vec<String>) {
+            let Some(m) = r.nodes.get(&id) else { return };
+            if m.a11y.hidden {
+                return;
+            }
+            match m.kind {
+                NodeKind::Text | NodeKind::Button if !m.text.trim().is_empty() => out.push(
+                    m.a11y
+                        .label
+                        .clone()
+                        .unwrap_or_else(|| m.text.trim().to_string()),
+                ),
+                _ => m.children.iter().for_each(|c| walk(r, *c, out)),
+            }
+        }
+        let mut parts = Vec::new();
+        for c in &self.nodes[&id].children {
+            walk(self, *c, &mut parts);
+        }
+        parts.join(", ")
     }
 
     fn create(&mut self, kind: NodeKind, key: Option<String>) -> NodeId {
@@ -429,6 +562,9 @@ impl Reconciler {
                 },
                 text: String::new(),
                 placeholder: String::new(),
+                icon: String::new(),
+                value: None,
+                a11y: Accessibility::default(),
                 clickable: false,
                 parent: None,
                 children: Vec::new(),
@@ -453,6 +589,7 @@ impl Reconciler {
         self.input.remove(&id);
         self.back.remove(&id);
         self.navigate.remove(&id);
+        self.change.remove(&id);
         self.destroyed.push(id);
     }
 }

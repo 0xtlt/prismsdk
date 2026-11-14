@@ -5,17 +5,20 @@
 //! [`Patch`]es; a [`Backend`] applies the patches to a real host (DOM, AppKit,
 //! UIKit, ...) and feeds [`UiEvent`]s back through a [`Runtime`].
 
+mod a11y;
 mod app;
 mod element;
 mod reconcile;
 mod router;
 mod style;
 
-pub use app::{AnyEntity, App, Context, Entity, EntityId, Render};
+pub use a11y::{Accessibility, Accessible, Role};
+pub use app::{AnyEntity, App, Appearance, Context, Entity, EntityId, Render};
 pub use element::{
-    BackEvent, Button, ClickEvent, Div, Element, FluentBuilder, Handler, InputEvent, IntoElement,
-    NavigateEvent, NodeKind, ParentElement, Screen, Stack, Text, TextInput, VNode, button, div,
-    screen, stack, text, text_input,
+    BackEvent, Button, ChangeEvent, ClickEvent, Div, Element, FluentBuilder, Handler, InputEvent,
+    IntoElement, NavigateEvent, NodeKind, ParentElement, Screen, Scroll, Stack, Tab, Tabs, Text,
+    TextInput, Toggle, VNode, button, div, lazy, screen, scroll, stack, tab, tabs, text,
+    text_input, toggle,
 };
 pub use reconcile::{NodeId, Patch, Reconciler, UiEvent};
 pub use router::{Params, Router, RouterBuilder, go_back, navigate_to, normalize_path};
@@ -99,6 +102,11 @@ impl Runtime {
                     h(&BackEvent { depth }, &mut self.app);
                 }
             }
+            UiEvent::Change(id, value) => {
+                if let Some(h) = self.reconciler.change_handler(id) {
+                    h(&ChangeEvent { value }, &mut self.app);
+                }
+            }
             UiEvent::Navigate(id, path) => {
                 if let Some(h) = self.reconciler.navigate_handler(id) {
                     h(&NavigateEvent { path }, &mut self.app);
@@ -122,9 +130,9 @@ impl Runtime {
 /// Everything an app usually needs.
 pub mod prelude {
     pub use crate::{
-        App, ClickEvent, Context, Entity, FluentBuilder, InputEvent, IntoElement, Params,
-        ParentElement, Render, Router, Styled, button, div, go_back, navigate_to, px, relative,
-        rgb, rgba, screen, text, text_input,
+        Accessible, App, ChangeEvent, ClickEvent, Context, Entity, FluentBuilder, InputEvent,
+        IntoElement, Params, ParentElement, Render, Role, Router, Styled, button, div, go_back,
+        lazy, navigate_to, px, relative, rgb, rgba, screen, scroll, text, text_input, toggle,
     };
 }
 

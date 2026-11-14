@@ -405,3 +405,203 @@ fn unknown_route_shows_not_found() {
     let (_, first) = routed("/nope");
     find_text(&first, "No route for /nope");
 }
+
+// --- Accessibility, toggles, tabs, lazy, globals -----------------------------
+
+use crate::{Accessibility, ChangeEvent, Role, lazy, toggle};
+
+fn a11y_of(patches: &[Patch], id: u64) -> Option<Accessibility> {
+    patches.iter().find_map(|p| match p {
+        Patch::SetAccessibility { id: i, a11y } if *i == id => Some(a11y.clone()),
+        _ => None,
+    })
+}
+
+struct A11yView {
+    wifi: bool,
+}
+
+impl Render for A11yView {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .child(text("Settings").heading(1))
+            .child(
+                div()
+                    .on_click(cx.listener(|_, _, _| {}))
+                    .child(text("Open"))
+                    .child(text("›").accessibility_hidden())
+                    .child(text("Profile")),
+            )
+            .child(
+                toggle(self.wifi)
+                    .accessibility_label("Wi-Fi")
+                    .on_change(cx.listener(|this, e: &ChangeEvent, _| this.wifi = e.checked())),
+            )
+            .child(text_input().placeholder("Search"))
+    }
+}
+
+#[test]
+fn accessibility_defaults_are_resolved_in_core() {
+    let (mut rt, first) = boot(|cx| {
+        let root = cx.new_entity(|_| A11yView { wifi: false });
+        cx.set_root(root);
+    });
+    let heading = a11y_of(&first, find_text(&first, "Settings")).unwrap();
+    assert_eq!(heading.role, Some(Role::Heading(1)));
+
+    // A clickable div becomes a button named by its visible text.
+    let row = first
+        .iter()
+        .find_map(|p| match p {
+            Patch::SetAccessibility { id, a11y } if a11y.role == Some(Role::Button) => {
+                Some((*id, a11y.clone()))
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(row.1.label.as_deref(), Some("Open, Profile"));
+
+    let toggle_id = first
+        .iter()
+        .find_map(|p| match p {
+            Patch::Create {
+                id,
+                kind: NodeKind::Toggle,
+            } => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    let t = a11y_of(&first, toggle_id).unwrap();
+    assert_eq!(
+        (t.role, t.checked, t.label.as_deref()),
+        (Some(Role::Switch), Some(false), Some("Wi-Fi"))
+    );
+
+    let patches = rt.dispatch(UiEvent::Change(toggle_id, 1.));
+    assert!(patches.contains(&Patch::SetValue {
+        id: toggle_id,
+        value: 1.
+    }));
+    assert_eq!(a11y_of(&patches, toggle_id).unwrap().checked, Some(true));
+
+    let input = first
+        .iter()
+        .find_map(|p| match p {
+            Patch::Create {
+                id,
+                kind: NodeKind::TextInput,
+            } => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        a11y_of(&first, input).unwrap().label.as_deref(),
+        Some("Search")
+    );
+}
+
+struct Themed;
+#[derive(Default)]
+struct Brand(&'static str);
+
+impl Render for Themed {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        div().child(lazy(|cx| text(cx.global::<Brand>().0)))
+    }
+}
+
+#[test]
+fn lazy_elements_read_globals_and_globals_rerender() {
+    let (mut rt, first) = boot(|cx| {
+        cx.set_global(Brand("blue"));
+        let root = cx.new_entity(|_| Themed);
+        cx.set_root(root);
+    });
+    let id = find_text(&first, "blue");
+    rt.app.set_global(Brand("red"));
+    let patches = rt.render();
+    assert_eq!(
+        patches,
+        vec![Patch::SetText {
+            id,
+            text: "red".into()
+        }]
+    );
+}
+
+fn tabbed(path: &str) -> (Runtime, Vec<Patch>) {
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let router = Router::new()
+            .tab("Home", "house", "/")
+            .tab("Settings", "gear", "/settings")
+            .route("/", |cx, _| cx.new_entity(|_| Home))
+            .route("/items/:id", |cx, p| {
+                let id = p.parse("id").unwrap_or(0);
+                cx.new_entity(move |_| Item(id))
+            })
+            .route("/settings", |cx, _| cx.new_entity(|_| Item(99)))
+            .route("/settings/:id", |cx, p| {
+                let id = p.parse("id").unwrap_or(0);
+                cx.new_entity(move |_| Item(id))
+            })
+            .build(cx);
+        cx.set_root(router);
+    });
+    let mut rt = Runtime::with_path(&init, path);
+    let first = rt.render();
+    (rt, first)
+}
+
+fn tabs_id(patches: &[Patch]) -> u64 {
+    patches
+        .iter()
+        .find_map(|p| match p {
+            Patch::Create {
+                id,
+                kind: NodeKind::Tabs,
+            } => Some(*id),
+            _ => None,
+        })
+        .unwrap()
+}
+
+#[test]
+fn tabs_keep_one_stack_each() {
+    let (mut rt, first) = tabbed("/");
+    let tabs = tabs_id(&first);
+    assert!(first.contains(&Patch::SetValue {
+        id: tabs,
+        value: 0.
+    }));
+    // Both tabs' root screens exist from the start (native tab bars need them).
+    find_text(&first, "Item 99");
+
+    rt.dispatch(UiEvent::Click(find_text(&first, "open 7")));
+    assert_eq!(rt.app.current_path(), Some("/items/7"));
+
+    let switched = rt.dispatch(UiEvent::Change(tabs, 1.));
+    assert!(switched.contains(&Patch::SetValue {
+        id: tabs,
+        value: 1.
+    }));
+    assert_eq!(rt.app.current_path(), Some("/settings"));
+
+    // Back on tab 0, its stack is intact.
+    rt.dispatch(UiEvent::Change(tabs, 0.));
+    assert_eq!(rt.app.current_path(), Some("/items/7"));
+}
+
+#[test]
+fn deep_link_selects_the_matching_tab_and_navigating_to_a_root_switches_tab() {
+    let (mut rt, first) = tabbed("/settings/5");
+    let tabs = tabs_id(&first);
+    assert!(first.contains(&Patch::SetValue {
+        id: tabs,
+        value: 1.
+    }));
+    assert_eq!(rt.app.current_path(), Some("/settings/5"));
+    rt.app.navigate("/");
+    rt.render();
+    assert_eq!(rt.app.current_path(), Some("/"));
+}

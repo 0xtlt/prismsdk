@@ -2,6 +2,7 @@
 
 use std::rc::Rc;
 
+use crate::a11y::{Accessibility, Accessible, Role};
 use crate::app::{AnyEntity, App, Entity, Render};
 use crate::style::{Style, Styled};
 
@@ -25,6 +26,16 @@ pub enum NodeKind {
     Stack,
     /// A screen inside a [`Stack`](NodeKind::Stack). Its text is the title.
     Screen,
+    /// A native on/off switch (`UISwitch`, `NSSwitch`, `<input role=switch>`).
+    /// Its value is 0 or 1.
+    Toggle,
+    /// A scrollable container (`UIScrollView`, `NSScrollView`, `overflow:auto`).
+    Scroll,
+    /// A native tab bar (`UITabBarController`, segmented bar, ARIA tablist).
+    /// Its children are [`Tab`](NodeKind::Tab)s; its value is the selected index.
+    Tabs,
+    /// One tab: its text is the title, its icon an SF Symbol name.
+    Tab,
 }
 
 impl NodeKind {
@@ -36,6 +47,22 @@ impl NodeKind {
             NodeKind::TextInput => "text_input",
             NodeKind::Stack => "stack",
             NodeKind::Screen => "screen",
+            NodeKind::Toggle => "toggle",
+            NodeKind::Scroll => "scroll",
+            NodeKind::Tabs => "tabs",
+            NodeKind::Tab => "tab",
+        }
+    }
+
+    /// The role a node of this kind has unless overridden.
+    pub fn default_role(self) -> Option<Role> {
+        match self {
+            NodeKind::Button => Some(Role::Button),
+            NodeKind::Toggle => Some(Role::Switch),
+            NodeKind::Tabs => Some(Role::TabList),
+            NodeKind::Tab => Some(Role::TabPanel),
+            NodeKind::Text => Some(Role::Text),
+            _ => None,
         }
     }
 }
@@ -63,6 +90,22 @@ pub struct NavigateEvent {
     pub path: String,
 }
 
+/// Fired when a control's value changes: a toggle (0/1), a tab bar (index).
+#[derive(Clone, Debug)]
+pub struct ChangeEvent {
+    pub value: f64,
+}
+
+impl ChangeEvent {
+    pub fn checked(&self) -> bool {
+        self.value != 0.
+    }
+
+    pub fn index(&self) -> usize {
+        self.value.max(0.) as usize
+    }
+}
+
 /// An event handler. Handlers receive the whole `App` so they can update any entity.
 pub type Handler<E> = Rc<dyn Fn(&E, &mut App)>;
 
@@ -72,7 +115,16 @@ pub enum Element {
     Node(Box<VNode>),
     Entity(AnyEntity),
     Fragment(Vec<Element>),
+    /// Built when the tree is resolved, with access to the app (themes,
+    /// globals). This is how stateless components are implemented.
+    Lazy(Box<dyn FnOnce(&mut App) -> Element>),
     Empty,
+}
+
+/// An element built at resolve time with access to the [`App`]:
+/// `lazy(|cx| text(cx.global::<Theme>().name))`.
+pub fn lazy<E: IntoElement>(f: impl FnOnce(&mut App) -> E + 'static) -> Element {
+    Element::Lazy(Box::new(move |app| f(app).into_element()))
 }
 
 /// A host node under construction.
@@ -81,12 +133,18 @@ pub struct VNode {
     pub style: Style,
     pub text: String,
     pub placeholder: String,
+    /// Icon name (SF Symbol on Apple platforms), used by tabs.
+    pub icon: String,
+    /// Numeric value: toggle state (0/1), selected tab index.
+    pub value: Option<f64>,
+    pub a11y: Accessibility,
     pub key: Option<String>,
     pub children: Vec<Element>,
     pub on_click: Option<Handler<ClickEvent>>,
     pub on_input: Option<Handler<InputEvent>>,
     pub on_back: Option<Handler<BackEvent>>,
     pub on_navigate: Option<Handler<NavigateEvent>>,
+    pub on_change: Option<Handler<ChangeEvent>>,
 }
 
 impl VNode {
@@ -96,12 +154,16 @@ impl VNode {
             style: Style::default(),
             text: String::new(),
             placeholder: String::new(),
+            icon: String::new(),
+            value: None,
+            a11y: Accessibility::default(),
             key: None,
             children: Vec::new(),
             on_click: None,
             on_input: None,
             on_back: None,
             on_navigate: None,
+            on_change: None,
         }
     }
 }
@@ -194,6 +256,12 @@ macro_rules! builder {
 
         impl FluentBuilder for $name {}
 
+        impl Accessible for $name {
+            fn a11y_mut(&mut self) -> &mut Accessibility {
+                &mut self.0.a11y
+            }
+        }
+
         impl IntoElement for $name {
             fn into_element(self) -> Element {
                 Element::Node(Box::new(self.0))
@@ -233,6 +301,22 @@ builder!(
 builder!(
     /// A native navigation stack. Usually created by [`Router`](crate::Router).
     Stack
+);
+builder!(
+    /// A native on/off switch. See [`toggle`].
+    Toggle
+);
+builder!(
+    /// A scrollable container. See [`scroll`].
+    Scroll
+);
+builder!(
+    /// A native tab bar. Usually created by [`Router`](crate::Router) tabs.
+    Tabs
+);
+builder!(
+    /// One tab of a [`Tabs`] bar. See [`tab`].
+    Tab
 );
 
 /// A flex container, laid out as a column by default.
@@ -345,5 +429,77 @@ impl Stack {
     pub fn on_navigate(mut self, handler: Handler<NavigateEvent>) -> Self {
         self.0.on_navigate = Some(handler);
         self
+    }
+}
+
+/// A native on/off switch: `toggle(self.wifi).on_change(cx.listener(|this, e, _| this.wifi = e.checked()))`.
+/// Give it a label: `.accessibility_label("Wi-Fi")`.
+pub fn toggle(on: bool) -> Toggle {
+    let mut n = VNode::new(NodeKind::Toggle);
+    n.value = Some(if on { 1. } else { 0. });
+    Toggle(n)
+}
+
+impl Toggle {
+    pub fn on_change(mut self, handler: Handler<ChangeEvent>) -> Self {
+        self.0.on_change = Some(handler);
+        self
+    }
+}
+
+/// A vertically scrolling container. Give it a bounded height (e.g. `.flex_1()`).
+pub fn scroll() -> Scroll {
+    let mut n = VNode::new(NodeKind::Scroll);
+    n.style.flex_grow = 1.;
+    n.style.flex_shrink = 1.;
+    n.style.flex_basis = crate::style::Length::Px(0.);
+    Scroll(n)
+}
+
+impl ParentElement for Scroll {
+    fn children_mut(&mut self) -> &mut Vec<Element> {
+        &mut self.0.children
+    }
+}
+
+/// A tab bar. Prefer `Router::new().tab(...)`, which manages one for you.
+pub fn tabs(selected: usize) -> Tabs {
+    let mut n = VNode::new(NodeKind::Tabs);
+    n.value = Some(selected as f64);
+    n.style.flex_grow = 1.;
+    Tabs(n)
+}
+
+impl ParentElement for Tabs {
+    fn children_mut(&mut self) -> &mut Vec<Element> {
+        &mut self.0.children
+    }
+}
+
+impl Tabs {
+    pub fn on_change(mut self, handler: Handler<ChangeEvent>) -> Self {
+        self.0.on_change = Some(handler);
+        self
+    }
+
+    /// The current path, mirrored to the URL bar on the web.
+    pub fn path(mut self, path: impl Into<String>) -> Self {
+        self.0.text = path.into();
+        self
+    }
+}
+
+/// One tab: a title and an icon (SF Symbol name, e.g. "checklist").
+pub fn tab(title: impl Into<String>, icon: impl Into<String>) -> Tab {
+    let mut n = VNode::new(NodeKind::Tab);
+    n.text = title.into();
+    n.icon = icon.into();
+    n.style.flex_grow = 1.;
+    Tab(n)
+}
+
+impl ParentElement for Tab {
+    fn children_mut(&mut self) -> &mut Vec<Element> {
+        &mut self.0.children
     }
 }

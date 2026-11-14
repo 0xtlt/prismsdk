@@ -98,7 +98,7 @@ pub fn page(config: &AppConfig, init: &AppInit, path: &str) -> String {
     };
     format!(
         r#"<!doctype html>
-<html lang="en">
+<html lang="en" style="color-scheme: {scheme}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -109,18 +109,36 @@ pub fn page(config: &AppConfig, init: &AppInit, path: &str) -> String {
   body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; font-size: 16px; background: Canvas; color: CanvasText; }}
   #prism-root {{ display: flex; flex-direction: column; min-height: 100%; }}
   #prism-root > * {{ flex-grow: 1; }}
+  #prism-root:has(> .prism-tabs) {{ height: 100%; }}
+  .prism-panels > * {{ overflow: auto; }}
   [hidden] {{ display: none !important; }}
+  :focus-visible {{ outline: 2px solid Highlight; outline-offset: 2px; }}
+  .prism-title {{ margin: 0; font: inherit; }}
+  .prism-scroll {{ overflow-y: auto; overscroll-behavior: contain; }}
+  .prism-tabs {{ display: flex; flex-direction: column; }}
+  .prism-panels {{ flex: 1; display: flex; flex-direction: column; min-height: 0; }}
+  .prism-panels > * {{ flex: 1; display: flex; flex-direction: column; }}
+  .prism-tabbar {{ flex: 0 0 auto; display: flex; justify-content: center; gap: 4px; padding: 6px; border-top: 1px solid rgba(128,128,128,.25); background: Canvas; }}
+  .prism-tab {{ flex: 0 1 140px; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px 8px; border: 0; border-radius: 8px; background: none; color: GrayText; font: inherit; font-size: 12px; cursor: pointer; }}
+  .prism-tab[aria-selected="true"] {{ color: LinkText; background: rgba(128,128,128,.12); }}
+  .prism-tab-icon {{ font-size: 18px; line-height: 1; }}
+  .prism-switch {{ appearance: none; width: 44px; height: 26px; margin: 0; border-radius: 13px; background: rgba(128,128,128,.35); position: relative; cursor: pointer; transition: background .15s; flex-shrink: 0; }}
+  .prism-switch::after {{ content: ""; position: absolute; top: 2px; left: 2px; width: 22px; height: 22px; border-radius: 50%; background: white; box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform .15s; }}
+  .prism-switch:checked {{ background: #34c759; }}
+  .prism-switch:checked::after {{ transform: translateX(18px); }}
+  @media (prefers-reduced-motion: reduce) {{ * {{ transition: none !important; }} }}
   .prism-header {{ position: relative; flex: 0 0 44px; display: flex; align-items: center; justify-content: center; border-bottom: 1px solid rgba(128,128,128,.25); background: Canvas; font-size: 15px; font-weight: 600; }}
   .prism-back {{ position: absolute; left: 8px; top: 50%; transform: translateY(-50%); font: inherit; font-size: 14px; font-weight: 400; cursor: pointer; }}
   .prism-body {{ flex: 1; display: flex; flex-direction: column; min-height: 0; }}
 </style>
 </head>
 <body>
-<div id="prism-root">{body}</div>
+<main id="prism-root">{body}</main>
 <script>{js}</script>
 </body>
 </html>"#,
         title = html::escape(&title),
+        scheme = html.color_scheme(),
         body = html.to_html(),
         js = CLIENT_JS,
     )
@@ -175,6 +193,7 @@ fn parse_event(msg: &str) -> Option<UiEvent> {
         "click" => Some(UiEvent::Click(id)),
         "input" => Some(UiEvent::Input(id, v.get("v")?.as_str()?.to_string())),
         "back" => Some(UiEvent::Back(id, v.get("depth")?.as_u64()? as usize)),
+        "change" => Some(UiEvent::Change(id, v.get("v")?.as_f64()?)),
         "navigate" => Some(UiEvent::Navigate(id, v.get("path")?.as_str()?.to_string())),
         _ => None,
     }
@@ -221,6 +240,31 @@ impl Encoder {
             }
             Patch::SetChildren { id, children } => {
                 json!({ "op": "children", "id": id, "children": children })
+            }
+            Patch::SetAppearance { appearance } => {
+                json!({ "op": "appearance", "value": match appearance {
+                    prism_core::Appearance::System => "light dark",
+                    prism_core::Appearance::Light => "light",
+                    prism_core::Appearance::Dark => "dark",
+                }})
+            }
+            Patch::SetValue { id, value } => json!({ "op": "value", "id": id, "value": value }),
+            Patch::SetIcon { id, icon } => json!({ "op": "icon", "id": id, "icon": icon }),
+            Patch::SetAccessibility { id, a11y } => {
+                let level = match a11y.role {
+                    Some(prism_core::Role::Heading(l)) => Some(l),
+                    _ => None,
+                };
+                json!({ "op": "a11y", "id": id, "a11y": {
+                    "role": a11y.role.map(|r| r.aria()),
+                    "level": level,
+                    "label": a11y.label,
+                    "hint": a11y.hint,
+                    "value": a11y.value,
+                    "checked": a11y.checked,
+                    "disabled": a11y.disabled,
+                    "hidden": a11y.hidden,
+                }})
             }
             Patch::SetRoot { id } => json!({ "op": "root", "id": id }),
             Patch::Destroy { id } => {

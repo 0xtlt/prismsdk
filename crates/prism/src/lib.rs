@@ -33,6 +33,9 @@
 
 pub use prism_core::*;
 
+/// The component library: themed, accessible, overridable, native on demand.
+pub use prism_ui as ui;
+
 use std::sync::Arc;
 
 /// Which backend [`Application::run`] will use for this build.

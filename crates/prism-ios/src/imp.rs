@@ -11,16 +11,21 @@ use objc2::{
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSString};
 use objc2_ui_kit::{
-    NSTextAlignment, UIApplication, UIApplicationDelegate, UIButton, UIButtonType, UIColor,
-    UIControlEvents, UIControlState, UIFont, UIFontWeightBold, UIFontWeightMedium,
-    UIFontWeightRegular, UIFontWeightSemibold, UILabel, UINavigationController,
-    UINavigationControllerDelegate, UIResponder, UIScene, UISceneConnectionOptions,
-    UISceneDelegate, UISceneSession, UITapGestureRecognizer, UITextBorderStyle, UITextField,
-    UIView, UIViewController, UIWindow, UIWindowScene, UIWindowSceneDelegate,
+    NSObjectUIAccessibility, NSTextAlignment, UIAccessibilityTraitButton,
+    UIAccessibilityTraitHeader, UIAccessibilityTraitImage, UIAccessibilityTraitLink,
+    UIAccessibilityTraitNotEnabled, UIAccessibilityTraitSelected, UIAccessibilityTraitStaticText,
+    UIAccessibilityTraitTabBar, UIAccessibilityTraitToggleButton, UIApplication,
+    UIApplicationDelegate, UIButton, UIButtonType, UIColor, UIControlEvents, UIControlState,
+    UIFont, UIFontWeightBold, UIFontWeightMedium, UIFontWeightRegular, UIFontWeightSemibold,
+    UIImage, UILabel, UINavigationController, UINavigationControllerDelegate, UIResponder, UIScene,
+    UISceneConnectionOptions, UISceneDelegate, UISceneSession, UIScrollView,
+    UIScrollViewContentInsetAdjustmentBehavior, UIScrollViewKeyboardDismissMode, UISwitch,
+    UITabBarController, UITabBarControllerDelegate, UITapGestureRecognizer, UITextBorderStyle,
+    UITextField, UIView, UIViewController, UIWindow, UIWindowScene, UIWindowSceneDelegate,
 };
 use prism_core::{
-    AppConfig, AppInit, Backend, Color, FontWeight, NodeId, NodeKind, Runtime, Style, TextAlign,
-    UiEvent,
+    Accessibility, AppConfig, AppInit, Appearance, Backend, Color, FontWeight, NodeId, NodeKind,
+    Role, Runtime, Style, TextAlign, UiEvent,
 };
 use prism_native::{Insets, NativeRenderer, Viewport, Widgets};
 
@@ -101,6 +106,12 @@ define_class!(
             dispatch(UiEvent::Input(sender.tag() as NodeId, text));
         }
 
+        #[unsafe(method(onToggle:))]
+        fn on_toggle(&self, sender: &UISwitch) {
+            let value = if sender.isOn() { 1. } else { 0. };
+            dispatch(UiEvent::Change(sender.tag() as NodeId, value));
+        }
+
         #[unsafe(method(onTap:))]
         fn on_tap(&self, sender: &UITapGestureRecognizer) {
             if let Some(view) = sender.view() {
@@ -110,6 +121,15 @@ define_class!(
     }
 
     unsafe impl NSObjectProtocol for Target {}
+
+    unsafe impl UITabBarControllerDelegate for Target {
+        #[unsafe(method(tabBarController:didSelectViewController:))]
+        fn did_select(&self, tabs: &UITabBarController, _controller: &UIViewController) {
+            if let Some(view) = tabs.viewIfLoaded() {
+                dispatch(UiEvent::Change(view.tag() as NodeId, tabs.selectedIndex() as f64));
+            }
+        }
+    }
 
     unsafe impl UINavigationControllerDelegate for Target {
         /// Fires after pushes, pops and swipe-back. Reports the native depth;
@@ -246,6 +266,8 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
         controller: controller.clone(),
         screens: HashMap::new(),
         titles: HashMap::new(),
+        icons: HashMap::new(),
+        selected: HashMap::new(),
     });
     renderer.apply(&runtime.render());
     STATE.with(|cell| *cell.borrow_mut() = Some(State { runtime, renderer }));
@@ -264,11 +286,38 @@ pub struct NavStack {
     view: Retained<UIView>,
 }
 
+pub struct TabBar {
+    controller: Retained<UITabBarController>,
+    view: Retained<UIView>,
+}
+
+/// Makes `child` a child view controller of the nearest controller above its
+/// view (stacks nested in tabs or screens), so it gets safe-area, rotation and
+/// appearance callbacks.
+fn ensure_contained(child: &UIViewController, view: &UIView) {
+    if child.parentViewController().is_some() {
+        return;
+    }
+    let mut responder = view.superview().map(Retained::into_super);
+    while let Some(r) = responder {
+        if let Ok(parent) = r.clone().downcast::<UIViewController>() {
+            parent.addChildViewController(child);
+            child.didMoveToParentViewController(Some(&parent));
+            return;
+        }
+        responder = r.nextResponder();
+    }
+}
+
 #[derive(Clone)]
 pub enum View {
     Container(Retained<UIView>),
     Screen(Retained<UIView>),
     Stack(Rc<NavStack>),
+    Tabs(Rc<TabBar>),
+    Tab(Retained<UIView>),
+    Scroll(Retained<UIScrollView>),
+    Toggle(Retained<UISwitch>),
     Label(Retained<UILabel>),
     Button(Retained<UIButton>),
     Input(Retained<UITextField>),
@@ -277,8 +326,11 @@ pub enum View {
 impl View {
     fn ui(&self) -> &UIView {
         match self {
-            View::Container(v) | View::Screen(v) => v,
+            View::Container(v) | View::Screen(v) | View::Tab(v) => v,
             View::Stack(s) => &s.view,
+            View::Tabs(t) => &t.view,
+            View::Scroll(v) => v,
+            View::Toggle(v) => v,
             View::Label(v) => v,
             View::Button(v) => v,
             View::Input(v) => v,
@@ -298,6 +350,9 @@ pub struct UiKit {
     /// One view controller per child of a navigation stack.
     screens: HashMap<NodeId, Retained<ScreenController>>,
     titles: HashMap<NodeId, String>,
+    icons: HashMap<NodeId, String>,
+    /// Selected index of each tab bar, applied once its tabs exist.
+    selected: HashMap<NodeId, usize>,
 }
 
 impl UiKit {
@@ -317,6 +372,9 @@ impl UiKit {
         }
         let title = self.titles.get(&id).map(|t| NSString::from_str(t));
         vc.setTitle(title.as_deref());
+        if let (Some(item), Some(icon)) = (vc.tabBarItem(), self.icons.get(&id)) {
+            item.setImage(UIImage::systemImageNamed(&NSString::from_str(icon)).as_deref());
+        }
         vc
     }
 }
@@ -360,6 +418,35 @@ impl Widgets for UiKit {
                 unsafe { nav.setDelegate(Some(ProtocolObject::from_ref(&*self.target))) };
                 let view = nav.view().expect("navigation controller has a view");
                 View::Stack(Rc::new(NavStack { nav, view }))
+            }
+            NodeKind::Tabs => {
+                let controller = UITabBarController::new(mtm);
+                controller.setDelegate(Some(ProtocolObject::from_ref(&*self.target)));
+                let view = controller.view().expect("tab bar controller has a view");
+                View::Tabs(Rc::new(TabBar { controller, view }))
+            }
+            NodeKind::Tab => View::Tab(UIView::new(mtm)),
+            NodeKind::Scroll => {
+                let s = UIScrollView::new(mtm);
+                s.setAlwaysBounceVertical(true);
+                s.setKeyboardDismissMode(UIScrollViewKeyboardDismissMode::OnDrag);
+                // UIKit insets content under bars (screens let a leading scroll
+                // view run under them, see prism-native).
+                s.setContentInsetAdjustmentBehavior(
+                    UIScrollViewContentInsetAdjustmentBehavior::Automatic,
+                );
+                View::Scroll(s)
+            }
+            NodeKind::Toggle => {
+                let t = UISwitch::new(mtm);
+                unsafe {
+                    t.addTarget_action_forControlEvents(
+                        Some(target),
+                        sel!(onToggle:),
+                        UIControlEvents::ValueChanged,
+                    )
+                };
+                View::Toggle(t)
             }
             NodeKind::Text => {
                 let l = UILabel::new(mtm);
@@ -410,7 +497,13 @@ impl Widgets for UiKit {
 
         let text_color = style.text_color.map(ui_color);
         match view {
-            View::Container(_) | View::Screen(_) | View::Stack(_) => {}
+            View::Container(_)
+            | View::Screen(_)
+            | View::Stack(_)
+            | View::Tabs(_)
+            | View::Tab(_)
+            | View::Scroll(_)
+            | View::Toggle(_) => {}
             View::Label(l) => {
                 unsafe { l.setFont(Some(&font(style))) };
                 unsafe { l.setTextColor(Some(&text_color.unwrap_or_else(UIColor::labelColor))) };
@@ -440,14 +533,14 @@ impl Widgets for UiKit {
                 }
             }
             View::Button(b) => b.setTitle_forState(Some(&s), UIControlState::Normal),
-            View::Screen(_) => {
+            View::Screen(_) | View::Tab(_) => {
                 let id = view.id();
                 self.titles.insert(id, text.to_string());
                 if let Some(vc) = self.screens.get(&id) {
                     vc.setTitle(Some(&s));
                 }
             }
-            View::Container(_) | View::Stack(_) => {}
+            _ => {}
         }
     }
 
@@ -496,13 +589,31 @@ impl Widgets for UiKit {
             }
             return;
         }
+        if let View::Tabs(bar) = parent {
+            let controllers: Vec<Retained<UIViewController>> = children
+                .iter()
+                .map(|c| Retained::into_super(self.screen_controller(c)))
+                .collect();
+            bar.controller.setViewControllers_animated(
+                Some(&NSArray::from_retained_slice(&controllers)),
+                false,
+            );
+            if let Some(i) = self.selected.get(&parent.id()) {
+                bar.controller.setSelectedIndex(*i);
+            }
+            return;
+        }
         let parent = parent.ui();
         for (i, child) in children.iter().enumerate() {
             parent.insertSubview_atIndex(child.ui(), i as isize);
         }
-        let subviews = parent.subviews();
-        for sub in subviews.iter().skip(children.len()) {
-            sub.removeFromSuperview();
+        // Remove former Prism children only (tag > 0); UIKit's own subviews,
+        // like scroll indicators, have tag 0.
+        let keep: Vec<isize> = children.iter().map(|c| c.ui().tag()).collect();
+        for sub in parent.subviews().iter() {
+            if sub.tag() > 0 && !keep.contains(&sub.tag()) {
+                sub.removeFromSuperview();
+            }
         }
     }
 
@@ -513,16 +624,19 @@ impl Widgets for UiKit {
         for child in self.controller.childViewControllers().iter() {
             child.removeFromParentViewController();
         }
-        if let View::Stack(stack) = view {
-            // Proper containment, so the navigation controller gets the safe
-            // area, rotation and appearance callbacks.
-            self.controller.addChildViewController(&stack.nav);
-            self.root.addSubview(view.ui());
-            stack
-                .nav
-                .didMoveToParentViewController(Some(&self.controller));
-        } else {
-            self.root.addSubview(view.ui());
+        // Proper containment, so container controllers get the safe area,
+        // rotation and appearance callbacks.
+        let child: Option<Retained<UIViewController>> = match view {
+            View::Stack(stack) => Some(Retained::into_super(stack.nav.clone())),
+            View::Tabs(bar) => Some(Retained::into_super(bar.controller.clone())),
+            _ => None,
+        };
+        if let Some(child) = &child {
+            self.controller.addChildViewController(child);
+        }
+        self.root.addSubview(view.ui());
+        if let Some(child) = &child {
+            child.didMoveToParentViewController(Some(&self.controller));
         }
     }
 
@@ -530,13 +644,21 @@ impl Widgets for UiKit {
         let id = view.id();
         self.screens.remove(&id);
         self.titles.remove(&id);
+        self.icons.remove(&id);
+        self.selected.remove(&id);
         view.ui().removeFromSuperview();
     }
 
     fn measure(&mut self, view: &View, max_width: Option<f32>) -> (f32, f32) {
         let limit = CGSize::new(max_width.map_or(f64::MAX / 4., |w| w as f64), f64::MAX / 4.);
         let size = match view {
-            View::Container(_) | View::Screen(_) | View::Stack(_) => CGSize::ZERO,
+            View::Toggle(t) => t.sizeThatFits(limit),
+            View::Container(_)
+            | View::Screen(_)
+            | View::Stack(_)
+            | View::Tabs(_)
+            | View::Tab(_)
+            | View::Scroll(_) => CGSize::ZERO,
             View::Input(f) => {
                 let s = f.sizeThatFits(limit);
                 CGSize::new(s.width.max(120.), s.height.max(36.))
@@ -547,20 +669,139 @@ impl Widgets for UiKit {
     }
 
     fn set_frame(&mut self, view: &View, x: f32, y: f32, w: f32, h: f32) {
+        match view {
+            View::Stack(st) => ensure_contained(&st.nav, &st.view),
+            View::Tabs(bar) => ensure_contained(&bar.controller, &bar.view),
+            _ => {}
+        }
         view.ui().setFrame(CGRect::new(
             CGPoint::new(x as f64, y as f64),
             CGSize::new(w as f64, h as f64),
         ));
     }
 
+    fn set_value(&mut self, view: &View, value: f64) {
+        match view {
+            View::Toggle(t) => {
+                if t.isOn() != (value != 0.) {
+                    t.setOn_animated(value != 0., true);
+                }
+            }
+            View::Tabs(bar) => {
+                let i = value.max(0.) as usize;
+                self.selected.insert(view.id(), i);
+                if bar.controller.selectedIndex() != i {
+                    bar.controller.setSelectedIndex(i);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn set_icon(&mut self, view: &View, icon: &str) {
+        let id = view.id();
+        self.icons.insert(id, icon.to_string());
+        if let Some(item) = self.screens.get(&id).and_then(|vc| vc.tabBarItem()) {
+            item.setImage(UIImage::systemImageNamed(&NSString::from_str(icon)).as_deref());
+        }
+    }
+
+    fn set_appearance(&mut self, appearance: Appearance) {
+        let style = match appearance {
+            Appearance::System => objc2_ui_kit::UIUserInterfaceStyle::Unspecified,
+            Appearance::Light => objc2_ui_kit::UIUserInterfaceStyle::Light,
+            Appearance::Dark => objc2_ui_kit::UIUserInterfaceStyle::Dark,
+        };
+        self.controller.setOverrideUserInterfaceStyle(style);
+    }
+
+    fn set_content_size(&mut self, view: &View, width: f32, height: f32) {
+        if let View::Scroll(s) = view {
+            s.setContentSize(CGSize::new(width as f64, height as f64));
+        }
+    }
+
+    fn set_accessibility(&mut self, view: &View, a: &Accessibility) {
+        let mtm = self.mtm;
+        let v = view.ui();
+        let ns = |s: &Option<String>| s.as_deref().map(NSString::from_str);
+        v.setAccessibilityElementsHidden(a.hidden, mtm);
+        // Platform containers announce themselves through their titles.
+        if matches!(
+            view,
+            View::Stack(_) | View::Tabs(_) | View::Tab(_) | View::Screen(_) | View::Scroll(_)
+        ) {
+            return;
+        }
+        let native_control = matches!(view, View::Button(_) | View::Input(_) | View::Toggle(_));
+        if !native_control {
+            // Operable containers and images are single elements; plain text
+            // labels already are; groups gather their children.
+            let element = a
+                .role
+                .is_some_and(|r| r.is_interactive() || r == Role::Image)
+                || matches!(view, View::Label(_));
+            v.setIsAccessibilityElement(element && !a.hidden, mtm);
+            v.setShouldGroupAccessibilityChildren(a.role == Some(Role::Group), mtm);
+            let mut traits = 0;
+            unsafe {
+                traits |= match a.role {
+                    Some(Role::Button) => UIAccessibilityTraitButton,
+                    Some(Role::Link) => UIAccessibilityTraitLink,
+                    Some(Role::Heading(_)) => UIAccessibilityTraitHeader,
+                    Some(Role::Image) => UIAccessibilityTraitImage,
+                    Some(Role::Text) => UIAccessibilityTraitStaticText,
+                    Some(Role::Switch | Role::Checkbox) => {
+                        UIAccessibilityTraitToggleButton | UIAccessibilityTraitButton
+                    }
+                    Some(Role::Tab) => UIAccessibilityTraitButton,
+                    Some(Role::TabList) => UIAccessibilityTraitTabBar,
+                    _ => 0,
+                };
+                if a.disabled {
+                    traits |= UIAccessibilityTraitNotEnabled;
+                }
+                if a.checked == Some(true) && matches!(a.role, Some(Role::Tab | Role::Button)) {
+                    traits |= UIAccessibilityTraitSelected;
+                }
+            }
+            v.setAccessibilityTraits(traits, mtm);
+        }
+        // Labels override the visible text only when given.
+        if a.label.is_some() || !native_control {
+            v.setAccessibilityLabel(ns(&a.label).as_deref(), mtm);
+        }
+        v.setAccessibilityHint(ns(&a.hint).as_deref(), mtm);
+        let value = a.value.clone().or_else(|| match (a.role, a.checked) {
+            (Some(Role::Switch | Role::Checkbox), Some(on)) if !native_control => {
+                Some(if on { "1".into() } else { "0".into() })
+            }
+            _ => None,
+        });
+        if value.is_some() || !native_control {
+            v.setAccessibilityValue(ns(&value).as_deref(), mtm);
+        }
+    }
+
     fn screen_viewport(&mut self, stack: &View, screen: &View) -> Viewport {
+        // A tab hosts a navigation stack, which handles the safe area itself.
+        let own_insets = !matches!(screen, View::Tab(_));
         let host = self
             .screens
             .get(&screen.id())
             .and_then(|vc| vc.view())
             .unwrap_or_else(|| stack.ui().retain());
         let b = host.bounds();
-        let i = host.safeAreaInsets();
+        let i = if own_insets {
+            host.safeAreaInsets()
+        } else {
+            objc2_ui_kit::UIEdgeInsets {
+                top: 0.,
+                left: 0.,
+                bottom: 0.,
+                right: 0.,
+            }
+        };
         Viewport {
             x: 0.,
             y: 0.,

@@ -20,8 +20,8 @@ use std::str::FromStr;
 
 use crate::app::{AnyEntity, App, Context, Entity, Render};
 use crate::element::{
-    BackEvent, ClickEvent, Element, Handler, IntoElement, NavigateEvent, ParentElement, div,
-    screen, stack, text,
+    BackEvent, ChangeEvent, ClickEvent, Element, Handler, IntoElement, NavigateEvent,
+    ParentElement, div, screen, stack, tab, tabs, text,
 };
 use crate::style::Styled;
 
@@ -101,18 +101,30 @@ struct Entry {
     entity: AnyEntity,
 }
 
-/// The navigation state: a stack of screens, each one an entity built from a route.
-pub struct Router {
-    routes: Vec<Route>,
-    not_found: Option<Build>,
+/// A tab and its own navigation stack.
+struct TabState {
+    title: String,
+    icon: String,
+    root: String,
     entries: Vec<Entry>,
 }
 
-/// Declares the routes, then [`build`](RouterBuilder::build)s the router.
+/// The navigation state: one stack of screens per tab (a single implicit tab
+/// when no tab bar is declared). Screens are entities built from routes.
+pub struct Router {
+    routes: Vec<Route>,
+    not_found: Option<Build>,
+    tabs: Vec<TabState>,
+    selected: usize,
+    tab_bar: bool,
+}
+
+/// Declares the routes (and optionally tabs), then [`build`](RouterBuilder::build)s the router.
 #[derive(Default)]
 pub struct RouterBuilder {
     routes: Vec<Route>,
     not_found: Option<Build>,
+    tabs: Vec<(String, String, String)>,
 }
 
 impl Router {
@@ -121,14 +133,23 @@ impl Router {
         RouterBuilder::default()
     }
 
-    /// Path of the visible screen.
-    pub fn current_path(&self) -> &str {
-        self.entries.last().map_or("/", |e| e.path.as_str())
+    fn entries(&self) -> &Vec<Entry> {
+        &self.tabs[self.selected].entries
     }
 
-    /// Number of screens in the stack.
+    /// Path of the visible screen.
+    pub fn current_path(&self) -> &str {
+        self.entries().last().map_or("/", |e| e.path.as_str())
+    }
+
+    /// Number of screens in the visible stack.
     pub fn depth(&self) -> usize {
-        self.entries.len()
+        self.entries().len()
+    }
+
+    /// Index of the selected tab.
+    pub fn selected_tab(&self) -> usize {
+        self.selected
     }
 
     pub(crate) fn apply(&mut self, op: NavOp, cx: &mut Context<Self>) {
@@ -136,50 +157,86 @@ impl Router {
             NavOp::Push(path) => self.push(&path, cx),
             NavOp::Replace(path) => {
                 let path = normalize_path(&path);
-                if let Some(old) = self.entries.pop() {
+                let tab = self.selected;
+                if let Some(old) = self.tabs[tab].entries.pop() {
                     cx.release_any(old.entity);
                 }
                 let entity = self.open(&path, cx);
-                self.entries.push(Entry { path, entity });
+                self.tabs[tab].entries.push(Entry { path, entity });
             }
             NavOp::Reset(path) => self.reset(&path, cx),
-            NavOp::Back => self.truncate(self.entries.len().saturating_sub(1), cx),
+            NavOp::Back => {
+                let depth = self.depth().saturating_sub(1);
+                self.truncate(self.selected, depth, cx)
+            }
         }
         cx.notify();
     }
 
+    /// Pushes `path` on the current tab, or switches tab if `path` is a tab's root.
     fn push(&mut self, path: &str, cx: &mut Context<Self>) {
         let path = normalize_path(path);
+        if self.tab_bar
+            && let Some(i) = self.tabs.iter().position(|t| t.root == path)
+        {
+            self.selected = i;
+            return;
+        }
         if self.current_path() == path {
             return;
         }
         let entity = self.open(&path, cx);
-        self.entries.push(Entry { path, entity });
+        self.tabs[self.selected]
+            .entries
+            .push(Entry { path, entity });
     }
 
-    /// Keeps the first `depth` screens (at least one).
-    fn truncate(&mut self, depth: usize, cx: &mut Context<Self>) {
-        while self.entries.len() > depth.max(1) {
-            let old = self.entries.pop().expect("non-empty");
+    /// Keeps the first `depth` screens (at least one) of tab `tab`.
+    fn truncate(&mut self, tab: usize, depth: usize, cx: &mut Context<Self>) {
+        let Some(t) = self.tabs.get_mut(tab) else {
+            return;
+        };
+        while t.entries.len() > depth.max(1) {
+            let old = t.entries.pop().expect("non-empty");
             cx.release_any(old.entity);
         }
     }
 
-    /// A deep link to `/a/b` opens `/` underneath, so "back" has somewhere to go.
+    fn select(&mut self, index: usize) {
+        if index < self.tabs.len() {
+            self.selected = index;
+        }
+    }
+
+    /// Opens `path` in the tab whose root best matches it. Each tab's root
+    /// screen sits underneath, so "back" has somewhere to go.
     fn reset(&mut self, path: &str, cx: &mut Context<Self>) {
-        for old in self.entries.drain(..) {
-            cx.release_any(old.entity);
-        }
         let path = normalize_path(path);
-        if path != "/" && self.routes.iter().any(|r| r.matches("/").is_some()) {
-            let home = self.open("/", cx);
-            self.entries.push(Entry {
-                path: "/".into(),
-                entity: home,
-            });
+        let tab = self
+            .tabs
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| {
+                t.root == "/" || path == t.root || path.starts_with(&format!("{}/", t.root))
+            })
+            .max_by_key(|(_, t)| t.root.len())
+            .map_or(0, |(i, _)| i);
+        for i in 0..self.tabs.len() {
+            for old in std::mem::take(&mut self.tabs[i].entries) {
+                cx.release_any(old.entity);
+            }
+            let root = self.tabs[i].root.clone();
+            let has_root_route = self.routes.iter().any(|r| r.matches(&root).is_some());
+            if i != tab || (path != root && has_root_route) {
+                let entity = self.open(&root, cx);
+                self.tabs[i].entries.push(Entry { path: root, entity });
+            }
         }
-        let entity = self.open(&path, cx);
-        self.entries.push(Entry { path, entity });
+        if path != self.tabs[tab].root || self.tabs[tab].entries.is_empty() {
+            let entity = self.open(&path, cx);
+            self.tabs[tab].entries.push(Entry { path, entity });
+        }
+        self.selected = tab;
     }
 
     fn open(&self, path: &str, app: &mut App) -> AnyEntity {
@@ -225,6 +282,15 @@ impl RouterBuilder {
         self
     }
 
+    /// Adds a tab to a native tab bar. `icon` is an SF Symbol name (Apple
+    /// platforms); `root` is the path of the tab's first screen. Each tab keeps
+    /// its own navigation stack.
+    pub fn tab(mut self, title: impl Into<String>, icon: impl Into<String>, root: &str) -> Self {
+        self.tabs
+            .push((title.into(), icon.into(), normalize_path(root)));
+        self
+    }
+
     /// The screen shown when no route matches.
     pub fn not_found<V: Render>(
         mut self,
@@ -238,10 +304,31 @@ impl RouterBuilder {
     /// initial path (the request URL on the web, `PRISM_PATH` or `/` natively).
     pub fn build(self, app: &mut App) -> Entity<Router> {
         let initial = app.initial_path().to_string();
+        let tab_bar = !self.tabs.is_empty();
+        let tabs = if tab_bar {
+            self.tabs
+                .into_iter()
+                .map(|(title, icon, root)| TabState {
+                    title,
+                    icon,
+                    root,
+                    entries: Vec::new(),
+                })
+                .collect()
+        } else {
+            vec![TabState {
+                title: String::new(),
+                icon: String::new(),
+                root: "/".into(),
+                entries: Vec::new(),
+            }]
+        };
         let router = app.new_entity(|_| Router {
             routes: self.routes,
             not_found: self.not_found,
-            entries: Vec::new(),
+            tabs,
+            selected: 0,
+            tab_bar,
         });
         app.set_navigator(router);
         router.update(app, |r, cx| r.reset(&initial, cx));
@@ -249,13 +336,28 @@ impl RouterBuilder {
     }
 }
 
+fn tab_stack(t: &TabState, index: usize, cx: &Context<Router>) -> crate::element::Stack {
+    stack()
+        .path(t.entries.last().map_or("/", |e| e.path.as_str()))
+        .on_back(cx.listener(move |this, e: &BackEvent, cx| this.truncate(index, e.depth, cx)))
+        .on_navigate(cx.listener(|this, e: &NavigateEvent, cx| this.push(&e.path, cx)))
+        .children(t.entries.iter().map(|e| Element::Entity(e.entity)))
+}
+
 impl Render for Router {
     fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        stack()
+        if !self.tab_bar {
+            return tab_stack(&self.tabs[0], 0, cx).into_element();
+        }
+        tabs(self.selected)
             .path(self.current_path())
-            .on_back(cx.listener(|this, e: &BackEvent, cx| this.truncate(e.depth, cx)))
-            .on_navigate(cx.listener(|this, e: &NavigateEvent, cx| this.push(&e.path, cx)))
-            .children(self.entries.iter().map(|e| Element::Entity(e.entity)))
+            .on_change(cx.listener(|this, e: &ChangeEvent, _| this.select(e.index())))
+            .children(self.tabs.iter().enumerate().map(|(i, t)| {
+                tab(t.title.clone(), t.icon.clone())
+                    .key(i.to_string())
+                    .child(tab_stack(t, i, cx))
+            }))
+            .into_element()
     }
 }
 
