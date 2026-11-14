@@ -746,8 +746,143 @@
   window.addEventListener("focus", reportLifecycle);
   window.addEventListener("blur", reportLifecycle);
 
+  // --- Device APIs: location, motion, photos, haptics, clipboard, share -----------
+  // The browser's UTC offset (seconds east), for dates formatted on the server.
+  const tz = -new Date().getTimezoneOffset() * 60;
+  document.cookie = `prism_tz=${tz}; Path=/; Max-Age=31536000; SameSite=Lax`;
+  const streams = new Map();
+  const position = (p) => ({
+    latitude: p.coords.latitude, longitude: p.coords.longitude, altitude: p.coords.altitude,
+    accuracy: p.coords.accuracy, speed: p.coords.speed, heading: p.coords.heading, timestamp: p.timestamp / 1000,
+  });
+  const geoError = (e) => (e.code === 1 ? "denied" : e.message || "unavailable");
+  const geoOptions = (msg) => ({ enableHighAccuracy: msg.accuracy === "best", timeout: 20000, maximumAge: msg.accuracy === "coarse" ? 600000 : 30000 });
+  const query = async (name) => {
+    try { return (await navigator.permissions.query({ name })).state; } catch { return null; }
+  };
+  const web = { granted: "granted", denied: "denied", prompt: "not_determined" };
+  async function permissionState(name, ask) {
+    switch (name) {
+      case "location": case "location_always": {
+        if (!navigator.geolocation) return "unavailable";
+        if (ask) await new Promise((r) => navigator.geolocation.getCurrentPosition(r, r, { timeout: 30000 }));
+        return web[await query("geolocation")] || "not_determined";
+      }
+      case "camera": case "microphone": {
+        if (!navigator.mediaDevices) return "unavailable";
+        if (ask) {
+          try {
+            const s = await navigator.mediaDevices.getUserMedia(name === "camera" ? { video: true } : { audio: true });
+            s.getTracks().forEach((t) => t.stop());
+          } catch (e) { if (e.name === "NotAllowedError") return "denied"; return "unavailable"; }
+        }
+        return web[await query(name)] || (ask ? "granted" : "not_determined");
+      }
+      case "notifications": {
+        if (!("Notification" in window)) return "unavailable";
+        if (ask && Notification.permission === "default") await Notification.requestPermission();
+        return web[Notification.permission === "default" ? "prompt" : Notification.permission];
+      }
+      case "motion": {
+        if (!("DeviceMotionEvent" in window)) return "unavailable";
+        if (typeof DeviceMotionEvent.requestPermission === "function") {
+          if (!ask) return "not_determined";
+          try { return web[await DeviceMotionEvent.requestPermission()] || "denied"; } catch { return "denied"; }
+        }
+        return "granted";
+      }
+      // Picking files needs no permission on the web.
+      case "photos": return "granted";
+      default: return "unavailable";
+    }
+  }
+  const readFile = (f) => new Promise((resolve) => {
+    const r = new FileReader();
+    r.onload = () => resolve({ name: f.name, mime: f.type, data: String(r.result).split(",")[1] || "" });
+    r.onerror = () => resolve(null);
+    r.readAsDataURL(f);
+  });
+  function watchMotion(msg, event) {
+    let last = 0, attitude = [0, 0, 0], seen = false;
+    const rad = Math.PI / 180;
+    const orient = (e) => { attitude = [(e.gamma || 0) * rad, (e.beta || 0) * rad, (e.alpha || 0) * rad]; };
+    const motion = (e) => {
+      seen = true;
+      const now = performance.now();
+      if (now - last < msg.interval) return;
+      last = now;
+      const a = e.acceleration || {}, g = e.accelerationIncludingGravity || {}, r = e.rotationRate || {};
+      const G = 9.80665;
+      event({
+        acceleration: [(a.x || 0) / G, (a.y || 0) / G, (a.z || 0) / G],
+        gravity: [((g.x || 0) - (a.x || 0)) / G, ((g.y || 0) - (a.y || 0)) / G, ((g.z || 0) - (a.z || 0)) / G],
+        rotation_rate: [(r.beta || 0) * rad, (r.gamma || 0) * rad, (r.alpha || 0) * rad],
+        attitude,
+      });
+    };
+    addEventListener("devicemotion", motion);
+    addEventListener("deviceorientation", orient);
+    // Desktops have no sensors: say so instead of staying silent.
+    setTimeout(() => { if (!seen && streams.has(msg.id)) event({ err: "unavailable" }); }, 1500);
+    return () => { removeEventListener("devicemotion", motion); removeEventListener("deviceorientation", orient); };
+  }
+  async function device(msg) {
+    const reply = (body) => send({ t: "device_reply", id: msg.id, ...body });
+    const event = (body) => send({ t: "device_event", id: msg.id, ...body });
+    try {
+      switch (msg.call) {
+        case "permission_status":
+        case "request_permission":
+          return reply({ permission: await permissionState(msg.permission, msg.call === "request_permission") });
+        case "location":
+          if (!navigator.geolocation) return reply({ err: "unavailable" });
+          return navigator.geolocation.getCurrentPosition((p) => reply({ location: position(p) }), (e) => reply({ err: geoError(e) }), geoOptions(msg));
+        case "watch_location": {
+          if (!navigator.geolocation) return event({ err: "unavailable" });
+          const w = navigator.geolocation.watchPosition((p) => event({ location: position(p) }), (e) => event({ err: geoError(e) }), geoOptions(msg));
+          return streams.set(msg.id, () => navigator.geolocation.clearWatch(w));
+        }
+        case "watch_motion":
+          if (!("DeviceMotionEvent" in window)) return event({ err: "unavailable" });
+          streams.set(msg.id, null);
+          return streams.set(msg.id, watchMotion(msg, event));
+        case "stop": {
+          const stop = streams.get(msg.id);
+          streams.delete(msg.id);
+          return stop && stop();
+        }
+        case "pick_images": {
+          const input = document.createElement("input");
+          input.type = "file";
+          input.accept = "image/*";
+          input.multiple = msg.limit !== 1;
+          if (msg.camera) input.capture = "environment";
+          input.addEventListener("cancel", () => reply({ err: "cancelled" }));
+          input.addEventListener("change", async () => {
+            let files = [...input.files];
+            if (msg.limit) files = files.slice(0, msg.limit);
+            reply({ files: (await Promise.all(files.map(readFile))).filter(Boolean) });
+          });
+          return input.click();
+        }
+        case "paste":
+          return reply({ text: await navigator.clipboard?.readText().catch(() => null) ?? null });
+        case "copy": return navigator.clipboard?.writeText(msg.text);
+        case "haptic":
+          return navigator.vibrate?.({ selection: 5, light: 10, medium: 20, heavy: 35, success: [10, 40, 10], warning: [20, 60, 20], error: [30, 50, 30, 50, 30] }[msg.kind] || 10);
+        case "share":
+          if (navigator.share) return navigator.share({ text: msg.text || undefined, url: msg.url || undefined }).catch(() => {});
+          return navigator.clipboard?.writeText([msg.text, msg.url].filter(Boolean).join(" "));
+        case "open_url": return window.open(msg.url, "_blank", "noopener");
+      }
+    } catch (e) {
+      reply({ err: String((e && e.message) || e) });
+    }
+  }
+
   function service(msg) {
     switch (msg.t) {
+      case "device": return device(msg);
       case "activity": return showActivity(msg.id, msg.c);
       case "activity_end": {
         // Show the final state for a moment, like the lock screen does.
@@ -773,7 +908,7 @@
 
   function connect() {
     const path = encodeURIComponent(location.pathname);
-    ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?path=${path}`);
+    ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?path=${path}&tz=${tz}`);
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
       if (!msg.p) return service(msg);

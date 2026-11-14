@@ -12,3 +12,10 @@ icon = "icon.png"
 # Default destinations.
 # simulator = "iPhone 17"
 # device = "My iPhone"
+
+[permissions]
+# Shown by iOS/macOS when the app asks.
+location = "Shows where you are in the Components gallery."
+camera = "Takes a photo in the Components gallery."
+photos = "Picks photos in the Components gallery."
+motion = "Shows the gyroscope in the Components gallery."

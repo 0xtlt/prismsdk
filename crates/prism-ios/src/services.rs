@@ -70,6 +70,13 @@ impl IosServices {
                 notifications,
                 tray: false,
                 app_menu: false,
+                location: true,
+                motion: true,
+                // Simulators have no camera.
+                camera: !cfg!(target_abi = "sim"),
+                photos: true,
+                haptics: true,
+                share: true,
             },
             controller,
         }
@@ -147,6 +154,7 @@ impl PlatformServices for IosServices {
                 let mtm = objc2::MainThreadMarker::new().expect("main thread");
                 crate::menus::show_alert(mtm, &self.controller, &spec, crate::imp::dispatch)
             }
+            PlatformRequest::Device { id, call } => prism_native::apple::device_call(id, call),
             PlatformRequest::ScheduleBackgroundTask(task) => {
                 let every = crate::imp::background_interval(task.every).as_secs_f64();
                 let (processing, network, power) = match task.kind {

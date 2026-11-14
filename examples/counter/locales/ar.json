@@ -180,5 +180,26 @@
   },
   "list": {
     "row": "الصف {row} من {total}"
+  },
+  "device": {
+    "title": "الجهاز",
+    "location_title": "الموقع",
+    "locating": "جارٍ تحديد الموقع…",
+    "location_none": "اضغط لمعرفة مكانك.",
+    "location": "{lat}، {lon} (±{meters} م)",
+    "error": "غير متاح: {error}",
+    "locate": "أين أنا؟",
+    "follow": "تتبعني",
+    "gyro": "الجيروسكوب",
+    "waiting": "في انتظار المستشعرات…",
+    "motion": "لف {roll} · ميل {pitch} · انعراج {yaw}",
+    "pick": "اختر صورًا",
+    "camera": "التقط صورة",
+    "haptic": "اهتزاز",
+    "copy": "نسخ",
+    "copied": "تم نسخ «Prism ♥ Rust»",
+    "paste": "لصق",
+    "empty": "(الحافظة فارغة)",
+    "share": "مشاركة"
   }
 }

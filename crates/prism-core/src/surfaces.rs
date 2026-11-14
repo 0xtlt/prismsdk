@@ -41,6 +41,13 @@ pub struct Capabilities {
     pub tray: bool,
     /// A menu bar for app menus (`cx.set_app_menu`).
     pub app_menu: bool,
+    /// Device APIs (see [`crate::device`]).
+    pub location: bool,
+    pub motion: bool,
+    pub camera: bool,
+    pub photos: bool,
+    pub haptics: bool,
+    pub share: bool,
 }
 
 /// Work the app asked the platform to do. Backends drain these with
@@ -73,6 +80,12 @@ pub enum PlatformRequest {
     /// Run this task periodically (see [`crate::background`]); re-sent after
     /// each run.
     ScheduleBackgroundTask(crate::background::BackgroundTask),
+    /// A device call (answer with `Runtime::device_reply`) or a stream
+    /// (events with `Runtime::device_event`, keyed by `id`).
+    Device {
+        id: u64,
+        call: crate::device::DeviceCall,
+    },
 }
 
 /// Implemented by each backend. Unsupported requests should fall back

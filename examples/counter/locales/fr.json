@@ -160,5 +160,26 @@
   },
   "list": {
     "row": "Ligne {row} sur {total}"
+  },
+  "device": {
+    "title": "Appareil",
+    "location_title": "Position",
+    "locating": "Localisation…",
+    "location_none": "Touche pour savoir où tu es.",
+    "location": "{lat}, {lon} (±{meters} m)",
+    "error": "Indisponible : {error}",
+    "locate": "Où suis-je ?",
+    "follow": "Me suivre",
+    "gyro": "Gyroscope",
+    "waiting": "En attente des capteurs…",
+    "motion": "Roulis {roll} · tangage {pitch} · lacet {yaw}",
+    "pick": "Choisir des photos",
+    "camera": "Prendre une photo",
+    "haptic": "Vibration",
+    "copy": "Copier",
+    "copied": "« Prism ♥ Rust » copié",
+    "paste": "Coller",
+    "empty": "(presse-papiers vide)",
+    "share": "Partager"
   }
 }

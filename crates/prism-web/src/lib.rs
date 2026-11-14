@@ -68,6 +68,7 @@ fn handle(stream: TcpStream, config: &AppConfig, init: &AppInit) -> std::io::Res
     reader.read_line(&mut request_line)?;
     let mut cookie = None;
     let mut language = None;
+    let mut tz = None;
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line)? == 0 || line == "\r\n" {
@@ -77,6 +78,7 @@ fn handle(stream: TcpStream, config: &AppConfig, init: &AppInit) -> std::io::Res
             && name.eq_ignore_ascii_case("cookie")
         {
             cookie = session_id(value);
+            tz = time_zone(value);
         }
         if let Some((name, value)) = line.split_once(':')
             && name.eq_ignore_ascii_case("accept-language")
@@ -99,12 +101,17 @@ fn handle(stream: TcpStream, config: &AppConfig, init: &AppInit) -> std::io::Res
     if let Some(asset) = path.strip_prefix("/assets/") {
         return serve_asset(stream, &percent_decode(asset), config.assets.as_deref());
     }
+    // Files this browser picked (photos…), private to its session.
+    if let Some(name) = path.strip_prefix("/files/") {
+        let dir = files_dir(&sid);
+        return serve_file(stream, &dir, &percent_decode(name));
+    }
     let (status, body, ctype) = match path {
         "/favicon.ico" => ("404 Not Found", "not found".to_string(), "text/plain"),
         // Every other path is an app route: render it on the server.
         path => (
             "200 OK",
-            page(config, init, &percent_decode(path), &sid, language),
+            page(config, init, &percent_decode(path), &sid, language, tz),
             "text/html; charset=utf-8",
         ),
     };
@@ -118,14 +125,19 @@ fn handle(stream: TcpStream, config: &AppConfig, init: &AppInit) -> std::io::Res
 }
 
 /// Serves `assets/<path>` (`PRISM_ASSETS_DIR` overrides the directory).
-fn serve_asset(mut stream: TcpStream, path: &str, configured: Option<&str>) -> std::io::Result<()> {
+fn serve_asset(stream: TcpStream, path: &str, configured: Option<&str>) -> std::io::Result<()> {
     let dir = std::env::var("PRISM_ASSETS_DIR")
         .ok()
         .or(configured.map(str::to_string))
         .unwrap_or_else(|| "assets".into());
-    // No escaping the assets directory.
+    serve_file(stream, std::path::Path::new(&dir), path)
+}
+
+/// Serves `<dir>/<path>`, refusing to leave `dir`.
+fn serve_file(mut stream: TcpStream, dir: &std::path::Path, path: &str) -> std::io::Result<()> {
+    // No escaping the directory.
     let safe = !path.split('/').any(|seg| seg == ".." || seg.is_empty());
-    let file = std::path::Path::new(&dir).join(path);
+    let file = dir.join(path);
     let body = if safe {
         std::fs::read(&file).ok()
     } else {
@@ -204,8 +216,132 @@ fn storage_for(sid: &str) -> Box<dyn prism_core::Storage> {
     ))
 }
 
+/// The browser's UTC offset (seconds east), from the `prism_tz` cookie.
+fn time_zone(cookie_header: &str) -> Option<i32> {
+    cookie_header
+        .split(';')
+        .find_map(|kv| kv.trim().strip_prefix("prism_tz="))
+        .and_then(|v| v.parse().ok())
+        .filter(|v: &i32| v.abs() <= 14 * 3600)
+}
+
+/// Where a browser's picked files are stored.
+fn files_dir(sid: &str) -> std::path::PathBuf {
+    let base = std::env::var("PRISM_DATA_DIR").unwrap_or_else(|_| ".prism-data".into());
+    std::path::Path::new(&base).join(sid).join("files")
+}
+
+/// Standard base64 (what `FileReader.readAsDataURL` produces).
+fn base64_decode(input: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    let (mut acc, mut bits) = (0u32, 0);
+    for c in input.bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' | b'-' => 62,
+            b'/' | b'_' => 63,
+            b'=' | b'\n' | b'\r' => continue,
+            _ => return None,
+        };
+        acc = (acc << 6) | u32::from(v);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
+/// Saves files uploaded by the client; returns what the app sees.
+fn save_files(sid: &str, files: &[Value]) -> Vec<prism_core::PickedFile> {
+    let dir = files_dir(sid);
+    let _ = std::fs::create_dir_all(&dir);
+    files
+        .iter()
+        .filter_map(|f| {
+            let data = base64_decode(f.get("data")?.as_str()?)?;
+            let name = f.get("name").and_then(Value::as_str).unwrap_or("file");
+            let mime = f
+                .get("mime")
+                .and_then(Value::as_str)
+                .unwrap_or("application/octet-stream");
+            let ext = std::path::Path::new(name)
+                .extension()
+                .and_then(|e| e.to_str())
+                .filter(|e| e.chars().all(|c| c.is_ascii_alphanumeric()))
+                .unwrap_or("bin")
+                .to_ascii_lowercase();
+            let stored = format!("{}.{ext}", new_session_id());
+            std::fs::write(dir.join(&stored), &data).ok()?;
+            Some(prism_core::PickedFile {
+                path: format!("/files/{stored}"),
+                name: name.to_string(),
+                mime: mime.to_string(),
+                size: data.len() as u64,
+            })
+        })
+        .collect()
+}
+
+fn location_from(v: &Value) -> Option<prism_core::Location> {
+    let n = |k: &str| v.get(k).and_then(Value::as_f64);
+    Some(prism_core::Location {
+        latitude: n("latitude")?,
+        longitude: n("longitude")?,
+        altitude: n("altitude"),
+        accuracy: n("accuracy").unwrap_or(0.),
+        speed: n("speed"),
+        heading: n("heading"),
+        timestamp: n("timestamp").unwrap_or(0.),
+    })
+}
+
+fn motion_from(v: &Value) -> prism_core::Motion {
+    let triple = |k: &str| {
+        let a = v.get(k).and_then(Value::as_array);
+        let at = |i: usize| {
+            a.and_then(|a| a.get(i))
+                .and_then(Value::as_f64)
+                .unwrap_or(0.)
+        };
+        [at(0), at(1), at(2)]
+    };
+    prism_core::Motion {
+        acceleration: triple("acceleration"),
+        gravity: triple("gravity"),
+        rotation_rate: triple("rotation_rate"),
+        attitude: triple("attitude"),
+    }
+}
+
+/// A `device_reply` from the client.
+fn device_result(sid: &str, v: &Value) -> Result<prism_core::DeviceValue, prism_core::DeviceError> {
+    use prism_core::DeviceValue;
+    if let Some(err) = v.get("err").and_then(Value::as_str) {
+        return Err(prism_core::DeviceError::from_message(err));
+    }
+    if let Some(p) = v.get("permission").and_then(Value::as_str) {
+        return Ok(DeviceValue::Permission(
+            prism_core::PermissionState::from_name(p),
+        ));
+    }
+    if let Some(l) = v.get("location").and_then(location_from) {
+        return Ok(DeviceValue::Location(l));
+    }
+    if let Some(files) = v.get("files").and_then(Value::as_array) {
+        return Ok(DeviceValue::Files(save_files(sid, files)));
+    }
+    if let Some(t) = v.get("text") {
+        return Ok(DeviceValue::Text(t.as_str().map(str::to_string)));
+    }
+    Ok(DeviceValue::Done)
+}
+
 /// The browser's environment: `Accept-Language` (`PRISM_LOCALE` overrides it).
-fn environment(language: Option<prism_core::Locale>) -> prism_core::Environment {
+fn environment(language: Option<prism_core::Locale>, tz: Option<i32>) -> prism_core::Environment {
     let locale = std::env::var("PRISM_LOCALE")
         .ok()
         .map(|l| prism_core::Locale::new(&l))
@@ -213,6 +349,7 @@ fn environment(language: Option<prism_core::Locale>) -> prism_core::Environment 
         .unwrap_or_default();
     prism_core::Environment {
         locale,
+        utc_offset: tz.unwrap_or(0),
         ..Default::default()
     }
 }
@@ -224,6 +361,7 @@ pub fn page(
     path: &str,
     sid: &str,
     language: Option<prism_core::Locale>,
+    tz: Option<i32>,
 ) -> String {
     let mut runtime = Runtime::with_options(
         init,
@@ -232,7 +370,7 @@ pub fn page(
             capabilities: WebServices::default().capabilities(),
             storage: Some(storage_for(sid)),
             wake_ui: None,
-            environment: environment(language),
+            environment: environment(language, tz),
             formatter: None,
         },
     );
@@ -339,6 +477,7 @@ fn session(stream: TcpStream, init: &AppInit) {
     let mut path = String::from("/");
     let mut sid = None;
     let mut language = None;
+    let mut tz = None;
     let handshake = tungstenite::accept_hdr(
         stream,
         |req: &tungstenite::handshake::server::Request, resp| {
@@ -347,6 +486,11 @@ fn session(stream: TcpStream, init: &AppInit) {
                 .get("cookie")
                 .and_then(|c| c.to_str().ok())
                 .and_then(session_id);
+            tz = req
+                .uri()
+                .query()
+                .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("tz=")))
+                .and_then(|v| v.parse().ok());
             language = req
                 .headers()
                 .get("accept-language")
@@ -368,16 +512,17 @@ fn session(stream: TcpStream, init: &AppInit) {
     // Async work wakes this loop (the socket read times out while tasks run).
     let woken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let flag = woken.clone();
+    let sid = sid.unwrap_or_else(new_session_id);
     let mut runtime = Runtime::with_options(
         init,
         prism_core::RuntimeOptions {
             path,
             capabilities: WebServices::default().capabilities(),
-            storage: Some(storage_for(&sid.unwrap_or_else(new_session_id))),
+            storage: Some(storage_for(&sid)),
             wake_ui: Some(std::sync::Arc::new(move || {
                 flag.store(true, std::sync::atomic::Ordering::SeqCst)
             })),
-            environment: environment(language),
+            environment: environment(language, tz),
             formatter: None,
         },
     );
@@ -454,6 +599,29 @@ fn session(stream: TcpStream, init: &AppInit) {
             && let Some(path) = v.get("path").and_then(Value::as_str)
         {
             let patches = runtime.open_link(path);
+            if !patches.is_empty() && send(&mut ws, &mut encoder, "patch", &patches).is_err() {
+                return;
+            }
+            continue;
+        }
+        // Device answers (location, photos…) and sensor events.
+        if let Ok(v) = serde_json::from_str::<Value>(&msg)
+            && let Some(kind @ ("device_reply" | "device_event")) =
+                v.get("t").and_then(Value::as_str)
+            && let Some(id) = v.get("id").and_then(Value::as_u64)
+        {
+            let patches = if kind == "device_reply" {
+                runtime.device_reply(id, device_result(&sid, &v))
+            } else if let Some(err) = v.get("err").and_then(Value::as_str) {
+                runtime.device_event(
+                    id,
+                    prism_core::DeviceEvent::Error(prism_core::DeviceError::from_message(err)),
+                )
+            } else if let Some(l) = v.get("location").and_then(location_from) {
+                runtime.device_event(id, prism_core::DeviceEvent::Location(l))
+            } else {
+                runtime.device_event(id, prism_core::DeviceEvent::Motion(motion_from(&v)))
+            };
             if !patches.is_empty() && send(&mut ws, &mut encoder, "patch", &patches).is_err() {
                 return;
             }
@@ -549,6 +717,13 @@ impl PlatformServices for WebServices {
             notifications: true,
             tray: false,
             app_menu: false,
+            // The browser decides; calls fail with "unavailable" otherwise.
+            location: true,
+            motion: true,
+            camera: true,
+            photos: true,
+            haptics: true,
+            share: true,
         }
     }
 
@@ -578,6 +753,7 @@ impl PlatformServices for WebServices {
             }),
             PlatformRequest::CancelNotification(id) => json!({ "t": "notify_cancel", "id": id }),
             PlatformRequest::RequestNotificationPermission => json!({ "t": "notify_permission" }),
+            PlatformRequest::Device { id, call } => device_json(id, call),
             PlatformRequest::ScheduleBackgroundTask(task) => {
                 let every = background_interval(task.every);
                 self.background.retain(|(id, _, _)| *id != task.id);
@@ -738,4 +914,34 @@ fn percent_decode(s: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// A device call for the JS client.
+fn device_json(id: u64, call: prism_core::DeviceCall) -> Value {
+    use prism_core::DeviceCall as C;
+    let accuracy = |a: prism_core::Accuracy| match a {
+        prism_core::Accuracy::Coarse => "coarse",
+        prism_core::Accuracy::Balanced => "balanced",
+        prism_core::Accuracy::Best => "best",
+    };
+    let body = match call {
+        C::PermissionStatus(p) => json!({ "call": "permission_status", "permission": p.name() }),
+        C::RequestPermission(p) => json!({ "call": "request_permission", "permission": p.name() }),
+        C::CurrentLocation(a) => json!({ "call": "location", "accuracy": accuracy(a) }),
+        C::WatchLocation(a) => json!({ "call": "watch_location", "accuracy": accuracy(a) }),
+        C::WatchMotion(every) => {
+            json!({ "call": "watch_motion", "interval": every.as_millis() as u64 })
+        }
+        C::StopWatch => json!({ "call": "stop" }),
+        C::PickImages(o) => json!({ "call": "pick_images", "limit": o.limit, "camera": o.camera }),
+        C::ReadClipboard => json!({ "call": "paste" }),
+        C::Haptic(h) => json!({ "call": "haptic", "kind": h.name() }),
+        C::CopyText(t) => json!({ "call": "copy", "text": t }),
+        C::Share(s) => json!({ "call": "share", "text": s.text, "url": s.url }),
+        C::OpenUrl(u) => json!({ "call": "open_url", "url": u }),
+    };
+    let mut body = body;
+    body["t"] = json!("device");
+    body["id"] = json!(id);
+    body
 }

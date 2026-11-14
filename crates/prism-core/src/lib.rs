@@ -8,6 +8,7 @@
 mod a11y;
 mod app;
 pub mod background;
+pub mod device;
 mod element;
 pub mod i18n;
 pub mod list;
@@ -22,6 +23,10 @@ mod task;
 pub use a11y::{Accessibility, Accessible, Role};
 pub use app::{AnyEntity, App, Appearance, Context, Entity, EntityId, Environment, Render};
 pub use background::{BackgroundKind, BackgroundTask, Lifecycle};
+pub use device::{
+    Accuracy, DeviceCall, DeviceError, DeviceEvent, DeviceValue, Haptic, Location, Motion,
+    Permission, PermissionState, PickImages, PickedFile, Share, Watch,
+};
 pub use element::{
     BackEvent, Button, ChangeEvent, ClickEvent, Div, Element, FluentBuilder, Handler, Image,
     InputEvent, IntoElement, Modal, NavigateEvent, NodeKind, ParentElement, Picture, Progress,
@@ -277,6 +282,22 @@ impl Runtime {
         patches
     }
 
+    /// A backend's answer to device call `id`. Returns the resulting patches.
+    pub fn device_reply(
+        &mut self,
+        id: u64,
+        result: Result<device::DeviceValue, device::DeviceError>,
+    ) -> Vec<Patch> {
+        self.app.device_reply(id, result);
+        self.poll()
+    }
+
+    /// A sensor event for stream `id`. Returns the resulting patches.
+    pub fn device_event(&mut self, id: u64, event: device::DeviceEvent) -> Vec<Patch> {
+        self.app.device_event(id, event);
+        self.poll()
+    }
+
     /// Runs ready tasks without rendering: for apps launched in the
     /// background with no UI yet (the first `render` draws everything).
     pub fn poll_headless(&mut self) {
@@ -325,13 +346,14 @@ impl Runtime {
 /// Everything an app usually needs.
 pub mod prelude {
     pub use crate::{
-        Accessible, Activity, Alert, App, AsyncApp, BackgroundTask, ChangeEvent, ClickEvent,
-        Context, DateStyle, Entity, FluentBuilder, Handler, InputEvent, IntoElement, Lifecycle,
-        Locale, Menu, MenuItem, Notification, NotificationAction, NotificationResponse, Params,
-        ParentElement, Render, Role, Router, ScrollEvent, Styled, SwipeDirection, Transition,
-        Translations, Tray, VirtualList, Widget, WidgetFamily, adaptive, button, div, go_back,
-        image, lazy, navigate_to, picture, progress, px, relative, rgb, rgba, screen, scroll, text,
-        text_input, timer, toggle,
+        Accessible, Accuracy, Activity, Alert, App, AsyncApp, BackgroundTask, ChangeEvent,
+        ClickEvent, Context, DateStyle, Entity, FluentBuilder, Handler, Haptic, InputEvent,
+        IntoElement, Lifecycle, Locale, Location, Menu, MenuItem, Motion, Notification,
+        NotificationAction, NotificationResponse, Params, ParentElement, Permission,
+        PermissionState, PickImages, PickedFile, Render, Role, Router, ScrollEvent, Share, Styled,
+        SwipeDirection, Transition, Translations, Tray, VirtualList, Watch, Widget, WidgetFamily,
+        adaptive, button, div, go_back, image, lazy, navigate_to, picture, progress, px, relative,
+        rgb, rgba, screen, scroll, text, text_input, timer, toggle,
     };
 }
 

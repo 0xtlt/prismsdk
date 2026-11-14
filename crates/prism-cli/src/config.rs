@@ -8,6 +8,10 @@
 //! version = "1.0.0"
 //! icon = "icon.png"             # 1024×1024 PNG
 //!
+//! [permissions]               # why the app asks (shown by the system)
+//! location = "Shows todos near you."
+//! camera = "Takes a photo for a todo."
+//!
 //! [ios]
 //! team = "ABCDE12345"           # Apple team for real devices
 //! simulator = "iPhone 17"       # default simulator
@@ -26,6 +30,8 @@ pub struct Project {
     pub bundle_id: String,
     pub version: String,
     pub icon: Option<PathBuf>,
+    /// `[permissions]`: why the app asks (Info.plist usage descriptions).
+    pub permissions: Vec<(String, String)>,
     /// Languages with a catalog in `locales/` (`[app] locales` to move it).
     pub languages: Vec<String>,
     pub team: Option<String>,
@@ -95,6 +101,16 @@ impl Project {
                 .filter(|v| !v.contains("workspace"))
                 .unwrap_or_else(|| "0.1.0".into()),
             icon: get("app.icon").map(|i| crate::resolve(root, &i)),
+            permissions: {
+                let mut p: Vec<(String, String)> = config
+                    .iter()
+                    .filter_map(|(k, v)| {
+                        Some((k.strip_prefix("permissions.")?.to_string(), v.clone()))
+                    })
+                    .collect();
+                p.sort();
+                p
+            },
             languages: languages(&crate::resolve(
                 root,
                 &get("app.locales").unwrap_or_else(|| "locales".into()),

@@ -73,6 +73,26 @@ if [[ -n "${PRISM_LOCALES:-}" ]]; then
   done
   LOC_PLIST+="</array>"
 fi
+# Permissions (Prism.toml [permissions]): the texts iOS/macOS show when asking.
+USAGE_PLIST="$(PLATFORM_KIND=macos python3 -c '
+import os
+from xml.sax.saxutils import escape
+keys = {
+    "location": ["NSLocationWhenInUseUsageDescription", "NSLocationUsageDescription"],
+    "location_always": ["NSLocationAlwaysAndWhenInUseUsageDescription", "NSLocationAlwaysUsageDescription"],
+    "camera": ["NSCameraUsageDescription"],
+    "photos": ["NSPhotoLibraryUsageDescription", "NSPhotoLibraryAddUsageDescription"],
+    "microphone": ["NSMicrophoneUsageDescription"],
+    "motion": ["NSMotionUsageDescription"],
+}
+for line in os.environ.get("PRISM_PERMISSIONS", "").splitlines():
+    name, _, text = line.partition("\t")
+    if name not in keys:
+        print("<!-- unknown permission " + escape(name) + " -->")
+        continue
+    for key in keys[name]:
+        print("  <key>" + key + "</key><string>" + escape(text) + "</string>")
+')"
 ICON_PLIST=""
 if [[ -n "${PRISM_ICON:-}" ]]; then
   bash "$PLATFORM/apple/app-icon.sh" "$PRISM_ICON" macosx 14.0 "$APP/Contents/Resources" "$GEN"
@@ -81,6 +101,7 @@ fi
 
 plist "$PKG" "$BUNDLE_ID" APPL "$ICON_PLIST
 $LOC_PLIST
+$USAGE_PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>CFBundleURLTypes</key>
   <array><dict>

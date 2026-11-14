@@ -1252,3 +1252,94 @@ fn background_tasks_and_lifecycle() {
     assert!(!rt.is_task_running(task) && !rt.wants_background_time());
     assert_eq!(*log.lock().unwrap(), ["Background", "synced"]);
 }
+
+#[test]
+fn device_calls_resolve_and_streams_deliver() {
+    use crate::PlatformRequest;
+    use crate::device::*;
+    struct Here {
+        text: String,
+        tilt: f64,
+    }
+    impl Render for Here {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            text(format!("{} {}", self.text, self.tilt))
+        }
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|cx: &mut Context<Here>| {
+            cx.spawn(async move |this, cx| {
+                let state = cx.request_permission(Permission::Location).await;
+                let text = match cx.current_location().await {
+                    Ok(l) if state.is_granted() => format!("{:.2},{:.2}", l.latitude, l.longitude),
+                    Ok(_) => "no permission".into(),
+                    Err(e) => e.to_string(),
+                };
+                cx.update_entity(&this, |h, _| h.text = text);
+            });
+            let me = cx.entity();
+            cx.watch_motion(std::time::Duration::from_millis(50), move |m, app| {
+                if let Ok(m) = m {
+                    me.update(app, |h, cx| {
+                        h.tilt = m.attitude[0];
+                        cx.notify();
+                    });
+                }
+            });
+            Here {
+                text: "…".into(),
+                tilt: 0.,
+            }
+        });
+        cx.set_root(root);
+    });
+    let mut rt = Runtime::new(&init);
+    rt.render();
+    let calls: Vec<(u64, DeviceCall)> = rt
+        .take_requests()
+        .into_iter()
+        .filter_map(|r| match r {
+            PlatformRequest::Device { id, call } => Some((id, call)),
+            _ => None,
+        })
+        .collect();
+    let (perm, _) = calls
+        .iter()
+        .find(|(_, c)| matches!(c, DeviceCall::RequestPermission(Permission::Location)))
+        .unwrap()
+        .clone();
+    let (motion, _) = calls
+        .iter()
+        .find(|(_, c)| matches!(c, DeviceCall::WatchMotion(_)))
+        .unwrap()
+        .clone();
+    rt.device_reply(perm, Ok(DeviceValue::Permission(PermissionState::Granted)));
+    let loc = rt
+        .take_requests()
+        .into_iter()
+        .find_map(|r| match r {
+            PlatformRequest::Device {
+                id,
+                call: DeviceCall::CurrentLocation(_),
+            } => Some(id),
+            _ => None,
+        })
+        .expect("asks for the location after the permission");
+    let patches = rt.device_reply(
+        loc,
+        Ok(DeviceValue::Location(Location {
+            latitude: 48.8566,
+            longitude: 2.3522,
+            ..Default::default()
+        })),
+    );
+    find_text(&patches, "48.86,2.35 0");
+    let patches = rt.device_event(
+        motion,
+        DeviceEvent::Motion(Motion {
+            attitude: [0.5, 0., 0.],
+            ..Default::default()
+        }),
+    );
+    find_text(&patches, "48.86,2.35 0.5");
+}

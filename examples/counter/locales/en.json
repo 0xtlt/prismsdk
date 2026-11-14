@@ -160,5 +160,26 @@
   },
   "list": {
     "row": "Row number {row} of {total}"
+  },
+  "device": {
+    "title": "Device",
+    "location_title": "Location",
+    "locating": "Locating…",
+    "location_none": "Tap to find where you are.",
+    "location": "{lat}, {lon} (±{meters} m)",
+    "error": "Not available: {error}",
+    "locate": "Where am I?",
+    "follow": "Follow me",
+    "gyro": "Gyroscope",
+    "waiting": "Waiting for the sensors…",
+    "motion": "Roll {roll} · pitch {pitch} · yaw {yaw}",
+    "pick": "Pick photos",
+    "camera": "Take a photo",
+    "haptic": "Haptic",
+    "copy": "Copy",
+    "copied": "Copied “Prism ♥ Rust”",
+    "paste": "Paste",
+    "empty": "(clipboard empty)",
+    "share": "Share"
   }
 }

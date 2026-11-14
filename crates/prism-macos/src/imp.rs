@@ -1534,6 +1534,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         )
     };
     STATE.with(|cell| *cell.borrow_mut() = Some(state));
+    prism_native::apple::set_device_sink(on_device);
     flush_responses();
     // Development: `PRISM_RUN_BACKGROUND=sync` runs a background task now.
     if let Ok(id) = std::env::var("PRISM_RUN_BACKGROUND") {
@@ -1607,7 +1608,12 @@ fn run_automation(mtm: MainThreadMarker) {
         roots
     };
 
-    if let Ok(clicks) = std::env::var("PRISM_CLICK") {
+    thread_local! {
+        static CLICKED: Cell<bool> = const { Cell::new(false) };
+    }
+    if let Ok(clicks) = std::env::var("PRISM_CLICK")
+        && !CLICKED.with(|c| c.replace(true))
+    {
         for title in clicks.split('|').filter(|t| !t.is_empty()) {
             // Sheets first: they are in front.
             let found = sheet_roots()
@@ -1625,6 +1631,27 @@ fn run_automation(mtm: MainThreadMarker) {
         }
     }
 
+    // `PRISM_AFTER=<seconds>`: let async answers arrive before the snapshot.
+    if let Some(after) = std::env::var("PRISM_AFTER")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        && CLICKED.with(|c| c.get())
+    {
+        thread_local! {
+            static WAITED: Cell<bool> = const { Cell::new(false) };
+        }
+        if !WAITED.with(|w| w.replace(true)) {
+            let mut target = None;
+            with_state(|s| target = Some(s.renderer.widgets.target.clone()));
+            if let Some(target) = target {
+                let none: Option<&AnyObject> = None;
+                let _: () = unsafe {
+                    msg_send![&*target, performSelector: sel!(prismAutomation:), withObject: none, afterDelay: after]
+                };
+                return;
+            }
+        }
+    }
     // `PRISM_SCROLL=<y>` scrolls the visible scroll views.
     if let Some(y) = std::env::var("PRISM_SCROLL")
         .ok()
@@ -1941,4 +1968,29 @@ fn check_background() {
             })
         })
     });
+}
+
+/// Answers from the device bridge (on the main thread). An answer given
+/// while the app is busy (synchronously, during the call) is handled on the
+/// next turn of the main loop.
+fn on_device(message: prism_native::apple::DeviceMessage) {
+    let mut message = Some(message);
+    with_state(|s| {
+        let patches = match message.take().expect("message") {
+            prism_native::apple::DeviceMessage::Reply(id, result) => {
+                s.runtime.device_reply(id, result)
+            }
+            prism_native::apple::DeviceMessage::Event(id, event) => {
+                s.runtime.device_event(id, event)
+            }
+        };
+        s.commit(patches);
+    });
+    // Busy (not just absent): try again on the next turn.
+    let busy = STATE.with(|c| c.try_borrow().is_err());
+    if let Some(message) = message
+        && busy
+    {
+        dispatch2::DispatchQueue::main().exec_async(move || on_device(message));
+    }
 }

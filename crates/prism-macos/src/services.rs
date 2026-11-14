@@ -83,6 +83,12 @@ impl MacServices {
                 notifications: bundled,
                 tray: true,
                 app_menu: true,
+                location: true,
+                motion: false,
+                camera: false,
+                photos: true,
+                haptics: true,
+                share: true,
             },
             activities: HashMap::new(),
         }
@@ -224,6 +230,7 @@ impl PlatformServices for MacServices {
                 crate::menus::install_main_menu(self.mtm, &self.title, &self.target, &menus)
             }
             PlatformRequest::ScheduleBackgroundTask(task) => self.schedule(task),
+            PlatformRequest::Device { id, call } => prism_native::apple::device_call(id, call),
             PlatformRequest::SetTray(tray) => {
                 let mtm = self.mtm;
                 let item = self.trays.entry(tray.id.clone()).or_insert_with(|| {

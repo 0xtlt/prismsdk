@@ -13,3 +13,7 @@ prism-http.workspace = true
 [target.'cfg(target_vendor = "apple")'.dependencies]
 objc2.workspace = true
 objc2-foundation.workspace = true
+
+[features]
+# The Swift bridge (platform/apple/Bridge) is linked: device APIs available.
+apple-bridge = []

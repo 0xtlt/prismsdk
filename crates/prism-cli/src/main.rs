@@ -242,6 +242,14 @@ fn apple_command(
     if let Some(icon) = &p.icon {
         cmd.env("PRISM_ICON", icon);
     }
+    if !p.permissions.is_empty() {
+        let lines: Vec<String> = p
+            .permissions
+            .iter()
+            .map(|(k, v)| format!("{k}\t{v}"))
+            .collect();
+        cmd.env("PRISM_PERMISSIONS", lines.join("\n"));
+    }
     if !p.languages.is_empty() {
         cmd.env("PRISM_LOCALES", p.languages.join(","));
     }

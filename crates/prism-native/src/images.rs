@@ -49,6 +49,13 @@ pub fn load(src: &str, sources: &ImageSources) -> Option<Vec<u8>> {
         }
         return Some(res.body);
     }
+    // A file on disk (a picked photo, a download…).
+    if let Some(path) = src
+        .strip_prefix("file://")
+        .or(src.starts_with('/').then_some(src))
+    {
+        return std::fs::read(path).ok();
+    }
     if src.split('/').any(|s| s == "..") {
         return None;
     }

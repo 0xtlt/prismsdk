@@ -12,6 +12,7 @@
 //!   and language (English, French, Arabic right-to-left).
 
 mod background;
+mod device;
 mod focus;
 mod menus;
 mod strings;
@@ -52,7 +53,7 @@ fn main() {
                     let id = p.parse("id").unwrap_or(0);
                     cx.new_entity(|cx| TodoDetail::new(store, id, cx))
                 })
-                .route("/components", |cx, _| cx.new_entity(|_| Gallery::default()))
+                .route("/components", |cx, _| cx.new_entity(Gallery::new))
                 .route("/settings", |cx, _| cx.new_entity(|_| Settings))
                 .route("/focus", move |_, _| focus)
                 .route("/components/list", |cx, _| cx.new_entity(LongList::new))
@@ -452,8 +453,8 @@ impl Render for TodoDetail {
 
 // --- Tab 2: component gallery ---------------------------------------------------------------
 
-#[derive(Default)]
 struct Gallery {
+    device: Entity<device::DeviceDemo>,
     quote: Option<Result<String, String>>,
     loading: bool,
     wifi: bool,
@@ -461,6 +462,21 @@ struct Gallery {
     terms: bool,
     email: String,
     taps: u32,
+}
+
+impl Gallery {
+    fn new(cx: &mut Context<Self>) -> Self {
+        Gallery {
+            device: cx.new(|_| device::DeviceDemo::default()),
+            quote: None,
+            loading: false,
+            wifi: false,
+            bluetooth: false,
+            terms: false,
+            email: String::new(),
+            taps: 0,
+        }
+    }
 }
 
 impl Render for Gallery {
@@ -616,6 +632,7 @@ impl Render for Gallery {
                             })),
                     ),
             )
+            .child(self.device)
             .child(
                 ui::card()
                     .child(ui::heading(strings::gallery_badges(cx)))

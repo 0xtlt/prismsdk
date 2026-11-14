@@ -69,3 +69,199 @@ pub fn system_locale() -> Locale {
 pub fn utc_offset() -> i32 {
     NSTimeZone::localTimeZone().secondsFromGMT() as i32
 }
+
+#[cfg(feature = "apple-bridge")]
+pub use bridge::{DeviceMessage, device_call, set_device_sink};
+
+/// Device APIs through the Swift bridge (`platform/apple/Bridge/PrismDevice.swift`).
+#[cfg(feature = "apple-bridge")]
+mod bridge {
+    use std::ffi::{CStr, CString, c_char};
+    use std::sync::OnceLock;
+
+    use prism_core::device::{
+        Accuracy, DeviceCall, DeviceError, DeviceEvent, DeviceValue, Location, Motion,
+        PermissionState, PickedFile,
+    };
+
+    unsafe extern "C" {
+        fn prism_device_permission(id: u64, name: *const c_char, ask: bool);
+        fn prism_device_location(id: u64, accuracy: i32, stream: bool);
+        fn prism_device_motion_start(id: u64, interval: f64);
+        fn prism_device_stop(id: u64);
+        fn prism_device_pick_images(id: u64, limit: u32, camera: bool);
+        fn prism_device_haptic(kind: *const c_char);
+        fn prism_device_copy(text: *const c_char);
+        fn prism_device_paste(id: u64);
+        fn prism_device_share(text: *const c_char, url: *const c_char, files: *const c_char);
+        fn prism_device_open_url(url: *const c_char);
+    }
+
+    /// What the bridge reports back, for the backend to hand to its runtime.
+    pub enum DeviceMessage {
+        Reply(u64, Result<DeviceValue, DeviceError>),
+        Event(u64, DeviceEvent),
+    }
+
+    static SINK: OnceLock<fn(DeviceMessage)> = OnceLock::new();
+
+    /// Where answers go (the backend's main-thread dispatcher).
+    pub fn set_device_sink(f: fn(DeviceMessage)) {
+        let _ = SINK.set(f);
+    }
+
+    fn send(m: DeviceMessage) {
+        if let Some(f) = SINK.get() {
+            f(m)
+        }
+    }
+
+    fn c(s: &str) -> CString {
+        CString::new(s.replace('\0', "")).unwrap_or_default()
+    }
+
+    /// Forwards a device call to the platform.
+    pub fn device_call(id: u64, call: DeviceCall) {
+        let accuracy = |a: Accuracy| match a {
+            Accuracy::Coarse => 0,
+            Accuracy::Balanced => 1,
+            Accuracy::Best => 2,
+        };
+        unsafe {
+            match call {
+                DeviceCall::PermissionStatus(p) => {
+                    prism_device_permission(id, c(p.name()).as_ptr(), false)
+                }
+                DeviceCall::RequestPermission(p) => {
+                    prism_device_permission(id, c(p.name()).as_ptr(), true)
+                }
+                DeviceCall::CurrentLocation(a) => prism_device_location(id, accuracy(a), false),
+                DeviceCall::WatchLocation(a) => prism_device_location(id, accuracy(a), true),
+                DeviceCall::WatchMotion(every) => {
+                    prism_device_motion_start(id, every.as_secs_f64())
+                }
+                DeviceCall::StopWatch => prism_device_stop(id),
+                DeviceCall::PickImages(o) => prism_device_pick_images(id, o.limit, o.camera),
+                DeviceCall::ReadClipboard => prism_device_paste(id),
+                DeviceCall::Haptic(h) => prism_device_haptic(c(h.name()).as_ptr()),
+                DeviceCall::CopyText(t) => prism_device_copy(c(&t).as_ptr()),
+                DeviceCall::Share(s) => {
+                    let text = s.text.as_deref().map(c);
+                    let url = s.url.as_deref().map(c);
+                    let files = (!s.files.is_empty()).then(|| c(&s.files.join("\n")));
+                    let ptr =
+                        |o: &Option<CString>| o.as_ref().map_or(std::ptr::null(), |s| s.as_ptr());
+                    prism_device_share(ptr(&text), ptr(&url), ptr(&files))
+                }
+                DeviceCall::OpenUrl(u) => prism_device_open_url(c(&u).as_ptr()),
+            }
+        }
+    }
+
+    fn string(p: *const c_char) -> Option<String> {
+        (!p.is_null()).then(|| unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned())
+    }
+
+    fn some(v: f64) -> Option<f64> {
+        (!v.is_nan()).then_some(v)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn prism_device_reply_permission(id: u64, state: *const c_char) {
+        let state = PermissionState::from_name(&string(state).unwrap_or_default());
+        send(DeviceMessage::Reply(id, Ok(DeviceValue::Permission(state))));
+    }
+
+    #[unsafe(no_mangle)]
+    #[allow(clippy::too_many_arguments)]
+    pub extern "C" fn prism_device_reply_location(
+        id: u64,
+        event: bool,
+        lat: f64,
+        lon: f64,
+        alt: f64,
+        accuracy: f64,
+        speed: f64,
+        heading: f64,
+        time: f64,
+    ) {
+        let l = Location {
+            latitude: lat,
+            longitude: lon,
+            altitude: some(alt),
+            accuracy,
+            speed: some(speed),
+            heading: some(heading),
+            timestamp: time,
+        };
+        send(if event {
+            DeviceMessage::Event(id, DeviceEvent::Location(l))
+        } else {
+            DeviceMessage::Reply(id, Ok(DeviceValue::Location(l)))
+        });
+    }
+
+    #[unsafe(no_mangle)]
+    #[allow(clippy::too_many_arguments)]
+    pub extern "C" fn prism_device_motion(
+        id: u64,
+        ax: f64,
+        ay: f64,
+        az: f64,
+        gx: f64,
+        gy: f64,
+        gz: f64,
+        rx: f64,
+        ry: f64,
+        rz: f64,
+        roll: f64,
+        pitch: f64,
+        yaw: f64,
+    ) {
+        send(DeviceMessage::Event(
+            id,
+            DeviceEvent::Motion(Motion {
+                acceleration: [ax, ay, az],
+                gravity: [gx, gy, gz],
+                rotation_rate: [rx, ry, rz],
+                attitude: [roll, pitch, yaw],
+            }),
+        ));
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn prism_device_reply_files(id: u64, lines: *const c_char) {
+        let files = string(lines)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| {
+                let mut p = line.split('\t');
+                Some(PickedFile {
+                    path: p.next()?.to_string(),
+                    name: p.next()?.to_string(),
+                    mime: p.next()?.to_string(),
+                    size: p.next()?.parse().unwrap_or(0),
+                })
+            })
+            .collect();
+        send(DeviceMessage::Reply(id, Ok(DeviceValue::Files(files))));
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn prism_device_reply_text(id: u64, text: *const c_char) {
+        send(DeviceMessage::Reply(
+            id,
+            Ok(DeviceValue::Text(string(text))),
+        ));
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn prism_device_reply_error(id: u64, event: bool, message: *const c_char) {
+        let error = DeviceError::from_message(&string(message).unwrap_or_default());
+        send(if event {
+            DeviceMessage::Event(id, DeviceEvent::Error(error))
+        } else {
+            DeviceMessage::Reply(id, Err(error))
+        });
+    }
+}

@@ -1,0 +1,442 @@
+// Device APIs for the Rust app (prism_core::device): permissions, location,
+// motion, photo/camera pickers, haptics, clipboard, share sheet, URLs.
+// Each call carries an id; answers go back through the C functions below.
+import AVFoundation
+import CoreLocation
+import Foundation
+import Photos
+import UniformTypeIdentifiers
+import UserNotifications
+#if os(iOS)
+import CoreMotion
+import PhotosUI
+import UIKit
+#else
+import AppKit
+#endif
+
+// MARK: Answers (implemented in Rust)
+
+@_silgen_name("prism_device_reply_permission")
+func prismReplyPermission(_ id: UInt64, _ state: UnsafePointer<CChar>)
+/// NaN for unknown altitude/speed/heading. `event`: a stream event.
+@_silgen_name("prism_device_reply_location")
+func prismReplyLocation(_ id: UInt64, _ event: Bool, _ lat: Double, _ lon: Double, _ alt: Double,
+                        _ accuracy: Double, _ speed: Double, _ heading: Double, _ time: Double)
+@_silgen_name("prism_device_motion")
+func prismMotion(_ id: UInt64, _ ax: Double, _ ay: Double, _ az: Double, _ gx: Double, _ gy: Double, _ gz: Double,
+                 _ rx: Double, _ ry: Double, _ rz: Double, _ roll: Double, _ pitch: Double, _ yaw: Double)
+/// One file per line: path \t name \t mime \t size.
+@_silgen_name("prism_device_reply_files")
+func prismReplyFiles(_ id: UInt64, _ lines: UnsafePointer<CChar>)
+@_silgen_name("prism_device_reply_text")
+func prismReplyText(_ id: UInt64, _ text: UnsafePointer<CChar>?)
+/// `denied`, `cancelled`, `unavailable` or a message.
+@_silgen_name("prism_device_reply_error")
+func prismReplyError(_ id: UInt64, _ event: Bool, _ message: UnsafePointer<CChar>)
+
+private func fail(_ id: UInt64, _ message: String, event: Bool = false) {
+    DispatchQueue.main.async { message.withCString { prismReplyError(id, event, $0) } }
+}
+
+private func permissionReply(_ id: UInt64, _ state: String) {
+    DispatchQueue.main.async { state.withCString { prismReplyPermission(id, $0) } }
+}
+
+/// Info.plist must explain why the app asks; `prism` adds the texts from
+/// `[permissions]` in Prism.toml.
+private func usageMissing(_ id: UInt64, _ key: String, _ name: String, event: Bool = false) -> Bool {
+    if Bundle.main.object(forInfoDictionaryKey: key) != nil { return false }
+    fail(id, "add `\(name) = \"why the app needs it\"` under [permissions] in Prism.toml (Info.plist \(key))", event: event)
+    return true
+}
+
+private func string(_ p: UnsafePointer<CChar>?) -> String? { p.map { String(cString: $0) } }
+
+// MARK: Location
+
+private let locationUsageKey: String = {
+    #if os(iOS)
+    return "NSLocationWhenInUseUsageDescription"
+    #else
+    return "NSLocationUsageDescription"
+    #endif
+}()
+
+private func locationState(_ status: CLAuthorizationStatus, precise: Bool) -> String {
+    switch status {
+    case .notDetermined: return "not_determined"
+    case .denied, .restricted: return "denied"
+    default: return precise ? "granted" : "limited"
+    }
+}
+
+/// One manager per call or stream; it answers through its delegate.
+final class PrismLocation: NSObject, CLLocationManagerDelegate {
+    static var active: [UInt64: PrismLocation] = [:]
+    let id: UInt64
+    let manager = CLLocationManager()
+    /// once: one location; stream: updates; permission: just the prompt.
+    enum Mode { case once, stream, permission(always: Bool) }
+    let mode: Mode
+
+    init(id: UInt64, mode: Mode, accuracy: Int32) {
+        self.id = id
+        self.mode = mode
+        super.init()
+        manager.delegate = self
+        manager.desiredAccuracy = accuracy == 0 ? kCLLocationAccuracyKilometer
+            : accuracy == 2 ? kCLLocationAccuracyBest : kCLLocationAccuracyHundredMeters
+    }
+
+    func start() {
+        PrismLocation.active[id] = self
+        switch manager.authorizationStatus {
+        case .notDetermined:
+            #if os(iOS)
+            if case .permission(true) = mode { manager.requestAlwaysAuthorization() } else { manager.requestWhenInUseAuthorization() }
+            #else
+            manager.requestWhenInUseAuthorization()
+            #endif
+        case .denied, .restricted:
+            if case .permission = mode { finishPermission() } else { error("denied") }
+        default:
+            proceed()
+        }
+    }
+
+    private func proceed() {
+        switch mode {
+        case .once: manager.requestLocation()
+        case .stream: manager.startUpdatingLocation()
+        case .permission: finishPermission()
+        }
+    }
+
+    private func finishPermission() {
+        let precise = manager.accuracyAuthorization == .fullAccuracy
+        permissionReply(id, locationState(manager.authorizationStatus, precise: precise))
+        PrismLocation.active[id] = nil
+    }
+
+    private func error(_ message: String) {
+        if case .stream = mode { fail(id, message, event: true) } else { fail(id, message); PrismLocation.active[id] = nil }
+    }
+
+    func locationManagerDidChangeAuthorization(_ m: CLLocationManager) {
+        switch m.authorizationStatus {
+        case .notDetermined: return
+        case .denied, .restricted:
+            if case .permission = mode { finishPermission() } else { error("denied") }
+        default: proceed()
+        }
+    }
+
+    func locationManager(_ m: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        guard let l = locations.last else { return }
+        let event: Bool
+        if case .stream = mode { event = true } else { event = false }
+        prismReplyLocation(id, event, l.coordinate.latitude, l.coordinate.longitude,
+                           l.verticalAccuracy >= 0 ? l.altitude : .nan, l.horizontalAccuracy,
+                           l.speed >= 0 ? l.speed : .nan, l.course >= 0 ? l.course : .nan,
+                           l.timestamp.timeIntervalSince1970)
+        if !event { PrismLocation.active[id] = nil }
+    }
+
+    func locationManager(_ m: CLLocationManager, didFailWithError e: Error) {
+        let code = (e as? CLError)?.code
+        error(code == .denied ? "denied" : code == .locationUnknown ? "location unknown" : e.localizedDescription)
+    }
+}
+
+// MARK: Calls (from Rust)
+
+@_cdecl("prism_device_permission")
+public func prismDevicePermission(_ id: UInt64, _ name: UnsafePointer<CChar>, _ ask: Bool) {
+    let name = String(cString: name)
+    switch name {
+    case "location", "location_always":
+        let manager = CLLocationManager()
+        if !ask || manager.authorizationStatus != .notDetermined {
+            return permissionReply(id, locationState(manager.authorizationStatus, precise: manager.accuracyAuthorization == .fullAccuracy))
+        }
+        if usageMissing(id, locationUsageKey, "location") { return }
+        PrismLocation(id: id, mode: .permission(always: name == "location_always"), accuracy: 1).start()
+    case "camera", "microphone":
+        let media: AVMediaType = name == "camera" ? .video : .audio
+        let reply = { (s: AVAuthorizationStatus) in
+            permissionReply(id, s == .authorized ? "granted" : s == .notDetermined ? "not_determined" : "denied")
+        }
+        let status = AVCaptureDevice.authorizationStatus(for: media)
+        guard ask, status == .notDetermined else { return reply(status) }
+        if usageMissing(id, name == "camera" ? "NSCameraUsageDescription" : "NSMicrophoneUsageDescription", name) { return }
+        AVCaptureDevice.requestAccess(for: media) { _ in reply(AVCaptureDevice.authorizationStatus(for: media)) }
+    case "photos":
+        let reply = { (s: PHAuthorizationStatus) in
+            permissionReply(id, s == .authorized ? "granted" : s == .limited ? "limited" : s == .notDetermined ? "not_determined" : "denied")
+        }
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard ask, status == .notDetermined else { return reply(status) }
+        if usageMissing(id, "NSPhotoLibraryUsageDescription", "photos") { return }
+        PHPhotoLibrary.requestAuthorization(for: .readWrite) { reply($0) }
+    case "motion":
+        #if os(iOS)
+        // Gyroscope and accelerometer need no permission (only activity does).
+        permissionReply(id, CMMotionManager().isDeviceMotionAvailable ? "granted" : "unavailable")
+        #else
+        permissionReply(id, "unavailable")
+        #endif
+    case "notifications":
+        let center = UNUserNotificationCenter.current()
+        let map = { (s: UNAuthorizationStatus) -> String in
+            switch s {
+            case .notDetermined: return "not_determined"
+            case .denied: return "denied"
+            case .provisional, .ephemeral: return "limited"
+            default: return "granted"
+            }
+        }
+        center.getNotificationSettings { settings in
+            guard ask, settings.authorizationStatus == .notDetermined else { return permissionReply(id, map(settings.authorizationStatus)) }
+            center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in
+                center.getNotificationSettings { permissionReply(id, map($0.authorizationStatus)) }
+            }
+        }
+    default:
+        permissionReply(id, "unavailable")
+    }
+}
+
+@_cdecl("prism_device_location")
+public func prismDeviceLocation(_ id: UInt64, _ accuracy: Int32, _ stream: Bool) {
+    if usageMissing(id, locationUsageKey, "location", event: stream) { return }
+    PrismLocation(id: id, mode: stream ? .stream : .once, accuracy: accuracy).start()
+}
+
+#if os(iOS)
+private var motionManagers: [UInt64: CMMotionManager] = [:]
+#endif
+
+@_cdecl("prism_device_motion_start")
+public func prismDeviceMotionStart(_ id: UInt64, _ interval: Double) {
+    #if os(iOS)
+    let m = CMMotionManager()
+    guard m.isDeviceMotionAvailable else { return fail(id, "unavailable", event: true) }
+    m.deviceMotionUpdateInterval = max(interval, 0.01)
+    motionManagers[id] = m
+    m.startDeviceMotionUpdates(to: .main) { data, error in
+        if let error { return fail(id, error.localizedDescription, event: true) }
+        guard let d = data else { return }
+        prismMotion(id, d.userAcceleration.x, d.userAcceleration.y, d.userAcceleration.z,
+                    d.gravity.x, d.gravity.y, d.gravity.z,
+                    d.rotationRate.x, d.rotationRate.y, d.rotationRate.z,
+                    d.attitude.roll, d.attitude.pitch, d.attitude.yaw)
+    }
+    #else
+    fail(id, "unavailable", event: true)
+    #endif
+}
+
+@_cdecl("prism_device_stop")
+public func prismDeviceStop(_ id: UInt64) {
+    if let l = PrismLocation.active.removeValue(forKey: id) { l.manager.stopUpdatingLocation() }
+    #if os(iOS)
+    motionManagers.removeValue(forKey: id)?.stopDeviceMotionUpdates()
+    #endif
+}
+
+// MARK: Photos and camera
+
+/// Copies picked files where the app can read them (Caches/prism-picked).
+private func keep(_ url: URL, ext: String? = nil) -> String? {
+    let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("prism-picked")
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let dest = dir.appendingPathComponent(UUID().uuidString).appendingPathExtension(ext ?? url.pathExtension)
+    do { try FileManager.default.copyItem(at: url, to: dest) } catch { return nil }
+    return dest.path
+}
+
+private func describe(_ path: String, name: String) -> String {
+    let url = URL(fileURLWithPath: path)
+    let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? NSNumber)?.int64Value ?? 0
+    let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+    return [path, name, mime, String(size)].joined(separator: "\t")
+}
+
+private func replyFiles(_ id: UInt64, _ lines: [String]) {
+    DispatchQueue.main.async {
+        if lines.isEmpty { return "cancelled".withCString { prismReplyError(id, false, $0) } }
+        lines.joined(separator: "\n").withCString { prismReplyFiles(id, $0) }
+    }
+}
+
+#if os(iOS)
+private var pickers: [UInt64: NSObject] = [:]
+
+private func topController() -> UIViewController? {
+    let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(\.windows)
+    var top = (windows.first(where: \.isKeyWindow) ?? windows.first)?.rootViewController
+    while let p = top?.presentedViewController { top = p }
+    return top
+}
+
+final class PrismPhotoPicker: NSObject, PHPickerViewControllerDelegate {
+    let id: UInt64
+    init(id: UInt64) { self.id = id }
+
+    func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+        picker.dismiss(animated: true)
+        let group = DispatchGroup()
+        var lines: [String] = []
+        let lock = NSLock()
+        for r in results {
+            let provider = r.itemProvider
+            guard let type = provider.registeredTypeIdentifiers.first(where: { UTType($0)?.conforms(to: .image) == true }) else { continue }
+            group.enter()
+            provider.loadFileRepresentation(forTypeIdentifier: type) { url, _ in
+                if let url, let path = keep(url, ext: UTType(type)?.preferredFilenameExtension) {
+                    lock.lock(); lines.append(describe(path, name: provider.suggestedName ?? url.lastPathComponent)); lock.unlock()
+                }
+                group.leave()
+            }
+        }
+        let id = self.id
+        group.notify(queue: .main) { replyFiles(id, lines); pickers[id] = nil }
+    }
+}
+
+final class PrismCamera: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+    let id: UInt64
+    init(id: UInt64) { self.id = id }
+
+    func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
+        picker.dismiss(animated: true)
+        var lines: [String] = []
+        if let image = info[.originalImage] as? UIImage, let data = image.jpegData(compressionQuality: 0.9) {
+            let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".jpg")
+            if (try? data.write(to: tmp)) != nil, let path = keep(tmp) { lines.append(describe(path, name: "Photo.jpg")) }
+        }
+        replyFiles(id, lines)
+        pickers[id] = nil
+    }
+
+    func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+        picker.dismiss(animated: true)
+        replyFiles(id, [])
+        pickers[id] = nil
+    }
+}
+#endif
+
+@_cdecl("prism_device_pick_images")
+public func prismDevicePickImages(_ id: UInt64, _ limit: UInt32, _ camera: Bool) {
+    #if os(iOS)
+    guard let top = topController() else { return fail(id, "no window to present the picker") }
+    if camera {
+        guard UIImagePickerController.isSourceTypeAvailable(.camera) else { return fail(id, "unavailable") }
+        if usageMissing(id, "NSCameraUsageDescription", "camera") { return }
+        let delegate = PrismCamera(id: id)
+        pickers[id] = delegate
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.delegate = delegate
+        top.present(picker, animated: true)
+        return
+    }
+    // PHPicker runs out of process: no photo library permission needed.
+    var config = PHPickerConfiguration()
+    config.filter = .images
+    config.selectionLimit = Int(limit)
+    let delegate = PrismPhotoPicker(id: id)
+    pickers[id] = delegate
+    let picker = PHPickerViewController(configuration: config)
+    picker.delegate = delegate
+    top.present(picker, animated: true)
+    #else
+    guard !camera else { return fail(id, "unavailable") }
+    let panel = NSOpenPanel()
+    panel.allowedContentTypes = [.image]
+    panel.allowsMultipleSelection = limit != 1
+    panel.canChooseDirectories = false
+    panel.begin { response in
+        guard response == .OK else { return replyFiles(id, []) }
+        var urls = panel.urls
+        if limit > 0 { urls = Array(urls.prefix(Int(limit))) }
+        replyFiles(id, urls.compactMap { url in keep(url).map { describe($0, name: url.lastPathComponent) } })
+    }
+    #endif
+}
+
+// MARK: Haptics, clipboard, share, URLs
+
+@_cdecl("prism_device_haptic")
+public func prismDeviceHaptic(_ kind: UnsafePointer<CChar>) {
+    let kind = String(cString: kind)
+    #if os(iOS)
+    switch kind {
+    case "selection": UISelectionFeedbackGenerator().selectionChanged()
+    case "success": UINotificationFeedbackGenerator().notificationOccurred(.success)
+    case "warning": UINotificationFeedbackGenerator().notificationOccurred(.warning)
+    case "error": UINotificationFeedbackGenerator().notificationOccurred(.error)
+    case "light": UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    case "heavy": UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
+    default: UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    }
+    #else
+    let pattern: NSHapticFeedbackManager.FeedbackPattern = kind == "selection" ? .alignment : kind == "light" ? .generic : .levelChange
+    NSHapticFeedbackManager.defaultPerformer.perform(pattern, performanceTime: .now)
+    #endif
+}
+
+@_cdecl("prism_device_copy")
+public func prismDeviceCopy(_ text: UnsafePointer<CChar>) {
+    let text = String(cString: text)
+    #if os(iOS)
+    UIPasteboard.general.string = text
+    #else
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(text, forType: .string)
+    #endif
+}
+
+@_cdecl("prism_device_paste")
+public func prismDevicePaste(_ id: UInt64) {
+    #if os(iOS)
+    let text = UIPasteboard.general.string
+    #else
+    let text = NSPasteboard.general.string(forType: .string)
+    #endif
+    if let text { text.withCString { prismReplyText(id, $0) } } else { prismReplyText(id, nil) }
+}
+
+@_cdecl("prism_device_share")
+public func prismDeviceShare(_ text: UnsafePointer<CChar>?, _ url: UnsafePointer<CChar>?, _ files: UnsafePointer<CChar>?) {
+    var items: [Any] = []
+    if let t = string(text) { items.append(t) }
+    if let u = string(url), let link = URL(string: u) { items.append(link) }
+    for path in (string(files) ?? "").split(separator: "\n") where !path.isEmpty {
+        items.append(URL(fileURLWithPath: String(path)))
+    }
+    guard !items.isEmpty else { return }
+    #if os(iOS)
+    guard let top = topController() else { return }
+    let sheet = UIActivityViewController(activityItems: items, applicationActivities: nil)
+    // iPad: a popover anchored to the middle of the screen.
+    sheet.popoverPresentationController?.sourceView = top.view
+    sheet.popoverPresentationController?.sourceRect = CGRect(x: top.view.bounds.midX, y: top.view.bounds.midY, width: 0, height: 0)
+    top.present(sheet, animated: true)
+    #else
+    guard let view = NSApp.keyWindow?.contentView ?? NSApp.windows.first?.contentView else { return }
+    NSSharingServicePicker(items: items).show(relativeTo: CGRect(x: view.bounds.midX, y: view.bounds.maxY - 40, width: 1, height: 1), of: view, preferredEdge: .minY)
+    #endif
+}
+
+@_cdecl("prism_device_open_url")
+public func prismDeviceOpenURL(_ url: UnsafePointer<CChar>) {
+    guard let url = URL(string: String(cString: url)) else { return }
+    #if os(iOS)
+    UIApplication.shared.open(url)
+    #else
+    NSWorkspace.shared.open(url)
+    #endif
+}

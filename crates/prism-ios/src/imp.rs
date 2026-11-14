@@ -460,6 +460,7 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
         image_cache: HashMap::new(),
         image_sources: image_sources(_config.assets.as_deref()),
         semantic: None,
+        radii: HashMap::new(),
     });
     let first = runtime.render();
     let mut state = State {
@@ -469,6 +470,7 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
     };
     state.commit(first);
     STATE.with(|cell| *cell.borrow_mut() = Some(state));
+    prism_native::apple::set_device_sink(on_device);
     flush_responses();
     // Development: `PRISM_RUN_BACKGROUND=sync` runs a background task now.
     if let Ok(id) = std::env::var("PRISM_RUN_BACKGROUND") {
@@ -586,6 +588,8 @@ pub struct UiKit {
     /// Decoded images by source.
     image_cache: HashMap<String, Retained<UIImage>>,
     image_sources: prism_native::images::ImageSources,
+    /// Requested corner radius by node (clamped to the frame).
+    radii: HashMap<NodeId, f64>,
     /// Layout direction of native chrome (set once the locale is known).
     semantic: Option<objc2_ui_kit::UISemanticContentAttribute>,
     /// Sheets currently presented, by modal id.
@@ -917,7 +921,15 @@ impl Widgets for UiKit {
             v.setBackgroundColor(Some(&bg));
         }
         let layer = v.layer();
-        layer.setCornerRadius(style.corner_radius as f64);
+        // Clamped to half the size in `set_frame` (a larger radius makes
+        // Core Animation skip the background entirely).
+        self.radii.insert(view.id(), style.corner_radius as f64);
+        let b = v.bounds().size;
+        layer.setCornerRadius(
+            (style.corner_radius as f64)
+                .min(b.width.min(b.height) / 2.)
+                .max(0.),
+        );
         layer.setBorderWidth(style.border_width as f64);
         let border = style.border_color.map(|c| unsafe { ui_color(c).CGColor() });
         layer.setBorderColor(border.as_deref());
@@ -1132,6 +1144,7 @@ impl Widgets for UiKit {
     fn destroy(&mut self, view: &View) {
         let id = view.id();
         self.screens.remove(&id);
+        self.radii.remove(&id);
         self.titles.remove(&id);
         self.icons.remove(&id);
         self.selected.remove(&id);
@@ -1192,6 +1205,11 @@ impl Widgets for UiKit {
             CGPoint::new(x as f64, y as f64),
             CGSize::new(w as f64, h as f64),
         ));
+        if let Some(r) = self.radii.get(&view.id()) {
+            view.ui()
+                .layer()
+                .setCornerRadius(r.min(w.min(h) as f64 / 2.).max(0.));
+        }
     }
 
     fn set_frame_animated(
@@ -2013,4 +2031,29 @@ fn observe_lifecycle(mtm: MainThreadMarker) {
         }
     }
     std::mem::forget(target);
+}
+
+/// Answers from the device bridge (on the main thread). An answer given
+/// while the app is busy (synchronously, during the call) is handled on the
+/// next turn of the main loop.
+fn on_device(message: prism_native::apple::DeviceMessage) {
+    let mut message = Some(message);
+    with_state(|s| {
+        let patches = match message.take().expect("message") {
+            prism_native::apple::DeviceMessage::Reply(id, result) => {
+                s.runtime.device_reply(id, result)
+            }
+            prism_native::apple::DeviceMessage::Event(id, event) => {
+                s.runtime.device_event(id, event)
+            }
+        };
+        s.commit(patches);
+    });
+    // Busy (not just absent): try again on the next turn.
+    let busy = STATE.with(|c| c.try_borrow().is_err());
+    if let Some(message) = message
+        && busy
+    {
+        dispatch2::DispatchQueue::main().exec_async(move || on_device(message));
+    }
 }

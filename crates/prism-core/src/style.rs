@@ -474,6 +474,14 @@ pub trait Styled: Sized {
     fn mt(self, v: f32) -> Self {
         self.with_style(|s| s.margin.top = v)
     }
+    /// Leading margin (flips in right-to-left languages).
+    fn ml(self, v: f32) -> Self {
+        self.with_style(|s| s.margin.left = v)
+    }
+    /// Trailing margin.
+    fn mr(self, v: f32) -> Self {
+        self.with_style(|s| s.margin.right = v)
+    }
     fn mb(self, v: f32) -> Self {
         self.with_style(|s| s.margin.bottom = v)
     }
