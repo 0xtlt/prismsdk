@@ -37,6 +37,8 @@ pub struct Project {
     pub team: Option<String>,
     pub simulator: Option<String>,
     pub device: Option<String>,
+    /// `[ios] icloud = true`: iCloud key-value storage.
+    pub icloud: bool,
     /// Cargo's target directory (the workspace's).
     pub target_dir: PathBuf,
     /// The Cargo workspace (watched by `prism dev`).
@@ -118,6 +120,7 @@ impl Project {
             team: get("ios.team"),
             simulator: get("ios.simulator"),
             device: get("ios.device"),
+            icloud: get("ios.icloud").is_some_and(|v| v == "true"),
             root: root.to_path_buf(),
             package,
             name,

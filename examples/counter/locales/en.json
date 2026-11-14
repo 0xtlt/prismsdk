@@ -98,7 +98,17 @@
     "body": "Nice work. Time for a short break.",
     "again": "5 more minutes",
     "note": "Add a todo…",
-    "note_placeholder": "What's next?"
+    "note_placeholder": "What's next?",
+    "history_title": "History",
+    "history": {
+      "one": "{count} session · {minutes} min in total",
+      "other": "{count} sessions · {minutes} min in total"
+    },
+    "history_empty": "No session yet.",
+    "history_row": "{time} · {minutes} min",
+    "stored_device": "Saved in SQLite on this device.",
+    "stored_server": "Saved in SQLite on the server, shared by every visitor.",
+    "synced": "Your default duration follows you on your devices (iCloud)."
   },
   "gallery": {
     "email_error": "Enter a valid email address",

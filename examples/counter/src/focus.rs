@@ -6,6 +6,7 @@
 
 use std::time::{Duration, SystemTime};
 
+use prism::db::{Db, sqlx};
 use prism::prelude::*;
 use prism::ui::{self, Theme};
 use prism::{ActivityId, Color, TaskHandle};
@@ -16,7 +17,17 @@ pub struct Focus {
     minutes: u64,
     running: Option<Session>,
     completed: u32,
+    /// From SQLite: (ended at, seconds), newest first, and totals.
+    history: Vec<(f64, i64)>,
+    total_sessions: i64,
+    total_seconds: i64,
 }
+
+/// Completed sessions, in SQLite (`prism::db`): on the device natively, on
+/// the server for the web.
+const MIGRATIONS: &[&str] = &[
+    "CREATE TABLE focus_sessions (id INTEGER PRIMARY KEY, ended_at REAL NOT NULL, seconds INTEGER NOT NULL)",
+];
 
 struct Session {
     activity: ActivityId,
@@ -32,6 +43,9 @@ impl Default for Focus {
             minutes: 25,
             running: None,
             completed: 0,
+            history: Vec::new(),
+            total_sessions: 0,
+            total_seconds: 0,
         }
     }
 }
@@ -96,7 +110,37 @@ fn activity(cx: &App, ends: SystemTime, total: Duration, accent: Color) -> Activ
 /// Creates the Focus tab (shared, so notification actions can reach it) and
 /// handles the notification's buttons.
 pub fn install(cx: &mut App, store: Entity<crate::Store>) -> Entity<Focus> {
-    let focus = cx.new_entity(|_| Focus::default());
+    match Db::open(cx, "counter.db", MIGRATIONS) {
+        Ok(db) => cx.set_global(db),
+        Err(e) => eprintln!("counter: no database: {e}"),
+    }
+    // The default duration follows the user across devices (iCloud).
+    let minutes = cx
+        .cloud_storage()
+        .get("focus.minutes")
+        .and_then(|m| m.parse().ok())
+        .unwrap_or(25);
+    let focus = cx.new_entity(|cx| {
+        let mut f = Focus {
+            minutes,
+            ..Focus::default()
+        };
+        f.load_history(cx);
+        f
+    });
+    cx.on_cloud_change(move |keys, app| {
+        if keys.iter().any(|k| k == "focus.minutes")
+            && let Some(m) = app
+                .cloud_storage()
+                .get("focus.minutes")
+                .and_then(|m| m.parse().ok())
+        {
+            focus.update(app, |f, cx| {
+                f.minutes = m;
+                cx.notify();
+            });
+        }
+    });
     cx.on_notification_response(move |r, app| match r.action.as_deref() {
         Some("again") => focus.update(app, |f, cx| {
             if f.running.is_none() {
@@ -131,6 +175,62 @@ fn done_notification(cx: &App, delay: Duration) -> Notification {
 }
 
 impl Focus {
+    /// Reads the history from SQLite.
+    fn load_history(&mut self, cx: &mut Context<Self>) {
+        if cx.try_global::<Db>().is_none() {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let loaded = Db::of(&cx)
+                .run(&cx, |pool| async move {
+                    let recent: Vec<(f64, i64)> = sqlx::query_as(
+                        "SELECT ended_at, seconds FROM focus_sessions ORDER BY ended_at DESC LIMIT 3",
+                    )
+                    .fetch_all(&pool)
+                    .await?;
+                    let totals: (i64, i64) = sqlx::query_as(
+                        "SELECT COUNT(*), COALESCE(SUM(seconds), 0) FROM focus_sessions",
+                    )
+                    .fetch_one(&pool)
+                    .await?;
+                    Ok::<_, sqlx::Error>((recent, totals))
+                })
+                .await;
+            match loaded {
+                Ok((recent, (count, seconds))) => {
+                    cx.update_entity(&this, |f, _| {
+                        f.history = recent;
+                        f.total_sessions = count;
+                        f.total_seconds = seconds;
+                    });
+                }
+                Err(e) => eprintln!("counter: history: {e}"),
+            }
+        });
+    }
+
+    /// Saves a finished session, then refreshes the history.
+    fn record(&mut self, seconds: i64, cx: &mut Context<Self>) {
+        if cx.try_global::<Db>().is_none() {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let saved = Db::of(&cx)
+                .run(&cx, move |pool| async move {
+                    sqlx::query("INSERT INTO focus_sessions (ended_at, seconds) VALUES (?, ?)")
+                        .bind(strings::now())
+                        .bind(seconds)
+                        .execute(&pool)
+                        .await
+                })
+                .await;
+            if let Err(e) = saved {
+                eprintln!("counter: could not save the session: {e}");
+            }
+            cx.update_entity(&this, |f, cx| f.load_history(cx));
+        });
+    }
+
     fn start(&mut self, cx: &mut Context<Self>) {
         self.start_for(Duration::from_secs(self.minutes * 60), cx);
     }
@@ -181,6 +281,7 @@ impl Focus {
                         .minimal(image("checkmark"));
                     cx.end_activity(s.activity, Some(done), false);
                     focus.completed += 1;
+                    focus.record(s.total.as_secs() as i64, cx);
                 }
             });
         })
@@ -266,7 +367,11 @@ impl Render for Focus {
                                     } else {
                                         ui::Variant::Secondary
                                     })
-                                    .on_click(cx.listener(move |this, _, _| this.minutes = m))
+                                    .on_click(cx.listener(move |this, _, cx| {
+                                        this.minutes = m;
+                                        // Synced to the user's other devices.
+                                        cx.cloud_storage().set("focus.minutes", &m.to_string());
+                                    }))
                             })),
                     )
                     .child(
@@ -297,8 +402,43 @@ impl Render for Focus {
                     ),
             ),
         };
+        // History from SQLite.
+        let rows = self.history.iter().map(|&(ended, seconds)| {
+            text(strings::focus_history_row(
+                cx,
+                cx.format_time(ended),
+                cx.format_number((seconds as f64 / 60.).ceil(), 0),
+            ))
+            .text_size(14.)
+        });
+        let summary = if self.total_sessions == 0 {
+            strings::focus_history_empty(cx)
+        } else {
+            strings::focus_history(
+                cx,
+                self.total_sessions,
+                cx.format_number((self.total_seconds as f64 / 60.).ceil(), 0),
+            )
+        };
+        let stored = if prism::BACKEND == "web" {
+            strings::focus_stored_server(cx)
+        } else {
+            strings::focus_stored_device(cx)
+        };
+        let history = ui::card()
+            .child(ui::heading(strings::focus_history_title(cx)))
+            .child(text(summary).semibold())
+            .children(rows)
+            .child(text(stored).text_size(13.).text_color(t.muted))
+            .when(cx.capabilities().cloud_sync, |c| {
+                c.child(
+                    text(strings::focus_synced(cx))
+                        .text_size(13.)
+                        .text_color(t.muted),
+                )
+            });
         screen(strings::focus_title(cx))
             .bg(t.background)
-            .child(body)
+            .child(body.child(history))
     }
 }

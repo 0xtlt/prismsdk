@@ -89,6 +89,8 @@ impl MacServices {
                 photos: true,
                 haptics: true,
                 share: true,
+                cloud_sync: prism_native::apple::ICloudStorage::new().is_some()
+                    && prism_native::apple::ICloudStorage::signed_in(),
             },
             activities: HashMap::new(),
         }

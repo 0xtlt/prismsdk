@@ -113,15 +113,26 @@ print(best[1] if best else "")
   [[ -n "$PROFILE" ]] || { echo "No provisioning profile for $BUNDLE_ID: open the project once in Xcode with your team, or set PRISM_PROFILE" >&2; exit 1; }
   security cms -D -i "$PROFILE" > "$GEN/profile.plist"
   # Entitlements granted by the profile (app id, team, debugging, groups).
-  python3 - "$GEN/profile.plist" "$GEN/entitlements.plist" "$BUNDLE_ID" <<'PY'
-import plistlib, sys
+  ICLOUD="${PRISM_ICLOUD:-}" python3 - "$GEN/profile.plist" "$GEN/entitlements.plist" "$BUNDLE_ID" <<'PY'
+import os, plistlib, sys
 p = plistlib.load(open(sys.argv[1], "rb"))
 e = dict(p["Entitlements"])
 team = p["TeamIdentifier"][0]
 e["application-identifier"] = f"{team}.{sys.argv[3]}"
 e.pop("keychain-access-groups", None)
+kv = "com.apple.developer.ubiquity-kvstore-identifier"
+if os.environ.get("ICLOUD") == "1":
+    if kv in e:
+        e[kv] = f"{team}.{sys.argv[3]}"
+    else:
+        print("note: the provisioning profile has no iCloud: cloud_storage stays local (enable iCloud for the App ID in Xcode)", file=sys.stderr)
+else:
+    e.pop(kv, None)
 plistlib.dump(e, open(sys.argv[2], "wb"))
 PY
+  if [[ "${PRISM_ICLOUD:-}" == 1 ]] && ! /usr/libexec/PlistBuddy -c "Print :com.apple.developer.ubiquity-kvstore-identifier" "$GEN/entitlements.plist" >/dev/null 2>&1; then
+    PRISM_ICLOUD=0
+  fi
   cp "$GEN/entitlements.plist" "$GEN/appex.entitlements.plist"
   /usr/libexec/PlistBuddy -c "Set :application-identifier $(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$GEN/profile.plist").$BUNDLE_ID.widgets" "$GEN/appex.entitlements.plist"
   if ! /usr/libexec/PlistBuddy -c "Print :com.apple.security.application-groups" "$GEN/entitlements.plist" >/dev/null 2>&1; then
@@ -130,12 +141,19 @@ PY
   IDENTITY="${PRISM_IDENTITY:-$(security find-identity -v -p codesigning | sed -n 's/.*"\(Apple Development[^"]*\)".*/\1/p' | head -1)}"
   [[ -n "$IDENTITY" ]] || { echo "No \"Apple Development\" signing identity in the keychain" >&2; exit 1; }
 else
+  # The simulator refuses to launch ad hoc builds with the iCloud
+  # entitlement: cloud_storage stays local there.
+  if [[ "${PRISM_ICLOUD:-}" == 1 ]]; then
+    echo "note: iCloud needs a signed build (a device): on the simulator cloud_storage stays local" >&2
+    PRISM_ICLOUD=0
+  fi
   cat > "$GEN/entitlements.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>com.apple.security.application-groups</key><array><string>$GROUP</string></array>
+$( [[ "${PRISM_ICLOUD:-}" == 1 ]] && echo "  <key>com.apple.developer.ubiquity-kvstore-identifier</key><string>${PRISM_TEAM:-SIMULATOR}.$BUNDLE_ID</string>" )
 </dict>
 </plist>
 PLIST
@@ -235,6 +253,7 @@ $ICON_PLIST
 $LOC_PLIST
 $BG_PLIST
 $USAGE_PLIST
+$( [[ "${PRISM_ICLOUD:-}" == 1 ]] && echo "  <key>PrismICloud</key><true/>" )
   <key>LSRequiresIPhoneOS</key><true/>
   <key>UILaunchScreen</key><dict/>
   <key>NSSupportsLiveActivities</key><true/>

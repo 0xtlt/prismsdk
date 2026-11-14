@@ -98,7 +98,17 @@
     "body": "Bien joué. C'est l'heure d'une petite pause.",
     "again": "5 minutes de plus",
     "note": "Ajouter une tâche…",
-    "note_placeholder": "Et ensuite ?"
+    "note_placeholder": "Et ensuite ?",
+    "history_title": "Historique",
+    "history": {
+      "one": "{count} session · {minutes} min au total",
+      "other": "{count} sessions · {minutes} min au total"
+    },
+    "history_empty": "Aucune session pour l'instant.",
+    "history_row": "{time} · {minutes} min",
+    "stored_device": "Enregistré dans SQLite sur cet appareil.",
+    "stored_server": "Enregistré dans SQLite sur le serveur, partagé par tous les visiteurs.",
+    "synced": "Ta durée par défaut te suit sur tes appareils (iCloud)."
   },
   "gallery": {
     "email_error": "Saisis une adresse e-mail valide",

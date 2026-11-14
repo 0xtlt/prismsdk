@@ -265,3 +265,76 @@ mod bridge {
         });
     }
 }
+
+/// `cx.cloud_storage()` on Apple platforms: the iCloud key-value store
+/// (synced between the user's devices, 1 MB). Needs the
+/// `com.apple.developer.ubiquity-kvstore-identifier` entitlement
+/// (`[ios] icloud = true` in Prism.toml).
+pub struct ICloudStorage {
+    store: Retained<objc2_foundation::NSUbiquitousKeyValueStore>,
+}
+
+impl ICloudStorage {
+    /// The iCloud store if the bundle enables it (Info.plist `PrismICloud`),
+    /// otherwise `None` (use local storage instead).
+    pub fn new() -> Option<Self> {
+        let enabled = objc2_foundation::NSBundle::mainBundle()
+            .objectForInfoDictionaryKey(&NSString::from_str("PrismICloud"))
+            .is_some();
+        if !enabled {
+            return None;
+        }
+        let store = objc2_foundation::NSUbiquitousKeyValueStore::defaultStore();
+        // Fetch what other devices wrote since the last launch.
+        store.synchronize();
+        Some(ICloudStorage { store })
+    }
+
+    /// Whether an iCloud account is signed in (otherwise the store stays local).
+    pub fn signed_in() -> bool {
+        objc2_foundation::NSFileManager::defaultManager()
+            .ubiquityIdentityToken()
+            .is_some()
+    }
+}
+
+impl prism_core::Storage for ICloudStorage {
+    fn get(&self, key: &str) -> Option<String> {
+        self.store
+            .stringForKey(&NSString::from_str(key))
+            .map(|s| s.to_string())
+    }
+    fn set(&mut self, key: &str, value: &str) {
+        self.store
+            .setString_forKey(Some(&NSString::from_str(value)), &NSString::from_str(key));
+        self.store.synchronize();
+    }
+    fn remove(&mut self, key: &str) {
+        self.store.removeObjectForKey(&NSString::from_str(key));
+        self.store.synchronize();
+    }
+    fn keys(&self) -> Vec<String> {
+        self.store
+            .dictionaryRepresentation()
+            .allKeys()
+            .iter()
+            .map(|k| k.to_string())
+            .collect()
+    }
+}
+
+/// The keys of an `NSUbiquitousKeyValueStoreDidChangeExternallyNotification`.
+pub fn changed_cloud_keys(n: &objc2_foundation::NSNotification) -> Vec<String> {
+    let Some(info) = n.userInfo() else {
+        return Vec::new();
+    };
+    let key = unsafe { objc2_foundation::NSUbiquitousKeyValueStoreChangedKeysKey };
+    info.objectForKey(key)
+        .and_then(|keys| keys.downcast::<objc2_foundation::NSArray>().ok())
+        .map(|keys| {
+            keys.iter()
+                .filter_map(|k| k.downcast::<NSString>().ok().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}

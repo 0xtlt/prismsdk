@@ -7,6 +7,8 @@ version = "0.1.0"
 icon = "icon.png"
 
 [ios]
+# iCloud key-value storage for cx.cloud_storage() (devices: the App ID needs iCloud).
+icloud = true
 # Apple team for real devices (default: the team of a matching profile).
 # team = "ABCDE12345"
 # Default destinations.

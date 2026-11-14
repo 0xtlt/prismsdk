@@ -11,12 +11,15 @@ default = ["native"]
 native = ["dep:prism-macos", "dep:prism-ios"]
 # Server-driven web UI: plain HTML/CSS + a tiny JS client, no WASM.
 web = ["dep:prism-web"]
+# SQL (sqlx + SQLite): on the device natively, on the server for the web.
+db = ["dep:prism-db"]
 
 [dependencies]
 prism-core.workspace = true
 prism-ui.workspace = true
 prism-http.workspace = true
 prism-web = { workspace = true, optional = true }
+prism-db = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 prism-macos = { workspace = true, optional = true }

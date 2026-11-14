@@ -208,6 +208,19 @@ fn new_session_id() -> String {
     format!("{:016x}{:016x}", part(1), part(2))
 }
 
+fn data_root() -> std::path::PathBuf {
+    std::env::var("PRISM_DATA_DIR")
+        .unwrap_or_else(|_| ".prism-data".into())
+        .into()
+}
+
+/// `cx.cloud_storage()` on the web: the server's, per browser.
+fn cloud_storage_for(sid: &str) -> Box<dyn prism_core::Storage> {
+    Box::new(prism_core::FileStorage::new(
+        data_root().join(sid).join("cloud"),
+    ))
+}
+
 /// Where a browser's `cx.storage()` lives (`PRISM_DATA_DIR`, default `.prism-data`).
 fn storage_for(sid: &str) -> Box<dyn prism_core::Storage> {
     let base = std::env::var("PRISM_DATA_DIR").unwrap_or_else(|_| ".prism-data".into());
@@ -372,6 +385,9 @@ pub fn page(
             wake_ui: None,
             environment: environment(language, tz),
             formatter: None,
+            cloud_storage: Some(cloud_storage_for(sid)),
+            data_dir: Some(data_root().join(sid)),
+            shared_data_dir: Some(data_root()),
         },
     );
     let mut html = HtmlBackend::default();
@@ -524,6 +540,9 @@ fn session(stream: TcpStream, init: &AppInit) {
             })),
             environment: environment(language, tz),
             formatter: None,
+            cloud_storage: Some(cloud_storage_for(&sid)),
+            data_dir: Some(data_root().join(&sid)),
+            shared_data_dir: Some(data_root()),
         },
     );
     let mut encoder = Encoder::default();
@@ -724,6 +743,8 @@ impl PlatformServices for WebServices {
             photos: true,
             haptics: true,
             share: true,
+            // Cloud storage is the server's, per browser.
+            cloud_sync: false,
         }
     }
 

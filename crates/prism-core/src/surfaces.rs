@@ -48,6 +48,8 @@ pub struct Capabilities {
     pub photos: bool,
     pub haptics: bool,
     pub share: bool,
+    /// `cloud_storage` syncs between devices (otherwise it is local).
+    pub cloud_sync: bool,
 }
 
 /// Work the app asked the platform to do. Backends drain these with

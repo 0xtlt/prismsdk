@@ -36,6 +36,9 @@ pub use prism_core::*;
 /// The component library: themed, accessible, overridable, native on demand.
 pub use prism_ui as ui;
 
+/// SQL with sqlx (`db` feature): see [`prism_db`].
+#[cfg(feature = "db")]
+pub use prism_db as db;
 /// HTTP: `cx.fetch(http::Request::get(url)).await`.
 pub use prism_http as http;
 

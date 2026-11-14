@@ -68,6 +68,12 @@ pub struct RuntimeOptions {
     pub environment: Environment,
     /// Platform number/date formatting (portable fallback if `None`).
     pub formatter: Option<Box<dyn Formatter>>,
+    /// Storage synced between devices (local storage semantics if `None`).
+    pub cloud_storage: Option<Box<dyn Storage>>,
+    /// Per-user data directory (web: per browser).
+    pub data_dir: Option<std::path::PathBuf>,
+    /// Data shared by every user (web: the server's directory).
+    pub shared_data_dir: Option<std::path::PathBuf>,
 }
 
 /// Window/page settings shared by every backend.
@@ -146,6 +152,10 @@ impl Runtime {
         if let Some(formatter) = options.formatter {
             app.set_formatter(formatter);
         }
+        if let Some(cloud) = options.cloud_storage {
+            app.set_cloud_storage(cloud);
+        }
+        app.set_data_dirs(options.data_dir, options.shared_data_dir);
         init(&mut app);
         Runtime {
             app,
@@ -295,6 +305,12 @@ impl Runtime {
     /// A sensor event for stream `id`. Returns the resulting patches.
     pub fn device_event(&mut self, id: u64, event: device::DeviceEvent) -> Vec<Patch> {
         self.app.device_event(id, event);
+        self.poll()
+    }
+
+    /// Another device changed these synced keys. Returns the resulting patches.
+    pub fn cloud_changed(&mut self, keys: &[String]) -> Vec<Patch> {
+        self.app.cloud_changed(keys);
         self.poll()
     }
 

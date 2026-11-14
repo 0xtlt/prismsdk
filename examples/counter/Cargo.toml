@@ -10,7 +10,7 @@ native = ["prism/native"]
 web = ["prism/web"]
 
 [dependencies]
-prism.workspace = true
+prism = { workspace = true, features = ["db"] }
 
 [build-dependencies]
 prism-build.workspace = true

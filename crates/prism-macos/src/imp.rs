@@ -404,6 +404,16 @@ define_class!(
         }
 
         /// Active / inactive / hidden.
+        /// Another device changed iCloud keys.
+        #[unsafe(method(onCloudChange:))]
+        fn on_cloud_change(&self, n: &NSNotification) {
+            let keys = prism_native::apple::changed_cloud_keys(n);
+            with_state(|s| {
+                let patches = s.runtime.cloud_changed(&keys);
+                s.commit(patches);
+            });
+        }
+
         #[unsafe(method(onLifecycle:))]
         fn on_lifecycle(&self, n: &NSNotification) {
             use objc2_app_kit::*;
@@ -1498,6 +1508,9 @@ pub fn run(config: AppConfig, init: AppInit) {
             wake_ui: Some(wake_ui()),
             environment: mac_environment(),
             formatter: Some(Box::new(prism_native::apple::FoundationFormatter)),
+            cloud_storage: Some(cloud_storage(&data_dir(&config.title))),
+            data_dir: Some(data_dir(&config.title)),
+            shared_data_dir: None,
         },
     );
     let renderer = NativeRenderer::new(AppKit {
@@ -1851,6 +1864,12 @@ fn observe_system(target: &Target) {
             Some(objc2_foundation::NSCurrentLocaleDidChangeNotification),
             None,
         );
+        center.addObserver_selector_name_object(
+            target,
+            sel!(onCloudChange:),
+            Some(objc2_foundation::NSUbiquitousKeyValueStoreDidChangeExternallyNotification),
+            None,
+        );
         use objc2_app_kit::*;
         for name in [
             NSApplicationDidBecomeActiveNotification,
@@ -1992,5 +2011,13 @@ fn on_device(message: prism_native::apple::DeviceMessage) {
         && busy
     {
         dispatch2::DispatchQueue::main().exec_async(move || on_device(message));
+    }
+}
+
+/// iCloud key-value storage when the bundle enables it, else local files.
+fn cloud_storage(dir: &std::path::Path) -> Box<dyn prism_core::Storage> {
+    match prism_native::apple::ICloudStorage::new() {
+        Some(icloud) => Box::new(icloud),
+        None => Box::new(prism_core::FileStorage::new(dir.join("cloud"))),
     }
 }

@@ -18,6 +18,7 @@ prism-ui = { path = "crates/prism-ui" }
 prism-http = { path = "crates/prism-http" }
 prism-apple-build = { path = "crates/prism-apple-build" }
 prism-build = { path = "crates/prism-build" }
+prism-db = { path = "crates/prism-db" }
 taffy = { version = "0.14", default-features = false, features = ["std", "flexbox", "taffy_tree"] }
 tungstenite = "0.30"
 serde_json = "1"

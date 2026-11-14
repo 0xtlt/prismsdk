@@ -1,0 +1,11 @@
+[package]
+name = "prism-db"
+description = "SQL for Prism apps (sqlx): SQLite on the device, the server's database on the web."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+prism-core.workspace = true
+sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio", "derive"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }

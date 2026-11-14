@@ -106,7 +106,21 @@
     "body": "عمل رائع. حان وقت استراحة قصيرة.",
     "again": "5 دقائق إضافية",
     "note": "أضف مهمة…",
-    "note_placeholder": "ما التالي؟"
+    "note_placeholder": "ما التالي؟",
+    "history_title": "السجل",
+    "history": {
+      "zero": "لا توجد جلسات",
+      "one": "جلسة واحدة · {minutes} د إجمالًا",
+      "two": "جلستان · {minutes} د إجمالًا",
+      "few": "{count} جلسات · {minutes} د إجمالًا",
+      "many": "{count} جلسة · {minutes} د إجمالًا",
+      "other": "{count} جلسة · {minutes} د إجمالًا"
+    },
+    "history_empty": "لا توجد جلسات بعد.",
+    "history_row": "{time} · {minutes} د",
+    "stored_device": "محفوظ في SQLite على هذا الجهاز.",
+    "stored_server": "محفوظ في SQLite على الخادم، مشترك بين جميع الزوار.",
+    "synced": "مدتك الافتراضية تتبعك على أجهزتك (iCloud)."
   },
   "gallery": {
     "email_error": "أدخل بريدًا إلكترونيًا صالحًا",

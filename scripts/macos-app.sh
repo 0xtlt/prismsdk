@@ -99,6 +99,11 @@ if [[ -n "${PRISM_ICON:-}" ]]; then
   ICON_PLIST="$(cat "$GEN/icon-info.xml")"
 fi
 
+# iCloud on macOS needs a provisioning profile (ad hoc signed apps with the
+# entitlement do not launch): `cloud_storage` stays local otherwise.
+if [[ "${PRISM_ICLOUD:-}" == 1 && -z "${PRISM_MAC_PROFILE:-}" ]]; then
+  echo "note: iCloud on macOS needs PRISM_MAC_PROFILE (a Mac provisioning profile); cloud_storage stays local" >&2
+fi
 plist "$PKG" "$BUNDLE_ID" APPL "$ICON_PLIST
 $LOC_PLIST
 $USAGE_PLIST

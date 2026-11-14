@@ -1343,3 +1343,44 @@ fn device_calls_resolve_and_streams_deliver() {
     );
     find_text(&patches, "48.86,2.35 0.5");
 }
+
+#[test]
+fn cloud_storage_and_external_changes() {
+    use std::sync::Mutex;
+    struct Plain;
+    impl Render for Plain {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+    let seen: Arc<Mutex<Vec<String>>> = Default::default();
+    let log = seen.clone();
+    let init: AppInit = Arc::new(move |cx: &mut App| {
+        cx.cloud_storage().set("theme", "dark");
+        let log = log.clone();
+        cx.on_cloud_change(move |keys, app| {
+            let value = app.cloud_storage().get(&keys[0]).unwrap_or_default();
+            log.lock().unwrap().push(format!("{}={value}", keys[0]));
+        });
+        let root = cx.new_entity(|_| Plain);
+        cx.set_root(root);
+    });
+    let mut rt = Runtime::with_options(
+        &init,
+        crate::RuntimeOptions {
+            path: "/".into(),
+            data_dir: Some("/tmp/prism-user".into()),
+            ..Default::default()
+        },
+    );
+    rt.render();
+    assert_eq!(rt.app.cloud_storage().get("theme").as_deref(), Some("dark"));
+    // Natively the shared directory is the user's.
+    assert_eq!(
+        rt.app.shared_data_dir(),
+        Some(std::path::Path::new("/tmp/prism-user"))
+    );
+    rt.app.cloud_storage().set("theme", "light"); // as if another device wrote it
+    rt.cloud_changed(&["theme".to_string()]);
+    assert_eq!(*seen.lock().unwrap(), ["theme=light"]);
+}

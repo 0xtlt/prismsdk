@@ -160,6 +160,16 @@ define_class!(
         }
 
         /// Active / inactive / background.
+        /// Another device changed iCloud keys.
+        #[unsafe(method(onCloudChange:))]
+        fn on_cloud_change(&self, n: &objc2_foundation::NSNotification) {
+            let keys = prism_native::apple::changed_cloud_keys(n);
+            with_state(|s| {
+                let patches = s.runtime.cloud_changed(&keys);
+                s.commit(patches);
+            });
+        }
+
         #[unsafe(method(onLifecycle:))]
         fn on_lifecycle(&self, n: &objc2_foundation::NSNotification) {
             use objc2_ui_kit::*;
@@ -1858,6 +1868,9 @@ fn make_runtime(
             wake_ui: Some(wake_ui()),
             environment: ios_environment(),
             formatter: Some(Box::new(prism_native::apple::FoundationFormatter)),
+            cloud_storage: Some(cloud_storage(&data_dir())),
+            data_dir: Some(data_dir()),
+            shared_data_dir: None,
         },
     )
 }
@@ -2029,6 +2042,12 @@ fn observe_lifecycle(mtm: MainThreadMarker) {
         ] {
             center.addObserver_selector_name_object(&target, sel!(onLifecycle:), Some(name), None);
         }
+        center.addObserver_selector_name_object(
+            &target,
+            sel!(onCloudChange:),
+            Some(objc2_foundation::NSUbiquitousKeyValueStoreDidChangeExternallyNotification),
+            None,
+        );
     }
     std::mem::forget(target);
 }
@@ -2055,5 +2074,13 @@ fn on_device(message: prism_native::apple::DeviceMessage) {
         && busy
     {
         dispatch2::DispatchQueue::main().exec_async(move || on_device(message));
+    }
+}
+
+/// iCloud key-value storage when the bundle enables it, else local files.
+fn cloud_storage(dir: &std::path::Path) -> Box<dyn prism_core::Storage> {
+    match prism_native::apple::ICloudStorage::new() {
+        Some(icloud) => Box::new(icloud),
+        None => Box::new(prism_core::FileStorage::new(dir.join("cloud"))),
     }
 }

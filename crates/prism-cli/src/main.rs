@@ -242,6 +242,9 @@ fn apple_command(
     if let Some(icon) = &p.icon {
         cmd.env("PRISM_ICON", icon);
     }
+    if p.icloud {
+        cmd.env("PRISM_ICLOUD", "1");
+    }
     if !p.permissions.is_empty() {
         let lines: Vec<String> = p
             .permissions
