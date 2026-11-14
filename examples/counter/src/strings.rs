@@ -20,6 +20,9 @@ pub fn choose(cx: &mut App, tag: Option<&str>) {
         None => cx.storage().remove("locale"),
     }
     cx.set_locale(tag.map(Locale::new));
+    // Menus and widgets live outside the views: rebuild them too.
+    crate::menus::refresh(cx);
+    cx.reload_widgets();
 }
 
 /// A language's own name ("Français"), from its catalog.

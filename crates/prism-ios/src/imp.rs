@@ -1203,6 +1203,7 @@ impl Widgets for UiKit {
         // Navigation bars, tab bars, back buttons and swipe-back follow it;
         // views created later get it in `create`.
         self.semantic = Some(attr);
+        set_appearance_semantic(attr);
         match self.controller.view().and_then(|v| v.window()) {
             Some(window) => set_semantic(&window, attr),
             None => set_semantic(&self.root, attr),
@@ -1746,5 +1747,20 @@ fn flush_responses() {
         PENDING_RESPONSES.with(|p| {
             p.borrow_mut().splice(0..0, pending);
         });
+    }
+}
+
+/// `[[UIView appearance] setSemanticContentAttribute:]`: views UIKit creates
+/// later (large titles, bar buttons) follow the direction too. The proxy
+/// forwards the message, so it is sent without objc2's selector check.
+fn set_appearance_semantic(attr: objc2_ui_kit::UISemanticContentAttribute) {
+    unsafe {
+        let proxy: *mut AnyObject = msg_send![UIView::class(), appearance];
+        if proxy.is_null() {
+            return;
+        }
+        let send: unsafe extern "C-unwind" fn(*mut AnyObject, objc2::runtime::Sel, isize) =
+            std::mem::transmute(objc2::ffi::objc_msgSend as *const ());
+        send(proxy, sel!(setSemanticContentAttribute:), attr.0);
     }
 }

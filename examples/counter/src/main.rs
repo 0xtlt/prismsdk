@@ -261,7 +261,7 @@ impl Render for CounterCard {
                         .child(
                             ui::button("−1")
                                 .secondary()
-                                .hint("Decrements the counter")
+                                .hint(strings::counter_decrement_hint(cx))
                                 .on_click(cx.listener(|this, _, _| this.count -= 1)),
                         )
                         .child(
@@ -294,7 +294,7 @@ impl Render for TodoList {
                             .flex_1()
                             .value(self.draft.clone())
                             .placeholder(strings::todos_placeholder(cx))
-                            .accessibility_label("New todo")
+                            .accessibility_label(strings::screens_new_todo(cx))
                             .on_input(
                                 cx.listener(|this, e: &InputEvent, _| this.draft = e.value.clone()),
                             ),
@@ -302,7 +302,7 @@ impl Render for TodoList {
                     .child(
                         ui::button(strings::todos_new(cx))
                             .secondary()
-                            .hint("Opens a form in a sheet")
+                            .hint(strings::todos_new_hint(cx))
                             .on_click(std::rc::Rc::new(|_: &ClickEvent, app: &mut App| {
                                 app.present("/todos/new")
                             })),
@@ -334,22 +334,26 @@ impl Render for TodoList {
                     .context_menu(
                         Menu::new()
                             .item(
-                                MenuItem::new("Open")
+                                MenuItem::new(strings::menu_open(cx))
                                     .icon("arrow.up.forward.square")
                                     .on_select(navigate_to(format!("/todos/{id}"))),
                             )
                             .item(
-                                MenuItem::new(if done { "Mark as open" } else { "Mark as done" })
-                                    .icon(if done { "circle" } else { "checkmark.circle" })
-                                    .on_select(std::rc::Rc::new(
-                                        move |_: &ClickEvent, app: &mut App| {
-                                            store_e.update(app, |s, cx| s.toggle(id, cx))
-                                        },
-                                    )),
+                                MenuItem::new(if done {
+                                    strings::todo_mark_open(cx)
+                                } else {
+                                    strings::todo_mark_done(cx)
+                                })
+                                .icon(if done { "circle" } else { "checkmark.circle" })
+                                .on_select(std::rc::Rc::new(
+                                    move |_: &ClickEvent, app: &mut App| {
+                                        store_e.update(app, |s, cx| s.toggle(id, cx))
+                                    },
+                                )),
                             )
                             .separator()
                             .item(
-                                MenuItem::new("Delete…")
+                                MenuItem::new(strings::menu_delete(cx))
                                     .icon("trash")
                                     .destructive()
                                     .on_select(std::rc::Rc::new(
@@ -391,22 +395,26 @@ impl Render for TodoDetail {
         let t = Theme::of(cx);
         let Some(todo) = self.store.read(cx).get(id) else {
             let (screen, body) = page(strings::screens_not_found(cx), cx);
-            return screen.child(
-                body.child(text(format!("Todo #{id} does not exist.")).text_color(t.muted)),
-            );
+            return screen
+                .child(body.child(text(strings::todo_missing(cx, id)).text_color(t.muted)));
         };
         let (screen, body) = page(todo.title.clone(), cx);
         screen.child(
             body.child(
                 ui::card()
                     .child(
-                        text(format!("Todo #{id}"))
+                        text(strings::todo_number(cx, id))
                             .text_size(13.)
                             .text_color(t.muted),
                     )
                     .child(ui::heading(todo.title.clone()).level(1))
                     .child(
-                        ui::badge(if todo.done { "Done" } else { "Open" }).tone(if todo.done {
+                        ui::badge(if todo.done {
+                            strings::todo_done(cx)
+                        } else {
+                            strings::todo_open(cx)
+                        })
+                        .tone(if todo.done {
                             ui::Variant::Primary
                         } else {
                             ui::Variant::Secondary
@@ -419,15 +427,15 @@ impl Render for TodoDetail {
                     .gap(8.)
                     .child(
                         ui::button(if todo.done {
-                            "Mark as open"
+                            strings::todo_mark_open(cx)
                         } else {
-                            "Mark as done"
+                            strings::todo_mark_done(cx)
                         })
                         .on_click(cx.listener(move |this, _, cx| {
                             this.store.update(cx, |s, cx| s.toggle(id, cx))
                         })),
                     )
-                    .child(ui::button("Delete").danger().on_click(
+                    .child(ui::button(strings::todo_delete(cx)).danger().on_click(
                         cx.listener(move |this, _, cx| confirm_delete(cx, this.store, id)),
                     )),
             ),
@@ -452,37 +460,37 @@ impl Render for Gallery {
     fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::of(cx);
         let email_error = (!self.email.is_empty() && !self.email.contains('@'))
-            .then_some("Enter a valid email address");
+            .then(|| strings::gallery_email_error(cx));
         let (screen, body) = page(strings::screens_components(cx), cx);
         screen.child(
             body.child(
                 ui::card()
-                    .child(ui::heading("Buttons"))
+                    .child(ui::heading(strings::gallery_buttons(cx)))
                     .child(
                         div()
                             .flex_row()
                             .flex_wrap()
                             .gap(8.)
                             .child(
-                                ui::button("Primary")
+                                ui::button(strings::gallery_primary(cx))
                                     .on_click(cx.listener(|this, _, _| this.taps += 1)),
                             )
                             .child(
-                                ui::button("Secondary")
+                                ui::button(strings::gallery_secondary(cx))
                                     .secondary()
                                     .on_click(cx.listener(|this, _, _| this.taps += 1)),
                             )
                             .child(
-                                ui::button("Ghost")
+                                ui::button(strings::gallery_ghost(cx))
                                     .ghost()
                                     .on_click(cx.listener(|this, _, _| this.taps += 1)),
                             )
                             .child(
-                                ui::button("Danger")
+                                ui::button(strings::gallery_danger(cx))
                                     .danger()
                                     .on_click(cx.listener(|this, _, _| this.taps += 1)),
                             )
-                            .child(ui::button("Disabled").disabled(true)),
+                            .child(ui::button(strings::gallery_disabled(cx)).disabled(true)),
                     )
                     .child(
                         div()
@@ -490,30 +498,30 @@ impl Render for Gallery {
                             .gap(8.)
                             .items_center()
                             .child(
-                                ui::button("Native")
+                                ui::button(strings::gallery_native(cx))
                                     .native()
                                     .on_click(cx.listener(|this, _, _| this.taps += 1)),
                             )
                             .child(
-                                ui::button("Square, large")
+                                ui::button(strings::gallery_square_large(cx))
                                     .large()
                                     .style(|s| s.corner_radius = 0.)
                                     .on_click(cx.listener(|this, _, _| this.taps += 1)),
                             ),
                     )
-                    .child(text(format!("Tapped {} time(s)", self.taps)).text_color(t.muted)),
+                    .child(text(strings::gallery_taps(cx, self.taps as i64)).text_color(t.muted)),
             )
             .child(
                 ui::card()
-                    .child(ui::heading("Switches"))
+                    .child(ui::heading(strings::gallery_switches(cx)))
                     .child(
-                        ui::switch("Wi-Fi (custom)", self.wifi).on_change(
+                        ui::switch(strings::gallery_wifi(cx), self.wifi).on_change(
                             cx.listener(|this, e: &ChangeEvent, _| this.wifi = e.checked()),
                         ),
                     )
                     .child(ui::divider())
                     .child(
-                        ui::switch("Bluetooth (native)", self.bluetooth)
+                        ui::switch(strings::gallery_bluetooth(cx), self.bluetooth)
                             .native()
                             .on_change(
                                 cx.listener(|this, e: &ChangeEvent, _| {
@@ -522,15 +530,15 @@ impl Render for Gallery {
                             ),
                     )
                     .child(ui::divider())
-                    .child(ui::checkbox("I accept the terms", self.terms).on_change(
+                    .child(ui::checkbox(strings::gallery_terms(cx), self.terms).on_change(
                         cx.listener(|this, e: &ChangeEvent, _| this.terms = e.checked()),
                     )),
             )
             .child(
-                ui::card().child(ui::heading("Text field")).child(
-                    ui::text_field("Email", self.email.clone())
-                        .placeholder("you@example.com")
-                        .helper("We never share it.")
+                ui::card().child(ui::heading(strings::gallery_text_field(cx))).child(
+                    ui::text_field(strings::gallery_email(cx), self.email.clone())
+                        .placeholder(strings::gallery_email_placeholder(cx))
+                        .helper(strings::gallery_email_helper(cx))
                         .error(email_error)
                         .on_input(
                             cx.listener(|this, e: &InputEvent, _| this.email = e.value.clone()),
@@ -539,42 +547,42 @@ impl Render for Gallery {
             )
             .child(
                 ui::card()
-                    .child(ui::heading("Images"))
+                    .child(ui::heading(strings::gallery_images(cx)))
                     .child(
                         div()
                             .flex_row()
                             .gap(12.)
                             .child(
                                 picture("https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=600&q=70")
-                                    .alt("A river between mountains")
+                                    .alt(strings::gallery_river_alt(cx))
                                     .w(px(180.))
                                     .h(px(120.))
                                     .rounded(12.),
                             )
-                            .child(picture("prism.png").alt("Prism logo").fit().size(px(120.)).rounded(24.)),
+                            .child(picture("prism.png").alt(strings::gallery_logo_alt(cx)).fit().size(px(120.)).rounded(24.)),
                     )
                     .child(
-                        ui::list_row("A list of 10,000 rows")
-                            .subtitle("Virtualized: only visible rows exist")
+                        ui::list_row(strings::gallery_list(cx, cx.format_number(10_000., 0)))
+                            .subtitle(strings::gallery_list_subtitle(cx))
                             .leading("☰")
                             .on_click(navigate_to("/components/list")),
                     ),
             )
             .child(
                 ui::card()
-                    .child(ui::heading("Network"))
+                    .child(ui::heading(strings::gallery_network(cx)))
                     .child(match (&self.quote, self.loading) {
-                        (_, true) => text("Loading…").text_color(t.muted).into_element(),
+                        (_, true) => text(strings::gallery_loading(cx)).text_color(t.muted).into_element(),
                         (Some(Ok(q)), _) => text(format!("“{q}”")).into_element(),
-                        (Some(Err(e)), _) => text(format!("Failed: {e}"))
+                        (Some(Err(e)), _) => text(strings::gallery_failed(cx, e))
                             .text_color(t.danger)
                             .into_element(),
-                        (None, _) => text("Fetch a line of GitHub wisdom over HTTPS.")
+                        (None, _) => text(strings::gallery_fetch_intro(cx))
                             .text_color(t.muted)
                             .into_element(),
                     })
                     .child(
-                        ui::button("Fetch")
+                        ui::button(strings::gallery_fetch(cx))
                             .secondary()
                             .disabled(self.loading)
                             .on_click(cx.listener(|this, _, cx| {
@@ -601,23 +609,23 @@ impl Render for Gallery {
             )
             .child(
                 ui::card()
-                    .child(ui::heading("Badges & rows"))
+                    .child(ui::heading(strings::gallery_badges(cx)))
                     .child(
                         div()
                             .flex_row()
                             .gap(6.)
-                            .child(ui::badge("New").tone(ui::Variant::Primary))
-                            .child(ui::badge("Beta"))
-                            .child(ui::badge("Deprecated").tone(ui::Variant::Danger)),
+                            .child(ui::badge(strings::gallery_new(cx)).tone(ui::Variant::Primary))
+                            .child(ui::badge(strings::gallery_beta(cx)))
+                            .child(ui::badge(strings::gallery_deprecated(cx)).tone(ui::Variant::Danger)),
                     )
                     .child(
-                        ui::list_row("Storage")
-                            .subtitle("12.4 GB used")
-                            .detail("64 GB"),
+                        ui::list_row(strings::gallery_storage(cx))
+                            .subtitle(strings::gallery_storage_used(cx, format!("{} GB", cx.format_number(12.4, 1))))
+                            .detail(format!("{} GB", cx.format_number(64., 0))),
                     )
                     .child(ui::divider())
                     .child(
-                        ui::list_row("Open settings")
+                        ui::list_row(strings::gallery_open_settings(cx))
                             .leading("⚙")
                             .on_click(navigate_to("/settings")),
                     ),
@@ -630,11 +638,14 @@ impl Render for Gallery {
 
 struct Settings;
 
-const ACCENTS: [(&str, u32); 4] = [
-    ("Indigo", 0x5B5BD6),
-    ("Blue", 0x0A84FF),
-    ("Green", 0x2E9E5B),
-    ("Orange", 0xE8730C),
+/// A translated name.
+type Label = fn(&App) -> String;
+
+const ACCENTS: [(Label, u32); 4] = [
+    (strings::settings_accents_indigo, 0x5B5BD6),
+    (strings::settings_accents_blue, 0x0A84FF),
+    (strings::settings_accents_green, 0x2E9E5B),
+    (strings::settings_accents_orange, 0xE8730C),
 ];
 
 impl Render for Settings {
@@ -675,7 +686,7 @@ impl Render for Settings {
                                 .bg(rgb(hex))
                                 .when(selected, |d| d.border(3.).border_color(t.text))
                                 .accessibility_role(Role::Button)
-                                .accessibility_label(name)
+                                .accessibility_label(name(cx))
                                 .accessibility_checked(selected)
                                 .on_click(std::rc::Rc::new(move |_: &ClickEvent, app: &mut App| {
                                     update_and_save_theme(app, |th| th.accent = rgb(hex))
@@ -847,10 +858,10 @@ fn confirm_delete(cx: &mut App, store: Entity<Store>, id: u64) {
         .map(|t| t.title.clone())
         .unwrap_or_default();
     cx.show_alert(
-        Alert::new(format!("Delete “{title}”?"))
-            .message("This cannot be undone.")
+        Alert::new(strings::todo_delete_title(cx, &title))
+            .message(strings::todo_delete_message(cx))
             .destructive(
-                "Delete",
+                strings::todo_delete(cx),
                 std::rc::Rc::new(move |_: &ClickEvent, app: &mut App| {
                     store.update(app, |s, cx| s.delete(id, cx));
                     if app.current_path() == Some(&format!("/todos/{id}")) {
@@ -858,7 +869,7 @@ fn confirm_delete(cx: &mut App, store: Entity<Store>, id: u64) {
                     }
                 }),
             )
-            .cancel("Cancel"),
+            .cancel(strings::todo_cancel(cx)),
     );
 }
 
@@ -877,14 +888,14 @@ impl Render for NewTodo {
             body.child(
                 ui::card()
                     .child(
-                        ui::text_field("Title", self.title.clone())
-                            .placeholder("What needs doing?")
+                        ui::text_field(strings::todos_title_label(cx), self.title.clone())
+                            .placeholder(strings::todos_placeholder(cx))
                             .on_input(
                                 cx.listener(|this, e: &InputEvent, _| this.title = e.value.clone()),
                             ),
                     )
                     .child(
-                        ui::button("Add todo")
+                        ui::button(strings::todos_add_todo(cx))
                             .full_width()
                             .disabled(empty)
                             .on_click(cx.listener(|this, _, cx| {
@@ -915,12 +926,19 @@ impl LongList {
                 .px(20.)
                 .h_full()
                 .child(
-                    text(format!("{}", i + 1))
+                    text(cx.format_number((i + 1) as f64, 0))
                         .text_color(t.accent)
                         .bold()
                         .min_w(px(56.)),
                 )
-                .child(text(format!("Row number {} of 10,000", i + 1)).text_color(t.text))
+                .child(
+                    text(strings::list_row(
+                        cx,
+                        cx.format_number((i + 1) as f64, 0),
+                        cx.format_number(10_000., 0),
+                    ))
+                    .text_color(t.text),
+                )
         });
         LongList { list }
     }

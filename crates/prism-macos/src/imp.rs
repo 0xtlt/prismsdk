@@ -593,6 +593,8 @@ pub struct AppKit {
     image_sources: prism_native::images::ImageSources,
     /// Right-to-left language: header buttons swap sides.
     rtl: bool,
+    /// Header button texts: (back, close), in the app's language.
+    chrome: (String, String),
 }
 
 impl AppKit {
@@ -782,13 +784,14 @@ impl AppKit {
         stack.container.setSubviews(&NSArray::from_slice(&subviews));
         let close = stack.closable.get() && screens.len() <= 1;
         stack.back.setHidden(screens.len() <= 1 && !close);
-        stack.back.setTitle(&NSString::from_str(if close {
-            "Close"
+        let label = if close {
+            self.chrome.1.clone()
         } else if self.rtl {
-            "Back ›"
+            format!("{} ›", self.chrome.0)
         } else {
-            "‹ Back"
-        }));
+            format!("‹ {}", self.chrome.0)
+        };
+        stack.back.setTitle(&NSString::from_str(&label));
         let title = screens
             .last()
             .and_then(|t| self.titles.get(&t.id()))
@@ -1316,6 +1319,7 @@ impl Widgets for AppKit {
 
     fn set_environment(&mut self, env: &prism_core::RenderEnvironment) {
         self.rtl = env.direction == prism_core::Direction::Rtl;
+        self.chrome = (env.back.clone(), env.close.clone());
         let dir = if self.rtl {
             objc2_app_kit::NSUserInterfaceLayoutDirection::RightToLeft
         } else {
@@ -1487,6 +1491,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         image_cache: HashMap::new(),
         image_sources: image_sources(config.assets.as_deref()),
         rtl: false,
+        chrome: ("Back".into(), "Close".into()),
     });
     let first = runtime.render();
     let mut state = State {

@@ -128,6 +128,9 @@
   const nextPrism = (n) => { let c = n.nextElementSibling; while (c && !c.dataset.pid) c = c.nextElementSibling; return c; };
 
 
+  // Header texts in the app's language (sent with the environment).
+  let chrome = { back: "Back", close: "Close" };
+
   // --- Stacks: header (Back + title), only the top screen visible -------------
   function refreshStack(st) {
     const screens = st._screens.map((i) => nodes.get(i)).filter(Boolean);
@@ -137,8 +140,8 @@
     // Stacks inside sheets show Close on their first screen.
     const closable = st._closable && screens.length <= 1;
     st._back.hidden = screens.length <= 1 && !closable;
-    st._back.textContent = closable ? "Close" : "‹ Back";
-    st._back.setAttribute("aria-label", closable ? "Close" : "Back");
+    st._back.textContent = closable ? chrome.close : `‹ ${chrome.back}`;
+    st._back.setAttribute("aria-label", closable ? chrome.close : chrome.back);
     st._title.textContent = title;
     if (top) top.setAttribute("aria-label", title);
     if (isMainStack(st)) {
@@ -279,7 +282,12 @@
         return applyA11y(el, p.a11y);
       case "menu": return setMenu(el, p.id, p.menu);
       case "appearance": document.documentElement.style.colorScheme = p.value; return;
-      case "env": document.documentElement.lang = p.lang; document.documentElement.dir = p.dir; return;
+      case "env":
+        document.documentElement.lang = p.lang;
+        document.documentElement.dir = p.dir;
+        chrome = { back: p.back, close: p.close };
+        for (const n of nodes.values()) if (n._screens) refreshStack(n);
+        return;
       case "children":
         if (el.dataset.kind === "stack" || el.dataset.kind === "tabs") {
           // Sheets attached to a root container are presented as dialogs.

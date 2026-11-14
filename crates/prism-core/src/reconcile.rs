@@ -32,6 +32,9 @@ pub struct RenderEnvironment {
     pub direction: crate::i18n::Direction,
     pub text_scale: f32,
     pub reduce_motion: bool,
+    /// Header buttons drawn by backends (web, macOS) in the app's language.
+    pub back: String,
+    pub close: String,
 }
 
 /// A mutation of the host tree.
@@ -277,6 +280,8 @@ impl Reconciler {
             direction: app.direction(),
             text_scale: app.text_scale(),
             reduce_motion: app.reduce_motion(),
+            back: app.chrome_text("back"),
+            close: app.chrome_text("close"),
         };
         if self.environment.as_ref() != Some(&env) {
             // Before any node patch: text is created at the right scale/direction.

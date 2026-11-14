@@ -521,7 +521,78 @@ impl Formatter for BasicFormatter {
     }
 }
 
+/// Texts drawn by Prism itself (stack headers, default screens), built in
+/// for common languages. Apps override them with `prism.back`,
+/// `prism.close`, `prism.not_found` and `prism.no_route` keys.
+const CHROME: &[(&str, [&str; 4])] = &[
+    ("en", ["Back", "Close", "Not found", "Nothing at {path}"]),
+    (
+        "fr",
+        ["Retour", "Fermer", "Introuvable", "Rien à l’adresse {path}"],
+    ),
+    (
+        "de",
+        [
+            "Zurück",
+            "Schließen",
+            "Nicht gefunden",
+            "Nichts unter {path}",
+        ],
+    ),
+    ("es", ["Atrás", "Cerrar", "No encontrado", "Nada en {path}"]),
+    (
+        "it",
+        ["Indietro", "Chiudi", "Non trovato", "Niente in {path}"],
+    ),
+    (
+        "pt",
+        ["Voltar", "Fechar", "Não encontrado", "Nada em {path}"],
+    ),
+    ("nl", ["Terug", "Sluit", "Niet gevonden", "Niets op {path}"]),
+    ("ar", ["رجوع", "إغلاق", "غير موجود", "لا شيء في {path}"]),
+    ("he", ["חזרה", "סגירה", "לא נמצא", "אין כלום ב־{path}"]),
+    (
+        "ja",
+        [
+            "戻る",
+            "閉じる",
+            "見つかりません",
+            "{path} には何もありません",
+        ],
+    ),
+    ("zh", ["返回", "关闭", "未找到", "{path} 没有内容"]),
+    (
+        "ko",
+        ["뒤로", "닫기", "찾을 수 없음", "{path}에 아무것도 없습니다"],
+    ),
+];
+
+/// A built-in Prism text: `back`, `close`, `not_found` or `no_route`.
+pub fn chrome_text(translations: Option<&Translations>, locale: &Locale, key: &str) -> String {
+    if let Some(t) = translations.and_then(|t| t.lookup(locale, &format!("prism.{key}"))) {
+        return t.to_string();
+    }
+    let index = match key {
+        "back" => 0,
+        "close" => 1,
+        "not_found" => 2,
+        _ => 3,
+    };
+    CHROME
+        .iter()
+        .find(|(l, _)| *l == locale.language())
+        .unwrap_or(&CHROME[0])
+        .1[index]
+        .to_string()
+}
+
 impl App {
+    /// A built-in Prism text (`back`, `close`, `not_found`, `no_route`) in
+    /// the current language.
+    pub fn chrome_text(&self, key: &str) -> String {
+        chrome_text(self.try_global::<Translations>(), self.locale(), key)
+    }
+
     /// Installs the app's translations and re-renders everything.
     pub fn set_translations(&mut self, translations: Translations) {
         self.set_global(translations);

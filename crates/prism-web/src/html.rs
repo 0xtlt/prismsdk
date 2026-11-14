@@ -202,9 +202,14 @@ impl HtmlBackend {
                 let top = n.children.last().and_then(|c| self.nodes.get(c));
                 let title = top.map(|t| t.text.as_str()).unwrap_or("");
                 let back_hidden = if n.children.len() <= 1 { " hidden" } else { "" };
+                let back = escape(if self.env.back.is_empty() {
+                    "Back"
+                } else {
+                    &self.env.back
+                });
                 let _ = write!(
                     out,
-                    r#"<div {attrs} class="prism-stack"><div class="prism-header"><button class="prism-back" aria-label="Back"{back_hidden}>‹ Back</button><h1 class="prism-title" tabindex="-1">{}</h1></div><div class="prism-body">"#,
+                    r#"<div {attrs} class="prism-stack"><div class="prism-header"><button class="prism-back" aria-label="{back}"{back_hidden}>‹ {back}</button><h1 class="prism-title" tabindex="-1">{}</h1></div><div class="prism-body">"#,
                     escape(title)
                 );
                 let last = n.children.len().saturating_sub(1);

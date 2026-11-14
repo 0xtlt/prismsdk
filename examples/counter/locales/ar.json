@@ -19,14 +19,26 @@
     "heading": "المهام",
     "placeholder": "ما الذي يجب فعله؟",
     "new": "جديدة…",
-    "add": "إضافة"
+    "add": "إضافة",
+    "new_hint": "يفتح نموذجًا في ورقة",
+    "title_label": "العنوان",
+    "add_todo": "إضافة المهمة"
   },
   "todo": {
     "done": "منجزة",
-    "open": "مفتوحة"
+    "open": "مفتوحة",
+    "missing": "المهمة رقم {id} غير موجودة.",
+    "number": "المهمة رقم {id}",
+    "mark_open": "وضع علامة مفتوحة",
+    "mark_done": "وضع علامة منجزة",
+    "delete": "حذف",
+    "delete_title": "حذف «{title}»؟",
+    "delete_message": "لا يمكن التراجع عن هذا.",
+    "cancel": "إلغاء"
   },
   "counter": {
-    "label": "العدد: {count}"
+    "label": "العدد: {count}",
+    "decrement_hint": "ينقص العداد"
   },
   "settings": {
     "language": "اللغة",
@@ -38,7 +50,13 @@
     "native": "عناصر تحكم أصلية",
     "square": "زوايا مربعة",
     "accent": "لون التمييز",
-    "a11y_note": "كل عنصر تحكم هنا متاح لـ VoiceOver ولقارئات الشاشة على الويب، ويعمل بلوحة المفاتيح."
+    "a11y_note": "كل عنصر تحكم هنا متاح لـ VoiceOver ولقارئات الشاشة على الويب، ويعمل بلوحة المفاتيح.",
+    "accents": {
+      "indigo": "نيلي",
+      "blue": "أزرق",
+      "green": "أخضر",
+      "orange": "برتقالي"
+    }
   },
   "tabs": {
     "todos": "المهام",
@@ -87,5 +105,78 @@
     "again": "5 دقائق إضافية",
     "note": "أضف مهمة…",
     "note_placeholder": "ما التالي؟"
+  },
+  "gallery": {
+    "email_error": "أدخل بريدًا إلكترونيًا صالحًا",
+    "buttons": "الأزرار",
+    "primary": "أساسي",
+    "secondary": "ثانوي",
+    "ghost": "شفاف",
+    "danger": "خطر",
+    "disabled": "معطّل",
+    "native": "أصلي",
+    "square_large": "مربع، كبير",
+    "taps": {
+      "zero": "لم يتم النقر",
+      "one": "نقرة واحدة",
+      "two": "نقرتان",
+      "few": "{count} نقرات",
+      "many": "{count} نقرة",
+      "other": "{count} نقرة"
+    },
+    "switches": "المفاتيح",
+    "wifi": "Wi-Fi (مخصص)",
+    "bluetooth": "Bluetooth (أصلي)",
+    "terms": "أوافق على الشروط",
+    "text_field": "حقل نص",
+    "email": "البريد الإلكتروني",
+    "email_placeholder": "you@example.com",
+    "email_helper": "لن نشاركه أبدًا.",
+    "images": "الصور",
+    "river_alt": "نهر بين الجبال",
+    "logo_alt": "شعار Prism",
+    "list": "قائمة من {count} صف",
+    "list_subtitle": "افتراضية: الصفوف المرئية فقط موجودة",
+    "network": "الشبكة",
+    "loading": "جارٍ التحميل…",
+    "failed": "فشل: {error}",
+    "fetch_intro": "اجلب حكمة من GitHub عبر HTTPS.",
+    "fetch": "جلب",
+    "badges": "الشارات والصفوف",
+    "new": "جديد",
+    "beta": "تجريبي",
+    "deprecated": "مهمل",
+    "storage": "التخزين",
+    "storage_used": "{used} مستخدمة",
+    "open_settings": "فتح الإعدادات"
+  },
+  "menu": {
+    "file": "ملف",
+    "view": "عرض",
+    "new_todo": "مهمة جديدة…",
+    "focus_session": "ابدأ جلسة تركيز",
+    "open": "فتح",
+    "delete": "حذف…",
+    "open_todos": {
+      "zero": "لا توجد مهام مفتوحة",
+      "one": "مهمة واحدة مفتوحة",
+      "two": "مهمتان مفتوحتان",
+      "few": "{count} مهام مفتوحة",
+      "many": "{count} مهمة مفتوحة",
+      "other": "{count} مهمة مفتوحة"
+    }
+  },
+  "widget": {
+    "open": {
+      "zero": "لا شيء مفتوح",
+      "one": "واحدة مفتوحة",
+      "two": "اثنتان مفتوحتان",
+      "few": "{count} مفتوحة",
+      "many": "{count} مفتوحة",
+      "other": "{count} مفتوحة"
+    }
+  },
+  "list": {
+    "row": "الصف {row} من {total}"
   }
 }

@@ -469,12 +469,10 @@ struct NotFound {
 }
 
 impl Render for NotFound {
-    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
-        screen("Not found").child(
-            div()
-                .p(24.)
-                .child(text(format!("No route for {}", self.path))),
-        )
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        screen(cx.chrome_text("not_found")).child(div().p(24.).child(text(
+            cx.chrome_text("no_route").replace("{path}", &self.path),
+        )))
     }
 }
 

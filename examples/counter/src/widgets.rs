@@ -2,6 +2,8 @@
 //! (and, later, Glance on Android). Re-rendered whenever the store changes.
 
 use prism::prelude::*;
+
+use crate::strings;
 use prism::ui::Theme;
 
 use crate::Store;
@@ -30,8 +32,8 @@ pub fn register(cx: &mut App, store: Entity<Store>) {
                     // Lock screen: monochrome, tinted by the system.
                     return div()
                         .gap(2.)
-                        .child(text("Todos").bold())
-                        .child(text(format!("{count} open")))
+                        .child(text(strings::tabs_todos(cx)).bold())
+                        .child(text(strings::widget_open(cx, count as i64)))
                         .into_element();
                 }
                 let rows = if family == WidgetFamily::Small { 2 } else { 3 };
@@ -43,14 +45,19 @@ pub fn register(cx: &mut App, store: Entity<Store>) {
                             .items_center()
                             .gap(6.)
                             .child(image("checklist").text_color(t.accent).text_size(16.))
-                            .child(text("Todos").semibold().text_size(15.).text_color(t.text)),
+                            .child(
+                                text(strings::tabs_todos(cx))
+                                    .semibold()
+                                    .text_size(15.)
+                                    .text_color(t.text),
+                            ),
                     )
                     .child(
                         text(count.to_string())
                             .text_size(34.)
                             .bold()
                             .text_color(t.accent)
-                            .accessibility_label(format!("{count} open todos")),
+                            .accessibility_label(strings::home_open(cx, count as i64)),
                     )
                     .children(open.into_iter().take(rows).map(|(id, title)| {
                         div()

@@ -6,32 +6,55 @@ use std::rc::Rc;
 
 use prism::prelude::*;
 
-use crate::Store;
+use crate::{Store, strings};
+
+/// Kept so menus can be rebuilt in another language.
+struct MenuStore(Entity<Store>);
 
 fn go(path: &'static str) -> prism::Handler<ClickEvent> {
     Rc::new(move |_: &ClickEvent, app: &mut App| app.navigate(path))
 }
 
 pub fn install(cx: &mut App, store: Entity<Store>) {
+    cx.set_global(MenuStore(store));
+    refresh(cx);
+    if cx.capabilities().tray {
+        cx.on_notify(&store, move |app| update_tray(app, store));
+    }
+}
+
+/// Builds the app menus and the tray in the current language.
+pub fn refresh(cx: &mut App) {
+    let Some(store) = cx.try_global::<MenuStore>().map(|m| m.0) else {
+        return;
+    };
     if cx.capabilities().app_menu {
         cx.set_app_menu(vec![
-            Menu::titled("File").item(MenuItem::new("New Todo…").shortcut("cmd+n").on_select(
-                Rc::new(|_: &ClickEvent, app: &mut App| app.present("/todos/new")),
-            )),
-            Menu::titled("View")
-                .item(MenuItem::new("Todos").shortcut("cmd+1").on_select(go("/")))
+            Menu::titled(strings::menu_file(cx)).item(
+                MenuItem::new(strings::menu_new_todo(cx))
+                    .shortcut("cmd+n")
+                    .on_select(Rc::new(|_: &ClickEvent, app: &mut App| {
+                        app.present("/todos/new")
+                    })),
+            ),
+            Menu::titled(strings::menu_view(cx))
                 .item(
-                    MenuItem::new("Focus")
+                    MenuItem::new(strings::tabs_todos(cx))
+                        .shortcut("cmd+1")
+                        .on_select(go("/")),
+                )
+                .item(
+                    MenuItem::new(strings::tabs_focus(cx))
                         .shortcut("cmd+2")
                         .on_select(go("/focus")),
                 )
                 .item(
-                    MenuItem::new("Components")
+                    MenuItem::new(strings::tabs_components(cx))
                         .shortcut("cmd+3")
                         .on_select(go("/components")),
                 )
                 .item(
-                    MenuItem::new("Settings")
+                    MenuItem::new(strings::tabs_settings(cx))
                         .shortcut("cmd+,")
                         .on_select(go("/settings")),
                 ),
@@ -39,7 +62,6 @@ pub fn install(cx: &mut App, store: Entity<Store>) {
     }
     if cx.capabilities().tray {
         update_tray(cx, store);
-        cx.on_notify(&store, move |app| update_tray(app, store));
     }
 }
 
@@ -52,8 +74,8 @@ fn update_tray(cx: &mut App, store: Entity<Store>) {
         .filter(|t| !t.done)
         .map(|t| (t.id, t.title.clone()))
         .collect();
-    let mut menu =
-        Menu::new().item(MenuItem::new(format!("{} open todo(s)", open.len())).enabled(false));
+    let mut menu = Menu::new()
+        .item(MenuItem::new(strings::menu_open_todos(cx, open.len() as i64)).enabled(false));
     for (id, title) in open.iter().take(5) {
         let id = *id;
         menu = menu.item(
@@ -66,11 +88,15 @@ fn update_tray(cx: &mut App, store: Entity<Store>) {
     }
     menu = menu
         .separator()
-        .item(MenuItem::new("New Todo…").icon("plus").on_select(Rc::new(
-            |_: &ClickEvent, app: &mut App| app.present("/todos/new"),
-        )))
         .item(
-            MenuItem::new("Start a focus session")
+            MenuItem::new(strings::menu_new_todo(cx))
+                .icon("plus")
+                .on_select(Rc::new(|_: &ClickEvent, app: &mut App| {
+                    app.present("/todos/new")
+                })),
+        )
+        .item(
+            MenuItem::new(strings::menu_focus_session(cx))
                 .icon("timer")
                 .on_select(go("/focus")),
         );
@@ -78,7 +104,7 @@ fn update_tray(cx: &mut App, store: Entity<Store>) {
         Tray::new("todos")
             .icon("checklist")
             .title(open.len().to_string())
-            .tooltip(format!("{} open todos", open.len()))
+            .tooltip(strings::menu_open_todos(cx, open.len() as i64))
             .menu(menu),
     );
 }

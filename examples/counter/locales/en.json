@@ -15,14 +15,26 @@
     "heading": "Todos",
     "placeholder": "What needs doing?",
     "new": "New…",
-    "add": "Add"
+    "add": "Add",
+    "new_hint": "Opens a form in a sheet",
+    "title_label": "Title",
+    "add_todo": "Add todo"
   },
   "todo": {
     "done": "Done",
-    "open": "Open"
+    "open": "Open",
+    "missing": "Todo #{id} does not exist.",
+    "number": "Todo #{id}",
+    "mark_open": "Mark as open",
+    "mark_done": "Mark as done",
+    "delete": "Delete",
+    "delete_title": "Delete “{title}”?",
+    "delete_message": "This cannot be undone.",
+    "cancel": "Cancel"
   },
   "counter": {
-    "label": "Count: {count}"
+    "label": "Count: {count}",
+    "decrement_hint": "Decrements the counter"
   },
   "settings": {
     "language": "Language",
@@ -34,7 +46,13 @@
     "native": "Use native controls",
     "square": "Square corners",
     "accent": "Accent color",
-    "a11y_note": "Every control here is exposed to VoiceOver and to screen readers on the web, and works with the keyboard."
+    "a11y_note": "Every control here is exposed to VoiceOver and to screen readers on the web, and works with the keyboard.",
+    "accents": {
+      "indigo": "Indigo",
+      "blue": "Blue",
+      "green": "Green",
+      "orange": "Orange"
+    }
   },
   "tabs": {
     "todos": "Todos",
@@ -79,5 +97,66 @@
     "again": "5 more minutes",
     "note": "Add a todo…",
     "note_placeholder": "What's next?"
+  },
+  "gallery": {
+    "email_error": "Enter a valid email address",
+    "buttons": "Buttons",
+    "primary": "Primary",
+    "secondary": "Secondary",
+    "ghost": "Ghost",
+    "danger": "Danger",
+    "disabled": "Disabled",
+    "native": "Native",
+    "square_large": "Square, large",
+    "taps": {
+      "one": "Tapped {count} time",
+      "other": "Tapped {count} times"
+    },
+    "switches": "Switches",
+    "wifi": "Wi-Fi (custom)",
+    "bluetooth": "Bluetooth (native)",
+    "terms": "I accept the terms",
+    "text_field": "Text field",
+    "email": "Email",
+    "email_placeholder": "you@example.com",
+    "email_helper": "We never share it.",
+    "images": "Images",
+    "river_alt": "A river between mountains",
+    "logo_alt": "Prism logo",
+    "list": "A list of {count} rows",
+    "list_subtitle": "Virtualized: only visible rows exist",
+    "network": "Network",
+    "loading": "Loading…",
+    "failed": "Failed: {error}",
+    "fetch_intro": "Fetch a line of GitHub wisdom over HTTPS.",
+    "fetch": "Fetch",
+    "badges": "Badges & rows",
+    "new": "New",
+    "beta": "Beta",
+    "deprecated": "Deprecated",
+    "storage": "Storage",
+    "storage_used": "{used} used",
+    "open_settings": "Open settings"
+  },
+  "menu": {
+    "file": "File",
+    "view": "View",
+    "new_todo": "New Todo…",
+    "focus_session": "Start a focus session",
+    "open": "Open",
+    "delete": "Delete…",
+    "open_todos": {
+      "one": "{count} open todo",
+      "other": "{count} open todos"
+    }
+  },
+  "widget": {
+    "open": {
+      "one": "{count} open",
+      "other": "{count} open"
+    }
+  },
+  "list": {
+    "row": "Row number {row} of {total}"
   }
 }

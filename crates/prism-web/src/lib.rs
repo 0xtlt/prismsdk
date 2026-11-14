@@ -615,6 +615,8 @@ impl Encoder {
                 "op": "env",
                 "lang": env.lang,
                 "dir": if env.direction == prism_core::Direction::Rtl { "rtl" } else { "ltr" },
+                "back": env.back,
+                "close": env.close,
             }),
             Patch::SetSwipe { id, left, right } => {
                 json!({ "op": "swipe", "id": id, "left": left, "right": right })

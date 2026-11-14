@@ -403,7 +403,7 @@ fn browser_forward_navigates() {
 #[test]
 fn unknown_route_shows_not_found() {
     let (_, first) = routed("/nope");
-    find_text(&first, "No route for /nope");
+    find_text(&first, "Nothing at /nope");
 }
 
 // --- Accessibility, toggles, tabs, lazy, globals -----------------------------

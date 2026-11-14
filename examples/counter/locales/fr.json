@@ -15,14 +15,26 @@
     "heading": "Tâches",
     "placeholder": "Que faut-il faire ?",
     "new": "Nouvelle…",
-    "add": "Ajouter"
+    "add": "Ajouter",
+    "new_hint": "Ouvre un formulaire dans une feuille",
+    "title_label": "Titre",
+    "add_todo": "Ajouter la tâche"
   },
   "todo": {
     "done": "Terminée",
-    "open": "À faire"
+    "open": "À faire",
+    "missing": "La tâche n°{id} n'existe pas.",
+    "number": "Tâche n°{id}",
+    "mark_open": "Marquer à faire",
+    "mark_done": "Marquer terminée",
+    "delete": "Supprimer",
+    "delete_title": "Supprimer « {title} » ?",
+    "delete_message": "Cette action est irréversible.",
+    "cancel": "Annuler"
   },
   "counter": {
-    "label": "Compteur : {count}"
+    "label": "Compteur : {count}",
+    "decrement_hint": "Diminue le compteur"
   },
   "settings": {
     "language": "Langue",
@@ -34,7 +46,13 @@
     "native": "Contrôles natifs",
     "square": "Coins carrés",
     "accent": "Couleur d'accent",
-    "a11y_note": "Chaque contrôle est exposé à VoiceOver et aux lecteurs d'écran sur le web, et fonctionne au clavier."
+    "a11y_note": "Chaque contrôle est exposé à VoiceOver et aux lecteurs d'écran sur le web, et fonctionne au clavier.",
+    "accents": {
+      "indigo": "Indigo",
+      "blue": "Bleu",
+      "green": "Vert",
+      "orange": "Orange"
+    }
   },
   "tabs": {
     "todos": "Tâches",
@@ -79,5 +97,66 @@
     "again": "5 minutes de plus",
     "note": "Ajouter une tâche…",
     "note_placeholder": "Et ensuite ?"
+  },
+  "gallery": {
+    "email_error": "Saisis une adresse e-mail valide",
+    "buttons": "Boutons",
+    "primary": "Principal",
+    "secondary": "Secondaire",
+    "ghost": "Discret",
+    "danger": "Danger",
+    "disabled": "Désactivé",
+    "native": "Natif",
+    "square_large": "Carré, grand",
+    "taps": {
+      "one": "Touché {count} fois",
+      "other": "Touché {count} fois"
+    },
+    "switches": "Interrupteurs",
+    "wifi": "Wi-Fi (personnalisé)",
+    "bluetooth": "Bluetooth (natif)",
+    "terms": "J'accepte les conditions",
+    "text_field": "Champ de texte",
+    "email": "E-mail",
+    "email_placeholder": "toi@exemple.fr",
+    "email_helper": "Nous ne le partageons jamais.",
+    "images": "Images",
+    "river_alt": "Une rivière entre des montagnes",
+    "logo_alt": "Logo Prism",
+    "list": "Une liste de {count} lignes",
+    "list_subtitle": "Virtualisée : seules les lignes visibles existent",
+    "network": "Réseau",
+    "loading": "Chargement…",
+    "failed": "Échec : {error}",
+    "fetch_intro": "Récupère une maxime GitHub en HTTPS.",
+    "fetch": "Récupérer",
+    "badges": "Badges et lignes",
+    "new": "Nouveau",
+    "beta": "Bêta",
+    "deprecated": "Obsolète",
+    "storage": "Stockage",
+    "storage_used": "{used} utilisés",
+    "open_settings": "Ouvrir les réglages"
+  },
+  "menu": {
+    "file": "Fichier",
+    "view": "Présentation",
+    "new_todo": "Nouvelle tâche…",
+    "focus_session": "Démarrer une session de concentration",
+    "open": "Ouvrir",
+    "delete": "Supprimer…",
+    "open_todos": {
+      "one": "{count} tâche ouverte",
+      "other": "{count} tâches ouvertes"
+    }
+  },
+  "widget": {
+    "open": {
+      "one": "{count} ouverte",
+      "other": "{count} ouvertes"
+    }
+  },
+  "list": {
+    "row": "Ligne {row} sur {total}"
   }
 }
