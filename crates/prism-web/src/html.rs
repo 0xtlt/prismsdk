@@ -23,12 +23,17 @@ struct HtmlNode {
     children: Vec<NodeId>,
 }
 
+/// Turns a picture source (`logo.png`, `https://…`) into its URL.
+pub type AssetUrls = std::sync::Arc<dyn Fn(&str) -> String + Send + Sync>;
+
 #[derive(Default)]
 pub struct HtmlBackend {
     nodes: HashMap<NodeId, HtmlNode>,
     root: Option<NodeId>,
     appearance: Appearance,
     pub env: prism_core::RenderEnvironment,
+    /// Hashed asset URLs (`/assets/logo.<hash>.png`); `/assets/<name>` if unset.
+    pub asset_urls: Option<AssetUrls>,
 }
 
 impl Backend for HtmlBackend {
@@ -179,7 +184,10 @@ impl HtmlBackend {
                 let _ = write!(
                     out,
                     r#"<img {attrs} class="prism-picture" src="{}" alt="{}" loading="lazy" decoding="async" style="object-fit:{fit}">"#,
-                    escape(&picture_url(&n.text)),
+                    escape(&match &self.asset_urls {
+                        Some(urls) => urls(&n.text),
+                        None => picture_url(&n.text),
+                    }),
                     escape(&alt)
                 );
             }

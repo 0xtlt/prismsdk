@@ -141,9 +141,31 @@ fn build_target(p: &Project, target: Target, o: &Options) -> Result<(), String> 
     match target {
         Target::Web => {
             build(p, target, o)?;
-            println!("Built {}", binary(p, target, o).display());
+            let bin = binary(p, target, o);
+            // Hashed static files (client, CSS, assets) for a CDN.
+            let public = bin.with_file_name("public");
+            let _ = std::fs::remove_dir_all(&public);
+            let status = spawn(
+                p,
+                target,
+                o,
+                &[("PRISM_EXPORT_STATIC", public.display().to_string())],
+            )?
+            .wait()
+            .map_err(|e| e.to_string())?;
+            if !status.success() {
+                return Err(format!("exporting static files failed ({status})"));
+            }
+            println!("Built {}", bin.display());
             println!(
-                "Run it anywhere (PRISM_PORT, PRISM_DATA_DIR); it serves HTML/CSS/JS, no WASM."
+                "Static files: {}/ (content-hashed, cache them forever)",
+                public.display()
+            );
+            println!(
+                "Run the server anywhere (PRISM_HOST, PRISM_PORT, PRISM_DATA_DIR). Behind a CDN:\n  \
+                 upload public/ and set PRISM_ASSET_URL=https://cdn.example.com,\n  \
+                 or let the CDN cache /_prism/* and /assets/* from the server (immutable).\n  \
+                 Pages are `private, no-store`; proxy /ws as a WebSocket."
             );
             Ok(())
         }

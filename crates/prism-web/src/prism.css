@@ -1,0 +1,67 @@
+/* Prism's base styles (served as /_prism/prism.<hash>.css). */
+:root { color-scheme: light dark; }
+html, body { margin: 0; height: 100%; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; font-size: 1rem; background: Canvas; color: CanvasText; }
+#prism-root { display: flex; flex-direction: column; min-height: 100%; }
+#prism-root > * { flex-grow: 1; }
+#prism-root:has(> .prism-tabs) { height: 100%; }
+.prism-panels > * { overflow: auto; }
+[hidden] { display: none !important; }
+:focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
+.prism-title { margin: 0; font: inherit; }
+.prism-scroll { overflow-y: auto; overscroll-behavior: contain; }
+.prism-tabs { display: flex; flex-direction: column; }
+.prism-panels { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.prism-panels > * { flex: 1; display: flex; flex-direction: column; }
+.prism-tabbar { flex: 0 0 auto; display: flex; justify-content: center; gap: 4px; padding: 6px; border-top: 1px solid rgba(128,128,128,.25); background: Canvas; }
+.prism-tab { flex: 0 1 140px; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px 8px; border: 0; border-radius: 8px; background: none; color: GrayText; font: inherit; font-size: 12px; cursor: pointer; }
+.prism-tab[aria-selected="true"] { color: LinkText; background: rgba(128,128,128,.12); }
+.prism-tab-icon { font-size: 18px; line-height: 1; }
+/* Wide screens: the tab bar becomes a sidebar. */
+@media (min-width: 1024px) {
+  .prism-tabs { flex-direction: row; }
+  .prism-tabbar { order: -1; flex-direction: column; justify-content: flex-start; width: 220px; padding: 12px 8px; border-top: 0; border-inline-end: 1px solid rgba(128,128,128,.25); }
+  .prism-tab { flex: 0 0 auto; flex-direction: row; gap: 10px; padding: 8px 12px; font-size: 14px; }
+}
+.prism-switch { appearance: none; width: 44px; height: 26px; margin: 0; border-radius: 13px; background: rgba(128,128,128,.35); position: relative; cursor: pointer; transition: background .15s; flex-shrink: 0; }
+.prism-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 22px; height: 22px; border-radius: 50%; background: white; box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform .15s; }
+.prism-switch:checked { background: #34c759; }
+.prism-switch:checked::after { transform: translateX(18px); }
+.prism-symbol { display: inline-flex; align-items: center; justify-content: center; line-height: 1; }
+progress { width: 100%; accent-color: currentColor; }
+#prism-island { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 1000; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
+.prism-island { pointer-events: auto; min-width: 180px; max-width: min(92vw, 420px); padding: 8px 14px; border-radius: 22px; background: #000; color: #fff; box-shadow: 0 6px 24px rgba(0,0,0,.25); cursor: pointer; border: 0; font: inherit; text-align: left; }
+.prism-island-compact { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.prism-island[aria-expanded="true"] { border-radius: 28px; padding: 14px 16px; }
+#prism-toasts { position: fixed; bottom: 80px; right: 16px; z-index: 1000; display: flex; flex-direction: column; gap: 8px; }
+.prism-toast { max-width: 340px; padding: 12px 14px; border-radius: 14px; background: Canvas; color: CanvasText; border: 1px solid rgba(128,128,128,.3); box-shadow: 0 6px 24px rgba(0,0,0,.18); cursor: pointer; text-align: left; font: inherit; }
+.prism-toast strong { display: block; }
+.prism-toast-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.prism-toast-actions button { padding: 5px 10px; border-radius: 8px; border: 1px solid rgba(128,128,128,.35); background: none; color: inherit; font: inherit; font-size: .875rem; cursor: pointer; }
+.prism-toast-actions button[data-role=destructive] { color: #d93636; }
+.prism-toast-actions input { flex: 1 1 140px; min-width: 0; padding: 5px 8px; border-radius: 8px; border: 1px solid rgba(128,128,128,.35); font: inherit; font-size: .875rem; background: Field; color: FieldText; }
+.prism-menu { position: fixed; z-index: 2000; min-width: 200px; padding: 6px; border-radius: 12px; background: Canvas; color: CanvasText; border: 1px solid rgba(128,128,128,.3); box-shadow: 0 10px 30px rgba(0,0,0,.2); display: flex; flex-direction: column; }
+.prism-menu [role^=menuitem] { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border: 0; border-radius: 8px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.prism-menu [role^=menuitem]:hover, .prism-menu [role^=menuitem]:focus { background: rgba(128,128,128,.15); outline: none; }
+.prism-menu [data-role=destructive] { color: #d93636; }
+.prism-menu [role=separator] { height: 1px; margin: 4px 6px; background: rgba(128,128,128,.25); }
+.prism-menu .prism-menu-group { padding: 6px 10px 2px; font-size: 12px; opacity: .6; }
+dialog.prism-alert { border: 0; border-radius: 16px; padding: 20px; width: min(340px, 90vw); background: Canvas; color: CanvasText; box-shadow: 0 20px 50px rgba(0,0,0,.3); }
+dialog.prism-alert h2 { margin: 0 0 6px; font-size: 17px; }
+dialog.prism-alert p { margin: 0 0 16px; opacity: .8; }
+dialog.prism-alert .prism-alert-actions { display: flex; flex-direction: column; gap: 8px; }
+dialog.prism-alert button { padding: 10px; border-radius: 10px; border: 1px solid rgba(128,128,128,.3); background: none; color: inherit; font: inherit; cursor: pointer; }
+dialog.prism-alert button[data-role=destructive] { color: #fff; background: #d93636; border-color: #d93636; }
+dialog.prism-alert button[data-role=cancel] { font-weight: 600; }
+dialog.prism-sheet { border: 0; padding: 0; width: min(560px, 100vw); height: min(720px, 92vh); border-radius: 18px; background: Canvas; color: CanvasText; box-shadow: 0 20px 60px rgba(0,0,0,.35); }
+dialog.prism-sheet[open] { display: flex; flex-direction: column; }
+dialog.prism-sheet > * { flex: 1; }
+.prism-picture { display: block; min-width: 0; min-height: 0; background: rgba(128,128,128,.12); }
+.prism-refresh { position: absolute; left: -9999px; }
+.prism-refresh:focus { position: static; margin: 8px auto; padding: 6px 12px; border-radius: 8px; }
+.prism-refreshing { text-align: center; padding: 10px; font-size: 13px; opacity: .7; }
+dialog::backdrop { background: rgba(0,0,0,.35); }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+.prism-header { position: relative; flex: 0 0 44px; display: flex; align-items: center; justify-content: center; border-bottom: 1px solid rgba(128,128,128,.25); background: Canvas; font-size: 15px; font-weight: 600; }
+.prism-back { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); font: inherit; font-size: 14px; font-weight: 400; cursor: pointer; }
+.prism-body { flex: 1; display: flex; flex-direction: column; min-height: 0; }

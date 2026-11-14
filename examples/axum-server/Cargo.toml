@@ -1,0 +1,12 @@
+[package]
+name = "axum-server"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Prism mounted in an existing Axum server, next to its API."
+
+[dependencies]
+prism = { workspace = true, features = ["web"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+serde_json = "1"

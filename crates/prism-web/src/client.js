@@ -2,6 +2,13 @@
 // mirrors navigation to the URL bar (History API), and implements the ARIA
 // patterns (roles, keyboard, focus) for every node kind.
 (() => {
+  // Where the app is mounted (`/app` when nested in another server's routes).
+  const BASE = ((document.currentScript && document.currentScript.dataset.base) || "").replace(/\/$/, "");
+  const urlFor = (path) => (path === "/" && BASE ? BASE : BASE + path);
+  const appPath = () => {
+    const p = location.pathname;
+    return BASE && p.startsWith(BASE) ? p.slice(BASE.length) || "/" : p;
+  };
   const mount = document.getElementById("prism-root");
   const baseTitle = document.title.split(" · ").pop();
   const nodes = new Map();
@@ -239,7 +246,8 @@
           return;
         }
         if (kind === "picture") {
-          const src = /^(https?:|data:|\/)/.test(p.text) ? p.text : "/assets/" + p.text;
+          // The server resolves asset URLs (hashed, maybe on a CDN).
+          const src = p.text;
           if (el.getAttribute("src") !== src) el.src = src;
           return;
         }
@@ -352,17 +360,17 @@
     if (!s) return;
     if (!hist && s.depth > 1) {
       // Deep link: give the browser entries for the screens underneath.
-      history.replaceState({ prism: 1, tab: s.tab }, "", "/");
-      for (let d = 2; d <= s.depth; d++) history.pushState({ prism: d, tab: s.tab }, "", s.path);
+      history.replaceState({ prism: 1, tab: s.tab }, "", urlFor("/"));
+      for (let d = 2; d <= s.depth; d++) history.pushState({ prism: d, tab: s.tab }, "", urlFor(s.path));
     } else if (!hist || hist.tab !== s.tab) {
-      history.replaceState({ prism: s.depth, tab: s.tab }, "", s.path);
+      history.replaceState({ prism: s.depth, tab: s.tab }, "", urlFor(s.path));
     } else if (s.depth > hist.depth) {
-      for (let d = hist.depth + 1; d <= s.depth; d++) history.pushState({ prism: d, tab: s.tab }, "", s.path);
+      for (let d = hist.depth + 1; d <= s.depth; d++) history.pushState({ prism: d, tab: s.tab }, "", urlFor(s.path));
     } else if (s.depth < hist.depth) {
       ignorePops++;
       history.go(s.depth - hist.depth);
-    } else if (location.pathname !== s.path) {
-      history.replaceState({ prism: s.depth, tab: s.tab }, "", s.path);
+    } else if (appPath() !== s.path) {
+      history.replaceState({ prism: s.depth, tab: s.tab }, "", urlFor(s.path));
     }
     hist = { depth: s.depth, tab: s.tab };
   }
@@ -371,7 +379,7 @@
     const s = navState();
     if (ignorePops > 0) {
       ignorePops--;
-      if (s && location.pathname !== s.path) history.replaceState({ prism: hist.depth, tab: s.tab }, "", s.path);
+      if (s && appPath() !== s.path) history.replaceState({ prism: hist.depth, tab: s.tab }, "", urlFor(s.path));
       return;
     }
     const depth = e.state && e.state.prism;
@@ -383,7 +391,7 @@
       send({ t: "back", id, depth });
     } else if (depth > hist.depth) {
       hist.depth = depth;
-      send({ t: "navigate", id, path: location.pathname });
+      send({ t: "navigate", id, path: appPath() });
     }
   });
 
@@ -958,8 +966,8 @@
   deviceReport();
 
   function connect() {
-    const path = encodeURIComponent(location.pathname);
-    ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?path=${path}&tz=${tz}&w=${innerWidth}&h=${innerHeight}`);
+    const path = encodeURIComponent(appPath());
+    ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${BASE}/ws?path=${path}&tz=${tz}&w=${innerWidth}&h=${innerHeight}`);
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
       if (!msg.p) return service(msg);

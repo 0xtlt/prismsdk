@@ -41,6 +41,10 @@ pub use prism_ui as ui;
 pub use prism_db as db;
 /// HTTP: `cx.fetch(http::Request::get(url)).await`.
 pub use prism_http as http;
+/// The web backend as a library (`web` feature): mount the app in Axum or
+/// any server, export hashed static files for a CDN. See [`Application::web_app`].
+#[cfg(feature = "web")]
+pub use prism_web as web;
 
 use std::sync::Arc;
 
@@ -110,6 +114,27 @@ impl Application {
     pub fn port(mut self, port: u16) -> Self {
         self.config.port = port;
         self
+    }
+
+    /// The app as a web rendering service, to mount in your own server
+    /// instead of [`run`](Self::run) (`web` feature):
+    ///
+    /// ```ignore
+    /// let prism = Application::new().title("Shop").assets("assets").web_app(|cx| cx.new_entity(Home::new));
+    /// let app = axum::Router::new()
+    ///     .route("/api/orders", get(orders))
+    ///     .merge(prism.router());   // or .nest("/app", prism.base_path("/app").router())
+    /// ```
+    #[cfg(feature = "web")]
+    pub fn web_app<V: Render>(
+        self,
+        init: impl Fn(&mut App) -> Entity<V> + Send + Sync + 'static,
+    ) -> prism_web::WebApp {
+        let init: AppInit = Arc::new(move |app: &mut App| {
+            let root = init(app);
+            app.set_root(root);
+        });
+        prism_web::WebApp::new(self.config, init)
     }
 
     /// Starts the backend selected at compile time. `init` creates the root

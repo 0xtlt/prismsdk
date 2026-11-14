@@ -1,11 +1,21 @@
 [package]
 name = "prism-web"
-description = "Prism web backend: server-side rendering + DOM patches over a WebSocket. No WASM."
+description = "Prism web backend: server-side rendering + DOM patches over a WebSocket. No WASM. Embeddable in Axum or any HTTP server."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["server"]
+# Axum router + a standalone server (`run`). Without it, use `WebApp::handle`
+# and `WebApp::connect` from any HTTP/WebSocket stack.
+server = ["dep:axum", "dep:tokio", "dep:futures-util"]
+
 [dependencies]
 prism-core.workspace = true
-tungstenite.workspace = true
 serde_json.workspace = true
+http = "1"
+sha2 = "0.10"
+axum = { version = "0.8", optional = true, default-features = false, features = ["ws", "tokio", "http1", "query"] }
+tokio = { version = "1", optional = true, features = ["rt-multi-thread", "net", "sync"] }
+futures-util = { version = "0.3", optional = true, default-features = false, features = ["sink"] }
