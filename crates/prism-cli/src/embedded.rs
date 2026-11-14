@@ -1,4 +1,4 @@
-//! Bundling scripts and Apple platform sources, embedded so `prism` works in
+//! Bundling scripts and platform sources (Apple, Android), embedded so `prism` works in
 //! any project. Extracted under `<target>/prism/platform` when they change.
 
 use std::path::{Path, PathBuf};
@@ -12,16 +12,25 @@ macro_rules! files {
 const FILES: &[(&str, &str)] = files![
     "scripts/ios-run.sh",
     "scripts/macos-app.sh",
+    "scripts/android-run.sh",
     "platform/apple/app-icon.sh",
     "platform/apple/generate_widgets.py",
     "platform/apple/Bridge/PrismBridge.swift",
     "platform/apple/Extension/PrismRenderer.swift",
     "platform/apple/Extension/PrismWidgetKit.swift",
     "platform/apple/Shared/PrismActivityAttributes.swift",
+    "platform/android/java/dev/prism/PrismActivity.java",
+    "platform/android/java/dev/prism/PrismDevice.java",
+    "platform/android/java/dev/prism/PrismFiles.java",
+    "platform/android/java/dev/prism/PrismHost.java",
+    "platform/android/java/dev/prism/PrismJob.java",
+    "platform/android/java/dev/prism/PrismLayout.java",
+    "platform/android/java/dev/prism/PrismSurface.java",
+    "platform/android/java/dev/prism/PrismWidget.java",
 ];
 
 /// Writes the files (if needed) and returns the platform directory, laid out
-/// as `scripts/…` and `apple/…`.
+/// as `scripts/…`, `apple/…` and `android/…`.
 pub fn extract(target_dir: &Path) -> Result<PathBuf, String> {
     let dir = target_dir.join("prism").join("platform");
     for (path, contents) in FILES {

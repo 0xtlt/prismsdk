@@ -51,7 +51,7 @@
     "native": "Contrôles natifs",
     "square": "Coins carrés",
     "accent": "Couleur d'accent",
-    "a11y_note": "Chaque contrôle est exposé à VoiceOver et aux lecteurs d'écran sur le web, et fonctionne au clavier.",
+    "a11y_note": "Chaque contrôle est exposé aux lecteurs d'écran (VoiceOver, TalkBack, Orca, le web) et fonctionne au clavier.",
     "accents": {
       "indigo": "Indigo",
       "blue": "Bleu",
@@ -91,6 +91,7 @@
     "live_note": "Live Activity : {where}. Une notification arrive à la fin.",
     "where_island": "écran verrouillé et Dynamic Island",
     "where_outside": "hors de l'app (barre des menus ou bandeau)",
+    "where_notification": "écran verrouillé et notifications",
     "where_app": "dans l'app",
     "title": "Focus",
     "session": "Session de {minutes} minutes",
@@ -218,6 +219,7 @@
     "windowed": "En fenêtre",
     "installed": "{browser}, installé comme une app",
     "simulator": "{model} (simulateur)",
+    "emulator": "{model} (émulateur)",
     "unknown": "Inconnu",
     "kind": {
       "phone": "Téléphone",

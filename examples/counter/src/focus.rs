@@ -318,6 +318,8 @@ impl Render for Focus {
         let caps = cx.capabilities();
         let where_ = if caps.dynamic_island {
             strings::focus_where_island(cx)
+        } else if caps.live_activities && cx.platform() == Platform::Android {
+            strings::focus_where_notification(cx)
         } else if caps.live_activities {
             strings::focus_where_outside(cx)
         } else {

@@ -13,11 +13,14 @@
 //! | `frame` | `f`: `[x, y, w, h]` in the parent |
 //! | `content` | `size`: a scroll view's content size |
 //! | `menu`, `swipe`, `scrollev`, `root` | context menu JSON, swipe sides, scroll events, root id |
+//! | `env` | `lang`, `rtl`, `back`, `close` (no `id`) |
+//! | `appearance` | `mode`: `system`, `light` or `dark` (no `id`) |
 
 use std::collections::HashMap;
 
 use prism_core::{
-    Accessibility, Color, FontWeight, NodeId, NodeKind, RenderEnvironment, Style, TextAlign,
+    Accessibility, Appearance, Color, Direction, FontWeight, NodeId, NodeKind, RenderEnvironment,
+    Style, TextAlign,
 };
 use serde_json::{Value, json};
 
@@ -188,10 +191,12 @@ impl Widgets for RemoteWidgets {
 
     /// Stacks and tabs: the area SwiftUI gives their content (below the
     /// navigation bar), as the host reported it.
-    fn screen_viewport(&mut self, container: &NodeId, _child: &NodeId) -> Viewport {
+    fn screen_viewport(&mut self, container: &NodeId, child: &NodeId) -> Viewport {
+        // A modal reports its own size; screens get their container's.
         let (width, height) = self
             .viewports
-            .get(container)
+            .get(child)
+            .or_else(|| self.viewports.get(container))
             .or_else(|| self.frames.get(container))
             .copied()
             .unwrap_or((0., 0.));
@@ -217,7 +222,7 @@ impl Widgets for RemoteWidgets {
 
     fn set_icon(&mut self, id: &NodeId, icon: &str) {
         self.ops
-            .push(json!({ "op": "icon", "id": id, "icon": icon }));
+            .push(json!({ "op": "icon", "id": id, "icon": icon, "glyph": prism_core::glyphs::glyph(icon) }));
     }
 
     fn set_hidden(&mut self, id: &NodeId, hidden: bool) {
@@ -246,5 +251,148 @@ impl Widgets for RemoteWidgets {
             .push(json!({ "op": "scrollev", "id": id, "on": on }));
     }
 
-    fn set_environment(&mut self, _env: &RenderEnvironment) {}
+    /// Language direction and the chrome's words (the host's header, bars).
+    fn set_environment(&mut self, env: &RenderEnvironment) {
+        self.ops.push(json!({
+            "op": "env",
+            "lang": env.lang,
+            "rtl": env.direction == Direction::Rtl,
+            "back": env.back,
+            "close": env.close,
+        }));
+    }
+
+    /// Light/dark chrome and the light or dark variant of every color.
+    fn set_appearance(&mut self, appearance: Appearance) {
+        let mode = match appearance {
+            Appearance::System => "system",
+            Appearance::Light => "light",
+            Appearance::Dark => "dark",
+        };
+        self.ops.push(json!({ "op": "appearance", "mode": mode }));
+    }
+}
+
+/// Device calls as JSON for a host (the same shape as the web client's), and
+/// the host's answers back.
+pub mod device {
+    use prism_core::{
+        Accuracy, DeviceCall, DeviceError, DeviceEvent, DeviceValue, Location, Motion,
+        PermissionState, PickedFile,
+    };
+    use serde_json::{Value, json};
+
+    /// `{"t":"device","id":…,"call":"location","accuracy":"best"}`…
+    pub fn call(id: u64, call: DeviceCall) -> Value {
+        let accuracy = |a: Accuracy| match a {
+            Accuracy::Coarse => "coarse",
+            Accuracy::Balanced => "balanced",
+            Accuracy::Best => "best",
+        };
+        let mut body = match call {
+            DeviceCall::PermissionStatus(p) => {
+                json!({ "call": "permission_status", "permission": p.name() })
+            }
+            DeviceCall::RequestPermission(p) => {
+                json!({ "call": "request_permission", "permission": p.name() })
+            }
+            DeviceCall::CurrentLocation(a) => {
+                json!({ "call": "location", "accuracy": accuracy(a) })
+            }
+            DeviceCall::WatchLocation(a) => {
+                json!({ "call": "watch_location", "accuracy": accuracy(a) })
+            }
+            DeviceCall::WatchMotion(every) => {
+                json!({ "call": "watch_motion", "interval": every.as_millis() as u64 })
+            }
+            DeviceCall::StopWatch => json!({ "call": "stop" }),
+            DeviceCall::PickImages(o) => {
+                json!({ "call": "pick_images", "limit": o.limit, "camera": o.camera })
+            }
+            DeviceCall::ReadClipboard => json!({ "call": "paste" }),
+            DeviceCall::Haptic(h) => json!({ "call": "haptic", "kind": h.name() }),
+            DeviceCall::CopyText(t) => json!({ "call": "copy", "text": t }),
+            DeviceCall::Share(s) => {
+                json!({ "call": "share", "text": s.text, "url": s.url, "files": s.files })
+            }
+            DeviceCall::OpenUrl(u) => json!({ "call": "open_url", "url": u }),
+        };
+        body["op"] = json!("device");
+        body["id"] = json!(id);
+        body
+    }
+
+    fn location(v: &Value) -> Option<Location> {
+        let n = |k: &str| v.get(k).and_then(Value::as_f64);
+        Some(Location {
+            latitude: n("latitude")?,
+            longitude: n("longitude")?,
+            altitude: n("altitude"),
+            accuracy: n("accuracy").unwrap_or(0.),
+            speed: n("speed"),
+            heading: n("heading"),
+            timestamp: n("timestamp").unwrap_or(0.),
+        })
+    }
+
+    fn motion(v: &Value) -> Motion {
+        let triple = |k: &str| {
+            let a = v.get(k).and_then(Value::as_array);
+            let at = |i: usize| {
+                a.and_then(|a| a.get(i))
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.)
+            };
+            [at(0), at(1), at(2)]
+        };
+        Motion {
+            acceleration: triple("acceleration"),
+            gravity: triple("gravity"),
+            rotation_rate: triple("rotation_rate"),
+            attitude: triple("attitude"),
+        }
+    }
+
+    /// A `device_reply`: `{"err":…}`, `{"permission":…}`, `{"location":{…}}`,
+    /// `{"files":[{path,name,mime,size}]}`, `{"text":…}` or nothing (done).
+    pub fn reply(v: &Value) -> Result<DeviceValue, DeviceError> {
+        if let Some(err) = v.get("err").and_then(Value::as_str) {
+            return Err(DeviceError::from_message(err));
+        }
+        if let Some(p) = v.get("permission").and_then(Value::as_str) {
+            return Ok(DeviceValue::Permission(PermissionState::from_name(p)));
+        }
+        if let Some(l) = v.get("location").and_then(location) {
+            return Ok(DeviceValue::Location(l));
+        }
+        if let Some(files) = v.get("files").and_then(Value::as_array) {
+            let s = |f: &Value, k: &str| f.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+            return Ok(DeviceValue::Files(
+                files
+                    .iter()
+                    .map(|f| PickedFile {
+                        path: s(f, "path"),
+                        name: s(f, "name"),
+                        mime: s(f, "mime"),
+                        size: f.get("size").and_then(Value::as_u64).unwrap_or(0),
+                    })
+                    .collect(),
+            ));
+        }
+        if let Some(t) = v.get("text") {
+            return Ok(DeviceValue::Text(t.as_str().map(str::to_string)));
+        }
+        Ok(DeviceValue::Done)
+    }
+
+    /// A `device_event` of a stream: an error, a location or motion.
+    pub fn event(v: &Value) -> DeviceEvent {
+        if let Some(err) = v.get("err").and_then(Value::as_str) {
+            DeviceEvent::Error(DeviceError::from_message(err))
+        } else if let Some(l) = v.get("location").and_then(location) {
+            DeviceEvent::Location(l)
+        } else {
+            DeviceEvent::Motion(motion(v))
+        }
+    }
 }

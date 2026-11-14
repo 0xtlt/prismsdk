@@ -7,6 +7,10 @@ use prism::ui;
 
 use crate::strings;
 
+fn android(d: &DeviceInfo) -> bool {
+    d.os.name == prism::OsName::Android
+}
+
 fn kind(cx: &App, d: &DeviceInfo) -> String {
     match d.kind {
         DeviceKind::Phone => strings::about_kind_phone(cx),
@@ -25,7 +29,9 @@ fn model(cx: &App, d: &DeviceInfo) -> String {
         .clone()
         .or_else(|| d.model.clone())
         .unwrap_or_else(|| kind(cx, d));
-    if d.simulator {
+    if d.simulator && android(d) {
+        strings::about_emulator(cx, name)
+    } else if d.simulator {
         strings::about_simulator(cx, name)
     } else {
         name
@@ -40,7 +46,9 @@ fn screen(cx: &App, d: &DeviceInfo) -> String {
         parts.push(format!("{}″", cx.format_number(inches as f64, 1)));
     }
     if s.width > 0. {
-        parts.push(format!("{:.0} × {:.0} pt", s.width, s.height));
+        // Android's unit is the dp (the same 1/160 inch idea as Apple's points).
+        let unit = if android(d) { "dp" } else { "pt" };
+        parts.push(format!("{:.0} × {:.0} {unit}", s.width, s.height));
     }
     if s.scale > 1. {
         parts.push(format!("@{}x", cx.format_number(s.scale as f64, 0)));

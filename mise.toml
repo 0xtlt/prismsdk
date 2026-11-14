@@ -24,6 +24,7 @@ run = [
   "cargo check -p counter --target aarch64-apple-ios-sim",
   "cargo check -p counter --target aarch64-apple-tvos-sim",
   "cargo check -p counter --target aarch64-apple-watchos-sim",
+  "cargo ndk -t arm64-v8a -P 29 check -p counter --lib",
 ]
 
 [tasks.test]
@@ -48,6 +49,11 @@ run = "cargo run -q -p prism-cli -- dev macos"
 description = "Run the example in the iOS simulator, restarting on save (PRISM_SIM=<name|udid>)"
 dir = "examples/counter"
 run = "cargo run -q -p prism-cli -- dev ios"
+
+[tasks.android]
+description = "Run the example on the running Android emulator or phone, reinstalling on save (start one: emulator -avd Pixel_9)"
+dir = "examples/counter"
+run = "cargo run -q -p prism-cli -- dev android"
 
 [tasks.macos-app]
 description = "Bundle the example as a macOS .app (widgets, notifications, deep links, icon) and open it"

@@ -51,7 +51,7 @@
     "native": "Use native controls",
     "square": "Square corners",
     "accent": "Accent color",
-    "a11y_note": "Every control here is exposed to VoiceOver and to screen readers on the web, and works with the keyboard.",
+    "a11y_note": "Every control here is exposed to screen readers (VoiceOver, TalkBack, Orca, the web) and works with the keyboard.",
     "accents": {
       "indigo": "Indigo",
       "blue": "Blue",
@@ -91,6 +91,7 @@
     "live_note": "Live Activity: {where}. A notification arrives when it ends.",
     "where_island": "Lock screen and Dynamic Island",
     "where_outside": "Outside the app (menu bar or live banner)",
+    "where_notification": "Lock screen and notifications",
     "where_app": "In the app",
     "title": "Focus",
     "session": "{minutes}-minute session",
@@ -218,6 +219,7 @@
     "windowed": "Windowed",
     "installed": "{browser}, installed as an app",
     "simulator": "{model} (simulator)",
+    "emulator": "{model} (emulator)",
     "unknown": "Unknown",
     "kind": {
       "phone": "Phone",

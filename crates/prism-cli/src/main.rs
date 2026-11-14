@@ -2,14 +2,14 @@
 //!
 //! ```text
 //! prism new my-app                 create a project
-//! prism run web|macos|ios          build and run (ios: simulator, or --device)
-//! prism dev web|macos|ios          run, then rebuild and restart on every save
-//! prism build web|macos|ios        release artifacts (.app bundles, server binary)
-//! prism devices                    simulators and paired devices
+//! prism run <target>               build and run (web, macos, ios, tvos, watchos, android)
+//! prism dev <target>               run, then rebuild and restart on every save
+//! prism build <target>             release artifacts (.app bundles, APK, server binary)
+//! prism devices                    simulators, emulators and devices
 //! ```
 //!
 //! Projects are configured by a `Prism.toml` next to their `Cargo.toml`. The
-//! Apple bundling scripts and platform sources are embedded in this binary,
+//! bundling scripts and platform sources (Apple, Android) are embedded in this binary,
 //! so the command works in any project.
 
 mod config;
@@ -23,17 +23,21 @@ use std::process::{Child, Command, ExitCode, Stdio};
 use config::Project;
 
 const USAGE: &str = "\
-prism — Rust UI for the web, macOS and iOS
+prism — Rust UI for the web, Apple platforms, Linux and Android
 
 USAGE:
     prism new <name> [--prism <path>]       Create a project
-    prism run <web|macos|ios|tvos|watchos> [options]    Build and run
-    prism dev <web|macos|ios|tvos|watchos> [options]    Run, rebuild and restart on save (keeps the screen)
-    prism build <web|macos|ios|tvos|watchos> [options]  Build release artifacts
-    prism devices                           List simulators and paired iOS devices
+    prism run <target> [options]            Build and run
+    prism dev <target> [options]            Run, rebuild and restart on save (keeps the screen)
+    prism build <target> [options]          Build release artifacts
+    prism devices                           List simulators, emulators and devices
+
+TARGETS:
+    web, macos, ios, tvos, watchos, android
 
 OPTIONS:
-    --device <name|udid>    iOS: a real iPhone/iPad (signed with your team)
+    --device <name|udid>    iOS: a real iPhone/iPad (signed with your team);
+                            Android: an adb serial (emulator-5554, a phone)
     --sim <name|udid>       iOS/tvOS/watchOS: a simulator
     --release               Optimized build
     --path </route>         Start on this screen
@@ -48,6 +52,7 @@ enum Target {
     Ios,
     Tvos,
     Watchos,
+    Android,
 }
 
 #[derive(Default, Debug)]
@@ -89,7 +94,12 @@ fn run(args: &[String]) -> Result<(), String> {
                 Some("ios") => Target::Ios,
                 Some("tvos" | "tv") => Target::Tvos,
                 Some("watchos" | "watch") => Target::Watchos,
-                _ => return Err(format!("usage: prism {cmd} <web|macos|ios|tvos|watchos>")),
+                Some("android") => Target::Android,
+                _ => {
+                    return Err(format!(
+                        "usage: prism {cmd} <web|macos|ios|tvos|watchos|android>"
+                    ));
+                }
             };
             let opts = Options {
                 device: flag(args, "--device"),
@@ -129,6 +139,7 @@ fn run_target(p: &Project, target: Target, o: &Options) -> Result<(), String> {
         Target::Ios => apple_script(p, "ios-run.sh", o, false),
         Target::Tvos => apple_script_os(p, o, false, "tvos"),
         Target::Watchos => apple_script_os(p, o, false, "watchos"),
+        Target::Android => apple_script(p, "android-run.sh", o, false),
         Target::Macos if o.bundle => apple_script(p, "macos-app.sh", o, false),
         _ => {
             build(p, target, o)?;
@@ -179,6 +190,7 @@ fn build_target(p: &Project, target: Target, o: &Options) -> Result<(), String> 
         Target::Ios => apple_script(p, "ios-run.sh", o, true),
         Target::Tvos => apple_script_os(p, o, true, "tvos"),
         Target::Watchos => apple_script_os(p, o, true, "watchos"),
+        Target::Android => apple_script(p, "android-run.sh", o, true),
     }
 }
 
@@ -313,12 +325,17 @@ fn apple_command(
         cmd.env("PRISM_TEAM", team);
     }
     match (&o.device, &o.sim) {
+        (Some(d), _) if script == "android-run.sh" => {
+            cmd.env("PRISM_SERIAL", d);
+        }
         (Some(d), _) => {
             cmd.env("PRISM_DEVICE", d);
         }
         (None, Some(s)) => {
             cmd.env("PRISM_SIM", s);
         }
+        // Prism.toml's defaults are the [ios] section's.
+        (None, None) if script == "android-run.sh" => {}
         (None, None) => {
             if let Some(d) = &p.device {
                 cmd.env("PRISM_DEVICE", d);
@@ -392,7 +409,58 @@ fn devices() -> Result<(), String> {
     if !ok || !any {
         println!("  none (pair an iPhone with Xcode › Devices)");
     }
+    android_devices();
     Ok(())
+}
+
+/// Running emulators and connected phones (`adb devices`), then the emulators
+/// that can be started.
+fn android_devices() {
+    let sdk = std::env::var_os("ANDROID_HOME").map(PathBuf::from);
+    let tool = |rel: &str, name: &str| {
+        sdk.as_ref()
+            .map(|s| s.join(rel))
+            .filter(|p| p.exists())
+            .unwrap_or_else(|| PathBuf::from(name))
+    };
+    println!("\nAndroid (prism run android --device <serial>):");
+    let out = Command::new(tool("platform-tools/adb", "adb"))
+        .args(["devices", "-l"])
+        .output();
+    let Ok(out) = out else {
+        println!("  adb not found (set ANDROID_HOME; see the README)");
+        return;
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut any = false;
+    for line in text.lines().skip(1).filter(|l| !l.trim().is_empty()) {
+        let mut parts = line.split_whitespace();
+        let (Some(serial), Some(state)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let model = parts
+            .find_map(|p| p.strip_prefix("model:"))
+            .unwrap_or("")
+            .replace('_', " ");
+        any = true;
+        println!("  ● {serial}  {model}  ({state})");
+    }
+    if !any {
+        println!("  none running");
+    }
+    if let Ok(out) = Command::new(tool("emulator/emulator", "emulator"))
+        .arg("-list-avds")
+        .output()
+    {
+        let avds = String::from_utf8_lossy(&out.stdout);
+        let avds: Vec<&str> = avds.lines().filter(|l| !l.trim().is_empty()).collect();
+        if !avds.is_empty() {
+            println!(
+                "  emulators: {} (start one: emulator -avd <name>)",
+                avds.join(", ")
+            );
+        }
+    }
 }
 
 /// `path` relative to `base` unless absolute.

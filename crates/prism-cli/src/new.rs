@@ -50,7 +50,7 @@ pub fn create(name: &str, prism: Option<PathBuf>) -> Result<(), String> {
     };
     let slug = package.replace('_', "-");
 
-    let files: [(&str, String); 9] = [
+    let files: [(&str, String); 10] = [
         (
             "build.rs",
             "fn main() {\n    // locales/*.json → typed `strings::…` functions, checked at build time.\n    prism_build::translations(\"locales\").fallback(\"en\").generate();\n}\n"
@@ -114,16 +114,26 @@ version = "0.1.0"
 "#
             ),
         ),
-        ("src/main.rs", MAIN_RS.replace("{title}", &title)),
+        // The app lives in its library: Android loads it as a shared library.
+        ("src/lib.rs", LIB_RS.replace("{title}", &title)),
+        (
+            "src/main.rs",
+            format!(
+                "fn main() {{\n    {}::run();\n}}\n",
+                package.replace('-', "_")
+            ),
+        ),
         (
             "mise.toml",
             r#"[tools]
-rust = { version = "1.99", targets = "aarch64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim" }
+rust = { version = "1.99", targets = "aarch64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim,aarch64-linux-android" }
+# Android: java = "temurin-21", android-sdk = "23.0", "cargo:cargo-ndk" = "4.1.2" (see Prism's README)
 
 [tasks]
 web = "prism dev web"
 macos = "prism dev macos"
 ios = "prism dev ios"
+android = "prism dev android"
 "#
             .to_string(),
         ),
@@ -140,10 +150,11 @@ ios = "prism dev ios"
     println!("  prism dev web      # http://localhost:3000, restarts on save");
     println!("  prism dev macos    # native window");
     println!("  prism dev ios      # iOS simulator (--device <name> for an iPhone)");
+    println!("  prism dev android  # the running Android emulator or phone");
     Ok(())
 }
 
-const MAIN_RS: &str = r#"use prism::prelude::*;
+const LIB_RS: &str = r#"use prism::prelude::*;
 use prism::ui::{self, Theme};
 
 /// One function per key of locales/*.json (a typo is a compile error).
@@ -151,7 +162,8 @@ mod strings {
     prism::include_strings!();
 }
 
-fn main() {
+/// The app (`main.rs` calls it; Android through `android_main!`).
+pub fn run() {
     Application::new()
         .title("{title}")
         .assets(concat!(env!("CARGO_MANIFEST_DIR"), "/assets"))
@@ -162,6 +174,8 @@ fn main() {
                 .build(cx)
         });
 }
+
+prism::android_main!(run);
 
 #[derive(Default)]
 struct Home {

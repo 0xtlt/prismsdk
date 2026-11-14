@@ -7,6 +7,7 @@ Write a UI once in Rust (GPUI-style API), ship it as:
 | **Web** | Server-side Rust → HTML/CSS + a small JS client receiving DOM patches over a WebSocket. **No WASM.** | `prism dev web` → http://localhost:3000 |
 | **macOS** | Real AppKit views (`NSView`, `NSTextField`, `NSButton`), menu bar, tray | `prism dev macos` |
 | **iOS** | Real UIKit views (`UIView`, `UILabel`, `UIButton`, `UITextField`), widgets + Dynamic Island | `prism dev ios` (simulator) / `prism run ios --device "My iPhone"` |
+| **Android** | Real Android views (`TextView`, `Button`, `EditText`, `Switch`), home-screen widgets, ongoing notifications | `prism dev android` (emulator or phone) |
 
 ## Quick start
 
@@ -17,7 +18,8 @@ prism dev web                # rebuilds and restarts on every save, on the same 
 prism dev ios                # same, in the iOS simulator
 prism run ios --device "My iPhone"
 prism build macos            # release .app with widgets and icon
-prism devices                # simulators and paired iPhones
+prism dev android            # the running emulator or a USB phone
+prism devices                # simulators, paired iPhones, Android devices
 ```
 
 `Prism.toml` configures the app: name, `bundle_id`, `version`, `icon` (one 1024×1024 PNG, compiled with `actool` for iOS and macOS), and `[ios] team` / `device` / `simulator`. Real devices are signed with your Apple Development identity and a matching provisioning profile (found automatically, or `PRISM_PROFILE`), then installed with `devicectl`. The bundling scripts and Apple sources are embedded in the CLI, so projects don't need this repository's scripts.
@@ -441,7 +443,7 @@ Measured on the example app (release build, Apple silicon):
 
 Layout is a flexbox subset (column by default, like React Native) and maps 1:1 to CSS on the web and to taffy on native, so all targets lay out the same way.
 
-### Adding a platform (Android, Windows, Linux, tvOS…)
+### Adding a platform (Windows…)
 
 1. New crate `prism-<os>` implementing `prism_native::Widgets` (create/style/measure/place native views).
 2. An entry point that builds a `Runtime`, feeds `runtime.render()` / `runtime.dispatch(event)` into a `NativeRenderer`, and calls `layout()` on resize.
@@ -453,7 +455,7 @@ Layout is a flexbox subset (column by default, like React Native) and maps 1:1 t
 mise install        # Rust 1.99 + macOS/iOS targets
 mise run test       # unit tests
 mise run check      # type-check host, web and iOS-simulator builds
-mise run web        # the example, restarting on save (also: macos, ios, macos-app, device)
+mise run web        # the example, restarting on save (also: macos, ios, android, macos-app, device)
 ```
 
 - `prism dev` keeps the current screen across restarts (`PRISM_DEV_STATE`); the web client reconnects by itself.
@@ -500,8 +502,36 @@ watchOS has no UIKit views (`UIView` is `API_UNAVAILABLE(watchos)` in the SDK), 
 - The tray uses StatusNotifierItem through `ksni`, checked against a test watcher. Also supported: swipes (touchpad), scroll events, refresh with F5 / Ctrl+R, lifecycle (focus, minimized) and background tasks while the app runs. Text size follows GNOME's scaling factor; reduced motion follows "animations off".
 - No desktop standard exists for motion, camera, haptics or a share sheet, so `capabilities` reports them as unavailable.
 
+## Android
+
+`prism run android` / `prism dev android` / `prism build android`: an APK built with the SDK's own tools (`javac`, `d8`, `aapt2`, `zipalign`, `apksigner`), without Gradle, then installed with `adb` on the running emulator or a USB phone (`--device <serial>`; `prism devices` lists them).
+
+The app runs in Rust, and a small Java host (`platform/android`) creates real Android views and places them at the frames Rust computes.
+
+- **Layout:** prism-native's flexbox in dp; the zoom is the screen density, and Java measures text. Navigation stacks get a header with Back (also the system back gesture), tabs a bottom bar, and modals a full-screen dialog.
+- **Look:** light/dark follows the system or `cx.set_appearance` (the header, bars and system bars included). Right-to-left languages mirror the layout, the header and the tab bar.
+- **Setup (mise):** Java 21, the Android SDK (`ANDROID_HOME`), `cargo-ndk`, the `aarch64-linux-android` target. Install the SDK packages and create an emulator:
+  ```sh
+  sdkmanager "platform-tools" "emulator" "platforms;android-36" "build-tools;37.0.0" "ndk;30.0.16248370" "system-images;android-36;google_apis;arm64-v8a"
+  avdmanager create avd -n Pixel_9 -k "system-images;android-36;google_apis;arm64-v8a" -d pixel_9
+  emulator -avd Pixel_9 &
+  ```
+- **The app crate:** its code lives in its library, and `main.rs` calls it. Android loads a shared library, through `prism::android_main!(run)` in `lib.rs`.
+- **Device APIs:**
+  - location (`LocationManager`), motion (rotation vector, gyroscope);
+  - photos (system photo picker), camera (`ACTION_IMAGE_CAPTURE`);
+  - haptics (`VibrationEffect`), clipboard;
+  - share sheet (files through a small content provider), links.
+  Permissions come from `Prism.toml`'s `[permissions]`.
+- **Notifications:** actions and text replies; the first one asks for the permission (Android 13+), as on iOS. Alerts are `AlertDialog`s. Context menus (`PopupMenu`) open on press and hold. Also supported: swipes, scroll events, deep links (`prism-<package>:/path`) and the lifecycle.
+- **Background tasks:** JobScheduler, even with the app closed; the library then loads without the Activity and runs the task without a screen.
+- **Live Activities:** an ongoing notification drawing the lock-screen content, with timers counting natively (`Chronometer`).
+- **Widgets:** home-screen widgets (`AppWidgetProvider`), one per `register_widget`, with small/medium layouts chosen by size (Android 12+). They are redrawn from the last snapshot while the app is closed. Both surfaces render `SNode` snapshots with `RemoteViews` (`PrismSurface.java`).
+- **Release:** `PRISM_RELEASE=1` or `prism build android`. Sign with `PRISM_ANDROID_KEYSTORE`, `PRISM_ANDROID_KEYSTORE_PASS` and `PRISM_ANDROID_KEY_ALIAS`; the default is the SDK's debug key. Libraries are aligned for 16 KB pages.
+- **Not on Android:** tray and menu bar (desktop surfaces).
+
 ## Status
 
 Primitives: `div`, `text`, `button`, `text_input`, `toggle`, `scroll`, `picture`, `VirtualList`, `screen`, `Router` (stacks, tabs, sheets). Component library `prism::ui`. Accessibility on all backends. Light/dark appearance.
 Widgets, Live Activities (Dynamic Island), notifications with actions, background tasks, device APIs (location, motion, photos, camera, haptics, clipboard, share), alerts, context menus, tray and app menus, async tasks, HTTP, storage, i18n/RTL, Dynamic Type, animations, `prism` CLI.
-Platforms: web, macOS, iOS/iPadOS, tvOS, watchOS, Linux (GTK 4). Not yet: Android, Windows backends (the `Widgets` trait and `PlatformServices` are the extension points).
+Platforms: web, macOS, iOS/iPadOS, tvOS, watchOS, Linux (GTK 4), Android. Not yet: Windows (the `Widgets` trait and `PlatformServices` are the extension points).

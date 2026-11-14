@@ -55,7 +55,7 @@
     "native": "عناصر تحكم أصلية",
     "square": "زوايا مربعة",
     "accent": "لون التمييز",
-    "a11y_note": "كل عنصر تحكم هنا متاح لـ VoiceOver ولقارئات الشاشة على الويب، ويعمل بلوحة المفاتيح.",
+    "a11y_note": "كل عنصر تحكم هنا متاح لقارئات الشاشة (VoiceOver وTalkBack وOrca والويب)، ويعمل بلوحة المفاتيح.",
     "accents": {
       "indigo": "نيلي",
       "blue": "أزرق",
@@ -99,6 +99,7 @@
     "live_note": "النشاط المباشر: {where}. يصل إشعار عند الانتهاء.",
     "where_island": "شاشة القفل و Dynamic Island",
     "where_outside": "خارج التطبيق (شريط القوائم أو لافتة)",
+    "where_notification": "شاشة القفل والإشعارات",
     "where_app": "داخل التطبيق",
     "title": "تركيز",
     "session": "جلسة {minutes} دقيقة",
@@ -242,6 +243,7 @@
     "windowed": "في نافذة",
     "installed": "{browser}، مثبت كتطبيق",
     "simulator": "{model} (محاكي)",
+    "emulator": "{model} (محاكي)",
     "unknown": "غير معروف",
     "kind": {
       "phone": "هاتف",

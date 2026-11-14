@@ -1,0 +1,12 @@
+[package]
+name = "prism-android"
+description = "Prism backend for Android: the app runs in Rust, a small Java host shows native Android views."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+prism-core.workspace = true
+prism-native.workspace = true
+serde_json.workspace = true
+jni-sys = "0.4.1"

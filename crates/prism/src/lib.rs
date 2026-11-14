@@ -62,6 +62,31 @@ macro_rules! include_strings {
     };
 }
 
+/// Android entry point. Android loads apps as a library (`cdylib`), so the
+/// app's code lives in `lib.rs` and this macro exports the function the Java
+/// host calls first:
+///
+/// ```ignore
+/// // lib.rs
+/// pub fn run() { prism::Application::new().run(|cx| …) }
+/// prism::android_main!(run);
+/// // main.rs (every other platform)
+/// fn main() { my_app::run() }
+/// ```
+#[macro_export]
+macro_rules! android_main {
+    ($run:path) => {
+        #[cfg(target_os = "android")]
+        #[unsafe(no_mangle)]
+        pub extern "system" fn Java_dev_prism_PrismHost_nativeMain(
+            _env: *mut ::core::ffi::c_void,
+            _class: *mut ::core::ffi::c_void,
+        ) {
+            $run()
+        }
+    };
+}
+
 /// Which backend [`Application::run`] will use for this build.
 pub const BACKEND: &str = if cfg!(feature = "web") {
     "web"
@@ -75,6 +100,8 @@ pub const BACKEND: &str = if cfg!(feature = "web") {
     "watchos"
 } else if cfg!(all(feature = "native", target_os = "linux")) {
     "linux"
+} else if cfg!(all(feature = "native", target_os = "android")) {
+    "android"
 } else {
     "none"
 };
@@ -198,6 +225,10 @@ impl Application {
         {
             prism_linux::run(config, init);
         }
+        #[cfg(all(not(feature = "web"), feature = "native", target_os = "android"))]
+        {
+            prism_android::run(config, init);
+        }
         #[cfg(not(any(
             feature = "web",
             all(
@@ -207,7 +238,8 @@ impl Application {
                     target_os = "ios",
                     target_os = "tvos",
                     target_os = "watchos",
-                    target_os = "linux"
+                    target_os = "linux",
+                    target_os = "android"
                 )
             )
         )))]

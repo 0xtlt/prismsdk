@@ -69,6 +69,13 @@ fn restart(
             .map_err(|e| e.to_string())?;
         return status.success().then_some(()).ok_or("build failed".into());
     }
+    if target == Target::Android {
+        // Reinstalling replaces the running app, relaunched on --path.
+        let status = crate::apple_command(p, "android-run.sh", o, false, env)?
+            .status()
+            .map_err(|e| e.to_string())?;
+        return status.success().then_some(()).ok_or("build failed".into());
+    }
     // Keep the old version running until the new one is built.
     crate::build(p, target, o)?;
     if let Some(mut old) = child.take() {
