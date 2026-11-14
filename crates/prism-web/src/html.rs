@@ -78,13 +78,23 @@ impl HtmlBackend {
 
     fn write(&self, id: NodeId, out: &mut String) {
         let Some(n) = self.nodes.get(&id) else { return };
-        let cursor = if n.clickable && n.kind == Some(NodeKind::View) {
+        self.write_with(id, n, false, out);
+    }
+
+    fn write_with(&self, id: NodeId, n: &HtmlNode, hidden: bool, out: &mut String) {
+        let kind = n.kind.unwrap_or(NodeKind::View);
+        let cursor = if n.clickable && kind == NodeKind::View {
             "cursor:pointer;"
         } else {
             ""
         };
-        let attrs = format!(r#"data-pid="{id}" style="{}{cursor}""#, escape(&n.css));
-        match n.kind.unwrap_or(NodeKind::View) {
+        let hidden = if hidden { " hidden" } else { "" };
+        let attrs = format!(
+            r#"data-pid="{id}" data-kind="{}" style="{}{cursor}"{hidden}"#,
+            kind.name(),
+            escape(&n.css)
+        );
+        match kind {
             NodeKind::TextInput => {
                 let _ = write!(
                     out,
@@ -93,19 +103,53 @@ impl HtmlBackend {
                     escape(&n.placeholder)
                 );
             }
+            NodeKind::Stack => {
+                // Same markup as the JS client builds: header bar + body.
+                let top = n.children.last().and_then(|c| self.nodes.get(c));
+                let title = top.map(|t| t.text.as_str()).unwrap_or("");
+                let back_hidden = if n.children.len() <= 1 { " hidden" } else { "" };
+                let _ = write!(
+                    out,
+                    r#"<div {attrs} class="prism-stack"><div class="prism-header"><button class="prism-back"{back_hidden}>‹ Back</button><div class="prism-title">{}</div></div><div class="prism-body">"#,
+                    escape(title)
+                );
+                let last = n.children.len().saturating_sub(1);
+                for (i, c) in n.children.iter().enumerate() {
+                    if let Some(child) = self.nodes.get(c) {
+                        self.write_with(*c, child, i != last, out);
+                    }
+                }
+                out.push_str("</div></div>");
+            }
             kind => {
                 let tag = if kind == NodeKind::Button {
                     "button"
                 } else {
                     "div"
                 };
-                let _ = write!(out, "<{tag} {attrs}>{}", escape(&n.text));
+                // A screen's text is its title (shown in the header), not content.
+                let content = if kind == NodeKind::Screen {
+                    ""
+                } else {
+                    n.text.as_str()
+                };
+                let _ = write!(out, "<{tag} {attrs}>{}", escape(content));
                 for c in &n.children {
                     self.write(*c, out);
                 }
                 let _ = write!(out, "</{tag}>");
             }
         }
+    }
+
+    /// Title of the visible screen of the root stack, if any.
+    pub fn screen_title(&self) -> Option<String> {
+        let root = self.nodes.get(&self.root?)?;
+        if root.kind != Some(NodeKind::Stack) {
+            return None;
+        }
+        let top = self.nodes.get(root.children.last()?)?;
+        Some(top.text.clone()).filter(|t| !t.is_empty())
     }
 }
 

@@ -8,14 +8,17 @@
 mod app;
 mod element;
 mod reconcile;
+mod router;
 mod style;
 
 pub use app::{AnyEntity, App, Context, Entity, EntityId, Render};
 pub use element::{
-    Button, ClickEvent, Div, Element, FluentBuilder, Handler, InputEvent, IntoElement, NodeKind,
-    ParentElement, Text, TextInput, VNode, button, div, text, text_input,
+    BackEvent, Button, ClickEvent, Div, Element, FluentBuilder, Handler, InputEvent, IntoElement,
+    NavigateEvent, NodeKind, ParentElement, Screen, Stack, Text, TextInput, VNode, button, div,
+    screen, stack, text, text_input,
 };
 pub use reconcile::{NodeId, Patch, Reconciler, UiEvent};
+pub use router::{Params, Router, RouterBuilder, go_back, navigate_to, normalize_path};
 pub use style::*;
 
 use std::sync::Arc;
@@ -58,7 +61,13 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn new(init: &AppInit) -> Self {
+        Self::with_path(init, "/")
+    }
+
+    /// Starts the app on `path` (a deep link / the requested URL).
+    pub fn with_path(init: &AppInit, path: &str) -> Self {
         let mut app = App::new();
+        app.set_initial_path(path);
         init(&mut app);
         Runtime {
             app,
@@ -85,6 +94,16 @@ impl Runtime {
                     h(&InputEvent { value }, &mut self.app);
                 }
             }
+            UiEvent::Back(id, depth) => {
+                if let Some(h) = self.reconciler.back_handler(id) {
+                    h(&BackEvent { depth }, &mut self.app);
+                }
+            }
+            UiEvent::Navigate(id, path) => {
+                if let Some(h) = self.reconciler.navigate_handler(id) {
+                    h(&NavigateEvent { path }, &mut self.app);
+                }
+            }
         }
         self.app.flush_effects();
         if self.app.has_dirty() {
@@ -103,8 +122,9 @@ impl Runtime {
 /// Everything an app usually needs.
 pub mod prelude {
     pub use crate::{
-        App, ClickEvent, Context, Entity, FluentBuilder, InputEvent, IntoElement, ParentElement,
-        Render, Styled, button, div, px, relative, rgb, rgba, text, text_input,
+        App, ClickEvent, Context, Entity, FluentBuilder, InputEvent, IntoElement, Params,
+        ParentElement, Render, Router, Styled, button, div, go_back, navigate_to, px, relative,
+        rgb, rgba, screen, text, text_input,
     };
 }
 

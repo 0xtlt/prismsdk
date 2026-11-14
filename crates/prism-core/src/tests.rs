@@ -282,3 +282,126 @@ fn observers_rerender_dependents() {
         "only source and mirror re-render"
     );
 }
+
+// --- Router -----------------------------------------------------------------
+
+struct Home;
+impl Render for Home {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        screen("Home").child(button("open 7").on_click(navigate_to("/items/7")))
+    }
+}
+
+struct Item(u64);
+impl Render for Item {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        screen(format!("Item {}", self.0)).child(button("back").on_click(go_back()))
+    }
+}
+
+fn routed(path: &str) -> (Runtime, Vec<Patch>) {
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let router = Router::new()
+            .route("/", |cx, _| cx.new_entity(|_| Home))
+            .route("/items/:id", |cx, p| {
+                let id = p.parse("id").unwrap_or(0);
+                cx.new_entity(move |_| Item(id))
+            })
+            .build(cx);
+        cx.set_root(router);
+    });
+    let mut rt = Runtime::with_path(&init, path);
+    let first = rt.render();
+    (rt, first)
+}
+
+fn stack_of(patches: &[Patch]) -> (u64, usize, String) {
+    let id = patches
+        .iter()
+        .find_map(|p| match p {
+            Patch::Create {
+                id,
+                kind: NodeKind::Stack,
+            } => Some(*id),
+            _ => None,
+        })
+        .expect("a stack");
+    let depth = patches
+        .iter()
+        .rev()
+        .find_map(|p| match p {
+            Patch::SetChildren { id: s, children } if *s == id => Some(children.len()),
+            _ => None,
+        })
+        .unwrap_or(0);
+    let path = patches
+        .iter()
+        .rev()
+        .find_map(|p| match p {
+            Patch::SetText { id: s, text } if *s == id => Some(text.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    (id, depth, path)
+}
+
+#[test]
+fn router_pushes_and_pops() {
+    let (mut rt, first) = routed("/");
+    let (stack, depth, path) = stack_of(&first);
+    assert_eq!((depth, path.as_str()), (1, "/"));
+
+    let pushed = rt.dispatch(UiEvent::Click(find_text(&first, "open 7")));
+    assert!(pushed.contains(&Patch::SetText {
+        id: stack,
+        text: "/items/7".into()
+    }));
+    assert!(pushed.iter().any(
+        |p| matches!(p, Patch::SetChildren { id, children } if *id == stack && children.len() == 2)
+    ));
+    assert_eq!(rt.app.current_path(), Some("/items/7"));
+    find_text(&pushed, "Item 7");
+
+    let popped = rt.dispatch(UiEvent::Click(find_text(&pushed, "back")));
+    assert!(popped.contains(&Patch::SetText {
+        id: stack,
+        text: "/".into()
+    }));
+    assert!(popped.iter().any(|p| matches!(p, Patch::Destroy { .. })));
+}
+
+#[test]
+fn deep_link_opens_home_underneath() {
+    let (_, first) = routed("/items/3?x=1");
+    let (_, depth, path) = stack_of(&first);
+    assert_eq!((depth, path.as_str()), (2, "/items/3"));
+    find_text(&first, "Item 3");
+}
+
+#[test]
+fn native_back_truncates_the_stack() {
+    let (mut rt, first) = routed("/items/3");
+    let (stack, _, _) = stack_of(&first);
+    let patches = rt.dispatch(UiEvent::Back(stack, 1));
+    assert!(patches.contains(&Patch::SetText {
+        id: stack,
+        text: "/".into()
+    }));
+    assert_eq!(rt.app.current_path(), Some("/"));
+    // Going "back" below the root is ignored.
+    assert!(rt.dispatch(UiEvent::Back(stack, 0)).is_empty());
+}
+
+#[test]
+fn browser_forward_navigates() {
+    let (mut rt, first) = routed("/");
+    let (stack, _, _) = stack_of(&first);
+    rt.dispatch(UiEvent::Navigate(stack, "/items/9".into()));
+    assert_eq!(rt.app.current_path(), Some("/items/9"));
+}
+
+#[test]
+fn unknown_route_shows_not_found() {
+    let (_, first) = routed("/nope");
+    find_text(&first, "No route for /nope");
+}

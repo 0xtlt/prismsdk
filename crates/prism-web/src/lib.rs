@@ -69,8 +69,13 @@ fn handle(stream: TcpStream, config: &AppConfig, init: &AppInit) -> std::io::Res
     }
     let path = request_line.split_whitespace().nth(1).unwrap_or("/");
     let (status, body, ctype) = match path {
-        "/" => ("200 OK", page(config, init), "text/html; charset=utf-8"),
-        _ => ("404 Not Found", "not found".to_string(), "text/plain"),
+        "/favicon.ico" => ("404 Not Found", "not found".to_string(), "text/plain"),
+        // Every other path is an app route: render it on the server.
+        path => (
+            "200 OK",
+            page(config, init, &percent_decode(path)),
+            "text/html; charset=utf-8",
+        ),
     };
     let mut stream = stream;
     write!(
@@ -81,11 +86,16 @@ fn handle(stream: TcpStream, config: &AppConfig, init: &AppInit) -> std::io::Res
     stream.flush()
 }
 
-/// Server-side render of a fresh session, as a full HTML document.
-pub fn page(config: &AppConfig, init: &AppInit) -> String {
-    let mut runtime = Runtime::new(init);
+/// Server-side render of a fresh session opened on `path`, as a full HTML document.
+pub fn page(config: &AppConfig, init: &AppInit, path: &str) -> String {
+    let mut runtime = Runtime::with_path(init, path);
     let mut html = HtmlBackend::default();
     html.apply(&runtime.render());
+    let title = match html.screen_title() {
+        Some(screen) if screen != config.title => format!("{screen} · {}", config.title),
+        Some(_) => config.title.clone(),
+        None => config.title.clone(),
+    };
     format!(
         r#"<!doctype html>
 <html lang="en">
@@ -99,6 +109,10 @@ pub fn page(config: &AppConfig, init: &AppInit) -> String {
   body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; font-size: 16px; background: Canvas; color: CanvasText; }}
   #prism-root {{ display: flex; flex-direction: column; min-height: 100%; }}
   #prism-root > * {{ flex-grow: 1; }}
+  [hidden] {{ display: none !important; }}
+  .prism-header {{ position: relative; flex: 0 0 44px; display: flex; align-items: center; justify-content: center; border-bottom: 1px solid rgba(128,128,128,.25); background: Canvas; font-size: 15px; font-weight: 600; }}
+  .prism-back {{ position: absolute; left: 8px; top: 50%; transform: translateY(-50%); font: inherit; font-size: 14px; font-weight: 400; cursor: pointer; }}
+  .prism-body {{ flex: 1; display: flex; flex-direction: column; min-height: 0; }}
 </style>
 </head>
 <body>
@@ -106,17 +120,33 @@ pub fn page(config: &AppConfig, init: &AppInit) -> String {
 <script>{js}</script>
 </body>
 </html>"#,
-        title = html::escape(&config.title),
+        title = html::escape(&title),
         body = html.to_html(),
         js = CLIENT_JS,
     )
 }
 
+#[allow(clippy::result_large_err)] // tungstenite's handshake callback signature
 fn session(stream: TcpStream, init: &AppInit) {
-    let Ok(mut ws) = tungstenite::accept(stream) else {
+    // The client passes its current URL: `/ws?path=/todos/1`.
+    let mut path = String::from("/");
+    let handshake = tungstenite::accept_hdr(
+        stream,
+        |req: &tungstenite::handshake::server::Request, resp| {
+            if let Some(p) = req
+                .uri()
+                .query()
+                .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("path=")))
+            {
+                path = percent_decode(p);
+            }
+            Ok(resp)
+        },
+    );
+    let Ok(mut ws) = handshake else {
         return;
     };
-    let mut runtime = Runtime::new(init);
+    let mut runtime = Runtime::with_path(init, &path);
     let mut encoder = Encoder::default();
     let first = runtime.render();
     if send(&mut ws, &mut encoder, "reset", &first).is_err() {
@@ -144,6 +174,8 @@ fn parse_event(msg: &str) -> Option<UiEvent> {
     match v.get("t")?.as_str()? {
         "click" => Some(UiEvent::Click(id)),
         "input" => Some(UiEvent::Input(id, v.get("v")?.as_str()?.to_string())),
+        "back" => Some(UiEvent::Back(id, v.get("depth")?.as_u64()? as usize)),
+        "navigate" => Some(UiEvent::Navigate(id, v.get("path")?.as_str()?.to_string())),
         _ => None,
     }
 }
@@ -197,4 +229,25 @@ impl Encoder {
             }
         }
     }
+}
+
+/// Decodes `%XX` escapes (URL paths and query values).
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(h), Some(l)) = (hex(bytes[i + 1]), hex(bytes[i + 2]))
+        {
+            out.push((h * 16 + l) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }

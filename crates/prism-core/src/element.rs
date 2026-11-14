@@ -19,6 +19,12 @@ pub enum NodeKind {
     Button,
     /// A single-line editable text field.
     TextInput,
+    /// A navigation stack (`UINavigationController`, a header bar + top screen
+    /// on macOS/web). Its children are screens; the last one is visible.
+    /// Its text is the current path (URL on the web).
+    Stack,
+    /// A screen inside a [`Stack`](NodeKind::Stack). Its text is the title.
+    Screen,
 }
 
 impl NodeKind {
@@ -28,6 +34,8 @@ impl NodeKind {
             NodeKind::Text => "text",
             NodeKind::Button => "button",
             NodeKind::TextInput => "text_input",
+            NodeKind::Stack => "stack",
+            NodeKind::Screen => "screen",
         }
     }
 }
@@ -40,6 +48,19 @@ pub struct ClickEvent;
 #[derive(Clone, Debug)]
 pub struct InputEvent {
     pub value: String,
+}
+
+/// Reported by a stack when the user went back natively (iOS swipe, browser
+/// back button, macOS back button): only the first `depth` screens remain.
+#[derive(Clone, Debug)]
+pub struct BackEvent {
+    pub depth: usize,
+}
+
+/// Reported by a stack when the host asks for a path (browser forward button).
+#[derive(Clone, Debug)]
+pub struct NavigateEvent {
+    pub path: String,
 }
 
 /// An event handler. Handlers receive the whole `App` so they can update any entity.
@@ -64,6 +85,8 @@ pub struct VNode {
     pub children: Vec<Element>,
     pub on_click: Option<Handler<ClickEvent>>,
     pub on_input: Option<Handler<InputEvent>>,
+    pub on_back: Option<Handler<BackEvent>>,
+    pub on_navigate: Option<Handler<NavigateEvent>>,
 }
 
 impl VNode {
@@ -77,6 +100,8 @@ impl VNode {
             children: Vec::new(),
             on_click: None,
             on_input: None,
+            on_back: None,
+            on_navigate: None,
         }
     }
 }
@@ -201,6 +226,14 @@ builder!(
     /// A native single-line text field. See [`text_input`].
     TextInput
 );
+builder!(
+    /// A screen of a navigation stack. See [`screen`].
+    Screen
+);
+builder!(
+    /// A native navigation stack. Usually created by [`Router`](crate::Router).
+    Stack
+);
 
 /// A flex container, laid out as a column by default.
 pub fn div() -> Div {
@@ -258,6 +291,59 @@ impl TextInput {
 
     pub fn on_input(mut self, handler: Handler<InputEvent>) -> Self {
         self.0.on_input = Some(handler);
+        self
+    }
+}
+
+/// A screen with a title, shown in the native navigation bar.
+/// A route's view should return one as its root.
+pub fn screen(title: impl Into<String>) -> Screen {
+    let mut n = VNode::new(NodeKind::Screen);
+    n.text = title.into();
+    n.style.flex_grow = 1.;
+    Screen(n)
+}
+
+impl ParentElement for Screen {
+    fn children_mut(&mut self) -> &mut Vec<Element> {
+        &mut self.0.children
+    }
+}
+
+impl Screen {
+    pub fn title(mut self, title: impl Into<String>) -> Self {
+        self.0.text = title.into();
+        self
+    }
+}
+
+/// A navigation stack. Prefer [`Router`](crate::Router), which manages one for you.
+pub fn stack() -> Stack {
+    let mut n = VNode::new(NodeKind::Stack);
+    n.style.flex_grow = 1.;
+    Stack(n)
+}
+
+impl ParentElement for Stack {
+    fn children_mut(&mut self) -> &mut Vec<Element> {
+        &mut self.0.children
+    }
+}
+
+impl Stack {
+    /// The current path, mirrored to the URL bar on the web.
+    pub fn path(mut self, path: impl Into<String>) -> Self {
+        self.0.text = path.into();
+        self
+    }
+
+    pub fn on_back(mut self, handler: Handler<BackEvent>) -> Self {
+        self.0.on_back = Some(handler);
+        self
+    }
+
+    pub fn on_navigate(mut self, handler: Handler<NavigateEvent>) -> Self {
+        self.0.on_navigate = Some(handler);
         self
     }
 }

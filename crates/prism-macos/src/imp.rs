@@ -1,4 +1,6 @@
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::rc::Rc;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
@@ -16,7 +18,7 @@ use prism_core::{
     AppConfig, AppInit, Backend, Color, FontWeight, NodeId, NodeKind, Runtime, Style, TextAlign,
     UiEvent,
 };
-use prism_native::{Insets, NativeRenderer, Widgets};
+use prism_native::{Insets, NativeRenderer, Viewport, Widgets};
 
 // ---------------------------------------------------------------------------
 // Global (main-thread) state. AppKit callbacks re-enter Rust through here.
@@ -32,27 +34,47 @@ thread_local! {
 }
 
 fn with_state(f: impl FnOnce(&mut State)) {
-    STATE.with(|cell| match cell.try_borrow_mut() {
-        Ok(mut guard) => {
-            if let Some(state) = guard.as_mut() {
-                f(state)
-            }
+    STATE.with(|cell| {
+        // The platform can call back while we mutate views (layout passes,
+        // navigation callbacks). We always re-layout after applying, so a
+        // nested callback is safely skipped.
+        if let Ok(mut guard) = cell.try_borrow_mut()
+            && let Some(state) = guard.as_mut()
+        {
+            f(state)
         }
-        Err(_) => eprintln!("prism-macos: re-entrant UI callback ignored"),
     });
 }
 
 fn dispatch(event: UiEvent) {
+    with_state(|s| s.dispatch(event));
+}
+
+/// Pops one screen: from a specific stack's Back button, or (⌘[) from the
+/// innermost stack that can go back.
+fn go_back(stack: Option<NodeId>) {
     with_state(|s| {
-        let patches = s.runtime.dispatch(event);
-        if !patches.is_empty() {
-            s.renderer.apply(&patches);
-            s.relayout();
+        let stacks = &s.renderer.widgets.stacks;
+        let found = match stack {
+            Some(id) => stacks.iter().find(|st| st.id == id),
+            None => stacks.iter().rev().find(|st| st.screens.borrow().len() > 1),
+        };
+        if let Some(st) = found {
+            let (id, depth) = (st.id, st.screens.borrow().len());
+            s.dispatch(UiEvent::Back(id, depth.saturating_sub(1)));
         }
     });
 }
 
 impl State {
+    fn dispatch(&mut self, event: UiEvent) {
+        let patches = self.runtime.dispatch(event);
+        if !patches.is_empty() {
+            self.renderer.apply(&patches);
+            self.relayout();
+        }
+    }
+
     fn relayout(&mut self) {
         let size = self.renderer.widgets.root.frame().size;
         self.renderer
@@ -163,6 +185,18 @@ define_class!(
         fn on_action(&self, sender: &NSButton) {
             dispatch(UiEvent::Click(sender.tag() as NodeId));
         }
+
+        /// A stack's header Back button (tag = stack id).
+        #[unsafe(method(onBack:))]
+        fn on_back(&self, sender: &NSButton) {
+            go_back(Some(sender.tag() as NodeId));
+        }
+
+        /// Go ▸ Back (⌘[).
+        #[unsafe(method(onBackMenu:))]
+        fn on_back_menu(&self, _sender: Option<&AnyObject>) {
+            go_back(None);
+        }
     }
 
     impl Target {
@@ -213,9 +247,25 @@ impl Target {
 // Widgets implementation
 // ---------------------------------------------------------------------------
 
+const HEADER_HEIGHT: f64 = 44.;
+
+/// A navigation stack: a native header bar (Back button + title) above the
+/// top screen. Other screens stay alive, detached, keeping their state.
+pub struct MacStack {
+    id: NodeId,
+    container: Retained<PrismView>,
+    header: Retained<PrismView>,
+    separator: Retained<PrismView>,
+    back: Retained<NSButton>,
+    title: Retained<NSTextField>,
+    screens: RefCell<Vec<View>>,
+}
+
 #[derive(Clone)]
 pub enum View {
     Container(Retained<PrismView>),
+    Screen(Retained<PrismView>),
+    Stack(Rc<MacStack>),
     Label(Retained<NSTextField>),
     Button(Retained<NSButton>),
     Input(Retained<NSTextField>),
@@ -224,9 +274,19 @@ pub enum View {
 impl View {
     fn ns(&self) -> &NSView {
         match self {
-            View::Container(v) => v,
+            View::Container(v) | View::Screen(v) => v,
+            View::Stack(s) => &s.container,
             View::Label(v) | View::Input(v) => v,
             View::Button(v) => v,
+        }
+    }
+
+    fn id(&self) -> NodeId {
+        match self {
+            View::Container(v) | View::Screen(v) => v.ivars().id.get(),
+            View::Stack(s) => s.id,
+            View::Label(v) | View::Input(v) => v.tag() as NodeId,
+            View::Button(v) => v.tag() as NodeId,
         }
     }
 }
@@ -235,6 +295,66 @@ pub struct AppKit {
     mtm: MainThreadMarker,
     target: Retained<Target>,
     root: Retained<PrismView>,
+    stacks: Vec<Rc<MacStack>>,
+    titles: HashMap<NodeId, String>,
+}
+
+impl AppKit {
+    fn new_stack(&self, id: NodeId) -> MacStack {
+        let mtm = self.mtm;
+        let header = PrismView::new(mtm, 0);
+        *header.ivars().background.borrow_mut() = Some(NSColor::windowBackgroundColor());
+        let separator = PrismView::new(mtm, 0);
+        *separator.ivars().background.borrow_mut() = Some(NSColor::separatorColor());
+        let target: &AnyObject = &self.target;
+        let back = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                &NSString::from_str("‹ Back"),
+                Some(target),
+                Some(sel!(onBack:)),
+                mtm,
+            )
+        };
+        back.setTag(id as isize);
+        let title = NSTextField::labelWithString(&NSString::new(), mtm);
+        title.setFont(Some(&NSFont::systemFontOfSize_weight(13., unsafe {
+            NSFontWeightSemibold
+        })));
+        title.setAlignment(NSTextAlignment::Center);
+        header.setSubviews(&NSArray::from_slice(&[&*title as &NSView, &back]));
+        MacStack {
+            id,
+            container: PrismView::new(mtm, id),
+            header,
+            separator,
+            back,
+            title,
+            screens: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Shows the top screen, its title, and Back when there is somewhere to go.
+    fn refresh_stack(&self, stack: &MacStack) {
+        let screens = stack.screens.borrow();
+        let mut subviews: Vec<&NSView> = vec![&stack.header, &stack.separator];
+        if let Some(top) = screens.last() {
+            subviews.push(top.ns());
+        }
+        stack.container.setSubviews(&NSArray::from_slice(&subviews));
+        stack.back.setHidden(screens.len() <= 1);
+        let title = screens
+            .last()
+            .and_then(|t| self.titles.get(&t.id()))
+            .map(String::as_str)
+            .unwrap_or("");
+        let title = NSString::from_str(title);
+        stack.title.setStringValue(&title);
+        if let Some(window) = stack.container.window()
+            && title.length() > 0
+        {
+            window.setTitle(&title);
+        }
+    }
 }
 
 fn ns_color(c: Color) -> Retained<NSColor> {
@@ -269,6 +389,12 @@ impl Widgets for AppKit {
         let empty = NSString::new();
         match kind {
             NodeKind::View => View::Container(PrismView::new(mtm, id)),
+            NodeKind::Screen => View::Screen(PrismView::new(mtm, id)),
+            NodeKind::Stack => {
+                let stack = Rc::new(self.new_stack(id));
+                self.stacks.push(stack.clone());
+                View::Stack(stack)
+            }
             NodeKind::Text => View::Label(NSTextField::wrappingLabelWithString(&empty, mtm)),
             NodeKind::Button => {
                 let target: &AnyObject = &self.target;
@@ -296,7 +422,11 @@ impl Widgets for AppKit {
     fn set_style(&mut self, view: &View, style: &Style) {
         view.ns().setAlphaValue(style.opacity as f64);
         match view {
-            View::Container(v) => {
+            View::Stack(st) => {
+                *st.container.ivars().background.borrow_mut() = style.background.map(ns_color);
+                st.container.setNeedsDisplay(true);
+            }
+            View::Container(v) | View::Screen(v) => {
                 let iv = v.ivars();
                 *iv.background.borrow_mut() = style.background.map(ns_color);
                 *iv.border_color.borrow_mut() = style.border_color.map(ns_color);
@@ -329,7 +459,13 @@ impl Widgets for AppKit {
                 }
             }
             View::Button(b) => b.setTitle(&s),
-            View::Container(_) => {}
+            View::Screen(_) => {
+                self.titles.insert(view.id(), text.to_string());
+                for stack in &self.stacks {
+                    self.refresh_stack(stack);
+                }
+            }
+            View::Container(_) | View::Stack(_) => {}
         }
     }
 
@@ -346,6 +482,11 @@ impl Widgets for AppKit {
     }
 
     fn set_children(&mut self, parent: &View, children: &[View]) {
+        if let View::Stack(stack) = parent {
+            *stack.screens.borrow_mut() = children.to_vec();
+            self.refresh_stack(stack);
+            return;
+        }
         let views: Vec<&NSView> = children.iter().map(View::ns).collect();
         parent.ns().setSubviews(&NSArray::from_slice(&views));
     }
@@ -355,8 +496,13 @@ impl Widgets for AppKit {
     }
 
     fn destroy(&mut self, view: &View) {
-        if let View::Input(f) = view {
-            unsafe { f.setDelegate(None) };
+        match view {
+            View::Input(f) => unsafe { f.setDelegate(None) },
+            View::Stack(st) => self.stacks.retain(|s| s.id != st.id),
+            View::Screen(_) => {
+                self.titles.remove(&view.id());
+            }
+            _ => {}
         }
         view.ns().removeFromSuperview();
     }
@@ -374,16 +520,46 @@ impl Widgets for AppKit {
                 NSSize::new(s.width.max(120.), s.height)
             }
             View::Button(b) => b.fittingSize(),
-            View::Container(_) => NSSize::ZERO,
+            View::Container(_) | View::Screen(_) | View::Stack(_) => NSSize::ZERO,
         };
         (size.width.ceil() as f32, size.height.ceil() as f32)
     }
 
     fn set_frame(&mut self, view: &View, x: f32, y: f32, w: f32, h: f32) {
-        view.ns().setFrame(NSRect::new(
-            NSPoint::new(x as f64, y as f64),
-            NSSize::new(w as f64, h as f64),
-        ));
+        let rect =
+            |x: f64, y: f64, w: f64, h: f64| NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));
+        view.ns()
+            .setFrame(rect(x as f64, y as f64, w as f64, h as f64));
+        if let View::Stack(st) = view {
+            let w = w as f64;
+            st.header.setFrame(rect(0., 0., w, HEADER_HEIGHT - 1.));
+            st.separator.setFrame(rect(0., HEADER_HEIGHT - 1., w, 1.));
+            let b = st.back.fittingSize();
+            st.back.setFrame(rect(
+                8.,
+                ((HEADER_HEIGHT - 1. - b.height) / 2.).round(),
+                b.width,
+                b.height,
+            ));
+            let t = st.title.fittingSize();
+            st.title.setFrame(rect(
+                0.,
+                ((HEADER_HEIGHT - 1. - t.height) / 2.).round(),
+                w,
+                t.height,
+            ));
+        }
+    }
+
+    fn screen_viewport(&mut self, stack: &View, _screen: &View) -> Viewport {
+        let size = stack.ns().frame().size;
+        Viewport {
+            x: 0.,
+            y: HEADER_HEIGHT as f32,
+            width: size.width as f32,
+            height: (size.height - HEADER_HEIGHT).max(0.) as f32,
+            insets: Insets::default(),
+        }
     }
 }
 
@@ -407,29 +583,39 @@ fn menu_item(
     }
 }
 
-fn install_menu(app: &NSApplication, mtm: MainThreadMarker, title: &str) {
+fn install_menu(app: &NSApplication, mtm: MainThreadMarker, title: &str, target: &Target) {
     let bar = NSMenu::new(mtm);
-    let submenu = |items: Vec<Retained<NSMenuItem>>| {
+    let submenu = |name: &str, items: Vec<Retained<NSMenuItem>>| {
         let item = NSMenuItem::new(mtm);
         let menu = NSMenu::new(mtm);
+        menu.setTitle(&NSString::from_str(name));
         for i in items {
             menu.addItem(&i);
         }
         item.setSubmenu(Some(&menu));
         bar.addItem(&item);
     };
-    submenu(vec![menu_item(
-        mtm,
-        &format!("Quit {title}"),
-        sel!(terminate:),
-        "q",
-    )]);
-    submenu(vec![
-        menu_item(mtm, "Cut", sel!(cut:), "x"),
-        menu_item(mtm, "Copy", sel!(copy:), "c"),
-        menu_item(mtm, "Paste", sel!(paste:), "v"),
-        menu_item(mtm, "Select All", sel!(selectAll:), "a"),
-    ]);
+    submenu(
+        title,
+        vec![menu_item(
+            mtm,
+            &format!("Quit {title}"),
+            sel!(terminate:),
+            "q",
+        )],
+    );
+    submenu(
+        "Edit",
+        vec![
+            menu_item(mtm, "Cut", sel!(cut:), "x"),
+            menu_item(mtm, "Copy", sel!(copy:), "c"),
+            menu_item(mtm, "Paste", sel!(paste:), "v"),
+            menu_item(mtm, "Select All", sel!(selectAll:), "a"),
+        ],
+    );
+    let back = menu_item(mtm, "Back", sel!(onBackMenu:), "[");
+    unsafe { back.setTarget(Some(target)) };
+    submenu("Go", vec![back]);
     app.setMainMenu(Some(&bar));
 }
 
@@ -439,9 +625,8 @@ pub fn run(config: AppConfig, init: AppInit) {
         MainThreadMarker::new().expect("prism-macos: run() must be called on the main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
-    install_menu(&app, mtm, &config.title);
-
     let target = Target::new(mtm);
+    install_menu(&app, mtm, &config.title, &target);
     let root = PrismView::new(mtm, 0);
     let frame = NSRect::new(
         NSPoint::ZERO,
@@ -466,11 +651,14 @@ pub fn run(config: AppConfig, init: AppInit) {
     window.setDelegate(Some(ProtocolObject::from_ref(&*target)));
     window.center();
 
-    let mut runtime = Runtime::new(&init);
+    let path = std::env::var("PRISM_PATH").unwrap_or_else(|_| "/".into());
+    let mut runtime = Runtime::with_path(&init, &path);
     let mut renderer = NativeRenderer::new(AppKit {
         mtm,
         target: target.clone(),
         root,
+        stacks: Vec::new(),
+        titles: HashMap::new(),
     });
     renderer.apply(&runtime.render());
     let mut state = State { runtime, renderer };

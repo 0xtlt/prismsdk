@@ -15,7 +15,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::app::{AnyEntity, App, EntityId};
-use crate::element::{ClickEvent, Element, Handler, InputEvent, NodeKind, VNode};
+use crate::element::{
+    BackEvent, ClickEvent, Element, Handler, InputEvent, NavigateEvent, NodeKind, VNode,
+};
 use crate::style::Style;
 
 pub type NodeId = u64;
@@ -66,6 +68,10 @@ pub enum Patch {
 pub enum UiEvent {
     Click(NodeId),
     Input(NodeId, String),
+    /// A stack was popped natively down to `depth` screens.
+    Back(NodeId, usize),
+    /// A stack was asked to show `path` (e.g. browser forward).
+    Navigate(NodeId, String),
 }
 
 /// A mounted host node.
@@ -97,6 +103,8 @@ pub struct Reconciler {
     next_id: NodeId,
     click: HashMap<NodeId, Handler<ClickEvent>>,
     input: HashMap<NodeId, Handler<InputEvent>>,
+    back: HashMap<NodeId, Handler<BackEvent>>,
+    navigate: HashMap<NodeId, Handler<NavigateEvent>>,
     // Per-frame scratch state.
     dirty: HashSet<EntityId>,
     patches: Vec<Patch>,
@@ -115,6 +123,14 @@ impl Reconciler {
 
     pub fn input_handler(&self, id: NodeId) -> Option<Handler<InputEvent>> {
         self.input.get(&id).cloned()
+    }
+
+    pub fn back_handler(&self, id: NodeId) -> Option<Handler<BackEvent>> {
+        self.back.get(&id).cloned()
+    }
+
+    pub fn navigate_handler(&self, id: NodeId) -> Option<Handler<NavigateEvent>> {
+        self.navigate.get(&id).cloned()
     }
 
     /// Number of entity renders performed by the last [`render`](Self::render).
@@ -280,6 +296,8 @@ impl Reconciler {
             children,
             on_click,
             on_input,
+            on_back,
+            on_navigate,
             ..
         } = *vnode;
         let clickable = kind == NodeKind::Button || on_click.is_some();
@@ -320,6 +338,14 @@ impl Reconciler {
         match on_input {
             Some(h) => self.input.insert(id, h),
             None => self.input.remove(&id),
+        };
+        match on_back {
+            Some(h) => self.back.insert(id, h),
+            None => self.back.remove(&id),
+        };
+        match on_navigate {
+            Some(h) => self.navigate.insert(id, h),
+            None => self.navigate.remove(&id),
         };
 
         // Children.
@@ -425,6 +451,8 @@ impl Reconciler {
         }
         self.click.remove(&id);
         self.input.remove(&id);
+        self.back.remove(&id);
+        self.navigate.remove(&id);
         self.destroyed.push(id);
     }
 }

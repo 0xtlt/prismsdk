@@ -11,6 +11,7 @@ use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
 use crate::element::{Element, Handler, IntoElement};
+use crate::router::{NavOp, Router};
 
 /// A stateful view. `render` runs on first mount and whenever the entity is
 /// notified; other entities' output is reused as-is.
@@ -99,7 +100,6 @@ fn render_entity<T: Render>(app: &mut App, id: EntityId) -> Element {
 type Observer = Rc<dyn Fn(&mut App)>;
 
 /// Owns every entity and tracks which ones must be re-rendered.
-#[derive(Default)]
 pub struct App {
     entities: HashMap<EntityId, Option<Box<dyn Any>>>,
     next_entity: u64,
@@ -108,11 +108,70 @@ pub struct App {
     pending: Vec<EntityId>,
     observers: HashMap<EntityId, Vec<Observer>>,
     root: Option<AnyEntity>,
+    initial_path: String,
+    navigator: Option<Entity<Router>>,
+    nav_queue: Vec<NavOp>,
+}
+
+impl Default for App {
+    fn default() -> Self {
+        App {
+            entities: HashMap::new(),
+            next_entity: 0,
+            dirty: HashSet::new(),
+            pending: Vec::new(),
+            observers: HashMap::new(),
+            root: None,
+            initial_path: "/".into(),
+            navigator: None,
+            nav_queue: Vec::new(),
+        }
+    }
 }
 
 impl App {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    // --- Navigation (applied after the current event, by the active Router) ---
+
+    /// Pushes the screen for `path` (no-op if it is already on top).
+    pub fn navigate(&mut self, path: impl Into<String>) {
+        self.nav_queue.push(NavOp::Push(path.into()));
+    }
+
+    /// Pops the top screen.
+    pub fn back(&mut self) {
+        self.nav_queue.push(NavOp::Back);
+    }
+
+    /// Replaces the top screen.
+    pub fn replace(&mut self, path: impl Into<String>) {
+        self.nav_queue.push(NavOp::Replace(path.into()));
+    }
+
+    /// Replaces the whole stack (e.g. after login).
+    pub fn reset(&mut self, path: impl Into<String>) {
+        self.nav_queue.push(NavOp::Reset(path.into()));
+    }
+
+    /// Path of the visible screen, if a router is active.
+    pub fn current_path(&self) -> Option<&str> {
+        self.navigator.map(|r| self.read(&r).current_path())
+    }
+
+    /// The path the app was opened with (request URL on the web).
+    pub fn initial_path(&self) -> &str {
+        &self.initial_path
+    }
+
+    pub fn set_initial_path(&mut self, path: impl AsRef<str>) {
+        self.initial_path = crate::router::normalize_path(path.as_ref());
+    }
+
+    pub(crate) fn set_navigator(&mut self, router: Entity<Router>) {
+        self.navigator = Some(router);
     }
 
     /// Creates a new entity. `build` receives a context for the entity being built.
@@ -173,6 +232,12 @@ impl App {
         self.dirty.remove(&entity.id);
     }
 
+    pub(crate) fn release_any(&mut self, entity: AnyEntity) {
+        self.entities.remove(&entity.id());
+        self.observers.remove(&entity.id());
+        self.dirty.remove(&entity.id());
+    }
+
     /// Marks one entity for re-render and queues its observers.
     pub fn notify_entity(&mut self, id: EntityId) {
         self.dirty.insert(id);
@@ -197,6 +262,13 @@ impl App {
     /// Delivers queued notifications to observers. Each entity's observers run
     /// at most once per flush, so observer cycles terminate.
     pub(crate) fn flush_effects(&mut self) {
+        if let Some(router) = self.navigator.filter(|r| self.contains(r.id())) {
+            for op in std::mem::take(&mut self.nav_queue) {
+                router.update(self, |r, cx| r.apply(op, cx));
+            }
+        } else {
+            self.nav_queue.clear();
+        }
         let mut delivered = HashSet::new();
         while let Some(id) = self.pending.pop() {
             if !delivered.insert(id) {

@@ -34,6 +34,38 @@ fn main() {
 - Derived state: `cx.observe(&other, |this, other, cx| this.total = other.read(cx).total())` runs when `other` changes, then re-renders `this`.
 - Each entity renders one root node (a fragment gets wrapped in a `div`).
 
+## Navigation
+
+A URL-style router, rendered with each platform's native navigation:
+
+```rust
+Application::new().title("Prism").run(|cx| {
+    let store = cx.new_entity(|_| Store::new());
+    Router::new()
+        .route("/", move |cx, _| cx.new_entity(|cx| Home::new(store, cx)))
+        .route("/todos/:id", move |cx, p| {
+            let id = p.parse("id").unwrap_or(0);
+            cx.new_entity(|cx| TodoDetail::new(store, id, cx))
+        })
+        .build(cx)
+});
+
+// A route's view returns a screen; its title goes in the navigation bar.
+screen("Details").child(...)
+
+// Anywhere:
+cx.navigate("/todos/2");   cx.back();   cx.replace("/login");   cx.reset("/");
+div().on_click(navigate_to("/todos/2"))   // handler helpers: navigate_to, go_back
+```
+
+| | Stack | Back | Deep links |
+|---|---|---|---|
+| **iOS** | `UINavigationController` (large titles, push animation) | system button + edge swipe | `PRISM_PATH=/todos/1` |
+| **macOS** | header bar (title, Back button) | Back button, Go ▸ Back ⌘[ | `PRISM_PATH=/todos/1` |
+| **Web** | header bar | header button + browser Back/Forward (History API) | any URL, server-rendered |
+
+Patterns: `/`, `/todos`, `/todos/:id`, `/files/*rest`. Unknown paths show a "Not found" screen (or `.not_found(...)`). Opening a deep link puts `/` underneath so Back works.
+
 ## Architecture
 
 ```
@@ -77,5 +109,5 @@ mise run check      # type-check host, web and iOS-simulator builds
 
 ## Status (v0.1)
 
-Primitives: `div`, `text`, `button`, `text_input`. Keyed lists, nested entities, controlled inputs.
-Not yet: scrolling, images, timers/async, animations, Android/Windows/Linux backends.
+Primitives: `div`, `text`, `button`, `text_input`, `screen`, `Router`. Keyed lists, entity-granular updates, observers, controlled inputs, native navigation.
+Not yet: tabs, modals, scrolling, images, timers/async, animations, Android/Windows/Linux backends.

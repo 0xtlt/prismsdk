@@ -1,26 +1,28 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::OnceLock;
 
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
+use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{
     ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel,
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
-use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
+use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSString};
 use objc2_ui_kit::{
     NSTextAlignment, UIApplication, UIApplicationDelegate, UIButton, UIButtonType, UIColor,
     UIControlEvents, UIControlState, UIFont, UIFontWeightBold, UIFontWeightMedium,
-    UIFontWeightRegular, UIFontWeightSemibold, UILabel, UIResponder, UIScene,
-    UISceneConnectionOptions, UISceneDelegate, UISceneSession, UITapGestureRecognizer,
-    UITextBorderStyle, UITextField, UIView, UIViewController, UIWindow, UIWindowScene,
-    UIWindowSceneDelegate,
+    UIFontWeightRegular, UIFontWeightSemibold, UILabel, UINavigationController,
+    UINavigationControllerDelegate, UIResponder, UIScene, UISceneConnectionOptions,
+    UISceneDelegate, UISceneSession, UITapGestureRecognizer, UITextBorderStyle, UITextField,
+    UIView, UIViewController, UIWindow, UIWindowScene, UIWindowSceneDelegate,
 };
 use prism_core::{
     AppConfig, AppInit, Backend, Color, FontWeight, NodeId, NodeKind, Runtime, Style, TextAlign,
     UiEvent,
 };
-use prism_native::{Insets, NativeRenderer, Widgets};
+use prism_native::{Insets, NativeRenderer, Viewport, Widgets};
 
 static APP: OnceLock<(AppConfig, AppInit)> = OnceLock::new();
 
@@ -38,13 +40,15 @@ thread_local! {
 }
 
 fn with_state(f: impl FnOnce(&mut State)) {
-    STATE.with(|cell| match cell.try_borrow_mut() {
-        Ok(mut guard) => {
-            if let Some(state) = guard.as_mut() {
-                f(state)
-            }
+    STATE.with(|cell| {
+        // The platform can call back while we mutate views (layout passes,
+        // navigation callbacks). We always re-layout after applying, so a
+        // nested callback is safely skipped.
+        if let Ok(mut guard) = cell.try_borrow_mut()
+            && let Some(state) = guard.as_mut()
+        {
+            f(state)
         }
-        Err(_) => eprintln!("prism-ios: re-entrant UI callback ignored"),
     });
 }
 
@@ -106,6 +110,23 @@ define_class!(
     }
 
     unsafe impl NSObjectProtocol for Target {}
+
+    unsafe impl UINavigationControllerDelegate for Target {
+        /// Fires after pushes, pops and swipe-back. Reports the native depth;
+        /// the router ignores it when it already matches.
+        #[unsafe(method(navigationController:didShowViewController:animated:))]
+        fn did_show(
+            &self,
+            nav: &UINavigationController,
+            _controller: &UIViewController,
+            _animated: bool,
+        ) {
+            let depth = nav.viewControllers().count();
+            if let Some(view) = nav.viewIfLoaded() {
+                dispatch(UiEvent::Back(view.tag() as NodeId, depth));
+            }
+        }
+    }
 );
 
 impl Target {
@@ -132,6 +153,29 @@ define_class!(
 );
 
 impl PrismViewController {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(());
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+define_class!(
+    /// Hosts one Prism screen inside a `UINavigationController`.
+    #[unsafe(super(UIViewController, UIResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PrismScreenController"]
+    pub struct ScreenController;
+
+    impl ScreenController {
+        #[unsafe(method(viewDidLayoutSubviews))]
+        fn view_did_layout_subviews(&self) {
+            let _: () = unsafe { msg_send![super(self), viewDidLayoutSubviews] };
+            with_state(State::relayout);
+        }
+    }
+);
+
+impl ScreenController {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(());
         unsafe { msg_send![super(this), init] }
@@ -193,11 +237,15 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
     let root = controller.view().expect("view controller has a view");
     root.setBackgroundColor(Some(&UIColor::systemBackgroundColor()));
 
-    let mut runtime = Runtime::new(init);
+    let path = std::env::var("PRISM_PATH").unwrap_or_else(|_| "/".into());
+    let mut runtime = Runtime::with_path(init, &path);
     let mut renderer = NativeRenderer::new(UiKit {
         mtm,
         target: Target::new(mtm),
         root,
+        controller: controller.clone(),
+        screens: HashMap::new(),
+        titles: HashMap::new(),
     });
     renderer.apply(&runtime.render());
     STATE.with(|cell| *cell.borrow_mut() = Some(State { runtime, renderer }));
@@ -211,9 +259,16 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
 // Widgets
 // ---------------------------------------------------------------------------
 
+pub struct NavStack {
+    nav: Retained<UINavigationController>,
+    view: Retained<UIView>,
+}
+
 #[derive(Clone)]
 pub enum View {
     Container(Retained<UIView>),
+    Screen(Retained<UIView>),
+    Stack(Rc<NavStack>),
     Label(Retained<UILabel>),
     Button(Retained<UIButton>),
     Input(Retained<UITextField>),
@@ -222,11 +277,16 @@ pub enum View {
 impl View {
     fn ui(&self) -> &UIView {
         match self {
-            View::Container(v) => v,
+            View::Container(v) | View::Screen(v) => v,
+            View::Stack(s) => &s.view,
             View::Label(v) => v,
             View::Button(v) => v,
             View::Input(v) => v,
         }
+    }
+
+    fn id(&self) -> NodeId {
+        self.ui().tag() as NodeId
     }
 }
 
@@ -234,6 +294,31 @@ pub struct UiKit {
     mtm: MainThreadMarker,
     target: Retained<Target>,
     root: Retained<UIView>,
+    controller: Retained<PrismViewController>,
+    /// One view controller per child of a navigation stack.
+    screens: HashMap<NodeId, Retained<ScreenController>>,
+    titles: HashMap<NodeId, String>,
+}
+
+impl UiKit {
+    /// The view controller hosting `view` in a stack (created on first use).
+    fn screen_controller(&mut self, view: &View) -> Retained<ScreenController> {
+        let id = view.id();
+        let mtm = self.mtm;
+        let vc = self
+            .screens
+            .entry(id)
+            .or_insert_with(|| ScreenController::new(mtm))
+            .clone();
+        let host = vc.view().expect("view controller has a view");
+        host.setBackgroundColor(Some(&UIColor::systemBackgroundColor()));
+        if view.ui().superview().as_deref() != Some(&*host) {
+            host.addSubview(view.ui());
+        }
+        let title = self.titles.get(&id).map(|t| NSString::from_str(t));
+        vc.setTitle(title.as_deref());
+        vc
+    }
 }
 
 fn ui_color(c: Color) -> Retained<UIColor> {
@@ -268,6 +353,14 @@ impl Widgets for UiKit {
         let target: &AnyObject = &self.target;
         let view = match kind {
             NodeKind::View => View::Container(UIView::new(mtm)),
+            NodeKind::Screen => View::Screen(UIView::new(mtm)),
+            NodeKind::Stack => {
+                let nav = UINavigationController::new(mtm);
+                nav.navigationBar().setPrefersLargeTitles(true);
+                unsafe { nav.setDelegate(Some(ProtocolObject::from_ref(&*self.target))) };
+                let view = nav.view().expect("navigation controller has a view");
+                View::Stack(Rc::new(NavStack { nav, view }))
+            }
             NodeKind::Text => {
                 let l = UILabel::new(mtm);
                 l.setNumberOfLines(0);
@@ -317,7 +410,7 @@ impl Widgets for UiKit {
 
         let text_color = style.text_color.map(ui_color);
         match view {
-            View::Container(_) => {}
+            View::Container(_) | View::Screen(_) | View::Stack(_) => {}
             View::Label(l) => {
                 unsafe { l.setFont(Some(&font(style))) };
                 unsafe { l.setTextColor(Some(&text_color.unwrap_or_else(UIColor::labelColor))) };
@@ -347,7 +440,14 @@ impl Widgets for UiKit {
                 }
             }
             View::Button(b) => b.setTitle_forState(Some(&s), UIControlState::Normal),
-            View::Container(_) => {}
+            View::Screen(_) => {
+                let id = view.id();
+                self.titles.insert(id, text.to_string());
+                if let Some(vc) = self.screens.get(&id) {
+                    vc.setTitle(Some(&s));
+                }
+            }
+            View::Container(_) | View::Stack(_) => {}
         }
     }
 
@@ -378,6 +478,24 @@ impl Widgets for UiKit {
     }
 
     fn set_children(&mut self, parent: &View, children: &[View]) {
+        if let View::Stack(stack) = parent {
+            let controllers: Vec<Retained<UIViewController>> = children
+                .iter()
+                .map(|c| Retained::into_super(self.screen_controller(c)))
+                .collect();
+            let current = stack.nav.viewControllers();
+            let unchanged = current.count() == controllers.len()
+                && current.iter().zip(&controllers).all(|(a, b)| *a == **b);
+            if !unchanged {
+                // Animate pushes/pops, but not the very first screen(s).
+                let animated = current.count() > 0;
+                stack.nav.setViewControllers_animated(
+                    &NSArray::from_retained_slice(&controllers),
+                    animated,
+                );
+            }
+            return;
+        }
         let parent = parent.ui();
         for (i, child) in children.iter().enumerate() {
             parent.insertSubview_atIndex(child.ui(), i as isize);
@@ -392,17 +510,33 @@ impl Widgets for UiKit {
         for sub in self.root.subviews().iter() {
             sub.removeFromSuperview();
         }
-        self.root.addSubview(view.ui());
+        for child in self.controller.childViewControllers().iter() {
+            child.removeFromParentViewController();
+        }
+        if let View::Stack(stack) = view {
+            // Proper containment, so the navigation controller gets the safe
+            // area, rotation and appearance callbacks.
+            self.controller.addChildViewController(&stack.nav);
+            self.root.addSubview(view.ui());
+            stack
+                .nav
+                .didMoveToParentViewController(Some(&self.controller));
+        } else {
+            self.root.addSubview(view.ui());
+        }
     }
 
     fn destroy(&mut self, view: &View) {
+        let id = view.id();
+        self.screens.remove(&id);
+        self.titles.remove(&id);
         view.ui().removeFromSuperview();
     }
 
     fn measure(&mut self, view: &View, max_width: Option<f32>) -> (f32, f32) {
         let limit = CGSize::new(max_width.map_or(f64::MAX / 4., |w| w as f64), f64::MAX / 4.);
         let size = match view {
-            View::Container(_) => CGSize::ZERO,
+            View::Container(_) | View::Screen(_) | View::Stack(_) => CGSize::ZERO,
             View::Input(f) => {
                 let s = f.sizeThatFits(limit);
                 CGSize::new(s.width.max(120.), s.height.max(36.))
@@ -417,6 +551,28 @@ impl Widgets for UiKit {
             CGPoint::new(x as f64, y as f64),
             CGSize::new(w as f64, h as f64),
         ));
+    }
+
+    fn screen_viewport(&mut self, stack: &View, screen: &View) -> Viewport {
+        let host = self
+            .screens
+            .get(&screen.id())
+            .and_then(|vc| vc.view())
+            .unwrap_or_else(|| stack.ui().retain());
+        let b = host.bounds();
+        let i = host.safeAreaInsets();
+        Viewport {
+            x: 0.,
+            y: 0.,
+            width: b.size.width as f32,
+            height: b.size.height as f32,
+            insets: Insets {
+                top: i.top as f32,
+                right: i.right as f32,
+                bottom: i.bottom as f32,
+                left: i.left as f32,
+            },
+        }
     }
 }
 

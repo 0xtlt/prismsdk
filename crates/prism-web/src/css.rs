@@ -54,7 +54,8 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
         let _ = write!(w, "gap:{}px;", s.gap);
     }
     let p = s.padding;
-    if kind == NodeKind::View && (p.top, p.right, p.bottom, p.left) != (0., 0., 0., 0.) {
+    let container = matches!(kind, NodeKind::View | NodeKind::Stack | NodeKind::Screen);
+    if container && (p.top, p.right, p.bottom, p.left) != (0., 0., 0., 0.) {
         let _ = write!(
             w,
             "padding:{}px {}px {}px {}px;",

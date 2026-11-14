@@ -32,6 +32,20 @@ pub trait Widgets {
     fn measure(&mut self, view: &Self::View, max_width: Option<f32>) -> (f32, f32);
     /// Place a view in its parent's coordinate space (top-left origin).
     fn set_frame(&mut self, view: &Self::View, x: f32, y: f32, w: f32, h: f32);
+    /// Where `stack` shows `screen` (in the coordinates of the screen's
+    /// superview) and what its content must avoid (navigation bar, safe area).
+    /// Called after the stack got its frame.
+    fn screen_viewport(&mut self, stack: &Self::View, screen: &Self::View) -> Viewport;
+}
+
+/// The area a navigation stack gives to one of its screens.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Viewport {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub insets: Insets,
 }
 
 /// Safe-area or window insets applied around the root.
@@ -59,6 +73,9 @@ pub struct NativeRenderer<W: Widgets> {
     viewport: taffy::NodeId,
     root: Option<NodeId>,
     insets: Insets,
+    /// Screens of each stack. Screens are separate layout roots: their size
+    /// comes from the platform's navigation container, not from flexbox.
+    stack_screens: HashMap<NodeId, Vec<NodeId>>,
 }
 
 impl<W: Widgets> NativeRenderer<W> {
@@ -75,6 +92,7 @@ impl<W: Widgets> NativeRenderer<W> {
             viewport,
             root: None,
             insets: Insets::default(),
+            stack_screens: HashMap::new(),
         }
     }
 
@@ -98,23 +116,34 @@ impl<W: Widgets> NativeRenderer<W> {
             ..Default::default()
         };
         let _ = self.taffy.set_style(self.viewport, viewport_style);
+        if self.compute(self.viewport, width, height)
+            && let Some(root) = self.root
+        {
+            self.place(root);
+        }
+    }
+
+    /// Runs flexbox on the subtree at `node`, measuring leaves natively.
+    fn compute(&mut self, node: taffy::NodeId, width: f32, height: f32) -> bool {
         let widgets = &mut self.widgets;
         let result = self.taffy.compute_layout_with_measure(
-            self.viewport,
+            node,
             Size {
                 width: AvailableSpace::Definite(width),
                 height: AvailableSpace::Definite(height),
             },
-            |input, _node, view, _style| {
-                let known = input.known_dimensions;
-                let size = match view {
-                    None => Size::ZERO,
-                    Some(_) if known.width.is_some() && known.height.is_some() => Size {
-                        width: known.width.unwrap(),
-                        height: known.height.unwrap(),
-                    },
-                    Some(view) => {
-                        let max_width = known.width.or(match input.available_space.width {
+            |input, _node, view, style| {
+                // Leaf layout (style size, min/max, padding) is taffy's; we only
+                // provide the content size of native leaves.
+                taffy::compute_leaf_layout(
+                    input,
+                    style,
+                    |_, _| 0.0,
+                    |known, available| {
+                        let Some(view) = view else {
+                            return Size::ZERO;
+                        };
+                        let max_width = known.width.or(match available.width {
                             AvailableSpace::Definite(w) => Some(w),
                             _ => None,
                         });
@@ -123,17 +152,43 @@ impl<W: Widgets> NativeRenderer<W> {
                             width: known.width.unwrap_or(w),
                             height: known.height.unwrap_or(h),
                         }
-                    }
-                };
-                taffy::LayoutOutput::from_outer_size(size)
+                    },
+                )
             },
         );
-        if let Err(err) = result {
-            eprintln!("prism: layout failed: {err}");
-            return;
+        match result {
+            Ok(()) => true,
+            Err(err) => {
+                eprintln!("prism: layout failed: {err}");
+                false
+            }
         }
-        if let Some(root) = self.root {
-            self.place(root);
+    }
+
+    /// Lays out one screen of a stack in the area the platform gives it.
+    fn layout_screen(&mut self, stack: NodeId, screen: NodeId) {
+        let (Some(st), Some(sc)) = (self.nodes.get(&stack), self.nodes.get(&screen)) else {
+            return;
+        };
+        let vp = self.widgets.screen_viewport(&st.view, &sc.view);
+        let mut style = to_taffy(&sc.style, NodeKind::View);
+        let (p, i) = (sc.style.padding, vp.insets);
+        style.padding = Rect {
+            top: LengthPercentage::length(p.top + i.top),
+            right: LengthPercentage::length(p.right + i.right),
+            bottom: LengthPercentage::length(p.bottom + i.bottom),
+            left: LengthPercentage::length(p.left + i.left),
+        };
+        style.size = Size {
+            width: Dimension::length(vp.width),
+            height: Dimension::length(vp.height),
+        };
+        let (layout, view) = (sc.layout, sc.view.clone());
+        let _ = self.taffy.set_style(layout, style);
+        if self.compute(layout, vp.width, vp.height) {
+            self.widgets
+                .set_frame(&view, vp.x, vp.y, vp.width, vp.height);
+            self.place_children(screen);
         }
     }
 
@@ -143,6 +198,9 @@ impl<W: Widgets> NativeRenderer<W> {
         if self.root == Some(id) {
             // Like `#prism-root > *` on the web: the root fills the viewport.
             style.flex_grow = 1.;
+        }
+        // A root stack handles the safe area itself (navigation bar, screens).
+        if self.root == Some(id) && e.kind != NodeKind::Stack {
             let (p, i) = (e.style.padding, self.insets);
             style.padding = Rect {
                 top: LengthPercentage::length(p.top + i.top),
@@ -168,6 +226,20 @@ impl<W: Widgets> NativeRenderer<W> {
             l.size.width,
             l.size.height,
         );
+        match self.stack_screens.get(&id).cloned() {
+            Some(screens) => {
+                for screen in screens {
+                    self.layout_screen(id, screen);
+                }
+            }
+            None => self.place_children(id),
+        }
+    }
+
+    fn place_children(&mut self, id: NodeId) {
+        let Some(entry) = self.nodes.get(&id) else {
+            return;
+        };
         let children = self.taffy.children(entry.layout).unwrap_or_default();
         let ids: Vec<NodeId> = children
             .iter()
@@ -185,7 +257,9 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
             match patch {
                 Patch::Create { id, kind } => {
                     let view = self.widgets.create(*id, *kind);
-                    let layout = if *kind == NodeKind::View {
+                    let container =
+                        matches!(kind, NodeKind::View | NodeKind::Stack | NodeKind::Screen);
+                    let layout = if container {
                         self.taffy.new_leaf(taffy::Style::default())
                     } else {
                         self.taffy
@@ -236,7 +310,12 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                     let views: Vec<W::View> = kids.iter().map(|e| e.view.clone()).collect();
                     let layouts: Vec<taffy::NodeId> = kids.iter().map(|e| e.layout).collect();
                     self.widgets.set_children(&parent.view, &views);
-                    let _ = self.taffy.set_children(parent.layout, &layouts);
+                    if parent.kind == NodeKind::Stack {
+                        let _ = self.taffy.set_children(parent.layout, &[]);
+                        self.stack_screens.insert(*id, children.clone());
+                    } else {
+                        let _ = self.taffy.set_children(parent.layout, &layouts);
+                    }
                 }
                 Patch::SetRoot { id } => {
                     if let Some(e) = self.nodes.get(id) {
@@ -253,6 +332,7 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                     if let Some(e) = self.nodes.remove(id) {
                         self.widgets.destroy(&e.view);
                         self.by_layout.remove(&e.layout);
+                        self.stack_screens.remove(id);
                         let _ = self.taffy.remove(e.layout);
                     }
                 }
@@ -300,7 +380,7 @@ pub fn to_taffy(s: &Style, kind: NodeKind) -> taffy::Style {
         bottom: LengthPercentageAuto::length(s.margin.bottom),
         left: LengthPercentageAuto::length(s.margin.left),
     };
-    let container = kind == NodeKind::View;
+    let container = matches!(kind, NodeKind::View | NodeKind::Stack | NodeKind::Screen);
     taffy::Style {
         display: taffy::Display::Flex,
         flex_direction: match s.direction {
@@ -350,5 +430,73 @@ pub fn to_taffy(s: &Style, kind: NodeKind) -> taffy::Style {
         flex_shrink: s.flex_shrink,
         flex_basis: dim(s.flex_basis),
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use prism_core::{AppInit, IntoElement, ParentElement, Render, Router, Runtime, screen, text};
+    use std::sync::Arc;
+
+    /// Records frames; screens get the stack's area minus a 44pt header.
+    #[derive(Default)]
+    struct Fake {
+        frames: HashMap<NodeId, (f32, f32, f32, f32)>,
+    }
+
+    impl Widgets for Fake {
+        type View = NodeId;
+        fn create(&mut self, id: NodeId, _: NodeKind) -> NodeId {
+            id
+        }
+        fn set_style(&mut self, _: &NodeId, _: &Style) {}
+        fn set_text(&mut self, _: &NodeId, _: &str) {}
+        fn set_placeholder(&mut self, _: &NodeId, _: &str) {}
+        fn set_clickable(&mut self, _: &NodeId, _: bool) {}
+        fn set_children(&mut self, _: &NodeId, _: &[NodeId]) {}
+        fn set_root(&mut self, _: &NodeId) {}
+        fn destroy(&mut self, _: &NodeId) {}
+        fn measure(&mut self, _: &NodeId, _: Option<f32>) -> (f32, f32) {
+            (50., 20.)
+        }
+        fn set_frame(&mut self, v: &NodeId, x: f32, y: f32, w: f32, h: f32) {
+            self.frames.insert(*v, (x, y, w, h));
+        }
+        fn screen_viewport(&mut self, stack: &NodeId, _: &NodeId) -> Viewport {
+            let (_, _, w, h) = self.frames[stack];
+            Viewport {
+                x: 0.,
+                y: 44.,
+                width: w,
+                height: h - 44.,
+                insets: Insets::default(),
+            }
+        }
+    }
+
+    struct Page;
+    impl Render for Page {
+        fn render(&mut self, _: &mut prism_core::Context<Self>) -> impl IntoElement {
+            screen("Page").child(text("hello"))
+        }
+    }
+
+    #[test]
+    fn root_stack_fills_viewport_and_screens_get_their_area() {
+        let init: AppInit = Arc::new(|cx: &mut prism_core::App| {
+            let r = Router::new()
+                .route("/", |cx, _| cx.new_entity(|_| Page))
+                .build(cx);
+            cx.set_root(r);
+        });
+        let mut rt = Runtime::new(&init);
+        let mut renderer = NativeRenderer::new(Fake::default());
+        renderer.apply(&rt.render());
+        renderer.layout(400., 800., Insets::default());
+        let f = &renderer.widgets.frames;
+        assert_eq!(f[&1], (0., 0., 400., 800.), "stack");
+        assert_eq!(f[&2], (0., 44., 400., 756.), "screen");
+        assert_eq!(f[&3], (0., 0., 400., 20.), "text in screen");
     }
 }
