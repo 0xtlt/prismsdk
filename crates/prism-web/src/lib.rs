@@ -408,8 +408,24 @@ fn session(stream: TcpStream, init: &AppInit) {
                     std::time::Duration::from_millis(25),
                 )
         });
+        // …and at the next background task.
+        let until_background = services.next_background().map(|t| {
+            t.saturating_duration_since(std::time::Instant::now())
+                .max(std::time::Duration::from_millis(1))
+        });
+        let timeout = match (timeout, until_background) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
         let _ = ws.get_ref().set_read_timeout(timeout);
         let read = ws.read();
+        let due_tasks = services.due_background();
+        for id in &due_tasks {
+            runtime.run_background_task(id);
+        }
+        if !due_tasks.is_empty() {
+            woken.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         let due = runtime
             .next_timer()
             .is_some_and(|t| t <= std::time::Instant::now());
@@ -438,6 +454,21 @@ fn session(stream: TcpStream, init: &AppInit) {
             && let Some(path) = v.get("path").and_then(Value::as_str)
         {
             let patches = runtime.open_link(path);
+            if !patches.is_empty() && send(&mut ws, &mut encoder, "patch", &patches).is_err() {
+                return;
+            }
+            continue;
+        }
+        // The page was hidden or shown again.
+        if let Ok(v) = serde_json::from_str::<Value>(&msg)
+            && v.get("t").and_then(Value::as_str) == Some("lifecycle")
+        {
+            let phase = match v.get("state").and_then(Value::as_str) {
+                Some("background") => prism_core::Lifecycle::Background,
+                Some("inactive") => prism_core::Lifecycle::Inactive,
+                _ => prism_core::Lifecycle::Active,
+            };
+            let patches = runtime.set_lifecycle(phase);
             if !patches.is_empty() && send(&mut ws, &mut encoder, "patch", &patches).is_err() {
                 return;
             }
@@ -476,6 +507,33 @@ fn session(stream: TcpStream, init: &AppInit) {
 #[derive(Default)]
 struct WebServices {
     outbox: Vec<Value>,
+    /// Periodic background tasks: (id, next run, interval). On the web they
+    /// run in each open page's session.
+    background: Vec<(String, std::time::Instant, std::time::Duration)>,
+}
+
+/// `PRISM_BACKGROUND_INTERVAL=<seconds>` shortens every background task's
+/// interval (development).
+fn background_interval(every: std::time::Duration) -> std::time::Duration {
+    std::env::var("PRISM_BACKGROUND_INTERVAL")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .map_or(every, std::time::Duration::from_secs_f64)
+}
+
+impl WebServices {
+    /// Background tasks due now (removed until they reschedule themselves).
+    fn due_background(&mut self) -> Vec<String> {
+        let now = std::time::Instant::now();
+        let (due, later): (Vec<_>, Vec<_>) =
+            self.background.drain(..).partition(|(_, at, _)| *at <= now);
+        self.background = later;
+        due.into_iter().map(|(id, _, _)| id).collect()
+    }
+
+    fn next_background(&self) -> Option<std::time::Instant> {
+        self.background.iter().map(|(_, at, _)| *at).min()
+    }
 }
 
 fn activity_json(content: &ActivityContent) -> Value {
@@ -520,6 +578,13 @@ impl PlatformServices for WebServices {
             }),
             PlatformRequest::CancelNotification(id) => json!({ "t": "notify_cancel", "id": id }),
             PlatformRequest::RequestNotificationPermission => json!({ "t": "notify_permission" }),
+            PlatformRequest::ScheduleBackgroundTask(task) => {
+                let every = background_interval(task.every);
+                self.background.retain(|(id, _, _)| *id != task.id);
+                self.background
+                    .push((task.id, std::time::Instant::now() + every, every));
+                return;
+            }
             PlatformRequest::ShowAlert(a) => json!({
                 "t": "alert",
                 "a": serde_json::from_str::<Value>(&a.to_json()).unwrap_or(Value::Null),

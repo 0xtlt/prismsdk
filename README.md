@@ -61,6 +61,29 @@ cx.spawn(async move |this, cx| {
 cx.storage().set("todos", &data);   // App Group (iOS), Application Support (macOS), per browser (web)
 ```
 
+## Background execution
+
+```rust
+cx.on_lifecycle(|phase, app| if phase == Lifecycle::Background { save(app) });
+
+// Finishes even if the user leaves the app (iOS: beginBackgroundTask, ~30 s).
+cx.spawn(async move |this, cx| upload(&cx).await).finish_in_background();
+
+// Periodic work, even when the app is closed (the system picks the moment).
+cx.register_background_task(
+    BackgroundTask::refresh("sync").every(Duration::from_secs(15 * 60)),
+    |cx| async move { sync(&cx).await },
+);
+```
+
+| | iOS | macOS | Web |
+|---|---|---|---|
+| Lifecycle | active / inactive / background | active / inactive / hidden or minimized | page focus / visibility |
+| `finish_in_background` | `beginBackgroundTask` | keeps running | keeps running (server) |
+| Periodic tasks | `BGTaskScheduler`; the app is relaunched without UI if needed | `NSBackgroundActivityScheduler` | timer while a page is open |
+
+`prism build/run` declares the tasks in Info.plist (`BGTaskSchedulerPermittedIdentifiers`, `UIBackgroundModes`). The iOS Simulator cannot run `BGTaskScheduler`: use a device, or `PRISM_RUN_BACKGROUND=sync` to run a task at launch and `PRISM_BACKGROUND_INTERVAL=5` to shorten intervals (macOS, web).
+
 ## Dialogs, menus, tray
 
 ```rust
@@ -265,5 +288,5 @@ mise run web        # the example, restarting on save (also: macos, ios, macos-a
 ## Status
 
 Primitives: `div`, `text`, `button`, `text_input`, `toggle`, `scroll`, `picture`, `VirtualList`, `screen`, `Router` (stacks, tabs, sheets). Component library `prism::ui`. Accessibility on all backends. Light/dark appearance.
-Widgets, Live Activities (Dynamic Island), notifications with actions, alerts, context menus, tray and app menus, async tasks, HTTP, storage, i18n/RTL, Dynamic Type, animations, `prism` CLI.
+Widgets, Live Activities (Dynamic Island), notifications with actions, background tasks, alerts, context menus, tray and app menus, async tasks, HTTP, storage, i18n/RTL, Dynamic Type, animations, `prism` CLI.
 Not yet: Android, Windows, Linux backends (the `Widgets` trait and `PlatformServices` are the extension points).

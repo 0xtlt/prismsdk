@@ -23,6 +23,15 @@ unsafe extern "C" {
     fn prism_notify(json: *const c_char);
     fn prism_notify_cancel(id: *const c_char);
     fn prism_notify_permission();
+    fn prism_bg_register();
+    fn prism_bg_schedule(
+        id: *const c_char,
+        seconds: f64,
+        processing: bool,
+        network: bool,
+        power: bool,
+    ) -> bool;
+    fn prism_bg_complete(id: *const c_char, success: bool);
 }
 
 fn c(s: &str) -> CString {
@@ -138,6 +147,26 @@ impl PlatformServices for IosServices {
                 let mtm = objc2::MainThreadMarker::new().expect("main thread");
                 crate::menus::show_alert(mtm, &self.controller, &spec, crate::imp::dispatch)
             }
+            PlatformRequest::ScheduleBackgroundTask(task) => {
+                let every = crate::imp::background_interval(task.every).as_secs_f64();
+                let (processing, network, power) = match task.kind {
+                    prism_core::BackgroundKind::Refresh => (false, false, false),
+                    prism_core::BackgroundKind::Processing {
+                        requires_network,
+                        requires_power,
+                    } => (true, requires_network, requires_power),
+                };
+                let id = full_task_id(&task.id);
+                let ok = unsafe {
+                    prism_bg_schedule(c(&id).as_ptr(), every, processing, network, power)
+                };
+                if !ok {
+                    eprintln!(
+                        "prism-ios: background task {:?} not scheduled (declared in Info.plist? simulators cannot run them)",
+                        task.id
+                    );
+                }
+            }
             // No menu bar or tray on iOS (capabilities say so).
             PlatformRequest::SetTray(_)
             | PlatformRequest::RemoveTray(_)
@@ -182,4 +211,51 @@ pub extern "C" fn prism_notification_response(
 /// Installs the notification delegate (idempotent).
 pub(crate) fn init_bridge() -> bool {
     unsafe { prism_bridge_init() }
+}
+
+/// Registers BGTaskScheduler handlers (must run before launch completes).
+pub(crate) fn register_background_tasks() {
+    unsafe { prism_bg_register() }
+}
+
+/// `sync` → `<bundle id>.sync`, as declared in Info.plist.
+pub(crate) fn full_task_id(id: &str) -> String {
+    let bundle = objc2_foundation::NSBundle::mainBundle()
+        .bundleIdentifier()
+        .map(|b| b.to_string())
+        .unwrap_or_default();
+    format!("{bundle}.{id}")
+}
+
+pub(crate) fn short_task_id(full: &str) -> String {
+    let bundle = objc2_foundation::NSBundle::mainBundle()
+        .bundleIdentifier()
+        .map(|b| format!("{b}."))
+        .unwrap_or_default();
+    full.strip_prefix(&bundle).unwrap_or(full).to_string()
+}
+
+/// Tells iOS a background task finished.
+pub(crate) fn complete_background_task(full_id: &str, success: bool) {
+    unsafe { prism_bg_complete(c(full_id).as_ptr(), success) }
+}
+
+fn cstr(p: *const c_char) -> Option<String> {
+    (!p.is_null()).then(|| unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned())
+}
+
+/// Called by iOS (through the Swift bridge) to run a background task.
+#[unsafe(no_mangle)]
+pub extern "C" fn prism_background_run(id: *const c_char) {
+    if let Some(full) = cstr(id) {
+        crate::imp::run_background(&short_task_id(&full), crate::imp::Completion::System(full));
+    }
+}
+
+/// The system's time for a background task ran out.
+#[unsafe(no_mangle)]
+pub extern "C" fn prism_background_expired(id: *const c_char) {
+    if let Some(full) = cstr(id) {
+        crate::imp::expire_background(&full);
+    }
 }

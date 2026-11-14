@@ -740,6 +740,12 @@
     }
   }
 
+  // Page visibility → app lifecycle (background tasks keep running server-side).
+  const reportLifecycle = () => send({ t: "lifecycle", state: document.hidden ? "background" : document.hasFocus() ? "active" : "inactive" });
+  document.addEventListener("visibilitychange", reportLifecycle);
+  window.addEventListener("focus", reportLifecycle);
+  window.addEventListener("blur", reportLifecycle);
+
   function service(msg) {
     switch (msg.t) {
       case "activity": return showActivity(msg.id, msg.c);
@@ -776,6 +782,7 @@
       syncHistory();
     };
     ws.onclose = () => setTimeout(connect, 1000);
+    ws.addEventListener("open", reportLifecycle);
   }
   connect();
 })();

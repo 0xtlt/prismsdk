@@ -9,7 +9,9 @@
       "other": "{count} open todos"
     },
     "synced": "Synced {count}×",
-    "today": "Today is {date}"
+    "today": "Today is {date}",
+    "background": "Background refresh: {time} ({count}×)",
+    "background_never": "Background refresh: not yet"
   },
   "todos": {
     "heading": "Todos",

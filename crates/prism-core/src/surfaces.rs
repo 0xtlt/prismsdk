@@ -70,6 +70,9 @@ pub enum PlatformRequest {
     SetAppMenu(Vec<crate::menu::MenuSpec>),
     CancelNotification(String),
     RequestNotificationPermission,
+    /// Run this task periodically (see [`crate::background`]); re-sent after
+    /// each run.
+    ScheduleBackgroundTask(crate::background::BackgroundTask),
 }
 
 /// Implemented by each backend. Unsupported requests should fall back

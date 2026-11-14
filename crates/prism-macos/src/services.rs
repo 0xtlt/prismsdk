@@ -8,7 +8,7 @@ use std::ffi::{CStr, CString, c_char};
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{MainThreadMarker, MainThreadOnly, sel};
+use objc2::{AnyThread, MainThreadMarker, MainThreadOnly, sel};
 use objc2_app_kit::{
     NSAccessibility, NSImage, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem,
     NSVariableStatusItemLength,
@@ -46,6 +46,8 @@ pub struct MacServices {
     trays: HashMap<String, Retained<NSStatusItem>>,
     caps: Capabilities,
     activities: HashMap<ActivityId, StatusActivity>,
+    /// Periodic background tasks by id (they repeat by themselves).
+    schedulers: HashMap<String, Retained<objc2_foundation::NSBackgroundActivityScheduler>>,
 }
 
 fn first(node: &SNode, kind: NodeKind) -> Option<&SNode> {
@@ -72,6 +74,7 @@ impl MacServices {
             window,
             title,
             trays: HashMap::new(),
+            schedulers: HashMap::new(),
             caps: Capabilities {
                 widgets: bundled && has_group,
                 // Rendered as a menu bar item.
@@ -220,6 +223,7 @@ impl PlatformServices for MacServices {
             PlatformRequest::SetAppMenu(menus) => {
                 crate::menus::install_main_menu(self.mtm, &self.title, &self.target, &menus)
             }
+            PlatformRequest::ScheduleBackgroundTask(task) => self.schedule(task),
             PlatformRequest::SetTray(tray) => {
                 let mtm = self.mtm;
                 let item = self.trays.entry(tray.id.clone()).or_insert_with(|| {
@@ -295,4 +299,46 @@ pub extern "C" fn prism_notification_response(
         text: s(text),
     };
     crate::imp::notification_response(response, s(link));
+}
+
+impl MacServices {
+    /// `NSBackgroundActivityScheduler`: macOS runs the task about every
+    /// `every` while the app is open, when the machine is not busy.
+    fn schedule(&mut self, task: prism_core::BackgroundTask) {
+        use objc2_foundation::{NSBackgroundActivityResult, NSBackgroundActivityScheduler};
+        if self.schedulers.contains_key(&task.id) {
+            return; // repeats by itself
+        }
+        let bundle = objc2_foundation::NSBundle::mainBundle()
+            .bundleIdentifier()
+            .map_or_else(
+                || format!("dev.prism.{}", self.title.to_lowercase()),
+                |b| b.to_string(),
+            );
+        let every = crate::imp::background_interval(task.every).as_secs_f64();
+        let scheduler = NSBackgroundActivityScheduler::initWithIdentifier(
+            NSBackgroundActivityScheduler::alloc(),
+            &NSString::from_str(&format!("{bundle}.{}", task.id)),
+        );
+        scheduler.setRepeats(true);
+        scheduler.setInterval(every);
+        scheduler.setTolerance((every / 10.).max(1.));
+        let id = task.id.clone();
+        // Runs on a background queue: hand the task to the main thread and
+        // report completion once the app's task is done.
+        let block = block2::RcBlock::new(
+            move |completion: objc2_foundation::NSBackgroundActivityCompletionHandler| {
+                let (done, finished) = std::sync::mpsc::channel::<()>();
+                let id = id.clone();
+                dispatch2::DispatchQueue::main()
+                    .exec_async(move || crate::imp::run_background(&id, done));
+                let _ = finished.recv_timeout(std::time::Duration::from_secs(600));
+                if let Some(completion) = unsafe { completion.as_ref() } {
+                    completion.call((NSBackgroundActivityResult::Finished,));
+                }
+            },
+        );
+        unsafe { scheduler.scheduleWithBlock(&block) };
+        self.schedulers.insert(task.id, scheduler);
+    }
 }

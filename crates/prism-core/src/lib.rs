@@ -7,6 +7,7 @@
 
 mod a11y;
 mod app;
+pub mod background;
 mod element;
 pub mod i18n;
 pub mod list;
@@ -20,6 +21,7 @@ mod task;
 
 pub use a11y::{Accessibility, Accessible, Role};
 pub use app::{AnyEntity, App, Appearance, Context, Entity, EntityId, Environment, Render};
+pub use background::{BackgroundKind, BackgroundTask, Lifecycle};
 pub use element::{
     BackEvent, Button, ChangeEvent, ClickEvent, Div, Element, FluentBuilder, Handler, Image,
     InputEvent, IntoElement, Modal, NavigateEvent, NodeKind, ParentElement, Picture, Progress,
@@ -275,6 +277,45 @@ impl Runtime {
         patches
     }
 
+    /// Runs ready tasks without rendering: for apps launched in the
+    /// background with no UI yet (the first `render` draws everything).
+    pub fn poll_headless(&mut self) {
+        task::poll_tasks(&mut self.app);
+        self.app.flush_effects();
+    }
+
+    /// The app moved on or off screen. Returns the resulting patches.
+    pub fn set_lifecycle(&mut self, phase: Lifecycle) -> Vec<Patch> {
+        self.app.set_lifecycle(phase);
+        task::poll_tasks(&mut self.app);
+        self.app.flush_effects();
+        self.render_dirty()
+    }
+
+    /// The platform runs background task `id`. Returns the running task's id
+    /// (watch it with [`is_task_running`](Self::is_task_running) and tell the
+    /// platform when it is done), or `None` if no such task is registered.
+    pub fn run_background_task(&mut self, id: &str) -> Option<u64> {
+        let handle = self.app.start_background_task(id)?;
+        task::poll_tasks(&mut self.app);
+        self.app.flush_effects();
+        Some(handle.id())
+    }
+
+    pub fn is_task_running(&self, id: u64) -> bool {
+        self.app.executor.is_running(id)
+    }
+
+    /// Whether a task asked to finish in the background.
+    pub fn wants_background_time(&self) -> bool {
+        self.app.executor.wants_background_time()
+    }
+
+    /// Stops a task (e.g. the platform's background time expired).
+    pub fn cancel_task(&mut self, id: u64) {
+        self.app.executor.cancel(id);
+    }
+
     /// Entity renders performed by the last render (for tests and profiling).
     pub fn last_render_count(&self) -> usize {
         self.reconciler.last_render_count()
@@ -284,13 +325,13 @@ impl Runtime {
 /// Everything an app usually needs.
 pub mod prelude {
     pub use crate::{
-        Accessible, Activity, Alert, App, AsyncApp, ChangeEvent, ClickEvent, Context, DateStyle,
-        Entity, FluentBuilder, Handler, InputEvent, IntoElement, Locale, Menu, MenuItem,
-        Notification, NotificationAction, NotificationResponse, Params, ParentElement, Render,
-        Role, Router, ScrollEvent, Styled, SwipeDirection, Transition, Translations, Tray,
-        VirtualList, Widget, WidgetFamily, adaptive, button, div, go_back, image, lazy,
-        navigate_to, picture, progress, px, relative, rgb, rgba, screen, scroll, text, text_input,
-        timer, toggle,
+        Accessible, Activity, Alert, App, AsyncApp, BackgroundTask, ChangeEvent, ClickEvent,
+        Context, DateStyle, Entity, FluentBuilder, Handler, InputEvent, IntoElement, Lifecycle,
+        Locale, Menu, MenuItem, Notification, NotificationAction, NotificationResponse, Params,
+        ParentElement, Render, Role, Router, ScrollEvent, Styled, SwipeDirection, Transition,
+        Translations, Tray, VirtualList, Widget, WidgetFamily, adaptive, button, div, go_back,
+        image, lazy, navigate_to, picture, progress, px, relative, rgb, rgba, screen, scroll, text,
+        text_input, timer, toggle,
     };
 }
 

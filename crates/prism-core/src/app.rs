@@ -153,6 +153,7 @@ pub struct App {
     pub(crate) surfaces: crate::surfaces::Surfaces,
     pub(crate) executor: Rc<crate::task::Executor>,
     pub(crate) menus: crate::menu::Menus,
+    pub(crate) background: crate::background::Background,
     storage: Box<dyn crate::storage::Storage>,
 }
 
@@ -176,6 +177,7 @@ impl Default for App {
             surfaces: Default::default(),
             executor: Default::default(),
             menus: Default::default(),
+            background: Default::default(),
             storage: Box::new(crate::storage::MemoryStorage::default()),
         }
     }

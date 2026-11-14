@@ -9,7 +9,9 @@
       "other": "{count} tâches ouvertes"
     },
     "synced": "Synchronisé {count}×",
-    "today": "Nous sommes le {date}"
+    "today": "Nous sommes le {date}",
+    "background": "Actualisation en arrière-plan : {time} ({count}×)",
+    "background_never": "Actualisation en arrière-plan : pas encore"
   },
   "todos": {
     "heading": "Tâches",

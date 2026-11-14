@@ -11,6 +11,7 @@
 //! - Settings:   live theming (system/light/dark, accent, shape, native controls)
 //!   and language (English, French, Arabic right-to-left).
 
+mod background;
 mod focus;
 mod menus;
 mod strings;
@@ -27,6 +28,7 @@ fn main() {
         .assets(concat!(env!("CARGO_MANIFEST_DIR"), "/assets"))
         .run(|cx| {
             strings::install(cx);
+            background::install(cx);
             let theme = load_theme(cx);
             ui::set_theme(cx, theme);
             let store = cx.new_entity(|cx| Store::load(cx));
@@ -206,6 +208,11 @@ impl Render for Home {
                     });
                 }))
                 .child(text(info).text_size(14.).text_color(t.muted))
+                .child(
+                    text(background::summary(cx))
+                        .text_size(14.)
+                        .text_color(t.muted),
+                )
                 .child(
                     text(strings::home_today(cx, &today))
                         .text_size(14.)
@@ -603,7 +610,9 @@ impl Render for Gallery {
                                             Err(e) => Err(e.to_string()),
                                         });
                                     });
-                                });
+                                })
+                                // Completes even if the user leaves the app meanwhile.
+                                .finish_in_background();
                             })),
                     ),
             )

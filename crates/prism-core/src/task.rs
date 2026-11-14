@@ -64,6 +64,8 @@ pub(crate) struct Executor {
     next_id: Cell<u64>,
     shared: Arc<Shared>,
     timers: RefCell<Vec<(Instant, Waker)>>,
+    /// Tasks the platform should keep the app alive for in the background.
+    keep_alive: RefCell<std::collections::HashSet<u64>>,
 }
 
 impl Executor {
@@ -77,6 +79,15 @@ impl Executor {
 
     pub(crate) fn cancel(&self, id: u64) {
         self.tasks.borrow_mut().remove(&id);
+        self.keep_alive.borrow_mut().remove(&id);
+    }
+
+    pub(crate) fn is_running(&self, id: u64) -> bool {
+        self.tasks.borrow().contains_key(&id) || self.shared.ready.lock().unwrap().contains(&id)
+    }
+
+    pub(crate) fn wants_background_time(&self) -> bool {
+        !self.keep_alive.borrow().is_empty()
     }
 
     pub(crate) fn set_wake_ui(&self, wake: WakeUi) {
@@ -140,7 +151,9 @@ pub(crate) fn poll_tasks(app: &mut App) {
                 .poll(&mut TaskContext::from_waker(&waker))
                 .is_ready();
             CURRENT_APP.with(|c| c.set(previous));
-            if !done {
+            if done {
+                exec.keep_alive.borrow_mut().remove(&id);
+            } else {
                 exec.tasks.borrow_mut().insert(id, task);
             }
             // Deliver notifications and navigation between tasks.
@@ -263,6 +276,23 @@ pub struct TaskHandle {
 }
 
 impl TaskHandle {
+    /// Identifies the task (see `Runtime::is_task_running`).
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Keeps the app running in the background until this task completes
+    /// (iOS: `beginBackgroundTask`, about 30 seconds; elsewhere the app
+    /// keeps running anyway). Returns the handle.
+    pub fn finish_in_background(self) -> Self {
+        if let Some(exec) = self.exec.upgrade()
+            && exec.tasks.borrow().contains_key(&self.id)
+        {
+            exec.keep_alive.borrow_mut().insert(self.id);
+        }
+        self
+    }
+
     pub fn cancel(self) {
         if let Some(exec) = self.exec.upgrade() {
             exec.cancel(self.id);

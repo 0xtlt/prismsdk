@@ -119,6 +119,12 @@ impl Application {
                 println!("{}", runtime.app.describe_widgets());
                 return;
             }
+            // Bundlers declare these in Info.plist (BGTaskScheduler).
+            Ok("background") => {
+                let runtime = Runtime::new(&init);
+                println!("{}", runtime.app.describe_background());
+                return;
+            }
             // Bundlers copy this directory into the app's resources.
             Ok("assets") => {
                 println!("{}", config.assets.as_deref().unwrap_or(""));

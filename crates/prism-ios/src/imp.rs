@@ -159,6 +159,27 @@ define_class!(
             scroll_into_view(sender);
         }
 
+        /// Active / inactive / background.
+        #[unsafe(method(onLifecycle:))]
+        fn on_lifecycle(&self, n: &objc2_foundation::NSNotification) {
+            use objc2_ui_kit::*;
+            let name = n.name();
+            let phase = unsafe {
+                if &*name == UIApplicationDidBecomeActiveNotification {
+                    prism_core::Lifecycle::Active
+                } else if &*name == UIApplicationDidEnterBackgroundNotification {
+                    prism_core::Lifecycle::Background
+                } else {
+                    prism_core::Lifecycle::Inactive
+                }
+            };
+            with_state(|s| {
+                let patches = s.runtime.set_lifecycle(phase);
+                s.commit(patches);
+            });
+            update_background_time(self.mtm());
+        }
+
         #[unsafe(method(onRefresh:))]
         fn on_refresh(&self, sender: &objc2_ui_kit::UIRefreshControl) {
             dispatch(UiEvent::Click(sender.tag() as NodeId));
@@ -331,6 +352,9 @@ define_class!(
         #[unsafe(method(application:didFinishLaunchingWithOptions:))]
         fn did_finish_launching(&self, _app: &UIApplication, _options: Option<&AnyObject>) -> bool {
             crate::services::init_bridge();
+            // Background tasks must be registered before launch completes.
+            crate::services::register_background_tasks();
+            observe_lifecycle(self.mtm());
             true
         }
     }
@@ -406,17 +430,20 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
         .is_some_and(|m| m.statusBarFrame().size.height >= 54.);
     let services =
         crate::services::IosServices::new(island, Retained::into_super(controller.clone()));
-    let mut runtime = Runtime::with_options(
-        init,
-        prism_core::RuntimeOptions {
-            path,
-            capabilities: prism_core::PlatformServices::capabilities(&services),
-            storage: Some(Box::new(prism_core::FileStorage::new(data_dir()))),
-            wake_ui: Some(wake_ui()),
-            environment: ios_environment(),
-            formatter: Some(Box::new(prism_native::apple::FoundationFormatter)),
-        },
-    );
+    // Launched in the background for a task earlier? Keep that app state.
+    let mut runtime = match HEADLESS.with(|h| h.borrow_mut().take()) {
+        Some(h) => {
+            let mut runtime = h.runtime;
+            runtime
+                .app
+                .set_capabilities(prism_core::PlatformServices::capabilities(&services));
+            if path != "/" {
+                runtime.app.navigate(path);
+            }
+            runtime
+        }
+        None => make_runtime(init, path, &services),
+    };
     let renderer = NativeRenderer::new(UiKit {
         mtm,
         target: Target::new(mtm),
@@ -443,6 +470,10 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
     state.commit(first);
     STATE.with(|cell| *cell.borrow_mut() = Some(state));
     flush_responses();
+    // Development: `PRISM_RUN_BACKGROUND=sync` runs a background task now.
+    if let Ok(id) = std::env::var("PRISM_RUN_BACKGROUND") {
+        run_background(&id, Completion::None);
+    }
     start_ticker(mtm);
     observe_system(mtm);
 
@@ -1459,7 +1490,9 @@ fn poll_now() {
         let patches = s.runtime.poll();
         s.commit(patches);
     });
+    poll_headless();
     flush_responses();
+    check_background();
 }
 
 thread_local! {
@@ -1763,4 +1796,221 @@ fn set_appearance_semantic(attr: objc2_ui_kit::UISemanticContentAttribute) {
             std::mem::transmute(objc2::ffi::objc_msgSend as *const ());
         send(proxy, sel!(setSemanticContentAttribute:), attr.0);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Background execution
+// ---------------------------------------------------------------------------
+
+/// The app without UI: iOS launched it in the background to run a task. The
+/// window's runtime takes it over when a scene connects.
+struct Headless {
+    runtime: Runtime,
+    services: crate::services::IosServices,
+}
+
+thread_local! {
+    static HEADLESS: RefCell<Option<Headless>> = const { RefCell::new(None) };
+    /// Running background tasks and who to tell when they finish.
+    static BG_WAITING: RefCell<Vec<(u64, Completion)>> = const { RefCell::new(Vec::new()) };
+    /// Extra time asked with `beginBackgroundTask` (finish_in_background).
+    static UIKIT_TASK: std::cell::Cell<Option<objc2_ui_kit::UIBackgroundTaskIdentifier>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Who started a background task.
+pub(crate) enum Completion {
+    /// BGTaskScheduler (full identifier).
+    System(String),
+    /// Development hook.
+    None,
+}
+
+fn make_runtime(
+    init: &prism_core::AppInit,
+    path: String,
+    services: &crate::services::IosServices,
+) -> Runtime {
+    Runtime::with_options(
+        init,
+        prism_core::RuntimeOptions {
+            path,
+            capabilities: prism_core::PlatformServices::capabilities(services),
+            storage: Some(Box::new(prism_core::FileStorage::new(data_dir()))),
+            wake_ui: Some(wake_ui()),
+            environment: ios_environment(),
+            formatter: Some(Box::new(prism_native::apple::FoundationFormatter)),
+        },
+    )
+}
+
+/// `PRISM_BACKGROUND_INTERVAL=<seconds>` shortens every background task's
+/// interval (development).
+pub(crate) fn background_interval(every: std::time::Duration) -> std::time::Duration {
+    std::env::var("PRISM_BACKGROUND_INTERVAL")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .map_or(every, std::time::Duration::from_secs_f64)
+}
+
+/// Runs the app's code for a headless launch, if there is one.
+fn poll_headless() {
+    HEADLESS.with(|h| {
+        let Ok(mut guard) = h.try_borrow_mut() else {
+            return;
+        };
+        let Some(h) = guard.as_mut() else { return };
+        h.runtime.poll_headless();
+        for request in h.runtime.take_requests() {
+            prism_core::PlatformServices::handle(&mut h.services, request);
+        }
+        schedule_timer(h.runtime.next_timer());
+    });
+}
+
+/// Runs background task `id` in the window's runtime, or in a headless one
+/// when iOS launched the app just for it.
+pub(crate) fn run_background(id: &str, completion: Completion) {
+    let mut started = None;
+    let mut has_ui = false;
+    with_state(|s| {
+        has_ui = true;
+        started = s.runtime.run_background_task(id);
+        let patches = s.runtime.poll();
+        s.commit(patches);
+    });
+    if !has_ui {
+        HEADLESS.with(|h| {
+            let mut h = h.borrow_mut();
+            let headless = h.get_or_insert_with(|| {
+                let mtm = MainThreadMarker::new().expect("main thread");
+                let (_, init) = APP.get().expect("prism-ios: run() was not called");
+                let services = crate::services::IosServices::new(false, UIViewController::new(mtm));
+                let runtime = make_runtime(init, "/".into(), &services);
+                Headless { runtime, services }
+            });
+            started = headless.runtime.run_background_task(id);
+        });
+        poll_headless();
+    }
+    eprintln!(
+        "prism-ios: background task {id:?} started ({})",
+        if has_ui { "app open" } else { "headless" }
+    );
+    match started {
+        Some(task) => BG_WAITING.with(|w| w.borrow_mut().push((task, completion))),
+        None => finish(&completion, false),
+    }
+    check_background();
+}
+
+/// The system's time ran out: stop the task and report failure.
+pub(crate) fn expire_background(full_id: &str) {
+    let expired: Vec<u64> = BG_WAITING.with(|w| {
+        let mut w = w.borrow_mut();
+        let ids = w
+            .iter()
+            .filter(|(_, c)| matches!(c, Completion::System(f) if f == full_id))
+            .map(|(t, _)| *t)
+            .collect();
+        w.retain(|(_, c)| !matches!(c, Completion::System(f) if f == full_id));
+        ids
+    });
+    for task in expired {
+        with_state(|s| s.runtime.cancel_task(task));
+        HEADLESS.with(|h| {
+            if let Some(h) = h.borrow_mut().as_mut() {
+                h.runtime.cancel_task(task);
+            }
+        });
+    }
+    crate::services::complete_background_task(full_id, false);
+}
+
+fn finish(completion: &Completion, success: bool) {
+    match completion {
+        Completion::System(full) => crate::services::complete_background_task(full, success),
+        Completion::None => {}
+    }
+}
+
+fn is_running(task: u64) -> bool {
+    let mut running = false;
+    with_state(|s| running = s.runtime.is_task_running(task));
+    HEADLESS.with(|h| {
+        if let Ok(h) = h.try_borrow()
+            && let Some(h) = h.as_ref()
+        {
+            running |= h.runtime.is_task_running(task);
+        }
+    });
+    running
+}
+
+/// Reports finished background tasks and releases unneeded background time.
+fn check_background() {
+    let done: Vec<(u64, Completion)> = BG_WAITING.with(|w| {
+        let mut w = w.borrow_mut();
+        let (done, running): (Vec<_>, Vec<_>) = w.drain(..).partition(|(t, _)| !is_running(*t));
+        *w = running;
+        done
+    });
+    for (_, completion) in done {
+        eprintln!("prism-ios: background task finished");
+        finish(&completion, true);
+    }
+    if let Some(mtm) = MainThreadMarker::new() {
+        update_background_time(mtm);
+    }
+}
+
+/// Holds `beginBackgroundTask` while a task asked to finish in the background.
+fn update_background_time(mtm: MainThreadMarker) {
+    let mut wants = false;
+    with_state(|s| {
+        wants = s.runtime.wants_background_time()
+            && s.runtime.app.lifecycle() == prism_core::Lifecycle::Background
+    });
+    let app = UIApplication::sharedApplication(mtm);
+    match (wants, UIKIT_TASK.with(|t| t.get())) {
+        (true, None) => {
+            let expired = block2::RcBlock::new(|| {
+                if let Some(mtm) = MainThreadMarker::new()
+                    && let Some(id) = UIKIT_TASK.with(|t| t.take())
+                {
+                    UIApplication::sharedApplication(mtm).endBackgroundTask(id);
+                }
+            });
+            let id = app.beginBackgroundTaskWithName_expirationHandler(
+                Some(&NSString::from_str("prism.finish_in_background")),
+                Some(&expired),
+            );
+            eprintln!("prism-ios: keeping the app alive to finish a task");
+            UIKIT_TASK.with(|t| t.set(Some(id)));
+        }
+        (false, Some(id)) => {
+            UIKIT_TASK.with(|t| t.set(None));
+            app.endBackgroundTask(id);
+            eprintln!("prism-ios: background work done");
+        }
+        _ => {}
+    }
+}
+
+/// App lifecycle notifications (registered at launch, before any scene).
+fn observe_lifecycle(mtm: MainThreadMarker) {
+    let target = Target::new(mtm);
+    let center = objc2_foundation::NSNotificationCenter::defaultCenter();
+    unsafe {
+        use objc2_ui_kit::*;
+        for name in [
+            UIApplicationDidBecomeActiveNotification,
+            UIApplicationWillResignActiveNotification,
+            UIApplicationDidEnterBackgroundNotification,
+            UIApplicationWillEnterForegroundNotification,
+        ] {
+            center.addObserver_selector_name_object(&target, sel!(onLifecycle:), Some(name), None);
+        }
+    }
+    std::mem::forget(target);
 }

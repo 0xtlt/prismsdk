@@ -403,6 +403,29 @@ define_class!(
             });
         }
 
+        /// Active / inactive / hidden.
+        #[unsafe(method(onLifecycle:))]
+        fn on_lifecycle(&self, n: &NSNotification) {
+            use objc2_app_kit::*;
+            let name = n.name();
+            let phase = unsafe {
+                if &*name == NSApplicationDidBecomeActiveNotification
+                    || &*name == NSWindowDidDeminiaturizeNotification
+                    || &*name == NSApplicationDidUnhideNotification
+                {
+                    prism_core::Lifecycle::Active
+                } else if &*name == NSApplicationDidResignActiveNotification {
+                    prism_core::Lifecycle::Inactive
+                } else {
+                    prism_core::Lifecycle::Background
+                }
+            };
+            with_state(|s| {
+                let patches = s.runtime.set_lifecycle(phase);
+                s.commit(patches);
+            });
+        }
+
         /// A scroll view moved (virtualized lists follow it).
         #[unsafe(method(onScrollBounds:))]
         fn on_scroll_bounds(&self, n: &NSNotification) {
@@ -1512,6 +1535,10 @@ pub fn run(config: AppConfig, init: AppInit) {
     };
     STATE.with(|cell| *cell.borrow_mut() = Some(state));
     flush_responses();
+    // Development: `PRISM_RUN_BACKGROUND=sync` runs a background task now.
+    if let Ok(id) = std::env::var("PRISM_RUN_BACKGROUND") {
+        run_background(&id, std::sync::mpsc::channel().0);
+    }
 
     observe_system(&target);
     window.makeKeyAndOrderFront(None);
@@ -1680,6 +1707,7 @@ fn poll_now() {
         s.commit(patches);
     });
     flush_responses();
+    check_background();
 }
 
 thread_local! {
@@ -1789,12 +1817,24 @@ fn observe_system(target: &Target) {
                 Some(objc2_app_kit::NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification),
                 None,
             );
-        objc2_foundation::NSNotificationCenter::defaultCenter().addObserver_selector_name_object(
+        let center = objc2_foundation::NSNotificationCenter::defaultCenter();
+        center.addObserver_selector_name_object(
             target,
             sel!(onEnvironment:),
             Some(objc2_foundation::NSCurrentLocaleDidChangeNotification),
             None,
         );
+        use objc2_app_kit::*;
+        for name in [
+            NSApplicationDidBecomeActiveNotification,
+            NSApplicationDidResignActiveNotification,
+            NSApplicationDidHideNotification,
+            NSApplicationDidUnhideNotification,
+            NSWindowDidMiniaturizeNotification,
+            NSWindowDidDeminiaturizeNotification,
+        ] {
+            center.addObserver_selector_name_object(target, sel!(onLifecycle:), Some(name), None);
+        }
     }
 }
 
@@ -1849,4 +1889,56 @@ fn flush_responses() {
             p.borrow_mut().splice(0..0, pending);
         });
     }
+}
+
+// ---------------------------------------------------------------------------
+// Background tasks
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    /// Running background tasks and who to tell when they finish.
+    static BG_WAITING: RefCell<Vec<(u64, std::sync::mpsc::Sender<()>)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// `PRISM_BACKGROUND_INTERVAL=<seconds>` shortens every background task's
+/// interval (development).
+pub(crate) fn background_interval(every: std::time::Duration) -> std::time::Duration {
+    std::env::var("PRISM_BACKGROUND_INTERVAL")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .map_or(every, std::time::Duration::from_secs_f64)
+}
+
+/// Runs background task `id`; `done` is signalled when it completes.
+pub(crate) fn run_background(id: &str, done: std::sync::mpsc::Sender<()>) {
+    let mut started = None;
+    with_state(|s| {
+        started = s.runtime.run_background_task(id);
+        let patches = s.runtime.poll();
+        s.commit(patches);
+    });
+    eprintln!("prism-macos: background task {id:?} started");
+    match started {
+        Some(task) => BG_WAITING.with(|w| w.borrow_mut().push((task, done))),
+        None => {
+            let _ = done.send(());
+        }
+    }
+    check_background();
+}
+
+fn check_background() {
+    with_state(|s| {
+        BG_WAITING.with(|w| {
+            w.borrow_mut().retain(|(task, done)| {
+                let running = s.runtime.is_task_running(*task);
+                if !running {
+                    eprintln!("prism-macos: background task finished");
+                    let _ = done.send(());
+                }
+                running
+            })
+        })
+    });
 }

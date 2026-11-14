@@ -1194,3 +1194,61 @@ fn tab_titles_follow_the_language() {
         "{patches:?}"
     );
 }
+
+#[test]
+fn background_tasks_and_lifecycle() {
+    use crate::{BackgroundTask, Lifecycle, PlatformRequest};
+    use std::sync::Mutex;
+    struct Plain;
+    impl Render for Plain {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+    let log: Arc<Mutex<Vec<String>>> = Default::default();
+    let seen = log.clone();
+    let init: AppInit = Arc::new(move |cx: &mut App| {
+        let (a, b) = (seen.clone(), seen.clone());
+        cx.on_lifecycle(move |phase, _| a.lock().unwrap().push(format!("{phase:?}")));
+        cx.register_background_task(
+            BackgroundTask::refresh("sync").every(std::time::Duration::from_secs(60)),
+            move |cx| {
+                let b = b.clone();
+                async move {
+                    cx.sleep(std::time::Duration::from_millis(30)).await;
+                    b.lock().unwrap().push("synced".into());
+                }
+            },
+        );
+        let root = cx.new_entity(|_| Plain);
+        cx.set_root(root);
+    });
+    let mut rt = Runtime::new(&init);
+    rt.render();
+    let scheduled = rt.take_requests();
+    assert!(
+        scheduled
+            .iter()
+            .any(|r| matches!(r, PlatformRequest::ScheduleBackgroundTask(t) if t.id == "sync"))
+    );
+    assert_eq!(
+        rt.app.describe_background(),
+        r#"[{"id":"sync","kind":"refresh"}]"#
+    );
+
+    rt.set_lifecycle(Lifecycle::Background);
+    assert_eq!(rt.app.lifecycle(), Lifecycle::Background);
+    assert!(rt.run_background_task("nope").is_none());
+    let task = rt.run_background_task("sync").unwrap();
+    assert!(rt.is_task_running(task) && rt.wants_background_time());
+    // Rescheduled for its next run.
+    assert!(
+        rt.take_requests()
+            .iter()
+            .any(|r| matches!(r, PlatformRequest::ScheduleBackgroundTask(_)))
+    );
+    std::thread::sleep(std::time::Duration::from_millis(40));
+    rt.poll();
+    assert!(!rt.is_task_running(task) && !rt.wants_background_time());
+    assert_eq!(*log.lock().unwrap(), ["Background", "synced"]);
+}

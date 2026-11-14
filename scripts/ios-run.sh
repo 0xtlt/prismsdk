@@ -156,6 +156,17 @@ cp "$TARGET_DIR/$TARGET/$PROFILE_DIR/$PKG" "$APP/$PKG"
 ASSETS="$(PRISM_DESCRIBE=assets "$HOST_BIN")"
 [[ -n "$ASSETS" && -d "$ASSETS" ]] && cp -R "$ASSETS" "$APP/assets"
 RESOURCES="$APP"
+# Background tasks (cx.register_background_task) are declared to iOS.
+BG_PLIST="$(PRISM_DESCRIBE=background "$HOST_BIN" | BUNDLE_ID="$BUNDLE_ID" python3 -c '
+import json, os, sys
+tasks = json.loads(sys.stdin.read() or "[]")
+if tasks:
+    bid = os.environ["BUNDLE_ID"]
+    ids = "".join("<string>%s.%s</string>" % (bid, t["id"]) for t in tasks)
+    modes = sorted({"fetch" if t["kind"] == "refresh" else "processing" for t in tasks})
+    print("  <key>BGTaskSchedulerPermittedIdentifiers</key><array>" + ids + "</array>")
+    print("  <key>UIBackgroundModes</key><array>" + "".join("<string>%s</string>" % m for m in modes) + "</array>")
+')"
 # Languages (locales/*.json): declared to the system, so iOS Settings
 # offers a per-app language and the App Store lists them.
 LOC_PLIST=""
@@ -202,6 +213,7 @@ cat > "$APP/Info.plist" <<PLIST
 $(plist_common "$PKG" "$BUNDLE_ID" APPL)
 $ICON_PLIST
 $LOC_PLIST
+$BG_PLIST
   <key>LSRequiresIPhoneOS</key><true/>
   <key>UILaunchScreen</key><dict/>
   <key>NSSupportsLiveActivities</key><true/>

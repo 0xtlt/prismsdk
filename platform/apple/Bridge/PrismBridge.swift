@@ -198,3 +198,66 @@ public func prismActivityEnd(_ key: UnsafePointer<CChar>, _ json: UnsafePointer<
     Task { await activity.end(c, dismissalPolicy: immediately ? .immediate : .default) }
 }
 #endif
+
+// MARK: Background tasks (iOS: BGTaskScheduler)
+
+/// Implemented in Rust: run / stop the app's background task `id` (full identifier).
+@_silgen_name("prism_background_run")
+func prismRustBackgroundRun(_ id: UnsafePointer<CChar>)
+@_silgen_name("prism_background_expired")
+func prismRustBackgroundExpired(_ id: UnsafePointer<CChar>)
+
+#if os(iOS)
+import BackgroundTasks
+
+private var prismBackgroundTasks: [String: BGTask] = [:]
+private var prismBackgroundRegistered = false
+
+/// Registers a launch handler for every identifier in Info.plist
+/// (BGTaskSchedulerPermittedIdentifiers). Must run before launch completes.
+@_cdecl("prism_bg_register")
+public func prismBgRegister() {
+    guard !prismBackgroundRegistered else { return }
+    prismBackgroundRegistered = true
+    let ids = Bundle.main.object(forInfoDictionaryKey: "BGTaskSchedulerPermittedIdentifiers") as? [String] ?? []
+    if ProcessInfo.processInfo.environment["PRISM_DEBUG_BACKGROUND"] != nil {
+        NSLog("prism: registering background tasks %@", ids.description)
+    }
+    for id in ids {
+        let ok = BGTaskScheduler.shared.register(forTaskWithIdentifier: id, using: .main) { task in
+            prismBackgroundTasks[id] = task
+            task.expirationHandler = { id.withCString { prismRustBackgroundExpired($0) } }
+            id.withCString { prismRustBackgroundRun($0) }
+        }
+        if !ok { NSLog("prism: could not register background task %@", id) }
+    }
+}
+
+@_cdecl("prism_bg_schedule")
+public func prismBgSchedule(_ id: UnsafePointer<CChar>, _ seconds: Double, _ processing: Bool,
+                            _ network: Bool, _ power: Bool) -> Bool {
+    let id = String(cString: id)
+    let request: BGTaskRequest
+    if processing {
+        let r = BGProcessingTaskRequest(identifier: id)
+        r.requiresNetworkConnectivity = network
+        r.requiresExternalPower = power
+        request = r
+    } else {
+        request = BGAppRefreshTaskRequest(identifier: id)
+    }
+    request.earliestBeginDate = Date(timeIntervalSinceNow: seconds)
+    do {
+        try BGTaskScheduler.shared.submit(request)
+        return true
+    } catch {
+        NSLog("prism: background task %@ not scheduled: %@", id, String(describing: error))
+        return false
+    }
+}
+
+@_cdecl("prism_bg_complete")
+public func prismBgComplete(_ id: UnsafePointer<CChar>, _ success: Bool) {
+    prismBackgroundTasks.removeValue(forKey: String(cString: id))?.setTaskCompleted(success: success)
+}
+#endif

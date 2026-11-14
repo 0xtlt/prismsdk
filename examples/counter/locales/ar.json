@@ -13,7 +13,9 @@
       "other": "{count} مهمة مفتوحة"
     },
     "synced": "تمت المزامنة {count}×",
-    "today": "اليوم {date}"
+    "today": "اليوم {date}",
+    "background": "التحديث في الخلفية: {time} ({count}×)",
+    "background_never": "التحديث في الخلفية: ليس بعد"
   },
   "todos": {
     "heading": "المهام",
