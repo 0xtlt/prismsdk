@@ -121,10 +121,14 @@ pub use forms::{
 };
 
 mod charts;
+pub mod qr;
+mod qr_code;
 pub use charts::{
     BarChart, LineChart, PieChart, Ring, Series, Sparkline, Stat, bar_chart, line_chart, pie_chart,
     ring, sparkline, stat,
 };
+pub use qr::QrEcc;
+pub use qr_code::{Qr, qr_code};
 
 // --- Button -------------------------------------------------------------------
 

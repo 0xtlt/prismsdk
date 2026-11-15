@@ -110,6 +110,11 @@ fn draw_paths(cr: &gtk::cairo::Context, paths: &[prism_core::Path]) {
         }
         if let Some(c) = p.fill {
             source(c);
+            cr.set_fill_rule(if p.even_odd {
+                gtk::cairo::FillRule::EvenOdd
+            } else {
+                gtk::cairo::FillRule::Winding
+            });
             let _ = cr.fill_preserve();
         }
         if let Some(c) = p.stroke {
@@ -784,6 +789,17 @@ impl Widgets for Gtk {
                 }
             }
             View::TextArea(_, t) => t.set_text(text),
+            // Bytes in memory (`picture_data`): decoded by GdkTexture
+            // (PNG, JPEG, TIFF; others through gdk-pixbuf's loaders).
+            View::Picture(_, p) if text.starts_with("data:") => {
+                let texture = prism_native::images::data_url(text).and_then(|b| {
+                    gtk::gdk::Texture::from_bytes(&gtk::glib::Bytes::from_owned(b)).ok()
+                });
+                match texture {
+                    Some(t) => p.set_paintable(Some(&t)),
+                    None => eprintln!("prism-linux: could not decode a data: picture"),
+                }
+            }
             View::Picture(_, p) => {
                 let path = if text.starts_with('/') {
                     Some(std::path::PathBuf::from(text))

@@ -95,8 +95,9 @@ fn color(c: Option<Color>) -> Value {
     }
 }
 
-/// `[{d, fill, stroke, w, round, dash}]`, `d` flat: `0 x y` move, `1 x y`
-/// line, `2 x1 y1 x2 y2 x y` curve, `3` close.
+/// `[{d, fill, stroke, w, round, dash}]` (and `eo: true` for the even-odd
+/// fill rule), `d` flat: `0 x y` move, `1 x y` line, `2 x1 y1 x2 y2 x y`
+/// curve, `3` close.
 fn drawing(paths: &[prism_core::Path]) -> Value {
     use prism_core::Segment as S;
     let paths: Vec<Value> = paths
@@ -112,14 +113,18 @@ fn drawing(paths: &[prism_core::Path]) -> Value {
                     S::Arc { .. } => {}
                 }
             }
-            json!({
+            let mut path = json!({
                 "d": d,
                 "fill": color(p.fill),
                 "stroke": color(p.stroke),
                 "w": p.width,
                 "round": p.round,
                 "dash": p.dash.map(|(a, b)| [a, b]),
-            })
+            });
+            if p.even_odd {
+                path["eo"] = json!(true);
+            }
+            path
         })
         .collect();
     Value::Array(paths)

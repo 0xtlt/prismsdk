@@ -536,6 +536,12 @@ test("shapes: insets, strokes, dashes, round caps and adaptive colors", () => {
   assert.equal(paths[0].style.strokeDasharray, "4 2");
 });
 
+test("shapes: the even-odd fill rule (SVG pictures with holes)", () => {
+  const { paths } = draw("i0,0\nf#000000FF e |M 0 0 L 1 0 L 1 1 Z M 0.2 0.2 L 0.8 0.2 L 0.8 0.8 Z\nf#000000FF |M 0 0 L 1 1\n");
+  assert.equal(paths[0].style.fillRule, "evenodd");
+  assert.ok(!paths[1].style.fillRule);
+});
+
 test("shapes: curves, and lines after Z start a new subpath", () => {
   const { paths } = draw("i0,0\n|C 0 0 0.5 1 1 0 Z L 0.5 0.5\n", 100, 100);
   // A curve without a start moves to its first control point; a line after

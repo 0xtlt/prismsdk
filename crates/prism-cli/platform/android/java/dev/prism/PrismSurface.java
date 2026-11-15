@@ -373,7 +373,7 @@ final class PrismSurface {
             if (bar < 0) continue;
             Integer fill = null, stroke = null;
             float width = 1;
-            boolean round = false;
+            boolean round = false, evenOdd = false;
             float[] dash = null;
             for (String t : line.substring(0, bar).trim().split("\\s+")) {
                 if (t.isEmpty()) continue;
@@ -383,6 +383,7 @@ final class PrismSurface {
                     case 's': stroke = paintColor(v, dark); break;
                     case 'w': width = parse(new String[]{v}, 0); break;
                     case 'r': round = true; break;
+                    case 'e': evenOdd = true; break;
                     case 'd': {
                         String[] d = v.split(",");
                         if (d.length == 2) dash = new float[]{parse(d, 0) * zoom, parse(d, 1) * zoom};
@@ -393,6 +394,7 @@ final class PrismSurface {
             }
             Path path = path(line.substring(bar + 1).trim().split("\\s+"), ix, iy,
                     Math.max(0, w - 2 * ix), Math.max(0, h - 2 * iy));
+            if (evenOdd) path.setFillType(Path.FillType.EVEN_ODD);
             if (fill != null) {
                 paint.reset();
                 paint.setAntiAlias(true);

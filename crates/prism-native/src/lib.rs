@@ -939,6 +939,7 @@ pub fn to_taffy(s: &Style, kind: NodeKind) -> taffy::Style {
             }
         },
         scrollbar_width: 0.,
+        aspect_ratio: s.aspect_ratio,
         ..Default::default()
     }
 }

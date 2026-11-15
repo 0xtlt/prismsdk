@@ -225,6 +225,34 @@ fn loops_that_start_over_and_non_uniform_scale() {
 }
 
 #[test]
+fn even_odd_paths_and_data_url_pictures() {
+    let mut w = RemoteWidgets::new(measure);
+    let hole = Path::rect(0., 0., 10., 10.).fill(rgb(0)).even_odd();
+    w.set_drawing(&4, &[hole, Path::rect(0., 0., 1., 1.).fill(rgb(0))]);
+    let paths = &last(&w)["paths"];
+    assert_eq!(paths[0]["eo"], json!(true));
+    assert!(paths[1].get("eo").is_none(), "only when set");
+
+    use prism_native::images::{ImageSources, data_url, load};
+    assert_eq!(
+        data_url("data:image/png;base64,TWFu").as_deref(),
+        Some(&b"Man"[..])
+    );
+    assert_eq!(data_url("data:;base64,TWE=").as_deref(), Some(&b"Ma"[..]));
+    assert_eq!(
+        data_url("data:image/svg+xml,%3Csvg%2F%3E").as_deref(),
+        Some(&b"<svg/>"[..])
+    );
+    assert_eq!(data_url("data:image/png;base64,***"), None);
+    assert_eq!(data_url("https://x"), None);
+    // `load` decodes them without touching the disk or the network.
+    assert_eq!(
+        load("data:image/gif;base64,//79", &ImageSources::default()),
+        Some(vec![0xff, 0xfe, 0xfd])
+    );
+}
+
+#[test]
 fn drawing_ops() {
     let mut w = RemoteWidgets::new(measure);
     let mut p = Path::new()

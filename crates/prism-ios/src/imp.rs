@@ -212,6 +212,7 @@ fn draw_paths(paths: &[prism_core::Path]) {
             }
         }
         if let Some(c) = p.fill {
+            b.setUsesEvenOddFillRule(p.even_odd);
             ui_color(c).setFill();
             b.fill();
         }

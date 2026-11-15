@@ -116,6 +116,9 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
     }
     let basis = len(s.flex_basis).unwrap_or_else(|| "auto".into());
     let _ = write!(w, "flex:{} {} {basis};", s.flex_grow, s.flex_shrink);
+    if let Some(r) = s.aspect_ratio {
+        let _ = write!(w, "aspect-ratio:{r};");
+    }
 
     if let Some(bg) = s.background {
         let _ = write!(w, "background:{};", bg.to_css());

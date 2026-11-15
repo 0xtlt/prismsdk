@@ -652,6 +652,16 @@ impl Gallery {
     }
 }
 
+/// SVG markup as a server would send it: drawn as native vectors by `svg()`
+/// (a rounded rectangle, a ring with an even-odd hole, an arc path, a
+/// rotated, dashed stroke).
+const BADGE_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="96" height="64" viewBox="0 0 48 32">
+  <rect x="1" y="1" width="46" height="30" rx="7" fill="#5B5BD6"/>
+  <path d="M16 5a11 11 0 1 0 0.01 0Z M16 10a6 6 0 1 0 0.01 0Z" fill="#fff" fill-rule="evenodd"/>
+  <path d="M30 22 A6 6 0 0 1 42 22" fill="none" stroke="#FFD34D" stroke-width="2.5" stroke-linecap="round"/>
+  <g transform="rotate(-12 36 11)"><line x1="29" y1="11" x2="43" y2="11" stroke="#fff" stroke-width="1.5" stroke-dasharray="2 1.5"/></g>
+</svg>"##;
+
 impl Render for Gallery {
     fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::of(cx);
@@ -759,6 +769,26 @@ impl Render for Gallery {
                                     .rounded(12.),
                             )
                             .child(picture("prism.png").alt(strings::gallery_logo_alt(cx)).fit().size(px(120.)).rounded(24.)),
+                    )
+                    // From memory: a QR code, PNG bytes, SVG markup.
+                    .child(
+                        div()
+                            .flex_row()
+                            .flex_wrap()
+                            .items_center()
+                            .gap(12.)
+                            .child(
+                                ui::qr_code("https://example.com/pair/8F3K-22QZ")
+                                    .size(120.)
+                                    .alt(strings::gallery_qr_alt(cx)),
+                            )
+                            .child(
+                                picture_data(include_bytes!("../assets/prism.png"), "image/png")
+                                    .alt(strings::gallery_memory_alt(cx))
+                                    .fit()
+                                    .size(px(64.)),
+                            )
+                            .child(svg(BADGE_SVG).alt(strings::gallery_svg_alt(cx)).w(px(96.))),
                     )
                     .child(
                         ui::list_row(strings::gallery_list(cx, cx.format_number(10_000., 0)))

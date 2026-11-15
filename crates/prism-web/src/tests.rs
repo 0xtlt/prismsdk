@@ -748,6 +748,21 @@ fn motion_describes_enter_exit_and_loops() {
 }
 
 #[test]
+fn aspect_ratio_and_data_url_pictures() {
+    let s = Style {
+        aspect_ratio: Some(2.),
+        ..Default::default()
+    };
+    assert!(css(NodeKind::Shape, &s).contains("aspect-ratio:2;"));
+    assert!(!css(NodeKind::Shape, &Style::default()).contains("aspect-ratio"));
+    // Pictures from memory keep their data: URL (no /assets/ prefix).
+    assert_eq!(
+        crate::html::picture_url("data:image/png;base64,TWFu"),
+        "data:image/png;base64,TWFu"
+    );
+}
+
+#[test]
 fn percent_offsets_non_uniform_scale_and_loops_that_start_over() {
     let s = Style {
         transform: prism_core::Transform {

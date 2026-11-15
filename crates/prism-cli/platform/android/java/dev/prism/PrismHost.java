@@ -980,6 +980,21 @@ public final class PrismHost {
     // --- Pictures ---------------------------------------------------------------------------
 
     static void loadPicture(ImageView view, String src) {
+        if (src.startsWith("data:")) {
+            // Bytes in memory (`picture_data`): base64 or percent-encoded.
+            int comma = src.indexOf(',');
+            try {
+                String meta = src.substring(5, Math.max(5, comma));
+                String payload = src.substring(comma + 1);
+                byte[] bytes = meta.endsWith(";base64")
+                        ? android.util.Base64.decode(payload, android.util.Base64.DEFAULT)
+                        : java.net.URLDecoder.decode(payload, "UTF-8").getBytes("ISO-8859-1");
+                view.setImageBitmap(BitmapFactory.decodeByteArray(bytes, 0, bytes.length));
+            } catch (Exception e) {
+                android.util.Log.w("prism", "picture data: URL", e);
+            }
+            return;
+        }
         if (src.startsWith("http://") || src.startsWith("https://")) {
             new Thread(() -> {
                 try (InputStream in = new URL(src).openStream()) {

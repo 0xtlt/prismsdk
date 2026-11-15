@@ -430,6 +430,9 @@ impl PrismView {
                 ]);
                 shape.setLineDashPattern(Some(&pattern));
             }
+            if p.even_odd {
+                shape.setFillRule(unsafe { objc2_quartz_core::kCAFillRuleEvenOdd });
+            }
             layer.addSublayer(&shape);
             layers.push(shape);
         }

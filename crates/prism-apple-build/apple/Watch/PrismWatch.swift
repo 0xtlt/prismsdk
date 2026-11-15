@@ -142,7 +142,7 @@ struct PrismShape: View {
             for p in paths {
                 let path = Self.path(p["d"] as? [Double] ?? [])
                 if let f = PrismColor(p["fill"]) {
-                    ctx.fill(path, with: .color(dark ? f.dark : f.light))
+                    ctx.fill(path, with: .color(dark ? f.dark : f.light), style: FillStyle(eoFill: p["eo"] as? Bool ?? false))
                 }
                 if let s = PrismColor(p["stroke"]) {
                     let round = p["round"] as? Bool ?? false
@@ -1155,13 +1155,26 @@ struct Picture: View {
     let fit: Bool
 
     var body: some View {
-        if source.hasPrefix("http://") || source.hasPrefix("https://"), let url = URL(string: source) {
+        if source.hasPrefix("data:"), let image = Self.dataImage(source) {
+            Image(uiImage: image).resizable().aspectRatio(contentMode: fit ? .fit : .fill)
+        } else if source.hasPrefix("http://") || source.hasPrefix("https://"), let url = URL(string: source) {
             AsyncImage(url: url) { $0.resizable().aspectRatio(contentMode: fit ? .fit : .fill) } placeholder: { Color.gray.opacity(0.2) }
         } else if let image = UIImage(contentsOfFile: source.hasPrefix("/") ? source : Bundle.main.bundlePath + "/assets/" + source) {
             Image(uiImage: image).resizable().aspectRatio(contentMode: fit ? .fit : .fill)
         } else {
             Color.gray.opacity(0.2)
         }
+    }
+
+    /// Bytes in memory (`picture_data`): a base64 or percent-encoded `data:` URL.
+    static func dataImage(_ source: String) -> UIImage? {
+        guard let comma = source.firstIndex(of: ",") else { return nil }
+        let meta = source[source.index(source.startIndex, offsetBy: 5)..<comma]
+        let payload = String(source[source.index(after: comma)...])
+        let data = meta.hasSuffix(";base64")
+            ? Data(base64Encoded: payload, options: .ignoreUnknownCharacters)
+            : payload.removingPercentEncoding.map { Data($0.utf8) }
+        return data.flatMap(UIImage.init(data:))
     }
 }
 

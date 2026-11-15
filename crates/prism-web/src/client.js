@@ -60,6 +60,7 @@
         else if (tok[0] === "w") p.w = +v;
         else if (tok[0] === "r") p.round = true;
         else if (tok[0] === "d") p.dash = v.replace(",", " ");
+        else if (tok[0] === "e") p.evenOdd = true;
       }
       paths.push(p);
     }
@@ -112,6 +113,7 @@
       e.style.strokeWidth = p.w;
       if (p.round) { e.style.strokeLinecap = "round"; e.style.strokeLinejoin = "round"; }
       if (p.dash) e.style.strokeDasharray = p.dash;
+      if (p.evenOdd) e.style.fillRule = "evenodd";
       return e;
     }));
   }

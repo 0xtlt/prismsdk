@@ -457,6 +457,12 @@ pub struct Style {
     /// `translate(x%, y%)`; `(-50., 0.)` centers it on its position). Leading
     /// / trailing like `transform.x`; no effect on the layout around it.
     pub translate_percent: (f32, f32),
+
+    // Size: proportions.
+    /// Width / height: with one side set (or stretched), the other follows
+    /// (CSS `aspect-ratio`). [`svg`](crate::svg()) pictures keep their
+    /// `viewBox` proportions with it.
+    pub aspect_ratio: Option<f32>,
 }
 
 /// Window size classes, by width in points (CSS pixels on the web).
@@ -812,6 +818,7 @@ impl Default for Style {
             responsive: Responsive::default(),
             platforms: None,
             translate_percent: (0., 0.),
+            aspect_ratio: None,
         }
     }
 }
@@ -1330,5 +1337,12 @@ pub trait Styled: Sized {
     /// .translate_percent(-50., 0.)` centers a label on 30 % of its parent.
     fn translate_percent(self, x: f32, y: f32) -> Self {
         self.with_style(|s| s.translate_percent = (x, y))
+    }
+
+    // Size: proportions.
+    /// Keeps width / height at `ratio`: set one side and the other follows
+    /// (`16. / 9.` for video, `1.` for a square).
+    fn aspect_ratio(self, ratio: f32) -> Self {
+        self.with_style(|s| s.aspect_ratio = (ratio > 0.).then_some(ratio))
     }
 }

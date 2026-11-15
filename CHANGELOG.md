@@ -41,6 +41,13 @@ The first version, not yet on crates.io.
   is a full turn on every backend, for spinners), non-uniform scale
   (`scale_x`, `scale_y` on styles and poses) and offsets in percent of the
   element's own size (`translate_percent`, for anchoring labels).
+- Pictures from memory: `picture_data(bytes, mime)` (a `data:` URL, decoded
+  natively on every backend) and `svg(markup)` (SVG drawn as native vector
+  paths everywhere, widgets included, keeping its proportions);
+  `ui::qr_code(text)` with a built-in QR encoder (`prism_ui::qr`: byte
+  mode, versions 1–40, four error-correction levels), drawn as one shape.
+- Shapes: the even-odd fill rule (`Path::even_odd`) on every renderer;
+  `aspect_ratio` on styles (taffy, CSS `aspect-ratio`, widget snapshots).
 - Shipping: Android App Bundles and Google Play upload, App Store builds and
   upload, Developer ID notarization and DMGs, `.deb` packages, web Docker
   images, all with `--dry-run`.

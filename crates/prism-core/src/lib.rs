@@ -31,6 +31,7 @@ pub mod shape;
 pub mod storage;
 mod style;
 pub mod surfaces;
+pub mod svg;
 mod task;
 mod window;
 
@@ -56,6 +57,7 @@ pub use element::{
     format_remaining, image, lazy, modal, picker, picture, progress, screen, scroll, shape, slider,
     spinner, stack, tab, tabs, text, text_area, text_input, timer, toggle, unix_seconds, unix_time,
 };
+pub use element::{picture_data, svg};
 pub use i18n::{BasicFormatter, DateStyle, Direction, Formatter, Locale, Translations};
 pub use list::VirtualList;
 pub use menu::{ActionRole, Alert, AlertStyle, Menu, MenuItem, Tray};
@@ -514,6 +516,7 @@ pub mod prelude {
         navigate_to, picker, picture, progress, px, relative, rgb, rgba, screen, scroll, shape,
         slider, spinner, text, text_area, text_input, timer, toggle,
     };
+    pub use crate::{picture_data, svg};
 }
 
 #[cfg(test)]

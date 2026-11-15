@@ -38,7 +38,7 @@ shape()
     .label("Trend: up")                                         // decorative unless labelled
 ```
 
-`Path` also has `line`, `arc`, `circle`, `rect`, `move_to`/`line_to`/`curve_to`/`arc_to`/`close`, `.fill`, `.stroke`, `.dashed`.
+`Path` also has `line`, `arc`, `circle`, `rect`, `move_to`/`line_to`/`curve_to`/`arc_to`/`close`, `.fill`, `.stroke`, `.dashed`, `.even_odd` (holes where subpaths overlap). SVG markup becomes a drawing with `svg(markup)` (see [Images](images-lists-gestures.md)).
 
 ## Charts in widgets, Live Activities and car screens
 
