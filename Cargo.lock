@@ -2174,6 +2174,7 @@ version = "0.1.0"
 name = "prism-build"
 version = "0.1.0"
 dependencies = [
+ "prism-apple-build",
  "serde_json",
 ]
 

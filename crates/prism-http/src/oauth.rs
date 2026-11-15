@@ -16,7 +16,7 @@
 //!
 //! | | Browser | Redirect caught by |
 //! |---|---|---|
-//! | Apple | `ASWebAuthenticationSession` | its callback scheme (`prism-<app>:/oauth`, or the provider's) |
+//! | Apple | `ASWebAuthenticationSession` | its callback scheme (`prism-<package>:/oauth`: the cargo package, `_` written `-`; or the provider's) |
 //! | Android | Custom Tab (or the default browser) | the app's deep-link scheme |
 //! | Linux | the default browser | a loopback server (`http://127.0.0.1:<port>/callback`) |
 //! | Web | a popup | the server (`<base>/_prism/auth/callback`) |

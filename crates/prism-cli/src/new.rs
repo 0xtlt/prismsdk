@@ -70,7 +70,7 @@ pub fn create(name: &str, prism: Option<PathBuf>) -> Result<(), String> {
     let files: [(&str, String); 10] = [
         (
             "build.rs",
-            "fn main() {\n    // locales/*.json → typed `strings::…` functions, checked at build time.\n    prism_build::translations(\"locales\").fallback(\"en\").generate();\n}\n"
+            "fn main() {\n    // The app binary's link settings (Apple: Swift's rpath, deployment target).\n    prism_build::link_app();\n    // locales/*.json → typed `strings::…` functions, checked at build time.\n    prism_build::translations(\"locales\").fallback(\"en\").generate();\n}\n"
                 .to_string(),
         ),
         (
@@ -127,6 +127,18 @@ version = "0.1.0"
 [ios]
 # team = "ABCDE12345"        # Apple team for real devices
 # device = "My iPhone"       # default to a device instead of a simulator
+# deployment_target = "17.0" # oldest iOS/iPadOS (IPHONEOS_DEPLOYMENT_TARGET)
+
+# Oldest system versions of the other platforms (these are the defaults; the
+# environment variable, e.g. MACOSX_DEPLOYMENT_TARGET, wins when it is set).
+# [macos]
+# deployment_target = "13.0"   # MACOSX_DEPLOYMENT_TARGET
+# [tvos]
+# deployment_target = "17.0"   # TVOS_DEPLOYMENT_TARGET
+# [watchos]
+# deployment_target = "10.0"   # WATCHOS_DEPLOYMENT_TARGET
+# [visionos]
+# deployment_target = "26.0"   # XROS_DEPLOYMENT_TARGET
 "#
             ),
         ),

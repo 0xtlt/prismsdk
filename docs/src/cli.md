@@ -52,7 +52,24 @@ team = "ABCDE12345"           # Apple team for real devices
 simulator = "iPhone 17"       # default simulator
 device = "My iPhone"          # default device (instead of a simulator)
 icloud = true                 # iCloud key-value storage (cloud_storage)
+deployment_target = "17.0"    # oldest iOS/iPadOS (the default)
+
+[macos]                       # likewise [tvos] (17.0), [watchos] (10.0), [visionos] (26.0)
+deployment_target = "13.0"
 ```
+
+`prism` sets the deployment targets (`IPHONEOS_DEPLOYMENT_TARGET`,
+`TVOS_DEPLOYMENT_TARGET`, `WATCHOS_DEPLOYMENT_TARGET`, `XROS_DEPLOYMENT_TARGET`,
+`MACOSX_DEPLOYMENT_TARGET`) for every `cargo` it runs, from these keys or the
+defaults; a variable already set in the environment wins. The app's
+`build.rs` calls `prism_build::link_app()` (`prism new` writes it), so builds
+without `prism` link the same way ([iOS](platforms/ios.md#deployment-target)).
+
+The widget extension (iOS, iPadOS, visionOS, macOS) is built, signed and
+embedded, with its provisioning profile and App Group, only when the app
+registers a widget or (iOS) declares Live Activities with
+`cx.enable_live_activities()`. Android generates one widget receiver per
+registered widget, so none without widgets.
 
 ## Environment
 

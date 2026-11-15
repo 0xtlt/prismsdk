@@ -313,6 +313,7 @@ fn build_target(p: &Project, target: Target, o: &Options) -> Result<(), String> 
 fn build(p: &Project, target: Target, o: &Options) -> Result<(), String> {
     let mut cmd = Command::new("cargo");
     cmd.current_dir(&p.root).args(["build", "-p", &p.package]);
+    p.deployment_env(&mut cmd);
     if o.release {
         cmd.arg("--release");
     }
@@ -408,6 +409,8 @@ fn apple_command(
         .env("PRISM_BUNDLE_ID", &p.bundle_id)
         .env("PRISM_APP_NAME", &p.name)
         .env("PRISM_VERSION", &p.version);
+    // The scripts' cargo builds, Swift compiles and MinimumOSVersion.
+    p.deployment_env(&mut cmd);
     if script == "android-run.sh" {
         cmd.env("PRISM_BUILD", p.version_code()?.to_string());
         if o.aab {

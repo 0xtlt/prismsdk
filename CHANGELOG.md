@@ -164,6 +164,16 @@ The first version, not yet on crates.io.
   `hit_test(false)` (`pointer-events: none`) and `inert(true)` styles (#19).
 - Runtime layers (`cx.add_layer`): entities mounted above the router, tabs,
   sheets and dialogs on every backend (#25).
+- `deployment_target` in the `[ios]`, `[tvos]`, `[watchos]`, `[visionos]` and
+  `[macos]` sections of `Prism.toml` (defaults 17.0, 17.0, 10.0, 26.0, 13.0),
+  written by `prism new` as comments (#27).
+- `prism_build::link_app()` (and `prism_apple_build::link_app`), called first
+  in the app's `build.rs` (`prism new` writes it): the Swift runtime's
+  `-rpath /usr/lib/swift` and Prism's deployment target for the app's own
+  binary, so plain `cargo build` links like `prism` (#27).
+- `cx.enable_live_activities()` declares Live Activities at startup
+  (`PRISM_DESCRIBE=live_activities`), so iOS bundles without widgets still
+  get the extension that draws them (#35).
 
 ### Changed
 
@@ -210,9 +220,26 @@ The first version, not yet on crates.io.
   `shape().absolute().inset(0.)` reaches `Styled::inset`. (#15)
 - A stack's value is a set of flags (`STACK_CLOSABLE`, `STACK_NO_HEADER`),
   and a screen's value says whether it is bare. (#8)
+- Apps that register no widget and declare no Live Activity are bundled
+  without the widget extension (`PrismWidgets.appex`), its provisioning
+  profile (`<bundle id>.widgets`) and the App Group, on iOS, iPadOS,
+  visionOS, macOS, tvOS and watchOS; their data stays in the app's own
+  container. On iOS, `start_activity` needs `cx.enable_live_activities()` (or
+  a widget, or `on_activity_push_token`). Android already added widget
+  receivers only for registered widgets. (#35)
 
 ### Fixed
 
+- An iOS app built outside the Prism checkout no longer stops at launch on
+  `@rpath/libswift_Concurrency.dylib` (#27): `prism` sets
+  `IPHONEOS_DEPLOYMENT_TARGET`, `TVOS_…`, `WATCHOS_…`, `XROS_…` and
+  `MACOSX_DEPLOYMENT_TARGET` for every `cargo` it runs (from `Prism.toml`,
+  unless the environment sets them; only Prism's own `mise.toml` did), and
+  the app's binary gets `-rpath /usr/lib/swift` from `prism_build::link_app`
+  (a backend's `rustc-link-arg` never reached it).
+- Docs: the iOS deployment target and how to change it, and the exact OAuth
+  redirect URI (`prism-<cargo package, _ as ->:/oauth`, with an example)
+  (#34). Unbundled macOS apps use the same scheme (it kept `_`).
 - Padding works on every kind of node (#14): `.p()`, `.px()`, `.pl()`… on a
   text, button, text input, text area, timer or control grow its box and
   inset its content on the web and every native backend (they were ignored

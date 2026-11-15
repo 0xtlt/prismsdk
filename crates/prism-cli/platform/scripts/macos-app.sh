@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Bundle a Prism app as a real macOS .app — with its WidgetKit extension,
-# notifications and deep links — then open it.
+# notifications and deep links — then open it. The extension (and its App
+# Group and store profile) is left out of apps that register no widget.
 #
 #   scripts/macos-app.sh <package> [--no-open]
 #
@@ -79,7 +80,6 @@ case "$DIST" in
     PROFILE="${PRISM_MAC_PROFILE:-$(find_profile "$BUNDLE_ID")}"
     WIDGETS_PROFILE="${PRISM_MAC_WIDGETS_PROFILE:-$(find_profile "$BUNDLE_ID.widgets")}"
     [[ -n "$PROFILE" ]] || { echo "No Mac App Store provisioning profile for $BUNDLE_ID (set PRISM_MAC_PROFILE)" >&2; exit 1; }
-    [[ -n "$WIDGETS_PROFILE" ]] || { echo "No Mac App Store provisioning profile for $BUNDLE_ID.widgets (set PRISM_MAC_WIDGETS_PROFILE)" >&2; exit 1; }
     TEAM="$(security cms -D -i "$PROFILE" | plutil -extract TeamIdentifier.0 raw -)" ;;
   developer-id)
     SIGN="${PRISM_IDENTITY:-$(identity "Developer ID Application")}"
@@ -102,9 +102,21 @@ mkdir -p "$GEN"
 cargo build -p "$PKG" ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"}
 BIN="$TARGET_DIR/$PROFILE_DIR/$PKG"
 PRISM_DESCRIBE=widgets "$BIN" > "$GEN/widgets.json"
-python3 "$PLATFORM/apple/generate_widgets.py" "$GEN/widgets.json" macos > "$GEN/Generated.swift"
+WIDGET_COUNT="$(python3 -c 'import json, sys; print(len(json.load(open(sys.argv[1]))))' "$GEN/widgets.json")"
+# No widget: no extension, App Group or widget profile (Live Activities are
+# a menu bar item, drawn by the app).
+WIDGETS=1
+[[ "$WIDGET_COUNT" == 0 ]] && WIDGETS=0
+if [[ $WIDGETS == 1 ]]; then
+  python3 "$PLATFORM/apple/generate_widgets.py" "$GEN/widgets.json" macos > "$GEN/Generated.swift"
+  if [[ "$DIST" == appstore && -z "$WIDGETS_PROFILE" ]]; then
+    echo "No Mac App Store provisioning profile for $BUNDLE_ID.widgets (set PRISM_MAC_WIDGETS_PROFILE)" >&2
+    exit 1
+  fi
+fi
 
-rm -rf "$APP" && mkdir -p "$APP/Contents/MacOS" "$APPEX/Contents/MacOS"
+rm -rf "$APP" && mkdir -p "$APP/Contents/MacOS"
+[[ $WIDGETS == 1 ]] && mkdir -p "$APPEX/Contents/MacOS"
 cp "$BIN" "$APP/Contents/MacOS/$PKG"
 ASSETS="$(PRISM_DESCRIBE=assets "$BIN")"
 [[ -n "$ASSETS" && -d "$ASSETS" ]] && mkdir -p "$APP/Contents/Resources" && cp -R "$ASSETS" "$APP/Contents/Resources/assets"
@@ -126,7 +138,7 @@ plist() { # $1 executable, $2 bundle id, $3 package type, $4 extra
   <key>CFBundleSupportedPlatforms</key><array><string>MacOSX</string></array>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
 $BUILD_PLIST
-  <key>PrismAppGroup</key><string>$GROUP</string>
+$( [[ $WIDGETS == 1 ]] && echo "  <key>PrismAppGroup</key><string>$GROUP</string>" )
   <key>PrismURLScheme</key><string>$SCHEME</string>
 $4
 </dict>
@@ -232,6 +244,7 @@ $USAGE_PLIST
     <key>CFBundleURLSchemes</key><array><string>$SCHEME</string></array>
   </dict></array>" > "$APP/Contents/Info.plist"
 
+if [[ $WIDGETS == 1 ]]; then
 xcrun --sdk macosx swiftc -target arm64-apple-macos14.0 -swift-version 5 -O \
   -parse-as-library -application-extension -module-name PrismWidgets \
   -Xlinker -e -Xlinker _NSExtensionMain \
@@ -240,14 +253,15 @@ xcrun --sdk macosx swiftc -target arm64-apple-macos14.0 -swift-version 5 -O \
 plist PrismWidgets "$BUNDLE_ID.widgets" XPC! "  <key>NSExtension</key>
   <dict><key>NSExtensionPointIdentifier</key><string>com.apple.widgetkit-extension</string></dict>" \
   > "$APPEX/Contents/Info.plist"
+fi
 
 # Entitlements. Widget extensions must be sandboxed; app and extension share
 # the App Group. Store builds are sandboxed too, with what Prism.toml's
 # [permissions] ask for (also needed under the hardened runtime), and carry
 # the app id their profile grants.
-[[ "$DIST" == appstore ]] && security cms -D -i "$PROFILE" > "$GEN/profile.plist" \
-  && security cms -D -i "$WIDGETS_PROFILE" > "$GEN/widgets.profile.plist"
-DIST="$DIST" GROUP="$GROUP" GEN="$GEN" ICLOUD="${PRISM_ICLOUD:-}" PUSH_ENV="${PUSH_ENT:+$PRISM_PUSH}" python3 <<'PY'
+[[ "$DIST" == appstore ]] && security cms -D -i "$PROFILE" > "$GEN/profile.plist"
+[[ "$DIST" == appstore && $WIDGETS == 1 ]] && security cms -D -i "$WIDGETS_PROFILE" > "$GEN/widgets.profile.plist"
+DIST="$DIST" GROUP="$GROUP" GEN="$GEN" ICLOUD="${PRISM_ICLOUD:-}" PUSH_ENV="${PUSH_ENT:+$PRISM_PUSH}" WIDGETS="$WIDGETS" python3 <<'PY'
 import os, plistlib
 dist, group, gen = os.environ["DIST"], os.environ["GROUP"], os.environ["GEN"]
 by_permission = {
@@ -265,7 +279,9 @@ def granted(p, e):
     for key in ("com.apple.application-identifier", "com.apple.developer.team-identifier"):
         if key in p:
             e[key] = p[key]
-app = {"com.apple.security.application-groups": [group]}
+# The App Group is shared with the widget extension: only apps with one.
+widgets = os.environ["WIDGETS"] == "1"
+app = {"com.apple.security.application-groups": [group]} if widgets else {}
 appex = {"com.apple.security.app-sandbox": True, "com.apple.security.application-groups": [group]}
 if dist:
     for name in asked:
@@ -282,24 +298,26 @@ if dist == "appstore":
     kv = "com.apple.developer.ubiquity-kvstore-identifier"
     if os.environ.get("ICLOUD") == "1" and kv in p:
         app[kv] = p[kv]
-    granted(profile("widgets.profile.plist"), appex)
+    if widgets:
+        granted(profile("widgets.profile.plist"), appex)
 # Remote push: only with a Mac provisioning profile granting it (PUSH_ENT).
 if os.environ.get("PUSH_ENV"):
     app["com.apple.developer.aps-environment"] = os.environ["PUSH_ENV"]
 plistlib.dump(app, open(os.path.join(gen, "app.entitlements"), "wb"))
-plistlib.dump(appex, open(os.path.join(gen, "appex.entitlements"), "wb"))
+if widgets:
+    plistlib.dump(appex, open(os.path.join(gen, "appex.entitlements"), "wb"))
 PY
 SIGN_ARGS=(--force --sign "$SIGN" ${KEYCHAIN_ARGS[@]+"${KEYCHAIN_ARGS[@]}"})
 # Distribution builds run under the hardened runtime (notarization needs it).
 [[ -n "$DIST" ]] && SIGN_ARGS+=(--options runtime "${TIMESTAMP[@]}")
 if [[ "$DIST" == appstore ]]; then
   cp "$PROFILE" "$APP/Contents/embedded.provisionprofile"
-  cp "$WIDGETS_PROFILE" "$APPEX/Contents/embedded.provisionprofile"
+  [[ $WIDGETS == 1 ]] && cp "$WIDGETS_PROFILE" "$APPEX/Contents/embedded.provisionprofile"
 fi
-codesign "${SIGN_ARGS[@]}" --entitlements "$GEN/appex.entitlements" "$APPEX"
+[[ $WIDGETS == 1 ]] && codesign "${SIGN_ARGS[@]}" --entitlements "$GEN/appex.entitlements" "$APPEX"
 codesign "${SIGN_ARGS[@]}" --entitlements "$GEN/app.entitlements" "$APP"
 [[ -n "$DIST" ]] && codesign --verify --deep --strict "$APP"
-echo "Built $APP (widgets: $(python3 -c "import json;print(len(json.load(open('$GEN/widgets.json'))))"))"
+echo "Built $APP (widgets: $WIDGET_COUNT)"
 if [[ "$DIST" == appstore ]]; then
   # The Mac App Store takes a signed product archive installing into /Applications.
   PKG_OUT="$OUT/$APP_NAME.pkg"

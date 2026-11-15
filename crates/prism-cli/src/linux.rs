@@ -218,6 +218,7 @@ mod tests {
             vapid_public_key: None,
             target_dir: "/w/target".into(),
             workspace_root: "/w".into(),
+            deployment_targets: vec![],
         }
     }
 

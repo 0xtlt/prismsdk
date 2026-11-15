@@ -379,6 +379,12 @@ impl App {
         self.push.activity_handlers.push(Rc::new(f));
     }
 
+    /// A Live Activity token handler is registered (bundlers then embed
+    /// the extension push-to-start needs).
+    pub(crate) fn watches_activity_tokens(&self) -> bool {
+        !self.push.activity_handlers.is_empty()
+    }
+
     /// Asks the platform for a push token (and for permission to show
     /// notifications). The answer goes to [`on_push_token`](App::on_push_token);
     /// in a task, `cx.register_for_push().await` returns it.

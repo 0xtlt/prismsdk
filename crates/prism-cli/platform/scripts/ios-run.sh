@@ -3,6 +3,9 @@
 # Activities, Dynamic Island) — or tvOS (PRISM_OS=tvos: the app alone), then
 # install and launch it on a simulator or a real device. Used by
 # `prism run ios|tvos` / `prism build ios|tvos` and `mise run ios`.
+# The extension, its provisioning profile and the App Group are left out of
+# apps that register no widget and declare no Live Activity
+# (PRISM_DESCRIBE=widgets / live_activities).
 #
 #   scripts/ios-run.sh <package> [--no-launch]
 #
@@ -101,7 +104,32 @@ APPEX="$APP/PlugIns/PrismWidgets.appex"
 GEN="$OUT/generated"
 mkdir -p "$GEN"
 
-# 1. Pick the destination: a real device, or a booted (slimmed) simulator.
+# 1. Describe the app (host build): its widgets, Live Activities and car
+#    screen. The widget extension is generated only when something needs it.
+cargo build -q -p "$PKG"
+HOST_BIN="$TARGET_DIR/debug/$PKG"
+# CarPlay (cx.register_car): a template scene. CarPlay only shows apps with an
+# entitlement Apple grants on request (com.apple.developer.carplay-driving-task):
+# devices get it from the provisioning profile; the simulator refuses to launch
+# an app claiming it without one.
+CAR=0
+[[ "$OS" == ios ]] && CAR="$(PRISM_DESCRIBE=car "$HOST_BIN" 2>/dev/null || echo 0)"
+if [[ $WIDGETS == 1 ]]; then
+  PRISM_DESCRIBE=widgets "$HOST_BIN" > "$GEN/widgets.json"
+  # Live Activities (iOS) are drawn by the extension too
+  # (cx.enable_live_activities, or a push-to-start token handler).
+  LIVE=0
+  [[ "$OS" == ios ]] && LIVE="$(PRISM_DESCRIBE=live_activities "$HOST_BIN" 2>/dev/null || echo 0)"
+  WIDGET_COUNT="$(python3 -c 'import json, sys; print(len(json.load(open(sys.argv[1]))))' "$GEN/widgets.json")"
+  if [[ "$WIDGET_COUNT" == 0 && "$LIVE" != 1 ]]; then
+    # Nothing to draw outside the app: no extension, profile or App Group.
+    WIDGETS=0
+  else
+    python3 "$PLATFORM/apple/generate_widgets.py" "$GEN/widgets.json" "$OS" > "$GEN/Generated.swift"
+  fi
+fi
+
+# 2. Pick the destination: a real device, or a booted (slimmed) simulator.
 #    Build-only runs (PRISM_NO_INSTALL=1) need neither.
 if [[ "${PRISM_NO_INSTALL:-}" == 1 ]]; then
   UDID=""
@@ -129,7 +157,8 @@ print((booted or pick)[0]["udid"] if pick else "")
 ')"
   [[ -n "$UDID" ]] || { echo "No matching $RUNTIME_NAME simulator (PRISM_SIM=${PRISM_SIM:-}; create one with xcrun simctl create)" >&2; exit 1; }
   if command -v simslim >/dev/null && ! simslim list --booted 2>/dev/null | grep -q "$UDID"; then
-    # Prism apps ship widgets and Live Activities: keep their daemons running.
+    # Widgets and Live Activities (when the app has the extension): keep
+    # their daemons running.
     # Push (PRISM_PUSH) needs the "store" daemons (apsd: remote notifications).
     KEEP=()
     [[ $WIDGETS == 1 ]] && KEEP+=(widgets)
@@ -137,20 +166,6 @@ print((booted or pick)[0]["udid"] if pick else "")
     if [[ ${#KEEP[@]} -gt 0 ]]; then simslim on "$UDID" --except "$(IFS=,; echo "${KEEP[*]}")"; else simslim on "$UDID"; fi
   fi
   xcrun simctl bootstatus "$UDID" -b >/dev/null
-fi
-
-# 2. Describe the app's widgets (host build) and generate the extension entry point.
-cargo build -q -p "$PKG"
-HOST_BIN="$TARGET_DIR/debug/$PKG"
-# CarPlay (cx.register_car): a template scene. CarPlay only shows apps with an
-# entitlement Apple grants on request (com.apple.developer.carplay-driving-task):
-# devices get it from the provisioning profile; the simulator refuses to launch
-# an app claiming it without one.
-CAR=0
-[[ "$OS" == ios ]] && CAR="$(PRISM_DESCRIBE=car "$HOST_BIN" 2>/dev/null || echo 0)"
-if [[ $WIDGETS == 1 ]]; then
-  PRISM_DESCRIBE=widgets "$HOST_BIN" > "$GEN/widgets.json"
-  python3 "$PLATFORM/apple/generate_widgets.py" "$GEN/widgets.json" "$OS" > "$GEN/Generated.swift"
 fi
 
 # 3. Signing (device) or simulator entitlements: an App Group shared by the
@@ -241,7 +256,7 @@ if [[ -n "$DEVICE_BUILD" ]]; then
       exit 1
     fi
   fi
-  if ! /usr/libexec/PlistBuddy -c "Print :com.apple.security.application-groups" "$GEN/entitlements.plist" >/dev/null 2>&1; then
+  if [[ $WIDGETS == 1 ]] && ! /usr/libexec/PlistBuddy -c "Print :com.apple.security.application-groups" "$GEN/entitlements.plist" >/dev/null 2>&1; then
     echo "note: the profile has no App Group: data stays in the app (widgets show placeholders)" >&2
   fi
   if [[ -n "$DIST" ]]; then
@@ -268,7 +283,7 @@ else
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>com.apple.security.application-groups</key><array><string>$GROUP</string></array>
+$( [[ $WIDGETS == 1 ]] && echo "  <key>com.apple.security.application-groups</key><array><string>$GROUP</string></array>" )
 $( [[ "${PRISM_ICLOUD:-}" == 1 ]] && echo "  <key>com.apple.developer.ubiquity-kvstore-identifier</key><string>${PRISM_TEAM:-SIMULATOR}.$BUNDLE_ID</string>" )
 $( [[ -n "${PRISM_PUSH:-}" ]] && echo "  <key>aps-environment</key><string>$PRISM_PUSH</string>" )
 </dict>
@@ -392,7 +407,7 @@ plist_common() { # $1 executable, $2 bundle id, $3 package type
   <key>CFBundleSupportedPlatforms</key><array><string>$PLATFORM_NAME</string></array>
   <key>MinimumOSVersion</key><string>$MIN_IOS</string>
   <key>UIDeviceFamily</key><array>$DEVICE_FAMILY</array>
-  <key>PrismAppGroup</key><string>$GROUP</string>
+$( [[ $WIDGETS == 1 ]] && echo "  <key>PrismAppGroup</key><string>$GROUP</string>" )
   <key>PrismURLScheme</key><string>$SCHEME</string>
 $BUILD_PLIST
 PLIST
@@ -411,7 +426,8 @@ $BG_PLIST
 $USAGE_PLIST
 $( [[ "${PRISM_ICLOUD:-}" == 1 ]] && echo "  <key>PrismICloud</key><true/>" )
 $( [[ "${PRISM_APPLE_SIGNIN:-}" == 1 ]] && echo "  <key>PrismAppleSignIn</key><true/>" )
-$( [[ "$OS" == ios ]] && printf '%s\n' "  <key>LSRequiresIPhoneOS</key><true/>" "  <key>UILaunchScreen</key><dict/>" "  <key>NSSupportsLiveActivities</key><true/>" )
+$( [[ "$OS" == ios ]] && printf '%s\n' "  <key>LSRequiresIPhoneOS</key><true/>" "  <key>UILaunchScreen</key><dict/>" )
+$( [[ "$OS" == ios && $WIDGETS == 1 ]] && echo "  <key>NSSupportsLiveActivities</key><true/>" )
   <key>CFBundleURLTypes</key>
   <array><dict>
     <key>CFBundleURLName</key><string>$BUNDLE_ID</string>
@@ -521,7 +537,7 @@ if [[ -n "$DEVICE" ]]; then
   fi
 else
   xcrun simctl install "$UDID" "$APP"
-  echo "Installed $BUNDLE_ID$( [[ $WIDGETS == 1 ]] && echo " (+ widgets, Live Activities)") on $UDID"
+  echo "Installed $BUNDLE_ID$( [[ $WIDGETS == 1 ]] && echo " (+ widget extension)") on $UDID"
   if [[ $LAUNCH == 1 ]]; then
     open -a Simulator --args -CurrentDeviceUDID "$UDID" 2>/dev/null || true
     # Prism variables (PRISM_PATH, PRISM_DEV_STATE…) reach the app.

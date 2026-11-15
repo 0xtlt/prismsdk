@@ -24,7 +24,7 @@
 - **`prism`**: facade; picks the backend from features (`web`, `native`) and the target OS.
 - **`prism-push`**: for your server: sends pushes to APNs, FCM and Web Push / UnifiedPush (see [Remote push](#remote-push-notifications)).
 - **`prism-http`**, **`prism-db`**: HTTP and SQL, resolved on the UI thread.
-- **`prism-build`**: typed translations from `locales/*.json`, in `build.rs`.
+- **`prism-build`**: typed translations from `locales/*.json`, in `build.rs`, and `link_app()`: the link settings of the app's own binary (Apple: Swift's rpath, deployment target), which the backends' build scripts cannot give it.
 - **`prism-apple-build`**: compiles the Swift sources (`apple/`) in the Apple backends' build scripts.
 - **`prism-cli`**: the `prism` command, with the bundling scripts and the Android host (`platform/`).
 

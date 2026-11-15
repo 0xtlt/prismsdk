@@ -283,6 +283,13 @@ impl Application {
                 println!("{}", runtime.app.describe_background());
                 return;
             }
+            // Bundlers embed the iOS widget extension for Live Activities
+            // even without widgets.
+            Ok("live_activities") => {
+                let runtime = Runtime::new(&init);
+                println!("{}", u8::from(runtime.app.uses_live_activities()));
+                return;
+            }
             // Bundlers declare a CarPlay scene / Android Auto service.
             Ok("car") => {
                 let runtime = Runtime::new(&init);
