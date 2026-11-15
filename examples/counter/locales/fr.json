@@ -167,6 +167,8 @@
     }
   },
   "widget": {
+    "done": "faites",
+    "today": "aujourd’hui",
     "open": {
       "one": "{count} ouverte",
       "other": "{count} ouvertes"

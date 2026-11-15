@@ -159,7 +159,8 @@ public final class PrismCarService extends CarAppService {
                     for (int i = 0; buttons != null && i < buttons.length(); i++) {
                         JSONObject b = buttons.optJSONObject(i);
                         GridItem.Builder g = new GridItem.Builder().setTitle(b.optString("title"))
-                                .setImage(icon(b.optString("glyph", "•")));
+                                .setImage(b.isNull("drawing") || !b.has("drawing")
+                                        ? icon(b.optString("glyph", "•")) : drawing(b.optString("drawing")));
                         long id = b.optLong("id", -1);
                         if (!b.isNull("id")) g.setOnClickListener(() -> select(id));
                         items.addItem(g.build());
@@ -214,7 +215,8 @@ public final class PrismCarService extends CarAppService {
         private Row row(JSONObject n) {
             Row.Builder row = new Row.Builder().setTitle(n.optString("title"));
             if (!n.isNull("detail")) row.addText(n.optString("detail"));
-            if (!n.isNull("glyph")) row.setImage(icon(n.optString("glyph")));
+            if (n.has("drawing") && !n.isNull("drawing")) row.setImage(drawing(n.optString("drawing")), Row.IMAGE_TYPE_LARGE);
+            else if (!n.isNull("glyph")) row.setImage(icon(n.optString("glyph")));
             long id = n.optLong("id", -1);
             if (!n.isNull("id")) {
                 row.setOnClickListener(() -> select(id));
@@ -225,6 +227,17 @@ public final class PrismCarService extends CarAppService {
 
         private void select(long id) {
             PrismHost.nativeCarEvent("select", id, "");
+        }
+
+        /**
+         * A chart (prism-core drawing) as a bitmap: 64 dp at the car screen's
+         * density, in its day or night colors.
+         */
+        private CarIcon drawing(String drawing) {
+            float density = getCarContext().getResources().getDisplayMetrics().density;
+            int size = Math.round(64 * density);
+            Bitmap bitmap = PrismSurface.draw(drawing, size, size, density, getCarContext().isDarkMode(), false);
+            return new CarIcon.Builder(IconCompat.createWithBitmap(bitmap)).build();
         }
 
         /** A glyph drawn as an icon (cars show images, not text, in that slot). */

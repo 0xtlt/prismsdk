@@ -20,7 +20,7 @@ use std::rc::Rc;
 
 use prism_core::shape::nice_ticks;
 use prism_core::{
-    Accessible, App, ChangeEvent, Color, Element, FluentBuilder, Handler, IntoElement,
+    Accessible, App, ChangeEvent, Color, Drawing, Element, FluentBuilder, Handler, IntoElement,
     ParentElement, Path, Role, Styled, adaptive, div, px, relative, rgb, shape, text,
 };
 
@@ -499,6 +499,9 @@ impl Component for BarChart {
         } else {
             1
         };
+        if cx.in_snapshot() {
+            return self.render_static(cx, &t, &axis, color, decimals);
+        }
         let bars = self.bars.iter().enumerate().map(|(i, (label, v, c))| {
             let fraction = ((v.max(0.) - axis.lo) / (axis.hi - axis.lo)).clamp(0., 1.) as f32;
             let faded = self.highlight.is_some_and(|hl| hl != i);
@@ -567,6 +570,72 @@ impl Component for BarChart {
             .gap(8.)
             .when(self.y_axis, |d| d.child(axis.labels(cx, &t, &self.unit, h)))
             .child(plot);
+        self.refine.apply(el).into_element()
+    }
+}
+
+impl BarChart {
+    /// Widgets and Live Activities: the grid and the bars in one shape
+    /// (nothing to tap or animate there, and bar heights relative to the
+    /// plot would not survive the snapshot).
+    fn render_static(
+        self,
+        cx: &App,
+        t: &Theme,
+        axis: &Axis,
+        color: Color,
+        decimals: usize,
+    ) -> Element {
+        let n = self.bars.len().max(1) as f32;
+        let mut paths = if self.y_axis {
+            axis.grid(t)
+        } else {
+            Vec::new()
+        };
+        let base = axis.y(axis.lo.max(0.));
+        for (i, (_, v, c)) in self.bars.iter().enumerate() {
+            let top = axis.y(v.max(0.).min(axis.hi));
+            let w = 0.72 / n;
+            let x = (i as f32 + 0.5) / n - w / 2.;
+            let faded_bar = self.highlight.is_some_and(|hl| hl != i);
+            let c = c.unwrap_or(color);
+            paths.push(
+                Path::rect(x, top, w, (base - top).max(0.)).fill(if faded_bar {
+                    faded(c, 0.35)
+                } else {
+                    c
+                }),
+            );
+        }
+        let spoken = self
+            .bars
+            .iter()
+            .map(|(l, v, _)| format!("{l}: {}{}", cx.format_number(*v, decimals), self.unit))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let labels: Vec<String> = self.bars.iter().map(|b| b.0.clone()).collect();
+        let h = self.height;
+        let el = div()
+            .flex_row()
+            .items_start()
+            .gap(8.)
+            .when(self.y_axis, |d| d.child(axis.labels(cx, t, &self.unit, h)))
+            .child(
+                div()
+                    .flex_1()
+                    .gap(4.)
+                    .child(
+                        shape()
+                            .inset(0., LABEL_H / 2.)
+                            .paths(paths)
+                            .h(px(h))
+                            .w_full()
+                            .label(spoken),
+                    )
+                    .when(!labels.iter().all(String::is_empty), |d| {
+                        d.child(x_labels(&labels, t, 0.))
+                    }),
+            );
         self.refine.apply(el).into_element()
     }
 }
@@ -762,13 +831,17 @@ impl Sparkline {
         self.area = false;
         self
     }
-}
 
-refinable!(Sparkline);
+    /// The trend alone, for image slots that take no views (car screens:
+    /// [`CarItem::drawing`](prism_core::CarItem::drawing)).
+    pub fn drawing(&self, cx: &App) -> Drawing {
+        Drawing {
+            inset: (3., 3.),
+            paths: self.paths(&Theme::of(cx)),
+        }
+    }
 
-impl Component for Sparkline {
-    fn render(self, cx: &mut App) -> Element {
-        let t = Theme::of(cx);
+    fn paths(&self, t: &Theme) -> Vec<Path> {
         let color = self.color.unwrap_or(t.accent);
         let min = self.values.iter().copied().fold(f64::INFINITY, f64::min);
         let max = self
@@ -810,6 +883,16 @@ impl Component for Sparkline {
         if let Some((x, y)) = pts.last() {
             paths.push(dot(*x, *y, color, 6.));
         }
+        paths
+    }
+}
+
+refinable!(Sparkline);
+
+impl Component for Sparkline {
+    fn render(self, cx: &mut App) -> Element {
+        let t = Theme::of(cx);
+        let paths = self.paths(&t);
         let el = shape()
             .inset(3., 3.)
             .paths(paths)
@@ -871,15 +954,11 @@ impl Ring {
         self.thickness = t;
         self
     }
-}
 
-refinable!(Ring);
-
-impl Component for Ring {
-    fn render(self, cx: &mut App) -> Element {
-        let t = Theme::of(cx);
+    /// The track and the filled arc.
+    fn paths(&self, t: &Theme) -> Vec<Path> {
         let color = self.color.unwrap_or(t.accent);
-        let (size, th) = (self.size, self.thickness);
+        let th = self.thickness;
         let mut paths = vec![Path::arc(0.5, 0.5, 0.5, 0., 360.).stroke(faded(color, 0.18), th)];
         if self.value > 0. {
             paths.push(
@@ -888,6 +967,27 @@ impl Component for Ring {
                     .round(),
             );
         }
+        paths
+    }
+
+    /// The ring alone, for image slots that take no views (car screens:
+    /// [`CarItem::drawing`](prism_core::CarItem::drawing)).
+    pub fn drawing(&self, cx: &App) -> Drawing {
+        let th = self.thickness;
+        Drawing {
+            inset: (th / 2., th / 2.),
+            paths: self.paths(&Theme::of(cx)),
+        }
+    }
+}
+
+refinable!(Ring);
+
+impl Component for Ring {
+    fn render(self, cx: &mut App) -> Element {
+        let t = Theme::of(cx);
+        let (size, th) = (self.size, self.thickness);
+        let paths = self.paths(&t);
         let pct = format!("{}%", cx.format_number(self.value * 100., 0));
         let el = div()
             .size(px(size))
@@ -1024,3 +1124,99 @@ impl Component for Stat {
 }
 
 component!(Stat);
+
+#[cfg(test)]
+mod tests {
+    use prism_core::surfaces::{SNode, snapshot_one};
+    use prism_core::{App, NodeKind};
+
+    use super::*;
+
+    fn shapes(n: &SNode, out: &mut Vec<SNode>) {
+        if n.kind == NodeKind::Shape {
+            out.push(n.clone());
+        }
+        n.children.iter().for_each(|c| shapes(c, out));
+    }
+
+    fn snap(e: impl IntoElement) -> (SNode, String) {
+        let mut app = App::new();
+        crate::set_theme(&mut app, Theme::system());
+        let node = snapshot_one(&mut app, e);
+        let json = node.to_json();
+        (node, json)
+    }
+
+    #[test]
+    fn charts_snapshot_as_shapes_within_surface_budgets() {
+        let week = [3., 5., 4., 8., 6., 9., 7.];
+        for (name, (node, json), budget) in [
+            ("sparkline", snap(sparkline(week)), 900),
+            ("ring", snap(ring(0.72).label("72%").size(60.)), 600),
+            (
+                "stat",
+                snap(stat("Revenue", "12 480 €").delta("+12%", true).trend(week)),
+                1500,
+            ),
+            (
+                "line",
+                snap(
+                    line_chart()
+                        .series("This week", week)
+                        .labels(["M", "T", "W", "T", "F", "S", "S"])
+                        .smooth()
+                        .area(),
+                ),
+                2600,
+            ),
+            (
+                "bars",
+                snap(
+                    bar_chart()
+                        .bars([("M", 3.), ("T", 5.), ("W", 4.)])
+                        .highlight(Some(1)),
+                ),
+                1600,
+            ),
+            (
+                "pie",
+                snap(pie_chart().slice("A", 2.).slice("B", 1.).donut("3")),
+                1200,
+            ),
+        ] {
+            let mut found = Vec::new();
+            shapes(&node, &mut found);
+            assert!(!found.is_empty(), "{name}: no shape");
+            assert!(
+                json.len() <= budget,
+                "{name}: {} bytes > {budget}\n{json}",
+                json.len()
+            );
+            // Adaptive colors (light/dark) survive the snapshot.
+            assert!(json.contains("/#"), "{name}: {json}");
+        }
+    }
+
+    #[test]
+    fn bar_charts_draw_their_bars_in_snapshots() {
+        let (node, json) = snap(
+            bar_chart()
+                .bars([("Mon", 3.), ("Tue", 5.)])
+                .on_select(std::rc::Rc::new(|_: &ChangeEvent, _: &mut App| {})),
+        );
+        let mut found = Vec::new();
+        shapes(&node, &mut found);
+        assert_eq!(found.len(), 1, "{json}");
+        // Grid lines plus one filled rectangle per bar.
+        let d = prism_core::Drawing::decode(&found[0].text);
+        assert_eq!(d.paths.iter().filter(|p| p.fill.is_some()).count(), 2);
+        assert_eq!(found[0].label.as_deref(), Some("Mon: 3, Tue: 5"));
+    }
+
+    #[test]
+    fn ring_label_overlays_its_ring_in_snapshots() {
+        let (_, json) = snap(ring(0.5).label("50%").size(60.));
+        // The label is pulled up over the ring by a negative margin.
+        assert!(json.contains(r#""m":[-60,0,0,0]"#), "{json}");
+    }
+}

@@ -167,6 +167,8 @@
     }
   },
   "widget": {
+    "done": "done",
+    "today": "today",
     "open": {
       "one": "{count} open",
       "other": "{count} open"

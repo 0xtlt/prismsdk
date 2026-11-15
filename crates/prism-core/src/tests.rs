@@ -634,6 +634,117 @@ fn snapshots_serialize_compact_json_with_adaptive_colors() {
     );
 }
 
+#[test]
+fn snapshots_carry_shapes_compactly_with_margins() {
+    use crate::{Drawing, Path, shape};
+    let mut app = App::new();
+    let line = Path::smooth([(0., 1.), (0.5, 0.25), (1., 0.6)])
+        .stroke(adaptive(rgb(0x5B5BD6), rgb(0x8B8BFF)), 2.)
+        .round()
+        .dashed(4., 2.);
+    let ring = Path::arc(0.5, 0.5, 0.5, 0., 270.).stroke(rgba(0xFF0000, 0.5), 8.);
+    let node = snapshot_one(
+        &mut app,
+        div().child(
+            shape()
+                .inset(2., 3.)
+                .path(line.clone())
+                .path(ring.clone())
+                .h(px(40.))
+                .w_full()
+                .with_style(|s| s.margin.top = -40.)
+                .label("Trend"),
+        ),
+    );
+    let json = node.to_json();
+    let sh = &node.children[0];
+    assert!(json.contains(r#""k":"sh""#), "{json}");
+    assert!(json.contains(r#""m":[-40,0,0,0]"#), "{json}");
+    assert!(json.contains(r#""al":"Trend""#), "{json}");
+    // Opaque colors lose their alpha, numbers their leading zero.
+    assert!(
+        json.contains(r#"s#5B5BD6/#8B8BFF w2 r d4,2|M 0 1 C .167 .75 .333 .25 .5 .25"#),
+        "{json}"
+    );
+    assert!(json.contains("s#FF000080 w8|A .5 .5 .5 0 270"), "{json}");
+    // The compact form still decodes to the same drawing (3 decimals).
+    let compact = super::surfaces::compact_drawing(&sh.text, 3);
+    let (a, b) = (Drawing::decode(&compact), Drawing::decode(&sh.text));
+    assert_eq!(a.inset, (2., 3.));
+    assert_eq!(a.paths.len(), 2);
+    for (pa, pb) in a.paths.iter().zip(&b.paths) {
+        assert_eq!(
+            (pa.fill, pa.stroke, pa.width, pa.dash),
+            (pb.fill, pb.stroke, pb.width, pb.dash)
+        );
+        assert_eq!(pa.segments.len(), pb.segments.len());
+    }
+    assert!(compact.len() < sh.text.len());
+}
+
+#[test]
+fn components_know_when_they_render_a_snapshot() {
+    let mut app = App::new();
+    assert!(!app.in_snapshot());
+    let node = snapshot_one(
+        &mut app,
+        crate::lazy(|cx| text(if cx.in_snapshot() { "static" } else { "live" })),
+    );
+    assert_eq!(node.text, "static");
+    assert!(!app.in_snapshot());
+}
+
+#[test]
+fn live_activities_stay_under_activitykit_limit() {
+    use crate::surfaces::{ACTIVITY_PAYLOAD_LIMIT, ActivityContent};
+    use crate::{Path, shape};
+    let wavy = |n: usize| {
+        let pts: Vec<(f32, f32)> = (0..n)
+            .map(|i| {
+                (
+                    i as f32 / (n - 1) as f32,
+                    (i as f32 * 0.7).sin() * 0.45 + 0.5,
+                )
+            })
+            .collect();
+        shape()
+            .path(Path::smooth(pts).stroke(rgb(0x123456), 2.))
+            .h(px(40.))
+            .w_full()
+    };
+    let mut app = App::new();
+    // Small: unchanged.
+    app.start_activity(Activity::new("small").summary("s").lock_screen(wavy(10)));
+    // Large: rounded or stripped, but always under the limit.
+    app.start_activity(
+        Activity::new("large")
+            .summary("l")
+            .lock_screen(div().child(wavy(120)).child(wavy(120)))
+            .expanded(wavy(60), wavy(60), wavy(60), wavy(60)),
+    );
+    let contents: Vec<(String, ActivityContent)> = app
+        .take_requests()
+        .into_iter()
+        .filter_map(|r| match r {
+            PlatformRequest::StartActivity { kind, content, .. } => Some((kind, content)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(contents.len(), 2);
+    for (kind, c) in &contents {
+        assert!(
+            c.payload_size(kind) <= ACTIVITY_PAYLOAD_LIMIT,
+            "{kind}: {}",
+            c.payload_size(kind)
+        );
+    }
+    let small = contents[0].1.lock_screen.as_ref().unwrap();
+    assert!(
+        small.to_json().contains("C .037 "),
+        "small drawings keep 3 decimals"
+    );
+}
+
 struct Counter2 {
     n: u32,
 }
@@ -1656,9 +1767,20 @@ fn car_templates_stack_select_and_back() {
                         let n = cx.global::<Count>().0;
                         cx.set_global(Count(n + 1));
                     }))
-                    .item(CarItem::new("Details").browsable().on_select(|cx| {
-                        cx.car_push(|_| CarTemplate::pane("Details").row("Speed", "Fast"));
-                    })),
+                    .item(
+                        CarItem::new("Details")
+                            .browsable()
+                            .drawing(crate::Drawing {
+                                inset: (2., 2.),
+                                paths: vec![
+                                    crate::Path::arc(0.5, 0.5, 0.5, 0., 180.)
+                                        .stroke(rgb(0xFF0000), 4.),
+                                ],
+                            })
+                            .on_select(|cx| {
+                                cx.car_push(|_| CarTemplate::pane("Details").row("Speed", "Fast"));
+                            }),
+                    ),
             )
         });
         let root = cx.new_entity(|_| Plain);
@@ -1678,6 +1800,12 @@ fn car_templates_stack_select_and_back() {
     let json = car(&mut rt).expect("templates when connected");
     assert!(json.contains(r#""title":"Count 0""#), "{json}");
     assert!(json.contains(r#""browsable":true"#), "{json}");
+    // Charts in the image slot travel as compact drawings.
+    assert!(json.contains(r#""drawing":null"#), "{json}");
+    assert!(
+        json.contains(r#""drawing":"i2,2\ns#FF0000 w4|A .5 .5 .5 0 180\n""#),
+        "{json}"
+    );
     // Unchanged: nothing new.
     assert!(car(&mut rt).is_none());
     // Item 0 increments; the list is rebuilt.

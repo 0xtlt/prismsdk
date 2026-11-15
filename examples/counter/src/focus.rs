@@ -21,7 +21,12 @@ pub struct Focus {
     history: Vec<(f64, i64)>,
     total_sessions: i64,
     total_seconds: i64,
+    /// Sessions finished in the last 24 hours (the Live Activity's ring).
+    today: i64,
 }
+
+/// Sessions a day the Live Activity's ring counts towards.
+const DAILY_GOAL: i64 = 4;
 
 /// Completed sessions, in SQLite (`prism::db`): on the device natively, on
 /// the server for the web.
@@ -46,12 +51,31 @@ impl Default for Focus {
             history: Vec::new(),
             total_sessions: 0,
             total_seconds: 0,
+            today: 0,
         }
     }
 }
 
+/// Today's sessions towards the daily goal: a `prism::ui` ring, drawn by
+/// SwiftUI on the lock screen and in the Dynamic Island, and as a bitmap in
+/// Android's ongoing notification.
+fn goal_ring(cx: &App, today: i64, size: f32, accent: Color) -> ui::Ring {
+    let ring = ui::ring(today as f64 / DAILY_GOAL as f64)
+        .size(size)
+        .thickness((size / 9.).round().max(3.))
+        .color(accent);
+    if size < 40. {
+        return ring;
+    }
+    ring.label(format!(
+        "{}/{}",
+        cx.format_number(today as f64, 0),
+        cx.format_number(DAILY_GOAL as f64, 0)
+    ))
+}
+
 /// Describes the activity for a session ending at `ends`.
-fn activity(cx: &App, ends: SystemTime, total: Duration, accent: Color) -> Activity {
+fn activity(cx: &App, ends: SystemTime, total: Duration, accent: Color, today: i64) -> Activity {
     let minutes = total.as_secs().div_ceil(60);
     Activity::new("focus")
         .summary(strings::focus_summary(cx, minutes))
@@ -65,11 +89,7 @@ fn activity(cx: &App, ends: SystemTime, total: Duration, accent: Color) -> Activ
                 .items_center()
                 .gap(12.)
                 .p(16.)
-                .child(
-                    image("brain.head.profile")
-                        .text_size(28.)
-                        .text_color(accent),
-                )
+                .child(goal_ring(cx, today, 48., accent))
                 .child(
                     div()
                         .flex_1()
@@ -101,9 +121,22 @@ fn activity(cx: &App, ends: SystemTime, total: Duration, accent: Color) -> Activ
             text(strings::focus_title(cx))
                 .semibold()
                 .text_color(rgb(0xFFFFFF)),
-            text(strings::focus_stay(cx, minutes))
-                .text_size(13.)
-                .text_color(rgb(0xB0B0BC)),
+            div()
+                .flex_row()
+                .items_center()
+                .gap(8.)
+                .child(goal_ring(cx, today, 22., accent))
+                .child(
+                    text(format!(
+                        "{} · {}/{} {}",
+                        strings::focus_stay(cx, minutes),
+                        cx.format_number(today as f64, 0),
+                        cx.format_number(DAILY_GOAL as f64, 0),
+                        strings::widget_today(cx)
+                    ))
+                    .text_size(13.)
+                    .text_color(rgb(0xB0B0BC)),
+                ),
         )
 }
 
@@ -193,15 +226,21 @@ impl Focus {
                     )
                     .fetch_one(&pool)
                     .await?;
-                    Ok::<_, sqlx::Error>((recent, totals))
+                    let today: (i64,) =
+                        sqlx::query_as("SELECT COUNT(*) FROM focus_sessions WHERE ended_at >= ?")
+                            .bind(strings::now() - 86_400.)
+                            .fetch_one(&pool)
+                            .await?;
+                    Ok::<_, sqlx::Error>((recent, totals, today.0))
                 })
                 .await;
             match loaded {
-                Ok((recent, (count, seconds))) => {
+                Ok((recent, (count, seconds), today)) => {
                     cx.update_entity(&this, |f, _| {
                         f.history = recent;
                         f.total_sessions = count;
                         f.total_seconds = seconds;
+                        f.today = today;
                     });
                 }
                 Err(e) => eprintln!("counter: history: {e}"),
@@ -238,7 +277,7 @@ impl Focus {
     fn start_for(&mut self, total: Duration, cx: &mut Context<Self>) {
         let ends = SystemTime::now() + total;
         let accent = Theme::of(cx).accent;
-        let mut a = activity(cx, ends, total, accent);
+        let mut a = activity(cx, ends, total, accent, self.today);
         if cx.capabilities().push.is_some() {
             // The server can update it too (its token: push::install).
             a = a.push_updates();
@@ -299,7 +338,7 @@ impl Focus {
             s.timer.cancel();
             let left = s.ends.duration_since(SystemTime::now()).unwrap_or_default();
             s.timer = Self::finish_after(left, cx);
-            let a = activity(cx, s.ends, s.total, accent);
+            let a = activity(cx, s.ends, s.total, accent, self.today);
             cx.update_activity(s.activity, a);
             let n = done_notification(cx, left);
             cx.send_notification(n);

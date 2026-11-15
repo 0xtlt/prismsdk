@@ -2,6 +2,7 @@
 //! pane templates, rebuilt whenever the store changes.
 
 use prism::prelude::*;
+use prism::ui;
 
 use crate::{Store, strings};
 
@@ -34,7 +35,21 @@ pub fn register(cx: &mut App, store: Entity<Store>) {
             .filter(|t| t.done)
             .map(|t| item(cx, t))
             .collect();
+        // Progress: a ring chart in the row's image slot.
+        let fraction = if todos.is_empty() {
+            0.
+        } else {
+            done.len() as f64 / todos.len() as f64
+        };
+        let summary = CarItem::new(format!(
+            "{}% {}",
+            cx.format_number(fraction * 100., 0),
+            strings::widget_done(cx)
+        ))
+        .detail(strings::widget_open(cx, open.len() as i64))
+        .drawing(ui::ring(fraction).thickness(8.).drawing(cx));
         CarTemplate::list(strings::tabs_todos(cx))
+            .section(CarSection::new().item(summary))
             .section(CarSection::new().header(strings::todo_open(cx)).items(open))
             .section(CarSection::new().header(strings::todo_done(cx)).items(done))
     });

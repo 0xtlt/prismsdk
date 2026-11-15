@@ -146,9 +146,13 @@ pub struct SNode {
 }
 
 /// Resolves an element (entities, lazy components) into static nodes.
+/// Components see [`App::in_snapshot`] while they render, so they can
+/// draw a non-interactive variant.
 pub fn snapshot(app: &mut App, element: impl IntoElement) -> Vec<SNode> {
     let mut out = Vec::new();
+    app.surfaces.snapshot_depth += 1;
     resolve(app, element.into_element(), &mut out);
+    app.surfaces.snapshot_depth -= 1;
     out
 }
 
@@ -201,25 +205,50 @@ impl SNode {
 
     /// Compact JSON (Live Activity payloads are limited to 4 KB).
     ///
-    /// Keys: `k` kind (`v` view, `t` text, `i` image, `p` progress, `m` timer),
-    /// `d` 1 = row, `g` gap, `pd` padding `[t,r,b,l]`, `w`/`h` size (number or
-    /// `"f"` = fill), `f` flex grow, `ai`/`jc` alignment, `bg`/`fg`/`bc` colors
-    /// (`"#RRGGBBAA"` or `["#light","#dark"]`), `r` radius, `bw` border,
-    /// `fs`/`fw`/`ta` font, `o` opacity, `s` text or symbol, `v` value,
-    /// `l` link, `al` accessibility label, `ah` hidden, `hd` heading, `c` children.
+    /// Keys: `k` kind (`v` view, `t` text, `i` image, `p` progress, `m` timer,
+    /// `sh` shape), `d` 1 = row, `g` gap, `pd` padding and `m` margin
+    /// `[t,r,b,l]`, `w`/`h` size (number or `"f"` = fill), `f` flex grow,
+    /// `ai`/`jc` alignment, `bg`/`fg`/`bc` colors (`"#RRGGBBAA"` or
+    /// `["#light","#dark"]`), `r` radius, `bw` border, `fs`/`fw`/`ta` font,
+    /// `o` opacity, `s` text, symbol or drawing, `v` value, `l` link,
+    /// `al` accessibility label, `ah` hidden, `hd` heading, `c` children.
+    ///
+    /// A shape's drawing is [`Drawing::encode`](crate::shape::Drawing) with
+    /// short numbers ([`compact_drawing`]): paths in fractions of the node's
+    /// frame, resolved by the renderer at the size it lays the node out.
     pub fn to_json(&self) -> String {
         let mut out = String::new();
-        self.write_json(&mut out);
+        self.write_json(&mut out, 3);
         out
     }
 
-    fn write_json(&self, o: &mut String) {
+    /// Rounds every drawing to `decimals` (fewer bytes, coarser curves).
+    fn round_drawings(&mut self, decimals: usize) {
+        if self.kind == NodeKind::Shape {
+            self.text = compact_drawing(&self.text, decimals);
+        }
+        self.children
+            .iter_mut()
+            .for_each(|c| c.round_drawings(decimals));
+    }
+
+    /// Removes every drawing's paths (their frames stay): the last resort
+    /// when a payload is over its limit.
+    fn strip_drawings(&mut self) {
+        if self.kind == NodeKind::Shape {
+            self.text = self.text.lines().next().unwrap_or("i0,0").to_string() + "\n";
+        }
+        self.children.iter_mut().for_each(SNode::strip_drawings);
+    }
+
+    fn write_json(&self, o: &mut String, decimals: usize) {
         let s = &self.style;
         let kind = match self.kind {
             NodeKind::Text | NodeKind::Button => "t",
             NodeKind::Image => "i",
             NodeKind::Progress => "p",
             NodeKind::Timer => "m",
+            NodeKind::Shape => "sh",
             _ => "v",
         };
         let _ = write!(o, r#"{{"k":"{kind}""#);
@@ -238,6 +267,17 @@ impl SNode {
                 num(p.right),
                 num(p.bottom),
                 num(p.left)
+            );
+        }
+        let m = s.margin;
+        if (m.top, m.right, m.bottom, m.left) != (0., 0., 0., 0.) {
+            let _ = write!(
+                o,
+                r#","m":[{},{},{},{}]"#,
+                num(m.top),
+                num(m.right),
+                num(m.bottom),
+                num(m.left)
             );
         }
         for (key, len) in [("w", s.width), ("h", s.height)] {
@@ -314,7 +354,10 @@ impl SNode {
         } else {
             &self.text
         };
-        if !content.is_empty() {
+        if self.kind == NodeKind::Shape {
+            let drawing = compact_drawing(content, decimals);
+            let _ = write!(o, r#","s":{}"#, json_str(&drawing));
+        } else if !content.is_empty() {
             let _ = write!(o, r#","s":{}"#, json_str(content));
         }
         if let Some(v) = self.value {
@@ -338,12 +381,71 @@ impl SNode {
                 if i > 0 {
                     o.push(',');
                 }
-                c.write_json(o);
+                c.write_json(o, decimals);
             }
             o.push(']');
         }
         o.push('}');
     }
+}
+
+/// A drawing's text form ([`Drawing::encode`](crate::shape::Drawing)) in
+/// fewer bytes: numbers rounded to `decimals` without leading zeros
+/// (`0.25` → `.25`), opaque colors without their alpha (`#5B5BD6FF` →
+/// `#5B5BD6`). Every reader accepts both forms.
+pub fn compact_drawing(text: &str, decimals: usize) -> String {
+    let scale = 10f32.powi(decimals as i32);
+    let short = |t: &str| -> String {
+        let Ok(v) = t.parse::<f32>() else {
+            return t.to_string();
+        };
+        let v = (v * scale).round() / scale;
+        let s = format!("{v:.decimals$}");
+        let s = if s.contains('.') {
+            s.trim_end_matches('0').trim_end_matches('.')
+        } else {
+            &s
+        };
+        match s {
+            "-0" => "0".into(),
+            s if s.starts_with("0.") => s[1..].into(),
+            s if s.starts_with("-0.") => format!("-{}", &s[2..]),
+            s => s.into(),
+        }
+    };
+    let color = |c: &str| -> String {
+        c.split('/')
+            .map(|h| match h.strip_suffix("FF") {
+                Some(rgb) if h.len() == 9 => rgb,
+                _ => h,
+            })
+            .collect::<Vec<_>>()
+            .join("/")
+    };
+    let mut o = String::with_capacity(text.len());
+    for line in text.lines() {
+        if line.starts_with('i') {
+            o.push_str(line);
+            o.push('\n');
+            continue;
+        }
+        let Some((paint, segs)) = line.split_once('|') else {
+            continue;
+        };
+        let paint: Vec<String> = paint
+            .split_whitespace()
+            .map(|t| match t.split_at(1) {
+                (tag @ ("f" | "s"), c) => format!("{tag}{}", color(c)),
+                _ => t.to_string(),
+            })
+            .collect();
+        o.push_str(&paint.join(" "));
+        o.push('|');
+        let segs: Vec<String> = segs.split_whitespace().map(short).collect();
+        o.push_str(&segs.join(" "));
+        o.push('\n');
+    }
+    o
 }
 
 /// Numbers without trailing `.0` noise.
@@ -599,7 +701,53 @@ impl ActivityContent {
         parts.push(format!(r#""sm":{}"#, json_str(&self.summary)));
         format!("{{{}}}", parts.join(","))
     }
+
+    /// The bytes ActivityKit counts for this content with an activity of
+    /// `kind`: the content state (`{"json":"…"}`, the JSON escaped in a
+    /// string) plus the static attributes (`{"kind":"…"}`).
+    pub fn payload_size(&self, kind: &str) -> usize {
+        json_str(&self.to_json()).len() + json_str(kind).len() + r#"{"json":}{"kind":}"#.len()
+    }
+
+    fn nodes_mut(&mut self) -> impl Iterator<Item = &mut SNode> {
+        [
+            &mut self.lock_screen,
+            &mut self.compact_leading,
+            &mut self.compact_trailing,
+            &mut self.minimal,
+            &mut self.expanded_leading,
+            &mut self.expanded_trailing,
+            &mut self.expanded_center,
+            &mut self.expanded_bottom,
+        ]
+        .into_iter()
+        .flatten()
+    }
+
+    /// Keeps the payload under ActivityKit's limit: drawings are rounded to
+    /// two decimals first, then left out (their frames stay empty).
+    fn fit(&mut self, kind: &str) {
+        let before = self.payload_size(kind);
+        if before <= ACTIVITY_PAYLOAD_LIMIT {
+            return;
+        }
+        self.nodes_mut().for_each(|n| n.round_drawings(2));
+        let mut action = "rounded its drawings";
+        if self.payload_size(kind) > ACTIVITY_PAYLOAD_LIMIT {
+            self.nodes_mut().for_each(SNode::strip_drawings);
+            action = "left its drawings out";
+        }
+        eprintln!(
+            "prism: Live Activity \"{kind}\" is {before} bytes (ActivityKit allows {ACTIVITY_PAYLOAD_LIMIT}): {action}, now {} bytes",
+            self.payload_size(kind)
+        );
+    }
 }
+
+/// ActivityKit's limit for a Live Activity's static and dynamic data
+/// combined, in bytes (ActivityKit documentation, "Displaying live data with
+/// Live Activities").
+pub const ACTIVITY_PAYLOAD_LIMIT: usize = 4096;
 
 /// Builder for a Live Activity: what shows on the lock screen and in each
 /// region of the Dynamic Island.
@@ -715,7 +863,7 @@ impl Activity {
 
     fn render(self, app: &mut App) -> (String, ActivityContent) {
         let mut snap = |e: Option<Element>| e.map(|e| snapshot_one(app, e));
-        let content = ActivityContent {
+        let mut content = ActivityContent {
             lock_screen: snap(self.lock_screen),
             compact_leading: snap(self.compact_leading),
             compact_trailing: snap(self.compact_trailing),
@@ -730,6 +878,7 @@ impl Activity {
             summary: self.summary,
             push_updates: self.push_updates,
         };
+        content.fit(&self.kind);
         (self.kind, content)
     }
 }
@@ -927,6 +1076,8 @@ pub(crate) struct Surfaces {
     pub requests: Vec<PlatformRequest>,
     pub next_activity: u64,
     pub notification_handler: Option<NotificationHandler>,
+    /// Inside [`snapshot`] (nested for snapshots taken while rendering one).
+    pub snapshot_depth: u32,
 }
 
 type NotificationHandler = std::rc::Rc<dyn Fn(&NotificationResponse, &mut App)>;
@@ -939,6 +1090,14 @@ impl App {
 
     pub fn set_capabilities(&mut self, caps: Capabilities) {
         self.surfaces.capabilities = caps;
+    }
+
+    /// True while a widget, Live Activity or other static surface is being
+    /// rendered: nothing there is tappable except links, nothing animates,
+    /// and sizes relative to the parent are not kept. Components use it to
+    /// draw a static variant (charts draw their bars as one shape).
+    pub fn in_snapshot(&self) -> bool {
+        self.surfaces.snapshot_depth > 0
     }
 
     /// Registers a widget and schedules its first render.

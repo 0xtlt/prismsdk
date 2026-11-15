@@ -23,6 +23,7 @@
 use std::rc::Rc;
 
 use crate::App;
+use crate::shape::Drawing;
 use crate::surfaces::json_str;
 
 type Handler = Rc<dyn Fn(&mut App)>;
@@ -129,6 +130,9 @@ pub struct CarItem {
     pub detail: Option<String>,
     /// SF Symbol name (drawn as a glyph where symbols do not exist).
     pub icon: Option<String>,
+    /// A small chart in the image slot, instead of the icon (see
+    /// [`CarItem::drawing`]).
+    pub drawing: Option<Drawing>,
     /// Shows a chevron: selecting opens another screen.
     pub browsable: bool,
     pub on_select: Option<Handler>,
@@ -140,6 +144,7 @@ impl CarItem {
             title: title.into(),
             detail: None,
             icon: None,
+            drawing: None,
             browsable: false,
             on_select: None,
         }
@@ -150,6 +155,13 @@ impl CarItem {
     }
     pub fn icon(mut self, icon: impl Into<String>) -> Self {
         self.icon = Some(icon.into());
+        self
+    }
+    /// Draws `drawing` (a ring, a sparkline: `ui::ring(0.7).drawing(cx)`)
+    /// in the row's image slot: a bitmap on Android Auto, a `UIImage` with
+    /// light and dark variants on CarPlay.
+    pub fn drawing(mut self, drawing: Drawing) -> Self {
+        self.drawing = Some(drawing);
         self
     }
     pub fn browsable(mut self) -> Self {
@@ -174,6 +186,8 @@ pub enum CarButtonStyle {
 pub struct CarButton {
     pub title: String,
     pub icon: Option<String>,
+    /// Grids: a chart as the button's image (panes show no images).
+    pub drawing: Option<Drawing>,
     pub style: CarButtonStyle,
     pub on_select: Option<Handler>,
 }
@@ -183,12 +197,18 @@ impl CarButton {
         CarButton {
             title: title.into(),
             icon: None,
+            drawing: None,
             style: CarButtonStyle::Normal,
             on_select: None,
         }
     }
     pub fn icon(mut self, icon: impl Into<String>) -> Self {
         self.icon = Some(icon.into());
+        self
+    }
+    /// Grids: draws `drawing` as the button's image.
+    pub fn drawing(mut self, drawing: Drawing) -> Self {
+        self.drawing = Some(drawing);
         self
     }
     pub fn style(mut self, style: CarButtonStyle) -> Self {
@@ -327,6 +347,13 @@ fn icon_json(icon: &Option<String>) -> String {
     }
 }
 
+/// A drawing's compact text form (see [`crate::surfaces::compact_drawing`]).
+fn drawing_json(d: &Option<Drawing>) -> String {
+    d.as_ref().map_or("null".into(), |d| {
+        json_str(&crate::surfaces::compact_drawing(&d.encode(), 3))
+    })
+}
+
 fn handler_id(h: &Option<Handler>, handlers: &mut Vec<Handler>) -> String {
     match h {
         Some(h) => {
@@ -344,9 +371,10 @@ fn button_json(b: &CarButton, handlers: &mut Vec<Handler>) -> String {
         CarButtonStyle::Destructive => "destructive",
     };
     format!(
-        r#"{{"title":{},{},"style":"{style}","id":{}}}"#,
+        r#"{{"title":{},{},"drawing":{},"style":"{style}","id":{}}}"#,
         json_str(&b.title),
         icon_json(&b.icon),
+        drawing_json(&b.drawing),
         handler_id(&b.on_select, handlers)
     )
 }
@@ -362,10 +390,11 @@ fn template_json(t: &CarTemplate, handlers: &mut Vec<Handler>) -> String {
                         .iter()
                         .map(|i| {
                             format!(
-                                r#"{{"title":{},"detail":{},{},"browsable":{},"id":{}}}"#,
+                                r#"{{"title":{},"detail":{},{},"drawing":{},"browsable":{},"id":{}}}"#,
                                 json_str(&i.title),
                                 opt(&i.detail),
                                 icon_json(&i.icon),
+                                drawing_json(&i.drawing),
                                 i.browsable,
                                 handler_id(&i.on_select, handlers)
                             )
