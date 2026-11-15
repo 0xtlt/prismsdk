@@ -841,6 +841,20 @@ final class PrismWatchDelegate: NSObject, WKApplicationDelegate {
             }
         }
     }
+
+    // Remote push (PrismPush.swift): the token, and silent pushes.
+    func didRegisterForRemoteNotifications(withDeviceToken deviceToken: Data) {
+        prismHex(deviceToken).withCString { prismRustPushToken($0, nil) }
+    }
+
+    func didFailToRegisterForRemoteNotificationsWithError(_ error: Error) {
+        error.localizedDescription.withCString { prismRustPushToken(nil, $0) }
+    }
+
+    func didReceiveRemoteNotification(_ userInfo: [AnyHashable: Any],
+                                      fetchCompletionHandler completionHandler: @escaping (WKBackgroundFetchResult) -> Void) {
+        prismWatchRemoteNotification(userInfo, completionHandler)
+    }
 }
 
 /// Asks watchOS to wake the app for task `id` in `seconds` (at the earliest).

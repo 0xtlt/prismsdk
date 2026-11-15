@@ -2173,6 +2173,32 @@ pub(crate) fn notification_response(
     flush_responses();
 }
 
+/// A push token or a registration error.
+pub(crate) fn push_registered(
+    result: Result<prism_core::PushSubscription, prism_core::DeviceError>,
+) {
+    if let Err(e) = &result {
+        eprintln!("prism-macos: push registration failed: {e}");
+    }
+    with_state(|s| {
+        let patches = s.runtime.push_registered(result);
+        s.commit(patches);
+    });
+}
+
+/// A push arrived (macOS does not launch apps for pushes: the app runs).
+pub(crate) fn push_received(message: prism_core::PushMessage) {
+    with_state(|s| {
+        let patches = if message.event == prism_core::PushEvent::Background {
+            s.runtime.run_background_push(message);
+            s.runtime.poll()
+        } else {
+            s.runtime.push_received(message, false)
+        };
+        s.commit(patches);
+    });
+}
+
 fn flush_responses() {
     let pending = PENDING_RESPONSES.with(|p| std::mem::take(&mut *p.borrow_mut()));
     if pending.is_empty() {

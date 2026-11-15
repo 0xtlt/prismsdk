@@ -6,6 +6,18 @@ bundle_id = "dev.prism.counter"
 version = "0.1.0"
 icon = "icon.png"
 
+[push]
+# Remote push: aps-environment + background pushes (Apple), the UnifiedPush
+# receiver (Android). Real devices need the Push Notifications capability on
+# the App ID; simulators accept `xcrun simctl push` (see push/*.apns).
+enabled = true
+apns_environment = "development"
+# Android FCM (opt-in): Firebase's google-services.json for this package.
+# google_services = "google-services.json"
+# Web Push: the public half of `cargo run -p prism-push --example push -- vapid`
+# (or PRISM_VAPID_PUBLIC_KEY).
+# vapid_public_key = "B…"
+
 [ios]
 # iCloud key-value storage for cx.cloud_storage() (devices: the App ID needs iCloud).
 icloud = true

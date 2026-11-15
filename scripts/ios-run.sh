@@ -17,6 +17,8 @@
 #   PRISM_APP_NAME   display name (default: package name, capitalized)
 #   PRISM_ICON       1024×1024 PNG app icon
 #   PRISM_RELEASE=1  release build
+#   PRISM_PUSH       remote push: the APNs environment (development / production);
+#                    adds aps-environment and the remote-notification background mode
 #   PRISM_PROJECT    project root (default: this repository)
 #   PRISM_PLATFORM   Prism platform files (default: <project>/platform)
 set -euo pipefail
@@ -109,7 +111,11 @@ print((booted or pick)[0]["udid"] if pick else "")
   [[ -n "$UDID" ]] || { echo "No matching $RUNTIME_NAME simulator (PRISM_SIM=${PRISM_SIM:-}; create one with xcrun simctl create)" >&2; exit 1; }
   if command -v simslim >/dev/null && ! simslim list --booted 2>/dev/null | grep -q "$UDID"; then
     # Prism apps ship widgets and Live Activities: keep their daemons running.
-    if [[ $WIDGETS == 1 ]]; then simslim on "$UDID" --except widgets; else simslim on "$UDID"; fi
+    # Push (PRISM_PUSH) needs the "store" daemons (apsd: remote notifications).
+    KEEP=()
+    [[ $WIDGETS == 1 ]] && KEEP+=(widgets)
+    [[ -n "${PRISM_PUSH:-}" ]] && KEEP+=(store)
+    if [[ ${#KEEP[@]} -gt 0 ]]; then simslim on "$UDID" --except "$(IFS=,; echo "${KEEP[*]}")"; else simslim on "$UDID"; fi
   fi
   xcrun simctl bootstatus "$UDID" -b >/dev/null
 fi
@@ -155,7 +161,7 @@ print(best[1] if best else "")
   [[ -n "$PROFILE" ]] || { echo "No provisioning profile for $BUNDLE_ID: open the project once in Xcode with your team, or set PRISM_PROFILE" >&2; exit 1; }
   security cms -D -i "$PROFILE" > "$GEN/profile.plist"
   # Entitlements granted by the profile (app id, team, debugging, groups).
-  ICLOUD="${PRISM_ICLOUD:-}" python3 - "$GEN/profile.plist" "$GEN/entitlements.plist" "$BUNDLE_ID" <<'PY'
+  ICLOUD="${PRISM_ICLOUD:-}" PUSH="${PRISM_PUSH:-}" python3 - "$GEN/profile.plist" "$GEN/entitlements.plist" "$BUNDLE_ID" <<'PY'
 import os, plistlib, sys
 p = plistlib.load(open(sys.argv[1], "rb"))
 e = dict(p["Entitlements"])
@@ -170,10 +176,16 @@ if os.environ.get("ICLOUD") == "1":
         print("note: the provisioning profile has no iCloud: cloud_storage stays local (enable iCloud for the App ID in Xcode)", file=sys.stderr)
 else:
     e.pop(kv, None)
+if os.environ.get("PUSH") and "aps-environment" not in e:
+    print("note: the provisioning profile has no Push Notifications capability: register_for_push will fail (enable it for the App ID)", file=sys.stderr)
 plistlib.dump(e, open(sys.argv[2], "wb"))
 PY
   if [[ "${PRISM_ICLOUD:-}" == 1 ]] && ! /usr/libexec/PlistBuddy -c "Print :com.apple.developer.ubiquity-kvstore-identifier" "$GEN/entitlements.plist" >/dev/null 2>&1; then
     PRISM_ICLOUD=0
+  fi
+  # The token's environment is the profile's (development or production).
+  if [[ -n "${PRISM_PUSH:-}" ]]; then
+    PRISM_PUSH="$(/usr/libexec/PlistBuddy -c "Print :aps-environment" "$GEN/entitlements.plist" 2>/dev/null || echo "$PRISM_PUSH")"
   fi
   cp "$GEN/entitlements.plist" "$GEN/appex.entitlements.plist"
   /usr/libexec/PlistBuddy -c "Set :application-identifier $(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$GEN/profile.plist").$BUNDLE_ID.widgets" "$GEN/appex.entitlements.plist"
@@ -196,6 +208,7 @@ else
 <dict>
   <key>com.apple.security.application-groups</key><array><string>$GROUP</string></array>
 $( [[ "${PRISM_ICLOUD:-}" == 1 ]] && echo "  <key>com.apple.developer.ubiquity-kvstore-identifier</key><string>${PRISM_TEAM:-SIMULATOR}.$BUNDLE_ID</string>" )
+$( [[ -n "${PRISM_PUSH:-}" ]] && echo "  <key>aps-environment</key><string>$PRISM_PUSH</string>" )
 </dict>
 </plist>
 PLIST
@@ -218,15 +231,21 @@ ASSETS="$(PRISM_DESCRIBE=assets "$HOST_BIN")"
 [[ -n "$ASSETS" && -d "$ASSETS" ]] && cp -R "$ASSETS" "$APP/assets"
 RESOURCES="$APP"
 # Background tasks (cx.register_background_task) are declared to iOS.
-BG_PLIST="$(PRISM_DESCRIBE=background "$HOST_BIN" | BUNDLE_ID="$BUNDLE_ID" python3 -c '
+# Remote push (PRISM_PUSH): silent pushes wake the app (remote-notification).
+BG_PLIST="$(PRISM_DESCRIBE=background "$HOST_BIN" | BUNDLE_ID="$BUNDLE_ID" PUSH="${PRISM_PUSH:-}" python3 -c '
 import json, os, sys
 tasks = json.loads(sys.stdin.read() or "[]")
+modes = set()
 if tasks:
     bid = os.environ["BUNDLE_ID"]
     ids = "".join("<string>%s.%s</string>" % (bid, t["id"]) for t in tasks)
-    modes = sorted({"fetch" if t["kind"] == "refresh" else "processing" for t in tasks})
+    modes = {"fetch" if t["kind"] == "refresh" else "processing" for t in tasks}
     print("  <key>BGTaskSchedulerPermittedIdentifiers</key><array>" + ids + "</array>")
-    print("  <key>UIBackgroundModes</key><array>" + "".join("<string>%s</string>" % m for m in modes) + "</array>")
+if os.environ.get("PUSH"):
+    modes.add("remote-notification")
+    print("  <key>PrismApsEnvironment</key><string>" + os.environ["PUSH"] + "</string>")
+if modes:
+    print("  <key>UIBackgroundModes</key><array>" + "".join("<string>%s</string>" % m for m in sorted(modes)) + "</array>")
 ')"
 # Languages (locales/*.json): declared to the system, so iOS Settings
 # offers a per-app language and the App Store lists them.
@@ -376,8 +395,15 @@ if [[ -n "$DEVICE" ]]; then
   codesign --force --sign "$IDENTITY" --timestamp=none --entitlements "$GEN/entitlements.plist" "$APP" >/dev/null
   codesign --verify --deep --strict "$APP"
 else
-  [[ $WIDGETS == 1 ]] && codesign --force --sign - --entitlements "$GEN/appex.entitlements.plist" "$APPEX" >/dev/null
-  codesign --force --sign - --entitlements "$GEN/entitlements.plist" "$APP" >/dev/null
+  # aps-environment stays in the binary's sections only: the simulator refuses
+  # to launch an ad hoc signature claiming it (RBS launch error 163), but
+  # reads it from the sections to hand out push tokens.
+  for f in entitlements appex.entitlements; do
+    cp "$GEN/$f.plist" "$GEN/$f.sign.plist"
+    /usr/libexec/PlistBuddy -c "Delete :aps-environment" "$GEN/$f.sign.plist" >/dev/null 2>&1 || true
+  done
+  [[ $WIDGETS == 1 ]] && codesign --force --sign - --entitlements "$GEN/appex.entitlements.sign.plist" "$APPEX" >/dev/null
+  codesign --force --sign - --entitlements "$GEN/entitlements.sign.plist" "$APP" >/dev/null
 fi
 echo "Built $APP"
 [[ "${PRISM_NO_INSTALL:-}" == 1 ]] && exit 0

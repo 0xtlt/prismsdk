@@ -12,6 +12,12 @@
 //! location = "Shows todos near you."
 //! camera = "Takes a photo for a todo."
 //!
+//! [push]                      # remote push notifications
+//! enabled = true                # aps-environment, background pushes, Android receivers
+//! apns_environment = "development"  # "production" for TestFlight / App Store builds
+//! google_services = "google-services.json"  # Android: FCM (else UnifiedPush only)
+//! vapid_public_key = "BKv…"     # Web Push (or PRISM_VAPID_PUBLIC_KEY)
+//!
 //! [ios]
 //! team = "ABCDE12345"           # Apple team for real devices
 //! simulator = "iPhone 17"       # default simulator
@@ -39,6 +45,13 @@ pub struct Project {
     pub device: Option<String>,
     /// `[ios] icloud = true`: iCloud key-value storage.
     pub icloud: bool,
+    /// `[push] enabled = true`: the APNs environment (`development` unless
+    /// `apns_environment = "production"`).
+    pub push: Option<String>,
+    /// `[push] google_services`: Firebase's `google-services.json` (FCM on Android).
+    pub google_services: Option<PathBuf>,
+    /// `[push] vapid_public_key`: the web app's VAPID key.
+    pub vapid_public_key: Option<String>,
     /// Cargo's target directory (the workspace's).
     pub target_dir: PathBuf,
     /// The Cargo workspace (watched by `prism dev`).
@@ -121,6 +134,11 @@ impl Project {
             simulator: get("ios.simulator"),
             device: get("ios.device"),
             icloud: get("ios.icloud").is_some_and(|v| v == "true"),
+            push: get("push.enabled")
+                .filter(|v| v == "true")
+                .map(|_| get("push.apns_environment").unwrap_or_else(|| "development".into())),
+            google_services: get("push.google_services").map(|g| crate::resolve(root, &g)),
+            vapid_public_key: get("push.vapid_public_key"),
             root: root.to_path_buf(),
             package,
             name,

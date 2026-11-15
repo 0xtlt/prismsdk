@@ -248,5 +248,22 @@
     "done": "Done",
     "selected": "{day}: {count} orders",
     "tap_bar": "Tap a bar to highlight it"
+  },
+  "push": {
+    "title": "Push notifications",
+    "unavailable": "Remote push is not available here.",
+    "service": "Service: {service}",
+    "enable": "Enable push",
+    "registering": "Registering…",
+    "registered": "Token: {token}",
+    "copy": "Copy subscription",
+    "disable": "Turn off",
+    "error": "Not registered: {error}",
+    "none": "Nothing received yet.",
+    "received": "Received",
+    "opened": "Opened",
+    "background": "Silent",
+    "hint": "Send one from your server with prism-push, or in the iOS Simulator: xcrun simctl push booted dev.prism.counter push/hello.apns",
+    "activity": "Live Activity token: {token}"
   }
 }

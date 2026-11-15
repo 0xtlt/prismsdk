@@ -147,6 +147,11 @@ pub fn model_id() -> Option<String> {
 #[cfg(feature = "apple-bridge")]
 pub use bridge::{DeviceMessage, device_call, set_device_sink};
 
+/// Remote push (APNs) through the Swift bridge.
+#[cfg(feature = "apple-bridge")]
+#[path = "apple_push.rs"]
+pub mod push;
+
 /// Device APIs through the Swift bridge (`platform/apple/Bridge/PrismDevice.swift`).
 #[cfg(feature = "apple-bridge")]
 mod bridge {

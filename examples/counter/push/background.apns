@@ -1,0 +1,8 @@
+{
+  "Simulator Target Bundle": "dev.prism.counter",
+  "aps": {
+    "alert": { "title": "Inbox", "body": "3 new messages (synced in the background)" },
+    "content-available": 1
+  },
+  "sync": "inbox"
+}

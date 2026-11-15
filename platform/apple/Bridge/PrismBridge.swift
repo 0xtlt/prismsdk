@@ -40,6 +40,10 @@ final class PrismNotificationDelegate: NSObject, UNUserNotificationCenterDelegat
     // Show banners even while the app is in the foreground.
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
                                 withCompletionHandler done: @escaping (UNNotificationPresentationOptions) -> Void) {
+        let request = notification.request
+        if request.trigger is UNPushNotificationTrigger {
+            prismDeliverPush(0, request.content.userInfo, id: request.identifier)
+        }
         done([.banner, .list, .sound])
     }
 
@@ -52,6 +56,14 @@ final class PrismNotificationDelegate: NSObject, UNUserNotificationCenterDelegat
         if action == UNNotificationDefaultActionIdentifier { action = nil }
         if action == UNNotificationDismissActionIdentifier { action = "dismiss" }
         let text = (response as? UNTextInputNotificationResponse)?.userText
+        // A remote push: the app's push handler (its link opens there).
+        if request.trigger is UNPushNotificationTrigger {
+            DispatchQueue.main.async {
+                prismDeliverPush(1, info, id: id, action: action, text: text)
+                done()
+            }
+            return
+        }
         let links = info["links"] as? [String: String] ?? [:]
         let link = action.flatMap { links[$0] } ?? (action == nil ? info["link"] as? String : nil)
         DispatchQueue.main.async {
@@ -76,6 +88,9 @@ private func withOptionalCString<R>(_ s: String?, _ body: (UnsafePointer<CChar>?
 
 @_cdecl("prism_bridge_init")
 public func prismBridgeInit() -> Bool {
+    #if os(macOS)
+    prismInstallMacDelegate()
+    #endif
     // Notifications need a bundled app (not `cargo run` on macOS).
     guard Bundle.main.bundleIdentifier != nil else { return false }
     UNUserNotificationCenter.current().delegate = PrismNotificationDelegate.shared
@@ -191,11 +206,13 @@ public func prismActivitySupported() -> Bool { ActivityAuthorizationInfo().areAc
 
 @_cdecl("prism_activity_start")
 public func prismActivityStart(_ key: UnsafePointer<CChar>, _ kind: UnsafePointer<CChar>,
-                               _ json: UnsafePointer<CChar>, _ stale: Double) -> Bool {
+                               _ json: UnsafePointer<CChar>, _ stale: Double, _ push: Bool) -> Bool {
     do {
+        // `push`: updates come from the app's server too (needs aps-environment).
         let activity = try Activity.request(attributes: PrismActivityAttributes(kind: String(cString: kind)),
-                                            content: content(json, stale), pushType: nil)
+                                            content: content(json, stale), pushType: push ? .token : nil)
         prismActivities[String(cString: key)] = activity
+        if push { prismWatchActivityToken(String(cString: key), String(cString: kind), activity) }
         return true
     } catch {
         NSLog("prism: Live Activity failed: %@", "\(error)")
@@ -222,7 +239,7 @@ public func prismActivityEnd(_ key: UnsafePointer<CChar>, _ json: UnsafePointer<
 public func prismActivitySupported() -> Bool { false }
 @_cdecl("prism_activity_start")
 public func prismActivityStart(_ key: UnsafePointer<CChar>, _ kind: UnsafePointer<CChar>,
-                               _ json: UnsafePointer<CChar>, _ stale: Double) -> Bool { false }
+                               _ json: UnsafePointer<CChar>, _ stale: Double, _ push: Bool) -> Bool { false }
 @_cdecl("prism_activity_update")
 public func prismActivityUpdate(_ key: UnsafePointer<CChar>, _ json: UnsafePointer<CChar>, _ stale: Double) {}
 @_cdecl("prism_activity_end")

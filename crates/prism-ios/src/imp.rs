@@ -476,6 +476,35 @@ define_class!(
             observe_lifecycle(self.mtm());
             true
         }
+
+        /// APNs answered `registerForRemoteNotifications` (prism_push_register).
+        #[unsafe(method(application:didRegisterForRemoteNotificationsWithDeviceToken:))]
+        fn did_register_push(&self, _app: &UIApplication, token: &objc2_foundation::NSData) {
+            let hex: String = token.to_vec().iter().map(|b| format!("{b:02x}")).collect();
+            push_registered(Ok(prism_native::apple::push::subscription(&hex)));
+        }
+
+        #[unsafe(method(application:didFailToRegisterForRemoteNotificationsWithError:))]
+        fn did_fail_push(&self, _app: &UIApplication, error: &objc2_foundation::NSError) {
+            let reason = error.localizedDescription().to_string();
+            push_registered(Err(prism_core::DeviceError::Failed(reason)));
+        }
+
+        /// A push with `content-available` (the app may have been launched
+        /// in the background for it): run the app's handler, then tell iOS.
+        #[unsafe(method(application:didReceiveRemoteNotification:fetchCompletionHandler:))]
+        fn did_receive_push(
+            &self,
+            _app: &UIApplication,
+            info: &objc2_foundation::NSDictionary,
+            done: &block2::DynBlock<dyn Fn(objc2_ui_kit::UIBackgroundFetchResult)>,
+        ) {
+            let json = unsafe {
+                prism_native::apple::push::payload(info as *const _ as *const std::ffi::c_void)
+            };
+            let message = prism_native::apple::push::message(2, &json, None, None);
+            push_background(message, done.copy());
+        }
     }
 );
 
@@ -2112,6 +2141,8 @@ thread_local! {
 pub(crate) enum Completion {
     /// BGTaskScheduler (full identifier).
     System(String),
+    /// A silent push: its fetch completion handler.
+    Push(block2::RcBlock<dyn Fn(objc2_ui_kit::UIBackgroundFetchResult)>),
     /// Development hook.
     None,
 }
@@ -2226,6 +2257,53 @@ pub(crate) fn run_background(id: &str, completion: Completion) {
     check_background();
 }
 
+/// A push token (or a registration error), in the window's runtime or a
+/// headless one (the token can arrive before the scene connects).
+pub(crate) fn push_registered(
+    result: Result<prism_core::PushSubscription, prism_core::DeviceError>,
+) {
+    if let Err(e) = &result {
+        eprintln!("prism-ios: push registration failed: {e}");
+    }
+    with_runtime(|rt| rt.push_registered(result));
+}
+
+/// A push received in the foreground or tapped (the tap can launch the app).
+pub(crate) fn push_received(message: prism_core::PushMessage) {
+    with_runtime(|rt| rt.push_received(message, false));
+}
+
+/// A silent push: runs the app's `on_background_push` job (headless when iOS
+/// launched the app for it) and calls `done` when it finishes.
+fn push_background(
+    message: prism_core::PushMessage,
+    done: block2::RcBlock<dyn Fn(objc2_ui_kit::UIBackgroundFetchResult)>,
+) {
+    let mut message = Some(message);
+    let mut started = None;
+    with_state(|s| {
+        if let Some(m) = message.take() {
+            started = s.runtime.run_background_push(m);
+            let patches = s.runtime.poll();
+            s.commit(patches);
+        }
+    });
+    if let Some(m) = message {
+        HEADLESS.with(|h| {
+            let mut h = h.borrow_mut();
+            let headless = h.get_or_insert_with(new_headless);
+            started = headless.runtime.run_background_push(m);
+        });
+        poll_headless();
+    }
+    let completion = Completion::Push(done);
+    match started {
+        Some(task) => BG_WAITING.with(|w| w.borrow_mut().push((task, completion))),
+        None => finish(&completion, true),
+    }
+    check_background();
+}
+
 /// The system's time ran out: stop the task and report failure.
 pub(crate) fn expire_background(full_id: &str) {
     let expired: Vec<u64> = BG_WAITING.with(|w| {
@@ -2252,6 +2330,11 @@ pub(crate) fn expire_background(full_id: &str) {
 fn finish(completion: &Completion, success: bool) {
     match completion {
         Completion::System(full) => crate::services::complete_background_task(full, success),
+        Completion::Push(done) => done.call((if success {
+            objc2_ui_kit::UIBackgroundFetchResult::NewData
+        } else {
+            objc2_ui_kit::UIBackgroundFetchResult::Failed
+        },)),
         Completion::None => {}
     }
 }
