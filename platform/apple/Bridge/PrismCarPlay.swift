@@ -89,8 +89,9 @@ public final class PrismCarPlaySceneDelegate: UIResponder, CPTemplateApplication
 
     // MARK: Building
 
-    func image(_ n: [String: Any]) -> UIImage? {
-        (n["icon"] as? String).flatMap { UIImage(systemName: $0) }
+    func image(_ n: [String: Any], size: CGSize = CPListItem.maximumImageSize) -> UIImage? {
+        if let drawing = n["drawing"] as? String { return prismCarDrawing(drawing, size: size) }
+        return (n["icon"] as? String).flatMap { UIImage(systemName: $0) }
     }
 
     func select(_ n: [String: Any]) -> UInt64? {
@@ -115,7 +116,7 @@ public final class PrismCarPlaySceneDelegate: UIResponder, CPTemplateApplication
         ((node["buttons"] as? [[String: Any]]) ?? []).map { n in
             let id = select(n)
             return CPGridButton(titleVariants: [n["title"] as? String ?? ""],
-                                image: image(n) ?? UIImage(systemName: "square")!) { _ in
+                                image: image(n, size: CGSize(width: 80, height: 80)) ?? UIImage(systemName: "square")!) { _ in
                 if let id { prismRustCarSelect(id) }
             }
         }
@@ -195,6 +196,125 @@ public func prismCarSet(_ json: UnsafePointer<CChar>) {
     let json = String(cString: json)
     pendingCarJSON = json
     PrismCarPlaySceneDelegate.current?.apply(json)
+}
+
+// MARK: Charts in image slots
+
+/// A prism-core drawing (compact text: `i<x>,<y>`, then per path paint
+/// tokens, `|`, segments in fractions of the frame; see PrismRenderer.swift)
+/// as a `UIImage` of `size` points, with light and dark variants (CarPlay
+/// switches between day and night).
+func prismCarDrawing(_ text: String, size: CGSize) -> UIImage {
+    func render(dark: Bool) -> UIImage {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 3
+        return UIGraphicsImageRenderer(size: size, format: format).image { ctx in
+            prismDrawPaths(text, in: CGRect(origin: .zero, size: size), dark: dark, ctx.cgContext)
+        }
+    }
+    let light = render(dark: false)
+    guard text.contains("/#") else { return light }
+    let asset = UIImageAsset()
+    asset.register(light, with: UITraitCollection(userInterfaceStyle: .light))
+    asset.register(render(dark: true), with: UITraitCollection(userInterfaceStyle: .dark))
+    return asset.image(with: UITraitCollection.current)
+}
+
+private func prismCarColor(_ spec: String, dark: Bool) -> UIColor? {
+    let parts = spec.split(separator: "/")
+    guard !parts.isEmpty else { return nil }
+    var s = String(parts[dark && parts.count == 2 ? 1 : 0]).replacingOccurrences(of: "#", with: "")
+    if s.count == 6 { s += "FF" }
+    guard s.count == 8, let v = UInt64(s, radix: 16) else { return nil }
+    return UIColor(red: CGFloat((v >> 24) & 0xFF) / 255, green: CGFloat((v >> 16) & 0xFF) / 255,
+                   blue: CGFloat((v >> 8) & 0xFF) / 255, alpha: CGFloat(v & 0xFF) / 255)
+}
+
+/// Strokes and fills each path of `text` in `rect` (like prism-core `Drawing::resolve`).
+func prismDrawPaths(_ text: String, in rect: CGRect, dark: Bool, _ cg: CGContext) {
+    var (ix, iy) = (0.0, 0.0)
+    for line in text.split(separator: "\n") {
+        if line.hasPrefix("i") {
+            let v = line.dropFirst().split(separator: ",").compactMap { Double($0) }
+            (ix, iy) = (v.first ?? 0, v.count > 1 ? v[1] : 0)
+            continue
+        }
+        guard let bar = line.firstIndex(of: "|") else { continue }
+        var fill: UIColor?, stroke: UIColor?, width = 1.0, round = false, dash: [CGFloat] = []
+        for token in line[..<bar].split(separator: " ") {
+            let value = String(token.dropFirst())
+            switch token.first {
+            case "f": fill = prismCarColor(value, dark: dark)
+            case "s": stroke = prismCarColor(value, dark: dark)
+            case "w": width = Double(value) ?? 1
+            case "r": round = true
+            case "d": dash = value.split(separator: ",").compactMap { Double($0) }.map { CGFloat($0) }
+            default: break
+            }
+        }
+        let iw = max(0, rect.width - 2 * ix), ih = max(0, rect.height - 2 * iy), side = min(iw, ih)
+        func pt(_ x: Double, _ y: Double) -> CGPoint { CGPoint(x: rect.minX + ix + x * iw, y: rect.minY + iy + y * ih) }
+        let path = CGMutablePath()
+        var open = false
+        let t = line[line.index(after: bar)...].split(separator: " ")
+        var i = 0
+        func take(_ n: Int) -> [Double]? {
+            guard i + n <= t.count else { return nil }
+            let v = t[i..<i + n].compactMap { Double($0) }
+            i += n
+            return v.count == n ? v : nil
+        }
+        parse: while i < t.count {
+            let cmd = t[i]
+            i += 1
+            switch cmd {
+            case "M", "L":
+                guard let v = take(2) else { break parse }
+                if cmd == "L" && open { path.addLine(to: pt(v[0], v[1])) } else { path.move(to: pt(v[0], v[1])) }
+                open = true
+            case "C":
+                guard let v = take(6) else { break parse }
+                if !open { path.move(to: pt(v[0], v[1])) }
+                path.addCurve(to: pt(v[4], v[5]), control1: pt(v[0], v[1]), control2: pt(v[2], v[3]))
+                open = true
+            case "A":
+                guard let v = take(5) else { break parse }
+                let c = pt(v[0], v[1]), r = v[2] * side
+                func at(_ deg: Double) -> CGPoint {
+                    CGPoint(x: c.x + r * sin(deg * .pi / 180), y: c.y - r * cos(deg * .pi / 180))
+                }
+                if open { path.addLine(to: at(v[3])) } else { path.move(to: at(v[3])) }
+                open = true
+                let sweep = min(max(v[4] - v[3], -360), 360)
+                let n = max(1, Int((abs(sweep) / 90).rounded(.up)))
+                let step = sweep / Double(n), k = 4 / 3 * tan(step * .pi / 720) * r
+                for j in 0..<n {
+                    let a0 = v[3] + step * Double(j), a1 = a0 + step
+                    let p0 = at(a0), p1 = at(a1), r0 = a0 * .pi / 180, r1 = a1 * .pi / 180
+                    path.addCurve(to: p1, control1: CGPoint(x: p0.x + k * cos(r0), y: p0.y + k * sin(r0)),
+                                  control2: CGPoint(x: p1.x - k * cos(r1), y: p1.y - k * sin(r1)))
+                }
+            case "Z":
+                path.closeSubpath()
+                open = false
+            default: break parse
+            }
+        }
+        if let fill {
+            cg.addPath(path)
+            cg.setFillColor(fill.cgColor)
+            cg.fillPath()
+        }
+        if let stroke {
+            cg.addPath(path)
+            cg.setStrokeColor(stroke.cgColor)
+            cg.setLineWidth(width)
+            cg.setLineCap(round ? .round : .butt)
+            cg.setLineJoin(round ? .round : .miter)
+            cg.setLineDash(phase: 0, lengths: dash.count == 2 ? dash : [])
+            cg.strokePath()
+        }
+    }
 }
 #else
 @_cdecl("prism_car_set")

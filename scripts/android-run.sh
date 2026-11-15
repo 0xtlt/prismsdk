@@ -175,13 +175,14 @@ BANNER
 fi
 # Layouts for widgets and Live Activities (RemoteViews only inflate resources;
 # PrismSurface.java nests them): prism_<kind>_<size>.xml.
-for kind in col row text chrono progress space; do
+for kind in col row text chrono progress image space; do
   case $kind in
     col) tag=LinearLayout extra='android:orientation="vertical"' ;;
     row) tag=LinearLayout extra='android:orientation="horizontal"' ;;
     text) tag=TextView extra='' ;;
     chrono) tag=Chronometer extra='' ;;
     progress) tag=ProgressBar extra='style="@android:style/Widget.Material.ProgressBar.Horizontal"' ;;
+    image) tag=ImageView extra='android:scaleType="fitXY"' ;;
     space) tag=FrameLayout extra='' ;;
   esac
   for size in wrap fill growh growv both; do

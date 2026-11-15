@@ -765,6 +765,14 @@
     else st.display = n.k === "p" ? "block" : "inline-block";
     if (n.g) st.gap = n.g + "px";
     if (n.pd) st.padding = n.pd.map((v) => v + "px").join(" ");
+    if (n.m) st.margin = n.m.map((v) => v + "px").join(" ");
+    if (n.k === "sh") {
+      // A drawing (charts): drawn in SVG at the box's size, like `shape()`.
+      el.className = "prism-shape";
+      el._drawing = n.s || "";
+      if (shapeObserver) shapeObserver.observe(el);
+      requestAnimationFrame(() => drawShape(el));
+    }
     if (n.w) st.width = n.w === "f" ? "100%" : n.w + "px";
     if (n.h) st.height = n.h === "f" ? "100%" : n.h + "px";
     if (n.f) st.flexGrow = n.f;

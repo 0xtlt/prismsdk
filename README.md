@@ -325,6 +325,35 @@ shape()
 
 `Path` also has `line`, `arc`, `circle`, `rect`, `move_to`/`line_to`/`curve_to`/`arc_to`/`close`, `.fill`, `.stroke`, `.dashed`.
 
+### Charts in widgets, Live Activities and car screens
+
+The same charts and shapes work in `Widget::render`, `Activity::lock_screen`/`compact`/`expanded` and car screens:
+
+```rust
+Widget::new("todos", "Todos").families(&[WidgetFamily::Medium, WidgetFamily::AccessoryCircular])
+    .render(move |cx, family| ui::ring(done).label("2/3").size(56.).thickness(6.))
+Activity::new("focus").lock_screen(div().flex_row().child(ui::ring(today / 4.).size(48.)).child(timer(ends)))
+CarItem::new("Today").drawing(ui::ring(0.6).drawing(cx))       // also ui::sparkline(…).drawing(cx), any Drawing
+```
+
+| Surface | iOS / macOS / visionOS | Android |
+|---|---|---|
+| Widgets (all sizes) | SwiftUI `Path`s at the node's frame (`PrismRenderer.swift`) | a bitmap per drawing in `RemoteViews` (`PrismSurface.java`) |
+| Lock-screen widgets (`Accessory*`) | `widgetRenderingMode`: in vibrant and accented modes colored paths are white and `widgetAccentable`, gray ones (grids, tracks) recede | — (no lock-screen widgets) |
+| Live Activity, Dynamic Island | SwiftUI paths, every region | ongoing notification: bitmaps |
+| Car screens | CarPlay list/grid images (`UIImage` with day and night variants) | Android Auto / Automotive row and grid images (`CarIcon` bitmap, day or night) |
+
+- **Snapshots** carry the drawing unresolved (fractions of the frame), so each renderer draws it at the size it lays out. Numbers are short (`.25`, opaque colors without alpha): a sparkline snapshot is ~0.5 KB, a ring with its label ~0.3 KB, a 7-point smooth line chart with its axes ~1.8 KB.
+- **Static variant**: while a surface renders, `cx.in_snapshot()` is true. The bar chart then draws its bars in its shape (nothing is tappable there), and overlays (a ring's label) use negative margins, which snapshots now keep.
+- **Light/dark and right to left** follow the host: adaptive colors resolve with the widget's color scheme (Android 12+: day and night bitmaps via `RemoteViews.setIcon(…, night)`), and drawings flip with the layout direction.
+- **Limits**, enforced:
+  - ActivityKit: 4 KB for a Live Activity's static and dynamic data together. Content over it has its drawings rounded to two decimals, then left out, with a log line (`ActivityContent::payload_size`).
+  - WidgetKit timelines read the snapshot from the App Group container, so there is no payload limit there; the extension's memory budget is the constraint, and vector paths cost almost nothing.
+  - Android widgets: the bitmaps and icons of one `RemoteViews` may not exceed screen width × height × 4 × 1.5 bytes (`AppWidgetManager.updateAppWidget`, an error from Android 17), shared by every size of the widget.
+  - Android notifications: the system warns above 2 000 000 bytes of custom views and strips them above 5 000 000 (`config_notificationWarnRemoteViewSizeBytes`, `…Strip…`). Prism keeps the collapsed and expanded views under 2 MB together.
+  - Past a budget, bitmaps are drawn at a lower resolution (and left out below a quarter of it). RemoteViews do not report their size: a drawing's bitmap is made for the size estimated from the host's bounds, fixed sizes and measured text, then stretched to its real frame.
+- **Watch complications**: this repository has no watchOS widget extension yet, so there are none; the watch app itself draws charts with SwiftUI.
+
 ## Accessibility
 
 Accessibility is built in, not opt-in. The core resolves one description per node (role, label, hint, value, checked, disabled, hidden) and each backend maps it to the platform API:
@@ -626,7 +655,7 @@ The app runs in Rust, and a small Java host (`platform/android`) creates real An
 - **Notifications:** actions and text replies; the first one asks for the permission (Android 13+), as on iOS. Alerts are `AlertDialog`s. Context menus (`PopupMenu`) open on press and hold. Also supported: swipes, scroll events, deep links (`prism-<package>:/path`) and the lifecycle.
 - **Background tasks:** JobScheduler, even with the app closed; the library then loads without the Activity and runs the task without a screen.
 - **Live Activities:** an ongoing notification drawing the lock-screen content, with timers counting natively (`Chronometer`).
-- **Widgets:** home-screen widgets (`AppWidgetProvider`), one per `register_widget`, with small/medium layouts chosen by size (Android 12+). They are redrawn from the last snapshot while the app is closed. Both surfaces render `SNode` snapshots with `RemoteViews` (`PrismSurface.java`).
+- **Widgets:** home-screen widgets (`AppWidgetProvider`), one per `register_widget`, with small/medium layouts chosen by size (Android 12+). They are redrawn from the last snapshot while the app is closed. Both surfaces render `SNode` snapshots with `RemoteViews` (`PrismSurface.java`), charts as bitmaps (see [Charts in widgets](#charts-in-widgets-live-activities-and-car-screens)).
 - **Release:** `PRISM_RELEASE=1` or `prism build android`. Sign with `PRISM_ANDROID_KEYSTORE`, `PRISM_ANDROID_KEYSTORE_PASS` and `PRISM_ANDROID_KEY_ALIAS`; the default is the SDK's debug key. Libraries are aligned for 16 KB pages.
 - **Wear OS and Android TV:** the same APK runs there; `cx.device_info().kind` says `Watch` or `Tv`.
   - *Watches:* dark, compact header, icon-only tabs, margins inside a round screen. Back is the swipe to the right. The app is standalone (no phone needed).
