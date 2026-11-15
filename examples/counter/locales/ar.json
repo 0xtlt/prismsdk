@@ -2,6 +2,14 @@
   "language": {
     "name": "العربية"
   },
+  "page": {
+    "title": "هذه الصفحة",
+    "origin": "العنوان: {origin}",
+    "path": "المسار: {path}",
+    "native": "ليست صفحة ويب: لا يوجد عنوان هنا.",
+    "reload": "إعادة التحميل (نفس علامة التبويب)",
+    "new_tab": "rust-lang.org (علامة تبويب جديدة)"
+  },
   "home": {
     "info": "واجهة Rust · تعمل على {backend}",
     "open": {

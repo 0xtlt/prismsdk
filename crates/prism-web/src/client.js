@@ -1296,7 +1296,7 @@
         case "share":
           if (navigator.share) return navigator.share({ text: msg.text || undefined, url: msg.url || undefined }).catch(() => {});
           return navigator.clipboard?.writeText([msg.text, msg.url].filter(Boolean).join(" "));
-        case "open_url": return window.open(msg.url, "_blank", "noopener");
+        case "open_url": return openUrl(msg.url, msg.target);
         case "web_auth": return webAuth(msg, reply);
         case "webauthn": return webauthn(msg, reply);
         default: return reply({ err: "unavailable" });
@@ -1306,8 +1306,24 @@
     }
   }
 
+  /**
+   * `cx.open_url`: a URL of this page's origin replaces the page (a host's
+   * sign-out page, a download); others open in a new tab. `target` ("same",
+   * "new") overrides it (`cx.open_url_in`).
+   */
+  function openUrl(url, target) {
+    let same = false;
+    try { same = new URL(url, location.href).origin === location.origin; } catch (e) { same = false; }
+    if (target === "same" || (target !== "new" && same)) return location.assign(url);
+    return window.open(url, "_blank", "noopener");
+  }
+
   function service(msg) {
     switch (msg.t) {
+      // The session ended for lack of activity: reconnect at the next one.
+      case "idle": conn.idle = true; return;
+      // The server refused the session (foreign origin, too many sessions).
+      case "refused": conn.refused = msg.status || 0; return;
       case "device": return device(msg);
       case "activity": return showActivity(msg.id, msg.c);
       case "activity_end": {
@@ -1377,9 +1393,69 @@
   });
   deviceReport();
 
+  // --- Connection: back-off, a visible state, the host's sign-in ---------------------
+  // `<html data-prism-connection="connecting|online|reconnecting|offline|idle">`
+  // styles the page (prism.css dims it and shows #prism-connection while
+  // reconnecting); `prism:connection` events on window tell scripts.
+  const conn = { attempt: 0, timer: null, idle: false, refused: 0, opened: false };
+  function setConnection(state) {
+    const root = document.documentElement;
+    if (root.getAttribute("data-prism-connection") === state) return;
+    root.setAttribute("data-prism-connection", state);
+    const banner = document.getElementById("prism-connection");
+    if (banner) banner.hidden = state !== "reconnecting" && state !== "offline";
+    if (typeof CustomEvent === "function" && window.dispatchEvent) {
+      window.dispatchEvent(new CustomEvent("prism:connection", { detail: { state, attempt: conn.attempt } }));
+    }
+  }
+  /** Retry delay: 0.5 s doubling to 30 s, ±25 % so pages do not reconnect in step. */
+  const backoff = (attempt) => Math.min(30000, 500 * 2 ** Math.min(attempt - 1, 6)) * (0.75 + Math.random() / 2);
+  /**
+   * The socket keeps failing: is it the host refusing us (signed out: 401,
+   * 403, a redirect to its sign-in page)? A WebSocket error cannot say, a
+   * fetch of the page can; reload then, so the host's own answer shows.
+   */
+  function probe() {
+    if (typeof fetch !== "function") return;
+    fetch(location.href, { cache: "no-store", credentials: "same-origin", redirect: "manual", headers: { "X-Prism-Probe": "1" } })
+      .then((r) => {
+        if (r.type === "opaqueredirect" || r.redirected || r.status === 401 || r.status === 403) reload();
+        else if (conn.attempt) setConnection("reconnecting");
+      }, () => { if (conn.attempt) setConnection("offline"); });
+  }
+  /** Reloads, at most once every 30 s (a host that keeps refusing cannot loop us). */
+  function reload() {
+    let last = 0;
+    try { last = Number(sessionStorage.getItem("prism-reload")) || 0; } catch (e) { last = 0; }
+    if (Date.now() - last < 30000) return;
+    try { sessionStorage.setItem("prism-reload", String(Date.now())); } catch (e) { /* private mode */ }
+    location.reload();
+  }
+  function closed() {
+    ws = null;
+    if (conn.idle) return setConnection("idle");
+    conn.attempt++;
+    setConnection(conn.opened || conn.attempt > 1 ? "reconnecting" : "connecting");
+    if (conn.attempt >= 2 || conn.refused) probe();
+    conn.refused = 0;
+    clearTimeout(conn.timer);
+    conn.timer = setTimeout(connect, backoff(conn.attempt));
+  }
+  /** Back online, shown again or touched after idling: try now. */
+  function retryNow() {
+    if (ws || (!conn.idle && !conn.attempt)) return;
+    clearTimeout(conn.timer);
+    conn.idle = false;
+    connect();
+  }
+  addEventListener("online", retryNow);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) retryNow(); });
+  for (const t of ["pointerdown", "keydown", "focus"]) addEventListener(t, () => { if (conn.idle) retryNow(); }, true);
+
   function connect() {
     const path = encodeURIComponent(appPath());
-    ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${BASE}/ws?path=${path}&tz=${tz}&w=${innerWidth}&h=${innerHeight}`);
+    const search = location.search ? `&search=${encodeURIComponent(location.search)}` : "";
+    ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${BASE}/ws?path=${path}&tz=${tz}&w=${innerWidth}&h=${innerHeight}${search}`);
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
       if (!msg.p) return service(msg);
@@ -1387,12 +1463,16 @@
       quiet = msg.t === "reset";
       msg.p.forEach(apply);
       quiet = false;
+      // The live tree replaced the first paint: its style rules can go.
+      if (msg.t === "reset") document.getElementById("prism-ssr")?.remove();
       syncHistory();
     };
-    ws.onclose = () => setTimeout(connect, 1000);
+    ws.onclose = closed;
+    ws.addEventListener("open", () => { conn.attempt = 0; conn.opened = true; setConnection("online"); });
     ws.addEventListener("open", reportLifecycle);
     ws.addEventListener("open", reportDevice);
     ws.addEventListener("open", () => { pushReady().catch(() => {}); });
   }
+  setConnection("connecting");
   connect();
 })();

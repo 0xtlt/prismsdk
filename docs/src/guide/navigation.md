@@ -32,4 +32,4 @@ div().on_click(navigate_to("/todos/2"))   // handler helpers: navigate_to, go_ba
 
 **Scrolling**: `scroll()` (`UIScrollView` / `NSScrollView` / `overflow:auto`). A screen starting with a scroll view lets it run under the bars, so iOS large titles collapse natively.
 
-Patterns: `/`, `/todos`, `/todos/:id`, `/files/*rest`. Unknown paths show a "Not found" screen (or `.not_found(...)`). Opening a deep link puts `/` underneath so Back works.
+Patterns: `/`, `/todos`, `/todos/:id`, `/files/*rest`. Unknown paths show a "Not found" screen (or `.not_found(...)`); on the web that page is answered with `404` (`cx.shows_not_found()` tells the app). Opening a deep link puts `/` underneath so Back works.

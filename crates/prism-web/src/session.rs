@@ -58,27 +58,85 @@ impl WebApp {
     ///
     /// The session runs on its own thread (the app's state is not `Send`);
     /// `send` is called from that thread.
+    ///
+    /// Check the handshake with [`accept_socket`](WebApp::accept_socket)
+    /// before upgrading it: a session it refuses ends at once.
     pub fn connect(
         &self,
         uri: &Uri,
         headers: &HeaderMap,
         send: impl Fn(String) -> bool + Send + 'static,
     ) -> Session {
+        self.start(uri, headers, None, send)
+    }
+
+    /// [`connect`](WebApp::connect) with the host's context for the app
+    /// (`cx.request_context::<T>()`), evaluated for this handshake (so again
+    /// at every reconnect).
+    pub fn connect_with(
+        &self,
+        uri: &Uri,
+        headers: &HeaderMap,
+        context: crate::RequestContext,
+        send: impl Fn(String) -> bool + Send + 'static,
+    ) -> Session {
+        self.start(uri, headers, Some(context), send)
+    }
+
+    /// [`connect`](WebApp::connect) for an upgrade request: its URI, headers
+    /// and the [`RequestContext`](crate::RequestContext) in its extensions.
+    pub fn connect_request<B>(
+        &self,
+        req: &http::Request<B>,
+        send: impl Fn(String) -> bool + Send + 'static,
+    ) -> Session {
+        let context = req.extensions().get::<crate::RequestContext>().cloned();
+        self.start(req.uri(), req.headers(), context, send)
+    }
+
+    fn start(
+        &self,
+        uri: &Uri,
+        headers: &HeaderMap,
+        context: Option<crate::RequestContext>,
+        send: impl Fn(String) -> bool + Send + 'static,
+    ) -> Session {
         let (tx, rx) = mpsc::channel();
+        if let Err(status) = self.accept_socket(headers) {
+            // A foreign origin or too many sessions: tell the page, end now.
+            send(json!({ "t": "refused", "status": status.as_u16() }).to_string());
+            return Session { tx };
+        }
         let (sid, path, visitor) = self.socket_visitor(uri, headers);
-        let origin = origin(headers);
+        let origin = crate::host::page_origin(headers, Some(uri));
+        let search = uri
+            .query()
+            .unwrap_or("")
+            .split('&')
+            .find_map(|kv| kv.strip_prefix("search="))
+            .map(crate::app::percent_decode);
+        let request = crate::host::web_request(
+            prism_core::RequestKind::Socket,
+            self.page_url(&origin, &path, search.as_deref()),
+            origin.clone(),
+            headers,
+            context,
+        );
+        let count = SessionCount::new(&self.inner.sessions);
+        let idle = self.inner.idle_timeout;
         let app = self.clone();
         let waker = tx.clone();
         let inbox = tx.clone();
         std::thread::Builder::new()
             .name("prism-session".into())
             .spawn(move || {
+                let _count = count;
                 let mut options = app.options(visitor.with_sid(&sid), path);
                 let device = options.device_info.clone();
                 options.wake_ui = Some(std::sync::Arc::new(move || {
                     let _ = waker.send(Inbound::Wake);
                 }));
-                let runtime = Runtime::with_options(&app.inner.init, options);
+                let runtime = Runtime::with_options(&app.init_with(request), options);
                 Live {
                     device: device.unwrap_or_else(|| runtime.app.device_info()),
                     runtime,
@@ -101,6 +159,8 @@ impl WebApp {
                     send: Box::new(send),
                     app,
                     sid,
+                    idle,
+                    last_seen: Instant::now(),
                 }
                 .run(rx);
             })
@@ -117,6 +177,25 @@ struct Live {
     services: WebServices,
     device: prism_core::DeviceInfo,
     send: Box<dyn Fn(String) -> bool + Send>,
+    /// Ends the session after this long without a message from the page.
+    idle: Option<Duration>,
+    last_seen: Instant,
+}
+
+/// Counts a live session while it exists.
+struct SessionCount(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl SessionCount {
+    fn new(count: &std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        SessionCount(count.clone())
+    }
+}
+
+impl Drop for SessionCount {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl Live {
@@ -128,6 +207,11 @@ impl Live {
         }
         loop {
             if !self.flush_requests() {
+                return;
+            }
+            // Idle for too long: the page reconnects at its next interaction.
+            if self.idle.is_some_and(|d| self.last_seen.elapsed() >= d) {
+                (self.send)(json!({ "t": "idle" }).to_string());
                 return;
             }
             // Calls the server answers itself (secure storage, redirects).
@@ -143,14 +227,21 @@ impl Live {
             }
             // Sleep until a message, a wake-up, the next timer or the next
             // background task.
-            let deadline = [self.runtime.next_timer(), self.services.next_background()]
-                .into_iter()
-                .flatten()
-                .min();
+            let deadline = [
+                self.runtime.next_timer(),
+                self.services.next_background(),
+                self.idle.map(|d| self.last_seen + d),
+            ]
+            .into_iter()
+            .flatten()
+            .min();
             let inbound = match deadline {
                 Some(at) => rx.recv_timeout(at.saturating_duration_since(Instant::now())),
                 None => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
             };
+            if let Ok(Inbound::Message(_)) = &inbound {
+                self.last_seen = Instant::now();
+            }
             let patches = match inbound {
                 // Busy pages still get their timers on time.
                 Ok(Inbound::Message(text)) if deadline.is_some_and(|at| at <= Instant::now()) => {
@@ -758,6 +849,7 @@ pub(crate) fn device_json(id: u64, call: prism_core::DeviceCall) -> Value {
         C::CopyText(t) => json!({ "call": "copy", "text": t }),
         C::Share(s) => json!({ "call": "share", "text": s.text, "url": s.url }),
         C::OpenUrl(u) => json!({ "call": "open_url", "url": u }),
+        C::OpenUrlIn(u, target) => json!({ "call": "open_url", "url": u, "target": target.name() }),
         // Handled by WebServices::security.
         _ => json!({ "call": "unavailable" }),
     };
@@ -773,16 +865,6 @@ pub(crate) enum Gate {
     Owner,
     /// A biometric secret's value.
     Secret(String),
-}
-
-/// The page's origin, from the socket's `Origin` header (or its `Host`).
-fn origin(headers: &HeaderMap) -> String {
-    let h = |k: &str| headers.get(k).and_then(|v| v.to_str().ok());
-    if let Some(o) = h("origin").filter(|o| *o != "null") {
-        return o.trim_end_matches('/').to_string();
-    }
-    let proto = h("x-forwarded-proto").unwrap_or("http");
-    format!("{proto}://{}", h("host").unwrap_or("localhost"))
 }
 
 type Answer = Result<prism_core::DeviceValue, prism_core::DeviceError>;

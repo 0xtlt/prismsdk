@@ -2,6 +2,14 @@
   "language": {
     "name": "English"
   },
+  "page": {
+    "title": "This page",
+    "origin": "Address: {origin}",
+    "path": "Path: {path}",
+    "native": "Not a web page: no address here.",
+    "reload": "Reload (same tab)",
+    "new_tab": "rust-lang.org (new tab)"
+  },
   "home": {
     "info": "Rust UI · running on {backend}",
     "open": {

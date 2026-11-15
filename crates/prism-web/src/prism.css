@@ -80,3 +80,8 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 @keyframes prism-spin { to { transform: rotate(360deg); } }
 /* Still turning (it says "busy"), only slower. */
 @media (prefers-reduced-motion: reduce) { .prism-spinner { animation-duration: 2s; } }
+/* The connection state (client.js sets data-prism-connection on <html>):
+   while reconnecting, the stale page is dimmed and inert and a banner says
+   so. Restyle or hide #prism-connection to taste. */
+#prism-connection { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 1001; padding: 6px 14px; border-radius: 16px; background: rgba(40,40,40,.92); color: #fff; font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,.2); pointer-events: none; }
+:root[data-prism-connection="reconnecting"] #prism-root, :root[data-prism-connection="offline"] #prism-root { opacity: .55; pointer-events: none; transition: opacity .3s .4s; }

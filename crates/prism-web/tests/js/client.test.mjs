@@ -469,17 +469,113 @@ test("window resizes are reported once settled", () => {
   assert.ok(page.document.cookies.some((c) => c.startsWith("prism_vw=390x800")));
 });
 
-test("a closed socket reconnects and the reset replaces the page", () => {
+test("a closed socket reconnects with back-off and the reset replaces the page", () => {
   const page = live([create(1, "text"), textOp(1, "old"), root(1)]);
-  page.ws.onclose();
-  const retry = page.timers.at(-1);
-  assert.equal(retry.ms, 1000);
-  retry.fn();
-  assert.equal(page.sockets.length, 2);
-  page.sockets[1].open();
-  page.sockets[1].deliver({ t: "reset", p: [create(1, "text"), textOp(1, "new"), root(1)] });
+  const html = page.document.documentElement;
+  const banner = page.document.getElementById("prism-connection");
+  const states = [];
+  page.window.addEventListener("prism:connection", (e) => states.push(e.detail.state));
+  assert.equal(html.getAttribute("data-prism-connection"), "online");
+  assert.ok(banner.hidden);
+  // Each failure waits about twice as long (±25 %), up to 30 s.
+  const delays = [];
+  for (let i = 0; i < 9; i++) {
+    page.sockets.at(-1).onclose();
+    delays.push(page.timers.at(-1).ms);
+    page.timers.at(-1).fn();
+  }
+  const base = [500, 1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000];
+  delays.forEach((d, i) => assert.ok(d >= base[i] * 0.75 && d <= base[i] * 1.25, `${i}: ${d}`));
+  assert.equal(html.getAttribute("data-prism-connection"), "reconnecting");
+  assert.ok(!banner.hidden, "the banner shows while reconnecting");
+  assert.deepEqual(states, ["reconnecting"]);
+  // Connected again: the counter restarts, the banner hides, the first
+  // paint's style rules go once the live tree replaced it.
+  const style = page.document.createElement("style");
+  style.setAttribute("id", "prism-ssr");
+  page.document.head.appendChild(style);
+  const ws = page.sockets.at(-1);
+  ws.open();
+  ws.deliver({ t: "reset", p: [create(1, "text"), textOp(1, "new"), root(1)] });
   assert.equal(page.mount.textContent, "new");
   assert.equal(page.mount.children.length, 1);
+  assert.equal(page.document.getElementById("prism-ssr"), null);
+  assert.ok(banner.hidden);
+  assert.deepEqual(states, ["reconnecting", "online"]);
+  ws.onclose();
+  assert.ok(page.timers.at(-1).ms <= 625, "back to the shortest delay");
+});
+
+test("failed reconnects fetch the page and reload when the host refuses it", async () => {
+  for (const [answer, reloads] of [
+    [{ status: 401, type: "basic" }, true],
+    [{ status: 403, type: "basic" }, true],
+    [{ status: 0, type: "opaqueredirect" }, true],
+    [{ status: 200, type: "basic" }, false],
+  ]) {
+    const page = live([create(1, "text"), root(1)], { fetch: async () => answer, path: "/orders" });
+    page.ws.onclose();
+    assert.equal(page.window.fetches.length, 0, "one failure is a blip");
+    page.timers.at(-1).fn();
+    page.sockets.at(-1).onclose();
+    assert.equal(page.window.fetches.length, 1);
+    const { url, init } = page.window.fetches[0];
+    assert.equal(url, "http://localhost:3000/orders");
+    assert.equal(init.redirect, "manual");
+    await new Promise((r) => setImmediate(r));
+    assert.equal(!!page.window.reloaded, reloads, JSON.stringify(answer));
+  }
+  // The server unreachable: offline, still retrying.
+  const page = live(null, { fetch: async () => { throw new Error("network"); } });
+  page.ws.onclose();
+  page.timers.at(-1).fn();
+  page.sockets.at(-1).onclose();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(page.document.documentElement.getAttribute("data-prism-connection"), "offline");
+  assert.ok(!page.window.reloaded);
+});
+
+test("a session the server refused probes at once", async () => {
+  const page = live(null, { fetch: async () => ({ status: 200, type: "basic" }) });
+  page.ws.deliver({ t: "refused", status: 403 });
+  page.ws.onclose();
+  assert.equal(page.window.fetches.length, 1);
+});
+
+test("an idle session waits for the user before reconnecting", () => {
+  const page = live([create(1, "text"), root(1)]);
+  page.ws.deliver({ t: "idle" });
+  const timers = page.timers.length;
+  page.ws.onclose();
+  assert.equal(page.timers.length, timers, "no retry scheduled");
+  assert.equal(page.document.documentElement.getAttribute("data-prism-connection"), "idle");
+  assert.ok(page.document.getElementById("prism-connection").hidden);
+  page.fire("pointerdown");
+  assert.equal(page.sockets.length, 2);
+});
+
+test("the socket carries the page's query", () => {
+  const page = live(null, { path: "/orders", search: "?page=2&q=a b" });
+  const url = new URL(page.ws.url);
+  assert.equal(url.searchParams.get("search"), "?page=2&q=a b");
+});
+
+test("open_url stays in the tab for this origin, opens a new one elsewhere", () => {
+  const page = live([create(1, "text"), root(1)]);
+  const open = (url, target) => page.ws.deliver({ t: "device", id: 1, call: "open_url", url, target });
+  open("/logout");
+  assert.equal(page.window.assigned, "/logout");
+  open("http://localhost:3000/reports/1.pdf");
+  assert.equal(page.window.assigned, "http://localhost:3000/reports/1.pdf");
+  assert.equal(page.window.opened, undefined);
+  open("https://example.com/");
+  assert.deepEqual(page.window.opened, { url: "https://example.com/", target: "_blank", features: "noopener" });
+  // An explicit target wins.
+  page.window.opened = undefined;
+  open("/help", "new");
+  assert.equal(page.window.opened.url, "/help");
+  open("https://example.com/sign-out", "same");
+  assert.equal(page.window.assigned, "https://example.com/sign-out");
 });
 
 // --- Shapes ----------------------------------------------------------------------

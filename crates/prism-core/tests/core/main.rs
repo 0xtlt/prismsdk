@@ -5,6 +5,7 @@ mod background;
 mod i18n;
 mod motion;
 mod reconcile;
+mod request;
 mod router;
 mod storage;
 mod virtual_list;

@@ -30,6 +30,10 @@ axum = { version = "0.8", optional = true, default-features = false, features = 
 tokio = { version = "1", optional = true, features = ["rt-multi-thread", "net", "sync"] }
 futures-util = { version = "0.3", optional = true, default-features = false, features = ["sink"] }
 
+[[example]]
+name = "embed"
+required-features = ["server"]
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

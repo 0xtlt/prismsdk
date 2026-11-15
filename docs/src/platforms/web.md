@@ -34,6 +34,56 @@ Other servers (actix, hyper, …): `prism-web` without default features has no s
 
 `prism build web` also writes `public/` (hashed files plus `manifest.json`). Upload it to a CDN and set `PRISM_ASSET_URL=https://cdn.example.com`, or let the CDN cache `/_prism/*` and `/assets/*` from the server. Settings: `PRISM_HOST`, `PRISM_PORT`, `PRISM_BASE_PATH`, `PRISM_ASSET_URL`, `PRISM_DATA_DIR` (or `WebApp::base_path` / `asset_url` / `data_dir`).
 
+## Embedding in an existing server
+
+`crates/prism-web/examples/embed.rs` is a complete host: its own sign-in, a strict CSP, Prism nested at `/app` (`cargo run -p prism-web --example embed`). `crates/prism-web/tests/axum_host.rs` tests the same setup over real sockets.
+
+**Your middleware runs first.** It can refuse a request, and attach two request extensions that Prism reads from the page request and from every socket handshake. A reconnect is a new handshake, so the middleware runs again and the session gets a fresh context.
+
+```rust
+async fn host_layer(mut req: Request, next: Next) -> Response {
+    let Some(user) = users::from_cookie(req.headers()).await else {
+        return Redirect::to("/signin").into_response();       // the socket: a 401
+    };
+    let nonce = prism_web::CspNonce::random();
+    req.extensions_mut().insert(prism_web::RequestContext::new(user));   // cx.request_context::<User>()
+    req.extensions_mut().insert(nonce.clone());                          // on Prism's <style>/<script>/<link>
+    let mut res = next.run(req).await;
+    res.headers_mut().insert("content-security-policy", csp(&nonce).parse().unwrap());
+    res
+}
+
+let app = axum::Router::new()
+    .route("/signout", get(sign_out))
+    .nest("/app", prism.base_path("/app").router().layer(middleware::from_fn(host_layer)));
+```
+
+Without Axum, pass the context yourself with `WebApp::handle_with(&req, context)` and `WebApp::connect_with(uri, headers, context, send)`, or put it in the `http::Request` extensions and call `handle` / `connect_request`.
+
+**What the app sees.** On the web, `cx.request()` is the page request during the first render, then the socket handshake in the live session. It gives `kind`, `url`, `origin`, `headers`, `header(name)`, `cookie(name)`, `path()` and `context::<T>()`. `cx.request_context::<T>()` returns the host's value, `cx.page_origin()` returns `https://example.com`, and `cx.page_url()` returns the full URL as the browser shows it, query included. The origin comes from the handshake's `Origin` header, or from `X-Forwarded-Proto` / `X-Forwarded-Host` / `Forwarded` / `Host`. All of these return `None` in native apps, which have no request and no address.
+
+**The page's `<head>`.** Use `WebApp::favicon`, `apple_touch_icon`, `theme_color`, `meta(name, content)`, `stylesheet(url)`, `preload_font(url)`, `script(url)`, `inline_script(js)`, `style(css)` (`@font-face`, your own rules), `body_background(color)`, `font_family(family)` and `head(raw_html)`. A URL without a leading `/` or a scheme names an app asset, so `"icon.png"` becomes `/assets/icon.<hash>.png` and is cached as immutable. Stylesheets come after Prism's own. With `Application`, configure the same calls in `.web(|w| w.favicon("icon.png").theme_color("#0a84ff"))`.
+
+**Content-Security-Policy.** The first paint has no `style="…"` attribute. Each distinct node style becomes one rule in `<style id="prism-ssr">`, and nodes carry `data-ps="N"`. The client removes that block once the live tree replaces the page. Prism's own tags and the `<head>` additions get the nonce. After that, the client sets styles through the CSSOM (`el.style`), which CSP allows. A Prism page needs:
+
+```
+default-src 'self';
+style-src 'self' 'nonce-<nonce>';      # + the CDN if PRISM_ASSET_URL is set
+script-src 'self' 'nonce-<nonce>';
+img-src 'self' data:;                   # + remote picture hosts
+connect-src 'self';                     # the socket (same origin)
+```
+
+Without a nonce, the page's `<style>` blocks need `'unsafe-inline'` (or their hashes). Under a strict policy that lacks both, the page still works: the first paint is unstyled until the client connects. The sign-in callback page (`/_prism/auth/callback`) takes the nonce too. `client.js` uses no `eval`, inline handlers or `style` attributes.
+
+**Status codes.** An unknown path renders the router's not-found screen (Prism's or `.not_found(...)`) with `404 Not Found`, so crawlers, monitoring and the host see it. An app without a router answers `200` on every path.
+
+**Leaving the app.** `cx.open_url(url)` loads a URL of the page's own origin in the same tab, such as the host's sign-out page or a download. Other origins open in a new tab. `cx.open_url_in(url, UrlTarget::SameTab | NewTab | Auto)` chooses explicitly. Natively, the system opens the URL whatever the target.
+
+**Socket origin and limits.** A handshake whose `Origin` is not the host it was sent to gets `403`, because browsers send cookies with cross-site WebSocket handshakes. `WebApp::allow_origins(["https://admin.example.com"])` adds origins, and `"*"` allows any. Behind a proxy that rewrites `Host` without setting `X-Forwarded-Host`, list your public origin there. `WebApp::max_sessions(n)` refuses handshakes beyond `n` live sessions with `503`, since each session is a thread with its own runtime. `WebApp::idle_timeout(d)` ends a session that hears nothing from its page for `d`. The page then reconnects at the next pointer, key or focus event. `WebApp::accept_socket(&headers)` runs both checks: the Axum router calls it before upgrading, and other servers should too. A refused `connect` ends at once.
+
+**Reconnecting.** When the socket closes, the client retries after 0.5 s, then doubles the delay up to 30 s, with ±25 % jitter. It retries at once when the browser comes back online or the tab is shown again. `<html data-prism-connection>` holds `connecting`, `online`, `reconnecting`, `offline` or `idle`. While it is `reconnecting` or `offline`, `prism.css` dims the stale page, makes it inert and shows `#prism-connection` ("Reconnecting…" in the app's language; override it with the `prism.reconnecting` translation key). Restyle the banner or hide it with your own CSS, and listen for `prism:connection` events on `window` (`detail.state`, `detail.attempt`). From the second failed attempt on, the client fetches the page. A `401`, a `403` or a redirect means the host signed the user out, so the client reloads the page and the host's own answer shows. It reloads at most once every 30 s.
+
 ## Docker (Linux)
 
 ```sh

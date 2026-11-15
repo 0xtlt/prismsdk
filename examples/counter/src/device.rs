@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use prism::prelude::*;
 use prism::ui::{self, Theme};
+use prism::{Div, Text, UrlTarget};
 
 use crate::strings;
 
@@ -260,5 +261,48 @@ impl Render for DeviceDemo {
                     }),
             )
             .when_some(self.status.clone(), |d, s| d.child(muted(s)))
+            .child(ui::divider())
+            // The page: its address (web only) and leaving it.
+            .child(page_section(cx, &muted))
     }
+}
+
+/// Where the page was opened (`cx.page_origin()`, `cx.request()`), and
+/// `open_url_in`: this tab or a new one. Natively there is no address.
+fn page_section(cx: &mut Context<DeviceDemo>, muted: &dyn Fn(String) -> Text) -> Div {
+    let section = div()
+        .flex_col()
+        .gap(6.)
+        .child(text(strings::page_title(cx)).semibold());
+    let section = match (cx.page_origin(), cx.request()) {
+        (Some(origin), Some(request)) => section
+            .child(muted(strings::page_origin(cx, origin)))
+            .child(muted(strings::page_path(cx, request.path()))),
+        _ => section.child(muted(strings::page_native(cx))),
+    };
+    let url = cx.page_url().map(str::to_string);
+    section.child(
+        div()
+            .flex_row()
+            .flex_wrap()
+            .gap(8.)
+            .when_some(url, |d, url| {
+                d.child(
+                    ui::button(strings::page_reload(cx))
+                        .small()
+                        .ghost()
+                        .on_click(cx.listener(move |_, _, cx| {
+                            cx.open_url_in(url.clone(), UrlTarget::SameTab)
+                        })),
+                )
+            })
+            .child(
+                ui::button(strings::page_new_tab(cx))
+                    .small()
+                    .ghost()
+                    .on_click(cx.listener(|_, _, cx| {
+                        cx.open_url_in("https://www.rust-lang.org", UrlTarget::NewTab)
+                    })),
+            ),
+    )
 }

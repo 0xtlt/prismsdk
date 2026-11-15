@@ -10,11 +10,16 @@
 //! //  .nest("/app", prism.base_path("/app").router())
 //! axum::serve(listener, app).await?;
 //! ```
+//!
+//! Your middleware runs before Prism's handlers: it can refuse a request,
+//! attach a [`RequestContext`](crate::RequestContext) (the signed-in user)
+//! and a [`CspNonce`](crate::CspNonce) as request extensions. Both are read
+//! from the page request and from every socket handshake.
 
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Request, State, WebSocketUpgrade, ws::Message};
-use axum::http::{HeaderMap, Uri};
+use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use futures_util::{SinkExt, StreamExt};
@@ -45,16 +50,16 @@ async fn page(State(app): State<WebApp>, req: Request) -> Response {
     }
 }
 
-async fn socket(
-    State(app): State<WebApp>,
-    ws: WebSocketUpgrade,
-    uri: Uri,
-    headers: HeaderMap,
-) -> Response {
+async fn socket(State(app): State<WebApp>, parts: Parts, ws: WebSocketUpgrade) -> Response {
+    // A foreign origin (403) or too many sessions (503): no upgrade.
+    if let Err(status) = app.accept_socket(&parts.headers) {
+        return status.into_response();
+    }
+    let req = http::Request::from_parts(parts, ());
     ws.on_upgrade(move |socket| async move {
         let (mut sink, mut stream) = socket.split();
         let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let session = app.connect(&uri, &headers, move |text| out_tx.send(text).is_ok());
+        let session = app.connect_request(&req, move |text| out_tx.send(text).is_ok());
         let writer = tokio::spawn(async move {
             while let Some(text) = out_rx.recv().await {
                 if sink.send(Message::Text(text.into())).await.is_err() {

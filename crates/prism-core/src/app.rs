@@ -355,6 +355,14 @@ impl App {
         self.navigator.map(|r| self.read(&r).current_path())
     }
 
+    /// Whether the app's router shows its not-found screen (no route matches
+    /// the visible path): the web answers the page with `404`. `false`
+    /// without a router.
+    pub fn shows_not_found(&self) -> bool {
+        self.navigator
+            .is_some_and(|r| self.contains(r.id()) && self.read(&r).shows_not_found())
+    }
+
     /// The path the app was opened with (request URL on the web).
     pub fn initial_path(&self) -> &str {
         &self.initial_path

@@ -342,7 +342,7 @@ pub(crate) fn forget_redirect(id: u64) {
 }
 
 /// `GET <base>/_prism/auth/callback?…`: hands the URL to its session.
-pub(crate) fn redirect_page(query: &str) -> String {
+pub(crate) fn redirect_page(query: &str, nonce: Option<&crate::CspNonce>) -> String {
     let state = prism_core_query(query).remove("state").unwrap_or_default();
     let found = waiting().lock().unwrap().remove(&state);
     let delivered = found.is_some_and(|(tx, id)| {
@@ -357,10 +357,13 @@ pub(crate) fn redirect_page(query: &str) -> String {
     } else {
         "This sign-in has expired. Close this window and try again."
     };
+    // No `style` attribute, and the host's nonce: a strict CSP allows it.
+    let n = crate::host::nonce_attr(nonce);
     format!(
         "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width\"><title>Sign-in</title>\
-<p style=\"font:16px system-ui;margin:40px;text-align:center\">{message}</p>\
-<script>if (window.opener) window.close();</script>"
+<style{n}>p{{font:16px system-ui;margin:40px;text-align:center}}</style>\
+<p>{message}</p>\
+<script{n}>if (window.opener) window.close();</script>"
     )
 }
 

@@ -276,6 +276,8 @@ mod bridge {
                     prism_device_share(ptr(&text), ptr(&url), ptr(&files))
                 }
                 DeviceCall::OpenUrl(u) => prism_device_open_url(c(&u).as_ptr()),
+                // No tabs here: the system opens it (Safari, Mail, another app).
+                DeviceCall::OpenUrlIn(u, _) => prism_device_open_url(c(&u).as_ptr()),
                 DeviceCall::SecureGet {
                     key,
                     prompt,

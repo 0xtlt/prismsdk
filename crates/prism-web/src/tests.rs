@@ -1269,10 +1269,10 @@ fn pages_and_files_by_path() {
     let body = String::from_utf8(page.body().clone()).unwrap();
     assert!(body.starts_with("<!doctype html>"));
     assert!(body.contains(r#"<main id="prism-root"><div data-pid="1""#));
-    assert!(
-        body.contains(r#"<html lang="en-US" dir="ltr" style="color-scheme: light dark">"#),
-        "{body}"
-    );
+    // No `style` attribute anywhere: a strict CSP allows the page.
+    assert!(body.contains(r#"<html lang="en-US" dir="ltr">"#), "{body}");
+    assert!(body.contains(":root{color-scheme:light dark}"), "{body}");
+    assert!(!body.contains("style="), "{body}");
     assert!(body.contains("<title>Test</title>"));
     assert_eq!(get("/favicon.ico").status(), StatusCode::NOT_FOUND);
     assert_eq!(get("/ws").status(), StatusCode::NOT_FOUND);

@@ -39,6 +39,18 @@ pub(crate) struct Inner {
     /// The VAPID public key (base64url) browsers subscribe with: Web Push is
     /// available when set.
     pub vapid_public_key: Option<String>,
+
+    // --- Embedding in a host server: the page's head, origins, session limits ---
+    /// Tags and CSS the app adds to its pages.
+    pub head: crate::host::Head,
+    /// Socket origins accepted besides the page's own (`*`: any).
+    pub allowed_origins: Vec<String>,
+    /// At most this many live sessions at once.
+    pub max_sessions: Option<usize>,
+    /// A session that hears nothing from its page for this long ends.
+    pub idle_timeout: Option<std::time::Duration>,
+    /// Live sessions now.
+    pub sessions: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl WebApp {
@@ -67,6 +79,11 @@ impl WebApp {
                     .into(),
                 assets,
                 vapid_public_key: env("PRISM_VAPID_PUBLIC_KEY"),
+                head: Default::default(),
+                allowed_origins: Vec::new(),
+                max_sessions: None,
+                idle_timeout: None,
+                sessions: Default::default(),
             }),
         };
         let app = match env("PRISM_BASE_PATH") {
@@ -170,7 +187,24 @@ impl WebApp {
     }
 
     /// Answers a GET or HEAD: a page, a static file or an upload.
+    ///
+    /// The request's extensions may carry a [`RequestContext`] (the app reads
+    /// it with `cx.request_context::<T>()`) and a [`CspNonce`] (put on the
+    /// page's `<style>`, `<link>` and `<script>` tags). An unknown path
+    /// renders the router's not-found screen with status `404`.
+    ///
+    /// [`RequestContext`]: crate::RequestContext
+    /// [`CspNonce`]: crate::CspNonce
     pub fn handle<B>(&self, req: &Request<B>) -> Response<Vec<u8>> {
+        let context = req.extensions().get::<crate::RequestContext>().cloned();
+        self.respond(req, context)
+    }
+
+    fn respond<B>(
+        &self,
+        req: &Request<B>,
+        context: Option<crate::RequestContext>,
+    ) -> Response<Vec<u8>> {
         if req.method() != Method::GET && req.method() != Method::HEAD {
             return status(StatusCode::METHOD_NOT_ALLOWED);
         }
@@ -179,7 +213,11 @@ impl WebApp {
         let mut response = if path == "/_prism/auth/callback" {
             // A sign-in provider's redirect: hand it to the session that asked.
             let mut r = Response::new(
-                crate::security::redirect_page(req.uri().query().unwrap_or("")).into_bytes(),
+                crate::security::redirect_page(
+                    req.uri().query().unwrap_or(""),
+                    req.extensions().get::<crate::CspNonce>(),
+                )
+                .into_bytes(),
             );
             set(&mut r, header::CONTENT_TYPE, "text/html; charset=utf-8");
             set(&mut r, header::CACHE_CONTROL, "no-store");
@@ -208,7 +246,7 @@ impl WebApp {
         } else if path == "/favicon.ico" || path == "/ws" {
             status(StatusCode::NOT_FOUND)
         } else {
-            self.page_response(&path, headers)
+            self.page_response(&path, req, context)
         };
         if req.method() == Method::HEAD {
             response.body_mut().clear();
@@ -244,7 +282,22 @@ impl WebApp {
         }
     }
 
-    fn page_response(&self, path: &str, headers: &HeaderMap) -> Response<Vec<u8>> {
+    fn page_response<B>(
+        &self,
+        path: &str,
+        req: &Request<B>,
+        context: Option<crate::RequestContext>,
+    ) -> Response<Vec<u8>> {
+        let headers = req.headers();
+        let origin = crate::host::page_origin(headers, Some(req.uri()));
+        let request = crate::host::web_request(
+            prism_core::RequestKind::Page,
+            self.page_url(&origin, self.app_path(req.uri().path()), req.uri().query()),
+            origin,
+            headers,
+            context,
+        );
+        let nonce = req.extensions().get::<crate::CspNonce>();
         let cookies = cookie_header(headers);
         let (sid, new) = match cookies.and_then(session_id) {
             Some(sid) => (sid, false),
@@ -267,7 +320,11 @@ impl WebApp {
             viewport,
             device: Some(crate::device_info::from_request(user_agent, cookies)),
         };
-        let mut r = Response::new(self.page(path, visitor).into_bytes());
+        let (page, not_found) = self.page(path, visitor, request, nonce);
+        let mut r = Response::new(page.into_bytes());
+        if not_found {
+            *r.status_mut() = StatusCode::NOT_FOUND;
+        }
         set(&mut r, header::CONTENT_TYPE, "text/html; charset=utf-8");
         // Rendered for this browser: never stored by a CDN or the browser.
         set(&mut r, header::CACHE_CONTROL, "private, no-store");
@@ -326,35 +383,77 @@ impl WebApp {
         format!("{}/files/{stored}", self.inner.base)
     }
 
-    /// Server-side render of a fresh session on `path`, as a full HTML document.
-    fn page(&self, path: &str, visitor: Visitor) -> String {
+    /// The app's init, with the session's request set first (`cx.request()`).
+    pub(crate) fn init_with(&self, request: prism_core::WebRequest) -> AppInit {
+        let init = self.inner.init.clone();
+        Arc::new(move |app: &mut prism_core::App| {
+            app.set_request(request.clone());
+            init(app)
+        })
+    }
+
+    /// The URL the browser shows for `app_path` (inside the app) and `query`.
+    pub(crate) fn page_url(&self, origin: &str, app_path: &str, query: Option<&str>) -> String {
+        let base = &self.inner.base;
+        let path = if app_path == "/" && !base.is_empty() {
+            base.clone()
+        } else {
+            format!("{base}{app_path}")
+        };
+        match query.map(|q| q.trim_start_matches('?')) {
+            Some(q) if !q.is_empty() => format!("{origin}{path}?{q}"),
+            _ => format!("{origin}{path}"),
+        }
+    }
+
+    /// Server-side render of a fresh session on `path`, as a full HTML
+    /// document without `style` attributes (a strict CSP allows it), and
+    /// whether it shows the not-found screen.
+    fn page(
+        &self,
+        path: &str,
+        visitor: Visitor,
+        request: prism_core::WebRequest,
+        nonce: Option<&crate::CspNonce>,
+    ) -> (String, bool) {
         let config = &self.inner.config;
         let mut runtime =
-            Runtime::with_options(&self.inner.init, self.options(visitor, path.into()));
+            Runtime::with_options(&self.init_with(request), self.options(visitor, path.into()));
         let mut html = HtmlBackend::default();
         html.asset_urls = Some(self.asset_urls());
         html.apply(&runtime.render());
+        let not_found = runtime.app.shows_not_found();
         let title = match html.screen_title() {
             Some(screen) if screen != config.title => format!("{screen} · {}", config.title),
             _ => config.title.clone(),
         };
         let prefix = self.static_prefix();
-        format!(
+        let (body, ssr_css) = html.to_html_and_css();
+        let head = &self.inner.head;
+        let page = format!(
             r#"<!doctype html>
-<html lang="{lang}" dir="{dir}" style="color-scheme: {scheme}">
+<html lang="{lang}" dir="{dir}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
-<link rel="stylesheet" href="{prefix}/{css}">
+<link rel="stylesheet" href="{prefix}/{css}"{n}>
+{app_head}<style id="prism-page"{n}>:root{{color-scheme:{scheme}}}
+{app_css}</style>
+<style id="prism-ssr"{n}>{ssr_css}</style>
 </head>
 <body>
 <main id="prism-root">{body}</main>
 <div id="prism-island" role="status" aria-live="polite"></div>
 <div id="prism-toasts" role="status" aria-live="polite"></div>
-<script src="{prefix}/{js}" data-base="{base}"></script>
+<div id="prism-connection" role="status" aria-live="polite" hidden>{reconnecting}</div>
+<script src="{prefix}/{js}" data-base="{base}"{n}></script>
 </body>
 </html>"#,
+            n = crate::host::nonce_attr(nonce),
+            app_head = head.render(nonce, &|src: &str| self.picture_url(src)),
+            app_css = crate::host::css_text(&head.css),
+            reconnecting = html::escape(&crate::host::reconnecting_text(&runtime.app)),
             title = html::escape(&title),
             scheme = html.color_scheme(),
             lang = html::escape(&html.env.lang),
@@ -363,12 +462,12 @@ impl WebApp {
             } else {
                 "ltr"
             },
-            body = html.to_html(),
             prefix = html::escape(prefix),
             css = self.inner.assets.css(),
             js = self.inner.assets.client(),
             base = html::escape(&self.inner.base),
-        )
+        );
+        (page, not_found)
     }
 
     /// What a socket request tells about the browser: session cookie,
@@ -402,6 +501,164 @@ impl WebApp {
             )),
         };
         (sid, path, visitor)
+    }
+}
+
+/// Embedding in a host server: the page's `<head>`, origins, session limits.
+impl WebApp {
+    fn add_head(self, item: crate::host::HeadItem) -> Self {
+        self.configure(|i| i.head.items.push(item))
+    }
+
+    /// Adds raw HTML to every page's `<head>`, as it is (trusted markup).
+    /// Under a nonce-based CSP, prefer [`style`](WebApp::style) and
+    /// [`inline_script`](WebApp::inline_script), which get the nonce.
+    pub fn head(self, html: impl Into<String>) -> Self {
+        self.add_head(crate::host::HeadItem::Raw(html.into()))
+    }
+
+    /// Adds `<meta name="…" content="…">` (`apple-mobile-web-app-title`,
+    /// `description`…).
+    pub fn meta(self, name: impl Into<String>, content: impl Into<String>) -> Self {
+        self.add_head(crate::host::HeadItem::Meta(name.into(), content.into()))
+    }
+
+    /// The browser's UI color (`<meta name="theme-color">`).
+    pub fn theme_color(self, color: impl Into<String>) -> Self {
+        self.meta("theme-color", color)
+    }
+
+    /// The page's icon. A name without a leading `/` or a scheme is an app
+    /// asset (`icon.png` → `/assets/icon.<hash>.png`, maybe on the CDN).
+    pub fn favicon(self, url: impl Into<String>) -> Self {
+        let url = url.into();
+        let ty = crate::host::icon_type(&url);
+        self.add_head(crate::host::HeadItem::Link("icon", url, ty))
+    }
+
+    /// The home-screen icon on iOS (`<link rel="apple-touch-icon">`); app
+    /// assets like [`favicon`](WebApp::favicon).
+    pub fn apple_touch_icon(self, url: impl Into<String>) -> Self {
+        self.add_head(crate::host::HeadItem::Link(
+            "apple-touch-icon",
+            url.into(),
+            "",
+        ))
+    }
+
+    /// Links a stylesheet after Prism's (its rules win over Prism's base
+    /// styles; node styles set in Rust still win). App assets like
+    /// [`favicon`](WebApp::favicon): `app.css` is served hashed and immutable.
+    pub fn stylesheet(self, url: impl Into<String>) -> Self {
+        self.add_head(crate::host::HeadItem::Link("stylesheet", url.into(), ""))
+    }
+
+    /// Preloads a web font (`<link rel="preload" as="font" crossorigin>`);
+    /// declare its `@font-face` with [`style`](WebApp::style) or a
+    /// [`stylesheet`](WebApp::stylesheet).
+    pub fn preload_font(self, url: impl Into<String>) -> Self {
+        let url = url.into();
+        let ty = crate::host::font_type(&url);
+        self.add_head(crate::host::HeadItem::Link("preload", url, ty))
+    }
+
+    /// Loads a script (`<script src defer>`, with the CSP nonce); app assets
+    /// like [`favicon`](WebApp::favicon).
+    pub fn script(self, url: impl Into<String>) -> Self {
+        self.add_head(crate::host::HeadItem::Script(url.into()))
+    }
+
+    /// An inline `<script>` in the head (with the CSP nonce).
+    pub fn inline_script(self, js: impl Into<String>) -> Self {
+        self.add_head(crate::host::HeadItem::InlineScript(js.into()))
+    }
+
+    /// CSS rules for every page (`@font-face`, the app's own classes), in
+    /// the page's `<style id="prism-page">` (with the CSP nonce).
+    pub fn style(self, css: impl AsRef<str>) -> Self {
+        let css = css.as_ref().to_string();
+        self.configure(|i| {
+            i.head.css.push_str(&css);
+            i.head.css.push('\n');
+        })
+    }
+
+    /// The page's background behind the app (`body`; `Canvas` by default).
+    pub fn body_background(self, color: impl AsRef<str>) -> Self {
+        let rule = format!("body{{background:{}}}", color.as_ref());
+        self.style(rule)
+    }
+
+    /// The page's font (`body`; text without a font of its own inherits it).
+    pub fn font_family(self, family: impl AsRef<str>) -> Self {
+        let rule = format!("body{{font-family:{}}}", family.as_ref());
+        self.style(rule)
+    }
+
+    /// Socket origins accepted besides the page's own
+    /// (`https://admin.example.com`; `*` accepts any). By default a
+    /// handshake whose `Origin` is not the host it was sent to is refused
+    /// (`403`): browsers send cookies with cross-site handshakes. Behind a
+    /// proxy that rewrites `Host` without `X-Forwarded-Host`, list the
+    /// public origin here.
+    pub fn allow_origins<I, S>(self, origins: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let origins: Vec<String> = origins.into_iter().map(Into::into).collect();
+        self.configure(|i| i.allowed_origins.extend(origins))
+    }
+
+    /// At most `n` live sessions at once (each is a thread with its own
+    /// runtime): further handshakes are refused with `503`, and the pages
+    /// retry with back-off.
+    pub fn max_sessions(self, n: usize) -> Self {
+        self.configure(|i| i.max_sessions = Some(n))
+    }
+
+    /// Ends a session that heard nothing from its page (no event, resize or
+    /// visibility change) for `timeout`. The page keeps its content and
+    /// reconnects (to a fresh session) at the next interaction.
+    pub fn idle_timeout(self, timeout: std::time::Duration) -> Self {
+        self.configure(|i| i.idle_timeout = Some(timeout))
+    }
+
+    /// Live sessions right now.
+    pub fn session_count(&self) -> usize {
+        self.inner
+            .sessions
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Whether a socket handshake may open a session: its `Origin` (`403`
+    /// when foreign, see [`allow_origins`](WebApp::allow_origins)) and the
+    /// session limit (`503`, see [`max_sessions`](WebApp::max_sessions)).
+    /// The Axum [`router`](WebApp::router) checks it before upgrading;
+    /// other servers should too (a refused [`connect`](WebApp::connect)
+    /// ends at once).
+    pub fn accept_socket(&self, headers: &HeaderMap) -> Result<(), StatusCode> {
+        if !crate::host::origin_allowed(headers, &self.inner.allowed_origins) {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        if self
+            .inner
+            .max_sessions
+            .is_some_and(|max| self.session_count() >= max)
+        {
+            return Err(StatusCode::SERVICE_UNAVAILABLE);
+        }
+        Ok(())
+    }
+
+    /// [`handle`](WebApp::handle) with the host's context for the app
+    /// (`cx.request_context::<T>()`), instead of a request extension.
+    pub fn handle_with<B>(
+        &self,
+        req: &Request<B>,
+        context: crate::RequestContext,
+    ) -> Response<Vec<u8>> {
+        self.respond(req, Some(context))
     }
 }
 
