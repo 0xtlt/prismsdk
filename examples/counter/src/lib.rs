@@ -19,6 +19,7 @@ mod decor;
 mod device;
 mod focus;
 mod forms;
+mod interact;
 mod layout;
 mod menus;
 mod push;
@@ -571,6 +572,7 @@ struct Gallery {
     decor: Entity<decor::Decor>,
     forms: Entity<forms::Forms>,
     typography: Entity<typography::Typography>,
+    interact: Entity<interact::Interact>,
     quote: Option<Result<String, String>>,
     loading: bool,
     wifi: bool,
@@ -591,6 +593,7 @@ impl Gallery {
             decor: cx.new(|_| decor::Decor::default()),
             forms: cx.new(|_| forms::Forms::default()),
             typography: cx.new(|_| typography::Typography::default()),
+            interact: cx.new(|_| interact::Interact::default()),
             quote: None,
             loading: false,
             wifi: false,
@@ -794,6 +797,7 @@ impl Render for Gallery {
             .child(self.forms)
             .child(report::card())
             .child(self.typography)
+            .child(self.interact)
             .child(charts)
             .child(layout::card(
                 cx,
@@ -993,8 +997,6 @@ impl Render for Gallery {
                     ),
             ),
         )
-        // Over the scroll view, at the bottom of the screen.
-        .child(ui::toaster())
     }
 }
 

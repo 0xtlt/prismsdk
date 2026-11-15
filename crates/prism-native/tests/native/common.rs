@@ -64,6 +64,12 @@ pub struct Fake {
     pub sticky: HashMap<NodeId, Option<(NodeId, Sticky)>>,
     /// The interaction states each view was asked to report.
     pub interactions: HashMap<NodeId, prism_core::Interactions>,
+    // Pointer, keys, focus, layers (#17, #25).
+    pub pointer: HashMap<NodeId, u8>,
+    pub keys: HashMap<NodeId, (bool, bool)>,
+    pub focused: Vec<NodeId>,
+    pub revealed: Vec<NodeId>,
+    pub layers: Vec<NodeId>,
 }
 
 impl Fake {
@@ -264,6 +270,31 @@ impl Widgets for Fake {
     }
     fn set_interactions(&mut self, v: &NodeId, states: prism_core::Interactions) {
         self.interactions.insert(*v, states);
+    }
+    fn set_pointer_events(&mut self, v: &NodeId, mask: u8) {
+        self.pointer.insert(*v, mask);
+    }
+    fn set_key_events(&mut self, v: &NodeId, local: bool, global: bool) {
+        self.keys.insert(*v, (local, global));
+    }
+    fn focus(&mut self, v: &NodeId) {
+        self.focused.push(*v);
+    }
+    fn scroll_into_view(&mut self, v: &NodeId) {
+        self.revealed.push(*v);
+    }
+    fn set_layers(&mut self, layers: &[NodeId]) {
+        self.layers = layers.to_vec();
+    }
+    /// Overlays get a 300 x 400 area at (10, 20).
+    fn overlay_viewport(&mut self, _: &NodeId, _: &NodeId) -> Viewport {
+        Viewport {
+            x: 10.,
+            y: 20.,
+            width: 300.,
+            height: 400.,
+            insets: Insets::default(),
+        }
     }
 }
 

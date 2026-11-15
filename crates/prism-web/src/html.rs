@@ -28,6 +28,8 @@ struct HtmlNode {
     states: String,
     /// Descendants' `group_*` refinements follow it (`data-group`).
     group: bool,
+    /// `Style::inert`: the `inert` attribute.
+    inert: bool,
 }
 
 /// Turns a picture source (`logo.png`, `https://…`) into its URL.
@@ -96,6 +98,7 @@ impl Backend for HtmlBackend {
                         n.group = style.group;
                         n.states =
                             crate::css::states_css(n.kind.unwrap_or(NodeKind::View), *id, style);
+                        n.inert = style.inert;
                     }
                 }
                 Patch::SetText { id, text } => self.with(*id, |n| n.text = text.clone()),
@@ -120,6 +123,12 @@ impl Backend for HtmlBackend {
                 Patch::Destroy { id } => {
                     self.nodes.remove(id);
                 }
+                // Applied by the client once it runs.
+                Patch::SetPointerEvents { .. }
+                | Patch::SetKeyEvents { .. }
+                | Patch::Focus { .. }
+                | Patch::ScrollIntoView { .. }
+                | Patch::SetLayers { .. } => {}
             }
         }
     }
@@ -142,6 +151,7 @@ pub fn a11y_attrs(kind: NodeKind, a: &Accessibility) -> String {
         NodeKind::Toggle => Some(Role::Switch),
         NodeKind::Slider => Some(Role::Slider),
         NodeKind::Picker => Some(Role::ComboBox),
+        NodeKind::Checkbox => Some(Role::Checkbox),
         _ => None,
     };
     if let Some(role) = a.role.filter(|r| *r != Role::Text && Some(*r) != native) {
@@ -156,7 +166,9 @@ pub fn a11y_attrs(kind: NodeKind, a: &Accessibility) -> String {
     if let Some(hint) = &a.hint {
         let _ = write!(out, r#" aria-description="{}""#, escape(hint));
     }
-    if kind != NodeKind::Toggle && matches!(a.role, Some(Role::Switch | Role::Checkbox)) {
+    if !matches!(kind, NodeKind::Toggle | NodeKind::Checkbox)
+        && matches!(a.role, Some(Role::Switch | Role::Checkbox))
+    {
         let _ = write!(out, r#" aria-checked="{}""#, a.checked.unwrap_or(false));
     }
     if let (Some(Role::Button), Some(pressed)) = (a.role, a.checked) {
@@ -178,6 +190,7 @@ pub fn a11y_attrs(kind: NodeKind, a: &Accessibility) -> String {
             NodeKind::Button
                 | NodeKind::TextInput
                 | NodeKind::Toggle
+                | NodeKind::Checkbox
                 | NodeKind::TextArea
                 | NodeKind::Slider
                 | NodeKind::Picker
@@ -265,12 +278,23 @@ impl HtmlBackend {
             a11y_attrs(kind, &n.a11y)
         };
         let group = if n.group { " data-group" } else { "" };
+        let inert = if n.inert { " inert" } else { "" };
+        // A checkbox's accessible name is its visible label.
+        let aria = if kind == NodeKind::Checkbox {
+            if n.a11y.hidden {
+                r#" aria-hidden="true""#.to_string()
+            } else {
+                String::new()
+            }
+        } else {
+            aria
+        };
         let style = match self.sheet.borrow_mut().as_mut() {
             Some(sheet) => sheet.attr(&css),
             None => format!(r#" style="{}""#, escape(&css)),
         };
         let attrs = format!(
-            r#"data-pid="{id}" data-kind="{}"{style}{hidden}{aria}{group}"#,
+            r#"data-pid="{id}" data-kind="{}"{style}{hidden}{inert}{aria}{group}"#,
             kind.name(),
         );
         // Sheets attached to a stack or tab bar are not screens or tabs: they
@@ -281,14 +305,63 @@ impl HtmlBackend {
             .partition(|c| self.kind(**c) == Some(NodeKind::Modal));
         match kind {
             NodeKind::TextInput => {
+                let suggestions = prism_core::controls::input_suggestions(&n.config);
+                let list = if suggestions.is_empty() {
+                    String::new()
+                } else {
+                    format!(r#" list="prism-list-{id}""#)
+                };
+                let icon = if n.icon.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        r#" class="prism-icon-field" data-icon="{}""#,
+                        escape(prism_core::glyphs::glyph(&n.icon))
+                    )
+                };
                 let _ = write!(
                     out,
-                    r#"<input type="{}" {attrs} value="{}" placeholder="{}"{}>"#,
+                    r#"<input type="{}" {attrs}{icon} value="{}" placeholder="{}"{}{list}>"#,
                     input_type(&n.config),
                     escape(&n.text),
                     escape(&n.placeholder),
                     input_attrs(&n.config)
                 );
+                if !suggestions.is_empty() {
+                    let _ = write!(out, r#"<datalist id="prism-list-{id}">"#);
+                    for s in &suggestions {
+                        let _ = write!(out, r#"<option value="{}"></option>"#, escape(s));
+                    }
+                    out.push_str("</datalist>");
+                }
+            }
+            NodeKind::Checkbox => {
+                let checked = if n.value != 0. { " checked" } else { "" };
+                let disabled = if n.a11y.disabled { " disabled" } else { "" };
+                let _ = write!(
+                    out,
+                    r#"<label class="prism-check" {attrs}><input type="checkbox"{checked}{disabled}><span>{}</span></label>"#,
+                    escape(&n.text)
+                );
+            }
+            NodeKind::RadioGroup => {
+                let c = prism_core::controls::RadioConfig::decode(&n.config);
+                let row = if c.horizontal { r#" data-row="1""# } else { "" };
+                let _ = write!(out, r#"<div class="prism-radios" {attrs}{row}>"#);
+                let disabled = if n.a11y.disabled { " disabled" } else { "" };
+                for (i, o) in c.options.iter().enumerate() {
+                    let checked = if i as f64 == n.value { " checked" } else { "" };
+                    let _ = write!(
+                        out,
+                        r#"<label><input type="radio" name="prism-radio-{id}" value="{i}"{checked}{disabled}><span>{}</span></label>"#,
+                        escape(o)
+                    );
+                }
+                out.push_str("</div>");
+            }
+            // Closed until the client opens it (its content is in the top layer).
+            NodeKind::Overlay => {
+                let _ = write!(out, r#"<div class="prism-overlay" {attrs}></div>"#);
             }
             NodeKind::TextArea => {
                 let _ = write!(
@@ -338,12 +411,19 @@ impl HtmlBackend {
                 let c = prism_core::controls::DateConfig::decode(&n.config);
                 let ty = match c.mode {
                     prism_core::DateMode::Date => "date",
-                    prism_core::DateMode::Time => "time",
+                    prism_core::DateMode::Time | prism_core::DateMode::TimeOfDay => "time",
                     prism_core::DateMode::DateTime => "datetime-local",
+                };
+                // A time of day is the same everywhere: written as is.
+                let value = if c.mode == prism_core::DateMode::TimeOfDay {
+                    let m = (n.value / 60.).round().rem_euclid(1440.) as u32;
+                    format!(r#" value="{:02}:{:02}""#, m / 60, m % 60)
+                } else {
+                    String::new()
                 };
                 let _ = write!(
                     out,
-                    r#"<input type="{ty}" class="prism-date" {attrs} data-value="{}">"#,
+                    r#"<input type="{ty}" class="prism-date" {attrs} data-value="{}"{value}>"#,
                     n.value
                 );
             }
@@ -494,7 +574,11 @@ impl HtmlBackend {
                 };
                 // A rich text's runs become inline spans and links.
                 let content = if kind == NodeKind::Text && !n.config.is_empty() {
-                    runs_html(&n.config)
+                    // A page: the runs' styles join the `<style>` block too.
+                    match self.sheet.borrow_mut().as_mut() {
+                        Some(sheet) => runs_html_with(&n.config, &mut |css| sheet.attr(css)),
+                        None => runs_html(&n.config),
+                    }
                 } else {
                     escape(content)
                 };
@@ -575,6 +659,9 @@ pub fn input_attrs(config: &str) -> String {
     if let Some(m) = mode {
         let _ = write!(out, r#" inputmode="{m}""#);
     }
+    if let Some(max) = c.max_length {
+        let _ = write!(out, r#" maxlength="{max}""#);
+    }
     let enter = match c.return_key {
         ReturnKey::Default => None,
         ReturnKey::Done => Some("done"),
@@ -622,13 +709,19 @@ pub fn escape(s: &str) -> String {
 /// href data-link>` per link (`<span role="link" tabindex="0">` for a
 /// clickable run without a path), `<span class="prism-symbol">` per icon.
 pub fn runs_html(config: &str) -> String {
+    runs_html_with(config, &mut |css| format!(r#" style="{}""#, escape(css)))
+}
+
+/// [`runs_html`], each run's CSS (never empty) turned into attributes by
+/// `style` (a `style` attribute, or a class of the page's sheet).
+fn runs_html_with(config: &str, style: &mut dyn FnMut(&str) -> String) -> String {
     let mut out = String::new();
     for r in prism_core::decode_runs(config) {
         let css = crate::css::run_css(&r);
         let style = if css.is_empty() {
             String::new()
         } else {
-            format!(r#" style="{}""#, escape(&css))
+            style(&css)
         };
         let text = escape(&r.text);
         if r.icon.is_some() {

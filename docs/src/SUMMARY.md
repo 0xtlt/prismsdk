@@ -21,6 +21,7 @@
 - [Charts and vector drawing](guide/charts.md)
 - [Motion](guide/motion.md)
 - [Images, long lists, gestures](guide/images-lists-gestures.md)
+- [Pointer, keyboard, focus](guide/input.md)
 - [Dialogs, menus, tray](guide/dialogs-menus.md)
 - [Accessibility](guide/accessibility.md)
 - [Languages, text size, motion](guide/i18n.md)

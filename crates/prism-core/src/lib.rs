@@ -19,6 +19,7 @@ pub mod decoration;
 pub mod device;
 pub mod device_info;
 mod element;
+pub mod events;
 pub mod glyphs;
 pub mod i18n;
 pub mod interaction;
@@ -45,10 +46,11 @@ pub use animation::{Animations, Pose, Transform};
 pub use app::{AnyEntity, App, Appearance, Context, Entity, EntityId, Environment, Render};
 pub use background::{BackgroundKind, BackgroundTask, Lifecycle};
 pub use car::{CarButton, CarButtonStyle, CarItem, CarSection, CarTab, CarTemplate};
-pub use controls::{Capitalize, DateMode, Keyboard, ReturnKey};
+pub use controls::{Capitalize, DateMode, Keyboard, OverlayKind, ReturnKey};
 pub use decoration::{
     BorderSide, BorderSides, BorderStyle, Cursor, Gradient, GradientKind, GradientStop, Shadow,
 };
+pub use device::PickFiles;
 pub use device::{
     Accuracy, DeviceCall, DeviceError, DeviceEvent, DeviceValue, Haptic, Location, Motion,
     Permission, PermissionState, PickImages, PickedFile, Share, Watch,
@@ -67,8 +69,14 @@ pub use element::{
     shape, slider, spinner, stack, tab, tabs, text, text_area, text_input, timer, toggle,
     unix_seconds, unix_time,
 };
+pub use element::{
+    Checkbox, Overlay, RadioGroup, checkbox, dialog, popover, radio_group, sheet, time_picker,
+};
 pub use element::{STACK_CLOSABLE, STACK_NO_HEADER};
 pub use element::{picture_data, svg};
+pub use events::{
+    DragEvent, DragPhase, HoverEvent, KeyEvent, Modifiers, Point, PointerEvent, PointerPhase,
+};
 pub use i18n::{BasicFormatter, DateStyle, Direction, Formatter, Locale, Translations};
 pub use interaction::{Interaction, Interactions, States};
 pub use layout::{GridTrack, Repetition, ScrollAxis, auto_fill, auto_fit, fr, minmax, repeat};
@@ -258,6 +266,7 @@ impl Runtime {
                 }
             }
             UiEvent::Back(id, depth) => {
+                self.reconciler.overlay_dismissed(id);
                 if let Some(h) = self.reconciler.back_handler(id) {
                     h(&BackEvent { depth }, &mut self.app);
                 }
@@ -295,6 +304,30 @@ impl Runtime {
                     h(&ClickEvent, &mut self.app);
                 }
             }
+            UiEvent::ClickAt(id, position) => {
+                if let Some(h) = self.reconciler.click_handler(id) {
+                    let e = ClickEvent {
+                        position: Some(position),
+                    };
+                    h(&e, &mut self.app);
+                }
+            }
+            UiEvent::Pointer(id, e) => self.dispatch_pointer(id, e),
+            UiEvent::Drag(id, e) => {
+                if let Some(h) = self.reconciler.drag_handler(id) {
+                    h(&e, &mut self.app);
+                }
+            }
+            UiEvent::Key(focused, e) => {
+                self.app.stop_propagation = false;
+                for h in self.reconciler.key_handlers(focused) {
+                    h(&e, &mut self.app);
+                    if self.app.stop_propagation {
+                        break;
+                    }
+                }
+                self.app.stop_propagation = false;
+            }
         }
         // Tasks spawned by the handler start right away.
         task::poll_tasks(&mut self.app);
@@ -303,6 +336,21 @@ impl Runtime {
             self.render_dirty()
         } else {
             Vec::new()
+        }
+    }
+
+    /// Hover (enter / leave) and move handlers of a pointer event.
+    fn dispatch_pointer(&mut self, id: NodeId, e: PointerEvent) {
+        if e.phase != PointerPhase::Move
+            && let Some(h) = self.reconciler.hover_handler(id)
+        {
+            let hovered = e.phase == PointerPhase::Enter;
+            h(&HoverEvent { hovered }, &mut self.app);
+        }
+        if e.phase != PointerPhase::Leave
+            && let Some(h) = self.reconciler.pointer_handler(id)
+        {
+            h(&e, &mut self.app);
         }
     }
 
@@ -540,6 +588,11 @@ pub mod prelude {
     pub use crate::decoration::{shadow_lg, shadow_md, shadow_sm};
     pub use crate::{Color, Cursor, Gradient, Shadow};
     pub use crate::{picture_data, svg};
+    // Pointer, keys, choice controls, overlays (#17, #18, #19).
+    pub use crate::{
+        DragEvent, DragPhase, HoverEvent, KeyEvent, Modifiers, PickFiles, Point, PointerEvent,
+        PointerPhase, checkbox, dialog, popover, radio_group, sheet, time_picker,
+    };
 }
 
 #[cfg(test)]

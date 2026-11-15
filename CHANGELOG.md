@@ -142,6 +142,28 @@ The first version, not yet on crates.io.
   `NSAttributedString`, `AttributedString`, `SpannableString`, Pango
   attributes and inline HTML.
 - Clickable texts: `text(…).on_click(…)` and `text(…).link(path)`.
+- Pointer and keyboard input on every backend (#17): `ClickEvent::position`
+  (where a click or tap landed), `Div::on_hover`, `on_pointer_move`,
+  `on_drag` (start / move / end / cancel with the translation), and
+  `on_key_down` / `on_global_key_down` with web key names and modifiers,
+  TV remote presses and Android D-pads included; `cx.stop_propagation()`.
+  Web moves and drags are throttled to one message per animation frame.
+- `.id(…)` on every element, `cx.focus(id)`, `.autofocus()` and
+  `cx.scroll_into_view(id)` (#17).
+- `checkbox` and `radio_group`, native where the platform has them and drawn
+  with the right accessibility traits on UIKit; `time_picker` for a time of
+  day independent of the time zone (`ChangeEvent::minutes`); `text_input`
+  `max_length`, `leading_icon` and `suggestions` (web `<datalist>`, native
+  completion); `cx.pick_files(PickFiles)`, `PickedFile::read` and
+  `ui::file_input`, whose bytes reach the app on every backend (the web
+  uploads them over the socket) (#18).
+- `sheet`, `popover` and `dialog` overlays a screen opens without a route,
+  presented natively (`UISheetPresentationController`, `NSPopover`, `<dialog>`
+  and the popover API, `GtkPopover`, Android dialogs…), above the whole
+  window, with the focus kept inside and Escape / Back closing them; the
+  `hit_test(false)` (`pointer-events: none`) and `inert(true)` styles (#19).
+- Runtime layers (`cx.add_layer`): entities mounted above the router, tabs,
+  sheets and dialogs on every backend (#25).
 
 ### Changed
 
@@ -163,6 +185,12 @@ The first version, not yet on crates.io.
 - Android: rounded views no longer clip their children unless they ask for it
   with `clip()` (pictures still do), like the other backends; this also lets
   their shadows show.
+- The toaster is a layer the runtime mounts above the whole app the first
+  time `ui::show_toast` runs: toasts work from anywhere, also right before
+  `cx.back()` / `cx.reset()`. `ui::toaster()` is deprecated and renders
+  nothing (#25).
+- `ClickEvent` carries an optional position; `ClickEvent` still works as a
+  value (`handler(&ClickEvent, cx)`).
 - The Swift sources moved from `platform/apple` to
   `crates/prism-apple-build/apple`, the Android host and the bundling scripts
   from `platform/android` and `scripts/` to `crates/prism-cli/platform`, so
@@ -185,6 +213,8 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- A web `picker` given a height centres its text vertically and draws its
+  own arrow (`appearance: none`) (#18).
 - watchOS simulator release builds link clang's runtime (Swift availability
   checks of the watchOS 26+ SDKs need `__isPlatformVersionAtLeast`).
 - The watch host clamps frames that are negative or not finite before

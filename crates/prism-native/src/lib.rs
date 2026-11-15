@@ -142,6 +142,37 @@ pub trait Widgets {
     /// keyboard focus; focus-within is derived). Backends that resolve
     /// states themselves (GTK CSS) read `style.states` instead.
     fn set_interactions(&mut self, _view: &Self::View, _states: prism_core::Interactions) {}
+
+    // --- Pointer, keys, focus, overlays, layers (#17, #19, #25) ---
+
+    /// Which pointer events a view reports (`prism_core::events::pointer_mask`
+    /// bits): `UiEvent::Pointer` for hover / move, `UiEvent::Drag`.
+    fn set_pointer_events(&mut self, _view: &Self::View, _mask: u8) {}
+    /// Whether key presses are reported (`UiEvent::Key`): `local` while the
+    /// view or a descendant has the focus (the view becomes focusable),
+    /// `global` wherever the focus is.
+    fn set_key_events(&mut self, _view: &Self::View, _local: bool, _global: bool) {}
+    /// Gives the view the keyboard focus (first responder, `grab_focus`).
+    fn focus(&mut self, _view: &Self::View) {}
+    /// Scrolls the scroll views around the view so it is visible.
+    fn scroll_into_view(&mut self, _view: &Self::View) {}
+    /// The runtime's layers, bottom first: mount them above everything
+    /// (sheets and dialogs too), covering the window, letting pointer input
+    /// through where they have no child. Their frames come from `set_frame`.
+    fn set_layers(&mut self, _layers: &[Self::View]) {}
+    /// Where an `Overlay`'s content goes and how big it may get: `width` is
+    /// the content's width (unless it sets a narrower one), `height` its
+    /// maximum height (sheets fill it). Coordinates are those of the
+    /// content's superview. Default: like a screen.
+    fn overlay_viewport(&mut self, overlay: &Self::View, content: &Self::View) -> Viewport {
+        self.screen_viewport(overlay, content)
+    }
+    /// What the runtime's layers keep clear of, given the window's safe
+    /// area: also a root tab bar, so toasts sit above it. Default: the
+    /// safe area.
+    fn layer_insets(&mut self, safe_area: Insets) -> Insets {
+        safe_area
+    }
 }
 
 /// `style` at `pose` (its opacity and transform replaced).
@@ -232,7 +263,7 @@ pub fn box_path(
 
 /// Containers whose children are positioned by the platform, not by flexbox.
 fn is_managed(kind: NodeKind) -> bool {
-    matches!(kind, NodeKind::Stack | NodeKind::Tabs)
+    matches!(kind, NodeKind::Stack | NodeKind::Tabs | NodeKind::Overlay)
 }
 
 fn is_container(kind: NodeKind) -> bool {
@@ -245,6 +276,7 @@ fn is_container(kind: NodeKind) -> bool {
             | NodeKind::Tabs
             | NodeKind::Tab
             | NodeKind::Modal
+            | NodeKind::Overlay
     )
 }
 
@@ -307,6 +339,14 @@ pub struct NativeRenderer<W: Widgets> {
     extras: extras::Extras,
     /// The node with the keyboard focus (its ancestors are focus-within).
     focused: Option<NodeId>,
+    /// Runtime-mounted layers (separate layout roots covering the window).
+    layers: Vec<NodeId>,
+    /// Overlay presentations (sheets fill their area, others fit content).
+    overlays: HashMap<NodeId, prism_core::controls::OverlayConfig>,
+    /// Size of the last layout, for the layers.
+    window: (f32, f32),
+    /// What layers keep clear of (`Widgets::layer_insets`).
+    layer_insets: Insets,
 }
 
 impl<W: Widgets> NativeRenderer<W> {
@@ -331,6 +371,10 @@ impl<W: Widgets> NativeRenderer<W> {
             zoom: 1.,
             extras: extras::Extras::default(),
             focused: None,
+            layers: Vec::new(),
+            overlays: HashMap::new(),
+            window: (0., 0.),
+            layer_insets: Insets::default(),
         }
     }
 
@@ -548,6 +592,69 @@ impl<W: Widgets> NativeRenderer<W> {
             self.place(root, width);
         }
         self.update_sticky();
+        self.window = (width, height);
+        self.layout_layers();
+    }
+
+    /// Lays each layer out over the whole window, inside the safe area.
+    fn layout_layers(&mut self) {
+        let (width, height) = self.window;
+        if !self.layers.is_empty() {
+            self.layer_insets = self.widgets.layer_insets(self.insets);
+        }
+        for id in self.layers.clone() {
+            self.sync_layout_style(id);
+            let Some(layout) = self.nodes.get(&id).map(|e| e.layout) else {
+                continue;
+            };
+            if self.compute(layout, width, height) {
+                self.set_frame(id, 0., 0., width, height);
+                self.place_children(id);
+            }
+        }
+    }
+
+    /// Lays out an overlay's content in the area the platform gives it,
+    /// then tells the overlay the content's size (`set_content_size`).
+    fn layout_overlay(&mut self, overlay: NodeId, content: NodeId) {
+        let (Some(ov), Some(c)) = (self.nodes.get(&overlay), self.nodes.get(&content)) else {
+            return;
+        };
+        let vp = self.widgets.overlay_viewport(&ov.view, &c.view);
+        let fill = self
+            .overlays
+            .get(&overlay)
+            .is_none_or(|o| o.kind == prism_core::OverlayKind::Sheet);
+        let zoomed = c.style.scaled(self.zoom);
+        let mut style = to_taffy(&zoomed, NodeKind::View);
+        let (p, i) = (zoomed.padding, vp.insets);
+        style.padding = Rect {
+            top: LengthPercentage::length(p.top + i.top),
+            right: LengthPercentage::length(p.right + i.right),
+            bottom: LengthPercentage::length(p.bottom + i.bottom),
+            left: LengthPercentage::length(p.left + i.left),
+        };
+        style.position = taffy::Position::Relative;
+        style.margin = Rect::zero();
+        if zoomed.width == Length::Auto {
+            style.size.width = Dimension::length(vp.width);
+        }
+        style.max_size.width = LengthPercentageAuto::length(vp.width);
+        if fill && zoomed.height == Length::Auto {
+            style.size.height = Dimension::length(vp.height);
+        }
+        style.max_size.height = LengthPercentageAuto::length(vp.height);
+        let (layout, view) = (c.layout, ov.view.clone());
+        let _ = self.taffy.set_style(layout, style);
+        if self.compute(layout, vp.width, vp.height) {
+            let size = self
+                .taffy
+                .layout(layout)
+                .map_or((0., 0.), |l| (l.size.width, l.size.height));
+            self.set_frame(content, vp.x, vp.y, size.0, size.1);
+            self.place_children(content);
+            self.widgets.set_content_size(&view, size.0, size.1);
+        }
     }
 
     /// Runs flexbox on the subtree at `node`, measuring leaves natively.
@@ -703,6 +810,34 @@ impl<W: Widgets> NativeRenderer<W> {
         let Some(e) = self.nodes.get(&id) else { return };
         let zoomed = e.style.scaled(self.zoom);
         let mut style = to_taffy(&zoomed, e.kind);
+        if e.kind == NodeKind::Overlay {
+            // An overlay takes no room: its content is presented on its own.
+            style.position = taffy::Position::Absolute;
+            style.size = Size {
+                width: Dimension::length(0.),
+                height: Dimension::length(0.),
+            };
+            style.margin = Rect::zero();
+            style.inset = Rect::zero();
+        }
+        if self.layers.contains(&id) {
+            // A layer covers the window, inside the safe area.
+            let (w, h) = self.window;
+            let (p, i) = (zoomed.padding, self.layer_insets);
+            style.position = taffy::Position::Relative;
+            style.size = Size {
+                width: Dimension::length(w),
+                height: Dimension::length(h),
+            };
+            style.padding = Rect {
+                top: LengthPercentage::length(p.top + i.top),
+                right: LengthPercentage::length(p.right + i.right),
+                bottom: LengthPercentage::length(p.bottom + i.bottom),
+                left: LengthPercentage::length(p.left + i.left),
+            };
+            let _ = self.taffy.set_style(e.layout, style);
+            return;
+        }
         if self.root == Some(id) {
             // Like `#prism-root > *` on the web: the root fills the viewport.
             style.flex_grow = 1.;
@@ -750,6 +885,16 @@ impl<W: Widgets> NativeRenderer<W> {
         }
         self.set_frame(id, x, y, w, h);
         match self.stack_screens.get(&id).cloned() {
+            Some(contents)
+                if self
+                    .nodes
+                    .get(&id)
+                    .is_some_and(|e| e.kind == NodeKind::Overlay) =>
+            {
+                for content in contents {
+                    self.layout_overlay(id, content);
+                }
+            }
             Some(screens) => {
                 for screen in screens {
                     self.layout_screen(id, screen);
@@ -1127,6 +1272,10 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                     if let Some(e) = self.nodes.get(id) {
                         self.widgets.set_config(&e.view, e.kind, config);
                         let _ = self.taffy.mark_dirty(e.layout);
+                        if e.kind == NodeKind::Overlay {
+                            let c = prism_core::controls::OverlayConfig::decode(config);
+                            self.overlays.insert(*id, c);
+                        }
                     }
                 }
                 Patch::SetIcon { id, icon } => {
@@ -1156,8 +1305,40 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                         self.widgets.destroy(&e.view);
                         self.by_layout.remove(&e.layout);
                         self.stack_screens.remove(id);
+                        self.overlays.remove(id);
                         let _ = self.taffy.remove(e.layout);
                     }
+                }
+                Patch::SetPointerEvents { id, mask } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.set_pointer_events(&e.view, *mask);
+                    }
+                }
+                Patch::SetKeyEvents { id, local, global } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.set_key_events(&e.view, *local, *global);
+                    }
+                }
+                Patch::Focus { id } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.focus(&e.view);
+                    }
+                }
+                Patch::ScrollIntoView { id } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.scroll_into_view(&e.view);
+                    }
+                }
+                Patch::SetLayers { ids } => {
+                    let views: Vec<W::View> = ids
+                        .iter()
+                        .filter_map(|i| self.nodes.get(i).map(|e| e.view.clone()))
+                        .collect();
+                    let previous = std::mem::replace(&mut self.layers, ids.clone());
+                    for old in previous {
+                        self.sync_layout_style(old);
+                    }
+                    self.widgets.set_layers(&views);
                 }
             }
         }

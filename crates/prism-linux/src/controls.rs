@@ -171,6 +171,11 @@ fn local(unix: f64) -> Option<glib::DateTime> {
     glib::DateTime::from_unix_local(unix.floor() as i64).ok()
 }
 
+/// A time of day is the same in every time zone: shown in UTC.
+fn utc(unix: f64) -> Option<glib::DateTime> {
+    glib::DateTime::from_unix_utc(unix.floor() as i64).ok()
+}
+
 fn two_digits(spin: &gtk::SpinButton) {
     spin.connect_output(|s| {
         s.set_text(&format!("{:02}", s.value_as_int()));
@@ -246,7 +251,8 @@ impl DatePicker {
     pub fn set_config(&self, config: &str) {
         let c = DateConfig::decode(config);
         self.config.set(c);
-        self.calendar.set_visible(c.mode != DateMode::Time);
+        self.calendar
+            .set_visible(!matches!(c.mode, DateMode::Time | DateMode::TimeOfDay));
         self.time_row.set_visible(c.mode != DateMode::Date);
         self.sync();
     }
@@ -261,15 +267,25 @@ impl DatePicker {
         self.sync();
     }
 
-    /// The value as shown, in the device's time zone and the app's locale.
+    /// The value in the time zone it is shown in.
+    fn at(&self, unix: f64) -> Option<glib::DateTime> {
+        if self.config.get().mode == DateMode::TimeOfDay {
+            utc(unix)
+        } else {
+            local(unix)
+        }
+    }
+
+    /// The value as shown, in the device's time zone (UTC for a time of
+    /// day) and the app's locale.
     fn text(&self) -> String {
         let v = self.value.get();
-        let offset = local(v).map_or(0, |d| d.utc_offset().as_seconds() as i32);
+        let offset = self.at(v).map_or(0, |d| d.utc_offset().as_seconds() as i32);
         let f = BasicFormatter { utc_offset: offset };
         let locale = self.locale.borrow();
         match self.config.get().mode {
             DateMode::Date => f.date(&locale, v, DateStyle::Medium),
-            DateMode::Time => f.time(&locale, v),
+            DateMode::Time | DateMode::TimeOfDay => f.time(&locale, v),
             DateMode::DateTime => format!(
                 "{}, {}",
                 f.date(&locale, v, DateStyle::Medium),
@@ -280,7 +296,7 @@ impl DatePicker {
 
     fn sync(&self) {
         self.label.set_text(&self.text());
-        let Some(d) = local(self.value.get()) else {
+        let Some(d) = self.at(self.value.get()) else {
             return;
         };
         self.syncing.set(true);
@@ -295,10 +311,18 @@ impl DatePicker {
         if self.syncing.get() {
             return;
         }
+        let c = self.config.get();
+        if c.mode == DateMode::TimeOfDay {
+            let minutes = self.hour.value_as_int() * 60 + self.minute.value_as_int();
+            let v = f64::from(minutes * 60);
+            self.value.set(v);
+            self.sync();
+            dispatch(UiEvent::Change(id, v));
+            return;
+        }
         let Some(cur) = local(self.value.get()) else {
             return;
         };
-        let c = self.config.get();
         let day = self.calendar.date();
         let (y, m, d) = if c.mode == DateMode::Time {
             (cur.year(), cur.month(), cur.day_of_month())
@@ -450,13 +474,117 @@ pub fn input_traits(c: &InputConfig) -> (gtk::InputPurpose, gtk::InputHints) {
     (purpose, hints)
 }
 
-/// Secure entries hide their characters.
+/// Secure entries hide their characters; a maximum length; suggestions
+/// in a `GtkEntryCompletion` popup (prefix matches, as you type).
 pub fn configure_entry(entry: &gtk::Entry, config: &str) {
     let c = InputConfig::decode(config);
     let (purpose, hints) = input_traits(&c);
     entry.set_visibility(!c.secure);
     entry.set_input_purpose(purpose);
     entry.set_input_hints(hints);
+    entry.set_max_length(c.max_length.map_or(0, |m| m.min(i32::MAX as u32) as i32));
+    set_suggestions(entry, &prism_core::controls::input_suggestions(config));
+}
+
+/// `GtkEntryCompletion` (deprecated in GTK 4.10 for a future replacement,
+/// still the toolkit's completion popup; Prism targets 4.8).
+#[allow(deprecated)]
+fn set_suggestions(entry: &gtk::Entry, suggestions: &[String]) {
+    if suggestions.is_empty() {
+        entry.set_completion(None);
+        return;
+    }
+    let store = gtk::ListStore::new(&[glib::Type::STRING]);
+    for s in suggestions {
+        store.insert_with_values(None, &[(0, s)]);
+    }
+    let completion = entry.completion().unwrap_or_else(|| {
+        let c = gtk::EntryCompletion::new();
+        c.set_text_column(0);
+        c.set_minimum_key_length(1);
+        c.set_popup_completion(true);
+        c.set_inline_completion(false);
+        entry.set_completion(Some(&c));
+        c
+    });
+    completion.set_model(Some(&store));
+}
+
+// --- Checkbox and radio group ---------------------------------------------------
+
+/// A `GtkCheckButton` (its label is the node's text) reporting `Change`.
+pub fn checkbox(id: NodeId) -> gtk::CheckButton {
+    let b = gtk::CheckButton::new();
+    b.set_valign(gtk::Align::Center);
+    b.connect_toggled(move |b| dispatch(UiEvent::Change(id, if b.is_active() { 1. } else { 0. })));
+    b
+}
+
+/// Grouped `GtkCheckButton`s (radio buttons: arrow keys move between them,
+/// screen readers get the radio role) in a box with the radio-group role.
+pub struct RadioGroup {
+    pub root: gtk::Box,
+    buttons: RefCell<Vec<gtk::CheckButton>>,
+    selected: Cell<i32>,
+}
+
+pub fn radio_group(id: NodeId) -> Rc<RadioGroup> {
+    let root = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(6)
+        .accessible_role(gtk::AccessibleRole::RadioGroup)
+        .build();
+    root.set_widget_name(&format!("radio{id}"));
+    Rc::new(RadioGroup {
+        root,
+        buttons: RefCell::new(Vec::new()),
+        selected: Cell::new(-1),
+    })
+}
+
+impl RadioGroup {
+    /// Rebuilds the buttons for `config` (`RadioConfig`).
+    pub fn set_options(self: &Rc<Self>, id: NodeId, config: &str) {
+        let c = prism_core::controls::RadioConfig::decode(config);
+        let (orientation, spacing) = if c.horizontal {
+            (gtk::Orientation::Horizontal, 16)
+        } else {
+            (gtk::Orientation::Vertical, 6)
+        };
+        self.root.set_orientation(orientation);
+        self.root.set_spacing(spacing);
+        for b in self.buttons.borrow_mut().drain(..) {
+            self.root.remove(&b);
+        }
+        let mut buttons = Vec::new();
+        for (i, label) in c.options.iter().enumerate() {
+            let b = gtk::CheckButton::with_label(label);
+            if let Some(first) = buttons.first() {
+                b.set_group(Some(first));
+            }
+            b.connect_toggled(move |b| {
+                if b.is_active() {
+                    dispatch(UiEvent::Change(id, i as f64));
+                }
+            });
+            self.root.append(&b);
+            buttons.push(b);
+        }
+        *self.buttons.borrow_mut() = buttons;
+        self.select(self.selected.get() as f64);
+    }
+
+    pub fn select(&self, index: f64) {
+        let index = if index >= 0. { index as i32 } else { -1 };
+        self.selected.set(index);
+        for (i, b) in self.buttons.borrow().iter().enumerate() {
+            b.set_active(i as i32 == index);
+        }
+    }
+
+    pub fn set_sensitive(&self, on: bool) {
+        self.root.set_sensitive(on);
+    }
 }
 
 pub fn configure_text_view(view: &gtk::TextView, config: &str) {

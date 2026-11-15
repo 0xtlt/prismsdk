@@ -1,0 +1,50 @@
+# Pointer, keyboard, focus
+
+Where the pointer is, drags, key presses, and moving the focus or the scroll position from code.
+
+```rust
+div()
+    .on_click(cx.listener(|this, e: &ClickEvent, _| {
+        if let Some(p) = e.position { this.tap_at(p.x, p.y) }   // None from the keyboard / VoiceOver
+    }))
+    .on_hover(cx.listener(|this, e: &HoverEvent, _| this.hot = e.hovered))
+    .on_pointer_move(cx.listener(|this, e: &PointerEvent, _| this.readout = Some(e.position)))
+    .on_drag(cx.listener(|this, e: &DragEvent, _| match e.phase {
+        DragPhase::Start => this.from = this.level,
+        DragPhase::Move | DragPhase::End => this.level = e.position().x / WIDTH,
+        DragPhase::Cancel => this.level = this.from,
+    }))
+
+div().id("pad").on_key_down(cx.listener(|this, e: &KeyEvent, cx| {
+    if e.is("ArrowUp") { this.y -= 1; cx.stop_propagation(); }
+}))
+div().on_global_key_down(cx.listener(|this, e: &KeyEvent, _| {
+    if e.is("Escape") { this.menu_open = false }               // anywhere in the window
+}))
+
+text_input().id("email").autofocus()
+cx.focus("email");                                              // after the next render
+cx.scroll_into_view("form");                                    // « jump to the form »
+```
+
+- **Coordinates** are points in the element, from its top-left corner (whatever the layout direction). A drag's `start` is where the pointer went down and `translation` how far it moved since, so moving the element while it is dragged (drag to reorder) does not disturb them; `position()` is their sum.
+- **Click and drag** combine: a tap reports its position through `on_click`, a drag starts once the pointer moved past the platform's slop and then does not click. Together they make a custom slider or a « level » bar; add `on_key_down` (arrows) and an `accessibility_role(Role::Slider)` with a value so it works without a pointer.
+- **Hover** needs a pointer: a mouse, a trackpad, an iPad pointer, Apple Vision Pro's gaze. Phones report `on_pointer_move` while a finger touches the element, and no hover. Don't hide anything essential behind hover.
+- **Keys** use the web's `KeyboardEvent.key` names everywhere: characters (`"a"`, `"A"`, `" "`), `"Escape"`, `"Enter"`, `"Tab"`, `"Backspace"`, `"Delete"`, `"ArrowUp"`…, `"Home"`, `"End"`, `"PageUp"`, `"PageDown"`, `"F1"`… with `e.modifiers` (`shift`, `control`, `alt`, `meta`, `command()` for ⌘ on Apple platforms and Ctrl elsewhere). A view with `on_key_down` can take the focus (Tab, a click, `cx.focus`, the tvOS focus engine, a D-pad). The handlers of the focused element and its ancestors run first, then every `on_global_key_down`, newest first; `cx.stop_propagation()` stops there. While a text field has the focus, global handlers only get keys that do not type (Escape, arrows, Enter, Tab, function keys) or come with Control / Command.
+- **TV remotes and D-pads**: the Siri Remote and Android TV / D-pad report their arrows and `"Enter"` (select / center), `"MediaPlayPause"`, and Menu / Back as `"Escape"` when the app listens for keys.
+- **Ids**: `.id("name")` names an element for `cx.focus` and `cx.scroll_into_view` (the last element given a name wins). Unknown names are ignored. `.autofocus()` focuses an element when it appears (a dialog's first field).
+- **Hit testing**: `.hit_test(false)` lets clicks, taps and hovers through the element and everything in it (CSS `pointer-events: none`: a label drawn over a bar, a decorative scrim). `.inert(true)` also takes the subtree out of the keyboard focus and the accessibility tree while keeping it visible.
+
+| | Click position | Hover / move | Drag | Keys | Focus, scroll into view |
+|---|---|---|---|---|---|
+| Web | pointer events | `pointerenter` / `pointermove` (one per frame) | pointer capture (one move per frame) | `keydown` | `focus()`, `scrollIntoView` |
+| macOS | mouse up | `NSTrackingArea` | mouse dragged | `keyDown`, a local event monitor | first responder, `scrollRectToVisible` |
+| iOS, iPadOS, visionOS | tap location | `UIHoverGestureRecognizer`; touches | `UIPanGestureRecognizer` | `pressesBegan` (hardware keyboards) | first responder, `scrollRectToVisible` |
+| tvOS | — | — | — | Siri Remote presses | focus engine, `scrollRectToVisible` |
+| Linux | `GestureClick` | `EventControllerMotion` | `GestureDrag` | `EventControllerKey` | `grab_focus`, scrolled window adjustment |
+| Android | touch up | hover events; touches | touch listener with touch slop | key events, D-pad | `requestFocus`, `requestRectangleOnScreen` |
+| watchOS | `SpatialTapGesture` | — (moves while touching) | `DragGesture` | — | `@FocusState`, `ScrollViewReader` |
+
+tvOS has no pointer over views, the watch neither hover nor keys: those handlers simply never run there. On tvOS, a focused view with `on_key_down` keeps left / right for the app while up / down still move the focus.
+
+Web events travel over the app's WebSocket: moves and drags are throttled to one per animation frame, so a fast pointer does not flood the connection; clicks, drag starts and ends are never dropped.

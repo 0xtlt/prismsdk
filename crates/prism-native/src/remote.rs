@@ -7,7 +7,7 @@
 //! | op | fields |
 //! |---|---|
 //! | `create` / `destroy` | `id`, `kind` |
-//! | `style` | `s`: `bg`, `radius`, `bw`, `bc`, `opacity`, `color`, `font`, `weight`, `talign` (colors `[r,g,b,a, dark r,g,b,a]`) |
+//! | `style` | `s`: `bg`, `radius`, `bw`, `bc`, `opacity`, `color`, `font`, `weight`, `talign` (colors `[r,g,b,a, dark r,g,b,a]`); `hit: false` (the subtree ignores pointer input) and `inert: true` (no input, no focus, hidden from assistive technologies) only when set |
 //! | `text`, `placeholder`, `icon`, `value`, `clickable`, `display` | the value |
 //! | `a11y` | `label`, `hidden`, `role` (ARIA name: `slider`, `combobox`, `status`…), `value` |
 //! | `config` | `config`: a control's config string (`prism_core::controls`: slider `min max step`, picker options one per line, date `mode min max`, input tokens) |
@@ -19,6 +19,18 @@
 //! | `exit` | `parent`, `to`: `{o, tf}` the view animates to (a picture of it), before it is removed |
 //! | `repeat` | `from`, `to`: `{o, tf}` (`to` null stops), back and forth forever |
 //! | `draw` | `paths`: `[{d, fill, stroke, w, round, dash}]` in points, `d` flat (`0 x y` move, `1 x y` line, `2 x1 y1 x2 y2 x y` curve, `3` close) |
+//!
+//! | `pointer` | `mask`: pointer events to report (1 hover, 2 move, 4 drag) |
+//! | `keys` | `local`, `global`: report key presses (focus in the node / anywhere) |
+//! | `focus`, `reveal` | give the node the focus / scroll it into view |
+//! | `layers` | `ids`: runtime layers above everything, bottom first (no `id`) |
+//!
+//! Hosts report the new input events as `{"t":"click","id","x","y"}`
+//! (position optional), `{"t":"pointer","id","phase","x","y"}`,
+//! `{"t":"drag","id","phase","x","y","dx","dy"}` and
+//! `{"t":"key","id","key","mods","repeat"}` (see [`parse_input_event`]).
+//! An overlay's host reports its content area like a modal's
+//! (`{"t":"viewport","id":overlay,"w","h"}`).
 //!
 //! Styles carry `tf`: `[x, y, scale, degrees]` (null: none). `style`, `frame`,
 //! `exit` and `repeat` may carry `anim`: `{d, delay, ease}` (seconds, cubic
@@ -70,7 +82,7 @@ pub struct MeasureRequest<'a> {
     pub kind: &'a str,
     /// The text, the icon name of an `image`, a picker's widest option, a
     /// date picker's config (`date`, `time`, `datetime` first), `large` for a
-    /// large spinner.
+    /// large spinner, a radio group's config (`row`/`column`, then options).
     pub text: &'a str,
     pub font_size: f32,
     /// CSS weight, 100 to 900.
@@ -99,6 +111,8 @@ pub struct RemoteWidgets {
     pub viewports: HashMap<NodeId, (f32, f32)>,
     frames: HashMap<NodeId, (f32, f32)>,
     measure: Measure,
+    /// The root view (overlays default to its size).
+    root: Option<NodeId>,
 }
 
 impl RemoteWidgets {
@@ -113,7 +127,50 @@ impl RemoteWidgets {
             viewports: HashMap::new(),
             frames: HashMap::new(),
             measure,
+            root: None,
         }
+    }
+}
+
+/// The input events of #17 a host reports (`click` with a position,
+/// `pointer`, `drag`, `key`), shared by the Android and watchOS backends.
+pub fn parse_input_event(v: &Value) -> Option<prism_core::UiEvent> {
+    use prism_core::{
+        DragEvent, DragPhase, KeyEvent, Modifiers, Point, PointerEvent, PointerPhase, UiEvent,
+    };
+    let num = |k: &str| v.get(k).and_then(Value::as_f64).map(|n| n as f32);
+    let id = v.get("id").and_then(Value::as_u64);
+    match v.get("t")?.as_str()? {
+        "click" => Some(match (num("x"), num("y")) {
+            (Some(x), Some(y)) => UiEvent::ClickAt(id?, Point::new(x, y)),
+            _ => UiEvent::Click(id?),
+        }),
+        "pointer" => Some(UiEvent::Pointer(
+            id?,
+            PointerEvent {
+                phase: PointerPhase::from_name(v.get("phase")?.as_str()?)?,
+                position: Point::new(num("x").unwrap_or(0.), num("y").unwrap_or(0.)),
+            },
+        )),
+        "drag" => Some(UiEvent::Drag(
+            id?,
+            DragEvent {
+                phase: DragPhase::from_name(v.get("phase")?.as_str()?)?,
+                start: Point::new(num("x").unwrap_or(0.), num("y").unwrap_or(0.)),
+                translation: Point::new(num("dx").unwrap_or(0.), num("dy").unwrap_or(0.)),
+            },
+        )),
+        "key" => Some(UiEvent::Key(
+            id.filter(|i| *i != 0),
+            KeyEvent {
+                key: v.get("key")?.as_str()?.to_string(),
+                modifiers: Modifiers::from_bits(
+                    v.get("mods").and_then(Value::as_u64).unwrap_or(0) as u8
+                ),
+                repeat: v.get("repeat").and_then(Value::as_bool).unwrap_or(false),
+            },
+        )),
+        _ => None,
     }
 }
 
@@ -301,6 +358,13 @@ impl RemoteWidgets {
             op["s"]["hscroll"] = json!(true);
         }
         decorations(&mut op["s"], s);
+        // Hit testing (#19), only when not the default.
+        if !s.hit_test {
+            op["s"]["hit"] = json!(false);
+        }
+        if s.inert {
+            op["s"]["inert"] = json!(true);
+        }
         op
     }
 }
@@ -450,6 +514,7 @@ impl Widgets for RemoteWidgets {
     }
 
     fn set_root(&mut self, id: &NodeId) {
+        self.root = Some(*id);
         self.ops.push(json!({ "op": "root", "id": id }));
     }
 
@@ -480,6 +545,8 @@ impl Widgets for RemoteWidgets {
                 .max_by_key(|o| o.chars().count())
                 .unwrap_or_default(),
             NodeKind::DatePicker => self.configs.get(id).cloned().unwrap_or_default(),
+            // `row` or `column`, then the options: the host lays them out.
+            NodeKind::RadioGroup => self.configs.get(id).cloned().unwrap_or_default(),
             _ => self.texts.get(id).cloned().unwrap_or_default(),
         };
         let spec = match kind {
@@ -702,6 +769,46 @@ impl Widgets for RemoteWidgets {
         });
         (b > 0.).then_some(b)
     }
+
+    fn set_pointer_events(&mut self, id: &NodeId, mask: u8) {
+        self.ops
+            .push(json!({ "op": "pointer", "id": id, "mask": mask }));
+    }
+
+    fn set_key_events(&mut self, id: &NodeId, local: bool, global: bool) {
+        self.ops
+            .push(json!({ "op": "keys", "id": id, "local": local, "global": global }));
+    }
+
+    fn focus(&mut self, id: &NodeId) {
+        self.ops.push(json!({ "op": "focus", "id": id }));
+    }
+
+    fn scroll_into_view(&mut self, id: &NodeId) {
+        self.ops.push(json!({ "op": "reveal", "id": id }));
+    }
+
+    fn set_layers(&mut self, layers: &[NodeId]) {
+        self.ops.push(json!({ "op": "layers", "ids": layers }));
+    }
+
+    /// The area the host reported for the overlay (its sheet, dialog or
+    /// popover), else the root's size.
+    fn overlay_viewport(&mut self, overlay: &NodeId, _content: &NodeId) -> Viewport {
+        let (width, height) = self
+            .viewports
+            .get(overlay)
+            .or_else(|| self.root.and_then(|r| self.frames.get(&r)))
+            .copied()
+            .unwrap_or((0., 0.));
+        Viewport {
+            x: 0.,
+            y: 0.,
+            width,
+            height,
+            insets: Insets::default(),
+        }
+    }
 }
 
 /// Device calls as JSON for a host (the same shape as the web client's), and
@@ -739,6 +846,9 @@ pub mod device {
             DeviceCall::StopWatch => json!({ "call": "stop" }),
             DeviceCall::PickImages(o) => {
                 json!({ "call": "pick_images", "limit": o.limit, "camera": o.camera })
+            }
+            DeviceCall::PickFiles(o) => {
+                json!({ "call": "pick_files", "types": o.types, "multiple": o.multiple })
             }
             DeviceCall::ReadClipboard => json!({ "call": "paste" }),
             DeviceCall::Haptic(h) => json!({ "call": "haptic", "kind": h.name() }),

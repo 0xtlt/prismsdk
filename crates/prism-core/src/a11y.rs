@@ -49,6 +49,12 @@ pub enum Role {
     /// A polite live region: its `value` is announced whenever it changes
     /// (toasts, "Saved"). Not an element by itself: children stay reachable.
     Status,
+    /// One choice of a [`Role::RadioGroup`].
+    Radio,
+    /// A set of mutually exclusive choices.
+    RadioGroup,
+    /// A modal dialog or sheet.
+    Dialog,
 }
 
 impl Role {
@@ -75,6 +81,9 @@ impl Role {
             Role::Slider => "slider",
             Role::ComboBox => "combobox",
             Role::Status => "status",
+            Role::Radio => "radio",
+            Role::RadioGroup => "radiogroup",
+            Role::Dialog => "dialog",
         }
     }
 
@@ -90,6 +99,7 @@ impl Role {
                 | Role::Tab
                 | Role::Slider
                 | Role::ComboBox
+                | Role::Radio
         )
     }
 }

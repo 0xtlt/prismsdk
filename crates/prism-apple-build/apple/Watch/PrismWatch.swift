@@ -60,6 +60,13 @@ enum TextAreaInset {
     static let vertical = 8.0
 }
 
+/// A radio option: the circle, spacing, the row's height.
+enum RadioChrome {
+    static let width = 30.0
+    static let minHeight = 32.0
+    static let spacing = 8.0
+}
+
 /// A picker row around its value: padding and the chevron.
 enum PickerChrome {
     static let width = 44.0
@@ -144,6 +151,25 @@ public func prismWatchMeasure(_ kind: UnsafePointer<CChar>, _ text: UnsafePointe
         if maxWidth.isFinite { result.width = min(result.width, maxWidth) }
     case "spinner":
         result = MainActor.assumeIsolated { controlSize(String(cString: text) == "large" ? "spinner_large" : "spinner") }
+    case "checkbox":
+        // A labelled toggle (watchOS has no checkbox style).
+        let toggle = MainActor.assumeIsolated { controlSize("toggle") }
+        let label = textSize(String(cString: text), width: maxWidth.isFinite ? max(maxWidth - toggle.width - 8, 1) : .infinity)
+        result = CGSize(width: label.width + toggle.width + 8, height: max(label.height, toggle.height) + 8)
+        if maxWidth.isFinite { result.width = min(result.width, maxWidth) }
+    case "radio_group":
+        // One row per option (a circle and the label), side by side for `row`.
+        let lines = String(cString: text).components(separatedBy: "\n")
+        let row = lines.first == "row"
+        let rows = lines.dropFirst().map { textSize($0, width: .infinity) }
+        let item = { (s: CGSize) in CGSize(width: s.width + RadioChrome.width, height: max(s.height, RadioChrome.minHeight)) }
+        if row {
+            result = rows.map(item).reduce(CGSize.zero) { CGSize(width: $0.width + $1.width + RadioChrome.spacing, height: max($0.height, $1.height)) }
+            result.width = max(result.width - RadioChrome.spacing, 0)
+        } else {
+            result = rows.map(item).reduce(CGSize.zero) { CGSize(width: max($0.width, $1.width), height: $0.height + $1.height) }
+        }
+        if maxWidth.isFinite { result.width = min(result.width, maxWidth) }
     case "image":
         let config = UIImage.SymbolConfiguration(pointSize: size)
         result = UIImage(systemName: String(cString: text), withConfiguration: config)?.size ?? CGSize(width: size, height: size)
@@ -460,6 +486,15 @@ struct Node {
     var runs: [[String: Any]] = []
     /// Interaction states Rust wants reported (`states` op): `active`.
     var states: Set<String> = []
+    /// Pointer events reported: 1 hover (none on a watch), 2 move, 4 drag.
+    var pointerMask = 0
+    /// A runtime layer's root: lets touches through where it has no child.
+    var layer = false
+
+    /// `hit_test(false)`: the subtree takes no touch.
+    var noHit: Bool { (style["hit"] as? Bool) == false }
+    /// `inert`: no touch, no focus, hidden from VoiceOver.
+    var inert: Bool { (style["inert"] as? Bool) == true }
 
     func num(_ k: String, _ d: Double = 0) -> Double { (style[k] as? NSNumber)?.doubleValue ?? d }
     /// The node's box: its radius on the corners it rounds (`corners` bits:
@@ -492,6 +527,13 @@ final class PrismStore: ObservableObject {
     /// mirror and format dates in it. Layout is already mirrored by Rust.
     @Published var rtl = false
     @Published var lang = ""
+    /// Runtime layers (the toaster), above everything.
+    @Published var layers: [UInt64] = []
+    /// `cx.focus` / `.autofocus()`: the node, and a count so asking again
+    /// for the same node is a change.
+    @Published var focus: (id: UInt64, n: Int) = (0, 0)
+    /// `cx.scroll_into_view`: the node, and a count.
+    @Published var reveal: (id: UInt64, n: Int) = (0, 0)
 
     func apply(_ json: String) {
         guard let data = json.data(using: .utf8),
@@ -558,6 +600,16 @@ final class PrismStore: ObservableObject {
                 if let sticky { PrismScrollState.shared.watched.insert(sticky.scroll) }
             case "states": nodes[id]?.states = Set(p["on"] as? [String] ?? [])
             case "alert": alert = p["alert"] as? [String: Any]
+            case "pointer": nodes[id]?.pointerMask = (p["mask"] as? NSNumber)?.intValue ?? 0
+            // No keyboard on a watch (and the Digital Crown scrolls): keys never come.
+            case "keys": break
+            case "focus": focus = (id, focus.n + 1)
+            case "reveal": reveal = (id, reveal.n + 1)
+            case "layers":
+                let ids = (p["ids"] as? [NSNumber] ?? []).map(\.uint64Value)
+                for l in layers where !ids.contains(l) { nodes[l]?.layer = false }
+                for l in ids { nodes[l]?.layer = true }
+                layers = ids
             default: break
             }
         }
@@ -733,6 +785,8 @@ struct NodeView: View {
     @ObservedObject var store = PrismStore.shared
     @Environment(\.colorScheme) var scheme
     let id: UInt64
+    /// A drag past the slop is under way.
+    @State private var dragging = false
 
     var body: some View {
         if let n = store.nodes[id], !n.hidden {
@@ -748,8 +802,32 @@ struct NodeView: View {
                 .background(DropShadows(node: n, dark: dark))
                 .modifier(PrismPosed(pose: PrismPose(opacity: n.num("opacity", 1), tf: n.style["tf"]), loop: n.loop))
                 .modifier(PressReport(id: id, on: pressable, clickable: n.clickable))
-                .contentShape(Rectangle())
-                .onTapGesture { if n.clickable && !pressable { send(["t": "click", "id": id]) } }
+                // A layer's root lets touches through (only its children take them).
+                .modifier(HitShape(on: !n.layer))
+                // Taps report where they landed (ClickEvent::position).
+                // (A pressable node's press report sends its click.)
+                .onTapGesture(coordinateSpace: .local) { p in
+                    if n.clickable && !pressable { send(["t": "click", "id": id, "x": p.x, "y": p.y]) }
+                }
+                // Moves while touching, and drags past the slop.
+                .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { g in
+                    if n.pointerMask & 2 != 0 { send(["t": "pointer", "id": id, "phase": "move", "x": g.location.x, "y": g.location.y]) }
+                    guard n.pointerMask & 4 != 0 else { return }
+                    let t = g.translation
+                    let event: [String: Any] = ["t": "drag", "id": id, "x": g.startLocation.x, "y": g.startLocation.y,
+                                                "dx": t.width, "dy": t.height]
+                    if !dragging, t.width * t.width + t.height * t.height > 100 {
+                        dragging = true
+                        send(event.merging(["phase": "start"]) { $1 })
+                    } else if dragging {
+                        send(event.merging(["phase": "move"]) { $1 })
+                    }
+                }.onEnded { g in
+                    guard dragging else { return }
+                    dragging = false
+                    send(["t": "drag", "id": id, "phase": "end", "x": g.startLocation.x, "y": g.startLocation.y,
+                          "dx": g.translation.width, "dy": g.translation.height])
+                }, including: n.pointerMask & 6 != 0 ? .all : .subviews)
                 // Context menus: a long press opens them as a dialog (SwiftUI's
                 // contextMenu is deprecated on watchOS).
                 .onLongPressGesture { if n.menu != nil { store.menuNode = id } }
@@ -760,7 +838,10 @@ struct NodeView: View {
                     if dx > 0 && n.swipeRight { send(["t": "swipe", "id": id, "dir": "right"]) }
                 }, including: n.swipeLeft || n.swipeRight ? .all : .subviews)
                 .accessibilityLabel(n.label ?? "")
-                .accessibilityHidden(n.a11yHidden)
+                .accessibilityHidden(n.a11yHidden || n.inert)
+                .allowsHitTesting(!n.noHit && !n.inert)
+                .disabled(n.inert)
+                .id(id)
         }
     }
 
@@ -850,8 +931,25 @@ struct NodeView: View {
                     .coordinateSpace(name: "s\(id)")
                     .modifier(Refresh(id: id, on: n.clickable))
                     .onAppear { DevScrollMark.scroll(id, proxy) }
+                    // `cx.scroll_into_view`: a no-op unless the node is in here.
+                    .onChange(of: store.reveal.n) { _, _ in
+                        withAnimation { proxy.scrollTo(store.reveal.id, anchor: .center) }
+                    }
                 }
             }
+        case "checkbox":
+            // watchOS has no checkbox style: a labelled toggle (read as a switch).
+            Toggle(isOn: Binding(
+                get: { n.value != 0 },
+                set: { send(["t": "change", "id": id, "v": $0 ? 1 : 0]) }
+            )) { Text(n.text).font(font(n)).foregroundStyle(fg) }
+                .modifier(ControlEnvironment(rtl: store.rtl, lang: store.lang))
+        case "radio_group":
+            PrismRadioGroup(id: id, node: n, font: font(n), fg: fg, tint: n.color("color", dark: dark))
+                .modifier(ControlEnvironment(rtl: store.rtl, lang: store.lang))
+        case "overlay":
+            // Takes no room; the content is presented in a sheet.
+            PrismOverlay(id: id, node: n)
         case "stack":
             StackView(id: id, node: n)
         case "tabs":
@@ -1088,6 +1186,7 @@ struct PrismDatePicker: View {
     var body: some View {
         let mode = node.config.split(separator: " ").first.map(String.init) ?? "date"
         let text = Self.format(Date(timeIntervalSince1970: node.value), mode, locale)
+        let timeOnly = mode == "time" || mode == "timeofday"
         Button { open = true } label: {
             Text(text).lineLimit(1).minimumScaleFactor(0.6)
         }
@@ -1096,9 +1195,11 @@ struct PrismDatePicker: View {
         .sheet(isPresented: $open) {
             // The wheels share the screen (in a scroll view they collapse).
             VStack(spacing: 6) {
-                if mode != "time" { wheels(.date).frame(maxHeight: .infinity) }
+                if !timeOnly { wheels(.date).frame(maxHeight: .infinity) }
                 if mode != "date" { wheels(.hourAndMinute).frame(maxHeight: .infinity) }
             }
+            // A time of day is seconds since midnight: the same in every zone.
+            .environment(\.timeZone, mode == "timeofday" ? TimeZone(identifier: "UTC")! : .current)
             .navigationTitle(node.label ?? "")
             .modifier(ControlEnvironment(rtl: PrismStore.shared.rtl, lang: PrismStore.shared.lang))
             .tint(tint)
@@ -1144,12 +1245,13 @@ struct PrismDatePicker: View {
 
     /// The value as the button shows it (and what it measures).
     static func format(_ date: Date, _ mode: String, _ locale: Locale) -> String {
-        let style: Date.FormatStyle
+        var style: Date.FormatStyle
         switch mode {
-        case "time": style = .dateTime.hour().minute()
+        case "time", "timeofday": style = .dateTime.hour().minute()
         case "datetime": style = .dateTime.day().month(.abbreviated).hour().minute()
         default: style = .dateTime.day().month(.abbreviated).year()
         }
+        if mode == "timeofday", let utc = TimeZone(identifier: "UTC") { style.timeZone = utc }
         return date.formatted(style.locale(locale))
     }
 }
@@ -1161,9 +1263,14 @@ struct InputTraits {
     var returnKey = ""
     var capitalize = ""
     var autocorrect = true
+    /// The most characters (`max=N`), if limited.
+    var maxLength: Int?
 
     init(_ config: String) {
-        for token in config.split(separator: " ") {
+        // The first line: the next ones are suggestions (none on watchOS:
+        // `textInputSuggestions` is `@available(watchOS, unavailable)`).
+        let first = config.split(separator: "\n", omittingEmptySubsequences: false).first ?? ""
+        for token in first.split(separator: " ") {
             let kv = token.split(separator: "=", maxSplits: 1).map(String.init)
             switch (kv[0], kv.count > 1 ? kv[1] : "") {
             case ("secure", _): secure = true
@@ -1171,6 +1278,7 @@ struct InputTraits {
             case ("return", let v): returnKey = v
             case ("capitalize", let v): capitalize = v
             case ("autocorrect", "off"): autocorrect = false
+            case ("max", let v): maxLength = Int(v)
             default: break
             }
         }
@@ -1216,6 +1324,7 @@ struct InputTraits {
 /// `@available(watchOS, unavailable)`, so a text area is a vertical
 /// TextField (watchOS 9+) showing as many lines as its frame holds.
 struct PrismTextField: View {
+    @ObservedObject var store = PrismStore.shared
     let id: UInt64
     let node: Node
     let font: Font
@@ -1225,9 +1334,20 @@ struct PrismTextField: View {
     var body: some View {
         let traits = InputTraits(node.config)
         let text = Binding(get: { node.text }, set: { v in
+            // InputConfig::max_length: longer text is cut.
+            let v = traits.maxLength.map { String(v.prefix($0)) } ?? v
             if v != node.text { send(["t": "input", "id": id, "v": v]) }
         })
-        field(traits, text)
+        HStack(spacing: 6) {
+            // TextInput::leading_icon.
+            if node.kind == "text_input", !node.icon.isEmpty {
+                Image(systemName: node.icon).foregroundStyle(.secondary).accessibilityHidden(true)
+            }
+            field(traits, text)
+        }
+            .focused($focused)
+            .onChange(of: store.focus.n) { _, _ in if store.focus.id == id { focused = true } }
+            .onAppear { if store.focus.id == id && store.focus.n > 0 { focused = true } }
             .font(font)
             .textContentType(traits.contentType)
             .textInputAutocapitalization(traits.secure ? .never : traits.autocapitalization)
@@ -1252,6 +1372,82 @@ struct PrismTextField: View {
             TextField(node.placeholder, text: text)
                 .onSubmit { send(["t": "submit", "id": id]) }
         }
+    }
+}
+
+/// The whole frame takes touches (a clickable card), except a layer's root.
+struct HitShape: ViewModifier {
+    let on: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if on { content.contentShape(Rectangle()) } else { content }
+    }
+}
+
+/// Radio buttons: one row per option, the chosen one checked. SwiftUI's
+/// `RadioGroupPickerStyle` is `@available(watchOS, unavailable)`.
+struct PrismRadioGroup: View {
+    let id: UInt64
+    let node: Node
+    let font: Font
+    let fg: Color
+    let tint: Color?
+
+    var body: some View {
+        let lines = node.config.components(separatedBy: "\n")
+        let options = Array(lines.dropFirst())
+        let selected = Int(node.value)
+        let layout = lines.first == "row" ? AnyLayout(HStackLayout(spacing: RadioChrome.spacing)) : AnyLayout(VStackLayout(alignment: .leading, spacing: 0))
+        layout {
+            ForEach(Array(options.enumerated()), id: \.offset) { i, o in
+                Button {
+                    guard i != selected else { return }
+                    PrismStore.shared.nodes[id]?.value = Double(i)
+                    send(["t": "change", "id": id, "v": i])
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: i == selected ? "largecircle.fill.circle" : "circle")
+                            .foregroundStyle(tint ?? .accentColor)
+                        Text(o).font(font).foregroundStyle(fg)
+                    }
+                    .frame(minHeight: RadioChrome.minHeight)
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(i == selected ? [.isSelected] : [])
+                .accessibilityValue("\(i + 1) / \(options.count)")
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(node.label ?? "")
+    }
+}
+
+/// A sheet, popover or dialog: on a watch all are full-screen sheets.
+/// `fixed` cannot be swiped away; a swipe away is the overlay's dismissal.
+struct PrismOverlay: View {
+    @ObservedObject var store = PrismStore.shared
+    let id: UInt64
+    let node: Node
+
+    var body: some View {
+        let fixed = node.config.split(separator: " ").contains("fixed")
+        Color.clear.frame(width: 0, height: 0)
+            .sheet(isPresented: Binding(
+                get: { node.value != 0 && !node.children.isEmpty },
+                set: { shown in
+                    if !shown, (store.nodes[id]?.value ?? 0) != 0 {
+                        send(["t": "back", "id": id, "depth": 0])
+                    }
+                }
+            )) {
+                Color.clear
+                    .overlay(alignment: .topLeading) {
+                        if let c = node.children.first { NodeView(id: c) }
+                    }
+                    .modifier(ReportSize(event: ["t": "viewport", "id": id]))
+                    .interactiveDismissDisabled(fixed)
+            }
     }
 }
 
@@ -1724,6 +1920,15 @@ struct PrismRootView: View {
         Color.clear
             .overlay(alignment: .topLeading) {
                 if let root = store.root { NodeView(id: root) } else { ProgressView() }
+            }
+            // Runtime layers (the toaster): over the app, touches go through
+            // where they have no child. (Under a sheet that is open: sheets are
+            // presented above the root view.)
+            .overlay(alignment: .topLeading) {
+                ForEach(store.layers, id: \.self) { l in
+                    let f = store.nodes[l]?.frame ?? .zero
+                    NodeView(id: l).offset(x: f.minX, y: f.minY)
+                }
             }
             .modifier(ReportSize(event: ["t": "resize"]))
             .modifier(Presented())

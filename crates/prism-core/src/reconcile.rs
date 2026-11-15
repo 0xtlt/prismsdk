@@ -162,6 +162,47 @@ pub enum Patch {
         /// The destroyed node.
         id: NodeId,
     },
+
+    // --- Pointer, keys, focus, layers (#17, #19, #25) ---
+    /// Which pointer events a view reports (bits of
+    /// [`pointer_mask`](crate::events::pointer_mask): hover, move, drag).
+    SetPointerEvents {
+        /// The view.
+        id: NodeId,
+        /// `HOVER | MOVE | DRAG` bits; 0 reports none.
+        mask: u8,
+    },
+    /// Whether a node reports key presses: `local` while it or something
+    /// in it has the focus (a view can then take the focus), `global`
+    /// whatever has the focus.
+    SetKeyEvents {
+        /// The node.
+        id: NodeId,
+        /// Keys while the focus is in the node.
+        local: bool,
+        /// Keys anywhere in the window.
+        global: bool,
+    },
+    /// Give the node the keyboard focus (`cx.focus`, `.autofocus()`). Sent
+    /// after the node is mounted.
+    Focus {
+        /// The node.
+        id: NodeId,
+    },
+    /// Scroll the scroll views around the node so it is visible
+    /// (`cx.scroll_into_view`).
+    ScrollIntoView {
+        /// The node.
+        id: NodeId,
+    },
+    /// Nodes the runtime mounts above the root, in order (the toaster):
+    /// each covers the window like the root, above everything else
+    /// (sheets and dialogs included), and lets pointer input through
+    /// wherever it has no child.
+    SetLayers {
+        /// The layer roots, bottom first.
+        ids: Vec<NodeId>,
+    },
 }
 
 /// An event reported by a backend.
@@ -187,6 +228,18 @@ pub enum UiEvent {
     Swipe(NodeId, SwipeDirection),
     /// The return key was pressed in a text input.
     Submit(NodeId),
+
+    // --- Pointer and keys (#17) ---
+    /// A clickable view was clicked or tapped at a position (in the view).
+    ClickAt(NodeId, crate::events::Point),
+    /// The pointer entered, moved over or left a view that listens to it.
+    Pointer(NodeId, crate::events::PointerEvent),
+    /// A drag on a view that listens to drags.
+    Drag(NodeId, crate::events::DragEvent),
+    /// A key press: the node with the focus (or `None` if nothing Prism
+    /// knows has it). Handlers of that node and its ancestors run, then
+    /// global ones.
+    Key(Option<NodeId>, crate::events::KeyEvent),
 }
 
 /// A mounted host node.
@@ -210,6 +263,12 @@ struct MNode {
     auto_label: bool,
     parent: Option<NodeId>,
     children: Vec<NodeId>,
+    /// Pointer events reported (`pointer_mask` bits).
+    pointer_mask: u8,
+    /// Key events reported: (local, global).
+    keys: (bool, bool),
+    /// Its `.id(…)`.
+    name: Option<String>,
 }
 
 /// A flattened child, ready to diff.
@@ -247,6 +306,20 @@ pub struct Reconciler {
     animation: Option<crate::style::Transition>,
     /// Nodes that got it, reset on the next render.
     animated: Vec<NodeId>,
+    // Pointer, keys, focus, layers (#17, #25).
+    hover: HashMap<NodeId, Handler<crate::events::HoverEvent>>,
+    pointer_move: HashMap<NodeId, Handler<crate::events::PointerEvent>>,
+    drag: HashMap<NodeId, Handler<crate::events::DragEvent>>,
+    key_down: HashMap<NodeId, Handler<crate::events::KeyEvent>>,
+    global_key: HashMap<NodeId, Handler<crate::events::KeyEvent>>,
+    /// `.id(…)` names of mounted nodes.
+    names: HashMap<String, NodeId>,
+    /// Nodes created with `.autofocus()` in this render.
+    autofocus: Vec<NodeId>,
+    /// Runtime-mounted layers: (entity, its root node), bottom first.
+    layers: Vec<(EntityId, NodeId)>,
+    /// The layer roots backends last got.
+    sent_layers: Vec<NodeId>,
 }
 
 impl Reconciler {
@@ -300,6 +373,55 @@ impl Reconciler {
         self.change.get(&id).cloned()
     }
 
+    /// The hover handler of node `id`, if any.
+    pub fn hover_handler(&self, id: NodeId) -> Option<Handler<crate::events::HoverEvent>> {
+        self.hover.get(&id).cloned()
+    }
+
+    /// The pointer-move handler of node `id`, if any.
+    pub fn pointer_handler(&self, id: NodeId) -> Option<Handler<crate::events::PointerEvent>> {
+        self.pointer_move.get(&id).cloned()
+    }
+
+    /// The drag handler of node `id`, if any.
+    pub fn drag_handler(&self, id: NodeId) -> Option<Handler<crate::events::DragEvent>> {
+        self.drag.get(&id).cloned()
+    }
+
+    /// The handlers a key press in node `focused` reaches, in order: the
+    /// node's and its ancestors' `on_key_down`, then every
+    /// `on_global_key_down`, most recently mounted first.
+    pub fn key_handlers(&self, focused: Option<NodeId>) -> Vec<Handler<crate::events::KeyEvent>> {
+        let mut out = Vec::new();
+        let mut next = focused;
+        while let Some(id) = next {
+            if let Some(h) = self.key_down.get(&id) {
+                out.push(h.clone());
+            }
+            next = self.nodes.get(&id).and_then(|n| n.parent);
+        }
+        let mut global: Vec<(&NodeId, &Handler<crate::events::KeyEvent>)> =
+            self.global_key.iter().collect();
+        global.sort_by(|a, b| b.0.cmp(a.0));
+        out.extend(global.into_iter().map(|(_, h)| h.clone()));
+        out
+    }
+
+    /// The mounted node named `name` (`.id(name)`), if any.
+    pub fn node_named(&self, name: &str) -> Option<NodeId> {
+        self.names.get(name).copied()
+    }
+
+    /// The user closed overlay `id` natively: remember it is closed, so
+    /// opening it again shows it even if the app never set it to closed.
+    pub fn overlay_dismissed(&mut self, id: NodeId) {
+        if let Some(m) = self.nodes.get_mut(&id)
+            && m.kind == NodeKind::Overlay
+        {
+            m.value = Some(0.);
+        }
+    }
+
     /// Number of entity renders performed by the last [`render`](Self::render).
     pub fn last_render_count(&self) -> usize {
         self.rendered
@@ -341,6 +463,7 @@ impl Reconciler {
                 self.patches.push(Patch::SetRoot { id });
             }
         }
+        self.mount_layers(app);
 
         // Re-render the remaining dirty entities in place, shallowest first, so
         // an ancestor's re-render handles its dirty descendants in one pass.
@@ -384,7 +507,69 @@ impl Reconciler {
                 appearance: self.appearance,
             });
         }
+        self.push_commands(app, &mut patches);
         patches
+    }
+
+    /// Mounts the app's layers (`App::add_layer`) that are not mounted yet
+    /// and unmounts removed ones.
+    fn mount_layers(&mut self, app: &mut App) {
+        let wanted = app.layers.clone();
+        let mut next = Vec::with_capacity(wanted.len());
+        for entity in wanted {
+            let mounted = self
+                .layers
+                .iter()
+                .find(|(e, _)| *e == entity.id())
+                .map(|(_, n)| *n);
+            let id = match mounted {
+                Some(n) => n,
+                None => {
+                    let vnode = self.render_entity(app, entity);
+                    self.diff(app, None, None, vnode, Some(entity))
+                }
+            };
+            next.push((entity.id(), id));
+        }
+        for (e, n) in std::mem::take(&mut self.layers) {
+            if !next.iter().any(|(k, _)| *k == e) {
+                self.destroy(n);
+            }
+        }
+        self.layers = next;
+        self.push_layers();
+    }
+
+    /// Tells backends the layer roots, if they changed.
+    fn push_layers(&mut self) {
+        let ids: Vec<NodeId> = self.layers.iter().map(|(_, n)| *n).collect();
+        if ids != self.sent_layers {
+            self.sent_layers = ids.clone();
+            self.patches.push(Patch::SetLayers { ids });
+        }
+    }
+
+    /// Focus and scroll requests, after every node is mounted.
+    fn push_commands(&mut self, app: &mut App, patches: &mut Vec<Patch>) {
+        for id in std::mem::take(&mut self.autofocus) {
+            if self.nodes.contains_key(&id) {
+                patches.push(Patch::Focus { id });
+            }
+        }
+        for command in std::mem::take(&mut app.ui_commands) {
+            let (name, focus) = match &command {
+                crate::app::UiCommand::Focus(n) => (n, true),
+                crate::app::UiCommand::ScrollIntoView(n) => (n, false),
+            };
+            let Some(id) = self.node_named(name) else {
+                continue;
+            };
+            patches.push(if focus {
+                Patch::Focus { id }
+            } else {
+                Patch::ScrollIntoView { id }
+            });
+        }
     }
 
     fn replace_child(&mut self, parent: Option<NodeId>, old: NodeId, new: NodeId) {
@@ -402,6 +587,11 @@ impl Reconciler {
                 });
             }
             None => {
+                if let Some(layer) = self.layers.iter_mut().find(|(_, n)| *n == old) {
+                    layer.1 = new;
+                    self.push_layers();
+                    return;
+                }
                 self.root = Some(new);
                 self.patches.push(Patch::SetRoot { id: new });
             }
@@ -523,9 +713,25 @@ impl Reconciler {
             on_swipe_right,
             on_submit,
             spans,
+            id: name,
+            autofocus,
+            on_hover,
+            on_pointer_move,
+            on_drag,
+            on_key_down,
+            on_global_key_down,
             ..
         } = *vnode;
         app.window.watch_widths(&style);
+        if autofocus && reusable.is_none() {
+            self.autofocus.push(id);
+        }
+        self.diff_events(
+            id,
+            name,
+            (on_hover, on_pointer_move, on_drag),
+            (on_key_down, on_global_key_down),
+        );
         let mut style = style.resolve(app.style_context());
         if let Some(t) = self.animation
             && style.transition.is_none()
@@ -764,6 +970,64 @@ impl Reconciler {
         id
     }
 
+    /// Names, pointer and key handlers of node `id` (#17).
+    #[allow(clippy::type_complexity)]
+    fn diff_events(
+        &mut self,
+        id: NodeId,
+        name: Option<String>,
+        pointer: (
+            Option<Handler<crate::events::HoverEvent>>,
+            Option<Handler<crate::events::PointerEvent>>,
+            Option<Handler<crate::events::DragEvent>>,
+        ),
+        keys: (
+            Option<Handler<crate::events::KeyEvent>>,
+            Option<Handler<crate::events::KeyEvent>>,
+        ),
+    ) {
+        use crate::events::pointer_mask::{DRAG, HOVER, MOVE};
+        let m = self.nodes.get_mut(&id).expect("node exists");
+        if m.name != name {
+            if let Some(old) = m.name.take()
+                && self.names.get(&old) == Some(&id)
+            {
+                self.names.remove(&old);
+            }
+            m.name = name.clone();
+        }
+        if let Some(n) = name {
+            self.names.insert(n, id);
+        }
+        let mask = if pointer.0.is_some() { HOVER } else { 0 }
+            | if pointer.1.is_some() { MOVE } else { 0 }
+            | if pointer.2.is_some() { DRAG } else { 0 };
+        if m.pointer_mask != mask {
+            m.pointer_mask = mask;
+            self.patches.push(Patch::SetPointerEvents { id, mask });
+        }
+        let flags = (keys.0.is_some(), keys.1.is_some());
+        if m.keys != flags {
+            m.keys = flags;
+            self.patches.push(Patch::SetKeyEvents {
+                id,
+                local: flags.0,
+                global: flags.1,
+            });
+        }
+        fn set<E>(map: &mut HashMap<NodeId, Handler<E>>, id: NodeId, h: Option<Handler<E>>) {
+            match h {
+                Some(h) => map.insert(id, h),
+                None => map.remove(&id),
+            };
+        }
+        set(&mut self.hover, id, pointer.0);
+        set(&mut self.pointer_move, id, pointer.1);
+        set(&mut self.drag, id, pointer.2);
+        set(&mut self.key_down, id, keys.0);
+        set(&mut self.global_key, id, keys.1);
+    }
+
     /// Recomputes the automatic labels of `from` and its ancestors (after a
     /// descendant entity re-rendered on its own).
     fn refresh_auto_labels(&mut self, from: Option<NodeId>) {
@@ -801,7 +1065,7 @@ impl Reconciler {
                 kind => kind.default_role(),
             };
         }
-        if m.kind == NodeKind::Toggle && a.checked.is_none() {
+        if matches!(m.kind, NodeKind::Toggle | NodeKind::Checkbox) && a.checked.is_none() {
             a.checked = value.map(|v| v != 0.);
         }
         if a.value.is_none() {
@@ -809,6 +1073,12 @@ impl Reconciler {
                 (NodeKind::Slider, Some(v)) => Some(format_value(v)),
                 (NodeKind::Picker, Some(v)) if v >= 0. => {
                     crate::controls::PickerConfig::decode(&m.config)
+                        .options
+                        .get(v as usize)
+                        .cloned()
+                }
+                (NodeKind::RadioGroup, Some(v)) if v >= 0. => {
+                    crate::controls::RadioConfig::decode(&m.config)
                         .options
                         .get(v as usize)
                         .cloned()
@@ -827,7 +1097,10 @@ impl Reconciler {
                 {
                     Some(m.placeholder.clone())
                 }
-                NodeKind::Tab | NodeKind::Screen if !m.text.is_empty() => Some(m.text.clone()),
+                NodeKind::Tab | NodeKind::Screen | NodeKind::Checkbox if !m.text.is_empty() => {
+                    Some(m.text.clone())
+                }
+                NodeKind::Overlay => None,
                 _ => None,
             };
         }
@@ -925,6 +1198,9 @@ impl Reconciler {
                 auto_label: false,
                 parent: None,
                 children: Vec::new(),
+                pointer_mask: 0,
+                keys: (false, false),
+                name: None,
             },
         );
         id
@@ -951,6 +1227,16 @@ impl Reconciler {
         self.menu_items.retain(|k, _| k >> 16 != id);
         self.scroll.remove(&id);
         self.swipe.retain(|(n, _), _| *n != id);
+        self.hover.remove(&id);
+        self.pointer_move.remove(&id);
+        self.drag.remove(&id);
+        self.key_down.remove(&id);
+        self.global_key.remove(&id);
+        if let Some(name) = node.name
+            && self.names.get(&name) == Some(&id)
+        {
+            self.names.remove(&name);
+        }
         self.destroyed.push(id);
     }
 }

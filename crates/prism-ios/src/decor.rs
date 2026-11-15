@@ -34,7 +34,7 @@ use objc2_core_foundation::{CFRetained, CGFloat, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{CGColor, CGMutablePath};
 use objc2_foundation::{NSArray, NSNumber, NSObject, NSObjectProtocol};
 use objc2_quartz_core::{CAGradientLayer, CALayer, CAShapeLayer, CATransaction};
-use objc2_ui_kit::{UIColor, UIResponder, UITraitEnvironment, UIView};
+use objc2_ui_kit::{UIColor, UITraitEnvironment, UIView};
 #[cfg(not(target_os = "tvos"))]
 use objc2_ui_kit::{UIInteraction, UIPointerInteractionDelegate};
 use prism_core::{
@@ -580,53 +580,14 @@ pub fn tv_focus(id: NodeId, on: bool) {
     }
 }
 
-define_class!(
-    /// Containers: report presses (touch down, up, cancelled) like
-    /// `UIControl` highlighting (delayed in scroll views, cancelled when
-    /// they scroll).
-    #[unsafe(super(UIView, UIResponder, NSObject))]
-    #[thread_kind = MainThreadOnly]
-    #[name = "PrismContainer"]
-    pub struct Container;
-
-    unsafe impl NSObjectProtocol for Container {}
-
-    impl Container {
-        #[unsafe(method(touchesBegan:withEvent:))]
-        fn touches_began(&self, touches: &AnyObject, event: Option<&AnyObject>) {
-            let _: () = unsafe { msg_send![super(self), touchesBegan: touches, withEvent: event] };
-            self.press(true);
-        }
-
-        #[unsafe(method(touchesEnded:withEvent:))]
-        fn touches_ended(&self, touches: &AnyObject, event: Option<&AnyObject>) {
-            let _: () = unsafe { msg_send![super(self), touchesEnded: touches, withEvent: event] };
-            self.press(false);
-        }
-
-        #[unsafe(method(touchesCancelled:withEvent:))]
-        fn touches_cancelled(&self, touches: &AnyObject, event: Option<&AnyObject>) {
-            let _: () =
-                unsafe { msg_send![super(self), touchesCancelled: touches, withEvent: event] };
-            self.press(false);
-        }
-    }
-);
-
-impl Container {
-    fn press(&self, on: bool) {
-        let id = self.tag() as NodeId;
-        if wants(id, Interaction::Active) {
-            report(id, Interaction::Active, on);
-        }
-    }
-}
-
-/// A container view that reports presses.
+/// A container was touched (`true`) or the touch ended or was cancelled:
+/// reports presses like `UIControl` highlighting (delayed in scroll views,
+/// cancelled when they scroll). Called by `interaction::ContainerView`.
 #[cfg_attr(target_os = "tvos", allow(dead_code))]
-pub fn container(mtm: MainThreadMarker) -> Retained<UIView> {
-    let view: Retained<Container> = unsafe { msg_send![Container::alloc(mtm), init] };
-    Retained::into_super(view)
+pub fn press(id: NodeId, on: bool) {
+    if wants(id, Interaction::Active) {
+        report(id, Interaction::Active, on);
+    }
 }
 
 define_class!(

@@ -17,11 +17,12 @@ use objc2_ui_kit::{
     UIAccessibilityTraitTabBar, UIAccessibilityTraitToggleButton,
     UIAdaptivePresentationControllerDelegate, UIApplication, UIApplicationDelegate, UIButton,
     UIButtonType, UIColor, UIContextMenuInteractionDelegate, UIControlEvents, UIControlState,
-    UIFont, UIImage, UIImageSymbolConfiguration, UIImageView, UILabel, UINavigationController,
-    UINavigationControllerDelegate, UIProgressView, UIResponder, UIScene, UISceneConnectionOptions,
-    UISceneDelegate, UISceneSession, UIScrollView, UIScrollViewContentInsetAdjustmentBehavior,
-    UIScrollViewDelegate, UIScrollViewKeyboardDismissMode, UISwitch, UITabBarController,
-    UITabBarControllerDelegate, UITapGestureRecognizer, UITextBorderStyle, UITextField,
+    UIFont, UIGestureRecognizerDelegate, UIImage, UIImageSymbolConfiguration, UIImageView, UILabel,
+    UINavigationController, UINavigationControllerDelegate, UIProgressView, UIResponder, UIScene,
+    UISceneConnectionOptions, UISceneDelegate, UISceneSession, UIScrollView,
+    UIScrollViewContentInsetAdjustmentBehavior, UIScrollViewDelegate,
+    UIScrollViewKeyboardDismissMode, UISwitch, UITabBarController, UITabBarControllerDelegate,
+    UITapGestureRecognizer, UITextBorderStyle, UITextField, UITextFieldDelegate,
     UITextViewDelegate, UITraitCollection, UIUserInterfaceStyle, UIView, UIViewController,
     UIWindow, UIWindowScene, UIWindowSceneDelegate,
 };
@@ -172,7 +173,25 @@ impl State {
         };
         self.renderer
             .layout(size.width as f32, size.height as f32, insets);
+        self.renderer.widgets.attach_layers();
+        crate::interaction::claim_keys(&self.renderer.widgets.controller);
     }
+}
+
+/// Lays everything out again (overlay controllers call it after UIKit
+/// sized them).
+pub(crate) fn relayout() {
+    with_state(State::relayout);
+}
+
+/// The user closed overlay `id` (swipe down, tap outside, Escape, Menu).
+pub(crate) fn overlay_closed(id: NodeId) {
+    with_state(|s| {
+        if let Some(o) = s.renderer.widgets.overlays.get(&id) {
+            o.open.set(false);
+        }
+    });
+    dispatch(UiEvent::Back(id, 0));
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +280,7 @@ define_class!(
         fn on_editing(&self, sender: &UITextField) {
             let text = sender.text().map(|t| t.to_string()).unwrap_or_default();
             dispatch(UiEvent::Input(sender.tag() as NodeId, text));
+            crate::interaction::refresh_suggestions(sender, self);
         }
 
         /// Text size, reduce motion or language changed in Settings.
@@ -283,6 +303,7 @@ define_class!(
         fn on_begin_editing(&self, sender: &UITextField) {
             scroll_into_view(sender);
             crate::decor::focus(sender.tag() as NodeId, true);
+            crate::interaction::refresh_suggestions(sender, self);
         }
 
         #[unsafe(method(onEndEditing:))]
@@ -300,8 +321,13 @@ define_class!(
         fn on_date(&self, sender: &AnyObject) {
             #[cfg(not(target_os = "tvos"))]
             if let Some(picker) = sender.downcast_ref::<objc2_ui_kit::UIDatePicker>() {
-                let secs = picker.date().timeIntervalSince1970().round();
-                dispatch(UiEvent::Change(picker.tag() as NodeId, secs));
+                let id = picker.tag() as NodeId;
+                let mut secs = picker.date().timeIntervalSince1970().round();
+                // A time of day: seconds since midnight, in UTC.
+                if crate::interaction::is_time_of_day(id) {
+                    secs = secs.rem_euclid(86_400.);
+                }
+                dispatch(UiEvent::Change(id, secs));
             }
             #[cfg(target_os = "tvos")]
             let _ = sender;
@@ -374,11 +400,109 @@ define_class!(
             dispatch(UiEvent::Change(sender.tag() as NodeId, if on { 1. } else { 0. }));
         }
 
+        /// A tap reports where it landed (VoiceOver activation does not:
+        /// see `PrismContainerView`).
         #[unsafe(method(onTap:))]
         fn on_tap(&self, sender: &UITapGestureRecognizer) {
             if let Some(view) = sender.view() {
-                dispatch(UiEvent::Click(view.tag() as NodeId));
+                let id = view.tag() as NodeId;
+                dispatch(match crate::interaction::tap_position(sender) {
+                    Some(p) => UiEvent::ClickAt(id, p),
+                    None => UiEvent::Click(id),
+                });
             }
+        }
+
+        #[unsafe(method(onHover:))]
+        fn on_hover(&self, sender: &objc2_ui_kit::UIGestureRecognizer) {
+            #[cfg(not(target_os = "tvos"))]
+            crate::interaction::on_hover(sender);
+            #[cfg(target_os = "tvos")]
+            let _ = sender;
+        }
+
+        #[unsafe(method(onTouchMove:))]
+        fn on_touch_move(&self, sender: &objc2_ui_kit::UIGestureRecognizer) {
+            #[cfg(not(target_os = "tvos"))]
+            crate::interaction::on_touch_move(sender);
+            #[cfg(target_os = "tvos")]
+            let _ = sender;
+        }
+
+        #[unsafe(method(onPan:))]
+        fn on_pan(&self, sender: &objc2_ui_kit::UIPanGestureRecognizer) {
+            #[cfg(not(target_os = "tvos"))]
+            crate::interaction::on_pan(sender);
+            #[cfg(target_os = "tvos")]
+            let _ = sender;
+        }
+
+        /// A checkbox was pressed: flip it and report.
+        #[unsafe(method(onCheckbox:))]
+        fn on_checkbox(&self, sender: &UIButton) {
+            let id = sender.tag() as NodeId;
+            let mut value = None;
+            with_state(|s| {
+                if let Some(c) = s.renderer.widgets.checkboxes.get(&id) {
+                    c.set_on(!c.is_on());
+                    value = Some(if c.is_on() { 1. } else { 0. });
+                }
+            });
+            if let Some(v) = value {
+                dispatch(UiEvent::Change(id, v));
+            }
+        }
+
+        /// A radio option (tag -1 - index) of its group (the superview).
+        #[unsafe(method(onRadio:))]
+        fn on_radio(&self, sender: &UIButton) {
+            let index = (-sender.tag() - 1).max(0) as f64;
+            if let Some(group) = sender.superview() {
+                dispatch(UiEvent::Change(group.tag() as NodeId, index));
+            }
+        }
+
+        #[unsafe(method(onSuggestion:))]
+        fn on_suggestion(&self, sender: &UIButton) {
+            #[cfg(target_os = "ios")]
+            crate::interaction::suggestion_chosen(sender, self);
+            #[cfg(not(target_os = "ios"))]
+            let _ = sender;
+        }
+    }
+
+    unsafe impl UITextFieldDelegate for Target {
+        /// `max_length`: edits that would make the text longer are refused.
+        #[unsafe(method(textField:shouldChangeCharactersInRange:replacementString:))]
+        fn should_change(
+            &self,
+            field: &UITextField,
+            range: objc2_foundation::NSRange,
+            replacement: &NSString,
+        ) -> bool {
+            let old = field.text().map_or(0, |t| t.length());
+            let new = old.saturating_sub(range.length) + replacement.length();
+            crate::interaction::edit_fits(field.tag() as NodeId, old, new)
+        }
+    }
+
+    unsafe impl UIGestureRecognizerDelegate for Target {
+        #[unsafe(method(gestureRecognizer:shouldRecognizeSimultaneouslyWithGestureRecognizer:))]
+        fn simultaneous(
+            &self,
+            g: &objc2_ui_kit::UIGestureRecognizer,
+            other: &objc2_ui_kit::UIGestureRecognizer,
+        ) -> bool {
+            crate::interaction::simultaneous(g) || crate::interaction::simultaneous(other)
+        }
+
+        #[unsafe(method(gestureRecognizer:shouldBeRequiredToFailByGestureRecognizer:))]
+        fn required_to_fail(
+            &self,
+            g: &objc2_ui_kit::UIGestureRecognizer,
+            other: &objc2_ui_kit::UIGestureRecognizer,
+        ) -> bool {
+            crate::interaction::required_to_fail_by(g, other)
         }
     }
 
@@ -505,6 +629,46 @@ define_class!(
             let _: () = unsafe { msg_send![super(self), traitCollectionDidChange: previous] };
             crate::decor::appearance_changed();
         }
+
+        #[unsafe(method(canBecomeFirstResponder))]
+        fn can_become_first_responder(&self) -> bool {
+            crate::interaction::has_global_keys()
+        }
+
+        /// Keys nothing below handled: global listeners (and local ones
+        /// around a focused text field).
+        #[unsafe(method(pressesBegan:withEvent:))]
+        fn presses_began(
+            &self,
+            presses: &objc2_foundation::NSSet<objc2_ui_kit::UIPress>,
+            event: Option<&objc2_ui_kit::UIPressesEvent>,
+        ) {
+            if !crate::interaction::handle_presses(presses, self, None, true) {
+                let _: () = unsafe { msg_send![super(self), pressesBegan: presses, withEvent: event] };
+            }
+        }
+
+        #[unsafe(method(pressesEnded:withEvent:))]
+        fn presses_ended(
+            &self,
+            presses: &objc2_foundation::NSSet<objc2_ui_kit::UIPress>,
+            event: Option<&objc2_ui_kit::UIPressesEvent>,
+        ) {
+            if !crate::interaction::handle_presses(presses, self, None, false) {
+                let _: () = unsafe { msg_send![super(self), pressesEnded: presses, withEvent: event] };
+            }
+        }
+
+        /// tvOS: `cx.focus` moves the focus engine there.
+        #[unsafe(method_id(preferredFocusEnvironments))]
+        fn preferred_focus_environments(
+            &self,
+        ) -> Retained<NSArray<ProtocolObject<dyn objc2_ui_kit::UIFocusEnvironment>>> {
+            match crate::interaction::take_focus_target() {
+                Some(v) => NSArray::from_retained_slice(&[ProtocolObject::from_retained(v)]),
+                None => unsafe { msg_send![super(self), preferredFocusEnvironments] },
+            }
+        }
     }
 );
 
@@ -583,7 +747,7 @@ fn apply_navigation_bar(vc: &UIViewController, animated: bool) {
 }
 
 #[cfg(not(target_os = "tvos"))]
-use objc2_ui_kit::{UIGestureRecognizer, UIGestureRecognizerDelegate};
+use objc2_ui_kit::UIGestureRecognizer;
 
 #[cfg(not(target_os = "tvos"))]
 define_class!(
@@ -823,6 +987,14 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
         date_pickers: HashMap::new(),
         announced: HashMap::new(),
         lang: String::new(),
+        overlays: HashMap::new(),
+        checkboxes: HashMap::new(),
+        no_hit: Default::default(),
+        inert: Default::default(),
+        a11y_hidden: Default::default(),
+        layers: Vec::new(),
+        layer_window: None,
+        root_tabs: None,
     });
     #[cfg(target_os = "tvos")]
     renderer.set_zoom(crate::tv::zoom());
@@ -922,6 +1094,12 @@ pub enum View {
     #[cfg(not(target_os = "tvos"))]
     TextArea(Rc<crate::forms::TextArea>),
     Spinner(Retained<objc2_ui_kit::UIActivityIndicatorView>),
+    /// A sheet, popover or dialog (its view is a hidden anchor).
+    Overlay(Rc<crate::overlay::Overlay>),
+    /// A drawn checkbox.
+    Checkbox(Rc<crate::choice::Checkbox>),
+    /// Drawn radio buttons.
+    Radio(Rc<crate::choice::RadioGroup>),
 }
 
 impl View {
@@ -946,6 +1124,9 @@ impl View {
             #[cfg(not(target_os = "tvos"))]
             View::TextArea(t) => &t.view,
             View::Spinner(v) => v,
+            View::Overlay(o) => &o.anchor,
+            View::Checkbox(c) => &c.button,
+            View::Radio(r) => &r.view,
         }
     }
 
@@ -988,6 +1169,77 @@ pub struct UiKit {
     announced: HashMap<NodeId, String>,
     /// The app's language (BCP 47).
     lang: String,
+    // Overlays, choices, hit testing, layers (#18, #19, #25).
+    overlays: HashMap<NodeId, Rc<crate::overlay::Overlay>>,
+    checkboxes: HashMap<NodeId, Rc<crate::choice::Checkbox>>,
+    /// Nodes made unreachable by `hit_test(false)` or `inert`.
+    no_hit: std::collections::HashSet<NodeId>,
+    inert: std::collections::HashSet<NodeId>,
+    /// `Accessibility::hidden` of each node (combined with `inert`).
+    a11y_hidden: std::collections::HashSet<NodeId>,
+    /// The runtime's layers, and the window showing them.
+    layers: Vec<Retained<UIView>>,
+    layer_window: Option<(Retained<UIWindow>, Retained<UIView>)>,
+    /// The root tab bar, which layers (toasts) keep clear of.
+    root_tabs: Option<Retained<UITabBarController>>,
+}
+
+impl UiKit {
+    /// Puts the layers in their pass-through window, once the app's window
+    /// is on screen, framed like the app's root.
+    fn attach_layers(&mut self) {
+        if self.layers.is_empty() && self.layer_window.is_none() {
+            return;
+        }
+        if self.layer_window.is_none() {
+            let Some(scene) = self.root.window().and_then(|w| w.windowScene()) else {
+                return;
+            };
+            self.layer_window = Some(crate::interaction::layer_window(self.mtm, &scene));
+        }
+        let Some((_, host)) = &self.layer_window else {
+            return;
+        };
+        let frame = self.root.convertRect_toView(self.root.bounds(), None);
+        crate::interaction::frame_layer_host(host, frame);
+        for (i, v) in self.layers.iter().enumerate() {
+            if v.superview().as_deref() != Some(&**host) {
+                host.insertSubview_atIndex(v, i as isize);
+            }
+        }
+        for sub in host.subviews().iter() {
+            if !self.layers.iter().any(|l| **l == *sub) {
+                sub.removeFromSuperview();
+            }
+        }
+    }
+
+    /// The user can point at / tap the view (`hit_test`, `inert`).
+    fn set_hit(&mut self, view: &View, style: &Style) {
+        let id = view.id();
+        let v = view.ui();
+        let blocked = !style.hit_test || style.inert;
+        if blocked {
+            v.setUserInteractionEnabled(false);
+            self.no_hit.insert(id);
+        } else if self.no_hit.remove(&id) {
+            // Labels and images take no touches by default.
+            let default_on = !matches!(
+                view,
+                View::Label(_) | View::Timer(_) | View::Image(_) | View::Picture(_)
+            );
+            v.setUserInteractionEnabled(default_on);
+        }
+        let inert = style.inert;
+        if inert != self.inert.contains(&id) {
+            if inert {
+                self.inert.insert(id);
+            } else {
+                self.inert.remove(&id);
+            }
+            v.setAccessibilityElementsHidden(inert || self.a11y_hidden.contains(&id), self.mtm);
+        }
+    }
 }
 
 impl UiKit {
@@ -1221,7 +1473,7 @@ impl Widgets for UiKit {
         let view = match kind {
             // Reports presses for `.active(|s| …)`.
             #[cfg(not(target_os = "tvos"))]
-            NodeKind::View => View::Container(crate::decor::container(mtm)),
+            NodeKind::View => View::Container(crate::interaction::container(mtm)),
             // tvOS: containers can take the remote's focus when clickable.
             #[cfg(target_os = "tvos")]
             NodeKind::View => View::Container(crate::tv::focus_view(mtm)),
@@ -1334,6 +1586,8 @@ impl Widgets for UiKit {
                         UIControlEvents::EditingDidEndOnExit,
                     );
                 };
+                // Max length.
+                f.setDelegate(Some(ProtocolObject::from_ref(&*self.target)));
                 View::Input(f)
             }
             #[cfg(not(target_os = "tvos"))]
@@ -1390,6 +1644,19 @@ impl Widgets for UiKit {
                 s.startAnimating();
                 View::Spinner(s)
             }
+            NodeKind::Overlay => {
+                let o = Rc::new(crate::overlay::Overlay::new(mtm, id));
+                self.overlays.insert(id, o.clone());
+                View::Overlay(o)
+            }
+            NodeKind::Checkbox => {
+                let c = Rc::new(crate::choice::Checkbox::new(mtm, target));
+                self.checkboxes.insert(id, c.clone());
+                View::Checkbox(c)
+            }
+            NodeKind::RadioGroup => {
+                View::Radio(Rc::new(crate::choice::RadioGroup::new(mtm, target)))
+            }
         };
         view.ui().setTag(id as isize);
         if let Some(attr) = self.semantic {
@@ -1408,6 +1675,10 @@ impl Widgets for UiKit {
     }
 
     fn set_style(&mut self, view: &View, style: &Style) {
+        if let View::Overlay(_) = view {
+            return;
+        }
+        self.set_hit(view, style);
         let v = view.ui();
         v.setAlpha(style.opacity as f64);
         v.setTransform(prism_native::apple::motion::affine(style.transform));
@@ -1448,7 +1719,10 @@ impl Widgets for UiKit {
             | View::Tab(_)
             | View::Scroll(_)
             | View::Picture(_)
-            | View::Toggle(_) => {}
+            | View::Toggle(_)
+            | View::Overlay(_) => {}
+            View::Checkbox(c) => c.set_style(font(style), text_color.clone()),
+            View::Radio(r) => r.set_style(font(style), text_color.clone()),
             #[cfg(not(target_os = "tvos"))]
             View::Slider(s) => s.setMinimumTrackTintColor(text_color.as_deref()),
             #[cfg(target_os = "tvos")]
@@ -1529,6 +1803,7 @@ impl Widgets for UiKit {
                 }
             }
             View::Button(b) => b.setTitle_forState(Some(&s), UIControlState::Normal),
+            View::Checkbox(c) => c.set_title(text),
             #[cfg(not(target_os = "tvos"))]
             View::TextArea(t) => t.set_text(text),
             View::Screen(_) | View::Tab(_) => {
@@ -1571,7 +1846,18 @@ impl Widgets for UiKit {
         match view {
             // A rich text's runs.
             View::Label(l) => crate::label::set_runs(l, config),
-            View::Input(f) => crate::forms::apply_input_config(f, config),
+            View::Input(f) => {
+                crate::forms::apply_input_config(f, config);
+                let id = view.id();
+                let c = prism_core::controls::InputConfig::decode(config);
+                crate::interaction::set_max_length(id, c.max_length);
+                crate::interaction::set_suggestions(
+                    id,
+                    prism_core::controls::input_suggestions(config),
+                );
+            }
+            View::Radio(r) => r.set_config(config),
+            View::Overlay(o) => o.set_config(config),
             #[cfg(not(target_os = "tvos"))]
             View::TextArea(t) => crate::forms::apply_input_config(&t.view, config),
             #[cfg(not(target_os = "tvos"))]
@@ -1590,9 +1876,15 @@ impl Widgets for UiKit {
                 let c = DateConfig::decode(config);
                 p.setDatePickerMode(match c.mode {
                     prism_core::DateMode::Date => M::Date,
-                    prism_core::DateMode::Time => M::Time,
+                    prism_core::DateMode::Time | prism_core::DateMode::TimeOfDay => M::Time,
                     prism_core::DateMode::DateTime => M::DateAndTime,
                 });
+                // A time of day is the same in every zone: shown in UTC.
+                let of_day = c.mode == prism_core::DateMode::TimeOfDay;
+                crate::interaction::set_time_of_day(view.id(), of_day);
+                let utc =
+                    of_day.then(|| objc2_foundation::NSTimeZone::timeZoneForSecondsFromGMT(0));
+                p.setTimeZone(utc.as_deref());
                 let date =
                     |v: Option<f64>| v.map(objc2_foundation::NSDate::dateWithTimeIntervalSince1970);
                 p.setMinimumDate(date(c.min).as_deref());
@@ -1636,6 +1928,7 @@ impl Widgets for UiKit {
         }
         let View::Container(v) = view else { return };
         crate::decor::set_clickable(v, clickable);
+        crate::interaction::set_activatable(v, clickable);
         if let Some(existing) = v.gestureRecognizers() {
             for g in existing.iter() {
                 if g.isKindOfClass(UITapGestureRecognizer::class()) {
@@ -1661,6 +1954,11 @@ impl Widgets for UiKit {
     }
 
     fn set_children(&mut self, parent: &View, children: &[View]) {
+        if let View::Overlay(o) = parent {
+            let views: Vec<Retained<UIView>> = children.iter().map(|c| c.ui().retain()).collect();
+            o.set_content(&views);
+            return;
+        }
         // Sheets attached to a root container are presented modally.
         let (sheets, children): (Vec<View>, Vec<View>) = children
             .iter()
@@ -1735,6 +2033,10 @@ impl Widgets for UiKit {
         if let Some(child) = &child {
             self.controller.addChildViewController(child);
         }
+        self.root_tabs = match view {
+            View::Tabs(bar) => Some(bar.controller.clone()),
+            _ => None,
+        };
         self.root.addSubview(view.ui());
         if let Some(child) = &child {
             child.didMoveToParentViewController(Some(&self.controller));
@@ -1760,6 +2062,15 @@ impl Widgets for UiKit {
         self.pickers.remove(&id);
         self.date_pickers.remove(&id);
         self.announced.remove(&id);
+        if let Some(o) = self.overlays.remove(&id) {
+            o.close();
+        }
+        self.checkboxes.remove(&id);
+        self.no_hit.remove(&id);
+        self.inert.remove(&id);
+        self.a11y_hidden.remove(&id);
+        self.layers.retain(|l| l.tag() as NodeId != id);
+        crate::interaction::forget(id);
         self.pictures.retain(|_, ids| {
             ids.retain(|(i, _)| *i != id);
             !ids.is_empty()
@@ -1824,11 +2135,32 @@ impl Widgets for UiKit {
                 objc2_ui_kit::UILayoutFittingCompressedSize
             }),
             View::Spinner(s) => s.intrinsicContentSize(),
+            View::Checkbox(c) => c.button.sizeThatFits(limit),
+            View::Radio(r) => r.measure(max_width),
+            View::Overlay(_) => CGSize::ZERO,
             #[cfg(not(target_os = "tvos"))]
             View::TextArea(t) => t.measure(max_width.map_or(240., |w| w as f64)),
             other => other.ui().sizeThatFits(limit),
         };
         (size.width.ceil() as f32, size.height.ceil() as f32)
+    }
+
+    /// A label wraps down to its longest word (CSS min-content), so flex
+    /// rows shrink it before squeezing fixed-size neighbours.
+    fn measure_min_content(&mut self, view: &View) -> f32 {
+        let View::Label(l) = view else {
+            return self.measure(view, None).0;
+        };
+        let text = l.text().map(|t| t.to_string()).unwrap_or_default();
+        let scratch = UILabel::new(self.mtm);
+        unsafe { scratch.setFont(l.font().as_deref()) };
+        let limit = CGSize::new(f64::MAX / 4., f64::MAX / 4.);
+        text.split_whitespace()
+            .map(|word| {
+                scratch.setText(Some(&NSString::from_str(word)));
+                scratch.sizeThatFits(limit).width.ceil() as f32
+            })
+            .fold(0., f32::max)
     }
 
     fn set_frame(&mut self, view: &View, x: f32, y: f32, w: f32, h: f32) {
@@ -1842,6 +2174,9 @@ impl Widgets for UiKit {
         #[cfg(not(target_os = "tvos"))]
         if let View::TextArea(t) = view {
             t.layout_placeholder();
+        }
+        if let View::Radio(r) = view {
+            r.layout(w as f64);
         }
         if let Some(r) = self.radii.get(&view.id()) {
             view.ui()
@@ -2063,6 +2398,13 @@ impl Widgets for UiKit {
             } else {
                 objc2_ui_kit::UIActivityIndicatorViewStyle::Medium
             }),
+            View::Checkbox(c) => c.set_on(value != 0.),
+            View::Radio(r) => r.set_selected((value >= 0.).then_some(value as usize)),
+            View::Overlay(o) => {
+                let root: Retained<UIViewController> =
+                    Retained::into_super(self.controller.clone());
+                o.set_open(value != 0., &root);
+            }
             View::Tabs(bar) => {
                 let i = value.max(0.) as usize;
                 self.selected.insert(view.id(), i);
@@ -2075,6 +2417,10 @@ impl Widgets for UiKit {
     }
 
     fn set_icon(&mut self, view: &View, icon: &str) {
+        if let View::Input(f) = view {
+            crate::interaction::set_leading_icon(f, icon);
+            return;
+        }
         if let View::Image(v) = view {
             v.setImage(UIImage::systemImageNamed(&NSString::from_str(icon)).as_deref());
             return;
@@ -2173,6 +2519,10 @@ impl Widgets for UiKit {
     }
 
     fn set_content_size(&mut self, view: &View, width: f32, height: f32) {
+        if let View::Overlay(o) = view {
+            o.set_size(width as f64, height as f64);
+            return;
+        }
         if let View::Scroll(s) = view {
             s.setContentSize(CGSize::new(width as f64, height as f64));
         }
@@ -2182,7 +2532,21 @@ impl Widgets for UiKit {
         let mtm = self.mtm;
         let v = view.ui();
         let ns = |s: &Option<String>| s.as_deref().map(NSString::from_str);
-        v.setAccessibilityElementsHidden(a.hidden, mtm);
+        let id = view.id();
+        if a.hidden {
+            self.a11y_hidden.insert(id);
+        } else {
+            self.a11y_hidden.remove(&id);
+        }
+        v.setAccessibilityElementsHidden(a.hidden || self.inert.contains(&id), mtm);
+        match view {
+            View::Overlay(_) => return,
+            View::Radio(r) => {
+                r.set_label(a.label.as_deref());
+                return;
+            }
+            _ => {}
+        }
         // Platform containers announce themselves through their titles.
         if matches!(
             view,
@@ -2232,14 +2596,16 @@ impl Widgets for UiKit {
                     Some(Role::Switch | Role::Checkbox) => {
                         UIAccessibilityTraitToggleButton | UIAccessibilityTraitButton
                     }
-                    Some(Role::Tab) => UIAccessibilityTraitButton,
+                    Some(Role::Tab | Role::Radio) => UIAccessibilityTraitButton,
                     Some(Role::TabList) => UIAccessibilityTraitTabBar,
                     _ => 0,
                 };
                 if a.disabled {
                     traits |= UIAccessibilityTraitNotEnabled;
                 }
-                if a.checked == Some(true) && matches!(a.role, Some(Role::Tab | Role::Button)) {
+                if a.checked == Some(true)
+                    && matches!(a.role, Some(Role::Tab | Role::Button | Role::Radio))
+                {
                     traits |= UIAccessibilityTraitSelected;
                 }
             }
@@ -2258,6 +2624,70 @@ impl Widgets for UiKit {
         });
         if value.is_some() || !native_control {
             v.setAccessibilityValue(ns(&value).as_deref(), mtm);
+        }
+    }
+
+    fn set_pointer_events(&mut self, view: &View, mask: u8) {
+        // tvOS has no pointer over views (the remote moves a focus).
+        #[cfg(not(target_os = "tvos"))]
+        crate::interaction::set_pointer_events(view.ui(), mask, &self.target);
+        #[cfg(target_os = "tvos")]
+        let _ = (view, mask);
+    }
+
+    fn set_key_events(&mut self, view: &View, local: bool, global: bool) {
+        crate::interaction::set_keys(view.id(), local, global);
+        if let View::Container(v) = view {
+            crate::interaction::set_view_keys(v, local);
+        }
+    }
+
+    fn focus(&mut self, view: &View) {
+        let target: Retained<UIView> = match view {
+            #[cfg(not(target_os = "tvos"))]
+            View::TextArea(t) => Retained::into_super(Retained::into_super(t.view.clone())),
+            other => other.ui().retain(),
+        };
+        crate::interaction::focus(target);
+    }
+
+    fn scroll_into_view(&mut self, view: &View) {
+        scroll_into_view(view.ui());
+    }
+
+    fn set_layers(&mut self, layers: &[View]) {
+        self.layers = layers.iter().map(|l| l.ui().retain()).collect();
+        for l in &self.layers {
+            crate::interaction::set_pass_through(l, true);
+        }
+        self.attach_layers();
+    }
+
+    /// Above a root tab bar (at the bottom on iPhone, the top on iPad).
+    fn layer_insets(&mut self, safe_area: Insets) -> Insets {
+        let Some(tabs) = &self.root_tabs else {
+            return safe_area;
+        };
+        let bar: Retained<UIView> = Retained::into_super(tabs.tabBar());
+        if bar.isHidden() {
+            return safe_area;
+        }
+        let f = bar.convertRect_toView(bar.bounds(), Some(&self.root));
+        let height = self.root.bounds().size.height;
+        let mut i = safe_area;
+        if f.origin.y > height / 2. {
+            i.bottom = i.bottom.max((height - f.origin.y) as f32);
+        } else {
+            i.top = i.top.max((f.origin.y + f.size.height) as f32);
+        }
+        i
+    }
+
+    fn overlay_viewport(&mut self, overlay: &View, _content: &View) -> Viewport {
+        let window = self.root.bounds().size;
+        match overlay {
+            View::Overlay(o) => o.viewport(window),
+            _ => Viewport::default(),
         }
     }
 

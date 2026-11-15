@@ -33,6 +33,10 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
         }
         _ => s,
     };
+    // An overlay takes no room: its content is presented in the top layer.
+    if kind == NodeKind::Overlay {
+        return "display:contents;".into();
+    }
     let mut c = String::from("box-sizing:border-box;min-width:0;");
     let w = &mut c;
     // Hidden, but shown in some interaction state: a plain `display:none`
@@ -51,6 +55,8 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
             w.push_str("display:block;")
         }
         _ if s.grid => w.push_str("display:grid;justify-items:stretch;"),
+        // A box and its label on one line.
+        NodeKind::Checkbox => w.push_str("display:flex;flex-direction:row;"),
         _ => {
             let dir = match s.direction {
                 FlexDirection::Row => "row",
@@ -62,7 +68,11 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
     if s.wrap {
         w.push_str("flex-wrap:wrap;");
     }
-    let _ = write!(w, "align-items:{};", align(s.align_items));
+    let items = match kind {
+        NodeKind::Checkbox => "center",
+        _ => align(s.align_items),
+    };
+    let _ = write!(w, "align-items:{items};");
     if let Some(a) = s.align_self {
         let _ = write!(w, "align-self:{};", align(a));
     }
@@ -139,7 +149,13 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
     layout_extras(kind, s, w);
 
     if let Some(bg) = s.background {
-        let _ = write!(w, "background:{};", bg.to_css());
+        // A picker keeps its drawn arrow (a background image).
+        let prop = if kind == NodeKind::Picker {
+            "background-color"
+        } else {
+            "background"
+        };
+        let _ = write!(w, "{prop}:{};", bg.to_css());
     }
     if s.corner_radius > 0. {
         let _ = write!(w, "border-radius:{}px;", s.corner_radius);
@@ -167,6 +183,10 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
     decorations(w, kind, s);
     if s.opacity < 1. {
         let _ = write!(w, "opacity:{};", s.opacity);
+    }
+    // Clicks and hovers go through (and its subtree's, unless re-enabled).
+    if !s.hit_test {
+        w.push_str("pointer-events:none;");
     }
     if s.translate_percent != (0., 0.) {
         let (t, (px, py)) = (s.transform, s.translate_percent);
@@ -220,7 +240,12 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
         let _ = write!(w, "text-align:{ta};");
     }
     if let (
-        NodeKind::Progress | NodeKind::Slider | NodeKind::DatePicker | NodeKind::Spinner,
+        NodeKind::Progress
+        | NodeKind::Slider
+        | NodeKind::DatePicker
+        | NodeKind::Spinner
+        | NodeKind::Checkbox
+        | NodeKind::RadioGroup,
         Some(c),
     ) = (kind, s.text_color)
     {

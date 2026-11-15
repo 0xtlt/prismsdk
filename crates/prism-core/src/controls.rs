@@ -8,7 +8,10 @@
 //! | `Slider` | [`SliderConfig`]: `min max step` | the current value |
 //! | `Picker` | [`PickerConfig`]: options, one per line | the selected index (-1: none) |
 //! | `DatePicker` | [`DateConfig`]: `mode min max` | Unix seconds (UTC instant) |
-//! | `TextInput`, `TextArea` | [`InputConfig`]: `secure keyboard=email return=done capitalize=none autocorrect=off` | – |
+//! | `TextInput`, `TextArea` | [`InputConfig`]: `secure keyboard=email return=done capitalize=none autocorrect=off max=40`, then one suggestion per line ([`input_suggestions`]) | – |
+//! | `Checkbox` | – | 0 or 1 |
+//! | `RadioGroup` | [`RadioConfig`]: `row` or `column`, then options one per line | the selected index (-1: none) |
+//! | `Overlay` | [`OverlayConfig`]: `sheet`/`popover`/`dialog`, `fixed`, `medium` | 1 open, 0 closed |
 
 /// A slider's range. `step == 0` is continuous.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -117,6 +120,9 @@ pub enum DateMode {
     Time,
     /// Both.
     DateTime,
+    /// A time of day on its own, the same in every time zone: the value is
+    /// seconds since midnight (`07:30` is `27000`). Backends show it in UTC.
+    TimeOfDay,
 }
 
 impl DateMode {
@@ -126,6 +132,7 @@ impl DateMode {
             DateMode::Date => "date",
             DateMode::Time => "time",
             DateMode::DateTime => "datetime",
+            DateMode::TimeOfDay => "timeofday",
         }
     }
 }
@@ -154,6 +161,7 @@ impl DateConfig {
         let mode = match it.next() {
             Some("time") => DateMode::Time,
             Some("datetime") => DateMode::DateTime,
+            Some("timeofday") => DateMode::TimeOfDay,
             _ => DateMode::Date,
         };
         let mut bound = || it.next().and_then(|v| v.parse::<f64>().ok());
@@ -232,6 +240,8 @@ pub struct InputConfig {
     pub capitalize: Capitalize,
     /// Whether the platform corrects spelling as the user types.
     pub autocorrect: bool,
+    /// The most characters the field accepts (`None`: no limit).
+    pub max_length: Option<u32>,
 }
 
 impl Default for InputConfig {
@@ -242,6 +252,7 @@ impl Default for InputConfig {
             return_key: ReturnKey::Default,
             capitalize: Capitalize::Sentences,
             autocorrect: true,
+            max_length: None,
         }
     }
 }
@@ -278,14 +289,23 @@ impl InputConfig {
         if !self.autocorrect {
             t.push("autocorrect=off");
         }
+        let max = self.max_length.map(|m| format!("max={m}"));
+        if let Some(m) = &max {
+            t.push(m);
+        }
         t.retain(|s| !s.is_empty());
         t.join(" ")
     }
 
-    /// Parses [`encode`](Self::encode)'s output; unknown tokens are ignored.
+    /// Parses [`encode`](Self::encode)'s output (its first line: the next
+    /// ones are [`input_suggestions`]); unknown tokens are ignored.
     pub fn decode(s: &str) -> Self {
         let mut c = InputConfig::default();
-        for token in s.split_whitespace() {
+        for token in s.lines().next().unwrap_or("").split_whitespace() {
+            if let Some(m) = token.strip_prefix("max=") {
+                c.max_length = m.parse().ok();
+                continue;
+            }
             match token {
                 "secure" => c.secure = true,
                 "keyboard=email" => c.keyboard = Keyboard::Email,
@@ -302,6 +322,116 @@ impl InputConfig {
                 "capitalize=words" => c.capitalize = Capitalize::Words,
                 "capitalize=all" => c.capitalize = Capitalize::All,
                 "autocorrect=off" => c.autocorrect = false,
+                _ => {}
+            }
+        }
+        c
+    }
+}
+
+/// The suggestions of a text input's config: every line after the first
+/// (web `<datalist>`, native completion lists).
+pub fn input_suggestions(config: &str) -> Vec<String> {
+    config.lines().skip(1).map(str::to_string).collect()
+}
+
+/// `config` (an [`InputConfig::encode`] line) followed by `suggestions`, one
+/// per line (line breaks inside them become spaces).
+pub fn with_suggestions(config: &str, suggestions: &[String]) -> String {
+    let mut out = config.lines().next().unwrap_or("").to_string();
+    for s in suggestions {
+        out.push('\n');
+        out.push_str(&s.replace(['\n', '\r'], " "));
+    }
+    out
+}
+
+/// A radio group's options and orientation.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct RadioConfig {
+    /// The option labels, in display order.
+    pub options: Vec<String>,
+    /// Options side by side (`row`) instead of stacked (`column`).
+    pub horizontal: bool,
+}
+
+impl RadioConfig {
+    /// `row` or `column`, then one option per line.
+    pub fn encode(&self) -> String {
+        let mut out = String::from(if self.horizontal { "row" } else { "column" });
+        for o in &self.options {
+            out.push('\n');
+            out.push_str(&o.replace(['\n', '\r'], " "));
+        }
+        out
+    }
+
+    /// Parses [`encode`](Self::encode)'s output.
+    pub fn decode(s: &str) -> Self {
+        let mut lines = s.split('\n');
+        let horizontal = lines.next() == Some("row");
+        RadioConfig {
+            options: lines.map(str::to_string).collect(),
+            horizontal,
+        }
+    }
+}
+
+/// How an [`Overlay`](crate::Overlay) is presented.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum OverlayKind {
+    /// A sheet: from the bottom edge on phones, a page sheet / window sheet
+    /// on larger screens (`UISheetPresentationController`, `NSWindow`
+    /// sheet, a modal `<dialog>`, a GTK modal window, a bottom sheet).
+    #[default]
+    Sheet,
+    /// A bubble anchored to the overlay's parent element (`NSPopover`,
+    /// `UIPopoverPresentationController`, the web popover API,
+    /// `GtkPopover`, `PopupWindow`). Phones may show it as a sheet.
+    Popover,
+    /// A centered modal dialog (`<dialog>`, a centered window or panel, a
+    /// form sheet, `Dialog`).
+    Dialog,
+}
+
+/// An overlay's presentation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct OverlayConfig {
+    /// Sheet, popover or dialog.
+    pub kind: OverlayKind,
+    /// Escape, Back, a tap outside or a swipe down do not close it.
+    pub fixed: bool,
+    /// A sheet starts at half height (it can be pulled up where the
+    /// platform allows).
+    pub medium: bool,
+}
+
+impl OverlayConfig {
+    /// `sheet` / `popover` / `dialog`, then `fixed`, `medium`.
+    pub fn encode(&self) -> String {
+        let mut out = String::from(match self.kind {
+            OverlayKind::Sheet => "sheet",
+            OverlayKind::Popover => "popover",
+            OverlayKind::Dialog => "dialog",
+        });
+        if self.fixed {
+            out.push_str(" fixed");
+        }
+        if self.medium {
+            out.push_str(" medium");
+        }
+        out
+    }
+
+    /// Parses [`encode`](Self::encode)'s output.
+    pub fn decode(s: &str) -> Self {
+        let mut c = OverlayConfig::default();
+        for t in s.split_whitespace() {
+            match t {
+                "popover" => c.kind = OverlayKind::Popover,
+                "dialog" => c.kind = OverlayKind::Dialog,
+                "fixed" => c.fixed = true,
+                "medium" => c.medium = true,
                 _ => {}
             }
         }
@@ -344,8 +474,46 @@ mod tests {
             return_key: ReturnKey::Go,
             capitalize: Capitalize::None,
             autocorrect: false,
+            max_length: Some(12),
         };
         assert_eq!(InputConfig::decode(&i.encode()), i);
         assert_eq!(InputConfig::default().encode(), "");
+    }
+
+    #[test]
+    fn new_configs_round_trip() {
+        let i = InputConfig {
+            max_length: Some(5),
+            ..Default::default()
+        };
+        let full = with_suggestions(&i.encode(), &["Paris".into(), "New\nYork".into()]);
+        assert_eq!(full, "max=5\nParis\nNew York");
+        assert_eq!(InputConfig::decode(&full), i);
+        assert_eq!(input_suggestions(&full), ["Paris", "New York"]);
+        assert!(input_suggestions("max=5").is_empty());
+        // Suggestions are not read as tokens.
+        let tricky = with_suggestions("", &["secure".into()]);
+        assert!(!InputConfig::decode(&tricky).secure);
+        let r = RadioConfig {
+            options: vec!["Daily".into(), "Weekly".into()],
+            horizontal: true,
+        };
+        assert_eq!(r.encode(), "row\nDaily\nWeekly");
+        assert_eq!(RadioConfig::decode(&r.encode()), r);
+        assert!(RadioConfig::decode("column").options.is_empty());
+        let o = OverlayConfig {
+            kind: OverlayKind::Popover,
+            fixed: true,
+            medium: false,
+        };
+        assert_eq!(o.encode(), "popover fixed");
+        assert_eq!(OverlayConfig::decode(&o.encode()), o);
+        assert_eq!(OverlayConfig::decode(""), OverlayConfig::default());
+        let d = DateConfig {
+            mode: DateMode::TimeOfDay,
+            min: None,
+            max: None,
+        };
+        assert_eq!(DateConfig::decode(&d.encode()), d);
     }
 }

@@ -599,15 +599,20 @@ fn toaster_entity(cx: &mut App) -> Entity<Toaster> {
     e
 }
 
-/// Where toasts appear: put it once, as the last child of the screen (or
-/// root view) they cover. It is absolutely positioned at the bottom.
+/// Deprecated: does nothing. The runtime mounts the toaster above the
+/// whole app (router, tabs, sheets) the first time [`show_toast`] runs, so
+/// no screen places it anymore. Kept so older code still compiles; remove
+/// it from your screens.
 pub fn toaster() -> Element {
-    prism_core::lazy(toaster_entity)
+    Element::Empty
 }
 
-/// Shows `toast` (several stack up, newest at the bottom).
+/// Shows `toast` (several stack up, newest at the bottom), from anywhere:
+/// the toaster is a layer the runtime keeps above the router, so a toast
+/// shown right before `cx.back()` or `cx.reset(…)` stays on screen.
 pub fn show_toast(cx: &mut App, toast: Toast) {
     let entity = toaster_entity(cx);
+    cx.add_layer(entity);
     let min = if toast.action.is_some() {
         Duration::from_secs(6)
     } else {
@@ -706,15 +711,132 @@ impl Render for Toaster {
                     )
                 })
         });
+        // A layer covering the window (inside the safe area): the toasts
+        // sit at its bottom; the rest lets input through.
         div()
-            .absolute()
-            .left(16.)
-            .right(16.)
-            .bottom(24.)
-            .gap(8.)
+            .flex_1()
+            .justify_end()
             .items_center()
+            .px(16.)
+            .pb(24.)
+            .gap(8.)
             .accessibility_role(Role::Status)
             .accessibility_value(self.announce.clone())
             .children(toasts.collect::<Vec<_>>())
     }
 }
+
+// --- File input -----------------------------------------------------------------
+
+/// What [`file_input`] calls with the chosen files.
+pub type FilesHandler = Rc<dyn Fn(Vec<prism_core::PickedFile>, &mut App)>;
+
+/// A labelled button that opens the platform's file picker and hands the
+/// chosen files (and their bytes, [`PickedFile::read`](prism_core::PickedFile::read))
+/// to the app: `ui::file_input("Photo").accept(["image/*"]).on_pick(|files, cx| …)`.
+/// On the web the browser uploads them over the app's connection.
+pub struct FileInput {
+    /// Shown above the button, also its accessibility label.
+    pub label: String,
+    /// The button's title (default `Choose…`).
+    pub button: String,
+    /// The current choice, shown next to the button (`photo.jpg`).
+    pub selected: Option<String>,
+    /// Which files, how many.
+    pub options: prism_core::PickFiles,
+    /// Greyed out and not interactive.
+    pub disabled: bool,
+    /// Called with the files once the user chose (not when they cancel).
+    pub on_pick: Option<FilesHandler>,
+    refine: Refine,
+}
+
+/// A file picker labelled `label`, for one file of any type.
+pub fn file_input(label: impl Into<String>) -> FileInput {
+    FileInput {
+        label: label.into(),
+        button: "Choose…".into(),
+        selected: None,
+        options: prism_core::PickFiles::new(),
+        disabled: false,
+        on_pick: None,
+        refine: Refine::default(),
+    }
+}
+
+impl FileInput {
+    /// Accepted types: MIME types (`"image/*"`) or extensions (`".pdf"`).
+    pub fn accept<S: Into<String>>(mut self, types: impl IntoIterator<Item = S>) -> Self {
+        self.options = self.options.types(types);
+        self
+    }
+    /// Lets the user choose several files.
+    pub fn multiple(mut self) -> Self {
+        self.options = self.options.multiple();
+        self
+    }
+    /// The button's title.
+    pub fn button(mut self, title: impl Into<String>) -> Self {
+        self.button = title.into();
+        self
+    }
+    /// The current choice, shown next to the button.
+    pub fn selected(mut self, name: impl Into<String>) -> Self {
+        self.selected = Some(name.into());
+        self
+    }
+    /// Greys the button out and ignores clicks when `disabled`.
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+    /// Called with the chosen files.
+    pub fn on_pick(mut self, f: impl Fn(Vec<prism_core::PickedFile>, &mut App) + 'static) -> Self {
+        self.on_pick = Some(Rc::new(f));
+        self
+    }
+}
+
+refinable!(FileInput);
+
+impl crate::Component for FileInput {
+    fn render(self, cx: &mut App) -> Element {
+        let t = Theme::of(cx);
+        let options = self.options.clone();
+        let handler = self.on_pick.clone();
+        let mut button = crate::button(self.button.clone())
+            .variant(Variant::Secondary)
+            .disabled(self.disabled || handler.is_none());
+        if let (Some(h), false) = (handler, self.disabled) {
+            button = button.on_click(Rc::new(move |_: &ClickEvent, app: &mut App| {
+                let (h, options) = (h.clone(), options.clone());
+                app.spawn(async move |cx| {
+                    if let Ok(files) = cx.pick_files(options).await
+                        && !files.is_empty()
+                    {
+                        cx.update(|app| h(files, app));
+                    }
+                });
+            }));
+        }
+        let row = div()
+            .flex_row()
+            .items_center()
+            .gap(12.)
+            .accessibility_label(self.label.clone())
+            .child(button)
+            .when_some(self.selected.clone(), |d, name| {
+                d.child(
+                    text(name)
+                        .text_size(t.font_size - 1.)
+                        .text_color(t.muted)
+                        .flex_1()
+                        .min_w(px(0.)),
+                )
+            });
+        let el = field(&t, &self.label, None, row.into_element());
+        self.refine.apply(el).into_element()
+    }
+}
+
+component!(FileInput);

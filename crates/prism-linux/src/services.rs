@@ -171,6 +171,7 @@ impl LinuxServices {
                 }
                 self.pick_images(id, o.limit);
             }
+            DeviceCall::PickFiles(o) => self.pick_files(id, o),
             DeviceCall::ReadClipboard => {
                 let clipboard = self.window.clipboard();
                 clipboard.read_text_async(None::<&gio::Cancellable>, move |r| {
@@ -334,6 +335,52 @@ impl LinuxServices {
             let mut picked = Vec::new();
             for i in 0..files.n_items() {
                 if limit > 0 && picked.len() as u32 >= limit {
+                    break;
+                }
+                let Some(file) = files.item(i).and_downcast::<gio::File>() else {
+                    continue;
+                };
+                if let Some(p) = copy_picked(&file) {
+                    picked.push(p);
+                }
+            }
+            reply(id, Ok(DeviceValue::Files(picked)));
+        });
+        chooser.show();
+    }
+
+    /// The desktop's file chooser (portal-aware `GtkFileChooserNative`:
+    /// `GtkFileDialog` needs GTK 4.10), filtered by MIME types and
+    /// extensions.
+    fn pick_files(&mut self, id: u64, o: prism_core::PickFiles) {
+        let chooser = gtk::FileChooserNative::new(
+            None,
+            Some(&self.window),
+            gtk::FileChooserAction::Open,
+            None,
+            None,
+        );
+        chooser.set_select_multiple(o.multiple);
+        if !o.types.is_empty() {
+            let filter = gtk::FileFilter::new();
+            for t in &o.types {
+                match t.trim().strip_prefix('.') {
+                    Some(ext) => filter.add_suffix(ext),
+                    None => filter.add_mime_type(t.trim()),
+                }
+            }
+            chooser.add_filter(&filter);
+        }
+        let keep = chooser.clone();
+        chooser.connect_response(move |c, response| {
+            let _ = &keep;
+            if response != gtk::ResponseType::Accept {
+                return reply(id, Err(DeviceError::from_message("cancelled")));
+            }
+            let files = c.files();
+            let mut picked = Vec::new();
+            for i in 0..files.n_items() {
+                if !o.multiple && !picked.is_empty() {
                     break;
                 }
                 let Some(file) = files.item(i).and_downcast::<gio::File>() else {

@@ -80,6 +80,10 @@ pub enum View {
     DatePicker(NodeId, Rc<controls::DatePicker>),
     TextArea(NodeId, Rc<controls::TextArea>),
     Spinner(NodeId, gtk::Spinner),
+    // Choice controls and overlays (#18, #19).
+    Check(NodeId, gtk::CheckButton),
+    Radio(NodeId, Rc<controls::RadioGroup>),
+    Overlay(NodeId, Rc<OverlayView>),
 }
 
 thread_local! {
@@ -162,7 +166,10 @@ impl View {
             | View::Picker(id, _)
             | View::DatePicker(id, _)
             | View::TextArea(id, _)
-            | View::Spinner(id, _) => *id,
+            | View::Spinner(id, _)
+            | View::Check(id, _)
+            | View::Radio(id, _)
+            | View::Overlay(id, _) => *id,
         }
     }
 
@@ -186,8 +193,313 @@ impl View {
             View::DatePicker(_, p) => p.button.clone().upcast(),
             View::TextArea(_, t) => t.root.clone().upcast(),
             View::Spinner(_, w) => w.clone().upcast(),
+            View::Check(_, b) => b.clone().upcast(),
+            View::Radio(_, r) => r.root.clone().upcast(),
+            View::Overlay(_, o) => o.anchor.clone().upcast(),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Overlays (#19): a popover anchored to the overlay's parent, or a modal
+// window for sheets and dialogs
+// ---------------------------------------------------------------------------
+
+pub struct OverlayView {
+    id: NodeId,
+    /// Zero-size placeholder in the parent (the popover's anchor is the
+    /// parent).
+    anchor: gtk::Box,
+    /// Holds the content node, at its Prism frame.
+    content: gtk::Box,
+    popover: RefCell<Option<gtk::Popover>>,
+    window: RefCell<Option<gtk::Window>>,
+    config: Cell<prism_core::controls::OverlayConfig>,
+    open: Cell<bool>,
+    /// Content size from the last layout.
+    size: Cell<(i32, i32)>,
+}
+
+impl OverlayView {
+    /// Builds the popover or window `config` asks for.
+    fn configure(
+        self: &Rc<Self>,
+        config: prism_core::controls::OverlayConfig,
+        main: &gtk::ApplicationWindow,
+        keys: &Rc<KeyState>,
+    ) {
+        use prism_core::OverlayKind;
+        let old = self.config.replace(config);
+        let built = self.popover.borrow().is_some() || self.window.borrow().is_some();
+        let popover_kind = config.kind == OverlayKind::Popover;
+        if built && (old.kind == OverlayKind::Popover) == popover_kind {
+            if let Some(p) = self.popover.borrow().as_ref() {
+                p.set_autohide(!config.fixed);
+            }
+            if let Some(w) = self.window.borrow().as_ref() {
+                w.set_deletable(!config.fixed);
+            }
+            return;
+        }
+        self.teardown();
+        let id = self.id;
+        if popover_kind {
+            let p = gtk::Popover::new();
+            p.set_autohide(!config.fixed);
+            p.set_child(Some(&self.content));
+            let weak = Rc::downgrade(self);
+            p.connect_closed(move |p| {
+                let Some(o) = weak.upgrade() else { return };
+                if !o.open.get() {
+                    return;
+                }
+                if o.config.get().fixed {
+                    // Escape closed a fixed popover: it stays.
+                    let p = p.clone();
+                    glib::idle_add_local_once(move || p.popup());
+                } else {
+                    o.open.set(false);
+                    dispatch(UiEvent::Back(id, 0));
+                }
+            });
+            *self.popover.borrow_mut() = Some(p);
+        } else {
+            let w = gtk::Window::builder()
+                .transient_for(main)
+                .modal(true)
+                .destroy_with_parent(true)
+                .resizable(config.kind == OverlayKind::Sheet)
+                .deletable(!config.fixed)
+                .accessible_role(gtk::AccessibleRole::Dialog)
+                .child(&self.content)
+                .build();
+            let weak = Rc::downgrade(self);
+            w.connect_close_request(move |_| {
+                if let Some(o) = weak.upgrade() {
+                    o.user_closed();
+                }
+                glib::Propagation::Stop
+            });
+            // Escape closes it; the app's key handlers see the dialog's keys.
+            let esc = gtk::EventControllerKey::new();
+            let weak = Rc::downgrade(self);
+            esc.connect_key_pressed(move |_, key, _, _| {
+                if key == gdk::Key::Escape
+                    && let Some(o) = weak.upgrade()
+                    && !o.config.get().fixed
+                {
+                    o.user_closed();
+                    return glib::Propagation::Stop;
+                }
+                glib::Propagation::Proceed
+            });
+            w.add_controller(esc);
+            attach_keys(&w, keys.clone());
+            *self.window.borrow_mut() = Some(w);
+        }
+        if self.open.get() {
+            self.show();
+        }
+    }
+
+    /// Escape or the close button: closes at once (unless fixed) and tells
+    /// the app, which keeps it closed or opens it again.
+    fn user_closed(&self) {
+        if self.config.get().fixed || !self.open.get() {
+            return;
+        }
+        self.open.set(false);
+        if let Some(w) = self.window.borrow().as_ref() {
+            w.set_visible(false);
+        }
+        dispatch(UiEvent::Back(self.id, 0));
+    }
+
+    fn teardown(&self) {
+        if let Some(p) = self.popover.borrow_mut().take() {
+            p.set_child(None::<&gtk::Widget>);
+            if p.parent().is_some() {
+                p.unparent();
+            }
+        }
+        if let Some(w) = self.window.borrow_mut().take() {
+            w.set_child(None::<&gtk::Widget>);
+            w.destroy();
+        }
+    }
+
+    fn set_open(&self, open: bool) {
+        if self.open.replace(open) == open {
+            return;
+        }
+        if open {
+            self.show();
+        } else {
+            if let Some(p) = self.popover.borrow().as_ref() {
+                p.popdown();
+            }
+            if let Some(w) = self.window.borrow().as_ref() {
+                w.set_visible(false);
+            }
+        }
+    }
+
+    fn show(&self) {
+        if let Some(p) = self.popover.borrow().as_ref() {
+            // Anchored to the element that contains the overlay.
+            if let Some(parent) = self.anchor.parent()
+                && p.parent().as_ref() != Some(&parent)
+            {
+                if p.parent().is_some() {
+                    p.unparent();
+                }
+                p.set_parent(&parent);
+            }
+            if p.parent().is_some() {
+                p.popup();
+            }
+        }
+        if let Some(w) = self.window.borrow().as_ref() {
+            let (cw, ch) = self.size.get();
+            if cw > 0 && ch > 0 {
+                w.set_default_size(cw, ch);
+            }
+            w.present();
+        }
+    }
+
+    fn set_size(&self, w: i32, h: i32) {
+        if self.size.replace((w, h)) == (w, h) {
+            return;
+        }
+        self.content.set_size_request(w, h);
+        if let Some(win) = self.window.borrow().as_ref() {
+            win.set_default_size(w, h);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Keys (#17): one controller per window, in the capture phase
+// ---------------------------------------------------------------------------
+
+/// Nodes that listen to keys, and the keys held down (to flag repeats).
+#[derive(Default)]
+pub struct KeyState {
+    local: RefCell<HashSet<NodeId>>,
+    global: RefCell<HashSet<NodeId>>,
+    down: RefCell<HashSet<u32>>,
+}
+
+/// The Prism node a widget belongs to (its `p{id}` class), if any.
+fn node_of(w: &gtk::Widget) -> Option<NodeId> {
+    w.css_classes()
+        .iter()
+        .find_map(|c| c.strip_prefix('p').and_then(|n| n.parse::<NodeId>().ok()))
+}
+
+/// Reports key presses in `window` (`UiEvent::Key`): to the focused node's
+/// nearest ancestor with `on_key_down`, and to global listeners. Typing in
+/// a text field only reaches local listeners.
+fn attach_keys(window: &gtk::Window, keys: Rc<KeyState>) {
+    use gtk::glib::translate::IntoGlib;
+    let controller = gtk::EventControllerKey::new();
+    controller.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let up = keys.clone();
+    controller.connect_key_released(move |_, key, _, _| {
+        up.down.borrow_mut().remove(&key.into_glib());
+    });
+    controller.connect_key_pressed(move |c, key, _, mods| {
+        if keys.local.borrow().is_empty() && keys.global.borrow().is_empty() {
+            return glib::Propagation::Proceed;
+        }
+        let name = key.name().map(|n| n.to_string()).unwrap_or_default();
+        let Some(name) = crate::input::key_name(&name, key.to_unicode()) else {
+            return glib::Propagation::Proceed;
+        };
+        let repeat = !keys.down.borrow_mut().insert(key.into_glib());
+        let modifiers = prism_core::Modifiers {
+            shift: mods.contains(gdk::ModifierType::SHIFT_MASK),
+            control: mods.contains(gdk::ModifierType::CONTROL_MASK),
+            alt: mods.contains(gdk::ModifierType::ALT_MASK),
+            meta: mods.intersects(gdk::ModifierType::SUPER_MASK | gdk::ModifierType::META_MASK),
+        };
+        let focus = c
+            .widget()
+            .and_downcast::<gtk::Window>()
+            .and_then(|w| GtkWindowExt::focus(&w));
+        let editing = focus
+            .as_ref()
+            .is_some_and(|f| f.is::<gtk::Text>() || f.is::<gtk::TextView>());
+        // The nearest focused node with `on_key_down`.
+        let mut target = None;
+        let mut next = focus.clone();
+        while let Some(w) = next {
+            if let Some(id) = node_of(&w)
+                && keys.local.borrow().contains(&id)
+            {
+                target = Some((id, w.clone()));
+                break;
+            }
+            next = w.parent();
+        }
+        let typing = editing
+            && crate::input::types_text(&name, modifiers.control, modifiers.alt, modifiers.meta);
+        if target.is_none() && (typing || keys.global.borrow().is_empty()) {
+            return glib::Propagation::Proceed;
+        }
+        let claimed = target
+            .as_ref()
+            .is_some_and(|(_, w)| Some(w) == focus.as_ref() && crate::input::claims(&name));
+        dispatch(UiEvent::Key(
+            target.map(|(id, _)| id),
+            prism_core::KeyEvent {
+                key: name,
+                modifiers,
+                repeat,
+            },
+        ));
+        if claimed {
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+    window.add_controller(controller);
+}
+
+// ---------------------------------------------------------------------------
+// Pointer (#17): moves are coalesced to one dispatch per main-loop turn
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static COALESCED: RefCell<HashMap<(NodeId, u8), UiEvent>> = RefCell::new(HashMap::new());
+}
+
+/// Dispatches `event`, replacing a not yet delivered one of the same kind
+/// for the same node (pointer and drag moves).
+fn dispatch_latest(id: NodeId, channel: u8, event: UiEvent) {
+    if UPDATING.get() {
+        return;
+    }
+    let first = COALESCED.with(|c| c.borrow_mut().insert((id, channel), event).is_none());
+    if first {
+        glib::idle_add_local_once(move || {
+            if let Some(e) = COALESCED.with(|c| c.borrow_mut().remove(&(id, channel))) {
+                with_state(|s| {
+                    let patches = s.runtime.dispatch(e);
+                    commit(s, patches);
+                });
+            }
+        });
+    }
+}
+
+/// Where a drag's pointer went down, and whether it moved past the slop.
+type DragStart = ((f64, f64), bool);
+
+fn point(x: f64, y: f64) -> prism_core::Point {
+    prism_core::Point::new(x as f32, y as f32)
 }
 
 // ---------------------------------------------------------------------------
@@ -258,7 +570,8 @@ fn relayout(s: &mut State) {
             s.renderer.widgets.flush_css();
         }
     }
-    s.renderer.layout(w, h, Insets::default());
+    let insets = s.renderer.widgets.chrome_insets();
+    s.renderer.layout(w, h, insets);
 }
 
 pub(crate) fn device_reply(
@@ -371,6 +684,16 @@ pub struct Gtk {
     watched: HashSet<NodeId>,
     /// Cursors set by `Style::cursor` (they win over the clickable default).
     cursors: HashMap<NodeId, prism_core::Cursor>,
+    // Pointer, keys, layers, overlays (#17, #19, #25).
+    /// Pointer events each node reports (`pointer_mask` bits).
+    pointer: Rc<RefCell<HashMap<NodeId, u8>>>,
+    /// Nodes whose motion / drag controllers are attached.
+    pointer_attached: HashSet<(NodeId, u8)>,
+    keys: Rc<KeyState>,
+    /// Runtime layers, above the root in the window.
+    layers: Vec<gtk::Widget>,
+    /// Nodes made inert (hidden from assistive technologies).
+    inert: HashSet<NodeId>,
 }
 
 /// Scroll view → its sticky views (node, widget, range).
@@ -399,6 +722,31 @@ fn rect(x: f32, y: f32, w: f32, h: f32) -> (i32, i32, i32, i32) {
 }
 
 impl Gtk {
+    /// What the window's own chrome covers: a root tab bar at the bottom.
+    /// Roots that are stacks or tab bars lay their bars out themselves, so
+    /// only the layers (toasts) keep clear of it.
+    fn chrome_insets(&self) -> Insets {
+        let root = self.root.first_child();
+        let tabs = self
+            .tab_bars
+            .iter()
+            .any(|t| root.as_ref() == Some(t.root.upcast_ref::<gtk::Widget>()));
+        Insets {
+            bottom: if tabs { TAB_BAR } else { 0. },
+            ..Insets::default()
+        }
+    }
+
+    /// Puts the layers back on top of the root's children.
+    fn raise_layers(&self) {
+        for l in &self.layers {
+            if l.parent().is_some() {
+                l.unparent();
+            }
+            l.set_parent(&self.root);
+        }
+    }
+
     fn flush_css(&mut self) {
         if !self.css_dirty {
             return;
@@ -638,10 +986,10 @@ impl Widgets for Gtk {
                 let c = layout::container();
                 let gesture = gtk::GestureClick::new();
                 let clickable = self.clickable.clone();
-                gesture.connect_released(move |g, _, _, _| {
+                gesture.connect_released(move |g, _, x, y| {
                     if clickable.borrow().contains(&id) {
                         g.set_state(gtk::EventSequenceState::Claimed);
-                        dispatch(UiEvent::Click(id));
+                        dispatch(UiEvent::ClickAt(id, point(x, y)));
                     }
                 });
                 c.add_controller(gesture);
@@ -837,6 +1185,25 @@ impl Widgets for Gtk {
                 });
                 View::Sheet(id, sheet)
             }
+            NodeKind::Checkbox => View::Check(id, controls::checkbox(id)),
+            NodeKind::RadioGroup => View::Radio(id, controls::radio_group(id)),
+            NodeKind::Overlay => {
+                let anchor = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                anchor.set_can_target(false);
+                View::Overlay(
+                    id,
+                    Rc::new(OverlayView {
+                        id,
+                        anchor,
+                        content: layout::container(),
+                        popover: RefCell::new(None),
+                        window: RefCell::new(None),
+                        config: Cell::new(Default::default()),
+                        open: Cell::new(false),
+                        size: Cell::new((0, 0)),
+                    }),
+                )
+            }
         };
         let w = view.widget();
         w.add_css_class(&format!("p{id}"));
@@ -848,6 +1215,8 @@ impl Widgets for Gtk {
                 | View::Picker(..)
                 | View::DatePicker(..)
                 | View::TextArea(..)
+                | View::Check(..)
+                | View::Radio(..)
         ) {
             controls::set_direction_deep(&w, self.rtl);
             self.controls.insert(id, w);
@@ -945,6 +1314,18 @@ impl Widgets for Gtk {
                 }
             }
         }
+        // `hit_test(false)`: GTK skips the widget and its children when
+        // picking; `inert`: no pointer, no focus, hidden from screen readers.
+        w.set_can_target(s.hit_test && !s.inert);
+        w.set_can_focus(!s.inert);
+        if s.inert != self.inert.contains(&id) {
+            if s.inert {
+                self.inert.insert(id);
+            } else {
+                self.inert.remove(&id);
+            }
+            set_accessible_hidden(&w, s.inert);
+        }
         layout::stop(&w, layout::Channel::Visual);
         layout::set_visual(
             &w,
@@ -1012,6 +1393,7 @@ impl Widgets for Gtk {
                     None => eprintln!("prism-linux: could not decode a data: picture"),
                 }
             }
+            View::Check(_, b) => b.set_label((!text.is_empty()).then_some(text)),
             View::Picture(_, p) => {
                 let path = if text.starts_with('/') {
                     Some(std::path::PathBuf::from(text))
@@ -1121,6 +1503,7 @@ impl Widgets for Gtk {
                 }
                 s.content.clone().upcast()
             }
+            View::Overlay(_, o) => o.content.clone().upcast(),
             _ => return,
         };
         // Remove the old children (keeping a stack's header and a tab bar).
@@ -1174,9 +1557,12 @@ impl Widgets for Gtk {
         let mut child = self.root.first_child();
         while let Some(c) = child {
             child = c.next_sibling();
-            c.unparent();
+            if !self.layers.contains(&c) {
+                c.unparent();
+            }
         }
         view.widget().set_parent(&self.root);
+        self.raise_layers();
     }
 
     fn set_drawing(&mut self, view: &View, paths: &[prism_core::Path]) {
@@ -1226,6 +1612,16 @@ impl Widgets for Gtk {
             s.window.destroy();
             return;
         }
+        if let View::Overlay(_, o) = view {
+            o.open.set(false);
+            o.teardown();
+        }
+        self.pointer.borrow_mut().remove(&id);
+        self.pointer_attached.retain(|(n, _)| *n != id);
+        self.keys.local.borrow_mut().remove(&id);
+        self.keys.global.borrow_mut().remove(&id);
+        self.inert.remove(&id);
+        self.layers.retain(|l| *l != view.widget());
         let w = view.widget();
         layout::forget(&w);
         if w.parent().is_some() {
@@ -1451,6 +1847,8 @@ impl Widgets for Gtk {
                 p.dropdown.set_sensitive(!a11y.disabled);
             }
             View::DatePicker(_, p) => p.button.set_sensitive(!a11y.disabled),
+            View::Check(_, b) => b.set_sensitive(!a11y.disabled),
+            View::Radio(_, r) => r.set_sensitive(!a11y.disabled),
             View::TextArea(_, t) => t.view.set_sensitive(!a11y.disabled),
             View::Container(id, ..) if a11y.role == Some(prism_core::Role::Status) => {
                 // A live region: GTK 4.8 has ROLE_STATUS (gtkenums.h); the
@@ -1511,6 +1909,9 @@ impl Widgets for Gtk {
             View::Picker(_, p) => p.select(value),
             View::DatePicker(_, p) => p.set_value(value),
             View::Spinner(_, s) => controls::spinner_size(s, value >= 1.),
+            View::Check(_, b) => b.set_active(value != 0.),
+            View::Radio(_, r) => r.select(value),
+            View::Overlay(_, o) => o.set_open(value != 0.),
             _ => {}
         }
     }
@@ -1534,6 +1935,12 @@ impl Widgets for Gtk {
                 text::apply(l, state, self.dark);
                 self.update_text_focus(*id, l);
             }
+            View::Radio(id, r) => r.set_options(*id, config),
+            View::Overlay(_, o) => o.configure(
+                prism_core::controls::OverlayConfig::decode(config),
+                &self.window,
+                &self.keys,
+            ),
             _ => {}
         }
     }
@@ -1558,6 +1965,12 @@ impl Widgets for Gtk {
     fn set_icon(&mut self, view: &View, icon: &str) {
         match view {
             View::Image(_, l) => l.set_text(prism_core::glyphs::glyph(icon)),
+            // A leading icon in the field (a themed icon; unknown symbols
+            // show none).
+            View::Input(_, e) => e.set_icon_from_icon_name(
+                gtk::EntryIconPosition::Primary,
+                crate::input::freedesktop_icon(icon),
+            ),
             View::Container(id, NodeKind::Tab, _) => {
                 self.icons.insert(*id, icon.to_string());
                 for t in self.tab_bars.clone() {
@@ -1641,8 +2054,235 @@ impl Widgets for Gtk {
     }
 
     fn set_content_size(&mut self, view: &View, width: f32, height: f32) {
-        if let View::Scroll(_, _, content) = view {
-            content.set_size_request(width.ceil() as i32, height.ceil() as i32);
+        match view {
+            View::Scroll(_, _, content) => {
+                content.set_size_request(width.ceil() as i32, height.ceil() as i32)
+            }
+            View::Overlay(_, o) => o.set_size(width.ceil() as i32, height.ceil() as i32),
+            _ => {}
+        }
+    }
+
+    // --- Pointer, keys, focus, layers, overlays (#17, #19, #25) ---------------
+
+    fn set_pointer_events(&mut self, view: &View, mask: u8) {
+        use prism_core::events::pointer_mask::{DRAG, HOVER, MOVE};
+        let id = view.id();
+        self.pointer.borrow_mut().insert(id, mask);
+        let w = view.widget();
+        if mask & (HOVER | MOVE) != 0 && self.pointer_attached.insert((id, HOVER)) {
+            let motion = gtk::EventControllerMotion::new();
+            let masks = self.pointer.clone();
+            let has = move |bits: u8| masks.borrow().get(&id).is_some_and(|m| m & bits != 0);
+            let pointer = move |phase, x, y| {
+                UiEvent::Pointer(
+                    id,
+                    prism_core::PointerEvent {
+                        phase,
+                        position: point(x, y),
+                    },
+                )
+            };
+            let h = has.clone();
+            motion.connect_enter(move |_, x, y| {
+                if h(HOVER | MOVE) {
+                    dispatch(pointer(prism_core::PointerPhase::Enter, x, y));
+                }
+            });
+            let h = has.clone();
+            motion.connect_motion(move |_, x, y| {
+                if h(MOVE) {
+                    dispatch_latest(id, 0, pointer(prism_core::PointerPhase::Move, x, y));
+                }
+            });
+            motion.connect_leave(move |_| {
+                if has(HOVER | MOVE) {
+                    dispatch(pointer(prism_core::PointerPhase::Leave, 0., 0.));
+                }
+            });
+            w.add_controller(motion);
+        }
+        if mask & DRAG != 0 && self.pointer_attached.insert((id, DRAG)) {
+            let drag = gtk::GestureDrag::new();
+            let masks = self.pointer.clone();
+            // Where the pointer went down, and whether the drag started.
+            let state: Rc<Cell<Option<DragStart>>> = Rc::default();
+            let threshold = gtk::Settings::default()
+                .map_or(8, |s| s.gtk_dnd_drag_threshold())
+                .max(1) as f64;
+            let event = move |phase, start: (f64, f64), dx: f64, dy: f64| {
+                UiEvent::Drag(
+                    id,
+                    prism_core::DragEvent {
+                        phase,
+                        start: point(start.0, start.1),
+                        translation: point(dx, dy),
+                    },
+                )
+            };
+            let st = state.clone();
+            drag.connect_drag_begin(move |_, x, y| {
+                let on = masks.borrow().get(&id).is_some_and(|m| m & DRAG != 0);
+                st.set(on.then_some(((x, y), false)));
+            });
+            let st = state.clone();
+            drag.connect_drag_update(move |g, dx, dy| {
+                let Some((start, started)) = st.get() else {
+                    return;
+                };
+                if !started {
+                    if dx.hypot(dy) < threshold {
+                        return;
+                    }
+                    // A drag, not a click: the click gestures stop here.
+                    g.set_state(gtk::EventSequenceState::Claimed);
+                    st.set(Some((start, true)));
+                    dispatch(event(prism_core::DragPhase::Start, start, dx, dy));
+                    return;
+                }
+                dispatch_latest(id, 1, event(prism_core::DragPhase::Move, start, dx, dy));
+            });
+            let st = state.clone();
+            drag.connect_drag_end(move |_, dx, dy| {
+                if let Some((start, true)) = st.take() {
+                    dispatch(event(prism_core::DragPhase::End, start, dx, dy));
+                }
+            });
+            drag.connect_cancel(move |_, _| {
+                if let Some((start, true)) = state.take() {
+                    dispatch(event(prism_core::DragPhase::Cancel, start, 0., 0.));
+                }
+            });
+            w.add_controller(drag);
+        }
+    }
+
+    fn set_key_events(&mut self, view: &View, local: bool, global: bool) {
+        let id = view.id();
+        let set = |s: &RefCell<HashSet<NodeId>>, on: bool| {
+            if on {
+                s.borrow_mut().insert(id);
+            } else {
+                s.borrow_mut().remove(&id);
+            }
+        };
+        set(&self.keys.local, local);
+        set(&self.keys.global, global);
+        // A view listening to keys can take the focus (Tab, a click).
+        if let View::Container(_, _, c) = view {
+            c.set_focusable(local);
+            if local {
+                c.add_css_class("prism-keys");
+                let focus = gtk::GestureClick::new();
+                let weak = c.downgrade();
+                focus.connect_pressed(move |_, _, _, _| {
+                    if let Some(c) = weak.upgrade()
+                        && c.is_focusable()
+                    {
+                        c.grab_focus();
+                    }
+                });
+                if self.pointer_attached.insert((id, 8)) {
+                    c.add_controller(focus);
+                }
+            } else {
+                c.remove_css_class("prism-keys");
+            }
+        }
+    }
+
+    fn focus(&mut self, view: &View) {
+        let target: gtk::Widget = match view {
+            View::Input(_, e) => e.clone().upcast(),
+            View::TextArea(_, t) => t.view.clone().upcast(),
+            View::Picker(_, p) => p.dropdown.clone().upcast(),
+            View::DatePicker(_, p) => p.button.clone().upcast(),
+            View::Radio(_, r) => r
+                .root
+                .first_child()
+                .unwrap_or_else(|| r.root.clone().upcast()),
+            other => other.widget(),
+        };
+        if target.is::<gtk::Box>() && !target.is_focusable() {
+            target.set_focusable(true);
+        }
+        // After the layout pass: a new widget is not mapped yet.
+        glib::idle_add_local_once(move || {
+            target.grab_focus();
+        });
+    }
+
+    /// Scrolls every scroll view around the widget so its frame is visible.
+    fn scroll_into_view(&mut self, view: &View) {
+        let mut w = view.widget();
+        loop {
+            // Offset of `w` inside the scroll view's content, from the
+            // frames Prism gave each widget on the way up.
+            let (mut y, h) = layout::frame_of(&w).map_or((0, 0), |f| (f.1, f.3));
+            let mut up = w.parent();
+            let sw = loop {
+                let Some(p) = up else { return };
+                if let Some(sw) = p.downcast_ref::<gtk::ScrolledWindow>() {
+                    break sw.clone();
+                }
+                if !p.is::<gtk::Viewport>() {
+                    y += layout::frame_of(&p).map_or(0, |f| f.1);
+                }
+                up = p.parent();
+            };
+            let adj = sw.vadjustment();
+            let (top, bottom) = (f64::from(y) - 12., f64::from(y + h) + 12.);
+            let (value, page) = (adj.value(), adj.page_size());
+            // The adjustment clamps to its range.
+            if top < value || bottom - top > page {
+                adj.set_value(top);
+            } else if bottom > value + page {
+                adj.set_value(bottom - page);
+            }
+            w = sw.upcast();
+        }
+    }
+
+    /// Layers are the last children of the window's root container (drawn
+    /// above it); they let input through where they have no child.
+    fn set_layers(&mut self, layers: &[View]) {
+        let next: Vec<gtk::Widget> = layers.iter().map(View::widget).collect();
+        for old in &self.layers {
+            if !next.contains(old)
+                && old.parent().as_ref() == Some(self.root.upcast_ref::<gtk::Widget>())
+            {
+                old.remove_css_class(layout::PASS_THROUGH);
+                old.unparent();
+            }
+        }
+        self.layers = next;
+        for l in &self.layers {
+            l.add_css_class(layout::PASS_THROUGH);
+        }
+        self.raise_layers();
+    }
+
+    /// A popover gets a phone-like width; dialogs and sheets fit the
+    /// window (a sheet fills its height, or half of it).
+    fn overlay_viewport(&mut self, overlay: &View, _content: &View) -> Viewport {
+        use prism_core::OverlayKind;
+        let (w, h) = self.size;
+        let config = match overlay {
+            View::Overlay(_, o) => o.config.get(),
+            _ => Default::default(),
+        };
+        let (width, height) = match config.kind {
+            OverlayKind::Popover => ((w - 32.).clamp(120., 360.), (h * 0.8).max(120.)),
+            OverlayKind::Dialog => ((w - 48.).clamp(200., 480.), (h - 80.).max(160.)),
+            OverlayKind::Sheet if config.medium => (w.min(560.), (h * 0.5).max(200.)),
+            OverlayKind::Sheet => (w.min(560.), (h - 48.).max(200.)),
+        };
+        Viewport {
+            x: 0.,
+            y: 0.,
+            width,
+            height,
+            insets: Insets::default(),
         }
     }
 
@@ -1700,6 +2340,29 @@ pub(crate) fn set_accessible_string(w: &impl IsA<gtk::Widget>, property: i32, te
             &property,
             value.to_glib_none_mut().0,
         );
+    }
+}
+
+unsafe extern "C" {
+    /// gtkaccessible.h, `GDK_AVAILABLE_IN_ALL` (gtk-rs binds it from 4.10).
+    fn gtk_accessible_update_state_value(
+        accessible: *mut std::ffi::c_void,
+        n_states: std::ffi::c_int,
+        states: *const i32,
+        values: *const gtk::glib::gobject_ffi::GValue,
+    );
+}
+
+/// `GTK_ACCESSIBLE_STATE_HIDDEN` (gtkenums.h): out of the accessibility
+/// tree (inert subtrees).
+pub(crate) fn set_accessible_hidden(w: &impl IsA<gtk::Widget>, hidden: bool) {
+    use gtk::glib::translate::{ToGlibPtr, ToGlibPtrMut};
+    const HIDDEN: i32 = 4;
+    let mut value = hidden.to_value();
+    let widget: *mut gtk::ffi::GtkWidget = w.as_ref().to_glib_none().0;
+    // SAFETY: every GtkWidget implements GtkAccessible; one boolean state.
+    unsafe {
+        gtk_accessible_update_state_value(widget.cast(), 1, &HIDDEN, value.to_glib_none_mut().0);
     }
 }
 
@@ -1880,7 +2543,8 @@ fn activate(app: &gtk::Application) {
     #[allow(deprecated)]
     base.load_from_data(
         ".prism-header{padding:0 8px;border-bottom:1px solid alpha(currentColor,0.15);}\
-         .prism-tabbar{padding:6px;border-top:1px solid alpha(currentColor,0.15);}",
+         .prism-tabbar{padding:6px;border-top:1px solid alpha(currentColor,0.15);}\
+         .prism-keys:focus-visible{outline:2px solid alpha(currentColor,0.55);outline-offset:2px;}",
     );
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
@@ -1939,6 +2603,8 @@ fn activate(app: &gtk::Application) {
             ..Default::default()
         },
     );
+    let keys = Rc::new(KeyState::default());
+    attach_keys(window.upcast_ref(), keys.clone());
     let renderer = NativeRenderer::new(Gtk {
         root: root.clone(),
         window: window.clone(),
@@ -1975,6 +2641,11 @@ fn activate(app: &gtk::Application) {
         reports: Rc::default(),
         watched: HashSet::new(),
         cursors: HashMap::new(),
+        pointer: Rc::new(RefCell::new(HashMap::new())),
+        pointer_attached: HashSet::new(),
+        keys: keys.clone(),
+        layers: Vec::new(),
+        inert: HashSet::new(),
     });
     STATE.with(|s| {
         *s.borrow_mut() = Some(State {

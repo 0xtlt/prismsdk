@@ -4,6 +4,7 @@
 mod background;
 mod decoration;
 mod i18n;
+mod interaction;
 mod motion;
 mod pictures;
 mod reconcile;

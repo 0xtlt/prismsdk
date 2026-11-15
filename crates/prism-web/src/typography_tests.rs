@@ -210,6 +210,16 @@ fn ssr_rich_text_and_clickable_text() {
         html.contains(r#"data-kind="text" style="" role="button" tabindex="0">Tap me</div>"#),
         "{html}"
     );
+    // A page (strict CSP): the runs' styles are rules of its `<style>` block.
+    let (html, css) = b.to_html_and_css();
+    assert!(!html.contains("style="), "{html}");
+    assert!(
+        html.contains(
+            r#"<a class="prism-link" href="/settings?a=1&amp;b=2" data-link="42" data-ps="#
+        ),
+        "{html}"
+    );
+    assert!(css.contains("text-decoration-line:underline;"), "{css}");
 }
 
 #[test]

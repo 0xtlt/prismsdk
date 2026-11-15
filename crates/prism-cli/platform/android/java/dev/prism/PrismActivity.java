@@ -83,6 +83,13 @@ public class PrismActivity extends Activity {
         handleLink(getIntent());
     }
 
+    /** Keys for Prism (`on_key_down`, `on_global_key_down`): D-pad, keyboards, TV remotes. */
+    @Override
+    public boolean dispatchKeyEvent(android.view.KeyEvent e) {
+        if (ready && PrismInput.key(e, getCurrentFocus())) return true;
+        return super.dispatchKeyEvent(e);
+    }
+
     @Override
     @SuppressWarnings("deprecation")
     public void onBackPressed() {

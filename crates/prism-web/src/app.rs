@@ -452,6 +452,7 @@ impl WebApp {
 <main id="prism-root">{body}</main>
 <div id="prism-island" role="status" aria-live="polite"></div>
 <div id="prism-toasts" role="status" aria-live="polite"></div>
+<div id="prism-layers" popover="manual"></div>
 <div id="prism-connection" role="status" aria-live="polite" hidden>{reconnecting}</div>
 <script src="{prefix}/{js}" data-base="{base}"{n}></script>
 </body>

@@ -12,6 +12,8 @@ mod device_info;
 #[cfg(target_os = "macos")]
 mod imp;
 #[cfg(target_os = "macos")]
+mod interact;
+#[cfg(target_os = "macos")]
 mod label;
 #[cfg(target_os = "macos")]
 mod menus;

@@ -732,6 +732,16 @@ pub struct Style {
     /// `translate(x%, y%)`; `(-50., 0.)` centers it on its position). Leading
     /// / trailing like `transform.x`; no effect on the layout around it.
     pub translate_percent: (f32, f32),
+
+    // --- Hit testing (#19) ---
+    /// The element and everything in it take pointer input (`true` by
+    /// default). `false`: clicks, taps and hovers go to what is underneath
+    /// (`pointer-events: none`).
+    pub hit_test: bool,
+    /// The element and everything in it are out of reach: no pointer input,
+    /// no keyboard focus, hidden from assistive technologies (`inert`).
+    /// Still drawn.
+    pub inert: bool,
 }
 
 impl Style {
@@ -1249,6 +1259,8 @@ impl Default for Style {
             cursor: None,
             group: false,
             translate_percent: (0., 0.),
+            hit_test: true,
+            inert: false,
         }
     }
 }
@@ -2108,5 +2120,21 @@ pub trait Styled: Sized {
     /// .translate_percent(-50., 0.)` centers a label on 30 % of its parent.
     fn translate_percent(self, x: f32, y: f32) -> Self {
         self.with_style(|s| s.translate_percent = (x, y))
+    }
+
+    // --- Hit testing (#19) ---
+
+    /// `false`: the element and everything in it let clicks, taps and
+    /// hovers through to what is underneath (`pointer-events: none`): a
+    /// decorative overlay, a scrim drawn over content.
+    fn hit_test(self, on: bool) -> Self {
+        self.with_style(|s| s.hit_test = on)
+    }
+
+    /// Makes the element and everything in it unreachable while `on`: no
+    /// pointer input, no keyboard focus, hidden from screen readers (the
+    /// screen behind a custom overlay). It stays visible.
+    fn inert(self, on: bool) -> Self {
+        self.with_style(|s| s.inert = on)
     }
 }
