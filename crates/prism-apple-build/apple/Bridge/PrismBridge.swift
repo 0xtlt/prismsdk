@@ -94,6 +94,9 @@ public func prismBridgeInit() -> Bool {
     // Notifications need a bundled app (not `cargo run` on macOS).
     guard Bundle.main.bundleIdentifier != nil else { return false }
     UNUserNotificationCenter.current().delegate = PrismNotificationDelegate.shared
+    #if os(iOS)
+    prismObserveActivities()
+    #endif
     return true
 }
 
@@ -194,7 +197,49 @@ public func prismWidgetsWrite(_ kind: UnsafePointer<CChar>, _ json: UnsafePointe
 // MARK: Live Activities
 
 #if os(iOS)
+/// The app's activities by id (prism-core `ActivityId`). Main thread.
 private var prismActivities: [String: Activity<PrismActivityAttributes>] = [:]
+
+/// Implemented in Rust: the id an activity the app did not start in this run
+/// joins the app's activities with (`requested`, or a new one when 0).
+@_silgen_name("prism_activity_adopt")
+func prismRustActivityAdopt(_ requested: UInt64) -> UInt64
+
+private func prismIsOver(_ activity: Activity<PrismActivityAttributes>) -> Bool {
+    switch activity.activityState {
+    case .ended, .dismissed: return true
+    default: return false
+    }
+}
+
+/// An activity the bridge does not hold yet: one a push-to-start push
+/// started, or an earlier run of the app. It keeps the id of its attributes
+/// unless a live activity of this run has it, is updated and ended like the
+/// app's own, and its push token is reported (`on_activity_push_token`).
+@MainActor
+private func prismAdopt(_ activity: Activity<PrismActivityAttributes>) {
+    guard !prismIsOver(activity), !prismActivities.values.contains(where: { $0.id == activity.id }) else { return }
+    var requested = activity.attributes.id.flatMap { UInt64($0) } ?? 0
+    if let held = prismActivities[String(requested)], !prismIsOver(held) { requested = 0 }
+    let key = String(prismRustActivityAdopt(requested))
+    prismActivities[key] = activity
+    prismWatchActivityToken(key, activity.attributes.kind, activity)
+}
+
+private var prismObservingActivities = false
+
+/// From launch, for apps that declare Live Activities: the running ones,
+/// then each one that starts outside the app. iOS wakes the app in the
+/// background when a push starts one, so the token gets to the server.
+func prismObserveActivities() {
+    guard !prismObservingActivities,
+          Bundle.main.object(forInfoDictionaryKey: "NSSupportsLiveActivities") as? Bool == true else { return }
+    prismObservingActivities = true
+    Task { @MainActor in
+        for activity in Activity<PrismActivityAttributes>.activities { prismAdopt(activity) }
+        for await activity in Activity<PrismActivityAttributes>.activityUpdates { prismAdopt(activity) }
+    }
+}
 
 private func content(_ json: UnsafePointer<CChar>, _ stale: Double) -> ActivityContent<PrismActivityAttributes.ContentState> {
     ActivityContent(state: .init(json: String(cString: json)),
@@ -209,7 +254,8 @@ public func prismActivityStart(_ key: UnsafePointer<CChar>, _ kind: UnsafePointe
                                _ json: UnsafePointer<CChar>, _ stale: Double, _ push: Bool) -> Bool {
     do {
         // `push`: updates come from the app's server too (needs aps-environment).
-        let activity = try Activity.request(attributes: PrismActivityAttributes(kind: String(cString: kind)),
+        let attributes = PrismActivityAttributes(kind: String(cString: kind), id: String(cString: key))
+        let activity = try Activity.request(attributes: attributes,
                                             content: content(json, stale), pushType: push ? .token : nil)
         prismActivities[String(cString: key)] = activity
         if push { prismWatchActivityToken(String(cString: key), String(cString: kind), activity) }

@@ -309,6 +309,23 @@ pub extern "C" fn prism_activity_push_token(
     crate::imp::with_runtime(|rt| rt.activity_push_token(token));
 }
 
+/// A Live Activity the app did not start in this run (a push started it, or
+/// an earlier run did) joins the app's activities: the id to use for it,
+/// `requested` (its attributes' id, 0: none) when the bridge has no live
+/// activity under it, or a new one.
+#[unsafe(no_mangle)]
+pub extern "C" fn prism_activity_adopt(requested: u64) -> u64 {
+    let mut id = 0;
+    crate::imp::with_runtime(|rt| {
+        id = rt
+            .app
+            .adopt_activity(Some(prism_core::ActivityId(requested)))
+            .0;
+        Vec::new()
+    });
+    id
+}
+
 /// CarPlay (PrismCarPlay.swift): connected or not, a selection, Back.
 #[unsafe(no_mangle)]
 pub extern "C" fn prism_car_connected(connected: bool) {

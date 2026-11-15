@@ -143,6 +143,9 @@ pub struct LiveActivity {
     pub content_state: Value,
     /// For `start`: the activity's kind (Prism's `PrismActivityAttributes`).
     pub kind: Option<String>,
+    /// For `start`: the id the app reports the activity's own push token
+    /// with (`ActivityPushToken::activity`, `ActivityId(id)`).
+    pub id: Option<u64>,
     pub stale_date: Option<SystemTime>,
     pub dismissal_date: Option<SystemTime>,
 }
@@ -238,6 +241,7 @@ impl Push {
             event: if end { "end" } else { "update" },
             content_state: serde_json::from_str(content_state_json).unwrap_or(Value::Null),
             kind: None,
+            id: None,
             stale_date: None,
             dismissal_date: None,
         });
@@ -246,15 +250,24 @@ impl Push {
 
     /// Starts a Live Activity of `kind` remotely (push-to-start token,
     /// iOS 17.2+). Set `title`/`body` for the alert it shows.
+    ///
+    /// `id` (non-zero) names the activity: the app reports the activity's
+    /// own push token, for updating and ending it, with
+    /// `ActivityPushToken::activity` = `Some(ActivityId(id))`, and can
+    /// update or end it locally with that id. Pick ids the app's own
+    /// activities will not use (they count from 1 at each launch), such as
+    /// a timestamp or a random number.
     pub fn start_live_activity(
         mut self,
         kind: impl Into<String>,
+        id: u64,
         content_state_json: &str,
     ) -> Self {
         self.live_activity = Some(LiveActivity {
             event: "start",
             content_state: serde_json::from_str(content_state_json).unwrap_or(Value::Null),
             kind: Some(kind.into()),
+            id: Some(id),
             stale_date: None,
             dismissal_date: None,
         });
