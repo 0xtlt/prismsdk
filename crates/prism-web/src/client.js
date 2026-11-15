@@ -16,7 +16,8 @@
     view: "div", text: "div", button: "button", text_input: "input",
     stack: "div", screen: "section", toggle: "input", scroll: "div", tabs: "div", tab: "div",
     image: "span", progress: "progress", timer: "span", modal: "dialog", picture: "img",
-    shape: "div",
+    shape: "div", slider: "input", picker: "select", date_picker: "input", text_area: "textarea",
+    spinner: "span",
   };
   // SF Symbol names → glyphs (table generated from Rust: glyphs.rs).
   const glyphs = __GLYPHS__;
@@ -122,6 +123,33 @@
     if (kind === "text_input") {
       el.type = "text";
       el.addEventListener("input", () => send({ t: "input", id, v: el.value }));
+      el.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.isComposing) send({ t: "submit", id });
+      });
+    } else if (kind === "text_area") {
+      el.className = "prism-textarea";
+      el.rows = 3;
+      el.addEventListener("input", () => { grow(el); send({ t: "input", id, v: el.value }); });
+    } else if (kind === "slider") {
+      el.type = "range";
+      el.className = "prism-slider";
+      el.addEventListener("input", () => send({ t: "change", id, v: Number(el.value) }));
+    } else if (kind === "picker") {
+      el.className = "prism-select";
+      el._ph = document.createElement("option");
+      Object.assign(el._ph, { disabled: true, hidden: true, value: "" });
+      el.appendChild(el._ph);
+      el._index = -1;
+      el.addEventListener("change", () => send({ t: "change", id, v: el.selectedIndex - 1 }));
+    } else if (kind === "date_picker") {
+      el.type = "date";
+      el.className = "prism-date";
+      el.addEventListener("change", () => {
+        const secs = dateSeconds(el);
+        if (secs !== null) send({ t: "change", id, v: secs });
+      });
+    } else if (kind === "spinner") {
+      el.className = "prism-spinner";
     } else if (kind === "toggle") {
       el.type = "checkbox";
       el.className = "prism-switch";
@@ -342,13 +370,85 @@
     if (s && s.stack) refreshStack(s.stack);
   }
 
+  // --- Form controls (prism-core `controls`) -------------------------------------
+  /** A text area as tall as its text (its max-height then scrolls it). */
+  function grow(el) {
+    // Not in the page yet (just created): measure once it is.
+    if (!el.isConnected) return requestAnimationFrame(() => el.isConnected && grow(el));
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight + el.offsetHeight - el.clientHeight}px`;
+  }
+  const pad = (n) => String(n).padStart(2, "0");
+  /** Unix seconds as an `<input type=date|time|datetime-local>` value (local time). */
+  function dateString(secs, type) {
+    const d = new Date(secs * 1000);
+    const day = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    return type === "date" ? day : type === "time" ? time : `${day}T${time}`;
+  }
+  /** The input's value as Unix seconds, keeping the part it does not show. */
+  function dateSeconds(el) {
+    const v = el.value;
+    if (!v) return null;
+    const b = new Date((el._secs || 0) * 1000);
+    let [y, mo, d, h, mi, s] = [b.getFullYear(), b.getMonth(), b.getDate(), b.getHours(), b.getMinutes(), b.getSeconds()];
+    if (el.type === "time") {
+      [h, mi] = v.split(":").map(Number);
+      s = 0;
+    } else {
+      const [day, time] = v.split("T");
+      [y, mo, d] = day.split("-").map(Number);
+      mo -= 1;
+      if (time) { [h, mi] = time.split(":").map(Number); s = 0; }
+    }
+    return Math.round(new Date(y, mo, d, h, mi, s).getTime() / 1000);
+  }
+  /** Keyboard, return key, capitalization, autocorrection (mirrors html.rs input_attrs). */
+  function applyInputConfig(el, config) {
+    const t = new Set(config.split(" ").filter(Boolean));
+    const get = (k) => { for (const x of t) if (x.startsWith(k + "=")) return x.slice(k.length + 1); return null; };
+    const secure = t.has("secure");
+    const kb = get("keyboard");
+    if (el.tagName === "INPUT") {
+      el.type = secure ? "password" : { email: "email", url: "url", phone: "tel" }[kb] || "text";
+      if (secure) el.autocomplete = "current-password";
+    }
+    const set = (name, v) => (v ? el.setAttribute(name, v) : el.removeAttribute(name));
+    set("inputmode", { number: "numeric", decimal: "decimal" }[kb]);
+    set("enterkeyhint", get("return"));
+    set("autocapitalize", secure ? "none" : { none: "none", words: "words", all: "characters" }[get("capitalize")]);
+    const noCorrect = secure || t.has("autocorrect=off");
+    set("autocorrect", noCorrect ? "off" : null);
+    el.spellcheck = !noCorrect;
+  }
+  function applyConfig(el, config) {
+    const kind = el.dataset.kind;
+    if (kind === "slider") {
+      const [min, max, step] = config.split(" ").map(Number);
+      Object.assign(el, { min, max, step: step > 0 ? step : "any" });
+      if (el._v !== undefined) el.value = el._v;
+    } else if (kind === "picker") {
+      while (el.options.length > 1) el.lastChild.remove();
+      (config ? config.split("\n") : []).forEach((text, i) => el.appendChild(new Option(text, String(i))));
+      el.selectedIndex = el._index + 1;
+    } else if (kind === "date_picker") {
+      const [mode, min, max] = config.split(" ");
+      el.type = { time: "time", datetime: "datetime-local" }[mode] || "date";
+      el.min = mode !== "time" && min !== "-" ? dateString(Number(min), el.type) : "";
+      el.max = mode !== "time" && max !== "-" ? dateString(Number(max), el.type) : "";
+      if (el._secs !== undefined) el.value = dateString(el._secs, el.type);
+    } else if (kind === "text_input" || kind === "text_area") {
+      applyInputConfig(el, config);
+    }
+  }
+
   function applyA11y(el, a) {
     const kind = el.dataset.kind;
     const set = (name, v) =>
       v === undefined || v === null || v === false ? el.removeAttribute(name) : el.setAttribute(name, v === true ? "true" : v);
     set("aria-hidden", a.hidden || null);
     if (kind === "stack" || kind === "tabs" || kind === "tab" || kind === "screen") return;
-    const native = { button: "button", toggle: "switch" }[kind];
+    const native = { button: "button", toggle: "switch", slider: "slider", picker: "combobox" }[kind];
     const role = a.role;
     if (role && role !== "text" && role !== native) {
       set("role", role);
@@ -364,10 +464,13 @@
     set("aria-selected", role === "tab" ? String(!!a.checked) : null);
     // A button with a state is a toggle button.
     set("aria-pressed", role === "button" && a.checked !== null && a.checked !== undefined ? String(a.checked) : null);
+    set("aria-valuetext", role === "slider" ? a.value || null : null);
+    // A polite live region: what it shows is announced.
+    set("aria-live", role === "status" ? "polite" : null);
     set("aria-disabled", a.disabled || null);
-    if (el.tagName === "INPUT" || el.tagName === "BUTTON") el.disabled = !!a.disabled;
+    if (["INPUT", "BUTTON", "SELECT", "TEXTAREA"].includes(el.tagName)) el.disabled = !!a.disabled;
     // Custom interactive elements must be reachable from the keyboard.
-    const interactive = ["button", "link", "switch", "checkbox", "tab"].includes(role);
+    const interactive = ["button", "link", "switch", "checkbox", "tab", "slider", "combobox"].includes(role);
     if (kind === "view") set("tabindex", interactive && !a.hidden && !a.disabled ? "0" : null);
   }
 
@@ -378,6 +481,7 @@
       case "style": {
         const hidden = el.style.display === "none";
         el.style.cssText = p.css;
+        if (el.dataset.kind === "text_area") grow(el);
         motion(el, p.motion, hidden);
         return;
       }
@@ -402,9 +506,10 @@
           if (el.getAttribute("src") !== src) el.src = src;
           return;
         }
-        if (el.tagName === "INPUT") {
+        if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
           // Never fight the user's typing: a focused field owns its value.
           if (el.value !== p.text && document.activeElement !== el) el.value = p.text;
+          if (el.tagName === "TEXTAREA") grow(el);
         } else {
           let t = el.firstChild && el.firstChild.nodeType === 3 ? el.firstChild : null;
           if (!t) { t = document.createTextNode(""); el.prepend(t); }
@@ -412,7 +517,11 @@
         }
         return;
       }
-      case "placeholder": el.placeholder = p.text; return;
+      case "placeholder":
+        if (el._ph) el._ph.textContent = p.text;
+        else el.placeholder = p.text;
+        return;
+      case "config": return applyConfig(el, p.config);
       case "clickable":
         el.dataset.clickable = p.on ? "1" : "0";
         if (el.dataset.kind === "scroll") setRefreshable(el, p.id, p.on);
@@ -422,6 +531,10 @@
       case "value":
         if (el.dataset.kind === "toggle") el.checked = p.value !== 0;
         if (el.dataset.kind === "progress") el.value = p.value;
+        if (el.dataset.kind === "slider") { el._v = p.value; el.value = p.value; }
+        if (el.dataset.kind === "picker") { el._index = p.value; el.selectedIndex = p.value + 1; }
+        if (el.dataset.kind === "date_picker") { el._secs = p.value; el.value = dateString(p.value, el.type); }
+        if (el.dataset.kind === "spinner") el.dataset.size = p.value === 1 ? "large" : "";
         if (el.dataset.kind === "picture") el.style.objectFit = p.value === 1 ? "contain" : "cover";
         if (el.dataset.kind === "scroll") setRefreshing(el, p.value === 1);
         if (el.dataset.kind === "stack") { el._closable = p.value === 1; refreshStack(el); }

@@ -13,6 +13,7 @@ use prism_core::{
 };
 use prism_native::{Insets, NativeRenderer, Viewport, Widgets};
 
+use crate::controls;
 use crate::layout;
 
 const HEADER: f32 = 44.;
@@ -66,6 +67,15 @@ pub enum View {
     Sheet(NodeId, Rc<Sheet>),
     /// Vector drawing (cairo), with its paths in points.
     Shape(NodeId, gtk::DrawingArea, Rc<RefCell<Vec<prism_core::Path>>>),
+    Slider(
+        NodeId,
+        gtk::Scale,
+        Rc<Cell<prism_core::controls::SliderConfig>>,
+    ),
+    Picker(NodeId, Rc<controls::Picker>),
+    DatePicker(NodeId, Rc<controls::DatePicker>),
+    TextArea(NodeId, Rc<controls::TextArea>),
+    Spinner(NodeId, gtk::Spinner),
 }
 
 thread_local! {
@@ -138,7 +148,12 @@ impl View {
             | View::Stack(id, _)
             | View::Tabs(id, _)
             | View::Sheet(id, _)
-            | View::Shape(id, ..) => *id,
+            | View::Shape(id, ..)
+            | View::Slider(id, ..)
+            | View::Picker(id, _)
+            | View::DatePicker(id, _)
+            | View::TextArea(id, _)
+            | View::Spinner(id, _) => *id,
         }
     }
 
@@ -157,6 +172,11 @@ impl View {
             View::Tabs(_, t) => t.root.clone().upcast(),
             View::Sheet(_, s) => s.content.clone().upcast(),
             View::Shape(_, w, _) => w.clone().upcast(),
+            View::Slider(_, w, _) => w.clone().upcast(),
+            View::Picker(_, p) => p.dropdown.clone().upcast(),
+            View::DatePicker(_, p) => p.button.clone().upcast(),
+            View::TextArea(_, t) => t.root.clone().upcast(),
+            View::Spinner(_, w) => w.clone().upcast(),
         }
     }
 }
@@ -320,6 +340,14 @@ pub struct Gtk {
     shapes: HashMap<NodeId, gtk::DrawingArea>,
     /// Window content size.
     size: (f32, f32),
+    /// Right-to-left layout and the app's locale (form controls follow them).
+    rtl: bool,
+    locale: prism_core::Locale,
+    /// Form controls, mirrored in right-to-left.
+    controls: HashMap<NodeId, gtk::Widget>,
+    date_pickers: HashMap<NodeId, Rc<controls::DatePicker>>,
+    /// Status regions and what they last announced.
+    statuses: HashMap<NodeId, String>,
 }
 
 fn css_color(c: Color, dark: bool) -> String {
@@ -486,7 +514,26 @@ impl Widgets for Gtk {
             NodeKind::TextInput => {
                 let e = gtk::Entry::new();
                 e.connect_changed(move |e| dispatch(UiEvent::Input(id, e.text().to_string())));
+                // Enter.
+                e.connect_activate(move |_| dispatch(UiEvent::Submit(id)));
                 View::Input(id, e)
+            }
+            NodeKind::Slider => {
+                let (scale, config) = controls::slider(id);
+                View::Slider(id, scale, config)
+            }
+            NodeKind::Picker => View::Picker(id, controls::picker(id)),
+            NodeKind::DatePicker => {
+                let p = controls::date_picker(id, self.locale.clone());
+                self.date_pickers.insert(id, p.clone());
+                View::DatePicker(id, p)
+            }
+            NodeKind::TextArea => View::TextArea(id, controls::text_area(id)),
+            NodeKind::Spinner => {
+                let s = gtk::Spinner::new();
+                s.set_spinning(true);
+                controls::spinner_size(&s, false);
+                View::Spinner(id, s)
             }
             NodeKind::Toggle => {
                 let t = gtk::Switch::new();
@@ -602,6 +649,17 @@ impl Widgets for Gtk {
         let w = view.widget();
         w.add_css_class(&format!("p{id}"));
         self.attach_gestures(id, &w);
+        if matches!(
+            view,
+            View::Input(..)
+                | View::Slider(..)
+                | View::Picker(..)
+                | View::DatePicker(..)
+                | View::TextArea(..)
+        ) {
+            controls::set_direction_deep(&w, self.rtl);
+            self.controls.insert(id, w);
+        }
         view
     }
 
@@ -628,8 +686,32 @@ impl Widgets for Gtk {
                 t.duration, t.delay
             );
         }
+        // Tint of form controls: the slider's fill, the picker's and the
+        // date picker's text (not their popovers').
+        let mut extra = String::new();
         if let Some(c) = s.text_color {
-            css += &format!("color:{};", css_color(c, self.dark));
+            let c = css_color(c, self.dark);
+            match view {
+                View::Slider(..) => {
+                    extra += &format!(
+                        ".p{id} trough highlight{{background-color:{c};border-color:{c};}}\n"
+                    )
+                }
+                View::Picker(..) | View::DatePicker(..) => {
+                    extra += &format!(".p{id} > button{{color:{c};}}\n")
+                }
+                _ => css += &format!("color:{c};"),
+            }
+        }
+        if let View::TextArea(_, t) = view {
+            // Prism draws the field: the text view is transparent inside.
+            let drawn = s.background.is_some() || s.border_width > 0.;
+            t.scroll.set_has_frame(!drawn);
+            if drawn {
+                extra += &format!(
+                    ".p{id} textview, .p{id} textview text{{background-color:transparent;}}\n"
+                );
+            }
         }
         css += &format!(
             "font-size:{}px;font-weight:{};",
@@ -641,7 +723,7 @@ impl Widgets for Gtk {
                 FontWeight::Bold => 700,
             }
         );
-        self.rules.insert(id, format!(".p{id}{{{css}}}\n"));
+        self.rules.insert(id, format!(".p{id}{{{css}}}\n{extra}"));
         self.css_dirty = true;
         let w = view.widget();
         layout::stop(&w, layout::Channel::Visual);
@@ -666,11 +748,13 @@ impl Widgets for Gtk {
                     TextAlign::Right => gtk::Justification::Right,
                 });
             }
-            View::Container(..) => view.widget().set_overflow(if s.corner_radius > 0. {
-                gtk::Overflow::Hidden
-            } else {
-                gtk::Overflow::Visible
-            }),
+            View::Container(..) | View::TextArea(..) => {
+                view.widget().set_overflow(if s.corner_radius > 0. {
+                    gtk::Overflow::Hidden
+                } else {
+                    gtk::Overflow::Visible
+                })
+            }
             _ => {}
         }
     }
@@ -684,6 +768,7 @@ impl Widgets for Gtk {
                     e.set_text(text);
                 }
             }
+            View::TextArea(_, t) => t.set_text(text),
             View::Picture(_, p) => {
                 let path = if text.starts_with('/') {
                     Some(std::path::PathBuf::from(text))
@@ -713,8 +798,18 @@ impl Widgets for Gtk {
     }
 
     fn set_placeholder(&mut self, view: &View, text: &str) {
-        if let View::Input(_, e) = view {
-            e.set_placeholder_text(Some(text));
+        match view {
+            View::Input(_, e) => {
+                e.set_placeholder_text(Some(text));
+                // GtkText creates its placeholder label now: mirror it too.
+                controls::set_direction_deep(e.upcast_ref(), self.rtl);
+            }
+            View::TextArea(_, t) => {
+                t.set_placeholder(text);
+                set_accessible_string(&t.view, a11y_property::PLACEHOLDER, text);
+            }
+            View::Picker(_, p) => p.set_placeholder(text),
+            _ => {}
         }
     }
 
@@ -823,6 +918,9 @@ impl Widgets for Gtk {
     fn destroy(&mut self, view: &View) {
         let id = view.id();
         self.shapes.remove(&id);
+        self.controls.remove(&id);
+        self.date_pickers.remove(&id);
+        self.statuses.remove(&id);
         self.rules.remove(&id);
         self.css_dirty = true;
         self.clickable.borrow_mut().remove(&id);
@@ -859,6 +957,13 @@ impl Widgets for Gtk {
         let width = match (view, max_width) {
             (View::Text(..), Some(m)) => (nat_w as f32).min(m),
             (View::Input(..) | View::Progress(..), Some(m)) => m,
+            // GtkScale's natural width is its knob: sliders take 200 px.
+            (View::Slider(..), m) => m.map_or(200., |m| m.min(200.)),
+            // As wide as offered; as tall as its text, at least 3 lines.
+            (View::TextArea(_, t), m) => {
+                let w = m.unwrap_or(240.).ceil();
+                return (w, t.measure_height(w).ceil());
+            }
             _ => nat_w as f32,
         };
         let (_, nat_h, _, _) = w.measure(gtk::Orientation::Vertical, width.ceil() as i32);
@@ -1022,8 +1127,54 @@ impl Widgets for Gtk {
     }
 
     fn set_accessibility(&mut self, view: &View, a11y: &Accessibility) {
+        let w = view.widget();
         if let Some(label) = &a11y.label {
-            set_accessible_label(&view.widget(), label);
+            let target: gtk::Widget = match view {
+                // The focusable part reads the label.
+                View::Picker(_, p) => p.dropdown.clone().upcast(),
+                View::TextArea(_, t) => t.view.clone().upcast(),
+                _ => w.clone(),
+            };
+            set_accessible_label(&target, label);
+        }
+        if let Some(hint) = &a11y.hint {
+            set_accessible_string(&w, a11y_property::DESCRIPTION, hint);
+        }
+        match view {
+            // GtkScale exposes its own range and value (VALUE_MIN/MAX/NOW,
+            // gtkrange.c); a formatted value ("40 %") is read instead.
+            View::Slider(_, s, _) => {
+                if let Some(v) = &a11y.value {
+                    set_accessible_string(s, a11y_property::VALUE_TEXT, v);
+                }
+                s.set_sensitive(!a11y.disabled);
+            }
+            View::Picker(_, p) => {
+                if let Some(v) = &a11y.value {
+                    set_accessible_string(&p.dropdown, a11y_property::VALUE_TEXT, v);
+                }
+                p.dropdown.set_sensitive(!a11y.disabled);
+            }
+            View::DatePicker(_, p) => p.button.set_sensitive(!a11y.disabled),
+            View::TextArea(_, t) => t.view.set_sensitive(!a11y.disabled),
+            View::Container(id, ..) if a11y.role == Some(prism_core::Role::Status) => {
+                // A live region: GTK 4.8 has ROLE_STATUS (gtkenums.h); the
+                // role can only change before the widget is realized.
+                if !w.is_realized()
+                    && w.property::<gtk::AccessibleRole>("accessible-role")
+                        != gtk::AccessibleRole::Status
+                {
+                    w.set_property("accessible-role", gtk::AccessibleRole::Status);
+                }
+                let value = a11y.value.clone().unwrap_or_default();
+                if self.statuses.get(id) != Some(&value) {
+                    if !value.is_empty() {
+                        controls::announce(&w, &value);
+                    }
+                    self.statuses.insert(*id, value);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1044,7 +1195,43 @@ impl Widgets for Gtk {
                 t.selected.set(value.max(0.) as usize);
                 self.refresh_tabs(t);
             }
+            View::Slider(_, s, c) => s.set_value(c.get().snap(value)),
+            View::Picker(_, p) => p.select(value),
+            View::DatePicker(_, p) => p.set_value(value),
+            View::Spinner(_, s) => controls::spinner_size(s, value >= 1.),
             _ => {}
+        }
+    }
+
+    fn set_config(&mut self, view: &View, _kind: NodeKind, config: &str) {
+        match view {
+            View::Slider(_, s, c) => {
+                let cfg = prism_core::controls::SliderConfig::decode(config);
+                c.set(cfg);
+                controls::configure_slider(s, cfg);
+            }
+            View::Picker(_, p) => p.set_options(config),
+            View::DatePicker(_, p) => p.set_config(config),
+            View::Input(_, e) => controls::configure_entry(e, config),
+            View::TextArea(_, t) => controls::configure_text_view(&t.view, config),
+            _ => {}
+        }
+    }
+
+    fn set_environment(&mut self, env: &prism_core::RenderEnvironment) {
+        let rtl = env.direction == prism_core::Direction::Rtl;
+        let locale = prism_core::Locale::new(&env.lang);
+        if rtl != self.rtl {
+            self.rtl = rtl;
+            for w in self.controls.values() {
+                controls::set_direction_deep(w, rtl);
+            }
+        }
+        if locale != self.locale {
+            self.locale = locale.clone();
+            for p in self.date_pickers.values() {
+                p.set_locale(locale.clone());
+            }
         }
     }
 
@@ -1116,8 +1303,13 @@ impl Widgets for Gtk {
     }
 }
 
-/// `GTK_ACCESSIBLE_PROPERTY_LABEL` (gtkenums.h: the fifth value, from 0).
-const ACCESSIBLE_PROPERTY_LABEL: i32 = 4;
+/// `GtkAccessibleProperty` values (gtkenums.h, counted from 0).
+pub(crate) mod a11y_property {
+    pub const DESCRIPTION: i32 = 1;
+    pub const LABEL: i32 = 4;
+    pub const PLACEHOLDER: i32 = 10;
+    pub const VALUE_TEXT: i32 = 18;
+}
 
 unsafe extern "C" {
     /// gtkaccessible.h, `GDK_AVAILABLE_IN_ALL` (gtk-rs only binds it from 4.10).
@@ -1129,20 +1321,25 @@ unsafe extern "C" {
     );
 }
 
-/// What screen readers say for `w`.
-fn set_accessible_label(w: &gtk::Widget, label: &str) {
+/// Sets a string accessible property of `w` (see [`a11y_property`]).
+pub(crate) fn set_accessible_string(w: &impl IsA<gtk::Widget>, property: i32, text: &str) {
     use gtk::glib::translate::{ToGlibPtr, ToGlibPtrMut};
-    let mut value = label.to_value();
-    let widget: *mut gtk::ffi::GtkWidget = w.to_glib_none().0;
+    let mut value = text.to_value();
+    let widget: *mut gtk::ffi::GtkWidget = w.as_ref().to_glib_none().0;
     // SAFETY: every GtkWidget implements GtkAccessible; one string property.
     unsafe {
         gtk_accessible_update_property_value(
             widget.cast(),
             1,
-            &ACCESSIBLE_PROPERTY_LABEL,
+            &property,
             value.to_glib_none_mut().0,
         );
     }
+}
+
+/// What screen readers say for `w`.
+fn set_accessible_label(w: &gtk::Widget, label: &str) {
+    set_accessible_string(w, a11y_property::LABEL, label);
 }
 
 // ---------------------------------------------------------------------------
@@ -1395,6 +1592,11 @@ fn activate(app: &gtk::Application) {
         tab_bars: Vec::new(),
         shapes: HashMap::new(),
         size: (width as f32, height as f32),
+        rtl: false,
+        locale: locale(),
+        controls: HashMap::new(),
+        date_pickers: HashMap::new(),
+        statuses: HashMap::new(),
     });
     STATE.with(|s| {
         *s.borrow_mut() = Some(State {
@@ -1474,7 +1676,12 @@ fn activate(app: &gtk::Application) {
 // ---------------------------------------------------------------------------
 
 /// `PRISM_CLICK="+1|Save"` presses buttons by label (or clickable views
-/// containing that text); `PRISM_SNAPSHOT=out.png` then saves the window and
+/// containing that text, or opens the picker / date picker showing it);
+/// `fill:Placeholder=text` types into the text input or text area with that
+/// placeholder (or picks option `text` of the picker showing it;
+/// `fill:@slider=40` drags the first slider), `submit:Placeholder` presses
+/// Enter in it.
+/// `PRISM_SNAPSHOT=out.png` then saves the window (and open popovers) and
 /// quits. `PRISM_DELAY` (seconds, default 1) before.
 fn automation(window: gtk::ApplicationWindow) {
     let snapshot = std::env::var("PRISM_SNAPSHOT").ok();
@@ -1493,9 +1700,17 @@ fn automation(window: gtk::ApplicationWindow) {
             .filter(|t| !t.is_empty())
         {
             // `menu:Title` opens the context menu of the view showing Title.
-            let found = match title.strip_prefix("menu:") {
-                Some(t) => open_menu(&window.clone().upcast(), t),
-                None => press(&window.clone().upcast(), title),
+            let root: gtk::Widget = window.clone().upcast();
+            let found = if let Some(t) = title.strip_prefix("menu:") {
+                open_menu(&root, t)
+            } else if let Some((placeholder, text)) =
+                title.strip_prefix("fill:").and_then(|t| t.split_once('='))
+            {
+                fill(&root, placeholder, Some(&text.replace("\\n", "\n")))
+            } else if let Some(placeholder) = title.strip_prefix("submit:") {
+                fill(&root, placeholder, None)
+            } else {
+                press(&root, title)
             };
             if !found {
                 eprintln!("prism-linux: PRISM_CLICK: nothing labelled {title:?}");
@@ -1520,19 +1735,22 @@ fn automation(window: gtk::ApplicationWindow) {
                     extra(&w);
                 }
             }
-            with_state(|s| {
-                let menus: Vec<gtk::PopoverMenu> = s
-                    .renderer
-                    .widgets
-                    .menus
-                    .borrow()
-                    .values()
-                    .cloned()
-                    .collect();
-                for p in menus.iter().filter(|p| p.is_visible()) {
-                    extra(&p.clone().upcast());
+            // Context menus, pickers' and date pickers' popovers.
+            fn popovers(w: &gtk::Widget, out: &mut Vec<gtk::Widget>) {
+                if w.is::<gtk::Popover>() && w.is_visible() {
+                    out.push(w.clone());
                 }
-            });
+                let mut child = w.first_child();
+                while let Some(c) = child {
+                    popovers(&c, out);
+                    child = c.next_sibling();
+                }
+            }
+            let mut open = Vec::new();
+            popovers(&window.clone().upcast(), &mut open);
+            for p in &open {
+                extra(p);
+            }
             if let Some(app) = window.application() {
                 app.quit();
             }
@@ -1558,6 +1776,17 @@ fn press(w: &gtk::Widget, title: &str) -> bool {
         && b.label().is_some_and(|l| l == title)
     {
         b.emit_clicked();
+        return true;
+    }
+    // A date picker or a picker showing `title`: open it.
+    if let Some(m) = w.downcast_ref::<gtk::MenuButton>()
+        && shows(w, title)
+    {
+        m.popup();
+        return true;
+    }
+    if w.is::<gtk::DropDown>() && shows(w, title) {
+        w.activate();
         return true;
     }
     // A clickable container showing `title` somewhere inside.
@@ -1591,6 +1820,80 @@ fn press(w: &gtk::Widget, title: &str) -> bool {
     let mut child = w.first_child();
     while let Some(c) = child {
         if press(&c, title) {
+            return true;
+        }
+        child = c.next_sibling();
+    }
+    false
+}
+
+/// Types `text` into the entry or text area whose placeholder is
+/// `placeholder` (`None`: presses Enter in the entry).
+fn fill(w: &gtk::Widget, placeholder: &str, text: Option<&str>) -> bool {
+    if let Some(e) = w.downcast_ref::<gtk::Entry>()
+        && e.placeholder_text().is_some_and(|p| p == placeholder)
+    {
+        match text {
+            Some(t) => e.set_text(t),
+            None => e.emit_by_name::<()>("activate", &[]),
+        }
+        return true;
+    }
+    // `@slider`: drags the first slider to `text`.
+    if placeholder == "@slider"
+        && let Some(scale) = w.downcast_ref::<gtk::Scale>()
+        && let Some(v) = text.and_then(|t| t.parse::<f64>().ok())
+    {
+        scale.emit_by_name::<bool>("change-value", &[&gtk::ScrollType::Jump, &v]);
+        return true;
+    }
+    // A picker showing `placeholder` (or an option): selects option `text`.
+    if let Some(d) = w.downcast_ref::<gtk::DropDown>()
+        && let Some(i) = text.and_then(|t| t.parse::<u32>().ok())
+        && label_shown(w, placeholder)
+    {
+        d.set_selected(i);
+        return true;
+    }
+    // A text area: an overlay with the text view and its placeholder label.
+    if let Some(o) = w.downcast_ref::<gtk::Overlay>()
+        && let Some(view) = o
+            .child()
+            .and_then(|s| s.downcast::<gtk::ScrolledWindow>().ok())
+            .and_then(|s| s.child())
+            .and_then(|v| v.downcast::<gtk::TextView>().ok())
+        && o.last_child()
+            .and_then(|l| l.downcast::<gtk::Label>().ok())
+            .is_some_and(|l| l.text() == placeholder)
+    {
+        if let Some(t) = text {
+            view.buffer().set_text(t);
+        }
+        return true;
+    }
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        if fill(&c, placeholder, text) {
+            return true;
+        }
+        child = c.next_sibling();
+    }
+    false
+}
+
+/// Whether a visible label inside `w` reads `text`.
+fn label_shown(w: &gtk::Widget, text: &str) -> bool {
+    if !w.is_visible() {
+        return false;
+    }
+    if w.downcast_ref::<gtk::Label>()
+        .is_some_and(|l| l.text() == text)
+    {
+        return true;
+    }
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        if label_shown(&c, text) {
             return true;
         }
         child = c.next_sibling();

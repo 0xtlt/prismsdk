@@ -127,7 +127,10 @@ fn run(
     let k = (key(w), channel);
     let id = w.add_tick_callback(move |w, clock| {
         let now = clock.frame_time();
-        let begin = *start.get().get_or_insert(now) + delay;
+        // The first frame starts the clock (`Cell::get` copies: store it back).
+        let first = start.get().unwrap_or(now);
+        start.set(Some(first));
+        let begin = first + delay;
         if now < begin {
             return glib::ControlFlow::Continue;
         }

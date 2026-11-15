@@ -2001,3 +2001,91 @@ fn push_is_unavailable_without_the_capability() {
     rt.poll();
     assert_eq!(out.lock().unwrap().as_deref(), Some("Err(Unavailable)"));
 }
+
+// --- Form controls ----------------------------------------------------------
+
+struct Form {
+    volume: f64,
+    size: Option<usize>,
+    submitted: u32,
+}
+
+impl Render for Form {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .child(
+                slider(self.volume)
+                    .range(0., 10.)
+                    .step(0.5)
+                    .accessibility_label("Volume")
+                    .on_change(cx.listener(|this, e: &ChangeEvent, _| this.volume = e.value)),
+            )
+            .child(
+                picker(["S", "M"], self.size)
+                    .on_change(cx.listener(|this, e: &ChangeEvent, _| this.size = Some(e.index()))),
+            )
+            .child(
+                text_input()
+                    .secure(true)
+                    .return_key(ReturnKey::Go)
+                    .on_submit(cx.listener(|this, _, _| this.submitted += 1)),
+            )
+            .child(text(format!("submitted {}", self.submitted)))
+    }
+}
+
+fn node_of(patches: &[Patch], kind: NodeKind) -> u64 {
+    patches
+        .iter()
+        .find_map(|p| match p {
+            Patch::Create { id, kind: k } if *k == kind => Some(*id),
+            _ => None,
+        })
+        .expect("node created")
+}
+
+#[test]
+fn controls_get_their_config_before_their_value_and_a_spoken_value() {
+    let (mut rt, first) = boot(|cx| {
+        let root = cx.new_entity(|_| Form {
+            volume: 2.5,
+            size: None,
+            submitted: 0,
+        });
+        cx.set_root(root);
+    });
+    let s = node_of(&first, NodeKind::Slider);
+    let pos = |pred: &dyn Fn(&Patch) -> bool| first.iter().position(pred).unwrap();
+    let config =
+        pos(&|p| matches!(p, Patch::SetConfig { id, config } if *id == s && config == "0 10 0.5"));
+    let value = pos(&|p| matches!(p, Patch::SetValue { id, value } if *id == s && *value == 2.5));
+    assert!(config < value);
+    assert!(
+        first
+            .iter()
+            .any(|p| matches!(p, Patch::SetAccessibility { id, a11y }
+        if *id == s && a11y.role == Some(Role::Slider) && a11y.value.as_deref() == Some("2.5")))
+    );
+    let input = node_of(&first, NodeKind::TextInput);
+    assert!(
+        first
+            .iter()
+            .any(|p| matches!(p, Patch::SetConfig { id, config }
+        if *id == input && config == "secure return=go"))
+    );
+
+    let picker = node_of(&first, NodeKind::Picker);
+    let patches = rt.dispatch(UiEvent::Change(picker, 1.));
+    assert!(
+        patches
+            .iter()
+            .any(|p| matches!(p, Patch::SetAccessibility { id, a11y }
+        if *id == picker && a11y.value.as_deref() == Some("M")))
+    );
+    let patches = rt.dispatch(UiEvent::Submit(input));
+    assert!(
+        patches
+            .iter()
+            .any(|p| matches!(p, Patch::SetText { text, .. } if text == "submitted 1"))
+    );
+}

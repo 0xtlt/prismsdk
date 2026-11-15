@@ -1,0 +1,525 @@
+//! Form controls: `GtkScale` (slider), `GtkDropDown` (picker), a
+//! `GtkMenuButton` with a `GtkCalendar` and spin buttons (date / time
+//! picker), `GtkTextView` (text area), `GtkSpinner`, and the text input
+//! traits of `GtkEntry` / `GtkTextView`.
+
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
+use gtk::glib;
+use gtk::prelude::*;
+use prism_core::controls::{
+    Capitalize, DateConfig, DateMode, InputConfig, Keyboard, PickerConfig, SliderConfig,
+};
+use prism_core::{BasicFormatter, DateStyle, Formatter, Locale, NodeId, UiEvent};
+
+use crate::imp::dispatch;
+
+// --- Slider -----------------------------------------------------------------
+
+/// A horizontal `GtkScale` without its value label. User changes snap to
+/// the step (`change-value`), then report `Change` (`value-changed`).
+/// `GtkScale` is flippable: it fills from the right in right-to-left.
+pub fn slider(id: NodeId) -> (gtk::Scale, Rc<Cell<SliderConfig>>) {
+    let config = Rc::new(Cell::new(SliderConfig::default()));
+    let scale = gtk::Scale::new(gtk::Orientation::Horizontal, None::<&gtk::Adjustment>);
+    scale.set_draw_value(false);
+    scale.set_valign(gtk::Align::Center);
+    configure_slider(&scale, SliderConfig::default());
+    let c = config.clone();
+    scale.connect_change_value(move |range, _, value| {
+        range.set_value(c.get().snap(value));
+        glib::Propagation::Stop
+    });
+    scale.connect_value_changed(move |range| dispatch(UiEvent::Change(id, range.value())));
+    (scale, config)
+}
+
+pub fn configure_slider(scale: &gtk::Scale, c: SliderConfig) {
+    let adj = scale.adjustment();
+    let step = c.a11y_step().max(f64::EPSILON);
+    adj.configure(
+        c.snap(adj.value()),
+        c.min,
+        c.max,
+        step,
+        step.max((c.max - c.min) / 10.),
+        0.,
+    );
+}
+
+// --- Picker -----------------------------------------------------------------
+
+/// A `GtkDropDown` over a `GtkStringList`. With nothing selected
+/// (`GTK_INVALID_LIST_POSITION`) the drop-down's button shows its "empty"
+/// page (gtkdropdown.ui: a label reading "(None)"): that label shows the
+/// placeholder, dimmed. The button's stack is homogeneous, so the
+/// placeholder counts in its width.
+pub struct Picker {
+    pub dropdown: gtk::DropDown,
+    /// The label of the button's "empty" page (absent in a future GTK
+    /// without it: then nothing shows).
+    empty: Option<gtk::Label>,
+    /// The selected index from Prism (-1: none), kept across new options.
+    selected: Cell<f64>,
+}
+
+/// The label of the drop-down button's "empty" stack page.
+fn empty_label(w: &gtk::Widget) -> Option<gtk::Label> {
+    if let Some(stack) = w.downcast_ref::<gtk::Stack>()
+        && let Some(label) = stack
+            .child_by_name("empty")
+            .and_then(|c| c.downcast::<gtk::Label>().ok())
+    {
+        return Some(label);
+    }
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        if let Some(l) = empty_label(&c) {
+            return Some(l);
+        }
+        child = c.next_sibling();
+    }
+    None
+}
+
+pub fn picker(id: NodeId) -> Rc<Picker> {
+    let dropdown = gtk::DropDown::from_strings(&[]);
+    dropdown.set_valign(gtk::Align::Center);
+    let empty = empty_label(dropdown.upcast_ref());
+    // The list's rows are created when it opens: they follow the
+    // drop-down's direction.
+    let mut child = dropdown.first_child();
+    while let Some(c) = child {
+        if c.is::<gtk::Popover>() {
+            let d = dropdown.downgrade();
+            c.connect_map(move |popover| {
+                let Some(d) = d.upgrade() else { return };
+                let (popover, rtl) = (popover.clone(), d.direction() == gtk::TextDirection::Rtl);
+                glib::idle_add_local_once(move || set_direction_deep(&popover, rtl));
+            });
+        }
+        child = c.next_sibling();
+    }
+    if let Some(l) = &empty {
+        l.set_text("");
+        l.add_css_class("dim-label");
+        l.set_xalign(0.);
+    }
+    dropdown.connect_selected_notify(move |d| {
+        if d.selected() != gtk::INVALID_LIST_POSITION {
+            dispatch(UiEvent::Change(id, d.selected() as f64));
+        }
+    });
+    let p = Rc::new(Picker {
+        dropdown,
+        empty,
+        selected: Cell::new(-1.),
+    });
+    p.select(-1.);
+    p
+}
+
+impl Picker {
+    pub fn set_options(&self, config: &str) {
+        let options = PickerConfig::decode(config).options;
+        let refs: Vec<&str> = options.iter().map(String::as_str).collect();
+        self.dropdown.set_model(Some(&gtk::StringList::new(&refs)));
+        // A new model selects its first item: show Prism's selection again.
+        self.select(self.selected.get());
+    }
+
+    pub fn select(&self, index: f64) {
+        self.selected.set(index);
+        let n = self.dropdown.model().map_or(0, |m| m.n_items());
+        let position = if index >= 0. && (index as u32) < n {
+            index as u32
+        } else {
+            gtk::INVALID_LIST_POSITION
+        };
+        self.dropdown.set_selected(position);
+    }
+
+    pub fn set_placeholder(&self, text: &str) {
+        if let Some(l) = &self.empty {
+            l.set_text(text);
+        }
+    }
+}
+
+// --- Date picker ------------------------------------------------------------
+
+/// A button showing the formatted date and/or time; it opens a popover
+/// with a `GtkCalendar` (date) and hour / minute spin buttons (time).
+/// `GtkCalendar` has no minimum or maximum date: choices outside the
+/// bounds are clamped (and the calendar moves back to the clamped day).
+pub struct DatePicker {
+    pub button: gtk::MenuButton,
+    label: gtk::Label,
+    calendar: gtk::Calendar,
+    time_row: gtk::Box,
+    hour: gtk::SpinButton,
+    minute: gtk::SpinButton,
+    value: Cell<f64>,
+    config: Cell<DateConfig>,
+    /// Set while the popover follows the value (its signals are ignored).
+    syncing: Cell<bool>,
+    locale: RefCell<Locale>,
+}
+
+fn local(unix: f64) -> Option<glib::DateTime> {
+    glib::DateTime::from_unix_local(unix.floor() as i64).ok()
+}
+
+fn two_digits(spin: &gtk::SpinButton) {
+    spin.connect_output(|s| {
+        s.set_text(&format!("{:02}", s.value_as_int()));
+        glib::Propagation::Stop
+    });
+}
+
+pub fn date_picker(id: NodeId, locale: Locale) -> Rc<DatePicker> {
+    let label = gtk::Label::new(None);
+    let button = gtk::MenuButton::new();
+    button.set_child(Some(&label));
+    button.set_always_show_arrow(true);
+    button.set_valign(gtk::Align::Center);
+    let calendar = gtk::Calendar::new();
+    let hour = gtk::SpinButton::with_range(0., 23., 1.);
+    let minute = gtk::SpinButton::with_range(0., 59., 1.);
+    for spin in [&hour, &minute] {
+        spin.set_orientation(gtk::Orientation::Vertical);
+        spin.set_wrap(true);
+        spin.set_numeric(true);
+        spin.set_width_chars(2);
+        two_digits(spin);
+    }
+    let time_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    time_row.set_halign(gtk::Align::Center);
+    time_row.append(&hour);
+    time_row.append(&gtk::Label::new(Some(":")));
+    time_row.append(&minute);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    content.append(&calendar);
+    content.append(&time_row);
+    let popover = gtk::Popover::new();
+    popover.set_child(Some(&content));
+    button.set_popover(Some(&popover));
+    let p = Rc::new(DatePicker {
+        button,
+        label,
+        calendar,
+        time_row,
+        hour,
+        minute,
+        value: Cell::new(0.),
+        config: Cell::new(DateConfig::default()),
+        syncing: Cell::new(false),
+        locale: RefCell::new(locale),
+    });
+    let weak = Rc::downgrade(&p);
+    p.calendar.connect_day_selected(move |_| {
+        if let Some(p) = weak.upgrade() {
+            p.edited(id);
+        }
+    });
+    for spin in [&p.hour, &p.minute] {
+        let weak = Rc::downgrade(&p);
+        spin.connect_value_changed(move |_| {
+            if let Some(p) = weak.upgrade() {
+                p.edited(id);
+            }
+        });
+    }
+    // Opening shows the current value.
+    let weak = Rc::downgrade(&p);
+    popover.connect_show(move |_| {
+        if let Some(p) = weak.upgrade() {
+            p.sync();
+        }
+    });
+    p.set_config("");
+    p
+}
+
+impl DatePicker {
+    pub fn set_config(&self, config: &str) {
+        let c = DateConfig::decode(config);
+        self.config.set(c);
+        self.calendar.set_visible(c.mode != DateMode::Time);
+        self.time_row.set_visible(c.mode != DateMode::Date);
+        self.sync();
+    }
+
+    pub fn set_value(&self, value: f64) {
+        self.value.set(value);
+        self.sync();
+    }
+
+    pub fn set_locale(&self, locale: Locale) {
+        *self.locale.borrow_mut() = locale;
+        self.sync();
+    }
+
+    /// The value as shown, in the device's time zone and the app's locale.
+    fn text(&self) -> String {
+        let v = self.value.get();
+        let offset = local(v).map_or(0, |d| d.utc_offset().as_seconds() as i32);
+        let f = BasicFormatter { utc_offset: offset };
+        let locale = self.locale.borrow();
+        match self.config.get().mode {
+            DateMode::Date => f.date(&locale, v, DateStyle::Medium),
+            DateMode::Time => f.time(&locale, v),
+            DateMode::DateTime => format!(
+                "{}, {}",
+                f.date(&locale, v, DateStyle::Medium),
+                f.time(&locale, v)
+            ),
+        }
+    }
+
+    fn sync(&self) {
+        self.label.set_text(&self.text());
+        let Some(d) = local(self.value.get()) else {
+            return;
+        };
+        self.syncing.set(true);
+        self.calendar.select_day(&d);
+        self.hour.set_value(d.hour() as f64);
+        self.minute.set_value(d.minute() as f64);
+        self.syncing.set(false);
+    }
+
+    /// The user picked a day, an hour or a minute.
+    fn edited(&self, id: NodeId) {
+        if self.syncing.get() {
+            return;
+        }
+        let Some(cur) = local(self.value.get()) else {
+            return;
+        };
+        let c = self.config.get();
+        let day = self.calendar.date();
+        let (y, m, d) = if c.mode == DateMode::Time {
+            (cur.year(), cur.month(), cur.day_of_month())
+        } else {
+            (day.year(), day.month(), day.day_of_month())
+        };
+        let (h, min) = if c.mode == DateMode::Date {
+            (cur.hour(), cur.minute())
+        } else {
+            (self.hour.value_as_int(), self.minute.value_as_int())
+        };
+        let Ok(t) = glib::DateTime::from_local(y, m, d, h, min, cur.second() as f64) else {
+            return;
+        };
+        let v = c.clamp(t.to_unix() as f64);
+        self.value.set(v);
+        self.sync();
+        dispatch(UiEvent::Change(id, v));
+    }
+}
+
+// --- Text area ----------------------------------------------------------------
+
+/// Insets of the text inside a text area (px).
+const AREA_PAD_X: i32 = 10;
+const AREA_PAD_Y: i32 = 8;
+
+/// A word-wrapping `GtkTextView` in a `GtkScrolledWindow` (it scrolls once
+/// Prism caps its height), with a dim label as placeholder: `GtkTextView`
+/// has none.
+pub struct TextArea {
+    pub root: gtk::Overlay,
+    pub scroll: gtk::ScrolledWindow,
+    pub view: gtk::TextView,
+    placeholder: gtk::Label,
+}
+
+pub fn text_area(id: NodeId) -> Rc<TextArea> {
+    let view = gtk::TextView::new();
+    view.set_wrap_mode(gtk::WrapMode::WordChar);
+    view.set_top_margin(AREA_PAD_Y);
+    view.set_bottom_margin(AREA_PAD_Y);
+    view.set_left_margin(AREA_PAD_X);
+    view.set_right_margin(AREA_PAD_X);
+    view.set_accepts_tab(false);
+    let scroll = gtk::ScrolledWindow::new();
+    scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    scroll.set_child(Some(&view));
+    let placeholder = gtk::Label::new(None);
+    placeholder.add_css_class("dim-label");
+    placeholder.set_halign(gtk::Align::Start);
+    placeholder.set_valign(gtk::Align::Start);
+    placeholder.set_margin_start(AREA_PAD_X);
+    placeholder.set_margin_end(AREA_PAD_X);
+    placeholder.set_margin_top(AREA_PAD_Y);
+    placeholder.set_wrap(true);
+    placeholder.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    placeholder.set_xalign(0.);
+    placeholder.set_can_target(false);
+    let root = gtk::Overlay::new();
+    root.set_child(Some(&scroll));
+    root.add_overlay(&placeholder);
+    let label = placeholder.clone();
+    view.buffer().connect_changed(move |b| {
+        let text = b.text(&b.start_iter(), &b.end_iter(), false).to_string();
+        label.set_visible(text.is_empty());
+        dispatch(UiEvent::Input(id, text));
+    });
+    Rc::new(TextArea {
+        root,
+        scroll,
+        view,
+        placeholder,
+    })
+}
+
+impl TextArea {
+    pub fn text(&self) -> String {
+        let b = self.view.buffer();
+        b.text(&b.start_iter(), &b.end_iter(), false).to_string()
+    }
+
+    /// Prism's value. Ignored while the user types (like `GtkEntry`), and
+    /// when equal, so the cursor stays.
+    pub fn set_text(&self, text: &str) {
+        if self.text() != text && !self.view.has_focus() {
+            self.view.buffer().set_text(text);
+        }
+        self.placeholder.set_visible(self.text().is_empty());
+    }
+
+    pub fn set_placeholder(&self, text: &str) {
+        self.placeholder.set_text(text);
+    }
+
+    /// Content height for `width`: at least three lines, insets included.
+    pub fn measure_height(&self, width: f32) -> f32 {
+        let inner = (width - 2. * AREA_PAD_X as f32).max(1.);
+        let layout = self.view.create_pango_layout(Some(&self.text()));
+        layout.set_width((inner * gtk::pango::SCALE as f32) as i32);
+        layout.set_wrap(gtk::pango::WrapMode::WordChar);
+        let text_h = layout.pixel_size().1 as f32;
+        let line = self.view.create_pango_layout(Some("Ag")).pixel_size().1 as f32;
+        text_h.max(line * 3.) + 2. * AREA_PAD_Y as f32
+    }
+}
+
+// --- Spinner ------------------------------------------------------------------
+
+/// GTK has one spinner size (16 px in the default theme); "large" is 32.
+pub fn spinner_size(spinner: &gtk::Spinner, large: bool) {
+    let s = if large { 32 } else { 16 };
+    spinner.set_size_request(s, s);
+}
+
+// --- Text input traits ----------------------------------------------------------
+
+/// `InputConfig` as an input purpose (on-screen keyboards) and hints
+/// (spell checking, capitalization). GTK has no return-key label.
+pub fn input_traits(c: &InputConfig) -> (gtk::InputPurpose, gtk::InputHints) {
+    use gtk::InputHints as H;
+    let purpose = match (c.secure, c.keyboard) {
+        (true, Keyboard::Number) => gtk::InputPurpose::Pin,
+        (true, _) => gtk::InputPurpose::Password,
+        (_, Keyboard::Default) => gtk::InputPurpose::FreeForm,
+        (_, Keyboard::Email) => gtk::InputPurpose::Email,
+        (_, Keyboard::Number) => gtk::InputPurpose::Digits,
+        (_, Keyboard::Decimal) => gtk::InputPurpose::Number,
+        (_, Keyboard::Phone) => gtk::InputPurpose::Phone,
+        (_, Keyboard::Url) => gtk::InputPurpose::Url,
+    };
+    let text = !c.secure && c.keyboard == Keyboard::Default;
+    let mut hints = if text && c.autocorrect {
+        H::SPELLCHECK | H::WORD_COMPLETION
+    } else {
+        H::NO_SPELLCHECK
+    };
+    if c.secure {
+        hints |= H::PRIVATE;
+    }
+    if text {
+        hints |= match c.capitalize {
+            Capitalize::Sentences => H::UPPERCASE_SENTENCES,
+            Capitalize::Words => H::UPPERCASE_WORDS,
+            Capitalize::All => H::UPPERCASE_CHARS,
+            Capitalize::None => H::NONE,
+        };
+    }
+    (purpose, hints)
+}
+
+/// Secure entries hide their characters.
+pub fn configure_entry(entry: &gtk::Entry, config: &str) {
+    let c = InputConfig::decode(config);
+    let (purpose, hints) = input_traits(&c);
+    entry.set_visibility(!c.secure);
+    entry.set_input_purpose(purpose);
+    entry.set_input_hints(hints);
+}
+
+pub fn configure_text_view(view: &gtk::TextView, config: &str) {
+    let (purpose, hints) = input_traits(&InputConfig::decode(config));
+    view.set_input_purpose(purpose);
+    view.set_input_hints(hints);
+}
+
+// --- Direction ----------------------------------------------------------------
+
+/// `w` and everything inside it (popovers included) lay out right to left
+/// or left to right. Only form controls follow it: Prism already mirrors
+/// frames and text alignment, and GTK would flip labels' alignment again.
+pub fn set_direction_deep(w: &gtk::Widget, rtl: bool) {
+    w.set_direction(if rtl {
+        gtk::TextDirection::Rtl
+    } else {
+        gtk::TextDirection::Ltr
+    });
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        set_direction_deep(&c, rtl);
+        child = c.next_sibling();
+    }
+}
+
+// --- Announcements --------------------------------------------------------------
+
+unsafe extern "C" {
+    /// dlfcn.h (glibc: `RTLD_DEFAULT` is the null handle).
+    fn dlsym(
+        handle: *mut std::ffi::c_void,
+        symbol: *const std::ffi::c_char,
+    ) -> *mut std::ffi::c_void;
+}
+
+/// `gtk_accessible_announce (GtkAccessible*, const char*, GtkAccessibleAnnouncementPriority)`,
+/// GTK 4.14+.
+type Announce =
+    unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_char, std::ffi::c_int);
+
+/// `GTK_ACCESSIBLE_ANNOUNCEMENT_PRIORITY_MEDIUM` (polite).
+const PRIORITY_MEDIUM: std::ffi::c_int = 1;
+
+/// Asks screen readers to read `message` out. GTK 4.14+ has
+/// `gtk_accessible_announce`, looked up when the app runs (Prism builds
+/// against older GTKs too); before 4.14 the status region's description
+/// changes, which assistive technologies see as an update.
+pub fn announce(w: &gtk::Widget, message: &str) {
+    static FN: std::sync::OnceLock<Option<Announce>> = std::sync::OnceLock::new();
+    let f = FN.get_or_init(|| {
+        // SAFETY: looks a symbol up in the loaded libraries.
+        let p = unsafe { dlsym(std::ptr::null_mut(), c"gtk_accessible_announce".as_ptr()) };
+        // SAFETY: when present, it has the signature documented above.
+        (!p.is_null()).then(|| unsafe { std::mem::transmute::<*mut std::ffi::c_void, Announce>(p) })
+    });
+    match (f, std::ffi::CString::new(message)) {
+        (Some(f), Ok(text)) => {
+            use gtk::glib::translate::ToGlibPtr;
+            let widget: *mut gtk::ffi::GtkWidget = w.to_glib_none().0;
+            // SAFETY: every GtkWidget is a GtkAccessible; the string outlives the call.
+            unsafe { f(widget.cast(), text.as_ptr(), PRIORITY_MEDIUM) };
+        }
+        _ => crate::imp::set_accessible_string(w, crate::imp::a11y_property::DESCRIPTION, message),
+    }
+}

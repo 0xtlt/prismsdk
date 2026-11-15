@@ -303,5 +303,31 @@
     "background": "Silent",
     "hint": "Send one from your server with prism-push, or in the iOS Simulator: xcrun simctl push booted dev.prism.counter push/hello.apns",
     "activity": "Live Activity token: {token}"
+  },
+  "forms": {
+    "heading": "Forms",
+    "volume": "Volume",
+    "brightness": "Brightness",
+    "size": "Size",
+    "sizes": "Small,Medium,Large,Extra large",
+    "choose": "Choose…",
+    "due": "Due date",
+    "reminder": "Reminder",
+    "meeting": "Meeting",
+    "password": "Password",
+    "password_placeholder": "At least 8 characters",
+    "phone": "Phone",
+    "website": "Website",
+    "notes": "Notes",
+    "notes_placeholder": "Grows as you type, then scrolls",
+    "notes_helper": "{count} characters",
+    "syncing": "Syncing…",
+    "show_toast": "Show a toast",
+    "toast_saved": "Changes saved",
+    "toast_undone": "Changes undone",
+    "undo": "Undo",
+    "signed_in": "Signed in ({count} characters)",
+    "error": "Show an error",
+    "toast_error": "Couldn’t reach the server"
   }
 }

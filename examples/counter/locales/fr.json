@@ -303,5 +303,31 @@
     "background": "Silencieuse",
     "hint": "Envoyez-en une depuis votre serveur avec prism-push, ou dans le simulateur iOS : xcrun simctl push booted dev.prism.counter push/hello.apns",
     "activity": "Jeton de l’activité en direct : {token}"
+  },
+  "forms": {
+    "heading": "Formulaires",
+    "volume": "Volume",
+    "brightness": "Luminosité",
+    "size": "Taille",
+    "sizes": "Petite,Moyenne,Grande,Très grande",
+    "choose": "Choisir…",
+    "due": "Échéance",
+    "reminder": "Rappel",
+    "meeting": "Réunion",
+    "password": "Mot de passe",
+    "password_placeholder": "Au moins 8 caractères",
+    "phone": "Téléphone",
+    "website": "Site web",
+    "notes": "Notes",
+    "notes_placeholder": "S’agrandit pendant la saisie, puis défile",
+    "notes_helper": "{count} caractères",
+    "syncing": "Synchronisation…",
+    "show_toast": "Afficher un toast",
+    "toast_saved": "Modifications enregistrées",
+    "toast_undone": "Modifications annulées",
+    "undo": "Annuler",
+    "signed_in": "Connecté ({count} caractères)",
+    "error": "Afficher une erreur",
+    "toast_error": "Serveur injoignable"
   }
 }

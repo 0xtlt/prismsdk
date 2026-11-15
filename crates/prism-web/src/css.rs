@@ -2,7 +2,7 @@
 
 use std::fmt::Write;
 
-use prism_core::{Align, FlexDirection, Justify, Length, NodeKind, Style, TextAlign};
+use prism_core::{Align, FlexDirection, Justify, Length, NodeKind, Position, Style, TextAlign};
 
 fn len(l: Length) -> Option<String> {
     match l {
@@ -31,7 +31,11 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
         NodeKind::Text => w.push_str("display:block;white-space:pre-wrap;overflow-wrap:anywhere;"),
         NodeKind::Timer => w.push_str("display:block;font-variant-numeric:tabular-nums;"),
         NodeKind::Image => w.push_str("display:inline-flex;"),
-        NodeKind::Progress => w.push_str("display:block;"),
+        NodeKind::Progress | NodeKind::Slider => w.push_str("display:block;"),
+        NodeKind::Spinner => w.push_str("display:inline-block;"),
+        NodeKind::Picker | NodeKind::DatePicker | NodeKind::TextArea => {
+            w.push_str("display:block;")
+        }
         _ => {
             let dir = match s.direction {
                 FlexDirection::Row => "row",
@@ -77,6 +81,20 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
             "padding-block:{}px {}px;padding-inline:{}px {}px;",
             p.top, p.bottom, p.left, p.right
         );
+    }
+    if s.position == Position::Absolute {
+        // Logical insets: left/right are leading/trailing, like margins.
+        w.push_str("position:absolute;");
+        for (prop, v) in [
+            ("inset-block-start", s.inset.top),
+            ("inset-block-end", s.inset.bottom),
+            ("inset-inline-start", s.inset.left),
+            ("inset-inline-end", s.inset.right),
+        ] {
+            if let Some(v) = len(v) {
+                let _ = write!(w, "{prop}:{v};");
+            }
+        }
     }
     let m = s.margin;
     let _ = write!(
@@ -149,7 +167,11 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
         };
         let _ = write!(w, "text-align:{ta};");
     }
-    if let (NodeKind::Progress, Some(c)) = (kind, s.text_color) {
+    if let (
+        NodeKind::Progress | NodeKind::Slider | NodeKind::DatePicker | NodeKind::Spinner,
+        Some(c),
+    ) = (kind, s.text_color)
+    {
         let _ = write!(w, "accent-color:{};", c.to_css());
     }
     match kind {
@@ -165,6 +187,7 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
                 );
             }
         }
+        NodeKind::TextArea if s.border_width > 0. => w.push_str("font-family:inherit;"),
         NodeKind::TextInput => {
             w.push_str("font-family:inherit;padding:6px 8px;");
             if s.border_width == 0. {

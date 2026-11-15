@@ -327,5 +327,31 @@
     "background": "صامتة",
     "hint": "أرسل إشعارًا من خادمك باستخدام prism-push، أو في محاكي iOS: xcrun simctl push booted dev.prism.counter push/hello.apns",
     "activity": "رمز النشاط المباشر: {token}"
+  },
+  "forms": {
+    "heading": "النماذج",
+    "volume": "مستوى الصوت",
+    "brightness": "السطوع",
+    "size": "الحجم",
+    "sizes": "صغير,متوسط,كبير,كبير جدًا",
+    "choose": "اختر…",
+    "due": "تاريخ الاستحقاق",
+    "reminder": "تذكير",
+    "meeting": "اجتماع",
+    "password": "كلمة المرور",
+    "password_placeholder": "٨ أحرف على الأقل",
+    "phone": "الهاتف",
+    "website": "الموقع",
+    "notes": "ملاحظات",
+    "notes_placeholder": "يكبر أثناء الكتابة ثم يمرَّر",
+    "notes_helper": "{count} حرفًا",
+    "syncing": "جارٍ المزامنة…",
+    "show_toast": "عرض إشعار",
+    "toast_saved": "تم حفظ التغييرات",
+    "toast_undone": "تم التراجع عن التغييرات",
+    "undo": "تراجع",
+    "signed_in": "تم تسجيل الدخول ({count} حرفًا)",
+    "error": "عرض خطأ",
+    "toast_error": "تعذّر الوصول إلى الخادم"
   }
 }

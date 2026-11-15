@@ -54,6 +54,23 @@ pub enum NodeKind {
     /// Vector drawing (text = [`Drawing::encode`](crate::shape::Drawing)):
     /// paths in fractions of the frame, drawn natively. No natural size.
     Shape,
+    /// A native slider (`UISlider`, `NSSlider`, `<input type=range>`,
+    /// `GtkScale`, `SeekBar`). Value: the current value; config:
+    /// [`SliderConfig`](crate::controls::SliderConfig).
+    Slider,
+    /// A native menu-style picker (`UIButton` menu, `NSPopUpButton`,
+    /// `<select>`, `GtkDropDown`, `Spinner`, SwiftUI `Picker`). Value: the
+    /// selected index; config: [`PickerConfig`](crate::controls::PickerConfig).
+    Picker,
+    /// A native date and/or time picker. Value: Unix seconds; config:
+    /// [`DateConfig`](crate::controls::DateConfig).
+    DatePicker,
+    /// A multi-line editable text (`UITextView`, `NSTextView`, `<textarea>`,
+    /// `GtkTextView`, multi-line `EditText`). Grows with its content, then
+    /// scrolls (cap it with `max_h`).
+    TextArea,
+    /// An indeterminate activity indicator. Value 1: large.
+    Spinner,
 }
 
 impl NodeKind {
@@ -75,6 +92,11 @@ impl NodeKind {
             NodeKind::Modal => "modal",
             NodeKind::Picture => "picture",
             NodeKind::Shape => "shape",
+            NodeKind::Slider => "slider",
+            NodeKind::Picker => "picker",
+            NodeKind::DatePicker => "date_picker",
+            NodeKind::TextArea => "text_area",
+            NodeKind::Spinner => "spinner",
         }
     }
 
@@ -86,7 +108,9 @@ impl NodeKind {
             NodeKind::Tabs => Some(Role::TabList),
             NodeKind::Tab => Some(Role::TabPanel),
             NodeKind::Text | NodeKind::Timer => Some(Role::Text),
-            NodeKind::Progress => Some(Role::ProgressBar),
+            NodeKind::Progress | NodeKind::Spinner => Some(Role::ProgressBar),
+            NodeKind::Slider => Some(Role::Slider),
+            NodeKind::Picker => Some(Role::ComboBox),
             NodeKind::Picture | NodeKind::Shape => Some(Role::Image),
             _ => None,
         }
@@ -129,6 +153,29 @@ impl ChangeEvent {
 
     pub fn index(&self) -> usize {
         self.value.max(0.) as usize
+    }
+
+    /// A date picker's new value.
+    pub fn date(&self) -> std::time::SystemTime {
+        unix_time(self.value)
+    }
+}
+
+/// `secs` since 1970 as a [`SystemTime`](std::time::SystemTime) (negative: before).
+pub fn unix_time(secs: f64) -> std::time::SystemTime {
+    let d = std::time::Duration::from_secs_f64(secs.abs());
+    if secs >= 0. {
+        std::time::UNIX_EPOCH + d
+    } else {
+        std::time::UNIX_EPOCH - d
+    }
+}
+
+/// Seconds since 1970 (negative: before).
+pub fn unix_seconds(t: std::time::SystemTime) -> f64 {
+    match t.duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => d.as_secs_f64(),
+        Err(e) => -e.duration().as_secs_f64(),
     }
 }
 
@@ -176,6 +223,8 @@ pub struct VNode {
     pub icon: String,
     /// Numeric value: toggle state (0/1), selected tab index.
     pub value: Option<f64>,
+    /// Control configuration (see [`crate::controls`]).
+    pub config: String,
     pub a11y: Accessibility,
     /// Deep link (`/todos/1`): navigates in the app, opens it from widgets,
     /// Live Activities and notifications.
@@ -192,6 +241,8 @@ pub struct VNode {
     pub on_scroll: Option<Handler<ScrollEvent>>,
     pub on_swipe_left: Option<Handler<ClickEvent>>,
     pub on_swipe_right: Option<Handler<ClickEvent>>,
+    /// The return key of a text input.
+    pub on_submit: Option<Handler<ClickEvent>>,
 }
 
 impl VNode {
@@ -203,6 +254,7 @@ impl VNode {
             placeholder: String::new(),
             icon: String::new(),
             value: None,
+            config: String::new(),
             a11y: Accessibility::default(),
             link: None,
             context_menu: None,
@@ -216,6 +268,7 @@ impl VNode {
             on_scroll: None,
             on_swipe_left: None,
             on_swipe_right: None,
+            on_submit: None,
         }
     }
 }
@@ -394,6 +447,26 @@ builder!(
     /// A vector drawing. See [`shape`].
     Shape
 );
+builder!(
+    /// A native slider. See [`slider`].
+    Slider
+);
+builder!(
+    /// A native menu picker. See [`picker`].
+    Picker
+);
+builder!(
+    /// A native date / time picker. See [`date_picker`].
+    DatePicker
+);
+builder!(
+    /// A native multi-line text field. See [`text_area`].
+    TextArea
+);
+builder!(
+    /// An activity indicator. See [`spinner`].
+    Spinner
+);
 
 /// A flex container, laid out as a column by default.
 pub fn div() -> Div {
@@ -475,6 +548,213 @@ impl TextInput {
 
     pub fn on_input(mut self, handler: Handler<InputEvent>) -> Self {
         self.0.on_input = Some(handler);
+        self
+    }
+
+    /// Hides the characters (passwords): `isSecureTextEntry`,
+    /// `NSSecureTextField`, `type=password`, an invisible `GtkEntry`,
+    /// `textPassword`. Autocorrection and capitalization are off.
+    pub fn secure(self, secure: bool) -> Self {
+        self.input_config(|c| c.secure = secure)
+    }
+
+    /// Called when the user presses the return key (Enter).
+    pub fn on_submit(mut self, handler: Handler<ClickEvent>) -> Self {
+        self.0.on_submit = Some(handler);
+        self
+    }
+
+    /// The return key's label: Done, Go, Next, Search, Send.
+    pub fn return_key(self, key: crate::controls::ReturnKey) -> Self {
+        self.input_config(|c| c.return_key = key)
+    }
+}
+
+macro_rules! text_entry {
+    ($ty:ident) => {
+        impl $ty {
+            fn input_config(mut self, f: impl FnOnce(&mut crate::controls::InputConfig)) -> Self {
+                let mut c = crate::controls::InputConfig::decode(&self.0.config);
+                f(&mut c);
+                self.0.config = c.encode();
+                self
+            }
+
+            /// The on-screen keyboard: email, number, decimal, phone, URL.
+            pub fn keyboard(self, keyboard: crate::controls::Keyboard) -> Self {
+                self.input_config(|c| c.keyboard = keyboard)
+            }
+
+            /// Automatic capitalization (`Capitalize::None` for emails, codes).
+            pub fn capitalize(self, capitalize: crate::controls::Capitalize) -> Self {
+                self.input_config(|c| c.capitalize = capitalize)
+            }
+
+            /// Autocorrection and spell checking (on by default).
+            pub fn autocorrect(self, on: bool) -> Self {
+                self.input_config(|c| c.autocorrect = on)
+            }
+        }
+    };
+}
+text_entry!(TextInput);
+text_entry!(TextArea);
+
+/// A multi-line text field. It grows with its text, then scrolls once it
+/// reaches its `max_h`: `text_area().value(&self.notes).max_h(px(160.))`.
+pub fn text_area() -> TextArea {
+    TextArea(VNode::new(NodeKind::TextArea))
+}
+
+impl TextArea {
+    /// The controlled value of the field.
+    pub fn value(mut self, value: impl Into<String>) -> Self {
+        self.0.text = value.into();
+        self
+    }
+
+    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.0.placeholder = placeholder.into();
+        self
+    }
+
+    pub fn on_input(mut self, handler: Handler<InputEvent>) -> Self {
+        self.0.on_input = Some(handler);
+        self
+    }
+}
+
+/// A native slider, `0.0..=1.0` unless given a [`range`](Slider::range):
+/// `slider(self.volume).range(0., 100.).step(1.).on_change(cx.listener(|this, e, _| this.volume = e.value))`.
+/// Adjustable with assistive technologies (swipe up/down, arrow keys).
+/// Give it a label: `.accessibility_label("Volume")`.
+pub fn slider(value: f64) -> Slider {
+    let mut n = VNode::new(NodeKind::Slider);
+    n.value = Some(value);
+    n.config = crate::controls::SliderConfig::default().encode();
+    Slider(n)
+}
+
+impl Slider {
+    fn slider_config(mut self, f: impl FnOnce(&mut crate::controls::SliderConfig)) -> Self {
+        let mut c = crate::controls::SliderConfig::decode(&self.0.config);
+        f(&mut c);
+        self.0.config = c.encode();
+        self
+    }
+
+    pub fn range(self, min: f64, max: f64) -> Self {
+        self.slider_config(|c| {
+            c.min = min.min(max);
+            c.max = max.max(min);
+        })
+    }
+
+    /// Values snap to multiples of `step` from the minimum (0: continuous).
+    pub fn step(self, step: f64) -> Self {
+        self.slider_config(|c| c.step = step.max(0.))
+    }
+
+    /// Called while the value changes (dragging, keys, assistive technologies).
+    pub fn on_change(mut self, handler: Handler<ChangeEvent>) -> Self {
+        self.0.on_change = Some(handler);
+        self
+    }
+}
+
+/// A native menu picker showing the selected option:
+/// `picker(["Small", "Medium", "Large"], Some(self.size)).on_change(cx.listener(|this, e, _| this.size = e.index()))`.
+/// Give it a label: `.accessibility_label("Size")`.
+pub fn picker<S: Into<String>>(
+    options: impl IntoIterator<Item = S>,
+    selected: Option<usize>,
+) -> Picker {
+    let mut n = VNode::new(NodeKind::Picker);
+    let c = crate::controls::PickerConfig {
+        options: options.into_iter().map(Into::into).collect(),
+    };
+    n.config = c.encode();
+    n.value = Some(selected.map_or(-1., |i| i as f64));
+    Picker(n)
+}
+
+impl Picker {
+    /// Shown while nothing is selected.
+    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.0.placeholder = placeholder.into();
+        self
+    }
+
+    /// Called with the chosen index (`e.index()`).
+    pub fn on_change(mut self, handler: Handler<ChangeEvent>) -> Self {
+        self.0.on_change = Some(handler);
+        self
+    }
+}
+
+/// A native date picker (`.time()` / `.date_time()` for the others):
+/// `date_picker(self.due).on_change(cx.listener(|this, e, _| this.due = e.date()))`.
+/// Values are instants; the picker shows them in the device's time zone.
+pub fn date_picker(value: std::time::SystemTime) -> DatePicker {
+    let mut n = VNode::new(NodeKind::DatePicker);
+    n.value = Some(unix_seconds(value).round());
+    n.config = crate::controls::DateConfig::default().encode();
+    DatePicker(n)
+}
+
+impl DatePicker {
+    fn date_config(mut self, f: impl FnOnce(&mut crate::controls::DateConfig)) -> Self {
+        let mut c = crate::controls::DateConfig::decode(&self.0.config);
+        f(&mut c);
+        self.0.config = c.encode();
+        self
+    }
+
+    pub fn mode(self, mode: crate::controls::DateMode) -> Self {
+        self.date_config(|c| c.mode = mode)
+    }
+
+    /// A time of day.
+    pub fn time(self) -> Self {
+        self.mode(crate::controls::DateMode::Time)
+    }
+
+    /// A day and a time.
+    pub fn date_time(self) -> Self {
+        self.mode(crate::controls::DateMode::DateTime)
+    }
+
+    /// The earliest selectable moment.
+    pub fn min(self, t: std::time::SystemTime) -> Self {
+        self.date_config(|c| c.min = Some(unix_seconds(t).round()))
+    }
+
+    /// The latest selectable moment.
+    pub fn max(self, t: std::time::SystemTime) -> Self {
+        self.date_config(|c| c.max = Some(unix_seconds(t).round()))
+    }
+
+    /// Called with the new instant (`e.date()`).
+    pub fn on_change(mut self, handler: Handler<ChangeEvent>) -> Self {
+        self.0.on_change = Some(handler);
+        self
+    }
+}
+
+/// An indeterminate activity indicator (`UIActivityIndicatorView`, spinning
+/// `NSProgressIndicator`, `GtkSpinner`, indeterminate `ProgressBar`,
+/// SwiftUI `ProgressView`, a CSS spinner). Tinted by `text_color`. Give it
+/// a label (`.accessibility_label("Loading")`) unless text next to it says so.
+pub fn spinner() -> Spinner {
+    let mut n = VNode::new(NodeKind::Spinner);
+    n.value = Some(0.);
+    Spinner(n)
+}
+
+impl Spinner {
+    /// The large size.
+    pub fn large(mut self) -> Self {
+        self.0.value = Some(1.);
         self
     }
 }

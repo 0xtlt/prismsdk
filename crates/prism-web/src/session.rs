@@ -326,6 +326,7 @@ fn parse_event(v: &Value) -> Option<UiEvent> {
     let id = v.get("id")?.as_u64()?;
     match v.get("t")?.as_str()? {
         "click" => Some(UiEvent::Click(id)),
+        "submit" => Some(UiEvent::Submit(id)),
         "input" => Some(UiEvent::Input(id, v.get("v")?.as_str()?.to_string())),
         "back" => Some(UiEvent::Back(id, v.get("depth")?.as_u64()? as usize)),
         "change" => Some(UiEvent::Change(id, v.get("v")?.as_f64()?)),
@@ -697,6 +698,9 @@ impl Encoder {
                 "op": "menu", "id": id,
                 "menu": menu.as_ref().map(|m| serde_json::from_str::<Value>(&m.to_json()).unwrap_or(Value::Null)),
             }),
+            Patch::SetConfig { id, config } => {
+                json!({ "op": "config", "id": id, "config": config })
+            }
             Patch::SetIcon { id, icon } => {
                 json!({ "op": "icon", "id": id, "icon": icon, "glyph": glyphs::glyph(icon) })
             }

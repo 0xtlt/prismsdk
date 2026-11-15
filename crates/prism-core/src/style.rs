@@ -241,6 +241,28 @@ impl Edges {
     }
 }
 
+/// How a node is placed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Position {
+    /// In the flex flow of its parent.
+    #[default]
+    Relative,
+    /// Out of the flow, at its [`Inset`] from the parent's edges (padding
+    /// box), drawn over earlier siblings: overlays, toasts, badges.
+    Absolute,
+}
+
+/// Distances from the parent's edges of an absolutely positioned node
+/// (`Auto`: unconstrained). `left` and `right` are the leading and trailing
+/// edges: they swap in right-to-left languages, like margins.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct Inset {
+    pub top: Length,
+    pub right: Length,
+    pub bottom: Length,
+    pub left: Length,
+}
+
 pub const DEFAULT_FONT_SIZE: f32 = 16.;
 
 /// The complete style of a node.
@@ -256,6 +278,9 @@ pub struct Style {
     pub gap: f32,
     pub padding: Edges,
     pub margin: Edges,
+    /// In the flow (default) or absolutely positioned at `inset`.
+    pub position: Position,
+    pub inset: Inset,
     pub width: Length,
     pub height: Length,
     pub min_width: Length,
@@ -445,6 +470,12 @@ impl Style {
             gap: self.gap * factor,
             padding: edges(self.padding),
             margin: edges(self.margin),
+            inset: Inset {
+                top: len(self.inset.top),
+                right: len(self.inset.right),
+                bottom: len(self.inset.bottom),
+                left: len(self.inset.left),
+            },
             width: len(self.width),
             height: len(self.height),
             min_width: len(self.min_width),
@@ -591,6 +622,8 @@ impl Default for Style {
             gap: 0.,
             padding: Edges::default(),
             margin: Edges::default(),
+            position: Position::Relative,
+            inset: Inset::default(),
             width: Length::Auto,
             height: Length::Auto,
             min_width: Length::Auto,
@@ -751,6 +784,44 @@ pub trait Styled: Sized {
     }
     fn mb(self, v: f32) -> Self {
         self.with_style(|s| s.margin.bottom = v)
+    }
+
+    // Position
+    /// Takes the node out of the flex flow: it is placed at its insets from
+    /// the parent (`.top()`, `.right()`, `.bottom()`, `.left()`) and drawn
+    /// over earlier siblings.
+    fn absolute(self) -> Self {
+        self.with_style(|s| s.position = Position::Absolute)
+    }
+    fn top(self, v: impl Into<Length>) -> Self {
+        let v = v.into();
+        self.with_style(|s| s.inset.top = v)
+    }
+    fn bottom(self, v: impl Into<Length>) -> Self {
+        let v = v.into();
+        self.with_style(|s| s.inset.bottom = v)
+    }
+    /// Distance from the leading edge (the right one, right to left).
+    fn left(self, v: impl Into<Length>) -> Self {
+        let v = v.into();
+        self.with_style(|s| s.inset.left = v)
+    }
+    /// Distance from the trailing edge.
+    fn right(self, v: impl Into<Length>) -> Self {
+        let v = v.into();
+        self.with_style(|s| s.inset.right = v)
+    }
+    /// The same distance from every edge (`.absolute().inset(0.)` covers the parent).
+    fn inset(self, v: impl Into<Length>) -> Self {
+        let v = v.into();
+        self.with_style(|s| {
+            s.inset = Inset {
+                top: v,
+                right: v,
+                bottom: v,
+                left: v,
+            }
+        })
     }
 
     // Size

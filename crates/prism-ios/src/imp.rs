@@ -23,8 +23,8 @@ use objc2_ui_kit::{
     UISceneDelegate, UISceneSession, UIScrollView, UIScrollViewContentInsetAdjustmentBehavior,
     UIScrollViewDelegate, UIScrollViewKeyboardDismissMode, UISwitch, UITabBarController,
     UITabBarControllerDelegate, UITapGestureRecognizer, UITextBorderStyle, UITextField,
-    UITraitCollection, UIUserInterfaceStyle, UIView, UIViewController, UIWindow, UIWindowScene,
-    UIWindowSceneDelegate,
+    UITextViewDelegate, UITraitCollection, UIUserInterfaceStyle, UIView, UIViewController,
+    UIWindow, UIWindowScene, UIWindowSceneDelegate,
 };
 use prism_core::{
     Accessibility, AppConfig, AppInit, Appearance, Backend, Color, FontWeight, NodeId, NodeKind,
@@ -40,6 +40,18 @@ static APP: OnceLock<(AppConfig, AppInit)> = OnceLock::new();
 type ToggleView = UISwitch;
 #[cfg(target_os = "tvos")]
 type ToggleView = UIButton;
+
+/// Sliders and date pickers: UIKit's on iOS and visionOS; tvOS has neither
+/// (UISlider.h, UIDatePicker.h: API_UNAVAILABLE(tvos)), so a focusable view
+/// adjusted with the remote.
+#[cfg(not(target_os = "tvos"))]
+type SliderView = crate::forms::PrismSlider;
+#[cfg(target_os = "tvos")]
+type SliderView = crate::tv::Adjustable;
+#[cfg(not(target_os = "tvos"))]
+type DateView = objc2_ui_kit::UIDatePicker;
+#[cfg(target_os = "tvos")]
+type DateView = crate::tv::Adjustable;
 
 // ---------------------------------------------------------------------------
 // Main-thread state
@@ -260,6 +272,23 @@ define_class!(
             scroll_into_view(sender);
         }
 
+        /// The return key (the field resigns, hiding the keyboard).
+        #[unsafe(method(onSubmit:))]
+        fn on_submit(&self, sender: &UITextField) {
+            dispatch(UiEvent::Submit(sender.tag() as NodeId));
+        }
+
+        #[unsafe(method(onDate:))]
+        fn on_date(&self, sender: &AnyObject) {
+            #[cfg(not(target_os = "tvos"))]
+            if let Some(picker) = sender.downcast_ref::<objc2_ui_kit::UIDatePicker>() {
+                let secs = picker.date().timeIntervalSince1970().round();
+                dispatch(UiEvent::Change(picker.tag() as NodeId, secs));
+            }
+            #[cfg(target_os = "tvos")]
+            let _ = sender;
+        }
+
         /// Active / inactive / background.
         /// Another device changed iCloud keys.
         #[unsafe(method(onCloudChange:))]
@@ -351,6 +380,21 @@ define_class!(
         #[unsafe(method(onCloseStack:))]
         fn on_close_stack(&self, sender: &objc2_ui_kit::UIBarButtonItem) {
             dispatch(UiEvent::Back(sender.tag() as NodeId, 0));
+        }
+    }
+
+    unsafe impl UITextViewDelegate for Target {
+        #[unsafe(method(textViewDidChange:))]
+        fn text_view_did_change(&self, view: &objc2_ui_kit::UITextView) {
+            #[cfg(not(target_os = "tvos"))]
+            crate::forms::text_area_changed(view);
+            #[cfg(target_os = "tvos")]
+            let _ = view;
+        }
+
+        #[unsafe(method(textViewDidBeginEditing:))]
+        fn text_view_did_begin_editing(&self, view: &objc2_ui_kit::UITextView) {
+            scroll_into_view(view);
         }
     }
 
@@ -611,6 +655,10 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
         image_sources: image_sources(_config.assets.as_deref()),
         semantic: None,
         radii: HashMap::new(),
+        pickers: HashMap::new(),
+        date_pickers: HashMap::new(),
+        announced: HashMap::new(),
+        lang: String::new(),
     });
     #[cfg(target_os = "tvos")]
     renderer.set_zoom(crate::tv::zoom());
@@ -701,6 +749,15 @@ pub enum View {
     Label(Retained<UILabel>),
     Button(Retained<UIButton>),
     Input(Retained<UITextField>),
+    Slider(Retained<SliderView>),
+    /// A pop-up button listing the options.
+    Picker(Retained<UIButton>),
+    DatePicker(Retained<DateView>),
+    /// tvOS text areas are text fields (`UITextView.editable` is
+    /// API_UNAVAILABLE(tvos)).
+    #[cfg(not(target_os = "tvos"))]
+    TextArea(Rc<crate::forms::TextArea>),
+    Spinner(Retained<objc2_ui_kit::UIActivityIndicatorView>),
 }
 
 impl View {
@@ -719,6 +776,12 @@ impl View {
             View::Label(v) => v,
             View::Button(v) => v,
             View::Input(v) => v,
+            View::Slider(v) => v,
+            View::Picker(v) => v,
+            View::DatePicker(v) => v,
+            #[cfg(not(target_os = "tvos"))]
+            View::TextArea(t) => &t.view,
+            View::Spinner(v) => v,
         }
     }
 
@@ -753,6 +816,14 @@ pub struct UiKit {
     semantic: Option<objc2_ui_kit::UISemanticContentAttribute>,
     /// Sheets currently presented, by modal id.
     presented: Vec<NodeId>,
+    /// Options, placeholder and selection of each picker.
+    pickers: HashMap<NodeId, crate::forms::PickerState>,
+    /// Date pickers (they follow the app's language).
+    date_pickers: HashMap<NodeId, Retained<DateView>>,
+    /// The last announcement of each status region.
+    announced: HashMap<NodeId, String>,
+    /// The app's language (BCP 47).
+    lang: String,
 }
 
 impl UiKit {
@@ -902,6 +973,11 @@ impl UiKit {
         }
         vc
     }
+}
+
+#[cfg(not(target_os = "tvos"))]
+fn ns_locale(lang: &str) -> Retained<objc2_foundation::NSLocale> {
+    objc2_foundation::NSLocale::localeWithLocaleIdentifier(&NSString::from_str(lang))
 }
 
 fn plain_color(c: Color) -> Retained<UIColor> {
@@ -1083,8 +1159,67 @@ impl Widgets for UiKit {
                         sel!(onBeginEditing:),
                         UIControlEvents::EditingDidBegin,
                     );
+                    f.addTarget_action_forControlEvents(
+                        Some(target),
+                        sel!(onSubmit:),
+                        UIControlEvents::EditingDidEndOnExit,
+                    );
                 };
                 View::Input(f)
+            }
+            #[cfg(not(target_os = "tvos"))]
+            NodeKind::Slider => View::Slider(crate::forms::PrismSlider::new(mtm)),
+            #[cfg(target_os = "tvos")]
+            NodeKind::Slider => View::Slider(crate::tv::Adjustable::slider(mtm)),
+            NodeKind::Picker => {
+                self.pickers.insert(id, Default::default());
+                View::Picker(crate::forms::picker(mtm))
+            }
+            #[cfg(not(target_os = "tvos"))]
+            NodeKind::DatePicker => {
+                let p = objc2_ui_kit::UIDatePicker::new(mtm);
+                p.setPreferredDatePickerStyle(objc2_ui_kit::UIDatePickerStyle::Compact);
+                // Compact pickers draw at the trailing edge of their frame.
+                p.setContentHorizontalAlignment(
+                    objc2_ui_kit::UIControlContentHorizontalAlignment::Leading,
+                );
+                p.setDatePickerMode(objc2_ui_kit::UIDatePickerMode::Date);
+                if !self.lang.is_empty() {
+                    p.setLocale(Some(&ns_locale(&self.lang)));
+                }
+                unsafe {
+                    p.addTarget_action_forControlEvents(
+                        Some(target),
+                        sel!(onDate:),
+                        UIControlEvents::ValueChanged,
+                    )
+                };
+                self.date_pickers.insert(id, p.clone());
+                View::DatePicker(p)
+            }
+            #[cfg(target_os = "tvos")]
+            NodeKind::DatePicker => {
+                let p = crate::tv::Adjustable::date_picker(mtm);
+                p.set_lang(&self.lang);
+                self.date_pickers.insert(id, p.clone());
+                View::DatePicker(p)
+            }
+            #[cfg(not(target_os = "tvos"))]
+            NodeKind::TextArea => View::TextArea(Rc::new(crate::forms::TextArea::new(
+                mtm,
+                ProtocolObject::from_ref(&*self.target),
+            ))),
+            // A text field: the remote opens the full-screen keyboard.
+            #[cfg(target_os = "tvos")]
+            NodeKind::TextArea => return self.create(id, NodeKind::TextInput),
+            NodeKind::Spinner => {
+                let s = objc2_ui_kit::UIActivityIndicatorView::initWithActivityIndicatorStyle(
+                    objc2_ui_kit::UIActivityIndicatorView::alloc(mtm),
+                    objc2_ui_kit::UIActivityIndicatorViewStyle::Medium,
+                );
+                s.setHidesWhenStopped(false);
+                s.startAnimating();
+                View::Spinner(s)
             }
         };
         view.ui().setTag(id as isize);
@@ -1132,6 +1267,34 @@ impl Widgets for UiKit {
             | View::Scroll(_)
             | View::Picture(_)
             | View::Toggle(_) => {}
+            #[cfg(not(target_os = "tvos"))]
+            View::Slider(s) => s.setMinimumTrackTintColor(text_color.as_deref()),
+            #[cfg(target_os = "tvos")]
+            View::Slider(s) => s.set_tint(text_color.as_deref()),
+            View::Picker(b) => {
+                let color = text_color.clone();
+                crate::forms::update_button(b, |c| c.setBaseForegroundColor(color.as_deref()));
+            }
+            #[cfg(not(target_os = "tvos"))]
+            View::DatePicker(p) => unsafe { p.setTintColor(text_color.as_deref()) },
+            #[cfg(target_os = "tvos")]
+            View::DatePicker(p) => {
+                p.set_tint(text_color.as_deref());
+                p.set_font(&font(style));
+                p.set_alignment(alignment(style.text_align));
+            }
+            #[cfg(not(target_os = "tvos"))]
+            View::TextArea(t) => {
+                let f = font(style);
+                t.view.setFont(Some(&f));
+                t.view
+                    .setTextColor(Some(&text_color.unwrap_or_else(UIColor::labelColor)));
+                t.view.setTextAlignment(alignment(style.text_align));
+                unsafe { t.placeholder.setFont(Some(&f)) };
+                t.placeholder.setTextAlignment(alignment(style.text_align));
+                t.layout_placeholder();
+            }
+            View::Spinner(s) => unsafe { s.setColor(text_color.as_deref()) },
             View::Image(v) => {
                 let config = UIImageSymbolConfiguration::configurationWithPointSize_weight(
                     style.font_size as f64,
@@ -1184,6 +1347,8 @@ impl Widgets for UiKit {
                 }
             }
             View::Button(b) => b.setTitle_forState(Some(&s), UIControlState::Normal),
+            #[cfg(not(target_os = "tvos"))]
+            View::TextArea(t) => t.set_text(text),
             View::Screen(_) | View::Tab(_) => {
                 let id = view.id();
                 self.titles.insert(id, text.to_string());
@@ -1202,8 +1367,56 @@ impl Widgets for UiKit {
     }
 
     fn set_placeholder(&mut self, view: &View, text: &str) {
-        if let View::Input(f) = view {
-            f.setPlaceholder(Some(&NSString::from_str(text)));
+        match view {
+            View::Input(f) => f.setPlaceholder(Some(&NSString::from_str(text))),
+            #[cfg(not(target_os = "tvos"))]
+            View::TextArea(t) => {
+                t.placeholder.setText(Some(&NSString::from_str(text)));
+                t.layout_placeholder();
+            }
+            View::Picker(b) => {
+                if let Some(p) = self.pickers.get_mut(&view.id()) {
+                    p.placeholder = text.to_string();
+                    crate::forms::refresh_picker(b, p);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn set_config(&mut self, view: &View, _kind: NodeKind, config: &str) {
+        use prism_core::controls::{DateConfig, PickerConfig, SliderConfig};
+        match view {
+            View::Input(f) => crate::forms::apply_input_config(f, config),
+            #[cfg(not(target_os = "tvos"))]
+            View::TextArea(t) => crate::forms::apply_input_config(&t.view, config),
+            #[cfg(not(target_os = "tvos"))]
+            View::Slider(s) => s.configure(SliderConfig::decode(config)),
+            #[cfg(target_os = "tvos")]
+            View::Slider(s) => s.set_slider_config(SliderConfig::decode(config)),
+            View::Picker(b) => {
+                if let Some(p) = self.pickers.get_mut(&view.id()) {
+                    p.options = PickerConfig::decode(config).options;
+                    crate::forms::refresh_picker(b, p);
+                }
+            }
+            #[cfg(not(target_os = "tvos"))]
+            View::DatePicker(p) => {
+                use objc2_ui_kit::UIDatePickerMode as M;
+                let c = DateConfig::decode(config);
+                p.setDatePickerMode(match c.mode {
+                    prism_core::DateMode::Date => M::Date,
+                    prism_core::DateMode::Time => M::Time,
+                    prism_core::DateMode::DateTime => M::DateAndTime,
+                });
+                let date =
+                    |v: Option<f64>| v.map(objc2_foundation::NSDate::dateWithTimeIntervalSince1970);
+                p.setMinimumDate(date(c.min).as_deref());
+                p.setMaximumDate(date(c.max).as_deref());
+            }
+            #[cfg(target_os = "tvos")]
+            View::DatePicker(p) => p.set_date_config(DateConfig::decode(config)),
+            _ => {}
         }
     }
 
@@ -1352,6 +1565,9 @@ impl Widgets for UiKit {
         self.icons.remove(&id);
         self.selected.remove(&id);
         self.timers.remove(&id);
+        self.pickers.remove(&id);
+        self.date_pickers.remove(&id);
+        self.announced.remove(&id);
         self.pictures.retain(|_, ids| {
             ids.retain(|(i, _)| *i != id);
             !ids.is_empty()
@@ -1393,6 +1609,31 @@ impl Widgets for UiKit {
                 let s = f.sizeThatFits(limit);
                 CGSize::new(s.width.max(120.), s.height.max(36.))
             }
+            // A comfortable default width; flex makes it wider.
+            #[cfg(not(target_os = "tvos"))]
+            View::Slider(s) => {
+                let h = s.sizeThatFits(limit).height.max(31.);
+                CGSize::new(max_width.map_or(200., |w| (w as f64).min(200.)), h)
+            }
+            #[cfg(target_os = "tvos")]
+            View::Slider(s) => {
+                let n = s.natural_size();
+                CGSize::new(
+                    max_width.map_or(n.width, |w| (w as f64).min(n.width)),
+                    n.height,
+                )
+            }
+            #[cfg(target_os = "tvos")]
+            View::DatePicker(p) => p.natural_size(),
+            #[cfg(not(target_os = "tvos"))]
+            // Compact pickers have no intrinsic size (-1); Auto Layout's
+            // fitting size is their button's.
+            View::DatePicker(p) => p.systemLayoutSizeFittingSize(unsafe {
+                objc2_ui_kit::UILayoutFittingCompressedSize
+            }),
+            View::Spinner(s) => s.intrinsicContentSize(),
+            #[cfg(not(target_os = "tvos"))]
+            View::TextArea(t) => t.measure(max_width.map_or(240., |w| w as f64)),
             other => other.ui().sizeThatFits(limit),
         };
         (size.width.ceil() as f32, size.height.ceil() as f32)
@@ -1405,6 +1646,10 @@ impl Widgets for UiKit {
             _ => {}
         }
         place(view.ui(), x, y, w, h);
+        #[cfg(not(target_os = "tvos"))]
+        if let View::TextArea(t) = view {
+            t.layout_placeholder();
+        }
         if let Some(r) = self.radii.get(&view.id()) {
             view.ui()
                 .layer()
@@ -1516,6 +1761,16 @@ impl Widgets for UiKit {
         // views created later get it in `create`.
         self.semantic = Some(attr);
         set_appearance_semantic(attr);
+        // Date pickers speak the app's language (month names, digits).
+        if self.lang != env.lang {
+            self.lang = env.lang.clone();
+            for p in self.date_pickers.values() {
+                #[cfg(not(target_os = "tvos"))]
+                p.setLocale(Some(&ns_locale(&self.lang)));
+                #[cfg(target_os = "tvos")]
+                p.set_lang(&self.lang);
+            }
+        }
         match self.controller.view().and_then(|v| v.window()) {
             Some(window) => set_semantic(&window, attr),
             None => set_semantic(&self.root, attr),
@@ -1558,6 +1813,30 @@ impl Widgets for UiKit {
             }
             #[cfg(target_os = "tvos")]
             View::Toggle(t) => crate::tv::set_toggle(t, value != 0.),
+            #[cfg(not(target_os = "tvos"))]
+            View::Slider(s) => s.set(value),
+            #[cfg(target_os = "tvos")]
+            View::Slider(s) => s.set_value(value),
+            View::Picker(b) => {
+                if let Some(p) = self.pickers.get_mut(&view.id()) {
+                    p.selected = (value >= 0.).then_some(value as usize);
+                    crate::forms::refresh_picker(b, p);
+                }
+            }
+            #[cfg(not(target_os = "tvos"))]
+            View::DatePicker(p) => {
+                if (p.date().timeIntervalSince1970() - value).abs() >= 0.5 {
+                    let d = objc2_foundation::NSDate::dateWithTimeIntervalSince1970(value);
+                    p.setDate_animated(&d, false);
+                }
+            }
+            #[cfg(target_os = "tvos")]
+            View::DatePicker(p) => p.set_value(value),
+            View::Spinner(s) => s.setActivityIndicatorViewStyle(if value == 1. {
+                objc2_ui_kit::UIActivityIndicatorViewStyle::Large
+            } else {
+                objc2_ui_kit::UIActivityIndicatorViewStyle::Medium
+            }),
             View::Tabs(bar) => {
                 let i = value.max(0.) as usize;
                 self.selected.insert(view.id(), i);
@@ -1666,7 +1945,28 @@ impl Widgets for UiKit {
         ) {
             return;
         }
-        let native_control = matches!(view, View::Button(_) | View::Input(_) | View::Toggle(_));
+        // A live region: not an element itself, it announces its value.
+        if a.role == Some(Role::Status) {
+            v.setIsAccessibilityElement(false, mtm);
+            let message = a.value.clone().unwrap_or_default();
+            let previous = self.announced.insert(view.id(), message.clone());
+            if !message.is_empty() && previous.as_ref() != Some(&message) {
+                crate::forms::announce(&message);
+            }
+            return;
+        }
+        let native_control = match view {
+            View::Button(_)
+            | View::Input(_)
+            | View::Toggle(_)
+            | View::Slider(_)
+            | View::Picker(_)
+            | View::DatePicker(_)
+            | View::Spinner(_) => true,
+            #[cfg(not(target_os = "tvos"))]
+            View::TextArea(_) => true,
+            _ => false,
+        };
         if !native_control {
             // Operable containers and images are single elements; plain text
             // labels already are; groups gather their children.

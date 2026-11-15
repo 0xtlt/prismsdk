@@ -176,6 +176,9 @@ public final class PrismHost {
         LinearLayout bar;
         Dialog dialog;
         int[] viewport = {0, 0};
+        // Form controls (PrismForms): the config string, accessibility.
+        String config = "";
+        String a11yLabel, a11yValue, announced;
     }
 
     static void send(JSONObject event) {
@@ -215,6 +218,8 @@ public final class PrismHost {
 
     /** Natural size of a leaf, in pixels: {width, height}. */
     public static float[] measure(String kind, String text, float size, int weight, float maxWidth) {
+        float[] form = PrismForms.measure(kind, text, size, weight, maxWidth);
+        if (form != null) return form;
         TextView v;
         switch (kind) {
             case "button": v = new Button(activity); ((Button) v).setAllCaps(false); break;
@@ -286,7 +291,10 @@ public final class PrismHost {
             case "repeat": PrismMotion.repeat(id, n.view, p.optJSONObject("from"), p.optJSONObject("to"), p.optJSONObject("anim")); break;
             case "text": setText(n, p.optString("text")); break;
             case "draw": if (n.view instanceof PrismShape) ((PrismShape) n.view).setPaths(p.optJSONArray("paths")); break;
-            case "placeholder": if (n.view instanceof EditText) ((EditText) n.view).setHint(p.optString("text")); break;
+            case "placeholder":
+                if (!PrismForms.placeholder(n, p.optString("text")) && n.view instanceof EditText) ((EditText) n.view).setHint(p.optString("text"));
+                break;
+            case "config": PrismForms.config(n, p.optString("config")); break;
             case "icon":
                 n.icon = p.optString("icon");
                 n.glyph = p.optString("glyph");
@@ -298,9 +306,13 @@ public final class PrismHost {
             case "display": n.view.setVisibility(p.optBoolean("hidden") ? View.GONE : View.VISIBLE); break;
             case "a11y":
                 String label = p.optString("label", null);
-                if (label != null && !label.equals("null")) n.view.setContentDescription(label);
+                if (label != null && !label.equals("null")) {
+                    n.view.setContentDescription(label);
+                    n.a11yLabel = label;
+                }
                 n.view.setImportantForAccessibility(p.optBoolean("hidden")
                         ? View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS : View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
+                PrismForms.a11y(n, p.isNull("role") ? null : p.optString("role", null), p.isNull("value") ? null : p.optString("value", null));
                 break;
             case "children": setChildren(n, p.getJSONArray("children")); break;
             case "frame": {
@@ -339,6 +351,8 @@ public final class PrismHost {
         Node n = new Node();
         n.id = id;
         n.kind = kind;
+        n.view = PrismForms.create(n);
+        if (n.view != null) return n;
         switch (kind) {
             case "text": {
                 TextView t = new TextView(activity);
@@ -655,7 +669,7 @@ public final class PrismHost {
         n.text = text;
         switch (n.kind) {
             case "text": case "button": ((TextView) n.view).setText(text); break;
-            case "text_input": {
+            case "text_input": case "text_area": {
                 EditText e = (EditText) n.view;
                 // Typing echoes back the same text; only a change from the app (clearing
                 // after "Add") differs. Runs inside apply(), so the watcher stays quiet.
@@ -695,6 +709,7 @@ public final class PrismHost {
 
     static void setValue(Node n, double value) {
         n.value = value;
+        if (PrismForms.value(n, value)) return;
         switch (n.kind) {
             case "toggle": ((Switch) n.view).setChecked(value != 0); break;
             case "progress": ((ProgressBar) n.view).setProgress((int) Math.round(value * 1000)); break;
@@ -715,6 +730,8 @@ public final class PrismHost {
     static String appearance = "system";
     static boolean rtl;
     static String backLabel = "Back";
+    /** The app's language (BCP 47), for formatted dates. */
+    static String lang = "";
 
     static boolean dark() {
         if (appearance.equals("dark")) return true;
@@ -735,17 +752,23 @@ public final class PrismHost {
     static void setEnvironment(JSONObject p) {
         rtl = p.optBoolean("rtl");
         backLabel = p.optString("back", "Back");
+        lang = p.isNull("lang") ? "" : p.optString("lang", "");
         View decor = activity.getWindow().getDecorView();
         decor.setLayoutDirection(rtl ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);
         // Each text by its first letter; no letter ("+1", "12:30") reads left to right.
         decor.setTextDirection(View.TEXT_DIRECTION_FIRST_STRONG_LTR);
-        for (Node n : nodes.values()) if (n.kind.equals("stack")) styleChrome(n);
+        for (Node n : nodes.values()) {
+            if (n.kind.equals("stack")) styleChrome(n);
+            // Dates in the new language.
+            if (n.kind.equals("date_picker")) PrismForms.showDate(n);
+        }
     }
 
     /** Light/dark changed (the app's choice or the system's): every color again. */
     static void restyle() {
         for (Node n : nodes.values()) {
             if (n.style.length() > 0) applyStyle(n);
+            else PrismForms.style(n);
             if (n.kind.equals("stack") || n.kind.equals("tabs")) styleChrome(n);
             if (n.kind.equals("tabs")) refreshTabs(n);
             if (n.view instanceof PrismShape) n.view.invalidate();
@@ -812,6 +835,7 @@ public final class PrismHost {
                 t.setGravity(a.equals("center") ? Gravity.CENTER_HORIZONTAL : a.equals("right") ? Gravity.RIGHT : Gravity.LEFT);
             }
         }
+        PrismForms.style(n);
     }
 
     // --- Interaction ------------------------------------------------------------------------
@@ -819,7 +843,12 @@ public final class PrismHost {
     static void setClickable(Node n) {
         View v = n.view;
         boolean gestures = n.clickable || n.menu != null || n.swipeLeft || n.swipeRight;
-        if (!gestures || n.kind.equals("button") || n.kind.equals("toggle") || n.kind.equals("text_input")) return;
+        if (!gestures) return;
+        switch (n.kind) {
+            // Controls handle their own touches.
+            case "button": case "toggle": case "text_input": case "text_area":
+            case "slider": case "picker": case "date_picker": return;
+        }
         GestureDetector g = new GestureDetector(activity, new GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onDown(MotionEvent e) { return true; }
             @Override public boolean onSingleTapUp(MotionEvent e) {
