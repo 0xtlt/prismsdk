@@ -97,6 +97,8 @@ pub fn a11y_attrs(kind: NodeKind, a: &Accessibility) -> String {
     let native = match kind {
         NodeKind::Button => Some(Role::Button),
         NodeKind::Toggle => Some(Role::Switch),
+        NodeKind::Slider => Some(Role::Slider),
+        NodeKind::Picker => Some(Role::ComboBox),
         _ => None,
     };
     if let Some(role) = a.role.filter(|r| *r != Role::Text && Some(*r) != native) {
@@ -120,11 +122,23 @@ pub fn a11y_attrs(kind: NodeKind, a: &Accessibility) -> String {
     if a.role == Some(Role::Tab) {
         let _ = write!(out, r#" aria-selected="{}""#, a.checked.unwrap_or(false));
     }
+    if let (Some(Role::Slider), Some(v)) = (a.role, &a.value) {
+        let _ = write!(out, r#" aria-valuetext="{}""#, escape(v));
+    }
+    if a.role == Some(Role::Status) {
+        out.push_str(r#" aria-live="polite""#);
+    }
     if a.disabled {
         out.push_str(r#" aria-disabled="true""#);
         if matches!(
             kind,
-            NodeKind::Button | NodeKind::TextInput | NodeKind::Toggle
+            NodeKind::Button
+                | NodeKind::TextInput
+                | NodeKind::Toggle
+                | NodeKind::TextArea
+                | NodeKind::Slider
+                | NodeKind::Picker
+                | NodeKind::DatePicker
         ) {
             out.push_str(" disabled");
         }
@@ -168,10 +182,69 @@ impl HtmlBackend {
             NodeKind::TextInput => {
                 let _ = write!(
                     out,
-                    r#"<input type="text" {attrs} value="{}" placeholder="{}">"#,
+                    r#"<input type="{}" {attrs} value="{}" placeholder="{}"{}>"#,
+                    input_type(&n.config),
                     escape(&n.text),
-                    escape(&n.placeholder)
+                    escape(&n.placeholder),
+                    input_attrs(&n.config)
                 );
+            }
+            NodeKind::TextArea => {
+                let _ = write!(
+                    out,
+                    r#"<textarea {attrs} class="prism-textarea" rows="3" placeholder="{}"{}>{}</textarea>"#,
+                    escape(&n.placeholder),
+                    input_attrs(&n.config),
+                    escape(&n.text)
+                );
+            }
+            NodeKind::Slider => {
+                let c = prism_core::controls::SliderConfig::decode(&n.config);
+                let step = if c.step > 0. {
+                    c.step.to_string()
+                } else {
+                    "any".into()
+                };
+                let _ = write!(
+                    out,
+                    r#"<input type="range" class="prism-slider" {attrs} min="{}" max="{}" step="{step}" value="{}">"#,
+                    c.min, c.max, n.value
+                );
+            }
+            NodeKind::Picker => {
+                let c = prism_core::controls::PickerConfig::decode(&n.config);
+                let selected = n.value as i64;
+                let _ = write!(out, r#"<select class="prism-select" {attrs}>"#);
+                if selected < 0 {
+                    let _ = write!(
+                        out,
+                        r#"<option value="" disabled selected hidden>{}</option>"#,
+                        escape(&n.placeholder)
+                    );
+                }
+                for (i, o) in c.options.iter().enumerate() {
+                    let sel = if i as i64 == selected { " selected" } else { "" };
+                    let _ = write!(out, r#"<option value="{i}"{sel}>{}</option>"#, escape(o));
+                }
+                out.push_str("</select>");
+            }
+            // The browser's time zone formats it: the client fills it in.
+            NodeKind::DatePicker => {
+                let c = prism_core::controls::DateConfig::decode(&n.config);
+                let ty = match c.mode {
+                    prism_core::DateMode::Date => "date",
+                    prism_core::DateMode::Time => "time",
+                    prism_core::DateMode::DateTime => "datetime-local",
+                };
+                let _ = write!(
+                    out,
+                    r#"<input type="{ty}" class="prism-date" {attrs} data-value="{}">"#,
+                    n.value
+                );
+            }
+            NodeKind::Spinner => {
+                let size = if n.value == 1. { r#" data-size="large""# } else { "" };
+                let _ = write!(out, r#"<span class="prism-spinner" {attrs}{size}></span>"#);
             }
             NodeKind::Image => {
                 let _ = write!(
@@ -313,6 +386,60 @@ impl HtmlBackend {
         let top = self.nodes.get(node.children.last()?)?;
         Some(top.text.clone()).filter(|t| !t.is_empty())
     }
+}
+
+/// The `type` of an `<input>` for a text input config.
+pub fn input_type(config: &str) -> &'static str {
+    use prism_core::controls::{InputConfig, Keyboard};
+    let c = InputConfig::decode(config);
+    match c.keyboard {
+        _ if c.secure => "password",
+        Keyboard::Email => "email",
+        Keyboard::Url => "url",
+        Keyboard::Phone => "tel",
+        _ => "text",
+    }
+}
+
+/// `inputmode`, `enterkeyhint`, `autocapitalize`, `autocorrect`, `spellcheck`
+/// (mirrors `applyInputConfig` in client.js).
+pub fn input_attrs(config: &str) -> String {
+    use prism_core::controls::{Capitalize, InputConfig, Keyboard, ReturnKey};
+    let c = InputConfig::decode(config);
+    let mut out = String::new();
+    let mode = match c.keyboard {
+        Keyboard::Number => Some("numeric"),
+        Keyboard::Decimal => Some("decimal"),
+        _ => None,
+    };
+    if let Some(m) = mode {
+        let _ = write!(out, r#" inputmode="{m}""#);
+    }
+    let enter = match c.return_key {
+        ReturnKey::Default => None,
+        ReturnKey::Done => Some("done"),
+        ReturnKey::Go => Some("go"),
+        ReturnKey::Next => Some("next"),
+        ReturnKey::Search => Some("search"),
+        ReturnKey::Send => Some("send"),
+    };
+    if let Some(e) = enter {
+        let _ = write!(out, r#" enterkeyhint="{e}""#);
+    }
+    let cap = match c.capitalize {
+        _ if c.secure => Some("none"),
+        Capitalize::Sentences => None,
+        Capitalize::None => Some("none"),
+        Capitalize::Words => Some("words"),
+        Capitalize::All => Some("characters"),
+    };
+    if let Some(a) = cap {
+        let _ = write!(out, r#" autocapitalize="{a}""#);
+    }
+    if !c.autocorrect || c.secure {
+        out.push_str(r#" autocorrect="off" spellcheck="false""#);
+    }
+    out
 }
 
 pub fn escape(s: &str) -> String {

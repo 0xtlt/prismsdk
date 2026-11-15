@@ -527,17 +527,17 @@ struct ToasterHandle(Entity<Toaster>);
 
 fn toaster_entity(cx: &mut App) -> Entity<Toaster> {
     if let Some(h) = cx.try_global::<ToasterHandle>() {
-        return h.0.clone();
+        return h.0;
     }
     let e = cx.new_entity(|_| Toaster::default());
-    cx.set_global(ToasterHandle(e.clone()));
+    cx.set_global(ToasterHandle(e));
     e
 }
 
 /// Where toasts appear: put it once, as the last child of the screen (or
 /// root view) they cover. It is absolutely positioned at the bottom.
 pub fn toaster() -> Element {
-    prism_core::lazy(|cx| toaster_entity(cx))
+    prism_core::lazy(toaster_entity)
 }
 
 /// Shows `toast` (several stack up, newest at the bottom).
@@ -561,7 +561,7 @@ pub fn show_toast(cx: &mut App, toast: Toast) {
         cx.notify();
         id
     });
-    let e = entity.clone();
+    let e = entity;
     cx.spawn(async move |cx| {
         cx.sleep(duration).await;
         cx.update_entity(&e, |t, _| t.items.retain(|(i, _)| *i != id));
@@ -610,7 +610,6 @@ impl Render for Toaster {
                         .flex_1(),
                 )
                 .when_some(toast.action.clone(), |d, (label, h)| {
-                    let this = this.clone();
                     d.child(
                         div()
                             .px(8.)
