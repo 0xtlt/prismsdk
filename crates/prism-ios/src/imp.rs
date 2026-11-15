@@ -402,6 +402,10 @@ define_class!(
         /// Virtualized lists follow the scroll position.
         #[unsafe(method(scrollViewDidScroll:))]
         fn scroll_view_did_scroll(&self, s: &UIScrollView) {
+            crate::layout::scrolled(s);
+            if !crate::layout::scroll_events(s.tag() as NodeId) {
+                return;
+            }
             let y = s.contentOffset().y + s.adjustedContentInset().top;
             dispatch(UiEvent::Scroll(s.tag() as NodeId, y as f32, s.bounds().size.height as f32));
         }
@@ -761,7 +765,7 @@ pub enum View {
 }
 
 impl View {
-    fn ui(&self) -> &UIView {
+    pub(crate) fn ui(&self) -> &UIView {
         match self {
             View::Container(v) | View::Screen(v) | View::Tab(v) => v,
             View::Stack(s) => &s.view,
@@ -785,7 +789,7 @@ impl View {
         }
     }
 
-    fn id(&self) -> NodeId {
+    pub(crate) fn id(&self) -> NodeId {
         self.ui().tag() as NodeId
     }
 }
@@ -1260,6 +1264,10 @@ impl Widgets for UiKit {
         let border = style.border_color.map(|c| unsafe { ui_color(c).CGColor() });
         layer.setBorderColor(border.as_deref());
 
+        if let View::Scroll(s) = view {
+            crate::layout::set_axis(s, style.scroll_axis);
+        }
+        crate::layout::remember_font(view, || font(style));
         let text_color = style.text_color.map(ui_color);
         match view {
             View::Container(_)
@@ -1563,6 +1571,7 @@ impl Widgets for UiKit {
     fn destroy(&mut self, view: &View) {
         let id = view.id();
         SHAPES.with(|s| s.borrow_mut().remove(&id));
+        crate::layout::forget(id);
         self.screens.remove(&id);
         self.radii.remove(&id);
         self.titles.remove(&id);
@@ -1650,6 +1659,7 @@ impl Widgets for UiKit {
             _ => {}
         }
         place(view.ui(), x, y, w, h);
+        crate::layout::framed(view.id());
         #[cfg(not(target_os = "tvos"))]
         if let View::TextArea(t) = view {
             t.layout_placeholder();
@@ -1875,9 +1885,28 @@ impl Widgets for UiKit {
 
     fn set_scroll_events(&mut self, view: &View, on: bool) {
         if let View::Scroll(s) = view {
+            crate::layout::set_scroll_events(view.id(), on);
+            // Sticky views follow the scroll position too.
+            let on = crate::layout::wants_delegate(view.id());
             let delegate = on.then(|| ProtocolObject::from_ref(&*self.target));
             unsafe { s.setDelegate(delegate) };
         }
+    }
+
+    fn set_sticky(&mut self, view: &View, sticky: Option<(&View, prism_native::Sticky)>) {
+        match sticky {
+            Some((View::Scroll(s), st)) => {
+                if s.delegate().is_none() {
+                    unsafe { s.setDelegate(Some(ProtocolObject::from_ref(&*self.target))) };
+                }
+                crate::layout::set_sticky(view.ui(), view.id(), Some((s, st)));
+            }
+            _ => crate::layout::set_sticky(view.ui(), view.id(), None),
+        }
+    }
+
+    fn baseline(&mut self, view: &View, width: f32, height: f32) -> Option<f32> {
+        crate::layout::baseline(view, width, height)
     }
 
     fn set_swipe(&mut self, view: &View, left: bool, right: bool) {

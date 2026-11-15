@@ -510,7 +510,9 @@ impl<W: Widgets> NativeRenderer<W> {
             .and_then(|c| c.first().copied())
             .and_then(|c| self.by_layout.get(&c))
             .and_then(|c| self.nodes.get(c));
-        if first_child.is_some_and(|c| c.kind == NodeKind::Scroll) {
+        if first_child.is_some_and(|c| {
+            c.kind == NodeKind::Scroll && c.style.scroll_axis == prism_core::ScrollAxis::Vertical
+        }) {
             i.top = 0.;
             i.bottom = 0.;
         }

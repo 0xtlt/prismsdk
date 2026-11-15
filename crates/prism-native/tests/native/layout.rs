@@ -625,3 +625,33 @@ fn own_width_rules_follow_the_element_not_the_window() {
     let f = h.layout(500., 300.);
     assert_eq!(f.frame(f.by_text("b")).1, 20.);
 }
+
+struct ChipsScreen;
+impl Render for ChipsScreen {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        screen("Chips").child(prism_core::scroll_x().child(text("chip")))
+    }
+}
+
+#[test]
+fn a_screen_starting_with_a_horizontal_scroll_keeps_its_safe_area() {
+    let mut h = Harness::new(|cx| {
+        let r = Router::new()
+            .route("/", |cx, _| cx.new_entity(|_| ChipsScreen))
+            .build(cx);
+        cx.set_root(r);
+    });
+    h.r.widgets.screen_insets = Insets {
+        top: 10.,
+        right: 0.,
+        bottom: 10.,
+        left: 0.,
+    };
+    let f = h.layout(400., 800.);
+    let s = f.of_kind(NodeKind::Scroll)[0];
+    assert_eq!(
+        f.frame(s).1,
+        10.,
+        "below the bar, unlike vertical page scrolls"
+    );
+}
