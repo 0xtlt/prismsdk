@@ -318,6 +318,9 @@ fn apple_command(
     if let Some(g) = &p.google_services {
         cmd.env("PRISM_GOOGLE_SERVICES", g);
     }
+    if let Some(key) = &p.vapid_public_key {
+        cmd.env("PRISM_VAPID_PUBLIC_KEY", key);
+    }
     if !p.permissions.is_empty() {
         let lines: Vec<String> = p
             .permissions

@@ -987,6 +987,7 @@ impl App {
         if let Some(link) = link {
             self.navigate(link);
         }
+        self.push_notification_opened(&response);
         if let Some(handler) = self.surfaces.notification_handler.clone() {
             handler(&response, self);
         }

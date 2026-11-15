@@ -2112,9 +2112,11 @@ dependencies = [
 name = "prism-android"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "jni-sys",
  "prism-core",
  "prism-native",
+ "prism-push",
  "serde_json",
 ]
 
@@ -2181,6 +2183,7 @@ dependencies = [
  "ksni",
  "prism-core",
  "prism-native",
+ "prism-push",
 ]
 
 [[package]]

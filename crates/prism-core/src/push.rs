@@ -288,6 +288,44 @@ pub(crate) struct Push {
     background: Option<BackgroundJob>,
     subscription: Option<PushSubscription>,
     waiting: Vec<Waiter>,
+    /// Pushes shown as local notifications (UnifiedPush, FCM data), by
+    /// notification id: a tap on one is an `Opened` push.
+    displayed: Vec<(String, PushMessage)>,
+    shown: u64,
+}
+
+/// Ids of the notifications Prism shows for pushes start with this.
+pub const PUSH_NOTIFICATION: &str = "prism-push:";
+
+impl App {
+    /// A tap on a notification shown for a push: the push handlers see it
+    /// as [`PushEvent::Opened`] (its link is opened by the response).
+    pub(crate) fn push_notification_opened(&mut self, response: &crate::NotificationResponse) {
+        if !response.id.starts_with(PUSH_NOTIFICATION) {
+            return;
+        }
+        let mut push = self
+            .push
+            .displayed
+            .iter()
+            .find(|(id, _)| *id == response.id)
+            .map(|(_, p)| p.clone())
+            // The app was relaunched by the tap: only the id is known.
+            .unwrap_or_else(|| {
+                let mut p = PushMessage::new(PushEvent::Opened);
+                p.id = response
+                    .id
+                    .strip_prefix(PUSH_NOTIFICATION)
+                    .map(str::to_string);
+                p
+            });
+        push.event = PushEvent::Opened;
+        push.action = response.action.clone();
+        push.text = response.text.clone();
+        for h in self.push.handlers.clone() {
+            h(&push, self);
+        }
+    }
 }
 
 impl App {
@@ -390,11 +428,18 @@ impl App {
         {
             let mut n = crate::Notification::new(push.title.clone().unwrap_or_default())
                 .body(push.body.clone().unwrap_or_default());
-            if let Some(id) = &push.id {
-                n = n.id(format!("push-{id}"));
-            }
+            self.push.shown += 1;
+            let id = match &push.id {
+                Some(id) => format!("{PUSH_NOTIFICATION}{id}"),
+                None => format!("{PUSH_NOTIFICATION}{}-{}", n.id, self.push.shown),
+            };
+            n = n.id(id);
             n.subtitle = push.subtitle.clone();
             n.link = push.link.clone();
+            self.push.displayed.push((n.id.clone(), push.clone()));
+            if self.push.displayed.len() > 20 {
+                self.push.displayed.remove(0);
+            }
             self.send_notification(n);
         }
         for h in self.push.handlers.clone() {

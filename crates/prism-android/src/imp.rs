@@ -372,6 +372,59 @@ pub extern "system" fn Java_dev_prism_PrismHost_nativeCarEvent(
     poll_headless();
 }
 
+/// Remote push from the host (PrismPush / PrismFcm): a token or endpoint, an
+/// error, or a message. In the open app's runtime, or one without a screen
+/// (the push woke the app). Visible pushes become notifications unless the
+/// app is on screen; silent ones run `on_background_push`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_prism_PrismHost_nativePush(
+    env: *mut JNIEnv,
+    _class: jclass,
+    json: jstring,
+    info: jstring,
+) {
+    jni::init_host(env);
+    let Ok(v) = serde_json::from_str::<Value>(&unsafe { jni::rust_string(env, json) }) else {
+        return;
+    };
+    let info: Value =
+        serde_json::from_str(&unsafe { jni::rust_string(env, info) }).unwrap_or_default();
+    let data_dir =
+        std::path::PathBuf::from(info.get("dataDir").and_then(Value::as_str).unwrap_or("."));
+    let Some(event) = crate::services::push_event(&v, &data_dir) else {
+        return;
+    };
+    let apply = |rt: &mut Runtime| match event {
+        crate::services::PushEvent::Registered(result) => rt.push_registered(result),
+        crate::services::PushEvent::Message(m) if m.event == prism_core::PushEvent::Background => {
+            rt.run_background_push(m);
+            rt.poll()
+        }
+        crate::services::PushEvent::Message(m) => rt.push_received(m, true),
+    };
+    let mut apply = Some(apply);
+    with_state(|s| {
+        if let Some(f) = apply.take() {
+            let patches = f(&mut s.runtime);
+            commit(s, &patches);
+        }
+    });
+    let Some(f) = apply else { return };
+    let Some((_, init)) = APP.get() else { return };
+    HEADLESS.with(|h| {
+        let mut h = h.borrow_mut();
+        let headless = h.get_or_insert_with(|| {
+            let services = crate::services::AndroidServices::new(&info);
+            let mut runtime = make_runtime(init, &info, &services, None, None);
+            // No screen: pushes are shown as notifications.
+            runtime.set_lifecycle(prism_core::Lifecycle::Background);
+            Headless { runtime, services }
+        });
+        let _ = f(&mut headless.runtime);
+    });
+    poll_headless();
+}
+
 /// The system stopped the job (its time ran out): stop the task.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_prism_PrismHost_nativeBackgroundExpired(

@@ -33,6 +33,13 @@ impl AndroidServices {
                 haptics: has("vibrator"),
                 share: true,
                 clipboard: true,
+                // FCM (built with google-services, Play services present) or a
+                // UnifiedPush distributor (PrismPush.java).
+                push: match info.get("push").and_then(Value::as_str) {
+                    Some("fcm") => Some(prism_core::PushService::Fcm),
+                    Some("unifiedpush") => Some(prism_core::PushService::UnifiedPush),
+                    _ => None,
+                },
                 ..Default::default()
             },
             ops: Vec::new(),
@@ -64,6 +71,10 @@ impl PlatformServices for AndroidServices {
             }),
             PlatformRequest::CancelNotification(id) => json!({ "op": "notify_cancel", "nid": id }),
             PlatformRequest::RequestNotificationPermission => json!({ "op": "notify_permission" }),
+            PlatformRequest::RegisterPush => json!({ "op": "push_register" }),
+            PlatformRequest::UnregisterPush => json!({ "op": "push_unregister" }),
+            // Live Updates notifications have no push tokens.
+            PlatformRequest::WatchActivityPushToStart => return,
             PlatformRequest::ShowAlert(a) => json!({
                 "op": "alert",
                 "alert": serde_json::from_str::<Value>(&a.to_json()).unwrap_or_default(),
@@ -150,6 +161,83 @@ pub(crate) fn event(runtime: &mut Runtime, v: &Value) -> Vec<prism_core::Patch> 
         }
         _ => Vec::new(),
     }
+}
+
+/// What a push event from the host means for the app.
+pub(crate) enum PushEvent {
+    Registered(Result<prism_core::PushSubscription, prism_core::DeviceError>),
+    Message(prism_core::PushMessage),
+}
+
+/// Reads a push event from the host (`PrismPush.java`, `PrismFcm.java`).
+/// UnifiedPush messages are decrypted with this device's Web Push keys,
+/// kept in `data_dir`.
+pub(crate) fn push_event(v: &Value, data_dir: &std::path::Path) -> Option<PushEvent> {
+    use base64::Engine;
+    use prism_core::{DeviceError, PushService, PushSubscription};
+    let s = |k: &str| v.get(k).and_then(Value::as_str);
+    Some(match s("t")? {
+        "push_token" => {
+            PushEvent::Registered(Ok(PushSubscription::new(PushService::Fcm, s("token")?)))
+        }
+        "push_endpoint" => {
+            let keys = receiver_keys(data_dir);
+            let mut sub = PushSubscription::new(PushService::UnifiedPush, s("endpoint")?);
+            sub.p256dh = Some(keys.p256dh());
+            sub.auth = Some(keys.auth());
+            PushEvent::Registered(Ok(sub))
+        }
+        "push_err" => {
+            PushEvent::Registered(Err(DeviceError::from_message(s("err").unwrap_or("failed"))))
+        }
+        "push_message" => {
+            let body = base64::engine::general_purpose::STANDARD
+                .decode(s("body")?)
+                .ok()?;
+            let plain = match receiver_keys(data_dir).decrypt(&body) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("prism-android: push message not decrypted: {e}");
+                    return None;
+                }
+            };
+            let text = String::from_utf8_lossy(&plain);
+            // Not Prism's JSON: the text is the body.
+            let (mut m, _) =
+                prism_core::PushMessage::from_payload(prism_core::PushEvent::Received, &text)
+                    .unwrap_or_else(|| {
+                        let mut m = prism_core::PushMessage::new(prism_core::PushEvent::Received);
+                        m.body = Some(text.to_string());
+                        (m, false)
+                    });
+            m.service = Some(PushService::UnifiedPush);
+            PushEvent::Message(m)
+        }
+        "push_data" => {
+            let (mut m, _) = prism_core::PushMessage::from_payload(
+                prism_core::PushEvent::Received,
+                s("payload")?,
+            )?;
+            m.service = Some(PushService::Fcm);
+            PushEvent::Message(m)
+        }
+        _ => return None,
+    })
+}
+
+/// This device's Web Push keys (P-256 + auth secret), made once.
+fn receiver_keys(data_dir: &std::path::Path) -> prism_push::webpush::ReceiverKeys {
+    let path = data_dir.join("prism-push-keys");
+    if let Some(k) = std::fs::read(&path)
+        .ok()
+        .and_then(|b| prism_push::webpush::ReceiverKeys::from_bytes(&b))
+    {
+        return k;
+    }
+    let k = prism_push::webpush::ReceiverKeys::generate();
+    let _ = std::fs::create_dir_all(data_dir);
+    let _ = std::fs::write(&path, k.to_bytes());
+    k
 }
 
 /// A surface snapshot (`SNode` JSON) with each icon's glyph (`"gl"`): the host

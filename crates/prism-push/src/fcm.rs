@@ -9,7 +9,9 @@
 
 use serde_json::{Map, Value, json};
 
-use crate::{HttpRequest, Push, PushError, Urgency};
+#[cfg(feature = "send")]
+use crate::HttpRequest;
+use crate::{Push, PushError, Urgency};
 
 pub const SCOPE: &str = "https://www.googleapis.com/auth/firebase.messaging";
 
