@@ -4,23 +4,29 @@ use std::rc::Rc;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2::{
+    ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel,
+};
 use objc2_app_kit::{
     NSAccessibility, NSAccessibilityButtonRole, NSAccessibilityCheckBoxRole,
     NSAccessibilityGroupRole, NSAccessibilityHeadingRole, NSAccessibilityImageRole,
-    NSAccessibilityLinkRole, NSAccessibilityListRole, NSAccessibilityRadioButtonRole,
-    NSAccessibilityStaticTextRole, NSAccessibilityTabGroupRole, NSAnimatablePropertyContainer,
-    NSAppearance, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSBezierPath,
-    NSButton, NSColor, NSControlStateValueOff, NSControlStateValueOn, NSControlTextEditingDelegate,
-    NSEvent, NSFont, NSFontWeightBold, NSFontWeightMedium, NSFontWeightRegular,
-    NSFontWeightSemibold, NSImage, NSImageSymbolConfiguration, NSImageView, NSMenu, NSMenuItem,
+    NSAccessibilityLinkRole, NSAccessibilityListRole, NSAccessibilityPopUpButtonRole,
+    NSAccessibilityRadioButtonRole, NSAccessibilitySliderRole, NSAccessibilityStaticTextRole,
+    NSAccessibilityTabGroupRole, NSAnimatablePropertyContainer, NSAppearance, NSApplication,
+    NSApplicationActivationPolicy, NSBackingStoreType, NSBezierPath, NSButton, NSColor, NSControl,
+    NSControlSize, NSControlStateValueOff, NSControlStateValueOn, NSControlTextEditingDelegate,
+    NSDatePicker, NSDatePickerElementFlags, NSDatePickerStyle, NSEvent, NSFont, NSFontWeightBold,
+    NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold, NSImage,
+    NSImageSymbolConfiguration, NSImageView, NSMenu, NSMenuItem, NSPopUpButton,
     NSProgressIndicator, NSProgressIndicatorStyle, NSResponder, NSScrollView, NSSegmentedControl,
-    NSSwitch, NSTextAlignment, NSTextField, NSTextFieldDelegate, NSView, NSWindow,
+    NSSlider, NSSwitch, NSText, NSTextAlignment, NSTextDelegate, NSTextField, NSTextFieldDelegate,
+    NSTextView, NSTextViewDelegate, NSUserInterfaceItemIdentification, NSView, NSWindow,
     NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_foundation::{
     NSArray, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
 };
+use prism_core::controls::{DateConfig, DateMode, InputConfig, PickerConfig, SliderConfig};
 use prism_core::{
     Accessibility, AppConfig, AppInit, Appearance, Backend, Color, FontWeight, NodeId, NodeKind,
     Role, Runtime, Style, TextAlign, UiEvent,
@@ -431,6 +437,156 @@ impl PrismView {
 }
 
 // ---------------------------------------------------------------------------
+// PrismSlider: an NSSlider that snaps to its step and adjusts by Prism's step
+// for VoiceOver (increment / decrement), reading out `a11y.value` if given.
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+pub struct SliderIvars {
+    config: Cell<SliderConfig>,
+    /// Last value reported (a drag sends many actions per step).
+    last: Cell<f64>,
+    /// What VoiceOver reads instead of the number ("40 %").
+    a11y_value: RefCell<Option<String>>,
+}
+
+define_class!(
+    #[unsafe(super(NSSlider, NSControl, NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PrismSlider"]
+    #[ivars = SliderIvars]
+    pub struct PrismSlider;
+
+    impl PrismSlider {
+        #[unsafe(method(accessibilityValue))]
+        fn accessibility_value(&self) -> *mut AnyObject {
+            if let Some(v) = self.ivars().a11y_value.borrow().as_deref() {
+                return Retained::autorelease_return(NSString::from_str(v)).cast();
+            }
+            let v: Option<Retained<AnyObject>> = unsafe { msg_send![super(self), accessibilityValue] };
+            v.map_or(std::ptr::null_mut(), Retained::autorelease_return)
+        }
+
+        #[unsafe(method(accessibilityPerformIncrement))]
+        fn accessibility_perform_increment(&self) -> objc2::runtime::Bool {
+            self.nudge(1.);
+            objc2::runtime::Bool::YES
+        }
+
+        #[unsafe(method(accessibilityPerformDecrement))]
+        fn accessibility_perform_decrement(&self) -> objc2::runtime::Bool {
+            self.nudge(-1.);
+            objc2::runtime::Bool::YES
+        }
+    }
+);
+
+impl PrismSlider {
+    fn new(mtm: MainThreadMarker, id: NodeId, target: &Target) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(SliderIvars::default());
+        let s: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
+        s.setTag(id as isize);
+        s.setContinuous(true);
+        let target: &AnyObject = target;
+        unsafe {
+            s.setTarget(Some(target));
+            s.setAction(Some(sel!(onSlider:)));
+        }
+        s
+    }
+
+    /// One accessibility step up or down.
+    fn nudge(&self, direction: f64) {
+        let cfg = self.ivars().config.get();
+        let v = cfg.snap(self.doubleValue() + direction * cfg.a11y_step());
+        self.setDoubleValue(v);
+        self.report(v);
+    }
+
+    fn report(&self, v: f64) {
+        if self.ivars().last.replace(v) != v {
+            dispatch(UiEvent::Change(self.tag() as NodeId, v));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PrismTextView: the editable text of a text area. NSTextView has no public
+// placeholder (only NSTextField does), so it draws its own.
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+pub struct TextViewIvars {
+    id: Cell<NodeId>,
+    placeholder: RefCell<String>,
+}
+
+define_class!(
+    #[unsafe(super(NSTextView, NSText, NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PrismTextView"]
+    #[ivars = TextViewIvars]
+    pub struct PrismTextView;
+
+    impl PrismTextView {
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, dirty: NSRect) {
+            let _: () = unsafe { msg_send![super(self), drawRect: dirty] };
+            self.draw_placeholder();
+        }
+    }
+);
+
+impl PrismTextView {
+    fn draw_placeholder(&self) {
+        use objc2_app_kit::NSStringDrawing;
+        let placeholder = self.ivars().placeholder.borrow();
+        if placeholder.is_empty() || self.string().length() > 0 {
+            return;
+        }
+        let font = self
+            .font()
+            .unwrap_or_else(|| NSFont::systemFontOfSize(NSFont::systemFontSize()));
+        let color = NSColor::placeholderTextColor();
+        let (f, c): (&AnyObject, &AnyObject) = (&font, &color);
+        let keys = unsafe {
+            [
+                objc2_app_kit::NSFontAttributeName,
+                objc2_app_kit::NSForegroundColorAttributeName,
+            ]
+        };
+        let attrs = objc2_foundation::NSDictionary::from_slices(&keys, &[f, c]);
+        let s = NSString::from_str(&placeholder);
+        let origin = self.textContainerOrigin();
+        let pad = unsafe { self.textContainer() }.map_or(5., |c| c.lineFragmentPadding());
+        let size = unsafe { s.sizeWithAttributes(Some(&attrs)) };
+        let rtl = self.userInterfaceLayoutDirection()
+            == objc2_app_kit::NSUserInterfaceLayoutDirection::RightToLeft;
+        let x = if rtl {
+            self.bounds().size.width - origin.x - pad - size.width
+        } else {
+            origin.x + pad
+        };
+        unsafe { s.drawAtPoint_withAttributes(NSPoint::new(x, origin.y), Some(&attrs)) };
+    }
+}
+
+/// Spelling correction, text replacement and spell checking of a text view
+/// (a text area, or the window's field editor while a text input is edited),
+/// following the user's System Settings when on.
+fn set_text_checking(tv: &NSTextView, on: bool) {
+    use objc2_app_kit::NSSpellChecker;
+    tv.setAutomaticSpellingCorrectionEnabled(
+        on && NSSpellChecker::isAutomaticSpellingCorrectionEnabled(),
+    );
+    tv.setAutomaticTextReplacementEnabled(
+        on && NSSpellChecker::isAutomaticTextReplacementEnabled(),
+    );
+    tv.setContinuousSpellCheckingEnabled(on);
+    tv.setGrammarCheckingEnabled(false);
+}
+
+// ---------------------------------------------------------------------------
 // Target: receives button actions and text-field edits, routes them by tag.
 // ---------------------------------------------------------------------------
 
@@ -456,6 +612,41 @@ define_class!(
         fn on_segment(&self, sender: &NSSegmentedControl) {
             let index = sender.selectedSegment().max(0) as f64;
             dispatch(UiEvent::Change(sender.tag() as NodeId, index));
+        }
+
+        /// A slider moved (continuously while dragging): snapped to its step.
+        #[unsafe(method(onSlider:))]
+        fn on_slider(&self, sender: &PrismSlider) {
+            let raw = sender.doubleValue();
+            let v = sender.ivars().config.get().snap(raw);
+            if v != raw && sender.numberOfTickMarks() == 0 {
+                sender.setDoubleValue(v);
+            }
+            sender.report(v);
+        }
+
+        /// A pop-up button option was chosen (item tag = option index; the
+        /// placeholder item is -1).
+        #[unsafe(method(onPicker:))]
+        fn on_picker(&self, sender: &NSPopUpButton) {
+            let index = sender.selectedItem().map_or(-1, |i| i.tag());
+            if index >= 0 {
+                dispatch(UiEvent::Change(sender.tag() as NodeId, index as f64));
+            }
+        }
+
+        /// A text input's action, sent on Return when the field editor
+        /// didn't ask `control:textView:doCommandBySelector:` first.
+        #[unsafe(method(onSubmit:))]
+        fn on_submit(&self, sender: &NSTextField) {
+            dispatch(UiEvent::Submit(sender.tag() as NodeId));
+        }
+
+        /// A date picker changed: Unix seconds.
+        #[unsafe(method(onDate:))]
+        fn on_date(&self, sender: &NSDatePicker) {
+            let secs = sender.dateValue().timeIntervalSince1970();
+            dispatch(UiEvent::Change(sender.tag() as NodeId, secs));
         }
 
         /// Any Prism menu item (context menus, tray, app menus).
@@ -574,9 +765,56 @@ define_class!(
             };
             dispatch(UiEvent::Input(field.tag() as NodeId, field.stringValue().to_string()));
         }
+
+        /// Return in a text input: `UiEvent::Submit` (the field keeps its
+        /// text, caret and focus).
+        #[unsafe(method(control:textView:doCommandBySelector:))]
+        fn control_do_command(
+            &self,
+            control: &NSControl,
+            _text_view: &NSTextView,
+            command: objc2::runtime::Sel,
+        ) -> objc2::runtime::Bool {
+            if command == sel!(insertNewline:) && control.isKindOfClass(NSTextField::class()) {
+                dispatch(UiEvent::Submit(control.tag() as NodeId));
+                return objc2::runtime::Bool::YES;
+            }
+            objc2::runtime::Bool::NO
+        }
+
+        /// Spelling correction lives on the window's shared field editor: set
+        /// it up for the input being edited (`autocorrect=off`, `secure`).
+        #[unsafe(method(controlTextDidBeginEditing:))]
+        fn control_text_did_begin_editing(&self, notification: &NSNotification) {
+            let Some(field) = notification.object().and_then(|o| o.downcast::<NSTextField>().ok())
+            else {
+                return;
+            };
+            let mut config = None;
+            with_state(|s| config = s.renderer.widgets.inputs.get(&(field.tag() as NodeId)).copied());
+            let on = config.is_none_or(|c| c.autocorrect && !c.secure);
+            if let Some(editor) = field.currentEditor().and_then(|e| e.downcast::<NSTextView>().ok()) {
+                set_text_checking(&editor, on);
+            }
+        }
     }
 
     unsafe impl NSTextFieldDelegate for Target {}
+
+    unsafe impl NSTextDelegate for Target {
+        /// A text area was edited.
+        #[unsafe(method(textDidChange:))]
+        fn text_did_change(&self, notification: &NSNotification) {
+            let Some(tv) = notification.object().and_then(|o| o.downcast::<PrismTextView>().ok())
+            else {
+                return;
+            };
+            tv.setNeedsDisplay(true);
+            dispatch(UiEvent::Input(tv.ivars().id.get(), tv.string().to_string()));
+        }
+    }
+
+    unsafe impl NSTextViewDelegate for Target {}
 
     unsafe impl NSWindowDelegate for Target {
         #[unsafe(method(windowDidResize:))]
@@ -650,6 +888,80 @@ pub struct MacScroll {
     document: Retained<PrismView>,
 }
 
+/// A text input. Secure entry is a different class (`NSSecureTextField`,
+/// whose field editor only reports edits to it), so the field sits in a
+/// host view that can swap it when `secure` changes.
+pub struct MacInput {
+    id: NodeId,
+    host: Retained<PrismView>,
+    field: RefCell<Retained<NSTextField>>,
+}
+
+impl MacInput {
+    fn field(&self) -> Retained<NSTextField> {
+        self.field.borrow().clone()
+    }
+}
+
+/// A pop-up button and what it lists. A placeholder item (tag -1) leads the
+/// menu while nothing is selected.
+pub struct MacPicker {
+    id: NodeId,
+    button: Retained<NSPopUpButton>,
+    options: RefCell<Vec<String>>,
+    placeholder: RefCell<String>,
+    selected: Cell<isize>,
+}
+
+impl MacPicker {
+    fn rebuild(&self) {
+        let b = &self.button;
+        b.removeAllItems();
+        let options = self.options.borrow();
+        let selected = self.selected.get();
+        let none = selected < 0 || selected as usize >= options.len();
+        // `addItemWithTitle` drops items with the same title: add each under
+        // a unique title, then rename it.
+        let add = |title: &str, tag: isize| {
+            b.addItemWithTitle(&NSString::from_str(&format!("\u{1}{tag}")));
+            if let Some(item) = b.lastItem() {
+                item.setTitle(&NSString::from_str(title));
+                item.setTag(tag);
+            }
+        };
+        if none {
+            add(&self.placeholder.borrow(), -1);
+        }
+        for (i, o) in options.iter().enumerate() {
+            add(o, i as isize);
+        }
+        b.selectItemAtIndex(if none { 0 } else { selected });
+    }
+}
+
+/// A text area: an NSTextView in a scroll view, inside a Prism view that
+/// paints the background and border. The text view runs on TextKit 1 (its
+/// layout manager measures the content height).
+pub struct MacTextArea {
+    container: Retained<PrismView>,
+    scroll: Retained<NSScrollView>,
+    text: Retained<PrismTextView>,
+    /// Owns the TextKit network (layout manager, container) of `text`.
+    _storage: Retained<objc2_app_kit::NSTextStorage>,
+}
+
+impl MacTextArea {
+    /// The border drawn by the container (the scroll view sits inside it).
+    fn border(&self) -> f64 {
+        let iv = self.container.ivars();
+        if iv.border_color.borrow().is_some() {
+            iv.border.get()
+        } else {
+            0.
+        }
+    }
+}
+
 #[derive(Clone)]
 pub enum View {
     Container(Retained<PrismView>),
@@ -666,7 +978,12 @@ pub enum View {
     Picture(Retained<PrismView>),
     Label(Retained<NSTextField>),
     Button(Retained<NSButton>),
-    Input(Retained<NSTextField>),
+    Input(Rc<MacInput>),
+    Slider(Retained<PrismSlider>),
+    Picker(Rc<MacPicker>),
+    DatePicker(Retained<NSDatePicker>),
+    TextArea(Rc<MacTextArea>),
+    Spinner(Retained<NSProgressIndicator>),
 }
 
 impl View {
@@ -682,8 +999,14 @@ impl View {
             View::Progress(v) => v,
             View::Timer(v) => v,
             View::Picture(v) => v,
-            View::Label(v) | View::Input(v) => v,
+            View::Label(v) => v,
+            View::Input(i) => &i.host,
             View::Button(v) => v,
+            View::Slider(v) => v,
+            View::Picker(p) => &p.button,
+            View::DatePicker(v) => v,
+            View::TextArea(t) => &t.container,
+            View::Spinner(v) => v,
         }
     }
 
@@ -700,8 +1023,18 @@ impl View {
             View::Progress(_) => 0,
             View::Timer(v) => v.tag() as NodeId,
             View::Picture(v) => v.ivars().id.get(),
-            View::Label(v) | View::Input(v) => v.tag() as NodeId,
+            View::Label(v) => v.tag() as NodeId,
+            View::Input(i) => i.id,
             View::Button(v) => v.tag() as NodeId,
+            View::Slider(v) => v.tag() as NodeId,
+            View::Picker(p) => p.id,
+            View::DatePicker(v) => v.tag() as NodeId,
+            View::TextArea(t) => t.container.ivars().id.get(),
+            // `NSView.tag` is read-only: the id is the view's identifier.
+            View::Spinner(v) => v
+                .identifier()
+                .and_then(|i| i.to_string().parse().ok())
+                .unwrap_or(0),
         }
     }
 }
@@ -729,6 +1062,12 @@ pub struct AppKit {
     chrome: (String, String),
     /// Visual transforms (offset, scale, rotation), applied around the center.
     transforms: HashMap<NodeId, prism_core::Transform>,
+    /// Text input behaviour, read when a field starts editing.
+    inputs: HashMap<NodeId, InputConfig>,
+    /// Last value of each status region (announced when it changes).
+    announced: HashMap<NodeId, String>,
+    /// App language (BCP 47): date pickers format in it.
+    lang: String,
 }
 
 fn ca_equal(a: objc2_quartz_core::CATransform3D, b: objc2_quartz_core::CATransform3D) -> bool {
@@ -805,7 +1144,212 @@ impl AppKit {
     }
 }
 
+/// Mode and bounds. Days get a text field that opens a calendar on click
+/// (the compact style); times a text field with a stepper.
+fn configure_date_picker(d: &NSDatePicker, c: DateConfig) {
+    let (style, elements) = match c.mode {
+        DateMode::Date => (
+            NSDatePickerStyle::TextField,
+            NSDatePickerElementFlags::YearMonthDay,
+        ),
+        DateMode::Time => (
+            NSDatePickerStyle::TextFieldAndStepper,
+            NSDatePickerElementFlags::HourMinute,
+        ),
+        DateMode::DateTime => (
+            NSDatePickerStyle::TextField,
+            NSDatePickerElementFlags::YearMonthDay | NSDatePickerElementFlags::HourMinute,
+        ),
+    };
+    d.setDatePickerStyle(style);
+    d.setDatePickerElements(elements);
+    d.setPresentsCalendarOverlay(style == NSDatePickerStyle::TextField);
+    let date = |v: Option<f64>| v.map(objc2_foundation::NSDate::dateWithTimeIntervalSince1970);
+    d.setMinDate(date(c.min).as_deref());
+    d.setMaxDate(date(c.max).as_deref());
+}
+
 impl AppKit {
+    /// Controls mirror in right-to-left languages (a slider fills from the
+    /// right, a pop-up's chevron moves left…). `userInterfaceLayoutDirection`
+    /// is per view in AppKit, not inherited.
+    fn directional(&self, v: &NSView) {
+        v.setUserInterfaceLayoutDirection(if self.rtl {
+            objc2_app_kit::NSUserInterfaceLayoutDirection::RightToLeft
+        } else {
+            objc2_app_kit::NSUserInterfaceLayoutDirection::LeftToRight
+        });
+    }
+
+    /// A status region's value changed: VoiceOver reads it out (an
+    /// announcement request posted for the application element, with a
+    /// priority, as NSAccessibilityConstants.h asks).
+    fn announce(&mut self, id: NodeId, value: &str) {
+        let previous = self.announced.insert(id, value.to_string());
+        if value.is_empty() || previous.as_deref() == Some(value) {
+            return;
+        }
+        if std::env::var_os("PRISM_A11Y_LOG").is_some() {
+            println!("prism-macos: announcement: {value:?}");
+        }
+        use objc2_app_kit::{
+            NSAccessibilityAnnouncementKey, NSAccessibilityAnnouncementRequestedNotification,
+            NSAccessibilityPostNotificationWithUserInfo, NSAccessibilityPriorityKey,
+            NSAccessibilityPriorityLevel,
+        };
+        let message = NSString::from_str(value);
+        let priority =
+            objc2_foundation::NSNumber::new_isize(NSAccessibilityPriorityLevel::Medium.0);
+        let (m, p): (&AnyObject, &AnyObject) = (&message, &priority);
+        let app = NSApplication::sharedApplication(self.mtm);
+        unsafe {
+            let info = objc2_foundation::NSDictionary::from_slices(
+                &[NSAccessibilityAnnouncementKey, NSAccessibilityPriorityKey],
+                &[m, p],
+            );
+            NSAccessibilityPostNotificationWithUserInfo(
+                &app,
+                NSAccessibilityAnnouncementRequestedNotification,
+                Some(&info),
+            );
+        }
+    }
+
+    /// Applies the direction to the form controls under `v`.
+    fn redirect_controls(&self, v: &NSView) {
+        let control = v.isKindOfClass(NSSlider::class())
+            || v.isKindOfClass(NSPopUpButton::class())
+            || v.isKindOfClass(NSDatePicker::class())
+            || v.isKindOfClass(PrismTextView::class())
+            || v.downcast_ref::<NSScrollView>()
+                .and_then(|s| s.documentView())
+                .is_some_and(|d| d.isKindOfClass(PrismTextView::class()));
+        if control {
+            self.directional(v);
+        }
+        for sub in v.subviews().iter() {
+            self.redirect_controls(&sub);
+        }
+    }
+
+    /// Dates read in the app's language (Arabic digits in `ar`…), in the
+    /// device's time zone.
+    fn set_date_locale(&self, d: &NSDatePicker) {
+        if !self.lang.is_empty() {
+            let id = NSString::from_str(&self.lang);
+            let locale = objc2_foundation::NSLocale::localeWithLocaleIdentifier(&id);
+            d.setLocale(Some(&locale));
+        }
+    }
+
+    fn new_text_area(&self, id: NodeId) -> MacTextArea {
+        use objc2_app_kit::{NSLayoutManager, NSTextContainer, NSTextStorage};
+        let mtm = self.mtm;
+        let storage = NSTextStorage::new();
+        let layout = NSLayoutManager::new();
+        storage.addLayoutManager(&layout);
+        let tc = NSTextContainer::initWithSize(
+            objc2::AllocAnyThread::alloc(),
+            NSSize::new(0., f64::MAX / 4.),
+        );
+        tc.setWidthTracksTextView(true);
+        layout.addTextContainer(&tc);
+        let this = PrismTextView::alloc(mtm).set_ivars(TextViewIvars {
+            id: Cell::new(id),
+            ..Default::default()
+        });
+        let text: Retained<PrismTextView> = unsafe {
+            msg_send![super(this), initWithFrame: NSRect::ZERO, textContainer: Some(&*tc)]
+        };
+        text.setRichText(false);
+        text.setImportsGraphics(false);
+        text.setAllowsUndo(true);
+        text.setDrawsBackground(false);
+        text.setVerticallyResizable(true);
+        text.setHorizontallyResizable(false);
+        text.setMinSize(NSSize::ZERO);
+        text.setMaxSize(NSSize::new(f64::MAX / 4., f64::MAX / 4.));
+        text.setAutoresizingMask(objc2_app_kit::NSAutoresizingMaskOptions::ViewWidthSizable);
+        text.setTextContainerInset(NSSize::new(7., 8.));
+        text.setTextColor(Some(&NSColor::labelColor()));
+        // Default `autocorrect`: as the user set it in System Settings.
+        set_text_checking(&text, true);
+        // The delegate is weak; `self.target` outlives every view.
+        text.setDelegate(Some(ProtocolObject::from_ref(&*self.target)));
+        let scroll = NSScrollView::new(mtm);
+        scroll.setHasVerticalScroller(true);
+        scroll.setAutohidesScrollers(true);
+        scroll.setDrawsBackground(false);
+        // Not under a title bar: no automatic top inset.
+        scroll.setAutomaticallyAdjustsContentInsets(false);
+        scroll.setDocumentView(Some(&text));
+        self.directional(&scroll);
+        self.directional(&text);
+        let container = PrismView::new(mtm, id);
+        container.setSubviews(&NSArray::from_slice(&[&*scroll as &NSView]));
+        MacTextArea {
+            container,
+            scroll,
+            text,
+            _storage: storage,
+        }
+    }
+
+    /// A text field (an `NSSecureTextField` showing bullets when `secure`)
+    /// reporting edits, and Return through its action.
+    fn new_text_field(&self, id: NodeId, secure: bool) -> Retained<NSTextField> {
+        let empty = NSString::new();
+        let f: Retained<NSTextField> = if secure {
+            // `+textFieldWithString:` (inherited class method) on the subclass.
+            let cls = objc2_app_kit::NSSecureTextField::class();
+            let s: Retained<objc2_app_kit::NSSecureTextField> =
+                unsafe { msg_send![cls, textFieldWithString: &*empty] };
+            Retained::into_super(s)
+        } else {
+            NSTextField::textFieldWithString(&empty, self.mtm)
+        };
+        f.setTag(id as isize);
+        // SAFETY: the delegate is weak; `self.target` outlives every view.
+        unsafe { f.setDelegate(Some(ProtocolObject::from_ref(&*self.target))) };
+        // The action is sent on Return only (not when focus leaves).
+        let target: &AnyObject = &self.target;
+        unsafe {
+            f.setTarget(Some(target));
+            f.setAction(Some(sel!(onSubmit:)));
+        }
+        if let Some(cell) = f.cell() {
+            cell.setSendsActionOnEndEditing(false);
+        }
+        if secure {
+            let password = unsafe { objc2_app_kit::NSTextContentTypePassword };
+            objc2_app_kit::NSTextContent::setContentType(&*f, Some(password));
+        }
+        f
+    }
+
+    /// Swaps the field for a secure (or plain) one, keeping its text, look
+    /// and accessibility.
+    fn set_secure(&self, input: &MacInput, secure: bool) {
+        let old = input.field();
+        let is_secure = old.isKindOfClass(objc2_app_kit::NSSecureTextField::class());
+        if is_secure == secure {
+            return;
+        }
+        let f = self.new_text_field(input.id, secure);
+        f.setStringValue(&old.stringValue());
+        f.setPlaceholderString(old.placeholderString().as_deref());
+        f.setFont(old.font().as_deref());
+        f.setTextColor(old.textColor().as_deref());
+        f.setAlignment(old.alignment());
+        f.setAccessibilityLabel(old.accessibilityLabel().as_deref());
+        f.setAccessibilityHelp(old.accessibilityHelp().as_deref());
+        f.setEnabled(old.isEnabled());
+        f.setFrame(old.frame());
+        unsafe { old.setDelegate(None) };
+        input.host.replaceSubview_with(&old, &f);
+        *input.field.borrow_mut() = f;
+    }
+
     fn new_stack(&self, id: NodeId) -> MacStack {
         let mtm = self.mtm;
         let header = PrismView::new(mtm, 0);
@@ -1018,6 +1562,34 @@ fn alignment(a: TextAlign) -> NSTextAlignment {
     }
 }
 
+/// A text area's content height for `max_width` (at least three lines),
+/// with its insets and border. Taffy caps it at `max_height`; beyond, the
+/// text scrolls.
+fn text_area_size(t: &MacTextArea, max_width: Option<f32>) -> NSSize {
+    let width = max_width.map_or(240., |w| w as f64);
+    let border = t.border();
+    let inset = t.text.textContainerInset();
+    let (lm, tc) = unsafe { (t.text.layoutManager(), t.text.textContainer()) };
+    let content = match (lm, tc) {
+        (Some(lm), Some(tc)) => {
+            // Lay out at the asked width, then give the container back.
+            let old = tc.size();
+            let w = (width - 2. * inset.width - 2. * border).max(1.);
+            tc.setSize(NSSize::new(w, f64::MAX / 4.));
+            lm.ensureLayoutForTextContainer(&tc);
+            let used = lm.usedRectForTextContainer(&tc).size.height;
+            tc.setSize(old);
+            let font = t
+                .text
+                .font()
+                .unwrap_or_else(|| NSFont::systemFontOfSize(NSFont::systemFontSize()));
+            used.max(3. * lm.defaultLineHeightForFont(&font))
+        }
+        _ => 54.,
+    };
+    NSSize::new(width, content + 2. * inset.height + 2. * border)
+}
+
 impl Widgets for AppKit {
     type View = View;
 
@@ -1077,12 +1649,59 @@ impl Widgets for AppKit {
             }
             NodeKind::Picture => View::Picture(PrismView::new(mtm, id)),
             NodeKind::Shape => View::Container(PrismView::new(mtm, id)),
-            // TODO(forms): native controls.
-            NodeKind::Slider
-            | NodeKind::Picker
-            | NodeKind::DatePicker
-            | NodeKind::TextArea
-            | NodeKind::Spinner => View::Container(PrismView::new(mtm, id)),
+            NodeKind::Slider => {
+                let s = PrismSlider::new(mtm, id, &self.target);
+                self.directional(&s);
+                View::Slider(s)
+            }
+            NodeKind::Picker => {
+                let b = NSPopUpButton::initWithFrame_pullsDown(
+                    NSPopUpButton::alloc(mtm),
+                    NSRect::ZERO,
+                    false,
+                );
+                b.setTag(id as isize);
+                let target: &AnyObject = &self.target;
+                unsafe {
+                    b.setTarget(Some(target));
+                    b.setAction(Some(sel!(onPicker:)));
+                }
+                self.directional(&b);
+                let p = Rc::new(MacPicker {
+                    id,
+                    button: b,
+                    options: RefCell::new(Vec::new()),
+                    placeholder: RefCell::new(String::new()),
+                    selected: Cell::new(-1),
+                });
+                p.rebuild();
+                View::Picker(p)
+            }
+            NodeKind::DatePicker => {
+                let d = NSDatePicker::new(mtm);
+                d.setTag(id as isize);
+                d.setBezeled(true);
+                d.setDrawsBackground(true);
+                let target: &AnyObject = &self.target;
+                unsafe {
+                    d.setTarget(Some(target));
+                    d.setAction(Some(sel!(onDate:)));
+                }
+                self.set_date_locale(&d);
+                self.directional(&d);
+                configure_date_picker(&d, DateConfig::default());
+                View::DatePicker(d)
+            }
+            NodeKind::TextArea => View::TextArea(Rc::new(self.new_text_area(id))),
+            NodeKind::Spinner => {
+                let p = NSProgressIndicator::new(mtm);
+                p.setStyle(NSProgressIndicatorStyle::Spinning);
+                p.setIndeterminate(true);
+                p.setControlSize(NSControlSize::Small);
+                p.setIdentifier(Some(&NSString::from_str(&id.to_string())));
+                unsafe { p.startAnimation(None) };
+                View::Spinner(p)
+            }
             NodeKind::Timer => {
                 let l = NSTextField::labelWithString(&empty, mtm);
                 l.setTag(id as isize);
@@ -1118,11 +1737,14 @@ impl Widgets for AppKit {
                 View::Button(b)
             }
             NodeKind::TextInput => {
-                let f = NSTextField::textFieldWithString(&empty, mtm);
-                f.setTag(id as isize);
-                // SAFETY: the delegate is weak; `self.target` outlives every view.
-                unsafe { f.setDelegate(Some(ProtocolObject::from_ref(&*self.target))) };
-                View::Input(f)
+                let f = self.new_text_field(id, false);
+                let host = PrismView::new(mtm, id);
+                host.setSubviews(&NSArray::from_slice(&[&*f as &NSView]));
+                View::Input(Rc::new(MacInput {
+                    id,
+                    host,
+                    field: RefCell::new(f),
+                }))
             }
         }
     }
@@ -1155,6 +1777,47 @@ impl Widgets for AppKit {
                 sc.document.setNeedsDisplay(true);
             }
             View::Toggle(_) | View::Progress(_) => {}
+            // No tint API: `controlTint` is "not respected on 10.15 and
+            // later" (NSProgressIndicator.h); pop-up buttons only tint
+            // borderless content (NSButton.h, contentTintColor) and date
+            // pickers have none. They follow the system accent color.
+            View::Spinner(_) | View::Picker(_) | View::DatePicker(_) => {}
+            View::Slider(s) => {
+                s.setTrackFillColor(style.text_color.map(ns_color).as_deref());
+                // macOS 26 leaves sliders with tick marks untinted unless
+                // asked (NSSlider.h, tintProminence).
+                if s.respondsToSelector(sel!(setTintProminence:)) {
+                    s.setTintProminence(if style.text_color.is_some() {
+                        objc2_app_kit::NSTintProminence::Primary
+                    } else {
+                        objc2_app_kit::NSTintProminence::Automatic
+                    });
+                }
+            }
+            View::TextArea(t) => {
+                let iv = t.container.ivars();
+                *iv.background.borrow_mut() = style.background.map(ns_color);
+                *iv.border_color.borrow_mut() = style.border_color.map(ns_color);
+                iv.radius.set(style.corner_radius as f64);
+                iv.border.set(style.border_width as f64);
+                t.container.setNeedsDisplay(true);
+                // Unstyled (`.native()`): the standard bezeled, white field.
+                let bare = style.background.is_none() && style.border_color.is_none();
+                t.scroll.setBorderType(if bare {
+                    objc2_app_kit::NSBorderType::BezelBorder
+                } else {
+                    objc2_app_kit::NSBorderType::NoBorder
+                });
+                t.text.setDrawsBackground(bare);
+                if bare {
+                    t.text.setBackgroundColor(&NSColor::textBackgroundColor());
+                }
+                t.text.setFont(Some(&font(style)));
+                t.text.setTextColor(Some(
+                    &style.text_color.map_or_else(NSColor::labelColor, ns_color),
+                ));
+                t.text.setAlignment(alignment(style.text_align));
+            }
             View::Image(v) => {
                 let config = NSImageSymbolConfiguration::configurationWithPointSize_weight(
                     style.font_size as f64,
@@ -1183,7 +1846,12 @@ impl Widgets for AppKit {
                 iv.border.set(style.border_width as f64);
                 v.setNeedsDisplay(true);
             }
-            View::Label(l) | View::Input(l) => {
+            View::Label(_) | View::Input(_) => {
+                let l = match view {
+                    View::Input(i) => i.field(),
+                    View::Label(l) => l.clone(),
+                    _ => unreachable!(),
+                };
                 l.setFont(Some(&font(style)));
                 l.setTextColor(Some(
                     &style.text_color.map_or_else(NSColor::labelColor, ns_color),
@@ -1202,13 +1870,21 @@ impl Widgets for AppKit {
         match view {
             View::Label(l) | View::Timer(l) => l.setStringValue(&s),
             View::Picture(v) => self.load_picture(view.id(), v, text),
-            View::Input(f) => {
+            View::Input(i) => {
+                let f = i.field();
                 // Don't reset the caret when the value already matches (controlled input echo).
                 if f.stringValue().to_string() != text {
                     f.setStringValue(&s);
                 }
             }
             View::Button(b) => b.setTitle(&s),
+            View::TextArea(t) => {
+                // Same text (controlled echo): keep the caret and selection.
+                if t.text.string().to_string() != text {
+                    t.text.setString(&s);
+                    t.text.setNeedsDisplay(true);
+                }
+            }
             View::Screen(_) => {
                 self.titles.insert(view.id(), text.to_string());
                 for stack in &self.stacks {
@@ -1226,8 +1902,19 @@ impl Widgets for AppKit {
     }
 
     fn set_placeholder(&mut self, view: &View, text: &str) {
-        if let View::Input(f) = view {
-            f.setPlaceholderString(Some(&NSString::from_str(text)));
+        match view {
+            View::Input(i) => i
+                .field()
+                .setPlaceholderString(Some(&NSString::from_str(text))),
+            View::TextArea(t) => {
+                *t.text.ivars().placeholder.borrow_mut() = text.to_string();
+                t.text.setNeedsDisplay(true);
+            }
+            View::Picker(p) => {
+                *p.placeholder.borrow_mut() = text.to_string();
+                p.rebuild();
+            }
+            _ => {}
         }
     }
 
@@ -1282,7 +1969,15 @@ impl Widgets for AppKit {
 
     fn destroy(&mut self, view: &View) {
         match view {
-            View::Input(f) => unsafe { f.setDelegate(None) },
+            View::Input(i) => {
+                unsafe { i.field().setDelegate(None) };
+                self.inputs.remove(&view.id());
+            }
+            View::TextArea(t) => t.text.setDelegate(None),
+            View::Spinner(p) => unsafe { p.stopAnimation(None) },
+            View::Container(_) => {
+                self.announced.remove(&view.id());
+            }
             View::Stack(st) => self.stacks.retain(|s| s.id != st.id),
             View::Tabs(t) => self.tab_bars.retain(|b| b.id != t.id),
             View::Sheet(sheet) => self.dismiss_sheet(sheet),
@@ -1316,8 +2011,8 @@ impl Widgets for AppKit {
                 l.cell()
                     .map_or(NSSize::ZERO, |c| c.cellSizeForBounds(bounds))
             }
-            View::Input(f) => {
-                let s = f.fittingSize();
+            View::Input(i) => {
+                let s = i.field().fittingSize();
                 NSSize::new(s.width.max(120.), s.height)
             }
             View::Button(b) => b.fittingSize(),
@@ -1340,6 +2035,26 @@ impl Widgets for AppKit {
                 None => NSSize::ZERO,
             },
             View::Progress(_) => NSSize::new(max_width.unwrap_or(120.) as f64, 6.),
+            // Natural width 180 (fills less when it must), the control's height.
+            View::Slider(s) => {
+                let h = s.fittingSize().height;
+                NSSize::new(max_width.map_or(180., |w| (w as f64).min(180.)), h)
+            }
+            // The widest option plus the chevron (NSPopUpButtonCell sizes to
+            // its widest item).
+            View::Picker(p) => p.button.fittingSize(),
+            View::DatePicker(d) => d.fittingSize(),
+            View::Spinner(p) => {
+                let s = p.fittingSize();
+                if s.width > 0. {
+                    s
+                } else if p.controlSize() == NSControlSize::Regular {
+                    NSSize::new(32., 32.)
+                } else {
+                    NSSize::new(16., 16.)
+                }
+            }
+            View::TextArea(t) => text_area_size(t, max_width),
             View::Container(_)
             | View::Screen(_)
             | View::Tab(_)
@@ -1357,6 +2072,23 @@ impl Widgets for AppKit {
             .setFrame(rect(x as f64, y as f64, w as f64, h as f64));
         if self.transforms.contains_key(&view.id()) {
             self.apply_transform(view);
+        }
+        if let View::Input(i) = view {
+            i.field().setFrame(rect(0., 0., w as f64, h as f64));
+        }
+        if let View::TextArea(t) = view {
+            let b = t.border();
+            let (w, h) = (w as f64, h as f64);
+            t.scroll
+                .setFrame(rect(b, b, (w - 2. * b).max(0.), (h - 2. * b).max(0.)));
+            // The text fills the visible area (clicks anywhere edit) and
+            // grows past it (scrolls).
+            let visible = t.scroll.contentSize();
+            t.text.setMinSize(NSSize::new(0., visible.height));
+            let current = t.text.frame().size.height;
+            t.text
+                .setFrameSize(NSSize::new(visible.width, current.max(visible.height)));
+            t.text.sizeToFit();
         }
         if let View::Tabs(t) = view {
             let w = w as f64;
@@ -1414,6 +2146,78 @@ impl Widgets for AppKit {
             View::Tabs(bar) => {
                 bar.selected.set(value.max(0.) as usize);
                 self.refresh_tabs(bar);
+            }
+            View::Slider(s) => {
+                let v = s.ivars().config.get().snap(value);
+                s.ivars().last.set(v);
+                if s.doubleValue() != v {
+                    s.setDoubleValue(v);
+                }
+            }
+            View::Picker(p) => {
+                let index = if value >= 0. { value as isize } else { -1 };
+                if p.selected.replace(index) != index {
+                    p.rebuild();
+                }
+            }
+            View::DatePicker(d) => {
+                if d.dateValue().timeIntervalSince1970() != value {
+                    d.setDateValue(&objc2_foundation::NSDate::dateWithTimeIntervalSince1970(
+                        value,
+                    ));
+                }
+            }
+            // 0: regular (16 pt, `NSControlSize::Small`, the size next to a
+            // line of text), 1: large (32 pt, `Regular`).
+            View::Spinner(p) => p.setControlSize(if value >= 1. {
+                NSControlSize::Regular
+            } else {
+                NSControlSize::Small
+            }),
+            _ => {}
+        }
+    }
+
+    fn set_config(&mut self, view: &View, _kind: NodeKind, config: &str) {
+        match view {
+            View::Slider(s) => {
+                let c = SliderConfig::decode(config);
+                s.ivars().config.set(c);
+                s.setMinValue(c.min);
+                s.setMaxValue(c.max);
+                // Few steps: tick marks the knob snaps to (also with the
+                // keyboard). Many: no marks, the action snaps.
+                let steps = if c.step > 0. {
+                    ((c.max - c.min) / c.step).round() as isize
+                } else {
+                    0
+                };
+                let ticks = (1..=10).contains(&steps);
+                s.setNumberOfTickMarks(if ticks { steps + 1 } else { 0 });
+                s.setAllowsTickMarkValuesOnly(ticks);
+                let v = c.snap(s.doubleValue());
+                s.setDoubleValue(v);
+                s.ivars().last.set(v);
+            }
+            View::Picker(p) => {
+                *p.options.borrow_mut() = PickerConfig::decode(config).options;
+                p.rebuild();
+            }
+            View::DatePicker(d) => configure_date_picker(d, DateConfig::decode(config)),
+            View::Input(i) => {
+                let c = InputConfig::decode(config);
+                self.set_secure(i, c.secure);
+                // Completion suggestions (Touch Bar, typing). On-screen
+                // keyboards, return-key labels and per-field
+                // auto-capitalization don't exist on macOS.
+                i.field()
+                    .setAutomaticTextCompletionEnabled(c.autocorrect && !c.secure);
+                self.inputs.insert(view.id(), c);
+            }
+            View::TextArea(t) => {
+                let c = InputConfig::decode(config);
+                set_text_checking(&t.text, c.autocorrect);
+                t.text.setAutomaticTextCompletionEnabled(c.autocorrect);
             }
             _ => {}
         }
@@ -1587,6 +2391,19 @@ impl Widgets for AppKit {
         for stack in self.stacks.clone() {
             self.refresh_stack(&stack);
         }
+        // Controls already on screen (and on screens kept off it).
+        self.redirect_controls(&self.root.clone());
+        for stack in &self.stacks {
+            for screen in stack.screens.borrow().iter() {
+                self.redirect_controls(screen.ns());
+            }
+        }
+        for bar in &self.tab_bars {
+            for tab in bar.tabs.borrow().iter() {
+                self.redirect_controls(tab.ns());
+            }
+        }
+        self.lang = env.lang.clone();
     }
 
     fn set_menu(&mut self, view: &View, menu: Option<&prism_core::menu::MenuSpec>) {
@@ -1603,13 +2420,40 @@ impl Widgets for AppKit {
     }
 
     fn set_accessibility(&mut self, view: &View, a: &Accessibility) {
-        let v = view.ns();
+        // A text area is its text view, an input its field (their hosts are
+        // just chrome).
+        let field;
+        let v: &NSView = match view {
+            View::TextArea(t) => &t.text,
+            View::Input(i) => {
+                field = i.field();
+                &field
+            }
+            _ => view.ns(),
+        };
         if matches!(view, View::Stack(_) | View::Tabs(_) | View::Scroll(_)) {
             return;
         }
+        if a.role == Some(Role::Status) {
+            self.announce(view.id(), a.value.as_deref().unwrap_or(""));
+        }
         v.setAccessibilityHidden(a.hidden);
         let ns = |s: &Option<String>| s.as_deref().map(NSString::from_str);
-        let native = matches!(view, View::Button(_) | View::Input(_) | View::Toggle(_));
+        let native = matches!(
+            view,
+            View::Button(_)
+                | View::Input(_)
+                | View::Toggle(_)
+                | View::Slider(_)
+                | View::Picker(_)
+                | View::DatePicker(_)
+                | View::TextArea(_)
+                | View::Spinner(_)
+        );
+        if let View::Slider(s) = view {
+            // Read through `accessibilityValue` (the native value otherwise).
+            *s.ivars().a11y_value.borrow_mut() = a.value.clone();
+        }
         if !native {
             let role = unsafe {
                 match a.role {
@@ -1625,6 +2469,10 @@ impl Widgets for AppKit {
                     Some(Role::Group | Role::ListItem | Role::TabPanel) => {
                         Some(NSAccessibilityGroupRole)
                     }
+                    Some(Role::Slider) => Some(NSAccessibilitySliderRole),
+                    Some(Role::ComboBox) => Some(NSAccessibilityPopUpButtonRole),
+                    // Status: not an element (its children stay reachable),
+                    // its value is announced.
                     _ => None,
                 }
             };
@@ -1648,7 +2496,16 @@ impl Widgets for AppKit {
             v.setAccessibilityLabel(ns(&a.label).as_deref());
         }
         v.setAccessibilityHelp(ns(&a.hint).as_deref());
-        if let Some(value) = &a.value {
+        // Pop-ups and date pickers read their own (live) selection; sliders
+        // go through `PrismSlider::accessibilityValue`.
+        let own_value = matches!(
+            view,
+            View::Slider(_) | View::Picker(_) | View::DatePicker(_) | View::TextArea(_)
+        );
+        if let Some(value) = &a.value
+            && !own_value
+            && a.role != Some(Role::Status)
+        {
             unsafe { v.setAccessibilityValue(Some(&NSString::from_str(value))) };
         }
         v.setAccessibilityEnabled(!a.disabled);
@@ -1755,6 +2612,9 @@ pub fn run(config: AppConfig, init: AppInit) {
         rtl: false,
         chrome: ("Back".into(), "Close".into()),
         transforms: HashMap::new(),
+        inputs: HashMap::new(),
+        announced: HashMap::new(),
+        lang: String::new(),
     });
     let first = runtime.render();
     let mut state = State {
@@ -1835,6 +2695,149 @@ fn find_pressable(view: &NSView, title: &str) -> Option<Pressable> {
     None
 }
 
+/// The visible view whose accessibility label, button title or placeholder
+/// is `label` (dev hooks).
+fn find_labelled(view: &NSView, label: &str) -> Option<Retained<NSView>> {
+    for sub in view.subviews().iter() {
+        if sub.isHiddenOrHasHiddenAncestor() {
+            continue;
+        }
+        let is = |s: Option<Retained<NSString>>| s.is_some_and(|s| s.to_string() == label);
+        if is(sub.accessibilityLabel())
+            || sub
+                .downcast_ref::<NSButton>()
+                .is_some_and(|b| is(Some(b.title())))
+            || sub
+                .downcast_ref::<NSTextField>()
+                .is_some_and(|f| f.isEditable() && is(f.placeholderString()))
+            || sub
+                .downcast_ref::<PrismTextView>()
+                .is_some_and(|t| *t.ivars().placeholder.borrow() == label)
+        {
+            return Some(sub.clone());
+        }
+        if let Some(found) = find_labelled(&sub, label) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Clicks the middle of `view` (mouse down, then the queued mouse up).
+fn post_click(window: &NSWindow, view: &NSView) {
+    use objc2_app_kit::{NSEventModifierFlags, NSEventType};
+    let b = view.bounds();
+    let mid = NSPoint::new(
+        b.origin.x + b.size.width / 2.,
+        b.origin.y + b.size.height / 2.,
+    );
+    let at = view.convertPoint_toView(mid, None);
+    let app = NSApplication::sharedApplication(window.mtm());
+    let now = objc2_foundation::NSProcessInfo::processInfo().systemUptime();
+    let event = |kind| {
+        NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+            kind,
+            at,
+            NSEventModifierFlags::empty(),
+            now,
+            window.windowNumber(),
+            None,
+            0,
+            1,
+            1.,
+        )
+    };
+    // The view tracks the mouse until the (queued) mouse up. Sent to the
+    // view itself: a window that isn't key would swallow a first click.
+    if let (Some(down), Some(up)) = (
+        event(NSEventType::LeftMouseDown),
+        event(NSEventType::LeftMouseUp),
+    ) {
+        app.postEvent_atStart(&up, false);
+        view.mouseDown(&down);
+    }
+}
+
+/// Types `text` into the focused view, one key every 50 ms, as the text
+/// system receives key presses once interpreted: `insertText:` for
+/// characters, `doCommandBySelector: insertNewline:` for Return (`\n`).
+fn post_typing(window: &NSWindow, text: &str) {
+    for (i, c) in text.chars().enumerate() {
+        let window = objc2::Message::retain(window);
+        let at = std::time::Duration::from_millis(50 * (i as u64 + 1));
+        on_main_after(at, move || {
+            let Some(responder) = window.firstResponder() else {
+                return;
+            };
+            if c == '\n' {
+                let _: () =
+                    unsafe { msg_send![&*responder, doCommandBySelector: sel!(insertNewline:)] };
+            } else {
+                let s = NSString::from_str(&c.to_string());
+                let _: () = unsafe { msg_send![&*responder, insertText: &*s] };
+            }
+        });
+    }
+}
+
+/// Writes `window` to a PNG with the app's other visible windows drawn over
+/// it where they are on screen (pop-up menus, calendar popovers). Each is
+/// drawn by the app itself: no screen recording permission needed.
+fn snapshot_with_overlays(window: &NSWindow, path: &str) {
+    use objc2_app_kit::NSGraphicsContext;
+    let Some(content) = window.contentView() else {
+        return;
+    };
+    let origin = window.contentRectForFrameRect(window.frame()).origin;
+    let bounds = content.bounds();
+    let Some(base) = content.bitmapImageRepForCachingDisplayInRect(bounds) else {
+        return;
+    };
+    content.cacheDisplayInRect_toBitmapImageRep(bounds, &base);
+    let Some(ctx) = NSGraphicsContext::graphicsContextWithBitmapImageRep(&base) else {
+        return;
+    };
+    NSGraphicsContext::saveGraphicsState_class();
+    NSGraphicsContext::setCurrentContext(Some(&ctx));
+    let app = NSApplication::sharedApplication(window.mtm());
+    for w in app.windows().iter() {
+        if *w == *window || !w.isVisible() {
+            continue;
+        }
+        let Some(view) = w
+            .contentView()
+            .map(|v| unsafe { v.superview() }.unwrap_or(v))
+        else {
+            continue;
+        };
+        let r = view.bounds();
+        let Some(rep) = view.bitmapImageRepForCachingDisplayInRect(r) else {
+            continue;
+        };
+        view.cacheDisplayInRect_toBitmapImageRep(r, &rep);
+        let image = NSImage::initWithSize(objc2::AllocAnyThread::alloc(), r.size);
+        image.addRepresentation(&rep);
+        let f = w.frame();
+        let at = NSRect::new(
+            NSPoint::new(f.origin.x - origin.x, f.origin.y - origin.y),
+            f.size,
+        );
+        NSColor::windowBackgroundColor().setFill();
+        objc2_app_kit::NSRectFill(at);
+        image.drawInRect(at);
+    }
+    ctx.flushGraphics();
+    NSGraphicsContext::restoreGraphicsState_class();
+    let props = objc2_foundation::NSDictionary::new();
+    let png = unsafe {
+        base.representationUsingType_properties(objc2_app_kit::NSBitmapImageFileType::PNG, &props)
+    };
+    match png.map(|d| std::fs::write(path, d.to_vec())) {
+        Some(Ok(())) => println!("prism-macos: snapshot written to {path}"),
+        _ => eprintln!("prism-macos: cannot write {path}"),
+    }
+}
+
 fn run_automation(mtm: MainThreadMarker) {
     let mut root = None;
     with_state(|s| root = Some(s.renderer.widgets.root.clone()));
@@ -1872,6 +2875,31 @@ fn run_automation(mtm: MainThreadMarker) {
         }
     }
 
+    // `PRISM_INCREMENT="Volume|Volume"`: VoiceOver's increment action on an
+    // adjustable control (a slider), by accessibility label.
+    thread_local! {
+        static INCREMENTED: Cell<bool> = const { Cell::new(false) };
+    }
+    if let Ok(labels) = std::env::var("PRISM_INCREMENT")
+        && !INCREMENTED.with(|c| c.replace(true))
+    {
+        for label in labels.split('|').filter(|t| !t.is_empty()) {
+            match find_labelled(&root, label) {
+                Some(v) => {
+                    let _: objc2::runtime::Bool =
+                        unsafe { msg_send![&*v, accessibilityPerformIncrement] };
+                    let value: Option<Retained<NSObject>> =
+                        unsafe { msg_send![&*v, accessibilityValue] };
+                    println!(
+                        "prism-macos: {label:?} reads {:?}",
+                        value.map(|v| format!("{v:?}"))
+                    );
+                }
+                None => eprintln!("prism-macos: PRISM_INCREMENT: nothing labelled {label:?}"),
+            }
+        }
+    }
+
     // `PRISM_AFTER=<seconds>`: let async answers arrive before the snapshot.
     if let Some(after) = std::env::var("PRISM_AFTER")
         .ok()
@@ -1903,6 +2931,13 @@ fn run_automation(mtm: MainThreadMarker) {
                 return;
             }
             if let Some(sv) = view.downcast_ref::<NSScrollView>() {
+                // Text areas keep their own scroll position.
+                if sv
+                    .documentView()
+                    .is_some_and(|d| d.isKindOfClass(PrismTextView::class()))
+                {
+                    return;
+                }
                 let clip = sv.contentView();
                 clip.scrollToPoint(NSPoint::new(0., y));
                 sv.reflectScrolledClipView(&clip);
@@ -1912,6 +2947,63 @@ fn run_automation(mtm: MainThreadMarker) {
             }
         }
         scroll_all(&root, y);
+    }
+
+    // `PRISM_TAP=<label>`: a click (mouse down and up) in the middle of the
+    // view with that accessibility label, title or placeholder: opens a
+    // pop-up's menu, focuses a field (a date picker's calendar only opens
+    // in an active app). Then `PRISM_TYPE=<text>` types into the focused view (`\n`: Return). The
+    // snapshot, `PRISM_TAP_DELAY` seconds later (default 1), includes the
+    // menus and popovers open over the window.
+    thread_local! {
+        static TAPPED: Cell<bool> = const { Cell::new(false) };
+    }
+    if let Ok(label) = std::env::var("PRISM_TAP")
+        && !TAPPED.with(|t| t.replace(true))
+        && let Some(window) = root.window()
+    {
+        let found = sheet_roots()
+            .iter()
+            .find_map(|r| find_labelled(r, &label))
+            .or_else(|| find_labelled(&root, &label));
+        let Some(target) = found else {
+            eprintln!("prism-macos: PRISM_TAP: nothing labelled {label:?}");
+            std::process::exit(1);
+        };
+        #[allow(deprecated)]
+        NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+        window.setLevel(objc2_app_kit::NSFloatingWindowLevel);
+        window.orderFrontRegardless();
+        window.makeKeyWindow();
+        println!(
+            "prism-macos: PRISM_TAP: clicking a {} (app active: {}, key window: {})",
+            target.class().name().to_str().unwrap_or("?"),
+            NSApplication::sharedApplication(mtm).isActive(),
+            window.isKeyWindow()
+        );
+        // A window that isn't key (the app may not get activated from a
+        // terminal) swallows the first click of most views: focus directly.
+        if target.acceptsFirstResponder() {
+            window.makeFirstResponder(Some(&target));
+        }
+        // Menus and calendars track the mouse in a loop of their own: click
+        // on the next turn, after scheduling the snapshot.
+        let (w, t) = (window.clone(), target.clone());
+        on_main_after(std::time::Duration::ZERO, move || post_click(&w, &t));
+        if let Ok(text) = std::env::var("PRISM_TYPE") {
+            post_typing(&window, &text.replace("\\n", "\n"));
+        }
+        let delay = std::env::var("PRISM_TAP_DELAY")
+            .ok()
+            .and_then(|d| d.parse().ok())
+            .unwrap_or(1.);
+        on_main_after(std::time::Duration::from_secs_f64(delay), move || {
+            if let Ok(path) = std::env::var("PRISM_SNAPSHOT") {
+                snapshot_with_overlays(&window, &path);
+            }
+            std::process::exit(0);
+        });
+        return;
     }
 
     with_state(|s| {

@@ -6,6 +6,7 @@
 // file keeps the node tree and renders it. Events go back as JSON
 // (`prism_watch_event`). Layout is SwiftUI's: rows/columns, padding, sizes,
 // grow, backgrounds and borders map to stacks and modifiers.
+import Accessibility
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
@@ -36,12 +37,33 @@ private var controlSizes: [String: CGSize] = [:]
 @MainActor
 private func controlSize(_ kind: String) -> CGSize {
     if let s = controlSizes[kind] { return s }
-    let view: AnyView = kind == "toggle"
-        ? AnyView(Toggle("", isOn: .constant(true)).labelsHidden().fixedSize())
-        : AnyView(ProgressView(value: 0.5).frame(width: 100).fixedSize())
+    let view: AnyView
+    switch kind {
+    case "toggle": view = AnyView(Toggle("", isOn: .constant(true)).labelsHidden().fixedSize())
+    // Full-width controls: their height at a typical width.
+    case "slider":
+        view = AnyView(Slider(value: .constant(0.5), in: 0...1, step: 0.1).frame(width: 160)
+            .fixedSize(horizontal: false, vertical: true))
+    case "spinner": view = AnyView(ProgressView().progressViewStyle(.circular).fixedSize())
+    case "spinner_large": view = AnyView(ProgressView().progressViewStyle(.circular).controlSize(.large).fixedSize())
+    default: view = AnyView(ProgressView(value: 0.5).frame(width: 100).fixedSize())
+    }
     let size = ImageRenderer(content: view).uiImage?.size ?? .zero
     controlSizes[kind] = size
     return size
+}
+
+/// Space around a text area's text (the TextField platter).
+enum TextAreaInset {
+    static let horizontal = 10.0
+    static let vertical = 8.0
+}
+
+/// A picker row around its value: padding and the chevron.
+enum PickerChrome {
+    static let width = 44.0
+    static let vertical = 20.0
+    static let minHeight = 44.0
 }
 
 @_cdecl("prism_watch_measure")
@@ -51,9 +73,9 @@ public func prismWatchMeasure(_ kind: UnsafePointer<CChar>, _ text: UnsafePointe
     let kind = String(cString: kind)
     let size = font > 0 ? font : 17
     let uiFont = UIFont.systemFont(ofSize: size, weight: uiWeight(weight))
-    func textSize(_ s: String) -> CGSize {
+    func textSize(_ s: String, width: Double = maxWidth) -> CGSize {
         let bounds = (s.isEmpty ? " " : s as NSString).boundingRect(
-            with: CGSize(width: maxWidth.isFinite ? maxWidth : .greatestFiniteMagnitude, height: .greatestFiniteMagnitude),
+            with: CGSize(width: width.isFinite ? width : .greatestFiniteMagnitude, height: .greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: uiFont], context: nil)
         return CGSize(width: ceil(bounds.width), height: ceil(bounds.height))
     }
@@ -65,9 +87,38 @@ public func prismWatchMeasure(_ kind: UnsafePointer<CChar>, _ text: UnsafePointe
     case "text_input":
         let line = textSize("Ag")
         result = CGSize(width: maxWidth.isFinite ? maxWidth : 120, height: line.height + 16)
+    case "text_area":
+        // TextEditor is unavailable on watchOS: a vertical TextField, its
+        // text wrapped inside the platter's insets, at least 3 lines.
+        let width = maxWidth.isFinite ? maxWidth : 160
+        let line = textSize("Ag").height
+        let inner = max(width - TextAreaInset.horizontal * 2, 1)
+        let content = textSize(String(cString: text), width: inner).height
+        result = CGSize(width: width, height: max(content, line * 3) + TextAreaInset.vertical * 2)
     case "toggle", "progress":
         result = MainActor.assumeIsolated { controlSize(kind) }
         if kind == "progress", maxWidth.isFinite { result.width = maxWidth }
+    case "slider":
+        result = MainActor.assumeIsolated { controlSize(kind) }
+        // Narrow screens: a small natural width (rows grow it with flex).
+        result.width = maxWidth.isFinite ? min(maxWidth, 100) : 100
+    case "picker":
+        // A navigation-link row: the widest option and its chrome.
+        let label = textSize(String(cString: text))
+        result = CGSize(width: label.width + PickerChrome.width,
+                        height: max(label.height + PickerChrome.vertical, PickerChrome.minHeight))
+        if maxWidth.isFinite { result.width = min(result.width, maxWidth) }
+    case "date_picker":
+        // A button showing the value (a wide one: day 28, 23:58).
+        let mode = String(cString: text).split(separator: " ").first.map(String.init) ?? "date"
+        let lang = MainActor.assumeIsolated { PrismStore.shared.lang }
+        let sample = PrismDatePicker.format(Date(timeIntervalSince1970: 1_798_498_680), mode, ControlEnvironment.locale(lang))
+        let label = textSize(sample, width: .infinity)
+        result = CGSize(width: label.width + PickerChrome.width,
+                        height: max(label.height + PickerChrome.vertical, PickerChrome.minHeight))
+        if maxWidth.isFinite { result.width = min(result.width, maxWidth) }
+    case "spinner":
+        result = MainActor.assumeIsolated { controlSize(String(cString: text) == "large" ? "spinner_large" : "spinner") }
     case "image":
         let config = UIImage.SymbolConfiguration(pointSize: size)
         result = UIImage(systemName: String(cString: text), withConfiguration: config)?.size ?? CGSize(width: size, height: size)
@@ -152,6 +203,12 @@ struct Node {
     var value = 0.0
     var clickable = false
     var label: String?
+    /// ARIA role name (`slider`, `status`…) and the read-out value.
+    var role: String?
+    var a11yValue: String?
+    /// A control's config (`prism_core::controls`): slider `min max step`,
+    /// picker options one per line, date `mode min max`, input tokens.
+    var config = ""
     var a11yHidden = false
     var hidden = false
     var style: [String: Any] = [:]
@@ -188,6 +245,10 @@ final class PrismStore: ObservableObject {
     @Published var share: (text: String?, url: String?)?
     /// Pictures of removed views animating out, by node.
     @Published var ghosts: [UInt64: PrismGhost] = [:]
+    /// The app's language direction and language (Rust's `env`): controls
+    /// mirror and format dates in it. Layout is already mirrored by Rust.
+    @Published var rtl = false
+    @Published var lang = ""
 
     func apply(_ json: String) {
         guard let data = json.data(using: .utf8),
@@ -197,6 +258,7 @@ final class PrismStore: ObservableObject {
         // Animated changes run once the rest is on screen, so they start from
         // what is shown (an entering view's first pose).
         var animated: [[String: Any]] = []
+        var announcements: [String] = []
         for p in patches {
             let id = (p["id"] as? NSNumber)?.uint64Value ?? 0
             if p["anim"] is [String: Any], p["op"] as? String != "exit", p["op"] as? String != "repeat" {
@@ -221,8 +283,20 @@ final class PrismStore: ObservableObject {
             case "clickable": nodes[id]?.clickable = p["on"] as? Bool ?? false
             case "display": nodes[id]?.hidden = p["hidden"] as? Bool ?? false
             case "a11y":
+                let role = p["role"] as? String
+                let value = p["value"] as? String
+                // A status region announces its new value (VoiceOver).
+                if role == "status", let value, !value.isEmpty, value != nodes[id]?.a11yValue {
+                    announcements.append(value)
+                }
                 nodes[id]?.label = p["label"] as? String
                 nodes[id]?.a11yHidden = p["hidden"] as? Bool ?? false
+                nodes[id]?.role = role
+                nodes[id]?.a11yValue = value
+            case "config": nodes[id]?.config = p["config"] as? String ?? ""
+            case "env":
+                rtl = p["rtl"] as? Bool ?? false
+                lang = p["lang"] as? String ?? ""
             case "style": nodes[id]?.style = p["s"] as? [String: Any] ?? [:]
             case "frame":
                 if let f = p["f"] as? [Double], f.count == 4 { nodes[id]?.frame = CGRect(x: f[0], y: f[1], width: f[2], height: f[3]) }
@@ -239,6 +313,12 @@ final class PrismStore: ObservableObject {
         }
         self.nodes = nodes
         self.root = root
+        // Accessibility framework (watchOS 10); UIAccessibilityPostNotification
+        // is API_UNAVAILABLE(watchos) in UIAccessibility.h.
+        for a in announcements {
+            AccessibilityNotification.Announcement(a).post()
+            if ProcessInfo.processInfo.environment["PRISM_DEBUG_A11Y"] != nil { NSLog("prism-a11y announce %@", a) }
+        }
         if !animated.isEmpty {
             DispatchQueue.main.async {
                 for p in animated {
@@ -420,7 +500,10 @@ struct NodeView: View {
         let fg = n.color("color", dark: dark) ?? .primary
         switch n.kind {
         case "text":
+            // Lines align in the text's frame too (right-aligned in RTL: Rust
+            // swaps left and right).
             Text(n.text).font(font(n)).foregroundStyle(fg).multilineTextAlignment(textAlign(n.str("talign")))
+                .frame(maxWidth: .infinity, alignment: frameAlign(n.str("talign")))
         case "button":
             Button { send(["t": "click", "id": id]) } label: { Text(n.text).font(font(n)).foregroundStyle(fg) }
                 .buttonStyle(.plain)
@@ -429,11 +512,28 @@ struct NodeView: View {
                 get: { n.value != 0 },
                 set: { send(["t": "change", "id": id, "v": $0 ? 1 : 0]) }
             )).labelsHidden()
-        case "text_input":
-            TextField(n.placeholder, text: Binding(get: { n.text }, set: { send(["t": "input", "id": id, "v": $0]) }))
-                .font(font(n))
+                .modifier(ControlEnvironment(rtl: store.rtl, lang: store.lang))
+        case "text_input", "text_area":
+            PrismTextField(id: id, node: n, font: font(n))
+                .modifier(ControlEnvironment(rtl: store.rtl, lang: store.lang))
+        case "slider":
+            PrismSlider(id: id, node: n, tint: n.color("color", dark: dark))
+                .modifier(ControlEnvironment(rtl: store.rtl, lang: store.lang))
+        case "picker":
+            PrismPicker(id: id, node: n, font: font(n), tint: n.color("color", dark: dark))
+                .modifier(ControlEnvironment(rtl: store.rtl, lang: store.lang))
+        case "date_picker":
+            PrismDatePicker(id: id, node: n, tint: n.color("color", dark: dark))
+                .modifier(ControlEnvironment(rtl: store.rtl, lang: store.lang))
+        case "spinner":
+            // Indeterminate: animates while on screen.
+            ProgressView().progressViewStyle(.circular)
+                .controlSize(n.value != 0 ? .large : .regular)
+                .tint(n.color("color", dark: dark))
+                .frame(width: n.frame.width, height: n.frame.height)
         case "progress":
             ProgressView(value: min(max(n.value, 0), 1))
+                .modifier(ControlEnvironment(rtl: store.rtl, lang: store.lang))
         case "image":
             Image(systemName: n.icon.isEmpty ? "circle" : n.icon).font(font(n)).foregroundStyle(fg)
         case "timer":
@@ -446,17 +546,21 @@ struct NodeView: View {
             if store.snapshotting {
                 placed(n.children)
             } else {
-                ScrollView {
-                    placed(n.children)
-                        .frame(width: n.content.width, height: n.content.height, alignment: .topLeading)
-                        .background(GeometryReader { g in
-                            Color.clear.onChange(of: g.frame(in: .named("s\(id)")).minY) { _, y in
-                                if n.scrollEvents { send(["t": "scroll", "id": id, "o": -y, "v": n.frame.height]) }
-                            }
-                        })
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        placed(n.children)
+                            .frame(width: n.content.width, height: n.content.height, alignment: .topLeading)
+                            .background(GeometryReader { g in
+                                Color.clear.onChange(of: g.frame(in: .named("s\(id)")).minY) { _, y in
+                                    if n.scrollEvents { send(["t": "scroll", "id": id, "o": -y, "v": n.frame.height]) }
+                                }
+                            })
+                            .overlay(alignment: .topLeading) { DevScrollMark(id: id) }
+                    }
+                    .coordinateSpace(name: "s\(id)")
+                    .modifier(Refresh(id: id, on: n.clickable))
+                    .onAppear { DevScrollMark.scroll(id, proxy) }
                 }
-                .coordinateSpace(name: "s\(id)")
-                .modifier(Refresh(id: id, on: n.clickable))
             }
         case "stack":
             StackView(id: id, node: n)
@@ -495,6 +599,320 @@ struct NodeView: View {
                 send(["t": "back", "id": stack, "depth": 0])
             }
         })
+    }
+}
+
+/// Dev hook: `PRISM_SCROLL=<points>` scrolls scroll views that far down once
+/// shown (the simulator has no Digital Crown input to script).
+struct DevScrollMark: View {
+    static let offset = ProcessInfo.processInfo.environment["PRISM_SCROLL"].flatMap(Double.init)
+    let id: UInt64
+
+    var body: some View {
+        if let y = Self.offset {
+            VStack(spacing: 0) {
+                Color.clear.frame(width: 1, height: y)
+                Color.clear.frame(width: 1, height: 1).id("prism-scroll-\(id)")
+            }
+        }
+    }
+
+    static func scroll(_ id: UInt64, _ proxy: ScrollViewProxy) {
+        guard offset != nil else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { proxy.scrollTo("prism-scroll-\(id)", anchor: .top) }
+    }
+}
+
+// MARK: Form controls
+
+/// The app's direction and language for a native control (Rust already
+/// mirrors the layout; this mirrors the control itself: a slider fills from
+/// the right, text aligns to the right, dates read in the app's language).
+struct ControlEnvironment: ViewModifier {
+    let rtl: Bool
+    let lang: String
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.layoutDirection, rtl ? .rightToLeft : .leftToRight)
+            .environment(\.locale, Self.locale(lang))
+    }
+
+    /// The device's locale, in the app's language (keeping the region).
+    static func locale(_ lang: String) -> Locale {
+        let current = Locale.current
+        guard !lang.isEmpty, current.language.languageCode?.identifier != lang else { return current }
+        return Locale(identifier: current.region.map { "\(lang)_\($0.identifier)" } ?? lang)
+    }
+}
+
+/// `a11y.value` (e.g. "40 %") read out instead of the control's own value.
+struct A11yValue: ViewModifier {
+    let value: String?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let value, !value.isEmpty { content.accessibilityValue(value) } else { content }
+    }
+}
+
+/// A slider's config: `min max step` (step 0: continuous).
+struct SliderRange {
+    var min = 0.0, max = 1.0, step = 0.0
+
+    init(_ config: String) {
+        let v = config.split(separator: " ").map { Double($0) }
+        if v.count > 0, let a = v[0] { min = a }
+        if v.count > 1, let b = v[1] { max = Swift.max(b, min) }
+        if v.count > 2, let s = v[2] { step = Swift.max(s, 0) }
+    }
+
+    /// Clamped and rounded to the step (`SliderConfig::snap`).
+    func snap(_ value: Double) -> Double {
+        let v = Swift.min(Swift.max(value, min), max)
+        guard step > 0 else { return v }
+        return Swift.min(Swift.max(min + ((v - min) / step).rounded() * step, min), max)
+    }
+
+    /// The Digital Crown / button step: the step, or a tenth of the range
+    /// (`SliderConfig::a11y_step`). watchOS sliders always move by steps.
+    var uiStep: Double { step > 0 ? step : Swift.max((max - min) / 10, .ulpOfOne) }
+    var range: ClosedRange<Double> { min...(max > min ? max : min + uiStep) }
+}
+
+/// SwiftUI's slider: − / + buttons and the Digital Crown, adjustable by
+/// VoiceOver natively.
+struct PrismSlider: View {
+    let id: UInt64
+    let node: Node
+    let tint: Color?
+
+    var body: some View {
+        let r = SliderRange(node.config)
+        Slider(value: Binding(
+            get: { Swift.min(Swift.max(node.value, r.min), r.max) },
+            set: { v in
+                let s = r.snap(v)
+                guard s != node.value else { return }
+                PrismStore.shared.nodes[id]?.value = s
+                send(["t": "change", "id": id, "v": s])
+            }
+        ), in: r.range, step: r.uiStep)
+            .tint(tint)
+            .modifier(A11yValue(value: node.a11yValue))
+    }
+}
+
+/// SwiftUI's picker as a navigation row (MenuPickerStyle is
+/// `@available(watchOS, unavailable)`): the row opens the list of options.
+/// Index -1 shows the placeholder.
+struct PrismPicker: View {
+    let id: UInt64
+    let node: Node
+    let font: Font
+    let tint: Color?
+
+    var body: some View {
+        let options = node.config.isEmpty ? [] : node.config.components(separatedBy: "\n")
+        let selected = Int(node.value)
+        let chosen = options.indices.contains(selected) ? options[selected] : nil
+        Picker(selection: Binding(
+            get: { selected },
+            set: { i in
+                guard i != selected else { return }
+                PrismStore.shared.nodes[id]?.value = Double(i)
+                send(["t": "change", "id": id, "v": i])
+            }
+        )) {
+            ForEach(Array(options.enumerated()), id: \.offset) { i, o in Text(o).tag(i) }
+        } label: {
+            // The row shows the label and the selected option: the
+            // placeholder stands in while nothing is chosen.
+            Text(chosen == nil ? node.placeholder : (node.label ?? "")).font(font)
+                .foregroundStyle(chosen == nil ? .secondary : .primary)
+        }
+        .pickerStyle(.navigationLink)
+        .tint(tint)
+        .modifier(A11yValue(value: node.a11yValue ?? chosen))
+    }
+}
+
+/// A date picker: a button showing the value (the compact form), opening
+/// SwiftUI's DatePicker wheels (watchOS 10+) in a sheet. Inline, watchOS
+/// draws the wheels at full size (CompactDatePickerStyle and
+/// GraphicalDatePickerStyle are `@available(watchOS, unavailable)`).
+/// `datetime` stacks the date and the time wheels. Values are Unix seconds,
+/// shown in the device's time zone.
+struct PrismDatePicker: View {
+    let id: UInt64
+    let node: Node
+    let tint: Color?
+    @State private var open = false
+    @Environment(\.locale) private var locale
+
+    var body: some View {
+        let mode = node.config.split(separator: " ").first.map(String.init) ?? "date"
+        let text = Self.format(Date(timeIntervalSince1970: node.value), mode, locale)
+        Button { open = true } label: {
+            Text(text).lineLimit(1).minimumScaleFactor(0.6)
+        }
+        .tint(tint)
+        .accessibilityValue(text)
+        .sheet(isPresented: $open) {
+            // The wheels share the screen (in a scroll view they collapse).
+            VStack(spacing: 6) {
+                if mode != "time" { wheels(.date).frame(maxHeight: .infinity) }
+                if mode != "date" { wheels(.hourAndMinute).frame(maxHeight: .infinity) }
+            }
+            .navigationTitle(node.label ?? "")
+            .modifier(ControlEnvironment(rtl: PrismStore.shared.rtl, lang: PrismStore.shared.lang))
+            .tint(tint)
+        }
+        .onAppear {
+            // Dev hook: `PRISM_PRESENT=<label>` opens this picker's wheels.
+            if let l = node.label, ProcessInfo.processInfo.environment["PRISM_PRESENT"] == l {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { open = true }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func wheels(_ components: DatePickerComponents) -> some View {
+        let parts = node.config.split(separator: " ").map(String.init)
+        let bounds = (1...2).map { i in
+            parts.count > i ? Double(parts[i]).map { Date(timeIntervalSince1970: $0) } : nil
+        }
+        let selection = Binding<Date>(
+            get: { Date(timeIntervalSince1970: PrismStore.shared.nodes[id]?.value ?? node.value) },
+            set: { d in
+                let v = d.timeIntervalSince1970
+                guard v != PrismStore.shared.nodes[id]?.value else { return }
+                PrismStore.shared.nodes[id]?.value = v
+                send(["t": "change", "id": id, "v": v])
+            }
+        )
+        let label = Text(node.label ?? "")
+        Group {
+            switch (bounds[0], bounds[1]) {
+            case let (lo?, hi?) where lo <= hi:
+                DatePicker(selection: selection, in: lo...hi, displayedComponents: components) { label }
+            case let (lo?, _):
+                DatePicker(selection: selection, in: lo..., displayedComponents: components) { label }
+            case let (_, hi?):
+                DatePicker(selection: selection, in: ...hi, displayedComponents: components) { label }
+            default:
+                DatePicker(selection: selection, displayedComponents: components) { label }
+            }
+        }
+        .labelsHidden()
+    }
+
+    /// The value as the button shows it (and what it measures).
+    static func format(_ date: Date, _ mode: String, _ locale: Locale) -> String {
+        let style: Date.FormatStyle
+        switch mode {
+        case "time": style = .dateTime.hour().minute()
+        case "datetime": style = .dateTime.day().month(.abbreviated).hour().minute()
+        default: style = .dateTime.day().month(.abbreviated).year()
+        }
+        return date.formatted(style.locale(locale))
+    }
+}
+
+/// A text input's config tokens (`prism_core::controls::InputConfig`).
+struct InputTraits {
+    var secure = false
+    var keyboard = ""
+    var returnKey = ""
+    var capitalize = ""
+    var autocorrect = true
+
+    init(_ config: String) {
+        for token in config.split(separator: " ") {
+            let kv = token.split(separator: "=", maxSplits: 1).map(String.init)
+            switch (kv[0], kv.count > 1 ? kv[1] : "") {
+            case ("secure", _): secure = true
+            case ("keyboard", let v): keyboard = v
+            case ("return", let v): returnKey = v
+            case ("capitalize", let v): capitalize = v
+            case ("autocorrect", "off"): autocorrect = false
+            default: break
+            }
+        }
+    }
+
+    /// SwiftUI has no `keyboardType` on watchOS (UIKeyboardType is
+    /// API_UNAVAILABLE(watchos) in UITextInputTraits.h): the closest is
+    /// WatchKit's text content type, which tunes the input sheet.
+    /// Number and decimal have no equivalent.
+    var contentType: WKTextContentType? {
+        if secure { return .password }
+        switch keyboard {
+        case "email": return .emailAddress
+        case "url": return .URL
+        case "phone": return .telephoneNumber
+        default: return nil
+        }
+    }
+
+    var autocapitalization: TextInputAutocapitalization {
+        switch capitalize {
+        case "none": return .never
+        case "words": return .words
+        case "all": return .characters
+        default: return .sentences
+        }
+    }
+
+    var submitLabel: SubmitLabel {
+        switch returnKey {
+        case "done": return .done
+        case "go": return .go
+        case "next": return .next
+        case "search": return .search
+        case "send": return .send
+        default: return .return
+        }
+    }
+}
+
+/// Text inputs and text areas. watchOS edits text in a system sheet
+/// (dictation, scribble, keyboard); the field shows the value. TextEditor is
+/// `@available(watchOS, unavailable)`, so a text area is a vertical
+/// TextField (watchOS 9+) showing as many lines as its frame holds.
+struct PrismTextField: View {
+    let id: UInt64
+    let node: Node
+    let font: Font
+
+    var body: some View {
+        let traits = InputTraits(node.config)
+        let text = Binding(get: { node.text }, set: { v in
+            if v != node.text { send(["t": "input", "id": id, "v": v]) }
+        })
+        field(traits, text)
+            .font(font)
+            .textContentType(traits.contentType)
+            .textInputAutocapitalization(traits.secure ? .never : traits.autocapitalization)
+            .autocorrectionDisabled(traits.secure || !traits.autocorrect)
+            .submitLabel(traits.submitLabel)
+    }
+
+    @ViewBuilder
+    private func field(_ traits: InputTraits, _ text: Binding<String>) -> some View {
+        if node.kind == "text_area" {
+            let line = UIFont.systemFont(ofSize: node.num("font", 17)).lineHeight
+            let lines = max(Int((node.frame.height - TextAreaInset.vertical * 2) / max(line, 1)), 1)
+            TextField(node.placeholder, text: text, axis: .vertical)
+                .lineLimit(lines)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else if traits.secure {
+            SecureField(node.placeholder, text: text)
+                .onSubmit { send(["t": "submit", "id": id]) }
+        } else {
+            TextField(node.placeholder, text: text)
+                .onSubmit { send(["t": "submit", "id": id]) }
+        }
     }
 }
 
@@ -732,6 +1150,10 @@ private func textAlign(_ a: String?) -> TextAlignment {
     a == "center" ? .center : a == "right" ? .trailing : .leading
 }
 
+private func frameAlign(_ a: String?) -> Alignment {
+    a == "center" ? .center : a == "right" ? .trailing : .leading
+}
+
 // MARK: App
 
 struct PrismRootView: View {
@@ -762,13 +1184,17 @@ struct PrismRootView: View {
 
 /// Dev hook: `PRISM_SNAPSHOT=/abs/out.png` renders the tree to a PNG after
 /// `PRISM_DELAY` seconds (default 2), then quits. (Navigation and tab
-/// containers render their current content.)
+/// containers render their current content; ImageRenderer cannot draw
+/// sliders, text fields, toggles and spinners, which are platform views on
+/// watchOS: screenshot the simulator for those.)
+/// `PRISM_CLICK="+1|Save"` presses buttons by title first (it also works
+/// without a snapshot).
 @MainActor
 private func snapshotIfAsked(size: CGSize) {
     let env = ProcessInfo.processInfo.environment
-    guard let path = env["PRISM_SNAPSHOT"] else { return }
+    let path = env["PRISM_SNAPSHOT"]
+    guard path != nil || env["PRISM_CLICK"] != nil else { return }
     let delay = Double(env["PRISM_DELAY"] ?? "") ?? 2
-    // `PRISM_CLICK="+1|Save"`: press buttons by title first.
     for (i, title) in (env["PRISM_CLICK"] ?? "").split(separator: "|").enumerated() {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay + 0.3 * Double(i)) {
             let store = PrismStore.shared
@@ -790,6 +1216,7 @@ private func snapshotIfAsked(size: CGSize) {
         }
     }
     let clicks = Double((env["PRISM_CLICK"] ?? "").split(separator: "|").count)
+    guard let path else { return }
     DispatchQueue.main.asyncAfter(deadline: .now() + delay + 0.3 * clicks + 0.7) {
         let store = PrismStore.shared
         store.snapshotting = true

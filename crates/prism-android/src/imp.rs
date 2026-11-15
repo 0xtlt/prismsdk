@@ -499,6 +499,8 @@ fn parse(v: &Value) -> Option<UiEvent> {
     let id = v.get("id")?.as_u64()?;
     Some(match v.get("t")?.as_str()? {
         "click" => UiEvent::Click(id),
+        // The return key of a text field.
+        "submit" => UiEvent::Submit(id),
         "input" => UiEvent::Input(id, v.get("v")?.as_str()?.to_string()),
         "change" => UiEvent::Change(id, v.get("v")?.as_f64()?),
         "back" => UiEvent::Back(id, v.get("depth")?.as_u64()? as usize),
