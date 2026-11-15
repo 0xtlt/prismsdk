@@ -276,7 +276,16 @@
     "goal": "الهدف",
     "done": "منجزة",
     "selected": "{day}: {count} طلبات",
-    "tap_bar": "اضغط على عمود لإبرازه"
+    "tap_bar": "اضغط على عمود لإبرازه",
+    "temperature": "غرفة المعيشة",
+    "measured": "مقيس",
+    "forecast": "توقع",
+    "average": "المتوسط",
+    "comfort": "الراحة",
+    "target": "الهدف",
+    "updating": "جارٍ التحديث…",
+    "tap_point": "المس الرسم البياني لقراءة قيمة",
+    "hour": "الساعة {hour}"
   },
   "security": {
     "title": "الأمان",

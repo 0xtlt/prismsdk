@@ -308,7 +308,7 @@ final class PrismStore: ObservableObject {
                 lang = p["lang"] as? String ?? ""
             case "style": nodes[id]?.style = p["s"] as? [String: Any] ?? [:]
             case "frame":
-                if let f = p["f"] as? [Double], f.count == 4 { nodes[id]?.frame = CGRect(x: f[0], y: f[1], width: f[2], height: f[3]) }
+                if let f = p["f"] as? [Double], f.count == 4 { nodes[id]?.frame = prismFrame(f) }
             case "content":
                 if let c = p["size"] as? [Double], c.count == 2 { nodes[id]?.content = CGSize(width: c[0], height: c[1]) }
             case "menu": nodes[id]?.menu = p["menu"] as? [String: Any]
@@ -337,7 +337,7 @@ final class PrismStore: ObservableObject {
                         case "style": self.nodes[id]?.style = p["s"] as? [String: Any] ?? [:]
                         case "frame":
                             if let f = p["f"] as? [Double], f.count == 4 {
-                                self.nodes[id]?.frame = CGRect(x: f[0], y: f[1], width: f[2], height: f[3])
+                                self.nodes[id]?.frame = prismFrame(f)
                             }
                         default: break
                         }
@@ -370,6 +370,15 @@ extension PrismStore {
         let total = (anim["d"] as? Double ?? 0.25) + (anim["delay"] as? Double ?? 0) + 0.05
         DispatchQueue.main.asyncAfter(deadline: .now() + total) { self.ghosts[id] = nil }
     }
+}
+
+/// `[x, y, width, height]` from Rust as a frame SwiftUI accepts: a size
+/// that is negative or not finite (a degenerate absolutely positioned
+/// overlay) would make `.frame(width:height:)` invalid and could take the
+/// siblings drawn in the same stack (chart bars) down with it.
+func prismFrame(_ f: [Double]) -> CGRect {
+    let v = f.map { $0.isFinite ? $0 : 0 }
+    return CGRect(x: v[0], y: v[1], width: max(0, v[2]), height: max(0, v[3]))
 }
 
 // MARK: Motion

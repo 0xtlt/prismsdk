@@ -252,7 +252,16 @@
     "goal": "Objectif",
     "done": "Faites",
     "selected": "{day} : {count} commandes",
-    "tap_bar": "Touchez une barre pour la mettre en avant"
+    "tap_bar": "Touchez une barre pour la mettre en avant",
+    "temperature": "Salon",
+    "measured": "Mesuré",
+    "forecast": "Prévision",
+    "average": "Moyenne",
+    "comfort": "Confort",
+    "target": "Objectif",
+    "updating": "Mise à jour…",
+    "tap_point": "Touchez le graphique pour lire une valeur",
+    "hour": "{hour} h"
   },
   "security": {
     "title": "Sécurité",

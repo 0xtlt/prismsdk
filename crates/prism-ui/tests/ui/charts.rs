@@ -162,8 +162,12 @@ fn single_points_empty_and_negative_series() {
             .into_element()
     });
     let d = drawings(&h);
-    // One point sits in the middle.
-    assert_eq!(d[0].paths[0].segments, [Segment::Move(0.5, 0.5)]);
+    // One point sits in the middle, drawn as a dot (a line would be invisible).
+    assert_eq!(
+        d[0].paths[0].segments,
+        [Segment::Move(0.5, 0.5), Segment::Line(0.5, 0.5)]
+    );
+    assert!(d[0].paths[0].round && d[0].paths[0].stroke.is_some());
     // No series: nothing but an empty plot, still announced (empty).
     assert!(d[1].paths.is_empty());
     // Negative values: the axis goes below zero, the line stays inside.
@@ -367,4 +371,251 @@ fn stats_read_label_value_and_change() {
     // The trend is a sparkline ending on a dot at the last value.
     let spark = drawings(&h).into_iter().last().unwrap();
     assert!(spark.paths.last().unwrap().round);
+}
+
+// --- Reference lines, bands, ticks, gaps, groups, read-outs ------------------------
+
+/// Subpaths of a path (each starts with a move).
+fn subpaths(p: &prism_core::Path) -> usize {
+    p.segments
+        .iter()
+        .filter(|s| matches!(s, Segment::Move(..)))
+        .count()
+}
+
+#[test]
+fn missing_values_leave_gaps_unless_bridged() {
+    let h = show(Theme::light, |_, _| {
+        div()
+            .child(
+                ui::line_chart()
+                    .series("kWh", [1., 2., f64::NAN, 4., 5.])
+                    .hide_y_axis(),
+            )
+            .child(
+                ui::line_chart()
+                    .series("kWh", [1., 2., f64::NAN, 4., 5.])
+                    .connect_gaps()
+                    .hide_y_axis(),
+            )
+            .into_element()
+    });
+    let d = drawings(&h);
+    let stroked = |d: &Drawing| d.paths.iter().filter(|p| p.stroke.is_some()).count();
+    // Two runs: two lines, nothing drawn across the gap.
+    assert_eq!(stroked(&d[0]), 2);
+    assert_eq!(stroked(&d[1]), 1);
+    assert_eq!(subpaths(&d[1].paths[0]), 1);
+    // Spoken: the missing value is a dash.
+    let n = h
+        .host
+        .find(|n| n.a11y.label.as_deref() == Some("kWh: 1, 2, –, 4, 5"));
+    assert!(n.is_some(), "{}", h.describe());
+}
+
+#[test]
+fn min_max_bands_dashed_series_reference_lines_and_bands() {
+    let t = Theme::light();
+    let h = show(Theme::light, |_, _| {
+        ui::line_chart()
+            .series("Temp", [10., 12., 11.])
+            .min_max([8., 9., 7.], [13., 15., 14.])
+            .series("Forecast", [11., 13., 12.])
+            .dashed()
+            .labels(["Mon", "Tue", "Wed"])
+            .reference_line(11., "Average")
+            .band_labeled(12., 20., rgb(0xE5484D), "Hot")
+            .y_ticks([0., 10., 20.])
+            .into_element()
+    });
+    let d = &drawings(&h)[0];
+    // The band first (behind), at 14 % opacity, from 12 to 20 (top of the axis).
+    let band = &d.paths[0];
+    assert_eq!(band.fill.map(|c| (c.a * 100.).round()), Some(14.));
+    assert_eq!(band.segments[0], Segment::Move(0., 0.));
+    // Grid lines only at the ticks asked for.
+    let grid = d
+        .paths
+        .iter()
+        .filter(|p| p.stroke == Some(t.border))
+        .count();
+    assert_eq!(grid, 3);
+    // The min–max band: a filled shape around the first line.
+    assert!(
+        d.paths
+            .iter()
+            .any(|p| p.fill.is_some() && subpaths(p) == 1 && p.segments.len() > 4)
+    );
+    // The forecast is dashed, the reference line too, at y = 11 (0.45 from the top).
+    assert!(d.paths.iter().filter(|p| p.dash.is_some()).count() >= 2);
+    let reference = d.paths.last().unwrap();
+    assert_eq!(reference.segments[0], Segment::Move(0., 0.45));
+    // Their labels, and what screen readers hear.
+    h.host.by_text("Average");
+    h.host.by_text("Hot");
+    for tick in ["0", "10", "20"] {
+        h.host.by_text(tick);
+    }
+    labelled(&h, "Temp: 10, 12, 11. Forecast: 11, 13, 12. Average: 11");
+}
+
+#[test]
+fn ticks_can_be_formatted_and_thinned() {
+    let h = show(Theme::light, |_, _| {
+        ui::line_chart()
+            .series("Power", [100., 250., 400., 300., 200., 150.])
+            .labels(["0h", "4h", "8h", "12h", "16h", "20h"])
+            .y_tick_count(2)
+            .format_y(|v| format!("{v:.0} W"))
+            .x_label_every(3)
+            .into_element()
+    });
+    // About two round steps, written by the formatter.
+    for tick in ["0 W", "200 W", "400 W"] {
+        h.host.by_text(tick);
+    }
+    labelled(&h, "Power: 100 W, 250 W, 400 W, 300 W, 200 W, 150 W");
+    // Every third x label.
+    let shown: Vec<bool> = ["0h", "4h", "8h", "12h", "16h", "20h"]
+        .iter()
+        .map(|l| h.host.find(|n| n.text == *l).is_some())
+        .collect();
+    assert_eq!(shown, [true, false, false, true, false, false]);
+}
+
+#[test]
+fn uneven_ticks_sit_on_their_grid_lines() {
+    let h = show(Theme::light, |_, _| {
+        ui::line_chart()
+            .series("pH", [6.5, 7.2, 8.1])
+            .y_ticks([0., 6., 7., 14.])
+            .height(114.)
+            .into_element()
+    });
+    // Each label (a 14 pt line) centered on its grid line: 100 pt of plot,
+    // 14 at the top, 7 halfway (50), 6 at 50 + 100 / 14, 0 at the bottom.
+    let margin = |t: &str| {
+        node(&h, h.host.by_text(t))
+            .style
+            .clone()
+            .unwrap()
+            .margin
+            .top
+    };
+    assert_eq!(margin("14"), 0.);
+    assert_eq!(margin("7"), 50. - 14.);
+    assert!((margin("6") - (100. / 14.0 - 14.)).abs() < 1e-3);
+    assert!((margin("0") - (100. - (50. + 100. / 14.) - 14.)).abs() < 1e-3);
+}
+
+#[test]
+fn grouped_bars_one_per_series_in_each_category() {
+    let mut h = show(Theme::light, |p, cx| {
+        ui::bar_chart()
+            .labels(["Q1", "Q2"])
+            .series("2025", [3., 4.])
+            .series("2026", [5., f64::NAN])
+            .selected(p.on.then_some(1))
+            .on_select(cx.listener(|p, e: &ChangeEvent, _| {
+                p.log.push(format!("group {}", e.index()));
+                p.on = true;
+            }))
+            .into_element()
+    });
+    let q1 = labelled(&h, "Q1: 2025: 3, 2026: 5");
+    assert_eq!(node(&h, q1).a11y.role, Some(Role::Button));
+    labelled(&h, "Q2: 2025: 4, 2026: –");
+    // Two bars side by side in each cell.
+    let row = node(&h, node(&h, q1).children[0]).clone();
+    assert_eq!(row.children.len(), 2);
+    let t = Theme::light();
+    let bg = |i: usize| node(&h, row.children[i]).style.clone().unwrap().background;
+    assert_eq!(
+        (bg(0), bg(1)),
+        (Some(t.chart_color(0)), Some(t.chart_color(1)))
+    );
+    // A legend names the series.
+    h.host.by_text("2025");
+    h.host.by_text("2026");
+    // Tapping a group selects it: the read-out shows its values.
+    let q2 = labelled(&h, "Q2: 2025: 4, 2026: –");
+    h.dispatch(UiEvent::Click(q2));
+    assert_eq!(log(&h), ["group 1"]);
+    // The read-out: its title and values (the x label is there too).
+    assert_eq!(
+        h.host
+            .mounted()
+            .iter()
+            .filter(|id| node(&h, **id).text == "Q2")
+            .count(),
+        2
+    );
+    h.host.by_text("–");
+}
+
+#[test]
+fn line_charts_select_the_nearest_point_and_show_a_read_out() {
+    let mut h = show(Theme::light, |p, cx| {
+        ui::line_chart()
+            .series("Sales", [3., 5., 4.])
+            .series("Costs", [1., 2., 2.5])
+            .labels(["Mon", "Tue", "Wed"])
+            .unit(" k€")
+            .selected(p.on.then_some(1))
+            .on_select(cx.listener(|p, e: &ChangeEvent, _| {
+                p.log.push(format!("point {}", e.index()));
+                p.on = true;
+            }))
+            .into_element()
+    });
+    // One tap target per point, spoken with every series' value.
+    let tue = labelled(&h, "Tue: Sales: 5 k€, Costs: 2 k€");
+    assert_eq!(node(&h, tue).a11y.role, Some(Role::Button));
+    let before = drawings(&h)[0].paths.len();
+    h.dispatch(UiEvent::Click(tue));
+    assert_eq!(log(&h), ["point 1"]);
+    // The read-out: a rule and two dots (each two paths) in the drawing,
+    // a bubble with the values.
+    assert_eq!(drawings(&h)[0].paths.len(), before + 5);
+    h.host.by_text("5 k€");
+    let bubble = h
+        .host
+        .find(|n| {
+            n.style
+                .as_ref()
+                .is_some_and(|s| s.translate_percent == (0., -100.))
+        })
+        .expect("a bubble right of the point, at the bottom (the points are high)");
+    assert_eq!(
+        node(&h, bubble).style.clone().unwrap().inset.left,
+        prism_core::Length::Fraction(0.5)
+    );
+}
+
+#[test]
+fn grouped_bars_and_reference_lines_in_widgets() {
+    use prism_core::surfaces::{SNode, snapshot_one};
+    fn shapes(n: &SNode, out: &mut Vec<String>) {
+        if n.kind == NodeKind::Shape {
+            out.push(n.text.clone());
+        }
+        n.children.iter().for_each(|c| shapes(c, out));
+    }
+    let mut app = App::new();
+    ui::set_theme(&mut app, Theme::light());
+    let node = snapshot_one(
+        &mut app,
+        ui::bar_chart()
+            .labels(["a", "b"])
+            .series("x", [1., 2.])
+            .series("y", [3., 4.])
+            .reference_line(2.5, "Target"),
+    );
+    let mut found = Vec::new();
+    shapes(&node, &mut found);
+    assert_eq!(found.len(), 1);
+    let d = Drawing::decode(&found[0]);
+    // Four bars and the dashed reference line, all in the one shape.
+    assert_eq!(d.paths.iter().filter(|p| p.fill.is_some()).count(), 4);
+    assert!(d.paths.iter().any(|p| p.dash.is_some()));
 }

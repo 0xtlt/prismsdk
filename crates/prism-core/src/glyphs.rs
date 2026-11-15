@@ -13,6 +13,7 @@ pub const GLYPHS: &[(&str, &str)] = &[
     ("list.bullet", "☰"),
     ("star", "☆"),
     ("star.fill", "★"),
+    ("arrow.clockwise", "↻"),
     ("person", "☺"),
     ("person.crop.circle", "☺"),
     ("magnifyingglass", "⌕"),

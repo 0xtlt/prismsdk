@@ -46,6 +46,12 @@ The first version, not yet on crates.io.
   paths everywhere, widgets included, keeping its proportions);
   `ui::qr_code(text)` with a built-in QR encoder (`prism_ui::qr`: byte
   mode, versions 1–40, four error-correction levels), drawn as one shape.
+- Charts: reference lines with labels (`reference_line`), colored bands
+  (`band`, `band_labeled`), tick control (`y_ticks`, `y_tick_count`,
+  `format_y`, `x_label_every`), grouped bars (`bar_chart().labels(…)
+  .series(…)`), min–max bands (`min_max`) and dashed series (`dashed`) on
+  line charts, and a read-out of the selected point or bars (`selected`,
+  and `on_select` on line charts: one tap target per point).
 - Shapes: the even-odd fill rule (`Path::even_odd`) on every renderer;
   `aspect_ratio` on styles (taffy, CSS `aspect-ratio`, widget snapshots).
 - Shipping: Android App Bundles and Google Play upload, App Store builds and
@@ -66,3 +72,13 @@ The first version, not yet on crates.io.
   `crates/prism-apple-build/apple`, the Android host and the bundling scripts
   from `platform/android` and `scripts/` to `crates/prism-cli/platform`, so
   the published crates contain them.
+- Line charts leave a gap where a value is missing (NaN) instead of joining
+  its neighbours (`.connect_gaps()` bridges it); a lone point is a dot.
+
+### Fixed
+
+- watchOS simulator release builds link clang's runtime (Swift availability
+  checks of the watchOS 26+ SDKs need `__isPlatformVersionAtLeast`).
+- The watch host clamps frames that are negative or not finite before
+  handing them to SwiftUI (absolutely positioned overlays next to chart
+  bars).

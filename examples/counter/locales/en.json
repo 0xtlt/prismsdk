@@ -252,7 +252,16 @@
     "goal": "Goal",
     "done": "Done",
     "selected": "{day}: {count} orders",
-    "tap_bar": "Tap a bar to highlight it"
+    "tap_bar": "Tap a bar to highlight it",
+    "temperature": "Living room",
+    "measured": "Measured",
+    "forecast": "Forecast",
+    "average": "Average",
+    "comfort": "Comfort",
+    "target": "Target",
+    "updating": "Updating…",
+    "tap_point": "Tap the chart to read a value",
+    "hour": "{hour}:00"
   },
   "security": {
     "title": "Security",

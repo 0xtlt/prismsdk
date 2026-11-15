@@ -66,7 +66,7 @@ fn dot(x: f32, y: f32, color: Color, width: f32) -> Path {
     Path::line([(x, y), (x, y)]).stroke(color, width).round()
 }
 
-/// A value axis: round ticks covering the data.
+/// A value axis: round ticks covering the data (or the ticks asked for).
 struct Axis {
     lo: f64,
     hi: f64,
@@ -75,9 +75,27 @@ struct Axis {
 }
 
 impl Axis {
-    fn new(min: f64, max: f64) -> Axis {
-        let ticks = nice_ticks(min, max, 4);
-        let step = (ticks[1] - ticks[0]).abs();
+    /// `ticks.y` as they are (the range stretched to the data), or about
+    /// `ticks.y_count` round ones.
+    fn with(min: f64, max: f64, ticks: &Ticks) -> Axis {
+        let values = match &ticks.y {
+            Some(v) if !v.is_empty() => {
+                let mut v: Vec<f64> = v.iter().copied().filter(|v| v.is_finite()).collect();
+                v.sort_by(f64::total_cmp);
+                v.dedup();
+                v
+            }
+            _ => nice_ticks(min, max, ticks.y_count.unwrap_or(4).max(1)),
+        };
+        let values = if values.len() < 2 {
+            nice_ticks(min, max, 4)
+        } else {
+            values
+        };
+        let step = values
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(f64::INFINITY, f64::min);
         let mut decimals = 0;
         while decimals < 6 {
             let scaled = step * 10f64.powi(decimals as i32);
@@ -86,20 +104,25 @@ impl Axis {
             }
             decimals += 1;
         }
+        let (first, last) = (values[0], *values.last().expect("two ticks"));
         Axis {
-            lo: ticks[0],
-            hi: *ticks.last().expect("two ticks"),
-            ticks,
+            lo: if min.is_finite() {
+                first.min(min)
+            } else {
+                first
+            },
+            hi: if max.is_finite() { last.max(max) } else { last },
+            ticks: values,
             decimals,
         }
     }
 
-    /// From the top: 0 at `hi`, 1 at `lo`.
+    /// From the top: 0 at `hi`, 1 at `lo` (clamped to the plot).
     fn y(&self, v: f64) -> f32 {
         if self.hi == self.lo {
             return 0.5;
         }
-        (1. - (v - self.lo) / (self.hi - self.lo)) as f32
+        ((1. - (v - self.lo) / (self.hi - self.lo)) as f32).clamp(0., 1.)
     }
 
     fn grid(&self, t: &Theme) -> Vec<Path> {
@@ -112,33 +135,118 @@ impl Axis {
             .collect()
     }
 
-    /// Tick labels, top to bottom, spaced like the grid lines.
-    fn labels(&self, cx: &App, t: &Theme, unit: &str, height: f32) -> Element {
+    /// Whether the ticks are evenly spaced over the whole range.
+    fn even(&self) -> bool {
+        let n = self.ticks.len();
+        n >= 2
+            && self.ticks[0] == self.lo
+            && self.ticks[n - 1] == self.hi
+            && self.ticks.windows(2).all(|w| {
+                ((w[1] - w[0]) - (self.hi - self.lo) / (n - 1) as f64).abs()
+                    < 1e-9 * (self.hi - self.lo).abs().max(1.)
+            })
+    }
+
+    /// Tick labels, each centered on its grid line (a plot `height` tall,
+    /// inset by half a label at the top and bottom).
+    fn labels(&self, cx: &App, t: &Theme, fmt: &Fmt, height: f32) -> Element {
+        let text_of = |v: f64| fmt.axis(cx, v, self.decimals);
+        let label = |v: f64| text(text_of(v)).text_size(LABEL_SIZE).text_color(t.muted);
+        if self.even() {
+            // Evenly spaced: spread over the height.
+            return div()
+                .h(px(height))
+                .justify_between()
+                .items_end()
+                .flex_shrink_0()
+                .accessibility_hidden()
+                .children(self.ticks.iter().rev().map(|v| label(*v)))
+                .into_element();
+        }
+        // Uneven: each label a line tall, centered on its grid line by the
+        // space above it (in the flow, so widgets keep it too).
+        let inner = height - LABEL_H;
+        let mut end = 0.;
+        let labels: Vec<_> = self
+            .ticks
+            .iter()
+            .rev()
+            .map(|v| {
+                let top = self.y(*v) * inner;
+                let gap = top - end;
+                end = top + LABEL_H;
+                label(*v)
+                    .h(px(LABEL_H))
+                    .flex_shrink_0()
+                    .with_style(move |s| s.margin.top = gap)
+            })
+            .collect();
         div()
             .h(px(height))
-            .justify_between()
-            .items_end()
             .flex_shrink_0()
+            .items_end()
             .accessibility_hidden()
-            .children(self.ticks.iter().rev().map(|v| {
-                text(format!("{}{unit}", cx.format_number(*v, self.decimals)))
-                    .text_size(LABEL_SIZE)
-                    .text_color(t.muted)
-            }))
+            .children(labels)
             .into_element()
     }
 }
 
+/// How a chart writes values: [`Ticks::format_y`], or the app's number
+/// format and the unit.
+struct Fmt {
+    custom: Option<Rc<dyn Fn(f64) -> String>>,
+    unit: String,
+}
+
+impl Fmt {
+    fn new(ticks: &Ticks, unit: &str) -> Fmt {
+        Fmt {
+            custom: ticks.format_y.clone(),
+            unit: unit.to_string(),
+        }
+    }
+
+    fn with(&self, cx: &App, v: f64, decimals: usize) -> String {
+        if !v.is_finite() {
+            return "–".into();
+        }
+        match &self.custom {
+            Some(f) => f(v),
+            None => format!("{}{}", cx.format_number(v, decimals), self.unit),
+        }
+    }
+
+    /// An axis label (the axis' own decimals).
+    fn axis(&self, cx: &App, v: f64, decimals: usize) -> String {
+        self.with(cx, v, decimals)
+    }
+
+    /// A data value.
+    /// A data value: whole numbers without decimals, others with one or two.
+    fn value(&self, cx: &App, v: f64) -> String {
+        let decimals = if v.fract() == 0. {
+            0
+        } else if ((v * 10.).fract()).abs() < 1e-9 {
+            1
+        } else {
+            2
+        };
+        self.with(cx, v, decimals)
+    }
+}
+
 /// Category labels under a plot, one cell per point (some skipped when
-/// they would not fit).
-fn x_labels(cx: &App, labels: &[String], t: &Theme, gap: f32) -> Element {
+/// they would not fit, or every `every`-th).
+fn x_labels(cx: &App, labels: &[String], t: &Theme, gap: f32, every: Option<usize>) -> Element {
     // Seven labels fit a phone; a watch (~170 pt) fits four.
     let room = if cx.device_info().kind == prism_core::DeviceKind::Watch {
         4.
     } else {
         7.
     };
-    let stride = (labels.len() as f32 / room).ceil().max(1.) as usize;
+    let stride = every
+        .filter(|e| *e > 0)
+        .unwrap_or_else(|| (labels.len() as f32 / room).ceil().max(1.) as usize);
     div()
         .flex_row()
         .gap(gap)
@@ -185,17 +293,24 @@ fn legend(items: &[(String, Color)], t: &Theme) -> Element {
 
 /// What a screen reader says: the title and the values.
 fn summary(cx: &App, title: &str, values: &[f64], unit: &str) -> String {
-    let decimals = if values.iter().all(|v| v.fract() == 0.) {
+    let fmt = Fmt::new(&Ticks::default(), unit);
+    spoken(cx, title, values, &fmt)
+}
+
+fn spoken(cx: &App, title: &str, values: &[f64], fmt: &Fmt) -> String {
+    // One number of decimals for the whole series.
+    let finite = || values.iter().copied().filter(|v| v.is_finite());
+    let decimals = if finite().all(|v| v.fract() == 0.) {
         0
     } else {
         1
     };
-    let f = |v: f64| format!("{}{unit}", cx.format_number(v, decimals));
+    let f = |v: f64| fmt.with(cx, v, decimals);
     let body = if values.len() <= 12 {
         values.iter().map(|v| f(*v)).collect::<Vec<_>>().join(", ")
     } else {
-        let min = values.iter().copied().fold(f64::INFINITY, f64::min);
-        let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let min = finite().fold(f64::INFINITY, f64::min);
+        let max = finite().fold(f64::NEG_INFINITY, f64::max);
         format!("{} – {}", f(min), f(max))
     };
     if title.is_empty() {
@@ -205,17 +320,328 @@ fn summary(cx: &App, title: &str, values: &[f64], unit: &str) -> String {
     }
 }
 
+// --- Reference lines, bands, ticks, read-outs ------------------------------------
+
+/// A horizontal line across the plot at a value, with a label at its end
+/// (an average, a target, a limit).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RefLine {
+    /// Where the line is, in data units.
+    pub value: f64,
+    /// Shown above the line's trailing end, and spoken.
+    pub label: String,
+    /// Default: the theme's muted text color.
+    pub color: Option<Color>,
+}
+
+/// A colored band behind the plot between two values (good / fair / poor
+/// zones).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Band {
+    /// One edge, in data units.
+    pub from: f64,
+    /// The other edge, in data units.
+    pub to: f64,
+    /// Drawn at 14 % opacity behind the grid.
+    pub color: Color,
+    /// Shown in the band's top leading corner.
+    pub label: Option<String>,
+}
+
+/// Which axis labels a chart shows, and how it writes values.
+#[derive(Clone, Default)]
+pub struct Ticks {
+    /// The values of the y axis labels and grid lines (default: round
+    /// numbers covering the data). The axis still covers the data.
+    pub y: Option<Vec<f64>>,
+    /// About how many y ticks (default 4, rounded to nice steps).
+    pub y_count: Option<usize>,
+    /// Writes a value: axis labels, reference lines, the read-out and what
+    /// screen readers say (default: the app's number format and the unit).
+    pub format_y: Option<Rc<dyn Fn(f64) -> String>>,
+    /// Shows every `n`-th x label (default: as many as fit).
+    pub x_every: Option<usize>,
+}
+
+/// The overlay layer of a plot `height` tall: zero-height (it covers
+/// nothing, so bars and tap targets under it stay tappable), its children
+/// placed in points from the top of the inner area and in fractions of its
+/// width.
+fn overlay(inset_x: f32) -> prism_core::Div {
+    div()
+        .absolute()
+        .top(px(LABEL_H / 2.))
+        .left(px(inset_x))
+        .right(px(inset_x))
+        .h(px(0.))
+        .accessibility_hidden()
+}
+
+/// Labels of reference lines (above each line's trailing end) and bands
+/// (in their top leading corner), in an [`overlay`] of a plot whose inner
+/// area is `inner` points tall.
+fn plot_labels(
+    cx: &App,
+    t: &Theme,
+    axis: &Axis,
+    fmt: &Fmt,
+    refs: &[RefLine],
+    bands: &[Band],
+    inner: f32,
+) -> Vec<Element> {
+    let mut out = Vec::new();
+    for b in bands {
+        if let Some(label) = &b.label {
+            let top = axis.y(b.from.max(b.to));
+            out.push(
+                text(label.clone())
+                    .text_size(LABEL_SIZE)
+                    .medium()
+                    .text_color(b.color)
+                    .absolute()
+                    .left(px(4.))
+                    .top(px(top * inner + 2.))
+                    .into_element(),
+            );
+        }
+    }
+    for r in refs {
+        let color = r.color.unwrap_or(t.muted);
+        let label = if r.label.is_empty() {
+            fmt.value(cx, r.value)
+        } else {
+            r.label.clone()
+        };
+        out.push(
+            div()
+                .absolute()
+                .right(px(0.))
+                .top(px(axis.y(r.value) * inner - 1.))
+                .translate_percent(0., -100.)
+                .px(4.)
+                .rounded(4.)
+                .bg(faded(t.surface, 0.85))
+                .child(
+                    text(label)
+                        .text_size(LABEL_SIZE)
+                        .semibold()
+                        .text_color(color),
+                )
+                .into_element(),
+        );
+    }
+    out
+}
+
+/// Bands (behind) and reference lines (over the grid) as paths.
+fn band_paths(axis: &Axis, bands: &[Band]) -> Vec<Path> {
+    bands
+        .iter()
+        .map(|b| {
+            let (a, c) = (axis.y(b.from), axis.y(b.to));
+            Path::rect(0., a.min(c), 1., (a - c).abs()).fill(faded(b.color, 0.14))
+        })
+        .collect()
+}
+
+fn ref_paths(t: &Theme, axis: &Axis, refs: &[RefLine]) -> Vec<Path> {
+    refs.iter()
+        .map(|r| {
+            let y = axis.y(r.value);
+            Path::line([(0., y), (1., y)])
+                .stroke(r.color.unwrap_or(t.muted), 1.5)
+                .dashed(5., 4.)
+        })
+        .collect()
+}
+
+/// What screen readers hear about reference lines ("Average: 2.1 k€").
+fn spoken_refs(cx: &App, fmt: &Fmt, refs: &[RefLine]) -> String {
+    refs.iter()
+        .map(|r| {
+            if r.label.is_empty() {
+                fmt.value(cx, r.value)
+            } else {
+                format!("{}: {}", r.label, fmt.value(cx, r.value))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(". ")
+}
+
+/// Where a read-out goes: beside what it reads (`from`..`to`, fractions of
+/// the plot's width), on the side with more room, so the selected point or
+/// bars stay visible; at the bottom of the plot when what it reads is high
+/// (`top`: the highest point, a fraction from the top), else at the top.
+struct Spot {
+    from: f32,
+    to: f32,
+    top: f32,
+}
+
+/// The read-out bubble at `spot`: a title, then one row per series (color
+/// dot, name when there are several, value).
+fn readout(
+    t: &Theme,
+    spot: Spot,
+    inner: f32,
+    title: &str,
+    rows: Vec<(Color, String, String)>,
+) -> Element {
+    let named = rows.len() > 1;
+    let right = (spot.from + spot.to) / 2. <= 0.5;
+    let low = spot.top < 0.45;
+    // Points get a little air; bars are already a cell apart.
+    let air = if spot.from == spot.to { 8. } else { 0. };
+    div()
+        .absolute()
+        .left(relative(if right { spot.to } else { spot.from }))
+        .top(px(if low { inner } else { 0. }))
+        .translate_percent(if right { 0. } else { -100. }, if low { -100. } else { 0. })
+        .offset(if right { air } else { -air }, 0.)
+        .bg(t.surface)
+        .border(1.)
+        .border_color(t.border)
+        .rounded(8.)
+        .px(8.)
+        .py(5.)
+        .gap(2.)
+        .when(!title.is_empty(), |d| {
+            d.child(
+                text(title.to_string())
+                    .text_size(LABEL_SIZE)
+                    .text_color(t.muted),
+            )
+        })
+        .children(rows.into_iter().map(move |(c, name, value)| {
+            div()
+                .flex_row()
+                .items_center()
+                .gap(5.)
+                .child(div().size(px(7.)).rounded(3.5).bg(c))
+                .when(named, |d| {
+                    d.child(text(name).text_size(12.).text_color(t.muted))
+                })
+                .child(text(value).text_size(12.).semibold().text_color(t.text))
+        }))
+        .into_element()
+}
+
+macro_rules! chart_options {
+    ($ty:ty) => {
+        impl $ty {
+            /// A dashed horizontal line at `value`, labelled at its end
+            /// ("Average"; an empty label shows the value).
+            pub fn reference_line(mut self, value: f64, label: impl Into<String>) -> Self {
+                self.refs.push(RefLine {
+                    value,
+                    label: label.into(),
+                    color: None,
+                });
+                self
+            }
+            /// A reference line in its own color.
+            pub fn reference_line_colored(
+                mut self,
+                value: f64,
+                label: impl Into<String>,
+                color: Color,
+            ) -> Self {
+                self.refs.push(RefLine {
+                    value,
+                    label: label.into(),
+                    color: Some(color),
+                });
+                self
+            }
+            /// A band between two values behind the plot, in `color` at
+            /// 14 % opacity (a "good" zone).
+            pub fn band(mut self, from: f64, to: f64, color: Color) -> Self {
+                self.bands.push(Band {
+                    from,
+                    to,
+                    color,
+                    label: None,
+                });
+                self
+            }
+            /// A band with a label in its top leading corner.
+            pub fn band_labeled(
+                mut self,
+                from: f64,
+                to: f64,
+                color: Color,
+                label: impl Into<String>,
+            ) -> Self {
+                self.bands.push(Band {
+                    from,
+                    to,
+                    color,
+                    label: Some(label.into()),
+                });
+                self
+            }
+            /// The y axis labels and grid lines at exactly these values.
+            pub fn y_ticks(mut self, values: impl IntoIterator<Item = f64>) -> Self {
+                self.ticks.y = Some(values.into_iter().collect());
+                self
+            }
+            /// About `n` round y ticks (default 4).
+            pub fn y_tick_count(mut self, n: usize) -> Self {
+                self.ticks.y_count = Some(n);
+                self
+            }
+            /// Writes values (axis labels, reference lines, the read-out,
+            /// screen readers) with `f` instead of the number format and
+            /// unit: `|v| format!("{v:.0} kWh")`.
+            pub fn format_y(mut self, f: impl Fn(f64) -> String + 'static) -> Self {
+                self.ticks.format_y = Some(Rc::new(f));
+                self
+            }
+            /// Shows every `n`-th x label (`1`: all of them; default: as
+            /// many as fit).
+            pub fn x_label_every(mut self, n: usize) -> Self {
+                self.ticks.x_every = Some(n);
+                self
+            }
+            /// Shows the read-out of the `index`-th point or bar (a rule,
+            /// dots and a bubble with the values); `None` hides it. Pair it
+            /// with `on_select` to follow taps.
+            pub fn selected(mut self, index: Option<usize>) -> Self {
+                self.selected = index;
+                self
+            }
+        }
+    };
+}
+
 // --- Line chart ----------------------------------------------------------------
 
-/// One line of a [`LineChart`].
+/// One line of a [`LineChart`] (or one color of a grouped [`BarChart`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Series {
     /// Spoken before the values; shown in the legend when there are several series.
     pub name: String,
-    /// One value per label.
+    /// One value per label; `f64::NAN` for a missing one (a gap).
     pub values: Vec<f64>,
     /// Default: the theme's chart colors, in order.
     pub color: Option<Color>,
+    /// Drawn dashed (a forecast, last year).
+    pub dashed: bool,
+    /// Lows and highs per label: a shaded band around the line.
+    pub band: Option<(Vec<f64>, Vec<f64>)>,
+}
+
+impl Series {
+    fn new(name: String, values: Vec<f64>, color: Option<Color>) -> Series {
+        Series {
+            name,
+            values,
+            color,
+            dashed: false,
+            band: None,
+        }
+    }
 }
 
 /// Lines over a value axis and category labels.
@@ -240,6 +666,19 @@ pub struct LineChart {
     pub unit: String,
     /// Spoken before the values.
     pub title: String,
+    /// Missing values (NaN) are bridged instead of leaving gaps.
+    pub connect_gaps: bool,
+    /// Horizontal reference lines.
+    pub refs: Vec<RefLine>,
+    /// Colored bands behind the plot.
+    pub bands: Vec<Band>,
+    /// Axis labels and value formatting.
+    pub ticks: Ticks,
+    /// The point whose values the read-out shows.
+    pub selected: Option<usize>,
+    /// Called with the index of the point nearest to a tap or click; the
+    /// plot then has one tap target per point.
+    pub on_select: Option<Handler<ChangeEvent>>,
     refine: Refine,
 }
 
@@ -256,28 +695,50 @@ pub fn line_chart() -> LineChart {
         range: None,
         unit: String::new(),
         title: String::new(),
+        connect_gaps: false,
+        refs: Vec::new(),
+        bands: Vec::new(),
+        ticks: Ticks::default(),
+        selected: None,
+        on_select: None,
         refine: Refine::default(),
     }
 }
 
 impl LineChart {
-    /// Adds a line named `name`.
+    /// Adds a line named `name`; `f64::NAN` values leave gaps.
     pub fn series(
         mut self,
         name: impl Into<String>,
         values: impl IntoIterator<Item = f64>,
     ) -> Self {
-        self.series.push(Series {
-            name: name.into(),
-            values: values.into_iter().collect(),
-            color: None,
-        });
+        self.series
+            .push(Series::new(name.into(), values.into_iter().collect(), None));
         self
     }
     /// Colors the last added series.
     pub fn color(mut self, c: Color) -> Self {
         if let Some(s) = self.series.last_mut() {
             s.color = Some(c);
+        }
+        self
+    }
+    /// Draws the last added series dashed.
+    pub fn dashed(mut self) -> Self {
+        if let Some(s) = self.series.last_mut() {
+            s.dashed = true;
+        }
+        self
+    }
+    /// A shaded band around the last added series, from `lows` to `highs`
+    /// (one of each per label: a min–max or a confidence range).
+    pub fn min_max(
+        mut self,
+        lows: impl IntoIterator<Item = f64>,
+        highs: impl IntoIterator<Item = f64>,
+    ) -> Self {
+        if let Some(s) = self.series.last_mut() {
+            s.band = Some((lows.into_iter().collect(), highs.into_iter().collect()));
         }
         self
     }
@@ -326,25 +787,60 @@ impl LineChart {
         self.title = title.into();
         self
     }
+    /// Bridges missing values (NaN) instead of leaving gaps.
+    pub fn connect_gaps(mut self) -> Self {
+        self.connect_gaps = true;
+        self
+    }
+    /// Called with the index of the point nearest to a tap or click
+    /// (`e.index()`): show it with [`selected`](Self::selected).
+    pub fn on_select(mut self, handler: Handler<ChangeEvent>) -> Self {
+        self.on_select = Some(handler);
+        self
+    }
 }
 
+chart_options!(LineChart);
 refinable!(LineChart);
+
+/// Runs of consecutive finite points (a gap ends a run), or every finite
+/// point in one run when gaps are bridged.
+/// Indices `0..n` where `ok`, in runs of consecutive ones (a missing value
+/// ends a run), or all in one run when gaps are bridged.
+fn runs(n: usize, ok: impl Fn(usize) -> bool, bridge: bool) -> Vec<Vec<usize>> {
+    let mut out: Vec<Vec<usize>> = vec![Vec::new()];
+    for i in 0..n {
+        if ok(i) {
+            out.last_mut().expect("a run").push(i);
+        } else if !bridge && !out.last().expect("a run").is_empty() {
+            out.push(Vec::new());
+        }
+    }
+    out.retain(|r| !r.is_empty());
+    out
+}
 
 impl Component for LineChart {
     fn render(self, cx: &mut App) -> Element {
         let t = Theme::of(cx);
-        // Missing values (NaN, infinities) are skipped.
+        // Missing values (NaN, infinities) leave gaps.
         let all: Vec<f64> = self
             .series
             .iter()
-            .flat_map(|s| s.values.iter().copied().filter(|v| v.is_finite()))
+            .flat_map(|s| {
+                let band = s.band.iter().flat_map(|(lo, hi)| lo.iter().chain(hi));
+                s.values.iter().chain(band).copied()
+            })
+            .chain(self.refs.iter().map(|r| r.value))
+            .filter(|v| v.is_finite())
             .collect();
         let (min, max) = self.range.unwrap_or_else(|| {
             let min = all.iter().copied().fold(f64::INFINITY, f64::min);
             let max = all.iter().copied().fold(f64::NEG_INFINITY, f64::max);
             if all.is_empty() { (0., 1.) } else { (min, max) }
         });
-        let axis = Axis::new(min, max);
+        let axis = Axis::with(min, max, &self.ticks);
+        let fmt = Fmt::new(&self.ticks, &self.unit);
         let n = self
             .series
             .iter()
@@ -361,63 +857,210 @@ impl Component for LineChart {
                 i as f32 / (n - 1) as f32
             }
         };
-        let mut paths = if self.y_axis {
-            axis.grid(&t)
-        } else {
-            Vec::new()
-        };
+        let y = |v: f64| axis.y(v);
+        let color_of = |i: usize, s: &Series| s.color.unwrap_or_else(|| t.chart_color(i));
+        let mut paths = band_paths(&axis, &self.bands);
+        if self.y_axis {
+            paths.extend(axis.grid(&t));
+        }
+        // Min–max bands under every line.
         for (i, s) in self.series.iter().enumerate() {
-            let color = s.color.unwrap_or_else(|| t.chart_color(i));
-            let pts: Vec<(f32, f32)> = s
-                .values
-                .iter()
-                .enumerate()
-                .filter(|(_, v)| v.is_finite())
-                .map(|(j, v)| (x(j), axis.y(*v)))
-                .collect();
-            let line = if self.smooth {
-                Path::smooth(pts.clone())
-            } else {
-                Path::line(pts.clone())
+            let Some((lows, highs)) = &s.band else {
+                continue;
             };
-            if let (true, Some(first), Some(last)) = (self.area, pts.first(), pts.last()) {
-                paths.push(
-                    line.clone()
-                        .line_to(last.0, 1.)
-                        .line_to(first.0, 1.)
-                        .close()
-                        .fill(faded(color, 0.16)),
-                );
+            let color = color_of(i, s);
+            let known = |j: usize| {
+                lows.get(j).is_some_and(|v| v.is_finite())
+                    && highs.get(j).is_some_and(|v| v.is_finite())
+            };
+            for idx in runs(n, known, self.connect_gaps) {
+                let top: Vec<(f32, f32)> = idx.iter().map(|j| (x(*j), y(highs[*j]))).collect();
+                let mut p = if self.smooth {
+                    Path::smooth(top)
+                } else {
+                    Path::line(top)
+                };
+                let bottom: Vec<(f32, f32)> =
+                    idx.iter().rev().map(|j| (x(*j), y(lows[*j]))).collect();
+                // Back along the lows (reversed: monotone curves need x sorted,
+                // so the low edge is straight segments).
+                for (bx, by) in bottom {
+                    p = p.line_to(bx, by);
+                }
+                paths.push(p.close().fill(faded(color, 0.16)));
             }
-            paths.push(line.stroke(color, 2.5).round());
+        }
+        for (i, s) in self.series.iter().enumerate() {
+            let color = color_of(i, s);
+            let known = |j: usize| s.values.get(j).is_some_and(|v| v.is_finite());
+            for idx in runs(n, known, self.connect_gaps) {
+                let run: Vec<(f32, f32)> = idx.iter().map(|j| (x(*j), y(s.values[*j]))).collect();
+                if run.len() == 1 {
+                    // A point alone between gaps.
+                    paths.push(dot(run[0].0, run[0].1, color, 5.));
+                    continue;
+                }
+                let line = if self.smooth {
+                    Path::smooth(run.clone())
+                } else {
+                    Path::line(run.clone())
+                };
+                if let (true, Some(first), Some(last)) = (self.area, run.first(), run.last()) {
+                    paths.push(
+                        line.clone()
+                            .line_to(last.0, 1.)
+                            .line_to(first.0, 1.)
+                            .close()
+                            .fill(faded(color, 0.16)),
+                    );
+                }
+                let stroke = line.stroke(color, 2.5).round();
+                paths.push(if s.dashed {
+                    stroke.dashed(6., 5.)
+                } else {
+                    stroke
+                });
+            }
             if self.points {
-                for (px_, py_) in &pts {
-                    paths.push(dot(*px_, *py_, color, 8.));
-                    paths.push(dot(*px_, *py_, t.surface, 3.5));
+                for (j, v) in s.values.iter().enumerate().filter(|(_, v)| v.is_finite()) {
+                    paths.push(dot(x(j), y(*v), color, 8.));
+                    paths.push(dot(x(j), y(*v), t.surface, 3.5));
                 }
             }
         }
-        let spoken = self
+        paths.extend(ref_paths(&t, &axis, &self.refs));
+        let selected = self.selected.filter(|i| *i < n);
+        if let Some(i) = selected {
+            // The read-out: a rule and a dot on every line.
+            paths.push(Path::line([(x(i), 0.), (x(i), 1.)]).stroke(faded(t.muted, 0.6), 1.));
+            for (k, s) in self.series.iter().enumerate() {
+                if let Some(v) = s.values.get(i).filter(|v| v.is_finite()) {
+                    paths.push(dot(x(i), y(*v), color_of(k, s), 10.));
+                    paths.push(dot(x(i), y(*v), t.surface, 4.));
+                }
+            }
+        }
+        let mut spoken = self
             .series
             .iter()
-            .map(|s| summary(cx, &s.name, &s.values, &self.unit))
+            .map(|s| spoken(cx, &s.name, &s.values, &fmt))
             .collect::<Vec<_>>()
             .join(". ");
-        let plot = shape()
-            .inset(if labelled { 0. } else { 5. }, LABEL_H / 2.)
-            .paths(paths)
-            .h(px(self.height))
+        if !self.refs.is_empty() {
+            spoken = format!("{spoken}. {}", spoken_refs(cx, &fmt, &self.refs));
+        }
+        let inset_x = if labelled { 0. } else { 5. };
+        let h = self.height;
+        let inner = h - LABEL_H;
+        let label_of = |i: usize| self.labels.get(i).cloned().unwrap_or_default();
+        let values_at = |i: usize| {
+            self.series
+                .iter()
+                .enumerate()
+                .map(|(k, s)| {
+                    let v = s.values.get(i).copied().unwrap_or(f64::NAN);
+                    (color_of(k, s), s.name.clone(), fmt.value(cx, v))
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut overlays = plot_labels(cx, &t, &axis, &fmt, &self.refs, &self.bands, inner);
+        if let Some(i) = selected.filter(|_| !cx.in_snapshot()) {
+            let top = self
+                .series
+                .iter()
+                .filter_map(|s| s.values.get(i).filter(|v| v.is_finite()))
+                .map(|v| y(*v))
+                .fold(1., f32::min);
+            // Series without a value there are left out.
+            let rows: Vec<_> = values_at(i)
+                .into_iter()
+                .zip(&self.series)
+                .filter(|(_, s)| s.values.get(i).is_some_and(|v| v.is_finite()))
+                .map(|(r, _)| r)
+                .collect();
+            let spot = Spot {
+                from: x(i),
+                to: x(i),
+                top,
+            };
+            overlays.push(readout(&t, spot, inner, &label_of(i), rows));
+        }
+        let snapshot = cx.in_snapshot();
+        // One tap target per point, as wide as the region nearest to it.
+        let targets = self
+            .on_select
+            .clone()
+            .filter(|_| !snapshot && n > 0)
+            .map(|handler| {
+                div()
+                    .absolute()
+                    .top(px(LABEL_H / 2.))
+                    .bottom(px(LABEL_H / 2.))
+                    .left(px(inset_x))
+                    .right(px(inset_x))
+                    .flex_row()
+                    .children((0..n).map(|i| {
+                        let grow = if !labelled && n > 1 && (i == 0 || i == n - 1) {
+                            0.5
+                        } else {
+                            1.
+                        };
+                        let spoken = values_at(i)
+                            .into_iter()
+                            .map(|(_, name, v)| {
+                                if self.series.len() > 1 {
+                                    format!("{name}: {v}")
+                                } else {
+                                    v
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let label = label_of(i);
+                        let handler = handler.clone();
+                        div()
+                            .h_full()
+                            .min_w(px(0.))
+                            .with_style(move |s| {
+                                s.flex_grow = grow;
+                                s.flex_basis = prism_core::Length::Px(0.);
+                            })
+                            .accessibility_role(Role::Button)
+                            .accessibility_label(if label.is_empty() {
+                                spoken
+                            } else {
+                                format!("{label}: {spoken}")
+                            })
+                            .on_click(Rc::new(move |_, cx: &mut App| {
+                                handler(&ChangeEvent { value: i as f64 }, cx)
+                            }))
+                    }))
+                    .into_element()
+            });
+        let plot = div()
+            .h(px(h))
             .w_full()
-            .label(if self.title.is_empty() {
-                spoken
-            } else {
-                format!("{}. {spoken}", self.title)
+            .child(
+                shape()
+                    .inset(inset_x, LABEL_H / 2.)
+                    .paths(paths)
+                    .h(px(h))
+                    .w_full()
+                    .label(if self.title.is_empty() {
+                        spoken
+                    } else {
+                        format!("{}. {spoken}", self.title)
+                    }),
+            )
+            .when_some(targets, |d, targets| d.child(targets))
+            .when(!overlays.is_empty() && !snapshot, |d| {
+                d.child(overlay(inset_x).children(overlays))
             });
         let legend_items: Vec<(String, Color)> = self
             .series
             .iter()
             .enumerate()
-            .map(|(i, s)| (s.name.clone(), s.color.unwrap_or_else(|| t.chart_color(i))))
+            .map(|(i, s)| (s.name.clone(), color_of(i, s)))
             .collect();
         let el = div()
             .gap(8.)
@@ -429,16 +1072,10 @@ impl Component for LineChart {
                     .flex_row()
                     .items_start()
                     .gap(8.)
-                    .when(self.y_axis, |d| {
-                        d.child(axis.labels(cx, &t, &self.unit, self.height))
-                    })
-                    .child(
-                        div()
-                            .flex_1()
-                            .gap(4.)
-                            .child(plot)
-                            .when(labelled, |d| d.child(x_labels(cx, &self.labels, &t, 0.))),
-                    ),
+                    .when(self.y_axis, |d| d.child(axis.labels(cx, &t, &fmt, h)))
+                    .child(div().flex_1().gap(4.).child(plot).when(labelled, |d| {
+                        d.child(x_labels(cx, &self.labels, &t, 0., self.ticks.x_every))
+                    })),
             );
         self.refine.apply(el).into_element()
     }
@@ -449,7 +1086,7 @@ component!(LineChart);
 // --- Bar chart -----------------------------------------------------------------
 
 /// Vertical bars, each a native element: tappable, spoken on its own, and
-/// animated when its value changes.
+/// animated when its value changes. Several series draw grouped bars.
 pub struct BarChart {
     /// Label, value, color (default: the chart's color).
     pub bars: Vec<(String, f64, Option<Color>)>,
@@ -472,11 +1109,25 @@ pub struct BarChart {
     /// The corners of each bar that are rounded (default: the top ones, the
     /// bars stand on the baseline).
     pub bar_corners: Corners,
+    /// Grouped bars: one bar per series in each category of `labels`
+    /// (instead of `bars`).
+    pub series: Vec<Series>,
+    /// Category labels of grouped bars.
+    pub labels: Vec<String>,
+    /// Horizontal reference lines.
+    pub refs: Vec<RefLine>,
+    /// Colored bands behind the plot.
+    pub bands: Vec<Band>,
+    /// Axis labels and value formatting.
+    pub ticks: Ticks,
+    /// The bar (or group) whose values the read-out shows; the others fade.
+    pub selected: Option<usize>,
     refine: Refine,
 }
 
-/// A bar chart. Add bars with [`BarChart::bar`]. Values below zero draw as
-/// zero.
+/// A bar chart. Add bars with [`BarChart::bar`], or groups with
+/// [`BarChart::labels`] and [`BarChart::series`]. Values below zero draw
+/// as zero.
 pub fn bar_chart() -> BarChart {
     BarChart {
         bars: Vec::new(),
@@ -489,6 +1140,12 @@ pub fn bar_chart() -> BarChart {
         on_select: None,
         bar_radius: 4.,
         bar_corners: Corners::TOP,
+        series: Vec::new(),
+        labels: Vec::new(),
+        refs: Vec::new(),
+        bands: Vec::new(),
+        ticks: Ticks::default(),
+        selected: None,
         refine: Refine::default(),
     }
 }
@@ -517,6 +1174,36 @@ impl BarChart {
     /// One bar in its own color.
     pub fn bar_colored(mut self, label: impl Into<String>, value: f64, c: Color) -> Self {
         self.bars.push((label.into(), value, Some(c)));
+        self
+    }
+    /// Category labels of grouped bars (with [`series`](Self::series)).
+    pub fn labels<S: Into<String>>(mut self, labels: impl IntoIterator<Item = S>) -> Self {
+        self.labels = labels.into_iter().map(Into::into).collect();
+        self
+    }
+    /// Adds a series: one bar per label, side by side with the other
+    /// series' (grouped bars), in the theme's chart colors.
+    pub fn series(
+        mut self,
+        name: impl Into<String>,
+        values: impl IntoIterator<Item = f64>,
+    ) -> Self {
+        self.series
+            .push(Series::new(name.into(), values.into_iter().collect(), None));
+        self
+    }
+    /// Adds a series in its own color.
+    pub fn series_colored(
+        mut self,
+        name: impl Into<String>,
+        values: impl IntoIterator<Item = f64>,
+        c: Color,
+    ) -> Self {
+        self.series.push(Series::new(
+            name.into(),
+            values.into_iter().collect(),
+            Some(c),
+        ));
         self
     }
     /// Color of every bar without its own.
@@ -549,35 +1236,121 @@ impl BarChart {
         self.unit = unit.into();
         self
     }
-    /// Called with the tapped bar's index (`e.index()`).
+    /// Called with the tapped bar's (or group's) index (`e.index()`).
     pub fn on_select(mut self, handler: Handler<ChangeEvent>) -> Self {
         self.on_select = Some(handler);
         self
     }
+
+    /// Categories: a label and its bars' values and colors.
+    fn groups(&self, t: &Theme) -> (Vec<String>, Vec<Vec<(f64, Color)>>) {
+        if self.series.is_empty() {
+            let color = self.color.unwrap_or(t.accent);
+            return (
+                self.bars.iter().map(|b| b.0.clone()).collect(),
+                self.bars
+                    .iter()
+                    .map(|b| vec![(b.1, b.2.unwrap_or(color))])
+                    .collect(),
+            );
+        }
+        let n = self
+            .series
+            .iter()
+            .map(|s| s.values.len())
+            .max()
+            .unwrap_or(0)
+            .max(self.labels.len());
+        let labels = (0..n)
+            .map(|i| self.labels.get(i).cloned().unwrap_or_default())
+            .collect();
+        let groups = (0..n)
+            .map(|i| {
+                self.series
+                    .iter()
+                    .enumerate()
+                    .map(|(k, s)| {
+                        (
+                            s.values.get(i).copied().unwrap_or(f64::NAN),
+                            s.color.unwrap_or_else(|| t.chart_color(k)),
+                        )
+                    })
+                    .collect()
+            })
+            .collect();
+        (labels, groups)
+    }
+
+    /// What one category says: its label and value(s).
+    fn spoken_group(&self, cx: &App, fmt: &Fmt, label: &str, values: &[(f64, Color)]) -> String {
+        let body = if self.series.is_empty() {
+            values
+                .iter()
+                .map(|(v, _)| fmt.value(cx, *v))
+                .collect::<Vec<_>>()
+                .join(", ")
+        } else {
+            self.series
+                .iter()
+                .zip(values)
+                .map(|(s, (v, _))| format!("{}: {}", s.name, fmt.value(cx, *v)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        if label.is_empty() {
+            body
+        } else {
+            format!("{label}: {body}")
+        }
+    }
 }
 
+chart_options!(BarChart);
 refinable!(BarChart);
 
 impl Component for BarChart {
     fn render(self, cx: &mut App) -> Element {
         let t = Theme::of(cx);
-        let max = self.bars.iter().map(|b| b.1).fold(0., f64::max);
-        let (lo, hi) = self.range.unwrap_or((0., if max > 0. { max } else { 1. }));
-        let axis = Axis::new(lo.min(0.), hi);
-        let (h, gap) = (self.height, 6.);
-        let color = self.color.unwrap_or(t.accent);
-        let decimals = if self.bars.iter().all(|b| b.1.fract() == 0.) {
-            0
-        } else {
-            1
+        let (labels, groups) = self.groups(&t);
+        let finite = || {
+            groups
+                .iter()
+                .flatten()
+                .map(|g| g.0)
+                .filter(|v| v.is_finite())
         };
+        let max = finite()
+            .chain(self.refs.iter().map(|r| r.value))
+            .fold(0., f64::max);
+        let (lo, hi) = self.range.unwrap_or((0., if max > 0. { max } else { 1. }));
+        let axis = Axis::with(lo.min(0.), hi, &self.ticks);
+        let fmt = Fmt::new(&self.ticks, &self.unit);
+        let (h, gap) = (self.height, if self.series.is_empty() { 6. } else { 10. });
+        let highlight = self.selected.or(self.highlight);
         if cx.in_snapshot() {
-            return self.render_static(cx, &t, &axis, color, decimals);
+            return self.render_static(cx, &t, &axis, &fmt, &labels, &groups, highlight);
         }
-        let bars = self.bars.iter().enumerate().map(|(i, (label, v, c))| {
-            let fraction = ((v.max(0.) - axis.lo) / (axis.hi - axis.lo)).clamp(0., 1.) as f32;
-            let faded = self.highlight.is_some_and(|hl| hl != i);
-            let spoken = format!("{label}: {}{}", cx.format_number(*v, decimals), self.unit);
+        let n = groups.len();
+        let grouped = !self.series.is_empty();
+        let fraction = |v: f64| {
+            if v.is_finite() {
+                ((v.max(0.) - axis.lo) / (axis.hi - axis.lo)).clamp(0., 1.) as f32
+            } else {
+                0.
+            }
+        };
+        let cells = groups.iter().enumerate().map(|(i, values)| {
+            let faded_cell = highlight.is_some_and(|hl| hl != i);
+            let spoken = self.spoken_group(cx, &fmt, &labels[i], values);
+            let bar = |v: f64, c: Color| {
+                div()
+                    .h(relative(fraction(v)))
+                    .min_h(px(if v > 0. { 2. } else { 0. }))
+                    .rounded_corners(self.bar_radius, self.bar_corners)
+                    .bg(c)
+                    .opacity(if faded_cell { 0.35 } else { 1. })
+                    .spring(450)
+            };
             div()
                 .flex_1()
                 .h_full()
@@ -594,33 +1367,68 @@ impl Component for BarChart {
                         h(&ChangeEvent { value: i as f64 }, cx)
                     }))
                 })
-                .child(
-                    div()
-                        .w(relative(0.72))
-                        .max_w(px(44.))
-                        .h(relative(fraction))
-                        .min_h(px(if *v > 0. { 2. } else { 0. }))
-                        .rounded_corners(self.bar_radius, self.bar_corners)
-                        .bg(c.unwrap_or(color))
-                        .opacity(if faded { 0.35 } else { 1. })
-                        .spring(450),
-                )
+                .map(|d| {
+                    if grouped {
+                        // Side by side, sharing the cell (a gap between them).
+                        d.child(
+                            div()
+                                .flex_row()
+                                .items_end()
+                                .gap(2.)
+                                .w(relative(0.84))
+                                .max_w(px(28. * values.len() as f32))
+                                .h_full()
+                                .children(
+                                    values
+                                        .iter()
+                                        .map(|(v, c)| bar(*v, *c).flex_1().min_w(px(0.))),
+                                ),
+                        )
+                    } else {
+                        let (v, c) = values[0];
+                        d.child(bar(v, c).w(relative(0.72)).max_w(px(44.)))
+                    }
+                })
         });
-        let labels: Vec<String> = self.bars.iter().map(|b| b.0.clone()).collect();
+        let inner = h - LABEL_H;
+        let mut overlays = plot_labels(cx, &t, &axis, &fmt, &self.refs, &self.bands, inner);
+        if let Some(i) = self.selected.filter(|i| *i < n) {
+            let rows = if grouped {
+                self.series
+                    .iter()
+                    .zip(&groups[i])
+                    .map(|(s, (v, c))| (*c, s.name.clone(), fmt.value(cx, *v)))
+                    .collect()
+            } else {
+                vec![(groups[i][0].1, String::new(), fmt.value(cx, groups[i][0].0))]
+            };
+            // Beside the cell's bars (they take 72–84 % of it).
+            let (cell, half) = (1. / n as f32, if grouped { 0.42 } else { 0.36 });
+            let center = (i as f32 + 0.5) * cell;
+            let spot = Spot {
+                from: center - half * cell,
+                to: center + half * cell,
+                // Beside the bars, whatever their height: at the top.
+                top: 1.,
+            };
+            overlays.push(readout(&t, spot, inner, &labels[i], rows));
+        }
+        let mut lines = band_paths(&axis, &self.bands);
+        if self.y_axis {
+            lines.extend(axis.grid(&t));
+        }
+        let refs = ref_paths(&t, &axis, &self.refs);
         let plot = div()
             .flex_1()
             .gap(4.)
             .child(
-                // The grid, with the bars over it (pulled up by a negative margin).
+                // The grid, with the bars over it (pulled up by a negative
+                // margin), reference lines over the bars, labels on top.
                 div()
                     .child(
                         shape()
                             .inset(0., LABEL_H / 2.)
-                            .paths(if self.y_axis {
-                                axis.grid(&t)
-                            } else {
-                                Vec::new()
-                            })
+                            .paths(lines)
                             .h(px(h))
                             .w_full(),
                     )
@@ -632,16 +1440,44 @@ impl Component for BarChart {
                             .py(LABEL_H / 2.)
                             .gap(gap)
                             .items_end()
-                            .children(bars),
-                    ),
+                            .children(cells),
+                    )
+                    .when(!refs.is_empty(), |d| {
+                        d.child(
+                            shape()
+                                .inset(0., LABEL_H / 2.)
+                                .paths(refs)
+                                .h(px(h))
+                                .w_full()
+                                .with_style(move |s| s.margin.top = -h),
+                        )
+                    })
+                    .when(!overlays.is_empty(), |d| {
+                        d.child(overlay(0.).children(overlays))
+                    }),
             )
-            .child(x_labels(cx, &labels, &t, gap));
+            .when(!labels.iter().all(String::is_empty), |d| {
+                d.child(x_labels(cx, &labels, &t, gap, self.ticks.x_every))
+            });
+        let legend_items: Vec<(String, Color)> = self
+            .series
+            .iter()
+            .enumerate()
+            .map(|(k, s)| (s.name.clone(), s.color.unwrap_or_else(|| t.chart_color(k))))
+            .collect();
         let el = div()
-            .flex_row()
-            .items_start()
             .gap(8.)
-            .when(self.y_axis, |d| d.child(axis.labels(cx, &t, &self.unit, h)))
-            .child(plot);
+            .when(self.series.len() > 1, |d| {
+                d.child(legend(&legend_items, &t))
+            })
+            .child(
+                div()
+                    .flex_row()
+                    .items_start()
+                    .gap(8.)
+                    .when(self.y_axis, |d| d.child(axis.labels(cx, &t, &fmt, h)))
+                    .child(plot),
+            );
         self.refine.apply(el).into_element()
     }
 }
@@ -650,48 +1486,61 @@ impl BarChart {
     /// Widgets and Live Activities: the grid and the bars in one shape
     /// (nothing to tap or animate there, and bar heights relative to the
     /// plot would not survive the snapshot).
+    #[allow(clippy::too_many_arguments)]
     fn render_static(
         self,
         cx: &App,
         t: &Theme,
         axis: &Axis,
-        color: Color,
-        decimals: usize,
+        fmt: &Fmt,
+        labels: &[String],
+        groups: &[Vec<(f64, Color)>],
+        highlight: Option<usize>,
     ) -> Element {
-        let n = self.bars.len().max(1) as f32;
-        let mut paths = if self.y_axis {
-            axis.grid(t)
-        } else {
-            Vec::new()
-        };
-        let base = axis.y(axis.lo.max(0.));
-        for (i, (_, v, c)) in self.bars.iter().enumerate() {
-            let top = axis.y(v.max(0.).min(axis.hi));
-            let w = 0.72 / n;
-            let x = (i as f32 + 0.5) / n - w / 2.;
-            let faded_bar = self.highlight.is_some_and(|hl| hl != i);
-            let c = c.unwrap_or(color);
-            paths.push(
-                Path::rect(x, top, w, (base - top).max(0.)).fill(if faded_bar {
-                    faded(c, 0.35)
-                } else {
-                    c
-                }),
-            );
+        let n = groups.len().max(1) as f32;
+        let mut paths = band_paths(axis, &self.bands);
+        if self.y_axis {
+            paths.extend(axis.grid(t));
         }
-        let spoken = self
-            .bars
+        let base = axis.y(axis.lo.max(0.));
+        for (i, values) in groups.iter().enumerate() {
+            let k = values.len().max(1) as f32;
+            let cell = if self.series.is_empty() { 0.72 } else { 0.84 } / n;
+            let w = cell / k;
+            for (j, (v, c)) in values.iter().enumerate() {
+                if !v.is_finite() {
+                    continue;
+                }
+                let top = axis.y(v.max(0.).min(axis.hi));
+                let x = (i as f32 + 0.5) / n - cell / 2. + j as f32 * w;
+                let faded_bar = highlight.is_some_and(|hl| hl != i);
+                // A hairline between grouped bars.
+                let wb = if k > 1. { w * 0.9 } else { w };
+                paths.push(
+                    Path::rect(x, top, wb, (base - top).max(0.)).fill(if faded_bar {
+                        faded(*c, 0.35)
+                    } else {
+                        *c
+                    }),
+                );
+            }
+        }
+        paths.extend(ref_paths(t, axis, &self.refs));
+        let mut spoken = groups
             .iter()
-            .map(|(l, v, _)| format!("{l}: {}{}", cx.format_number(*v, decimals), self.unit))
+            .zip(labels)
+            .map(|(g, l)| self.spoken_group(cx, fmt, l, g))
             .collect::<Vec<_>>()
             .join(", ");
-        let labels: Vec<String> = self.bars.iter().map(|b| b.0.clone()).collect();
+        if !self.refs.is_empty() {
+            spoken = format!("{spoken}. {}", spoken_refs(cx, fmt, &self.refs));
+        }
         let h = self.height;
         let el = div()
             .flex_row()
             .items_start()
             .gap(8.)
-            .when(self.y_axis, |d| d.child(axis.labels(cx, t, &self.unit, h)))
+            .when(self.y_axis, |d| d.child(axis.labels(cx, t, fmt, h)))
             .child(
                 div()
                     .flex_1()
@@ -705,7 +1554,7 @@ impl BarChart {
                             .label(spoken),
                     )
                     .when(!labels.iter().all(String::is_empty), |d| {
-                        d.child(x_labels(cx, &labels, t, 0.))
+                        d.child(x_labels(cx, labels, t, 0., self.ticks.x_every))
                     }),
             );
         self.refine.apply(el).into_element()
