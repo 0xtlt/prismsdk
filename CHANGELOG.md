@@ -213,6 +213,9 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- Web: on windows 1024 px wide or more the tab bar is a sidebar again; the
+  Tabs node no longer carries a `flex-direction` that overrode the media
+  query in `prism.css`.
 - A web `picker` given a height centres its text vertically and draws its
   own arrow (`appearance: none`) (#18).
 - iOS, iPadOS, tvOS, visionOS and watchOS builds (simulators and devices)

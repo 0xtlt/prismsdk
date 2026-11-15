@@ -2120,3 +2120,15 @@ fn horizontal_scrolls_and_own_width_rules_in_ops_and_markup() {
             .contains(r#"class="prism-scroll prism-scroll-x""#)
     );
 }
+
+#[test]
+fn tabs_leave_their_direction_to_the_stylesheet() {
+    // `prism.css` turns the tab bar into a sidebar on wide windows; an
+    // inline (or first-paint) direction would win over its media query.
+    let tabs = crate::css::css(NodeKind::Tabs, &Style::default());
+    assert!(tabs.contains("display:flex;"), "{tabs}");
+    assert!(!tabs.contains("flex-direction"), "{tabs}");
+    let sheet = include_str!("prism.css");
+    assert!(sheet.contains(".prism-tabs { display: flex; flex-direction: column; }"));
+    assert!(sheet.contains(".prism-tabs { flex-direction: row; }"));
+}

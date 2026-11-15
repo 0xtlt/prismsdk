@@ -54,6 +54,10 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
         NodeKind::Picker | NodeKind::DatePicker | NodeKind::TextArea => {
             w.push_str("display:block;")
         }
+        // The tab bar is above the panels, or a sidebar beside them on wide
+        // windows: `prism.css` decides (a media query), so no direction here
+        // (a node's rules would win over it).
+        NodeKind::Tabs => w.push_str("display:flex;"),
         _ if s.grid => w.push_str("display:grid;justify-items:stretch;"),
         // A box and its label on one line.
         NodeKind::Checkbox => w.push_str("display:flex;flex-direction:row;"),
