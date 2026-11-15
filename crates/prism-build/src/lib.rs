@@ -1,5 +1,15 @@
 //! Build-time helpers for Prism apps.
 //!
+//! ## Link settings
+//!
+//! Call [`link_app`] first in the app's `build.rs` (`prism new` does):
+//!
+//! ```ignore
+//! fn main() {
+//!     prism_build::link_app();
+//! }
+//! ```
+//!
 //! ## Translations
 //!
 //! One file per language in `locales/` (`en.json`, `fr.json`, `pt-BR.json`…),
@@ -35,6 +45,20 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+
+/// Link settings the app's own executable needs: on Apple targets, the Swift
+/// runtime's search path (`-rpath /usr/lib/swift`) and, when the environment
+/// sets none, Prism's deployment target (iOS 17, tvOS 17, watchOS 10,
+/// visionOS 26, macOS 13) for the final link. No-op on other targets.
+///
+/// Prism's backends cannot add these themselves: Cargo applies a build
+/// script's `rustc-link-arg` only to the package that printed it. Without
+/// them, a plain `cargo build` for iOS links for rustc's default (iOS 14),
+/// where Swift Concurrency is an `@rpath` library the app does not ship, and
+/// the app stops at launch. See [`prism_apple_build::link_app`].
+pub fn link_app() {
+    prism_apple_build::link_app();
+}
 
 /// Starts the translations build step for the `*.json` files in `dir`
 /// (relative to the package).

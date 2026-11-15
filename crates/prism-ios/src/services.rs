@@ -141,6 +141,17 @@ impl PlatformServices for IosServices {
                 };
                 if !ok {
                     eprintln!("prism-ios: Live Activity {kind:?} not started");
+                    // Bundled without the widget extension that draws them.
+                    let declared = objc2_foundation::NSBundle::mainBundle()
+                        .objectForInfoDictionaryKey(&objc2_foundation::NSString::from_str(
+                            "NSSupportsLiveActivities",
+                        ))
+                        .is_some();
+                    if !declared && cfg!(target_os = "ios") {
+                        eprintln!(
+                            "prism-ios: the app was bundled without Live Activities: call cx.enable_live_activities() at startup"
+                        );
+                    }
                 }
             }
             PlatformRequest::UpdateActivity { id, content } => unsafe {

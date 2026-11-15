@@ -30,7 +30,11 @@ borders, corners and pictures are layer properties ([Performance](../performance
 
 The Swift bridge (`crates/prism-apple-build/apple/Bridge`) is compiled by
 `prism-macos`'s build script, so Xcode is required. The deployment target is
-macOS 13 (`MACOSX_DEPLOYMENT_TARGET`); the WidgetKit parts need macOS 14.
+macOS 13 (`MACOSX_DEPLOYMENT_TARGET`, set by `prism`; change it with
+`[macos] deployment_target` in `Prism.toml`, see
+[iOS](ios.md#deployment-target)); the WidgetKit parts need macOS 14. The
+bundled app embeds the widget extension and its App Group only when the app
+registers a widget.
 
 Development hooks: `PRISM_CLICK="+1|Dark mode" PRISM_SCROLL=600 PRISM_DELAY=2
 PRISM_SNAPSHOT=out.png cargo run -p counter` ([Development](../development.md)).

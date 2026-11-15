@@ -33,6 +33,22 @@ fn creates_a_project_named_after_the_directory() {
     let lib = read(&dir, "src/lib.rs");
     assert!(lib.contains(".title(\"My Cool App\")") && !lib.contains("{title}"));
     assert!(lib.contains("prism::android_main!(run);"));
+    // The app's own binary gets the Apple link settings (Swift rpath).
+    assert!(read(&dir, "build.rs").contains("prism_build::link_app();"));
+    // Every deployment target is documented, with Prism's defaults.
+    for (section, version) in [
+        ("[ios]", "17.0"),
+        ("[macos]", "13.0"),
+        ("[tvos]", "17.0"),
+        ("[watchos]", "10.0"),
+        ("[visionos]", "26.0"),
+    ] {
+        assert!(prism.contains(section), "{section}");
+        assert!(
+            prism.contains(&format!("deployment_target = \"{version}\"")),
+            "{section}"
+        );
+    }
     for f in [
         "build.rs",
         "locales/en.json",

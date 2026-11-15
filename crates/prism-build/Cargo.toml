@@ -1,6 +1,6 @@
 [package]
 name = "prism-build"
-description = "Build-time helpers for Prism apps: checked, typed translations from locales/*.json."
+description = "Build-time helpers for Prism apps: checked, typed translations from locales/*.json, and the app binary's link settings."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -15,6 +15,8 @@ categories = ["internationalization", "development-tools::build-utils"]
 
 [dependencies]
 serde_json.workspace = true
+# link_app: the Apple link settings (Swift rpath, deployment targets).
+prism-apple-build.workspace = true
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]

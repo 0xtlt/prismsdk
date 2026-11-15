@@ -11,6 +11,9 @@ use prism::ui::{self, Theme};
 use crate::Store;
 
 pub fn register(cx: &mut App, store: Entity<Store>) {
+    // The focus timer starts Live Activities (focus.rs): the iOS bundle needs
+    // the extension for them even without this widget.
+    cx.enable_live_activities();
     cx.register_widget(
         Widget::new("todos", "Todos")
             .description("Your open todos at a glance.")

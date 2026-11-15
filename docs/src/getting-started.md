@@ -62,7 +62,7 @@ fn main() {
 | `Prism.toml` | name, bundle id, version, icon, Apple team ([the `prism` command](cli.md#prismtoml)) |
 | `src/lib.rs` | the app: a `run()` function, plus `prism::android_main!(run)` for Android |
 | `src/main.rs` | calls `run()` on every other platform |
-| `build.rs` | turns `locales/*.json` into typed `strings::…` functions ([Languages](guide/i18n.md)) |
+| `build.rs` | the app binary's link settings (`prism_build::link_app()`: Swift's rpath and deployment target on Apple platforms, see [iOS](platforms/ios.md#deployment-target)); turns `locales/*.json` into typed `strings::…` functions ([Languages](guide/i18n.md)) |
 | `locales/en.json`, `fr.json` | the strings |
 | `assets/` | pictures shown with `picture("logo.png")` |
 | `mise.toml` | `mise run web` / `macos` / `ios` / `android` |

@@ -457,7 +457,10 @@ public func prismAuthRedirect(_ id: UInt64, _ preferred: UnsafePointer<CChar>?) 
     if let p = str(preferred), let scheme = URL(string: p)?.scheme?.lowercased(), scheme != "http", scheme != "https" {
         return text(id, p)
     }
-    let scheme = info("PrismURLScheme") ?? "prism-\(ProcessInfo.processInfo.processName.lowercased())"
+    // Unbundled (`cargo run`): the bundlers' scheme, from the executable
+    // (the package name, `_` written `-`: schemes have no underscore).
+    let scheme = info("PrismURLScheme")
+        ?? "prism-\(ProcessInfo.processInfo.processName.lowercased().replacingOccurrences(of: "_", with: "-"))"
     text(id, "\(scheme):/oauth")
 }
 

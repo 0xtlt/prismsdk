@@ -34,7 +34,14 @@
 //! simulator = "iPhone 17"       # default simulator
 //! device = "My iPhone"          # default device (instead of a simulator)
 //! sign_in_with_apple = true     # the com.apple.developer.applesignin entitlement
+//! deployment_target = "17.0"    # oldest iOS/iPadOS (IPHONEOS_DEPLOYMENT_TARGET)
+//!
+//! [macos]                       # also [tvos], [watchos], [visionos]
+//! deployment_target = "13.0"    # MACOSX_ (TVOS_, WATCHOS_, XROS_) DEPLOYMENT_TARGET
 //! ```
+//!
+//! Deployment targets default to iOS 17, tvOS 17, watchOS 10, visionOS 26 and
+//! macOS 13; the environment variable wins when it is set.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -84,6 +91,50 @@ pub struct Project {
     pub target_dir: PathBuf,
     /// The Cargo workspace (watched by `prism dev`).
     pub workspace_root: PathBuf,
+    /// Deployment targets for every `cargo` the CLI runs, as
+    /// `(environment variable, version)`: `deployment_target` of `[ios]`,
+    /// `[tvos]`, `[watchos]`, `[visionos]` and `[macos]`, else Prism's defaults.
+    pub deployment_targets: Vec<(&'static str, String)>,
+}
+
+/// The `Prism.toml` section of each deployment-target variable.
+const DEPLOYMENT_SECTIONS: [(&str, &str); 5] = [
+    ("ios", "IPHONEOS_DEPLOYMENT_TARGET"),
+    ("tvos", "TVOS_DEPLOYMENT_TARGET"),
+    ("watchos", "WATCHOS_DEPLOYMENT_TARGET"),
+    ("visionos", "XROS_DEPLOYMENT_TARGET"),
+    ("macos", "MACOSX_DEPLOYMENT_TARGET"),
+];
+
+/// `deployment_target` of each platform section, else Prism's default
+/// (`prism_apple_build::DEPLOYMENT_TARGETS`).
+fn deployment_targets(
+    get: impl Fn(&str) -> Option<String>,
+) -> Result<Vec<(&'static str, String)>, String> {
+    prism_apple_build::DEPLOYMENT_TARGETS
+        .iter()
+        .map(|&(var, default)| {
+            let section = DEPLOYMENT_SECTIONS
+                .iter()
+                .find(|(_, v)| *v == var)
+                .map_or("ios", |(s, _)| *s);
+            let Some(version) = get(&format!("{section}.deployment_target")) else {
+                return Ok((var, default.to_string()));
+            };
+            let valid = !version.is_empty()
+                && version.split('.').count() <= 3
+                && version
+                    .split('.')
+                    .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
+            if valid {
+                Ok((var, version))
+            } else {
+                Err(format!(
+                    "Prism.toml [{section}] deployment_target: a version like \"{default}\", not {version:?}"
+                ))
+            }
+        })
+        .collect()
 }
 
 /// A minimal TOML reader for `[section]` and `key = "value"` lines.
@@ -155,6 +206,7 @@ impl Project {
                 .unwrap_or_default()
         });
         let (target_dir, workspace_root) = cargo_dirs(root)?;
+        let deployment_targets = deployment_targets(get)?;
         Ok(Project {
             bundle_id: get("app.bundle_id")
                 .unwrap_or_else(|| format!("dev.prism.{}", package.replace('_', "-"))),
@@ -199,7 +251,20 @@ impl Project {
             name,
             target_dir,
             workspace_root,
+            deployment_targets,
         })
+    }
+}
+
+impl Project {
+    /// Sets the deployment targets on a command that runs `cargo` (directly
+    /// or through a bundling script), except those the environment sets.
+    pub fn deployment_env(&self, cmd: &mut Command) {
+        for (var, version) in &self.deployment_targets {
+            if std::env::var_os(var).is_none() {
+                cmd.env(var, version);
+            }
+        }
     }
 }
 
@@ -282,6 +347,25 @@ mod tests {
         assert_eq!(c["app.build"], "42");
         assert_eq!(c["app.category"], "public.app-category.games");
         assert_eq!(c["android.track"], "beta");
+    }
+
+    #[test]
+    fn deployment_targets_default_to_prisms_and_read_each_section() {
+        let c = super::parse(
+            "[ios]\ndeployment_target = \"18.0\"\n[macos]\ndeployment_target = \"14\"\n",
+        );
+        let get = |k: &str| c.get(k).cloned();
+        let t = super::deployment_targets(get).unwrap();
+        let find = |var: &str| t.iter().find(|(v, _)| *v == var).unwrap().1.clone();
+        assert_eq!(find("IPHONEOS_DEPLOYMENT_TARGET"), "18.0");
+        assert_eq!(find("MACOSX_DEPLOYMENT_TARGET"), "14");
+        assert_eq!(find("TVOS_DEPLOYMENT_TARGET"), "17.0");
+        assert_eq!(find("WATCHOS_DEPLOYMENT_TARGET"), "10.0");
+        assert_eq!(find("XROS_DEPLOYMENT_TARGET"), "26.0");
+        assert_eq!(t.len(), 5);
+        let bad = super::parse("[watchos]\ndeployment_target = \"ten\"\n");
+        let err = super::deployment_targets(|k| bad.get(k).cloned()).unwrap_err();
+        assert!(err.contains("[watchos]"), "{err}");
     }
 
     #[test]

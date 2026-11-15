@@ -327,6 +327,79 @@ fn build_swift(dirs: &[&str], module: &str) {
     }
 }
 
+/// The deployment targets Prism builds for when the environment sets none,
+/// as `(environment variable, version)`: iOS and iPadOS 17, tvOS 17, watchOS
+/// 10, visionOS 26 (WidgetKit there), macOS 13.
+///
+/// The `prism` CLI sets them for every `cargo` it runs (overridden by
+/// `deployment_target` in the platform's section of `Prism.toml`, and by the
+/// variable itself when it is already set); [`link_app`] uses them for builds
+/// without the CLI. Below iOS 15 Swift Concurrency would be a back-deployed
+/// `@rpath` library the app does not ship.
+pub const DEPLOYMENT_TARGETS: [(&str, &str); 5] = [
+    ("IPHONEOS_DEPLOYMENT_TARGET", "17.0"),
+    ("TVOS_DEPLOYMENT_TARGET", "17.0"),
+    ("WATCHOS_DEPLOYMENT_TARGET", "10.0"),
+    ("XROS_DEPLOYMENT_TARGET", "26.0"),
+    ("MACOSX_DEPLOYMENT_TARGET", "13.0"),
+];
+
+/// The deployment-target variable of a Rust target, `None` off Apple
+/// platforms.
+fn deployment_variable(target: &str) -> Option<&'static str> {
+    let var = if target.contains("-apple-watchos") {
+        "WATCHOS_DEPLOYMENT_TARGET"
+    } else if target.contains("-apple-tvos") {
+        "TVOS_DEPLOYMENT_TARGET"
+    } else if target.contains("-apple-visionos") {
+        "XROS_DEPLOYMENT_TARGET"
+    } else if target.contains("-apple-ios") {
+        "IPHONEOS_DEPLOYMENT_TARGET"
+    } else if target.contains("-apple-darwin") {
+        "MACOSX_DEPLOYMENT_TARGET"
+    } else {
+        return None;
+    };
+    Some(var)
+}
+
+/// The deployment target a Rust target is linked for: its variable from
+/// the environment, else Prism's default ([`DEPLOYMENT_TARGETS`]); arm64
+/// watches (`aarch64-apple-watchos`) at least watchOS 26.
+fn deployment_target(target: &str, env: Option<String>) -> Option<(&'static str, String)> {
+    let var = deployment_variable(target)?;
+    let default = DEPLOYMENT_TARGETS.iter().find(|(v, _)| *v == var)?.1;
+    let mut version = env.unwrap_or_else(|| default.to_string());
+    if target == "aarch64-apple-watchos" {
+        version = at_least(&version, "26.0");
+    }
+    Some((var, version))
+}
+
+/// Link settings for the **app's own** binary, from the app's `build.rs`
+/// (`prism new` generates the call, through `prism_build::link_app`).
+///
+/// Cargo applies a build script's `rustc-link-arg` only to the package that
+/// printed it, so the backends' build scripts cannot reach the final
+/// executable. For Apple targets this adds the Swift runtime's search path
+/// (`-rpath /usr/lib/swift`, as Xcode does) and, when the environment sets no
+/// deployment target, Prism's ([`DEPLOYMENT_TARGETS`]) for the final link:
+/// plain `cargo build` then links like the `prism` CLI. No-op elsewhere.
+pub fn link_app() {
+    let target = std::env::var("TARGET").unwrap_or_default();
+    let Some(var) = deployment_variable(&target) else {
+        return;
+    };
+    println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
+    println!("cargo:rerun-if-env-changed={var}");
+    if std::env::var_os(var).is_none()
+        && let Some((var, version)) = deployment_target(&target, None)
+    {
+        // rustc reads it when linking the binary.
+        println!("cargo:rustc-env={var}={version}");
+    }
+}
+
 /// The higher of two `major.minor` versions.
 fn at_least(version: &str, min: &str) -> String {
     let parse = |v: &str| -> Vec<u32> { v.split('.').map(|p| p.parse().unwrap_or(0)).collect() };
@@ -349,6 +422,40 @@ mod tests {
         assert_eq!(super::at_least("10.0", "26.0"), "26.0");
         assert_eq!(super::at_least("26.1", "26.0"), "26.1");
         assert_eq!(super::at_least("27", "26.0"), "27");
+    }
+
+    #[test]
+    fn deployment_targets_follow_the_rust_target() {
+        let t = |target: &str, env: Option<&str>| {
+            super::deployment_target(target, env.map(str::to_string))
+        };
+        for (target, var, version) in [
+            (
+                "aarch64-apple-ios-sim",
+                "IPHONEOS_DEPLOYMENT_TARGET",
+                "17.0",
+            ),
+            ("aarch64-apple-ios", "IPHONEOS_DEPLOYMENT_TARGET", "17.0"),
+            ("aarch64-apple-tvos-sim", "TVOS_DEPLOYMENT_TARGET", "17.0"),
+            ("aarch64-apple-visionos", "XROS_DEPLOYMENT_TARGET", "26.0"),
+            (
+                "aarch64-apple-watchos-sim",
+                "WATCHOS_DEPLOYMENT_TARGET",
+                "10.0",
+            ),
+            ("aarch64-apple-watchos", "WATCHOS_DEPLOYMENT_TARGET", "26.0"),
+            ("aarch64-apple-darwin", "MACOSX_DEPLOYMENT_TARGET", "13.0"),
+        ] {
+            assert_eq!(
+                t(target, None),
+                Some((var, version.to_string())),
+                "{target}"
+            );
+        }
+        assert_eq!(t("aarch64-apple-ios-sim", Some("18.2")).unwrap().1, "18.2");
+        assert_eq!(t("aarch64-apple-watchos", Some("11.0")).unwrap().1, "26.0");
+        assert_eq!(t("x86_64-unknown-linux-gnu", None), None);
+        assert_eq!(t("aarch64-linux-android", None), None);
     }
 
     #[test]

@@ -1233,6 +1233,9 @@ pub(crate) struct Surfaces {
     pub notification_handler: Option<NotificationHandler>,
     /// Inside [`snapshot`] (nested for snapshots taken while rendering one).
     pub snapshot_depth: u32,
+    // --- Bundling: what the app declares (`PRISM_DESCRIBE`) ---
+    /// [`App::enable_live_activities`] was called.
+    pub live_activities: bool,
 }
 
 type NotificationHandler = std::rc::Rc<dyn Fn(&NotificationResponse, &mut App)>;
@@ -1368,5 +1371,48 @@ impl App {
             .map(Widget::describe_json)
             .collect();
         format!("[{}]", items.join(","))
+    }
+}
+
+impl App {
+    /// Declares that the app starts Live Activities ([`App::start_activity`]),
+    /// so the bundler embeds the widget extension that draws them on iOS.
+    /// Call it at startup, like [`App::register_widget`].
+    ///
+    /// The `prism` CLI leaves the extension (and its provisioning profile and
+    /// App Group) out of apps that register no widget and declare no Live
+    /// Activity; there, `start_activity` does nothing on iOS. Apps with a
+    /// widget, or listening for push-to-start tokens
+    /// ([`App::on_activity_push_token`]), get the extension anyway.
+    pub fn enable_live_activities(&mut self) {
+        self.surfaces.live_activities = true;
+    }
+
+    /// Whether the app declared Live Activities: [`App::enable_live_activities`]
+    /// or a handler for their push tokens. `PRISM_DESCRIBE=live_activities`
+    /// prints it (`1` or `0`) for bundlers.
+    pub fn uses_live_activities(&self) -> bool {
+        self.surfaces.live_activities || self.watches_activity_tokens()
+    }
+}
+
+#[cfg(test)]
+mod bundling_tests {
+    use crate::App;
+
+    #[test]
+    fn live_activities_are_declared_or_implied_by_push_to_start() {
+        let mut app = App::new();
+        assert!(!app.uses_live_activities());
+        app.enable_live_activities();
+        assert!(app.uses_live_activities());
+        let mut app = App::new();
+        app.on_activity_push_token(|_, _| {});
+        assert!(app.uses_live_activities());
+        // Widgets alone are no declaration (the extension is built for them).
+        let mut app = App::new();
+        app.register_widget(crate::Widget::new("w", "W"));
+        assert!(!app.uses_live_activities());
+        assert_ne!(app.describe_widgets(), "[]");
     }
 }
