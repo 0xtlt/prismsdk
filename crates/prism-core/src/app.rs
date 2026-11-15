@@ -152,6 +152,8 @@ pub struct App {
     formatter: Option<Box<dyn crate::i18n::Formatter>>,
     pub(crate) surfaces: crate::surfaces::Surfaces,
     pub(crate) car: crate::car::CarState,
+    /// Set by `with_animation` for the next render.
+    pub(crate) animation: Option<crate::style::Transition>,
     pub(crate) executor: Rc<crate::task::Executor>,
     pub(crate) menus: crate::menu::Menus,
     pub(crate) background: crate::background::Background,
@@ -181,6 +183,7 @@ impl Default for App {
             formatter: None,
             surfaces: Default::default(),
             car: Default::default(),
+            animation: None,
             executor: Default::default(),
             menus: Default::default(),
             background: Default::default(),

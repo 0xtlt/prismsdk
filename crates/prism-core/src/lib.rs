@@ -6,6 +6,7 @@
 //! UIKit, ...) and feeds [`UiEvent`]s back through a [`Runtime`].
 
 mod a11y;
+pub mod animation;
 mod app;
 mod apple_models;
 pub mod background;
@@ -27,6 +28,7 @@ mod task;
 mod window;
 
 pub use a11y::{Accessibility, Accessible, Role};
+pub use animation::{Animations, Pose, Transform};
 pub use app::{AnyEntity, App, Appearance, Context, Entity, EntityId, Environment, Render};
 pub use background::{BackgroundKind, BackgroundTask, Lifecycle};
 pub use car::{CarButton, CarButtonStyle, CarItem, CarSection, CarTab, CarTemplate};
@@ -432,16 +434,16 @@ impl Runtime {
 /// Everything an app usually needs.
 pub mod prelude {
     pub use crate::{
-        Accessible, Accuracy, Activity, Alert, App, AsyncApp, BackgroundTask, Breakpoint,
-        CarButton, CarButtonStyle, CarItem, CarSection, CarTab, CarTemplate, ChangeEvent,
-        ClickEvent, Context, DateStyle, DeviceInfo, DeviceKind, Entity, FluentBuilder, Handler,
-        Haptic, InputEvent, IntoElement, Lifecycle, Locale, Location, Menu, MenuItem, Motion,
-        Notification, NotificationAction, NotificationResponse, Orientation, Params, ParentElement,
-        Permission, PermissionState, PickImages, PickedFile, Platform, Posture, Render, Role,
-        Router, ScrollEvent, Share, Styled, SwipeDirection, Transition, Translations, Tray,
-        VirtualList, Watch, Widget, WidgetFamily, adaptive, button, div, go_back, image, lazy,
-        navigate_to, picture, progress, px, relative, rgb, rgba, screen, scroll, text, text_input,
-        timer, toggle,
+        Accessible, Accuracy, Activity, Alert, Animations, App, AsyncApp, BackgroundTask,
+        Breakpoint, CarButton, CarButtonStyle, CarItem, CarSection, CarTab, CarTemplate,
+        ChangeEvent, ClickEvent, Context, DateStyle, DeviceInfo, DeviceKind, Entity, FluentBuilder,
+        Handler, Haptic, InputEvent, IntoElement, Lifecycle, Locale, Location, Menu, MenuItem,
+        Motion, Notification, NotificationAction, NotificationResponse, Orientation, Params,
+        ParentElement, Permission, PermissionState, PickImages, PickedFile, Platform, Pose,
+        Posture, Render, Role, Router, ScrollEvent, Share, Styled, SwipeDirection, Transition,
+        Translations, Tray, VirtualList, Watch, Widget, WidgetFamily, adaptive, button, div,
+        go_back, image, lazy, navigate_to, picture, progress, px, relative, rgb, rgba, screen,
+        scroll, text, text_input, timer, toggle,
     };
 }
 

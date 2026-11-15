@@ -112,13 +112,23 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
     if s.opacity < 1. {
         let _ = write!(w, "opacity:{};", s.opacity);
     }
+    if !s.transform.is_identity() {
+        let t = s.transform;
+        // Offsets are leading/trailing: `--prism-dir` is -1 right to left.
+        let _ = write!(
+            w,
+            "transform:translate(calc(var(--prism-dir,1)*{}px),{}px) rotate(calc(var(--prism-dir,1)*{}deg)) scale({});",
+            t.x, t.y, t.rotate, t.scale
+        );
+    }
     if let Some(t) = s.transition {
-        let curve = match t.curve {
-            prism_core::Curve::EaseInOut => "ease-in-out",
-            prism_core::Curve::Linear => "linear",
-            prism_core::Curve::Spring => "cubic-bezier(.34,1.56,.64,1)",
-        };
-        let _ = write!(w, "transition:all {}s {curve};", t.duration);
+        let _ = write!(
+            w,
+            "transition:all {}s {} {}s;",
+            t.duration,
+            t.css_easing(),
+            t.delay
+        );
     }
 
     if kind != NodeKind::View {
@@ -164,4 +174,31 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
         _ => {}
     }
     c
+}
+
+/// Enter, exit and loop animations for the client (Web Animations API), or
+/// null: `{rest, enter, exit, repeat, t, xt}` with poses `{o, tf: [x, y,
+/// scale, degrees]}` and transitions `{d, delay, ease}`.
+pub fn motion(s: &Style) -> serde_json::Value {
+    use prism_core::animation::{DEFAULT_ENTER, DEFAULT_EXIT};
+    use prism_core::{Pose, Transition};
+    use serde_json::{Value, json};
+    let a = s.animations;
+    if a.is_empty() {
+        return Value::Null;
+    }
+    let pose = |p: Pose| {
+        let (o, t) = p.apply(s.opacity, s.transform);
+        json!({ "o": o, "tf": [t.x, t.y, t.scale, t.rotate] })
+    };
+    let anim = |t: Transition| json!({ "d": t.duration, "delay": t.delay, "ease": t.css_easing() });
+    let t = s.transition;
+    json!({
+        "rest": pose(Pose::new()),
+        "enter": a.enter.map(pose),
+        "exit": a.exit.map(pose),
+        "repeat": a.repeat.map(|(p, t)| json!({ "to": pose(p), "t": anim(t) })),
+        "t": anim(t.unwrap_or(DEFAULT_ENTER)),
+        "xt": anim(t.map_or(DEFAULT_EXIT, |t| Transition { delay: 0., ..t })),
+    })
 }

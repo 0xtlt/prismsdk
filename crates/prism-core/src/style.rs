@@ -277,8 +277,13 @@ pub struct Style {
     pub font_weight: FontWeight,
     pub text_align: TextAlign,
 
-    /// Animates frame, opacity and color changes (skipped with reduce motion).
+    /// Visual offset, scale and rotation (no effect on layout).
+    pub transform: crate::animation::Transform,
+    /// Animates frame, opacity, color and transform changes (skipped with
+    /// reduce motion).
     pub transition: Option<Transition>,
+    /// Enter, exit and looping animations.
+    pub animations: crate::animation::Animations,
 
     /// Changes applied from a window width up (`.md(|s| s.flex_row())`) or
     /// on some platforms (`.on(Platform::Web, |s| …)`).
@@ -450,6 +455,12 @@ impl Style {
             corner_radius: self.corner_radius * factor,
             border_width: self.border_width * factor,
             font_size: (self.font_size * factor).round(),
+            transform: crate::animation::Transform {
+                x: self.transform.x * factor,
+                y: self.transform.y * factor,
+                ..self.transform
+            },
+            animations: self.animations.scaled(factor, false),
             ..self.clone()
         }
     }
@@ -473,26 +484,87 @@ pub struct Transition {
     /// Seconds.
     pub duration: f32,
     pub curve: Curve,
+    /// Seconds before it starts.
+    pub delay: f32,
 }
 
 impl Transition {
-    pub fn ease(ms: u32) -> Self {
+    fn new(ms: u32, curve: Curve) -> Self {
         Transition {
             duration: ms as f32 / 1000.,
-            curve: Curve::EaseInOut,
+            curve,
+            delay: 0.,
         }
+    }
+    pub fn ease(ms: u32) -> Self {
+        Self::new(ms, Curve::EaseInOut)
+    }
+    /// Starts fast, settles slowly (things arriving).
+    pub fn ease_out(ms: u32) -> Self {
+        Self::new(ms, Curve::EaseOut)
+    }
+    /// Starts slowly, leaves fast (things leaving).
+    pub fn ease_in(ms: u32) -> Self {
+        Self::new(ms, Curve::EaseIn)
     }
     pub fn linear(ms: u32) -> Self {
-        Transition {
-            duration: ms as f32 / 1000.,
-            curve: Curve::Linear,
-        }
+        Self::new(ms, Curve::Linear)
     }
     pub fn spring(ms: u32) -> Self {
-        Transition {
-            duration: ms as f32 / 1000.,
-            curve: Curve::Spring,
+        Self::new(ms, Curve::Spring)
+    }
+    /// Waits `ms` milliseconds first.
+    pub fn delay(mut self, ms: u32) -> Self {
+        self.delay = ms as f32 / 1000.;
+        self
+    }
+
+    /// CSS `<easing-function>`.
+    pub fn css_easing(&self) -> &'static str {
+        match self.curve {
+            Curve::EaseInOut => "ease-in-out",
+            Curve::EaseOut => "cubic-bezier(.2,.8,.2,1)",
+            Curve::EaseIn => "cubic-bezier(.4,0,1,1)",
+            Curve::Linear => "linear",
+            Curve::Spring => "cubic-bezier(.34,1.56,.64,1)",
         }
+    }
+
+    /// The curve as cubic Bézier control points `(x1, y1, x2, y2)`, the same
+    /// as [`css_easing`](Self::css_easing) (springs overshoot slightly).
+    pub fn bezier(&self) -> (f32, f32, f32, f32) {
+        match self.curve {
+            Curve::EaseInOut => (0.42, 0., 0.58, 1.),
+            Curve::EaseOut => (0.2, 0.8, 0.2, 1.),
+            Curve::EaseIn => (0.4, 0., 1., 1.),
+            Curve::Linear => (0., 0., 1., 1.),
+            Curve::Spring => (0.34, 1.56, 0.64, 1.),
+        }
+    }
+
+    /// The eased progress at linear progress `p` (0 to 1), for backends that
+    /// animate frame by frame. Springs overshoot past 1 a little.
+    pub fn ease_at(&self, p: f32) -> f32 {
+        let p = p.clamp(0., 1.);
+        if p == 0. || p == 1. {
+            return p;
+        }
+        let (x1, y1, x2, y2) = self.bezier();
+        let at = |a: f32, b: f32, t: f32| {
+            let u = 1. - t;
+            3. * u * u * t * a + 3. * u * t * t * b + t * t * t
+        };
+        // The curve's parameter where x = p (x is increasing: bisection).
+        let (mut lo, mut hi) = (0f32, 1f32);
+        for _ in 0..24 {
+            let mid = (lo + hi) / 2.;
+            if at(x1, x2, mid) < p {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        at(y1, y2, (lo + hi) / 2.)
     }
 }
 
@@ -500,6 +572,8 @@ impl Transition {
 pub enum Curve {
     #[default]
     EaseInOut,
+    EaseOut,
+    EaseIn,
     Linear,
     /// Slight overshoot, like iOS springs.
     Spring,
@@ -535,7 +609,9 @@ impl Default for Style {
             font_size: DEFAULT_FONT_SIZE,
             font_weight: FontWeight::Regular,
             text_align: TextAlign::Left,
+            transform: crate::animation::Transform::IDENTITY,
             transition: None,
+            animations: crate::animation::Animations::default(),
             responsive: Responsive::default(),
             platforms: None,
         }
@@ -857,12 +933,64 @@ pub trait Styled: Sized {
             .at(breakpoint, |s| s.with_style(|s| s.display_none = false))
     }
 
-    // Motion
+    // Motion (see the `animation` module)
     /// Animates changes of this element over `ms` milliseconds.
     fn animate(self, ms: u32) -> Self {
         self.transition(Transition::ease(ms))
     }
+    /// Animates changes with a slightly bouncy spring.
+    fn spring(self, ms: u32) -> Self {
+        self.transition(Transition::spring(ms))
+    }
     fn transition(self, t: Transition) -> Self {
-        self.with_style(|s| s.transition = Some(t))
+        self.with_style(|s| {
+            let delay = s.transition.map_or(0., |t| t.delay);
+            s.transition = Some(Transition {
+                delay: if t.delay > 0. { t.delay } else { delay },
+                ..t
+            })
+        })
+    }
+    /// Waits `ms` before animating (its transition, or a spring).
+    fn delay(self, ms: u32) -> Self {
+        self.with_style(|s| {
+            s.transition = Some(
+                s.transition
+                    .unwrap_or(crate::animation::DEFAULT_ENTER)
+                    .delay(ms),
+            )
+        })
+    }
+    /// The `index`-th of a list, `ms` after the previous one (cascading entrances).
+    fn stagger(self, index: usize, ms: u32) -> Self {
+        self.delay(index as u32 * ms)
+    }
+    /// Moves it `x`, `y` points without changing the layout.
+    fn offset(self, x: f32, y: f32) -> Self {
+        self.with_style(|s| {
+            s.transform.x = x;
+            s.transform.y = y;
+        })
+    }
+    /// Scales it around its center without changing the layout.
+    fn scale(self, scale: f32) -> Self {
+        self.with_style(|s| s.transform.scale = scale)
+    }
+    /// Rotates it clockwise around its center, in degrees.
+    fn rotate(self, degrees: f32) -> Self {
+        self.with_style(|s| s.transform.rotate = degrees)
+    }
+    /// Appears from `pose` (with its transition, or a spring).
+    fn enter(self, pose: crate::animation::Pose) -> Self {
+        self.with_style(|s| s.animations.enter = Some(pose))
+    }
+    /// Animates to `pose` when removed, then disappears.
+    fn exit(self, pose: crate::animation::Pose) -> Self {
+        self.with_style(|s| s.animations.exit = Some(pose))
+    }
+    /// Goes back and forth between its style and `pose`, forever (pulses,
+    /// breathing, loading indicators).
+    fn repeat(self, pose: crate::animation::Pose, t: Transition) -> Self {
+        self.with_style(|s| s.animations.repeat = Some((pose, t)))
     }
 }

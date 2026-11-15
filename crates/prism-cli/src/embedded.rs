@@ -26,6 +26,7 @@ const FILES: &[(&str, &str)] = files![
     "platform/android/java/dev/prism/PrismHost.java",
     "platform/android/java/dev/prism/PrismJob.java",
     "platform/android/java/dev/prism/PrismLayout.java",
+    "platform/android/java/dev/prism/PrismMotion.java",
     "platform/android/java/dev/prism/PrismSurface.java",
     "platform/android/java/dev/prism/PrismWidget.java",
     "platform/android/car/dev/prism/PrismCarService.java",

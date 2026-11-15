@@ -69,7 +69,12 @@ pub fn run(config: AppConfig, init: AppInit) {
 }
 
 fn measure(r: &MeasureRequest) -> (f32, f32) {
-    jni::measure(r.kind, r.text, r.font_size, r.weight, r.max_width)
+    // Images are drawn as their glyph (SF Symbol names do not exist here).
+    let text = match r.kind {
+        "image" => prism_core::glyphs::glyph(r.text),
+        _ => r.text,
+    };
+    jni::measure(r.kind, text, r.font_size, r.weight, r.max_width)
 }
 
 /// What the host tells about the device (JSON from `PrismHost.deviceInfo`).

@@ -257,7 +257,15 @@ public final class PrismHost {
         }
         if (n == null) return;
         switch (op) {
-            case "style": n.style = p.getJSONObject("s"); applyStyle(n); break;
+            case "style": {
+                n.style = p.getJSONObject("s");
+                JSONObject anim = p.optJSONObject("anim");
+                if (anim != null) PrismMotion.style(n.view, anim, () -> applyStyle(n));
+                else applyStyle(n);
+                break;
+            }
+            case "exit": PrismMotion.exit(n.view, p.getJSONObject("to"), p.getJSONObject("anim")); break;
+            case "repeat": PrismMotion.repeat(id, n.view, p.optJSONObject("from"), p.optJSONObject("to"), p.optJSONObject("anim")); break;
             case "text": setText(n, p.optString("text")); break;
             case "placeholder": if (n.view instanceof EditText) ((EditText) n.view).setHint(p.optString("text")); break;
             case "icon":
@@ -278,6 +286,14 @@ public final class PrismHost {
             case "children": setChildren(n, p.getJSONArray("children")); break;
             case "frame": {
                 JSONArray f = p.getJSONArray("f");
+                JSONObject anim = p.optJSONObject("anim");
+                if (anim != null) {
+                    PrismMotion.frame(id, n.view, new int[]{Math.round((float) f.getDouble(0)), Math.round((float) f.getDouble(1)),
+                            Math.round((float) f.getDouble(2)), Math.round((float) f.getDouble(3))}, anim);
+                    break;
+                }
+                android.animation.ValueAnimator moving = PrismMotion.frames.remove(id);
+                if (moving != null) moving.cancel();
                 PrismLayout.Frame frame = PrismLayout.frameOf(n.view);
                 frame.x = Math.round((float) f.getDouble(0));
                 frame.y = Math.round((float) f.getDouble(1));
@@ -471,6 +487,7 @@ public final class PrismHost {
     static void destroy(Node n) {
         if (n == null) return;
         nodes.remove(n.id);
+        PrismMotion.forget(n.id);
         if (n.dialog != null) n.dialog.dismiss();
         ViewGroup parent = (ViewGroup) n.view.getParent();
         if (parent != null) parent.removeView(n.view);
@@ -759,6 +776,7 @@ public final class PrismHost {
             n.view.setBackground(null);
         }
         n.view.setAlpha((float) s.optDouble("opacity", 1));
+        PrismMotion.transform(n.view, s.optJSONArray("tf"));
         if (n.view instanceof TextView) {
             TextView t = (TextView) n.view;
             Integer fg = color(s.optJSONArray("color"));

@@ -511,7 +511,12 @@ impl Encoder {
             }
             Patch::SetStyle { id, style } => {
                 let kind = self.kinds.get(id).copied().unwrap_or(NodeKind::View);
-                json!({ "op": "style", "id": id, "css": css(kind, style) })
+                let motion = crate::css::motion(style);
+                if motion.is_null() {
+                    json!({ "op": "style", "id": id, "css": css(kind, style) })
+                } else {
+                    json!({ "op": "style", "id": id, "css": css(kind, style), "motion": motion })
+                }
             }
             Patch::SetText { id, text } => {
                 let text = match self.kinds.get(id) {

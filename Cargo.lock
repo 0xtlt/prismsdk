@@ -1831,7 +1831,9 @@ name = "prism-native"
 version = "0.1.0"
 dependencies = [
  "objc2",
+ "objc2-core-foundation",
  "objc2-foundation",
+ "objc2-quartz-core",
  "prism-core",
  "prism-http",
  "serde_json",

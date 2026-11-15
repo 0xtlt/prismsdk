@@ -1000,6 +1000,7 @@ impl Widgets for UiKit {
     fn set_style(&mut self, view: &View, style: &Style) {
         let v = view.ui();
         v.setAlpha(style.opacity as f64);
+        v.setTransform(prism_native::apple::motion::affine(style.transform));
         if !matches!(view, View::Input(_)) {
             // `nil` renders black for some UIKit views; be explicit.
             let bg = style.background.map_or_else(UIColor::clearColor, ui_color);
@@ -1296,10 +1297,7 @@ impl Widgets for UiKit {
             View::Tabs(bar) => ensure_contained(&bar.controller, &bar.view),
             _ => {}
         }
-        view.ui().setFrame(CGRect::new(
-            CGPoint::new(x as f64, y as f64),
-            CGSize::new(w as f64, h as f64),
-        ));
+        place(view.ui(), x, y, w, h);
         if let Some(r) = self.radii.get(&view.id()) {
             view.ui()
                 .layer()
@@ -1317,24 +1315,87 @@ impl Widgets for UiKit {
         t: prism_core::Transition,
     ) {
         let v: Retained<UIView> = view.ui().retain();
-        let old = v.frame();
+        let old = (v.bounds(), v.center());
         self.set_frame(view, x, y, w, h);
-        let new = v.frame();
-        v.setFrame(old);
-        animate(self.mtm, t, move || v.setFrame(new));
+        let new = (v.bounds(), v.center());
+        v.setBounds(old.0);
+        v.setCenter(old.1);
+        animate(self.mtm, t, move || {
+            v.setBounds(new.0);
+            v.setCenter(new.1);
+        });
     }
 
     fn set_style_animated(&mut self, view: &View, style: &Style, t: prism_core::Transition) {
         let v: Retained<UIView> = view.ui().retain();
-        let (alpha, bg) = (v.alpha(), v.backgroundColor());
+        let (alpha, bg, transform) = (v.alpha(), v.backgroundColor(), v.transform());
         self.set_style(view, style);
-        let (new_alpha, new_bg) = (v.alpha(), v.backgroundColor());
+        let (new_alpha, new_bg, new_transform) = (v.alpha(), v.backgroundColor(), v.transform());
         v.setAlpha(alpha);
         v.setBackgroundColor(bg.as_deref());
+        v.setTransform(transform);
         animate(self.mtm, t, move || {
             v.setAlpha(new_alpha);
             v.setBackgroundColor(new_bg.as_deref());
+            v.setTransform(new_transform);
         });
+    }
+
+    /// A snapshot of the view stays in its place and animates out.
+    fn animate_exit(&mut self, parent: &View, view: &View, to: &Style, t: prism_core::Transition) {
+        let (parent, v) = (parent.ui(), view.ui());
+        if v.window().is_none() || v.superview().is_none_or(|s| *s != *parent) {
+            return;
+        }
+        let Some(snapshot) = v.snapshotViewAfterScreenUpdates(false) else {
+            return;
+        };
+        snapshot.setUserInteractionEnabled(false);
+        snapshot.setBounds(CGRect::new(CGPoint::ZERO, v.bounds().size));
+        snapshot.setCenter(v.center());
+        snapshot.setTransform(v.transform());
+        snapshot.setAlpha(v.alpha());
+        parent.insertSubview_aboveSubview(&snapshot, v);
+        let (alpha, transform) = (
+            to.opacity as f64,
+            prism_native::apple::motion::affine(to.transform),
+        );
+        let s = snapshot.clone();
+        let done = snapshot.clone();
+        animate_then(
+            self.mtm,
+            t,
+            move || {
+                s.setAlpha(alpha);
+                s.setTransform(transform);
+            },
+            move || done.removeFromSuperview(),
+        );
+    }
+
+    fn set_repeat(
+        &mut self,
+        view: &View,
+        style: &Style,
+        repeat: Option<(prism_core::Pose, prism_core::Transition)>,
+    ) {
+        use prism_native::apple::motion;
+        let layer = view.ui().layer();
+        match repeat {
+            None => motion::stop_repeat(&layer),
+            Some((pose, t)) => {
+                let (opacity, transform) = pose.apply(style.opacity, style.transform);
+                motion::repeat(
+                    &layer,
+                    (
+                        style.opacity,
+                        motion::transform3d(motion::affine(style.transform)),
+                    ),
+                    (opacity, motion::transform3d(motion::affine(transform))),
+                    t,
+                );
+            }
+        }
     }
 
     fn set_environment(&mut self, env: &prism_core::RenderEnvironment) {
@@ -1735,23 +1796,50 @@ fn observe_system(mtm: MainThreadMarker) {
     std::mem::forget(target);
 }
 
+/// Places a view by its bounds and center: `frame` is undefined while a
+/// transform is set. A scroll view's bounds origin (its offset) is kept.
+fn place(v: &UIView, x: f32, y: f32, w: f32, h: f32) {
+    let origin = v.bounds().origin;
+    v.setBounds(CGRect::new(origin, CGSize::new(w as f64, h as f64)));
+    v.setCenter(CGPoint::new((x + w / 2.) as f64, (y + h / 2.) as f64));
+}
+
 /// Runs `f` in a UIKit animation shaped like `t`.
 fn animate(mtm: MainThreadMarker, t: prism_core::Transition, f: impl Fn() + 'static) {
+    animate_then(mtm, t, f, || {});
+}
+
+/// [`animate`], then `done`.
+fn animate_then(
+    mtm: MainThreadMarker,
+    t: prism_core::Transition,
+    f: impl Fn() + 'static,
+    done: impl Fn() + 'static,
+) {
     use objc2_ui_kit::UIViewAnimationOptions as O;
     let block = block2::RcBlock::new(f);
-    let duration = t.duration as f64;
+    let completion = block2::RcBlock::new(move |_: objc2::runtime::Bool| done());
+    let (duration, delay) = (t.duration as f64, t.delay as f64);
     let options = O::AllowUserInteraction | O::BeginFromCurrentState;
-    match t.curve {
-        prism_core::Curve::Spring => UIView::animateWithSpringDuration_bounce_initialSpringVelocity_delay_options_animations_completion(
-            duration, 0.25, 0., 0., options, &block, None, mtm,
-        ),
-        prism_core::Curve::Linear => UIView::animateWithDuration_delay_options_animations_completion(
-            duration, 0., options | O::CurveLinear, &block, None, mtm,
-        ),
-        prism_core::Curve::EaseInOut => UIView::animateWithDuration_delay_options_animations_completion(
-            duration, 0., options | O::CurveEaseInOut, &block, None, mtm,
-        ),
-    }
+    let curve = match t.curve {
+        prism_core::Curve::Spring => {
+            return UIView::animateWithSpringDuration_bounce_initialSpringVelocity_delay_options_animations_completion(
+                duration, 0.25, 0., delay, options, &block, Some(&completion), mtm,
+            );
+        }
+        prism_core::Curve::Linear => O::CurveLinear,
+        prism_core::Curve::EaseInOut => O::CurveEaseInOut,
+        prism_core::Curve::EaseIn => O::CurveEaseIn,
+        prism_core::Curve::EaseOut => O::CurveEaseOut,
+    };
+    UIView::animateWithDuration_delay_options_animations_completion(
+        duration,
+        delay,
+        options | curve,
+        &block,
+        Some(&completion),
+        mtm,
+    );
 }
 
 /// Raises the bottom of the safe area of each visible screen above the

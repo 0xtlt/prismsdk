@@ -119,10 +119,65 @@
   }
 
   // Orders Prism children; helper elements (no data-pid) are left in place.
+  // --- Motion (prism-core `animation`) ------------------------------------------
+  const reducedMotion = window.matchMedia ? matchMedia("(prefers-reduced-motion: reduce)") : null;
+  /** Set while a reconnect rebuilds the page: what is shown does not enter again. */
+  let quiet = false;
+  const poseCss = (p) => {
+    const d = document.documentElement.dir === "rtl" ? -1 : 1;
+    const [x, y, s, r] = p.tf;
+    return { opacity: p.o, transform: `translate(${d * x}px,${y}px) rotate(${d * r}deg) scale(${s})` };
+  };
+  const timing = (t, extra) => Object.assign({ duration: t.d * 1000, delay: t.delay * 1000, easing: t.ease }, extra);
+
+  /** Enters (new, or shown again) and loops of an element. */
+  function motion(el, m, wasHidden) {
+    const first = !el._styled;
+    el._styled = true;
+    el._motion = m || null;
+    const key = m && m.repeat ? JSON.stringify([m.rest, m.repeat]) : "";
+    if (el._loopKey !== key) {
+      if (el._loop) el._loop.cancel();
+      el._loop = null;
+      el._loopKey = key;
+      if (key && !reducedMotion?.matches) {
+        el._loop = el.animate([poseCss(m.rest), poseCss(m.repeat.to)],
+          timing(m.repeat.t, { iterations: Infinity, direction: "alternate", easing: "ease-in-out" }));
+      }
+    }
+    if (!m || !m.enter || quiet || reducedMotion?.matches) return;
+    if (!first && !(wasHidden && el.style.display !== "none")) return;
+    el.animate([poseCss(m.enter), poseCss(m.rest)], timing(m.t, { fill: "backwards" }));
+  }
+
+  /** A copy of a removed element stays in place and animates to its exit pose. */
+  function exit(parent, el) {
+    const m = el._motion;
+    if (!m || !m.exit || quiet || reducedMotion?.matches || !el.isConnected) return;
+    const r = el.getBoundingClientRect(), pr = parent.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    if (getComputedStyle(parent).position === "static") parent.style.position = "relative";
+    const ghost = el.cloneNode(true);
+    ghost.removeAttribute("data-pid");
+    ghost.querySelectorAll("[data-pid]").forEach((n) => n.removeAttribute("data-pid"));
+    ghost.setAttribute("aria-hidden", "true");
+    Object.assign(ghost.style, {
+      position: "absolute", margin: "0", pointerEvents: "none", transition: "none",
+      left: `${el.offsetLeft}px`, top: `${el.offsetTop}px`, width: `${el.offsetWidth}px`, height: `${el.offsetHeight}px`,
+    });
+    if (el.offsetParent !== parent) {
+      ghost.style.left = `${r.left - pr.left - parent.clientLeft + parent.scrollLeft}px`;
+      ghost.style.top = `${r.top - pr.top - parent.clientTop + parent.scrollTop}px`;
+    }
+    parent.appendChild(ghost);
+    ghost.animate([poseCss(m.rest), poseCss(m.exit)], timing(m.xt, { fill: "forwards" })).finished
+      .then(() => ghost.remove(), () => ghost.remove());
+  }
+
   function setChildren(el, ids) {
     const kids = ids.map((i) => nodes.get(i)).filter(Boolean);
     const keep = new Set(kids);
-    [...el.children].forEach((c) => { if (c.dataset.pid && !keep.has(c)) c.remove(); });
+    [...el.children].forEach((c) => { if (c.dataset.pid && !keep.has(c)) { exit(el, c); c.remove(); } });
     let anchor = [...el.children].find((c) => c.dataset.pid) || null;
     kids.forEach((kid) => {
       if (kid === anchor) {
@@ -232,9 +287,12 @@
     const el = p.id === undefined ? null : nodes.get(p.id);
     switch (p.op) {
       case "create": return create(p.id, p.kind);
-      case "style":
+      case "style": {
+        const hidden = el.style.display === "none";
         el.style.cssText = p.css;
+        motion(el, p.motion, hidden);
         return;
+      }
       case "text": {
         const kind = el.dataset.kind;
         if (kind === "stack" || kind === "tabs") { el.dataset.path = p.text; return; }
@@ -972,7 +1030,9 @@
       const msg = JSON.parse(e.data);
       if (!msg.p) return service(msg);
       if (msg.t === "reset") { nodes.clear(); stacks = []; hist = null; userNavigated = false; }
+      quiet = msg.t === "reset";
       msg.p.forEach(apply);
+      quiet = false;
       syncHistory();
     };
     ws.onclose = () => setTimeout(connect, 1000);

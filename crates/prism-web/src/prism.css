@@ -1,5 +1,6 @@
 /* Prism's base styles (served as /_prism/prism.<hash>.css). */
 :root { color-scheme: light dark; }
+[dir="rtl"] { --prism-dir: -1; }
 html, body { margin: 0; height: 100%; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; font-size: 1rem; background: Canvas; color: CanvasText; }
 #prism-root { display: flex; flex-direction: column; min-height: 100%; }

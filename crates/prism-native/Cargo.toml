@@ -14,6 +14,8 @@ serde_json.workspace = true
 [target.'cfg(target_vendor = "apple")'.dependencies]
 objc2.workspace = true
 objc2-foundation.workspace = true
+objc2-quartz-core.workspace = true
+objc2-core-foundation.workspace = true
 
 [features]
 # The Swift bridge (platform/apple/Bridge) is linked: device APIs available.

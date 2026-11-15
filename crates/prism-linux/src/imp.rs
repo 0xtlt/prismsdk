@@ -529,8 +529,13 @@ impl Widgets for Gtk {
                 .map_or("currentColor".into(), |c| css_color(c, self.dark));
             css += &format!("border:{}px solid {c};", s.border_width);
         }
-        if s.opacity < 1. {
-            css += &format!("opacity:{};", s.opacity);
+        if let Some(t) = s.transition {
+            // Colors animate in GTK's CSS; opacity and transforms in `layout`.
+            let (x1, y1, x2, y2) = t.bezier();
+            css += &format!(
+                "transition:all {}s cubic-bezier({x1},{y1},{x2},{y2}) {}s;",
+                t.duration, t.delay
+            );
         }
         if let Some(c) = s.text_color {
             css += &format!("color:{};", css_color(c, self.dark));
@@ -547,6 +552,15 @@ impl Widgets for Gtk {
         );
         self.rules.insert(id, format!(".p{id}{{{css}}}\n"));
         self.css_dirty = true;
+        let w = view.widget();
+        layout::stop(&w, layout::Channel::Visual);
+        layout::set_visual(
+            &w,
+            layout::Visual {
+                opacity: s.opacity,
+                transform: s.transform,
+            },
+        );
         let xalign = match s.text_align {
             TextAlign::Left => 0.,
             TextAlign::Center => 0.5,
@@ -668,8 +682,9 @@ impl Widgets for Gtk {
         let mut child = host.first_child();
         while let Some(c) = child {
             child = c.next_sibling();
-            // Context-menu popovers are children too: they stay.
-            if !keep.contains(&c) && !c.is::<gtk::Popover>() {
+            // Context-menu popovers are children too: they stay, like
+            // pictures of removed views animating out.
+            if !keep.contains(&c) && !c.is::<gtk::Popover>() && !c.has_css_class("prism-ghost") {
                 c.unparent();
             }
         }
@@ -774,6 +789,102 @@ impl Widgets for Gtk {
                 layout::set_frame(&t.bar, rect(0., h - TAB_BAR, w, TAB_BAR));
             }
             _ => layout::set_frame(&view.widget(), rect(x, y, w, h)),
+        }
+    }
+
+    fn set_frame_animated(
+        &mut self,
+        view: &View,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        t: prism_core::Transition,
+    ) {
+        match view {
+            View::Container(..)
+            | View::Text(..)
+            | View::Image(..)
+            | View::Button(..)
+            | View::Picture(..)
+            | View::Toggle(..)
+            | View::Progress(..)
+            | View::Timer(..) => {
+                self.sizes.insert(view.id(), (w, h));
+                layout::animate_frame(&view.widget(), rect(x, y, w, h), t);
+            }
+            _ => self.set_frame(view, x, y, w, h),
+        }
+    }
+
+    fn set_style_animated(&mut self, view: &View, style: &Style, t: prism_core::Transition) {
+        let w = view.widget();
+        let from = layout::visual(&w);
+        self.set_style(view, style);
+        let to = layout::visual(&w);
+        if from != to {
+            layout::set_visual(&w, from);
+            layout::animate_visual(&w, to, t, || {});
+        }
+    }
+
+    /// A still picture of the view stays in its place and animates out.
+    fn animate_exit(&mut self, parent: &View, view: &View, to: &Style, t: prism_core::Transition) {
+        let host: gtk::Widget = match parent {
+            View::Container(_, _, c) => c.clone().upcast(),
+            View::Scroll(_, _, content) => content.clone().upcast(),
+            _ => return,
+        };
+        let w = view.widget();
+        let Some(frame) = layout::frame_of(&w) else {
+            return;
+        };
+        if w.parent().as_ref() != Some(&host) || frame.2 <= 0 || frame.3 <= 0 {
+            return;
+        }
+        let image = gtk::WidgetPaintable::new(Some(&w)).current_image();
+        let picture = gtk::Picture::for_paintable(&image);
+        picture.set_can_shrink(true);
+        picture.set_can_target(false);
+        picture.add_css_class("prism-ghost");
+        picture.set_parent(&host);
+        layout::set_frame(&picture, frame);
+        layout::set_visual(&picture, layout::visual(&w));
+        let ghost = picture.clone();
+        layout::animate_visual(
+            &picture,
+            layout::Visual {
+                opacity: to.opacity,
+                transform: to.transform,
+            },
+            t,
+            move || {
+                layout::forget(&ghost);
+                ghost.unparent();
+            },
+        );
+    }
+
+    fn set_repeat(
+        &mut self,
+        view: &View,
+        style: &Style,
+        repeat: Option<(prism_core::Pose, prism_core::Transition)>,
+    ) {
+        let w = view.widget();
+        let rest = layout::Visual {
+            opacity: style.opacity,
+            transform: style.transform,
+        };
+        match repeat {
+            None => {
+                layout::stop(&w, layout::Channel::Loop);
+                layout::set_visual(&w, rest);
+            }
+            Some((pose, t)) => {
+                let (opacity, transform) = pose.apply(style.opacity, style.transform);
+                layout::repeat(&w, rest, layout::Visual { opacity, transform }, t);
+            }
         }
     }
 

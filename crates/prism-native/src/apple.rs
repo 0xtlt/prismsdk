@@ -412,3 +412,120 @@ pub fn changed_cloud_keys(n: &objc2_foundation::NSNotification) -> Vec<String> {
         })
         .unwrap_or_default()
 }
+
+/// Core Animation pieces of the UIKit and AppKit backends' motion.
+pub mod motion {
+    use objc2::rc::Retained;
+    use objc2_core_foundation::CGAffineTransform;
+    use objc2_foundation::{NSArray, NSNumber, NSString, NSValue};
+    use objc2_quartz_core::{
+        CAAnimation, CAAnimationGroup, CABasicAnimation, CACurrentMediaTime, CALayer,
+        CAMediaTiming, CAMediaTimingFunction, CATransform3D, NSValueCATransform3DAdditions,
+        kCAFillModeBoth,
+    };
+    use prism_core::{Curve, Transform, Transition};
+
+    /// `t` as an affine transform around the layer's anchor point.
+    pub fn affine(t: Transform) -> CGAffineTransform {
+        let (s, r) = (t.scale as f64, (t.rotate as f64).to_radians());
+        CGAffineTransform {
+            a: s * r.cos(),
+            b: s * r.sin(),
+            c: -s * r.sin(),
+            d: s * r.cos(),
+            tx: t.x as f64,
+            ty: t.y as f64,
+        }
+    }
+
+    pub fn matrix(m: [f64; 6]) -> CGAffineTransform {
+        CGAffineTransform {
+            a: m[0],
+            b: m[1],
+            c: m[2],
+            d: m[3],
+            tx: m[4],
+            ty: m[5],
+        }
+    }
+
+    /// The curve of `t` (springs as ease-in-out: loops do not overshoot).
+    pub fn timing(t: Transition) -> Retained<CAMediaTimingFunction> {
+        let (x1, y1, x2, y2) = match t.curve {
+            Curve::Spring => Transition::ease(0).bezier(),
+            _ => t.bezier(),
+        };
+        CAMediaTimingFunction::functionWithControlPoints(x1, y1, x2, y2)
+    }
+
+    const KEY: &str = "prism.repeat";
+
+    /// Loops `layer` between `from` and `to` (opacity, transform), back and
+    /// forth, without touching its model values.
+    pub fn repeat(
+        layer: &CALayer,
+        from: (f32, CATransform3D),
+        to: (f32, CATransform3D),
+        t: Transition,
+    ) {
+        let key = NSString::from_str(KEY);
+        layer.removeAnimationForKey(&key);
+        let opacity = CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str("opacity")));
+        let transform =
+            CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str("transform")));
+        unsafe {
+            opacity.setFromValue(Some(&NSNumber::new_f32(from.0)));
+            opacity.setToValue(Some(&NSNumber::new_f32(to.0)));
+            transform.setFromValue(Some(&NSValue::valueWithCATransform3D(from.1)));
+            transform.setToValue(Some(&NSValue::valueWithCATransform3D(to.1)));
+        }
+        let group = CAAnimationGroup::new();
+        let parts: [Retained<CAAnimation>; 2] = [
+            Retained::into_super(Retained::into_super(opacity)),
+            Retained::into_super(Retained::into_super(transform)),
+        ];
+        group.setAnimations(Some(&NSArray::from_retained_slice(&parts)));
+        let duration = t.duration.max(0.01) as f64;
+        for part in &parts {
+            part.setDuration(duration);
+        }
+        group.setDuration(duration);
+        group.setAutoreverses(true);
+        group.setRepeatCount(f32::INFINITY);
+        group.setTimingFunction(Some(&timing(t)));
+        // Kept when the app goes to the background or the view moves.
+        group.setRemovedOnCompletion(false);
+        if t.delay > 0. {
+            group.setBeginTime(CACurrentMediaTime() + t.delay as f64);
+            group.setFillMode(unsafe { kCAFillModeBoth });
+        }
+        layer.addAnimation_forKey(&group, Some(&key));
+    }
+
+    pub fn stop_repeat(layer: &CALayer) {
+        layer.removeAnimationForKey(&NSString::from_str(KEY));
+    }
+
+    /// Animates `layer`'s transform from `from` to its current (model) value.
+    pub fn animate_transform(layer: &CALayer, from: CATransform3D, t: Transition) {
+        let a = CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str("transform")));
+        unsafe { a.setFromValue(Some(&NSValue::valueWithCATransform3D(from))) };
+        a.setDuration(t.duration.max(0.01) as f64);
+        a.setTimingFunction(Some(&timing_overshoot(t)));
+        if t.delay > 0. {
+            a.setBeginTime(CACurrentMediaTime() + t.delay as f64);
+            a.setFillMode(unsafe { kCAFillModeBoth });
+        }
+        layer.addAnimation_forKey(&a, Some(&NSString::from_str("prism.transform")));
+    }
+
+    /// The curve of `t`, springs overshooting.
+    pub fn timing_overshoot(t: Transition) -> Retained<CAMediaTimingFunction> {
+        let (x1, y1, x2, y2) = t.bezier();
+        CAMediaTimingFunction::functionWithControlPoints(x1, y1, x2, y2)
+    }
+
+    pub fn transform3d(t: CGAffineTransform) -> CATransform3D {
+        CATransform3D::new_affine_transform(t)
+    }
+}

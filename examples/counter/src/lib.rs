@@ -278,13 +278,31 @@ impl Render for CounterCard {
                 // On a watch the number sits above the buttons.
                 .on_device(DeviceKind::Watch, |s| s.flex_col().items_start().gap(6.))
                 .child(
-                    text(self.count.to_string())
-                        .text_size(40.)
-                        .on_device(DeviceKind::Watch, |s| s.text_size(30.))
-                        .bold()
-                        .text_color(t.accent)
-                        .accessibility_label(strings::counter_label(cx, self.count))
-                        .min_w(px(64.)),
+                    div()
+                        .flex_row()
+                        .items_center()
+                        .gap(8.)
+                        .child(
+                            text(self.count.to_string())
+                                .text_size(40.)
+                                .on_device(DeviceKind::Watch, |s| s.text_size(30.))
+                                .bold()
+                                .text_color(t.accent)
+                                .accessibility_label(strings::counter_label(cx, self.count))
+                                .min_w(px(64.)),
+                        )
+                        // Ten and up: a star pops in and keeps pulsing.
+                        .when(self.count >= 10, |row| {
+                            row.child(
+                                image("star.fill")
+                                    .text_size(24.)
+                                    .text_color(t.accent)
+                                    .enter(Pose::pop())
+                                    .exit(Pose::pop())
+                                    .repeat(Pose::new().scale(1.25), Transition::ease(700))
+                                    .accessibility_hidden(),
+                            )
+                        }),
                 )
                 .child(
                     div()
@@ -343,7 +361,9 @@ impl Render for TodoList {
                         |this, _, cx| {
                             let title = this.draft.trim().to_string();
                             if !title.is_empty() {
-                                this.store.update(cx, |s, cx| s.add(title, cx));
+                                cx.with_animation(Transition::spring(400), |cx| {
+                                    this.store.update(cx, |s, cx| s.add(title, cx))
+                                });
                                 this.draft.clear();
                             }
                         },
@@ -372,7 +392,7 @@ impl Render for TodoList {
                     strings::todo_open(cx)
                 };
                 let (id, store_e, done) = (todo.id, self.store, todo.done);
-                ui::list_row(todo.title.clone())
+                let row = ui::list_row(todo.title.clone())
                     .leading(if todo.done { "✓" } else { "○" })
                     .subtitle(status)
                     .on_click(navigate_to(format!("/todos/{}", todo.id)))
@@ -395,7 +415,9 @@ impl Render for TodoList {
                                 .icon(if done { "circle" } else { "checkmark.circle" })
                                 .on_select(std::rc::Rc::new(
                                     move |_: &ClickEvent, app: &mut App| {
-                                        store_e.update(app, |s, cx| s.toggle(id, cx))
+                                        app.with_animation(Transition::ease(250), |app| {
+                                            store_e.update(app, |s, cx| s.toggle(id, cx))
+                                        })
                                     },
                                 )),
                             )
@@ -420,7 +442,14 @@ impl Render for TodoList {
                             s.padding.left = 12.;
                             s.padding.right = 12.;
                         }
-                    })
+                    });
+                // Keyed, so a removed todo is the one that leaves. New rows
+                // rise in; removed ones slide away.
+                div()
+                    .key(format!("todo-{id}"))
+                    .enter(Pose::slide(0., 12.))
+                    .exit(Pose::slide(-40., 0.))
+                    .child(row)
             }))
     }
 }
@@ -952,7 +981,10 @@ fn confirm_delete(cx: &mut App, store: Entity<Store>, id: u64) {
             .destructive(
                 strings::todo_delete(cx),
                 std::rc::Rc::new(move |_: &ClickEvent, app: &mut App| {
-                    store.update(app, |s, cx| s.delete(id, cx));
+                    // The row slides out, the ones below move up.
+                    app.with_animation(Transition::spring(400), |app| {
+                        store.update(app, |s, cx| s.delete(id, cx))
+                    });
                     if app.current_path() == Some(&format!("/todos/{id}")) {
                         app.back();
                     }

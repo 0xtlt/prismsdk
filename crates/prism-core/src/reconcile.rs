@@ -39,6 +39,8 @@ pub struct RenderEnvironment {
 
 /// A mutation of the host tree.
 #[derive(Clone, Debug, PartialEq)]
+// Styles are the big variant; patches are short-lived.
+#[allow(clippy::large_enum_variant)]
 pub enum Patch {
     /// Which swipe directions a node listens to.
     SetSwipe {
@@ -186,6 +188,10 @@ pub struct Reconciler {
     rendered: usize,
     appearance: Appearance,
     environment: Option<RenderEnvironment>,
+    /// `with_animation` of this render: given to nodes without a transition.
+    animation: Option<crate::style::Transition>,
+    /// Nodes that got it, reset on the next render.
+    animated: Vec<NodeId>,
 }
 
 impl Reconciler {
@@ -235,6 +241,19 @@ impl Reconciler {
     pub fn render(&mut self, app: &mut App) -> Vec<Patch> {
         self.dirty = app.take_dirty();
         self.rendered = 0;
+        // Last render's animated update is over: later changes are instant.
+        for id in std::mem::take(&mut self.animated) {
+            if let Some(m) = self.nodes.get_mut(&id)
+                && m.style.transition.is_some()
+            {
+                m.style.transition = None;
+                self.patches.push(Patch::SetStyle {
+                    id,
+                    style: m.style.clone(),
+                });
+            }
+        }
+        self.animation = app.take_animation();
         let Some(root_entity) = app.root() else {
             return Vec::new();
         };
@@ -432,7 +451,13 @@ impl Reconciler {
             on_swipe_right,
             ..
         } = *vnode;
-        let style = style.resolve(app.style_context());
+        let mut style = style.resolve(app.style_context());
+        if let Some(t) = self.animation
+            && style.transition.is_none()
+        {
+            style.transition = Some(t);
+            self.animated.push(id);
+        }
         {
             let swipe = (on_swipe_left.is_some(), on_swipe_right.is_some());
             let scroll_events = on_scroll.is_some();

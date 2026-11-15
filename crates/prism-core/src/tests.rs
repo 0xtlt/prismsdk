@@ -1694,3 +1694,51 @@ fn car_templates_stack_select_and_back() {
     rt.car_back(0);
     assert!(!car(&mut rt).unwrap().contains("pane"));
 }
+
+// --- Motion -----------------------------------------------------------------
+
+struct Grow {
+    big: bool,
+}
+
+impl Render for Grow {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .child(text(if self.big { "big" } else { "small" }).enter(Pose::fade()))
+            .child(button("grow").on_click(cx.listener(|this, _, cx| {
+                cx.with_animation(Transition::spring(300), |_| {});
+                this.big = !this.big;
+            })))
+            .child(button("plain").on_click(cx.listener(|this, _, _| this.big = !this.big)))
+    }
+}
+
+fn styles(patches: &[Patch]) -> Vec<(u64, Option<Transition>)> {
+    patches
+        .iter()
+        .filter_map(|p| match p {
+            Patch::SetStyle { id, style } => Some((*id, style.transition)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn with_animation_animates_one_update_only() {
+    let (mut rt, first) = boot(|cx| {
+        let root = cx.new_entity(|_| Grow { big: false });
+        cx.set_root(root);
+    });
+    // Animations are part of the style.
+    assert!(first.iter().any(|p| matches!(p,
+        Patch::SetStyle { style, .. } if style.animations.enter == Some(Pose::fade()))));
+    let animated = rt.dispatch(UiEvent::Click(find_text(&first, "grow")));
+    let t = Some(Transition::spring(300));
+    assert!(!styles(&animated).is_empty());
+    assert!(styles(&animated).iter().all(|(_, tr)| *tr == t));
+    // The next update is instant again: the animated nodes lose the transition.
+    let plain = rt.dispatch(UiEvent::Click(find_text(&first, "plain")));
+    assert!(!styles(&plain).is_empty());
+    assert!(styles(&plain).iter().all(|(_, tr)| tr.is_none()));
+    assert!(styles(&rt.dispatch(UiEvent::Click(find_text(&first, "plain")))).is_empty());
+}

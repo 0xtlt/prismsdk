@@ -95,6 +95,18 @@ macro_rules! refinable {
                 self.refine.push(f);
                 self
             }
+            /// Appears from `pose` (see `prism_core::animation`).
+            pub fn enter(self, pose: prism_core::Pose) -> Self {
+                self.style(move |s| s.animations.enter = Some(pose))
+            }
+            /// Animates to `pose` when removed.
+            pub fn exit(self, pose: prism_core::Pose) -> Self {
+                self.style(move |s| s.animations.exit = Some(pose))
+            }
+            /// Animates its changes with `t`.
+            pub fn transition(self, t: prism_core::Transition) -> Self {
+                self.style(move |s| s.transition = Some(t))
+            }
         }
     };
 }

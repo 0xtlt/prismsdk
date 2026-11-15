@@ -14,13 +14,19 @@
 //! | `content` | `size`: a scroll view's content size |
 //! | `menu`, `swipe`, `scrollev`, `root` | context menu JSON, swipe sides, scroll events, root id |
 //! | `env` | `lang`, `rtl`, `back`, `close` (no `id`) |
+//! | `exit` | `parent`, `to`: `{o, tf}` the view animates to (a picture of it), before it is removed |
+//! | `repeat` | `from`, `to`: `{o, tf}` (`to` null stops), back and forth forever |
+//!
+//! Styles carry `tf`: `[x, y, scale, degrees]` (null: none). `style`, `frame`,
+//! `exit` and `repeat` may carry `anim`: `{d, delay, ease}` (seconds, cubic
+//! Bézier `[x1, y1, x2, y2]`): animate to the new values.
 //! | `appearance` | `mode`: `system`, `light` or `dark` (no `id`) |
 
 use std::collections::HashMap;
 
 use prism_core::{
-    Accessibility, Appearance, Color, Direction, FontWeight, NodeId, NodeKind, RenderEnvironment,
-    Style, TextAlign,
+    Accessibility, Appearance, Color, Direction, FontWeight, NodeId, NodeKind, Pose,
+    RenderEnvironment, Style, TextAlign, Transform, Transition,
 };
 use serde_json::{Value, json};
 
@@ -47,6 +53,8 @@ pub struct RemoteWidgets {
     pub ops: Vec<Value>,
     kinds: HashMap<NodeId, NodeKind>,
     texts: HashMap<NodeId, String>,
+    /// Icon names of images (what they measure).
+    icons: HashMap<NodeId, String>,
     styles: HashMap<NodeId, Style>,
     /// Content size of each stack or tab container, reported by the host.
     pub viewports: HashMap<NodeId, (f32, f32)>,
@@ -60,6 +68,7 @@ impl RemoteWidgets {
             ops: Vec::new(),
             kinds: HashMap::new(),
             texts: HashMap::new(),
+            icons: HashMap::new(),
             styles: HashMap::new(),
             viewports: HashMap::new(),
             frames: HashMap::new(),
@@ -78,12 +87,47 @@ fn color(c: Option<Color>) -> Value {
     }
 }
 
+fn transform(t: Transform) -> Value {
+    if t.is_identity() {
+        Value::Null
+    } else {
+        json!([t.x, t.y, t.scale, t.rotate])
+    }
+}
+
+fn anim(t: Transition) -> Value {
+    let (x1, y1, x2, y2) = t.bezier();
+    json!({ "d": t.duration, "delay": t.delay, "ease": [x1, y1, x2, y2] })
+}
+
+fn pose(opacity: f32, t: Transform) -> Value {
+    json!({ "o": opacity, "tf": transform(t) })
+}
+
 fn weight(w: FontWeight) -> i32 {
     match w {
         FontWeight::Regular => 400,
         FontWeight::Medium => 500,
         FontWeight::Semibold => 600,
         FontWeight::Bold => 700,
+    }
+}
+
+impl RemoteWidgets {
+    fn style_op(&mut self, id: &NodeId, s: &Style) -> Value {
+        self.styles.insert(*id, s.clone());
+        json!({ "op": "style", "id": id, "s": {
+            "bg": color(s.background),
+            "radius": s.corner_radius,
+            "bw": s.border_width,
+            "bc": if s.border_width > 0. { color(s.border_color) } else { Value::Null },
+            "opacity": s.opacity,
+            "tf": transform(s.transform),
+            "color": color(s.text_color),
+            "font": s.font_size,
+            "weight": weight(s.font_weight),
+            "talign": match s.text_align { TextAlign::Left => "left", TextAlign::Center => "center", TextAlign::Right => "right" },
+        }})
     }
 }
 
@@ -99,18 +143,40 @@ impl Widgets for RemoteWidgets {
 
     /// Only what SwiftUI draws: layout is ours (frames).
     fn set_style(&mut self, id: &NodeId, s: &Style) {
-        self.styles.insert(*id, s.clone());
-        self.ops.push(json!({ "op": "style", "id": id, "s": {
-            "bg": color(s.background),
-            "radius": s.corner_radius,
-            "bw": s.border_width,
-            "bc": if s.border_width > 0. { color(s.border_color) } else { Value::Null },
-            "opacity": s.opacity,
-            "color": color(s.text_color),
-            "font": s.font_size,
-            "weight": weight(s.font_weight),
-            "talign": match s.text_align { TextAlign::Left => "left", TextAlign::Center => "center", TextAlign::Right => "right" },
-        }}));
+        let op = self.style_op(id, s);
+        self.ops.push(op);
+    }
+
+    fn set_style_animated(&mut self, id: &NodeId, s: &Style, t: Transition) {
+        let mut op = self.style_op(id, s);
+        op["anim"] = anim(t);
+        self.ops.push(op);
+    }
+
+    fn set_frame_animated(&mut self, id: &NodeId, x: f32, y: f32, w: f32, h: f32, t: Transition) {
+        self.frames.insert(*id, (w, h));
+        self.ops
+            .push(json!({ "op": "frame", "id": id, "f": [x, y, w, h], "anim": anim(t) }));
+    }
+
+    fn animate_exit(&mut self, parent: &NodeId, id: &NodeId, to: &Style, t: Transition) {
+        self.ops.push(json!({
+            "op": "exit", "id": id, "parent": parent, "to": pose(to.opacity, to.transform), "anim": anim(t),
+        }));
+    }
+
+    fn set_repeat(&mut self, id: &NodeId, s: &Style, repeat: Option<(Pose, Transition)>) {
+        let op = match repeat {
+            None => json!({ "op": "repeat", "id": id, "to": Value::Null }),
+            Some((p, t)) => {
+                let (o, tf) = p.apply(s.opacity, s.transform);
+                json!({
+                    "op": "repeat", "id": id, "from": pose(s.opacity, s.transform),
+                    "to": pose(o, tf), "anim": anim(t),
+                })
+            }
+        };
+        self.ops.push(op);
     }
 
     fn set_text(&mut self, id: &NodeId, text: &str) {
@@ -141,6 +207,7 @@ impl Widgets for RemoteWidgets {
     fn destroy(&mut self, id: &NodeId) {
         self.kinds.remove(id);
         self.texts.remove(id);
+        self.icons.remove(id);
         self.styles.remove(id);
         self.viewports.remove(id);
         self.frames.remove(id);
@@ -152,6 +219,7 @@ impl Widgets for RemoteWidgets {
         let style = self.styles.get(id).cloned().unwrap_or_default();
         let text = match kind {
             NodeKind::Timer => "00:00".to_string(),
+            NodeKind::Image => self.icons.get(id).cloned().unwrap_or_default(),
             _ => self.texts.get(id).cloned().unwrap_or_default(),
         };
         (self.measure)(&MeasureRequest {
@@ -221,6 +289,7 @@ impl Widgets for RemoteWidgets {
     }
 
     fn set_icon(&mut self, id: &NodeId, icon: &str) {
+        self.icons.insert(*id, icon.to_string());
         self.ops
             .push(json!({ "op": "icon", "id": id, "icon": icon, "glyph": prism_core::glyphs::glyph(icon) }));
     }

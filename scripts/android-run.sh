@@ -299,11 +299,16 @@ javac --release 17 -nowarn -classpath "$ANDROID_JAR$LIB_JARS" -d "$OUT/classes" 
 (cd "$STAGE" && zip -q "$OUT/base.apk" classes.dex && zip -q -0 -r "$OUT/base.apk" lib)
 # The libraries' Java resources (car-app-api.level…), as Gradle packages them.
 if [[ -n "$LIB_JARS" ]]; then
+  # Unzipped entries can be read-only: make them removable first.
+  [ -d "$OUT/javares" ] && chmod -R u+rwX "$OUT/javares"
   rm -rf "$OUT/javares" && mkdir -p "$OUT/javares"
   for jar in ${LIB_JARS//:/ }; do
     unzip -qo "$jar" -x '*.class' 'META-INF/MANIFEST.MF' 'META-INF/*.SF' 'META-INF/*.RSA' 'META-INF/*.DSA' \
       'META-INF/versions/*' 'module-info.class' -d "$OUT/javares" 2>/dev/null || true
   done
+  # Some jars store directories without the search bit: fix them, or their
+  # files would be left out.
+  chmod -R u+rwX "$OUT/javares"
   (cd "$OUT/javares" && find . -type f | sed 's|^\./||' | zip -q "$OUT/base.apk" -@)
 fi
 "$BUILD_TOOLS/zipalign" -f -P 16 4 "$OUT/base.apk" "$OUT/aligned.apk"

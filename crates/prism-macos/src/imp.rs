@@ -647,9 +647,30 @@ pub struct AppKit {
     rtl: bool,
     /// Header button texts: (back, close), in the app's language.
     chrome: (String, String),
+    /// Visual transforms (offset, scale, rotation), applied around the center.
+    transforms: HashMap<NodeId, prism_core::Transform>,
+}
+
+fn ca_equal(a: objc2_quartz_core::CATransform3D, b: objc2_quartz_core::CATransform3D) -> bool {
+    let f = |t: objc2_quartz_core::CATransform3D| [t.m11, t.m12, t.m21, t.m22, t.m41, t.m42];
+    f(a) == f(b)
 }
 
 impl AppKit {
+    /// The view's transform around its center (AppKit layers turn around
+    /// their corner).
+    fn apply_transform(&self, view: &View) {
+        let v = view.ns();
+        let t = self.transforms.get(&view.id()).copied().unwrap_or_default();
+        v.setWantsLayer(true);
+        if let Some(layer) = v.layer() {
+            let size = v.bounds().size;
+            layer.setAffineTransform(prism_native::apple::motion::matrix(
+                t.matrix_around_center(size.width as f32, size.height as f32),
+            ));
+        }
+    }
+
     /// Shows `src` in `view`: from memory, or loaded on a background thread.
     fn load_picture(&mut self, id: NodeId, view: &Retained<PrismView>, src: &str) {
         if let Some(img) = self.image_cache.get(src) {
@@ -1025,6 +1046,10 @@ impl Widgets for AppKit {
 
     fn set_style(&mut self, view: &View, style: &Style) {
         view.ns().setAlphaValue(style.opacity as f64);
+        if !style.transform.is_identity() || self.transforms.contains_key(&view.id()) {
+            self.transforms.insert(view.id(), style.transform);
+            self.apply_transform(view);
+        }
         match view {
             View::Sheet(sheet) => {
                 *sheet.content.ivars().background.borrow_mut() = style.background.map(ns_color);
@@ -1236,6 +1261,9 @@ impl Widgets for AppKit {
             |x: f64, y: f64, w: f64, h: f64| NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));
         view.ns()
             .setFrame(rect(x as f64, y as f64, w as f64, h as f64));
+        if self.transforms.contains_key(&view.id()) {
+            self.apply_transform(view);
+        }
         if let View::Tabs(t) = view {
             let w = w as f64;
             t.bar.setFrame(rect(0., 0., w, HEADER_HEIGHT - 1.));
@@ -1367,10 +1395,90 @@ impl Widgets for AppKit {
     fn set_style_animated(&mut self, view: &View, style: &Style, t: prism_core::Transition) {
         let v: Retained<NSView> = objc2::Message::retain(view.ns());
         let alpha = v.alphaValue();
+        let transform = v.layer().map(|l| l.transform());
         self.set_style(view, style);
         let new = v.alphaValue();
         v.setAlphaValue(alpha);
+        if let (Some(layer), Some(from)) = (v.layer(), transform) {
+            let to = layer.transform();
+            if !ca_equal(from, to) {
+                prism_native::apple::motion::animate_transform(&layer, from, t);
+            }
+        }
         animate(t, move || v.animator().setAlphaValue(new));
+    }
+
+    /// A picture of the view stays in its place and animates out.
+    fn animate_exit(&mut self, parent: &View, view: &View, to: &Style, t: prism_core::Transition) {
+        let v = view.ns();
+        let parent = match parent {
+            View::Scroll(sc) => {
+                let d: &NSView = &sc.document;
+                objc2::Message::retain(d)
+            }
+            p => objc2::Message::retain(p.ns()),
+        };
+        if v.window().is_none() || unsafe { v.superview() }.is_none_or(|s| *s != *parent) {
+            return;
+        }
+        let bounds = v.bounds();
+        let Some(rep) = v.bitmapImageRepForCachingDisplayInRect(bounds) else {
+            return;
+        };
+        v.cacheDisplayInRect_toBitmapImageRep(bounds, &rep);
+        let image = NSImage::initWithSize(objc2::AllocAnyThread::alloc(), bounds.size);
+        image.addRepresentation(&rep);
+        let picture = objc2_app_kit::NSImageView::imageViewWithImage(&image, self.mtm);
+        picture.setFrame(v.frame());
+        picture.setWantsLayer(true);
+        picture.setAlphaValue(v.alphaValue());
+        parent.addSubview_positioned_relativeTo(
+            &picture,
+            objc2_app_kit::NSWindowOrderingMode::Above,
+            Some(v),
+        );
+        let size = bounds.size;
+        if let Some(layer) = picture.layer() {
+            let from = v.layer().map_or(layer.transform(), |l| l.transform());
+            layer.setAffineTransform(prism_native::apple::motion::matrix(
+                to.transform
+                    .matrix_around_center(size.width as f32, size.height as f32),
+            ));
+            prism_native::apple::motion::animate_transform(&layer, from, t);
+        }
+        let (p, alpha) = (picture.clone(), to.opacity as f64);
+        animate(t, move || p.animator().setAlphaValue(alpha));
+        let done = std::time::Duration::from_secs_f32(t.delay + t.duration * 1.2 + 0.05);
+        on_main_after(done, move || picture.removeFromSuperview());
+    }
+
+    fn set_repeat(
+        &mut self,
+        view: &View,
+        style: &Style,
+        repeat: Option<(prism_core::Pose, prism_core::Transition)>,
+    ) {
+        use prism_native::apple::motion;
+        let v = view.ns();
+        v.setWantsLayer(true);
+        let Some(layer) = v.layer() else { return };
+        let Some((pose, t)) = repeat else {
+            motion::stop_repeat(&layer);
+            return;
+        };
+        let size = v.bounds().size;
+        let m = |tr: prism_core::Transform| {
+            motion::transform3d(motion::matrix(
+                tr.matrix_around_center(size.width as f32, size.height as f32),
+            ))
+        };
+        let (opacity, transform) = pose.apply(style.opacity, style.transform);
+        motion::repeat(
+            &layer,
+            (style.opacity, m(style.transform)),
+            (opacity, m(transform)),
+            t,
+        );
     }
 
     fn set_environment(&mut self, env: &prism_core::RenderEnvironment) {
@@ -1552,6 +1660,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         image_sources: image_sources(config.assets.as_deref()),
         rtl: false,
         chrome: ("Back".into(), "Close".into()),
+        transforms: HashMap::new(),
     });
     let first = runtime.render();
     let mut state = State {
@@ -1909,22 +2018,56 @@ fn observe_system(target: &Target) {
     }
 }
 
-/// Runs `f` (which changes `animator()` proxies) in an animation group.
+/// Runs `f` (which changes `animator()` proxies) in an animation group,
+/// after `t`'s delay.
 fn animate(t: prism_core::Transition, f: impl Fn() + 'static) {
-    let block = block2::RcBlock::new(
-        move |ctx: std::ptr::NonNull<objc2_app_kit::NSAnimationContext>| {
-            let ctx = unsafe { ctx.as_ref() };
-            // Springs overshoot: approximate with a slightly longer ease.
-            let duration = match t.curve {
-                prism_core::Curve::Spring => t.duration * 1.2,
-                _ => t.duration,
-            };
-            ctx.setDuration(duration as f64);
-            ctx.setAllowsImplicitAnimation(true);
+    let run = move || {
+        let block = block2::RcBlock::new(
+            move |ctx: std::ptr::NonNull<objc2_app_kit::NSAnimationContext>| {
+                let ctx = unsafe { ctx.as_ref() };
+                // Springs overshoot: approximate with a slightly longer ease.
+                let duration = match t.curve {
+                    prism_core::Curve::Spring => t.duration * 1.2,
+                    _ => t.duration,
+                };
+                ctx.setDuration(duration as f64);
+                ctx.setTimingFunction(Some(&prism_native::apple::motion::timing(t)));
+                ctx.setAllowsImplicitAnimation(true);
+                f();
+            },
+        );
+        objc2_app_kit::NSAnimationContext::runAnimationGroup(&block);
+    };
+    if t.delay > 0. {
+        on_main_after(std::time::Duration::from_secs_f32(t.delay), run);
+    } else {
+        run();
+    }
+}
+
+type Later = (u64, HashMap<u64, Box<dyn FnOnce()>>);
+
+thread_local! {
+    /// Callbacks waiting for `on_main_after`, by number (the last one given).
+    static LATER: RefCell<Later> = RefCell::new((0, HashMap::new()));
+}
+
+/// Runs `f` on the main thread after `delay` (`f` need not be `Send`: it
+/// stays on this thread, only its number travels).
+fn on_main_after(delay: std::time::Duration, f: impl FnOnce() + 'static) {
+    let id = LATER.with(|l| {
+        let mut l = l.borrow_mut();
+        l.0 += 1;
+        let id = l.0;
+        l.1.insert(id, Box::new(f));
+        id
+    });
+    let when = dispatch2::DispatchTime::try_from(delay).unwrap_or(dispatch2::DispatchTime::NOW);
+    let _ = dispatch2::DispatchQueue::main().after(when, move || {
+        if let Some(f) = LATER.with(|l| l.borrow_mut().1.remove(&id)) {
             f();
-        },
-    );
-    objc2_app_kit::NSAnimationContext::runAnimationGroup(&block);
+        }
+    });
 }
 
 thread_local! {

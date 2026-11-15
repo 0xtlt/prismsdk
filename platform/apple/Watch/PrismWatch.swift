@@ -112,6 +112,8 @@ struct Node {
     var swipeLeft = false
     var swipeRight = false
     var scrollEvents = false
+    /// Back and forth between the style's pose and this one.
+    var loop: PrismLoop?
 
     func num(_ k: String, _ d: Double = 0) -> Double { (style[k] as? NSNumber)?.doubleValue ?? d }
     func str(_ k: String) -> String? { style[k] as? String }
@@ -130,15 +132,29 @@ final class PrismStore: ObservableObject {
     @Published var menuNode: UInt64?
     @Published var picker: (id: UInt64, limit: Int)?
     @Published var share: (text: String?, url: String?)?
+    /// Pictures of removed views animating out, by node.
+    @Published var ghosts: [UInt64: PrismGhost] = [:]
 
     func apply(_ json: String) {
         guard let data = json.data(using: .utf8),
               let patches = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return }
         var nodes = self.nodes
         var root = self.root
+        // Animated changes run once the rest is on screen, so they start from
+        // what is shown (an entering view's first pose).
+        var animated: [[String: Any]] = []
         for p in patches {
             let id = (p["id"] as? NSNumber)?.uint64Value ?? 0
+            if p["anim"] is [String: Any], p["op"] as? String != "exit", p["op"] as? String != "repeat" {
+                animated.append(p)
+                continue
+            }
             switch p["op"] as? String {
+            case "exit": MainActor.assumeIsolated { exit(id, p) }
+            case "repeat":
+                nodes[id]?.loop = (p["to"] as? [String: Any]).map {
+                    PrismLoop(from: PrismPose(p["from"]), to: PrismPose($0), anim: p["anim"] as? [String: Any] ?? [:])
+                }
             case "create": nodes[id] = Node(kind: p["kind"] as? String ?? "view")
             case "destroy": nodes[id] = nil
             case "root": root = id
@@ -168,12 +184,133 @@ final class PrismStore: ObservableObject {
         }
         self.nodes = nodes
         self.root = root
+        if !animated.isEmpty {
+            DispatchQueue.main.async {
+                for p in animated {
+                    let id = (p["id"] as? NSNumber)?.uint64Value ?? 0
+                    withAnimation(prismAnimation(p["anim"] as? [String: Any] ?? [:])) {
+                        switch p["op"] as? String {
+                        case "style": self.nodes[id]?.style = p["s"] as? [String: Any] ?? [:]
+                        case "frame":
+                            if let f = p["f"] as? [Double], f.count == 4 {
+                                self.nodes[id]?.frame = CGRect(x: f[0], y: f[1], width: f[2], height: f[3])
+                            }
+                        default: break
+                        }
+                    }
+                }
+            }
+        }
         // `PRISM_DEBUG_LAYOUT=1`: log every text's frame.
         if ProcessInfo.processInfo.environment["PRISM_DEBUG_LAYOUT"] != nil {
             for (id, n) in nodes where !n.text.isEmpty {
                 NSLog("prism-layout %llu %@ %@ %@", id, n.kind, n.text, NSCoder.string(for: n.frame))
             }
         }
+    }
+}
+
+extension PrismStore {
+    /// A picture of the view, left in its parent, animating to `to`.
+    @MainActor
+    func exit(_ id: UInt64, _ p: [String: Any]) {
+        guard let n = nodes[id], n.frame.width > 0, n.frame.height > 0,
+              let parent = (p["parent"] as? NSNumber)?.uint64Value else { return }
+        let renderer = ImageRenderer(content: NodeView(id: id).environment(\.colorScheme, .dark))
+        renderer.scale = WKInterfaceDevice.current().screenScale
+        guard let image = renderer.uiImage else { return }
+        let anim = p["anim"] as? [String: Any] ?? [:]
+        ghosts[id] = PrismGhost(parent: parent, image: image, frame: n.frame,
+                                from: PrismPose(["o": n.num("opacity", 1), "tf": n.style["tf"] ?? NSNull()]),
+                                to: PrismPose(p["to"]), anim: anim)
+        let total = (anim["d"] as? Double ?? 0.25) + (anim["delay"] as? Double ?? 0) + 0.05
+        DispatchQueue.main.asyncAfter(deadline: .now() + total) { self.ghosts[id] = nil }
+    }
+}
+
+// MARK: Motion
+
+/// Opacity and transform (offset, scale, rotation around the center).
+struct PrismPose: Equatable {
+    var o = 1.0, x = 0.0, y = 0.0, scale = 1.0, rotate = 0.0
+
+    init(_ v: Any?) {
+        let d = v as? [String: Any] ?? [:]
+        o = (d["o"] as? NSNumber)?.doubleValue ?? 1
+        if let tf = d["tf"] as? [Double], tf.count == 4 { (x, y, scale, rotate) = (tf[0], tf[1], tf[2], tf[3]) }
+    }
+
+    init(opacity: Double, tf: Any?) { self.init(["o": opacity, "tf": tf ?? NSNull()]) }
+}
+
+struct PrismLoop: Equatable {
+    var from: PrismPose
+    var to: PrismPose
+    var anim: [String: Any]
+    static func == (a: PrismLoop, b: PrismLoop) -> Bool {
+        a.from == b.from && a.to == b.to && NSDictionary(dictionary: a.anim).isEqual(to: b.anim)
+    }
+}
+
+struct PrismGhost {
+    var parent: UInt64
+    var image: UIImage
+    var frame: CGRect
+    var from: PrismPose
+    var to: PrismPose
+    var anim: [String: Any]
+}
+
+/// `{d, delay, ease: [x1, y1, x2, y2]}` as a SwiftUI animation.
+func prismAnimation(_ a: [String: Any]) -> Animation {
+    let e = a["ease"] as? [Double] ?? [0.42, 0, 0.58, 1]
+    let curve = Animation.timingCurve(e[0], e[1], e[2], e[3], duration: a["d"] as? Double ?? 0.25)
+    return curve.delay(a["delay"] as? Double ?? 0)
+}
+
+extension View {
+    func prismPose(_ p: PrismPose) -> some View {
+        scaleEffect(p.scale).rotationEffect(.degrees(p.rotate)).offset(x: p.x, y: p.y).opacity(p.o)
+    }
+}
+
+/// The style's pose, or a loop between two.
+struct PrismPosed: ViewModifier {
+    let pose: PrismPose
+    let loop: PrismLoop?
+    @State private var swing = false
+
+    func body(content: Content) -> some View {
+        content.prismPose(loop.map { swing ? $0.to : $0.from } ?? pose)
+            .onAppear(perform: start)
+            .onChange(of: loop) { _, _ in start() }
+    }
+
+    private func start() {
+        var t = Transaction()
+        t.disablesAnimations = true
+        withTransaction(t) { swing = false }
+        guard let loop else { return }
+        let d = loop.anim["d"] as? Double ?? 0.6
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: d).repeatForever(autoreverses: true).delay(loop.anim["delay"] as? Double ?? 0)) {
+                swing = true
+            }
+        }
+    }
+}
+
+/// A removed view's picture, animating out.
+struct GhostView: View {
+    let ghost: PrismGhost
+    @State private var gone = false
+
+    var body: some View {
+        Image(uiImage: ghost.image).resizable()
+            .frame(width: ghost.frame.width, height: ghost.frame.height)
+            .prismPose(gone ? ghost.to : ghost.from)
+            .allowsHitTesting(false)
+            .onAppear { withAnimation(prismAnimation(ghost.anim)) { gone = true } }
     }
 }
 
@@ -202,7 +339,7 @@ struct NodeView: View {
                     RoundedRectangle(cornerRadius: n.num("radius")).strokeBorder($0, lineWidth: n.num("bw", 1))
                 })
                 .modifier(RoundedClip(radius: n.num("radius")))
-                .opacity(n.num("opacity", 1))
+                .modifier(PrismPosed(pose: PrismPose(opacity: n.num("opacity", 1), tf: n.style["tf"]), loop: n.loop))
                 .contentShape(Rectangle())
                 .onTapGesture { if n.clickable { send(["t": "click", "id": id]) } }
                 // Context menus: a long press opens them as a dialog (SwiftUI's
@@ -283,6 +420,11 @@ struct NodeView: View {
             ForEach(children, id: \.self) { c in
                 let f = store.nodes[c]?.frame ?? .zero
                 NodeView(id: c).offset(x: f.minX, y: f.minY)
+            }
+            ForEach(store.ghosts.filter { $0.value.parent == id }.map(\.key), id: \.self) { g in
+                if let ghost = store.ghosts[g] {
+                    GhostView(ghost: ghost).offset(x: ghost.frame.minX, y: ghost.frame.minY)
+                }
             }
         }
     }

@@ -6,7 +6,7 @@
 //! flexbox layout with taffy, so AppKit, UIKit (and later Android, Win32, GTK)
 //! all lay out exactly like the web backend's CSS flexbox.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[cfg(target_vendor = "apple")]
 pub mod apple;
@@ -15,7 +15,8 @@ pub mod remote;
 
 use prism_core::{
     Accessibility, Align, Appearance, Backend, Direction, FlexDirection, Justify, Length, NodeId,
-    NodeKind, Patch, RenderEnvironment, Style, TextAlign, Transition,
+    NodeKind, Patch, Pose, RenderEnvironment, Style, TextAlign, Transition,
+    animation::{DEFAULT_ENTER, DEFAULT_EXIT},
 };
 use taffy::prelude::{
     AvailableSpace, Dimension, LengthPercentage, LengthPercentageAuto, Rect, Size, TaffyTree,
@@ -88,6 +89,36 @@ pub trait Widgets {
     }
     /// Language and layout direction of native chrome (navigation bars…).
     fn set_environment(&mut self, _env: &RenderEnvironment) {}
+    /// `view` is about to leave `parent` (and be destroyed): show it animating
+    /// to `to` (its style at the exit pose), e.g. with a snapshot. Default:
+    /// it disappears at once.
+    fn animate_exit(
+        &mut self,
+        _parent: &Self::View,
+        _view: &Self::View,
+        _to: &Style,
+        _t: Transition,
+    ) {
+    }
+    /// Loops `view` between `style` (its opacity and transform) and `pose`,
+    /// back and forth, until called with `None`.
+    fn set_repeat(
+        &mut self,
+        _view: &Self::View,
+        _style: &Style,
+        _repeat: Option<(Pose, Transition)>,
+    ) {
+    }
+}
+
+/// `style` at `pose` (its opacity and transform replaced).
+pub fn posed(style: &Style, pose: Pose) -> Style {
+    let (opacity, transform) = pose.apply(style.opacity, style.transform);
+    Style {
+        opacity,
+        transform,
+        ..style.clone()
+    }
 }
 
 /// Containers whose children are positioned by the platform, not by flexbox.
@@ -212,13 +243,20 @@ impl<W: Widgets> NativeRenderer<W> {
                 TextAlign::Center => TextAlign::Center,
             };
         }
+        if self.env.direction == Direction::Rtl {
+            // Offsets are leading/trailing, like margins.
+            s.transform.x = -s.transform.x;
+            s.animations = s.animations.scaled(1., true);
+        }
         if self.env.reduce_motion {
             s.transition = None;
+            s.animations = Default::default();
         }
         s
     }
 
-    /// Places a view, animating if its style asks for it.
+    /// Places a view, animating if its style asks for it. The first time, an
+    /// element with an enter pose starts there and animates to its style.
     fn set_frame(&mut self, id: NodeId, x: f32, y: f32, w: f32, h: f32) {
         let Some(e) = self.nodes.get_mut(&id) else {
             return;
@@ -230,11 +268,76 @@ impl<W: Widgets> NativeRenderer<W> {
             return;
         }
         let transition = e.style.transition.filter(|_| !self.env.reduce_motion);
+        let enter = e
+            .style
+            .animations
+            .enter
+            .filter(|_| previous.is_none() && !self.env.reduce_motion && !e.style.display_none);
+        if let Some(pose) = enter {
+            let (view, kind, style) = (e.view.clone(), e.kind, e.style.clone());
+            self.play_enter(&view, kind, &style, pose);
+            self.widgets.set_frame(&view, x, y, w, h);
+            return;
+        }
+        let e = &self.nodes[&id];
         match (transition, previous) {
             (Some(t), Some(p)) if p != frame && p.2 > 0. && p.3 > 0. => {
                 self.widgets.set_frame_animated(&e.view, x, y, w, h, t)
             }
             _ => self.widgets.set_frame(&e.view, x, y, w, h),
+        }
+    }
+
+    /// Shows `view` at its enter pose and animates it to its style.
+    fn play_enter(&mut self, view: &W::View, kind: NodeKind, style: &Style, pose: Pose) {
+        let s = self.effective_style(style, kind);
+        let pose = pose.scaled(self.zoom, self.env.direction == Direction::Rtl);
+        self.widgets.set_style(view, &posed(&s, pose));
+        let t = s.transition.unwrap_or(DEFAULT_ENTER);
+        self.widgets.set_style_animated(view, &s, t);
+    }
+
+    /// Children of `parent` removed by `children` and destroyed in this
+    /// batch, with an exit pose: they animate out before going away.
+    fn play_exits(&mut self, parent: NodeId, children: &[NodeId], destroyed: &HashSet<NodeId>) {
+        if self.env.reduce_motion {
+            return;
+        }
+        let Some(p) = self.nodes.get(&parent) else {
+            return;
+        };
+        if is_managed(p.kind) {
+            return;
+        }
+        let old: Vec<NodeId> = self
+            .taffy
+            .children(p.layout)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|c| self.by_layout.get(c).copied())
+            .collect();
+        let parent_view = p.view.clone();
+        for id in old {
+            if children.contains(&id) || !destroyed.contains(&id) {
+                continue;
+            }
+            let Some(e) = self.nodes.get(&id) else {
+                continue;
+            };
+            let Some(pose) = e.style.animations.exit else {
+                continue;
+            };
+            if e.frame.is_none() || e.style.display_none {
+                continue;
+            }
+            let s = self.effective_style(&e.style, e.kind);
+            let pose = pose.scaled(self.zoom, self.env.direction == Direction::Rtl);
+            let t = s
+                .transition
+                .map_or(DEFAULT_EXIT, |t| Transition { delay: 0., ..t });
+            let view = e.view.clone();
+            self.widgets
+                .animate_exit(&parent_view, &view, &posed(&s, pose), t);
         }
     }
 
@@ -448,6 +551,13 @@ impl<W: Widgets> NativeRenderer<W> {
 
 impl<W: Widgets> Backend for NativeRenderer<W> {
     fn apply(&mut self, patches: &[Patch]) {
+        let destroyed: HashSet<NodeId> = patches
+            .iter()
+            .filter_map(|p| match p {
+                Patch::Destroy { id } => Some(*id),
+                _ => None,
+            })
+            .collect();
         for patch in patches {
             match patch {
                 Patch::Create { id, kind } => {
@@ -475,14 +585,30 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                 Patch::SetStyle { id, style } => {
                     if let Some(e) = self.nodes.get(id) {
                         let s = self.effective_style(style, e.kind);
+                        let was_hidden = e.style.display_none;
                         if e.style.display_none != s.display_none || s.display_none {
                             self.widgets.set_hidden(&e.view, s.display_none);
                         }
-                        match s.transition {
-                            Some(t) if e.frame.is_some() => {
-                                self.widgets.set_style_animated(&e.view, &s, t)
+                        let (view, kind) = (e.view.clone(), e.kind);
+                        let enter = s
+                            .animations
+                            .enter
+                            .filter(|_| was_hidden && !s.display_none && e.frame.is_some());
+                        let old = self.effective_style(&e.style, e.kind);
+                        match (enter, s.transition) {
+                            // Shown again: enters like a new element.
+                            (Some(pose), _) => self.play_enter(&view, kind, style, pose),
+                            (None, Some(t)) if e.frame.is_some() => {
+                                self.widgets.set_style_animated(&view, &s, t)
                             }
-                            _ => self.widgets.set_style(&e.view, &s),
+                            _ => self.widgets.set_style(&view, &s),
+                        }
+                        // A loop restarts when it, or what it loops from, changes.
+                        if old.animations.repeat != s.animations.repeat
+                            || (s.animations.repeat.is_some()
+                                && (old.opacity != s.opacity || old.transform != s.transform))
+                        {
+                            self.widgets.set_repeat(&view, &s, s.animations.repeat);
                         }
                     }
                     if let Some(e) = self.nodes.get_mut(id) {
@@ -524,6 +650,7 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                     }
                 }
                 Patch::SetChildren { id, children } => {
+                    self.play_exits(*id, children, &destroyed);
                     let Some(parent) = self.nodes.get(id) else {
                         continue;
                     };
@@ -568,6 +695,7 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                 Patch::SetIcon { id, icon } => {
                     if let Some(e) = self.nodes.get(id) {
                         self.widgets.set_icon(&e.view, icon);
+                        let _ = self.taffy.mark_dirty(e.layout);
                     }
                 }
                 Patch::SetRoot { id } => {
