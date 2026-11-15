@@ -78,7 +78,10 @@ fn paths_are_normalized() {
     assert_eq!(normalize_path("/"), "/");
     assert_eq!(normalize_path("todos/1/"), "/todos/1");
     assert_eq!(normalize_path("//todos//"), "/todos");
-    assert_eq!(normalize_path("/a?b=/c"), "/a");
+    // The query string is kept as it is; the fragment is dropped.
+    assert_eq!(normalize_path("/a?b=/c"), "/a?b=/c");
+    assert_eq!(normalize_path("a/?x=1&y=2#top"), "/a?x=1&y=2");
+    assert_eq!(normalize_path("/a?"), "/a");
     assert_eq!(normalize_path("/a#/frag"), "/a");
 }
 
@@ -108,7 +111,7 @@ fn params_static_segments_and_rest() {
 fn deep_links_open_on_top_of_home() {
     let h = stack_app("/todos/3?from=widget");
     assert_eq!(screens(&h, stack(&h)), ["home", "todo Some(3)"]);
-    assert_eq!(path(&h), "/todos/3");
+    assert_eq!(path(&h), "/todos/3?from=widget");
 }
 
 #[test]
@@ -376,4 +379,204 @@ fn sheets_over_tabs() {
     assert_eq!(h.host.get(tabs_node(&h)).value, Some(0.));
     h.dispatch(UiEvent::Back(m, 0));
     assert!(modal(&h).is_none());
+}
+
+// --- Query strings, navigation state, hidden headers (#7, #8) ----------------
+
+/// A "Saved" notice handed to the next screen.
+struct Saved(&'static str);
+
+fn query_app(path: &str) -> Harness {
+    Harness::at(path, |cx| {
+        let router = Router::new()
+            .route("/", |cx, _| page(cx, "home".into()))
+            .route("/analytics", |cx, p| {
+                let rooms = p.query_all("room").join("+");
+                let notice = p.state::<Saved>().map_or("-", |s| s.0);
+                page(
+                    cx,
+                    format!(
+                        "analytics {} [{rooms}] {notice}",
+                        p.query("period").unwrap_or("all")
+                    ),
+                )
+            })
+            .route("/items/:id", |cx, p| {
+                let notice = p.state::<Saved>().map_or("-", |s| s.0);
+                page(cx, format!("item {} {notice}", p.get("id").unwrap()))
+            })
+            .build(cx);
+        cx.set_root(router);
+    })
+}
+
+#[test]
+fn routes_read_the_query_string_with_every_value_decoded() {
+    let h = query_app("/analytics?period=7d&room=3&room=4%2B5");
+    assert_eq!(screens(&h, stack(&h)), ["home", "analytics 7d [3+4+5] -"]);
+    // The stack (the URL on the web) keeps it.
+    assert_eq!(
+        h.host.get(stack(&h)).text,
+        "/analytics?period=7d&room=3&room=4%2B5"
+    );
+    assert_eq!(path(&h), "/analytics?period=7d&room=3&room=4%2B5");
+    let q = h.rt.app.current_query();
+    assert_eq!(q[0], ("period".to_string(), "7d".to_string()));
+    assert_eq!(q[2].1, "4+5");
+}
+
+#[test]
+fn query_helpers_round_trip() {
+    let q = prism_core::encode_query([("q", "a&b c"), ("é", "1/2"), ("edit", "")]);
+    assert_eq!(q, "q=a%26b%20c&%C3%A9=1/2&edit=");
+    assert_eq!(
+        prism_core::parse_query(&q),
+        [
+            ("q".to_string(), "a&b c".to_string()),
+            ("é".into(), "1/2".into()),
+            ("edit".into(), "".into())
+        ]
+    );
+    // `+` is a space; broken escapes stay as they are.
+    assert_eq!(prism_core::parse_query("a=x+y&b=%zz&c")[0].1, "x y");
+    assert_eq!(prism_core::parse_query("b=%zz")[0].1, "%zz");
+    assert_eq!(prism_core::parse_query("c&&")[0], ("c".into(), "".into()));
+}
+
+#[test]
+fn navigating_to_another_query_pushes_a_screen_back_undoes() {
+    let mut h = query_app("/analytics?period=7d");
+    h.rt.app.navigate("/analytics?period=30d");
+    h.render();
+    let s = stack(&h);
+    assert_eq!(
+        screens(&h, s),
+        ["home", "analytics 7d [] -", "analytics 30d [] -"]
+    );
+    // The same path and query again is a no-op.
+    h.rt.app.navigate("/analytics?period=30d");
+    assert!(h.render().is_empty());
+    // Back (the browser's, a swipe) returns to the previous query.
+    h.dispatch(UiEvent::Back(s, 2));
+    assert_eq!(path(&h), "/analytics?period=7d");
+}
+
+#[test]
+fn replace_query_rewrites_the_url_and_keeps_the_screen() {
+    let mut h = query_app("/analytics?period=7d");
+    let s = stack(&h);
+    let screen = h.host.get(s).children[1];
+    h.rt.app.replace_query([("period", "30d"), ("room", "2 b")]);
+    let p = h.render().to_vec();
+    assert_eq!(creates(&p), 0, "no screen is built");
+    assert!(destroys(&p).is_empty());
+    assert_eq!(h.host.get(s).children[1], screen);
+    assert_eq!(h.host.get(s).text, "/analytics?period=30d&room=2%20b");
+    assert_eq!(path(&h), "/analytics?period=30d&room=2%20b");
+    // An empty list clears it.
+    h.rt.app.replace_query(std::iter::empty::<(&str, &str)>());
+    h.render();
+    assert_eq!(path(&h), "/analytics");
+    assert_eq!(h.host.get(s).children.len(), 2);
+}
+
+#[test]
+fn navigation_state_reaches_only_the_next_screen() {
+    let mut h = query_app("/");
+    h.rt.app.navigate_with("/items/4", Saved("saved"));
+    h.render();
+    h.host.by_text("at item 4 saved");
+    // A plain navigation afterwards gets nothing.
+    h.rt.app.navigate("/items/5");
+    h.render();
+    h.host.by_text("at item 5 -");
+    // After a save: replace the form, with a notice.
+    h.rt.app.replace_with("/analytics?period=1d", Saved("done"));
+    h.render();
+    assert_eq!(
+        screens(&h, stack(&h)),
+        ["home", "item 4 saved", "analytics 1d [] done"]
+    );
+    // A value of another type is not handed over.
+    h.rt.app.navigate_with("/items/6", 42u8);
+    h.render();
+    h.host.by_text("at item 6 -");
+    // Dropped when nothing is built (already on top): not kept for later.
+    h.rt.app.navigate_with("/items/6", Saved("lost"));
+    h.render();
+    h.rt.app.navigate("/items/7");
+    h.render();
+    h.host.by_text("at item 7 -");
+}
+
+#[test]
+fn deep_links_to_a_tab_root_with_a_query_open_it_there() {
+    let h = tab_app("/settings?section=privacy");
+    let t = tabs_node(&h);
+    assert_eq!(h.host.get(t).value, Some(1.));
+    assert_eq!(path(&h), "/settings?section=privacy");
+    // The tab's root, with its query: no plain root underneath.
+    let settings = h.host.get(t).children[1];
+    let s = h.host.get(settings).children[0];
+    assert_eq!(screens(&h, s), ["settings"]);
+}
+
+#[test]
+fn a_tab_root_with_a_query_switches_tab_then_pushes() {
+    let mut h = tab_app("/");
+    h.rt.app.navigate("/settings?section=privacy");
+    h.render();
+    assert_eq!(h.host.get(tabs_node(&h)).value, Some(1.));
+    assert_eq!(path(&h), "/settings?section=privacy");
+    h.rt.app.navigate("/settings");
+    h.render();
+    assert_eq!(path(&h), "/settings?section=privacy", "a tab switch only");
+}
+
+#[test]
+fn the_header_can_be_hidden_for_every_screen_or_one() {
+    struct Bare;
+    impl Render for Bare {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            screen("Bare").bare()
+        }
+    }
+    let mut h = Harness::at("/", |cx| {
+        let router = routes(Router::new())
+            .route("/bare", |cx, _| cx.new_entity(|_| Bare))
+            .build(cx);
+        cx.set_root(router);
+    });
+    let s = stack(&h);
+    assert_eq!(h.host.get(s).value, Some(0.), "header shown");
+    let home = h.host.get(s).children[0];
+    assert_eq!(h.host.get(home).value, Some(0.), "a plain screen");
+    h.rt.app.navigate("/bare");
+    h.render();
+    let bare = h.host.get(s).children[1];
+    assert_eq!(h.host.get(bare).value, Some(1.), "a bare screen");
+
+    let h = Harness::at("/", |cx| {
+        let router = routes(Router::new()).header(false).build(cx);
+        cx.set_root(router);
+    });
+    let flags = h.host.get(stack(&h)).value.unwrap() as u32;
+    assert_eq!(flags, prism_core::STACK_NO_HEADER);
+}
+
+#[test]
+fn a_headerless_sheet_stays_closable() {
+    let mut h = Harness::at("/", |cx| {
+        let router = routes(Router::new()).header(false).build(cx);
+        cx.set_root(router);
+    });
+    h.rt.app.present("/todos/new");
+    h.render();
+    let m = modal(&h).expect("a sheet");
+    let sheet_stack = h.host.get(m).children[0];
+    let flags = h.host.get(sheet_stack).value.unwrap() as u32;
+    assert_eq!(
+        flags,
+        prism_core::STACK_CLOSABLE | prism_core::STACK_NO_HEADER
+    );
 }

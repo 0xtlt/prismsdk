@@ -374,7 +374,7 @@ fn router_pushes_and_pops() {
 fn deep_link_opens_home_underneath() {
     let (_, first) = routed("/items/3?x=1");
     let (_, depth, path) = stack_of(&first);
-    assert_eq!((depth, path.as_str()), (2, "/items/3"));
+    assert_eq!((depth, path.as_str()), (2, "/items/3?x=1"));
     find_text(&first, "Item 3");
 }
 
@@ -647,7 +647,7 @@ fn snapshots_carry_shapes_compactly_with_margins() {
         &mut app,
         div().child(
             shape()
-                .inset(2., 3.)
+                .stroke_inset(2., 3.)
                 .path(line.clone())
                 .path(ring.clone())
                 .h(px(40.))
@@ -2105,4 +2105,183 @@ fn corners_combine_and_mirror() {
     let mut d = div().rounded_bottom(6.);
     let s = d.style_mut().clone();
     assert_eq!((s.corner_radius, s.rounded_corners), (6., Corners::BOTTOM));
+}
+
+// --- Quiet globals, tasks tied to their entity (#23) ---------------------------
+
+#[derive(Default)]
+struct Debounce(Vec<f32>);
+
+struct Shown;
+
+impl Render for Shown {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        div().child(text("shown"))
+    }
+}
+
+#[test]
+fn quiet_globals_change_without_re_rendering() {
+    let (mut rt, _) = boot(|cx| {
+        let root = cx.new_entity(|_| Shown);
+        cx.set_root(root);
+    });
+    rt.app.update_global_quiet(|d: &mut Debounce| d.0.push(0.5));
+    rt.app.global_mut::<Debounce>().0.push(0.7);
+    assert!(!rt.app.has_dirty(), "nothing re-renders");
+    assert_eq!(rt.app.global::<Debounce>().0, vec![0.5, 0.7]);
+    rt.app.update_global(|d: &mut Debounce| d.0.clear());
+    assert!(
+        rt.app.has_dirty(),
+        "update_global still re-renders everything"
+    );
+}
+
+struct Poller;
+
+impl Render for Poller {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
+#[test]
+fn tasks_tied_to_an_entity_stop_when_it_is_released() {
+    let mut app = App::new();
+    let (scoped, free) = (
+        std::rc::Rc::new(std::cell::Cell::new(0u32)),
+        std::rc::Rc::new(std::cell::Cell::new(0u32)),
+    );
+    let (s, f) = (scoped.clone(), free.clone());
+    let poller = app.new_entity(|_| Poller);
+    let (scoped_task, free_task) = poller.update(&mut app, |_, cx| {
+        let a = cx
+            .spawn(async move |_, cx| {
+                loop {
+                    s.set(s.get() + 1);
+                    cx.sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .cancel_on_release();
+        let b = cx.spawn(async move |_, cx| {
+            loop {
+                f.set(f.get() + 1);
+                cx.sleep(Duration::from_millis(1)).await;
+            }
+        });
+        (a.id(), b.id())
+    });
+    crate::task::poll_tasks(&mut app);
+    assert_eq!((scoped.get(), free.get()), (1, 1));
+    assert!(app.executor.is_running(scoped_task));
+    app.release(poller);
+    assert!(
+        !app.executor.is_running(scoped_task),
+        "cancelled with its entity"
+    );
+    assert!(app.executor.is_running(free_task), "plain cx.spawn runs on");
+    std::thread::sleep(Duration::from_millis(3));
+    crate::task::poll_tasks(&mut app);
+    assert_eq!((scoped.get(), free.get()), (1, 2));
+}
+
+#[test]
+fn a_task_can_release_its_own_entity_and_stop() {
+    let (mut rt, _) = boot(|cx| {
+        let root = cx.new_entity(|_| Shown);
+        cx.set_root(root);
+    });
+    let polls = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    let p = polls.clone();
+    let owner = rt.app.new_entity(|_| Poller);
+    let task = rt
+        .app
+        .spawn(|cx| async move {
+            loop {
+                p.set(p.get() + 1);
+                // Releasing the owner from inside its own task cancels it.
+                cx.update(|app| app.release(owner));
+                cx.sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .cancel_with(&owner)
+        .id();
+    rt.poll();
+    assert!(!rt.is_task_running(task));
+    std::thread::sleep(Duration::from_millis(3));
+    rt.poll();
+    assert_eq!(polls.get(), 1, "never polled again");
+}
+
+// --- Shapes position like any element (#15), fitted scroll views (#16) --------
+
+#[test]
+fn a_shape_takes_the_styled_inset_and_keeps_its_stroke_inset() {
+    use crate::{Drawing, Length, Path, shape};
+    let mut sh = shape()
+        .absolute()
+        .inset(0.)
+        .stroke_inset(2., 3.)
+        .path(Path::line([(0., 0.), (1., 1.)]).stroke(rgb(0x000000), 1.));
+    let s = sh.style_mut();
+    assert_eq!(
+        (s.inset.top, s.inset.left),
+        (Length::Px(0.), Length::Px(0.))
+    );
+    let crate::Element::Node(n) = sh.into_element() else {
+        panic!("a node")
+    };
+    assert_eq!(Drawing::decode(&n.text).inset, (2., 3.));
+}
+
+#[test]
+fn fitted_scroll_views_size_to_their_content() {
+    use crate::Length;
+    let mut fitted = scroll().fit().max_h(px(200.));
+    let s = fitted.style_mut();
+    assert_eq!((s.flex_grow, s.flex_shrink), (0., 1.));
+    assert_eq!((s.flex_basis, s.max_height), (Length::Auto, px(200.)));
+    let mut plain = scroll();
+    let s = plain.style_mut();
+    assert_eq!((s.flex_grow, s.flex_basis), (1., Length::Px(0.)));
+}
+
+struct Loads {
+    status: &'static str,
+}
+
+impl Loads {
+    fn new(cx: &mut Context<Self>) -> Self {
+        // A first load, started by the screen's constructor.
+        cx.spawn(async move |this, cx| {
+            cx.update_entity(&this, |this, _| this.status = "loading");
+        })
+        .cancel_on_release();
+        Loads { status: "idle" }
+    }
+}
+
+impl Render for Loads {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        screen("Loads").child(text(self.status))
+    }
+}
+
+#[test]
+fn tasks_spawned_by_a_screen_opened_by_navigation_start_at_once() {
+    let (mut rt, _) = boot(|cx| {
+        let r = Router::new()
+            .route("/", |cx, _| cx.new_entity(|_| Shown))
+            .route("/loads", |cx, _| cx.new_entity(Loads::new))
+            .build(cx);
+        cx.set_root(r);
+    });
+    rt.app.navigate("/loads");
+    let patches = rt.poll();
+    assert!(
+        patches
+            .iter()
+            .any(|p| matches!(p, Patch::SetText { text, .. } if text == "loading")),
+        "the task ran before the screen was first shown: {patches:?}"
+    );
 }

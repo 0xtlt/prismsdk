@@ -20,6 +20,7 @@ mod focus;
 mod forms;
 mod menus;
 mod push;
+mod report;
 mod security;
 mod strings;
 mod widgets;
@@ -73,6 +74,9 @@ pub fn run() {
                 .route("/focus", move |_, _| focus)
                 .route("/components/list", |cx, _| cx.new_entity(LongList::new))
                 .route("/push", |cx, _| cx.new_entity(|_| push::PushScreen))
+                .route("/components/report", |cx, p| {
+                    cx.new_entity(|cx| report::Report::new(p, cx))
+                })
                 .build(cx)
         });
 }
@@ -661,6 +665,7 @@ impl Render for Gallery {
         let charts = self.charts(cx);
         screen.child(
             body.child(self.forms)
+            .child(report::card())
             .child(charts)
             .child(
                 ui::card()

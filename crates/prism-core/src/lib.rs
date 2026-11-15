@@ -56,6 +56,7 @@ pub use element::{
     format_remaining, image, lazy, modal, picker, picture, progress, screen, scroll, shape, slider,
     spinner, stack, tab, tabs, text, text_area, text_input, timer, toggle, unix_seconds, unix_time,
 };
+pub use element::{STACK_CLOSABLE, STACK_NO_HEADER};
 pub use i18n::{BasicFormatter, DateStyle, Direction, Formatter, Locale, Translations};
 pub use list::VirtualList;
 pub use menu::{ActionRole, Alert, AlertStyle, Menu, MenuItem, Tray};
@@ -65,6 +66,7 @@ pub use push::{
 };
 pub use reconcile::{NodeId, Patch, Reconciler, RenderEnvironment, UiEvent};
 pub use router::{Params, Router, RouterBuilder, go_back, navigate_to, normalize_path};
+pub use router::{encode_query, parse_query};
 pub use security::{
     AppleCredential, AppleSignIn, AuthRequest, Biometry, BiometryKind, SecureOptions,
     SecureStorage, WebAuthRequest,
@@ -77,6 +79,7 @@ pub use surfaces::{
     PlatformRequest, PlatformServices, SNode, Widget, WidgetFamily,
 };
 pub use task::{AsyncApp, Background, Sleep, TaskHandle, WakeUi};
+pub use task::{DEFAULT_BACKGROUND_THREADS, background_threads, set_background_threads};
 
 use std::sync::Arc;
 

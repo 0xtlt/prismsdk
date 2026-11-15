@@ -33,6 +33,9 @@ pub struct NavStack {
     screens: RefCell<Vec<View>>,
     /// Inside a modal: the first screen offers "Close".
     in_sheet: Cell<bool>,
+    // --- Hidden header (#8) ---
+    /// No header bar at all (`Router::header(false)`).
+    no_header: Cell<bool>,
 }
 
 pub struct TabBar {
@@ -348,6 +351,9 @@ pub struct Gtk {
     date_pickers: HashMap<NodeId, Rc<controls::DatePicker>>,
     /// Status regions and what they last announced.
     statuses: HashMap<NodeId, String>,
+    // --- Hidden header (#8) ---
+    /// Screens that hide their stack's header while on top (`.bare()`).
+    bare: HashSet<NodeId>,
 }
 
 fn css_color(c: Color, dark: bool) -> String {
@@ -380,7 +386,18 @@ impl Gtk {
         self.css.load_from_data(&sheet);
     }
 
+    /// Whether `stack` shows no header bar: none at all, or a bare screen on top.
+    fn header_hidden(&self, stack: &NavStack) -> bool {
+        stack.no_header.get()
+            || stack
+                .screens
+                .borrow()
+                .last()
+                .is_some_and(|top| self.bare.contains(&top.id()))
+    }
+
     fn header_back(&self, stack: &Rc<NavStack>) {
+        stack.header.set_visible(!self.header_hidden(stack));
         let depth = stack.screens.borrow().len();
         let closable = stack.in_sheet.get() && depth <= 1;
         stack.back.set_visible(depth > 1 || closable);
@@ -592,6 +609,7 @@ impl Widgets for Gtk {
                     title,
                     screens: RefCell::new(Vec::new()),
                     in_sheet: Cell::new(false),
+                    no_header: Cell::new(false),
                 });
                 self.stacks.push(stack.clone());
                 let weak = Rc::downgrade(&stack);
@@ -1131,6 +1149,14 @@ impl Widgets for Gtk {
                 height: (h - TAB_BAR).max(0.),
                 insets: Insets::default(),
             },
+            // No header bar: the screen gets the whole stack.
+            View::Stack(_, st) if self.header_hidden(st) => Viewport {
+                x: 0.,
+                y: 0.,
+                width: w,
+                height: h,
+                insets: Insets::default(),
+            },
             _ => Viewport {
                 x: 0.,
                 y: HEADER,
@@ -1209,6 +1235,23 @@ impl Widgets for Gtk {
             View::Tabs(_, t) => {
                 t.selected.set(value.max(0.) as usize);
                 self.refresh_tabs(t);
+            }
+            View::Stack(_, st) => {
+                st.no_header
+                    .set((value as u32) & prism_core::STACK_NO_HEADER != 0);
+                self.header_back(st);
+            }
+            View::Container(id, NodeKind::Screen, _) => {
+                let changed = if value == 1. {
+                    self.bare.insert(*id)
+                } else {
+                    self.bare.remove(id)
+                };
+                if changed {
+                    for st in self.stacks.clone() {
+                        self.header_back(&st);
+                    }
+                }
             }
             View::Slider(_, s, c) => s.set_value(c.get().snap(value)),
             View::Picker(_, p) => p.select(value),
@@ -1612,6 +1655,7 @@ fn activate(app: &gtk::Application) {
         controls: HashMap::new(),
         date_pickers: HashMap::new(),
         statuses: HashMap::new(),
+        bare: HashSet::new(),
     });
     STATE.with(|s| {
         *s.borrow_mut() = Some(State {

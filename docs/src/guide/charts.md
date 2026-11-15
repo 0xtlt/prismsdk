@@ -27,11 +27,11 @@ ui::sparkline([3., 5., 4., 8.])
 - **Bars** are native elements: tappable, read one by one by screen readers, and animated when values change. They stand on the baseline, so only their top corners are rounded by default (`bar_radius`, `bar_corners`). Other charts read as one element with their values.
 - Charts mirror in right-to-left languages, like the layout around them.
 
-Draw your own with `shape()`: coordinates are fractions of the frame, so drawings follow the layout size.
+Draw your own with `shape()`: coordinates are fractions of the frame, so drawings follow the layout size. `stroke_inset(x, y)` keeps points free around the drawing so thick strokes are not clipped; a shape is positioned like any element (`shape().absolute().inset(0.)` covers its parent).
 
 ```rust
 shape()
-    .inset(2., 2.)                                              // points kept free for strokes
+    .stroke_inset(2., 2.)                                       // points kept free for strokes
     .path(Path::smooth([(0., 1.), (0.5, 0.2), (1., 0.6)]).stroke(theme.accent, 2.).round())
     .path(Path::sector(0.5, 0.5, 0.5, 0.3, 0., 120.).fill(theme.success))   // donut slice, degrees
     .size(px(120.))

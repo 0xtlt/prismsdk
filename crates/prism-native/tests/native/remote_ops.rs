@@ -535,3 +535,44 @@ fn style_sends_rounded_corners_only_when_some_are_square() {
     );
     assert!(last(&w)["s"].get("corners").is_none());
 }
+
+#[test]
+fn hosts_learn_which_stacks_and_screens_hide_the_header() {
+    use prism_core::{
+        AppInit, Context, IntoElement, Render, Router, Runtime, STACK_NO_HEADER, screen,
+    };
+    struct Bare;
+    impl Render for Bare {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            screen("Photo").bare()
+        }
+    }
+    let init: AppInit = std::sync::Arc::new(|cx: &mut prism_core::App| {
+        let r = Router::new()
+            .header(false)
+            .route("/", |cx, _| cx.new_entity(|_| Bare))
+            .build(cx);
+        cx.set_root(r);
+    });
+    let mut rt = Runtime::new(&init);
+    let mut r = NativeRenderer::new(RemoteWidgets::new(measure));
+    r.apply(&rt.render());
+    let value_of = |kind: &str| {
+        let id = r
+            .widgets
+            .ops
+            .iter()
+            .find(|o| o["op"] == "create" && o["kind"] == kind)
+            .map(|o| o["id"].clone())
+            .unwrap();
+        r.widgets
+            .ops
+            .iter()
+            .find(|o| o["op"] == "value" && o["id"] == id)
+            .map(|o| o["value"].as_f64().unwrap())
+    };
+    // The host hides its header for flag 2 on the stack, or value 1 on the
+    // top screen (PrismHost.java refreshStack, PrismWatch.swift StackView).
+    assert_eq!(value_of("stack"), Some(STACK_NO_HEADER as f64));
+    assert_eq!(value_of("screen"), Some(1.));
+}

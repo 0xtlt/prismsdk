@@ -328,6 +328,10 @@ impl HtmlBackend {
                 let top = kids.last().and_then(|c| self.nodes.get(c));
                 let title = top.map(|t| t.text.as_str()).unwrap_or("");
                 let back_hidden = if kids.len() <= 1 { " hidden" } else { "" };
+                // No header bar: `Router::header(false)` or a bare top screen.
+                let no_header = (n.value as u32) & prism_core::STACK_NO_HEADER != 0
+                    || top.is_some_and(|t| t.value == 1.);
+                let header_hidden = if no_header { " hidden" } else { "" };
                 let back = escape(if self.env.back.is_empty() {
                     "Back"
                 } else {
@@ -335,7 +339,7 @@ impl HtmlBackend {
                 });
                 let _ = write!(
                     out,
-                    r#"<div {attrs} class="prism-stack"><div class="prism-header"><button class="prism-back" aria-label="{back}"{back_hidden}>‹ {back}</button><h1 class="prism-title" tabindex="-1">{}</h1></div><div class="prism-body">"#,
+                    r#"<div {attrs} class="prism-stack"><div class="prism-header"{header_hidden}><button class="prism-back" aria-label="{back}"{back_hidden}>‹ {back}</button><h1 class="prism-title" tabindex="-1">{}</h1></div><div class="prism-body">"#,
                     escape(title)
                 );
                 let last = kids.len().saturating_sub(1);

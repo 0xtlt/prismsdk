@@ -1501,3 +1501,88 @@ fn some_corners_rounded_use_logical_properties() {
     );
     assert!(!all.contains("-radius:0"), "{all}");
 }
+
+// --- Query strings, hidden headers, fitted scroll views (#7, #8, #16) -----------
+
+struct Period(String);
+
+impl Render for Period {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        screen("Analytics").child(text(format!("period {}", self.0)))
+    }
+}
+
+#[test]
+fn pages_open_with_their_query_string() {
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let r = Router::new()
+            .route("/", |cx, p| {
+                let period = p.query("period").unwrap_or("all").to_string();
+                cx.new_entity(|_| Period(period))
+            })
+            .build(cx);
+        cx.set_root(r);
+    });
+    let (app, dir) = web_app(init, "query");
+    let get = |path: &str| {
+        let r = app.handle(&Request::get(path).body(()).unwrap());
+        String::from_utf8(r.body().clone()).unwrap()
+    };
+    assert!(get("/?period=7%20d").contains("period 7 d"));
+    assert!(get("/").contains("period all"));
+    // The socket's `path` carries it too (the page's pathname + search).
+    let uri: Uri = "/ws?path=%2F%3Fperiod%3D30d&w=400&h=800".parse().unwrap();
+    let (_, path, _) = app.socket_visitor(&uri, &HeaderMap::new());
+    assert_eq!(path, "/?period=30d");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn ssr_hides_the_header_of_a_headerless_stack_or_a_bare_screen() {
+    let stack = |flags: f64, bare: f64| {
+        html(&[
+            create(1, NodeKind::Stack),
+            Patch::SetValue {
+                id: 1,
+                value: flags,
+            },
+            create(2, NodeKind::Screen),
+            Patch::SetValue { id: 2, value: bare },
+            children(1, &[2]),
+            Patch::SetRoot { id: 1 },
+        ])
+    };
+    let header = r#"<div class="prism-header"><button"#;
+    let hidden = r#"<div class="prism-header" hidden><button"#;
+    assert!(stack(0., 0.).contains(header));
+    assert!(stack(prism_core::STACK_NO_HEADER as f64, 0.).contains(hidden));
+    assert!(stack(0., 1.).contains(hidden));
+    // Closable alone keeps it.
+    assert!(stack(prism_core::STACK_CLOSABLE as f64, 0.).contains(header));
+}
+
+#[test]
+fn fitted_scroll_views_are_as_tall_as_their_content() {
+    let s = Style {
+        flex_grow: 0.,
+        flex_shrink: 1.,
+        flex_basis: Length::Auto,
+        max_height: Length::Px(240.),
+        ..Default::default()
+    };
+    let c = css(NodeKind::Scroll, &s);
+    assert!(c.contains("max-height:240px;"), "{c}");
+    assert!(c.contains("flex:0 1 auto;"), "{c}");
+}
+
+#[test]
+fn the_root_stack_and_its_screens_fill_the_window() {
+    let sheet = include_str!("prism.css");
+    for rule in [
+        "#prism-root:has(> .prism-stack) { height: 100%; height: 100dvh; min-height: 0; }",
+        ".prism-stack { min-height: 0; }",
+        ".prism-body > [data-kind=screen] { min-height: 0; overflow-y: auto;",
+    ] {
+        assert!(sheet.contains(rule), "{rule}");
+    }
+}

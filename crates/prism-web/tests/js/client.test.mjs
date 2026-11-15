@@ -559,3 +559,63 @@ test("timers count down by themselves", () => {
   const past = live([create(1, "timer"), root(1), { op: "value", id: 1, value: now - 10 }]);
   assert.equal(past.node(1).textContent, "0:00");
 });
+
+test("query strings: the socket, pushes, replaces and Back keep them", () => {
+  const page = live(null, { path: "/app/analytics?period=7d&room=3", base: "/app/" });
+  assert.equal(new URL(page.ws.url).searchParams.get("path"), "/analytics?period=7d&room=3");
+  page.ws.deliver({ t: "reset", p: [
+    create(1, "stack"), textOp(1, "/analytics?period=7d&room=3"), create(2, "screen"), textOp(2, "Analytics"),
+    children(1, [2]), root(1),
+  ] });
+  assert.equal(page.window.location.pathname, "/app/analytics");
+  assert.equal(page.window.location.search, "?period=7d&room=3");
+  // `cx.replace_query`: same screen, the URL is replaced, not pushed.
+  page.ws.deliver({ t: "patch", p: [textOp(1, "/analytics?period=30d")] });
+  assert.equal(page.window.location.search, "?period=30d");
+  assert.equal(page.history.entries.length, 1, "no new history entry");
+  // `cx.navigate` to another query pushes a screen: Back undoes it.
+  page.ws.deliver({ t: "patch", p: [create(3, "screen"), textOp(3, "Analytics"), textOp(1, "/analytics?period=1d"), children(1, [2, 3])] });
+  assert.equal(page.history.entries.length, 2);
+  assert.equal(page.history.entries[1].url, "/app/analytics?period=1d");
+  page.history.index = 0;
+  page.fire("popstate", { state: { prism: 1, tab: 0 } });
+  assert.deepEqual(lastSent(page), { t: "back", id: 1, depth: 1 });
+  // The root path with a query, mounted under a prefix.
+  page.ws.deliver({ t: "patch", p: [textOp(1, "/?tab=2"), children(1, [2])] });
+  assert.equal(page.window.location.pathname, "/app");
+  assert.equal(page.window.location.search, "?tab=2");
+  // Forward asks the app for the path, query included.
+  page.history.entries.push({ state: { prism: 2, tab: 0 }, url: "/app/analytics?period=1d" });
+  page.history.index = 1;
+  page.window.location.pathname = "/app/analytics";
+  page.window.location.search = "?period=1d";
+  page.fire("popstate", { state: { prism: 2, tab: 0 } });
+  assert.deepEqual(lastSent(page), { t: "navigate", id: 1, path: "/analytics?period=1d" });
+});
+
+test("the header bar hides for a whole stack or a bare screen", () => {
+  const page = live([
+    create(1, "stack"), { op: "value", id: 1, value: 0 }, create(2, "screen"), textOp(2, "Home"),
+    { op: "value", id: 2, value: 0 }, children(1, [2]), root(1),
+  ]);
+  const header = page.node(1).querySelector(".prism-header");
+  assert.equal(header.hidden, false);
+  // A bare screen on top hides it; popping back shows it again.
+  page.ws.deliver({ t: "patch", p: [create(3, "screen"), textOp(3, "Photo"), { op: "value", id: 3, value: 1 }, children(1, [2, 3])] });
+  assert.equal(header.hidden, true);
+  assert.equal(page.document.title, "Photo · Prism", "the title still names the page");
+  page.ws.deliver({ t: "patch", p: [children(1, [2]), { op: "destroy", id: 3 }] });
+  assert.equal(header.hidden, false);
+  // A screen turning bare while on top.
+  page.ws.deliver({ t: "patch", p: [{ op: "value", id: 2, value: 1 }] });
+  assert.equal(header.hidden, true);
+  page.ws.deliver({ t: "patch", p: [{ op: "value", id: 2, value: 0 }] });
+  assert.equal(header.hidden, false);
+  // `Router::header(false)`: flag 2, independent of Close (flag 1).
+  page.ws.deliver({ t: "patch", p: [{ op: "value", id: 1, value: 2 }] });
+  assert.equal(header.hidden, true);
+  assert.equal(page.node(1).querySelector(".prism-back").hidden, true, "not closable");
+  page.ws.deliver({ t: "patch", p: [{ op: "value", id: 1, value: 3 }] });
+  assert.equal(header.hidden, true);
+  assert.equal(page.node(1).querySelector(".prism-back").textContent, "Close");
+});

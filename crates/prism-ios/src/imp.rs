@@ -492,8 +492,136 @@ define_class!(
             let _: () = unsafe { msg_send![super(self), viewDidLayoutSubviews] };
             with_state(State::relayout);
         }
+
+        /// Shows or hides the navigation bar for this screen as it comes
+        /// on top (pushes, pops, swipe back), animated with the transition.
+        #[unsafe(method(viewWillAppear:))]
+        fn view_will_appear(&self, animated: bool) {
+            let _: () = unsafe { msg_send![super(self), viewWillAppear: animated] };
+            apply_navigation_bar(self, animated);
+        }
     }
 );
+
+// --- Hidden navigation bar (#8) ---
+
+thread_local! {
+    /// Stacks without a navigation bar (`Router::header(false)`) and bare
+    /// screens (`screen(..).bare()`), by node id. Read from UIKit callbacks,
+    /// which may run while the app state is borrowed.
+    static NO_BAR: RefCell<std::collections::HashSet<NodeId>> = RefCell::default();
+}
+
+/// Records whether node `id` hides the navigation bar.
+fn set_no_bar(id: NodeId, hidden: bool) {
+    NO_BAR.with(|s| {
+        let mut s = s.borrow_mut();
+        if hidden {
+            s.insert(id);
+        } else {
+            s.remove(&id);
+        }
+    });
+}
+
+/// Hides the bar of `vc`'s navigation controller if its stack has none or
+/// the screen `vc` hosts is bare.
+fn apply_navigation_bar(vc: &UIViewController, animated: bool) {
+    let Some(nav) = vc.navigationController() else {
+        return;
+    };
+    let stack = nav.viewIfLoaded().map(|v| v.tag() as NodeId);
+    let screen = vc
+        .viewIfLoaded()
+        .and_then(|v| v.subviews().firstObject())
+        .map(|v| v.tag() as NodeId);
+    let hidden = NO_BAR.with(|s| {
+        let s = s.borrow();
+        stack.is_some_and(|id| s.contains(&id)) || screen.is_some_and(|id| s.contains(&id))
+    });
+    if nav.isNavigationBarHidden() != hidden {
+        nav.setNavigationBarHidden_animated(hidden, animated);
+    }
+    #[cfg(not(target_os = "tvos"))]
+    keep_swipe_back(&nav, hidden);
+}
+
+#[cfg(not(target_os = "tvos"))]
+use objc2_ui_kit::{UIGestureRecognizer, UIGestureRecognizerDelegate};
+
+#[cfg(not(target_os = "tvos"))]
+define_class!(
+    /// Lets the edge swipe go back while the navigation bar is hidden
+    /// (UIKit's own delegate refuses it then): it starts whenever there is a
+    /// screen to go back to and no transition is running.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PrismPopGestureDelegate"]
+    struct PopGestureDelegate;
+
+    unsafe impl NSObjectProtocol for PopGestureDelegate {}
+
+    unsafe impl UIGestureRecognizerDelegate for PopGestureDelegate {
+        #[unsafe(method(gestureRecognizerShouldBegin:))]
+        fn should_begin(&self, gesture: &UIGestureRecognizer) -> bool {
+            // The gesture sits on the navigation controller's view, whose
+            // next responder is the controller.
+            gesture
+                .view()
+                .and_then(|v| v.nextResponder())
+                .and_then(|r| r.downcast::<UINavigationController>().ok())
+                .is_some_and(|nav| {
+                    nav.viewControllers().count() > 1 && nav.transitionCoordinator().is_none()
+                })
+        }
+    }
+);
+
+#[cfg(not(target_os = "tvos"))]
+thread_local! {
+    /// The delegate above (gesture delegates are weak references).
+    static POP_DELEGATE: Retained<PopGestureDelegate> = {
+        let mtm = MainThreadMarker::new().expect("main thread");
+        let this = PopGestureDelegate::alloc(mtm).set_ivars(());
+        unsafe { msg_send![super(this), init] }
+    };
+    /// UIKit's delegate of each navigation controller's pop gesture, put
+    /// back when its bar shows again.
+    static POP_ORIGINAL: RefCell<HashMap<usize, Retained<ProtocolObject<dyn UIGestureRecognizerDelegate>>>> =
+        RefCell::default();
+}
+
+/// Keeps the edge swipe back working while `nav`'s bar is hidden.
+#[cfg(not(target_os = "tvos"))]
+fn keep_swipe_back(nav: &UINavigationController, hidden: bool) {
+    // The edge swipe, and on iOS 26 and later the swipe from anywhere in
+    // the content.
+    let mut gestures: Vec<Retained<UIGestureRecognizer>> =
+        nav.interactivePopGestureRecognizer().into_iter().collect();
+    if nav.respondsToSelector(sel!(interactiveContentPopGestureRecognizer)) {
+        gestures.extend(nav.interactiveContentPopGestureRecognizer());
+    }
+    POP_DELEGATE.with(|ours| {
+        let ours: &ProtocolObject<dyn UIGestureRecognizerDelegate> =
+            ProtocolObject::from_ref(&**ours);
+        POP_ORIGINAL.with(|saved| {
+            let mut saved = saved.borrow_mut();
+            for gesture in gestures {
+                let key = &*gesture as *const UIGestureRecognizer as usize;
+                let current = gesture.delegate();
+                let is_ours = current.as_deref().is_some_and(|d| std::ptr::eq(d, ours));
+                if hidden && !is_ours {
+                    if let Some(original) = current {
+                        saved.insert(key, original);
+                    }
+                    gesture.setDelegate(Some(ours));
+                } else if !hidden && is_ours {
+                    gesture.setDelegate(saved.remove(&key).as_deref());
+                }
+            }
+        });
+    });
+}
 
 impl ScreenController {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
@@ -1784,8 +1912,22 @@ impl Widgets for UiKit {
     fn set_value(&mut self, view: &View, value: f64) {
         match view {
             View::Stack(st) => {
-                st.closable.set(value != 0.);
+                let flags = value as u32;
+                st.closable.set(flags & prism_core::STACK_CLOSABLE != 0);
                 self.apply_close_button(st, view.id());
+                set_no_bar(view.id(), flags & prism_core::STACK_NO_HEADER != 0);
+                if let Some(top) = st.nav.topViewController() {
+                    apply_navigation_bar(&top, false);
+                }
+            }
+            View::Screen(_) => {
+                set_no_bar(view.id(), value == 1.);
+                if let Some(vc) = self.screens.get(&view.id())
+                    && let Some(nav) = vc.navigationController()
+                    && nav.topViewController().as_deref() == Some(&***vc)
+                {
+                    apply_navigation_bar(vc, true);
+                }
             }
             View::Progress(p) => p.setProgress_animated(value as f32, true),
             View::Picture(v) => v.setContentMode(if value == 1. {

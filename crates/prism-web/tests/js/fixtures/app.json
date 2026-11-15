@@ -166,6 +166,11 @@
       "text": "/"
     },
     {
+      "id": 3,
+      "op": "value",
+      "value": 0.0
+    },
+    {
       "id": 4,
       "kind": "screen",
       "op": "create"
@@ -179,6 +184,11 @@
       "id": 4,
       "op": "text",
       "text": "Home"
+    },
+    {
+      "id": 4,
+      "op": "value",
+      "value": 0.0
     },
     {
       "id": 5,
@@ -629,6 +639,11 @@
       "text": "/more"
     },
     {
+      "id": 18,
+      "op": "value",
+      "value": 0.0
+    },
+    {
       "id": 19,
       "kind": "screen",
       "op": "create"
@@ -642,6 +657,11 @@
       "id": 19,
       "op": "text",
       "text": "Home"
+    },
+    {
+      "id": 19,
+      "op": "value",
+      "value": 0.0
     },
     {
       "id": 20,

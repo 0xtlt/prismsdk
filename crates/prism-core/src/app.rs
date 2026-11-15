@@ -308,6 +308,7 @@ impl App {
     }
 
     /// Mutates a global (inserting its default first) and re-renders everything.
+    /// For bookkeeping that no view shows, use [`App::update_global_quiet`].
     pub fn update_global<T: Default + 'static, R>(&mut self, f: impl FnOnce(&mut T) -> R) -> R {
         let slot = self
             .globals
@@ -316,6 +317,27 @@ impl App {
         let r = f(slot.downcast_mut().expect("global type"));
         self.refresh();
         r
+    }
+
+    /// Mutates a global (inserting its default first) **without**
+    /// re-rendering anything: for bookkeeping no view reads while
+    /// rendering (a debounce table, a cache, request counters). Call
+    /// [`App::refresh`] or notify an entity yourself if a view must change.
+    pub fn update_global_quiet<T: Default + 'static, R>(
+        &mut self,
+        f: impl FnOnce(&mut T) -> R,
+    ) -> R {
+        f(self.global_mut())
+    }
+
+    /// The global of type `T` (inserting its default first), mutably,
+    /// without re-rendering anything; see [`App::update_global_quiet`].
+    pub fn global_mut<T: Default + 'static>(&mut self) -> &mut T {
+        self.globals
+            .entry(TypeId::of::<T>())
+            .or_insert_with(|| Box::new(T::default()))
+            .downcast_mut()
+            .expect("global type")
     }
 
     // --- Navigation (applied after the current event, by the active Router) ---
@@ -348,6 +370,43 @@ impl App {
     /// Replaces the whole stack (e.g. after login).
     pub fn reset(&mut self, path: impl Into<String>) {
         self.nav_queue.push(NavOp::Reset(path.into()));
+    }
+
+    /// Pushes the screen for `path`, handing it `state`: its route reads it
+    /// with [`Params::state`](crate::Params::state) (a "Saved" notice, a
+    /// draft, an object already loaded). Only that screen gets it; a reload
+    /// or a deep link opens the path without it. Dropped if no screen is
+    /// built (`path` is already on top, or a tab's root).
+    pub fn navigate_with(&mut self, path: impl Into<String>, state: impl std::any::Any) {
+        self.nav_queue.push(NavOp::State(Rc::new(state)));
+        self.nav_queue.push(NavOp::Push(path.into()));
+    }
+
+    /// Replaces the top screen, handing `state` to the new one (a form
+    /// that saved, then shows the saved item with a notice); see
+    /// [`App::navigate_with`].
+    pub fn replace_with(&mut self, path: impl Into<String>, state: impl std::any::Any) {
+        self.nav_queue.push(NavOp::State(Rc::new(state)));
+        self.nav_queue.push(NavOp::Replace(path.into()));
+    }
+
+    /// Rewrites the query string of the visible screen without pushing
+    /// one (the web replaces the history entry; native apps keep it for
+    /// `prism dev` restarts): `cx.replace_query([("period", "30d")])`. The
+    /// screen keeps its state; an empty list clears the query. To make Back
+    /// undo a change, [`navigate`](App::navigate) to the new path instead.
+    pub fn replace_query<K: AsRef<str>, V: AsRef<str>>(
+        &mut self,
+        pairs: impl IntoIterator<Item = (K, V)>,
+    ) {
+        let query = crate::router::encode_query(pairs);
+        self.nav_queue.push(NavOp::ReplaceQuery(query));
+    }
+
+    /// The query parameters of the visible screen's path, decoded.
+    pub fn current_query(&self) -> Vec<(String, String)> {
+        let path = self.current_path().unwrap_or("/");
+        crate::router::parse_query(crate::router::split_query(path).1)
     }
 
     /// Path of the visible screen, if a router is active.
@@ -422,17 +481,20 @@ impl App {
         self.entities.contains_key(&id)
     }
 
-    /// Drops an entity's state and its observers.
+    /// Drops an entity's state and its observers, and cancels the tasks
+    /// tied to it ([`TaskHandle::cancel_on_release`](crate::TaskHandle::cancel_on_release)).
     pub fn release<T>(&mut self, entity: Entity<T>) {
         self.entities.remove(&entity.id);
         self.observers.remove(&entity.id);
         self.dirty.remove(&entity.id);
+        self.executor.release_owner(entity.id);
     }
 
     pub(crate) fn release_any(&mut self, entity: AnyEntity) {
         self.entities.remove(&entity.id());
         self.observers.remove(&entity.id());
         self.dirty.remove(&entity.id());
+        self.executor.release_owner(entity.id());
     }
 
     /// Marks one entity for re-render and queues its observers.
@@ -462,8 +524,15 @@ impl App {
     /// at most once per flush, so observer cycles terminate.
     pub fn flush_effects(&mut self) {
         if let Some(router) = self.navigator.filter(|r| self.contains(r.id())) {
-            for op in std::mem::take(&mut self.nav_queue) {
+            let ops = std::mem::take(&mut self.nav_queue);
+            let navigated = !ops.is_empty();
+            for op in ops {
                 router.update(self, |r, cx| r.apply(op, cx));
+            }
+            // Screens just built may have spawned tasks (a first load):
+            // start them now rather than at the next event.
+            if navigated && self.executor.has_ready() {
+                crate::task::poll_tasks(self);
             }
         } else {
             self.nav_queue.clear();

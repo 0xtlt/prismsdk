@@ -22,6 +22,8 @@ let app = axum::Router::new()
 axum::serve(listener, app).await?;
 ```
 
+The example draws its own chrome (`Router::new().header(false)`): the app fills the window, its title bar stays put while `scroll().flex_1()` scrolls the list, and its filter lives in the URL (`/app?status=shipped`, `Params::query`, `cx.replace_query`). See [Navigation](../guide/navigation.md).
+
 Other servers (actix, hyper, …): `prism-web` without default features has no server dependency. `WebApp::handle(&http::Request)` answers pages and static files, and `WebApp::connect(uri, headers, send)` runs a live session over any WebSocket (`session.receive(text)` for incoming messages). Each session is a thread that sleeps until a message, a timer or async work wakes it.
 
 | Path | Cache-Control | |

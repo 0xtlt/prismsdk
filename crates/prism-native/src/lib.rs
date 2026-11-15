@@ -1040,6 +1040,41 @@ mod tests {
         assert_eq!(w.content[&2], (400., 1020.));
     }
 
+    /// Two fitted scroll views (3 rows, then 50) and a line of text below.
+    struct Fitted;
+    impl Render for Fitted {
+        fn render(&mut self, _: &mut prism_core::Context<Self>) -> impl IntoElement {
+            let rows = |n: usize| (0..n).map(|i| text(format!("row {i}")));
+            div()
+                .child(scroll().fit().max_h(prism_core::px(100.)).children(rows(3)))
+                .child(
+                    scroll()
+                        .fit()
+                        .max_h(prism_core::px(100.))
+                        .children(rows(50)),
+                )
+                .child(text("below"))
+        }
+    }
+
+    #[test]
+    fn fitted_scroll_views_are_as_tall_as_their_content_up_to_max_h() {
+        let init: AppInit = Arc::new(|cx: &mut prism_core::App| {
+            let r = cx.new_entity(|_| Fitted);
+            cx.set_root(r);
+        });
+        let mut rt = Runtime::new(&init);
+        let mut renderer = NativeRenderer::new(Fake::default());
+        renderer.apply(&rt.render());
+        renderer.layout(400., 600., Insets::default());
+        let w = &renderer.widgets;
+        // Ids: 1 div, 2 short scroll (3..5 rows), 6 long scroll (7..56), 57 text.
+        assert_eq!(w.frames[&2], (0., 0., 400., 60.), "short: its content");
+        assert_eq!(w.frames[&6], (0., 60., 400., 100.), "long: capped at max_h");
+        assert_eq!(w.content[&6], (400., 1000.), "long: scrolls its content");
+        assert_eq!(w.frames[&57].1, 160., "text follows, nothing stretched");
+    }
+
     struct Row;
     impl Render for Row {
         fn render(&mut self, _: &mut prism_core::Context<Self>) -> impl IntoElement {

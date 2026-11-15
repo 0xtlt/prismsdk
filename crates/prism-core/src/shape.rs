@@ -9,7 +9,7 @@
 //!
 //! ```ignore
 //! shape()
-//!     .inset(2., 2.)
+//!     .stroke_inset(2., 2.)
 //!     .path(Path::line([(0., 1.), (0.5, 0.2), (1., 0.6)]).stroke(theme.accent, 2.).round())
 //!     .path(Path::arc(0.5, 0.5, 0.5, 0., 270.).stroke(theme.success, 8.).round())
 //!     .size(120., 80.)

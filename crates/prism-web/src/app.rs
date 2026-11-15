@@ -208,7 +208,13 @@ impl WebApp {
         } else if path == "/favicon.ico" || path == "/ws" {
             status(StatusCode::NOT_FOUND)
         } else {
-            self.page_response(&path, headers)
+            // The router keeps the query string (`/analytics?period=7d`),
+            // still escaped: it decodes each value itself.
+            let page = match req.uri().query().filter(|q| !q.is_empty()) {
+                Some(query) => format!("{path}?{query}"),
+                None => path,
+            };
+            self.page_response(&page, headers)
         };
         if req.method() == Method::HEAD {
             response.body_mut().clear();
