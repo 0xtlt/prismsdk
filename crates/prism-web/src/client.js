@@ -38,6 +38,33 @@
   const shapeObserver = typeof ResizeObserver === "function"
     ? new ResizeObserver((entries) => entries.forEach((e) => drawShape(e.target)))
     : null;
+  // Rules on an element's own width (`.when_width_at_least`): the server
+  // sends the CSS for each width they switch at; the element takes the
+  // widest one it reaches, as it is resized.
+  const widthObserver = typeof ResizeObserver === "function"
+    ? new ResizeObserver((entries) => entries.forEach((e) => {
+      const box = e.borderBoxSize && e.borderBoxSize[0];
+      applyOwnWidth(e.target, box ? box.inlineSize : e.contentRect.width);
+    }))
+    : null;
+  function applyOwnWidth(el, width) {
+    const v = el._ownWidth;
+    if (!v) return;
+    let css = v.base;
+    for (const [min, variant] of v.cq) if (width >= min) css = variant;
+    if (v.applied !== css) { v.applied = css; el.style.cssText = css; }
+  }
+  function ownWidth(el, css, cq) {
+    if (!cq) {
+      if (el._ownWidth && widthObserver && widthObserver.unobserve) widthObserver.unobserve(el);
+      el._ownWidth = null;
+      return;
+    }
+    el._ownWidth = { base: css, cq, applied: css };
+    if (widthObserver) widthObserver.observe(el);
+    applyOwnWidth(el, el.getBoundingClientRect ? el.getBoundingClientRect().width : 0);
+  }
+
   const shapeColor = (s) => {
     if (!s) return "none";
     const [light, dark] = s.split("/");
@@ -481,6 +508,8 @@
       case "style": {
         const hidden = el.style.display === "none";
         el.style.cssText = p.css;
+        if (el.dataset.kind === "scroll") el.className = p.hx ? "prism-scroll prism-scroll-x" : "prism-scroll";
+        ownWidth(el, p.css, p.cq);
         if (el.dataset.kind === "text_area") grow(el);
         motion(el, p.motion, hidden);
         return;

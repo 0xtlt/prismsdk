@@ -559,3 +559,31 @@ test("timers count down by themselves", () => {
   const past = live([create(1, "timer"), root(1), { op: "value", id: 1, value: now - 10 }]);
   assert.equal(past.node(1).textContent, "0:00");
 });
+
+test("own-width rules: the element takes the CSS of the widest threshold it reaches", () => {
+  const cq = [[300, "display:flex;flex-direction:row;"], [600, "display:grid;"]];
+  const page = live([create(1, "view"), root(1)]);
+  const el = page.node(1);
+  el.clientWidth = 400;
+  page.ws.deliver({ t: "patch", p: [{ op: "style", id: 1, css: "display:flex;flex-direction:column;", cq }] });
+  // Measured at once: 400 wide is past 300.
+  assert.equal(el.style.cssText, "display:flex;flex-direction:row;");
+  const ro = page.window.resizeObservers.find((o) => o.targets.includes(el));
+  assert.ok(ro, "observed");
+  ro.cb([{ target: el, contentRect: { width: 200 } }]);
+  assert.equal(el.style.cssText, "display:flex;flex-direction:column;");
+  ro.cb([{ target: el, borderBoxSize: [{ inlineSize: 800 }] }]);
+  assert.equal(el.style.cssText, "display:grid;");
+  // No rules anymore: the plain CSS stays, resizes change nothing.
+  page.ws.deliver({ t: "patch", p: [{ op: "style", id: 1, css: "display:flex;" }] });
+  ro.cb([{ target: el, contentRect: { width: 900 } }]);
+  assert.equal(el.style.cssText, "display:flex;");
+});
+
+test("horizontal scroll views get their class from the style op", () => {
+  const page = live([create(1, "scroll"), root(1), { op: "style", id: 1, css: "", hx: true }]);
+  const el = page.node(1);
+  assert.equal(el.getAttribute("class"), "prism-scroll prism-scroll-x");
+  page.ws.deliver({ t: "patch", p: [{ op: "style", id: 1, css: "" }] });
+  assert.equal(el.getAttribute("class"), "prism-scroll");
+});

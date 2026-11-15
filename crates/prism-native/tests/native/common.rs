@@ -9,7 +9,7 @@ use prism_core::{
     Accessibility, App, AppInit, Appearance, Backend, NodeId, NodeKind, Patch, Path, Pose, Render,
     RenderEnvironment, Runtime, Style, Transition, menu::MenuSpec,
 };
-use prism_native::{Insets, NativeRenderer, Viewport, Widgets};
+use prism_native::{Insets, NativeRenderer, Sticky, Viewport, Widgets};
 
 pub const CHAR: f32 = 8.;
 pub const LINE: f32 = 20.;
@@ -60,6 +60,8 @@ pub struct Fake {
     pub measured: HashMap<NodeId, Vec<Option<f32>>>,
     /// Safe area the fake platform gives stack screens.
     pub screen_insets: Insets,
+    /// What each sticky view was last told: its scroll view and range.
+    pub sticky: HashMap<NodeId, Option<(NodeId, Sticky)>>,
 }
 
 impl Fake {
@@ -254,6 +256,9 @@ impl Widgets for Fake {
     }
     fn set_repeat(&mut self, v: &NodeId, _style: &Style, repeat: Option<(Pose, Transition)>) {
         self.calls.push(Call::Repeat(*v, repeat));
+    }
+    fn set_sticky(&mut self, v: &NodeId, sticky: Option<(&NodeId, Sticky)>) {
+        self.sticky.insert(*v, sticky.map(|(s, st)| (*s, st)));
     }
 }
 

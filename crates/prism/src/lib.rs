@@ -139,6 +139,8 @@ pub const PLATFORM: Platform = if cfg!(feature = "web") {
 #[derive(Clone, Debug, Default)]
 pub struct Application {
     config: AppConfig,
+    /// Smallest widths of the `Medium`, `Expanded` and `Large` size classes.
+    breakpoints: Option<[f32; 3]>,
 }
 
 impl Application {
@@ -166,6 +168,16 @@ impl Application {
         self
     }
 
+    /// Moves the size classes: the smallest widths of `Medium`, `Expanded`
+    /// and `Large`, in points (default `[600., 1024., 1440.]`). `.md()`,
+    /// `.lg()`, `.xl()` and `cx.breakpoint()` follow them, and every
+    /// window re-renders when it crosses one. Any other width:
+    /// `.at_width(768., |s| …)`.
+    pub fn breakpoints(mut self, widths: [f32; 3]) -> Self {
+        self.breakpoints = Some(widths);
+        self
+    }
+
     /// Web server port (default 3000, `PRISM_PORT` overrides).
     pub fn port(mut self, port: u16) -> Self {
         self.config.port = port;
@@ -186,7 +198,11 @@ impl Application {
         self,
         init: impl Fn(&mut App) -> Entity<V> + Send + Sync + 'static,
     ) -> prism_web::WebApp {
+        let breakpoints = self.breakpoints;
         let init: AppInit = Arc::new(move |app: &mut App| {
+            if let Some(b) = breakpoints {
+                app.set_breakpoints(b);
+            }
             let root = init(app);
             app.set_root(root);
         });
@@ -196,7 +212,11 @@ impl Application {
     /// Starts the backend selected at compile time. `init` creates the root
     /// entity; it runs once per window, or once per browser session on the web.
     pub fn run<V: Render>(self, init: impl Fn(&mut App) -> Entity<V> + Send + Sync + 'static) {
+        let breakpoints = self.breakpoints;
         let init: AppInit = Arc::new(move |app: &mut App| {
+            if let Some(b) = breakpoints {
+                app.set_breakpoints(b);
+            }
             let root = init(app);
             app.set_root(root);
         });

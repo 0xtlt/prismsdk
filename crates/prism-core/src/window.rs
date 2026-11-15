@@ -8,7 +8,9 @@
 //! ```
 //!
 //! Everything re-renders when the window crosses a breakpoint (rotation,
-//! resize, split view); `on_resize` gets every size change.
+//! resize, split view) or a width an `.at_width(…)` rule uses;
+//! `on_resize` gets every size change. The breakpoints themselves move with
+//! [`App::set_breakpoints`] (`Application::breakpoints([480., 900., 1280.])`).
 
 use std::rc::Rc;
 
@@ -21,6 +23,10 @@ pub(crate) struct Window {
     pub size: (f32, f32),
     pub platform: crate::platform::Platform,
     pub handlers: Vec<ResizeHandler>,
+    /// Smallest widths of `Medium`, `Expanded` and `Large`.
+    pub breakpoints: [f32; 3],
+    /// Window widths `.at_width(…)` rules switch at (re-render when crossed).
+    pub thresholds: Vec<f32>,
 }
 
 impl Default for Window {
@@ -30,6 +36,8 @@ impl Default for Window {
             size: (390., 844.),
             platform: crate::platform::Platform::compiled(),
             handlers: Vec::new(),
+            breakpoints: Breakpoint::DEFAULT_WIDTHS,
+            thresholds: Vec::new(),
         }
     }
 }
@@ -42,7 +50,7 @@ impl App {
 
     /// The window's size class.
     pub fn breakpoint(&self) -> Breakpoint {
-        Breakpoint::for_width(self.window.size.0)
+        Breakpoint::for_width_in(self.window.size.0, self.window.breakpoints)
     }
 
     /// Runs `f` on every size change (crossing a breakpoint already
@@ -55,13 +63,49 @@ impl App {
         if self.window.size == size {
             return;
         }
-        let before = self.breakpoint();
+        let before = (self.breakpoint(), self.window.band(self.window.size.0));
         self.window.size = size;
-        if self.breakpoint() != before {
+        if (self.breakpoint(), self.window.band(size.0)) != before {
             self.refresh();
         }
         for handler in self.window.handlers.clone() {
             handler(size, self);
         }
+    }
+}
+
+impl Window {
+    /// How many `.at_width(…)` thresholds a window `width` wide has passed.
+    pub(crate) fn band(&self, width: f32) -> usize {
+        self.thresholds.iter().filter(|t| width >= **t).count()
+    }
+
+    /// Remembers the window widths `style`'s `.at_width(…)` rules switch at.
+    pub(crate) fn watch_widths(&mut self, style: &crate::style::Style) {
+        for w in style.window_width_thresholds() {
+            if !self.thresholds.contains(&w) {
+                self.thresholds.push(w);
+            }
+        }
+    }
+}
+
+impl App {
+    /// Moves the size classes: the smallest widths of `Medium`, `Expanded`
+    /// and `Large` (600, 1024 and 1440 by default), in points. `.md()`,
+    /// `.lg()`, `.xl()` and [`breakpoint`](Self::breakpoint) follow them,
+    /// and the app re-renders when the window crosses one. Usually set with
+    /// `Application::breakpoints`.
+    pub fn set_breakpoints(&mut self, widths: [f32; 3]) {
+        if self.window.breakpoints == widths {
+            return;
+        }
+        self.window.breakpoints = widths;
+        self.refresh();
+    }
+
+    /// The smallest widths of `Medium`, `Expanded` and `Large`, in points.
+    pub fn breakpoints(&self) -> [f32; 3] {
+        self.window.breakpoints
     }
 }

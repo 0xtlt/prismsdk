@@ -340,6 +340,7 @@ impl SNode {
             Align::Center => Some("c"),
             Align::End => Some("e"),
             Align::Stretch => None,
+            Align::Baseline => Some("b"),
         };
         if let Some(a) = align(s.align_items) {
             let _ = write!(o, r#","ai":"{a}""#);

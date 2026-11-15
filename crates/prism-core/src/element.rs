@@ -888,7 +888,26 @@ pub fn scroll() -> Scroll {
     Scroll(n)
 }
 
+/// A horizontally scrolling row (chips, a wide table on a phone): as tall
+/// as its content; its children keep their size instead of shrinking to
+/// the view. Shorthand for `scroll().horizontal()`.
+pub fn scroll_x() -> Scroll {
+    scroll().horizontal()
+}
+
 impl Scroll {
+    /// Scrolls leading to trailing instead of top to bottom: the children
+    /// form a row, keep their width (they never shrink) and the view is as
+    /// tall as they are.
+    pub fn horizontal(mut self) -> Self {
+        let s = &mut self.0.style;
+        s.scroll_axis = crate::layout::ScrollAxis::Horizontal;
+        s.direction = crate::style::FlexDirection::Row;
+        s.flex_grow = 0.;
+        s.flex_basis = crate::style::Length::Auto;
+        self
+    }
+
     /// Called as the content scrolls (virtualized lists, parallax…).
     pub fn on_scroll(mut self, handler: Handler<ScrollEvent>) -> Self {
         self.0.on_scroll = Some(handler);

@@ -22,6 +22,8 @@ struct HtmlNode {
     a11y: Accessibility,
     clickable: bool,
     children: Vec<NodeId>,
+    /// A horizontal scroll view (`prism-scroll-x`).
+    hscroll: bool,
 }
 
 /// Turns a picture source (`logo.png`, `https://…`) into its URL.
@@ -53,6 +55,7 @@ impl Backend for HtmlBackend {
                 Patch::SetStyle { id, style } => {
                     if let Some(n) = self.nodes.get_mut(id) {
                         n.css = css(n.kind.unwrap_or(NodeKind::View), style);
+                        n.hscroll = style.scroll_axis == prism_core::ScrollAxis::Horizontal;
                     }
                 }
                 Patch::SetText { id, text } => self.with(*id, |n| n.text = text.clone()),
@@ -399,6 +402,9 @@ impl HtmlBackend {
                 let (tag, class) = match kind {
                     NodeKind::Button => ("button", ""),
                     NodeKind::Screen => ("section", ""),
+                    NodeKind::Scroll if n.hscroll => {
+                        ("div", r#" class="prism-scroll prism-scroll-x""#)
+                    }
                     NodeKind::Scroll => ("div", r#" class="prism-scroll""#),
                     _ => ("div", ""),
                 };

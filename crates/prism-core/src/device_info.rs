@@ -563,6 +563,7 @@ impl App {
             orientation: self.orientation(),
             posture: self.posture(),
             kind: self.device_kind(),
+            width: self.viewport().0,
         }
     }
 

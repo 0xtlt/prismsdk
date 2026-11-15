@@ -20,6 +20,7 @@ pub mod device_info;
 mod element;
 pub mod glyphs;
 pub mod i18n;
+pub mod layout;
 pub mod list;
 pub mod menu;
 pub mod platform;
@@ -48,6 +49,7 @@ pub use device_info::{
     Browser, DeviceInfo, DeviceKind, Engine, Fold, Orientation, Os, OsName, Posture, Rotation,
     ScreenInfo, Version, WindowMode,
 };
+pub use element::scroll_x;
 pub use element::{
     BackEvent, Button, ChangeEvent, ClickEvent, DatePicker, Div, Element, FluentBuilder, Handler,
     Image, InputEvent, IntoElement, Modal, NavigateEvent, NodeKind, ParentElement, Picker, Picture,
@@ -57,6 +59,7 @@ pub use element::{
     spinner, stack, tab, tabs, text, text_area, text_input, timer, toggle, unix_seconds, unix_time,
 };
 pub use i18n::{BasicFormatter, DateStyle, Direction, Formatter, Locale, Translations};
+pub use layout::{GridTrack, Repetition, ScrollAxis, auto_fill, auto_fit, fr, minmax, repeat};
 pub use list::VirtualList;
 pub use menu::{ActionRole, Alert, AlertStyle, Menu, MenuItem, Tray};
 pub use platform::{Platform, Platforms};
@@ -514,6 +517,7 @@ pub mod prelude {
         navigate_to, picker, picture, progress, px, relative, rgb, rgba, screen, scroll, shape,
         slider, spinner, text, text_area, text_input, timer, toggle,
     };
+    pub use crate::{GridTrack, ScrollAxis, auto_fill, auto_fit, fr, minmax, repeat, scroll_x};
 }
 
 #[cfg(test)]

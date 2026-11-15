@@ -524,6 +524,7 @@ impl Reconciler {
             on_submit,
             ..
         } = *vnode;
+        app.window.watch_widths(&style);
         let mut style = style.resolve(app.style_context());
         if let Some(t) = self.animation
             && style.transition.is_none()

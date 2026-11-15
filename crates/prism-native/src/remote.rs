@@ -24,6 +24,13 @@
 //! `exit` and `repeat` may carry `anim`: `{d, delay, ease}` (seconds, cubic
 //! Bézier `[x1, y1, x2, y2]`): animate to the new values.
 //! | `appearance` | `mode`: `system`, `light` or `dark` (no `id`) |
+//! | `sticky` | `scroll`: id of the scroll view (null: not sticky anymore), `top`, `inset`, `max` (see [`Sticky`](crate::Sticky)): move the view down by `clamp(scrollY + inset - top, 0, max)`, above its siblings |
+//!
+//! A scroll view's `style` carries `hscroll: true` when it scrolls
+//! horizontally (its `content` size is then wider than its frame). For
+//! `items_baseline()`, hosts answer a measure of kind `baseline` (its
+//! `text` is the leaf's kind, `max_width` its height): `(0, distance from
+//! the top to the first baseline)`, or `(0, 0)` if unknown.
 
 use std::collections::HashMap;
 
@@ -170,6 +177,9 @@ impl RemoteWidgets {
         // right, 8 bottom left (already mirrored for right to left).
         if s.rounded_corners != prism_core::Corners::ALL {
             op["s"]["corners"] = json!(s.rounded_corners.bits());
+        }
+        if s.scroll_axis == prism_core::ScrollAxis::Horizontal {
+            op["s"]["hscroll"] = json!(true);
         }
         op
     }
@@ -412,6 +422,43 @@ impl Widgets for RemoteWidgets {
             Appearance::Dark => "dark",
         };
         self.ops.push(json!({ "op": "appearance", "mode": mode }));
+    }
+
+    /// The host moves the view as its scroll view scrolls.
+    fn set_sticky(&mut self, id: &NodeId, sticky: Option<(&NodeId, crate::Sticky)>) {
+        let op = match sticky {
+            Some((scroll, s)) => json!({
+                "op": "sticky", "id": id, "scroll": scroll,
+                "top": s.top, "inset": s.inset, "max": s.max_offset,
+            }),
+            None => json!({ "op": "sticky", "id": id, "scroll": Value::Null }),
+        };
+        self.ops.push(op);
+    }
+
+    /// Asked of the host: where the first line of text sits in the leaf.
+    fn baseline(&mut self, id: &NodeId, _width: f32, height: f32) -> Option<f32> {
+        let kind = self.kinds.get(id).copied().unwrap_or(NodeKind::View);
+        if !matches!(
+            kind,
+            NodeKind::Text
+                | NodeKind::Button
+                | NodeKind::TextInput
+                | NodeKind::Timer
+                | NodeKind::Picker
+                | NodeKind::DatePicker
+        ) {
+            return None;
+        }
+        let style = self.styles.get(id).cloned().unwrap_or_default();
+        let (_, b) = (self.measure)(&MeasureRequest {
+            kind: "baseline",
+            text: kind.name(),
+            font_size: style.font_size,
+            weight: weight(style.font_weight),
+            max_width: Some(height),
+        });
+        (b > 0.).then_some(b)
     }
 }
 
