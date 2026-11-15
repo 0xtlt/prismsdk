@@ -1274,8 +1274,14 @@ fn device_info(window: &gtk::ApplicationWindow) -> prism_core::DeviceInfo {
 /// Opens a window and runs the GTK main loop.
 pub fn run(config: AppConfig, init: AppInit) {
     let _ = APP.set((config, init));
+    // Installed packages set PRISM_APP_ID (the .desktop file's name), so
+    // desktops match the window to its launcher and icon.
+    let id = std::env::var("PRISM_APP_ID")
+        .ok()
+        .filter(|id| gtk::gio::Application::id_is_valid(id))
+        .unwrap_or_else(|| "dev.prism.app".into());
     let app = gtk::Application::builder()
-        .application_id("dev.prism.app")
+        .application_id(id)
         .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
         .build();
     app.connect_activate(activate);

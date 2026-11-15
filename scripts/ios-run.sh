@@ -10,6 +10,14 @@
 #   PRISM_OS         ios (default), tvos, watchos or visionos
 #   PRISM_SIM        simulator name or UDID (default: first available iPhone / Apple TV)
 #   PRISM_DEVICE     real device name or UDID (signs and installs with devicectl)
+#   PRISM_DIST=appstore  a store build: device SDK, "Apple Distribution"
+#                    identity, App Store profiles (app and widgets), then an .ipa
+#   PRISM_WIDGETS_PROFILE  the widget extension's profile (default: best match
+#                    for <bundle id>.widgets, else the app's)
+#   PRISM_KEYCHAIN   keychain holding the identity (default: the search list)
+#   PRISM_BUILD      CFBundleVersion (default 1)
+#   PRISM_CATEGORY   LSApplicationCategoryType (public.app-category.…)
+#   PRISM_ENCRYPTION=0  ITSAppUsesNonExemptEncryption = NO (export compliance)
 #   PRISM_TEAM       Apple team id (default: the team of a matching profile)
 #   PRISM_PROFILE    .mobileprovision to use (default: best match for the bundle id)
 #   PRISM_IDENTITY   code signing identity (default: first "Apple Development")
@@ -33,13 +41,23 @@ PLATFORM="${PRISM_PLATFORM:-$ROOT/platform}"
 cd "$ROOT"
 TARGET_DIR="$(cargo metadata --format-version 1 --no-deps 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
 DEVICE="${PRISM_DEVICE:-}"
+DIST="${PRISM_DIST:-}"
+case "$DIST" in
+  "") ;;
+  appstore) export PRISM_NO_INSTALL=1 ;;
+  *) echo "PRISM_DIST=$DIST: use appstore" >&2; exit 1 ;;
+esac
+# Device SDK builds: a real device or a store build.
+DEVICE_BUILD="$DEVICE$DIST"
 OS="${PRISM_OS:-ios}"
 if [[ "$OS" == watchos ]]; then
   # watchOS: a watch-only SwiftUI app (WKApplication, WKWatchOnly), no widgets.
   RUNTIME_NAME=watchOS DEVICE_PREFIX="Apple Watch" DEVICE_FAMILY="<integer>4</integer>" WIDGETS=0
   MIN_IOS="${WATCHOS_DEPLOYMENT_TARGET:-10.0}" SWIFT_OS=watchos
-  if [[ -n "$DEVICE" ]]; then
+  if [[ -n "$DEVICE_BUILD" ]]; then
     TARGET=aarch64-apple-watchos SDK=watchos PLATFORM_NAME=WatchOS SWIFT_TRIPLE_SUFFIX=""
+    # arm64 watches (Rust's aarch64-apple-watchos) run watchOS 26+.
+    if [[ "${MIN_IOS%%.*}" -lt 26 ]]; then MIN_IOS=26.0; fi
   else
     TARGET=aarch64-apple-watchos-sim SDK=watchsimulator PLATFORM_NAME=WatchSimulator SWIFT_TRIPLE_SUFFIX="-simulator"
   fi
@@ -47,7 +65,7 @@ elif [[ "$OS" == visionos ]]; then
   # visionOS: the UIKit app in a window (iPad-like); widgets need visionOS 26.
   RUNTIME_NAME=xrOS DEVICE_PREFIX="Apple Vision Pro" DEVICE_FAMILY="<integer>7</integer>" WIDGETS=1
   MIN_IOS="${XROS_DEPLOYMENT_TARGET:-26.0}" SWIFT_OS=xros
-  if [[ -n "$DEVICE" ]]; then
+  if [[ -n "$DEVICE_BUILD" ]]; then
     TARGET=aarch64-apple-visionos SDK=xros PLATFORM_NAME=XROS SWIFT_TRIPLE_SUFFIX=""
   else
     TARGET=aarch64-apple-visionos-sim SDK=xrsimulator PLATFORM_NAME=XRSimulator SWIFT_TRIPLE_SUFFIX="-simulator"
@@ -56,7 +74,7 @@ elif [[ "$OS" == tvos ]]; then
   # tvOS: no WidgetKit, Live Activities or iPhone-only keys.
   RUNTIME_NAME=tvOS DEVICE_PREFIX="Apple TV" DEVICE_FAMILY="<integer>3</integer>" WIDGETS=0
   MIN_IOS="${TVOS_DEPLOYMENT_TARGET:-17.0}" SWIFT_OS=tvos
-  if [[ -n "$DEVICE" ]]; then
+  if [[ -n "$DEVICE_BUILD" ]]; then
     TARGET=aarch64-apple-tvos SDK=appletvos PLATFORM_NAME=AppleTVOS SWIFT_TRIPLE_SUFFIX=""
   else
     TARGET=aarch64-apple-tvos-sim SDK=appletvsimulator PLATFORM_NAME=AppleTVSimulator SWIFT_TRIPLE_SUFFIX="-simulator"
@@ -64,7 +82,7 @@ elif [[ "$OS" == tvos ]]; then
 else
   RUNTIME_NAME=iOS DEVICE_PREFIX=iPhone DEVICE_FAMILY="<integer>1</integer><integer>2</integer>" WIDGETS=1
   MIN_IOS="${IPHONEOS_DEPLOYMENT_TARGET:-17.0}" SWIFT_OS=ios
-  if [[ -n "$DEVICE" ]]; then
+  if [[ -n "$DEVICE_BUILD" ]]; then
     TARGET=aarch64-apple-ios SDK=iphoneos PLATFORM_NAME=iPhoneOS SWIFT_TRIPLE_SUFFIX=""
   else
     TARGET=aarch64-apple-ios-sim SDK=iphonesimulator PLATFORM_NAME=iPhoneSimulator SWIFT_TRIPLE_SUFFIX="-simulator"
@@ -137,12 +155,14 @@ fi
 
 # 3. Signing (device) or simulator entitlements: an App Group shared by the
 #    app and its widget extension.
-if [[ -n "$DEVICE" ]]; then
-  PROFILE="${PRISM_PROFILE:-}"
-  if [[ -z "$PROFILE" ]]; then
-    PROFILE="$(BUNDLE_ID="$BUNDLE_ID" TEAM="${PRISM_TEAM:-}" python3 -c '
+KEYCHAIN_ARGS=()
+[[ -n "${PRISM_KEYCHAIN:-}" ]] && KEYCHAIN_ARGS=(--keychain "$PRISM_KEYCHAIN")
+# The best provisioning profile for a bundle id: development profiles list
+# devices; App Store ones list none and do not allow debugging.
+find_profile() { # $1 bundle id
+  BUNDLE_ID="$1" TEAM="${PRISM_TEAM:-}" DIST="$DIST" python3 -c '
 import glob, os, plistlib, subprocess, datetime
-bid, team = os.environ["BUNDLE_ID"], os.environ["TEAM"]
+bid, team, dist = os.environ["BUNDLE_ID"], os.environ["TEAM"], os.environ["DIST"]
 home = os.path.expanduser("~")
 best = None
 for f in glob.glob(home + "/Library/Developer/Xcode/UserData/Provisioning Profiles/*.mobileprovision") + \
@@ -150,19 +170,22 @@ for f in glob.glob(home + "/Library/Developer/Xcode/UserData/Provisioning Profil
     raw = subprocess.run(["security", "cms", "-D", "-i", f], capture_output=True).stdout
     try: p = plistlib.loads(raw)
     except Exception: continue
-    if p["ExpirationDate"] < datetime.datetime.now() or not p.get("ProvisionedDevices"): continue
+    if p["ExpirationDate"] < datetime.datetime.now(): continue
+    if dist:
+        if p.get("ProvisionedDevices") or p.get("ProvisionsAllDevices") or p["Entitlements"].get("get-task-allow"): continue
+    elif not p.get("ProvisionedDevices"):
+        continue
     t = p["TeamIdentifier"][0]
     if team and t != team: continue
     app_id = p["Entitlements"]["application-identifier"].split(".", 1)[1]
     score = 2 if app_id == bid else 1 if app_id == "*" or (app_id.endswith("*") and bid.startswith(app_id[:-1])) else 0
     if score and (best is None or score > best[0]): best = (score, f)
 print(best[1] if best else "")
-')"
-  fi
-  [[ -n "$PROFILE" ]] || { echo "No provisioning profile for $BUNDLE_ID: open the project once in Xcode with your team, or set PRISM_PROFILE" >&2; exit 1; }
-  security cms -D -i "$PROFILE" > "$GEN/profile.plist"
-  # Entitlements granted by the profile (app id, team, debugging, groups).
-  ICLOUD="${PRISM_ICLOUD:-}" APPLE="${PRISM_APPLE_SIGNIN:-}" PUSH="${PRISM_PUSH:-}" python3 - "$GEN/profile.plist" "$GEN/entitlements.plist" "$BUNDLE_ID" <<'PY'
+'
+}
+# Entitlements granted by a profile (app id, team, debugging, groups) for a bundle.
+profile_entitlements() { # $1 profile plist, $2 output, $3 bundle id
+  ICLOUD="${PRISM_ICLOUD:-}" APPLE="${PRISM_APPLE_SIGNIN:-}" PUSH="${PRISM_PUSH:-}" python3 - "$1" "$2" "$3" <<'PY'
 import os, plistlib, sys
 p = plistlib.load(open(sys.argv[1], "rb"))
 e = dict(p["Entitlements"])
@@ -186,23 +209,48 @@ if os.environ.get("PUSH") and "aps-environment" not in e:
     print("note: the provisioning profile has no Push Notifications capability: register_for_push will fail (enable it for the App ID)", file=sys.stderr)
 plistlib.dump(e, open(sys.argv[2], "wb"))
 PY
+}
+if [[ -n "$DEVICE_BUILD" ]]; then
+  KIND=development
+  [[ -n "$DIST" ]] && KIND="App Store"
+  PROFILE="${PRISM_PROFILE:-$(find_profile "$BUNDLE_ID")}"
+  [[ -n "$PROFILE" ]] || { echo "No $KIND provisioning profile for $BUNDLE_ID: create one in the developer portal (or open the project once in Xcode with your team), or set PRISM_PROFILE" >&2; exit 1; }
+  security cms -D -i "$PROFILE" > "$GEN/profile.plist"
+  profile_entitlements "$GEN/profile.plist" "$GEN/entitlements.plist" "$BUNDLE_ID"
   if [[ "${PRISM_APPLE_SIGNIN:-}" == 1 ]] && ! /usr/libexec/PlistBuddy -c "Print :com.apple.developer.applesignin" "$GEN/entitlements.plist" >/dev/null 2>&1; then
     PRISM_APPLE_SIGNIN=0
-  fi
-  if [[ "${PRISM_ICLOUD:-}" == 1 ]] && ! /usr/libexec/PlistBuddy -c "Print :com.apple.developer.ubiquity-kvstore-identifier" "$GEN/entitlements.plist" >/dev/null 2>&1; then
-    PRISM_ICLOUD=0
   fi
   # The token's environment is the profile's (development or production).
   if [[ -n "${PRISM_PUSH:-}" ]]; then
     PRISM_PUSH="$(/usr/libexec/PlistBuddy -c "Print :aps-environment" "$GEN/entitlements.plist" 2>/dev/null || echo "$PRISM_PUSH")"
   fi
-  cp "$GEN/entitlements.plist" "$GEN/appex.entitlements.plist"
-  /usr/libexec/PlistBuddy -c "Set :application-identifier $(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$GEN/profile.plist").$BUNDLE_ID.widgets" "$GEN/appex.entitlements.plist"
+  if [[ "${PRISM_ICLOUD:-}" == 1 ]] && ! /usr/libexec/PlistBuddy -c "Print :com.apple.developer.ubiquity-kvstore-identifier" "$GEN/entitlements.plist" >/dev/null 2>&1; then
+    PRISM_ICLOUD=0
+  fi
+  # The widget extension: its own profile when there is one (App Store
+  # builds need it), else the app's (a wildcard development profile).
+  APPEX_PROFILE="$PROFILE"
+  if [[ $WIDGETS == 1 ]]; then
+    APPEX_PROFILE="${PRISM_WIDGETS_PROFILE:-$(find_profile "$BUNDLE_ID.widgets")}"
+    APPEX_PROFILE="${APPEX_PROFILE:-$PROFILE}"
+    security cms -D -i "$APPEX_PROFILE" > "$GEN/appex.profile.plist"
+    profile_entitlements "$GEN/appex.profile.plist" "$GEN/appex.entitlements.plist" "$BUNDLE_ID.widgets"
+    APPEX_ID="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$GEN/appex.profile.plist")"
+    if [[ -n "$DIST" && "$APPEX_ID" != *".$BUNDLE_ID.widgets" ]]; then
+      echo "No App Store provisioning profile for $BUNDLE_ID.widgets (the widget extension): create one, or set PRISM_WIDGETS_PROFILE" >&2
+      exit 1
+    fi
+  fi
   if ! /usr/libexec/PlistBuddy -c "Print :com.apple.security.application-groups" "$GEN/entitlements.plist" >/dev/null 2>&1; then
     echo "note: the profile has no App Group: data stays in the app (widgets show placeholders)" >&2
   fi
-  IDENTITY="${PRISM_IDENTITY:-$(security find-identity -v -p codesigning | sed -n 's/.*"\(Apple Development[^"]*\)".*/\1/p' | head -1)}"
-  [[ -n "$IDENTITY" ]] || { echo "No \"Apple Development\" signing identity in the keychain" >&2; exit 1; }
+  if [[ -n "$DIST" ]]; then
+    IDENTITY="${PRISM_IDENTITY:-$(security find-identity -v -p codesigning ${PRISM_KEYCHAIN:+"$PRISM_KEYCHAIN"} | sed -n 's/.*"\(Apple Distribution[^"]*\)".*/\1/p;s/.*"\(iPhone Distribution[^"]*\)".*/\1/p' | head -1)}"
+    [[ -n "$IDENTITY" ]] || { echo "No \"Apple Distribution\" signing identity in the keychain (or set PRISM_IDENTITY)" >&2; exit 1; }
+  else
+    IDENTITY="${PRISM_IDENTITY:-$(security find-identity -v -p codesigning | sed -n 's/.*"\(Apple Development[^"]*\)".*/\1/p' | head -1)}"
+    [[ -n "$IDENTITY" ]] || { echo "No \"Apple Development\" signing identity in the keychain" >&2; exit 1; }
+  fi
 else
   # The simulator refuses to launch ad hoc builds with the iCloud
   # entitlement: cloud_storage stays local there.
@@ -295,11 +343,38 @@ for line in os.environ.get("PRISM_PERMISSIONS", "").splitlines():
         print("  <key>" + key + "</key><string>" + escape(text) + "</string>")
 ')"
 ICON_PLIST=""
-if [[ -n "${PRISM_ICON:-}" && "$OS" != ios ]]; then
-  echo "note: $RUNTIME_NAME app icons are not generated yet" >&2
-elif [[ -n "${PRISM_ICON:-}" ]]; then
+if [[ -n "${PRISM_ICON:-}" ]]; then
   bash "$PLATFORM/apple/app-icon.sh" "$PRISM_ICON" "$SDK" "$MIN_IOS" "$APP" "$GEN"
   ICON_PLIST="$(cat "$GEN/icon-info.xml")"
+fi
+
+# Device builds record the SDK and Xcode that built them, like Xcode does
+# (App Store Connect reads these keys).
+BUILD_PLIST=""
+if [[ -n "$DEVICE_BUILD" ]]; then
+  SDK_VERSION="$(xcrun --sdk "$SDK" --show-sdk-version)"
+  SDK_BUILD="$(xcrun --sdk "$SDK" --show-sdk-build-version)"
+  XCODE_BUILD="$(xcodebuild -version | awk '/Build version/ {print $3}')"
+  # Xcode 26.1.1 → 2611, 27.2 → 2720.
+  XCODE_VERSION="$(xcodebuild -version | awk 'NR==1 {split($2, v, "."); printf "%d%d%d", v[1], v[2], v[3]}')"
+  BUILD_PLIST="  <key>DTSDKName</key><string>$SDK$SDK_VERSION</string>
+  <key>DTSDKBuild</key><string>$SDK_BUILD</string>
+  <key>DTPlatformVersion</key><string>$SDK_VERSION</string>
+  <key>DTPlatformBuild</key><string>$SDK_BUILD</string>
+  <key>DTXcode</key><string>$XCODE_VERSION</string>
+  <key>DTXcodeBuild</key><string>$XCODE_BUILD</string>
+  <key>DTCompiler</key><string>com.apple.compilers.llvm.clang.1_0</string>
+  <key>BuildMachineOSBuild</key><string>$(sw_vers -buildVersion)</string>"
+fi
+STORE_PLIST=""
+[[ -n "${PRISM_CATEGORY:-}" ]] && STORE_PLIST+="  <key>LSApplicationCategoryType</key><string>$PRISM_CATEGORY</string>
+"
+[[ "${PRISM_ENCRYPTION:-}" == 0 ]] && STORE_PLIST+="  <key>ITSAppUsesNonExemptEncryption</key><false/>
+"
+if [[ "$OS" == ios ]]; then
+  # iPad multitasking needs every orientation (App Store validation).
+  STORE_PLIST+="  <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
+  <key>UISupportedInterfaceOrientations~ipad</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationPortraitUpsideDown</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>"
 fi
 
 plist_common() { # $1 executable, $2 bundle id, $3 package type
@@ -319,6 +394,7 @@ plist_common() { # $1 executable, $2 bundle id, $3 package type
   <key>UIDeviceFamily</key><array>$DEVICE_FAMILY</array>
   <key>PrismAppGroup</key><string>$GROUP</string>
   <key>PrismURLScheme</key><string>$SCHEME</string>
+$BUILD_PLIST
 PLIST
 }
 
@@ -328,6 +404,7 @@ cat > "$APP/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
 $(plist_common "$PKG" "$BUNDLE_ID" APPL)
+$STORE_PLIST
 $ICON_PLIST
 $LOC_PLIST
 $BG_PLIST
@@ -377,7 +454,7 @@ PLIST
 
 # 6. Widget extension (iOS): Prism's generic SwiftUI renderer + the generated entry point.
 SIM_SECTIONS=()
-if [[ -z "$DEVICE" ]]; then
+if [[ -z "$DEVICE_BUILD" ]]; then
   SIM_SECTIONS=(-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __entitlements -Xlinker "$GEN/entitlements.plist")
   [[ -f "$GEN/entitlements.plist.der" ]] && SIM_SECTIONS+=(-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __ents_der -Xlinker "$GEN/entitlements.plist.der")
 fi
@@ -402,13 +479,15 @@ PLIST
 fi
 
 # 7. Sign: ad hoc on the simulator, with the profile on a device.
-if [[ -n "$DEVICE" ]]; then
+if [[ -n "$DEVICE_BUILD" ]]; then
   cp "$PROFILE" "$APP/embedded.mobileprovision"
   if [[ $WIDGETS == 1 ]]; then
-    cp "$PROFILE" "$APPEX/embedded.mobileprovision"
-    codesign --force --sign "$IDENTITY" --timestamp=none --entitlements "$GEN/appex.entitlements.plist" "$APPEX" >/dev/null
+    cp "$APPEX_PROFILE" "$APPEX/embedded.mobileprovision"
+    codesign --force --sign "$IDENTITY" ${KEYCHAIN_ARGS[@]+"${KEYCHAIN_ARGS[@]}"} --timestamp=none \
+      --entitlements "$GEN/appex.entitlements.plist" "$APPEX" >/dev/null
   fi
-  codesign --force --sign "$IDENTITY" --timestamp=none --entitlements "$GEN/entitlements.plist" "$APP" >/dev/null
+  codesign --force --sign "$IDENTITY" ${KEYCHAIN_ARGS[@]+"${KEYCHAIN_ARGS[@]}"} --timestamp=none \
+    --entitlements "$GEN/entitlements.plist" "$APP" >/dev/null
   codesign --verify --deep --strict "$APP"
 else
   # aps-environment stays in the binary's sections only: the simulator refuses
@@ -422,6 +501,15 @@ else
   codesign --force --sign - --entitlements "$GEN/entitlements.sign.plist" "$APP" >/dev/null
 fi
 echo "Built $APP"
+if [[ -n "$DIST" ]]; then
+  # The .ipa App Store Connect takes: Payload/<App>.app, zipped.
+  IPA="$OUT/$APP_NAME.ipa"
+  rm -rf "$OUT/ipa" "$IPA" && mkdir -p "$OUT/ipa/Payload"
+  cp -R "$APP" "$OUT/ipa/Payload/"
+  (cd "$OUT/ipa" && zip -qry -X "$IPA" Payload)
+  rm -rf "$OUT/ipa"
+  echo "Built $IPA"
+fi
 [[ "${PRISM_NO_INSTALL:-}" == 1 ]] && exit 0
 
 # 8. Install and launch.

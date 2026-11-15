@@ -5,6 +5,12 @@ package = "counter"
 bundle_id = "dev.prism.counter"
 version = "0.1.0"
 icon = "icon.png"
+# Store builds (prism build --store/--aab, prism publish): the build number
+# (CFBundleVersion, Android versionCode) goes up with every upload.
+build = 1
+category = "public.app-category.productivity"
+uses_encryption = false
+description = "Todos, a counter and every Prism component."
 
 [push]
 # Remote push: aps-environment + background pushes (Apple), the UnifiedPush

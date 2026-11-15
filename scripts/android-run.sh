@@ -26,7 +26,12 @@
 #                      SDK fetched from Google's Maven and bundled (opt-in)
 #   PRISM_VAPID_PUBLIC_KEY  given to UnifiedPush distributors that require VAPID
 #   PRISM_ANDROID_KEYSTORE, PRISM_ANDROID_KEYSTORE_PASS, PRISM_ANDROID_KEY_ALIAS
-#                      signing key for store builds (default: the debug key)
+#                      signing key for store builds (default: the debug key);
+#                      PRISM_ANDROID_KEY_PASS if the key's password differs
+#   PRISM_BUILD        versionCode (default 1)
+#   PRISM_ANDROID_AAB=1  an Android App Bundle for Google Play (bundletool,
+#                      signed with jarsigner) instead of an APK; installing it
+#                      goes through `bundletool build-apks --local-testing`
 set -euo pipefail
 
 PKG="${1:?usage: android-run.sh <package> [--no-launch]}"
@@ -51,6 +56,10 @@ LIB="${PKG//-/_}"
 APP_ID="${PRISM_BUNDLE_ID:-dev.prism.${LIB}}"
 APP_NAME="${PRISM_APP_NAME:-$(tr '[:lower:]' '[:upper:]' <<< "${PKG:0:1}")${PKG:1}}"
 SCHEME="prism-$SLUG"
+AAB="${PRISM_ANDROID_AAB:-}"
+VERSION_CODE="${PRISM_BUILD:-1}"
+[[ "$VERSION_CODE" =~ ^[1-9][0-9]{0,9}$ ]] && (( VERSION_CODE <= 2100000000 )) \
+  || { echo "versionCode must be a whole number from 1 to 2100000000 (Prism.toml [app] build), not $VERSION_CODE" >&2; exit 1; }
 PROFILE_DIR=debug CARGO_FLAGS=()
 if [[ "${PRISM_RELEASE:-}" == 1 ]]; then PROFILE_DIR=release CARGO_FLAGS=(--release); fi
 OUT="$TARGET_DIR/android/$PROFILE_DIR"
@@ -379,11 +388,14 @@ $PUSH_APP
 XML
 
 # 5. Link resources (the libraries' too, with their R classes), then the Java
-#    host, widget providers and libraries → dex.
+#    host, widget providers and libraries → dex. App bundles keep the manifest
+#    and resources in protobuf format (bundletool's input).
 rm -rf "$OUT/rjava" && mkdir -p "$OUT/rjava"
-"$BUILD_TOOLS/aapt2" link -o "$OUT/base.apk" -I "$ANDROID_JAR" --manifest "$OUT/AndroidManifest.xml" \
+LINK_FORMAT=()
+[[ "$AAB" == 1 ]] && LINK_FORMAT=(--proto-format)
+"$BUILD_TOOLS/aapt2" link ${LINK_FORMAT[@]+"${LINK_FORMAT[@]}"} -o "$OUT/base.apk" -I "$ANDROID_JAR" --manifest "$OUT/AndroidManifest.xml" \
   -A "$STAGE/assets" --min-sdk-version "$MIN_SDK" --target-sdk-version "$TARGET_SDK" \
-  --version-code "${PRISM_BUILD:-1}" --version-name "${PRISM_VERSION:-0.1.0}" ${RES_ARGS[@]+"${RES_ARGS[@]}"} \
+  --version-code "$VERSION_CODE" --version-name "${PRISM_VERSION:-0.1.0}" ${RES_ARGS[@]+"${RES_ARGS[@]}"} \
   ${LIB_RES[@]+"${LIB_RES[@]}"} --auto-add-overlay --java "$OUT/rjava" ${LIB_PKGS:+--extra-packages "$LIB_PKGS"}
 rm -rf "$OUT/classes" && mkdir -p "$OUT/classes"
 SOURCES=("$PLATFORM/android/java" "$OUT/gen")
@@ -393,30 +405,14 @@ javac --release 17 -nowarn -classpath "$ANDROID_JAR$LIB_JARS" -d "$OUT/classes" 
 "$BUILD_TOOLS/d8" --min-api "$MIN_SDK" --lib "$ANDROID_JAR" --output "$STAGE" \
   $(find "$OUT/classes" -name '*.class') ${LIB_JARS//:/ }
 
-# 6. Add code and native libraries, align (16 KB pages), sign.
-# Large libraries (Firebase) need several dex files: classes2.dex…
-(cd "$STAGE" && zip -q "$OUT/base.apk" classes*.dex && zip -q -0 -r "$OUT/base.apk" lib)
-# The libraries' Java resources (car-app-api.level…), as Gradle packages them.
-if [[ -n "$LIB_JARS" ]]; then
-  # Unzipped entries can be read-only: make them removable first.
-  [ -d "$OUT/javares" ] && chmod -R u+rwX "$OUT/javares"
-  rm -rf "$OUT/javares" && mkdir -p "$OUT/javares"
-  for jar in ${LIB_JARS//:/ }; do
-    unzip -qo "$jar" -x '*.class' 'META-INF/MANIFEST.MF' 'META-INF/*.SF' 'META-INF/*.RSA' 'META-INF/*.DSA' \
-      'META-INF/versions/*' 'module-info.class' -d "$OUT/javares" 2>/dev/null || true
-  done
-  # Some jars store directories without the search bit: fix them, or their
-  # files would be left out.
-  chmod -R u+rwX "$OUT/javares"
-  (cd "$OUT/javares" && find . -type f | sed 's|^\./||' | zip -q "$OUT/base.apk" -@)
-fi
-"$BUILD_TOOLS/zipalign" -f -P 16 4 "$OUT/base.apk" "$OUT/aligned.apk"
+# 6. Signing key: the store key, else the SDK's debug key.
 if [[ -n "${PRISM_ANDROID_KEYSTORE:-}" ]]; then
   KEYSTORE="$PRISM_ANDROID_KEYSTORE" PASS="${PRISM_ANDROID_KEYSTORE_PASS:?set PRISM_ANDROID_KEYSTORE_PASS}"
+  KEY_PASS="${PRISM_ANDROID_KEY_PASS:-$PASS}"
   ALIAS="${PRISM_ANDROID_KEY_ALIAS:?set PRISM_ANDROID_KEY_ALIAS}"
 else
   # The SDK's conventional debug key (what Android Studio uses too).
-  KEYSTORE="$HOME/.android/debug.keystore" PASS=android ALIAS=androiddebugkey
+  KEYSTORE="$HOME/.android/debug.keystore" PASS=android KEY_PASS=android ALIAS=androiddebugkey
   if [[ ! -f "$KEYSTORE" ]]; then
     mkdir -p "$HOME/.android"
     keytool -genkeypair -keystore "$KEYSTORE" -storepass android -keypass android -alias androiddebugkey \
@@ -424,15 +420,84 @@ else
   fi
   [[ "${PRISM_RELEASE:-}" == 1 ]] && echo "note: signed with the debug key; set PRISM_ANDROID_KEYSTORE for a store build" >&2
 fi
+
+# The libraries' Java resources (car-app-api.level…), as Gradle packages them.
+# Unzipped entries can be read-only: make them removable first.
+[ -d "$OUT/javares" ] && chmod -R u+rwX "$OUT/javares"
+rm -rf "$OUT/javares"
+if [[ -n "$LIB_JARS" ]]; then
+  mkdir -p "$OUT/javares"
+  for jar in ${LIB_JARS//:/ }; do
+    unzip -qo "$jar" -x '*.class' 'META-INF/MANIFEST.MF' 'META-INF/*.SF' 'META-INF/*.RSA' 'META-INF/*.DSA' \
+      'META-INF/versions/*' 'module-info.class' -d "$OUT/javares" 2>/dev/null || true
+  done
+  # Some jars store directories without the search bit: fix them, or their
+  # files would be left out.
+  chmod -R u+rwX "$OUT/javares"
+fi
+
+if [[ "$AAB" == 1 ]]; then
+  # 7. App bundle: the base module's zip (manifest/, dex/, res/, resources.pb,
+  #    assets/, lib/, root/), bundletool build-bundle, then jarsigner (Play
+  #    rejects bundles signed with apksigner or a debug key).
+  BUNDLETOOL=(bash "$(dirname "$0")/bundletool.sh")
+  MOD="$OUT/module"
+  rm -rf "$MOD" "$OUT/base.zip" && mkdir -p "$MOD/manifest" "$MOD/dex"
+  (cd "$MOD" && unzip -q "$OUT/base.apk")
+  mv "$MOD/AndroidManifest.xml" "$MOD/manifest/AndroidManifest.xml"
+  mv "$STAGE"/classes*.dex "$MOD/dex/"
+  cp -R "$STAGE/lib" "$MOD/lib"
+  if [[ -d "$OUT/javares" ]]; then mkdir -p "$MOD/root" && cp -R "$OUT/javares/." "$MOD/root/"; fi
+  (cd "$MOD" && zip -q -r -D "$OUT/base.zip" .)
+  # Native libraries stay uncompressed and 16 KB aligned in the APKs Play
+  # generates (Android 15+ devices with 16 KB pages).
+  cat > "$OUT/BundleConfig.json" <<'JSON'
+{
+  "optimizations": {
+    "uncompressNativeLibraries": { "enabled": true, "alignment": "PAGE_ALIGNMENT_16K" }
+  }
+}
+JSON
+  BUNDLE="$OUT/$APP_NAME.aab"
+  rm -f "$OUT/unsigned.aab"
+  "${BUNDLETOOL[@]}" build-bundle --modules="$OUT/base.zip" --config="$OUT/BundleConfig.json" \
+    --output="$OUT/unsigned.aab"
+  rm -f "$BUNDLE"
+  PRISM_KS_PASS="$PASS" PRISM_KEY_PASS="$KEY_PASS" jarsigner -keystore "$KEYSTORE" \
+    -storepass:env PRISM_KS_PASS -keypass:env PRISM_KEY_PASS \
+    -sigalg SHA256withRSA -digestalg SHA-256 -signedjar "$BUNDLE" "$OUT/unsigned.aab" "$ALIAS" >/dev/null
+  jarsigner -verify -strict "$BUNDLE" >/dev/null 2>&1 || jarsigner -verify "$BUNDLE" >/dev/null
+  echo "Built $BUNDLE (versionCode $VERSION_CODE)"
+  [[ "${PRISM_NO_INSTALL:-}" == 1 ]] && exit 0
+
+  # 8. Install like Play would: the device's split APKs from the bundle.
+  [[ -n "$SERIAL" ]] || { echo "No Android device or emulator running (start one: emulator -avd <name>)" >&2; exit 1; }
+  rm -f "$OUT/local.apks"
+  # bundletool reads passwords from files (pass: would show them in ps).
+  SECRETS="$(mktemp -d)" && trap 'rm -rf "$SECRETS"' EXIT
+  (umask 077 && printf '%s\n' "$PASS" > "$SECRETS/ks" && printf '%s\n' "$KEY_PASS" > "$SECRETS/key")
+  "${BUNDLETOOL[@]}" build-apks --bundle="$BUNDLE" \
+    --output="$OUT/local.apks" --local-testing --connected-device --device-id="$SERIAL" \
+    --adb="$ADB" --aapt2="$BUILD_TOOLS/aapt2" \
+    --ks="$KEYSTORE" --ks-pass="file:$SECRETS/ks" --key-pass="file:$SECRETS/key" --ks-key-alias="$ALIAS"
+  "${BUNDLETOOL[@]}" install-apks --apks="$OUT/local.apks" --device-id="$SERIAL" --adb="$ADB"
+else
+# 7. APK: add code and native libraries, align (16 KB pages), sign.
+(cd "$STAGE" && zip -q "$OUT/base.apk" classes*.dex && zip -q -0 -r "$OUT/base.apk" lib)
+if [[ -d "$OUT/javares" ]]; then
+  (cd "$OUT/javares" && find . -type f | sed 's|^\./||' | zip -q "$OUT/base.apk" -@)
+fi
+"$BUILD_TOOLS/zipalign" -f -P 16 4 "$OUT/base.apk" "$OUT/aligned.apk"
 APK="$OUT/$APP_NAME.apk"
-"$BUILD_TOOLS/apksigner" sign --ks "$KEYSTORE" --ks-pass "pass:$PASS" --key-pass "pass:$PASS" \
-  --ks-key-alias "$ALIAS" --out "$APK" "$OUT/aligned.apk"
-echo "Built $APK"
+PRISM_KS_PASS="$PASS" PRISM_KEY_PASS="$KEY_PASS" "$BUILD_TOOLS/apksigner" sign --ks "$KEYSTORE" \
+  --ks-pass env:PRISM_KS_PASS --key-pass env:PRISM_KEY_PASS --ks-key-alias "$ALIAS" --out "$APK" "$OUT/aligned.apk"
+echo "Built $APK (versionCode $VERSION_CODE)"
 [[ "${PRISM_NO_INSTALL:-}" == 1 ]] && exit 0
 
-# 7. Install and launch.
+# 8. Install and launch.
 [[ -n "$SERIAL" ]] || { echo "No Android device or emulator running (start one: emulator -avd <name>)" >&2; exit 1; }
 "$ADB" -s "$SERIAL" install -r "$APK" >/dev/null
+fi
 echo "Installed $APP_ID on $SERIAL"
 if [[ $LAUNCH == 1 ]]; then
   if [[ -n "${PRISM_PATH:-}" ]]; then

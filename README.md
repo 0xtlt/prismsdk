@@ -18,6 +18,7 @@ prism dev web                # rebuilds and restarts on every save, on the same 
 prism dev ios                # same, in the iOS simulator
 prism run ios --device "My iPhone"
 prism build macos            # release .app with widgets and icon
+prism publish ios --dry-run  # App Store build, checked (see Shipping to stores)
 prism dev android            # the running emulator or a USB phone
 prism devices                # simulators, paired iPhones, Android devices
 ```
@@ -640,7 +641,85 @@ docker build -f docker/web.Dockerfile --build-arg PACKAGE=my-app -t my-app .
 docker run -p 3000:3000 -v my-app-data:/data my-app
 ```
 
+`prism build web --docker` runs the same build from any project in the workspace.
+
 This is a multi-stage build on Rust 1.99 / Debian bookworm. It produces the server binary, `public/` (the hashed files for a CDN) and the app's assets, in about 160 MB with the counter example. The image is tested with the same jsdom suites as the macOS build.
+
+## Shipping to stores
+
+`prism build <target>` makes store packages, and `prism publish <target>` uploads them after checking them locally. `--dry-run` builds and checks everything and prints the requests or commands it would send, without using the network. CI runs every dry run.
+
+| Target | Package | Command | Sent to |
+|---|---|---|---|
+| Android | `.aab` (App Bundle) | `prism build android --aab` | Google Play (`prism publish android`) |
+| iOS, iPadOS, tvOS, visionOS, watchOS | `.ipa` | `prism build ios --store` (`tvos`, `visionos`, `watchos`) | App Store Connect (`prism publish ios`…) |
+| macOS (Mac App Store) | `.pkg` | `prism build macos --store` | App Store Connect (`prism publish macos`) |
+| macOS (direct download) | notarized `.dmg` | `prism build macos --direct` | Apple's notary service (`prism publish macos --direct`) |
+| Linux | `.deb` | `prism build linux` | your repository or download page |
+| Web | Docker image | `prism build web --docker` | your registry or server |
+
+Versions come from `Prism.toml`. `[app] version` is the version people see. `[app] build` is the build number: `CFBundleVersion` on Apple platforms, `versionCode` on Android (or `[android] version_code`), and the Debian revision on Linux. Each upload needs a higher build number.
+
+```toml
+[app]
+version = "1.2.0"
+build = 7
+category = "public.app-category.productivity"   # LSApplicationCategoryType (the Mac App Store needs one)
+uses_encryption = false                          # answers App Store export compliance
+description = "Counts things"                    # Linux packages
+
+[android]
+track = "internal"                               # internal, alpha, beta, production
+
+[linux]
+maintainer = "Jane Doe <jane@example.com>"
+```
+
+### Google Play
+
+- **The bundle:** `aapt2 link --proto-format` writes the manifest and resources as protobuf. They go into the base module zip (`manifest/`, `dex/`, `res/`, `resources.pb`, `assets/`, `lib/`, `root/`), and `bundletool build-bundle` assembles it. bundletool 1.18.3 is downloaded once into `~/.cache/prism` and checked against a pinned SHA-256 (`PRISM_BUNDLETOOL` uses another jar). `BundleConfig.json` keeps native libraries uncompressed and 16 KB aligned (`PAGE_ALIGNMENT_16K`), as Android 15+ devices with 16 KB pages need.
+- **Signing:** jarsigner signs the bundle with your upload key (`PRISM_ANDROID_KEYSTORE`, `PRISM_ANDROID_KEYSTORE_PASS`, `PRISM_ANDROID_KEY_ALIAS`, and `PRISM_ANDROID_KEY_PASS` if the key's password differs). Play rejects the debug key, so `prism publish` refuses it. Create an upload key once: `keytool -genkeypair -keystore upload.jks -alias upload -keyalg RSA -keysize 2048 -validity 10000`. Enroll in Play App Signing, then keep the keystore out of the repository.
+- **Testing like Play does:** `prism run android --aab` builds the bundle, then `bundletool build-apks --local-testing --connected-device` and `install-apks` install the split APKs (base, ABI, language, density) that Play would serve to that device.
+- **Upload:** `prism publish android [--track beta] [--rollout 0.1 | --draft] [--notes "…"]` uses the Google Play Developer API. It creates an edit (`edits.insert`), uploads the bundle (`edits.bundles.upload`), sets the track's release (`edits.tracks.update`) and commits the edit (`edits.commit`). If any step fails, it deletes the edit. Credentials come from a service account JSON key: `PRISM_PLAY_SERVICE_ACCOUNT` (a path or the JSON itself) or `--service-account`. Invite the service account in the Play Console (Users and permissions) with release rights.
+- **Checks before the upload:** package name, `versionCode`, `targetSdkVersion` ≥ 36 (Play's rule since August 31, 2026), not debuggable, signed and not with the debug key, release status and rollout, and the service account key (it signs its token request).
+- **First release:** the app must already exist in the Play Console. Until it has been published once, Play only accepts draft releases (`--draft`).
+
+### App Store Connect (iOS, iPadOS, tvOS, visionOS, watchOS, macOS)
+
+- **Store builds** (`--store`) use the device SDK. They are signed with an "Apple Distribution" identity (or the older "iPhone Distribution" or "3rd Party Mac Developer Application"), with App Store provisioning profiles: one for the app and one for its widget extension (`<bundle id>.widgets`). The profiles are found in `~/Library/MobileDevice/Provisioning Profiles` and Xcode's folder, or set them with `PRISM_PROFILE` / `PRISM_WIDGETS_PROFILE`, and on macOS `PRISM_MAC_PROFILE` / `PRISM_MAC_WIDGETS_PROFILE`. `PRISM_IDENTITY` picks the identity, `PRISM_TEAM` the team, and `PRISM_KEYCHAIN` the keychain that holds them (CI). The build records the SDK and Xcode in Info.plist (`DT*` keys), as App Store Connect expects, and adds every iPad orientation (needed for multitasking).
+- **Icons:** one 1024 px PNG (`[app] icon`) becomes each platform's icon. iOS and watchOS get a single size, macOS every size, visionOS a two-layer solid image stack. tvOS gets brand assets: layered icons at 400×240 and 1280×768 and the top shelf images, with the icon filling each.
+- **iOS family:** the `.ipa` is `Payload/<App>.app` (with `PlugIns/PrismWidgets.appex`), zipped. Untested: Xcode wraps watch-only apps in an iOS stub app, which Prism does not make, so App Store Connect may refuse a watchOS `.ipa` (the dry run warns).
+- **Mac App Store:** the app is sandboxed (`com.apple.security.app-sandbox`, network client, user-selected files). `[permissions]` add the matching entitlements: camera, microphone, location, photos. The profile is embedded, and productbuild makes a `.pkg` installing into `/Applications`, signed with `PRISM_INSTALLER_IDENTITY` ("3rd Party Mac Developer Installer"). The app group becomes `<TEAM>.<bundle id>`, the form macOS accepts.
+- **Upload:** `prism publish ios` (or `tvos`, `visionos`, `watchos`, `macos`) runs `xcrun altool --upload-package <ipa|pkg> --api-key … --api-issuer … --p8-file-path …`. It uses an App Store Connect API key (Users and Access › Integrations): `PRISM_ASC_KEY_ID`, `PRISM_ASC_ISSUER_ID`, and `PRISM_ASC_KEY` (the `AuthKey_<id>.p8`). Before uploading, it checks the bundle id, version and build, the `DT*` keys, the icon, the macOS category, the signature (`codesign --verify --deep --strict`) and identity, the profiles (App Store type, matching bundle ids), the sandbox (macOS) and the key, by signing an App Store Connect token with it.
+
+### macOS outside the store (Developer ID)
+
+`prism build macos --direct` signs the app and its widget extension with "Developer ID Application" under the hardened runtime (`--options runtime`) with a secure timestamp, puts them in a `.dmg` (with an Applications shortcut), and signs the disk image. `prism publish macos --direct` checks all of that, then runs `xcrun notarytool submit <dmg> --wait`, `xcrun stapler staple` and `stapler validate`. It authenticates with the same API key or a `notarytool store-credentials` profile (`PRISM_NOTARY_PROFILE`). Without a provisioning profile, iCloud stays off (`PRISM_MAC_PROFILE` embeds one).
+
+### Linux
+
+`prism build linux` makes a `.deb`: the release binary and its assets in `/usr/lib/<name>`, a launcher in `/usr/bin`, a desktop entry and icon named after the bundle id (the window uses it as its GTK application id, so desktops match it to its launcher), and AppStream metadata. Dependencies come from `dpkg-shlibdeps`. On Linux it builds directly. Elsewhere it builds inside the `docker/linux-dev.Dockerfile` image, which it builds if needed, with its own target dir under `target/linux`. Install the package with `sudo apt install ./<name>_<version>-<build>_<arch>.deb`.
+
+### Web
+
+`prism build web --docker` builds `docker/web.Dockerfile` (see [Docker](#docker-linux)) into an image tagged `<name>:<version>`. The build context is the Cargo workspace, without `target/` and local data, so path dependencies must be inside the workspace. Push the image to your registry yourself.
+
+### Trying it without accounts
+
+`scripts/test-signing.sh <dir> <bundle id>` creates a throwaway keychain with a self-signed identity, plus provisioning profiles signed by it. It prints the `PRISM_*` variables to export. Apple refuses all of this, so it is only for exercising the builds and the dry runs. With them, `prism publish ios --dry-run` and the others build real packages, check them, and show the upload commands. Identity problems appear as warnings in a dry run and as errors for a real upload. productbuild only signs packages with an identity the system trusts, so the test `.pkg` is unsigned (`PRISM_INSTALLER_IDENTITY=-`).
+
+### Secrets for CI
+
+| Secret | For |
+|---|---|
+| `ANDROID_UPLOAD_KEYSTORE` (base64), `ANDROID_KEYSTORE_PASS`, `ANDROID_KEY_ALIAS` | `PRISM_ANDROID_KEYSTORE` (decoded to a file), `PRISM_ANDROID_KEYSTORE_PASS`, `PRISM_ANDROID_KEY_ALIAS` |
+| `PLAY_SERVICE_ACCOUNT_JSON` | `PRISM_PLAY_SERVICE_ACCOUNT` |
+| `APPLE_CERTIFICATES_P12` (base64), `APPLE_CERTIFICATES_PASSWORD` | Apple Distribution, Mac Installer Distribution and Developer ID Application identities, imported into a temporary keychain (`PRISM_KEYCHAIN`) |
+| `APPLE_PROFILES` (base64 tarball) | App Store profiles for the app and `.widgets`, per platform (`PRISM_PROFILE`, `PRISM_WIDGETS_PROFILE`, `PRISM_MAC_PROFILE`, `PRISM_MAC_WIDGETS_PROFILE`) |
+| `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8` | `PRISM_ASC_KEY_ID`, `PRISM_ASC_ISSUER_ID`, `PRISM_ASC_KEY` (uploads and notarization) |
+| `APPLE_TEAM_ID` | `PRISM_TEAM` |
+
+The `release` jobs in `.github/workflows/ci.yml` run every dry run with throwaway keys. To publish for real, add these secrets and drop `--dry-run`, ideally in a separate workflow that runs on tags.
 
 ## Performance
 
@@ -700,7 +779,7 @@ mise run web        # the example, restarting on save (also: macos, ios, android
 - `prism dev` keeps the current screen across restarts (`PRISM_DEV_STATE`); the web client reconnects by itself.
 - `PRISM_PORT=8080`, `PRISM_SIM="iPhone 17"` (simulators are slimmed with `simslim` when installed), `PRISM_LOCALE=ar`, `PRISM_TEXT_SCALE=1.5`.
 - macOS dev hooks: `PRISM_CLICK="+1|Dark mode" PRISM_SCROLL=600 PRISM_DELAY=2 PRISM_SNAPSHOT=out.png cargo run -p counter` presses controls by title or accessibility label, scrolls, waits, writes a PNG of the window, and quits.
-- CI (`.github/workflows/ci.yml`): format, tests, clippy for macOS / iOS simulator / iOS device / web, then release bundles and a web smoke test.
+- CI (`.github/workflows/ci.yml`): format, tests, clippy for macOS / iOS simulator / iOS device / web, then release bundles and a web smoke test. The `release-*` jobs build the store packages and run every `prism publish --dry-run` with throwaway keys. The Linux job builds and installs the `.deb`.
 
 ## tvOS
 
@@ -725,6 +804,7 @@ watchOS has no UIKit views (`UIView` is `API_UNAVAILABLE(watchos)` in the SDK), 
 - Also on the watch: notifications with actions, alerts, and context menus (press and hold opens a dialog, since SwiftUI's `contextMenu` is deprecated on watchOS). It also handles swipes, scroll events, pull to refresh, the scene lifecycle, Dynamic Type and iCloud key-value storage.
 - Background tasks use WatchKit's `scheduleBackgroundRefresh`, because `BGTaskScheduler` is `API_UNAVAILABLE(watchos)`.
 - What the watch lacks (SDK): camera, clipboard. `capabilities` says so.
+- Devices and store builds use Rust's `aarch64-apple-watchos` (arm64 watches, watchOS 26+), so their minimum version is 26.0. Older `arm64_32` watches would need Rust's tier-3 `arm64_32-apple-watchos` target, which Prism does not build.
 - Dev hooks: `PRISM_CLICK`, `PRISM_SNAPSHOT` (SwiftUI `ImageRenderer`: text fields render as a placeholder), `PRISM_DEBUG_LAYOUT=1` (logs text frames).
 
 ## visionOS
@@ -776,8 +856,8 @@ The app runs in Rust, and a small Java host (`platform/android`) creates real An
 - **Notifications:** actions and text replies; the first one asks for the permission (Android 13+), as on iOS. Alerts are `AlertDialog`s. Context menus (`PopupMenu`) open on press and hold. Also supported: swipes, scroll events, deep links (`prism-<package>:/path`) and the lifecycle.
 - **Background tasks:** JobScheduler, even with the app closed; the library then loads without the Activity and runs the task without a screen.
 - **Live Activities:** an ongoing notification drawing the lock-screen content, with timers counting natively (`Chronometer`).
-- **Widgets:** home-screen widgets (`AppWidgetProvider`), one per `register_widget`, with small/medium layouts chosen by size (Android 12+). They are redrawn from the last snapshot while the app is closed. Both surfaces render `SNode` snapshots with `RemoteViews` (`PrismSurface.java`), charts as bitmaps (see [Charts in widgets](#charts-in-widgets-live-activities-and-car-screens)).
-- **Release:** `PRISM_RELEASE=1` or `prism build android`. Sign with `PRISM_ANDROID_KEYSTORE`, `PRISM_ANDROID_KEYSTORE_PASS` and `PRISM_ANDROID_KEY_ALIAS`; the default is the SDK's debug key. Libraries are aligned for 16 KB pages.
+- **Widgets:** home-screen widgets (`AppWidgetProvider`), one per `register_widget`, with small/medium layouts chosen by size (Android 12+). They are redrawn from the last snapshot while the app is closed, charts as bitmaps (see [Charts in widgets](#charts-in-widgets-live-activities-and-car-screens)). Both surfaces render `SNode` snapshots with `RemoteViews` (`PrismSurface.java`).
+- **Release:** `PRISM_RELEASE=1` or `prism build android`. Sign with `PRISM_ANDROID_KEYSTORE`, `PRISM_ANDROID_KEYSTORE_PASS` and `PRISM_ANDROID_KEY_ALIAS`; the default is the SDK's debug key. Libraries are aligned for 16 KB pages. `prism build android --aab` makes an App Bundle for Google Play, and `prism publish android` uploads it (see [Shipping to stores](#shipping-to-stores)).
 - **Wear OS and Android TV:** the same APK runs there; `cx.device_info().kind` says `Watch` or `Tv`.
   - *Watches:* dark, compact header, icon-only tabs, margins inside a round screen. Back is the swipe to the right. The app is standalone (no phone needed).
   - *TVs:* the remote moves the focus; the focused view rises with a ring. Select clicks, and holding it opens the context menu. Android TV's safe area applies, and the app gets a launcher banner made from the icon.

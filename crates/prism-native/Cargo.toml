@@ -14,7 +14,12 @@ serde_json.workspace = true
 [target.'cfg(target_vendor = "apple")'.dependencies]
 objc2.workspace = true
 objc2-foundation.workspace = true
-objc2-quartz-core.workspace = true
+# Only the Core Animation pieces motion uses: the default features link Metal,
+# which watchOS devices do not have.
+objc2-quartz-core = { version = "0.3", default-features = false, features = [
+  "std", "CAAnimation", "CABase", "CALayer", "CAMediaTiming", "CAMediaTimingFunction",
+  "CATransform3D", "objc2-core-foundation",
+] }
 objc2-core-foundation.workspace = true
 
 [features]
