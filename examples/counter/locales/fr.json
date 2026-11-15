@@ -230,5 +230,23 @@
       "headset": "Casque",
       "unknown": "Appareil"
     }
+  },
+  "charts": {
+    "heading": "Graphiques",
+    "revenue": "Revenus",
+    "visitors": "Visiteurs",
+    "orders": "Commandes",
+    "this_week": "Cette semaine",
+    "last_week": "Semaine dernière",
+    "days": "Lun,Mar,Mer,Jeu,Ven,Sam,Dim",
+    "budget": "Budget",
+    "rent": "Loyer",
+    "food": "Courses",
+    "transport": "Transport",
+    "leisure": "Loisirs",
+    "goal": "Objectif",
+    "done": "Faites",
+    "selected": "{day} : {count} commandes",
+    "tap_bar": "Touchez une barre pour la mettre en avant"
   }
 }

@@ -531,6 +531,8 @@ struct Gallery {
     terms: bool,
     email: String,
     taps: u32,
+    /// The highlighted bar of the orders chart.
+    day: Option<usize>,
 }
 
 impl Gallery {
@@ -544,7 +546,97 @@ impl Gallery {
             terms: false,
             email: String::new(),
             taps: 0,
+            day: None,
         }
+    }
+
+    /// Stat tiles, a line chart, tappable bars, a donut and rings.
+    fn charts(&self, cx: &mut Context<Self>) -> ui::Card {
+        let t = Theme::of(cx);
+        let days: Vec<String> = strings::charts_days(cx)
+            .split(',')
+            .map(str::to_string)
+            .collect();
+        let orders = [12., 18., 9., 24., 21., 30., 16.];
+        let caption = match self.day {
+            Some(i) => strings::charts_selected(cx, &days[i], orders[i] as i64),
+            None => strings::charts_tap_bar(cx),
+        };
+        let euros = |v: f64| format!("{} €", cx.format_number(v, 0));
+        ui::card()
+            .child(ui::heading(strings::charts_heading(cx)))
+            .child(
+                div()
+                    .flex_row()
+                    .flex_wrap()
+                    .gap(10.)
+                    .child(
+                        ui::stat(strings::charts_revenue(cx), euros(12480.))
+                            .delta("+12%", true)
+                            .trend([8., 9.5, 9., 11., 10.5, 12., 12.5]),
+                    )
+                    .child(
+                        ui::stat(strings::charts_visitors(cx), cx.format_number(3204., 0))
+                            .delta("−4%", false)
+                            .trend([40., 38., 41., 36., 35., 37., 33.]),
+                    ),
+            )
+            .child(
+                ui::line_chart()
+                    .title(strings::charts_revenue(cx))
+                    .series(
+                        strings::charts_this_week(cx),
+                        [1.2, 1.9, 1.6, 2.4, 2.1, 3.1, 2.8],
+                    )
+                    .series(
+                        strings::charts_last_week(cx),
+                        [1.0, 1.4, 1.5, 1.7, 1.9, 2.2, 2.0],
+                    )
+                    .labels(days.clone())
+                    .smooth()
+                    .area()
+                    .points()
+                    .unit(" k€")
+                    .height(160.),
+            )
+            .child(ui::heading(strings::charts_orders(cx)).level(3))
+            .child(text(caption).text_size(13.).text_color(t.muted))
+            .child(
+                ui::bar_chart()
+                    .bars(days.iter().cloned().zip(orders))
+                    .highlight(self.day)
+                    .height(150.)
+                    .on_select(cx.listener(|this, e: &ChangeEvent, _| {
+                        this.day = (this.day != Some(e.index())).then_some(e.index());
+                    })),
+            )
+            .child(ui::heading(strings::charts_budget(cx)).level(3))
+            .child(
+                ui::pie_chart()
+                    .slice(strings::charts_rent(cx), 900.)
+                    .slice(strings::charts_food(cx), 420.)
+                    .slice(strings::charts_leisure(cx), 240.)
+                    .slice(strings::charts_transport(cx), 160.)
+                    .donut(euros(1720.))
+                    .size(140.),
+            )
+            .child(
+                div()
+                    .flex_row()
+                    .justify_center()
+                    .gap(24.)
+                    .child(
+                        ui::ring(0.72)
+                            .label("72%")
+                            .caption(strings::charts_goal(cx)),
+                    )
+                    .child(
+                        ui::ring(0.45)
+                            .label("9/20")
+                            .caption(strings::charts_done(cx))
+                            .color(t.success),
+                    ),
+            )
     }
 }
 
@@ -554,8 +646,10 @@ impl Render for Gallery {
         let email_error = (!self.email.is_empty() && !self.email.contains('@'))
             .then(|| strings::gallery_email_error(cx));
         let (screen, body) = page(strings::screens_components(cx), cx);
+        let charts = self.charts(cx);
         screen.child(
-            body.child(
+            body.child(charts)
+            .child(
                 ui::card()
                     .child(ui::heading(strings::gallery_buttons(cx)))
                     .child(

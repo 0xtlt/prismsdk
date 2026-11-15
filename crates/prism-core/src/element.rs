@@ -51,6 +51,9 @@ pub enum NodeKind {
     /// A bitmap image from a URL or an app asset (text = source; value 0 =
     /// fill/cover, 1 = fit/contain). Loaded asynchronously and cached.
     Picture,
+    /// Vector drawing (text = [`Drawing::encode`](crate::shape::Drawing)):
+    /// paths in fractions of the frame, drawn natively. No natural size.
+    Shape,
 }
 
 impl NodeKind {
@@ -71,6 +74,7 @@ impl NodeKind {
             NodeKind::Timer => "timer",
             NodeKind::Modal => "modal",
             NodeKind::Picture => "picture",
+            NodeKind::Shape => "shape",
         }
     }
 
@@ -83,7 +87,7 @@ impl NodeKind {
             NodeKind::Tab => Some(Role::TabPanel),
             NodeKind::Text | NodeKind::Timer => Some(Role::Text),
             NodeKind::Progress => Some(Role::ProgressBar),
-            NodeKind::Picture => Some(Role::Image),
+            NodeKind::Picture | NodeKind::Shape => Some(Role::Image),
             _ => None,
         }
     }
@@ -385,6 +389,10 @@ builder!(
 builder!(
     /// A bitmap image. See [`picture`].
     Picture
+);
+builder!(
+    /// A vector drawing. See [`shape`].
+    Shape
 );
 
 /// A flex container, laid out as a column by default.
@@ -723,6 +731,45 @@ impl Picture {
     /// Scales to fill the frame, cropping (default).
     pub fn fill(mut self) -> Self {
         self.0.value = Some(0.);
+        self
+    }
+}
+
+/// A vector drawing (lines, curves, arcs; see [`crate::shape`]). It has no
+/// natural size: give it one (`.size(…)`, `.flex_grow(1.)`). Decorative
+/// unless given [`Shape::label`].
+pub fn shape() -> Shape {
+    let mut n = VNode::new(NodeKind::Shape);
+    n.a11y.hidden = true;
+    n.text = "i0,0\n".into();
+    Shape(n)
+}
+
+impl Shape {
+    /// Adds a path, drawn over the previous ones.
+    pub fn path(mut self, path: crate::shape::Path) -> Self {
+        path.encode(&mut self.0.text);
+        self
+    }
+    pub fn paths(self, paths: impl IntoIterator<Item = crate::shape::Path>) -> Self {
+        paths.into_iter().fold(self, Shape::path)
+    }
+    /// Points kept free around the drawing, horizontally and vertically.
+    pub fn inset(mut self, x: f32, y: f32) -> Self {
+        let rest = self
+            .0
+            .text
+            .split_once('\n')
+            .map_or("", |(_, r)| r)
+            .to_string();
+        self.0.text = format!("i{x},{y}\n{rest}");
+        self
+    }
+    /// Announces the drawing (a chart summary: "Sales, 3 to 12").
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.0.a11y.hidden = false;
+        self.0.a11y.role = Some(Role::Image);
+        self.0.a11y.label = Some(label.into());
         self
     }
 }

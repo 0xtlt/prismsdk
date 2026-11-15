@@ -16,6 +16,7 @@
     view: "div", text: "div", button: "button", text_input: "input",
     stack: "div", screen: "section", toggle: "input", scroll: "div", tabs: "div", tab: "div",
     image: "span", progress: "progress", timer: "span", modal: "dialog", picture: "img",
+    shape: "div",
   };
   // SF Symbol names → glyphs (table generated from Rust: glyphs.rs).
   const glyphs = __GLYPHS__;
@@ -28,6 +29,90 @@
   function activate(el, id) {
     if (el.dataset.clickable !== "1" || el.getAttribute("aria-disabled") === "true") return;
     send({ t: "click", id });
+  }
+
+  // Shapes (prism-core shape.rs): paths in fractions of the box become an
+  // SVG in pixels, drawn again whenever the box is resized.
+  const svgNS = "http://www.w3.org/2000/svg";
+  const shapeObserver = typeof ResizeObserver === "function"
+    ? new ResizeObserver((entries) => entries.forEach((e) => drawShape(e.target)))
+    : null;
+  const shapeColor = (s) => {
+    if (!s) return "none";
+    const [light, dark] = s.split("/");
+    return dark ? `light-dark(${light}, ${dark})` : light;
+  };
+
+  function drawShape(el) {
+    const w = el.clientWidth, h = el.clientHeight;
+    let ix = 0, iy = 0;
+    const paths = [];
+    for (const line of (el._drawing || "").split("\n")) {
+      if (line[0] === "i") { [ix, iy] = line.slice(1).split(",").map(Number); continue; }
+      const bar = line.indexOf("|");
+      if (bar < 0) continue;
+      const p = { fill: null, stroke: null, w: 1, round: false, dash: null, t: line.slice(bar + 1).trim().split(/\s+/) };
+      for (const tok of line.slice(0, bar).trim().split(/\s+/)) {
+        const v = tok.slice(1);
+        if (tok[0] === "f") p.fill = v;
+        else if (tok[0] === "s") p.stroke = v;
+        else if (tok[0] === "w") p.w = +v;
+        else if (tok[0] === "r") p.round = true;
+        else if (tok[0] === "d") p.dash = v.replace(",", " ");
+      }
+      paths.push(p);
+    }
+    const iw = Math.max(0, w - 2 * ix), ih = Math.max(0, h - 2 * iy), side = Math.min(iw, ih);
+    const X = (x) => ix + x * iw, Y = (y) => iy + y * ih;
+    let svg = el._svg;
+    if (!svg) {
+      svg = el._svg = document.createElementNS(svgNS, "svg");
+      svg.setAttribute("aria-hidden", "true");
+      el.append(svg);
+    }
+    svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+    svg.replaceChildren(...paths.map((p) => {
+      const d = [], t = p.t;
+      let open = false;
+      for (let i = 0; i < t.length;) {
+        const c = t[i++];
+        const n = (k) => t.slice(i, (i += k)).map(Number);
+        if (c === "M" || c === "L") {
+          const [x, y] = n(2);
+          d.push(`${open && c === "L" ? "L" : "M"}${X(x)} ${Y(y)}`);
+          open = true;
+        } else if (c === "C") {
+          const v = n(6);
+          if (!open) d.push(`M${X(v[0])} ${Y(v[1])}`);
+          d.push(`C${X(v[0])} ${Y(v[1])} ${X(v[2])} ${Y(v[3])} ${X(v[4])} ${Y(v[5])}`);
+          open = true;
+        } else if (c === "A") {
+          // Degrees clockwise from 12 o'clock; radius: fraction of the smaller side.
+          const [cx0, cy0, r0, a0, a1] = n(5);
+          const cx = X(cx0), cy = Y(cy0), r = r0 * side;
+          const at = (a) => `${cx + r * Math.sin(a * Math.PI / 180)} ${cy - r * Math.cos(a * Math.PI / 180)}`;
+          d.push(`${open ? "L" : "M"}${at(a0)}`);
+          open = true;
+          const sweep = Math.max(-360, Math.min(360, a1 - a0));
+          // One SVG arc cannot draw a full circle: two halves at most.
+          const parts = Math.abs(sweep) > 180 ? 2 : 1;
+          for (let k = 1; k <= parts; k++) {
+            d.push(`A${r} ${r} 0 0 ${sweep > 0 ? 1 : 0} ${at(a0 + (sweep / parts) * k)}`);
+          }
+        } else if (c === "Z") {
+          d.push("Z");
+          open = false;
+        } else break;
+      }
+      const e = document.createElementNS(svgNS, "path");
+      e.setAttribute("d", d.join(""));
+      e.style.fill = shapeColor(p.fill);
+      e.style.stroke = shapeColor(p.stroke);
+      e.style.strokeWidth = p.w;
+      if (p.round) { e.style.strokeLinecap = "round"; e.style.strokeLinejoin = "round"; }
+      if (p.dash) e.style.strokeDasharray = p.dash;
+      return e;
+    }));
   }
 
   function create(id, kind) {
@@ -87,6 +172,9 @@
       el.loading = "lazy";
       el.decoding = "async";
       el.alt = "";
+    } else if (kind === "shape") {
+      el.className = "prism-shape";
+      if (shapeObserver) shapeObserver.observe(el);
     } else if (kind === "image") {
       el.className = "prism-symbol";
     } else if (kind === "progress") {
@@ -301,6 +389,11 @@
           const owner = el.parentElement && el.parentElement.parentElement;
           if (owner && owner._screens) refreshStack(owner);
           if (owner && owner._tabs) refreshTabs(owner);
+          return;
+        }
+        if (kind === "shape") {
+          el._drawing = p.text;
+          drawShape(el);
           return;
         }
         if (kind === "picture") {

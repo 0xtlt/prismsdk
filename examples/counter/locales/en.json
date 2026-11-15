@@ -230,5 +230,23 @@
       "headset": "Headset",
       "unknown": "Device"
     }
+  },
+  "charts": {
+    "heading": "Charts",
+    "revenue": "Revenue",
+    "visitors": "Visitors",
+    "orders": "Orders",
+    "this_week": "This week",
+    "last_week": "Last week",
+    "days": "Mon,Tue,Wed,Thu,Fri,Sat,Sun",
+    "budget": "Budget",
+    "rent": "Rent",
+    "food": "Food",
+    "transport": "Transport",
+    "leisure": "Leisure",
+    "goal": "Goal",
+    "done": "Done",
+    "selected": "{day}: {count} orders",
+    "tap_bar": "Tap a bar to highlight it"
   }
 }

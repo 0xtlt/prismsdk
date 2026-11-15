@@ -191,6 +191,10 @@ impl HtmlBackend {
                     escape(&alt)
                 );
             }
+            // Drawn by the client once the box has a size (see client.js).
+            NodeKind::Shape => {
+                let _ = write!(out, r#"<div {attrs} class="prism-shape"></div>"#);
+            }
             NodeKind::Progress => {
                 let _ = write!(
                     out,

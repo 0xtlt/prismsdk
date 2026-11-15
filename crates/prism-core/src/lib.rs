@@ -21,6 +21,7 @@ pub mod menu;
 pub mod platform;
 mod reconcile;
 mod router;
+pub mod shape;
 pub mod storage;
 mod style;
 pub mod surfaces;
@@ -43,9 +44,9 @@ pub use device_info::{
 pub use element::{
     BackEvent, Button, ChangeEvent, ClickEvent, Div, Element, FluentBuilder, Handler, Image,
     InputEvent, IntoElement, Modal, NavigateEvent, NodeKind, ParentElement, Picture, Progress,
-    Screen, Scroll, ScrollEvent, Stack, SwipeDirection, Tab, Tabs, Text, TextInput, Timer, Toggle,
-    VNode, button, div, format_remaining, image, lazy, modal, picture, progress, screen, scroll,
-    stack, tab, tabs, text, text_input, timer, toggle,
+    Screen, Scroll, ScrollEvent, Shape, Stack, SwipeDirection, Tab, Tabs, Text, TextInput, Timer,
+    Toggle, VNode, button, div, format_remaining, image, lazy, modal, picture, progress, screen,
+    scroll, shape, stack, tab, tabs, text, text_input, timer, toggle,
 };
 pub use i18n::{BasicFormatter, DateStyle, Direction, Formatter, Locale, Translations};
 pub use list::VirtualList;
@@ -53,6 +54,7 @@ pub use menu::{ActionRole, Alert, AlertStyle, Menu, MenuItem, Tray};
 pub use platform::{Platform, Platforms};
 pub use reconcile::{NodeId, Patch, Reconciler, RenderEnvironment, UiEvent};
 pub use router::{Params, Router, RouterBuilder, go_back, navigate_to, normalize_path};
+pub use shape::{Drawing, Path, Segment};
 pub use storage::{FileStorage, MemoryStorage, Storage};
 pub use style::*;
 pub use surfaces::{
@@ -439,11 +441,11 @@ pub mod prelude {
         ChangeEvent, ClickEvent, Context, DateStyle, DeviceInfo, DeviceKind, Entity, FluentBuilder,
         Handler, Haptic, InputEvent, IntoElement, Lifecycle, Locale, Location, Menu, MenuItem,
         Motion, Notification, NotificationAction, NotificationResponse, Orientation, Params,
-        ParentElement, Permission, PermissionState, PickImages, PickedFile, Platform, Pose,
+        ParentElement, Path, Permission, PermissionState, PickImages, PickedFile, Platform, Pose,
         Posture, Render, Role, Router, ScrollEvent, Share, Styled, SwipeDirection, Transition,
         Translations, Tray, VirtualList, Watch, Widget, WidgetFamily, adaptive, button, div,
         go_back, image, lazy, navigate_to, picture, progress, px, relative, rgb, rgba, screen,
-        scroll, text, text_input, timer, toggle,
+        scroll, shape, text, text_input, timer, toggle,
     };
 }
 

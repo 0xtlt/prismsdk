@@ -153,6 +153,9 @@ pub struct ViewIvars {
     fit: Cell<bool>,
     /// Trackpad swipes (left, right) reported to Prism.
     swipe: Cell<(bool, bool)>,
+    /// What a shape draws, in points, and the layers drawing it.
+    shape: RefCell<Vec<prism_core::Path>>,
+    shape_layers: RefCell<Vec<Retained<objc2_quartz_core::CAShapeLayer>>>,
 }
 
 define_class!(
@@ -212,6 +215,8 @@ define_class!(
             }
             // Pictures are cropped to their rounded frame.
             layer.setMasksToBounds(image.is_some());
+            drop(image);
+            self.update_shape_layers(&layer);
         }
 
         /// Three-finger (or two-finger, per System Settings) swipes.
@@ -334,6 +339,81 @@ impl PrismView {
         with_state(|s| target = Some(s.renderer.widgets.target.clone()));
         let target: Retained<AnyObject> = Retained::into_super(Retained::into_super(target?));
         Some(crate::menus::build_menu(self.mtm(), &spec, &target))
+    }
+
+    /// One `CAShapeLayer` per path, rebuilt within the view's appearance
+    /// (dynamic colors resolve to light or dark here).
+    fn update_shape_layers(&self, layer: &objc2_quartz_core::CALayer) {
+        use objc2_core_graphics::CGMutablePath;
+        use objc2_quartz_core::CAShapeLayer;
+        use prism_core::Segment as S;
+        let iv = self.ivars();
+        for old in iv.shape_layers.borrow_mut().drain(..) {
+            old.removeFromSuperlayer();
+        }
+        let paths = iv.shape.borrow();
+        if paths.is_empty() {
+            return;
+        }
+        // Paths are top-left based: flip unless the layer tree already is.
+        let mut flipped = false;
+        let mut l = Some(objc2::Message::retain(layer));
+        while let Some(cur) = l {
+            flipped ^= cur.isGeometryFlipped();
+            l = cur.superlayer();
+        }
+        let h = self.bounds().size.height;
+        let y = |v: f32| if flipped { v as f64 } else { h - v as f64 };
+        let mut layers = Vec::new();
+        for p in paths.iter() {
+            let cg = CGMutablePath::new();
+            let path = Some(&*cg);
+            let n = std::ptr::null();
+            for s in &p.segments {
+                unsafe {
+                    match *s {
+                        S::Move(px, py) => CGMutablePath::move_to_point(path, n, px as f64, y(py)),
+                        S::Line(px, py) => {
+                            CGMutablePath::add_line_to_point(path, n, px as f64, y(py))
+                        }
+                        S::Cubic(a, b, c, d, e, f) => CGMutablePath::add_curve_to_point(
+                            path,
+                            n,
+                            a as f64,
+                            y(b),
+                            c as f64,
+                            y(d),
+                            e as f64,
+                            y(f),
+                        ),
+                        S::Close => CGMutablePath::close_subpath(path),
+                        S::Arc { .. } => {}
+                    }
+                }
+            }
+            let shape = CAShapeLayer::new();
+            shape.setFrame(self.bounds());
+            shape.setPath(Some(&cg));
+            shape.setFillColor(p.fill.map(|c| ns_color(c).CGColor()).as_deref());
+            shape.setStrokeColor(p.stroke.map(|c| ns_color(c).CGColor()).as_deref());
+            shape.setLineWidth(p.width as f64);
+            if p.round {
+                unsafe {
+                    shape.setLineCap(objc2_quartz_core::kCALineCapRound);
+                    shape.setLineJoin(objc2_quartz_core::kCALineJoinRound);
+                }
+            }
+            if let Some((dash, gap)) = p.dash {
+                let pattern = NSArray::from_retained_slice(&[
+                    objc2_foundation::NSNumber::new_f64(dash as f64),
+                    objc2_foundation::NSNumber::new_f64(gap as f64),
+                ]);
+                shape.setLineDashPattern(Some(&pattern));
+            }
+            layer.addSublayer(&shape);
+            layers.push(shape);
+        }
+        *iv.shape_layers.borrow_mut() = layers;
     }
 
     fn new(mtm: MainThreadMarker, id: NodeId) -> Retained<Self> {
@@ -996,6 +1076,7 @@ impl Widgets for AppKit {
                 View::Progress(p)
             }
             NodeKind::Picture => View::Picture(PrismView::new(mtm, id)),
+            NodeKind::Shape => View::Container(PrismView::new(mtm, id)),
             NodeKind::Timer => {
                 let l = NSTextField::labelWithString(&empty, mtm);
                 l.setTag(id as isize);
@@ -1184,6 +1265,13 @@ impl Widgets for AppKit {
 
     fn set_root(&mut self, view: &View) {
         self.root.setSubviews(&NSArray::from_slice(&[view.ns()]));
+    }
+
+    fn set_drawing(&mut self, view: &View, paths: &[prism_core::Path]) {
+        if let View::Container(v) = view {
+            *v.ivars().shape.borrow_mut() = paths.to_vec();
+            v.setNeedsDisplay(true);
+        }
     }
 
     fn destroy(&mut self, view: &View) {

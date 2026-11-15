@@ -16,6 +16,7 @@
 //! | `env` | `lang`, `rtl`, `back`, `close` (no `id`) |
 //! | `exit` | `parent`, `to`: `{o, tf}` the view animates to (a picture of it), before it is removed |
 //! | `repeat` | `from`, `to`: `{o, tf}` (`to` null stops), back and forth forever |
+//! | `draw` | `paths`: `[{d, fill, stroke, w, round, dash}]` in points, `d` flat (`0 x y` move, `1 x y` line, `2 x1 y1 x2 y2 x y` curve, `3` close) |
 //!
 //! Styles carry `tf`: `[x, y, scale, degrees]` (null: none). `style`, `frame`,
 //! `exit` and `repeat` may carry `anim`: `{d, delay, ease}` (seconds, cubic
@@ -85,6 +86,36 @@ fn color(c: Option<Color>) -> Value {
             json!([l.r, l.g, l.b, l.a, d.r, d.g, d.b, d.a])
         }
     }
+}
+
+/// `[{d, fill, stroke, w, round, dash}]`, `d` flat: `0 x y` move, `1 x y`
+/// line, `2 x1 y1 x2 y2 x y` curve, `3` close.
+fn drawing(paths: &[prism_core::Path]) -> Value {
+    use prism_core::Segment as S;
+    let paths: Vec<Value> = paths
+        .iter()
+        .map(|p| {
+            let mut d: Vec<f32> = Vec::new();
+            for s in &p.segments {
+                match *s {
+                    S::Move(x, y) => d.extend([0., x, y]),
+                    S::Line(x, y) => d.extend([1., x, y]),
+                    S::Cubic(a, b, c, e, f, g) => d.extend([2., a, b, c, e, f, g]),
+                    S::Close => d.push(3.),
+                    S::Arc { .. } => {}
+                }
+            }
+            json!({
+                "d": d,
+                "fill": color(p.fill),
+                "stroke": color(p.stroke),
+                "w": p.width,
+                "round": p.round,
+                "dash": p.dash.map(|(a, b)| [a, b]),
+            })
+        })
+        .collect();
+    Value::Array(paths)
 }
 
 fn transform(t: Transform) -> Value {
@@ -292,6 +323,11 @@ impl Widgets for RemoteWidgets {
         self.icons.insert(*id, icon.to_string());
         self.ops
             .push(json!({ "op": "icon", "id": id, "icon": icon, "glyph": prism_core::glyphs::glyph(icon) }));
+    }
+
+    fn set_drawing(&mut self, id: &NodeId, paths: &[prism_core::Path]) {
+        self.ops
+            .push(json!({ "op": "draw", "id": id, "paths": drawing(paths) }));
     }
 
     fn set_hidden(&mut self, id: &NodeId, hidden: bool) {

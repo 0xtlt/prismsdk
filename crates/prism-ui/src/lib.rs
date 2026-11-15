@@ -87,11 +87,11 @@ impl Refine {
 
 macro_rules! refinable {
     ($ty:ty) => {
-        impl FluentBuilder for $ty {}
+        impl prism_core::FluentBuilder for $ty {}
 
         impl $ty {
             /// Adjusts the rendered root's style after theming.
-            pub fn style(mut self, f: impl FnOnce(&mut Style) + 'static) -> Self {
+            pub fn style(mut self, f: impl FnOnce(&mut prism_core::Style) + 'static) -> Self {
                 self.refine.push(f);
                 self
             }
@@ -110,6 +110,12 @@ macro_rules! refinable {
         }
     };
 }
+
+mod charts;
+pub use charts::{
+    BarChart, LineChart, PieChart, Ring, Series, Sparkline, Stat, bar_chart, line_chart, pie_chart,
+    ring, sparkline, stat,
+};
 
 // --- Button -------------------------------------------------------------------
 

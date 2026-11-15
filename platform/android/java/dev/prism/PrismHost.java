@@ -267,6 +267,7 @@ public final class PrismHost {
             case "exit": PrismMotion.exit(n.view, p.getJSONObject("to"), p.getJSONObject("anim")); break;
             case "repeat": PrismMotion.repeat(id, n.view, p.optJSONObject("from"), p.optJSONObject("to"), p.optJSONObject("anim")); break;
             case "text": setText(n, p.optString("text")); break;
+            case "draw": if (n.view instanceof PrismShape) ((PrismShape) n.view).setPaths(p.optJSONArray("paths")); break;
             case "placeholder": if (n.view instanceof EditText) ((EditText) n.view).setHint(p.optString("text")); break;
             case "icon":
                 n.icon = p.optString("icon");
@@ -464,6 +465,7 @@ public final class PrismHost {
                 n.view = n.host;
                 break;
             }
+            case "shape": n.view = new PrismShape(activity); break;
             default: { // view, screen, tab
                 n.host = new PrismLayout(activity);
                 n.view = n.host;
@@ -728,6 +730,7 @@ public final class PrismHost {
             if (n.style.length() > 0) applyStyle(n);
             if (n.kind.equals("stack") || n.kind.equals("tabs")) styleChrome(n);
             if (n.kind.equals("tabs")) refreshTabs(n);
+            if (n.view instanceof PrismShape) n.view.invalidate();
         }
     }
 

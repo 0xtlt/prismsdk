@@ -80,6 +80,58 @@ public func prismWatchMeasure(_ kind: UnsafePointer<CChar>, _ text: UnsafePointe
 
 // MARK: Tree
 
+/// A Prism shape: paths resolved by Rust for the node's size. `d` is flat:
+/// `0 x y` move, `1 x y` line, `2 x1 y1 x2 y2 x y` curve, `3` close.
+struct PrismShape: View {
+    let paths: [[String: Any]]
+    let dark: Bool
+
+    var body: some View {
+        Canvas { ctx, _ in
+            for p in paths {
+                let path = Self.path(p["d"] as? [Double] ?? [])
+                if let f = PrismColor(p["fill"]) {
+                    ctx.fill(path, with: .color(dark ? f.dark : f.light))
+                }
+                if let s = PrismColor(p["stroke"]) {
+                    let round = p["round"] as? Bool ?? false
+                    let style = StrokeStyle(
+                        lineWidth: (p["w"] as? Double) ?? 1,
+                        lineCap: round ? .round : .butt,
+                        lineJoin: round ? .round : .miter,
+                        dash: (p["dash"] as? [Double])?.map { CGFloat($0) } ?? []
+                    )
+                    ctx.stroke(path, with: .color(dark ? s.dark : s.light), style: style)
+                }
+            }
+        }
+    }
+
+    static func path(_ d: [Double]) -> Path {
+        var path = Path()
+        var i = 0
+        while i < d.count {
+            let cmd = Int(d[i])
+            i += 1
+            let n = cmd == 2 ? 6 : cmd == 3 ? 0 : 2
+            guard i + n <= d.count else { break }
+            let v = Array(d[i..<(i + n)])
+            i += n
+            switch cmd {
+            case 0: path.move(to: CGPoint(x: v[0], y: v[1]))
+            case 1: path.addLine(to: CGPoint(x: v[0], y: v[1]))
+            case 2:
+                path.addCurve(to: CGPoint(x: v[4], y: v[5]),
+                              control1: CGPoint(x: v[0], y: v[1]),
+                              control2: CGPoint(x: v[2], y: v[3]))
+            case 3: path.closeSubpath()
+            default: return path
+            }
+        }
+        return path
+    }
+}
+
 struct PrismColor {
     var light: Color
     var dark: Color
@@ -114,6 +166,8 @@ struct Node {
     var scrollEvents = false
     /// Back and forth between the style's pose and this one.
     var loop: PrismLoop?
+    /// A shape's paths, in points (see `PrismShape`).
+    var paths: [[String: Any]] = []
 
     func num(_ k: String, _ d: Double = 0) -> Double { (style[k] as? NSNumber)?.doubleValue ?? d }
     func str(_ k: String) -> String? { style[k] as? String }
@@ -160,6 +214,7 @@ final class PrismStore: ObservableObject {
             case "root": root = id
             case "children": nodes[id]?.children = (p["children"] as? [NSNumber] ?? []).map(\.uint64Value)
             case "text": nodes[id]?.text = p["text"] as? String ?? ""
+            case "draw": nodes[id]?.paths = p["paths"] as? [[String: Any]] ?? []
             case "placeholder": nodes[id]?.placeholder = p["text"] as? String ?? ""
             case "icon": nodes[id]?.icon = p["icon"] as? String ?? ""
             case "value": nodes[id]?.value = (p["value"] as? NSNumber)?.doubleValue ?? 0
@@ -385,6 +440,8 @@ struct NodeView: View {
             Text(Date(timeIntervalSince1970: n.value), style: .timer).font(font(n).monospacedDigit()).foregroundStyle(fg)
         case "picture":
             Picture(source: n.text, fit: n.value == 1)
+        case "shape":
+            PrismShape(paths: n.paths, dark: dark)
         case "scroll":
             if store.snapshotting {
                 placed(n.children)

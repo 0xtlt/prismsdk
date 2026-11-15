@@ -64,6 +64,62 @@ pub enum View {
     Stack(NodeId, Rc<NavStack>),
     Tabs(NodeId, Rc<TabBar>),
     Sheet(NodeId, Rc<Sheet>),
+    /// Vector drawing (cairo), with its paths in points.
+    Shape(NodeId, gtk::DrawingArea, Rc<RefCell<Vec<prism_core::Path>>>),
+}
+
+thread_local! {
+    /// Whether shapes draw the dark variants of their colors.
+    static SHAPE_DARK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Fills, then strokes, each path with cairo.
+fn draw_paths(cr: &gtk::cairo::Context, paths: &[prism_core::Path]) {
+    use prism_core::Segment as S;
+    let dark = SHAPE_DARK.with(|d| d.get());
+    let source = |c: Color| {
+        let c = if dark {
+            c.dark_variant()
+        } else {
+            c.light_variant()
+        };
+        cr.set_source_rgba(c.r as f64, c.g as f64, c.b as f64, c.a as f64);
+    };
+    for p in paths {
+        cr.new_path();
+        for s in &p.segments {
+            match *s {
+                S::Move(x, y) => cr.move_to(x as f64, y as f64),
+                S::Line(x, y) => cr.line_to(x as f64, y as f64),
+                S::Cubic(a, b, c, d, e, f) => {
+                    cr.curve_to(a as f64, b as f64, c as f64, d as f64, e as f64, f as f64)
+                }
+                S::Close => cr.close_path(),
+                S::Arc { .. } => {}
+            }
+        }
+        if let Some(c) = p.fill {
+            source(c);
+            let _ = cr.fill_preserve();
+        }
+        if let Some(c) = p.stroke {
+            source(c);
+            cr.set_line_width(p.width as f64);
+            let (cap, join) = if p.round {
+                (gtk::cairo::LineCap::Round, gtk::cairo::LineJoin::Round)
+            } else {
+                (gtk::cairo::LineCap::Butt, gtk::cairo::LineJoin::Miter)
+            };
+            cr.set_line_cap(cap);
+            cr.set_line_join(join);
+            match p.dash {
+                Some((d, g)) => cr.set_dash(&[d as f64, g as f64], 0.),
+                None => cr.set_dash(&[], 0.),
+            }
+            let _ = cr.stroke_preserve();
+        }
+        cr.new_path();
+    }
 }
 
 impl View {
@@ -81,7 +137,8 @@ impl View {
             | View::Scroll(id, ..)
             | View::Stack(id, _)
             | View::Tabs(id, _)
-            | View::Sheet(id, _) => *id,
+            | View::Sheet(id, _)
+            | View::Shape(id, ..) => *id,
         }
     }
 
@@ -99,6 +156,7 @@ impl View {
             View::Stack(_, s) => s.root.clone().upcast(),
             View::Tabs(_, t) => t.root.clone().upcast(),
             View::Sheet(_, s) => s.content.clone().upcast(),
+            View::Shape(_, w, _) => w.clone().upcast(),
         }
     }
 }
@@ -235,6 +293,8 @@ pub struct Gtk {
     icons: HashMap<NodeId, String>,
     stacks: Vec<Rc<NavStack>>,
     tab_bars: Vec<Rc<TabBar>>,
+    /// Shapes, redrawn when the appearance changes.
+    shapes: HashMap<NodeId, gtk::DrawingArea>,
     /// Window content size.
     size: (f32, f32),
 }
@@ -421,6 +481,14 @@ impl Widgets for Gtk {
                 View::Picture(id, p)
             }
             NodeKind::Timer => View::Timer(id, gtk::Label::new(None)),
+            NodeKind::Shape => {
+                let area = gtk::DrawingArea::new();
+                let paths: Rc<RefCell<Vec<prism_core::Path>>> = Rc::default();
+                let drawn = paths.clone();
+                area.set_draw_func(move |_, cr, _, _| draw_paths(cr, &drawn.borrow()));
+                self.shapes.insert(id, area.clone());
+                View::Shape(id, area, paths)
+            }
             NodeKind::Scroll => {
                 let content = layout::container();
                 let s = gtk::ScrolledWindow::new();
@@ -722,8 +790,16 @@ impl Widgets for Gtk {
         view.widget().set_parent(&self.root);
     }
 
+    fn set_drawing(&mut self, view: &View, paths: &[prism_core::Path]) {
+        if let View::Shape(_, area, p) = view {
+            *p.borrow_mut() = paths.to_vec();
+            area.queue_draw();
+        }
+    }
+
     fn destroy(&mut self, view: &View) {
         let id = view.id();
+        self.shapes.remove(&id);
         self.rules.remove(&id);
         self.css_dirty = true;
         self.clickable.borrow_mut().remove(&id);
@@ -1010,6 +1086,10 @@ impl Widgets for Gtk {
             settings.set_gtk_application_prefer_dark_theme(dark);
         }
         self.dark = dark;
+        SHAPE_DARK.with(|d| d.set(dark));
+        for area in self.shapes.values() {
+            area.queue_draw();
+        }
     }
 }
 
@@ -1217,6 +1297,7 @@ fn activate(app: &gtk::Application) {
         );
     }
     let dark = gtk::Settings::default().is_some_and(|s| s.is_gtk_application_prefer_dark_theme());
+    SHAPE_DARK.with(|d| d.set(dark));
 
     let data = data_dir(&config.title);
     let services = crate::services::LinuxServices::new(app.clone(), window.clone());
@@ -1283,6 +1364,7 @@ fn activate(app: &gtk::Application) {
         icons: HashMap::new(),
         stacks: Vec::new(),
         tab_bars: Vec::new(),
+        shapes: HashMap::new(),
         size: (width as f32, height as f32),
     });
     STATE.with(|s| {

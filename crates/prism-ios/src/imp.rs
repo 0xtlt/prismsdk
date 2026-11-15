@@ -156,6 +156,70 @@ impl State {
 // Objective-C classes
 // ---------------------------------------------------------------------------
 
+thread_local! {
+    /// What each shape draws, in points, by node id.
+    static SHAPES: RefCell<HashMap<NodeId, Vec<prism_core::Path>>> = RefCell::new(HashMap::new());
+}
+
+define_class!(
+    /// Draws a shape's paths. Colors resolve while drawing, and UIKit redraws
+    /// views when the appearance changes, so dark mode follows by itself.
+    #[unsafe(super(UIView, UIResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PrismShapeView"]
+    pub struct ShapeView;
+
+    impl ShapeView {
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, _rect: CGRect) {
+            SHAPES.with(|s| {
+                if let Some(paths) = s.borrow().get(&(self.tag() as NodeId)) {
+                    draw_paths(paths);
+                }
+            });
+        }
+    }
+);
+
+/// Fills, then strokes, each path with UIKit Bézier paths.
+fn draw_paths(paths: &[prism_core::Path]) {
+    use objc2_ui_kit::UIBezierPath;
+    use prism_core::Segment as S;
+    for p in paths {
+        let b = UIBezierPath::bezierPath();
+        let pt = |x: f32, y: f32| CGPoint::new(x as f64, y as f64);
+        for s in &p.segments {
+            match *s {
+                S::Move(x, y) => b.moveToPoint(pt(x, y)),
+                S::Line(x, y) => b.addLineToPoint(pt(x, y)),
+                S::Cubic(x1, y1, x2, y2, x, y) => {
+                    b.addCurveToPoint_controlPoint1_controlPoint2(pt(x, y), pt(x1, y1), pt(x2, y2))
+                }
+                S::Close => b.closePath(),
+                S::Arc { .. } => {}
+            }
+        }
+        if let Some(c) = p.fill {
+            ui_color(c).setFill();
+            b.fill();
+        }
+        if let Some(c) = p.stroke {
+            b.setLineWidth(p.width as f64);
+            if p.round {
+                // kCGLineCapRound, kCGLineJoinRound.
+                let _: () = unsafe { msg_send![&b, setLineCapStyle: 1i32] };
+                let _: () = unsafe { msg_send![&b, setLineJoinStyle: 1i32] };
+            }
+            if let Some((dash, gap)) = p.dash {
+                let pattern = [dash as f64, gap as f64];
+                unsafe { b.setLineDash_count_phase(pattern.as_ptr(), 2, 0.) };
+            }
+            ui_color(c).setStroke();
+            b.stroke();
+        }
+    }
+}
+
 define_class!(
     /// Receives control events and taps; routes them by view tag (= node id).
     #[unsafe(super(NSObject))]
@@ -926,6 +990,14 @@ impl Widgets for UiKit {
                 View::Image(v)
             }
             NodeKind::Progress => View::Progress(UIProgressView::new(mtm)),
+            NodeKind::Shape => {
+                let v: Retained<ShapeView> = unsafe { msg_send![ShapeView::alloc(mtm), init] };
+                v.setOpaque(false);
+                v.setBackgroundColor(Some(&UIColor::clearColor()));
+                // Redrawn at the new size, not stretched.
+                v.setContentMode(objc2_ui_kit::UIViewContentMode::Redraw);
+                View::Container(Retained::into_super(v))
+            }
             NodeKind::Picture => {
                 let v = UIImageView::new(mtm);
                 v.setClipsToBounds(true);
@@ -1237,8 +1309,14 @@ impl Widgets for UiKit {
         }
     }
 
+    fn set_drawing(&mut self, view: &View, paths: &[prism_core::Path]) {
+        SHAPES.with(|s| s.borrow_mut().insert(view.id(), paths.to_vec()));
+        view.ui().setNeedsDisplay();
+    }
+
     fn destroy(&mut self, view: &View) {
         let id = view.id();
+        SHAPES.with(|s| s.borrow_mut().remove(&id));
         self.screens.remove(&id);
         self.radii.remove(&id);
         self.titles.remove(&id);

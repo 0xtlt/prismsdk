@@ -56,6 +56,10 @@ pub trait Widgets {
     fn set_accessibility(&mut self, view: &Self::View, a11y: &Accessibility);
     /// Toggle state (0/1) or selected tab index.
     fn set_value(&mut self, view: &Self::View, value: f64);
+    /// What a shape draws, in points for its current size (arcs already
+    /// turned into curves; colors may adapt to dark mode). Called when the
+    /// drawing or the shape's size changes.
+    fn set_drawing(&mut self, _view: &Self::View, _paths: &[prism_core::Path]) {}
     /// Tab icon (SF Symbol name on Apple platforms).
     fn set_icon(&mut self, _view: &Self::View, _icon: &str) {}
     /// Context menu of a view (`None` removes it). Items report
@@ -165,6 +169,8 @@ struct Entry<V> {
     layout: taffy::NodeId,
     /// Last frame given to the platform (animations only run on changes).
     frame: Option<(f32, f32, f32, f32)>,
+    /// What a shape draws (resolved again when its size changes).
+    drawing: Option<prism_core::Drawing>,
 }
 
 /// Applies patches to native widgets and lays them out.
@@ -277,6 +283,7 @@ impl<W: Widgets> NativeRenderer<W> {
             let (view, kind, style) = (e.view.clone(), e.kind, e.style.clone());
             self.play_enter(&view, kind, &style, pose);
             self.widgets.set_frame(&view, x, y, w, h);
+            self.redraw(id);
             return;
         }
         let e = &self.nodes[&id];
@@ -286,6 +293,33 @@ impl<W: Widgets> NativeRenderer<W> {
             }
             _ => self.widgets.set_frame(&e.view, x, y, w, h),
         }
+        if previous.map(|p| (p.2, p.3)) != Some((w, h)) {
+            self.redraw(id);
+        }
+    }
+
+    fn is_shape(&self, id: NodeId) -> bool {
+        self.nodes
+            .get(&id)
+            .is_some_and(|e| e.kind == NodeKind::Shape)
+    }
+
+    /// Hands a shape its drawing at its current size.
+    fn redraw(&mut self, id: NodeId) {
+        let Some(e) = self.nodes.get(&id) else {
+            return;
+        };
+        let (Some(d), Some((_, _, w, h))) = (&e.drawing, e.frame) else {
+            return;
+        };
+        let mut paths = d.resolve(w, h, self.zoom);
+        if self.env.direction == Direction::Rtl {
+            // Like the layout around it: charts read right to left.
+            for p in &mut paths {
+                p.mirror_x(w);
+            }
+        }
+        self.widgets.set_drawing(&e.view, &paths);
     }
 
     /// Shows `view` at its enter pose and animates it to its style.
@@ -562,7 +596,8 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
             match patch {
                 Patch::Create { id, kind } => {
                     let view = self.widgets.create(*id, *kind);
-                    let container = is_container(*kind);
+                    // Shapes have no content size: only their style sizes them.
+                    let container = is_container(*kind) || *kind == NodeKind::Shape;
                     let layout = if container {
                         self.taffy.new_leaf(taffy::Style::default())
                     } else {
@@ -579,6 +614,7 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                             style: Style::default(),
                             layout,
                             frame: None,
+                            drawing: None,
                         },
                     );
                 }
@@ -628,9 +664,19 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                             let e = &self.nodes[&id];
                             let s = self.effective_style(&e.style, e.kind);
                             self.widgets.set_style(&e.view, &s);
+                            if e.kind == NodeKind::Shape {
+                                self.redraw(id);
+                            }
                         }
                         self.mark_all_dirty();
                     }
+                }
+                Patch::SetText { id, text } if self.is_shape(*id) => {
+                    let drawing = prism_core::Drawing::decode(text);
+                    if let Some(e) = self.nodes.get_mut(id) {
+                        e.drawing = Some(drawing);
+                    }
+                    self.redraw(*id);
                 }
                 Patch::SetText { id, text } => {
                     if let Some(e) = self.nodes.get(id) {
@@ -845,6 +891,7 @@ mod tests {
     struct Fake {
         frames: HashMap<NodeId, (f32, f32, f32, f32)>,
         content: HashMap<NodeId, (f32, f32)>,
+        drawings: HashMap<NodeId, Vec<prism_core::Path>>,
     }
 
     impl Widgets for Fake {
@@ -869,6 +916,9 @@ mod tests {
         fn set_value(&mut self, _: &NodeId, _: f64) {}
         fn set_content_size(&mut self, v: &NodeId, w: f32, h: f32) {
             self.content.insert(*v, (w, h));
+        }
+        fn set_drawing(&mut self, v: &NodeId, paths: &[prism_core::Path]) {
+            self.drawings.insert(*v, paths.to_vec());
         }
         fn screen_viewport(&mut self, stack: &NodeId, _: &NodeId) -> Viewport {
             let (_, _, w, h) = self.frames[stack];
@@ -971,6 +1021,46 @@ mod tests {
         let f = &renderer.widgets.frames;
         assert_eq!(f[&2].0, 350., "RTL: first item on the right");
         assert_eq!(f[&3].0, 300.);
+    }
+
+    struct Chart;
+    impl Render for Chart {
+        fn render(&mut self, _: &mut prism_core::Context<Self>) -> impl IntoElement {
+            div().child(
+                prism_core::shape()
+                    .path(prism_core::Path::line([(0., 1.), (1., 0.)]))
+                    .w_full()
+                    .h(100.),
+            )
+        }
+    }
+
+    #[test]
+    fn shapes_are_drawn_at_their_size_and_mirrored_right_to_left() {
+        use prism_core::Segment;
+        let init: AppInit = Arc::new(|cx: &mut prism_core::App| {
+            let r = cx.new_entity(|_| Chart);
+            cx.set_root(r);
+        });
+        let mut rt = Runtime::new(&init);
+        let mut renderer = NativeRenderer::new(Fake::default());
+        renderer.apply(&rt.render());
+        renderer.layout(400., 300., Insets::default());
+        let first = |r: &NativeRenderer<Fake>| r.widgets.drawings[&2][0].segments.clone();
+        assert_eq!(
+            first(&renderer),
+            [Segment::Move(0., 100.), Segment::Line(400., 0.)]
+        );
+        // Resized: drawn again at the new width.
+        renderer.layout(200., 300., Insets::default());
+        assert_eq!(first(&renderer)[1], Segment::Line(200., 0.));
+        rt.app.set_locale(Some(prism_core::Locale::new("ar")));
+        renderer.apply(&rt.render());
+        renderer.layout(200., 300., Insets::default());
+        assert_eq!(
+            first(&renderer),
+            [Segment::Move(200., 100.), Segment::Line(0., 0.)]
+        );
     }
 
     #[test]
