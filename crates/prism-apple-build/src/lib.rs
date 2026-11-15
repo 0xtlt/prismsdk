@@ -24,6 +24,58 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// clang's runtime library (`libclang_rt.<name>.a`) for a Rust Apple
+/// target, `None` for macOS (rustc links what it needs there).
+fn clang_runtime(target: &str) -> Option<&'static str> {
+    let sim = target.ends_with("-sim") || target.starts_with("x86_64-apple-ios");
+    let os = if target.contains("-apple-watchos") {
+        "watchos"
+    } else if target.contains("-apple-tvos") {
+        "tvos"
+    } else if target.contains("-apple-visionos") {
+        "xros"
+    } else if target.contains("-apple-ios") && !target.ends_with("-macabi") {
+        "ios"
+    } else {
+        return None;
+    };
+    Some(match (os, sim) {
+        ("ios", false) => "clang_rt.ios",
+        ("ios", true) => "clang_rt.iossim",
+        ("tvos", false) => "clang_rt.tvos",
+        ("tvos", true) => "clang_rt.tvossim",
+        ("xros", false) => "clang_rt.xros",
+        ("xros", true) => "clang_rt.xrossim",
+        ("watchos", false) => "clang_rt.watchos",
+        _ => "clang_rt.watchossim",
+    })
+}
+
+/// The directory of clang's Darwin runtimes holding `file`:
+/// `$(clang -print-resource-dir)/lib/darwin`, else any version under the
+/// toolchain's `lib/clang`.
+fn clang_darwin_dir(file: &str) -> Option<PathBuf> {
+    let resource = Command::new("xcrun")
+        .args(["clang", "-print-resource-dir"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    if let Some(dir) = resource.map(|r| Path::new(&r).join("lib/darwin"))
+        && dir.join(file).exists()
+    {
+        return Some(dir);
+    }
+    let clang = xcrun(&["-f", "clang"]);
+    let versions = Path::new(&clang).parent()?.join("../lib/clang");
+    std::fs::read_dir(&versions)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|v| v.path().join("lib/darwin"))
+        .find(|d| d.join(file).exists())
+}
+
 fn xcrun(args: &[&str]) -> String {
     let out = Command::new("xcrun")
         .args(args)
@@ -203,29 +255,19 @@ fn build_swift(dirs: &[&str], module: &str) {
     println!("cargo:rustc-link-search=native={}", toolchain_lib.display());
     println!("cargo:rustc-link-search=native={sdk_path}/usr/lib/swift");
     println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
-    // Swift's availability checks call compiler-rt's
-    // `__isPlatformVersionAtLeast`; rustc links with -nodefaultlibs, and only
-    // brings its own copy on some targets. watchOS devices need clang's, and
-    // so does the simulator in release builds with the watchOS 26+ SDKs
-    // (SwiftUI's `tag(_:includeOptional:)` checks availability).
-    if target == "aarch64-apple-watchos" || target == "aarch64-apple-watchos-sim" {
-        let lib = if target.ends_with("-sim") {
-            "clang_rt.watchossim"
-        } else {
-            "clang_rt.watchos"
-        };
-        let clang = xcrun(&["-f", "clang"]);
-        let versions = Path::new(&clang).parent().unwrap().join("../lib/clang");
-        let darwin = std::fs::read_dir(&versions)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|v| v.path().join("lib/darwin"))
-            .find(|d| d.join(format!("lib{lib}.a")).exists());
-        if let Some(darwin) = darwin {
+    // Swift's availability checks (`if #available`, SwiftUI's own) call
+    // compiler-rt's `__isPlatformVersionAtLeast`; rustc links with
+    // -nodefaultlibs and its builtins do not always have it (iOS and watchOS
+    // simulators and devices with the 26 SDKs, release builds), so clang's
+    // runtime for the target is linked. Only the members needed are pulled
+    // in: nothing clashes where rustc's builtins have it too.
+    if let Some(lib) = clang_runtime(&target) {
+        if let Some(darwin) = clang_darwin_dir(&format!("lib{lib}.a")) {
             println!("cargo:rustc-link-search=native={}", darwin.display());
             // A fat archive: left for the final link (ld picks the slice).
             println!("cargo:rustc-link-lib=static:-bundle={lib}");
+        } else {
+            println!("cargo:warning=prism: lib{lib}.a not found in clang's resource directory");
         }
     }
     // Simulator builds read entitlements (App Groups…) from sections of the
@@ -307,5 +349,24 @@ mod tests {
         assert_eq!(super::at_least("10.0", "26.0"), "26.0");
         assert_eq!(super::at_least("26.1", "26.0"), "26.1");
         assert_eq!(super::at_least("27", "26.0"), "27");
+    }
+
+    #[test]
+    fn every_apple_target_but_macos_links_clangs_runtime() {
+        for (target, lib) in [
+            ("aarch64-apple-ios", Some("clang_rt.ios")),
+            ("aarch64-apple-ios-sim", Some("clang_rt.iossim")),
+            ("x86_64-apple-ios", Some("clang_rt.iossim")),
+            ("aarch64-apple-tvos", Some("clang_rt.tvos")),
+            ("aarch64-apple-tvos-sim", Some("clang_rt.tvossim")),
+            ("aarch64-apple-visionos", Some("clang_rt.xros")),
+            ("aarch64-apple-visionos-sim", Some("clang_rt.xrossim")),
+            ("aarch64-apple-watchos", Some("clang_rt.watchos")),
+            ("aarch64-apple-watchos-sim", Some("clang_rt.watchossim")),
+            ("aarch64-apple-darwin", None),
+            ("aarch64-apple-ios-macabi", None),
+        ] {
+            assert_eq!(super::clang_runtime(target), lib, "{target}");
+        }
     }
 }

@@ -215,8 +215,11 @@ The first version, not yet on crates.io.
 
 - A web `picker` given a height centres its text vertically and draws its
   own arrow (`appearance: none`) (#18).
-- watchOS simulator release builds link clang's runtime (Swift availability
-  checks of the watchOS 26+ SDKs need `__isPlatformVersionAtLeast`).
+- iOS, iPadOS, tvOS, visionOS and watchOS builds (simulators and devices)
+  link clang's runtime for their target (`libclang_rt.<os>[sim].a`, found
+  with `clang -print-resource-dir`): Swift availability checks need
+  `__isPlatformVersionAtLeast`, which rustc's builtins lack there, so
+  simulator builds no longer fail to link without a `RUSTFLAGS` workaround.
 - The watch host clamps frames that are negative or not finite before
   handing them to SwiftUI (absolutely positioned overlays next to chart
   bars).
