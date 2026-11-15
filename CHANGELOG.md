@@ -213,6 +213,16 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- Padding works on every kind of node (#14): `.p()`, `.px()`, `.pl()`… on a
+  text, button, text input, text area, timer or control grow its box and
+  inset its content on the web and every native backend (they were ignored
+  outside containers). On buttons, inputs and text areas the app's padding
+  replaces the control's own inset; a filled web button keeps its 6 × 14
+  only when it sets none (it used to add them up).
+- Web text inputs get their default padding and border only when the app
+  sets none, and `.border(0.)` now removes the default border of inputs,
+  text areas, pickers and date pickers on every backend (#14).
+
 - Web: on windows 1024 px wide or more the tab bar is a sidebar again; the
   Tabs node no longer carries a `flex-direction` that overrode the media
   query in `prism.css`.

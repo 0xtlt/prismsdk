@@ -18,6 +18,8 @@ mod label;
 #[cfg(target_os = "macos")]
 mod menus;
 #[cfg(target_os = "macos")]
+mod padding;
+#[cfg(target_os = "macos")]
 mod services;
 #[cfg(target_os = "macos")]
 mod sticky;

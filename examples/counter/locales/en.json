@@ -361,7 +361,11 @@
     "own_width": "Container query",
     "own_width_note": "A row once this card is 420 pt wide, a column below, whatever the window.",
     "wide_window": "Shown in windows at least 768 pt wide.",
-    "fab": "Add one tap"
+    "fab": "Add one tap",
+    "badges": "Paid,Pending,Overdue",
+    "padding_note": "Padding on a text and on fields: the chip grows around its text, the field's text starts after its icon.",
+    "search": "Search orders",
+    "borderless": "No border"
   },
   "typography": {
     "title": "Typography",

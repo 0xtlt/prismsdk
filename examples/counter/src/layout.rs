@@ -91,6 +91,51 @@ pub fn card(cx: &App, taps: u32, on_tap: Handler<ClickEvent>) -> ui::Card {
                         .child(text(c).text_size(14.).text_color(t.text))
                 })),
         )
+        // Padding on leaves: a text chip grows around its text, a field's
+        // text starts after its icon, `.border(0.)` drops a field's border.
+        .child(
+            text(strings::layout_padding_note(cx))
+                .text_size(13.)
+                .text_color(t.muted),
+        )
+        .child(
+            div().flex_row().flex_wrap().gap(8.).children(
+                strings::layout_badges(cx)
+                    .split(',')
+                    .zip([t.success, t.accent, t.danger])
+                    .map(|(label, tint)| {
+                        text(label.to_string())
+                            .text_size(13.)
+                            .semibold()
+                            .text_color(tint)
+                            .bg(tint.with_alpha(0.14))
+                            .px(12.)
+                            .py(4.)
+                            .rounded(999.)
+                            .hover(move |s| s.bg(tint.with_alpha(0.24)))
+                    }),
+            ),
+        )
+        .child(
+            text_input()
+                .placeholder(strings::layout_search(cx))
+                .accessibility_label(strings::layout_search(cx))
+                .leading_icon("magnifyingglass")
+                .pl(36.)
+                .pr(12.)
+                .py(8.)
+                .rounded(10.)
+                .bg(soft(t.muted))
+                .border(0.),
+        )
+        .child(
+            text_input()
+                .placeholder(strings::layout_borderless(cx))
+                .accessibility_label(strings::layout_borderless(cx))
+                .border(0.)
+                .px(2.)
+                .py(4.),
+        )
         // Rearranges by its own width, whatever the window.
         .child(
             div()

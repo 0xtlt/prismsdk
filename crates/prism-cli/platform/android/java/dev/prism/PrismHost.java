@@ -198,6 +198,11 @@ public final class PrismHost {
         android.widget.PopupWindow popup;
         String overlay = "sheet";
         boolean fixed, medium, closing;
+        // Padding (#14): the view's own padding while the app's replaces it,
+        // and its own background while `.border(0.)` removes it.
+        int[] basePad;
+        boolean bare;
+        android.graphics.drawable.Drawable baseBackground;
         int[] contentSize = {0, 0};
     }
 
@@ -971,7 +976,40 @@ public final class PrismHost {
         // Texts: typography and runs (their colors follow light/dark too).
         if (n.kind.equals("text")) PrismText.render(n);
         PrismForms.style(n);
+        applyPadding(n, bg != null || border != null || radius > 0 || PrismDecor.needed(s));
         PrismInput.hitTest(n);
+    }
+
+    /**
+     * Padding (#14): `pad` [top, right, bottom, left] in place of the view's
+     * own (a text's, button's or field's text inset; left and right already
+     * mirrored right to left). `bnone` (`.border(0.)`): a field without its
+     * own frame (the underline of an input, a date picker's pill).
+     */
+    static void applyPadding(Node n, boolean painted) {
+        View v = n.view;
+        boolean field = v instanceof EditText || n.kind.equals("date_picker");
+        boolean bare = field && n.style.optBoolean("bnone") && !painted;
+        if (bare && !n.bare) {
+            n.bare = true;
+            n.baseBackground = v.getBackground();
+            v.setBackground(null);
+        } else if (!bare && n.bare) {
+            n.bare = false;
+            if (!painted) v.setBackground(n.baseBackground);
+            n.baseBackground = null;
+        }
+        JSONArray pad = n.style.optJSONArray("pad");
+        if (pad != null) {
+            if (n.basePad == null) {
+                n.basePad = new int[]{v.getPaddingLeft(), v.getPaddingTop(), v.getPaddingRight(), v.getPaddingBottom()};
+            }
+            v.setPadding(Math.round((float) pad.optDouble(3)), Math.round((float) pad.optDouble(0)),
+                    Math.round((float) pad.optDouble(1)), Math.round((float) pad.optDouble(2)));
+        } else if (n.basePad != null) {
+            v.setPadding(n.basePad[0], n.basePad[1], n.basePad[2], n.basePad[3]);
+            n.basePad = null;
+        }
     }
 
     // --- Scroll views: axis and sticky children ----------------------------------------------

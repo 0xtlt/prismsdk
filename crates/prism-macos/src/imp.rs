@@ -1967,6 +1967,8 @@ impl AppKit {
         f.setAccessibilityLabel(old.accessibilityLabel().as_deref());
         f.setAccessibilityHelp(old.accessibilityHelp().as_deref());
         f.setEnabled(old.isEnabled());
+        f.setBezeled(old.isBezeled());
+        f.setDrawsBackground(old.drawsBackground());
         f.setFrame(old.frame());
         unsafe { old.setDelegate(None) };
         input.host.replaceSubview_with(&old, &f);
@@ -2429,6 +2431,12 @@ impl Widgets for AppKit {
             self.transforms.insert(view.id(), style.transform);
             self.apply_transform(view);
         }
+        if matches!(
+            view,
+            View::Label(_) | View::Timer(_) | View::Button(_) | View::Input(_) | View::TextArea(_)
+        ) {
+            crate::padding::remember(view.id(), style);
+        }
         match view {
             View::Sheet(sheet) => {
                 *sheet.content.ivars().background.borrow_mut() = style.background.map(ns_color);
@@ -2498,6 +2506,12 @@ impl Widgets for AppKit {
                 if bare {
                     t.text.setBackgroundColor(&NSColor::textBackgroundColor());
                 }
+                // Its padding replaces the text's own inset (#14).
+                t.text.setTextContainerInset(if style.padding.is_zero() {
+                    NSSize::new(7., 8.)
+                } else {
+                    NSSize::ZERO
+                });
                 t.text.setFont(Some(&font(style)));
                 t.text.setTextColor(Some(
                     &style.text_color.map_or_else(NSColor::labelColor, ns_color),
@@ -2535,11 +2549,21 @@ impl Widgets for AppKit {
                 v.setNeedsDisplay(true);
             }
             View::Label(l) => crate::label::set_style(l, style),
-            View::Input(_) => {
-                let l = match view {
-                    View::Input(i) => i.field(),
-                    _ => unreachable!(),
-                };
+            View::Input(i) => {
+                // Padding, a background, a border or `.border(0.)`: Prism's
+                // box around a bare field (#14), else the bezeled field.
+                let iv = i.host.ivars();
+                let decor = crate::padding::field_box(style);
+                let b = decor.as_ref();
+                *iv.background.borrow_mut() = b.and_then(|s| s.background).map(ns_color);
+                *iv.border_color.borrow_mut() = b.and_then(|s| s.border_color).map(ns_color);
+                iv.radius.set(b.map_or(0., |s| s.corner_radius as f64));
+                iv.corners.set(style.rounded_corners);
+                iv.border.set(b.map_or(0., |s| s.border_width as f64));
+                self.apply_decor(&i.host, b.unwrap_or(&Style::default()));
+                i.host.setNeedsDisplay(true);
+                let l = i.field();
+                crate::padding::style_field(&l, style);
                 l.setFont(Some(&font(style)));
                 l.setTextColor(Some(
                     &style.text_color.map_or_else(NSColor::labelColor, ns_color),
@@ -2549,6 +2573,7 @@ impl Widgets for AppKit {
             View::Button(b) => {
                 b.setFont(Some(&font(style)));
                 b.setBezelColor(style.background.map(ns_color).as_deref());
+                crate::padding::style_button(b, style);
             }
             View::Check(b) => b.setFont(Some(&font(style))),
             View::Radios(r) => r.set_font(font(style)),
@@ -2726,6 +2751,7 @@ impl Widgets for AppKit {
 
     fn destroy(&mut self, view: &View) {
         crate::sticky::forget(view.id());
+        crate::padding::forget(view.id());
         self.hover_areas.remove(&view.id());
         if let Some(v) = view.prism_view() {
             crate::decor::detach(&v.ivars().decor.borrow());
@@ -2786,7 +2812,16 @@ impl Widgets for AppKit {
             }
             View::Input(i) => {
                 let s = i.field().fittingSize();
-                NSSize::new(s.width.max(120.), s.height)
+                let style = crate::padding::style_of(i.id);
+                if crate::padding::custom_field(&style) {
+                    crate::padding::field_content(&style, s)
+                } else {
+                    NSSize::new(s.width.max(120.), s.height)
+                }
+            }
+            // Padded: its title alone (the layout adds the padding).
+            View::Button(b) if !crate::padding::of(view.id()).is_zero() => {
+                crate::padding::button_content(b)
             }
             View::Button(b) => b.fittingSize(),
             View::Toggle(t) => t.fittingSize(),
@@ -2845,8 +2880,20 @@ impl Widgets for AppKit {
         let rect =
             |x: f64, y: f64, w: f64, h: f64| NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));
         // Sticky views add how far their scroll view has carried them.
-        let frame =
+        let mut frame =
             crate::sticky::frame_for(view.id(), rect(x as f64, y as f64, w as f64, h as f64));
+        if let View::Timer(_) = view {
+            // A timer's digits sit inside its padding (#14), in its
+            // parent's (flipped) coordinates.
+            let p = crate::padding::of(view.id());
+            let (l, t) = (p.left as f64, p.top as f64);
+            frame = rect(
+                frame.origin.x + l,
+                frame.origin.y + t,
+                (frame.size.width - l - p.right as f64).max(0.),
+                (frame.size.height - t - p.bottom as f64).max(0.),
+            );
+        }
         view.ns().setFrame(frame);
         if self.transforms.contains_key(&view.id()) {
             self.apply_transform(view);
@@ -2855,7 +2902,25 @@ impl Widgets for AppKit {
             crate::decor::sync_shadow_host(v, &v.ivars().decor.borrow());
         }
         if let View::Input(i) = view {
-            i.field().setFrame(rect(0., 0., w as f64, h as f64));
+            // Inside its padding and border when Prism draws its box.
+            let style = crate::padding::style_of(i.id);
+            let mut e = crate::padding::field_inset(&style);
+            if crate::padding::custom_field(&style) && i.icon.borrow().1.is_some() {
+                // The field's cell draws the icon in its first 24 points:
+                // the text starts at the leading padding (32 at least, like
+                // the web).
+                let rtl = i.field().userInterfaceLayoutDirection()
+                    == objc2_app_kit::NSUserInterfaceLayoutDirection::RightToLeft;
+                let lead = if rtl { &mut e.right } else { &mut e.left };
+                *lead = (lead.max(32.) - 24.).max(0.);
+            }
+            let (l, t) = (e.left as f64, e.top as f64);
+            i.field().setFrame(rect(
+                l,
+                t,
+                (w as f64 - l - e.right as f64).max(0.),
+                (h as f64 - t - e.bottom as f64).max(0.),
+            ));
             if let Some(icon) = i.icon.borrow().1.as_deref() {
                 crate::interact::place_icon(&i.field(), icon);
             }
@@ -2866,8 +2931,20 @@ impl Widgets for AppKit {
         if let View::TextArea(t) = view {
             let b = t.border();
             let (w, h) = (w as f64, h as f64);
-            t.scroll
-                .setFrame(rect(b, b, (w - 2. * b).max(0.), (h - 2. * b).max(0.)));
+            // Inside its border, then its padding (#14).
+            let p = crate::padding::of(view.id());
+            let (l, r, top, bottom) = (
+                b + p.left as f64,
+                b + p.right as f64,
+                b + p.top as f64,
+                b + p.bottom as f64,
+            );
+            t.scroll.setFrame(rect(
+                l,
+                top,
+                (w - l - r).max(0.),
+                (h - top - bottom).max(0.),
+            ));
             // The text fills the visible area (clicks anywhere edit) and
             // grows past it (scrolls).
             let visible = t.scroll.contentSize();

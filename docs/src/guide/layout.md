@@ -51,6 +51,44 @@ Native backends measure each text leaf's first baseline (the font's ascent
 where the control draws its text: labels, buttons, inputs, pickers, timers);
 views without text sit on the baseline with their bottom edge, as in CSS.
 
+## Padding on every node
+
+`.p()`, `.px()`, `.py()`, `.pt()`, `.pr()`, `.pb()` and `.pl()` work on
+every kind of node, not only containers: the box (background, border,
+rounding) grows by the padding, and the content is drawn inside it.
+`pl`/`pr` are leading and trailing, so they swap right to left.
+
+```rust
+// A chip: no wrapper needed.
+text("Overdue").px(12.).py(4.).bg(red.with_alpha(0.14)).rounded(999.)
+
+// Room for a leading icon, in a field without a border.
+text_input().leading_icon("magnifyingglass").pl(36.).py(8.)
+    .bg(surface).rounded(10.).border(0.)
+```
+
+What padding means per kind:
+
+- **Texts and timers**: the text is inset by it.
+- **Buttons, text inputs, text areas**: it replaces the control's own
+  inset around its title or text (the default look, with its built-in
+  inset, is kept when no padding is set). A field with padding, a
+  background, a border or `.border(0.)` draws Prism's box instead of the
+  platform's bezel: its own background and border, else a 1-point gray
+  border rounded 6, and a default 6 × 8 inset when it sets no padding (as on
+  the web). A leading icon keeps at least 32 points before the text.
+- **Other controls** (pickers, date pickers, switches, sliders, progress
+  bars, spinners, checkboxes, radio groups, images, pictures, shapes):
+  natively they are placed inside their padding, keeping their own inset;
+  on the web the padding is the element's CSS padding (a select keeps room
+  for its arrow after it).
+
+`.border(0.)` removes every border, the default one of text inputs, text
+areas, pickers and date pickers included (`.border(w)` with `w > 0` brings
+borders back). Padding works in interaction states
+(`.hover(|s| s.px(16.))`), responsive and own-width rules, and in the
+server-rendered first paint.
+
 ## Sticky and fixed
 
 ```rust
@@ -98,6 +136,8 @@ its leading (right) edge, native scroll views at offset 0.
 | Sticky | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Fixed | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Horizontal scroll | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Padding on leaves | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `.border(0.)` on fields | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 Notes per platform:
 
@@ -114,3 +154,14 @@ Notes per platform:
   would take height from the row): trackpad swipes and shift + wheel scroll
   them. Scroll events (`on_scroll`) stay vertical.
 - Sticky only follows vertical scroll views.
+- Padding on leaves: the layout adds it around the measured content on
+  every native backend; then each draws the content inside it. macOS
+  labels draw their box and inset their text (`NSCell`), padded buttons get
+  a bezel as tall as their frame (`NSBezelStyleFlexiblePush`) with the title
+  centered in it, so uneven leading and trailing padding is not honored on
+  native macOS buttons. UIKit labels inset their text rect, buttons take it
+  as `contentEdgeInsets`, fields as their text rect (a `UITextField`
+  subclass) and text areas as `textContainerInset`. GTK applies it as the
+  widget's CSS padding (text views: their margins), Android with
+  `setPadding`, the watch with SwiftUI's `.padding` (fields lose their
+  platter). Android pickers keep their arrow background with `.border(0.)`.

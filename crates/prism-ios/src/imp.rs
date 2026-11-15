@@ -1080,7 +1080,7 @@ pub enum View {
     Toggle(Retained<ToggleView>),
     Image(Retained<UIImageView>),
     Progress(Retained<UIProgressView>),
-    Timer(Retained<UILabel>),
+    Timer(Retained<crate::label::PrismLabel>),
     Picture(Retained<UIImageView>),
     Label(Retained<crate::label::PrismLabel>),
     Button(Retained<UIButton>),
@@ -1529,10 +1529,7 @@ impl Widgets for UiKit {
                 v.setContentMode(objc2_ui_kit::UIViewContentMode::ScaleAspectFill);
                 View::Picture(v)
             }
-            NodeKind::Timer => {
-                let l = UILabel::new(mtm);
-                View::Timer(l)
-            }
+            NodeKind::Timer => View::Timer(crate::label::new_timer(mtm, id)),
             #[cfg(not(target_os = "tvos"))]
             NodeKind::Toggle => {
                 let t = UISwitch::new(mtm);
@@ -1562,7 +1559,8 @@ impl Widgets for UiKit {
                 View::Button(b)
             }
             NodeKind::TextInput => {
-                let f = UITextField::new(mtm);
+                // Its text sits inside its padding (#14).
+                let f = crate::padding::PrismField::field(mtm);
                 f.setBorderStyle(UITextBorderStyle::RoundedRect);
                 unsafe {
                     f.addTarget_action_forControlEvents(
@@ -1710,6 +1708,9 @@ impl Widgets for UiKit {
         }
         crate::layout::remember_font(view, || font(style));
         let text_color = style.text_color.map(ui_color);
+        if matches!(view, View::Button(_) | View::Input(_)) || is_text_area(view) {
+            crate::padding::remember(view.id(), style);
+        }
         match view {
             View::Container(_)
             | View::Screen(_)
@@ -1748,7 +1749,7 @@ impl Widgets for UiKit {
                 t.view.setTextAlignment(alignment(style.text_align));
                 unsafe { t.placeholder.setFont(Some(&f)) };
                 t.placeholder.setTextAlignment(alignment(style.text_align));
-                t.layout_placeholder();
+                crate::padding::style_text_area(t, style);
             }
             View::Spinner(s) => unsafe { s.setColor(text_color.as_deref()) },
             View::Image(v) => {
@@ -1774,21 +1775,32 @@ impl Widgets for UiKit {
                 unsafe { l.setFont(Some(&f)) };
                 unsafe { l.setTextColor(Some(&text_color.unwrap_or_else(UIColor::labelColor))) };
                 l.setTextAlignment(alignment(style.text_align));
+                crate::label::set_insets(l, style.padding);
             }
             View::Input(f) => {
                 f.setFont(Some(&font(style)));
                 f.setTextColor(Some(&text_color.unwrap_or_else(UIColor::labelColor)));
                 f.setTextAlignment(alignment(style.text_align));
+                crate::padding::style_field(f, style);
             }
             View::Button(b) => {
                 if let Some(label) = b.titleLabel() {
                     unsafe { label.setFont(Some(&font(style))) };
                 }
                 b.setTitleColor_forState(text_color.as_deref(), UIControlState::Normal);
+                crate::padding::style_button(b, style);
             }
         }
         // Shadows, per-side and dashed borders, clip, gradient, blur.
         crate::decor::apply(v, style);
+        if matches!(view, View::Label(_) | View::Timer(_)) {
+            // A label paints its background itself, not its layer: rounded
+            // only when clipped (a chip, #14). Shadows live in a companion
+            // view, so they survive.
+            v.setClipsToBounds(
+                style.clip || (style.corner_radius > 0. && style.background.is_some()),
+            );
+        }
     }
 
     fn set_text(&mut self, view: &View, text: &str) {
@@ -2051,6 +2063,7 @@ impl Widgets for UiKit {
     fn destroy(&mut self, view: &View) {
         let id = view.id();
         crate::decor::destroy(id);
+        crate::padding::forget(id);
         SHAPES.with(|s| s.borrow_mut().remove(&id));
         crate::layout::forget(id);
         self.screens.remove(&id);
@@ -2109,9 +2122,19 @@ impl Widgets for UiKit {
             | View::Tab(_)
             | View::Scroll(_) => CGSize::ZERO,
             View::Input(f) => {
-                let s = f.sizeThatFits(limit);
-                CGSize::new(s.width.max(120.), s.height.max(36.))
+                let style = crate::padding::style_of(view.id());
+                if crate::padding::custom_field(&style) {
+                    crate::padding::field_content(f, &style)
+                } else {
+                    let s = f.sizeThatFits(limit);
+                    CGSize::new(s.width.max(120.), s.height.max(36.))
+                }
             }
+            // Padded: without its content insets (the layout adds them).
+            View::Button(b) => crate::padding::button_content(
+                b.sizeThatFits(limit),
+                &crate::padding::style_of(view.id()),
+            ),
             // A comfortable default width; flex makes it wider.
             #[cfg(not(target_os = "tvos"))]
             View::Slider(s) => {
@@ -2139,7 +2162,14 @@ impl Widgets for UiKit {
             View::Radio(r) => r.measure(max_width),
             View::Overlay(_) => CGSize::ZERO,
             #[cfg(not(target_os = "tvos"))]
-            View::TextArea(t) => t.measure(max_width.map_or(240., |w| w as f64)),
+            View::TextArea(t) => {
+                // Its padding is its text container's inset: measured with
+                // it, returned without (the layout adds it).
+                let p = crate::padding::style_of(view.id()).padding;
+                let w = max_width.map_or(240., |w| w as f64);
+                let s = t.measure(w + (p.left + p.right) as f64);
+                CGSize::new(w, (s.height - (p.top + p.bottom) as f64).max(0.))
+            }
             other => other.ui().sizeThatFits(limit),
         };
         (size.width.ceil() as f32, size.height.ceil() as f32)
@@ -2361,7 +2391,8 @@ impl Widgets for UiKit {
                 }
             }
             View::Timer(l) => {
-                self.timers.insert(view.id(), (l.clone(), value));
+                self.timers
+                    .insert(view.id(), (Retained::into_super(l.clone()), value));
                 l.setText(Some(&NSString::from_str(&prism_core::format_remaining(
                     value,
                 ))));
@@ -3445,4 +3476,14 @@ fn cloud_storage(dir: &std::path::Path) -> Box<dyn prism_core::Storage> {
         Some(icloud) => Box::new(icloud),
         None => Box::new(prism_core::FileStorage::new(dir.join("cloud"))),
     }
+}
+
+/// Whether `view` is a text area (tvOS has none: they are text inputs).
+fn is_text_area(view: &View) -> bool {
+    #[cfg(not(target_os = "tvos"))]
+    if let View::TextArea(_) = view {
+        return true;
+    }
+    let _ = view;
+    false
 }

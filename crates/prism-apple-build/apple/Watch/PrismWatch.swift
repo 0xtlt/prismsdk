@@ -506,6 +506,13 @@ struct Node {
         return UnevenRoundedRectangle(topLeadingRadius: at(1), bottomLeadingRadius: at(8), bottomTrailingRadius: at(4), topTrailingRadius: at(2))
     }
     func str(_ k: String) -> String? { style[k] as? String }
+    /// Padding (#14), `pad`: [top, right, bottom, left], left and right as
+    /// drawn (Rust already mirrored them for right to left).
+    var padding: EdgeInsets {
+        guard let p = style["pad"] as? [NSNumber], p.count == 4 else { return EdgeInsets() }
+        let v = p.map { CGFloat($0.doubleValue) }
+        return EdgeInsets(top: v[0], leading: v[3], bottom: v[2], trailing: v[1])
+    }
     func color(_ k: String, dark: Bool) -> Color? { PrismColor(style[k]).map { dark ? $0.dark : $0.light } }
 }
 
@@ -795,6 +802,8 @@ struct NodeView: View {
             let height = store.snapshotting && n.kind == "scroll" ? max(n.content.height, n.frame.height) : n.frame.height
             let pressable = n.states.contains("active")
             content(n, dark: dark)
+                // The content inside its padding; the box around it.
+                .padding(n.padding)
                 .frame(width: n.frame.width, height: height, alignment: .topLeading)
                 .background(BoxFill(node: n, dark: dark))
                 .overlay(BoxBorder(node: n, dark: dark))
@@ -1323,6 +1332,14 @@ struct InputTraits {
 /// (dictation, scribble, keyboard); the field shows the value. TextEditor is
 /// `@available(watchOS, unavailable)`, so a text area is a vertical
 /// TextField (watchOS 9+) showing as many lines as its frame holds.
+/// A text field without its platter (its node draws the box).
+struct BareField: ViewModifier {
+    let on: Bool
+    func body(content: Content) -> some View {
+        if on { content.textFieldStyle(.plain) } else { content }
+    }
+}
+
 struct PrismTextField: View {
     @ObservedObject var store = PrismStore.shared
     let id: UInt64
@@ -1353,6 +1370,8 @@ struct PrismTextField: View {
             .textInputAutocapitalization(traits.secure ? .never : traits.autocapitalization)
             .autocorrectionDisabled(traits.secure || !traits.autocorrect)
             .submitLabel(traits.submitLabel)
+            // Padding or `.border(0.)` (#14): the node's box, not the platter.
+            .modifier(BareField(on: node.style["pad"] != nil || node.style["bnone"] as? Bool == true))
             .focused($focused)
             .onChange(of: focused) { _, on in send(["t": "state", "id": id, "s": "focus", "on": on]) }
     }

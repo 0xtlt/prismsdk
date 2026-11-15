@@ -604,8 +604,8 @@ fn layout_properties() {
         assert!(c.contains(part), "{part} missing in {c}");
     }
     assert!(!c.contains("min-width:") || c.matches("min-width:").count() == 1);
-    // Padding is for containers: a text's padding is not applied by CSS.
-    assert!(!css(NodeKind::Text, &s).contains("padding-block"));
+    // Leaves too (#14): a text's box grows by its padding.
+    assert!(css(NodeKind::Text, &s).contains("padding-block:1px 3px;padding-inline:4px 2px;"));
     for (j, v) in [
         (Justify::Start, "flex-start"),
         (Justify::Center, "center"),
@@ -675,8 +675,20 @@ fn buttons_and_inputs_get_their_defaults() {
             ..Default::default()
         },
     );
+    // The app's padding replaces the filled button's own (6 × 14).
+    assert!(filled.ends_with("border:none;"), "{filled}");
+    assert_eq!(filled.matches("padding-block").count(), 1, "{filled}");
+    assert!(!filled.contains("padding:"), "{filled}");
+    assert!(filled.contains("padding-block:2px 2px;padding-inline:2px 2px;"));
+    let filled = css(
+        NodeKind::Button,
+        &Style {
+            background: Some(rgb(0x0000FF)),
+            ..Default::default()
+        },
+    );
     assert!(
-        filled.ends_with("border:none;padding:8px 16px;"),
+        filled.ends_with("border:none;padding:6px 14px;"),
         "{filled}"
     );
     let input = css(NodeKind::TextInput, &Style::default());
@@ -689,6 +701,67 @@ fn buttons_and_inputs_get_their_defaults() {
         },
     );
     assert_eq!(bordered.matches("border:").count(), 1);
+}
+
+#[test]
+fn padding_works_on_every_leaf_and_replaces_a_fields_own() {
+    use prism_core::{Styled, div, text, text_input};
+    fn style<S: Styled>(mut el: S) -> Style {
+        el.style_mut().clone()
+    }
+    // A chip: its box grows by the padding.
+    let chip = style(text("Chip").px(12.).py(4.).bg(rgb(0xEEEEEE)).rounded(999.));
+    let c = css(NodeKind::Text, &chip);
+    assert!(
+        c.contains("padding-block:4px 4px;padding-inline:12px 12px;"),
+        "{c}"
+    );
+    // An input with room for an icon: its own 6 × 8 is replaced.
+    let input = style(text_input().pl(40.));
+    let c = css(NodeKind::TextInput, &input);
+    assert!(
+        c.contains("padding-block:0px 0px;padding-inline:40px 0px;"),
+        "{c}"
+    );
+    assert!(!c.contains("padding:6px 8px"), "{c}");
+    assert!(c.contains("--prism-pl:40px;"), "an icon keeps room: {c}");
+    // `.border(0.)`: a borderless field, not the default border.
+    let bare = style(text_input().border(0.));
+    let c = css(NodeKind::TextInput, &bare);
+    assert!(!c.contains("border:1px"), "{c}");
+    assert!(c.contains("border:none;"), "{c}");
+    // Without `.border(…)` it keeps the default one; a later width wins.
+    let c = css(
+        NodeKind::TextInput,
+        &style(text_input().border(0.).border(2.)),
+    );
+    assert!(
+        c.contains("border:2px solid") && !c.contains("border:none"),
+        "{c}"
+    );
+    for kind in [NodeKind::TextArea, NodeKind::Picker, NodeKind::DatePicker] {
+        assert!(css(kind, &bare).contains("border:none;"), "{kind:?}");
+    }
+    // A select keeps room for its arrow after the app's padding.
+    let c = css(NodeKind::Picker, &style(div().px(10.)));
+    assert!(c.contains("padding-inline:10px 32px;"), "{c}");
+    // Padding in a state (`.hover(|s| s.px(…))`) reaches leaves too.
+    let hover = style(text("Chip").px(8.).hover(|s| s.px(16.)));
+    let rules = crate::css::states_css(NodeKind::Text, 7, &hover.resolve(Default::default()));
+    assert!(
+        rules.contains("padding-inline:16px 16px !important;"),
+        "{rules}"
+    );
+    // So do rules on its own width.
+    let wide = style(text("Chip").px(8.).when_width_at_least(300., |s| s.px(20.)));
+    let v = crate::css::own_width_variants(NodeKind::Text, &wide);
+    assert!(
+        v[0][1]
+            .as_str()
+            .unwrap()
+            .contains("padding-inline:20px 20px;"),
+        "{v}"
+    );
 }
 
 #[test]
@@ -1735,6 +1808,8 @@ fn overlays_take_no_room_and_pickers_keep_their_arrow() {
         ..Default::default()
     };
     assert!(css(NodeKind::Picker, &bg).contains("background-color:"));
+    // An input keeps its leading icon (a background image) under its color.
+    assert!(css(NodeKind::TextInput, &bg).contains("background-color:"));
     assert!(css(NodeKind::View, &bg).contains("background:"));
     assert!(css(NodeKind::Checkbox, &Style::default()).contains("align-items:center;"));
     let inert = Style {

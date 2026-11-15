@@ -906,3 +906,108 @@ fn typography_and_runs_reach_the_host_and_its_measure() {
         Some(String::new())
     );
 }
+
+#[test]
+fn padded_leaves_carry_pad_and_measure_their_content_alone() {
+    use prism_core::Edges;
+    let padded = Style {
+        padding: Edges {
+            top: 4.,
+            right: 12.,
+            bottom: 4.,
+            left: 20.,
+        },
+        ..Style::default()
+    };
+    let mut w = RemoteWidgets::new(measure);
+    w.create(1, NodeKind::Button);
+    w.set_style(&1, &Style::default());
+    assert!(last(&w)["s"].get("pad").is_none(), "only when set");
+    w.set_style(&1, &padded);
+    assert_eq!(last(&w)["s"]["pad"], json!([4., 12., 4., 20.]));
+    assert!(last(&w)["s"].get("bnone").is_none());
+    // `.border(0.)`: no frame of the field's own.
+    w.set_style(
+        &1,
+        &Style {
+            border_none: true,
+            ..Style::default()
+        },
+    );
+    assert_eq!(last(&w)["s"]["bnone"], json!(true));
+    // A padded button is its title, measured as text (no built-in insets).
+    SEEN.with(|s| s.borrow_mut().clear());
+    let mut w = RemoteWidgets::new(recording);
+    w.create(1, NodeKind::Button);
+    w.set_style(&1, &padded);
+    w.set_text(&1, "Save");
+    assert_eq!(w.measure(&1, None), (40., 16.));
+    // A padded input: one line, 10 em wide.
+    w.create(2, NodeKind::TextInput);
+    w.set_style(&2, &padded);
+    assert_eq!(w.measure(&2, None), (160., 16.));
+    let seen = SEEN.with(|s| s.borrow().clone());
+    assert_eq!((seen[0].0.as_str(), seen[0].1.as_str()), ("text", "Save"));
+    assert_eq!((seen[1].0.as_str(), seen[1].1.as_str()), ("text", "Ag"));
+}
+
+#[test]
+fn a_padded_text_frame_includes_its_padding() {
+    use prism_core::{Edges, Patch};
+    let mut r = NativeRenderer::new(RemoteWidgets::new(measure));
+    let leaf = Style {
+        padding: Edges {
+            top: 4.,
+            right: 12.,
+            bottom: 4.,
+            left: 12.,
+        },
+        ..Style::default()
+    };
+    r.apply(&[
+        Patch::Create {
+            id: 1,
+            kind: NodeKind::View,
+        },
+        Patch::Create {
+            id: 2,
+            kind: NodeKind::Text,
+        },
+        Patch::SetText {
+            id: 2,
+            text: "Chip".into(),
+        },
+        Patch::SetStyle {
+            id: 1,
+            style: Style {
+                align_items: prism_core::Align::Start,
+                ..Style::default()
+            },
+        },
+        Patch::SetStyle { id: 2, style: leaf },
+        Patch::SetChildren {
+            id: 1,
+            children: vec![2],
+        },
+        Patch::SetRoot { id: 1 },
+    ]);
+    r.layout(400., 800., prism_native::Insets::default());
+    let frame = r
+        .widgets
+        .ops
+        .iter()
+        .rev()
+        .find(|o| o["op"] == "frame" && o["id"] == 2)
+        .cloned()
+        .expect("a frame");
+    // 40 × 16 of text, 12 and 4 around it.
+    assert_eq!(frame["f"], json!([0., 0., 64., 24.]));
+    let style = r
+        .widgets
+        .ops
+        .iter()
+        .find(|o| o["op"] == "style" && o["id"] == 2)
+        .cloned()
+        .expect("a style");
+    assert_eq!(style["s"]["pad"], json!([4., 12., 4., 12.]));
+}

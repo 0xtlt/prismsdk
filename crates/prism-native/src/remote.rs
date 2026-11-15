@@ -62,6 +62,14 @@
 //! radius; `cursor`: a CSS cursor name. Colors are already resolved
 //! ([`prism_core::Color::current`] included).
 //!
+//! A leaf's `style` carries `pad`: `[top, right, bottom, left]` (already
+//! mirrored right to left) when it has padding: a text, timer, button, text
+//! input or text area draws its content inset by it inside its frame, in
+//! place of the control's own inset (the frame already includes it; other
+//! leaves get a frame inside their padding and no `pad`). `bnone: true`
+//! (`.border(0.)`): a field draws no frame of its own (an input's
+//! underline or bezel, a date picker's pill) unless the style paints one.
+//!
 //! The host reports interaction states as `{"t":"state","id":…,"s":"hover",
 //! "on":true}` (see [`state_event`]).
 
@@ -358,6 +366,16 @@ impl RemoteWidgets {
             op["s"]["hscroll"] = json!(true);
         }
         decorations(&mut op["s"], s);
+        // A leaf's padding (#14), only when set: inset the content (text,
+        // title, an input's text) by it, in place of the control's own.
+        let p = s.padding;
+        if !p.is_zero() {
+            op["s"]["pad"] = json!([p.top, p.right, p.bottom, p.left]);
+        }
+        // `.border(0.)`: not even a field's own frame.
+        if s.border_none {
+            op["s"]["bnone"] = json!(true);
+        }
         // Hit testing (#19), only when not the default.
         if !s.hit_test {
             op["s"]["hit"] = json!(false);
@@ -437,6 +455,43 @@ pub fn state_event(v: &Value) -> Option<(NodeId, prism_core::Interaction, bool)>
         prism_core::Interaction::from_name(v.get("s")?.as_str()?)?,
         v.get("on")?.as_bool()?,
     ))
+}
+
+impl RemoteWidgets {
+    /// A button, text input or text area with padding: its content alone,
+    /// measured as text (the padding replaces the control's own insets, and
+    /// the layout adds it). An input is one line of text 10 em wide (as wide
+    /// as it may be), a text area at least three lines, 17.5 em wide.
+    fn measure_padded(
+        &mut self,
+        id: &NodeId,
+        kind: NodeKind,
+        style: &Style,
+        max_width: Option<f32>,
+    ) -> (f32, f32) {
+        let value = self.texts.get(id).cloned().unwrap_or_default();
+        let text = match kind {
+            NodeKind::TextInput => "Ag".to_string(),
+            NodeKind::TextArea if value.lines().count() < 3 => "Ag\nAg\nAg".to_string(),
+            _ => value,
+        };
+        let spec = Value::Object(typography(style)).to_string();
+        let em = style.font_size;
+        let width = match kind {
+            NodeKind::TextInput => Some(max_width.unwrap_or(10. * em)),
+            NodeKind::TextArea => Some(max_width.unwrap_or(17.5 * em)),
+            _ => None,
+        };
+        let (w, h) = (self.measure)(&MeasureRequest {
+            kind: "text",
+            text: &text,
+            font_size: style.font_size,
+            weight: weight(style.font_weight),
+            max_width: width.or(max_width),
+            spec: if spec == "{}" { "" } else { &spec },
+        });
+        (width.unwrap_or(w), h)
+    }
 }
 
 impl Widgets for RemoteWidgets {
@@ -532,6 +587,9 @@ impl Widgets for RemoteWidgets {
     fn measure(&mut self, id: &NodeId, max_width: Option<f32>) -> (f32, f32) {
         let kind = self.kinds.get(id).copied().unwrap_or(NodeKind::View);
         let style = self.styles.get(id).cloned().unwrap_or_default();
+        if !style.padding.is_zero() && kind != NodeKind::Text && kind != NodeKind::Timer {
+            return self.measure_padded(id, kind, &style, max_width);
+        }
         let text = match kind {
             NodeKind::Timer => "00:00".to_string(),
             NodeKind::Image => self.icons.get(id).cloned().unwrap_or_default(),

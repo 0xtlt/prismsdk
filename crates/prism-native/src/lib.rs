@@ -18,6 +18,9 @@ pub mod text;
 
 pub use extras::Sticky;
 
+#[cfg(test)]
+mod padding_tests;
+
 use prism_core::{
     Accessibility, Align, Appearance, Backend, Direction, FlexDirection, Justify, Length, NodeId,
     NodeKind, Patch, Pose, RenderEnvironment, Style, TextAlign, Transition,
@@ -280,6 +283,44 @@ fn is_container(kind: NodeKind) -> bool {
     )
 }
 
+/// Leaves that draw their own padding: the backend gets it as
+/// `style.padding` in [`Widgets::set_style`] (zoomed, leading = left) and
+/// insets their content by it inside their frame: a text, an input's text,
+/// a button's title. Set on a button, text input or text area, it replaces
+/// the control's own content inset; `measure` then returns the bare content
+/// size (taffy adds the padding). Other leaves (images, pictures, switches,
+/// sliders, progress bars, spinners, checkboxes, radio groups, pickers, date
+/// pickers, shapes) are placed inside their padding by the renderer: their
+/// frame is the content box, their own chrome keeps its inset.
+pub fn draws_padding(kind: NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Text
+            | NodeKind::Timer
+            | NodeKind::Button
+            | NodeKind::TextInput
+            | NodeKind::TextArea
+    )
+}
+
+/// The frame a node's view gets: its box, or for leaves placed inside
+/// their padding (see [`draws_padding`]) the box minus the padding.
+fn content_box(
+    kind: NodeKind,
+    style: &Style,
+    zoom: f32,
+    rtl: bool,
+    (x, y, w, h): (f32, f32, f32, f32),
+) -> (f32, f32, f32, f32) {
+    let p = style.padding;
+    if is_container(kind) || draws_padding(kind) || p.is_zero() {
+        return (x, y, w, h);
+    }
+    let p = if rtl { p.mirrored() } else { p };
+    let (l, r, t, b) = (p.left * zoom, p.right * zoom, p.top * zoom, p.bottom * zoom);
+    (x + l, y + t, (w - l - r).max(0.), (h - t - b).max(0.))
+}
+
 /// The area a navigation stack gives to one of its screens.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Viewport {
@@ -443,15 +484,27 @@ impl<W: Widgets> NativeRenderer<W> {
             s.transition = None;
             s.animations = Default::default();
         }
+        // What the backend insets the content by (leading = left); the
+        // layout applies everyone else's.
+        s.padding = if !draws_padding(kind) {
+            prism_core::Edges::default()
+        } else if self.env.direction == Direction::Rtl {
+            s.padding.mirrored()
+        } else {
+            s.padding
+        };
         s
     }
 
     /// Places a view, animating if its style asks for it. The first time, an
     /// element with an enter pose starts there and animates to its style.
     fn set_frame(&mut self, id: NodeId, x: f32, y: f32, w: f32, h: f32) {
+        let rtl = self.env.direction == Direction::Rtl;
+        let zoom = self.zoom;
         let Some(e) = self.nodes.get_mut(&id) else {
             return;
         };
+        let (x, y, w, h) = content_box(e.kind, &e.style, zoom, rtl, (x, y, w, h));
         let frame = (x, y, w, h);
         let previous = e.frame.replace(frame);
         // Unchanged: no native call (big trees relayout on every change).
@@ -663,6 +716,7 @@ impl<W: Widgets> NativeRenderer<W> {
         let baselines = self.extras.baselines;
         let (by_layout, nodes) = (&self.by_layout, &self.nodes);
         let font = self.zoom * self.env.text_scale;
+        let zoom = self.zoom;
         let result = self.taffy.compute_layout_with_measure(
             node,
             Size {
@@ -671,6 +725,13 @@ impl<W: Widgets> NativeRenderer<W> {
             },
             |input, node, view, style| {
                 let view: Option<&W::View> = view.map(|v| &*v);
+                // The leaf's padding: taffy adds it around the content size
+                // we measure (known sizes include it).
+                let pad = by_layout
+                    .get(&node)
+                    .and_then(|id| nodes.get(id))
+                    .map_or(prism_core::Edges::default(), |e| e.style.padding);
+                let (pad_x, pad_y) = ((pad.left + pad.right) * zoom, (pad.top + pad.bottom) * zoom);
                 // Leaf layout (style size, min/max, padding) is taffy's; we only
                 // provide the content size of native leaves.
                 let mut out = taffy::compute_leaf_layout(
@@ -680,6 +741,10 @@ impl<W: Widgets> NativeRenderer<W> {
                     |known, available| {
                         let Some(view) = view else {
                             return Size::ZERO;
+                        };
+                        let known = Size {
+                            width: known.width.map(|w| (w - pad_x).max(0.)),
+                            height: known.height.map(|h| (h - pad_y).max(0.)),
                         };
                         // Single-line text (see `to_taffy`): its natural width,
                         // cut by its frame.
@@ -705,11 +770,18 @@ impl<W: Widgets> NativeRenderer<W> {
                 );
                 // `items_baseline()`: where the first line of text sits.
                 if baselines && let Some(view) = view {
-                    let (w, h) = (out.size.width, out.size.height);
-                    out.baselines.first = widgets.baseline(view, w, h).or_else(|| {
-                        let e = by_layout.get(&node).and_then(|id| nodes.get(id))?;
-                        extras::estimated_baseline(e.kind, e.style.font_size * font, h)
-                    });
+                    // Measured in the content box, below the top padding.
+                    let (w, h) = (
+                        (out.size.width - pad_x).max(0.),
+                        (out.size.height - pad_y).max(0.),
+                    );
+                    out.baselines.first = widgets
+                        .baseline(view, w, h)
+                        .or_else(|| {
+                            let e = by_layout.get(&node).and_then(|id| nodes.get(id))?;
+                            extras::estimated_baseline(e.kind, e.style.font_size * font, h)
+                        })
+                        .map(|b| b + pad.top * zoom);
                 }
                 out
             },
@@ -1388,7 +1460,6 @@ pub fn to_taffy(s: &Style, kind: NodeKind) -> taffy::Style {
         bottom: LengthPercentageAuto::length(s.margin.bottom),
         left: LengthPercentageAuto::length(s.margin.left),
     };
-    let container = is_container(kind);
     let mut style = taffy::Style {
         display: if s.display_none {
             taffy::Display::None
@@ -1418,12 +1489,9 @@ pub fn to_taffy(s: &Style, kind: NodeKind) -> taffy::Style {
             width: LengthPercentage::length(s.gap),
             height: LengthPercentage::length(s.gap),
         },
-        // Leaves (text, buttons, inputs) draw their own insets natively.
-        padding: if container {
-            edges(s.padding)
-        } else {
-            Rect::zero()
-        },
+        // Leaves too: taffy adds it around their measured content, and the
+        // content is drawn inset by it (see `draws_padding`).
+        padding: edges(s.padding),
         border: Rect::zero(),
         margin,
         position: match s.position {

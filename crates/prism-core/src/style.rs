@@ -324,6 +324,18 @@ pub struct Edges {
 }
 
 impl Edges {
+    /// Whether every edge is zero.
+    pub fn is_zero(&self) -> bool {
+        (self.top, self.right, self.bottom, self.left) == (0., 0., 0., 0.)
+    }
+    /// Left and right swapped (leading/trailing in a right-to-left layout).
+    pub fn mirrored(self) -> Self {
+        Edges {
+            left: self.right,
+            right: self.left,
+            ..self
+        }
+    }
     /// The same value on every edge.
     pub fn all(v: f32) -> Self {
         Edges {
@@ -577,7 +589,8 @@ pub struct Style {
     pub justify_content: Justify,
     /// Space between children, points.
     pub gap: f32,
-    /// Inner spacing, points.
+    /// Inner spacing, points, on containers and leaves alike (see
+    /// [`Styled::p`]).
     pub padding: Edges,
     /// Outer spacing, points.
     pub margin: Edges,
@@ -742,6 +755,11 @@ pub struct Style {
     /// no keyboard focus, hidden from assistive technologies (`inert`).
     /// Still drawn.
     pub inert: bool,
+
+    // --- Padding on every node, borderless fields (#14) ---
+    /// `.border(0.)` was called: no border at all, not even the platform's
+    /// default one around text inputs, text areas, pickers and date pickers.
+    pub border_none: bool,
 }
 
 impl Style {
@@ -1261,6 +1279,8 @@ impl Default for Style {
             translate_percent: (0., 0.),
             hit_test: true,
             inert: false,
+
+            border_none: false,
         }
     }
 }
@@ -1371,7 +1391,11 @@ pub trait Styled: Sized {
     }
 
     // Spacing
-    /// Padding on every edge, points.
+    /// Padding on every edge, points. Works on every kind of node: the box
+    /// (background, border, rounding) grows by it and the content (a text,
+    /// an input's text, a button's title, a control) is inset by it. On a
+    /// button, text input, text area or picker it replaces the control's
+    /// own inset.
     fn p(self, v: f32) -> Self {
         self.with_style(|s| s.padding = Edges::all(v))
     }
@@ -1559,9 +1583,14 @@ pub trait Styled: Sized {
     fn rounded_bottom(self, r: f32) -> Self {
         self.rounded_corners(r, Corners::BOTTOM)
     }
-    /// Border width, points.
+    /// Border width, points. `border(0.)` removes every border, the
+    /// default one of text inputs, text areas, pickers and date pickers
+    /// included (a borderless field).
     fn border(self, w: f32) -> Self {
-        self.with_style(|s| s.border_width = w)
+        self.with_style(|s| {
+            s.border_width = w;
+            s.border_none = w <= 0.;
+        })
     }
     /// Border color.
     fn border_color(self, c: Color) -> Self {

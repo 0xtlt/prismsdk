@@ -93,22 +93,21 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
         let _ = write!(w, "gap:{}px;", s.gap);
     }
     let p = s.padding;
-    let container = matches!(
-        kind,
-        NodeKind::View
-            | NodeKind::Stack
-            | NodeKind::Screen
-            | NodeKind::Scroll
-            | NodeKind::Tabs
-            | NodeKind::Tab
-    );
-    // Logical sides: left/right are leading/trailing, so `dir=rtl` mirrors
-    // them like native backends do.
-    if container && (p.top, p.right, p.bottom, p.left) != (0., 0., 0., 0.) {
+    // Every kind of node: a text, input or button grows by it and its
+    // content is inset by it (on a button, input or select it replaces the
+    // control's own inset). Logical sides: left/right are leading/trailing,
+    // so `dir=rtl` mirrors them like native backends do.
+    if !p.is_zero() {
+        // A select keeps room for its arrow after the text.
+        let end = if kind == NodeKind::Picker {
+            p.right + 22.
+        } else {
+            p.right
+        };
         let _ = write!(
             w,
-            "padding-block:{}px {}px;padding-inline:{}px {}px;",
-            p.top, p.bottom, p.left, p.right
+            "padding-block:{}px {}px;padding-inline:{}px {end}px;",
+            p.top, p.bottom, p.left
         );
     }
     if s.position != Position::Relative {
@@ -153,8 +152,9 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
     layout_extras(kind, s, w);
 
     if let Some(bg) = s.background {
-        // A picker keeps its drawn arrow (a background image).
-        let prop = if kind == NodeKind::Picker {
+        // A picker keeps its drawn arrow, an input its leading icon (a
+        // background image).
+        let prop = if matches!(kind, NodeKind::Picker | NodeKind::TextInput) {
             "background-color"
         } else {
             "background"
@@ -258,24 +258,46 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
     match kind {
         NodeKind::Button => {
             w.push_str("font-family:inherit;cursor:pointer;justify-content:center;");
-            if s.background.is_some() {
-                let _ = write!(
-                    w,
-                    "border:{};padding:{}px {}px;",
-                    if has_border(s) { "" } else { "none" },
-                    6. + p.top,
-                    14. + p.left
-                );
+            if s.background.is_some() && !has_border(s) {
+                w.push_str("border:none;");
+            }
+            // A filled button's own inset, unless the app sets one.
+            if s.background.is_some() && p.is_zero() {
+                w.push_str("padding:6px 14px;");
             }
         }
         NodeKind::TextArea if s.border_width > 0. => w.push_str("font-family:inherit;"),
         NodeKind::TextInput => {
-            w.push_str("font-family:inherit;padding:6px 8px;");
-            if !has_border(s) {
+            w.push_str("font-family:inherit;");
+            // The field's own inset and border, unless the app sets them
+            // (`.border(0.)`: none at all).
+            if p.is_zero() {
+                w.push_str("padding:6px 8px;");
+            } else {
+                // An icon field keeps room for its icon (`prism.css`).
+                let _ = write!(w, "--prism-pl:{}px;", p.left);
+            }
+            if !has_border(s) && !s.border_none {
                 w.push_str("border:1px solid rgba(128,128,128,.45);border-radius:6px;");
             }
         }
         _ => {}
+    }
+    // `.border(0.)`: not even the default border of a field.
+    if s.border_none
+        && !has_border(s)
+        && matches!(
+            kind,
+            NodeKind::TextInput
+                | NodeKind::TextArea
+                | NodeKind::Picker
+                | NodeKind::DatePicker
+                | NodeKind::Button
+        )
+        // (A filled button has none already.)
+        && !(kind == NodeKind::Button && s.background.is_some())
+    {
+        w.push_str("border:none;");
     }
     if kind != NodeKind::View {
         typography(kind, s, w);

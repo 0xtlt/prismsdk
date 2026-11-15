@@ -361,7 +361,11 @@
     "own_width": "Requête de conteneur",
     "own_width_note": "En ligne dès que cette carte fait 420 pt de large, en colonne en dessous, quelle que soit la fenêtre.",
     "wide_window": "Visible dans les fenêtres d’au moins 768 pt.",
-    "fab": "Ajouter un appui"
+    "fab": "Ajouter un appui",
+    "badges": "Payée,En attente,En retard",
+    "padding_note": "Du padding sur un texte et sur des champs : la puce grandit autour de son texte, le texte du champ commence après son icône.",
+    "search": "Rechercher des commandes",
+    "borderless": "Sans bordure"
   },
   "typography": {
     "title": "Typographie",

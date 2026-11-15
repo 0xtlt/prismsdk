@@ -1269,7 +1269,8 @@ impl Widgets for Gtk {
         }
         if let View::TextArea(_, t) = view {
             // Prism draws the field: the text view is transparent inside.
-            let drawn = s.background.is_some() || s.borders().iter().any(|b| b.width > 0.);
+            let drawn =
+                s.background.is_some() || s.borders().iter().any(|b| b.width > 0.) || s.border_none;
             t.scroll.set_has_frame(!drawn);
             if drawn {
                 extra += &format!(
@@ -1284,6 +1285,25 @@ impl Widgets for Gtk {
         );
         if let View::Text(..) = view {
             extra += &text::link_css(id);
+        }
+        // Padding (#14): drawn by GTK in place of the theme's, or the text
+        // view's margins; `.border(0.)`: not even the theme's frame.
+        crate::padding::remember(id, s);
+        match view {
+            View::Text(..) | View::Timer(..) | View::Button(..) | View::Input(..) => {
+                css += &crate::padding::css(s)
+            }
+            View::TextArea(_, t) => t.set_padding(s.padding),
+            _ => {}
+        }
+        if s.border_none && !s.borders().iter().any(|b| b.width > 0.) {
+            match view {
+                View::Input(..) | View::Button(..) => css += crate::padding::NO_BORDER,
+                View::Picker(..) | View::DatePicker(..) => {
+                    extra += &format!(".p{id} > button{{{}}}\n", crate::padding::NO_BORDER)
+                }
+                _ => {}
+            }
         }
         // Hover, press and focus refinements: GTK's own pseudo-classes.
         let text_on_self = !matches!(
@@ -1631,21 +1651,26 @@ impl Widgets for Gtk {
 
     fn measure(&mut self, view: &View, max_width: Option<f32>) -> (f32, f32) {
         let w = view.widget();
+        // GTK measures with the CSS padding: the content is without it
+        // (the layout adds it, #14).
+        let p = crate::padding::of(view.id());
+        let (px, py) = (p.left + p.right, p.top + p.bottom);
         let (_, nat_w, _, _) = w.measure(gtk::Orientation::Horizontal, -1);
+        let nat_w = (nat_w as f32 - px).max(0.);
         let width = match (view, max_width) {
-            (View::Text(..), Some(m)) => (nat_w as f32).min(m),
+            (View::Text(..), Some(m)) => nat_w.min(m),
             (View::Input(..) | View::Progress(..), Some(m)) => m,
             // GtkScale's natural width is its knob: sliders take 200 px.
             (View::Slider(..), m) => m.map_or(200., |m| m.min(200.)),
             // As wide as offered; as tall as its text, at least 3 lines.
             (View::TextArea(_, t), m) => {
                 let w = m.unwrap_or(240.).ceil();
-                return (w, t.measure_height(w).ceil());
+                return (w, (t.measure_height(w + px) - py).max(0.).ceil());
             }
-            _ => nat_w as f32,
+            _ => nat_w,
         };
-        let (_, nat_h, _, _) = w.measure(gtk::Orientation::Vertical, width.ceil() as i32);
-        (width.ceil(), nat_h as f32)
+        let (_, nat_h, _, _) = w.measure(gtk::Orientation::Vertical, (width + px).ceil() as i32);
+        (width.ceil(), (nat_h as f32 - py).max(0.))
     }
 
     /// GTK's minimum width of a wrapping label is its longest word.

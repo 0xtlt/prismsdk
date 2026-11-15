@@ -17,7 +17,7 @@ use objc2::{
     AnyThread, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
     sel,
 };
-use objc2_core_foundation::{CGPoint, CGSize};
+use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{
     NSArray, NSAttributedString, NSDictionary, NSMutableAttributedString, NSNumber, NSObject,
     NSObjectProtocol, NSRange, NSString,
@@ -43,6 +43,8 @@ pub struct LabelIvars {
     /// What is drawn (links, for taps).
     styled: RefCell<Option<StyledText>>,
     tap: RefCell<Option<Retained<UITapGestureRecognizer>>>,
+    /// Padding (#14): the text is drawn this far inside the bounds.
+    insets: Cell<prism_core::Edges>,
 }
 
 define_class!(
@@ -55,6 +57,14 @@ define_class!(
     unsafe impl NSObjectProtocol for PrismLabel {}
 
     impl PrismLabel {
+        /// The text inside the padding; the box (background, border) fills
+        /// the bounds.
+        #[unsafe(method(drawTextInRect:))]
+        fn draw_text_in_rect(&self, rect: CGRect) {
+            let rect = inset(rect, self.ivars().insets.get());
+            unsafe { msg_send![super(self), drawTextInRect: rect] }
+        }
+
         #[unsafe(method(prismTap:))]
         fn prism_tap(&self, tap: &UITapGestureRecognizer) {
             let p = tap.locationInView(Some(self));
@@ -134,7 +144,8 @@ impl PrismLabel {
         let styled = styled.as_ref().filter(|s| s.has_links())?;
         let attributed = self.attributedText()?;
         let lines = self.numberOfLines();
-        let rect = self.textRectForBounds_limitedToNumberOfLines(self.bounds(), lines);
+        let bounds = inset(self.bounds(), self.ivars().insets.get());
+        let rect = self.textRectForBounds_limitedToNumberOfLines(bounds, lines);
         let storage = NSTextStorage::new();
         storage.setAttributedString(&attributed);
         let layout = NSLayoutManager::new();
@@ -230,6 +241,7 @@ pub fn new_label(mtm: MainThreadMarker, id: NodeId) -> Retained<PrismLabel> {
         style: RefCell::new(Style::default()),
         styled: RefCell::new(None),
         tap: RefCell::new(None),
+        insets: Cell::new(Default::default()),
     });
     let l: Retained<PrismLabel> = unsafe { msg_send![super(this), init] };
     l.setNumberOfLines(0);
@@ -250,7 +262,35 @@ pub fn set_runs(l: &PrismLabel, runs: &str) {
 
 pub fn set_style(l: &PrismLabel, style: &Style) {
     *l.ivars().style.borrow_mut() = style.clone();
+    set_insets(l, style.padding);
     l.refresh();
+}
+
+/// Draws the text `e` inside the bounds (a text's or a timer's padding).
+pub fn set_insets(l: &PrismLabel, e: prism_core::Edges) {
+    if l.ivars().insets.get() != e {
+        l.ivars().insets.set(e);
+        l.setNeedsDisplay();
+    }
+}
+
+/// A timer's label: a plain one-line label that can draw inside a padding.
+pub fn new_timer(mtm: MainThreadMarker, id: NodeId) -> Retained<PrismLabel> {
+    let l = new_label(mtm, id);
+    l.setNumberOfLines(1);
+    l
+}
+
+/// `rect` minus `e` (left/right already mirrored right to left).
+pub fn inset(rect: CGRect, e: prism_core::Edges) -> CGRect {
+    let (l, r, t, b) = (e.left as f64, e.right as f64, e.top as f64, e.bottom as f64);
+    CGRect::new(
+        CGPoint::new(rect.origin.x + l, rect.origin.y + t),
+        CGSize::new(
+            (rect.size.width - l - r).max(0.),
+            (rect.size.height - t - b).max(0.),
+        ),
+    )
 }
 
 pub fn set_clickable(l: &PrismLabel, clickable: bool) {

@@ -166,6 +166,19 @@ define_class!(
             self.bounds()
         }
 
+        /// The text's box (background, border, rounding) under the text,
+        /// which is drawn inside the padding (#14).
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, dirty: NSRect) {
+            let style = self.ivars().style.borrow().clone();
+            crate::padding::draw_box(self, &style);
+            let inner = crate::padding::inset_rect(self, self.bounds(), style.padding);
+            match self.cell() {
+                Some(cell) if !style.padding.is_zero() => cell.drawWithFrame_inView(inner, self),
+                _ => unsafe { msg_send![super(self), drawRect: dirty] },
+            }
+        }
+
         #[unsafe(method(drawFocusRingMask))]
         fn draw_focus_ring_mask(&self) {
             NSBezierPath::fillRect(self.bounds());
@@ -214,7 +227,9 @@ impl PrismLabel {
         let styled = self.ivars().styled.borrow();
         let styled = styled.as_ref().filter(|s| s.has_links())?;
         let cell = self.cell()?;
-        let rect = cell.titleRectForBounds(self.bounds());
+        let padding = self.ivars().style.borrow().padding;
+        let inner = crate::padding::inset_rect(self, self.bounds(), padding);
+        let rect = cell.titleRectForBounds(inner);
         let attributed = self.attributedStringValue();
         let storage = NSTextStorage::new();
         storage.setAttributedString(&attributed);
@@ -316,6 +331,8 @@ pub fn set_runs(l: &PrismLabel, runs: &str) {
 pub fn set_style(l: &PrismLabel, style: &Style) {
     *l.ivars().style.borrow_mut() = style.clone();
     l.refresh();
+    // Its box and padding are drawn by `drawRect:`.
+    NSView::setNeedsDisplay(l, true);
 }
 
 pub fn set_clickable(l: &PrismLabel, clickable: bool) {

@@ -358,6 +358,8 @@ pub struct TextArea {
     pub scroll: gtk::ScrolledWindow,
     pub view: gtk::TextView,
     placeholder: gtk::Label,
+    /// The text's insets: left, right, top, bottom (its padding, #14).
+    pad: Cell<(i32, i32, i32, i32)>,
 }
 
 pub fn text_area(id: NodeId) -> Rc<TextArea> {
@@ -396,6 +398,7 @@ pub fn text_area(id: NodeId) -> Rc<TextArea> {
         scroll,
         view,
         placeholder,
+        pad: Cell::new((AREA_PAD_X, AREA_PAD_X, AREA_PAD_Y, AREA_PAD_Y)),
     })
 }
 
@@ -418,15 +421,39 @@ impl TextArea {
         self.placeholder.set_text(text);
     }
 
+    /// Its padding replaces the text's own insets (10 × 8), left and right
+    /// as drawn (already mirrored right to left).
+    pub fn set_padding(&self, p: prism_core::Edges) {
+        let pad = if p.is_zero() {
+            (AREA_PAD_X, AREA_PAD_X, AREA_PAD_Y, AREA_PAD_Y)
+        } else {
+            let r = |v: f32| v.round() as i32;
+            (r(p.left), r(p.right), r(p.top), r(p.bottom))
+        };
+        if self.pad.replace(pad) == pad {
+            return;
+        }
+        let (l, r, t, b) = pad;
+        self.view.set_left_margin(l);
+        self.view.set_right_margin(r);
+        self.view.set_top_margin(t);
+        self.view.set_bottom_margin(b);
+        let rtl = self.root.direction() == gtk::TextDirection::Rtl;
+        self.placeholder.set_margin_start(if rtl { r } else { l });
+        self.placeholder.set_margin_end(if rtl { l } else { r });
+        self.placeholder.set_margin_top(t);
+    }
+
     /// Content height for `width`: at least three lines, insets included.
     pub fn measure_height(&self, width: f32) -> f32 {
-        let inner = (width - 2. * AREA_PAD_X as f32).max(1.);
+        let (l, r, t, b) = self.pad.get();
+        let inner = (width - (l + r) as f32).max(1.);
         let layout = self.view.create_pango_layout(Some(&self.text()));
         layout.set_width((inner * gtk::pango::SCALE as f32) as i32);
         layout.set_wrap(gtk::pango::WrapMode::WordChar);
         let text_h = layout.pixel_size().1 as f32;
         let line = self.view.create_pango_layout(Some("Ag")).pixel_size().1 as f32;
-        text_h.max(line * 3.) + 2. * AREA_PAD_Y as f32
+        text_h.max(line * 3.) + (t + b) as f32
     }
 }
 
