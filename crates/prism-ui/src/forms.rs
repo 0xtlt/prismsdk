@@ -607,7 +607,10 @@ impl Render for Toaster {
                         .text_color(fg)
                         .text_size(t.font_size - 1.)
                         .medium()
-                        .flex_1(),
+                        .flex_1()
+                        // Wraps on narrow screens (watches) instead of pushing
+                        // the action out.
+                        .min_w(px(0.)),
                 )
                 .when_some(toast.action.clone(), |d, (label, h)| {
                     d.child(
@@ -615,6 +618,7 @@ impl Render for Toaster {
                             .px(8.)
                             .py(4.)
                             .rounded(t.radius)
+                            .flex_shrink_0()
                             .accessibility_role(Role::Button)
                             .accessibility_label(label.clone())
                             .child(

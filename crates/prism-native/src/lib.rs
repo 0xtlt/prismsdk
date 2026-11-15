@@ -488,6 +488,36 @@ impl<W: Widgets> NativeRenderer<W> {
             width: Dimension::length(vp.width),
             height: Dimension::length(vp.height),
         };
+        // Absolutely positioned children (toasts, floating buttons) are placed
+        // against the screen's edges, not its padding: keep them inside the
+        // safe area so bars and the keyboard don't cover them.
+        let safe = vp.insets;
+        let floating: Vec<(taffy::NodeId, prism_core::Inset)> = self
+            .taffy
+            .children(sc.layout)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|c| {
+                let n = self.by_layout.get(&c).and_then(|id| self.nodes.get(id))?;
+                (n.style.position == prism_core::Position::Absolute)
+                    .then(|| (c, n.style.scaled(self.zoom).inset))
+            })
+            .collect();
+        let shift = |l: Length, by: f32| match l {
+            Length::Px(v) => LengthPercentageAuto::length(v + by),
+            other => lpa(other),
+        };
+        for (child, inset) in floating {
+            if let Ok(mut st) = self.taffy.style(child).cloned() {
+                st.inset = Rect {
+                    top: shift(inset.top, safe.top),
+                    right: shift(inset.right, safe.right),
+                    bottom: shift(inset.bottom, safe.bottom),
+                    left: shift(inset.left, safe.left),
+                };
+                let _ = self.taffy.set_style(child, st);
+            }
+        }
         let layout = sc.layout;
         let _ = self.taffy.set_style(layout, style);
         if self.compute(layout, vp.width, vp.height) {
