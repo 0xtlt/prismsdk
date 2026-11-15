@@ -812,10 +812,19 @@ public final class PrismHost {
         if (bg != null || border != null || radius > 0) {
             GradientDrawable d = new GradientDrawable();
             d.setColor(bg != null ? bg : Color.TRANSPARENT);
-            d.setCornerRadius(radius);
+            int corners = s.optInt("corners", 15);
+            if (corners == 15) {
+                d.setCornerRadius(radius);
+            } else {
+                // Bits: 1 top left, 2 top right, 4 bottom right, 8 bottom left.
+                float tl = (corners & 1) != 0 ? radius : 0, tr = (corners & 2) != 0 ? radius : 0;
+                float br = (corners & 4) != 0 ? radius : 0, bl = (corners & 8) != 0 ? radius : 0;
+                d.setCornerRadii(new float[] {tl, tl, tr, tr, br, br, bl, bl});
+            }
             if (border != null) d.setStroke(Math.max(1, Math.round((float) s.optDouble("bw", 1))), border);
             if (!(n.view instanceof Button) || bg != null) n.view.setBackground(d);
-            n.view.setClipToOutline(radius > 0);
+            // Outlines clip to one radius only.
+            n.view.setClipToOutline(radius > 0 && corners == 15);
         } else if (n.host != null && !(n.view instanceof ScrollView)) {
             n.view.setBackground(null);
         }

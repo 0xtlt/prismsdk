@@ -281,3 +281,32 @@ fn unchanged_frames_are_not_sent_again() {
         "a relayout at the same size touches no view"
     );
 }
+
+#[test]
+fn right_to_left_swaps_leading_and_trailing_corners() {
+    use prism_core::Corners;
+    let mut h = tree(|| {
+        div()
+            .child(
+                div()
+                    .w(50.)
+                    .h(10.)
+                    .rounded_corners(4., Corners::TOP_LEADING),
+            )
+            .child(div().w(50.).h(10.).rounded_top(4.))
+    });
+    let f = h.layout(400., 300.);
+    let (lead, top) = (f.of_kind(NodeKind::View)[1], f.of_kind(NodeKind::View)[2]);
+    assert_eq!(f.styles[&lead].rounded_corners, Corners::TOP_LEADING);
+    assert_eq!(f.styles[&top].rounded_corners, Corners::TOP);
+
+    h.rt.app.set_locale(Some(Locale::new("ar")));
+    h.rerender();
+    let f = h.layout(400., 300.);
+    assert_eq!(
+        f.styles[&lead].rounded_corners,
+        Corners::TOP_TRAILING,
+        "backends get leading = left"
+    );
+    assert_eq!(f.styles[&top].rounded_corners, Corners::TOP, "symmetric");
+}

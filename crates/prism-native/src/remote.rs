@@ -154,7 +154,7 @@ fn weight(w: FontWeight) -> i32 {
 impl RemoteWidgets {
     fn style_op(&mut self, id: &NodeId, s: &Style) -> Value {
         self.styles.insert(*id, s.clone());
-        json!({ "op": "style", "id": id, "s": {
+        let mut op = json!({ "op": "style", "id": id, "s": {
             "bg": color(s.background),
             "radius": s.corner_radius,
             "bw": s.border_width,
@@ -165,7 +165,13 @@ impl RemoteWidgets {
             "font": s.font_size,
             "weight": weight(s.font_weight),
             "talign": match s.text_align { TextAlign::Left => "left", TextAlign::Center => "center", TextAlign::Right => "right" },
-        }})
+        }});
+        // Only some corners rounded: bits 1 top left, 2 top right, 4 bottom
+        // right, 8 bottom left (already mirrored for right to left).
+        if s.rounded_corners != prism_core::Corners::ALL {
+            op["s"]["corners"] = json!(s.rounded_corners.bits());
+        }
+        op
     }
 }
 

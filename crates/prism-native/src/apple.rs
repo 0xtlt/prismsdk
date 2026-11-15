@@ -637,3 +637,38 @@ pub mod motion {
         CATransform3D::new_affine_transform(t)
     }
 }
+
+/// The Core Animation corner mask for `corners` (leading = left: prism-native
+/// already mirrored right-to-left layouts). `y_down`: the layer's y axis
+/// points down (UIKit, and AppKit layers with flipped geometry).
+pub fn corner_mask(corners: prism_core::Corners, y_down: bool) -> objc2_quartz_core::CACornerMask {
+    use objc2_quartz_core::CACornerMask as M;
+    use prism_core::Corners as C;
+    let (top_left, top_right, bottom_right, bottom_left) = if y_down {
+        (
+            M::LayerMinXMinYCorner,
+            M::LayerMaxXMinYCorner,
+            M::LayerMaxXMaxYCorner,
+            M::LayerMinXMaxYCorner,
+        )
+    } else {
+        (
+            M::LayerMinXMaxYCorner,
+            M::LayerMaxXMaxYCorner,
+            M::LayerMaxXMinYCorner,
+            M::LayerMinXMinYCorner,
+        )
+    };
+    let mut mask = M::empty();
+    for (corner, bit) in [
+        (C::TOP_LEADING, top_left),
+        (C::TOP_TRAILING, top_right),
+        (C::BOTTOM_TRAILING, bottom_right),
+        (C::BOTTOM_LEADING, bottom_left),
+    ] {
+        if corners.contains(corner) {
+            mask |= bit;
+        }
+    }
+    mask
+}

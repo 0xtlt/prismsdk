@@ -227,6 +227,14 @@ struct Node {
     var paths: [[String: Any]] = []
 
     func num(_ k: String, _ d: Double = 0) -> Double { (style[k] as? NSNumber)?.doubleValue ?? d }
+    /// The node's box: its radius on the corners it rounds (`corners` bits:
+    /// 1 top left, 2 top right, 4 bottom right, 8 bottom left; Rust already
+    /// mirrored them for right to left).
+    func box() -> UnevenRoundedRectangle {
+        let r = num("radius"), c = Int(num("corners", 15))
+        func at(_ bit: Int) -> Double { c & bit != 0 ? r : 0 }
+        return UnevenRoundedRectangle(topLeadingRadius: at(1), bottomLeadingRadius: at(8), bottomTrailingRadius: at(4), topTrailingRadius: at(2))
+    }
     func str(_ k: String) -> String? { style[k] as? String }
     func color(_ k: String, dark: Bool) -> Color? { PrismColor(style[k]).map { dark ? $0.dark : $0.light } }
 }
@@ -469,11 +477,11 @@ struct NodeView: View {
             let height = store.snapshotting && n.kind == "scroll" ? max(n.content.height, n.frame.height) : n.frame.height
             content(n, dark: dark)
                 .frame(width: n.frame.width, height: height, alignment: .topLeading)
-                .background(n.color("bg", dark: dark).map { RoundedRectangle(cornerRadius: n.num("radius")).fill($0) })
+                .background(n.color("bg", dark: dark).map { n.box().fill($0) })
                 .overlay(n.color("bc", dark: dark).map {
-                    RoundedRectangle(cornerRadius: n.num("radius")).strokeBorder($0, lineWidth: n.num("bw", 1))
+                    n.box().strokeBorder($0, lineWidth: n.num("bw", 1))
                 })
-                .modifier(RoundedClip(radius: n.num("radius")))
+                .modifier(RoundedClip(radius: n.num("radius"), shape: n.box()))
                 .modifier(PrismPosed(pose: PrismPose(opacity: n.num("opacity", 1), tf: n.style["tf"]), loop: n.loop))
                 .contentShape(Rectangle())
                 .onTapGesture { if n.clickable { send(["t": "click", "id": id]) } }
@@ -920,10 +928,11 @@ struct PrismTextField: View {
 /// the other backends without `overflow: hidden`).
 struct RoundedClip: ViewModifier {
     let radius: Double
+    let shape: UnevenRoundedRectangle
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        if radius > 0 { content.clipShape(RoundedRectangle(cornerRadius: radius)) } else { content }
+        if radius > 0 { content.clipShape(shape) } else { content }
     }
 }
 

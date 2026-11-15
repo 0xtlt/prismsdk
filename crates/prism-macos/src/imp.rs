@@ -149,6 +149,8 @@ pub struct ViewIvars {
     background: RefCell<Option<Retained<NSColor>>>,
     border_color: RefCell<Option<Retained<NSColor>>>,
     radius: Cell<f64>,
+    /// The corners `radius` rounds (leading = left).
+    corners: Cell<prism_core::Corners>,
     border: Cell<f64>,
     /// Context menu (right-click, ⌃-click, VoiceOver "show menu").
     menu: RefCell<Option<prism_core::menu::MenuSpec>>,
@@ -162,6 +164,10 @@ pub struct ViewIvars {
     /// What a shape draws, in points, and the layers drawing it.
     shape: RefCell<Vec<prism_core::Path>>,
     shape_layers: RefCell<Vec<Retained<objc2_quartz_core::CAShapeLayer>>>,
+    /// Background and border when only some corners are rounded (a path:
+    /// `maskedCorners` is skipped by `renderInContext`, so snapshots and
+    /// the screen would differ).
+    box_layer: RefCell<Option<Retained<objc2_quartz_core::CAShapeLayer>>>,
 }
 
 define_class!(
@@ -199,10 +205,18 @@ define_class!(
             layer.setBackgroundColor(iv.background.borrow().as_deref().map(cg).as_deref());
             // A radius over half the size draws garbage: clamp (pills).
             let b = self.bounds().size;
-            layer.setCornerRadius(iv.radius.get().min(b.width.min(b.height) / 2.).max(0.));
+            let radius = iv.radius.get().min(b.width.min(b.height) / 2.).max(0.);
             let bw = if iv.border_color.borrow().is_some() { iv.border.get() } else { 0. };
-            layer.setBorderWidth(bw);
-            layer.setBorderColor(iv.border_color.borrow().as_deref().map(cg).as_deref());
+            if radius > 0. && iv.corners.get() != prism_core::Corners::ALL {
+                self.update_box_layer(&layer, radius, bw);
+            } else {
+                if let Some(old) = iv.box_layer.borrow_mut().take() {
+                    old.removeFromSuperlayer();
+                }
+                layer.setCornerRadius(radius);
+                layer.setBorderWidth(bw);
+                layer.setBorderColor(iv.border_color.borrow().as_deref().map(cg).as_deref());
+            }
             let image = iv.image.borrow();
             unsafe {
                 // A CGImage: what Core Animation composites directly.
@@ -420,6 +434,108 @@ impl PrismView {
             layers.push(shape);
         }
         *iv.shape_layers.borrow_mut() = layers;
+    }
+
+    /// Draws the background and border as a path rounding only some corners
+    /// (in a sublayer under the content).
+    fn update_box_layer(&self, layer: &objc2_quartz_core::CALayer, radius: f64, bw: f64) {
+        use objc2_core_graphics::CGMutablePath;
+        use objc2_quartz_core::CAShapeLayer;
+        use prism_core::Corners as C;
+        let iv = self.ivars();
+        layer.setBackgroundColor(None);
+        layer.setCornerRadius(0.);
+        layer.setBorderWidth(0.);
+        let mut flipped = false;
+        let mut l = Some(objc2::Message::retain(layer));
+        while let Some(cur) = l {
+            flipped ^= cur.isGeometryFlipped();
+            l = cur.superlayer();
+        }
+        let b = self.bounds().size;
+        let (w, h) = (b.width, b.height);
+        let y = |v: f64| if flipped { v } else { h - v };
+        // Inset by half the border so the stroke stays inside.
+        let i = bw / 2.;
+        let corners = iv.corners.get();
+        let r = |c: C| {
+            if corners.contains(c) {
+                (radius - i).max(0.)
+            } else {
+                0.
+            }
+        };
+        let (tl, tr, br, bl) = (
+            r(C::TOP_LEADING),
+            r(C::TOP_TRAILING),
+            r(C::BOTTOM_TRAILING),
+            r(C::BOTTOM_LEADING),
+        );
+        // Quarter circles as cubics (k = 0.5523).
+        let k = 0.5523;
+        let cg = CGMutablePath::new();
+        let p = Some(&*cg);
+        let n = std::ptr::null();
+        unsafe {
+            CGMutablePath::move_to_point(p, n, i + tl, y(i));
+            CGMutablePath::add_line_to_point(p, n, w - i - tr, y(i));
+            CGMutablePath::add_curve_to_point(
+                p,
+                n,
+                w - i - tr + k * tr,
+                y(i),
+                w - i,
+                y(i + tr - k * tr),
+                w - i,
+                y(i + tr),
+            );
+            CGMutablePath::add_line_to_point(p, n, w - i, y(h - i - br));
+            CGMutablePath::add_curve_to_point(
+                p,
+                n,
+                w - i,
+                y(h - i - br + k * br),
+                w - i - br + k * br,
+                y(h - i),
+                w - i - br,
+                y(h - i),
+            );
+            CGMutablePath::add_line_to_point(p, n, i + bl, y(h - i));
+            CGMutablePath::add_curve_to_point(
+                p,
+                n,
+                i + bl - k * bl,
+                y(h - i),
+                i,
+                y(h - i - bl + k * bl),
+                i,
+                y(h - i - bl),
+            );
+            CGMutablePath::add_line_to_point(p, n, i, y(i + tl));
+            CGMutablePath::add_curve_to_point(
+                p,
+                n,
+                i,
+                y(i + tl - k * tl),
+                i + tl - k * tl,
+                y(i),
+                i + tl,
+                y(i),
+            );
+            CGMutablePath::close_subpath(p);
+        }
+        let mut slot = iv.box_layer.borrow_mut();
+        let shape = slot.get_or_insert_with(|| {
+            let shape = CAShapeLayer::new();
+            layer.insertSublayer_atIndex(&shape, 0);
+            shape
+        });
+        shape.setFrame(self.bounds());
+        shape.setPath(Some(&cg));
+        let cg_color = |c: &NSColor| c.CGColor();
+        shape.setFillColor(iv.background.borrow().as_deref().map(cg_color).as_deref());
+        shape.setStrokeColor(iv.border_color.borrow().as_deref().map(cg_color).as_deref());
+        shape.setLineWidth(bw);
     }
 
     fn new(mtm: MainThreadMarker, id: NodeId) -> Retained<Self> {
@@ -1799,6 +1915,7 @@ impl Widgets for AppKit {
                 *iv.background.borrow_mut() = style.background.map(ns_color);
                 *iv.border_color.borrow_mut() = style.border_color.map(ns_color);
                 iv.radius.set(style.corner_radius as f64);
+                iv.corners.set(style.rounded_corners);
                 iv.border.set(style.border_width as f64);
                 t.container.setNeedsDisplay(true);
                 // Unstyled (`.native()`): the standard bezeled, white field.
@@ -1843,6 +1960,7 @@ impl Widgets for AppKit {
                 *iv.background.borrow_mut() = style.background.map(ns_color);
                 *iv.border_color.borrow_mut() = style.border_color.map(ns_color);
                 iv.radius.set(style.corner_radius as f64);
+                iv.corners.set(style.rounded_corners);
                 iv.border.set(style.border_width as f64);
                 v.setNeedsDisplay(true);
             }

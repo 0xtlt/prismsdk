@@ -303,6 +303,70 @@ pub struct Inset {
     pub left: Length,
 }
 
+/// Which corners of a box [`Style::corner_radius`] rounds. Leading and
+/// trailing follow the text direction (left and right in left-to-right
+/// languages), like margins. Combine with `|`: `Corners::TOP | Corners::BOTTOM_LEADING`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Corners(u8);
+
+impl Corners {
+    /// No corner.
+    pub const NONE: Corners = Corners(0);
+    /// The top leading corner (top left in left-to-right languages).
+    pub const TOP_LEADING: Corners = Corners(1);
+    /// The top trailing corner (top right in left-to-right languages).
+    pub const TOP_TRAILING: Corners = Corners(2);
+    /// The bottom trailing corner (bottom right in left-to-right languages).
+    pub const BOTTOM_TRAILING: Corners = Corners(4);
+    /// The bottom leading corner (bottom left in left-to-right languages).
+    pub const BOTTOM_LEADING: Corners = Corners(8);
+    /// Both top corners.
+    pub const TOP: Corners = Corners(1 | 2);
+    /// Both bottom corners.
+    pub const BOTTOM: Corners = Corners(4 | 8);
+    /// Both leading corners.
+    pub const LEADING: Corners = Corners(1 | 8);
+    /// Both trailing corners.
+    pub const TRAILING: Corners = Corners(2 | 4);
+    /// Every corner (the default).
+    pub const ALL: Corners = Corners(15);
+
+    /// Whether every corner of `other` is in `self`.
+    pub fn contains(self, other: Corners) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// The corners as bits: 1 top leading, 2 top trailing, 4 bottom trailing,
+    /// 8 bottom leading.
+    pub fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// The corners for `bits` (see [`bits`](Self::bits)); other bits are ignored.
+    pub fn from_bits(bits: u8) -> Corners {
+        Corners(bits & 15)
+    }
+
+    /// Leading and trailing swapped (right-to-left layouts).
+    pub fn mirrored(self) -> Corners {
+        let b = self.0;
+        Corners((b & 1) << 1 | (b & 2) >> 1 | (b & 4) << 1 | (b & 8) >> 1)
+    }
+}
+
+impl Default for Corners {
+    fn default() -> Self {
+        Corners::ALL
+    }
+}
+
+impl std::ops::BitOr for Corners {
+    type Output = Corners;
+    fn bitor(self, rhs: Corners) -> Corners {
+        Corners(self.0 | rhs.0)
+    }
+}
+
 /// Default text size, in points.
 pub const DEFAULT_FONT_SIZE: f32 = 16.;
 
@@ -354,6 +418,10 @@ pub struct Style {
     pub background: Option<Color>,
     /// Corner radius, points.
     pub corner_radius: f32,
+    /// The corners `corner_radius` rounds (all by default; the others stay
+    /// square). In the style backends receive from prism-native, leading
+    /// means left: right-to-left layouts are already mirrored.
+    pub rounded_corners: Corners,
     /// Border width, points.
     pub border_width: f32,
     /// Border color.
@@ -724,6 +792,7 @@ impl Default for Style {
             flex_basis: Length::Auto,
             background: None,
             corner_radius: 0.,
+            rounded_corners: Corners::ALL,
             border_width: 0.,
             border_color: None,
             opacity: 1.,
@@ -1008,7 +1077,25 @@ pub trait Styled: Sized {
     }
     /// Corner radius, points.
     fn rounded(self, r: f32) -> Self {
-        self.with_style(|s| s.corner_radius = r)
+        self.with_style(|s| {
+            s.corner_radius = r;
+            s.rounded_corners = Corners::ALL;
+        })
+    }
+    /// Rounds only `corners` by `r` points; the others stay square.
+    fn rounded_corners(self, r: f32, corners: Corners) -> Self {
+        self.with_style(|s| {
+            s.corner_radius = r;
+            s.rounded_corners = corners;
+        })
+    }
+    /// Rounds the top corners only.
+    fn rounded_top(self, r: f32) -> Self {
+        self.rounded_corners(r, Corners::TOP)
+    }
+    /// Rounds the bottom corners only.
+    fn rounded_bottom(self, r: f32) -> Self {
+        self.rounded_corners(r, Corners::BOTTOM)
     }
     /// Border width, points.
     fn border(self, w: f32) -> Self {

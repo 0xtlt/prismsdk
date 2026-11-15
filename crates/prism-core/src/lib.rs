@@ -503,9 +503,9 @@ pub mod prelude {
     pub use crate::{
         Accessible, Accuracy, Activity, Alert, Animations, App, AppleSignIn, AsyncApp, AuthRequest,
         BackgroundTask, BiometryKind, Breakpoint, Capitalize, CarButton, CarButtonStyle, CarItem,
-        CarSection, CarTab, CarTemplate, ChangeEvent, ClickEvent, Context, DateMode, DateStyle,
-        DeviceInfo, DeviceKind, Entity, FluentBuilder, Handler, Haptic, InputEvent, IntoElement,
-        Keyboard, Lifecycle, Locale, Location, Menu, MenuItem, Motion, Notification,
+        CarSection, CarTab, CarTemplate, ChangeEvent, ClickEvent, Context, Corners, DateMode,
+        DateStyle, DeviceInfo, DeviceKind, Entity, FluentBuilder, Handler, Haptic, InputEvent,
+        IntoElement, Keyboard, Lifecycle, Locale, Location, Menu, MenuItem, Motion, Notification,
         NotificationAction, NotificationResponse, Orientation, Params, ParentElement, Path,
         Permission, PermissionState, PickImages, PickedFile, Platform, Pose, Posture, PushEvent,
         PushMessage, PushService, PushSubscription, Render, ReturnKey, Role, Router, ScrollEvent,

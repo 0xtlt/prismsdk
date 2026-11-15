@@ -366,6 +366,10 @@ impl SNode {
         }
         if s.corner_radius > 0. {
             let _ = write!(o, r#","r":{}"#, num(s.corner_radius));
+            // Some corners only (logical bits, see `Corners::bits`).
+            if s.rounded_corners != crate::Corners::ALL {
+                let _ = write!(o, r#","rc":{}"#, s.rounded_corners.bits());
+            }
         }
         if s.border_width > 0. {
             let _ = write!(o, r#","bw":{}"#, num(s.border_width));

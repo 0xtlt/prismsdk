@@ -34,6 +34,9 @@ The first version, not yet on crates.io.
 - Remote push: APNs, FCM (without Gradle), Web Push and UnifiedPush in the
   app, Live Activity push tokens, and `prism-push` to send from a server.
 - Charts in widgets, Live Activities, the Dynamic Island and car screens.
+- Per-corner rounding (`rounded_top`, `rounded_bottom`, `rounded_corners` with
+  `Corners`, leading/trailing aware) on every backend; bar charts round only
+  the top of their bars by default (`bar_radius`, `bar_corners`).
 - Shipping: Android App Bundles and Google Play upload, App Store builds and
   upload, Developer ID notarization and DMGs, `.deb` packages, web Docker
   images, all with `--dry-run`.

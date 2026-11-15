@@ -2089,3 +2089,20 @@ fn controls_get_their_config_before_their_value_and_a_spoken_value() {
             .any(|p| matches!(p, Patch::SetText { text, .. } if text == "submitted 1"))
     );
 }
+
+#[test]
+fn corners_combine_and_mirror() {
+    use crate::Corners;
+    assert_eq!(Corners::default(), Corners::ALL);
+    assert_eq!(Corners::TOP | Corners::BOTTOM, Corners::ALL);
+    assert!(Corners::TOP.contains(Corners::TOP_TRAILING));
+    assert!(!Corners::TOP.contains(Corners::BOTTOM_LEADING));
+    assert_eq!(Corners::LEADING.mirrored(), Corners::TRAILING);
+    assert_eq!(Corners::TOP_LEADING.mirrored(), Corners::TOP_TRAILING);
+    assert_eq!(Corners::BOTTOM_TRAILING.mirrored(), Corners::BOTTOM_LEADING);
+    assert_eq!(Corners::TOP.mirrored(), Corners::TOP);
+    assert_eq!(Corners::from_bits(0xFF), Corners::ALL);
+    let mut d = div().rounded_bottom(6.);
+    let s = d.style_mut().clone();
+    assert_eq!((s.corner_radius, s.rounded_corners), (6., Corners::BOTTOM));
+}

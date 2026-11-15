@@ -155,12 +155,18 @@ private func prismModifiers(_ base: AnyView, _ n: PNode) -> AnyView {
     if fill("w") || (num(n["f"]) ?? 0) > 0 { v = AnyView(v.frame(maxWidth: .infinity, alignment: .leading)) }
     if fill("h") { v = AnyView(v.frame(maxHeight: .infinity)) }
     let radius = num(n["r"]) ?? 0
+    // Rounded corners: all, or the `rc` bits (1 top leading, 2 top trailing,
+    // 4 bottom trailing, 8 bottom leading; SwiftUI mirrors them right to left).
+    let rc = Int(num(n["rc"]) ?? 15)
+    let at = { (bit: Int) -> Double in rc & bit != 0 ? radius : 0 }
+    let box = UnevenRoundedRectangle(topLeadingRadius: at(1), bottomLeadingRadius: at(8),
+                                     bottomTrailingRadius: at(4), topTrailingRadius: at(2), style: .continuous)
     if let bg = prismColor(n["bg"]) {
-        v = AnyView(v.background(RoundedRectangle(cornerRadius: radius, style: .continuous).fill(bg)))
+        v = AnyView(v.background(box.fill(bg)))
     }
     if let bw = num(n["bw"]), bw > 0 {
         let c = prismColor(n["bc"]) ?? .secondary
-        v = AnyView(v.overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(c, lineWidth: bw)))
+        v = AnyView(v.overlay(box.strokeBorder(c, lineWidth: bw)))
     }
     // Margins, outside the background. Negative ones pull the node over its
     // previous sibling (a chart's label over its ring).

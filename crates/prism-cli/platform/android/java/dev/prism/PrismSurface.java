@@ -517,7 +517,9 @@ final class PrismSurface {
         if (bg != null) {
             setColor(v, "setBackgroundColor", bg);
             double r = n.optDouble("r", 0);
-            if (r > 0 && Build.VERSION.SDK_INT >= 31) {
+            // RemoteViews outlines round every corner alike: some corners
+            // only ("rc") stay square here.
+            if (r > 0 && n.optInt("rc", 15) == 15 && Build.VERSION.SDK_INT >= 31) {
                 v.setViewOutlinePreferredRadius(node, (float) r, TypedValue.COMPLEX_UNIT_DIP);
                 v.setBoolean(node, "setClipToOutline", true);
             }

@@ -670,7 +670,22 @@ impl Widgets for Gtk {
             css += &format!("background-color:{};", css_color(bg, self.dark));
         }
         if s.corner_radius > 0. {
-            css += &format!("border-radius:{}px;", s.corner_radius);
+            // Top left, top right, bottom right, bottom left: prism-native
+            // already mirrored the corners for right-to-left layouts.
+            let r = |c: prism_core::Corners| {
+                if s.rounded_corners.contains(c) {
+                    s.corner_radius
+                } else {
+                    0.
+                }
+            };
+            css += &format!(
+                "border-radius:{}px {}px {}px {}px;",
+                r(prism_core::Corners::TOP_LEADING),
+                r(prism_core::Corners::TOP_TRAILING),
+                r(prism_core::Corners::BOTTOM_TRAILING),
+                r(prism_core::Corners::BOTTOM_LEADING)
+            );
         }
         if s.border_width > 0. {
             let c = s

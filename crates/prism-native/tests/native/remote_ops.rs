@@ -513,3 +513,25 @@ fn device_replies_and_events_parse() {
     assert_eq!(m.gravity, [0., -1., 0.], "short arrays are padded");
     assert_eq!(m.attitude, [0., 0., 0.]);
 }
+
+#[test]
+fn style_sends_rounded_corners_only_when_some_are_square() {
+    let mut w = RemoteWidgets::new(measure);
+    w.set_style(
+        &3,
+        &Style {
+            corner_radius: 6.,
+            rounded_corners: prism_core::Corners::TOP,
+            ..Default::default()
+        },
+    );
+    assert_eq!(last(&w)["s"]["corners"], json!(3));
+    w.set_style(
+        &3,
+        &Style {
+            corner_radius: 6.,
+            ..Default::default()
+        },
+    );
+    assert!(last(&w)["s"].get("corners").is_none());
+}

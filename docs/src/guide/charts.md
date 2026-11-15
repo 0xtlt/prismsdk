@@ -12,6 +12,8 @@ ui::line_chart()
 ui::bar_chart()
     .bars([("Mon", 12.), ("Tue", 18.), ("Wed", 9.)])
     .highlight(self.day)                                        // the others fade
+    .bar_radius(6.)                                             // 0: square bars
+    .bar_corners(Corners::TOP)                                  // default; Corners::ALL for pills
     .on_select(cx.listener(|this, e, _| this.day = Some(e.index())))
 
 ui::pie_chart().slice("Rent", 900.).slice("Food", 420.).donut("1 320 €")
@@ -22,7 +24,7 @@ ui::sparkline([3., 5., 4., 8.])
 
 - **Themed**: series use `Theme::chart_color(i)` (the accent first), adaptive in dark mode; axis labels use the app's number format.
 - **Axes** pick round ticks (1, 2, 2.5, 5 × 10ⁿ). Curves never overshoot the data (monotone interpolation).
-- **Bars** are native elements: tappable, read one by one by screen readers, and animated when values change. Other charts read as one element with their values.
+- **Bars** are native elements: tappable, read one by one by screen readers, and animated when values change. They stand on the baseline, so only their top corners are rounded by default (`bar_radius`, `bar_corners`). Other charts read as one element with their values.
 - Charts mirror in right-to-left languages, like the layout around them.
 
 Draw your own with `shape()`: coordinates are fractions of the frame, so drawings follow the layout size.

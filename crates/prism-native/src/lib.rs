@@ -257,6 +257,8 @@ impl<W: Widgets> NativeRenderer<W> {
         if self.env.direction == Direction::Rtl {
             // Offsets are leading/trailing, like margins.
             s.transform.x = -s.transform.x;
+            // So are corners: backends get leading = left.
+            s.rounded_corners = s.rounded_corners.mirrored();
             s.animations = s.animations.scaled(1., true);
         }
         if self.env.reduce_motion {

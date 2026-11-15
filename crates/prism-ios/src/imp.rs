@@ -1252,6 +1252,10 @@ impl Widgets for UiKit {
                 .min(b.width.min(b.height) / 2.)
                 .max(0.),
         );
+        layer.setMaskedCorners(prism_native::apple::corner_mask(
+            style.rounded_corners,
+            true,
+        ));
         layer.setBorderWidth(style.border_width as f64);
         let border = style.border_color.map(|c| unsafe { ui_color(c).CGColor() });
         layer.setBorderColor(border.as_deref());

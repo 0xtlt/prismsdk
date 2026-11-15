@@ -20,8 +20,8 @@ use std::rc::Rc;
 
 use prism_core::shape::nice_ticks;
 use prism_core::{
-    Accessible, App, ChangeEvent, Color, Drawing, Element, FluentBuilder, Handler, IntoElement,
-    ParentElement, Path, Role, Styled, adaptive, div, px, relative, rgb, shape, text,
+    Accessible, App, ChangeEvent, Color, Corners, Drawing, Element, FluentBuilder, Handler,
+    IntoElement, ParentElement, Path, Role, Styled, adaptive, div, px, relative, rgb, shape, text,
 };
 
 use crate::{Component, Refine, Theme};
@@ -467,6 +467,11 @@ pub struct BarChart {
     pub unit: String,
     /// Called with the tapped bar's index; bars are then buttons.
     pub on_select: Option<Handler<ChangeEvent>>,
+    /// Corner radius of the bars, points (default 4; 0: square).
+    pub bar_radius: f32,
+    /// The corners of each bar that are rounded (default: the top ones, the
+    /// bars stand on the baseline).
+    pub bar_corners: Corners,
     refine: Refine,
 }
 
@@ -482,11 +487,24 @@ pub fn bar_chart() -> BarChart {
         highlight: None,
         unit: String::new(),
         on_select: None,
+        bar_radius: 4.,
+        bar_corners: Corners::TOP,
         refine: Refine::default(),
     }
 }
 
 impl BarChart {
+    /// Rounds the bars by `r` points (0: square bars).
+    pub fn bar_radius(mut self, r: f32) -> Self {
+        self.bar_radius = r;
+        self
+    }
+    /// Which corners of each bar are rounded (default `Corners::TOP`;
+    /// `Corners::ALL` for pills).
+    pub fn bar_corners(mut self, corners: Corners) -> Self {
+        self.bar_corners = corners;
+        self
+    }
     /// Adds a bar.
     pub fn bar(mut self, label: impl Into<String>, value: f64) -> Self {
         self.bars.push((label.into(), value, None));
@@ -582,7 +600,7 @@ impl Component for BarChart {
                         .max_w(px(44.))
                         .h(relative(fraction))
                         .min_h(px(if *v > 0. { 2. } else { 0. }))
-                        .rounded(4.)
+                        .rounded_corners(self.bar_radius, self.bar_corners)
                         .bg(c.unwrap_or(color))
                         .opacity(if faded { 0.35 } else { 1. })
                         .spring(450),

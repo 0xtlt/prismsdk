@@ -1,5 +1,7 @@
 # Components (`prism::ui`)
 
+Rounded corners on any element: `.rounded(8.)` (every corner), `.rounded_top(8.)`, `.rounded_bottom(8.)`, or `.rounded_corners(8., Corners::TOP_LEADING | Corners::BOTTOM_TRAILING)`. Leading and trailing follow the text direction, like margins.
+
 A themed, accessible component library: `button`, `switch`, `checkbox`, `text_field`, `card`, `heading`, `badge`, `list_row`, `divider`, form controls and toasts (see [Forms](forms.md)), and charts (see [Charts](charts.md)).
 
 Three levels of customization:

@@ -1479,3 +1479,25 @@ fn client_fixture_is_up_to_date() {
         file.display()
     );
 }
+
+#[test]
+fn some_corners_rounded_use_logical_properties() {
+    let s = Style {
+        corner_radius: 4.,
+        rounded_corners: prism_core::Corners::TOP,
+        ..Default::default()
+    };
+    let c = css(NodeKind::View, &s);
+    assert!(
+        c.contains("border-radius:4px;border-end-end-radius:0;border-end-start-radius:0;"),
+        "{c}"
+    );
+    let all = css(
+        NodeKind::View,
+        &Style {
+            corner_radius: 4.,
+            ..Default::default()
+        },
+    );
+    assert!(!all.contains("-radius:0"), "{all}");
+}

@@ -122,6 +122,26 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
     }
     if s.corner_radius > 0. {
         let _ = write!(w, "border-radius:{}px;", s.corner_radius);
+        // Square corners, as logical properties (they follow `dir`).
+        for (corner, prop) in [
+            (
+                prism_core::Corners::TOP_LEADING,
+                "border-start-start-radius",
+            ),
+            (prism_core::Corners::TOP_TRAILING, "border-start-end-radius"),
+            (
+                prism_core::Corners::BOTTOM_TRAILING,
+                "border-end-end-radius",
+            ),
+            (
+                prism_core::Corners::BOTTOM_LEADING,
+                "border-end-start-radius",
+            ),
+        ] {
+            if !s.rounded_corners.contains(corner) {
+                let _ = write!(w, "{prop}:0;");
+            }
+        }
     }
     if s.border_width > 0. {
         let color = s.border_color.map_or("currentColor".into(), |c| c.to_css());
