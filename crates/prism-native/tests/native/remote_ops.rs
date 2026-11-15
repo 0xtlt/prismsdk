@@ -535,3 +535,34 @@ fn style_sends_rounded_corners_only_when_some_are_square() {
     );
     assert!(last(&w)["s"].get("corners").is_none());
 }
+
+#[test]
+fn style_sends_hit_test_and_inert_only_when_set() {
+    let mut w = RemoteWidgets::new(measure);
+    w.set_style(&3, &Style::default());
+    assert!(last(&w)["s"].get("hit").is_none());
+    assert!(last(&w)["s"].get("inert").is_none());
+    w.set_style(
+        &3,
+        &Style {
+            hit_test: false,
+            inert: true,
+            ..Default::default()
+        },
+    );
+    assert_eq!(last(&w)["s"]["hit"], json!(false));
+    assert_eq!(last(&w)["s"]["inert"], json!(true));
+}
+
+#[test]
+fn radio_groups_measure_their_config() {
+    fn echo(r: &MeasureRequest) -> (f32, f32) {
+        assert_eq!(r.kind, "radio_group");
+        assert_eq!(r.text, "row\nA\nB");
+        (40., 20.)
+    }
+    let mut w = RemoteWidgets::new(echo);
+    w.create(4, NodeKind::RadioGroup);
+    w.set_config(&4, NodeKind::RadioGroup, "row\nA\nB");
+    assert_eq!(w.measure(&4, None), (40., 20.));
+}

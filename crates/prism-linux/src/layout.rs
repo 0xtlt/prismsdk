@@ -320,7 +320,47 @@ impl PrismLayout {
 
 /// A container whose children sit at their Prism frames.
 pub fn container() -> gtk::Box {
-    let b = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let b: PrismBox = glib::Object::builder()
+        .property("orientation", gtk::Orientation::Vertical)
+        .build();
     b.set_layout_manager(Some(PrismLayout::new()));
-    b
+    b.upcast()
+}
+
+/// CSS class of containers that let pointer input through wherever they
+/// have no child (runtime layers such as the toaster).
+pub const PASS_THROUGH: &str = "prism-layer";
+
+mod pass_through {
+    use super::*;
+
+    /// A `GtkBox` that, given [`PASS_THROUGH`](super::PASS_THROUGH), is
+    /// never picked itself: GTK's picking then reaches the widgets under it,
+    /// while its children are still picked normally.
+    #[derive(Default)]
+    pub struct PrismBox;
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for PrismBox {
+        const NAME: &'static str = "PrismBox";
+        type Type = super::PrismBox;
+        type ParentType = gtk::Box;
+    }
+
+    impl ObjectImpl for PrismBox {}
+
+    impl WidgetImpl for PrismBox {
+        fn contains(&self, x: f64, y: f64) -> bool {
+            !self.obj().has_css_class(super::PASS_THROUGH) && self.parent_contains(x, y)
+        }
+    }
+
+    impl BoxImpl for PrismBox {}
+}
+
+glib::wrapper! {
+    /// See [`container`].
+    pub struct PrismBox(ObjectSubclass<pass_through::PrismBox>)
+        @extends gtk::Box, gtk::Widget,
+        @implements gtk::Buildable, gtk::ConstraintTarget, gtk::Orientable;
 }

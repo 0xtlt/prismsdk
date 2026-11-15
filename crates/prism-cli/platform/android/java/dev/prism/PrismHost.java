@@ -179,6 +179,15 @@ public final class PrismHost {
         // Form controls (PrismForms): the config string, accessibility.
         String config = "";
         String a11yLabel, a11yValue, announced;
+        // Pointer, keys, hit testing, overlays (PrismInput).
+        int pointerMask;
+        boolean keysLocal, keysGlobal, noHit, inert, a11yHidden, dragging;
+        /** Where the pointer went down: view x, y, then raw x, y (pixels). */
+        float[] down = {0, 0, 0, 0};
+        android.widget.PopupWindow popup;
+        String overlay = "sheet";
+        boolean fixed, medium, closing;
+        int[] contentSize = {0, 0};
     }
 
     static void send(JSONObject event) {
@@ -277,6 +286,7 @@ public final class PrismHost {
             case "activity_end": PrismSurface.activity(context, p, true); return;
             case "env": setEnvironment(p); return;
             case "appearance": appearance = p.optString("mode", "system"); restyle(); return;
+            case "layers": PrismInput.setLayers(p.optJSONArray("ids")); return;
         }
         if (n == null) return;
         switch (op) {
@@ -299,6 +309,7 @@ public final class PrismHost {
                 n.icon = p.optString("icon");
                 n.glyph = p.optString("glyph");
                 if (n.kind.equals("image")) ((TextView) n.view).setText(n.glyph);
+                if (n.kind.equals("text_input")) PrismForms.leadingIcon(n);
                 refreshTabs(parentOf(n));
                 break;
             case "value": setValue(n, p.optDouble("value")); break;
@@ -310,7 +321,8 @@ public final class PrismHost {
                     n.view.setContentDescription(label);
                     n.a11yLabel = label;
                 }
-                n.view.setImportantForAccessibility(p.optBoolean("hidden")
+                n.a11yHidden = p.optBoolean("hidden");
+                n.view.setImportantForAccessibility(n.a11yHidden || n.inert
                         ? View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS : View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
                 PrismForms.a11y(n, p.isNull("role") ? null : p.optString("role", null), p.isNull("value") ? null : p.optString("value", null));
                 break;
@@ -334,7 +346,10 @@ public final class PrismHost {
                 break;
             }
             case "content":
-                if (n.host != null) {
+                if (n.kind.equals("overlay")) {
+                    JSONArray c = p.getJSONArray("size");
+                    PrismInput.contentSize(n, Math.round((float) c.getDouble(0)), Math.round((float) c.getDouble(1)));
+                } else if (n.host != null) {
                     JSONArray c = p.getJSONArray("size");
                     n.host.fixedWidth = Math.round((float) c.getDouble(0));
                     n.host.fixedHeight = Math.round((float) c.getDouble(1));
@@ -344,10 +359,24 @@ public final class PrismHost {
             case "menu": n.menu = p.optJSONObject("menu"); setClickable(n); break;
             case "swipe": n.swipeLeft = p.optBoolean("left"); n.swipeRight = p.optBoolean("right"); setClickable(n); break;
             case "scrollev": n.scrollEvents = p.optBoolean("on"); break;
+            case "pointer":
+                n.pointerMask = p.optInt("mask");
+                setClickable(n);
+                PrismInput.hover(n);
+                break;
+            case "keys": PrismInput.keys(n, p.optBoolean("local"), p.optBoolean("global")); break;
+            case "focus": PrismInput.focus(n); break;
+            case "reveal": PrismInput.reveal(n); break;
         }
     }
 
     static Node create(long id, String kind) {
+        Node n = createView(id, kind);
+        PrismInput.byView.put(n.view, n);
+        return n;
+    }
+
+    static Node createView(long id, String kind) {
         Node n = new Node();
         n.id = id;
         n.kind = kind;
@@ -369,7 +398,9 @@ public final class PrismHost {
                 break;
             }
             case "text_input": {
-                EditText e = new EditText(activity);
+                // Completes from the config's suggestions (an EditText without them).
+                android.widget.AutoCompleteTextView e = new android.widget.AutoCompleteTextView(activity);
+                e.setThreshold(1);
                 e.setSingleLine(true);
                 e.addTextChangedListener(new TextWatcher() {
                     public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
@@ -498,6 +529,13 @@ public final class PrismHost {
                 break;
             }
             case "shape": n.view = new PrismShape(activity); break;
+            case "overlay": {
+                // Takes no room; its parent is the popover's anchor. The
+                // content is shown in a dialog or popup (PrismInput.open).
+                n.host = PrismInput.overlayHost(n);
+                n.view = new View(activity);
+                break;
+            }
             default: { // view, screen, tab
                 n.host = new PrismLayout(activity);
                 n.view = n.host;
@@ -522,7 +560,7 @@ public final class PrismHost {
         if (n == null) return;
         nodes.remove(n.id);
         PrismMotion.forget(n.id);
-        if (n.dialog != null) n.dialog.dismiss();
+        if (n.dialog != null || n.popup != null) PrismInput.close(n);
         ViewGroup parent = (ViewGroup) n.view.getParent();
         if (parent != null) parent.removeView(n.view);
         timers.remove(n.id);
@@ -668,7 +706,7 @@ public final class PrismHost {
     static void setText(Node n, String text) {
         n.text = text;
         switch (n.kind) {
-            case "text": case "button": ((TextView) n.view).setText(text); break;
+            case "text": case "button": case "checkbox": ((TextView) n.view).setText(text); break;
             case "text_input": case "text_area": {
                 EditText e = (EditText) n.view;
                 // Typing echoes back the same text; only a change from the app (clearing
@@ -721,6 +759,7 @@ public final class PrismHost {
                 if (!ticking) { ticking = true; tick(); }
                 break;
             case "tabs": refreshTabs(n); break;
+            case "overlay": PrismInput.open(n, value != 0); break;
         }
     }
 
@@ -845,23 +884,25 @@ public final class PrismHost {
             }
         }
         PrismForms.style(n);
+        PrismInput.hitTest(n);
     }
 
     // --- Interaction ------------------------------------------------------------------------
 
     static void setClickable(Node n) {
         View v = n.view;
-        boolean gestures = n.clickable || n.menu != null || n.swipeLeft || n.swipeRight;
-        if (!gestures) return;
+        boolean gestures = n.clickable || n.menu != null || n.swipeLeft || n.swipeRight || n.pointerMask != 0;
+        if (!gestures || n.noHit || n.inert) return;
         switch (n.kind) {
             // Controls handle their own touches.
             case "button": case "toggle": case "text_input": case "text_area":
-            case "slider": case "picker": case "date_picker": return;
+            case "slider": case "picker": case "date_picker": case "checkbox": case "radio_group": return;
         }
         GestureDetector g = new GestureDetector(activity, new GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onDown(MotionEvent e) { return true; }
             @Override public boolean onSingleTapUp(MotionEvent e) {
-                if (n.clickable) { send(event("click", n.id)); return true; }
+                // With its position (ClickEvent::position).
+                if (n.clickable) { PrismInput.click(n, e); return true; }
                 return false;
             }
             @Override public void onLongPress(MotionEvent e) { if (n.menu != null) showMenu(n); }
@@ -877,13 +918,14 @@ public final class PrismHost {
                 return false;
             }
         });
-        v.setOnTouchListener((view, e) -> g.onTouchEvent(e));
+        v.setOnTouchListener((view, e) -> PrismInput.touch(n, g, e));
+        if (!n.clickable && n.menu == null) return;
         v.setClickable(true);
         // Remotes and keyboards (Android TV, D-pad): select clicks, holding it
         // opens the menu. Touches never get here (the gesture detector takes them).
         v.setOnClickListener(n.clickable ? x -> send(event("click", n.id)) : null);
         v.setOnLongClickListener(n.menu != null ? x -> { showMenu(n); return true; } : null);
-        v.setFocusable(n.clickable || n.menu != null);
+        v.setFocusable(n.clickable || n.menu != null || n.keysLocal);
         v.setOnFocusChangeListener((view, focused) -> focusEffect(n, focused));
     }
 

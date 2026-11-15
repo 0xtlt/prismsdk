@@ -69,6 +69,8 @@ final class PrismForms {
             case "picker": return picker(n);
             case "date_picker": return dateField(n);
             case "text_area": return textArea(n);
+            case "checkbox": return checkbox(n);
+            case "radio_group": return radioGroup(n);
             case "spinner": {
                 ProgressBar p = new ProgressBar(ctx(), null, android.R.attr.progressBarStyle);
                 p.setIndeterminate(true);
@@ -283,7 +285,12 @@ final class PrismForms {
     /** `date`, `time` or `datetime`, and the bounds in Unix seconds (NaN: none). */
     static String mode(String config) {
         String m = config.trim().split("\\s+")[0];
-        return m.equals("time") || m.equals("datetime") ? m : "date";
+        return m.equals("time") || m.equals("datetime") || m.equals("timeofday") ? m : "date";
+    }
+
+    /** A time of day is the same everywhere: seconds since midnight, shown in UTC. */
+    static java.util.TimeZone zone(String mode) {
+        return mode.equals("timeofday") ? java.util.TimeZone.getTimeZone("UTC") : java.util.TimeZone.getDefault();
     }
 
     static double bound(String config, int i) {
@@ -301,9 +308,12 @@ final class PrismForms {
     static String format(String mode, long millis) {
         Locale l = locale();
         boolean h24 = android.text.format.DateFormat.is24HourFormat(PrismHost.activity);
-        String skeleton = mode.equals("time") ? (h24 ? "Hm" : "hm")
+        boolean time = mode.equals("time") || mode.equals("timeofday");
+        String skeleton = time ? (h24 ? "Hm" : "hm")
                 : mode.equals("datetime") ? (h24 ? "yMMMdHm" : "yMMMdhm") : "yMMMd";
-        return new SimpleDateFormat(android.text.format.DateFormat.getBestDateTimePattern(l, skeleton), l).format(new Date(millis));
+        SimpleDateFormat f = new SimpleDateFormat(android.text.format.DateFormat.getBestDateTimePattern(l, skeleton), l);
+        f.setTimeZone(zone(mode));
+        return f.format(new Date(millis));
     }
 
     static void showDate(PrismHost.Node n) {
@@ -324,9 +334,9 @@ final class PrismForms {
 
     static void openDate(PrismHost.Node n) {
         String mode = mode(n.config);
-        Calendar cal = Calendar.getInstance();
+        Calendar cal = Calendar.getInstance(zone(mode));
         cal.setTimeInMillis(Math.round(n.value * 1000));
-        if (mode.equals("time")) openTime(n, cal);
+        if (mode.equals("time") || mode.equals("timeofday")) openTime(n, cal);
         else {
             Context c = dialogContext();
             DatePickerDialog d = new DatePickerDialog(c, 0, (picker, y, m, day) -> {
@@ -412,8 +422,12 @@ final class PrismForms {
         boolean multi = n.kind.equals("text_area");
         boolean secure = false, autocorrect = true;
         String keyboard = "", ret = "", cap = "sentences";
-        for (String t : config.trim().split("\\s+")) {
-            if (t.equals("secure")) secure = !multi;
+        int max = -1;
+        String[] lines = config.split("\n", -1);
+        for (String t : lines[0].trim().split("\\s+")) {
+            if (t.startsWith("max=")) {
+                try { max = Integer.parseInt(t.substring(4)); } catch (NumberFormatException ignored) {}
+            } else if (t.equals("secure")) secure = !multi;
             else if (t.equals("autocorrect=off")) autocorrect = false;
             else if (t.startsWith("keyboard=")) keyboard = t.substring(9);
             else if (t.startsWith("return=")) ret = t.substring(7);
@@ -452,7 +466,17 @@ final class PrismForms {
             e.setTypeface(tf);
             if (start >= 0 && end <= e.length()) e.setSelection(start, end);
         }
+        // InputConfig::max_length.
+        e.setFilters(max >= 0 ? new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(max)}
+                : new android.text.InputFilter[0]);
         if (multi) return;
+        // Suggestions: the lines after the first (the system's completion list).
+        if (e instanceof android.widget.AutoCompleteTextView) {
+            List<String> list = new ArrayList<>();
+            for (int i = 1; i < lines.length; i++) if (!lines[i].isEmpty()) list.add(lines[i]);
+            ((android.widget.AutoCompleteTextView) e).setAdapter(list.isEmpty() ? null
+                    : new android.widget.ArrayAdapter<>(ctx(), android.R.layout.simple_dropdown_item_1line, list));
+        }
         int action;
         switch (ret) {
             case "done": action = EditorInfo.IME_ACTION_DONE; break;
@@ -478,6 +502,94 @@ final class PrismForms {
         });
     }
 
+    // --- Checkbox, radio group, leading icon -------------------------------------------------
+
+    static View checkbox(PrismHost.Node n) {
+        android.widget.CheckBox c = new android.widget.CheckBox(ctx());
+        c.setOnCheckedChangeListener((b, on) -> {
+            if (!PrismHost.updating) change(n, on ? 1 : 0);
+        });
+        return c;
+    }
+
+    static View radioGroup(PrismHost.Node n) {
+        android.widget.RadioGroup g = new android.widget.RadioGroup(ctx());
+        g.setOnCheckedChangeListener((group, checked) -> {
+            if (PrismHost.updating || checked == View.NO_ID) return;
+            int index = group.indexOfChild(group.findViewById(checked));
+            if (index >= 0 && index != (int) n.value) change(n, index);
+        });
+        return g;
+    }
+
+    /** `row` or `column`, then one RadioButton per option. */
+    static void radioConfig(PrismHost.Node n, String config) {
+        android.widget.RadioGroup g = (android.widget.RadioGroup) n.view;
+        String[] lines = config.split("\n", -1);
+        boolean updating = PrismHost.updating;
+        PrismHost.updating = true;
+        g.removeAllViews();
+        boolean row = lines[0].equals("row");
+        g.setOrientation(row ? android.widget.RadioGroup.HORIZONTAL : android.widget.RadioGroup.VERTICAL);
+        for (int i = 1; i < lines.length; i++) {
+            android.widget.RadioButton b = new android.widget.RadioButton(g.getContext());
+            b.setId(View.generateViewId());
+            b.setText(lines[i]);
+            if (row) b.setPaddingRelative(b.getPaddingStart(), b.getPaddingTop(), Math.round(dp(12)), b.getPaddingBottom());
+            g.addView(b);
+        }
+        PrismHost.updating = updating;
+        selectRadio(n);
+        if (n.style.length() > 0) style(n);
+    }
+
+    static void selectRadio(PrismHost.Node n) {
+        android.widget.RadioGroup g = (android.widget.RadioGroup) n.view;
+        int i = (int) n.value;
+        boolean updating = PrismHost.updating;
+        PrismHost.updating = true;
+        if (i >= 0 && i < g.getChildCount()) g.check(g.getChildAt(i).getId());
+        else g.clearCheck();
+        PrismHost.updating = updating;
+    }
+
+    /** An icon drawn from text (the SF Symbol's glyph), before the field's text. */
+    static final class GlyphDrawable extends android.graphics.drawable.Drawable {
+        final android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        final String glyph;
+
+        GlyphDrawable(String glyph, float size, int color) {
+            this.glyph = glyph;
+            paint.setTextSize(size);
+            paint.setColor(color);
+            paint.setTextAlign(android.graphics.Paint.Align.CENTER);
+        }
+
+        @Override public int getIntrinsicWidth() { return Math.round(paint.getTextSize() * 1.2f); }
+        @Override public int getIntrinsicHeight() { return Math.round(paint.getTextSize() * 1.2f); }
+        @Override public void draw(android.graphics.Canvas c) {
+            android.graphics.Rect b = getBounds();
+            android.graphics.Paint.FontMetrics m = paint.getFontMetrics();
+            c.drawText(glyph, b.exactCenterX(), b.exactCenterY() - (m.ascent + m.descent) / 2, paint);
+        }
+        @Override public void setAlpha(int a) { paint.setAlpha(a); }
+        @Override public void setColorFilter(android.graphics.ColorFilter f) { paint.setColorFilter(f); }
+        @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+    }
+
+    /** `TextInput::leading_icon`: a compound drawable at the start. */
+    static void leadingIcon(PrismHost.Node n) {
+        EditText e = (EditText) n.view;
+        String g = !TextUtils.isEmpty(n.glyph) ? n.glyph : TextUtils.isEmpty(n.icon) ? "" : "•";
+        if (g.isEmpty()) {
+            e.setCompoundDrawablesRelativeWithIntrinsicBounds(null, null, null, null);
+            return;
+        }
+        int color = PrismHost.dark() ? 0xFF98989F : 0xFF6C6C72;
+        e.setCompoundDrawablesRelativeWithIntrinsicBounds(new GlyphDrawable(g, e.getTextSize(), color), null, null, null);
+        e.setCompoundDrawablePadding(Math.round(dp(8)));
+    }
+
     // --- Ops ---------------------------------------------------------------------------------
 
     static void config(PrismHost.Node n, String config) {
@@ -494,6 +606,8 @@ final class PrismForms {
             }
             case "date_picker": showDate(n); break;
             case "text_input": case "text_area": inputConfig(n, config); break;
+            case "radio_group": radioConfig(n, config); break;
+            case "overlay": PrismInput.overlayConfig(n, config); break;
         }
     }
 
@@ -504,6 +618,8 @@ final class PrismForms {
             case "picker": selectPicker(n); return true;
             case "date_picker": showDate(n); return true;
             case "spinner": return true;
+            case "checkbox": ((android.widget.CheckBox) n.view).setChecked(v != 0); return true;
+            case "radio_group": selectRadio(n); return true;
         }
         return false;
     }
@@ -551,6 +667,16 @@ final class PrismForms {
                 // The theme's color until the app sets one.
                 if (p.getTag() == null) p.setTag(new Object[]{p.getIndeterminateTintList()});
                 p.setIndeterminateTintList(list != null ? list : (ColorStateList) ((Object[]) p.getTag())[0]);
+                break;
+            }
+            case "radio_group": {
+                android.widget.RadioGroup g = (android.widget.RadioGroup) n.view;
+                float size = (float) n.style.optDouble("font", 0);
+                for (int i = 0; i < g.getChildCount(); i++) {
+                    TextView t = (TextView) g.getChildAt(i);
+                    if (size > 0) t.setTextSize(TypedValue.COMPLEX_UNIT_PX, size);
+                    if (tint != null) t.setTextColor(tint);
+                }
                 break;
             }
             case "text_area": {
@@ -655,7 +781,7 @@ final class PrismForms {
                 t.setTypeface(Typeface.create(Typeface.DEFAULT, Math.max(100, Math.min(900, weight)), false));
                 Calendar cal = Calendar.getInstance();
                 float w = 0, h = 0;
-                for (int m = 0; m < (mode.equals("time") ? 1 : 12); m++) {
+                for (int m = 0; m < (mode.equals("time") || mode.equals("timeofday") ? 1 : 12); m++) {
                     cal.set(2026, m, 28, 22, 58);
                     t.setText(format(mode, cal.getTimeInMillis()));
                     t.measure(unspecified, unspecified);
@@ -663,6 +789,28 @@ final class PrismForms {
                     h = Math.max(h, t.getMeasuredHeight());
                 }
                 return new float[]{maxWidth >= 0 ? Math.min(w, maxWidth) : w, h};
+            }
+            case "checkbox": {
+                android.widget.CheckBox c = new android.widget.CheckBox(ctx());
+                c.setText(text);
+                if (size > 0) c.setTextSize(TypedValue.COMPLEX_UNIT_PX, size);
+                c.setTypeface(Typeface.create(Typeface.DEFAULT, Math.max(100, Math.min(900, weight)), false));
+                int ws = maxWidth >= 0 ? View.MeasureSpec.makeMeasureSpec(Math.round(maxWidth), View.MeasureSpec.AT_MOST) : unspecified;
+                c.measure(ws, unspecified);
+                return new float[]{c.getMeasuredWidth(), c.getMeasuredHeight()};
+            }
+            case "radio_group": {
+                PrismHost.Node fake = new PrismHost.Node();
+                fake.kind = "radio_group";
+                fake.view = radioGroup(fake);
+                radioConfig(fake, text);
+                android.widget.RadioGroup g = (android.widget.RadioGroup) fake.view;
+                for (int i = 0; i < g.getChildCount(); i++) {
+                    if (size > 0) ((TextView) g.getChildAt(i)).setTextSize(TypedValue.COMPLEX_UNIT_PX, size);
+                }
+                int ws = maxWidth >= 0 ? View.MeasureSpec.makeMeasureSpec(Math.round(maxWidth), View.MeasureSpec.AT_MOST) : unspecified;
+                g.measure(ws, unspecified);
+                return new float[]{g.getMeasuredWidth(), g.getMeasuredHeight()};
             }
             case "text_area": {
                 EditText e = (EditText) textArea(new PrismHost.Node());

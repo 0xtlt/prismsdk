@@ -401,6 +401,10 @@ pub extern "C" fn prism_watch_event(json: *const c_char) {
 }
 
 fn parse(v: &Value) -> Option<UiEvent> {
+    // Clicks with a position, pointer, drag and key events (#17).
+    if let Some(event) = prism_native::remote::parse_input_event(v) {
+        return Some(event);
+    }
     let id = v.get("id")?.as_u64()?;
     Some(match v.get("t")?.as_str()? {
         "click" => UiEvent::Click(id),

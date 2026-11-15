@@ -352,6 +352,7 @@ impl WebApp {
 <main id="prism-root">{body}</main>
 <div id="prism-island" role="status" aria-live="polite"></div>
 <div id="prism-toasts" role="status" aria-live="polite"></div>
+<div id="prism-layers" popover="manual"></div>
 <script src="{prefix}/{js}" data-base="{base}"></script>
 </body>
 </html>"#,

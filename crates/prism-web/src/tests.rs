@@ -1501,3 +1501,212 @@ fn some_corners_rounded_use_logical_properties() {
     );
     assert!(!all.contains("-radius:0"), "{all}");
 }
+
+// --- Pointer, keys, overlays, layers, choice controls (#17, #18, #19, #25) -------------
+
+#[test]
+fn new_patches_have_a_stable_json_encoding() {
+    let mut e = Encoder::default();
+    let style = Style {
+        hit_test: false,
+        inert: true,
+        ..Default::default()
+    };
+    let out = e.encode(&[
+        create(1, NodeKind::View),
+        Patch::SetStyle { id: 1, style },
+        Patch::SetPointerEvents { id: 1, mask: 5 },
+        Patch::SetKeyEvents {
+            id: 1,
+            local: true,
+            global: false,
+        },
+        Patch::Focus { id: 1 },
+        Patch::ScrollIntoView { id: 1 },
+        Patch::SetLayers { ids: vec![1, 2] },
+    ]);
+    assert!(
+        out[1]["css"]
+            .as_str()
+            .unwrap()
+            .contains("pointer-events:none;")
+    );
+    assert_eq!(out[1]["inert"], json!(true));
+    assert_eq!(
+        Value::Array(out[2..].to_vec()),
+        json!([
+            { "op": "pointer", "id": 1, "mask": 5 },
+            { "op": "keys", "id": 1, "local": true, "global": false },
+            { "op": "focus", "id": 1 },
+            { "op": "reveal", "id": 1 },
+            { "op": "layers", "ids": [1, 2] },
+        ])
+    );
+    // Hit-testable, not inert: nothing extra.
+    let plain = e.encode(&[Patch::SetStyle {
+        id: 1,
+        style: Style::default(),
+    }]);
+    assert!(plain[0].get("inert").is_none());
+    assert!(!plain[0]["css"].as_str().unwrap().contains("pointer-events"));
+}
+
+#[test]
+fn pointer_drag_and_key_messages_become_ui_events() {
+    use crate::session::parse_event;
+    use prism_core::{DragPhase, Point, PointerPhase};
+    let ev = |v: Value| parse_event(&v);
+    assert_eq!(
+        ev(json!({"t": "click", "id": 3, "x": 12.5, "y": 4})),
+        Some(UiEvent::ClickAt(3, Point::new(12.5, 4.)))
+    );
+    let Some(UiEvent::Pointer(3, p)) =
+        ev(json!({"t": "pointer", "id": 3, "phase": "move", "x": 1, "y": 2}))
+    else {
+        panic!("pointer")
+    };
+    assert_eq!(
+        (p.phase, p.position),
+        (PointerPhase::Move, Point::new(1., 2.))
+    );
+    let Some(UiEvent::Drag(3, d)) =
+        ev(json!({"t": "drag", "id": 3, "phase": "start", "x": 10, "y": 0, "dx": 5, "dy": -1}))
+    else {
+        panic!("drag")
+    };
+    assert_eq!(d.phase, DragPhase::Start);
+    assert_eq!(d.position(), Point::new(15., -1.));
+    let Some(UiEvent::Key(Some(3), k)) =
+        ev(json!({"t": "key", "id": 3, "key": "ArrowUp", "mods": 2, "repeat": true}))
+    else {
+        panic!("key")
+    };
+    assert!(k.is("ArrowUp") && k.modifiers.control && k.repeat);
+    // No focused node: id 0.
+    assert!(matches!(
+        ev(json!({"t": "key", "id": 0, "key": "Escape"})),
+        Some(UiEvent::Key(None, _))
+    ));
+    for bad in [
+        json!({"t": "drag", "id": 3, "phase": "fly"}),
+        json!({"t": "pointer", "id": 3}),
+        json!({"t": "key", "id": 3}),
+    ] {
+        assert_eq!(ev(bad.clone()), None, "{bad}");
+    }
+}
+
+#[test]
+fn files_are_picked_with_their_types() {
+    use crate::session::device_json;
+    use prism_core::{DeviceCall, PickFiles};
+    assert_eq!(
+        device_json(
+            3,
+            DeviceCall::PickFiles(PickFiles::new().types(["image/*", ".pdf"]).multiple())
+        ),
+        json!({ "t": "device", "id": 3, "call": "pick_files", "types": ["image/*", ".pdf"], "multiple": true })
+    );
+}
+
+#[test]
+fn ssr_of_choice_controls_inputs_and_overlays() {
+    use prism_core::controls::{InputConfig, RadioConfig, with_suggestions};
+    let config = |id, config: String| Patch::SetConfig { id, config };
+    let input = InputConfig {
+        max_length: Some(20),
+        ..Default::default()
+    };
+    let out = html(&[
+        create(1, NodeKind::View),
+        create(2, NodeKind::Checkbox),
+        set_text(2, "Remember me"),
+        Patch::SetValue { id: 2, value: 1. },
+        create(3, NodeKind::RadioGroup),
+        config(
+            3,
+            RadioConfig {
+                options: vec!["Daily".into(), "Weekly".into()],
+                horizontal: true,
+            }
+            .encode(),
+        ),
+        Patch::SetValue { id: 3, value: 1. },
+        create(4, NodeKind::TextInput),
+        config(4, with_suggestions(&input.encode(), &["Paris".into()])),
+        Patch::SetIcon {
+            id: 4,
+            icon: "magnifyingglass".into(),
+        },
+        create(5, NodeKind::DatePicker),
+        config(5, "timeofday - -".into()),
+        Patch::SetValue {
+            id: 5,
+            value: 27000.,
+        },
+        create(6, NodeKind::Overlay),
+        config(6, "dialog".into()),
+        create(7, NodeKind::Text),
+        children(6, &[7]),
+        children(1, &[2, 3, 4, 5, 6]),
+        Patch::SetRoot { id: 1 },
+    ]);
+    assert!(
+        out.contains(r#"<label class="prism-check" data-pid="2" data-kind="checkbox" style=""><input type="checkbox" checked><span>Remember me</span></label>"#),
+        "{out}"
+    );
+    assert!(out.contains(r#"class="prism-radios""#) && out.contains(r#"data-row="1""#));
+    assert!(out.contains(r#"name="prism-radio-3" value="1" checked><span>Weekly</span>"#));
+    assert!(!out.contains(r#"value="0" checked"#));
+    assert!(out.contains(r#"maxlength="20""#) && out.contains(r#"list="prism-list-4""#));
+    assert!(
+        out.contains(r#"<datalist id="prism-list-4"><option value="Paris"></option></datalist>"#)
+    );
+    assert!(out.contains(r#"class="prism-icon-field""#));
+    assert!(
+        out.contains(r#"type="time""#) && out.contains(r#"value="07:30""#),
+        "{out}"
+    );
+    // A closed overlay renders nothing of its content.
+    assert!(out.contains(
+        r#"<div class="prism-overlay" data-pid="6" data-kind="overlay" style=""></div>"#
+    ));
+}
+
+#[test]
+fn overlays_take_no_room_and_pickers_keep_their_arrow() {
+    assert_eq!(
+        css(NodeKind::Overlay, &Style::default()),
+        "display:contents;"
+    );
+    let bg = Style {
+        background: Some(prism_core::rgb(0xffffff)),
+        ..Default::default()
+    };
+    assert!(css(NodeKind::Picker, &bg).contains("background-color:"));
+    assert!(css(NodeKind::View, &bg).contains("background:"));
+    assert!(css(NodeKind::Checkbox, &Style::default()).contains("align-items:center;"));
+    let inert = Style {
+        inert: true,
+        ..Default::default()
+    };
+    let mut b = HtmlBackend::default();
+    b.apply(&[
+        create(1, NodeKind::View),
+        Patch::SetStyle {
+            id: 1,
+            style: inert,
+        },
+        Patch::SetRoot { id: 1 },
+    ]);
+    assert!(b.to_html().contains(" inert"));
+}
+
+#[test]
+fn the_page_has_a_layer_host() {
+    let (app, dir) = web_app(counter_init(), "layers");
+    let r = app.handle(&Request::get("/").body(()).unwrap());
+    let page = String::from_utf8(r.body().clone()).unwrap();
+    assert!(page.contains(r#"<div id="prism-layers" popover="manual"></div>"#));
+    let _ = std::fs::remove_dir_all(dir);
+}

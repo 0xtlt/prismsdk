@@ -416,6 +416,74 @@ public func prismDevicePickImages(_ id: UInt64, _ limit: UInt32, _ camera: Bool)
     #endif
 }
 
+// MARK: Files
+
+/// UTTypes for `types` (one per line: MIME types such as `image/*`, or
+/// extensions such as `.pdf`). Empty: any file.
+private func contentTypes(_ types: String) -> [UTType] {
+    let list = types.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }.filter { !$0.isEmpty }
+    if list.isEmpty { return [.item] }
+    let found: [UTType] = list.compactMap { t in
+        if t.hasPrefix(".") { return UTType(filenameExtension: String(t.dropFirst())) }
+        if t.hasSuffix("/*") {
+            switch t.dropLast(2) {
+            case "image": return .image
+            case "video": return .movie
+            case "audio": return .audio
+            case "text": return .text
+            default: return nil
+            }
+        }
+        return UTType(mimeType: t)
+    }
+    return found.isEmpty ? [.item] : found
+}
+
+#if os(iOS) || os(visionOS)
+final class PrismDocumentPicker: NSObject, UIDocumentPickerDelegate {
+    let id: UInt64
+    init(id: UInt64) { self.id = id }
+
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        // `asCopy`: the files are already in the app's sandbox (tmp/Inbox).
+        replyFiles(id, urls.compactMap { url in keep(url).map { describe($0, name: url.lastPathComponent) } })
+        pickers[id] = nil
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        replyFiles(id, [])
+        pickers[id] = nil
+    }
+}
+#endif
+
+@_cdecl("prism_device_pick_files")
+public func prismDevicePickFiles(_ id: UInt64, _ types: UnsafePointer<CChar>, _ multiple: Bool) {
+    let types = contentTypes(String(cString: types))
+    #if os(watchOS) || os(tvOS)
+    _ = types
+    fail(id, "unavailable") // no document picker on the watch or the TV
+    #elseif os(iOS) || os(visionOS)
+    guard let top = topController() else { return fail(id, "no window to present the picker") }
+    let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
+    picker.allowsMultipleSelection = multiple
+    let delegate = PrismDocumentPicker(id: id)
+    pickers[id] = delegate
+    picker.delegate = delegate
+    top.present(picker, animated: true)
+    #else
+    let panel = NSOpenPanel()
+    panel.allowedContentTypes = types
+    panel.allowsMultipleSelection = multiple
+    panel.canChooseDirectories = false
+    panel.canChooseFiles = true
+    panel.begin { response in
+        guard response == .OK else { return replyFiles(id, []) }
+        replyFiles(id, panel.urls.compactMap { url in keep(url).map { describe($0, name: url.lastPathComponent) } })
+    }
+    #endif
+}
+
 // MARK: Haptics, clipboard, share, URLs
 
 @_cdecl("prism_device_haptic")

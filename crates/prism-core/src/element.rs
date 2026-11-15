@@ -711,7 +711,9 @@ macro_rules! text_entry {
             fn input_config(mut self, f: impl FnOnce(&mut crate::controls::InputConfig)) -> Self {
                 let mut c = crate::controls::InputConfig::decode(&self.0.config);
                 f(&mut c);
-                self.0.config = c.encode();
+                // Keep the suggestions (the lines after the first).
+                let suggestions = crate::controls::input_suggestions(&self.0.config);
+                self.0.config = crate::controls::with_suggestions(&c.encode(), &suggestions);
                 self
             }
 

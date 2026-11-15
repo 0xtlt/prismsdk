@@ -314,7 +314,9 @@ impl Render for Choices {
             .child(
                 text_input()
                     .leading_icon("magnifyingglass")
-                    .suggestions(["Paris", "Lyon"]),
+                    .suggestions(["Paris", "Lyon"])
+                    // Later input settings keep the suggestions.
+                    .max_length(12),
             )
     }
 }

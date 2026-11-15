@@ -383,7 +383,7 @@ pub enum DeviceCall {
     /// Opens the photo picker or the camera.
     PickImages(PickImages),
     /// Opens the file picker (`<input type=file>`, `UIDocumentPickerViewController`,
-    /// `NSOpenPanel`, `GtkFileDialog`, `ACTION_OPEN_DOCUMENT`).
+    /// `NSOpenPanel`, `GtkFileChooserNative`, `ACTION_OPEN_DOCUMENT`).
     PickFiles(PickFiles),
     /// The clipboard's text.
     ReadClipboard,

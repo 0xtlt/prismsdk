@@ -7,7 +7,7 @@
 //! | op | fields |
 //! |---|---|
 //! | `create` / `destroy` | `id`, `kind` |
-//! | `style` | `s`: `bg`, `radius`, `bw`, `bc`, `opacity`, `color`, `font`, `weight`, `talign` (colors `[r,g,b,a, dark r,g,b,a]`) |
+//! | `style` | `s`: `bg`, `radius`, `bw`, `bc`, `opacity`, `color`, `font`, `weight`, `talign` (colors `[r,g,b,a, dark r,g,b,a]`); `hit: false` (the subtree ignores pointer input) and `inert: true` (no input, no focus, hidden from assistive technologies) only when set |
 //! | `text`, `placeholder`, `icon`, `value`, `clickable`, `display` | the value |
 //! | `a11y` | `label`, `hidden`, `role` (ARIA name: `slider`, `combobox`, `status`…), `value` |
 //! | `config` | `config`: a control's config string (`prism_core::controls`: slider `min max step`, picker options one per line, date `mode min max`, input tokens) |
@@ -54,7 +54,7 @@ pub struct MeasureRequest<'a> {
     pub kind: &'a str,
     /// The text, the icon name of an `image`, a picker's widest option, a
     /// date picker's config (`date`, `time`, `datetime` first), `large` for a
-    /// large spinner.
+    /// large spinner, a radio group's config (`row`/`column`, then options).
     pub text: &'a str,
     pub font_size: f32,
     /// 400, 500, 600, 700.
@@ -228,6 +228,13 @@ impl RemoteWidgets {
         if s.rounded_corners != prism_core::Corners::ALL {
             op["s"]["corners"] = json!(s.rounded_corners.bits());
         }
+        // Hit testing (#19), only when not the default.
+        if !s.hit_test {
+            op["s"]["hit"] = json!(false);
+        }
+        if s.inert {
+            op["s"]["inert"] = json!(true);
+        }
         op
     }
 }
@@ -333,6 +340,8 @@ impl Widgets for RemoteWidgets {
                 .max_by_key(|o| o.chars().count())
                 .unwrap_or_default(),
             NodeKind::DatePicker => self.configs.get(id).cloned().unwrap_or_default(),
+            // `row` or `column`, then the options: the host lays them out.
+            NodeKind::RadioGroup => self.configs.get(id).cloned().unwrap_or_default(),
             _ => self.texts.get(id).cloned().unwrap_or_default(),
         };
         (self.measure)(&MeasureRequest {

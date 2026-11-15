@@ -42,6 +42,8 @@ const PRESS_SELECT: isize = 4;
 #[derive(Default)]
 pub struct FocusIvars {
     focusable: Cell<bool>,
+    /// Reports the remote's presses while focused (`on_key_down`).
+    keys: Cell<bool>,
 }
 
 define_class!(
@@ -56,12 +58,41 @@ define_class!(
     impl FocusView {
         #[unsafe(method(canBecomeFocused))]
         fn can_become_focused(&self) -> bool {
-            self.ivars().focusable.get()
+            self.ivars().focusable.get() || self.ivars().keys.get()
         }
 
         #[unsafe(method(setPrismFocusable:))]
         fn set_prism_focusable(&self, on: bool) {
             self.ivars().focusable.set(on);
+        }
+
+        #[unsafe(method(setPrismKeys:))]
+        fn set_prism_keys(&self, on: bool) {
+            self.ivars().keys.set(on);
+        }
+
+        /// A key pad keeps the focus on left / right: the app gets them.
+        #[unsafe(method(shouldUpdateFocusInContext:))]
+        fn should_update_focus(&self, context: &UIFocusUpdateContext) -> bool {
+            !(self.ivars().keys.get()
+                && self.isFocused()
+                && context.focusHeading().0 & HEADING_SIDEWAYS != 0)
+        }
+
+        #[unsafe(method(pressesBegan:withEvent:))]
+        fn presses_began(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
+            let local = self.ivars().keys.get().then_some(self.tag() as NodeId);
+            if local.is_none() || !crate::interaction::handle_presses(presses, self, local, true) {
+                let _: () = unsafe { msg_send![super(self), pressesBegan: presses, withEvent: event] };
+            }
+        }
+
+        #[unsafe(method(pressesEnded:withEvent:))]
+        fn presses_ended(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
+            let local = self.ivars().keys.get().then_some(self.tag() as NodeId);
+            if local.is_none() || !crate::interaction::handle_presses(presses, self, local, false) {
+                let _: () = unsafe { msg_send![super(self), pressesEnded: presses, withEvent: event] };
+            }
         }
 
         #[unsafe(method(didUpdateFocusInContext:withAnimationCoordinator:))]
@@ -109,6 +140,14 @@ pub fn focus_view(mtm: MainThreadMarker) -> Retained<UIView> {
 pub fn set_focusable(view: &UIView, on: bool) {
     if view.respondsToSelector(sel!(setPrismFocusable:)) {
         let _: () = unsafe { msg_send![view, setPrismFocusable: on] };
+    }
+}
+
+/// Lets `view` take the focus and report the remote's presses (only
+/// `PrismFocusView`s).
+pub fn set_keys(view: &UIView, on: bool) {
+    if view.respondsToSelector(sel!(setPrismKeys:)) {
+        let _: () = unsafe { msg_send![view, setPrismKeys: on] };
     }
 }
 
@@ -356,7 +395,7 @@ impl Adjustable {
                 v + direction
                     * match c.mode {
                         DateMode::Date => 86_400.,
-                        DateMode::Time => 900.,
+                        DateMode::Time | DateMode::TimeOfDay => 900.,
                         DateMode::DateTime => 3_600.,
                     },
             ),
@@ -364,6 +403,11 @@ impl Adjustable {
                 let c = self.ivars().slider.get();
                 c.snap(v + direction * c.a11y_step())
             }
+        };
+        // A time of day wraps around midnight.
+        let next = match self.ivars().date.get() {
+            Some(c) if c.mode == DateMode::TimeOfDay => next.rem_euclid(86_400.),
+            _ => next,
         };
         if next != v {
             self.ivars().value.set(next);
@@ -388,7 +432,7 @@ impl Adjustable {
                         NSDateFormatterStyle::MediumStyle,
                         NSDateFormatterStyle::NoStyle,
                     ),
-                    DateMode::Time => (
+                    DateMode::Time | DateMode::TimeOfDay => (
                         NSDateFormatterStyle::NoStyle,
                         NSDateFormatterStyle::ShortStyle,
                     ),
@@ -399,6 +443,12 @@ impl Adjustable {
                 };
                 f.setDateStyle(date);
                 f.setTimeStyle(time);
+                // A time of day is the same in every zone: shown in UTC.
+                if c.mode == DateMode::TimeOfDay {
+                    f.setTimeZone(Some(
+                        &objc2_foundation::NSTimeZone::timeZoneForSecondsFromGMT(0),
+                    ));
+                }
                 let text = f.stringFromDate(&NSDate::dateWithTimeIntervalSince1970(v));
                 self.ivars().label.setText(Some(&text));
             }

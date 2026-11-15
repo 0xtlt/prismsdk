@@ -8,7 +8,7 @@ import android.view.ViewGroup;
  * A container whose children sit exactly at the frames Prism's layout gave
  * them (in pixels): Prism computes layout in Rust, like on iOS and macOS.
  */
-public final class PrismLayout extends ViewGroup {
+public class PrismLayout extends ViewGroup {
     /** x, y, width, height of a child, in pixels. */
     public static final class Frame extends ViewGroup.LayoutParams {
         public int x, y;
@@ -20,6 +20,21 @@ public final class PrismLayout extends ViewGroup {
 
     /** Scroll content: its size is the content's, not the parent's. */
     public int fixedWidth = -1, fixedHeight = -1;
+
+    /** `hit_test(false)` / `inert`: the subtree takes no touch; what is under it does. */
+    public boolean passThrough;
+
+    @Override
+    public boolean dispatchTouchEvent(android.view.MotionEvent e) {
+        if (passThrough) return false;
+        return super.dispatchTouchEvent(e);
+    }
+
+    @Override
+    public boolean dispatchGenericMotionEvent(android.view.MotionEvent e) {
+        if (passThrough) return false;
+        return super.dispatchGenericMotionEvent(e);
+    }
 
     public PrismLayout(Context context) {
         super(context);

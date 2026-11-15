@@ -143,6 +143,12 @@ pub trait Widgets {
     fn overlay_viewport(&mut self, overlay: &Self::View, content: &Self::View) -> Viewport {
         self.screen_viewport(overlay, content)
     }
+    /// What the runtime's layers keep clear of, given the window's safe
+    /// area: also a root tab bar, so toasts sit above it. Default: the
+    /// safe area.
+    fn layer_insets(&mut self, safe_area: Insets) -> Insets {
+        safe_area
+    }
 }
 
 /// `style` at `pose` (its opacity and transform replaced).
@@ -225,6 +231,8 @@ pub struct NativeRenderer<W: Widgets> {
     overlays: HashMap<NodeId, prism_core::controls::OverlayConfig>,
     /// Size of the last layout, for the layers.
     window: (f32, f32),
+    /// What layers keep clear of (`Widgets::layer_insets`).
+    layer_insets: Insets,
 }
 
 impl<W: Widgets> NativeRenderer<W> {
@@ -250,6 +258,7 @@ impl<W: Widgets> NativeRenderer<W> {
             layers: Vec::new(),
             overlays: HashMap::new(),
             window: (0., 0.),
+            layer_insets: Insets::default(),
         }
     }
 
@@ -454,6 +463,9 @@ impl<W: Widgets> NativeRenderer<W> {
     /// Lays each layer out over the whole window, inside the safe area.
     fn layout_layers(&mut self) {
         let (width, height) = self.window;
+        if !self.layers.is_empty() {
+            self.layer_insets = self.widgets.layer_insets(self.insets);
+        }
         for id in self.layers.clone() {
             self.sync_layout_style(id);
             let Some(layout) = self.nodes.get(&id).map(|e| e.layout) else {
@@ -647,7 +659,7 @@ impl<W: Widgets> NativeRenderer<W> {
         if self.layers.contains(&id) {
             // A layer covers the window, inside the safe area.
             let (w, h) = self.window;
-            let (p, i) = (zoomed.padding, self.insets);
+            let (p, i) = (zoomed.padding, self.layer_insets);
             style.position = taffy::Position::Relative;
             style.size = Size {
                 width: Dimension::length(w),

@@ -10,6 +10,8 @@ mod device_info;
 #[cfg(target_os = "macos")]
 mod imp;
 #[cfg(target_os = "macos")]
+mod interact;
+#[cfg(target_os = "macos")]
 mod menus;
 #[cfg(target_os = "macos")]
 mod services;

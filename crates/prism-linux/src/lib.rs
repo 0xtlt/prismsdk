@@ -11,6 +11,8 @@
 mod controls;
 #[cfg(target_os = "linux")]
 mod imp;
+// Key and icon names: no GTK, tested everywhere.
+mod input;
 #[cfg(target_os = "linux")]
 mod layout;
 #[cfg(target_os = "linux")]

@@ -169,6 +169,7 @@ mod bridge {
         fn prism_device_motion_start(id: u64, interval: f64);
         fn prism_device_stop(id: u64);
         fn prism_device_pick_images(id: u64, limit: u32, camera: bool);
+        fn prism_device_pick_files(id: u64, types: *const c_char, multiple: bool);
         fn prism_device_haptic(kind: *const c_char);
         fn prism_device_copy(text: *const c_char);
         fn prism_device_paste(id: u64);
@@ -264,6 +265,10 @@ mod bridge {
                 }
                 DeviceCall::StopWatch => prism_device_stop(id),
                 DeviceCall::PickImages(o) => prism_device_pick_images(id, o.limit, o.camera),
+                // Types one per line: MIME types or `.ext`.
+                DeviceCall::PickFiles(o) => {
+                    prism_device_pick_files(id, c(&o.types.join("\n")).as_ptr(), o.multiple)
+                }
                 DeviceCall::ReadClipboard => prism_device_paste(id),
                 DeviceCall::Haptic(h) => prism_device_haptic(c(h.name()).as_ptr()),
                 DeviceCall::CopyText(t) => prism_device_copy(c(&t).as_ptr()),

@@ -573,6 +573,10 @@ pub extern "system" fn Java_dev_prism_PrismHost_nativeEvent(
 }
 
 fn parse(v: &Value) -> Option<UiEvent> {
+    // Clicks with a position, pointer, drag and key events (#17).
+    if let Some(event) = prism_native::remote::parse_input_event(v) {
+        return Some(event);
+    }
     let id = v.get("id")?.as_u64()?;
     Some(match v.get("t")?.as_str()? {
         "click" => UiEvent::Click(id),

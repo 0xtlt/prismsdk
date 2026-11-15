@@ -22,7 +22,7 @@ pub struct Interact {
     level: f32,
     /// The level when the current drag started.
     drag_from: f32,
-    /// Width of the level bar, as last measured from a click.
+    /// Where the pointer last was over the read-out area.
     pointer: Option<Point>,
     hovered: bool,
     dot: (i32, i32),
@@ -146,6 +146,7 @@ impl Interact {
         let (x, y) = self.dot;
         div()
             .id("pad")
+            .flex_shrink_0()
             .w(px(cell * PAD as f32 + 8.))
             .h(px(cell * PAD as f32 + 8.))
             .p(4.)
@@ -196,7 +197,7 @@ impl Interact {
                     div()
                         .size(px(64.))
                         .rounded(t.radius)
-                        .bg(t.surface)
+                        .bg(t.accent.with_alpha(0.12))
                         .items_center()
                         .justify_center()
                         .child(text(e).text_size(28.))
@@ -369,7 +370,8 @@ impl Render for Interact {
                         text(strings::interact_pad_hint(cx))
                             .text_size(13.)
                             .text_color(t.muted)
-                            .flex_1(),
+                            .flex_1()
+                            .min_w(px(0.)),
                     ),
             )
             .child(overlays)

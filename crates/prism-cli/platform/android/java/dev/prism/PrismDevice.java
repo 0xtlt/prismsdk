@@ -90,6 +90,7 @@ final class PrismDevice {
             case "watch_motion": motion(id, c.optLong("interval", 100)); break;
             case "stop": stop(id); break;
             case "pick_images": pick(id, c.optInt("limit"), c.optBoolean("camera")); break;
+            case "pick_files": pickFiles(id, c.optJSONArray("types"), c.optBoolean("multiple")); break;
             case "haptic": haptic(c.optString("kind")); reply(id, null, null); break;
             case "copy": {
                 ClipboardManager cb = (ClipboardManager) ctx().getSystemService(Context.CLIPBOARD_SERVICE);
@@ -334,6 +335,31 @@ final class PrismDevice {
         }
     }
 
+    /**
+     * The system's document picker (ACTION_OPEN_DOCUMENT): MIME types, or
+     * extensions mapped to theirs. Files are copied like photos.
+     */
+    static void pickFiles(long id, JSONArray types, boolean multiple) {
+        int code = 10_000 + nextCode++;
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE);
+        List<String> mimes = new ArrayList<>();
+        for (int i = 0; types != null && i < types.length(); i++) {
+            String t = types.optString(i).trim().toLowerCase(java.util.Locale.ROOT);
+            if (t.startsWith(".")) t = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(t.substring(1));
+            if (t != null && !t.isEmpty()) mimes.add(t);
+        }
+        intent.setType(mimes.size() == 1 ? mimes.get(0) : "*/*");
+        if (mimes.size() > 1) intent.putExtra(Intent.EXTRA_MIME_TYPES, mimes.toArray(new String[0]));
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, multiple);
+        picking.put(code, new Object[]{id, null, Boolean.TRUE});
+        try {
+            PrismHost.activity.startActivityForResult(intent, code);
+        } catch (Exception e) {
+            picking.remove(code);
+            fail(id, "unavailable", false);
+        }
+    }
+
     static void activityResult(int code, int result, Intent data) {
         Object[] pending = picking.remove(code);
         if (pending == null) return;
@@ -348,8 +374,9 @@ final class PrismDevice {
             for (int i = 0; i < data.getClipData().getItemCount(); i++) uris.add(data.getClipData().getItemAt(i).getUri());
         } else if (data != null && data.getData() != null) uris.add(data.getData());
         JSONArray files = new JSONArray();
+        boolean documents = pending.length > 2;
         for (Uri u : uris) {
-            JSONObject f = copy(u);
+            JSONObject f = copy(u, documents);
             if (f != null) files.put(f);
         }
         if (files.length() == 0) fail(id, "cancelled", false);
@@ -358,7 +385,11 @@ final class PrismDevice {
 
     /** Copies a picked item into the app's cache: what the app can read. */
     static JSONObject copy(Uri uri) {
-        String name = "photo.jpg";
+        return copy(uri, false);
+    }
+
+    static JSONObject copy(Uri uri, boolean document) {
+        String name = document ? "file" : "photo.jpg";
         try (Cursor c = ctx().getContentResolver().query(uri, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
             if (c != null && c.moveToFirst()) name = c.getString(0);
         } catch (Exception ignored) {
@@ -366,7 +397,7 @@ final class PrismDevice {
         String mime = ctx().getContentResolver().getType(uri);
         File dir = new File(ctx().getCacheDir(), "prism-picked");
         dir.mkdirs();
-        String ext = name.contains(".") ? name.substring(name.lastIndexOf('.')) : ".jpg";
+        String ext = name.contains(".") ? name.substring(name.lastIndexOf('.')) : document ? "" : ".jpg";
         File out = new File(dir, UUID.randomUUID() + ext);
         try (InputStream in = ctx().getContentResolver().openInputStream(uri); OutputStream os = new FileOutputStream(out)) {
             byte[] buf = new byte[64 * 1024];
@@ -375,7 +406,7 @@ final class PrismDevice {
             JSONObject f = new JSONObject();
             f.put("path", out.getAbsolutePath());
             f.put("name", name);
-            f.put("mime", mime != null ? mime : "image/jpeg");
+            f.put("mime", mime != null ? mime : document ? "application/octet-stream" : "image/jpeg");
             f.put("size", out.length());
             return f;
         } catch (Exception e) {

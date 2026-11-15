@@ -17,7 +17,7 @@
     stack: "div", screen: "section", toggle: "input", scroll: "div", tabs: "div", tab: "div",
     image: "span", progress: "progress", timer: "span", modal: "dialog", picture: "img",
     shape: "div", slider: "input", picker: "select", date_picker: "input", text_area: "textarea",
-    spinner: "span",
+    spinner: "span", overlay: "div", checkbox: "label", radio_group: "div",
   };
   // SF Symbol names → glyphs (table generated from Rust: glyphs.rs).
   const glyphs = __GLYPHS__;
@@ -27,9 +27,292 @@
 
   const send = (msg) => ws && ws.readyState === 1 && ws.send(JSON.stringify(msg));
 
-  function activate(el, id) {
+  function activate(el, id, e) {
     if (el.dataset.clickable !== "1" || el.getAttribute("aria-disabled") === "true") return;
-    send({ t: "click", id });
+    // The click that ends a drag is not a click.
+    if (dragJustEnded) return;
+    // Pointer clicks say where (keyboard activations have no position: detail 0).
+    if (e && e.detail > 0 && typeof e.clientX === "number") send({ t: "click", id, ...local(el, e) });
+    else send({ t: "click", id });
+  }
+
+  // --- Pointer and drag (#17) -------------------------------------------------
+  const round = (v) => Math.round(v * 10) / 10;
+  /** The pointer in an element's own coordinates (from its top-left corner). */
+  const local = (el, e) => {
+    const r = el.getBoundingClientRect();
+    return { x: round(e.clientX - r.left), y: round(e.clientY - r.top) };
+  };
+  const toggleClass = (el, cls, on) => {
+    const list = el.className.split(/\s+/).filter((c) => c && c !== cls);
+    if (on) list.push(cls);
+    el.className = list.join(" ");
+  };
+  /** Set from a drag's end until the click it produces has been ignored. */
+  let dragJustEnded = false;
+  /** One message per animation frame: the latest one wins. */
+  function throttled() {
+    let pending = null, queued = false;
+    const flush = () => { queued = false; if (pending) { const m = pending; pending = null; send(m); } };
+    return {
+      queue(m) { pending = m; if (!queued) { queued = true; requestAnimationFrame(flush); } },
+      flush,
+      drop() { pending = null; },
+    };
+  }
+  /** Hover (1), move (2) and drag (4) reports of a node. */
+  function setPointer(el, id, mask) {
+    el._pmask = mask;
+    toggleClass(el, "prism-draggable", (mask & 4) !== 0);
+    if (el._pointerBound) return;
+    el._pointerBound = true;
+    const moves = throttled(), drags = throttled();
+    let drag = null;
+    el.addEventListener("pointerenter", (e) => { if (el._pmask & 1) send({ t: "pointer", id, phase: "enter", ...local(el, e) }); });
+    el.addEventListener("pointerleave", (e) => {
+      if (!(el._pmask & 3)) return;
+      moves.flush();
+      send({ t: "pointer", id, phase: "leave", ...local(el, e) });
+    });
+    el.addEventListener("pointerdown", (e) => {
+      // The innermost draggable element takes the drag.
+      if (!(el._pmask & 4) || e.button > 0 || e.prismDrag) return;
+      e.prismDrag = true;
+      const at = local(el, e);
+      drag = { pointer: e.pointerId, cx: e.clientX, cy: e.clientY, x: at.x, y: at.y, started: false };
+    });
+    el.addEventListener("pointermove", (e) => {
+      if (drag && e.pointerId === drag.pointer) {
+        const dx = round(e.clientX - drag.cx), dy = round(e.clientY - drag.cy);
+        const msg = { t: "drag", id, x: drag.x, y: drag.y, dx, dy };
+        if (!drag.started) {
+          // Past the slop: a drag, not a click.
+          if (Math.hypot(dx, dy) < 4) return;
+          drag.started = true;
+          try { el.setPointerCapture(e.pointerId); } catch {}
+          send({ ...msg, phase: "start" });
+        } else drags.queue({ ...msg, phase: "move" });
+      }
+      if (el._pmask & 2) moves.queue({ t: "pointer", id, phase: "move", ...local(el, e) });
+    });
+    const finish = (e, phase) => {
+      if (!drag || e.pointerId !== drag.pointer) return;
+      const d = drag;
+      drag = null;
+      if (!d.started) return;
+      drags.drop();
+      send({ t: "drag", id, phase, x: d.x, y: d.y, dx: round(e.clientX - d.cx), dy: round(e.clientY - d.cy) });
+      dragJustEnded = true;
+      setTimeout(() => { dragJustEnded = false; }, 0);
+    };
+    el.addEventListener("pointerup", (e) => finish(e, "end"));
+    el.addEventListener("pointercancel", (e) => finish(e, "cancel"));
+  }
+
+  // --- Keys (#17): focused elements and the whole window ----------------------
+  let globalKeys = 0;
+  const NATIVE_FOCUS = ["INPUT", "BUTTON", "SELECT", "TEXTAREA", "A"];
+  function setKeys(el, local, global) {
+    if (!!el._kGlobal !== global) globalKeys += global ? 1 : -1;
+    el._kGlobal = global;
+    el._kLocal = local;
+    if (local) el.dataset.keys = "1"; else delete el.dataset.keys;
+    // A view with key handlers can take the focus.
+    if (local && !NATIVE_FOCUS.includes(el.tagName) && !el.hasAttribute("tabindex")) {
+      el.setAttribute("tabindex", "0");
+      el._kTab = true;
+    } else if (!local && el._kTab) {
+      el.removeAttribute("tabindex");
+      el._kTab = false;
+    }
+  }
+  const editable = (t) => !!t && (t.isContentEditable || t.tagName === "TEXTAREA"
+    || (t.tagName === "INPUT" && !["checkbox", "radio", "range", "button", "submit", "color", "file"].includes(t.type)));
+  const SCROLL_KEYS = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " ", "PageUp", "PageDown", "Home", "End"];
+  document.addEventListener("keydown", (e) => {
+    if (e.isComposing || !e.key) return;
+    const t = e.target && e.target.closest ? e.target : null;
+    const owner = t && t.closest("[data-keys]");
+    const typing = editable(t);
+    // In a text field, global listeners only hear keys that do not type.
+    const typed = e.key.length === 1 && !e.ctrlKey && !e.metaKey;
+    if (!owner && !(globalKeys > 0 && !(typing && typed))) return;
+    const mods = (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
+    send({ t: "key", id: owner ? Number(owner.dataset.pid) : 0, key: e.key, mods, repeat: !!e.repeat });
+    // The app handles arrows and space on its element: the page does not scroll.
+    const control = typing || (t && ["SELECT", "INPUT"].includes(t.tagName));
+    if (owner && !control && SCROLL_KEYS.includes(e.key)) e.preventDefault();
+  });
+
+  // --- Focus and scrolling from the app (#17) ----------------------------------
+  function focusNode(el) {
+    const target = el._input || (el.dataset.kind === "radio_group"
+      ? el.querySelector("input:checked") || el.querySelector("input") : el);
+    target?.focus?.();
+  }
+  function reveal(el) {
+    el.scrollIntoView?.({ block: "nearest", inline: "nearest", behavior: reducedMotion?.matches ? "auto" : "smooth" });
+  }
+
+  // --- Layers (#25): above everything, the toaster ----------------------------
+  let layerHost = document.getElementById("prism-layers");
+  if (!layerHost) {
+    layerHost = document.createElement("div");
+    layerHost.id = "prism-layers";
+    layerHost.setAttribute("popover", "manual");
+    document.body.appendChild(layerHost);
+  }
+  /** Shown last in the top layer, so it stays over dialogs opened since. */
+  function raiseLayers() {
+    if (typeof layerHost.showPopover !== "function") return;
+    try {
+      if (layerHost.matches(":popover-open")) layerHost.hidePopover();
+      layerHost.showPopover();
+    } catch {}
+  }
+
+  // --- Overlays (#19): sheets, dialogs, popovers without a route ---------------
+  const openPopovers = new Set();
+  /** The user closed it (Escape, a click outside): the app hears `back`. */
+  function overlayDismissed(el) {
+    if (!el._open || el._closing) return;
+    el._open = false;
+    openPopovers.delete(el);
+    hideOverlay(el);
+    send({ t: "back", id: Number(el.dataset.pid), depth: 0 });
+  }
+  function overlayBox(el, config) {
+    const t = config.split(" ");
+    const kind = ["popover", "dialog"].includes(t[0]) ? t[0] : "sheet";
+    el._fixed = t.includes("fixed");
+    let box = el._box;
+    if (!box || el._boxKind !== kind) {
+      const old = box;
+      box = document.createElement(kind === "popover" ? "div" : "dialog");
+      box.className = `prism-overlay-box prism-ov-${kind}`;
+      if (kind === "popover") {
+        box.addEventListener("toggle", (e) => { if (e.newState === "closed") overlayDismissed(el); });
+      } else {
+        box.setAttribute("aria-modal", "true");
+        box.addEventListener("cancel", (e) => {
+          // Escape closes it, unless it is fixed (then the app offers a way out).
+          if (el._fixed) e.preventDefault();
+        });
+        box.addEventListener("close", () => overlayDismissed(el));
+        // A click on the backdrop (the dialog box itself, outside its content).
+        box.addEventListener("click", (e) => {
+          if (e.target !== box || el._fixed) return;
+          const r = box.getBoundingClientRect();
+          const inside = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+          if (!inside || !box.firstElementChild) { el._closing = false; overlayDismissed(el); }
+        });
+      }
+      if (old) { box.append(...old.childNodes); old.remove(); }
+      el.appendChild(box);
+      el._box = box;
+      el._boxKind = kind;
+    }
+    if (kind === "popover") box.setAttribute("popover", el._fixed ? "manual" : "auto");
+    box.dataset.medium = t.includes("medium") ? "1" : "";
+    if (el._open) showOverlay(el);
+  }
+  function showOverlay(el) {
+    const box = el._box;
+    if (!box) return;
+    if (el._boxKind === "popover") {
+      if (typeof box.showPopover === "function") {
+        try { if (!box.matches(":popover-open")) box.showPopover(); } catch {}
+      } else box.dataset.open = "1";
+      openPopovers.add(el);
+      placePopover(el);
+      requestAnimationFrame(() => placePopover(el));
+    } else if (!box.open && !box.hasAttribute("open")) {
+      if (typeof box.showModal === "function" && box.isConnected) box.showModal();
+      else box.setAttribute("open", "");
+      userNavigated = true;
+    }
+    raiseLayers();
+  }
+  function hideOverlay(el) {
+    const box = el._box;
+    if (!box) return;
+    el._closing = true;
+    try {
+      if (el._boxKind === "popover") {
+        openPopovers.delete(el);
+        if (typeof box.hidePopover === "function") { if (box.matches(":popover-open")) box.hidePopover(); }
+        else delete box.dataset.open;
+      } else if (typeof box.close === "function") box.close();
+      else box.removeAttribute("open");
+    } catch {}
+    el._closing = false;
+  }
+  /** Below its anchor (the overlay's parent), above it if there is no room. */
+  function placePopover(el) {
+    const box = el._box, anchor = el.parentElement;
+    if (!box || !anchor || !el._open || el._boxKind !== "popover") return;
+    const a = anchor.getBoundingClientRect(), b = box.getBoundingClientRect();
+    const m = 8, gap = 6;
+    let top = a.bottom + gap;
+    if (top + b.height > innerHeight - m && a.top - gap - b.height >= m) top = a.top - gap - b.height;
+    const rtl = document.documentElement.dir === "rtl";
+    let left = rtl ? a.right - b.width : a.left;
+    left = Math.max(m, Math.min(left, innerWidth - b.width - m));
+    top = Math.max(m, Math.min(top, innerHeight - b.height - m));
+    box.style.left = `${round(left)}px`;
+    box.style.top = `${round(top)}px`;
+  }
+  const replace = () => openPopovers.forEach(placePopover);
+  addEventListener("resize", replace);
+  addEventListener("scroll", replace, true);
+
+  // --- Choice controls (#18) ----------------------------------------------------
+  function radioOptions(el, id, config) {
+    const lines = config.split("\n");
+    if (lines[0] === "row") el.dataset.row = "1"; else delete el.dataset.row;
+    const options = lines.slice(1);
+    el.replaceChildren(...options.map((text, i) => {
+      const label = document.createElement("label");
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.name = `prism-radio-${id}`;
+      input.value = String(i);
+      input.checked = i === el._index;
+      input.disabled = !!el._disabled;
+      input.addEventListener("change", () => { if (input.checked) send({ t: "change", id, v: i }); });
+      const span = document.createElement("span");
+      span.textContent = text;
+      label.append(input, span);
+      return label;
+    }));
+  }
+  const radios = (el) => el.querySelectorAll("input");
+
+  /** A glyph drawn inside a text field, before the text. */
+  function setFieldIcon(el, glyph) {
+    toggleClass(el, "prism-icon-field", !!glyph);
+    el._extraCss = glyph
+      ? `--prism-icon:url("data:image/svg+xml,${encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><text x='8' y='14' font-size='16' text-anchor='middle' fill='gray' font-family='system-ui,sans-serif'>${glyph.replace(/[<&'"]/g, "")}</text></svg>`)}");`
+      : "";
+    el.style.cssText = (el._css || el.style.cssText) + el._extraCss;
+  }
+  /** `<datalist>` of a text field's suggestions. */
+  function setSuggestions(el, list) {
+    if (!list.length) {
+      if (el._list) { el._list.remove(); el._list = null; el.removeAttribute("list"); }
+      return;
+    }
+    if (!el._list) {
+      el._list = document.createElement("datalist");
+      el._list.id = `prism-list-${el.dataset.pid}`;
+    }
+    el._list.replaceChildren(...list.map((v) => {
+      const o = document.createElement("option");
+      o.setAttribute("value", v);
+      return o;
+    }));
+    if (!el._list.isConnected) document.body.appendChild(el._list);
+    el.setAttribute("list", el._list.id);
   }
 
   // Shapes (prism-core shape.rs): paths in fractions of the box become an
@@ -213,7 +496,7 @@
       el.addEventListener("click", (e) => {
         if (el.dataset.clickable !== "1") return;
         e.stopPropagation();
-        activate(el, id);
+        activate(el, id, e);
       });
       // Keyboard activation for custom buttons (ARIA button pattern).
       el.addEventListener("keydown", (e) => {
@@ -228,8 +511,20 @@
       el.dataset.clickable = "1";
       el.addEventListener("click", (e) => {
         e.stopPropagation();
-        activate(el, id);
+        activate(el, id, e);
       });
+    } else if (kind === "overlay") {
+      el.className = "prism-overlay";
+    } else if (kind === "checkbox") {
+      el.className = "prism-check";
+      el.innerHTML = '<input type="checkbox"><span></span>';
+      el._input = el.firstChild;
+      el._label = el.lastChild;
+      el._input.addEventListener("change", () => send({ t: "change", id, v: el._input.checked ? 1 : 0 }));
+    } else if (kind === "radio_group") {
+      el.className = "prism-radios";
+      el.setAttribute("role", "radiogroup");
+      el._index = -1;
     }
     nodes.set(id, el);
   }
@@ -380,7 +675,12 @@
   }
   const pad = (n) => String(n).padStart(2, "0");
   /** Unix seconds as an `<input type=date|time|datetime-local>` value (local time). */
-  function dateString(secs, type) {
+  function dateString(secs, type, utc) {
+    if (utc) {
+      // A time of day (#18): seconds since midnight, no time zone.
+      const m = Math.floor((((Math.round(secs) % 86400) + 86400) % 86400) / 60);
+      return `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+    }
     const d = new Date(secs * 1000);
     const day = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
     const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
@@ -390,6 +690,10 @@
   function dateSeconds(el) {
     const v = el.value;
     if (!v) return null;
+    if (el._utc) {
+      const [h, mi] = v.split(":").map(Number);
+      return h * 3600 + mi * 60;
+    }
     const b = new Date((el._secs || 0) * 1000);
     let [y, mo, d, h, mi, s] = [b.getFullYear(), b.getMonth(), b.getDate(), b.getHours(), b.getMinutes(), b.getSeconds()];
     if (el.type === "time") {
@@ -405,7 +709,8 @@
   }
   /** Keyboard, return key, capitalization, autocorrection (mirrors html.rs input_attrs). */
   function applyInputConfig(el, config) {
-    const t = new Set(config.split(" ").filter(Boolean));
+    const lines = config.split("\n");
+    const t = new Set(lines[0].split(" ").filter(Boolean));
     const get = (k) => { for (const x of t) if (x.startsWith(k + "=")) return x.slice(k.length + 1); return null; };
     const secure = t.has("secure");
     const kb = get("keyboard");
@@ -420,6 +725,8 @@
     const noCorrect = secure || t.has("autocorrect=off");
     set("autocorrect", noCorrect ? "off" : null);
     el.spellcheck = !noCorrect;
+    set("maxlength", get("max"));
+    if (el.tagName === "INPUT") setSuggestions(el, lines.slice(1));
   }
   function applyConfig(el, config) {
     const kind = el.dataset.kind;
@@ -433,12 +740,18 @@
       el.selectedIndex = el._index + 1;
     } else if (kind === "date_picker") {
       const [mode, min, max] = config.split(" ");
-      el.type = { time: "time", datetime: "datetime-local" }[mode] || "date";
-      el.min = mode !== "time" && min !== "-" ? dateString(Number(min), el.type) : "";
-      el.max = mode !== "time" && max !== "-" ? dateString(Number(max), el.type) : "";
-      if (el._secs !== undefined) el.value = dateString(el._secs, el.type);
+      el._utc = mode === "timeofday";
+      el.type = { time: "time", timeofday: "time", datetime: "datetime-local" }[mode] || "date";
+      const bounded = mode !== "time" && !el._utc;
+      el.min = bounded && min !== "-" ? dateString(Number(min), el.type) : "";
+      el.max = bounded && max !== "-" ? dateString(Number(max), el.type) : "";
+      if (el._secs !== undefined) el.value = dateString(el._secs, el.type, el._utc);
     } else if (kind === "text_input" || kind === "text_area") {
       applyInputConfig(el, config);
+    } else if (kind === "overlay") {
+      overlayBox(el, config);
+    } else if (kind === "radio_group") {
+      radioOptions(el, Number(el.dataset.pid), config);
     }
   }
 
@@ -448,6 +761,20 @@
       v === undefined || v === null || v === false ? el.removeAttribute(name) : el.setAttribute(name, v === true ? "true" : v);
     set("aria-hidden", a.hidden || null);
     if (kind === "stack" || kind === "tabs" || kind === "tab" || kind === "screen") return;
+    if (kind === "overlay") return;
+    if (kind === "checkbox") {
+      // A native checkbox: its label is the visible text unless overridden.
+      const input = el._input;
+      const own = a.label && a.label !== el._label.textContent ? a.label : null;
+      own ? input.setAttribute("aria-label", own) : input.removeAttribute("aria-label");
+      a.hint ? input.setAttribute("aria-description", a.hint) : input.removeAttribute("aria-description");
+      input.disabled = !!a.disabled;
+      return;
+    }
+    if (kind === "radio_group") {
+      el._disabled = !!a.disabled;
+      radios(el).forEach((r) => { r.disabled = !!a.disabled; });
+    }
     const native = { button: "button", toggle: "switch", slider: "slider", picker: "combobox" }[kind];
     const role = a.role;
     if (role && role !== "text" && role !== native) {
@@ -471,7 +798,7 @@
     if (["INPUT", "BUTTON", "SELECT", "TEXTAREA"].includes(el.tagName)) el.disabled = !!a.disabled;
     // Custom interactive elements must be reachable from the keyboard.
     const interactive = ["button", "link", "switch", "checkbox", "tab", "slider", "combobox"].includes(role);
-    if (kind === "view") set("tabindex", interactive && !a.hidden && !a.disabled ? "0" : null);
+    if (kind === "view") set("tabindex", (interactive || el._kLocal) && !a.hidden && !a.disabled ? "0" : null);
   }
 
   function apply(p) {
@@ -480,7 +807,10 @@
       case "create": return create(p.id, p.kind);
       case "style": {
         const hidden = el.style.display === "none";
-        el.style.cssText = p.css;
+        el._css = p.css;
+        el.style.cssText = p.css + (el._extraCss || "");
+        if (p.inert) el.inert = true; else if (el.inert) el.inert = false;
+        if (p.inert) el.setAttribute("inert", ""); else el.removeAttribute("inert");
         if (el.dataset.kind === "text_area") grow(el);
         motion(el, p.motion, hidden);
         return;
@@ -506,6 +836,7 @@
           if (el.getAttribute("src") !== src) el.src = src;
           return;
         }
+        if (kind === "checkbox") { el._label.textContent = p.text; return; }
         if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
           // Never fight the user's typing: a focused field owns its value.
           if (el.value !== p.text && document.activeElement !== el) el.value = p.text;
@@ -533,7 +864,13 @@
         if (el.dataset.kind === "progress") el.value = p.value;
         if (el.dataset.kind === "slider") { el._v = p.value; el.value = p.value; }
         if (el.dataset.kind === "picker") { el._index = p.value; el.selectedIndex = p.value + 1; }
-        if (el.dataset.kind === "date_picker") { el._secs = p.value; el.value = dateString(p.value, el.type); }
+        if (el.dataset.kind === "date_picker") { el._secs = p.value; el.value = dateString(p.value, el.type, el._utc); }
+        if (el.dataset.kind === "checkbox") el._input.checked = p.value !== 0;
+        if (el.dataset.kind === "radio_group") { el._index = p.value; radios(el).forEach((r, i) => { r.checked = i === p.value; }); }
+        if (el.dataset.kind === "overlay") {
+          el._open = p.value === 1;
+          if (el._open) showOverlay(el); else hideOverlay(el);
+        }
         if (el.dataset.kind === "spinner") el.dataset.size = p.value === 1 ? "large" : "";
         if (el.dataset.kind === "picture") el.style.objectFit = p.value === 1 ? "contain" : "cover";
         if (el.dataset.kind === "scroll") setRefreshing(el, p.value === 1);
@@ -545,6 +882,7 @@
         el._icon = p.icon;
         el._glyph = p.glyph;
         if (el.dataset.kind === "image") el.textContent = p.glyph;
+        if (el.dataset.kind === "text_input") setFieldIcon(el, p.icon ? p.glyph : "");
         const owner = el.parentElement && el.parentElement.parentElement;
         if (owner && owner._tabs) refreshTabs(owner);
         return;
@@ -568,7 +906,7 @@
           (el._sheets || []).filter((i) => !sheets.includes(i)).forEach((i) => nodes.get(i)?.remove());
           sheets.forEach((i) => {
             const d = nodes.get(i);
-            if (!d.isConnected) { document.body.appendChild(d); d.showModal(); userNavigated = true; }
+            if (!d.isConnected) { document.body.appendChild(d); d.showModal(); userNavigated = true; raiseLayers(); }
           });
           el._sheets = sheets;
         }
@@ -583,13 +921,31 @@
           el._tabs = p.children;
           setChildren(el._panels, p.children);
           refreshTabs(el);
+        } else if (el.dataset.kind === "overlay") {
+          // The content goes in the dialog or popover box.
+          if (!el._box) overlayBox(el, "sheet");
+          setChildren(el._box, p.children);
+          if (el._open) requestAnimationFrame(() => placePopover(el));
         } else {
           setChildren(el, p.children);
         }
         return;
       case "root": return mount.replaceChildren(el);
+      // Pointer, keys, focus, layers (#17, #25).
+      case "pointer": return setPointer(el, p.id, p.mask);
+      case "keys": return setKeys(el, p.local, p.global);
+      case "focus": return el && focusNode(el);
+      case "reveal": return el && reveal(el);
+      case "layers":
+        layerHost.replaceChildren(...p.ids.map((i) => nodes.get(i)).filter(Boolean));
+        return raiseLayers();
       case "destroy":
-        if (el) el.remove();
+        if (el) {
+          el.remove();
+          if (el._kGlobal) globalKeys--;
+          if (el._list) el._list.remove();
+          openPopovers.delete(el);
+        }
         nodes.delete(p.id);
         stacks = stacks.filter((s) => s !== el);
         return;
@@ -842,6 +1198,7 @@
     d.addEventListener("cancel", (e) => { e.preventDefault(); close(cancel >= 0 ? cancel : null); });
     document.body.appendChild(d);
     d.showModal();
+    raiseLayers();
     // Safest default focus: Cancel when there is one.
     (cancel >= 0 ? actions.children[cancel] : actions.firstChild)?.focus();
   }
@@ -1288,6 +1645,19 @@
           });
           return input.click();
         }
+        case "pick_files": {
+          // Bytes go up over the socket, like photos (the server keeps them).
+          const input = document.createElement("input");
+          input.type = "file";
+          input.accept = (msg.types || []).join(",");
+          input.multiple = !!msg.multiple;
+          input.addEventListener("cancel", () => reply({ err: "cancelled" }));
+          input.addEventListener("change", async () => {
+            const files = [...input.files].slice(0, msg.multiple ? Infinity : 1);
+            reply({ files: (await Promise.all(files.map(readFile))).filter(Boolean) });
+          });
+          return input.click();
+        }
         case "paste":
           return reply({ text: await navigator.clipboard?.readText().catch(() => null) ?? null });
         case "copy": return navigator.clipboard?.writeText(msg.text);
@@ -1383,7 +1753,11 @@
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
       if (!msg.p) return service(msg);
-      if (msg.t === "reset") { nodes.clear(); stacks = []; hist = null; userNavigated = false; }
+      if (msg.t === "reset") {
+        nodes.clear(); stacks = []; hist = null; userNavigated = false;
+        globalKeys = 0; openPopovers.clear(); layerHost.replaceChildren();
+        document.querySelectorAll("datalist[id^=prism-list-]").forEach((d) => d.remove());
+      }
       quiet = msg.t === "reset";
       msg.p.forEach(apply);
       quiet = false;

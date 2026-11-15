@@ -23,6 +23,7 @@ use objc2_app_kit::{
     NSTextView, NSTextViewDelegate, NSUserInterfaceItemIdentification, NSView, NSWindow,
     NSWindowDelegate, NSWindowStyleMask,
 };
+use objc2_app_kit::{NSPopover, NSPopoverDelegate, NSTrackingArea, NSTrackingAreaOptions};
 use objc2_foundation::{
     NSArray, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
 };
@@ -31,6 +32,9 @@ use prism_core::{
     Accessibility, AppConfig, AppInit, Appearance, Backend, Color, FontWeight, NodeId, NodeKind,
     Role, Runtime, Style, TextAlign, UiEvent,
 };
+use prism_core::{DragEvent, DragPhase, Point, PointerEvent, PointerPhase};
+
+use crate::interact::{MacOverlay, MacRadios};
 use prism_native::{Insets, NativeRenderer, Viewport, Widgets};
 
 // ---------------------------------------------------------------------------
@@ -135,6 +139,10 @@ impl State {
 
         self.renderer
             .layout(size.width as f32, size.height as f32, Insets::default());
+        let w = &self.renderer.widgets;
+        if let Some(main) = w.root.window() {
+            w.ix.follow(&main);
+        }
     }
 }
 
@@ -144,7 +152,7 @@ impl State {
 
 #[derive(Default)]
 pub struct ViewIvars {
-    id: Cell<NodeId>,
+    pub(crate) id: Cell<NodeId>,
     clickable: Cell<bool>,
     background: RefCell<Option<Retained<NSColor>>>,
     border_color: RefCell<Option<Retained<NSColor>>>,
@@ -155,7 +163,7 @@ pub struct ViewIvars {
     /// Context menu (right-click, ⌃-click, VoiceOver "show menu").
     menu: RefCell<Option<prism_core::menu::MenuSpec>>,
     /// Root of a sheet: Escape dismisses it.
-    sheet_root: Cell<bool>,
+    pub(crate) sheet_root: Cell<bool>,
     /// Picture content, drawn aspect-fill (or aspect-fit).
     image: RefCell<Option<Retained<NSImage>>>,
     fit: Cell<bool>,
@@ -168,6 +176,19 @@ pub struct ViewIvars {
     /// `maskedCorners` is skipped by `renderInContext`, so snapshots and
     /// the screen would differ).
     box_layer: RefCell<Option<Retained<objc2_quartz_core::CAShapeLayer>>>,
+    // Pointer, keys, overlays, layers (#17, #19, #25).
+    /// A layer's root: clicks where it has no child go to the windows below.
+    pub(crate) pass_through: Cell<bool>,
+    /// An overlay's host that Escape does not close.
+    pub(crate) overlay_fixed: Cell<bool>,
+    /// `prism_core::events::pointer_mask` bits.
+    pub(crate) pointer_mask: Cell<u8>,
+    tracking: RefCell<Option<Retained<NSTrackingArea>>>,
+    /// Where the mouse went down (window coordinates), while pressed.
+    press: Cell<Option<NSPoint>>,
+    dragging: Cell<bool>,
+    /// Reports keys while focused (it can take the focus).
+    pub(crate) key_local: Cell<bool>,
 }
 
 define_class!(
@@ -268,10 +289,66 @@ define_class!(
         }
 
         // Full keyboard access: clickable views take focus, show a focus
-        // ring, and activate with Space or Return.
+        // ring, and activate with Space or Return. Views with `on_key_down`
+        // take it too.
         #[unsafe(method(acceptsFirstResponder))]
         fn accepts_first_responder(&self) -> bool {
-            self.ivars().clickable.get() || self.ivars().sheet_root.get()
+            let iv = self.ivars();
+            (iv.clickable.get() || iv.sheet_root.get() || iv.key_local.get())
+                && !crate::interact::in_inert(self)
+        }
+
+        /// `hit_test(false)` and `inert` subtrees let clicks through; a
+        /// layer's root only takes them on its children.
+        #[unsafe(method(hitTest:))]
+        fn hit_test(&self, point: NSPoint) -> *mut NSView {
+            crate::interact::hit(self, point)
+        }
+
+        #[unsafe(method(mouseEntered:))]
+        fn mouse_entered(&self, event: &NSEvent) {
+            self.pointer(PointerPhase::Enter, event);
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn mouse_exited(&self, event: &NSEvent) {
+            self.pointer(PointerPhase::Leave, event);
+        }
+
+        #[unsafe(method(mouseMoved:))]
+        fn mouse_moved(&self, event: &NSEvent) {
+            if self.ivars().pointer_mask.get() & prism_core::events::pointer_mask::MOVE != 0 {
+                self.pointer(PointerPhase::Move, event);
+            } else {
+                unsafe { msg_send![super(self), mouseMoved: event] }
+            }
+        }
+
+        /// Past 3 points the press becomes a drag (no click follows).
+        #[unsafe(method(mouseDragged:))]
+        fn mouse_dragged(&self, event: &NSEvent) {
+            let iv = self.ivars();
+            let drags = iv.pointer_mask.get() & prism_core::events::pointer_mask::DRAG != 0;
+            if iv.pointer_mask.get() & prism_core::events::pointer_mask::MOVE != 0 {
+                self.pointer(PointerPhase::Move, event);
+            }
+            let Some(start) = iv.press.get().filter(|_| drags) else {
+                if !iv.clickable.get() {
+                    unsafe { msg_send![super(self), mouseDragged: event] }
+                }
+                return;
+            };
+            let at = event.locationInWindow();
+            let (dx, dy) = (at.x - start.x, start.y - at.y);
+            if !iv.dragging.get() {
+                if dx.hypot(dy) < 3. {
+                    return;
+                }
+                iv.dragging.set(true);
+                self.drag(DragPhase::Start, start, dx, dy);
+            } else {
+                self.drag(DragPhase::Move, start, dx, dy);
+            }
         }
 
         /// Right-click / ⌃-click.
@@ -295,6 +372,9 @@ define_class!(
         /// Escape in a sheet.
         #[unsafe(method(cancelOperation:))]
         fn cancel_operation(&self, sender: Option<&AnyObject>) {
+            if self.ivars().overlay_fixed.get() {
+                return;
+            }
             if self.ivars().sheet_root.get() {
                 dispatch(UiEvent::Back(self.ivars().id.get(), 0));
             } else {
@@ -306,14 +386,25 @@ define_class!(
         /// Keyboard Navigation (System Settings › Keyboard).
         #[unsafe(method(canBecomeKeyView))]
         fn can_become_key_view(&self) -> bool {
-            self.ivars().clickable.get()
-                && NSApplication::sharedApplication(self.mtm()).isFullKeyboardAccessEnabled()
+            let iv = self.ivars();
+            (iv.key_local.get()
+                || (iv.clickable.get()
+                    && NSApplication::sharedApplication(self.mtm()).isFullKeyboardAccessEnabled()))
+                && !crate::interact::in_inert(self)
         }
 
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
             let code = event.keyCode();
-            if self.ivars().clickable.get() && (code == 49 || code == 36 || code == 76) {
+            if self.ivars().key_local.get() {
+                // Its `on_key_down` (and its ancestors', then global ones).
+                if let Some(key) = crate::interact::key_event(event) {
+                    dispatch(UiEvent::Key(Some(self.ivars().id.get()), key));
+                }
+                if self.ivars().clickable.get() && (code == 49 || code == 36 || code == 76) {
+                    dispatch(UiEvent::Click(self.ivars().id.get()));
+                }
+            } else if self.ivars().clickable.get() && (code == 49 || code == 36 || code == 76) {
                 dispatch(UiEvent::Click(self.ivars().id.get()));
             } else {
                 unsafe { msg_send![super(self), keyDown: event] }
@@ -333,26 +424,107 @@ define_class!(
 
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
-            if !self.ivars().clickable.get() {
+            let iv = self.ivars();
+            let drags = iv.pointer_mask.get() & prism_core::events::pointer_mask::DRAG != 0;
+            iv.dragging.set(false);
+            iv.press.set(Some(event.locationInWindow()));
+            if iv.key_local.get()
+                && let Some(w) = self.window()
+            {
+                w.makeFirstResponder(Some(self));
+            }
+            if !iv.clickable.get() && !drags {
+                iv.press.set(None);
                 unsafe { msg_send![super(self), mouseDown: event] }
             }
         }
 
         #[unsafe(method(mouseUp:))]
         fn mouse_up(&self, event: &NSEvent) {
-            if !self.ivars().clickable.get() {
-                return unsafe { msg_send![super(self), mouseUp: event] };
+            let iv = self.ivars();
+            let start = iv.press.take();
+            if iv.dragging.replace(false) {
+                if let Some(start) = start {
+                    let at = event.locationInWindow();
+                    self.drag(DragPhase::End, start, at.x - start.x, start.y - at.y);
+                }
+                return;
+            }
+            if !iv.clickable.get() {
+                if start.is_none() {
+                    unsafe { msg_send![super(self), mouseUp: event] }
+                }
+                return;
             }
             let p = self.convertPoint_fromView(event.locationInWindow(), None);
             let b = self.bounds();
             if p.x >= 0. && p.y >= 0. && p.x <= b.size.width && p.y <= b.size.height {
-                dispatch(UiEvent::Click(self.ivars().id.get()));
+                // Where it was clicked, from the top-left corner (flipped).
+                let at = Point::new(p.x as f32, p.y as f32);
+                dispatch(UiEvent::ClickAt(self.ivars().id.get(), at));
             }
         }
     }
 );
 
 impl PrismView {
+    /// Reports the pointer entering, moving over or leaving the view.
+    fn pointer(&self, phase: PointerPhase, event: &NSEvent) {
+        use prism_core::events::pointer_mask::{HOVER, MOVE};
+        let mask = self.ivars().pointer_mask.get();
+        if mask & (HOVER | MOVE) == 0 {
+            return;
+        }
+        let p = self.convertPoint_fromView(event.locationInWindow(), None);
+        let position = Point::new(p.x as f32, p.y as f32);
+        dispatch(UiEvent::Pointer(
+            self.ivars().id.get(),
+            PointerEvent { phase, position },
+        ));
+    }
+
+    /// A drag that started at `start` (window coordinates) and moved by
+    /// (`dx`, `dy`) points, y down.
+    fn drag(&self, phase: DragPhase, start: NSPoint, dx: f64, dy: f64) {
+        let p = self.convertPoint_fromView(start, None);
+        dispatch(UiEvent::Drag(
+            self.ivars().id.get(),
+            DragEvent {
+                phase,
+                start: Point::new(p.x as f32, p.y as f32),
+                translation: Point::new(dx as f32, dy as f32),
+            },
+        ));
+    }
+
+    /// Hover and move events through a tracking area (key window only).
+    fn set_pointer_mask(&self, mask: u8) {
+        use prism_core::events::pointer_mask::{HOVER, MOVE};
+        let iv = self.ivars();
+        iv.pointer_mask.set(mask);
+        if let Some(old) = iv.tracking.borrow_mut().take() {
+            self.removeTrackingArea(&old);
+        }
+        if mask & (HOVER | MOVE) != 0 {
+            let options = NSTrackingAreaOptions::MouseEnteredAndExited
+                | NSTrackingAreaOptions::MouseMoved
+                | NSTrackingAreaOptions::ActiveInKeyWindow
+                | NSTrackingAreaOptions::InVisibleRect;
+            let owner: &AnyObject = self;
+            let area = unsafe {
+                NSTrackingArea::initWithRect_options_owner_userInfo(
+                    <NSTrackingArea as objc2::AllocAnyThread>::alloc(),
+                    NSRect::ZERO,
+                    options,
+                    Some(owner),
+                    None,
+                )
+            };
+            self.addTrackingArea(&area);
+            *iv.tracking.borrow_mut() = Some(area);
+        }
+    }
+
     fn context_menu(&self) -> Option<Retained<NSMenu>> {
         let spec = self.ivars().menu.borrow().clone()?;
         let mut target = None;
@@ -538,7 +710,7 @@ impl PrismView {
         shape.setLineWidth(bw);
     }
 
-    fn new(mtm: MainThreadMarker, id: NodeId) -> Retained<Self> {
+    pub(crate) fn new(mtm: MainThreadMarker, id: NodeId) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(ViewIvars {
             id: Cell::new(id),
             ..Default::default()
@@ -718,6 +890,24 @@ define_class!(
             dispatch(UiEvent::Click(sender.tag() as NodeId));
         }
 
+        /// A checkbox was checked or unchecked.
+        #[unsafe(method(onCheck:))]
+        fn on_check(&self, sender: &NSButton) {
+            let on = sender.state() == NSControlStateValueOn;
+            dispatch(UiEvent::Change(sender.tag() as NodeId, if on { 1. } else { 0. }));
+        }
+
+        /// A radio button was chosen (tag = its index; the group is its superview).
+        #[unsafe(method(onRadio:))]
+        fn on_radio(&self, sender: &NSButton) {
+            let group = unsafe { sender.superview() }
+                .and_then(|v| v.downcast::<PrismView>().ok())
+                .map(|v| v.ivars().id.get());
+            if let Some(id) = group {
+                dispatch(UiEvent::Change(id, sender.tag() as f64));
+            }
+        }
+
         #[unsafe(method(onToggle:))]
         fn on_toggle(&self, sender: &NSSwitch) {
             let on = sender.state() == NSControlStateValueOn;
@@ -879,7 +1069,61 @@ define_class!(
             else {
                 return;
             };
-            dispatch(UiEvent::Input(field.tag() as NodeId, field.stringValue().to_string()));
+            let id = field.tag() as NodeId;
+            let (mut max, mut suggests) = (None, false);
+            with_state(|s| {
+                let w = &s.renderer.widgets;
+                max = w.inputs.get(&id).and_then(|c| c.max_length);
+                suggests = w.ix.suggestions.get(&id).is_some_and(|l| !l.is_empty());
+            });
+            let mut text = field.stringValue().to_string();
+            // `max_length`: what goes past it is dropped.
+            if let Some(max) = max
+                && text.chars().count() > max as usize
+            {
+                text = text.chars().take(max as usize).collect();
+                field.setStringValue(&NSString::from_str(&text));
+            }
+            let grew = text.chars().count() > LAST_LEN.with(|l| l.replace(text.chars().count()));
+            dispatch(UiEvent::Input(id, text));
+            // Suggestions: AppKit's completion list as the user types.
+            if suggests
+                && grew
+                && !COMPLETING.with(|c| c.replace(true))
+                && let Some(editor) = field.currentEditor().and_then(|e| e.downcast::<NSTextView>().ok())
+            {
+                unsafe { editor.complete(None) };
+            }
+            COMPLETING.with(|c| c.set(false));
+        }
+
+        /// The completion list of a text input with suggestions.
+        #[unsafe(method(control:textView:completions:forPartialWordRange:indexOfSelectedItem:))]
+        fn control_completions(
+            &self,
+            control: &NSControl,
+            text_view: &NSTextView,
+            _words: &NSArray<NSString>,
+            range: objc2_foundation::NSRange,
+            index: *mut isize,
+        ) -> *mut NSArray<NSString> {
+            let id = control.tag() as NodeId;
+            let mut list = Vec::new();
+            with_state(|s| list = s.renderer.widgets.ix.suggestions.get(&id).cloned().unwrap_or_default());
+            let text = text_view.string().to_string();
+            // UTF-16 offset of the completed word → characters.
+            let from = String::from_utf16_lossy(
+                &text.encode_utf16().take(range.location).collect::<Vec<u16>>(),
+            )
+            .chars()
+            .count();
+            let found = crate::interact::completions(&text, from, &list);
+            if !index.is_null() {
+                // Nothing pre-selected: the typed text stays as typed.
+                unsafe { *index = -1 };
+            }
+            let items: Vec<Retained<NSString>> = found.iter().map(|s| NSString::from_str(s)).collect();
+            Retained::autorelease_return(NSArray::from_retained_slice(&items))
         }
 
         /// Return in a text input: `UiEvent::Submit` (the field keeps its
@@ -931,6 +1175,29 @@ define_class!(
     }
 
     unsafe impl NSTextViewDelegate for Target {}
+
+    unsafe impl NSPopoverDelegate for Target {
+        /// A popover closed: by the user (Escape, a click outside) unless
+        /// Prism closed it.
+        #[unsafe(method(popoverDidClose:))]
+        fn popover_did_close(&self, n: &NSNotification) {
+            let Some(popover) = n.object().and_then(|o| o.downcast::<NSPopover>().ok()) else {
+                return;
+            };
+            let mut closed = None;
+            with_state(|s| {
+                for o in &s.renderer.widgets.ix.overlays {
+                    let mine = o.popover.borrow().as_deref().is_some_and(|p| *p == *popover);
+                    if mine && o.popover_closed() {
+                        closed = Some(o.id);
+                    }
+                }
+            });
+            if let Some(id) = closed {
+                dispatch(UiEvent::Back(id, 0));
+            }
+        }
+    }
 
     unsafe impl NSWindowDelegate for Target {
         #[unsafe(method(windowDidResize:))]
@@ -1011,6 +1278,8 @@ pub struct MacInput {
     id: NodeId,
     host: Retained<PrismView>,
     field: RefCell<Retained<NSTextField>>,
+    /// The leading icon (an SF Symbol), inside the field.
+    icon: RefCell<(String, Option<Retained<NSImageView>>)>,
 }
 
 impl MacInput {
@@ -1100,6 +1369,10 @@ pub enum View {
     DatePicker(Retained<NSDatePicker>),
     TextArea(Rc<MacTextArea>),
     Spinner(Retained<NSProgressIndicator>),
+    // Overlays and choice controls (#18, #19).
+    Overlay(Rc<MacOverlay>),
+    Check(Retained<NSButton>),
+    Radios(Rc<MacRadios>),
 }
 
 impl View {
@@ -1123,6 +1396,9 @@ impl View {
             View::DatePicker(v) => v,
             View::TextArea(t) => &t.container,
             View::Spinner(v) => v,
+            View::Overlay(o) => &o.anchor,
+            View::Check(v) => v,
+            View::Radios(r) => &r.container,
         }
     }
 
@@ -1151,6 +1427,9 @@ impl View {
                 .identifier()
                 .and_then(|i| i.to_string().parse().ok())
                 .unwrap_or(0),
+            View::Overlay(o) => o.id,
+            View::Check(v) => v.tag() as NodeId,
+            View::Radios(r) => r.id,
         }
     }
 }
@@ -1184,6 +1463,8 @@ pub struct AppKit {
     announced: HashMap<NodeId, String>,
     /// App language (BCP 47): date pickers format in it.
     lang: String,
+    /// Keys, overlays, layers, suggestions (#17, #19, #25).
+    ix: crate::interact::Interaction,
 }
 
 fn ca_equal(a: objc2_quartz_core::CATransform3D, b: objc2_quartz_core::CATransform3D) -> bool {
@@ -1268,7 +1549,7 @@ fn configure_date_picker(d: &NSDatePicker, c: DateConfig) {
             NSDatePickerStyle::TextField,
             NSDatePickerElementFlags::YearMonthDay,
         ),
-        DateMode::Time => (
+        DateMode::Time | DateMode::TimeOfDay => (
             NSDatePickerStyle::TextFieldAndStepper,
             NSDatePickerElementFlags::HourMinute,
         ),
@@ -1280,6 +1561,9 @@ fn configure_date_picker(d: &NSDatePicker, c: DateConfig) {
     d.setDatePickerStyle(style);
     d.setDatePickerElements(elements);
     d.setPresentsCalendarOverlay(style == NSDatePickerStyle::TextField);
+    // A time of day is the same everywhere: seconds since midnight, shown in UTC.
+    let utc = objc2_foundation::NSTimeZone::timeZoneForSecondsFromGMT(0);
+    d.setTimeZone((c.mode == DateMode::TimeOfDay).then_some(&*utc));
     let date = |v: Option<f64>| v.map(objc2_foundation::NSDate::dateWithTimeIntervalSince1970);
     d.setMinDate(date(c.min).as_deref());
     d.setMaxDate(date(c.max).as_deref());
@@ -1464,6 +1748,10 @@ impl AppKit {
         unsafe { old.setDelegate(None) };
         input.host.replaceSubview_with(&old, &f);
         *input.field.borrow_mut() = f;
+        // The new field gets the icon again (secure ones have none).
+        let name = input.icon.borrow().0.clone();
+        let icon = crate::interact::set_leading_icon(&input.field(), &name, None);
+        input.icon.borrow_mut().1 = icon;
     }
 
     fn new_stack(&self, id: NodeId) -> MacStack {
@@ -1852,6 +2140,29 @@ impl Widgets for AppKit {
                 b.setTag(id as isize);
                 View::Button(b)
             }
+            NodeKind::Overlay => {
+                let o = Rc::new(MacOverlay::new(mtm, id));
+                self.ix.overlays.push(o.clone());
+                View::Overlay(o)
+            }
+            NodeKind::Checkbox => {
+                let target: &AnyObject = &self.target;
+                let b = unsafe {
+                    NSButton::checkboxWithTitle_target_action(
+                        &empty,
+                        Some(target),
+                        Some(sel!(onCheck:)),
+                        mtm,
+                    )
+                };
+                b.setTag(id as isize);
+                View::Check(b)
+            }
+            NodeKind::RadioGroup => {
+                let r = MacRadios::new(mtm, id);
+                self.directional(&r.container);
+                View::Radios(Rc::new(r))
+            }
             NodeKind::TextInput => {
                 let f = self.new_text_field(id, false);
                 let host = PrismView::new(mtm, id);
@@ -1860,6 +2171,7 @@ impl Widgets for AppKit {
                     id,
                     host,
                     field: RefCell::new(f),
+                    icon: RefCell::new((String::new(), None)),
                 }))
             }
         }
@@ -1871,6 +2183,12 @@ impl Widgets for AppKit {
 
     fn set_style(&mut self, view: &View, style: &Style) {
         view.ns().setAlphaValue(style.opacity as f64);
+        // `hit_test(false)` / `inert`: clicks go through the subtree.
+        crate::interact::set_no_hit(view.ns(), !style.hit_test || style.inert);
+        if crate::interact::set_inert(view.ns(), style.inert) {
+            crate::interact::refuse_focus(view.ns(), style.inert);
+            view.ns().setAccessibilityHidden(style.inert);
+        }
         if !style.transform.is_identity() || self.transforms.contains_key(&view.id()) {
             self.transforms.insert(view.id(), style.transform);
             self.apply_transform(view);
@@ -1980,6 +2298,9 @@ impl Widgets for AppKit {
                 b.setFont(Some(&font(style)));
                 b.setBezelColor(style.background.map(ns_color).as_deref());
             }
+            View::Check(b) => b.setFont(Some(&font(style))),
+            View::Radios(r) => r.set_font(font(style)),
+            View::Overlay(_) => {}
         }
     }
 
@@ -1995,7 +2316,7 @@ impl Widgets for AppKit {
                     f.setStringValue(&s);
                 }
             }
-            View::Button(b) => b.setTitle(&s),
+            View::Button(b) | View::Check(b) => b.setTitle(&s),
             View::TextArea(t) => {
                 // Same text (controlled echo): keep the caret and selection.
                 if t.text.string().to_string() != text {
@@ -2068,6 +2389,11 @@ impl Widgets for AppKit {
                 sc.document.setSubviews(&NSArray::from_slice(&views));
                 return;
             }
+            View::Overlay(o) => {
+                let views: Vec<&NSView> = children.iter().map(View::ns).collect();
+                o.host.setSubviews(&NSArray::from_slice(&views));
+                return;
+            }
             _ => {}
         }
         let views: Vec<&NSView> = children.iter().map(View::ns).collect();
@@ -2099,6 +2425,10 @@ impl Widgets for AppKit {
             View::Stack(st) => self.stacks.retain(|s| s.id != st.id),
             View::Tabs(t) => self.tab_bars.retain(|b| b.id != t.id),
             View::Sheet(sheet) => self.dismiss_sheet(sheet),
+            View::Overlay(o) => {
+                o.dismiss(self.root.window().as_deref());
+                self.ix.overlays.retain(|x| x.id != o.id);
+            }
             View::Timer(_) => {
                 self.timers.remove(&view.id());
             }
@@ -2118,6 +2448,10 @@ impl Widgets for AppKit {
             }
             _ => {}
         }
+        crate::interact::forget(view.ns());
+        self.ix.key_local.remove(&view.id());
+        self.ix.key_global.remove(&view.id());
+        self.ix.suggestions.remove(&view.id());
         view.ns().removeFromSuperview();
     }
 
@@ -2173,6 +2507,9 @@ impl Widgets for AppKit {
                 }
             }
             View::TextArea(t) => text_area_size(t, max_width),
+            View::Check(b) => b.fittingSize(),
+            View::Radios(r) => r.size(),
+            View::Overlay(_) => NSSize::ZERO,
             View::Container(_)
             | View::Screen(_)
             | View::Tab(_)
@@ -2193,6 +2530,12 @@ impl Widgets for AppKit {
         }
         if let View::Input(i) = view {
             i.field().setFrame(rect(0., 0., w as f64, h as f64));
+            if let Some(icon) = i.icon.borrow().1.as_deref() {
+                crate::interact::place_icon(&i.field(), icon);
+            }
+        }
+        if let View::Radios(r) = view {
+            r.layout();
         }
         if let View::TextArea(t) = view {
             let b = t.border();
@@ -2261,6 +2604,19 @@ impl Widgets for AppKit {
             } else {
                 NSControlStateValueOff
             }),
+            View::Check(b) => b.setState(if value != 0. {
+                NSControlStateValueOn
+            } else {
+                NSControlStateValueOff
+            }),
+            View::Radios(r) => r.set_selected(if value >= 0. { value as isize } else { -1 }),
+            View::Overlay(o) => {
+                o.open.set(value != 0.);
+                o.update(
+                    self.root.window().as_deref(),
+                    ProtocolObject::from_ref(&*self.target),
+                );
+            }
             View::Tabs(bar) => {
                 bar.selected.set(value.max(0.) as usize);
                 self.refresh_tabs(bar);
@@ -2322,8 +2678,19 @@ impl Widgets for AppKit {
                 p.rebuild();
             }
             View::DatePicker(d) => configure_date_picker(d, DateConfig::decode(config)),
+            View::Radios(r) => {
+                let target: &AnyObject = &self.target;
+                r.set_config(config, target);
+            }
+            View::Overlay(o) => o.set_config(config),
             View::Input(i) => {
                 let c = InputConfig::decode(config);
+                let suggestions = prism_core::controls::input_suggestions(config);
+                if suggestions.is_empty() {
+                    self.ix.suggestions.remove(&view.id());
+                } else {
+                    self.ix.suggestions.insert(view.id(), suggestions);
+                }
                 self.set_secure(i, c.secure);
                 // Completion suggestions (Touch Bar, typing). On-screen
                 // keyboards, return-key labels and per-field
@@ -2342,6 +2709,12 @@ impl Widgets for AppKit {
     }
 
     fn set_icon(&mut self, view: &View, icon: &str) {
+        if let View::Input(i) = view {
+            let existing = i.icon.borrow_mut().1.take();
+            let v = crate::interact::set_leading_icon(&i.field(), icon, existing);
+            *i.icon.borrow_mut() = (icon.to_string(), v);
+            return;
+        }
         if let View::Image(v) = view {
             let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
                 &NSString::from_str(icon),
@@ -2535,6 +2908,87 @@ impl Widgets for AppKit {
             sc.document
                 .setFrameSize(NSSize::new(width as f64, height as f64));
         }
+        // An overlay's laid out content: present it, or follow its size.
+        if let View::Overlay(o) = view {
+            o.size
+                .set(NSSize::new(width.ceil() as f64, height.ceil() as f64));
+            o.update(
+                self.root.window().as_deref(),
+                ProtocolObject::from_ref(&*self.target),
+            );
+        }
+    }
+
+    fn overlay_viewport(&mut self, overlay: &View, _content: &View) -> Viewport {
+        let window = self.root.frame().size;
+        let config = match overlay {
+            View::Overlay(o) => o.config.get(),
+            _ => Default::default(),
+        };
+        let (width, height) = crate::interact::overlay_area(config, window);
+        Viewport {
+            x: 0.,
+            y: 0.,
+            width,
+            height,
+            insets: Insets::default(),
+        }
+    }
+
+    fn set_pointer_events(&mut self, view: &View, mask: u8) {
+        if let View::Container(v) | View::Screen(v) | View::Tab(v) | View::Picture(v) = view {
+            v.set_pointer_mask(mask);
+        }
+    }
+
+    fn set_key_events(&mut self, view: &View, local: bool, global: bool) {
+        let id = view.id();
+        if let View::Container(v) | View::Screen(v) | View::Tab(v) | View::Picture(v) = view {
+            v.ivars().key_local.set(local);
+        }
+        for (set, on) in [
+            (&mut self.ix.key_local, local),
+            (&mut self.ix.key_global, global),
+        ] {
+            if on {
+                set.insert(id);
+            } else {
+                set.remove(&id);
+            }
+        }
+    }
+
+    /// First responder after the layout (sheets present then).
+    fn focus(&mut self, view: &View) {
+        let v: Retained<NSView> = match view {
+            View::Input(i) => Retained::into_super(Retained::into_super(i.field())),
+            View::TextArea(t) => {
+                Retained::into_super(Retained::into_super(Retained::into_super(t.text.clone())))
+            }
+            other => objc2::Message::retain(other.ns()),
+        };
+        on_main_after(std::time::Duration::ZERO, move || {
+            if let Some(w) = v.window() {
+                w.makeFirstResponder(Some(&v));
+            }
+        });
+    }
+
+    /// After the layout: its frame is where the scroll view must go.
+    fn scroll_into_view(&mut self, view: &View) {
+        let v: Retained<NSView> = objc2::Message::retain(view.ns());
+        on_main_after(std::time::Duration::ZERO, move || {
+            v.scrollRectToVisible(v.bounds());
+        });
+    }
+
+    fn set_layers(&mut self, layers: &[View]) {
+        let views: Vec<Retained<NSView>> = layers
+            .iter()
+            .map(|l| objc2::Message::retain(l.ns()))
+            .collect();
+        let main = self.root.window();
+        self.ix.set_layers(main.as_deref(), views);
     }
 
     fn set_accessibility(&mut self, view: &View, a: &Accessibility) {
@@ -2555,7 +3009,7 @@ impl Widgets for AppKit {
         if a.role == Some(Role::Status) {
             self.announce(view.id(), a.value.as_deref().unwrap_or(""));
         }
-        v.setAccessibilityHidden(a.hidden);
+        v.setAccessibilityHidden(a.hidden || crate::interact::in_inert(v));
         let ns = |s: &Option<String>| s.as_deref().map(NSString::from_str);
         let native = matches!(
             view,
@@ -2567,6 +3021,7 @@ impl Widgets for AppKit {
                 | View::DatePicker(_)
                 | View::TextArea(_)
                 | View::Spinner(_)
+                | View::Check(_)
         );
         if let View::Slider(s) = view {
             // Read through `accessibilityValue` (the native value otherwise).
@@ -2589,12 +3044,15 @@ impl Widgets for AppKit {
                     }
                     Some(Role::Slider) => Some(NSAccessibilitySliderRole),
                     Some(Role::ComboBox) => Some(NSAccessibilityPopUpButtonRole),
+                    Some(Role::Radio) => Some(NSAccessibilityRadioButtonRole),
+                    Some(Role::RadioGroup) => Some(objc2_app_kit::NSAccessibilityRadioGroupRole),
+                    Some(Role::Dialog) => Some(NSAccessibilityGroupRole),
                     // Status: not an element (its children stay reachable),
                     // its value is announced.
                     _ => None,
                 }
             };
-            if let View::Container(_) | View::Screen(_) | View::Tab(_) = view {
+            if let View::Container(_) | View::Screen(_) | View::Tab(_) | View::Radios(_) = view {
                 v.setAccessibilityElement(role.is_some() && !a.hidden);
                 v.setAccessibilityRole(role);
                 if a.role == Some(Role::Switch) {
@@ -2733,6 +3191,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         inputs: HashMap::new(),
         announced: HashMap::new(),
         lang: String::new(),
+        ix: Default::default(),
     });
     let first = runtime.render();
     let mut state = State {
@@ -2761,6 +3220,7 @@ pub fn run(config: AppConfig, init: AppInit) {
     }
 
     observe_system(&target);
+    install_key_monitor();
     window.makeKeyAndOrderFront(None);
     app.activate();
     if std::env::var_os("PRISM_SNAPSHOT").is_some()
@@ -2779,6 +3239,71 @@ pub fn run(config: AppConfig, init: AppInit) {
     }
     app.run();
     drop(window);
+}
+
+thread_local! {
+    /// Characters in the text input being edited (completion only while typing).
+    static LAST_LEN: Cell<usize> = const { Cell::new(0) };
+    /// `complete:` re-enters `controlTextDidChange:`.
+    static COMPLETING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Key presses for `on_key_down` handlers around the focus (text fields,
+/// buttons…; a focused Prism view with a handler gets them in `keyDown:`)
+/// and `on_global_key_down` ones. Typing in a text field only reaches global
+/// handlers for keys that do not type, or with ⌘ / ⌃.
+fn install_key_monitor() {
+    let block = block2::RcBlock::new(|event: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
+        let e = unsafe { event.as_ref() };
+        let Some(key) = crate::interact::key_event(e) else {
+            return event.as_ptr();
+        };
+        let mtm = MainThreadMarker::new().expect("main thread");
+        let responder = e.window(mtm).and_then(|w| w.firstResponder());
+        let view = responder
+            .as_ref()
+            .and_then(|r| r.clone().downcast::<NSView>().ok());
+        let mut send = None;
+        with_state(|s| {
+            let ix = &s.renderer.widgets.ix;
+            if ix.key_local.is_empty() && ix.key_global.is_empty() {
+                return;
+            }
+            // A focused Prism view with a handler reports in `keyDown:`.
+            if view
+                .as_ref()
+                .and_then(|v| v.downcast_ref::<PrismView>())
+                .is_some_and(|p| p.ivars().key_local.get())
+            {
+                return;
+            }
+            let chain = view
+                .as_deref()
+                .map(crate::interact::node_chain)
+                .unwrap_or_default();
+            let local = chain.iter().any(|id| ix.key_local.contains(id));
+            let typing = view
+                .as_ref()
+                .is_some_and(|v| v.isKindOfClass(NSText::class()));
+            let shortcut = key.modifiers.control || key.modifiers.meta;
+            let global = !ix.key_global.is_empty() && !(typing && key.is_character() && !shortcut);
+            if local || global {
+                send = Some(chain.first().copied());
+            }
+        });
+        if let Some(focused) = send {
+            dispatch(UiEvent::Key(focused, key));
+        }
+        event.as_ptr()
+    });
+    let monitor = unsafe {
+        NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+            objc2_app_kit::NSEventMask::KeyDown,
+            &block,
+        )
+    };
+    // Lives as long as the app.
+    std::mem::forget(monitor);
 }
 
 // ---------------------------------------------------------------------------
@@ -2901,6 +3426,47 @@ fn post_typing(window: &NSWindow, text: &str) {
     }
 }
 
+/// Posts key presses (`PRISM_KEYS`) by name, one every 100 ms.
+fn post_keys(window: &NSWindow, keys: &str) {
+    use objc2_app_kit::{NSEventModifierFlags, NSEventType};
+    for (i, name) in keys.split('|').filter(|k| !k.is_empty()).enumerate() {
+        let (code, chars) = match name {
+            "Escape" => (53, "\u{1b}"),
+            "Enter" => (36, "\r"),
+            "Tab" => (48, "\t"),
+            "ArrowLeft" => (123, "\u{F702}"),
+            "ArrowRight" => (124, "\u{F703}"),
+            "ArrowDown" => (125, "\u{F701}"),
+            "ArrowUp" => (126, "\u{F700}"),
+            other => (0, other),
+        };
+        let window = objc2::Message::retain(window);
+        let chars = chars.to_string();
+        on_main_after(
+            std::time::Duration::from_millis(300 + 100 * i as u64),
+            move || {
+                let s = NSString::from_str(&chars);
+                let now = objc2_foundation::NSProcessInfo::processInfo().systemUptime();
+                let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+                NSEventType::KeyDown,
+                NSPoint::ZERO,
+                NSEventModifierFlags::empty(),
+                now,
+                window.windowNumber(),
+                None,
+                &s,
+                &s,
+                false,
+                code,
+            );
+                if let Some(e) = event {
+                    NSApplication::sharedApplication(window.mtm()).sendEvent(&e);
+                }
+            },
+        );
+    }
+}
+
 /// Writes `window` to a PNG with the app's other visible windows drawn over
 /// it where they are on screen (pop-up menus, calendar popovers). Each is
 /// drawn by the app itself: no screen recording permission needed.
@@ -2925,6 +3491,8 @@ fn snapshot_with_overlays(window: &NSWindow, path: &str) {
         if *w == *window || !w.isVisible() {
             continue;
         }
+        // The transparent layer window draws only its content.
+        let opaque = w.isOpaque();
         let Some(view) = w
             .contentView()
             .map(|v| unsafe { v.superview() }.unwrap_or(v))
@@ -2943,8 +3511,10 @@ fn snapshot_with_overlays(window: &NSWindow, path: &str) {
             NSPoint::new(f.origin.x - origin.x, f.origin.y - origin.y),
             f.size,
         );
-        NSColor::windowBackgroundColor().setFill();
-        objc2_app_kit::NSRectFill(at);
+        if opaque {
+            NSColor::windowBackgroundColor().setFill();
+            objc2_app_kit::NSRectFill(at);
+        }
         image.drawInRect(at);
     }
     ctx.flushGraphics();
@@ -2968,6 +3538,12 @@ fn run_automation(mtm: MainThreadMarker) {
         with_state(|s| {
             for sheet in &s.renderer.widgets.sheets {
                 roots.push(Retained::into_super(sheet.content.clone()));
+            }
+            // Open sheets, dialogs and popovers.
+            for o in &s.renderer.widgets.ix.overlays {
+                if o.presented.get() {
+                    roots.push(Retained::into_super(o.host.clone()));
+                }
             }
         });
         roots
@@ -3114,6 +3690,11 @@ fn run_automation(mtm: MainThreadMarker) {
         if let Ok(text) = std::env::var("PRISM_TYPE") {
             post_typing(&window, &text.replace("\\n", "\n"));
         }
+        // `PRISM_KEYS="ArrowRight|ArrowDown|Escape"`: key presses, as the
+        // keyboard sends them (through the app's event monitors).
+        if let Ok(keys) = std::env::var("PRISM_KEYS") {
+            post_keys(&window, &keys);
+        }
         let delay = std::env::var("PRISM_TAP_DELAY")
             .ok()
             .and_then(|d| d.parse().ok())
@@ -3154,6 +3735,13 @@ fn run_automation(mtm: MainThreadMarker) {
     if let Ok(path) = std::env::var("PRISM_SNAPSHOT") {
         for (i, sheet) in sheet_roots().iter().enumerate() {
             write_png(sheet, &format!("{path}.sheet{i}.png"));
+        }
+        // Layers (toasts) and popovers drawn over the window.
+        if std::env::var_os("PRISM_SNAPSHOT_OVERLAYS").is_some()
+            && let Some(window) = root.window()
+        {
+            snapshot_with_overlays(&window, &path);
+            std::process::exit(0);
         }
         root.displayIfNeeded();
         let bounds = root.bounds();
@@ -3368,7 +3956,7 @@ thread_local! {
 
 /// Runs `f` on the main thread after `delay` (`f` need not be `Send`: it
 /// stays on this thread, only its number travels).
-fn on_main_after(delay: std::time::Duration, f: impl FnOnce() + 'static) {
+pub(crate) fn on_main_after(delay: std::time::Duration, f: impl FnOnce() + 'static) {
     let id = LATER.with(|l| {
         let mut l = l.borrow_mut();
         l.0 += 1;
