@@ -69,6 +69,8 @@ struct State {
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
+    /// UIKit laid views out while Prism was busy (see [`relayout`]).
+    static RELAYOUT_MISSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn with_state(f: impl FnOnce(&mut State)) {
@@ -141,6 +143,7 @@ impl State {
     }
 
     fn relayout(&mut self) {
+        RELAYOUT_MISSED.set(false);
         let size = self.renderer.widgets.root.bounds().size;
         let (w, h) = self.report_window().unwrap_or((0., 0.));
         // Rotation, Split View: `cx.device_info()` (re-renders if it changed).
@@ -169,6 +172,11 @@ impl State {
             if self.report_window().is_some() && self.window_rerendered {
                 self.layout_root(size);
             }
+        }
+        // A screen UIKit sized meanwhile (a tab shown for the first time,
+        // laid out by `layoutIfNeeded` above): in this frame, not the next.
+        if RELAYOUT_MISSED.take() {
+            self.layout_root(self.renderer.widgets.root.bounds().size);
         }
     }
 
@@ -217,10 +225,18 @@ impl State {
     }
 }
 
-/// Lays everything out again (overlay controllers call it after UIKit
-/// sized them).
+/// Lays everything out again (UIKit laid out a controller's views, an
+/// overlay controller sized them). Called while Prism lays out, the layout
+/// running does it again before returning.
 pub(crate) fn relayout() {
-    with_state(State::relayout);
+    let mut ran = false;
+    with_state(|s| {
+        ran = true;
+        s.relayout();
+    });
+    if !ran {
+        RELAYOUT_MISSED.set(true);
+    }
 }
 
 /// The user closed overlay `id` (swipe down, tap outside, Escape, Menu).
@@ -658,7 +674,7 @@ define_class!(
         #[unsafe(method(viewDidLayoutSubviews))]
         fn view_did_layout_subviews(&self) {
             let _: () = unsafe { msg_send![super(self), viewDidLayoutSubviews] };
-            with_state(State::relayout);
+            relayout();
         }
 
         /// Light / dark: layer colors (borders, shadows, gradients) are
@@ -732,7 +748,7 @@ define_class!(
         #[unsafe(method(viewDidLayoutSubviews))]
         fn view_did_layout_subviews(&self) {
             let _: () = unsafe { msg_send![super(self), viewDidLayoutSubviews] };
-            with_state(State::relayout);
+            relayout();
         }
 
         /// The screen's safe area moved (a tab shown for the first time, a
