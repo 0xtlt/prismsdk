@@ -11,10 +11,8 @@
 //!   ([`build_watch_host`]).
 //!
 //! ```no_run
-//! // build.rs of an Apple backend
-//! fn main() {
-//!     prism_apple_build::build_bridge();
-//! }
+//! // In `fn main` of an Apple backend's build.rs:
+//! prism_apple_build::build_bridge();
 //! ```
 //!
 //! Both are no-ops for non-Apple targets and on docs.rs (`DOCS_RS`), where no
