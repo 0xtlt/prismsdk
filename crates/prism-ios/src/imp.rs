@@ -2167,6 +2167,14 @@ impl Widgets for UiKit {
             View::Tabs(bar) => Some(bar.controller.clone()),
             _ => None,
         };
+        // Give the new root the root's size before it joins the window: a
+        // tab bar controller builds its bar for the size its view enters
+        // with, and a foldable's side bar is not rebuilt when the layout
+        // resizes it just after, only on a trait change (#39).
+        let size = self.root.bounds().size;
+        if size.width > 0. && size.height > 0. {
+            place(view.ui(), 0., 0., size.width as f32, size.height as f32);
+        }
         self.root.addSubview(view.ui());
         if let Some(child) = &child {
             child.didMoveToParentViewController(Some(&self.controller));
