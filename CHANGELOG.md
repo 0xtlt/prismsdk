@@ -37,6 +37,10 @@ The first version, not yet on crates.io.
 - Per-corner rounding (`rounded_top`, `rounded_bottom`, `rounded_corners` with
   `Corners`, leading/trailing aware) on every backend; bar charts round only
   the top of their bars by default (`bar_radius`, `bar_corners`).
+- Motion: loops that start over (`repeat_from_start`; `Pose::rotate(360.)`
+  is a full turn on every backend, for spinners), non-uniform scale
+  (`scale_x`, `scale_y` on styles and poses) and offsets in percent of the
+  element's own size (`translate_percent`, for anchoring labels).
 - Shipping: Android App Bundles and Google Play upload, App Store builds and
   upload, Developer ID notarization and DMGs, `.deb` packages, web Docker
   images, all with `--dry-run`.

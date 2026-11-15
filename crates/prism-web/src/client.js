@@ -242,6 +242,11 @@
   const poseCss = (p) => {
     const d = document.documentElement.dir === "rtl" ? -1 : 1;
     const [x, y, s, r] = p.tf;
+    if (p.tf.length > 4) {
+      // Non-uniform scale, offsets in percent of the element's own size.
+      const [, , , , sx, sy, px, py] = p.tf;
+      return { opacity: p.o, transform: `translate(calc(${d * x}px + ${d * px}%),calc(${y}px + ${py}%)) rotate(${d * r}deg) scale(${s * sx},${s * sy})` };
+    }
     return { opacity: p.o, transform: `translate(${d * x}px,${y}px) rotate(${d * r}deg) scale(${s})` };
   };
   const timing = (t, extra) => Object.assign({ duration: t.d * 1000, delay: t.delay * 1000, easing: t.ease }, extra);
@@ -257,8 +262,11 @@
       el._loop = null;
       el._loopKey = key;
       if (key && !reducedMotion?.matches) {
+        // Swings ease in and out; a loop that starts over keeps its curve
+        // (rotate(0deg) to rotate(360deg) is a full turn).
         el._loop = el.animate([poseCss(m.rest), poseCss(m.repeat.to)],
-          timing(m.repeat.t, { iterations: Infinity, direction: "alternate", easing: "ease-in-out" }));
+          timing(m.repeat.t, m.repeat.restart ? { iterations: Infinity }
+            : { iterations: Infinity, direction: "alternate", easing: "ease-in-out" }));
       }
     }
     if (!m || !m.enter || quiet || reducedMotion?.matches) return;

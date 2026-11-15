@@ -1102,7 +1102,12 @@ impl Widgets for Gtk {
             }
             Some((pose, t)) => {
                 let (opacity, transform) = pose.apply(style.opacity, style.transform);
-                layout::repeat(&w, rest, layout::Visual { opacity, transform }, t);
+                let to = layout::Visual { opacity, transform };
+                if style.animations.restart {
+                    layout::repeat_from_start(&w, rest, to, t);
+                } else {
+                    layout::repeat(&w, rest, to, t);
+                }
             }
         }
     }

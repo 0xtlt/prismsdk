@@ -699,6 +699,7 @@ fn transforms_mirror_right_to_left_and_transitions_animate() {
             y: -4.,
             scale: 1.5,
             rotate: 45.,
+            ..prism_core::Transform::IDENTITY
         },
         transition: Some(Transition::ease_out(250).delay(100)),
         ..Default::default()
@@ -744,6 +745,41 @@ fn motion_describes_enter_exit_and_loops() {
     assert_eq!(m["t"]["delay"], json!(0.05000000074505806));
     assert_eq!(m["xt"]["delay"], json!(0.));
     assert_eq!(m["xt"]["d"], m["t"]["d"]);
+}
+
+#[test]
+fn percent_offsets_non_uniform_scale_and_loops_that_start_over() {
+    let s = Style {
+        transform: prism_core::Transform {
+            scale_y: 0.5,
+            ..prism_core::Transform::IDENTITY
+        },
+        translate_percent: (-50., -100.),
+        ..Default::default()
+    };
+    let c = css(NodeKind::View, &s);
+    assert!(
+        c.contains("transform:translate(calc(var(--prism-dir,1)*(0px + -50%)),calc(0px + -100%)) rotate(calc(var(--prism-dir,1)*0deg)) scale(1,0.5);"),
+        "{c}"
+    );
+    // A spinner: starts over, keeps its linear curve; poses carry the
+    // percent offset so the loop does not drop it.
+    let mut spin = s.clone();
+    spin.animations.repeat = Some((Pose::new().rotate(360.), Transition::linear(900)));
+    spin.animations.restart = true;
+    let m = crate::css::motion(&spin);
+    assert_eq!(m["repeat"]["restart"], json!(true));
+    assert_eq!(m["repeat"]["t"]["ease"], json!("linear"));
+    assert_eq!(
+        m["repeat"]["to"]["tf"],
+        json!([0., 0., 1., 360., 1., 0.5, -50., -100.])
+    );
+    // Springs would jump at every restart: they ease in and out.
+    spin.animations.repeat = Some((Pose::new().rotate(360.), Transition::spring(900)));
+    assert_eq!(
+        crate::css::motion(&spin)["repeat"]["t"]["ease"],
+        json!("ease-in-out")
+    );
 }
 
 // --- Patch wire format -------------------------------------------------------------------

@@ -128,8 +128,11 @@ fn drawing(paths: &[prism_core::Path]) -> Value {
 fn transform(t: Transform) -> Value {
     if t.is_identity() {
         Value::Null
-    } else {
+    } else if (t.scale_x, t.scale_y) == (1., 1.) {
         json!([t.x, t.y, t.scale, t.rotate])
+    } else {
+        // Non-uniform: `[x, y, scale, degrees, scale x, scale y]`.
+        json!([t.x, t.y, t.scale, t.rotate, t.scale_x, t.scale_y])
     }
 }
 
@@ -214,10 +217,15 @@ impl Widgets for RemoteWidgets {
             None => json!({ "op": "repeat", "id": id, "to": Value::Null }),
             Some((p, t)) => {
                 let (o, tf) = p.apply(s.opacity, s.transform);
-                json!({
+                let mut op = json!({
                     "op": "repeat", "id": id, "from": pose(s.opacity, s.transform),
                     "to": pose(o, tf), "anim": anim(t),
-                })
+                });
+                // Starts over from `from` instead of reversing (spinners).
+                if s.animations.restart {
+                    op["restart"] = json!(true);
+                }
+                op
             }
         };
         self.ops.push(op);

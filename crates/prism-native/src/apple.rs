@@ -527,23 +527,15 @@ pub mod motion {
     use objc2_core_foundation::CGAffineTransform;
     use objc2_foundation::{NSArray, NSNumber, NSString, NSValue};
     use objc2_quartz_core::{
-        CAAnimation, CAAnimationGroup, CABasicAnimation, CACurrentMediaTime, CALayer,
-        CAMediaTiming, CAMediaTimingFunction, CATransform3D, NSValueCATransform3DAdditions,
-        kCAFillModeBoth,
+        CAAnimation, CAAnimationGroup, CABasicAnimation, CACurrentMediaTime, CAKeyframeAnimation,
+        CALayer, CAMediaTiming, CAMediaTimingFunction, CATransform3D,
+        NSValueCATransform3DAdditions, kCAFillModeBoth,
     };
     use prism_core::{Curve, Transform, Transition};
 
     /// `t` as an affine transform around the layer's anchor point.
     pub fn affine(t: Transform) -> CGAffineTransform {
-        let (s, r) = (t.scale as f64, (t.rotate as f64).to_radians());
-        CGAffineTransform {
-            a: s * r.cos(),
-            b: s * r.sin(),
-            c: -s * r.sin(),
-            d: s * r.cos(),
-            tx: t.x as f64,
-            ty: t.y as f64,
-        }
+        matrix(t.matrix())
     }
 
     pub fn matrix(m: [f64; 6]) -> CGAffineTransform {
@@ -568,24 +560,47 @@ pub mod motion {
 
     const KEY: &str = "prism.repeat";
 
-    /// Loops `layer` between `from` and `to` (opacity, transform), back and
-    /// forth, without touching its model values.
+    /// Evenly timed steps from `from` to `to`, field by field: enough of
+    /// them that a matrix interpolated between two neighbours follows the
+    /// turn (0° to 360° is a full turn, not "no change").
+    pub fn steps(from: Transform, to: Transform) -> Vec<Transform> {
+        let turn = (to.rotate - from.rotate).abs();
+        let n = if turn == 0. {
+            1
+        } else {
+            ((turn / 30.).ceil() as usize).max(2)
+        };
+        (0..=n)
+            .map(|i| from.lerp(to, i as f32 / n as f32))
+            .collect()
+    }
+
+    /// Loops `layer` from `from` to `to` (opacity, transform), back and
+    /// forth, or starting over when `restart`, without touching its model
+    /// values. `m` turns a transform into the layer's matrix.
     pub fn repeat(
         layer: &CALayer,
-        from: (f32, CATransform3D),
-        to: (f32, CATransform3D),
+        from: (f32, Transform),
+        to: (f32, Transform),
         t: Transition,
+        restart: bool,
+        m: impl Fn(Transform) -> CATransform3D,
     ) {
         let key = NSString::from_str(KEY);
         layer.removeAnimationForKey(&key);
         let opacity = CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str("opacity")));
         let transform =
-            CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str("transform")));
+            CAKeyframeAnimation::animationWithKeyPath(Some(&NSString::from_str("transform")));
+        let frames: Vec<Retained<NSValue>> = steps(from.1, to.1)
+            .into_iter()
+            .map(|tr| unsafe { NSValue::valueWithCATransform3D(m(tr)) })
+            .collect();
         unsafe {
             opacity.setFromValue(Some(&NSNumber::new_f32(from.0)));
             opacity.setToValue(Some(&NSNumber::new_f32(to.0)));
-            transform.setFromValue(Some(&NSValue::valueWithCATransform3D(from.1)));
-            transform.setToValue(Some(&NSValue::valueWithCATransform3D(to.1)));
+            let frames: Vec<&objc2::runtime::AnyObject> =
+                frames.iter().map(|v| v.as_ref() as _).collect();
+            transform.setValues(Some(&NSArray::from_slice(&frames)));
         }
         let group = CAAnimationGroup::new();
         let parts: [Retained<CAAnimation>; 2] = [
@@ -598,7 +613,7 @@ pub mod motion {
             part.setDuration(duration);
         }
         group.setDuration(duration);
-        group.setAutoreverses(true);
+        group.setAutoreverses(!restart);
         group.setRepeatCount(f32::INFINITY);
         group.setTimingFunction(Some(&timing(t)));
         // Kept when the app goes to the background or the view moves.

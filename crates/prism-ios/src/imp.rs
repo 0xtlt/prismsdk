@@ -1743,12 +1743,11 @@ impl Widgets for UiKit {
                 let (opacity, transform) = pose.apply(style.opacity, style.transform);
                 motion::repeat(
                     &layer,
-                    (
-                        style.opacity,
-                        motion::transform3d(motion::affine(style.transform)),
-                    ),
-                    (opacity, motion::transform3d(motion::affine(transform))),
+                    (style.opacity, style.transform),
+                    (opacity, transform),
                     t,
+                    style.animations.restart,
+                    |tr| motion::transform3d(motion::affine(tr)),
                 );
             }
         }

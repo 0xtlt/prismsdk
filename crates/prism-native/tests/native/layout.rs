@@ -232,6 +232,31 @@ fn right_to_left_mirrors_padding_offsets_and_text_alignment() {
 }
 
 #[test]
+fn translate_percent_shifts_by_the_nodes_own_size_after_layout() {
+    // A 40 × 10 label centred on 30 % of a 200 pt wide parent, above its top.
+    let mut h = tree(|| {
+        div().w(200.).h(50.).child(
+            div()
+                .absolute()
+                .left(relative(0.3))
+                .top(20.)
+                .w(40.)
+                .h(10.)
+                .translate_percent(-50., -100.),
+        )
+    });
+    let f = h.layout(400., 300.);
+    let label = f.of_kind(NodeKind::View)[1];
+    assert_eq!(f.frame(label), (40., 10., 40., 10.), "60 - 20, 20 - 10");
+
+    // Right to left: leading is the right edge, the shift mirrors too.
+    h.rt.app.set_locale(Some(Locale::new("ar")));
+    h.rerender();
+    let f = h.layout(400., 300.);
+    assert_eq!(f.frame(label).0, 120., "200 - 60 - 40, then + 20");
+}
+
+#[test]
 fn text_scale_grows_text_but_not_containers() {
     let mut h = tree(|| div().text_size(10.).child(text("t").text_size(17.)));
     let root = h.w().root.unwrap();

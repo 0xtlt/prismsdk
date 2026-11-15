@@ -255,6 +255,27 @@ test("styles replace the inline CSS and play enter animations once", () => {
   assert.equal((again.document.animations || []).length, 0);
 });
 
+test("loops swing back and forth, or start over (spinners), with non-uniform scale", () => {
+  const page = live([create(1, "view"), root(1)]);
+  const t = { d: 0.9, delay: 0, ease: "linear" };
+  const base = { enter: null, exit: null, t, xt: t };
+  const anims = () => (page.document.animations || []).filter((a) => a.el === page.node(1) && !a.anim.cancelled);
+  const spin = { ...base, rest: { o: 1, tf: [0, 0, 1, 0] }, repeat: { to: { o: 1, tf: [0, 0, 1, 360] }, t, restart: true } };
+  page.ws.deliver({ t: "patch", p: [{ op: "style", id: 1, css: "", motion: spin }] });
+  assert.equal(anims().length, 1);
+  assert.equal(anims()[0].options.iterations, Infinity);
+  assert.equal(anims()[0].options.direction, undefined, "starts over");
+  assert.equal(anims()[0].options.easing, "linear", "keeps its curve");
+  assert.equal(anims()[0].keyframes[1].transform, "translate(0px,0px) rotate(360deg) scale(1)");
+  // A blink: vertical scale only, a label offset in percent kept while looping.
+  const blink = { ...base, rest: { o: 1, tf: [0, 0, 1, 0, 1, 1, -50, 0] }, repeat: { to: { o: 1, tf: [0, 0, 1, 0, 1, 0.1, -50, 0] }, t } };
+  page.ws.deliver({ t: "patch", p: [{ op: "style", id: 1, css: "", motion: blink }] });
+  assert.equal(anims().length, 1, "the spin stopped");
+  assert.equal(anims()[0].options.direction, "alternate");
+  assert.equal(anims()[0].options.easing, "ease-in-out");
+  assert.equal(anims()[0].keyframes[1].transform, "translate(calc(0px + -50%),calc(0px + 0%)) rotate(0deg) scale(1,0.1)");
+});
+
 test("stacks show the top screen, its title and a Back button", () => {
   const page = live([
     create(1, "stack"), textOp(1, "/"), create(2, "screen"), textOp(2, "Home"), children(1, [2]), root(1),

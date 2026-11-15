@@ -115,6 +115,7 @@ fn style_ops() {
             y: -2.,
             scale: 1.5,
             rotate: 90.,
+            ..Transform::IDENTITY
         },
         ..Style::default()
     };
@@ -187,6 +188,40 @@ fn motion_ops() {
     );
     w.set_repeat(&9, &rest, None);
     assert_eq!(last(&w), json!({"op": "repeat", "id": 9, "to": null}));
+}
+
+#[test]
+fn loops_that_start_over_and_non_uniform_scale() {
+    let mut w = RemoteWidgets::new(measure);
+    let mut spinner = Style::default();
+    spinner.animations.restart = true;
+    w.set_repeat(&3, &spinner, Some((Pose::new().rotate(360.), linear())));
+    assert_eq!(
+        last(&w),
+        json!({"op": "repeat", "id": 3, "restart": true,
+               "from": {"o": 1., "tf": null},
+               "to": {"o": 1., "tf": [0., 0., 1., 360.]}, "anim": ANIM()})
+    );
+    // A blink: only the vertical factor changes, sent after the first four.
+    w.set_repeat(
+        &3,
+        &Style::default(),
+        Some((Pose::new().scale_y(0.1), linear())),
+    );
+    assert_eq!(
+        last(&w)["to"]["tf"],
+        json!([0., 0., 1., 0., 1., 0.10000000149011612])
+    );
+    assert!(last(&w).get("restart").is_none());
+    let squashed = Style {
+        transform: Transform {
+            scale_x: 2.,
+            ..Transform::IDENTITY
+        },
+        ..Style::default()
+    };
+    w.set_style(&3, &squashed);
+    assert_eq!(last(&w)["s"]["tf"], json!([0., 0., 1., 0., 2., 1.]));
 }
 
 #[test]

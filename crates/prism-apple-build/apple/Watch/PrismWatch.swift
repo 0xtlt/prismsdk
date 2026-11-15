@@ -277,7 +277,8 @@ final class PrismStore: ObservableObject {
             case "exit": MainActor.assumeIsolated { exit(id, p) }
             case "repeat":
                 nodes[id]?.loop = (p["to"] as? [String: Any]).map {
-                    PrismLoop(from: PrismPose(p["from"]), to: PrismPose($0), anim: p["anim"] as? [String: Any] ?? [:])
+                    PrismLoop(from: PrismPose(p["from"]), to: PrismPose($0), anim: p["anim"] as? [String: Any] ?? [:],
+                              restart: p["restart"] as? Bool ?? false)
                 }
             case "create": nodes[id] = Node(kind: p["kind"] as? String ?? "view")
             case "destroy": nodes[id] = nil
@@ -376,11 +377,15 @@ extension PrismStore {
 /// Opacity and transform (offset, scale, rotation around the center).
 struct PrismPose: Equatable {
     var o = 1.0, x = 0.0, y = 0.0, scale = 1.0, rotate = 0.0
+    /// Size factors on each axis (multiplied with `scale`).
+    var scaleX = 1.0, scaleY = 1.0
 
     init(_ v: Any?) {
         let d = v as? [String: Any] ?? [:]
         o = (d["o"] as? NSNumber)?.doubleValue ?? 1
-        if let tf = d["tf"] as? [Double], tf.count == 4 { (x, y, scale, rotate) = (tf[0], tf[1], tf[2], tf[3]) }
+        // `[x, y, scale, degrees]`, then `scale x, scale y`.
+        if let tf = d["tf"] as? [Double], tf.count >= 4 { (x, y, scale, rotate) = (tf[0], tf[1], tf[2], tf[3]) }
+        if let tf = d["tf"] as? [Double], tf.count >= 6 { (scaleX, scaleY) = (tf[4], tf[5]) }
     }
 
     init(opacity: Double, tf: Any?) { self.init(["o": opacity, "tf": tf ?? NSNull()]) }
@@ -390,8 +395,10 @@ struct PrismLoop: Equatable {
     var from: PrismPose
     var to: PrismPose
     var anim: [String: Any]
+    /// Starts over from `from` instead of swinging back (spinners).
+    var restart = false
     static func == (a: PrismLoop, b: PrismLoop) -> Bool {
-        a.from == b.from && a.to == b.to && NSDictionary(dictionary: a.anim).isEqual(to: b.anim)
+        a.from == b.from && a.to == b.to && a.restart == b.restart && NSDictionary(dictionary: a.anim).isEqual(to: b.anim)
     }
 }
 
@@ -413,7 +420,7 @@ func prismAnimation(_ a: [String: Any]) -> Animation {
 
 extension View {
     func prismPose(_ p: PrismPose) -> some View {
-        scaleEffect(p.scale).rotationEffect(.degrees(p.rotate)).offset(x: p.x, y: p.y).opacity(p.o)
+        scaleEffect(x: p.scale * p.scaleX, y: p.scale * p.scaleY).rotationEffect(.degrees(p.rotate)).offset(x: p.x, y: p.y).opacity(p.o)
     }
 }
 
@@ -435,8 +442,15 @@ struct PrismPosed: ViewModifier {
         withTransaction(t) { swing = false }
         guard let loop else { return }
         let d = loop.anim["d"] as? Double ?? 0.6
+        // A loop that starts over keeps its curve (linear for a spinner:
+        // the angle animates as a number, so 0 to 360 degrees is a full turn);
+        // swings, and curves that overshoot, ease in and out.
+        let e = loop.anim["ease"] as? [Double] ?? []
+        let overshoots = e.count < 4 || e.contains { $0 < 0 || $0 > 1 }
+        let curve: Animation = loop.restart && !overshoots
+            ? .timingCurve(e[0], e[1], e[2], e[3], duration: d) : .easeInOut(duration: d)
         DispatchQueue.main.async {
-            withAnimation(.easeInOut(duration: d).repeatForever(autoreverses: true).delay(loop.anim["delay"] as? Double ?? 0)) {
+            withAnimation(curve.repeatForever(autoreverses: !loop.restart).delay(loop.anim["delay"] as? Double ?? 0)) {
                 swing = true
             }
         }

@@ -29,14 +29,23 @@ final class PrismMotion {
     /** Running frame animations, by node. */
     static final Map<Long, ValueAnimator> frames = new HashMap<>();
 
-    /** `tf`: [x, y, scale, degrees], or null for none (around the center). */
+    /** `tf`: [x, y, scale, degrees, scale x, scale y], or null for none (around the center). */
     static void transform(View v, JSONArray tf) {
         v.setTranslationX(tf == null ? 0 : (float) tf.optDouble(0));
         v.setTranslationY(tf == null ? 0 : (float) tf.optDouble(1));
-        float s = tf == null ? 1 : (float) tf.optDouble(2, 1);
-        v.setScaleX(s);
-        v.setScaleY(s);
+        v.setScaleX(scaleX(tf));
+        v.setScaleY(scaleY(tf));
         v.setRotation(tf == null ? 0 : (float) tf.optDouble(3));
+    }
+
+    /** The horizontal size factor of `tf` (uniform scale × scale x). */
+    static float scaleX(JSONArray tf) {
+        return tf == null ? 1 : (float) (tf.optDouble(2, 1) * tf.optDouble(4, 1));
+    }
+
+    /** The vertical size factor of `tf` (uniform scale × scale y). */
+    static float scaleY(JSONArray tf) {
+        return tf == null ? 1 : (float) (tf.optDouble(2, 1) * tf.optDouble(5, 1));
     }
 
     static PathInterpolator curve(JSONObject anim) {
@@ -49,9 +58,9 @@ final class PrismMotion {
         return Math.round(anim.optDouble(key, 0) * 1000);
     }
 
-    /** What animates of a view: alpha, translation, scale, rotation. */
+    /** What animates of a view: alpha, translation, scale x, rotation, scale y. */
     static float[] pose(View v) {
-        return new float[]{v.getAlpha(), v.getTranslationX(), v.getTranslationY(), v.getScaleX(), v.getRotation()};
+        return new float[]{v.getAlpha(), v.getTranslationX(), v.getTranslationY(), v.getScaleX(), v.getRotation(), v.getScaleY()};
     }
 
     static void set(View v, float[] p) {
@@ -59,7 +68,7 @@ final class PrismMotion {
         v.setTranslationX(p[1]);
         v.setTranslationY(p[2]);
         v.setScaleX(p[3]);
-        v.setScaleY(p[3]);
+        v.setScaleY(p[5]);
         v.setRotation(p[4]);
     }
 
@@ -68,7 +77,7 @@ final class PrismMotion {
         JSONArray tf = p.optJSONArray("tf");
         return new float[]{(float) p.optDouble("o", 1),
                 tf == null ? 0 : (float) tf.optDouble(0), tf == null ? 0 : (float) tf.optDouble(1),
-                tf == null ? 1 : (float) tf.optDouble(2, 1), tf == null ? 0 : (float) tf.optDouble(3)};
+                scaleX(tf), tf == null ? 0 : (float) tf.optDouble(3), scaleY(tf)};
     }
 
     static Integer color(View v) {
@@ -88,7 +97,7 @@ final class PrismMotion {
         Integer toBg = color(v);
         set(v, from);
         v.animate().cancel();
-        v.animate().alpha(to[0]).translationX(to[1]).translationY(to[2]).scaleX(to[3]).scaleY(to[3]).rotation(to[4])
+        v.animate().alpha(to[0]).translationX(to[1]).translationY(to[2]).scaleX(to[3]).scaleY(to[5]).rotation(to[4])
                 .setDuration(ms(anim, "d")).setStartDelay(ms(anim, "delay")).setInterpolator(curve(anim)).start();
         if (fromBg != null && toBg != null && !fromBg.equals(toBg)) {
             GradientDrawable d = (GradientDrawable) v.getBackground();
@@ -139,13 +148,17 @@ final class PrismMotion {
         set(picture, pose(v));
         parent.getOverlay().add(picture);
         float[] p = pose(to);
-        picture.animate().alpha(p[0]).translationX(p[1]).translationY(p[2]).scaleX(p[3]).scaleY(p[3]).rotation(p[4])
+        picture.animate().alpha(p[0]).translationX(p[1]).translationY(p[2]).scaleX(p[3]).scaleY(p[5]).rotation(p[4])
                 .setDuration(ms(anim, "d")).setStartDelay(ms(anim, "delay")).setInterpolator(curve(anim))
                 .withEndAction(() -> parent.getOverlay().remove(picture)).start();
     }
 
-    /** Back and forth between two poses, forever (`to` null stops). */
-    static void repeat(long id, View v, JSONObject from, JSONObject to, JSONObject anim) {
+    /**
+     * Back and forth between two poses, forever (`to` null stops); `restart`:
+     * from `from` to `to` and starting over (spinners: rotation animates as
+     * a number, so 0 to 360 degrees is a full turn).
+     */
+    static void repeat(long id, View v, JSONObject from, JSONObject to, JSONObject anim, boolean restart) {
         ValueAnimator old = loops.remove(id);
         if (old != null) old.cancel();
         if (to == null || from == null || anim == null) {
@@ -156,14 +169,17 @@ final class PrismMotion {
         ValueAnimator loop = ValueAnimator.ofFloat(0, 1);
         loop.setDuration(Math.max(10, ms(anim, "d")));
         loop.setStartDelay(ms(anim, "delay"));
-        // Springs would overshoot every swing: loops ease in and out.
-        loop.setInterpolator(new PathInterpolator(0.42f, 0f, 0.58f, 1f));
-        loop.setRepeatMode(ValueAnimator.REVERSE);
+        // Springs would overshoot every swing: loops ease in and out (a loop
+        // that starts over keeps its curve: linear for a spinner).
+        JSONArray e = anim.optJSONArray("ease");
+        boolean overshoots = e != null && e.length() >= 4 && (e.optDouble(1) < 0 || e.optDouble(1) > 1 || e.optDouble(3) < 0 || e.optDouble(3) > 1);
+        loop.setInterpolator(restart && !overshoots ? curve(anim) : new PathInterpolator(0.42f, 0f, 0.58f, 1f));
+        loop.setRepeatMode(restart ? ValueAnimator.RESTART : ValueAnimator.REVERSE);
         loop.setRepeatCount(ValueAnimator.INFINITE);
         loop.addUpdateListener(x -> {
             float t = (Float) x.getAnimatedValue();
-            float[] p = new float[5];
-            for (int i = 0; i < 5; i++) p[i] = a[i] + (b[i] - a[i]) * t;
+            float[] p = new float[a.length];
+            for (int i = 0; i < a.length; i++) p[i] = a[i] + (b[i] - a[i]) * t;
             set(v, p);
         });
         loops.put(id, loop);

@@ -451,6 +451,12 @@ pub struct Style {
     pub responsive: Responsive,
     /// Platforms where the element exists (`.only(…)`, `.except(…)`).
     pub platforms: Option<crate::platform::Platforms>,
+
+    // Motion: offsets relative to the element's own size.
+    /// Extra offset in percent of the element's own width and height (CSS
+    /// `translate(x%, y%)`; `(-50., 0.)` centers it on its position). Leading
+    /// / trailing like `transform.x`; no effect on the layout around it.
+    pub translate_percent: (f32, f32),
 }
 
 /// Window size classes, by width in points (CSS pixels on the web).
@@ -805,6 +811,7 @@ impl Default for Style {
             animations: crate::animation::Animations::default(),
             responsive: Responsive::default(),
             platforms: None,
+            translate_percent: (0., 0.),
         }
     }
 }
@@ -1299,5 +1306,29 @@ pub trait Styled: Sized {
     /// breathing, loading indicators).
     fn repeat(self, pose: crate::animation::Pose, t: Transition) -> Self {
         self.with_style(|s| s.animations.repeat = Some((pose, t)))
+    }
+
+    // Motion: loops that start over, non-uniform scale, relative offsets.
+    /// Plays from its style to `pose`, then starts over, forever: with
+    /// `Pose::new().rotate(360.)` and a linear transition, a spinner.
+    fn repeat_from_start(self, pose: crate::animation::Pose, t: Transition) -> Self {
+        self.with_style(|s| {
+            s.animations.repeat = Some((pose, t));
+            s.animations.restart = true;
+        })
+    }
+    /// Scales it horizontally around its center (with [`scale`](Self::scale)).
+    fn scale_x(self, factor: f32) -> Self {
+        self.with_style(|s| s.transform.scale_x = factor)
+    }
+    /// Scales it vertically around its center (with [`scale`](Self::scale)).
+    fn scale_y(self, factor: f32) -> Self {
+        self.with_style(|s| s.transform.scale_y = factor)
+    }
+    /// Moves it by `x` % of its own width and `y` % of its own height,
+    /// without changing the layout: `.absolute().left(relative(0.3))
+    /// .translate_percent(-50., 0.)` centers a label on 30 % of its parent.
+    fn translate_percent(self, x: f32, y: f32) -> Self {
+        self.with_style(|s| s.translate_percent = (x, y))
     }
 }
