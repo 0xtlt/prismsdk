@@ -16,6 +16,7 @@
 //! team = "ABCDE12345"           # Apple team for real devices
 //! simulator = "iPhone 17"       # default simulator
 //! device = "My iPhone"          # default device (instead of a simulator)
+//! sign_in_with_apple = true     # the com.apple.developer.applesignin entitlement
 //! ```
 
 use std::collections::HashMap;
@@ -39,6 +40,8 @@ pub struct Project {
     pub device: Option<String>,
     /// `[ios] icloud = true`: iCloud key-value storage.
     pub icloud: bool,
+    /// `[ios] sign_in_with_apple = true`: the Sign in with Apple entitlement.
+    pub apple_sign_in: bool,
     /// Cargo's target directory (the workspace's).
     pub target_dir: PathBuf,
     /// The Cargo workspace (watched by `prism dev`).
@@ -121,6 +124,7 @@ impl Project {
             simulator: get("ios.simulator"),
             device: get("ios.device"),
             icloud: get("ios.icloud").is_some_and(|v| v == "true"),
+            apple_sign_in: get("ios.sign_in_with_apple").is_some_and(|v| v == "true"),
             root: root.to_path_buf(),
             package,
             name,

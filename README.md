@@ -152,9 +152,9 @@ cx.spawn(async move |this, cx| {
 | iOS | App Group container | iCloud KVS (`[ios] icloud = true`; signed builds) | on the device |
 | macOS | Application Support | iCloud KVS (needs a Mac provisioning profile) | on the device |
 | Web | server, per browser | server, per browser | **on the server, shared by every user**: the app runs there, so this is your backend |
-| Android (planned) | app files | Block Store / Drive app data | on the device |
+| Android | app files | backed up by Android Backup (key/value), restored on a new device or a reinstall | on the device |
 
-The database runs queries on a small Tokio runtime and hands results back to the UI thread. Migrations are SQL statements applied once each, in order (`PRAGMA user_version`). On the web the same sqlx code can point at Postgres instead of SQLite. `cx.capabilities().cloud_sync` says whether `cloud_storage` really syncs (iCloud signed in); elsewhere it is local storage.
+The database runs queries on a small Tokio runtime and hands results back to the UI thread. Migrations are SQL statements applied once each, in order (`PRAGMA user_version`). On the web the same sqlx code can point at Postgres instead of SQLite. `cx.capabilities().cloud_sync` says whether `cloud_storage` really syncs (iCloud signed in); `cloud_backup` that it is backed up without live sync (Android: `BackupAgent` + `BackupManager.dataChanged()` after each change; Block Store needs the Play services library, so it is not used); elsewhere it is local storage. Secrets go in [`secure_storage`](#security-secrets-biometrics-sign-in), which is never synced or backed up.
 
 ## Device APIs
 
@@ -190,6 +190,50 @@ camera = "Adds a photo to a todo."
 ```
 
 `cx.capabilities()` says what exists (`location`, `motion`, `camera`, `photos`, `haptics`, `share`); unsupported calls fail with `DeviceError::Unavailable`.
+
+## Security: secrets, biometrics, sign-in
+
+```rust
+cx.spawn(async move |this, cx| {
+    // Secrets: never in plain files, never synced or backed up.
+    cx.secure_storage().set("refresh_token", &token).await?;
+    let token = cx.secure_storage().get("refresh_token").await?;            // Option<String>
+    cx.secure_storage().set_with("pin", "1234", SecureOptions::new().biometric()).await?;  // read = Face ID…
+    cx.secure_storage().delete("pin").await?;
+
+    // Is it the owner? Face ID, Touch ID, Optic ID, a fingerprint, then the passcode.
+    match cx.authenticate("Unlock your notes").await {
+        Ok(()) => unlock(),
+        Err(DeviceError::Cancelled) => {}
+        Err(e) => show(e),
+    }
+    let b = cx.biometry().await;            // kind (FaceId, Fingerprint…), enrolled, passcode, locked_out
+
+    // Sign in with Apple, and OAuth 2 / OpenID Connect with PKCE (Google, Microsoft, Auth0, Keycloak…).
+    let apple = cx.sign_in_with_apple(AppleSignIn::new().email().full_name()).await?;
+    let tokens = prism::oauth::OAuth::google("1234-abc.apps.googleusercontent.com").sign_in(&cx).await?;
+    let email = tokens.id_claims().and_then(|c| c["email"].as_str().map(String::from));
+});
+```
+
+| | `secure_storage` | `authenticate` (`capabilities().biometry`) | Sign in with Apple | `oauth` sign-in browser → redirect |
+|---|---|---|---|---|
+| iOS, iPadOS | Keychain (this device only; `biometric`: `SecAccessControl` `.biometryCurrentSet`, else `.userPresence`) | LocalAuthentication: Face ID / Touch ID, then the passcode | AuthenticationServices | `ASWebAuthenticationSession` → `prism-<app>:/oauth` (or the provider's scheme) |
+| visionOS | Keychain | Optic ID, then the passcode | AuthenticationServices | `ASWebAuthenticationSession` |
+| macOS | login keychain; data protection keychain with a provisioning profile | Touch ID, then the password | needs a Mac provisioning profile | `ASWebAuthenticationSession` |
+| watchOS | Keychain (`biometric` = `.userPresence`) | passcode / wrist detection (no biometric policy on the watch) | AuthenticationServices | `ASWebAuthenticationSession` |
+| tvOS | Keychain | — (the SDK marks `LAContext` unavailable) | AuthenticationServices | `ASWebAuthenticationSession` (tvOS 16+) |
+| Android | Keystore: AES-256-GCM key in `AndroidKeyStore`, ciphertext in `files/secure` (`biometric`: an RSA key needing the owner wraps the value's key) | `BiometricPrompt` (framework, no androidx), then the PIN (Android 11+ with keys) | — | Custom Tab (protocol extra, no androidx) or the browser → deep link |
+| Linux | Secret Service over D-Bus (GNOME Keyring, KWallet) | fprintd (fingerprint readers) | — | default browser → loopback `http://127.0.0.1:<port>/callback` |
+| Web | on the server, per browser (the `HttpOnly` session cookie), AES-256-GCM at rest | WebAuthn platform authenticator with user verification, checked on the server | — | popup → `<base>/_prism/auth/callback` |
+
+- **Biometric secrets** need the owner every time they are read; new fingers or faces make them unreadable (Apple, Android: store them again). Setting one never prompts.
+- **Face ID** needs a usage text: `face_id = "…"` under `[permissions]` in Prism.toml (`NSFaceIDUsageDescription`). Without it the call fails with a message saying so instead of crashing.
+- **Sign in with Apple** needs the `com.apple.developer.applesignin` entitlement: `[ios] sign_in_with_apple = true` takes it from the provisioning profile (enable the capability for the App ID). `capabilities().sign_in_with_apple` is true only in bundles built with it. Verify `identity_token` (or exchange `authorization_code`) on your server.
+- **OAuth**: authorization code + PKCE (S256), random `state` checked on return, `nonce` and audience checked in the ID token. Public clients only on devices (no secret); `.code_only()` hands the code and verifier to your server instead. `OAuth::oidc(issuer, client_id)` discovers the endpoints. Google requires the reversed client id as the scheme for iOS clients (`OAuth::google` does it on Apple); for Android it only accepts App Links or Credential Manager (Play services), so use a provider that allows custom schemes, or bounce through your server.
+- **Web secrets** are a server-side store, because the app runs there: the browser never sees them. Set `PRISM_SECRET_KEY` (64 hex digits) in production; otherwise a key is generated in the data directory. WebAuthn needs a secure context (`https://` or `localhost`); the first `authenticate` registers this browser's platform credential. When a popup or WebAuthn needs a fresh tap (Safari), the page shows a "Continue" button.
+- **Linux** has no desktop standard for checking a password on behalf of an app (polkit authorizes system actions, not apps): `authenticate` uses fprintd, otherwise `Unavailable`. Biometric secrets are checked by the app with fprintd before the keyring hands them out.
+- Test sign-in without real accounts: `python3 scripts/mock-oidc.py` (a local OpenID provider checking PKCE); `scripts/mock-fprintd.py` stands in for a fingerprint reader (`PRISM_FPRINTD_BUS=session`).
 
 ## Background execution
 
@@ -600,6 +644,7 @@ watchOS has no UIKit views (`UIView` is `API_UNAVAILABLE(watchos)` in the SDK), 
 - Location uses GeoClue2 over the system bus, asynchronously; `request_permission` starts a client, so the desktop's agent asks the user. Also available: the file chooser for photos, the clipboard, opening links with the default app.
 - Notifications use `GNotification`, with buttons; the dev image's D-Bus monitor shows them. Alerts are modal windows. Context menus open on right-click or press and hold (`GtkPopoverMenu`). `set_app_menu` becomes the menu bar, with shortcuts.
 - The tray uses StatusNotifierItem through `ksni`, checked against a test watcher. Also supported: swipes (touchpad), scroll events, refresh with F5 / Ctrl+R, lifecycle (focus, minimized) and background tasks while the app runs. Text size follows GNOME's scaling factor; reduced motion follows "animations off".
+- Secrets use the Secret Service (D-Bus), fingerprints fprintd, sign-in the default browser with a loopback redirect (see [Security](#security-secrets-biometrics-sign-in)).
 - No desktop standard exists for motion, camera, haptics or a share sheet, so `capabilities` reports them as unavailable.
 
 ## Android
@@ -621,8 +666,9 @@ The app runs in Rust, and a small Java host (`platform/android`) creates real An
   - location (`LocationManager`), motion (rotation vector, gyroscope);
   - photos (system photo picker), camera (`ACTION_IMAGE_CAPTURE`);
   - haptics (`VibrationEffect`), clipboard;
-  - share sheet (files through a small content provider), links.
-  Permissions come from `Prism.toml`'s `[permissions]`.
+  - share sheet (files through a small content provider), links;
+  - secrets (Keystore), `BiometricPrompt`, sign-in in a Custom Tab, `cloud_storage` backed up (see [Security](#security-secrets-biometrics-sign-in)).
+  Permissions come from `Prism.toml`'s `[permissions]`. Deep links and sign-in redirects arrive through `PrismLinkActivity`, which hands them to the running app.
 - **Notifications:** actions and text replies; the first one asks for the permission (Android 13+), as on iOS. Alerts are `AlertDialog`s. Context menus (`PopupMenu`) open on press and hold. Also supported: swipes, scroll events, deep links (`prism-<package>:/path`) and the lifecycle.
 - **Background tasks:** JobScheduler, even with the app closed; the library then loads without the Activity and runs the task without a screen.
 - **Live Activities:** an ongoing notification drawing the lock-screen content, with timers counting natively (`Chronometer`).
@@ -637,5 +683,5 @@ The app runs in Rust, and a small Java host (`platform/android`) creates real An
 ## Status
 
 Primitives: `div`, `text`, `button`, `text_input`, `toggle`, `scroll`, `picture`, `VirtualList`, `screen`, `Router` (stacks, tabs, sheets). Component library `prism::ui`. Accessibility on all backends. Light/dark appearance.
-Widgets, Live Activities (Dynamic Island), car screens (CarPlay, Android Auto, Automotive), notifications with actions, background tasks, device APIs (location, motion, photos, camera, haptics, clipboard, share), alerts, context menus, tray and app menus, async tasks, HTTP, storage, i18n/RTL, Dynamic Type, animations, `prism` CLI.
+Widgets, Live Activities (Dynamic Island), car screens (CarPlay, Android Auto, Automotive), notifications with actions, background tasks, device APIs (location, motion, photos, camera, haptics, clipboard, share), secure storage, biometrics, Sign in with Apple, OAuth/OIDC sign-in, alerts, context menus, tray and app menus, async tasks, HTTP, storage, i18n/RTL, Dynamic Type, animations, `prism` CLI.
 Platforms: web, macOS, iOS/iPadOS, tvOS, watchOS, visionOS, Linux (GTK 4), Android (phones, tablets, Wear OS, Android TV). Not yet: Windows (the `Widgets` trait and `PlatformServices` are the extension points).

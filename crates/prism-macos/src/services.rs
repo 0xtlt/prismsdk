@@ -68,6 +68,7 @@ impl MacServices {
         let has_group = objc2_foundation::NSBundle::mainBundle()
             .objectForInfoDictionaryKey(&NSString::from_str("PrismAppGroup"))
             .is_some();
+        let (biometry, device_auth, apple) = prism_native::apple::security_capabilities();
         MacServices {
             mtm,
             target,
@@ -93,6 +94,14 @@ impl MacServices {
                 clipboard: true,
                 cloud_sync: prism_native::apple::ICloudStorage::new().is_some()
                     && prism_native::apple::ICloudStorage::signed_in(),
+                cloud_backup: false,
+                // The login keychain, or the data protection keychain when
+                // the app is signed with a profile.
+                secure_storage: true,
+                biometry,
+                device_auth,
+                sign_in_with_apple: apple,
+                web_auth: true,
             },
             activities: HashMap::new(),
         }

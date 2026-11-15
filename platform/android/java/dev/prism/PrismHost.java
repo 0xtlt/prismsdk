@@ -100,6 +100,12 @@ public final class PrismHost {
             o.put("manufacturer", android.os.Build.MANUFACTURER);
             o.put("release", android.os.Build.VERSION.RELEASE);
             o.put("emulator", android.os.Build.FINGERPRINT.contains("generic") || android.os.Build.HARDWARE.contains("ranchu"));
+            // Owner checks (PrismSecurity): the sensor, a lock screen, a browser for sign-in.
+            o.put("biometry", PrismSecurity.kind());
+            o.put("deviceSecure", PrismSecurity.deviceSecure());
+            o.put("biometricReady", PrismSecurity.canAuthenticate() == android.hardware.biometrics.BiometricManager.BIOMETRIC_SUCCESS);
+            o.put("browser", c.getPackageManager().resolveActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW,
+                    android.net.Uri.parse("https://example.com")), 0) != null);
         } catch (JSONException ignored) {
         }
         return o;
@@ -111,6 +117,11 @@ public final class PrismHost {
             Class.forName("dev.prism.PrismCarService").getDeclaredMethod("set", String.class).invoke(null, json);
         } catch (ReflectiveOperationException ignored) {
         }
+    }
+
+    /** From Rust: `cloud_storage` changed; the Backup Service backs it up later (PrismBackup). */
+    public static void cloudChanged() {
+        if (context != null) new android.app.backup.BackupManager(context).dataChanged();
     }
 
     /** From Rust: background task `task` is done. */

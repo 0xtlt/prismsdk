@@ -994,6 +994,90 @@
     setTimeout(() => { if (!seen && streams.has(msg.id)) event({ err: "unavailable" }); }, 1500);
     return () => { removeEventListener("devicemotion", motion); removeEventListener("deviceorientation", orient); };
   }
+  // --- Sign-in popups and WebAuthn (checked on the server: security.rs) ---------
+  const b64u = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const unb64u = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+  const gestureText = () => ({
+    fr: ["Continuer", "Annuler", "Vérifier votre identité"],
+    ar: ["متابعة", "إلغاء", "تحقّق من هويتك"],
+  })[(document.documentElement.lang || "en").slice(0, 2)] || ["Continue", "Cancel", "Verify it’s you"];
+  // Popups and WebAuthn need a recent tap; after the server round trip it may
+  // be gone. Then ask for one: `run` gets called from the button's click.
+  function withGesture(title, run, cancel) {
+    const [ok, no] = gestureText();
+    const d = document.createElement("dialog");
+    d.className = "prism-alert";
+    d.setAttribute("role", "alertdialog");
+    d.innerHTML = `<h2></h2><div class="prism-alert-actions"><button type="button" data-role="cancel"></button><button type="button" data-role="default"></button></div>`;
+    d.querySelector("h2").textContent = title;
+    const [bNo, bOk] = d.querySelectorAll("button");
+    bNo.textContent = no;
+    bOk.textContent = ok;
+    const close = () => { d.close(); d.remove(); };
+    bOk.addEventListener("click", () => { close(); run(); });
+    bNo.addEventListener("click", () => { close(); cancel(); });
+    d.addEventListener("cancel", (e) => { e.preventDefault(); close(); cancel(); });
+    document.body.appendChild(d);
+    d.showModal();
+    bOk.focus();
+  }
+  function webAuth(msg, reply) {
+    const open = () => {
+      const w = Math.min(520, screen.width), h = Math.min(680, screen.height);
+      const features = `popup,width=${w},height=${h},left=${Math.round((screen.width - w) / 2)},top=${Math.round((screen.height - h) / 2)}`;
+      const popup = window.open(msg.url, "prism-auth", features);
+      if (!popup) return false;
+      // The server answers when the provider redirects; a closed popup before
+      // that is a cancel (the server ignores it once answered).
+      const timer = setInterval(() => {
+        if (popup.closed) { clearInterval(timer); setTimeout(() => reply({ err: "cancelled" }), 800); }
+      }, 500);
+      return true;
+    };
+    if (!open()) withGesture(msg.provider || location.host, () => { if (!open()) reply({ err: "popup blocked" }); }, () => reply({ err: "cancelled" }));
+  }
+  async function webauthn(msg, reply) {
+    if (!window.PublicKeyCredential || !navigator.credentials) return reply({ err: "unavailable" });
+    const ceremony = async () => {
+      if (msg.mode === "create") {
+        const c = await navigator.credentials.create({ publicKey: {
+          challenge: unb64u(msg.challenge),
+          rp: { name: msg.rp || location.host },
+          user: { id: unb64u(msg.user), name: msg.name || location.host, displayName: msg.name || location.host },
+          pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
+          authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "required", residentKey: "discouraged" },
+          attestation: "none", timeout: 60000,
+        } });
+        return { type: "create", id: b64u(c.rawId), client: b64u(c.response.clientDataJSON),
+          auth: b64u(c.response.getAuthenticatorData()), key: b64u(c.response.getPublicKey()), alg: c.response.getPublicKeyAlgorithm() };
+      }
+      const c = await navigator.credentials.get({ publicKey: {
+        challenge: unb64u(msg.challenge),
+        allowCredentials: [{ type: "public-key", id: unb64u(msg.credential) }],
+        userVerification: "required", timeout: 60000,
+      } });
+      return { type: "get", id: b64u(c.rawId), client: b64u(c.response.clientDataJSON),
+        auth: b64u(c.response.authenticatorData), sig: b64u(c.response.signature) };
+    };
+    const error = (e) => ({ err: e && e.name === "NotAllowedError" ? "cancelled" : e && e.name === "SecurityError" ? "unavailable" : String((e && e.message) || e) });
+    const started = Date.now();
+    try {
+      reply({ webauthn: await ceremony() });
+    } catch (e) {
+      // Refused at once: most likely no recent tap (Safari). Ask for one.
+      if (e && e.name === "NotAllowedError" && Date.now() - started < 400) {
+        withGesture(msg.reason || gestureText()[2], () => ceremony().then((r) => reply({ webauthn: r }), (e2) => reply(error(e2))), () => reply({ err: "cancelled" }));
+      } else reply(error(e));
+    }
+  }
+  // Whether `authenticate` can work here (reported with the device).
+  let uvpa = false;
+  if (window.PublicKeyCredential && PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable) {
+    PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()
+      .then((ok) => { uvpa = !!ok; if (ws && ws.readyState === 1) reportDevice(); })
+      .catch(() => {});
+  }
+
   async function device(msg) {
     const reply = (body) => send({ t: "device_reply", id: msg.id, ...body });
     const event = (body) => send({ t: "device_event", id: msg.id, ...body });
@@ -1042,6 +1126,9 @@
           if (navigator.share) return navigator.share({ text: msg.text || undefined, url: msg.url || undefined }).catch(() => {});
           return navigator.clipboard?.writeText([msg.text, msg.url].filter(Boolean).join(" "));
         case "open_url": return window.open(msg.url, "_blank", "noopener");
+        case "web_auth": return webAuth(msg, reply);
+        case "webauthn": return webauthn(msg, reply);
+        default: return reply({ err: "unavailable" });
       }
     } catch (e) {
       reply({ err: String((e && e.message) || e) });
@@ -1093,6 +1180,7 @@
       angle: o ? o.angle : (typeof window.orientation === "number" ? window.orientation : 0),
       posture: navigator.devicePosture ? navigator.devicePosture.type : null,
       segments: segments(),
+      uvpa,
     };
     if (hints) r.hints = hints;
     document.cookie = `prism_dev=${touch ? 1 : 0}_${r.standalone ? 1 : 0}_${r.sw}_${r.sh}_${r.dpr}; Path=/; Max-Age=31536000; SameSite=Lax`;

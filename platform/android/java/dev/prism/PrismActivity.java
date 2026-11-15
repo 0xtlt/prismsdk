@@ -99,6 +99,8 @@ public class PrismActivity extends Activity {
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        // A sign-in's redirect goes to the waiting call, not the router.
+        if (PrismSecurity.redirected(intent)) return;
         handleLink(intent);
         PrismDevice.notificationTapped(intent);
     }
@@ -118,6 +120,8 @@ public class PrismActivity extends Activity {
     private void handleLink(Intent intent) {
         String path = linkPath(intent);
         if (path == null || !ready) return;
+        // A sign-in redirect nobody waits for any more (the app was restarted).
+        if (path.startsWith("/oauth?") || path.equals("/oauth")) return;
         JSONObject e = PrismHost.event("link", -1);
         try { e.put("path", path); } catch (JSONException ignored) {}
         PrismHost.send(e);
@@ -130,7 +134,7 @@ public class PrismActivity extends Activity {
         PrismHost.send(e);
     }
 
-    @Override protected void onResume() { super.onResume(); lifecycle("active"); }
+    @Override protected void onResume() { super.onResume(); lifecycle("active"); PrismSecurity.resumed(); }
     @Override protected void onPause() { super.onPause(); lifecycle("inactive"); }
     @Override protected void onStop() { super.onStop(); lifecycle("background"); }
 

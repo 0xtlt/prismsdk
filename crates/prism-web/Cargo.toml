@@ -16,6 +16,8 @@ prism-core.workspace = true
 serde_json.workspace = true
 http = "1"
 sha2 = "0.10"
+# Secrets at rest (AES-256-GCM) and WebAuthn signatures (ES256, RS256).
+ring = "0.17"
 axum = { version = "0.8", optional = true, default-features = false, features = ["ws", "tokio", "http1", "query"] }
 tokio = { version = "1", optional = true, features = ["rt-multi-thread", "net", "sync"] }
 futures-util = { version = "0.3", optional = true, default-features = false, features = ["sink"] }

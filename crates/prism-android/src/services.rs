@@ -20,6 +20,11 @@ impl AndroidServices {
     /// `info`: what the host found (sensors, camera…).
     pub fn new(info: &Value) -> Self {
         let has = |k: &str| info.get(k).and_then(Value::as_bool).unwrap_or(false);
+        let biometry = prism_core::BiometryKind::from_name(
+            info.get("biometry")
+                .and_then(Value::as_str)
+                .unwrap_or("none"),
+        );
         AndroidServices {
             caps: Capabilities {
                 car: has("car"),
@@ -33,6 +38,14 @@ impl AndroidServices {
                 haptics: has("vibrator"),
                 share: true,
                 clipboard: true,
+                // Backed up and restored by the Android Backup Service, not synced.
+                cloud_sync: false,
+                cloud_backup: true,
+                // Android Keystore (AES-GCM), BiometricPrompt, Custom Tabs.
+                secure_storage: true,
+                biometry,
+                device_auth: has("biometricReady") || has("deviceSecure"),
+                web_auth: has("browser"),
                 ..Default::default()
             },
             ops: Vec::new(),

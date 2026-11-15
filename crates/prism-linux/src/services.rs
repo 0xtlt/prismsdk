@@ -10,6 +10,7 @@
 //! | alerts | a modal window |
 //! | context menus, menu bar | `GMenu` models with app actions (`app.m<id>`) |
 //! | background tasks | run while the app is open |
+//! | secrets, fingerprint, sign-in | Secret Service, fprintd, loopback redirect (`security.rs`) |
 //!
 //! Motion, camera, haptics and the share sheet have no desktop standard:
 //! capabilities say so and calls fail with "unavailable".
@@ -28,6 +29,10 @@ use prism_core::{
 };
 
 use crate::imp;
+use crate::security::SecretOp;
+
+/// Prefix of secrets that need a fingerprint first (kept in the keyring).
+const GATED: &str = "\u{1}prism-gated\u{1}";
 
 const GEOCLUE: &str = "org.freedesktop.GeoClue2";
 
@@ -41,6 +46,8 @@ pub(crate) struct LinuxServices {
     pending: HashMap<String, glib::SourceId>,
     /// Background tasks: id → (next run, interval).
     pub background: Vec<(String, std::time::Instant, std::time::Duration)>,
+    /// Sign-ins waiting for their loopback redirect.
+    loopback: crate::security::Loopback,
 }
 
 fn reply(id: u64, result: Result<DeviceValue, DeviceError>) {
@@ -76,6 +83,7 @@ impl LinuxServices {
             .and_then(|v| v.child_value(0).get::<Vec<String>>())
             .is_some_and(|names| names.iter().any(|n| n == GEOCLUE))
         });
+        let (secrets, biometry) = crate::security::capabilities();
         LinuxServices {
             caps: Capabilities {
                 car: false,
@@ -85,6 +93,11 @@ impl LinuxServices {
                 location: geoclue,
                 photos: true,
                 clipboard: true,
+                secure_storage: secrets,
+                biometry,
+                // fprintd only: no desktop standard checks a password for an app.
+                device_auth: biometry.is_biometric(),
+                web_auth: true,
                 ..Default::default()
             },
             app,
@@ -92,6 +105,7 @@ impl LinuxServices {
             location_streams: Rc::new(RefCell::new(HashMap::new())),
             pending: HashMap::new(),
             background: Vec::new(),
+            loopback: Default::default(),
         }
     }
 
@@ -171,10 +185,65 @@ impl LinuxServices {
                 id,
                 DeviceEvent::Error(DeviceError::from_message("unavailable")),
             ),
-            DeviceCall::Haptic(_) | DeviceCall::Share(_) => {
+            DeviceCall::Haptic(_) | DeviceCall::Share(_) | DeviceCall::SignInWithApple(_) => {
                 reply(id, Err(DeviceError::from_message("unavailable")))
             }
+            DeviceCall::SecureGet { key, prompt, .. } => {
+                self.secret(id, key, SecretOp::Get, prompt)
+            }
+            DeviceCall::SecureSet {
+                key,
+                value,
+                options,
+            } => {
+                // The keyring has no per-item owner check: gate it with fprintd.
+                if options.biometric && !self.caps.device_auth {
+                    return reply(id, Err(DeviceError::Unavailable));
+                }
+                let label = self
+                    .window
+                    .title()
+                    .map(|t| t.to_string())
+                    .unwrap_or_default();
+                let value = format!("{}{value}", if options.biometric { GATED } else { "" });
+                self.secret(id, key, SecretOp::Set { label, value }, None)
+            }
+            DeviceCall::SecureDelete { key, .. } => self.secret(id, key, SecretOp::Delete, None),
+            DeviceCall::BiometryStatus => {
+                crate::security::biometry(move |r| imp::device_reply(id, r))
+            }
+            DeviceCall::Authenticate(r) => {
+                crate::security::authenticate(&self.window, r.reason, move |r| {
+                    imp::device_reply(id, r)
+                })
+            }
+            DeviceCall::AuthRedirect(_) => reply(id, self.loopback.redirect()),
+            DeviceCall::WebAuth(r) => self
+                .loopback
+                .start(&r.url, &r.redirect, move |r| imp::device_reply(id, r)),
         }
+    }
+
+    /// A Secret Service operation; biometric items are verified with
+    /// fprintd before their value is returned.
+    fn secret(&mut self, id: u64, key: String, op: SecretOp, prompt: Option<String>) {
+        if !self.caps.secure_storage {
+            return reply(id, Err(DeviceError::Unavailable));
+        }
+        let window = self.window.clone();
+        let get = matches!(op, SecretOp::Get);
+        crate::security::secret(self.desktop_id(), key, op, move |r| match r {
+            Ok(DeviceValue::Text(Some(v))) if get && v.starts_with(GATED) => {
+                let value = v[GATED.len()..].to_string();
+                let reason = prompt
+                    .or_else(|| window.title().map(|t| t.to_string()))
+                    .unwrap_or_default();
+                crate::security::authenticate(&window, reason, move |r| {
+                    imp::device_reply(id, r.map(|_| DeviceValue::Text(Some(value))))
+                });
+            }
+            r => imp::device_reply(id, r),
+        });
     }
 
     fn desktop_id(&self) -> String {

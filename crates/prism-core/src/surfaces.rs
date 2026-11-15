@@ -54,6 +54,20 @@ pub struct Capabilities {
     pub clipboard: bool,
     /// `cloud_storage` syncs between devices (otherwise it is local).
     pub cloud_sync: bool,
+    /// `cloud_storage` is backed up and restored on a new device or a
+    /// reinstall, without live sync (Android Backup).
+    pub cloud_backup: bool,
+    /// `secure_storage` keeps secrets in the platform's secure store.
+    pub secure_storage: bool,
+    /// The biometric sensor (`BiometryKind::None` without one). Enrollment
+    /// can change while the app runs: `cx.biometry()` says how it is now.
+    pub biometry: crate::security::BiometryKind,
+    /// `authenticate` can check the owner (biometrics or a passcode).
+    pub device_auth: bool,
+    /// `sign_in_with_apple` (AuthenticationServices, with the entitlement).
+    pub sign_in_with_apple: bool,
+    /// Browser sign-in sessions (`prism::oauth`).
+    pub web_auth: bool,
 }
 
 /// Work the app asked the platform to do. Backends drain these with

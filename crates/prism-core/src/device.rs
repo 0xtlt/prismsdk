@@ -278,6 +278,35 @@ pub enum DeviceCall {
     CopyText(String),
     Share(Share),
     OpenUrl(String),
+    /// Secure storage (see [`crate::security`]): the secret, or `None`.
+    SecureGet {
+        key: String,
+        /// Shown when the item needs the device owner (biometrics).
+        prompt: Option<String>,
+        shared: bool,
+    },
+    SecureSet {
+        key: String,
+        value: String,
+        options: crate::security::SecureOptions,
+    },
+    SecureDelete {
+        key: String,
+        shared: bool,
+    },
+    /// Biometrics and device passcode, right now.
+    BiometryStatus,
+    /// Asks the device owner to prove it's them.
+    Authenticate(crate::security::AuthRequest),
+    /// Sign in with Apple (AuthenticationServices).
+    SignInWithApple(crate::security::AppleSignIn),
+    /// The redirect URI the platform can catch for a web sign-in: a custom
+    /// scheme (Apple, Android), a loopback port (Linux), the server (web).
+    /// `Some(uri)` asks for that one.
+    AuthRedirect(Option<String>),
+    /// Opens `url` in the system's sign-in browser and answers the URL it
+    /// was redirected to (`Text`).
+    WebAuth(crate::security::WebAuthRequest),
 }
 
 /// A backend's answer to a [`DeviceCall`].
@@ -287,6 +316,8 @@ pub enum DeviceValue {
     Location(Location),
     Files(Vec<PickedFile>),
     Text(Option<String>),
+    /// Named values (biometry status, an Apple ID credential…).
+    Fields(std::collections::BTreeMap<String, String>),
     Done,
 }
 

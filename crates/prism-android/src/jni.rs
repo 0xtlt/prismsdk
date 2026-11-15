@@ -20,6 +20,7 @@ struct Host {
     measure: jmethodID,
     post: jmethodID,
     job_finished: jmethodID,
+    cloud_changed: jmethodID,
 }
 // SAFETY: a global class reference and method ids are valid on every thread.
 unsafe impl Send for Host {}
@@ -79,6 +80,7 @@ pub(crate) fn init_host(env: *mut JNIEnv) {
             measure: method(c"measure", c"(Ljava/lang/String;Ljava/lang/String;FIF)[F"),
             post: method(c"post", c"(J)V"),
             job_finished: method(c"jobFinished", c"(Ljava/lang/String;Z)V"),
+            cloud_changed: method(c"cloudChanged", c"()V"),
         };
         check(env);
         let _ = HOST.set(host);
@@ -184,5 +186,16 @@ pub(crate) fn job_finished(task: &str, ok: bool) {
         ((**env).v1_6.CallStaticVoidMethodA)(env, h.class, h.job_finished, args.as_ptr());
         check(env);
         ((**env).v1_6.DeleteLocalRef)(env, t);
+    }
+}
+
+/// `PrismHost.cloudChanged()`: `cloud_storage` changed (BackupManager.dataChanged).
+pub(crate) fn cloud_changed() {
+    let (Some(env), Some(h)) = (env(), HOST.get()) else {
+        return;
+    };
+    unsafe {
+        ((**env).v1_6.CallStaticVoidMethodA)(env, h.class, h.cloud_changed, std::ptr::null());
+        check(env);
     }
 }

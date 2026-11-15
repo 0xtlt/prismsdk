@@ -206,7 +206,16 @@ fn build_swift(dirs: &[&str], module: &str) {
     }
     // Only what this SDK has (tvOS: no WidgetKit or ActivityKit).
     let frameworks = Path::new(&sdk_path).join("System/Library/Frameworks");
-    for fw in ["WidgetKit", "UserNotifications", "SwiftUI", "ActivityKit"] {
+    for fw in [
+        "WidgetKit",
+        "UserNotifications",
+        "SwiftUI",
+        "ActivityKit",
+        // Secure storage, owner authentication, sign-in (PrismSecurity.swift).
+        "Security",
+        "LocalAuthentication",
+        "AuthenticationServices",
+    ] {
         if frameworks.join(format!("{fw}.framework")).exists()
             && !(fw == "ActivityKit" && sdk == "macosx")
         {

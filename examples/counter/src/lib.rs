@@ -18,6 +18,7 @@ mod car;
 mod device;
 mod focus;
 mod menus;
+mod security;
 mod strings;
 mod widgets;
 
@@ -61,7 +62,11 @@ pub fn run() {
                     cx.new_entity(|cx| TodoDetail::new(store, id, cx))
                 })
                 .route("/components", |cx, _| cx.new_entity(Gallery::new))
-                .route("/settings", |cx, _| cx.new_entity(|_| Settings))
+                .route("/settings", |cx, _| {
+                    cx.new_entity(|cx| Settings {
+                        security: cx.new(security::SecurityDemo::new),
+                    })
+                })
                 .route("/focus", move |_, _| focus)
                 .route("/components/list", |cx, _| cx.new_entity(LongList::new))
                 .build(cx)
@@ -827,7 +832,9 @@ impl Render for Gallery {
 
 // --- Tab 3: settings (live theming) ---------------------------------------------------------
 
-struct Settings;
+struct Settings {
+    security: Entity<security::SecurityDemo>,
+}
 
 /// A translated name.
 type Label = fn(&App) -> String;
@@ -855,45 +862,48 @@ impl Render for Settings {
             .md(|s| s.flex_row().flex_wrap().items_start());
         screen.child(
             body.child(
-                grid.child(cell(
-                    ui::card()
-                        .child(ui::heading(strings::settings_appearance(cx)))
-                        .child(appearance_picker(&t, cx))
-                        .child(ui::divider())
-                        .child(
-                            ui::switch(strings::settings_native(cx), t.prefer_native)
-                                .on_change(update(|th, v| th.prefer_native = v != 0.)),
-                        )
-                        .child(ui::divider())
-                        .child(
-                            ui::switch(strings::settings_square(cx), t.radius == 0.).on_change(
-                                update(|th, v| th.radius = if v != 0. { 0. } else { 10. }),
+                grid.child(cell(self.security))
+                    .child(cell(
+                        ui::card()
+                            .child(ui::heading(strings::settings_appearance(cx)))
+                            .child(appearance_picker(&t, cx))
+                            .child(ui::divider())
+                            .child(
+                                ui::switch(strings::settings_native(cx), t.prefer_native)
+                                    .on_change(update(|th, v| th.prefer_native = v != 0.)),
+                            )
+                            .child(ui::divider())
+                            .child(
+                                ui::switch(strings::settings_square(cx), t.radius == 0.).on_change(
+                                    update(|th, v| th.radius = if v != 0. { 0. } else { 10. }),
+                                ),
                             ),
-                        ),
-                ))
-                .child(cell(
-                    ui::card()
-                        .child(ui::heading(strings::settings_accent(cx)))
-                        .child(div().flex_row().gap(12.).children(ACCENTS.iter().map(
-                            |&(name, hex)| {
-                                let selected = t.accent == rgb(hex);
-                                div()
-                                    .size(px(40.))
-                                    .rounded(20.)
-                                    .bg(rgb(hex))
-                                    .when(selected, |d| d.border(3.).border_color(t.text))
-                                    .accessibility_role(Role::Button)
-                                    .accessibility_label(name(cx))
-                                    .accessibility_checked(selected)
-                                    .on_click(std::rc::Rc::new(
-                                        move |_: &ClickEvent, app: &mut App| {
-                                            update_and_save_theme(app, |th| th.accent = rgb(hex))
-                                        },
-                                    ))
-                            },
-                        ))),
-                ))
-                .child(cell(language_card(cx))),
+                    ))
+                    .child(cell(
+                        ui::card()
+                            .child(ui::heading(strings::settings_accent(cx)))
+                            .child(div().flex_row().gap(12.).children(ACCENTS.iter().map(
+                                |&(name, hex)| {
+                                    let selected = t.accent == rgb(hex);
+                                    div()
+                                        .size(px(40.))
+                                        .rounded(20.)
+                                        .bg(rgb(hex))
+                                        .when(selected, |d| d.border(3.).border_color(t.text))
+                                        .accessibility_role(Role::Button)
+                                        .accessibility_label(name(cx))
+                                        .accessibility_checked(selected)
+                                        .on_click(std::rc::Rc::new(
+                                            move |_: &ClickEvent, app: &mut App| {
+                                                update_and_save_theme(app, |th| {
+                                                    th.accent = rgb(hex)
+                                                })
+                                            },
+                                        ))
+                                },
+                            ))),
+                    ))
+                    .child(cell(language_card(cx))),
             )
             .child(
                 text(strings::settings_a11y_note(cx))

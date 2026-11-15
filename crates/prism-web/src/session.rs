@@ -16,13 +16,15 @@ use crate::WebApp;
 use crate::html::AssetUrls;
 use crate::{css, glyphs};
 
-enum Inbound {
+pub(crate) enum Inbound {
     /// A text message from the page.
     Message(String),
     /// Async work is ready (a task, a timer from another thread).
     Wake,
     /// The socket closed.
     Close,
+    /// A sign-in provider redirected (to `/_prism/auth/callback`) for call `id`.
+    AuthRedirect(u64, String),
 }
 
 /// The server side of one open page. Pass it the page's messages; drop it
@@ -64,8 +66,10 @@ impl WebApp {
     ) -> Session {
         let (tx, rx) = mpsc::channel();
         let (sid, path, visitor) = self.socket_visitor(uri, headers);
+        let origin = origin(headers);
         let app = self.clone();
         let waker = tx.clone();
+        let inbox = tx.clone();
         std::thread::Builder::new()
             .name("prism-session".into())
             .spawn(move || {
@@ -82,7 +86,18 @@ impl WebApp {
                         asset_urls: Some(app.asset_urls()),
                         ..Default::default()
                     },
-                    services: WebServices::default(),
+                    services: WebServices {
+                        secure: Some(crate::security::SecureStore::new(
+                            &app.session_dir(&sid),
+                            &sid,
+                            crate::security::server_key(&app.inner.data_root),
+                        )),
+                        origin,
+                        base: app.base().to_string(),
+                        title: app.config().title.clone(),
+                        inbox: Some(inbox),
+                        ..Default::default()
+                    },
                     send: Box::new(send),
                     app,
                     sid,
@@ -115,6 +130,17 @@ impl Live {
             if !self.flush_requests() {
                 return;
             }
+            // Calls the server answers itself (secure storage, redirects).
+            if !self.services.local.is_empty() {
+                let mut patches = Vec::new();
+                for (id, result) in std::mem::take(&mut self.services.local) {
+                    patches.extend(self.runtime.device_reply(id, result));
+                }
+                if !self.patches("patch", &patches) {
+                    return;
+                }
+                continue;
+            }
             // Sleep until a message, a wake-up, the next timer or the next
             // background task.
             let deadline = [self.runtime.next_timer(), self.services.next_background()]
@@ -133,6 +159,9 @@ impl Live {
                     patches
                 }
                 Ok(Inbound::Message(text)) => self.message(&text),
+                Ok(Inbound::AuthRedirect(id, url)) => self
+                    .runtime
+                    .device_reply(id, Ok(prism_core::DeviceValue::Text(Some(url)))),
                 Ok(Inbound::Wake) | Err(mpsc::RecvTimeoutError::Timeout) => self.tick(),
                 Ok(Inbound::Close) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
             };
@@ -180,7 +209,15 @@ impl Live {
             },
             // Device answers (location, photos…) and sensor events.
             Some("device_reply") => match v.get("id").and_then(Value::as_u64) {
+                // A WebAuthn ceremony the server checks.
+                Some(id) if self.services.ceremonies.contains_key(&id) => {
+                    let result = self.services.finish_ceremony(id, &v);
+                    rt.device_reply(id, result)
+                }
                 Some(id) => {
+                    if v.get("err").is_some() {
+                        crate::security::forget_redirect(id);
+                    }
                     let result = device_result(&self.app, &self.sid, &v);
                     rt.device_reply(id, result)
                 }
@@ -210,6 +247,11 @@ impl Live {
             // The page described its device (on connect, rotation, fold).
             Some("device") => {
                 crate::device_info::apply_report(&mut self.device, &v);
+                // A platform authenticator (WebAuthn) for `authenticate`.
+                if let Some(uvpa) = v.get("uvpa").and_then(Value::as_bool) {
+                    self.services.uvpa = uvpa;
+                    rt.app.set_capabilities(self.services.capabilities());
+                }
                 rt.set_device_info(self.device.clone())
             }
             // The page was hidden or shown again.
@@ -385,6 +427,23 @@ fn device_result(
 #[derive(Default)]
 pub(crate) struct WebServices {
     outbox: Vec<Value>,
+    /// Answers the server gives itself, without the page.
+    pub local: Vec<(
+        u64,
+        Result<prism_core::DeviceValue, prism_core::DeviceError>,
+    )>,
+    /// This browser's secrets (`None` while rendering a page).
+    pub secure: Option<crate::security::SecureStore>,
+    /// The page's origin (`https://app.example.com`) and the mount point.
+    pub origin: String,
+    pub base: String,
+    pub title: String,
+    /// The session's own inbox (sign-in redirects arrive there).
+    pub inbox: Option<mpsc::Sender<Inbound>>,
+    /// WebAuthn ceremonies waiting for the page, by call id.
+    pub ceremonies: HashMap<u64, (crate::security::Ceremony, Gate)>,
+    /// The browser has a platform authenticator with user verification.
+    pub uvpa: bool,
     /// Periodic background tasks: (id, next run, interval). On the web they
     /// run in each open page's session.
     background: Vec<(String, Instant, Duration)>,
@@ -438,6 +497,17 @@ impl PlatformServices for WebServices {
             clipboard: true,
             // Cloud storage is the server's, per browser.
             cloud_sync: false,
+            cloud_backup: false,
+            // On the server, per browser, encrypted at rest.
+            secure_storage: true,
+            biometry: if self.uvpa {
+                prism_core::BiometryKind::Platform
+            } else {
+                prism_core::BiometryKind::None
+            },
+            device_auth: self.uvpa,
+            sign_in_with_apple: false,
+            web_auth: true,
         }
     }
 
@@ -467,7 +537,10 @@ impl PlatformServices for WebServices {
             }),
             PlatformRequest::CancelNotification(id) => json!({ "t": "notify_cancel", "id": id }),
             PlatformRequest::RequestNotificationPermission => json!({ "t": "notify_permission" }),
-            PlatformRequest::Device { id, call } => device_json(id, call),
+            PlatformRequest::Device { id, call } => match self.security(id, call) {
+                Some(msg) => msg,
+                None => return,
+            },
             PlatformRequest::ScheduleBackgroundTask(task) => {
                 let every = background_interval(task.every);
                 self.background.retain(|(id, _, _)| *id != task.id);
@@ -611,9 +684,181 @@ fn device_json(id: u64, call: prism_core::DeviceCall) -> Value {
         C::CopyText(t) => json!({ "call": "copy", "text": t }),
         C::Share(s) => json!({ "call": "share", "text": s.text, "url": s.url }),
         C::OpenUrl(u) => json!({ "call": "open_url", "url": u }),
+        // Handled by WebServices::security.
+        _ => json!({ "call": "unavailable" }),
     };
     let mut body = body;
     body["t"] = json!("device");
     body["id"] = json!(id);
     body
+}
+
+/// What a WebAuthn ceremony unlocks once the owner is verified.
+pub(crate) enum Gate {
+    /// `authenticate`: nothing more.
+    Owner,
+    /// A biometric secret's value.
+    Secret(String),
+}
+
+/// The page's origin, from the socket's `Origin` header (or its `Host`).
+fn origin(headers: &HeaderMap) -> String {
+    let h = |k: &str| headers.get(k).and_then(|v| v.to_str().ok());
+    if let Some(o) = h("origin").filter(|o| *o != "null") {
+        return o.trim_end_matches('/').to_string();
+    }
+    let proto = h("x-forwarded-proto").unwrap_or("http");
+    format!("{proto}://{}", h("host").unwrap_or("localhost"))
+}
+
+type Answer = Result<prism_core::DeviceValue, prism_core::DeviceError>;
+
+impl WebServices {
+    fn reply(&mut self, id: u64, r: Answer) {
+        self.local.push((id, r));
+    }
+
+    /// Security calls, answered on the server (secrets, redirects) or with
+    /// WebAuthn; everything else goes to the page as it is.
+    fn security(&mut self, id: u64, call: prism_core::DeviceCall) -> Option<Value> {
+        use prism_core::{DeviceCall as C, DeviceError as E, DeviceValue as V};
+        match call {
+            C::SecureSet {
+                key,
+                value,
+                options,
+            } => {
+                let r = match &self.secure {
+                    Some(s) => s.set(&key, &value, options.biometric).map(|_| V::Done),
+                    None => Err("no session".into()),
+                };
+                self.reply(id, r.map_err(E::Failed));
+                None
+            }
+            C::SecureGet { key, prompt, .. } => {
+                let found = match &self.secure {
+                    Some(s) => s.get(&key),
+                    None => Err("no session".into()),
+                };
+                match found {
+                    Ok(Some(secret)) if secret.biometric => {
+                        if !self.uvpa {
+                            self.reply(id, Err(E::Unavailable));
+                            return None;
+                        }
+                        let reason = prompt.unwrap_or_default();
+                        Some(self.ceremony(id, reason, Gate::Secret(secret.value)))
+                    }
+                    Ok(secret) => {
+                        self.reply(id, Ok(V::Text(secret.map(|s| s.value))));
+                        None
+                    }
+                    Err(e) => {
+                        self.reply(id, Err(E::Failed(e)));
+                        None
+                    }
+                }
+            }
+            C::SecureDelete { key, .. } => {
+                if let Some(s) = &self.secure {
+                    s.delete(&key);
+                }
+                self.reply(id, Ok(V::Done));
+                None
+            }
+            C::BiometryStatus => {
+                let flag = |b: bool| (if b { "1" } else { "0" }).to_string();
+                let kind = self.capabilities().biometry.name().to_string();
+                let fields = [
+                    ("kind".to_string(), kind),
+                    ("enrolled".to_string(), flag(self.uvpa)),
+                    ("passcode".to_string(), flag(self.uvpa)),
+                ];
+                self.reply(id, Ok(V::Fields(fields.into_iter().collect())));
+                None
+            }
+            C::Authenticate(r) => {
+                if !self.uvpa {
+                    self.reply(id, Err(E::Unavailable));
+                    return None;
+                }
+                Some(self.ceremony(id, r.reason, Gate::Owner))
+            }
+            C::SignInWithApple(_) => {
+                // Apple's web sign-in is OAuth: use prism::oauth with its endpoints.
+                self.reply(id, Err(E::Unavailable));
+                None
+            }
+            C::AuthRedirect(_) => {
+                let uri = format!("{}{}/_prism/auth/callback", self.origin, self.base);
+                self.reply(id, Ok(V::Text(Some(uri))));
+                None
+            }
+            C::WebAuth(r) => {
+                match (crate::security::state_of(&r.url), self.inbox.clone()) {
+                    (Some(state), Some(tx)) => crate::security::wait_for_redirect(state, tx, id),
+                    _ => {
+                        self.reply(id, Err(E::Failed("the sign-in URL has no state".into())));
+                        return None;
+                    }
+                }
+                Some(json!({
+                    "t": "device", "id": id, "call": "web_auth",
+                    "url": r.url, "provider": r.provider,
+                }))
+            }
+            other => Some(device_json(id, other)),
+        }
+    }
+
+    /// Starts a WebAuthn ceremony: an assertion with this browser's
+    /// credential, or its registration the first time.
+    fn ceremony(&mut self, id: u64, reason: String, gate: Gate) -> Value {
+        let c = crate::security::Ceremony::new(&self.origin);
+        let credential = self.secure.as_ref().and_then(|s| s.credential());
+        let msg = match credential {
+            Some(cred) => json!({
+                "t": "device", "id": id, "call": "webauthn", "mode": "get",
+                "challenge": c.challenge, "credential": cred.id, "reason": reason,
+            }),
+            None => json!({
+                "t": "device", "id": id, "call": "webauthn", "mode": "create",
+                "challenge": c.challenge, "user": crate::security::random_id(),
+                "rp": self.title, "name": self.title, "reason": reason,
+            }),
+        };
+        self.ceremonies.insert(id, (c, gate));
+        msg
+    }
+
+    /// Checks the page's WebAuthn answer for call `id`.
+    pub(crate) fn finish_ceremony(&mut self, id: u64, v: &Value) -> Answer {
+        use prism_core::{DeviceError as E, DeviceValue as V};
+        let Some((c, gate)) = self.ceremonies.remove(&id) else {
+            return Err(E::Failed("no ceremony".into()));
+        };
+        if let Some(err) = v.get("err").and_then(Value::as_str) {
+            return Err(E::from_message(err));
+        }
+        let (Some(r), Some(store)) = (v.get("webauthn"), &self.secure) else {
+            return Err(E::Failed("webauthn: no answer".into()));
+        };
+        let checked = match r.get("type").and_then(Value::as_str) {
+            Some("create") => {
+                crate::security::verify_registration(&c, r).map(|cred| store.save_credential(&cred))
+            }
+            _ => match store.credential() {
+                Some(mut cred) => crate::security::verify_assertion(&c, &mut cred, r)
+                    .map(|_| store.save_credential(&cred)),
+                None => Err("webauthn: no credential".into()),
+            },
+        };
+        match checked {
+            Ok(()) => Ok(match gate {
+                Gate::Owner => V::Done,
+                Gate::Secret(value) => V::Text(Some(value)),
+            }),
+            Err(e) => Err(E::from_message(&e)),
+        }
+    }
 }

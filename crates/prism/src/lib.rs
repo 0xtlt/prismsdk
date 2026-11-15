@@ -41,6 +41,9 @@ pub use prism_ui as ui;
 pub use prism_db as db;
 /// HTTP: `cx.fetch(http::Request::get(url)).await`.
 pub use prism_http as http;
+/// OAuth 2 / OpenID Connect sign-in with PKCE, in the system's sign-in
+/// browser: `OAuth::google(id).sign_in(&cx).await`.
+pub use prism_http::oauth;
 /// The web backend as a library (`web` feature): mount the app in Axum or
 /// any server, export hashed static files for a CDN. See [`Application::web_app`].
 #[cfg(feature = "web")]

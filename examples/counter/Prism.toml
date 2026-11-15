@@ -14,6 +14,8 @@ icloud = true
 # Default destinations.
 # simulator = "iPhone 17"
 # device = "My iPhone"
+# Sign in with Apple (the App ID needs the capability; simulators cannot sign in).
+# sign_in_with_apple = true
 
 [permissions]
 # Shown by iOS/macOS when the app asks.
@@ -21,3 +23,5 @@ location = "Shows where you are in the Components gallery."
 camera = "Takes a photo in the Components gallery."
 photos = "Picks photos in the Components gallery."
 motion = "Shows the gyroscope in the Components gallery."
+# iOS asks before the first Face ID use (Settings › Security).
+face_id = "Unlocks your secret note in Settings."

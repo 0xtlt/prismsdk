@@ -84,6 +84,7 @@ keys = {
     "photos": ["NSPhotoLibraryUsageDescription", "NSPhotoLibraryAddUsageDescription"],
     "microphone": ["NSMicrophoneUsageDescription"],
     "motion": ["NSMotionUsageDescription"],
+    "face_id": ["NSFaceIDUsageDescription"],
 }
 for line in os.environ.get("PRISM_PERMISSIONS", "").splitlines():
     name, _, text = line.partition("\t")
@@ -103,6 +104,10 @@ fi
 # entitlement do not launch): `cloud_storage` stays local otherwise.
 if [[ "${PRISM_ICLOUD:-}" == 1 && -z "${PRISM_MAC_PROFILE:-}" ]]; then
   echo "note: iCloud on macOS needs PRISM_MAC_PROFILE (a Mac provisioning profile); cloud_storage stays local" >&2
+fi
+# Same for Sign in with Apple (a restricted entitlement).
+if [[ "${PRISM_APPLE_SIGNIN:-}" == 1 ]]; then
+  echo "note: Sign in with Apple on macOS needs a Mac provisioning profile with the capability; capabilities().sign_in_with_apple stays false" >&2
 fi
 plist "$PKG" "$BUNDLE_ID" APPL "$ICON_PLIST
 $LOC_PLIST

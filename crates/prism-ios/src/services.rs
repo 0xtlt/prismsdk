@@ -68,6 +68,8 @@ impl IosServices {
         // visionOS no haptics or camera for apps (UIKit headers).
         let tv = cfg!(target_os = "tvos");
         let vision = cfg!(target_os = "visionos");
+        // Keychain, LocalAuthentication (none on tvOS), Sign in with Apple.
+        let (biometry, device_auth, apple) = prism_native::apple::security_capabilities();
         IosServices {
             caps: Capabilities {
                 // The bundle declares a CarPlay scene (Prism.toml / register_car).
@@ -88,6 +90,13 @@ impl IosServices {
                 clipboard: !tv,
                 cloud_sync: prism_native::apple::ICloudStorage::new().is_some()
                     && prism_native::apple::ICloudStorage::signed_in(),
+                cloud_backup: false,
+                secure_storage: true,
+                biometry,
+                device_auth,
+                sign_in_with_apple: apple,
+                // ASWebAuthenticationSession (tvOS 16+ included).
+                web_auth: true,
             },
             controller,
         }
