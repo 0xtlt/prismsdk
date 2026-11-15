@@ -24,6 +24,9 @@
 //!     .child(ui::button("Save").on_click(cx.listener(|this, _, _| this.save())))
 //! ```
 
+#![cfg_attr(docsrs, feature(doc_cfg))]
+#![warn(missing_docs)]
+
 mod theme;
 
 use std::rc::Rc;
@@ -119,36 +122,55 @@ pub use charts::{
 
 // --- Button -------------------------------------------------------------------
 
+/// The look of a [`Button`] (and the tone of a [`Badge`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Variant {
+    /// Filled with the theme's accent: the main action.
     #[default]
     Primary,
+    /// Outlined on the alternate surface: a secondary action.
     Secondary,
+    /// Accent-colored text without a background.
     Ghost,
+    /// Filled with the theme's danger color: a destructive action.
     Danger,
 }
 
+/// The size of a [`Button`]: padding and font size.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Size {
+    /// Tighter padding, text 2 pt below the theme's font size.
     Small,
+    /// The theme's font size (default).
     #[default]
     Medium,
+    /// Larger padding, text 2 pt above the theme's font size.
     Large,
 }
 
 /// A themed button. Props are public so theme overrides can re-render them.
 pub struct Button {
+    /// Text shown on the button, also its accessibility label.
     pub label: String,
+    /// Look: primary, secondary, ghost or danger.
     pub variant: Variant,
+    /// Padding and font size.
     pub size: Size,
+    /// Dimmed, ignores clicks, reported as disabled to assistive technologies.
     pub disabled: bool,
+    /// Stretches to its container's width instead of its content's.
     pub full_width: bool,
+    /// `Some(true)`: native control, `Some(false)`: custom-drawn, `None`: follow
+    /// [`Theme::prefer_native`].
     pub native: Option<bool>,
+    /// Called on click (not while disabled).
     pub on_click: Option<Handler<ClickEvent>>,
+    /// Accessibility hint read after the label.
     pub hint: Option<String>,
     refine: Refine,
 }
 
+/// A themed button with `label` (primary, medium size).
 pub fn button(label: impl Into<String>) -> Button {
     Button {
         label: label.into(),
@@ -164,34 +186,43 @@ pub fn button(label: impl Into<String>) -> Button {
 }
 
 impl Button {
+    /// Sets the look.
     pub fn variant(mut self, v: Variant) -> Self {
         self.variant = v;
         self
     }
+    /// Filled with the accent color (default).
     pub fn primary(self) -> Self {
         self.variant(Variant::Primary)
     }
+    /// Outlined, for secondary actions.
     pub fn secondary(self) -> Self {
         self.variant(Variant::Secondary)
     }
+    /// Text only, no background.
     pub fn ghost(self) -> Self {
         self.variant(Variant::Ghost)
     }
+    /// Filled with the danger color, for destructive actions.
     pub fn danger(self) -> Self {
         self.variant(Variant::Danger)
     }
+    /// Smaller padding and text.
     pub fn small(mut self) -> Self {
         self.size = Size::Small;
         self
     }
+    /// Larger padding and text.
     pub fn large(mut self) -> Self {
         self.size = Size::Large;
         self
     }
+    /// Dims the button and ignores clicks while `disabled` is true.
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
     }
+    /// Stretches to the container's width.
     pub fn full_width(mut self) -> Self {
         self.full_width = true;
         self
@@ -206,10 +237,12 @@ impl Button {
         self.native = Some(false);
         self
     }
+    /// Accessibility hint read after the label.
     pub fn hint(mut self, hint: impl Into<String>) -> Self {
         self.hint = Some(hint.into());
         self
     }
+    /// Called on click.
     pub fn on_click(mut self, handler: Handler<ClickEvent>) -> Self {
         self.on_click = Some(handler);
         self
@@ -280,14 +313,21 @@ fn rgb_white() -> prism_core::Color {
 
 /// An on/off switch with a label.
 pub struct Switch {
+    /// Text next to the switch, also its accessibility label.
     pub label: String,
+    /// Whether the switch is on.
     pub on: bool,
+    /// Dimmed, ignores changes, reported as disabled.
     pub disabled: bool,
+    /// `Some(true)`: native control, `Some(false)`: custom-drawn, `None`: follow
+    /// [`Theme::prefer_native`].
     pub native: Option<bool>,
+    /// Called with the new state (`e.checked()`).
     pub on_change: Option<Handler<ChangeEvent>>,
     refine: Refine,
 }
 
+/// A switch labelled `label`, currently `on`.
 pub fn switch(label: impl Into<String>, on: bool) -> Switch {
     Switch {
         label: label.into(),
@@ -300,18 +340,22 @@ pub fn switch(label: impl Into<String>, on: bool) -> Switch {
 }
 
 impl Switch {
+    /// Called with the new state when toggled (`e.checked()`).
     pub fn on_change(mut self, handler: Handler<ChangeEvent>) -> Self {
         self.on_change = Some(handler);
         self
     }
+    /// Dims the switch and ignores changes while `disabled` is true.
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
     }
+    /// Use the platform's native switch for this instance.
     pub fn native(mut self) -> Self {
         self.native = Some(true);
         self
     }
+    /// Force the custom-drawn switch even if the theme prefers native.
     pub fn custom(mut self) -> Self {
         self.native = Some(false);
         self
@@ -382,13 +426,18 @@ component!(Switch);
 
 // --- Checkbox -------------------------------------------------------------------
 
+/// A check box with a label; the whole row toggles it.
 pub struct Checkbox {
+    /// Text next to the box, also its accessibility label.
     pub label: String,
+    /// Whether the box is checked.
     pub checked: bool,
+    /// Called with the new state when toggled (`e.checked()`).
     pub on_change: Option<Handler<ChangeEvent>>,
     refine: Refine,
 }
 
+/// A check box labelled `label`, currently `checked`.
 pub fn checkbox(label: impl Into<String>, checked: bool) -> Checkbox {
     Checkbox {
         label: label.into(),
@@ -399,6 +448,7 @@ pub fn checkbox(label: impl Into<String>, checked: bool) -> Checkbox {
 }
 
 impl Checkbox {
+    /// Called with the new state when toggled (`e.checked()`).
     pub fn on_change(mut self, handler: Handler<ChangeEvent>) -> Self {
         self.on_change = Some(handler);
         self
@@ -447,15 +497,22 @@ component!(Checkbox);
 
 /// A labelled native text field with optional helper or error text.
 pub struct TextField {
+    /// Shown above the field, also its accessibility label.
     pub label: String,
+    /// Current text.
     pub value: String,
+    /// Shown while the field is empty.
     pub placeholder: String,
+    /// Note under the field (hidden while `error` is set).
     pub helper: Option<String>,
+    /// Error under the field, in the danger color, with a danger border.
     pub error: Option<String>,
+    /// Called on every edit with the new text.
     pub on_input: Option<Handler<InputEvent>>,
     refine: Refine,
 }
 
+/// A text field labelled `label`, holding `value`.
 pub fn text_field(label: impl Into<String>, value: impl Into<String>) -> TextField {
     TextField {
         label: label.into(),
@@ -469,18 +526,22 @@ pub fn text_field(label: impl Into<String>, value: impl Into<String>) -> TextFie
 }
 
 impl TextField {
+    /// Shown while the field is empty.
     pub fn placeholder(mut self, p: impl Into<String>) -> Self {
         self.placeholder = p.into();
         self
     }
+    /// A note under the field.
     pub fn helper(mut self, h: impl Into<String>) -> Self {
         self.helper = Some(h.into());
         self
     }
+    /// An error under the field (`None` clears it); it replaces the helper text.
     pub fn error(mut self, e: Option<impl Into<String>>) -> Self {
         self.error = e.map(Into::into);
         self
     }
+    /// Called on every edit with the new text.
     pub fn on_input(mut self, handler: Handler<InputEvent>) -> Self {
         self.on_input = Some(handler);
         self
@@ -536,10 +597,12 @@ component!(TextField);
 
 /// A surface grouping related content.
 pub struct Card {
+    /// The card's content, stacked vertically.
     pub children: Vec<Element>,
     refine: Refine,
 }
 
+/// An empty card; add content with `.child(…)`.
 pub fn card() -> Card {
     Card {
         children: Vec::new(),
@@ -572,8 +635,11 @@ impl Component for Card {
 
 component!(Card);
 
+/// A bold heading, exposed as a heading to assistive technologies.
 pub struct Heading {
+    /// The heading's text.
     pub text: String,
+    /// Heading level, 1 (largest) to 6.
     pub level: u8,
     refine: Refine,
 }
@@ -588,6 +654,7 @@ pub fn heading(text: impl Into<String>) -> Heading {
 }
 
 impl Heading {
+    /// Sets the level (clamped to 1–6): 28, 20, 17 pt, then 15 pt from level 4.
     pub fn level(mut self, level: u8) -> Self {
         self.level = level.clamp(1, 6);
         self
@@ -616,8 +683,12 @@ impl Component for Heading {
 
 component!(Heading);
 
+/// A small rounded label (a status, a count).
 pub struct Badge {
+    /// The badge's text.
     pub label: String,
+    /// Colors: `Primary` uses the accent, `Danger` the danger color, others
+    /// are muted.
     pub tone: Variant,
     refine: Refine,
 }
@@ -632,6 +703,7 @@ pub fn badge(label: impl Into<String>) -> Badge {
 }
 
 impl Badge {
+    /// Sets the colors (see [`Badge::tone`](Badge#structfield.tone)).
     pub fn tone(mut self, tone: Variant) -> Self {
         self.tone = tone;
         self
@@ -675,16 +747,24 @@ pub fn divider() -> Element {
 
 /// A tappable list row: title, optional subtitle and trailing detail, chevron.
 pub struct ListRow {
+    /// Opens on long press or right click.
     pub context_menu: Option<prism_core::Menu>,
+    /// Called when the row is swiped left.
     pub swipe_left: Option<Handler<ClickEvent>>,
+    /// Main text.
     pub title: String,
+    /// Smaller, muted text under the title.
     pub subtitle: Option<String>,
+    /// Muted text at the trailing edge.
     pub detail: Option<String>,
+    /// A decorative glyph at the leading edge, in the accent color.
     pub leading: Option<String>,
+    /// Called on tap; the row then shows a chevron and acts as a button.
     pub on_click: Option<Handler<ClickEvent>>,
     refine: Refine,
 }
 
+/// A list row titled `title`.
 pub fn list_row(title: impl Into<String>) -> ListRow {
     ListRow {
         context_menu: None,
@@ -699,10 +779,12 @@ pub fn list_row(title: impl Into<String>) -> ListRow {
 }
 
 impl ListRow {
+    /// Smaller, muted text under the title.
     pub fn subtitle(mut self, s: impl Into<String>) -> Self {
         self.subtitle = Some(s.into());
         self
     }
+    /// Muted text at the trailing edge (a value, a count).
     pub fn detail(mut self, d: impl Into<String>) -> Self {
         self.detail = Some(d.into());
         self
@@ -712,6 +794,7 @@ impl ListRow {
         self.leading = Some(glyph.into());
         self
     }
+    /// Called on tap; adds a chevron and makes the row a button.
     pub fn on_click(mut self, handler: Handler<ClickEvent>) -> Self {
         self.on_click = Some(handler);
         self
@@ -937,11 +1020,14 @@ mod tests {
 /// ui::dual_pane(list, detail)
 /// ```
 pub struct DualPane {
+    /// The first pane (a list, a map).
     pub primary: Element,
+    /// The second pane (the detail, the controls).
     pub secondary: Element,
     refine: Refine,
 }
 
+/// Places `primary` and `secondary` for the device (see [`DualPane`]).
 pub fn dual_pane(primary: impl IntoElement, secondary: impl IntoElement) -> DualPane {
     DualPane {
         primary: primary.into_element(),

@@ -1,0 +1,72 @@
+name: Docs
+
+# The book (docs/, mdBook) and the API docs of `main`, on GitHub Pages:
+# https://0xtlt.github.io/prism/ (API under /api/). Pull requests build both
+# and check that every crate still packages for crates.io; only `main` deploys.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  MACOSX_DEPLOYMENT_TARGET: "13.0"
+
+jobs:
+  build:
+    # macOS: the Apple backends' build scripts compile Swift (Xcode).
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v5
+        with:
+          install_args: rust mdbook
+      - uses: Swatinem/rust-cache@v2
+      - name: Book
+        run: mdbook build docs
+      - name: API docs
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps
+      - name: Assemble the site
+        run: |
+          mkdir -p docs/book/api
+          cp -R target/doc/. docs/book/api/
+      - uses: actions/configure-pages@v6
+        if: github.event_name != 'pull_request'
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs/book
+
+  # Every crate packages and builds from its .crate file (files outside a
+  # crate's directory, path dependencies without a version...).
+  package:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v5
+        with:
+          install_args: rust
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo publish --dry-run
+        run: cargo publish --workspace --dry-run --locked
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

@@ -33,19 +33,25 @@ use crate::platform::Platform;
 /// The shape of the device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum DeviceKind {
+    /// Phones.
     Phone,
+    /// Tablets (iPad, Android tablets).
     Tablet,
     /// Computers, laptops.
     Desktop,
+    /// TVs (Apple TV, Android TV).
     Tv,
+    /// Watches (Apple Watch, Wear OS).
     Watch,
     /// Headsets (Apple Vision Pro): windows in space.
     Headset,
     #[default]
+    /// Not reported yet (the web before the page reports it).
     Unknown,
 }
 
 impl DeviceKind {
+    /// Lowercase name (`"phone"`, `"tablet"`…), as used by the web client.
     pub fn name(self) -> &'static str {
         match self {
             DeviceKind::Phone => "phone",
@@ -58,6 +64,7 @@ impl DeviceKind {
         }
     }
 
+    /// Parses [`DeviceKind::name`]; anything else is `Unknown`.
     pub fn from_name(name: &str) -> Self {
         match name {
             "phone" => DeviceKind::Phone,
@@ -75,11 +82,14 @@ impl DeviceKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum Orientation {
     #[default]
+    /// Taller than wide (or square).
     Portrait,
+    /// Wider than tall.
     Landscape,
 }
 
 impl Orientation {
+    /// The orientation of a `width` × `height` area.
     pub fn of(width: f32, height: f32) -> Self {
         if width > height {
             Orientation::Landscape
@@ -88,6 +98,7 @@ impl Orientation {
         }
     }
 
+    /// `"portrait"` or `"landscape"`.
     pub fn name(self) -> &'static str {
         match self {
             Orientation::Portrait => "portrait",
@@ -117,6 +128,7 @@ pub enum Posture {
 }
 
 impl Posture {
+    /// Lowercase name (`"flat"`, `"book"`, `"tabletop"`, `"closed"`).
     pub fn name(self) -> &'static str {
         match self {
             Posture::Flat => "flat",
@@ -126,6 +138,7 @@ impl Posture {
         }
     }
 
+    /// Parses [`Posture::name`] (`"folded"` is `Closed`); anything else is `Flat`.
     pub fn from_name(name: &str) -> Self {
         match name {
             "book" => Posture::Book,
@@ -140,9 +153,13 @@ impl Posture {
 /// coordinates.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct Fold {
+    /// Left edge, in points.
     pub x: f32,
+    /// Top edge, in points.
     pub y: f32,
+    /// Width, in points.
     pub width: f32,
+    /// Height, in points.
     pub height: f32,
     /// A vertical hinge splits the window into left and right panes.
     pub vertical: bool,
@@ -166,6 +183,7 @@ pub enum WindowMode {
 }
 
 impl WindowMode {
+    /// Lowercase name (`"fullscreen"`, `"split"`, `"slide-over"`, `"windowed"`).
     pub fn name(self) -> &'static str {
         match self {
             WindowMode::Fullscreen => "fullscreen",
@@ -175,6 +193,7 @@ impl WindowMode {
         }
     }
 
+    /// Parses [`WindowMode::name`]; anything else is `Fullscreen`.
     pub fn from_name(name: &str) -> Self {
         match name {
             "split" => WindowMode::Split,
@@ -188,12 +207,16 @@ impl WindowMode {
 /// `major.minor.patch`, compared numerically (`18.10 > 18.9`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Version {
+    /// Major version (`18` in `18.2.1`).
     pub major: u32,
+    /// Minor version (`2` in `18.2.1`).
     pub minor: u32,
+    /// Patch version (`1` in `18.2.1`).
     pub patch: u32,
 }
 
 impl Version {
+    /// `major.minor.patch`.
     pub const fn new(major: u32, minor: u32, patch: u32) -> Self {
         Version {
             major,
@@ -226,6 +249,7 @@ impl Version {
         self >= Version::new(major, minor, 0)
     }
 
+    /// Whether a version was reported (`0.0.0` means unknown).
     pub fn is_known(self) -> bool {
         self != Version::default()
     }
@@ -243,22 +267,33 @@ impl fmt::Display for Version {
 /// An operating system.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum OsName {
+    /// iOS (iPhones).
     Ios,
     /// iPads report iPadOS (same version numbers as iOS).
     Ipados,
+    /// macOS.
     Macos,
+    /// Android (phones, tablets, Wear OS, Android TV).
     Android,
+    /// Windows.
     Windows,
+    /// Linux.
     Linux,
+    /// ChromeOS.
     ChromeOs,
+    /// tvOS.
     Tvos,
+    /// watchOS.
     Watchos,
+    /// visionOS.
     Visionos,
     #[default]
+    /// Not known (yet).
     Unknown,
 }
 
 impl OsName {
+    /// Display name (`"iOS"`, `"macOS"`, `"ChromeOS"`…).
     pub fn name(self) -> &'static str {
         match self {
             OsName::Ios => "iOS",
@@ -275,6 +310,7 @@ impl OsName {
         }
     }
 
+    /// Parses an OS name, case-insensitively (`"mac os x"`, `"xros"` too); anything else is `Unknown`.
     pub fn from_name(name: &str) -> Self {
         match name.to_ascii_lowercase().as_str() {
             "ios" => OsName::Ios,
@@ -295,7 +331,9 @@ impl OsName {
 /// The OS the device runs (on the web: the visitor's device, not the server).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub struct Os {
+    /// Which OS.
     pub name: OsName,
+    /// Its version (`0.0.0` when unknown).
     pub version: Version,
 }
 
@@ -314,6 +352,7 @@ impl fmt::Display for Os {
 pub struct ScreenInfo {
     /// Points (CSS pixels on the web), in the current orientation.
     pub width: f32,
+    /// Points (CSS pixels on the web), in the current orientation.
     pub height: f32,
     /// Physical pixels per point.
     pub scale: f32,
@@ -337,10 +376,12 @@ pub enum Engine {
     /// Firefox.
     Gecko,
     #[default]
+    /// Not recognized.
     Unknown,
 }
 
 impl Engine {
+    /// Display name (`"WebKit"`, `"Blink"`, `"Gecko"`, `"Unknown"`).
     pub fn name(self) -> &'static str {
         match self {
             Engine::WebKit => "WebKit",
@@ -356,7 +397,9 @@ impl Engine {
 pub struct Browser {
     /// `Safari`, `Chrome`, `Firefox`, `Edge`, `Samsung Internet`, `Opera`…
     pub name: String,
+    /// The browser's version.
     pub version: Version,
+    /// The browser's rendering engine.
     pub engine: Engine,
     /// Installed as an app (added to the home screen / dock): no browser UI.
     pub standalone: bool,
@@ -365,7 +408,9 @@ pub struct Browser {
 /// Everything about the device; see the [module docs](self).
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct DeviceInfo {
+    /// Phone, tablet, desktop, TV, watch or headset.
     pub kind: DeviceKind,
+    /// The OS and its version.
     pub os: Os,
     /// Hardware identifier (`iPhone17,1`, `Mac15,6`), when known.
     pub model: Option<String>,
@@ -376,14 +421,18 @@ pub struct DeviceInfo {
     /// The screen's orientation (the window's own shape is
     /// [`App::viewport`]).
     pub orientation: Orientation,
+    /// How the device is turned from its natural position.
     pub rotation: Rotation,
+    /// The screen the window is on.
     pub screen: ScreenInfo,
+    /// How a foldable is folded ([`Posture::Flat`] otherwise).
     pub posture: Posture,
     /// How far a foldable's hinge is open, in degrees (0 closed, 180 flat),
     /// when the platform reports it.
     pub hinge_angle: Option<f32>,
     /// The hinge of a foldable, when the window spans it.
     pub fold: Option<Fold>,
+    /// How the window shares the screen.
     pub window_mode: WindowMode,
     /// Primary input is touch (phones, tablets, touch screens).
     pub touch: bool,
@@ -430,18 +479,23 @@ impl DeviceInfo {
         }
     }
 
+    /// The device is a phone.
     pub fn is_phone(&self) -> bool {
         self.kind == DeviceKind::Phone
     }
+    /// The device is a tablet.
     pub fn is_tablet(&self) -> bool {
         self.kind == DeviceKind::Tablet
     }
+    /// The device is a computer.
     pub fn is_desktop(&self) -> bool {
         self.kind == DeviceKind::Desktop
     }
+    /// The screen is wider than tall.
     pub fn is_landscape(&self) -> bool {
         self.orientation == Orientation::Landscape
     }
+    /// The screen is taller than wide (or square).
     pub fn is_portrait(&self) -> bool {
         self.orientation == Orientation::Portrait
     }
@@ -717,6 +771,7 @@ pub struct AppleModel {
 }
 
 impl AppleModel {
+    /// The device has more than one built-in display (a foldable).
     pub fn is_foldable(&self) -> bool {
         self.screens.len() > 1
     }

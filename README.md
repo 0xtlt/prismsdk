@@ -9,10 +9,14 @@ Write a UI once in Rust (GPUI-style API), ship it as:
 | **iOS** | Real UIKit views (`UIView`, `UILabel`, `UIButton`, `UITextField`), widgets + Dynamic Island | `prism dev ios` (simulator) / `prism run ios --device "My iPhone"` |
 | **Android** | Real Android views (`TextView`, `Button`, `EditText`, `Switch`), home-screen widgets, ongoing notifications | `prism dev android` (emulator or phone) |
 
+Also tvOS, watchOS, visionOS, Linux (GTK 4), Wear OS, Android TV and car screens.
+
+**Documentation: the [Prism book](https://0xtlt.github.io/prism/)** (sources in [`docs/`](docs/src/SUMMARY.md)), and the API reference on docs.rs. Each section below is a summary of a chapter.
+
 ## Quick start
 
 ```sh
-mise run cli                 # installs the `prism` command
+cargo install prism-cli      # or, in this repository: mise run cli
 prism new my-app && cd my-app
 prism dev web                # rebuilds and restarts on every save, on the same screen
 prism dev ios                # same, in the iOS simulator
@@ -21,8 +25,6 @@ prism build macos            # release .app with widgets and icon
 prism dev android            # the running emulator or a USB phone
 prism devices                # simulators, paired iPhones, Android devices
 ```
-
-`Prism.toml` configures the app: name, `bundle_id`, `version`, `icon` (one 1024×1024 PNG, compiled with `actool` for iOS and macOS), and `[ios] team` / `device` / `simulator`. Real devices are signed with your Apple Development identity and a matching provisioning profile (found automatically, or `PRISM_PROFILE`), then installed with `devicectl`. The bundling scripts and Apple sources are embedded in the CLI, so projects don't need this repository's scripts.
 
 ```rust
 use prism::prelude::*;
@@ -42,600 +44,138 @@ fn main() {
 }
 ```
 
+`Prism.toml` configures the app (name, bundle id, icon, Apple team). → [Getting started](docs/src/getting-started.md), [the `prism` command](docs/src/cli.md)
+
 ## Updating state
 
-- State lives in **entities** (`cx.new(|_| MyView { .. })`), GPUI-style.
-- Mutate it in a `cx.listener`: the entity re-renders automatically. Elsewhere, call `cx.notify()`.
-- Only notified entities re-render. A clean child entity is neither rendered nor diffed: its mounted views are reused as-is. So split your UI into entities where updates are frequent (an input, a live counter, a list row).
-- Derived state: `cx.observe(&other, |this, other, cx| this.total = other.read(cx).total())` runs when `other` changes, then re-renders `this`.
-- Each entity renders one root node (a fragment gets wrapped in a `div`).
+State lives in entities, GPUI-style; listeners re-render their entity, and only notified entities re-render. → [Updating state](docs/src/guide/state.md)
 
 ## Async, network, storage
 
-```rust
-// Runs on the UI thread; await timers or background work in between.
-cx.spawn(async move |this, cx| {
-    cx.sleep(Duration::from_secs(1)).await;
-    let quote = cx.background(|| prism::http::Request::get("https://api.github.com/zen").send_blocking()).await;
-    cx.update_entity(&this, |this, _| this.quote = quote.ok().map(|r| r.text()));
-});
-
-cx.storage().set("todos", &data);   // App Group (iOS), Application Support (macOS), per browser (web)
-```
+`cx.spawn` for async work on the UI thread, `cx.background` for blocking work, `prism::http` and `cx.storage()`. → [Async, network, storage](docs/src/guide/async.md)
 
 ## Responsive
 
-```rust
-// Styles, from a width up (like Tailwind): phones get a column, tablets a row.
-div().flex_col().gap(12.).md(|s| s.flex_row().gap(24.))
-text("Swipe to delete").hidden_from(Breakpoint::Medium)   // phones only
-sidebar().visible_from(Breakpoint::Expanded)              // laptops and up
-
-// Structure: anything else.
-if cx.breakpoint() >= Breakpoint::Expanded { two_panes() } else { one_pane() }
-cx.on_resize(|(w, h), app| { … });                        // every size change
-```
-
-| Breakpoint | Width | Typically |
-|---|---|---|
-| `Compact` | < 600 | phones |
-| `Medium` (`md`) | ≥ 600 | tablets portrait, small windows, phones in landscape |
-| `Expanded` (`lg`) | ≥ 1024 | iPad landscape / 13", laptops |
-| `Large` (`xl`) | ≥ 1440 | desktops |
-
-Rules are resolved in the core for the current window, so every backend agrees and the web needs no media queries: the iOS window (rotation, Split View, iPad), the macOS window (resize) and the browser (resize, plus a cookie so the server's first render already fits) report their size, and the app re-renders when it crosses a breakpoint. On wide browser windows the tab bar becomes a sidebar.
+Tailwind-style breakpoints (`.md(|s| …)`, `hidden_from`, `cx.breakpoint()`), resolved in the core for every backend. → [Responsive](docs/src/guide/responsive.md)
 
 ## Platform-specific UI
 
-```rust
-text("Swipe left to delete").only(Platform::MOBILE)       // iOS, Android
-text("Right-click for more").except(Platform::MOBILE)     // macOS, Windows, Linux, web
-apple_pay_button().only(Platform::APPLE)
-div().p(16.).on(Platform::Web, |s| s.p(24.)).md(|s| s.flex_row())   // combine with breakpoints
-
-match cx.platform() {
-    Platform::Ios | Platform::Android => mobile_onboarding(),
-    Platform::Web => landing_page(),
-    _ => desktop_welcome(),
-}
-```
-
-Platforms: `Ios`, `Android`, `Macos`, `Windows`, `Linux`, `Web`; sets with `|` or `Platform::MOBILE`, `DESKTOP`, `APPLE`, `NATIVE` (all but web). Excluded elements are left out of the tree (no hidden view). `cx.platform()` is the runtime platform (`Web` for the web backend, even on a phone browser: use breakpoints for screen size); `prism::PLATFORM` is the same at compile time. For code that only compiles on one platform, use `cfg`: `#[cfg(target_os = "ios")]`, `#[cfg(feature = "web")]` (your app's feature), or per-platform files with `#[cfg_attr(target_os = "ios", path = "share_ios.rs")]`.
+`.only(Platform::MOBILE)`, `.except(…)`, `.on(Platform::Web, …)` and `cx.platform()`. → [Platform-specific UI](docs/src/guide/platform-ui.md)
 
 ## Device information
 
-```rust
-let d = cx.device_info();
-if d.is_tablet() && d.is_landscape() { two_columns() } else { one_column() }
-if d.os.version.at_least(18, 0) { new_feature() }
-d.screen.diagonal            // Some(6.3) inches
-if let Some(b) = &d.browser { /* web: "Safari", 18, WebKit, standalone (installed) */ }
-
-div().flex_col().landscape(|s| s.flex_row())                // style rules, like breakpoints
-    .posture(Posture::Tabletop, |s| s.justify_end())
-    .on_device(DeviceKind::Tablet, |s| s.p(32.))
-ui::dual_pane(list, detail)   // one pane per side of a foldable's hinge, side by side on tablets
-cx.on_device_info_change(|d, cx| …);   // the tree already re-renders on rotation, fold, split view
-```
-
-| Field | iOS / iPadOS | macOS | Web |
-|---|---|---|---|
-| `kind` (phone, tablet, desktop, tv) | idiom | desktop | user agent + touch (iPads in desktop mode included) |
-| `os`, `model`, `model_name` | `iOS 18.2`, `iPhone17,1`, `iPhone 16 Pro` | `macOS 15.1`, `Mac15,6` | the visitor's OS, Android model, client hints |
-| `screen` (pt, scale, inches, ppi, Hz, cutout) | screen pixels ÷ the model's ppi (table generated from Xcode's simulator profiles: `scripts/apple-models.py`) | `CGDisplayScreenSize` | estimated inches |
-| `orientation`, `rotation` | interface orientation | screen shape | `screen.orientation` |
-| `posture`, `hinge_angle`, `fold` (Flat, Book, Tabletop, Closed) | `UIHingeInteraction` + division reserved regions (iOS 27.1+, iPhone Duo) | – | `devicePosture`, viewport segments |
-| `window_mode` (fullscreen, split, slide over, windowed) | Split View / Stage Manager | fullscreen or windowed | installed app or browser tab |
-| `browser` | `None` | `None` | always set |
-
-On the web the server reads the `User-Agent` for the first HTML, then the page reports touch, screen, orientation, posture and client hints (and remembers them in a cookie for the next visit). Android: types ready, backend to come.
+`cx.device_info()`: kind, OS version, model, screen, orientation, foldable posture, window mode, browser. → [Device information](docs/src/guide/device-info.md)
 
 ## Data: local, synced, SQL
 
-```rust
-cx.storage().set("draft", &text);              // this device (web: this browser, on the server)
-cx.cloud_storage().set("theme", "dark");       // the user's devices: iCloud key-value store
-cx.on_cloud_change(|keys, app| { … });         // another device changed something
-
-// SQL with sqlx (`prism` feature `db`)
-let db = prism::db::Db::open(cx, "app.db", &["CREATE TABLE notes (id INTEGER PRIMARY KEY, text TEXT)"])?;
-cx.set_global(db);
-cx.spawn(async move |this, cx| {
-    let notes: Vec<(i64, String)> = Db::of(&cx)
-        .run(&cx, |pool| async move { sqlx::query_as("SELECT id, text FROM notes").fetch_all(&pool).await })
-        .await?;
-});
-```
-
-| | `storage` | `cloud_storage` | `prism::db` (SQLite) |
-|---|---|---|---|
-| iOS | App Group container | iCloud KVS (`[ios] icloud = true`; signed builds) | on the device |
-| macOS | Application Support | iCloud KVS (needs a Mac provisioning profile) | on the device |
-| Web | server, per browser | server, per browser | **on the server, shared by every user**: the app runs there, so this is your backend |
-| Android (planned) | app files | Block Store / Drive app data | on the device |
-
-The database runs queries on a small Tokio runtime and hands results back to the UI thread. Migrations are SQL statements applied once each, in order (`PRAGMA user_version`). On the web the same sqlx code can point at Postgres instead of SQLite. `cx.capabilities().cloud_sync` says whether `cloud_storage` really syncs (iCloud signed in); elsewhere it is local storage.
+`cx.storage()` (this device), `cx.cloud_storage()` (iCloud key-value store) and SQL with sqlx (`prism::db`). → [Data](docs/src/guide/data.md)
 
 ## Device APIs
 
-```rust
-cx.spawn(async move |this, cx| {
-    if cx.request_permission(Permission::Location).await.is_granted() {
-        let here = cx.current_location().await?;            // Location { latitude, longitude, accuracy, … }
-    }
-    let photos = cx.pick_images(PickImages::new().limit(3)).await?;  // picture(photo.path) shows them
-    let photo = cx.take_photo().await?;
-    let text = cx.read_clipboard().await;
-});
-let gyro = cx.watch_motion(Duration::from_millis(50), |m, app| { /* m.rotation_rate, m.attitude */ });
-let follow = cx.watch_location(Accuracy::Best, |l, app| { … });
-cx.stop_watching(gyro);
-cx.haptic(Haptic::Success);   cx.copy_text("Hi");   cx.share(Share::text("Look").url(url));   cx.open_url(url);
-```
-
-| | iOS | macOS | Web |
-|---|---|---|---|
-| Permissions | system prompts (location, camera, photos, microphone, motion, notifications) | same (bundled app) | Permissions API, `getUserMedia` |
-| Location | CoreLocation | CoreLocation (bundled app) | `navigator.geolocation` |
-| Motion | CoreMotion (device only) | — | `devicemotion` |
-| Photos / camera | PHPicker (no permission needed) / camera | open panel / — | `<input type=file>`, uploaded to the session |
-| Haptics, clipboard, share, URLs | UIFeedbackGenerator, UIPasteboard, share sheet | trackpad, NSPasteboard, sharing picker | `vibrate`, Clipboard API, Web Share |
-
-Usage texts go in `Prism.toml`; `prism` writes them to Info.plist (iOS refuses to ask without them):
-
-```toml
-[permissions]
-location = "Shows todos near you."
-camera = "Adds a photo to a todo."
-```
-
-`cx.capabilities()` says what exists (`location`, `motion`, `camera`, `photos`, `haptics`, `share`); unsupported calls fail with `DeviceError::Unavailable`.
+Permissions, location, motion, photos and camera, haptics, clipboard, share sheet, URLs. → [Device APIs](docs/src/guide/device-apis.md)
 
 ## Background execution
 
-```rust
-cx.on_lifecycle(|phase, app| if phase == Lifecycle::Background { save(app) });
-
-// Finishes even if the user leaves the app (iOS: beginBackgroundTask, ~30 s).
-cx.spawn(async move |this, cx| upload(&cx).await).finish_in_background();
-
-// Periodic work, even when the app is closed (the system picks the moment).
-cx.register_background_task(
-    BackgroundTask::refresh("sync").every(Duration::from_secs(15 * 60)),
-    |cx| async move { sync(&cx).await },
-);
-```
-
-| | iOS | macOS | Web |
-|---|---|---|---|
-| Lifecycle | active / inactive / background | active / inactive / hidden or minimized | page focus / visibility |
-| `finish_in_background` | `beginBackgroundTask` | keeps running | keeps running (server) |
-| Periodic tasks | `BGTaskScheduler`; the app is relaunched without UI if needed | `NSBackgroundActivityScheduler` | timer while a page is open |
-
-`prism build/run` declares the tasks in Info.plist (`BGTaskSchedulerPermittedIdentifiers`, `UIBackgroundModes`). The iOS Simulator cannot run `BGTaskScheduler`: use a device, or `PRISM_RUN_BACKGROUND=sync` to run a task at launch and `PRISM_BACKGROUND_INTERVAL=5` to shorten intervals (macOS, web).
+Lifecycle events, `finish_in_background`, periodic tasks even when the app is closed. → [Background execution](docs/src/guide/background.md)
 
 ## Dialogs, menus, tray
 
-```rust
-cx.show_alert(Alert::new("Delete “Milk”?").message("This cannot be undone.")
-    .destructive("Delete", on_delete).cancel("Cancel"));          // UIAlertController, NSAlert, <dialog>
-cx.present("/todos/new");                                          // sheet: page sheet, NSWindow sheet, <dialog>
-div().context_menu(Menu::new().item(MenuItem::new("Open").icon("arrow.up.forward.square")))
-cx.set_tray(Tray::new("focus").title("25:00").menu(menu));         // macOS menu bar (NSStatusItem)
-cx.set_app_menu(vec![Menu::titled("File").item(MenuItem::new("New").shortcut("cmd+n"))]);
-```
-
-Context menus open with a long press (iOS), right click or ⌃-click (macOS), right click / Shift+F10 (web), and from VoiceOver.
+Alerts, sheets, context menus, the macOS menu bar and tray. → [Dialogs, menus, tray](docs/src/guide/dialogs-menus.md)
 
 ## Images, long lists, gestures
 
-```rust
-picture("https://…/photo.jpg").alt("A river").fill()   // cached on disk; or picture("logo.png") from assets/
-VirtualList::new(10_000, 56., |i| row(i))               // only the visible rows exist
-scroll().on_refresh(handler).refreshing(self.loading)   // pull to refresh (UIRefreshControl)
-div().on_swipe(SwipeDirection::Left, handler)           // swipe gestures
-```
+`picture` (cached), `VirtualList`, pull to refresh, swipes. → [Images, long lists, gestures](docs/src/guide/images-lists-gestures.md)
 
 ## Languages, text size, motion
 
-One JSON file per language in `locales/` (`en.json`, `fr.json`, `ar.json`…), flat or nested, plurals as `{"one": …, "other": …}`. `build.rs` turns them into one function per key:
-
-```rust
-// build.rs
-prism_build::translations("locales").fallback("en").generate();   // .strict() to fail instead of warn
-
-// src/main.rs
-mod strings { prism::include_strings!(); }
-cx.set_translations(strings::translations());
-text(strings::home_title(cx, &name));            // {name} → argument; a typo is a compile error
-text(strings::todos(cx, n));                     // CLDR plurals: one/few/many/other…
-text(cx.format_date(now, DateStyle::Long));      // Foundation formatters on Apple, Accept-Language on the web
-cx.set_locale(Some(Locale::new("ar")));          // or follow the system
-div().w(relative(fill)).animate(250)             // UIView/NSAnimationContext/CSS transitions
-```
-
-- **Build-time checks**: a key missing in a language, an unknown key, a placeholder the reference text lacks, or a plural without `other` is a cargo warning (`warning: counter: fr.json: missing "todos.add"`).
-- **Native packaging**: `prism build/run` declares the languages to iOS/macOS (`CFBundleLocalizations` + `.lproj`), so iOS Settings offers a per-app language.
-- `cx.t("key")` / `cx.t_with` / `cx.t_count` remain for dynamic keys.
-- **Right-to-left** languages mirror layouts on every backend (native frames and chrome, `dir=rtl` + logical CSS).
-- **Dynamic Type**: native text follows the iOS text size live; the web uses `rem`.
-- **Reduce Motion** turns transitions off. **iOS keyboard**: screens shrink above it and the focused field stays visible.
+`locales/*.json` turned into typed functions at build time, CLDR plurals, right-to-left layouts, Dynamic Type, Reduce Motion. → [Languages, text size, motion](docs/src/guide/i18n.md)
 
 ## Motion
 
-Transitions, transforms, enter/exit animations and loops, native on every backend: UIKit and Core Animation (iOS, tvOS, visionOS), AppKit (macOS), property animators (Android), SwiftUI (watchOS), CSS and the Web Animations API (web), GTK's frame clock (Linux).
-
-```rust
-div().spring(400)                                   // animate this element's changes (frame, colors, opacity, transform)
-div().transition(Transition::ease_out(250).delay(100))
-div().offset(0., -4.).scale(1.05).rotate(3.)        // visual only: the layout does not move
-
-// Appear and disappear (keyed children: the removed one leaves)
-div().key(id).enter(Pose::slide(0., 12.)).exit(Pose::slide(-40., 0.))
-row.stagger(index, 40)                              // cascading entrances, 40 ms apart
-image("heart.fill").repeat(Pose::new().scale(1.2), Transition::ease(700))   // pulse forever
-
-// Animate everything one update changes (SwiftUI's withAnimation)
-cx.with_animation(Transition::spring(400), |cx| store.update(cx, |s, cx| s.delete(id, cx)));
-```
-
-- **Curves**: `ease`, `ease_in`, `ease_out`, `linear`, `spring` (a slight overshoot), each with `.delay(ms)`.
-- **Poses**: `Pose::fade()`, `Pose::slide(x, y)`, `Pose::pop()`, or `Pose::new().opacity(…).offset(…).scale(…).rotate(…)`; unset fields keep the element's values.
-- **Exits** animate a picture of the removed view (snapshot, overlay, clone), so its subtree can be freed at once.
-- Offsets follow the layout direction (mirrored right to left). **Reduce Motion** (system setting, `prefers-reduced-motion`, GTK's animations switch) turns all of it off.
-- `prism::ui` components take `.enter()`, `.exit()` and `.transition()` too.
+Transitions, transforms, enter/exit animations, loops and `with_animation`, native on every backend. → [Motion](docs/src/guide/motion.md)
 
 ## Charts and vector drawing
 
-`prism::ui` has charts, drawn natively with vector shapes: UIKit Bézier paths (iOS, tvOS, visionOS), Core Animation shape layers (macOS), `Canvas` (Android), SwiftUI (watchOS), SVG (web), cairo (Linux).
-
-```rust
-ui::line_chart()
-    .series("This week", [1.2, 1.9, 1.6, 2.4, 2.1, 3.1, 2.8])
-    .series("Last week", [1.0, 1.4, 1.5, 1.7, 1.9, 2.2, 2.0])
-    .labels(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"])
-    .smooth().area().points().unit(" k€")
-
-ui::bar_chart()
-    .bars([("Mon", 12.), ("Tue", 18.), ("Wed", 9.)])
-    .highlight(self.day)                                        // the others fade
-    .on_select(cx.listener(|this, e, _| this.day = Some(e.index())))
-
-ui::pie_chart().slice("Rent", 900.).slice("Food", 420.).donut("1 320 €")
-ui::ring(0.72).label("72%").caption("Goal")                     // circular progress
-ui::stat("Revenue", "12 480 €").delta("+12%", true).trend([8., 9.5, 9., 11.])
-ui::sparkline([3., 5., 4., 8.])
-```
-
-- **Themed**: series use `Theme::chart_color(i)` (the accent first), adaptive in dark mode; axis labels use the app's number format.
-- **Axes** pick round ticks (1, 2, 2.5, 5 × 10ⁿ). Curves never overshoot the data (monotone interpolation).
-- **Bars** are native elements: tappable, read one by one by screen readers, and animated when values change. Other charts read as one element with their values.
-- Charts mirror in right-to-left languages, like the layout around them.
-
-Draw your own with `shape()`: coordinates are fractions of the frame, so drawings follow the layout size.
-
-```rust
-shape()
-    .inset(2., 2.)                                              // points kept free for strokes
-    .path(Path::smooth([(0., 1.), (0.5, 0.2), (1., 0.6)]).stroke(theme.accent, 2.).round())
-    .path(Path::sector(0.5, 0.5, 0.5, 0.3, 0., 120.).fill(theme.success))   // donut slice, degrees
-    .size(px(120.))
-    .label("Trend: up")                                         // decorative unless labelled
-```
-
-`Path` also has `line`, `arc`, `circle`, `rect`, `move_to`/`line_to`/`curve_to`/`arc_to`/`close`, `.fill`, `.stroke`, `.dashed`.
+Line, bar and pie charts, rings, stats and sparklines in `prism::ui`, and `shape()` for your own drawings. → [Charts and vector drawing](docs/src/guide/charts.md)
 
 ## Accessibility
 
-Accessibility is built in, not opt-in. The core resolves one description per node (role, label, hint, value, checked, disabled, hidden) and each backend maps it to the platform API:
-
-| | Web | iOS | macOS |
-|---|---|---|---|
-| API | ARIA + semantic HTML (`<main>`, `<h1>`, `<button>`, `role=switch`, `tablist`) | `UIAccessibility` traits, labels, values | `NSAccessibility` roles, labels, press action |
-| Keyboard | Tab/Enter/Space on custom buttons, arrow keys in tab bars, visible focus | — | Full Keyboard Access, Space/Return, focus ring |
-| Navigation | focus moves to the new screen's title; document title follows | native | window title follows |
-
-Defaults are automatic: a clickable `div` becomes a button named after its text ("Try Prism on the web, Done"), inputs use their placeholder, toggles expose their state. Refine with:
-
-```rust
-text("Settings").heading(1)
-div().on_click(..).accessibility_label("Open profile").accessibility_hint("Shows your account")
-text("›").accessibility_hidden()
-```
+Built in: one description per node, mapped to ARIA, `UIAccessibility`, `NSAccessibility`, GTK and Android. → [Accessibility](docs/src/guide/accessibility.md)
 
 ## Components (`prism::ui`)
 
-A themed, accessible component library: `button`, `switch`, `checkbox`, `text_field`, `card`, `heading`, `badge`, `list_row`, `divider`, and charts (see [Charts](#charts-and-vector-drawing)).
-
-Three levels of customization:
-
-1. **Theme**: `ui::set_theme(cx, Theme::dark().accent(rgb(0x0A84FF)).radius(0.))`. It also switches the native chrome (bars, native controls) to dark.
-2. **Per instance**: `ui::button("Delete").danger().large()`, plus `.style(|s| s.corner_radius = 0.)` for anything else.
-3. **Replace a component app-wide**: `Theme::light().override_component(|b: ui::Button, cx| my_button(b, cx))`, or implement `ui::Component` for your own and register it with `prism_ui::component!(MyThing)`.
-
-Custom or native: `ui::button("Save").native()` / `ui::switch(..).native()` per instance, or `Theme::prefer_native(true)` everywhere (UIButton/UISwitch, NSButton/NSSwitch, `<button>`/`<input role=switch>`). Raw native primitives remain available: `button()`, `toggle()`, `text_input()`.
+A themed, accessible component library with three levels of customization and a native escape hatch. → [Components](docs/src/guide/components.md)
 
 ## Widgets, Live Activities, Dynamic Island, notifications
 
-System surfaces are described with the **same elements as the UI**, plus `image("sf.symbol")`, `progress(0.4)`, `timer(until)` (counts down by itself, even when the app is not running) and `div().link("/path")` (deep link everywhere):
-
-```rust
-// A home-screen widget, re-rendered whenever `store` changes.
-cx.register_widget(
-    Widget::new("todos", "Todos")
-        .families(&[WidgetFamily::Small, WidgetFamily::Medium])
-        .link("/")
-        .render(move |cx, family| text(format!("{} open", store.read(cx).open()))),
-);
-cx.reload_widgets_on(&store);
-
-// A Live Activity: lock screen + Dynamic Island (compact, minimal, expanded).
-let id = cx.start_activity(
-    Activity::new("focus")
-        .summary("Focus session, 25 minutes")
-        .compact(image("brain.head.profile"), timer(ends))
-        .minimal(image("timer"))
-        .lock_screen(div().flex_row().child(text("Focus")).child(timer(ends)))
-        .link("/focus"),
-);
-cx.update_activity(id, …);  cx.end_activity(id, None, true);
-
-// A local notification that opens a screen when tapped, with action buttons.
-cx.send_notification(
-    Notification::new("Done").body("Take a break").link("/focus").after(total)
-        .action(NotificationAction::new("again", "5 more minutes").link("/focus"))
-        .action(NotificationAction::new("note", "Add a todo…").reply("What's next?")),
-);
-cx.on_notification_response(|r, app| match r.action.as_deref() { Some("note") => add(app, r.text.clone()), _ => {} });
-```
-
-| | iOS | macOS | Web | Android (planned) |
-|---|---|---|---|---|
-| Widgets | WidgetKit | WidgetKit (`mise run macos-app`) | — | Glance |
-| Live Activities | lock screen + **Dynamic Island** | menu bar item with live countdown | in-page live banner (`aria-live`) | Live Updates notification |
-| Notifications | UserNotifications | UserNotifications (bundled app) | Notification API / toast | NotificationCompat |
-
-How it works: Prism resolves the elements into a static snapshot (compact JSON, under ActivityKit's 4 KB limit). A **generic SwiftUI renderer** shipped with Prism (`platform/apple/Extension`) draws it in a WidgetKit extension. `scripts/ios-run.sh` generates that extension from the app's registered widgets, then builds and signs it with the App Group. The Rust app talks to WidgetKit/ActivityKit/UserNotifications through a small Swift bridge linked automatically (`crates/prism-apple-build`). Platforms implement `PlatformServices`; apps query `cx.capabilities()` instead of checking the OS.
-
-**Light & dark**: colors can be adaptive, `adaptive(rgb(0xFFFFFF), rgb(0x1C1C22))`, resolved natively everywhere: CSS `light-dark()`, dynamic `UIColor`/`NSColor`, SwiftUI color scheme in widgets and Live Activities. `Theme::system()` makes the whole component library follow the system appearance live.
+System surfaces described with the same elements as the UI: widgets, Live Activities, notifications with actions, light and dark. → [Widgets, Live Activities, notifications](docs/src/guide/system-surfaces.md)
 
 ## In the car (CarPlay, Android Auto, Android Automotive)
 
-Cars only show the platform's templates, so a car screen is described with them: lists in sections, grids, panes (rows and up to two actions) and tabs. They are rebuilt whenever the app changes, like widgets; the car only receives what differs.
-
-```rust
-cx.register_car(move |cx| {
-    CarTemplate::list("Todos").section(CarSection::new().items(
-        store.read(cx).todos.iter().map(|t| {
-            let id = t.id;
-            CarItem::new(&t.title).icon("circle").browsable()
-                .on_select(move |cx| cx.car_push(move |cx| detail(cx, id)))
-        }),
-    ))
-});
-// In a handler: cx.car_push(…), cx.car_pop(), cx.car_pop_to_root(); cx.car_connected().
-```
-
-- **CarPlay:**
-  - a template scene (`CPListTemplate`, `CPGridTemplate`, `CPInformationTemplate`, `CPTabBarTemplate`), updated in place;
-  - the car can start the app without its phone window;
-  - CarPlay only shows apps whose provisioning profile carries an entitlement Apple grants on request (`com.apple.developer.carplay-driving-task`), even in the simulator. Builds declare the scene; the entitlement comes from your profile.
-- **Android Auto and Android Automotive:**
-  - Google's Car App Library (IoT category), fetched from Maven by `scripts/android-deps.py` (no Gradle);
-  - the phone APK serves Android Auto. A build for a car running Android (`PRISM_ANDROID_AUTOMOTIVE=1`, automatic when the device is one) opens the car screens from the car's launcher;
-  - tabs show their first tab (`TabTemplate` needs Car API level 6);
-  - test on the Automotive emulator (`system-images;android-35-ext15;android-automotive;arm64-v8a`, device `automotive_1408p_landscape_with_google_apis`), or with Android Auto's Desktop Head Unit and a phone signed in to Play.
+Car screens from the platforms' templates (lists, grids, panes, tabs), rebuilt when the app changes. → [In the car](docs/src/guide/car.md)
 
 ## Navigation
 
-A URL-style router, rendered with each platform's native navigation:
-
-```rust
-Application::new().title("Prism").run(|cx| {
-    let store = cx.new_entity(|_| Store::new());
-    Router::new()
-        .route("/", move |cx, _| cx.new_entity(|cx| Home::new(store, cx)))
-        .route("/todos/:id", move |cx, p| {
-            let id = p.parse("id").unwrap_or(0);
-            cx.new_entity(|cx| TodoDetail::new(store, id, cx))
-        })
-        .build(cx)
-});
-
-// A route's view returns a screen; its title goes in the navigation bar.
-screen("Details").child(...)
-
-// Anywhere:
-cx.navigate("/todos/2");   cx.back();   cx.replace("/login");   cx.reset("/");
-div().on_click(navigate_to("/todos/2"))   // handler helpers: navigate_to, go_back
-```
-
-| | Stack | Back | Deep links |
-|---|---|---|---|
-| **iOS** | `UINavigationController` (large titles, push animation) | system button + edge swipe | `PRISM_PATH=/todos/1` |
-| **macOS** | header bar (title, Back button) | Back button, Go ▸ Back ⌘[ | `PRISM_PATH=/todos/1` |
-| **Web** | header bar | header button + browser Back/Forward (History API) | any URL, server-rendered |
-
-**Tabs**: `.tab("Todos", "checklist", "/")` per tab (SF Symbol name; a glyph on the web). Each tab keeps its own stack. `navigate()` to a tab's root path switches tab. iOS: `UITabBarController`. macOS: segmented control. Web: ARIA tablist, URL follows the tab.
-
-**Scrolling**: `scroll()` (`UIScrollView` / `NSScrollView` / `overflow:auto`). A screen starting with a scroll view lets it run under the bars, so iOS large titles collapse natively.
-
-Patterns: `/`, `/todos`, `/todos/:id`, `/files/*rest`. Unknown paths show a "Not found" screen (or `.not_found(...)`). Opening a deep link puts `/` underneath so Back works.
+A URL-style router with native stacks, tabs, sheets and deep links. → [Navigation](docs/src/guide/navigation.md)
 
 ## Web: inside your server, behind a CDN
 
-Prism's web backend is a library. Mount it in Axum next to your API (`examples/axum-server`):
-
-```rust
-let prism = Application::new().title("Shop").web_app(|cx| routes(cx)).base_path("/app");
-let app = axum::Router::new()
-    .route("/api/orders", get(orders))
-    .nest("/app", prism.router());          // or .merge(prism.router()) at the root
-axum::serve(listener, app).await?;
-```
-
-Other servers (actix, hyper, …): `prism-web` without default features has no server dependency. `WebApp::handle(&http::Request)` answers pages and static files, and `WebApp::connect(uri, headers, send)` runs a live session over any WebSocket (`session.receive(text)` for incoming messages). Each session is a thread that sleeps until a message, a timer or async work wakes it.
-
-| Path | Cache-Control | |
-|---|---|---|
-| pages | `private, no-store` | rendered per browser, sets the session cookie |
-| `/_prism/client.<hash>.js`, `/_prism/prism.<hash>.css` | `public, max-age=31536000, immutable` | ETag, `304` |
-| `/assets/logo.<hash>.png` (`picture("logo.png")`) | `public, max-age=31536000, immutable` | unhashed `/assets/logo.png`: revalidated |
-| `/files/*` (uploads) | `private` | per browser |
-| `/ws` | – | proxy as a WebSocket |
-
-`prism build web` also writes `public/` (hashed files plus `manifest.json`). Upload it to a CDN and set `PRISM_ASSET_URL=https://cdn.example.com`, or let the CDN cache `/_prism/*` and `/assets/*` from the server. Settings: `PRISM_HOST`, `PRISM_PORT`, `PRISM_BASE_PATH`, `PRISM_ASSET_URL`, `PRISM_DATA_DIR` (or `WebApp::base_path` / `asset_url` / `data_dir`).
+The web backend is a library: mount it in Axum (or any server), export hashed static files for a CDN, or ship the Docker image. → [Web](docs/src/platforms/web.md)
 
 ### Docker (Linux)
 
-```sh
-docker build -f docker/web.Dockerfile --build-arg PACKAGE=my-app -t my-app .
-docker run -p 3000:3000 -v my-app-data:/data my-app
-```
-
-This is a multi-stage build on Rust 1.99 / Debian bookworm. It produces the server binary, `public/` (the hashed files for a CDN) and the app's assets, in about 160 MB with the counter example. The image is tested with the same jsdom suites as the macOS build.
+`docker/web.Dockerfile` builds the server, its static files and assets. → [Web: Docker](docs/src/platforms/web.md#docker-linux)
 
 ## Performance
 
-Measured on the example app (release build, Apple silicon):
-
-| | Idle CPU | Memory |
-|---|---|---|
-| macOS, 460×720 / 1200×800 window | ~0 % | 42 MB / 49 MB |
-| iOS (simulator) | ~0.2 % | 30–35 MB |
-| Web server, per open session | ~0 % (sleeps until a message or timer) | ~0.3 MB |
-
-- **Updates are local**: changing one row of a 5,000-row list re-renders that row only (1 patch, ~20 µs) and touches no other native view (`cargo test -p prism-native --release -- --ignored --nocapture bench`).
-- **GPU-composited views**: backgrounds, borders, corners and pictures are layer properties, not per-view bitmaps (macOS graphics memory 28 MB → 0.4 MB in a large window).
-- **Web**: one database pool per file for the whole server (not per visitor); sessions sleep until a message, a timer or finished background work.
-- **Release profile**: thin LTO and stripped symbols (binaries −24 %).
+~0 % idle CPU, local updates (one patch for one changed row), GPU-composited views. → [Performance](docs/src/performance.md)
 
 ## Architecture
 
-```
-            your app (Render entities)
-                      │ render()
-                      ▼
- prism-core   Element tree ──► Reconciler ──► Vec<Patch> ◄── UiEvent (click, input)
-                                                 │
-        ┌────────────────────────┬───────────────┴──────────────┐
-        ▼                        ▼                              ▼
-   prism-web                prism-native (taffy flexbox, Widgets trait)
-   SSR HTML + JSON              ├── prism-macos  (AppKit)
-   patches over WS              └── prism-ios    (UIKit)
-```
-
-- **`prism-core`**: styles, element builders, entities/`Context`, reconciler, `Backend` trait, `Runtime`. No platform code.
-- **`prism-native`**: turns patches into calls on a 10-method `Widgets` trait and runs flexbox layout with taffy. Shared by every native backend.
-- **`prism-web`**: std-only HTTP server + tungstenite. One `Runtime` per browser session (LiveView model).
-- **`prism-macos`** / **`prism-ios`**: `Widgets` implementations over objc2.
-- **`prism-ui`**: component library on top of the core (themes, overrides, native escape hatch).
-- **`prism`**: facade; picks the backend from features (`web`, `native`) and the target OS.
-
-Layout is a flexbox subset (column by default, like React Native) and maps 1:1 to CSS on the web and to taffy on native, so all targets lay out the same way.
+`prism-core` (elements, reconciler) → patches → `prism-web` or `prism-native` and the native backends. → [Architecture](docs/src/architecture.md)
 
 ### Adding a platform (Windows…)
 
-1. New crate `prism-<os>` implementing `prism_native::Widgets` (create/style/measure/place native views).
-2. An entry point that builds a `Runtime`, feeds `runtime.render()` / `runtime.dispatch(event)` into a `NativeRenderer`, and calls `layout()` on resize.
-3. One `cfg` line in `crates/prism/src/lib.rs`.
+A crate implementing `prism_native::Widgets`, an entry point and one `cfg` line. → [Adding a platform](docs/src/architecture.md#adding-a-platform-windows)
 
 ## Development
 
 ```sh
-mise install        # Rust 1.99 + macOS/iOS targets
+mise install        # Rust 1.99 + platform targets
 mise run test       # unit tests
-mise run check      # type-check host, web and iOS-simulator builds
+mise run check      # type-check every target
 mise run web        # the example, restarting on save (also: macos, ios, android, macos-app, device)
+mise run docs       # the book, into docs/book
 ```
 
-- `prism dev` keeps the current screen across restarts (`PRISM_DEV_STATE`); the web client reconnects by itself.
-- `PRISM_PORT=8080`, `PRISM_SIM="iPhone 17"` (simulators are slimmed with `simslim` when installed), `PRISM_LOCALE=ar`, `PRISM_TEXT_SCALE=1.5`.
-- macOS dev hooks: `PRISM_CLICK="+1|Dark mode" PRISM_SCROLL=600 PRISM_DELAY=2 PRISM_SNAPSHOT=out.png cargo run -p counter` presses controls by title or accessibility label, scrolls, waits, writes a PNG of the window, and quits.
-- CI (`.github/workflows/ci.yml`): format, tests, clippy for macOS / iOS simulator / iOS device / web, then release bundles and a web smoke test.
+→ [Development](docs/src/development.md), [CONTRIBUTING.md](CONTRIBUTING.md), [RELEASING.md](RELEASING.md), [CHANGELOG.md](CHANGELOG.md)
 
 ## tvOS
 
-`prism run tvos` (simulator) / `prism build tvos`: the UIKit backend, adapted to the Siri Remote.
-
-- Clickable views take the focus (raised with a shadow) and react to the select press; buttons use the primary action.
-- Toggles are check-mark buttons (`UISwitch` does not exist on tvOS).
-- The whole UI is zoomed by the system's body text size ÷ 17, so phone-sized styles read from a sofa. The app sees the viewport in Prism points (1920 ÷ zoom), so breakpoints keep working. `PRISM_ZOOM` overrides it.
-- Not on tvOS (the SDK marks them unavailable): notifications with text, widgets, Live Activities, motion, photo/camera pickers, haptics, clipboard, share sheet, pull to refresh. Location gives one position at a time. `cx.capabilities()` reports all of this, and `.only(Platform::TV)` / `Platform::Tvos` adapt the UI.
-- Dev hooks on iOS and tvOS: `PRISM_CLICK="+1|Save"` presses by title or label, `PRISM_SNAPSHOT=/abs/out.png` saves the window and quits.
+The UIKit backend adapted to the Siri Remote and the focus engine. → [tvOS](docs/src/platforms/tvos.md)
 
 ## watchOS
 
-`prism run watchos` (simulator) / `prism build watchos`: a watch-only app (`WKApplication`, `WKWatchOnly`).
-
-watchOS has no UIKit views (`UIView` is `API_UNAVAILABLE(watchos)` in the SDK), so the app runs in Rust and a SwiftUI host draws it (`platform/apple/Watch`).
-
-- Layout is prism-native's flexbox, as on iOS and macOS. Swift measures text (UIKit string drawing) and places each node at its frame, so layouts match the other platforms.
-- Navigation stacks are `NavigationStack`, tabs are vertical pages (Digital Crown), toggles are SwiftUI toggles.
-- Styles are zoomed like tvOS (body text size ÷ 17); `cx.device_info()` reports the watch (model and screen from Xcode's profiles).
-- Device APIs: location (Core Location), motion (Core Motion), the photo picker (PhotosUI's `PhotosPicker`), haptics (`WKInterfaceDevice.play`), sharing (`ShareLink`), links and the microphone permission.
-- Also on the watch: notifications with actions, alerts, and context menus (press and hold opens a dialog, since SwiftUI's `contextMenu` is deprecated on watchOS). It also handles swipes, scroll events, pull to refresh, the scene lifecycle, Dynamic Type and iCloud key-value storage.
-- Background tasks use WatchKit's `scheduleBackgroundRefresh`, because `BGTaskScheduler` is `API_UNAVAILABLE(watchos)`.
-- What the watch lacks (SDK): camera, clipboard. `capabilities` says so.
-- Dev hooks: `PRISM_CLICK`, `PRISM_SNAPSHOT` (SwiftUI `ImageRenderer`: text fields render as a placeholder), `PRISM_DEBUG_LAYOUT=1` (logs text frames).
+The app runs in Rust and a SwiftUI host draws it. → [watchOS](docs/src/platforms/watchos.md)
 
 ## visionOS
 
-`prism run visionos` (simulator) / `prism build visionos`: the UIKit backend in a window, like an iPad app. `cx.platform()` is `Platform::Visionos` and `cx.device_info().kind` is `Headset`; `Platform::SPATIAL` selects it in `.only()`.
-
-- Eyes and pinches arrive as touches, so controls, gestures and menus work as on iOS.
-- Widgets (WidgetKit, visionOS 26+): the minimum version is 26 (`XROS_DEPLOYMENT_TARGET`).
-- Not on visionOS (unavailable in the SDK): `UIScreen` (so the window gives the size and scale), haptics, the camera for apps, Live Activities (no ActivityKit), lock-screen widget families, and "always" location.
-- The simulator runtime comes from Xcode › Settings › Components, or `xcodebuild -downloadPlatform visionOS`.
+The UIKit backend in a window, like an iPad app. → [visionOS](docs/src/platforms/visionos.md)
 
 ## Linux (GTK 4)
 
-`cargo run` on Linux opens a native GTK 4 window: `GtkLabel`, `GtkButton`, `GtkEntry`, `GtkSwitch`, `GtkProgressBar`, `GtkPicture` and `GtkScrolledWindow`. Navigation stacks get a header with a Back button, tabs a tab bar, and modals their own window.
-
-- Layout is prism-native's flexbox: a small GTK layout manager puts each widget at its frame, so screens look like on macOS. Styles become generated CSS.
-- Wrapping labels report their longest word as minimum width.
-- Storage goes to `$XDG_DATA_HOME/<title>`; the language comes from `LANG`. `cx.device_info()` reports the distribution's `VERSION_ID` and the monitor (size in mm, refresh rate).
-- Develop and test in Docker: `docker build -f docker/linux-dev.Dockerfile -t prism-linux-dev docker`, then run the app under `xvfb-run` with `PRISM_SNAPSHOT`/`PRISM_CLICK` (see CI).
-- Accessibility labels use GTK's C API (`gtk_accessible_update_property_value`, available in every GTK 4); gtk-rs only binds it from 4.10.
-- Location uses GeoClue2 over the system bus, asynchronously; `request_permission` starts a client, so the desktop's agent asks the user. Also available: the file chooser for photos, the clipboard, opening links with the default app.
-- Notifications use `GNotification`, with buttons; the dev image's D-Bus monitor shows them. Alerts are modal windows. Context menus open on right-click or press and hold (`GtkPopoverMenu`). `set_app_menu` becomes the menu bar, with shortcuts.
-- The tray uses StatusNotifierItem through `ksni`, checked against a test watcher. Also supported: swipes (touchpad), scroll events, refresh with F5 / Ctrl+R, lifecycle (focus, minimized) and background tasks while the app runs. Text size follows GNOME's scaling factor; reduced motion follows "animations off".
-- No desktop standard exists for motion, camera, haptics or a share sheet, so `capabilities` reports them as unavailable.
+Native GTK 4 widgets placed by prism-native's flexbox; notifications, tray, menu bar. → [Linux](docs/src/platforms/linux.md)
 
 ## Android
 
-`prism run android` / `prism dev android` / `prism build android`: an APK built with the SDK's own tools (`javac`, `d8`, `aapt2`, `zipalign`, `apksigner`), without Gradle, then installed with `adb` on the running emulator or a USB phone (`--device <serial>`; `prism devices` lists them).
-
-The app runs in Rust, and a small Java host (`platform/android`) creates real Android views and places them at the frames Rust computes.
-
-- **Layout:** prism-native's flexbox in dp; the zoom is the screen density, and Java measures text. Navigation stacks get a header with Back (also the system back gesture), tabs a bottom bar, and modals a full-screen dialog.
-- **Look:** light/dark follows the system or `cx.set_appearance` (the header, bars and system bars included). Right-to-left languages mirror the layout, the header and the tab bar.
-- **Setup (mise):** Java 21, the Android SDK (`ANDROID_HOME`), `cargo-ndk`, the `aarch64-linux-android` target. Install the SDK packages and create an emulator:
-  ```sh
-  sdkmanager "platform-tools" "emulator" "platforms;android-36" "build-tools;37.0.0" "ndk;30.0.16248370" "system-images;android-36;google_apis;arm64-v8a"
-  avdmanager create avd -n Pixel_9 -k "system-images;android-36;google_apis;arm64-v8a" -d pixel_9
-  emulator -avd Pixel_9 &
-  ```
-- **The app crate:** its code lives in its library, and `main.rs` calls it. Android loads a shared library, through `prism::android_main!(run)` in `lib.rs`.
-- **Device APIs:**
-  - location (`LocationManager`), motion (rotation vector, gyroscope);
-  - photos (system photo picker), camera (`ACTION_IMAGE_CAPTURE`);
-  - haptics (`VibrationEffect`), clipboard;
-  - share sheet (files through a small content provider), links.
-  Permissions come from `Prism.toml`'s `[permissions]`.
-- **Notifications:** actions and text replies; the first one asks for the permission (Android 13+), as on iOS. Alerts are `AlertDialog`s. Context menus (`PopupMenu`) open on press and hold. Also supported: swipes, scroll events, deep links (`prism-<package>:/path`) and the lifecycle.
-- **Background tasks:** JobScheduler, even with the app closed; the library then loads without the Activity and runs the task without a screen.
-- **Live Activities:** an ongoing notification drawing the lock-screen content, with timers counting natively (`Chronometer`).
-- **Widgets:** home-screen widgets (`AppWidgetProvider`), one per `register_widget`, with small/medium layouts chosen by size (Android 12+). They are redrawn from the last snapshot while the app is closed. Both surfaces render `SNode` snapshots with `RemoteViews` (`PrismSurface.java`).
-- **Release:** `PRISM_RELEASE=1` or `prism build android`. Sign with `PRISM_ANDROID_KEYSTORE`, `PRISM_ANDROID_KEYSTORE_PASS` and `PRISM_ANDROID_KEY_ALIAS`; the default is the SDK's debug key. Libraries are aligned for 16 KB pages.
-- **Wear OS and Android TV:** the same APK runs there; `cx.device_info().kind` says `Watch` or `Tv`.
-  - *Watches:* dark, compact header, icon-only tabs, margins inside a round screen. Back is the swipe to the right. The app is standalone (no phone needed).
-  - *TVs:* the remote moves the focus; the focused view rises with a ring. Select clicks, and holding it opens the context menu. Android TV's safe area applies, and the app gets a launcher banner made from the icon.
-  - *Emulators:* `system-images;android-34;android-wear;arm64-v8a` (device `wearos_large_round`) and `system-images;android-34;android-tv;arm64-v8a` (device `tv_1080p`).
-- **Not on Android:** tray and menu bar (desktop surfaces).
+An APK without Gradle; a small Java host shows real Android views. Phones, tablets, Wear OS, Android TV. → [Android](docs/src/platforms/android.md)
 
 ## Status
 
 Primitives: `div`, `text`, `button`, `text_input`, `toggle`, `scroll`, `picture`, `VirtualList`, `screen`, `Router` (stacks, tabs, sheets). Component library `prism::ui`. Accessibility on all backends. Light/dark appearance.
 Widgets, Live Activities (Dynamic Island), car screens (CarPlay, Android Auto, Automotive), notifications with actions, background tasks, device APIs (location, motion, photos, camera, haptics, clipboard, share), alerts, context menus, tray and app menus, async tasks, HTTP, storage, i18n/RTL, Dynamic Type, animations, `prism` CLI.
 Platforms: web, macOS, iOS/iPadOS, tvOS, watchOS, visionOS, Linux (GTK 4), Android (phones, tablets, Wear OS, Android TV). Not yet: Windows (the `Widgets` trait and `PlatformServices` are the extension points).
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT) at your option. Contributions are dual licensed the same way ([CONTRIBUTING.md](CONTRIBUTING.md)).

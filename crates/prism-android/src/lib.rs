@@ -1,7 +1,7 @@
 //! # prism-android
 //!
 //! Android backend. The app runs in Rust (a `cdylib` loaded by the Java host
-//! in `platform/android`); layout is prism-native's flexbox, like on iOS and
+//! in `prism-cli`, `platform/android`); layout is prism-native's flexbox, like on iOS and
 //! macOS. The Java host creates real Android views (`TextView`, `Button`,
 //! `EditText`, `Switch`, `ProgressBar`, `ImageView`, `ScrollView`…), measures
 //! text, and places each view at the frame Prism computed.

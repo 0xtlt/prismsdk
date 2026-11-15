@@ -13,19 +13,31 @@ use crate::Component;
 /// `cx.set_global(Theme::light().accent(rgb(0x0A84FF)))`.
 #[derive(Clone)]
 pub struct Theme {
+    /// Main color: primary buttons, switches, links, the first chart series.
     pub accent: Color,
     /// Text/icon color on top of `accent`.
     pub on_accent: Color,
+    /// Screen background.
     pub background: Color,
+    /// Cards and other raised surfaces.
     pub surface: Color,
+    /// Secondary surfaces: secondary buttons, badges, empty charts.
     pub surface_alt: Color,
+    /// Body text.
     pub text: Color,
+    /// Secondary text (subtitles, captions, axis labels).
     pub muted: Color,
+    /// Separators and outlines.
     pub border: Color,
+    /// Destructive actions and errors.
     pub danger: Color,
+    /// Positive values and confirmations.
     pub success: Color,
+    /// Corner radius of controls (cards add 4 pt).
     pub radius: f32,
+    /// Padding inside cards.
     pub spacing: f32,
+    /// Body text size in points; other sizes derive from it.
     pub font_size: f32,
     /// Render `Button`/`Switch` as the platform's native controls instead of
     /// custom-drawn ones (per instance: `.native()`).
@@ -46,6 +58,7 @@ impl Default for Theme {
 }
 
 impl Theme {
+    /// The default light theme.
     pub fn light() -> Self {
         Theme {
             accent: rgb(0x5B5BD6),
@@ -68,6 +81,7 @@ impl Theme {
         }
     }
 
+    /// A dark theme (native chrome switches to dark too).
     pub fn dark() -> Self {
         Theme {
             accent: rgb(0x8B8BFF),
@@ -111,11 +125,14 @@ impl Theme {
         self
     }
 
+    /// Sets the corner radius of controls.
     pub fn radius(mut self, radius: f32) -> Self {
         self.radius = radius;
         self
     }
 
+    /// Renders `Button` and `Switch` as the platform's native controls
+    /// (per instance: `.native()` / `.custom()`).
     pub fn prefer_native(mut self, native: bool) -> Self {
         self.prefer_native = native;
         self

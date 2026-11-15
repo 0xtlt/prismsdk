@@ -32,18 +32,25 @@ type Builder = Rc<dyn Fn(&mut App) -> CarTemplate>;
 pub enum CarTemplate {
     /// Rows in sections (CPListTemplate, ListTemplate).
     List {
+        /// Shown in the car's navigation bar.
         title: String,
+        /// The rows, grouped.
         sections: Vec<CarSection>,
     },
     /// Large buttons with icons (CPGridTemplate, GridTemplate).
     Grid {
+        /// Shown in the car's navigation bar.
         title: String,
+        /// The grid's buttons, in order.
         buttons: Vec<CarButton>,
     },
     /// Label/value rows and up to two actions (CPInformationTemplate, PaneTemplate).
     Pane {
+        /// Shown in the car's navigation bar.
         title: String,
+        /// `(label, value)` rows.
         rows: Vec<(String, String)>,
+        /// Buttons under the rows (the platforms show up to two).
         actions: Vec<CarButton>,
     },
     /// Tabs, each with its own template (CPTabBarTemplate, TabTemplate).
@@ -51,18 +58,21 @@ pub enum CarTemplate {
 }
 
 impl CarTemplate {
+    /// An empty list; add rows with [`section`](Self::section).
     pub fn list(title: impl Into<String>) -> Self {
         CarTemplate::List {
             title: title.into(),
             sections: Vec::new(),
         }
     }
+    /// An empty grid; add buttons with [`button`](Self::button).
     pub fn grid(title: impl Into<String>) -> Self {
         CarTemplate::Grid {
             title: title.into(),
             buttons: Vec::new(),
         }
     }
+    /// An empty pane; add [`row`](Self::row)s and [`button`](Self::button)s.
     pub fn pane(title: impl Into<String>) -> Self {
         CarTemplate::Pane {
             title: title.into(),
@@ -70,6 +80,8 @@ impl CarTemplate {
             actions: Vec::new(),
         }
     }
+    /// A tab bar. Android Auto shows the first tab only (`TabTemplate` needs
+    /// Car API level 6).
     pub fn tabs(tabs: impl IntoIterator<Item = CarTab>) -> Self {
         CarTemplate::Tabs(tabs.into_iter().collect())
     }
@@ -99,24 +111,31 @@ impl CarTemplate {
     }
 }
 
+/// A group of list rows, with an optional header.
 #[derive(Default)]
 pub struct CarSection {
+    /// Text above the rows.
     pub header: Option<String>,
+    /// The rows, in order.
     pub items: Vec<CarItem>,
 }
 
 impl CarSection {
+    /// An empty section without a header.
     pub fn new() -> Self {
         Self::default()
     }
+    /// Text above the rows.
     pub fn header(mut self, header: impl Into<String>) -> Self {
         self.header = Some(header.into());
         self
     }
+    /// Adds a row.
     pub fn item(mut self, item: CarItem) -> Self {
         self.items.push(item);
         self
     }
+    /// Adds several rows.
     pub fn items(mut self, items: impl IntoIterator<Item = CarItem>) -> Self {
         self.items.extend(items);
         self
@@ -125,16 +144,20 @@ impl CarSection {
 
 /// A list row.
 pub struct CarItem {
+    /// The row's main text.
     pub title: String,
+    /// Secondary text under the title.
     pub detail: Option<String>,
     /// SF Symbol name (drawn as a glyph where symbols do not exist).
     pub icon: Option<String>,
     /// Shows a chevron: selecting opens another screen.
     pub browsable: bool,
+    /// Runs when the driver selects the row.
     pub on_select: Option<Handler>,
 }
 
 impl CarItem {
+    /// A row with a title only.
     pub fn new(title: impl Into<String>) -> Self {
         CarItem {
             title: title.into(),
@@ -144,41 +167,55 @@ impl CarItem {
             on_select: None,
         }
     }
+    /// Secondary text under the title.
     pub fn detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = Some(detail.into());
         self
     }
+    /// An SF Symbol name (drawn as a glyph where symbols do not exist).
     pub fn icon(mut self, icon: impl Into<String>) -> Self {
         self.icon = Some(icon.into());
         self
     }
+    /// Shows a chevron: selecting opens another screen.
     pub fn browsable(mut self) -> Self {
         self.browsable = true;
         self
     }
+    /// Runs `f` when the driver selects the row (push a screen with
+    /// `cx.car_push`).
     pub fn on_select(mut self, f: impl Fn(&mut App) + 'static) -> Self {
         self.on_select = Some(Rc::new(f));
         self
     }
 }
 
+/// How a car button is drawn.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub enum CarButtonStyle {
+    /// The platform's regular button.
     #[default]
     Normal,
+    /// Emphasized: the main action.
     Primary,
+    /// Marks an action that deletes or cancels something.
     Destructive,
 }
 
 /// A grid button or a pane action.
 pub struct CarButton {
+    /// The button's label.
     pub title: String,
+    /// SF Symbol name (drawn as a glyph where symbols do not exist).
     pub icon: Option<String>,
+    /// Normal, primary or destructive.
     pub style: CarButtonStyle,
+    /// Runs when the driver selects the button.
     pub on_select: Option<Handler>,
 }
 
 impl CarButton {
+    /// A normal button with a label only.
     pub fn new(title: impl Into<String>) -> Self {
         CarButton {
             title: title.into(),
@@ -187,27 +224,35 @@ impl CarButton {
             on_select: None,
         }
     }
+    /// An SF Symbol name (drawn as a glyph where symbols do not exist).
     pub fn icon(mut self, icon: impl Into<String>) -> Self {
         self.icon = Some(icon.into());
         self
     }
+    /// Normal, primary or destructive.
     pub fn style(mut self, style: CarButtonStyle) -> Self {
         self.style = style;
         self
     }
+    /// Runs `f` when the driver selects the button.
     pub fn on_select(mut self, f: impl Fn(&mut App) + 'static) -> Self {
         self.on_select = Some(Rc::new(f));
         self
     }
 }
 
+/// One tab of [`CarTemplate::tabs`].
 pub struct CarTab {
+    /// The tab's label.
     pub title: String,
+    /// SF Symbol name (drawn as a glyph where symbols do not exist).
     pub icon: Option<String>,
+    /// What the tab shows.
     pub template: CarTemplate,
 }
 
 impl CarTab {
+    /// A tab showing `template`.
     pub fn new(title: impl Into<String>, template: CarTemplate) -> Self {
         CarTab {
             title: title.into(),
@@ -215,6 +260,7 @@ impl CarTab {
             template,
         }
     }
+    /// An SF Symbol name for the tab bar.
     pub fn icon(mut self, icon: impl Into<String>) -> Self {
         self.icon = Some(icon.into());
         self

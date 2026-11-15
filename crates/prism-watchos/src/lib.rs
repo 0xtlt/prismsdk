@@ -2,7 +2,7 @@
 //!
 //! watchOS apps have no UIKit views (`UIView` is `API_UNAVAILABLE(watchos)`
 //! in the SDK), so this backend keeps the app in Rust and lets a SwiftUI
-//! host (`platform/apple/Watch/PrismWatch.swift`) draw the tree. Layout is
+//! host (`apple/Watch/PrismWatch.swift` in `prism-apple-build`) draw the tree. Layout is
 //! prism-native's flexbox (taffy), like on iOS and macOS: Swift measures
 //! text and draws each node at its frame; events come back as JSON.
 //!

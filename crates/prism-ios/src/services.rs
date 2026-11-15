@@ -1,6 +1,6 @@
 //! iOS system surfaces: widgets (WidgetKit), Live Activities (lock screen +
 //! Dynamic Island via ActivityKit) and notifications, through the Swift bridge
-//! in `platform/apple/Bridge`.
+//! in `prism-apple-build` (`apple/Bridge`).
 
 use std::ffi::{CStr, CString, c_char};
 use std::time::UNIX_EPOCH;

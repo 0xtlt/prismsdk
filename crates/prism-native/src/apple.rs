@@ -147,7 +147,7 @@ pub fn model_id() -> Option<String> {
 #[cfg(feature = "apple-bridge")]
 pub use bridge::{DeviceMessage, device_call, set_device_sink};
 
-/// Device APIs through the Swift bridge (`platform/apple/Bridge/PrismDevice.swift`).
+/// Device APIs through the Swift bridge (`apple/Bridge/PrismDevice.swift` in `prism-apple-build`).
 #[cfg(feature = "apple-bridge")]
 mod bridge {
     use std::ffi::{CStr, CString, c_char};

@@ -1,0 +1,55 @@
+# Summary
+
+[Introduction](introduction.md)
+
+- [Getting started](getting-started.md)
+- [The `prism` command](cli.md)
+
+# Guide
+
+- [Updating state](guide/state.md)
+- [Async, network, storage](guide/async.md)
+- [Navigation](guide/navigation.md)
+- [Responsive](guide/responsive.md)
+- [Platform-specific UI](guide/platform-ui.md)
+- [Device information](guide/device-info.md)
+- [Components](guide/components.md)
+- [Charts and vector drawing](guide/charts.md)
+- [Motion](guide/motion.md)
+- [Images, long lists, gestures](guide/images-lists-gestures.md)
+- [Dialogs, menus, tray](guide/dialogs-menus.md)
+- [Accessibility](guide/accessibility.md)
+- [Languages, text size, motion](guide/i18n.md)
+- [Data: local, synced, SQL](guide/data.md)
+- [Device APIs](guide/device-apis.md)
+- [Background execution](guide/background.md)
+- [Widgets, Live Activities, notifications](guide/system-surfaces.md)
+- [In the car](guide/car.md)
+
+# Platforms
+
+- [Web](platforms/web.md)
+- [macOS](platforms/macos.md)
+- [iOS and iPadOS](platforms/ios.md)
+- [tvOS](platforms/tvos.md)
+- [watchOS](platforms/watchos.md)
+- [visionOS](platforms/visionos.md)
+- [Linux (GTK 4)](platforms/linux.md)
+- [Android](platforms/android.md)
+
+# Under the hood
+
+- [Architecture](architecture.md)
+- [Performance](performance.md)
+- [Status](status.md)
+
+# Shipping
+
+- [Shipping apps](shipping.md)
+- [Releasing Prism](releasing.md)
+
+# Contributing
+
+- [Contributing](contributing.md)
+- [Development](development.md)
+- [Changelog](changelog.md)

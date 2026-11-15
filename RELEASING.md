@@ -1,0 +1,106 @@
+# Releasing
+
+Every crate shares one version (`[workspace.package] version` in the root
+`Cargo.toml`) and is released together. Only maintainers with a crates.io
+token for the crates can publish.
+
+## Checklist
+
+1. **Start from a green `main`.** CI passes (format, tests, clippy on every
+   target, bundles) and the docs workflow builds.
+2. **Pick the version.** Before 1.0, a breaking change bumps the minor
+   (`0.1.x` → `0.2.0`), anything else the patch.
+3. **Bump it in one commit**, in this order:
+   1. `[workspace.package] version` in `Cargo.toml`;
+   2. the `version = "…"` of every `prism*` entry in `[workspace.dependencies]`
+      (same file; they are what crates.io resolves);
+   3. `cargo update --workspace` to refresh `Cargo.lock`;
+   4. `CHANGELOG.md`: rename `Unreleased` to the version and date, start a new
+      empty `Unreleased` section.
+4. **Check locally** (macOS with Xcode, so the Apple crates build):
+
+   ```sh
+   cargo fmt --all --check
+   cargo test --workspace
+   cargo clippy --workspace --all-targets -- -D warnings
+   RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+   cargo publish --workspace --dry-run    # packages and builds every crate
+   mise run docs                          # the book
+   ```
+
+   `--dry-run` packages each crate, then builds it from its package against
+   the others' packages, so a file outside a crate's directory (or a missing
+   version on a path dependency) fails here.
+5. **Tag** the bump commit: `git tag v0.2.0 && git push origin main v0.2.0`.
+6. **Publish** (below), then check the docs.rs builds and create the GitHub
+   release from the changelog section.
+
+## Publish order
+
+Dependencies first. `cargo publish --workspace` computes this order itself;
+the table is the same order for publishing crate by crate.
+
+| # | Crate | Depends on (Prism crates) |
+|---|---|---|
+| 1 | `prism-core` | – |
+| 2 | `prism-apple-build` | – |
+| 3 | `prism-build` | – |
+| 4 | `prism-http` | core |
+| 5 | `prism-ui` | core |
+| 6 | `prism-native` | core, http |
+| 7 | `prism-web` | core |
+| 8 | `prism-db` | core |
+| 9 | `prism-macos` | core, native, apple-build |
+| 10 | `prism-ios` | core, native, apple-build |
+| 11 | `prism-watchos` | core, native, apple-build |
+| 12 | `prism-linux` | core, native |
+| 13 | `prism-android` | core, native |
+| 14 | `prism` | core, ui, http, web, db and the five backends |
+| 15 | `prism-cli` | apple-build |
+
+Publishing must happen from macOS with Xcode: verifying `prism-macos`,
+`prism-ios` and `prism-watchos` compiles the Swift bridge.
+
+### New versions of existing crates
+
+crates.io accepts 30 updates in a burst, then one a minute: the whole
+workspace goes in one command.
+
+```sh
+cargo publish --workspace
+```
+
+### The first release (new crates)
+
+crates.io limits **new** crates to a burst of 5, then one every 10 minutes
+(`PublishNew` in crates.io's `rate_limiter.rs`). One `cargo publish
+--workspace` would stop at the sixth crate with `429 Too Many Requests`. Publish
+crate by crate instead, in the order above, and wait when crates.io asks to
+(the error says until when):
+
+```sh
+for c in prism-core prism-apple-build prism-build prism-http prism-ui \
+         prism-native prism-web prism-db prism-macos prism-ios prism-watchos \
+         prism-linux prism-android prism prism-cli; do
+  cargo publish -p "$c" || break
+done
+```
+
+Run the loop again after the wait: remove the crates already published from
+the list first (publishing a version twice is an error). The ten crates after
+the first five take about 100 minutes. Alternatively, ask help@crates.io for a
+temporary higher limit before the release.
+
+The names `prism`, `prism-core` and `prism-cli` are already taken on
+crates.io by other projects: they have to be renamed (or transferred by their
+owners) before a first release.
+
+## After publishing
+
+- docs.rs builds every crate within minutes (<https://docs.rs/crate/prism/latest/builds>).
+  The Apple and Android backends are documented on docs.rs' Linux target (see
+  their `[package.metadata.docs.rs]`).
+- The book and the `main` API docs are deployed by `.github/workflows/docs.yml`
+  on every push to `main`.
+- A broken release can't be deleted, only yanked: `cargo yank --version
+  0.2.0 <crate>`, then publish a fixed patch.

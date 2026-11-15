@@ -5,7 +5,7 @@
 //! text("Swipe left to delete").only(Platform::MOBILE)
 //! text("Right-click for more").except(Platform::MOBILE)
 //! div().p(16.).on(Platform::Web, |s| s.p(24.))
-//! match cx.platform() { Platform::Ios => …, Platform::Web => …, _ => … }
+//! match cx.platform() { Platform::Ios => ios_hint(), Platform::Web => web_hint(), _ => other() }
 //! ```
 //!
 //! Excluded elements are left out of the tree (no hidden view is created).
@@ -17,24 +17,35 @@ use std::ops::BitOr;
 /// Where the app runs. The web backend reports `Web` whatever the server's OS.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Platform {
+    /// iPhone and iPad (iOS, iPadOS).
     Ios,
+    /// Android phones, tablets, Wear OS and Android TV.
     Android,
+    /// macOS.
     Macos,
+    /// Windows (no backend yet).
     Windows,
+    /// Linux desktops (GTK 4).
     Linux,
+    /// The web backend, whatever the browser or the server's OS.
     Web,
+    /// Apple TV.
     Tvos,
+    /// Apple Watch.
     Watchos,
     /// Apple Vision Pro.
     Visionos,
 }
 
 impl Platform {
+    /// Phones and tablets: iOS and Android.
     pub const MOBILE: Platforms =
         Platforms(1 << Platform::Ios as u16 | 1 << Platform::Android as u16);
+    /// Desktops: macOS, Windows and Linux.
     pub const DESKTOP: Platforms = Platforms(
         1 << Platform::Macos as u16 | 1 << Platform::Windows as u16 | 1 << Platform::Linux as u16,
     );
+    /// Apple's platforms: iOS, macOS, tvOS, watchOS and visionOS.
     pub const APPLE: Platforms = Platforms(
         1 << Platform::Ios as u16
             | 1 << Platform::Macos as u16
@@ -48,6 +59,7 @@ impl Platform {
     pub const WEARABLE: Platforms = Platforms(1 << Platform::Watchos as u16);
     /// Headsets: visionOS.
     pub const SPATIAL: Platforms = Platforms(1 << Platform::Visionos as u16);
+    /// Every platform.
     pub const ALL: Platforms = Platforms((1 << 9) - 1);
     /// Everything but the web.
     pub const NATIVE: Platforms = Platforms(Platform::ALL.0 & !(1 << Platform::Web as u16));
@@ -73,19 +85,24 @@ impl Platform {
         }
     }
 
+    /// iOS or Android.
     pub fn is_mobile(self) -> bool {
         Platform::MOBILE.contains(self)
     }
+    /// macOS, Windows or Linux.
     pub fn is_desktop(self) -> bool {
         Platform::DESKTOP.contains(self)
     }
+    /// The web backend.
     pub fn is_web(self) -> bool {
         self == Platform::Web
     }
+    /// One of Apple's platforms.
     pub fn is_apple(self) -> bool {
         Platform::APPLE.contains(self)
     }
 
+    /// Lowercase name: `"ios"`, `"macos"`, `"web"`…
     pub fn name(self) -> &'static str {
         match self {
             Platform::Ios => "ios",
@@ -106,6 +123,7 @@ impl Platform {
 pub struct Platforms(u16);
 
 impl Platforms {
+    /// Whether `p` is in the set.
     pub fn contains(self, p: Platform) -> bool {
         self.0 & (1 << p as u16) != 0
     }

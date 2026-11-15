@@ -27,6 +27,8 @@
 //! [`WebApp::export_static`] writes the static files for a CDN and
 //! [`WebApp::asset_url`] (or `PRISM_ASSET_URL`) points pages at it.
 
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 mod app;
 mod assets;
 mod css;

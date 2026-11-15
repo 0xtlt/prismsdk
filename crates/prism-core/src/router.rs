@@ -32,6 +32,7 @@ pub struct Params {
 }
 
 impl Params {
+    /// The value captured for `name` (`id` in `/todos/:id`).
     pub fn get(&self, name: &str) -> Option<&str> {
         self.values
             .iter()
@@ -149,6 +150,7 @@ pub struct RouterBuilder {
 
 impl Router {
     #[allow(clippy::new_ret_no_self)]
+    /// Starts declaring routes.
     pub fn new() -> RouterBuilder {
         RouterBuilder::default()
     }

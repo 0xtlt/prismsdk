@@ -76,6 +76,7 @@ impl Locale {
         best.map(|(_, tag)| Locale::new(tag))
     }
 
+    /// The BCP 47 tag (`fr-FR`).
     pub fn tag(&self) -> &str {
         &self.0
     }
@@ -90,6 +91,7 @@ impl Locale {
         self.0.split('-').skip(1).find(|p| p.len() == 2)
     }
 
+    /// Right to left for Arabic, Hebrew, Persian, Urdu and other RTL scripts.
     pub fn direction(&self) -> Direction {
         match self.language() {
             "ar" | "he" | "iw" | "fa" | "ur" | "ps" | "yi" | "dv" | "ckb" | "sd" | "ug" => {
@@ -110,7 +112,9 @@ impl Display for Locale {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Direction {
     #[default]
+    /// Left to right.
     Ltr,
+    /// Right to left (Arabic, Hebrew…).
     Rtl,
 }
 
@@ -131,6 +135,7 @@ impl Default for Translations {
 }
 
 impl Translations {
+    /// No languages yet, falling back to English.
     pub fn new() -> Self {
         Translations {
             catalogs: HashMap::new(),
@@ -183,6 +188,7 @@ impl Translations {
         langs
     }
 
+    /// The text of `key` for `locale`: its exact tag, then its language, then the fallback language.
     pub fn lookup(&self, locale: &Locale, key: &str) -> Option<&str> {
         [locale.tag(), locale.language(), self.fallback.as_str()]
             .into_iter()
@@ -294,9 +300,11 @@ pub enum DateStyle {
 /// Formats numbers and dates for a locale. Apple backends use Foundation's
 /// formatters; [`BasicFormatter`] is the portable fallback (web, tests).
 pub trait Formatter {
+    /// `value` with `decimals` digits after the separator, in the locale's style.
     fn number(&self, locale: &Locale, value: f64, decimals: usize) -> String;
     /// `unix` is seconds since 1970 (UTC).
     fn date(&self, locale: &Locale, unix: f64, style: DateStyle) -> String;
+    /// The time of day of `unix` (seconds since 1970, UTC).
     fn time(&self, locale: &Locale, unix: f64) -> String;
 }
 
@@ -619,6 +627,7 @@ impl App {
         }
     }
 
+    /// Layout direction of the current locale.
     pub fn direction(&self) -> Direction {
         self.locale().direction()
     }
@@ -643,6 +652,7 @@ impl App {
         self.t_count_with(key, count, &[])
     }
 
+    /// Like [`t_count`](Self::t_count), with other `{name}` placeholders filled too.
     pub fn t_count_with(&self, key: &str, count: i64, args: &[(&str, &dyn Display)]) -> String {
         let locale = self.locale();
         let category = plural_category(locale.language(), count);
@@ -662,6 +672,7 @@ impl App {
         interpolate(&template, &all)
     }
 
+    /// `value` formatted for the current locale, with `decimals` digits.
     pub fn format_number(&self, value: f64, decimals: usize) -> String {
         self.formatter().number(self.locale(), value, decimals)
     }
@@ -671,6 +682,7 @@ impl App {
         self.formatter().date(self.locale(), unix, style)
     }
 
+    /// The time of day of `unix` (seconds since 1970), for the current locale.
     pub fn format_time(&self, unix: f64) -> String {
         self.formatter().time(self.locale(), unix)
     }

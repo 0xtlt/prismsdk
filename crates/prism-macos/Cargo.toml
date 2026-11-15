@@ -3,7 +3,15 @@ name = "prism-macos"
 description = "Prism backend for macOS (AppKit native views)."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/prism-macos"
+readme = "README.md"
+keywords = ["macos", "appkit", "ui", "gui", "native"]
+categories = ["gui", "os::macos-apis"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 prism-core.workspace = true
@@ -18,3 +26,12 @@ dispatch2.workspace = true
 
 [build-dependencies]
 prism-apple-build.workspace = true
+
+[package.metadata.docs.rs]
+# docs.rs builds on Linux, without Xcode or the Android NDK, and C dependencies
+# (ring, through prism-http) cannot be cross-compiled there. This crate's only
+# public item is `run`, which the `prism` facade calls on macOS; on the default
+# target the page shows the crate overview. `cargo doc --target aarch64-apple-darwin`
+# documents it locally.
+targets = []
+rustdoc-args = ["--cfg", "docsrs"]

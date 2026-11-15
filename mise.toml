@@ -5,6 +5,8 @@ rust = { version = "1.99", targets = "aarch64-apple-darwin,aarch64-apple-ios,aar
 java = "temurin-21"
 android-sdk = "23.0"
 "cargo:cargo-ndk" = "4.1.2"
+# The documentation site (docs/, `mise run docs`).
+mdbook = "0.5.4"
 
 [env]
 IPHONEOS_DEPLOYMENT_TARGET = "17.0"
@@ -33,6 +35,10 @@ run = [
 [tasks.test]
 description = "Run the unit tests"
 run = "cargo test --workspace"
+
+[tasks.docs]
+description = "Build the documentation site into docs/book (`mdbook serve docs` to preview it live)"
+run = "mdbook build docs"
 
 [tasks.cli]
 description = "Install the `prism` command (prism new / run / dev / build / devices)"

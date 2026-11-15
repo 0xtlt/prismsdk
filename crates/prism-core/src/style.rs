@@ -12,15 +12,20 @@
 /// widgets and Live Activities), so it follows the system appearance live.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Color {
+    /// Red, `0.0..=1.0`.
     pub r: f32,
+    /// Green, `0.0..=1.0`.
     pub g: f32,
+    /// Blue, `0.0..=1.0`.
     pub b: f32,
+    /// Alpha (opacity), `0.0..=1.0`.
     pub a: f32,
     /// Dark-mode variant `[r, g, b, a]`, if the color adapts.
     pub dark: Option<[f32; 4]>,
 }
 
 impl Color {
+    /// Opaque black.
     pub const BLACK: Color = Color {
         r: 0.,
         g: 0.,
@@ -28,6 +33,7 @@ impl Color {
         a: 1.,
         dark: None,
     };
+    /// Opaque white.
     pub const WHITE: Color = Color {
         r: 1.,
         g: 1.,
@@ -35,6 +41,7 @@ impl Color {
         a: 1.,
         dark: None,
     };
+    /// Fully transparent.
     pub const TRANSPARENT: Color = Color {
         r: 0.,
         g: 0.,
@@ -43,6 +50,7 @@ impl Color {
         dark: None,
     };
 
+    /// The same color with alpha `a` (both variants of an adaptive color).
     pub fn with_alpha(self, a: f32) -> Color {
         Color {
             a,
@@ -132,6 +140,7 @@ pub fn rgba(hex: u32, a: f32) -> Color {
 /// A length along one axis.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum Length {
+    /// Sized by content and flex rules.
     #[default]
     Auto,
     /// Logical points (CSS px, AppKit/UIKit points).
@@ -162,9 +171,12 @@ pub fn relative(f: f32) -> Length {
     Length::Fraction(f)
 }
 
+/// Main axis of a flex container (`flex-direction`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum FlexDirection {
+    /// Children side by side (leading to trailing).
     Row,
+    /// Children stacked top to bottom (the default).
     #[default]
     Column,
 }
@@ -172,9 +184,13 @@ pub enum FlexDirection {
 /// Cross-axis alignment (`align-items` / `align-self`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Align {
+    /// Aligned to the leading or top edge.
     Start,
+    /// Centered.
     Center,
+    /// Aligned to the trailing or bottom edge.
     End,
+    /// Stretched to fill the cross axis (the default).
     #[default]
     Stretch,
 }
@@ -182,25 +198,37 @@ pub enum Align {
 /// Main-axis distribution (`justify-content`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Justify {
+    /// Packed at the start (the default).
     #[default]
     Start,
+    /// Packed in the center.
     Center,
+    /// Packed at the end.
     End,
+    /// Equal space between children, none at the edges.
     SpaceBetween,
+    /// Equal space around each child (half at the edges).
     SpaceAround,
+    /// Equal space between children and at the edges.
     SpaceEvenly,
 }
 
+/// Font weight (system font).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum FontWeight {
+    /// 400 (the default).
     #[default]
     Regular,
+    /// 500.
     Medium,
+    /// 600.
     Semibold,
+    /// 700.
     Bold,
 }
 
 impl FontWeight {
+    /// The CSS `font-weight` number (400, 500, 600, 700).
     pub fn css(self) -> u16 {
         match self {
             FontWeight::Regular => 400,
@@ -215,22 +243,30 @@ impl FontWeight {
 /// right-to-left languages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum TextAlign {
+    /// Leading edge (the default).
     #[default]
     Left,
+    /// Centered.
     Center,
+    /// Trailing edge.
     Right,
 }
 
 /// Per-edge values (padding, margin).
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct Edges {
+    /// Top, points.
     pub top: f32,
+    /// Right (trailing in right-to-left layouts), points.
     pub right: f32,
+    /// Bottom, points.
     pub bottom: f32,
+    /// Left (leading in left-to-right layouts), points.
     pub left: f32,
 }
 
 impl Edges {
+    /// The same value on every edge.
     pub fn all(v: f32) -> Self {
         Edges {
             top: v,
@@ -241,6 +277,7 @@ impl Edges {
     }
 }
 
+/// Default text size, in points.
 pub const DEFAULT_FONT_SIZE: f32 = 16.;
 
 /// The complete style of a node.
@@ -248,33 +285,59 @@ pub const DEFAULT_FONT_SIZE: f32 = 16.;
 pub struct Style {
     /// Removed from layout and hidden (`display: none`).
     pub display_none: bool,
+    /// Main axis of the children (`Column` by default).
     pub direction: FlexDirection,
+    /// Children wrap onto new lines (`flex-wrap`).
     pub wrap: bool,
+    /// Cross-axis alignment of the children.
     pub align_items: Align,
+    /// Cross-axis alignment of this node, overriding its parent's `align_items`.
     pub align_self: Option<Align>,
+    /// Main-axis distribution of the children.
     pub justify_content: Justify,
+    /// Space between children, points.
     pub gap: f32,
+    /// Inner spacing, points.
     pub padding: Edges,
+    /// Outer spacing, points.
     pub margin: Edges,
+    /// Width.
     pub width: Length,
+    /// Height.
     pub height: Length,
+    /// Minimum width.
     pub min_width: Length,
+    /// Minimum height.
     pub min_height: Length,
+    /// Maximum width.
     pub max_width: Length,
+    /// Maximum height.
     pub max_height: Length,
+    /// Share of the free space this node grows into (`0` by default).
     pub flex_grow: f32,
+    /// How much this node shrinks when space is short (`1` by default).
     pub flex_shrink: f32,
+    /// Main-axis size before growing or shrinking.
     pub flex_basis: Length,
 
+    /// Background color.
     pub background: Option<Color>,
+    /// Corner radius, points.
     pub corner_radius: f32,
+    /// Border width, points.
     pub border_width: f32,
+    /// Border color.
     pub border_color: Option<Color>,
+    /// Opacity, `0.0..=1.0` (`1` by default).
     pub opacity: f32,
 
+    /// Text color (the platform's default label color when unset).
     pub text_color: Option<Color>,
+    /// Text size, points ([`DEFAULT_FONT_SIZE`] by default).
     pub font_size: f32,
+    /// Text weight.
     pub font_weight: FontWeight,
+    /// Text alignment.
     pub text_align: TextAlign,
 
     /// Visual offset, scale and rotation (no effect on layout).
@@ -302,14 +365,19 @@ pub struct Style {
 /// | `Large` | ≥ 1440 | desktops |
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum Breakpoint {
+    /// Narrower than 600 (the default).
     #[default]
     Compact,
+    /// 600 to 1023 wide.
     Medium,
+    /// 1024 to 1439 wide.
     Expanded,
+    /// 1440 and wider.
     Large,
 }
 
 impl Breakpoint {
+    /// The class of a window `width` points wide.
     pub fn for_width(width: f32) -> Self {
         match width {
             w if w >= 1440. => Breakpoint::Large,
@@ -350,14 +418,20 @@ pub enum Condition {
 /// What responsive rules are resolved against.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct StyleContext {
+    /// The window's size class.
     pub breakpoint: Breakpoint,
+    /// The platform the app runs on (`None`: platform rules never apply).
     pub platform: Option<crate::platform::Platform>,
+    /// The screen's orientation.
     pub orientation: crate::device_info::Orientation,
+    /// A foldable's posture.
     pub posture: crate::device_info::Posture,
+    /// The kind of device.
     pub kind: crate::device_info::DeviceKind,
 }
 
 impl StyleContext {
+    /// A context for `breakpoint` on `platform`; device fields at their defaults.
     pub fn new(breakpoint: Breakpoint, platform: crate::platform::Platform) -> Self {
         StyleContext {
             breakpoint,
@@ -373,6 +447,7 @@ impl StyleContext {
 pub struct Responsive(Vec<(Condition, Rule)>);
 
 impl Responsive {
+    /// Whether no rule is set.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -483,6 +558,7 @@ impl Styled for Style {
 pub struct Transition {
     /// Seconds.
     pub duration: f32,
+    /// The timing curve.
     pub curve: Curve,
     /// Seconds before it starts.
     pub delay: f32,
@@ -496,6 +572,7 @@ impl Transition {
             delay: 0.,
         }
     }
+    /// Eases in and out, over `ms` milliseconds.
     pub fn ease(ms: u32) -> Self {
         Self::new(ms, Curve::EaseInOut)
     }
@@ -507,9 +584,11 @@ impl Transition {
     pub fn ease_in(ms: u32) -> Self {
         Self::new(ms, Curve::EaseIn)
     }
+    /// Constant speed, over `ms` milliseconds.
     pub fn linear(ms: u32) -> Self {
         Self::new(ms, Curve::Linear)
     }
+    /// A spring with a slight overshoot, over `ms` milliseconds.
     pub fn spring(ms: u32) -> Self {
         Self::new(ms, Curve::Spring)
     }
@@ -568,12 +647,17 @@ impl Transition {
     }
 }
 
+/// The timing curve of a [`Transition`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Curve {
+    /// Slow start and end (the default).
     #[default]
     EaseInOut,
+    /// Fast start, slow end.
     EaseOut,
+    /// Slow start, fast end.
     EaseIn,
+    /// Constant speed.
     Linear,
     /// Slight overshoot, like iOS springs.
     Spring,
@@ -620,67 +704,87 @@ impl Default for Style {
 
 /// GPUI-style fluent styling methods, available on every element builder.
 pub trait Styled: Sized {
+    /// The style the builders change.
     fn style_mut(&mut self) -> &mut Style;
 
+    /// Changes the style with `f`.
     fn with_style(mut self, f: impl FnOnce(&mut Style)) -> Self {
         f(self.style_mut());
         self
     }
 
     // Flex container
+    /// Lays children out in a row.
     fn flex_row(self) -> Self {
         self.with_style(|s| s.direction = FlexDirection::Row)
     }
+    /// Lays children out in a column (the default).
     fn flex_col(self) -> Self {
         self.with_style(|s| s.direction = FlexDirection::Column)
     }
+    /// Wraps children onto new lines when they don't fit.
     fn flex_wrap(self) -> Self {
         self.with_style(|s| s.wrap = true)
     }
+    /// Space between children, points.
     fn gap(self, v: f32) -> Self {
         self.with_style(|s| s.gap = v)
     }
+    /// Aligns children to the start of the cross axis.
     fn items_start(self) -> Self {
         self.with_style(|s| s.align_items = Align::Start)
     }
+    /// Centers children on the cross axis.
     fn items_center(self) -> Self {
         self.with_style(|s| s.align_items = Align::Center)
     }
+    /// Aligns children to the end of the cross axis.
     fn items_end(self) -> Self {
         self.with_style(|s| s.align_items = Align::End)
     }
+    /// Stretches children across the cross axis (the default).
     fn items_stretch(self) -> Self {
         self.with_style(|s| s.align_items = Align::Stretch)
     }
+    /// Aligns this node to the start of its parent's cross axis.
     fn self_start(self) -> Self {
         self.with_style(|s| s.align_self = Some(Align::Start))
     }
+    /// Centers this node on its parent's cross axis.
     fn self_center(self) -> Self {
         self.with_style(|s| s.align_self = Some(Align::Center))
     }
+    /// Aligns this node to the end of its parent's cross axis.
     fn self_end(self) -> Self {
         self.with_style(|s| s.align_self = Some(Align::End))
     }
+    /// Packs children at the start of the main axis (the default).
     fn justify_start(self) -> Self {
         self.with_style(|s| s.justify_content = Justify::Start)
     }
+    /// Packs children in the center of the main axis.
     fn justify_center(self) -> Self {
         self.with_style(|s| s.justify_content = Justify::Center)
     }
+    /// Packs children at the end of the main axis.
     fn justify_end(self) -> Self {
         self.with_style(|s| s.justify_content = Justify::End)
     }
+    /// Equal space between children, none at the edges.
     fn justify_between(self) -> Self {
         self.with_style(|s| s.justify_content = Justify::SpaceBetween)
     }
+    /// Equal space around each child.
     fn justify_around(self) -> Self {
         self.with_style(|s| s.justify_content = Justify::SpaceAround)
     }
+    /// Equal space between children and at the edges.
     fn justify_evenly(self) -> Self {
         self.with_style(|s| s.justify_content = Justify::SpaceEvenly)
     }
 
     // Flex item
+    /// Grows and shrinks from a zero basis: siblings with `flex_1` share the space equally.
     fn flex_1(self) -> Self {
         self.with_style(|s| {
             s.flex_grow = 1.;
@@ -688,56 +792,69 @@ pub trait Styled: Sized {
             s.flex_basis = Length::Px(0.)
         })
     }
+    /// Grows into the free space.
     fn flex_grow(self) -> Self {
         self.with_style(|s| s.flex_grow = 1.)
     }
+    /// Never shrinks below its size.
     fn flex_shrink_0(self) -> Self {
         self.with_style(|s| s.flex_shrink = 0.)
     }
 
     // Spacing
+    /// Padding on every edge, points.
     fn p(self, v: f32) -> Self {
         self.with_style(|s| s.padding = Edges::all(v))
     }
+    /// Leading and trailing padding, points.
     fn px(self, v: f32) -> Self {
         self.with_style(|s| {
             s.padding.left = v;
             s.padding.right = v
         })
     }
+    /// Top and bottom padding, points.
     fn py(self, v: f32) -> Self {
         self.with_style(|s| {
             s.padding.top = v;
             s.padding.bottom = v
         })
     }
+    /// Top padding, points.
     fn pt(self, v: f32) -> Self {
         self.with_style(|s| s.padding.top = v)
     }
+    /// Trailing padding (right in left-to-right languages), points.
     fn pr(self, v: f32) -> Self {
         self.with_style(|s| s.padding.right = v)
     }
+    /// Bottom padding, points.
     fn pb(self, v: f32) -> Self {
         self.with_style(|s| s.padding.bottom = v)
     }
+    /// Leading padding (left in left-to-right languages), points.
     fn pl(self, v: f32) -> Self {
         self.with_style(|s| s.padding.left = v)
     }
+    /// Margin on every edge, points.
     fn m(self, v: f32) -> Self {
         self.with_style(|s| s.margin = Edges::all(v))
     }
+    /// Leading and trailing margin, points.
     fn mx(self, v: f32) -> Self {
         self.with_style(|s| {
             s.margin.left = v;
             s.margin.right = v
         })
     }
+    /// Top and bottom margin, points.
     fn my(self, v: f32) -> Self {
         self.with_style(|s| {
             s.margin.top = v;
             s.margin.bottom = v
         })
     }
+    /// Top margin, points.
     fn mt(self, v: f32) -> Self {
         self.with_style(|s| s.margin.top = v)
     }
@@ -749,19 +866,23 @@ pub trait Styled: Sized {
     fn mr(self, v: f32) -> Self {
         self.with_style(|s| s.margin.right = v)
     }
+    /// Bottom margin, points.
     fn mb(self, v: f32) -> Self {
         self.with_style(|s| s.margin.bottom = v)
     }
 
     // Size
+    /// Width: points (`w(120.)`) or a fraction of the parent (`w(relative(0.5))`).
     fn w(self, v: impl Into<Length>) -> Self {
         let v = v.into();
         self.with_style(|s| s.width = v)
     }
+    /// Height: points or a fraction of the parent.
     fn h(self, v: impl Into<Length>) -> Self {
         let v = v.into();
         self.with_style(|s| s.height = v)
     }
+    /// Width and height.
     fn size(self, v: impl Into<Length>) -> Self {
         let v = v.into();
         self.with_style(|s| {
@@ -769,71 +890,91 @@ pub trait Styled: Sized {
             s.height = v
         })
     }
+    /// The parent's full width.
     fn w_full(self) -> Self {
         self.w(relative(1.))
     }
+    /// The parent's full height.
     fn h_full(self) -> Self {
         self.h(relative(1.))
     }
+    /// The parent's full width and height.
     fn size_full(self) -> Self {
         self.w_full().h_full()
     }
+    /// Minimum width.
     fn min_w(self, v: impl Into<Length>) -> Self {
         let v = v.into();
         self.with_style(|s| s.min_width = v)
     }
+    /// Minimum height.
     fn min_h(self, v: impl Into<Length>) -> Self {
         let v = v.into();
         self.with_style(|s| s.min_height = v)
     }
+    /// Maximum width.
     fn max_w(self, v: impl Into<Length>) -> Self {
         let v = v.into();
         self.with_style(|s| s.max_width = v)
     }
+    /// Maximum height.
     fn max_h(self, v: impl Into<Length>) -> Self {
         let v = v.into();
         self.with_style(|s| s.max_height = v)
     }
 
     // Visuals
+    /// Background color.
     fn bg(self, c: Color) -> Self {
         self.with_style(|s| s.background = Some(c))
     }
+    /// Corner radius, points.
     fn rounded(self, r: f32) -> Self {
         self.with_style(|s| s.corner_radius = r)
     }
+    /// Border width, points.
     fn border(self, w: f32) -> Self {
         self.with_style(|s| s.border_width = w)
     }
+    /// Border color.
     fn border_color(self, c: Color) -> Self {
         self.with_style(|s| s.border_color = Some(c))
     }
+    /// Opacity, `0.0..=1.0`.
     fn opacity(self, o: f32) -> Self {
         self.with_style(|s| s.opacity = o)
     }
 
     // Text
+    /// Text color.
     fn text_color(self, c: Color) -> Self {
         self.with_style(|s| s.text_color = Some(c))
     }
+    /// Text size, points.
     fn text_size(self, v: f32) -> Self {
         self.with_style(|s| s.font_size = v)
     }
+    /// Text weight.
     fn font_weight(self, w: FontWeight) -> Self {
         self.with_style(|s| s.font_weight = w)
     }
+    /// Medium text weight (500).
     fn medium(self) -> Self {
         self.font_weight(FontWeight::Medium)
     }
+    /// Semibold text weight (600).
     fn semibold(self) -> Self {
         self.font_weight(FontWeight::Semibold)
     }
+    /// Bold text weight (700).
     fn bold(self) -> Self {
         self.font_weight(FontWeight::Bold)
     }
+    /// Centers the text.
     fn text_center(self) -> Self {
         self.with_style(|s| s.text_align = TextAlign::Center)
     }
+    /// Aligns the text to the trailing edge (left in right-to-left languages).
     fn text_right(self) -> Self {
         self.with_style(|s| s.text_align = TextAlign::Right)
     }
@@ -942,6 +1083,7 @@ pub trait Styled: Sized {
     fn spring(self, ms: u32) -> Self {
         self.transition(Transition::spring(ms))
     }
+    /// Animates changes of this element with `t` (keeps an earlier `delay`).
     fn transition(self, t: Transition) -> Self {
         self.with_style(|s| {
             let delay = s.transition.map_or(0., |t| t.delay);

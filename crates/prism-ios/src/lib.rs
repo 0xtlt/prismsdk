@@ -3,7 +3,7 @@
 //! UIKit backend: every Prism node is a real `UIView` (`UILabel`, `UIButton`,
 //! `UITextField`), laid out by `prism-native`. Uses the UIScene lifecycle, so
 //! the app bundle's Info.plist must declare `PrismSceneDelegate` (see
-//! `scripts/ios-run.sh`).
+//! `platform/scripts/ios-run.sh` in `prism-cli`).
 
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "visionos"))]
 mod automation;

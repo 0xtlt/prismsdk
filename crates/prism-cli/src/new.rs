@@ -32,12 +32,29 @@ pub fn create(name: &str, prism: Option<PathBuf>) -> Result<(), String> {
     {
         return Err(format!("{name:?}: use letters, digits, - and _"));
     }
-    let prism = prism
-        .or_else(default_prism)
-        .ok_or("where is Prism? pass --prism <path to the Prism repository>")?;
-    let prism = prism
-        .canonicalize()
-        .map_err(|e| format!("{}: {e}", prism.display()))?;
+    // A Prism checkout (`--prism`, or the one this CLI was built from) gives
+    // path dependencies; otherwise the crates.io release matching this CLI.
+    let (prism_dep, build_dep) = match prism.or_else(default_prism) {
+        Some(prism) => {
+            let prism = prism
+                .canonicalize()
+                .map_err(|e| format!("{}: {e}", prism.display()))?;
+            (
+                format!(
+                    "{{ path = \"{}/crates/prism\", default-features = false }}",
+                    prism.display()
+                ),
+                format!("{{ path = \"{}/crates/prism-build\" }}", prism.display()),
+            )
+        }
+        None => {
+            let version = env!("CARGO_PKG_VERSION");
+            (
+                format!("{{ version = \"{version}\", default-features = false }}"),
+                format!("\"{version}\""),
+            )
+        }
+    };
     let title = {
         let mut c = package.split('_').map(|w| {
             let mut ch = w.chars();
@@ -91,12 +108,11 @@ native = ["prism/native"]
 web = ["prism/web"]
 
 [dependencies]
-prism = {{ path = "{prism}/crates/prism", default-features = false }}
+prism = {prism_dep}
 
 [build-dependencies]
-prism-build = {{ path = "{prism}/crates/prism-build" }}
-"#,
-                prism = prism.display()
+prism-build = {build_dep}
+"#
             ),
         ),
         (

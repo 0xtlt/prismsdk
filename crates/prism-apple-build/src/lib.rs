@@ -1,6 +1,27 @@
-//! Used from `build.rs` of the Apple backends: compiles the Swift sources in
-//! `platform/apple/{Shared,Bridge}` into a static library for the cargo target
-//! and links it, together with the Swift runtime search paths.
+//! # prism-apple-build
+//!
+//! Build-script helper for Prism's Apple backends (`prism-macos`,
+//! `prism-ios`, `prism-watchos`). It compiles the Swift sources shipped in
+//! this crate's `apple/` directory into a static library for the cargo target
+//! and links it, with the Swift runtime search paths:
+//!
+//! - `apple/Shared` and `apple/Bridge`: the bridge to WidgetKit, ActivityKit,
+//!   UserNotifications, CarPlay and the device APIs ([`build_bridge`]);
+//! - `apple/Watch`: the SwiftUI host that draws watchOS apps
+//!   ([`build_watch_host`]).
+//!
+//! ```no_run
+//! // build.rs of an Apple backend
+//! fn main() {
+//!     prism_apple_build::build_bridge();
+//! }
+//! ```
+//!
+//! Both are no-ops for non-Apple targets and on docs.rs (`DOCS_RS`), where no
+//! Xcode toolchain exists. Requires Xcode (`xcrun swiftc`) otherwise.
+//!
+//! The same sources, plus the widget extension (`apple/Extension`) and the
+//! bundling helpers, are exposed as [`SOURCES`] for the `prism` CLI.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -18,20 +39,33 @@ fn xcrun(args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// Compiles and links the bridge. No-op for non-Apple targets.
+/// Every file of this crate's `apple/` directory, as `(path, contents)` with
+/// paths relative to it (`"Bridge/PrismBridge.swift"`, `"generate_widgets.py"`).
+///
+/// The `prism` CLI writes them under its platform directory to bundle apps
+/// (widget extension, icons), so projects don't need a Prism checkout.
+pub const SOURCES: &[(&str, &str)] = include!(concat!(env!("OUT_DIR"), "/sources.rs"));
+
+/// Compiles and links the bridge (`apple/Shared` + `apple/Bridge`). No-op for
+/// non-Apple targets.
 pub fn build_bridge() {
     build_swift(&["Shared", "Bridge"], "PrismBridge");
 }
 
-/// Compiles and links the watchOS SwiftUI host (`platform/apple/Watch`) with
+/// Compiles and links the watchOS SwiftUI host (`apple/Watch`) with
 /// the shared bridge (device APIs, notifications).
 pub fn build_watch_host() {
     build_swift(&["Shared", "Bridge", "Watch"], "PrismWatch");
 }
 
-/// Compiles the Swift sources of `dirs` (under `platform/apple`) into a
+/// Compiles the Swift sources of `dirs` (under `apple/`) into a
 /// static library named `module` and links it, for the cargo target.
 fn build_swift(dirs: &[&str], module: &str) {
+    // docs.rs builds documentation on Linux, without Xcode.
+    println!("cargo:rerun-if-env-changed=DOCS_RS");
+    if std::env::var_os("DOCS_RS").is_some() {
+        return;
+    }
     let target = std::env::var("TARGET").unwrap_or_default();
     let (sdk, platform, triple) = match target.as_str() {
         "aarch64-apple-ios-sim" => (
@@ -115,13 +149,14 @@ fn build_swift(dirs: &[&str], module: &str) {
         _ => return,
     };
 
-    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    let apple = manifest.join("../../platform/apple");
+    // This crate's own sources (a checkout, or the registry's copy), not the
+    // manifest of the backend whose build script calls us.
+    let apple = Path::new(env!("CARGO_MANIFEST_DIR")).join("apple");
     let mut sources: Vec<PathBuf> = Vec::new();
     for dir in dirs {
         let dir = apple.join(dir);
         println!("cargo:rerun-if-changed={}", dir.display());
-        for entry in std::fs::read_dir(&dir).expect("platform/apple sources") {
+        for entry in std::fs::read_dir(&dir).expect("prism-apple-build: apple/ sources") {
             let p = entry.unwrap().path();
             if p.extension().is_some_and(|e| e == "swift") {
                 sources.push(p);

@@ -16,10 +16,12 @@ use crate::router::{NavOp, Router};
 /// A stateful view. `render` runs on first mount and whenever the entity is
 /// notified; other entities' output is reused as-is.
 pub trait Render: 'static + Sized {
+    /// Describes this entity's UI.
     fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// Identifies an entity within its [`App`].
 pub struct EntityId(u64);
 
 /// A typed handle to state owned by the [`App`].
@@ -45,14 +47,17 @@ impl<T: 'static> Entity<T> {
         }
     }
 
+    /// This entity's id.
     pub fn id(&self) -> EntityId {
         self.id
     }
 
+    /// Borrows the entity's state.
     pub fn read<'a>(&self, app: &'a App) -> &'a T {
         app.read(self)
     }
 
+    /// Mutably borrows the entity's state, with a [`Context`] for it.
     pub fn update<R>(&self, app: &mut App, f: impl FnOnce(&mut T, &mut Context<T>) -> R) -> R {
         app.update(self, f)
     }
@@ -64,6 +69,7 @@ impl<T: 'static> Entity<T> {
 }
 
 impl<T: Render> Entity<T> {
+    /// Erases the type, to use the entity as a child or the root.
     pub fn into_any(self) -> AnyEntity {
         AnyEntity {
             id: self.id,
@@ -80,6 +86,7 @@ pub struct AnyEntity {
 }
 
 impl AnyEntity {
+    /// The entity's id.
     pub fn id(&self) -> EntityId {
         self.id
     }
@@ -105,7 +112,9 @@ pub enum Appearance {
     /// Follow the system setting.
     #[default]
     System,
+    /// Always light.
     Light,
+    /// Always dark.
     Dark,
 }
 
@@ -197,6 +206,7 @@ impl Default for App {
 }
 
 impl App {
+    /// An empty app.
     pub fn new() -> Self {
         Self::default()
     }
@@ -206,6 +216,7 @@ impl App {
         &mut *self.storage
     }
 
+    /// Replaces the storage (backends install the platform's).
     pub fn set_storage(&mut self, storage: Box<dyn crate::storage::Storage>) {
         self.storage = storage;
     }
@@ -233,6 +244,7 @@ impl App {
         }
     }
 
+    /// The appearance set with [`App::set_appearance`].
     pub fn appearance(&self) -> Appearance {
         self.appearance
     }
@@ -255,6 +267,7 @@ impl App {
         self.environment.text_scale
     }
 
+    /// The user asked for less motion: animations are skipped.
     pub fn reduce_motion(&self) -> bool {
         self.environment.reduce_motion
     }
@@ -281,6 +294,7 @@ impl App {
         self.refresh();
     }
 
+    /// Reads a global, or `None` if it was never set.
     pub fn try_global<T: 'static>(&self) -> Option<&T> {
         self.globals.get(&TypeId::of::<T>())?.downcast_ref()
     }
@@ -344,6 +358,7 @@ impl App {
         &self.initial_path
     }
 
+    /// Sets the path the app opens on (normalized).
     pub fn set_initial_path(&mut self, path: impl AsRef<str>) {
         self.initial_path = crate::router::normalize_path(path.as_ref());
     }
@@ -368,6 +383,7 @@ impl App {
         entity
     }
 
+    /// Borrows an entity's state. Panics if it is released or being updated.
     pub fn read<T: 'static>(&self, entity: &Entity<T>) -> &T {
         self.entities
             .get(&entity.id)
@@ -399,6 +415,7 @@ impl App {
         result
     }
 
+    /// Whether the entity `id` exists.
     pub fn contains(&self, id: EntityId) -> bool {
         self.entities.contains_key(&id)
     }
@@ -428,10 +445,12 @@ impl App {
         self.dirty.extend(ids);
     }
 
+    /// Whether some entity waits to be re-rendered.
     pub fn has_dirty(&self) -> bool {
         !self.dirty.is_empty()
     }
 
+    /// Makes `entity` the root of the UI and marks it for rendering.
     pub fn set_root<T: Render>(&mut self, entity: Entity<T>) {
         self.root = Some(entity.into_any());
         self.dirty.insert(entity.id);

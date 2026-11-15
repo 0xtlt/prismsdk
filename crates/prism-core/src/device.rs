@@ -12,7 +12,7 @@
 //!     }
 //!     let photos = cx.pick_images(PickImages::new().limit(3)).await?;
 //! });
-//! let watch = cx.watch_motion(Duration::from_millis(50), |m, app| { … });
+//! let watch = cx.watch_motion(Duration::from_millis(50), |m, app| { /* … */ });
 //! cx.haptic(Haptic::Success);
 //! cx.copy_text("Hello");
 //! cx.share(Share::text("Look").url("https://example.com"));
@@ -48,14 +48,20 @@ pub enum Permission {
     Location,
     /// Also in the background.
     LocationAlways,
+    /// Taking photos with the camera.
     Camera,
+    /// Reading the photo library.
     Photos,
+    /// Recording audio.
     Microphone,
+    /// Motion sensors (iOS: motion and fitness activity).
     Motion,
+    /// Showing notifications.
     Notifications,
 }
 
 impl Permission {
+    /// Stable lowercase name, as backends report it (`"location_always"`).
     pub fn name(self) -> &'static str {
         match self {
             Permission::Location => "location",
@@ -68,6 +74,7 @@ impl Permission {
         }
     }
 
+    /// The permission named `name` (see [`Permission::name`]).
     pub fn from_name(name: &str) -> Option<Self> {
         [
             Permission::Location,
@@ -83,24 +90,29 @@ impl Permission {
     }
 }
 
+/// Whether a [`Permission`] is granted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum PermissionState {
     /// Not asked yet: `request_permission` shows the system prompt.
     #[default]
     NotDetermined,
+    /// Allowed.
     Granted,
     /// Partially granted (iOS: selected photos only, approximate location…).
     Limited,
+    /// Refused: only the system settings can change it now.
     Denied,
     /// The device or platform does not have it.
     Unavailable,
 }
 
 impl PermissionState {
+    /// `Granted` or `Limited`.
     pub fn is_granted(self) -> bool {
         matches!(self, PermissionState::Granted | PermissionState::Limited)
     }
 
+    /// Stable lowercase name, as backends report it (`"not_determined"`).
     pub fn name(self) -> &'static str {
         match self {
             PermissionState::NotDetermined => "not_determined",
@@ -111,6 +123,7 @@ impl PermissionState {
         }
     }
 
+    /// The state named `name`; unknown names are `NotDetermined`.
     pub fn from_name(name: &str) -> Self {
         match name {
             "granted" => PermissionState::Granted,
@@ -125,7 +138,9 @@ impl PermissionState {
 /// A position on Earth.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct Location {
+    /// Degrees, north positive.
     pub latitude: f64,
+    /// Degrees, east positive.
     pub longitude: f64,
     /// Meters above sea level.
     pub altitude: Option<f64>,
@@ -157,8 +172,11 @@ pub struct Motion {
 pub struct PickedFile {
     /// Usable with `picture(path)` and `std::fs` natively; a URL on the web.
     pub path: String,
+    /// File name.
     pub name: String,
+    /// MIME type (`image/jpeg`).
     pub mime: String,
+    /// Size in bytes.
     pub size: u64,
 }
 
@@ -178,34 +196,46 @@ impl Default for PickImages {
 }
 
 impl PickImages {
+    /// One image from the library.
     pub fn new() -> Self {
         PickImages {
             limit: 1,
             camera: false,
         }
     }
+    /// Lets the user choose up to `n` images (0 = no limit).
     pub fn limit(mut self, n: u32) -> Self {
         self.limit = n;
         self
     }
+    /// Takes a photo with the camera instead.
     pub fn camera(mut self) -> Self {
         self.camera = true;
         self
     }
 }
 
+/// A haptic feedback pattern (`UIFeedbackGenerator` styles on iOS).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Haptic {
+    /// A selection changed (a picker tick).
     Selection,
+    /// A light impact.
     Light,
+    /// A medium impact.
     Medium,
+    /// A heavy impact.
     Heavy,
+    /// A task succeeded.
     Success,
+    /// A task produced a warning.
     Warning,
+    /// A task failed.
     Error,
 }
 
 impl Haptic {
+    /// Stable lowercase name, as backends receive it (`"success"`).
     pub fn name(self) -> &'static str {
         match self {
             Haptic::Selection => "selection",
@@ -222,29 +252,35 @@ impl Haptic {
 /// Content for the system share sheet.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Share {
+    /// Text to share.
     pub text: Option<String>,
+    /// A link to share.
     pub url: Option<String>,
     /// Local files (e.g. a [`PickedFile`] path).
     pub files: Vec<String>,
 }
 
 impl Share {
+    /// Shares `text`.
     pub fn text(text: impl Into<String>) -> Self {
         Share {
             text: Some(text.into()),
             ..Default::default()
         }
     }
+    /// Shares the link `url`.
     pub fn link(url: impl Into<String>) -> Self {
         Share {
             url: Some(url.into()),
             ..Default::default()
         }
     }
+    /// Adds a link.
     pub fn url(mut self, url: impl Into<String>) -> Self {
         self.url = Some(url.into());
         self
     }
+    /// Adds a local file.
     pub fn file(mut self, path: impl Into<String>) -> Self {
         self.files.push(path.into());
         self
@@ -256,37 +292,54 @@ impl Share {
 pub enum Accuracy {
     /// About a kilometer.
     Coarse,
+    /// About a hundred meters: the usual choice.
     #[default]
     Balanced,
+    /// The most precise the device can do (GPS).
     Best,
 }
 
 /// A call the app makes; backends answer with [`App::device_reply`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum DeviceCall {
+    /// The permission's current state, without prompting.
     PermissionStatus(Permission),
+    /// Shows the system prompt if the permission was never asked.
     RequestPermission(Permission),
+    /// One position.
     CurrentLocation(Accuracy),
+    /// Opens the photo picker or the camera.
     PickImages(PickImages),
+    /// The clipboard's text.
     ReadClipboard,
     /// Starts a stream; events use this call's id.
     WatchLocation(Accuracy),
+    /// Starts a motion stream, one sample about every interval.
     WatchMotion(Duration),
     /// Stops the stream started by call `id`.
     StopWatch,
+    /// Plays a haptic pattern.
     Haptic(Haptic),
+    /// Puts text on the clipboard.
     CopyText(String),
+    /// Opens the share sheet.
     Share(Share),
+    /// Opens a URL with the system (browser, mail, another app).
     OpenUrl(String),
 }
 
 /// A backend's answer to a [`DeviceCall`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum DeviceValue {
+    /// Answer to a permission call.
     Permission(PermissionState),
+    /// Answer to `CurrentLocation`.
     Location(Location),
+    /// Answer to `PickImages`.
     Files(Vec<PickedFile>),
+    /// Answer to `ReadClipboard` (`None` when it holds no text).
     Text(Option<String>),
+    /// The call completed without a value.
     Done,
 }
 
@@ -299,6 +352,7 @@ pub enum DeviceError {
     Cancelled,
     /// Not supported on this platform or device.
     Unavailable,
+    /// Anything else, with the platform's message.
     Failed(String),
 }
 
@@ -332,8 +386,11 @@ type Slot = Rc<RefCell<(Option<Result<DeviceValue, DeviceError>>, Option<Waker>)
 /// A sensor event delivered to a stream.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DeviceEvent {
+    /// A new position.
     Location(Location),
+    /// A new motion sample.
     Motion(Motion),
+    /// The stream failed (permission denied, sensor unavailable).
     Error(DeviceError),
 }
 
@@ -431,10 +488,12 @@ impl App {
         }
     }
 
+    /// Plays a haptic pattern (no-op where unsupported).
     pub fn haptic(&mut self, kind: Haptic) {
         self.device_call(DeviceCall::Haptic(kind));
     }
 
+    /// Puts `text` on the clipboard.
     pub fn copy_text(&mut self, text: impl Into<String>) {
         self.device_call(DeviceCall::CopyText(text.into()));
     }
@@ -501,6 +560,7 @@ impl AsyncApp {
         self.location_with(Accuracy::Balanced).await
     }
 
+    /// The current position at a given accuracy (asks for permission if needed).
     pub async fn location_with(&self, accuracy: Accuracy) -> Result<Location, DeviceError> {
         match self.device(DeviceCall::CurrentLocation(accuracy)).await? {
             DeviceValue::Location(l) => Ok(l),
@@ -527,6 +587,7 @@ impl AsyncApp {
             .next())
     }
 
+    /// The clipboard's text, `None` if empty, not text, or unavailable.
     pub async fn read_clipboard(&self) -> Option<String> {
         match self.device(DeviceCall::ReadClipboard).await {
             Ok(DeviceValue::Text(t)) => t,

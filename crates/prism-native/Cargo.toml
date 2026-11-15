@@ -3,7 +3,15 @@ name = "prism-native"
 description = "Shared machinery for native Prism backends: patch handling and flexbox layout (taffy)."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/prism-native"
+readme = "README.md"
+keywords = ["ui", "gui", "flexbox", "layout", "native"]
+categories = ["gui"]
 
 [dependencies]
 prism-core.workspace = true
@@ -18,5 +26,8 @@ objc2-quartz-core.workspace = true
 objc2-core-foundation.workspace = true
 
 [features]
-# The Swift bridge (platform/apple/Bridge) is linked: device APIs available.
+# The Swift bridge (prism-apple-build: apple/Bridge) is linked: device APIs available.
 apple-bridge = []
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]

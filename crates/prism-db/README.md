@@ -1,0 +1,17 @@
+# prism-db
+
+SQL for Prism apps (sqlx): SQLite on the device, the server's database on the web.
+
+SQL for Prism apps with [sqlx](https://crates.io/crates/sqlx): SQLite on the
+device natively, on the server for the web backend (where it is your
+backend, shared by every user). Queries run on a small Tokio runtime and
+resolve on the UI thread; migrations are applied once each, in order.
+
+Apps use it as `prism::db` (the `prism` facade's `db` feature).
+
+Part of [Prism](https://github.com/0xtlt/prism). Guide: [https://0xtlt.github.io/prism/](https://0xtlt.github.io/prism/) · API: [docs.rs/prism-db](https://docs.rs/prism-db)
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option.

@@ -26,6 +26,7 @@ pub struct Transform {
     pub x: f32,
     /// Points, down.
     pub y: f32,
+    /// Size factor, `1.0` is the element's own size.
     pub scale: f32,
     /// Degrees, clockwise.
     pub rotate: f32,
@@ -38,6 +39,7 @@ impl Default for Transform {
 }
 
 impl Transform {
+    /// No offset, scale 1, no rotation.
     pub const IDENTITY: Transform = Transform {
         x: 0.,
         y: 0.,
@@ -45,6 +47,7 @@ impl Transform {
         rotate: 0.,
     };
 
+    /// Whether this is [`Transform::IDENTITY`].
     pub fn is_identity(&self) -> bool {
         *self == Transform::IDENTITY
     }
@@ -77,13 +80,18 @@ impl Transform {
 /// value.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct Pose {
+    /// Opacity, `0.0..=1.0`.
     pub opacity: Option<f32>,
+    /// Offset `(x, y)` in points.
     pub offset: Option<(f32, f32)>,
+    /// Size factor.
     pub scale: Option<f32>,
+    /// Rotation in degrees, clockwise.
     pub rotate: Option<f32>,
 }
 
 impl Pose {
+    /// A pose that changes nothing (set fields with the builders).
     pub fn new() -> Self {
         Self::default()
     }
@@ -99,26 +107,32 @@ impl Pose {
     pub fn pop() -> Self {
         Pose::fade().scale(0.85)
     }
+    /// Sets the opacity (clamped to `0.0..=1.0`).
     pub fn opacity(mut self, o: f32) -> Self {
         self.opacity = Some(o.clamp(0., 1.));
         self
     }
+    /// Sets the offset, in points.
     pub fn offset(mut self, x: f32, y: f32) -> Self {
         self.offset = Some((x, y));
         self
     }
+    /// Sets the horizontal offset, keeping the vertical one.
     pub fn x(self, x: f32) -> Self {
         let y = self.offset.map_or(0., |o| o.1);
         self.offset(x, y)
     }
+    /// Sets the vertical offset, keeping the horizontal one.
     pub fn y(self, y: f32) -> Self {
         let x = self.offset.map_or(0., |o| o.0);
         self.offset(x, y)
     }
+    /// Sets the size factor.
     pub fn scale(mut self, s: f32) -> Self {
         self.scale = Some(s);
         self
     }
+    /// Sets the rotation, in degrees clockwise.
     pub fn rotate(mut self, degrees: f32) -> Self {
         self.rotate = Some(degrees);
         self
@@ -161,10 +175,12 @@ pub struct Animations {
 }
 
 impl Animations {
+    /// Whether no enter, exit or loop animation is set.
     pub fn is_empty(&self) -> bool {
         *self == Animations::default()
     }
 
+    /// Offsets multiplied by `factor` (zoom); `mirror` flips x (right to left).
     pub fn scaled(&self, factor: f32, mirror: bool) -> Animations {
         Animations {
             enter: self.enter.map(|p| p.scaled(factor, mirror)),

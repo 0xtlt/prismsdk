@@ -3,7 +3,15 @@ name = "prism"
 description = "Write a UI once in Rust; ship it as a web server (HTML/CSS/JS) or a native app."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/prism"
+readme = "README.md"
+keywords = ["ui", "gui", "cross-platform", "native", "web"]
+categories = ["gui", "web-programming", "os::macos-apis", "os::android-apis", "accessibility"]
 
 [features]
 default = ["native"]
@@ -35,3 +43,9 @@ prism-linux = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 prism-android = { workspace = true, optional = true }
+
+[package.metadata.docs.rs]
+# The web backend and SQL too. The native backend on docs.rs' Linux builder
+# is GTK 4 (installed there).
+features = ["web", "db"]
+rustdoc-args = ["--cfg", "docsrs"]
