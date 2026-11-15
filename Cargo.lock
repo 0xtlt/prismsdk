@@ -1770,6 +1770,9 @@ dependencies = [
 [[package]]
 name = "prism-core"
 version = "0.1.0"
+dependencies = [
+ "prism-testing",
+]
 
 [[package]]
 name = "prism-db"
@@ -1845,10 +1848,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "prism-testing"
+version = "0.1.0"
+dependencies = [
+ "prism-core",
+]
+
+[[package]]
 name = "prism-ui"
 version = "0.1.0"
 dependencies = [
  "prism-core",
+ "prism-testing",
 ]
 
 [[package]]

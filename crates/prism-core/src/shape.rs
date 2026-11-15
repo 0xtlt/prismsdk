@@ -485,12 +485,23 @@ fn arc(segs: &mut Vec<Segment>, open: bool, cx: f32, cy: f32, r: f32, start: f32
 /// "Nice" axis ticks covering `min..=max`: about `count` round values
 /// (multiples of 1, 2 or 5 × 10ⁿ), first ≤ min, last ≥ max.
 pub fn nice_ticks(min: f64, max: f64, count: usize) -> Vec<f64> {
+    // Missing data (NaN, infinities): a unit range next to the finite bound.
+    let (min, max) = match (min.is_finite(), max.is_finite()) {
+        (true, true) => (min, max),
+        (true, false) => (min, min + 1.),
+        (false, true) => (max - 1., max),
+        (false, false) => (0., 1.),
+    };
     let (min, max) = if min == max {
         (min - 1., max + 1.)
     } else {
         (min.min(max), max.max(min))
     };
     let raw = (max - min) / count.max(1) as f64;
+    // Too wide or too narrow for f64 steps: just the bounds.
+    if !(raw.is_finite() && raw > 0.) {
+        return vec![min, max];
+    }
     let mag = 10f64.powf(raw.log10().floor());
     let step = [1., 2., 2.5, 5., 10.]
         .iter()

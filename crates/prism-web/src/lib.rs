@@ -36,6 +36,8 @@ mod html;
 #[cfg(feature = "server")]
 mod server;
 mod session;
+#[cfg(test)]
+mod tests;
 
 pub use app::WebApp;
 pub use assets::{IMMUTABLE, REVALIDATE, StaticFile, content_hash};

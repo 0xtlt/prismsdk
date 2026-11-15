@@ -196,3 +196,7 @@ impl Render for Home {
     }
 }
 "#;
+
+#[cfg(test)]
+#[path = "new_tests.rs"]
+mod tests;

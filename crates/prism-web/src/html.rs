@@ -144,6 +144,16 @@ impl HtmlBackend {
         }
     }
 
+    fn kind(&self, id: NodeId) -> Option<NodeKind> {
+        self.nodes.get(&id).and_then(|n| n.kind)
+    }
+
+    fn write_sheets(&self, sheets: &[NodeId], out: &mut String) {
+        for s in sheets {
+            self.write(*s, false, out);
+        }
+    }
+
     pub fn to_html(&self) -> String {
         let mut out = String::new();
         if let Some(root) = self.root {
@@ -156,12 +166,31 @@ impl HtmlBackend {
         let Some(n) = self.nodes.get(&id) else { return };
         let kind = n.kind.unwrap_or(NodeKind::View);
         let hidden = if hidden { " hidden" } else { "" };
-        let attrs = format!(
-            r#"data-pid="{id}" data-kind="{}" style="{}"{hidden}{}"#,
-            kind.name(),
-            escape(&n.css),
+        // One `style` attribute (browsers ignore a second one).
+        let css = match kind {
+            NodeKind::Picture => {
+                let fit = if n.value == 1. { "contain" } else { "cover" };
+                format!("{}object-fit:{fit};", n.css)
+            }
+            _ => n.css.clone(),
+        };
+        // A picture's description is its `alt` (like the client sets it).
+        let aria = if kind == NodeKind::Picture {
+            String::new()
+        } else {
             a11y_attrs(kind, &n.a11y)
+        };
+        let attrs = format!(
+            r#"data-pid="{id}" data-kind="{}" style="{}"{hidden}{aria}"#,
+            kind.name(),
+            escape(&css),
         );
+        // Sheets attached to a stack or tab bar are not screens or tabs: they
+        // open as dialogs on top (like the client does).
+        let (sheets, kids): (Vec<NodeId>, Vec<NodeId>) = n
+            .children
+            .iter()
+            .partition(|c| self.kind(**c) == Some(NodeKind::Modal));
         match kind {
             NodeKind::TextInput => {
                 let _ = write!(
@@ -179,16 +208,18 @@ impl HtmlBackend {
                 );
             }
             NodeKind::Picture => {
-                let alt = n.a11y.label.clone().unwrap_or_default();
-                let fit = if n.value == 1. { "contain" } else { "cover" };
+                let alt = match &n.a11y.label {
+                    Some(label) if !n.a11y.hidden => label.as_str(),
+                    _ => "",
+                };
                 let _ = write!(
                     out,
-                    r#"<img {attrs} class="prism-picture" src="{}" alt="{}" loading="lazy" decoding="async" style="object-fit:{fit}">"#,
+                    r#"<img {attrs} class="prism-picture" src="{}" alt="{}" loading="lazy" decoding="async">"#,
                     escape(&match &self.asset_urls {
                         Some(urls) => urls(&n.text),
                         None => picture_url(&n.text),
                     }),
-                    escape(&alt)
+                    escape(alt)
                 );
             }
             // Drawn by the client once the box has a size (see client.js).
@@ -211,9 +242,9 @@ impl HtmlBackend {
             }
             NodeKind::Stack => {
                 // Same markup as the JS client builds: header bar + body.
-                let top = n.children.last().and_then(|c| self.nodes.get(c));
+                let top = kids.last().and_then(|c| self.nodes.get(c));
                 let title = top.map(|t| t.text.as_str()).unwrap_or("");
-                let back_hidden = if n.children.len() <= 1 { " hidden" } else { "" };
+                let back_hidden = if kids.len() <= 1 { " hidden" } else { "" };
                 let back = escape(if self.env.back.is_empty() {
                     "Back"
                 } else {
@@ -224,11 +255,13 @@ impl HtmlBackend {
                     r#"<div {attrs} class="prism-stack"><div class="prism-header"><button class="prism-back" aria-label="{back}"{back_hidden}>‹ {back}</button><h1 class="prism-title" tabindex="-1">{}</h1></div><div class="prism-body">"#,
                     escape(title)
                 );
-                let last = n.children.len().saturating_sub(1);
-                for (i, c) in n.children.iter().enumerate() {
+                let last = kids.len().saturating_sub(1);
+                for (i, c) in kids.iter().enumerate() {
                     self.write(*c, i != last, out);
                 }
-                out.push_str("</div></div>");
+                out.push_str("</div>");
+                self.write_sheets(&sheets, out);
+                out.push_str("</div>");
             }
             NodeKind::Tabs => {
                 let selected = n.value as usize;
@@ -236,21 +269,38 @@ impl HtmlBackend {
                     out,
                     r#"<div {attrs} class="prism-tabs"><div class="prism-panels">"#
                 );
-                for (i, c) in n.children.iter().enumerate() {
+                for (i, c) in kids.iter().enumerate() {
                     self.write(*c, i != selected, out);
                 }
                 out.push_str(r#"</div><div class="prism-tabbar" role="tablist">"#);
-                for (i, c) in n.children.iter().enumerate() {
-                    let title = self.nodes.get(c).map(|t| t.text.as_str()).unwrap_or("");
+                for (i, c) in kids.iter().enumerate() {
+                    let tab = self.nodes.get(c);
+                    let title = tab.map(|t| t.text.as_str()).unwrap_or("");
+                    let icon = match tab.map(|t| t.icon.as_str()) {
+                        Some("") | None => "",
+                        Some(icon) => prism_core::glyphs::glyph(icon),
+                    };
                     let sel = i == selected;
                     let _ = write!(
                         out,
-                        r#"<button type="button" role="tab" class="prism-tab" id="prism-tab-{c}" aria-controls="prism-panel-{c}" aria-selected="{sel}" tabindex="{}"><span>{}</span></button>"#,
+                        r#"<button type="button" role="tab" class="prism-tab" id="prism-tab-{c}" aria-controls="prism-panel-{c}" aria-selected="{sel}" tabindex="{}"><span class="prism-tab-icon" aria-hidden="true">{icon}</span><span>{}</span></button>"#,
                         if sel { 0 } else { -1 },
                         escape(title)
                     );
                 }
-                out.push_str("</div></div>");
+                out.push_str("</div>");
+                self.write_sheets(&sheets, out);
+                out.push_str("</div>");
+            }
+            NodeKind::Modal => {
+                let _ = write!(
+                    out,
+                    r#"<dialog {attrs} class="prism-sheet" aria-modal="true" open>"#
+                );
+                for c in &n.children {
+                    self.write(*c, false, out);
+                }
+                out.push_str("</dialog>");
             }
             NodeKind::Tab => {
                 let _ = write!(
@@ -300,15 +350,22 @@ impl HtmlBackend {
 
     /// Title of the visible screen (root stack or selected tab), if any.
     pub fn screen_title(&self) -> Option<String> {
+        let screens = |n: &HtmlNode| -> Vec<NodeId> {
+            n.children
+                .iter()
+                .copied()
+                .filter(|c| self.kind(*c) != Some(NodeKind::Modal))
+                .collect()
+        };
         let mut node = self.nodes.get(&self.root?)?;
         if node.kind == Some(NodeKind::Tabs) {
-            let tab = self.nodes.get(node.children.get(node.value as usize)?)?;
+            let tab = self.nodes.get(screens(node).get(node.value as usize)?)?;
             node = self.nodes.get(tab.children.first()?)?;
         }
         if node.kind != Some(NodeKind::Stack) {
             return None;
         }
-        let top = self.nodes.get(node.children.last()?)?;
+        let top = self.nodes.get(screens(node).last()?)?;
         Some(top.text.clone()).filter(|t| !t.is_empty())
     }
 }

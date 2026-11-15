@@ -19,6 +19,7 @@
 #   PRISM_PATH         first screen (deep link)
 #   PRISM_RELEASE=1    release build
 #   PRISM_NO_INSTALL=1 build only
+#   PRISM_ANDROID_ABI  arm64-v8a (default) or x86_64 (x86 emulators, e.g. CI)
 #   PRISM_ANDROID_AUTOMOTIVE=1  a build for cars running Android (default:
 #                      when the device is one); car screens need cx.register_car
 #   PRISM_ANDROID_KEYSTORE, PRISM_ANDROID_KEYSTORE_PASS, PRISM_ANDROID_KEY_ALIAS
@@ -51,11 +52,17 @@ PROFILE_DIR=debug CARGO_FLAGS=()
 if [[ "${PRISM_RELEASE:-}" == 1 ]]; then PROFILE_DIR=release CARGO_FLAGS=(--release); fi
 OUT="$TARGET_DIR/android/$PROFILE_DIR"
 STAGE="$OUT/stage"
-rm -rf "$STAGE" && mkdir -p "$STAGE/lib/arm64-v8a" "$OUT/classes" "$STAGE/assets"
+ABI="${PRISM_ANDROID_ABI:-arm64-v8a}"
+case "$ABI" in
+  arm64-v8a) TRIPLE=aarch64-linux-android ;;
+  x86_64) TRIPLE=x86_64-linux-android ;;
+  *) echo "PRISM_ANDROID_ABI: arm64-v8a or x86_64, not $ABI" >&2; exit 1 ;;
+esac
+rm -rf "$STAGE" && mkdir -p "$STAGE/lib/$ABI" "$OUT/classes" "$STAGE/assets"
 
 # 1. The app as a shared library (arm64: phones and Apple Silicon emulators).
-cargo ndk -t arm64-v8a -P "$MIN_SDK" rustc -p "$PKG" --lib --crate-type cdylib ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"}
-cp "$TARGET_DIR/aarch64-linux-android/$PROFILE_DIR/lib$LIB.so" "$STAGE/lib/arm64-v8a/"
+cargo ndk -t "$ABI" -P "$MIN_SDK" rustc -p "$PKG" --lib --crate-type cdylib ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"}
+cp "$TARGET_DIR/$TRIPLE/$PROFILE_DIR/lib$LIB.so" "$STAGE/lib/$ABI/"
 
 # 2. What the app declares (a host build): assets (picture("logo.png")) and widgets.
 cargo build -q -p "$PKG"

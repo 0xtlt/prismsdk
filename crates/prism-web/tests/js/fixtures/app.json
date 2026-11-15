@@ -1,0 +1,752 @@
+{
+  "events": [
+    {
+      "patches": [
+        {
+          "id": 6,
+          "op": "text",
+          "text": "Count: 1"
+        }
+      ],
+      "send": {
+        "id": 7,
+        "t": "click"
+      }
+    },
+    {
+      "patches": [
+        {
+          "id": 6,
+          "op": "text",
+          "text": "Count: 2"
+        }
+      ],
+      "send": {
+        "id": 7,
+        "t": "click"
+      }
+    },
+    {
+      "patches": [
+        {
+          "id": 6,
+          "op": "text",
+          "text": "Count: 0"
+        }
+      ],
+      "send": {
+        "id": 8,
+        "t": "click"
+      }
+    },
+    {
+      "patches": [
+        {
+          "id": 11,
+          "op": "text",
+          "text": "Ada"
+        }
+      ],
+      "send": {
+        "id": 11,
+        "t": "input",
+        "v": "Ada"
+      }
+    },
+    {
+      "patches": [
+        {
+          "id": 12,
+          "op": "value",
+          "value": 1.0
+        },
+        {
+          "a11y": {
+            "checked": true,
+            "disabled": false,
+            "hidden": false,
+            "hint": null,
+            "label": "Dark mode",
+            "level": null,
+            "role": "switch",
+            "value": null
+          },
+          "id": 12,
+          "op": "a11y"
+        }
+      ],
+      "send": {
+        "id": 12,
+        "t": "change",
+        "v": 1
+      }
+    },
+    {
+      "patches": [
+        {
+          "id": 1,
+          "op": "text",
+          "text": "/more"
+        },
+        {
+          "id": 1,
+          "op": "value",
+          "value": 1.0
+        }
+      ],
+      "send": {
+        "id": 1,
+        "t": "change",
+        "v": 1
+      }
+    }
+  ],
+  "reset": [
+    {
+      "back": "Back",
+      "close": "Close",
+      "dir": "ltr",
+      "lang": "en-US",
+      "op": "env"
+    },
+    {
+      "id": 1,
+      "kind": "tabs",
+      "op": "create"
+    },
+    {
+      "css": "box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:1 1 auto;font-size:1rem;font-weight:400;text-align:start;",
+      "id": 1,
+      "op": "style"
+    },
+    {
+      "id": 1,
+      "op": "text",
+      "text": "/"
+    },
+    {
+      "id": 1,
+      "op": "value",
+      "value": 0.0
+    },
+    {
+      "id": 2,
+      "kind": "tab",
+      "op": "create"
+    },
+    {
+      "css": "box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:1 1 auto;font-size:1rem;font-weight:400;text-align:start;",
+      "id": 2,
+      "op": "style"
+    },
+    {
+      "id": 2,
+      "op": "text",
+      "text": "Home"
+    },
+    {
+      "glyph": "⌂",
+      "icon": "house",
+      "id": 2,
+      "op": "icon"
+    },
+    {
+      "id": 3,
+      "kind": "stack",
+      "op": "create"
+    },
+    {
+      "css": "box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:1 1 auto;font-size:1rem;font-weight:400;text-align:start;",
+      "id": 3,
+      "op": "style"
+    },
+    {
+      "id": 3,
+      "op": "text",
+      "text": "/"
+    },
+    {
+      "id": 4,
+      "kind": "screen",
+      "op": "create"
+    },
+    {
+      "css": "box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:1 1 auto;font-size:1rem;font-weight:400;text-align:start;",
+      "id": 4,
+      "op": "style"
+    },
+    {
+      "id": 4,
+      "op": "text",
+      "text": "Home"
+    },
+    {
+      "id": 5,
+      "kind": "view",
+      "op": "create"
+    },
+    {
+      "css": "box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;gap:8px;margin-block:0px 0px;margin-inline:0px 0px;flex:0 1 auto;",
+      "id": 5,
+      "op": "style"
+    },
+    {
+      "id": 6,
+      "kind": "text",
+      "op": "create"
+    },
+    {
+      "css": "box-sizing:border-box;min-width:0;display:block;white-space:pre-wrap;overflow-wrap:anywhere;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:0 1 auto;font-size:1rem;font-weight:400;text-align:start;",
+      "id": 6,
+      "op": "style"
+    },
+    {
+      "id": 6,
+      "op": "text",
+      "text": "Count: 0"
+    },
+    {
+      "a11y": {
+        "checked": null,
+        "disabled": false,
+        "hidden": false,
+        "hint": null,
+        "label": null,
+        "level": 1,
+        "role": "heading",
+        "value": null
+      },
+      "id": 6,
+      "op": "a11y"
+    },
+    {
+      "id": 7,
+      "kind": "button",
+      "op": "create"
+    },
+    {
+      "css": "box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:0 1 auto;font-size:1rem;font-weight:400;text-align:start;font-family:inherit;cursor:pointer;justify-content:center;",
+      "id": 7,
+      "op": "style"
+    },
+    {
+      "id": 7,
+      "op": "text",
+      "text": "+1"
+    },
+    {
+      "id": 7,
+      "on": true,
+      "op": "clickable"
+    },
+    {
+      "a11y": {
+        "checked": null,
+        "disabled": false,
+        "hidden": false,
+        "hint": null,
+        "label": null,
+        "level": null,
+        "role": "button",
+        "value": null
+      },
+      "id": 7,
+      "op": "a11y"
+    },
+    {
+      "id": 8,
+      "kind": "view",
+      "op": "create"
+    },
+    {
+      "css": "box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:0 1 auto;",
+      "id": 8,
+      "op": "style"
+    },
+    {
+      "id": 8,
+      "on": true,
+      "op": "clickable"
+    },
+    {
+      "id": 9,
+      "kind": "text",
+      "op": "create"
+    },
+    {
+      "css": "box-sizing:border-box;min-width:0;display:block;white-space:pre-wrap;overflow-wrap:anywhere;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:0 1 auto;font-size:1rem;font-weight:400;text-align:start;",
+      "id": 9,
+      "op": "style"
+    },
+    {
+      "id": 9,
+      "op": "text",
+      "text": "Card"
+    },
+    {
+      "a11y": {
+        "checked": null,
+        "disabled": false,
+        "hidden": false,
+        "hint": null,
+        "label": null,
+        "level": null,
+        "role": "text",
+        "value": null
+      },
+      "id": 9,
+      "op": "a11y"
+    },
+    {
+      "id": 10,
+      "kind": "text",
+      "op": "create"
+    },
+    {
+      "css": "box-sizing:border-box;min-width:0;display:block;white-space:pre-wrap;overflow-wrap:anywhere;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:0 1 auto;font-size:1rem;font-weight:400;text-align:start;",
+      "id": 10,
+      "op": "style"
+    },
+    {
+      "id": 10,
+      "op": "text",
+      "text": "details"
+    },
+    {
+      "a11y": {
+        "checked": null,
+        "disabled": false,
+        "hidden": false,
+        "hint": null,
+        "label": null,
+        "level": null,
+        "role": "text",
+        "value": null
+      },
+      "id": 10,
+      "op": "a11y"
+    },
+    {
+      "children": [
+        9,
+        10
+      ],
+      "id": 8,
+      "op": "children"
+    },
+    {
+      "a11y": {
+        "checked": null,
+        "disabled": false,
+        "hidden": false,
+        "hint": null,
+        "label": "Card, details",
+        "level": null,
+        "role": "button",
+        "value": null
+      },
+      "id": 8,
+      "op": "a11y"
+    },
+    {
+      "id": 11,
+      "kind": "text_input",
+      "op": "create"
+    },
+    {
+      "css": "box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:0 1 auto;font-size:1rem;font-weight:400;text-align:start;font-family:inherit;padding:6px 8px;border:1px solid rgba(128,128,128,.45);border-radius:6px;",
+      "id": 11,
+      "op": "style"
+    },
+    {
+      "id": 11,
+      "op": "placeholder",
+      "text": "Your name"
+    },
+    {
+      "a11y": {
+        "checked": null,
+        "disabled": false,
+        "hidden": false,
+        "hint": null,
+        "label": "Your name",
+        "level": null,
+        "role": null,
+        "value": null
+      },
+      "id": 11,
+      "op": "a11y"
+    },
+    {
+      "id": 12,
+      "kind": "toggle",
+      "op": "create"
+    },
+    {
+      "css": "box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:0 1 auto;font-size:1rem;font-weight:400;text-align:start;",
+      "id": 12,
+      "op": "style"
+    },
+    {
+      "id": 12,
+      "op": "value",
+      "value": 0.0
+    },
+    {
+      "a11y": {
+        "checked": false,
+        "disabled": false,
+        "hidden": false,
+        "hint": null,
+        "label": "Dark mode",
+        "level": null,
+        "role": "switch",
+        "value": null
+      },
+      "id": 12,
+      "op": "a11y"
+    },
+    {
+      "id": 13,
+      "kind": "progress",
+      "op": "create"
+    },
+    {
+      "css": "box-sizing:border-box;min-width:0;display:block;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:0 1 auto;font-size:1rem;font-weight:400;text-align:start;",
+      "id": 13,
+      "op": "style"
+    },
+    {
+      "id": 13,
+      "op": "value",
+      "value": 0.5
+    },
+    {
+      "a11y": {
+        "checked": null,
+        "disabled": false,
+        "hidden": false,
+        "hint": null,
+        "label": null,
+        "level": null,
+        "role": "progressbar",
+        "value": "50%"
+      },
+      "id": 13,
+      "op": "a11y"
+    },
+    {
+      "id": 14,
+      "kind": "image",
+      "op": "create"
+    },
+    {
+      "css": "box-sizing:border-box;min-width:0;display:inline-flex;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:0 1 auto;font-size:1rem;font-weight:400;text-align:start;",
+      "id": 14,
+      "op": "style"
+    },
+    {
+      "glyph": "+",
+      "icon": "plus",
+      "id": 14,
+      "op": "icon"
+    },
+    {
+      "a11y": {
+        "checked": null,
+        "disabled": false,
+        "hidden": true,
+        "hint": null,
+        "label": null,
+        "level": null,
+        "role": null,
+        "value": null
+      },
+      "id": 14,
+      "op": "a11y"
+    },
+    {
+      "id": 15,
+      "kind": "picture",
+      "op": "create"
+    },
+    {
+      "css": "box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:0 1 auto;font-size:1rem;font-weight:400;text-align:start;",
+      "id": 15,
+      "op": "style"
+    },
+    {
+      "id": 15,
+      "op": "text",
+      "text": "/assets/logo.png"
+    },
+    {
+      "id": 15,
+      "op": "value",
+      "value": 1.0
+    },
+    {
+      "a11y": {
+        "checked": null,
+        "disabled": false,
+        "hidden": false,
+        "hint": null,
+        "label": "Logo",
+        "level": null,
+        "role": "img",
+        "value": null
+      },
+      "id": 15,
+      "op": "a11y"
+    },
+    {
+      "id": 16,
+      "kind": "shape",
+      "op": "create"
+    },
+    {
+      "css": "box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;width:100px;height:50px;flex:0 1 auto;font-size:1rem;font-weight:400;text-align:start;",
+      "id": 16,
+      "op": "style"
+    },
+    {
+      "id": 16,
+      "op": "text",
+      "text": "i0,0\ns#FF0000FF w2 |M 0 1 L 1 0 \n"
+    },
+    {
+      "a11y": {
+        "checked": null,
+        "disabled": false,
+        "hidden": true,
+        "hint": null,
+        "label": null,
+        "level": null,
+        "role": "img",
+        "value": null
+      },
+      "id": 16,
+      "op": "a11y"
+    },
+    {
+      "children": [
+        6,
+        7,
+        8,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "id": 5,
+      "op": "children"
+    },
+    {
+      "children": [
+        5
+      ],
+      "id": 4,
+      "op": "children"
+    },
+    {
+      "a11y": {
+        "checked": null,
+        "disabled": false,
+        "hidden": false,
+        "hint": null,
+        "label": "Home",
+        "level": null,
+        "role": null,
+        "value": null
+      },
+      "id": 4,
+      "op": "a11y"
+    },
+    {
+      "children": [
+        4
+      ],
+      "id": 3,
+      "op": "children"
+    },
+    {
+      "children": [
+        3
+      ],
+      "id": 2,
+      "op": "children"
+    },
+    {
+      "a11y": {
+        "checked": null,
+        "disabled": false,
+        "hidden": false,
+        "hint": null,
+        "label": "Home",
+        "level": null,
+        "role": "tabpanel",
+        "value": null
+      },
+      "id": 2,
+      "op": "a11y"
+    },
+    {
+      "id": 17,
+      "kind": "tab",
+      "op": "create"
+    },
+    {
+      "css": "box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:1 1 auto;font-size:1rem;font-weight:400;text-align:start;",
+      "id": 17,
+      "op": "style"
+    },
+    {
+      "id": 17,
+      "op": "text",
+      "text": "More"
+    },
+    {
+      "glyph": "⚙",
+      "icon": "gear",
+      "id": 17,
+      "op": "icon"
+    },
+    {
+      "id": 18,
+      "kind": "stack",
+      "op": "create"
+    },
+    {
+      "css": "box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:1 1 auto;font-size:1rem;font-weight:400;text-align:start;",
+      "id": 18,
+      "op": "style"
+    },
+    {
+      "id": 18,
+      "op": "text",
+      "text": "/more"
+    },
+    {
+      "id": 19,
+      "kind": "screen",
+      "op": "create"
+    },
+    {
+      "css": "box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:1 1 auto;font-size:1rem;font-weight:400;text-align:start;",
+      "id": 19,
+      "op": "style"
+    },
+    {
+      "id": 19,
+      "op": "text",
+      "text": "Home"
+    },
+    {
+      "id": 20,
+      "kind": "text",
+      "op": "create"
+    },
+    {
+      "css": "box-sizing:border-box;min-width:0;display:block;white-space:pre-wrap;overflow-wrap:anywhere;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:0 1 auto;font-size:1rem;font-weight:400;text-align:start;",
+      "id": 20,
+      "op": "style"
+    },
+    {
+      "id": 20,
+      "op": "text",
+      "text": "home body"
+    },
+    {
+      "a11y": {
+        "checked": null,
+        "disabled": false,
+        "hidden": false,
+        "hint": null,
+        "label": null,
+        "level": null,
+        "role": "text",
+        "value": null
+      },
+      "id": 20,
+      "op": "a11y"
+    },
+    {
+      "children": [
+        20
+      ],
+      "id": 19,
+      "op": "children"
+    },
+    {
+      "a11y": {
+        "checked": null,
+        "disabled": false,
+        "hidden": false,
+        "hint": null,
+        "label": "Home",
+        "level": null,
+        "role": null,
+        "value": null
+      },
+      "id": 19,
+      "op": "a11y"
+    },
+    {
+      "children": [
+        19
+      ],
+      "id": 18,
+      "op": "children"
+    },
+    {
+      "children": [
+        18
+      ],
+      "id": 17,
+      "op": "children"
+    },
+    {
+      "a11y": {
+        "checked": null,
+        "disabled": false,
+        "hidden": false,
+        "hint": null,
+        "label": "More",
+        "level": null,
+        "role": "tabpanel",
+        "value": null
+      },
+      "id": 17,
+      "op": "a11y"
+    },
+    {
+      "children": [
+        2,
+        17
+      ],
+      "id": 1,
+      "op": "children"
+    },
+    {
+      "a11y": {
+        "checked": null,
+        "disabled": false,
+        "hidden": false,
+        "hint": null,
+        "label": null,
+        "level": null,
+        "role": "tablist",
+        "value": null
+      },
+      "id": 1,
+      "op": "a11y"
+    },
+    {
+      "id": 1,
+      "op": "root"
+    }
+  ],
+  "ssr": "<div data-pid=\"1\" data-kind=\"tabs\" style=\"box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:1 1 auto;font-size:1rem;font-weight:400;text-align:start;\" class=\"prism-tabs\"><div class=\"prism-panels\"><div data-pid=\"2\" data-kind=\"tab\" style=\"box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:1 1 auto;font-size:1rem;font-weight:400;text-align:start;\" id=\"prism-panel-2\" role=\"tabpanel\" aria-labelledby=\"prism-tab-2\"><div data-pid=\"3\" data-kind=\"stack\" style=\"box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:1 1 auto;font-size:1rem;font-weight:400;text-align:start;\" class=\"prism-stack\"><div class=\"prism-header\"><button class=\"prism-back\" aria-label=\"Back\" hidden>‹ Back</button><h1 class=\"prism-title\" tabindex=\"-1\">Home</h1></div><div class=\"prism-body\"><section data-pid=\"4\" data-kind=\"screen\" style=\"box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:1 1 auto;font-size:1rem;font-weight:400;text-align:start;\" aria-label=\"Home\"><div data-pid=\"5\" data-kind=\"view\" style=\"box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;gap:8px;margin-block:0px 0px;margin-inline:0px 0px;flex:0 1 auto;\"><div data-pid=\"6\" data-kind=\"text\" style=\"box-sizing:border-box;min-width:0;display:block;white-space:pre-wrap;overflow-wrap:anywhere;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:0 1 auto;font-size:1rem;font-weight:400;text-align:start;\" role=\"heading\" aria-level=\"1\">Count: 0</div><button data-pid=\"7\" data-kind=\"button\" style=\"box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:0 1 auto;font-size:1rem;font-weight:400;text-align:start;font-family:inherit;cursor:pointer;justify-content:center;\">+1</button><div data-pid=\"8\" data-kind=\"view\" style=\"box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:0 1 auto;\" role=\"button\" aria-label=\"Card, details\" tabindex=\"0\"><div data-pid=\"9\" data-kind=\"text\" style=\"box-sizing:border-box;min-width:0;display:block;white-space:pre-wrap;overflow-wrap:anywhere;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:0 1 auto;font-size:1rem;font-weight:400;text-align:start;\">Card</div><div data-pid=\"10\" data-kind=\"text\" style=\"box-sizing:border-box;min-width:0;display:block;white-space:pre-wrap;overflow-wrap:anywhere;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:0 1 auto;font-size:1rem;font-weight:400;text-align:start;\">details</div></div><input type=\"text\" data-pid=\"11\" data-kind=\"text_input\" style=\"box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:0 1 auto;font-size:1rem;font-weight:400;text-align:start;font-family:inherit;padding:6px 8px;border:1px solid rgba(128,128,128,.45);border-radius:6px;\" aria-label=\"Your name\" value=\"\" placeholder=\"Your name\"><input type=\"checkbox\" role=\"switch\" class=\"prism-switch\" data-pid=\"12\" data-kind=\"toggle\" style=\"box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:0 1 auto;font-size:1rem;font-weight:400;text-align:start;\" aria-label=\"Dark mode\"><progress data-pid=\"13\" data-kind=\"progress\" style=\"box-sizing:border-box;min-width:0;display:block;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:0 1 auto;font-size:1rem;font-weight:400;text-align:start;\" role=\"progressbar\" max=\"1\" value=\"0.5\"></progress><span data-pid=\"14\" data-kind=\"image\" style=\"box-sizing:border-box;min-width:0;display:inline-flex;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:0 1 auto;font-size:1rem;font-weight:400;text-align:start;\" aria-hidden=\"true\" class=\"prism-symbol\">+</span><img data-pid=\"15\" data-kind=\"picture\" style=\"box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:0 1 auto;font-size:1rem;font-weight:400;text-align:start;object-fit:contain;\" class=\"prism-picture\" src=\"/assets/logo.png\" alt=\"Logo\" loading=\"lazy\" decoding=\"async\"><div data-pid=\"16\" data-kind=\"shape\" style=\"box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;width:100px;height:50px;flex:0 1 auto;font-size:1rem;font-weight:400;text-align:start;\" aria-hidden=\"true\" role=\"img\" class=\"prism-shape\"></div></div></section></div></div></div><div data-pid=\"17\" data-kind=\"tab\" style=\"box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:1 1 auto;font-size:1rem;font-weight:400;text-align:start;\" hidden id=\"prism-panel-17\" role=\"tabpanel\" aria-labelledby=\"prism-tab-17\"><div data-pid=\"18\" data-kind=\"stack\" style=\"box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:1 1 auto;font-size:1rem;font-weight:400;text-align:start;\" class=\"prism-stack\"><div class=\"prism-header\"><button class=\"prism-back\" aria-label=\"Back\" hidden>‹ Back</button><h1 class=\"prism-title\" tabindex=\"-1\">Home</h1></div><div class=\"prism-body\"><section data-pid=\"19\" data-kind=\"screen\" style=\"box-sizing:border-box;min-width:0;display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:1 1 auto;font-size:1rem;font-weight:400;text-align:start;\" aria-label=\"Home\"><div data-pid=\"20\" data-kind=\"text\" style=\"box-sizing:border-box;min-width:0;display:block;white-space:pre-wrap;overflow-wrap:anywhere;align-items:stretch;justify-content:flex-start;margin-block:0px 0px;margin-inline:0px 0px;flex:0 1 auto;font-size:1rem;font-weight:400;text-align:start;\">home body</div></section></div></div></div></div><div class=\"prism-tabbar\" role=\"tablist\"><button type=\"button\" role=\"tab\" class=\"prism-tab\" id=\"prism-tab-2\" aria-controls=\"prism-panel-2\" aria-selected=\"true\" tabindex=\"0\"><span class=\"prism-tab-icon\" aria-hidden=\"true\">⌂</span><span>Home</span></button><button type=\"button\" role=\"tab\" class=\"prism-tab\" id=\"prism-tab-17\" aria-controls=\"prism-panel-17\" aria-selected=\"false\" tabindex=\"-1\"><span class=\"prism-tab-icon\" aria-hidden=\"true\">⚙</span><span>More</span></button></div></div>"
+}

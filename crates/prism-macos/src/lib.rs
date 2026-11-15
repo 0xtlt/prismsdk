@@ -4,6 +4,8 @@
 //! `NSTextField`s, buttons are `NSButton`s), laid out by `prism-native`.
 
 #[cfg(target_os = "macos")]
+mod a11y_dump;
+#[cfg(target_os = "macos")]
 mod device_info;
 #[cfg(target_os = "macos")]
 mod imp;

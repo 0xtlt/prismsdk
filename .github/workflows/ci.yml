@@ -28,6 +28,8 @@ jobs:
         run: cargo fmt --all --check
       - name: Tests
         run: cargo test --workspace
+      - name: A project from `prism new` builds (native and web)
+        run: cargo test -p prism-cli -- --ignored generated_project
       - name: Clippy (macOS)
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Clippy (iOS simulator)
@@ -48,15 +50,23 @@ jobs:
       - uses: actions/checkout@v4
       - name: Dev image (Rust + GTK 4 + Xvfb)
         run: docker build -f docker/linux-dev.Dockerfile -t prism-linux-dev docker
-      - name: Tests, clippy, GTK snapshot
+      # GTK smoke (scripts/linux-smoke.sh): every tab under Xvfb, non-blank
+      # snapshots, no crash or GTK criticals, and "+1" must change the window.
+      - name: Tests, clippy, GTK smoke on every tab
         run: |
+          mkdir -p linux-smoke
           docker run --rm -v "$PWD":/src -w /src -e CARGO_TARGET_DIR=/tmp/target prism-linux-dev sh -c '
-            cargo test -p prism-core -p prism-native -p prism-web &&
+            cargo test -p prism-core -p prism-native -p prism-web -p prism-ui &&
             cargo clippy -p prism-linux -p counter --all-targets -- -D warnings &&
-            cargo build -p counter &&
-            cd examples/counter &&
-            PRISM_SNAPSHOT=/tmp/linux.png PRISM_CLICK="+1" timeout 60 xvfb-run -a /tmp/target/debug/counter &&
-            test -s /tmp/linux.png'
+            scripts/linux-smoke.sh linux-smoke'
+      - name: Check the snapshots
+        run: scripts/linux-smoke.sh --check linux-smoke
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-smoke
+          path: linux-smoke
+          if-no-files-found: ignore
       - name: Production web image
         run: docker build -f docker/web.Dockerfile --build-arg PACKAGE=counter -t counter-web .
 
@@ -84,3 +94,135 @@ jobs:
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:3000/ >/dev/null && break; sleep 1; done
           curl -sf http://127.0.0.1:3000/ | grep -q 'id="prism-root"'
           curl -sf -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/assets/prism.png | grep -q 200
+
+  # The web client (client.js) against a tiny DOM: patches, events, shapes,
+  # and the server's own SSR/patch fixture (no npm dependencies).
+  web-js:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Syntax
+        run: |
+          node --check crates/prism-web/src/client.js
+          node --check scripts/web-e2e.mjs
+      - name: Client tests
+        run: node --test crates/prism-web/tests/js/
+
+  # The counter's web server in headless Chrome (DevTools protocol over
+  # Node's WebSocket): every tab loads and connects, +1 updates the count
+  # through the socket, no console errors.
+  web-e2e:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99"
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build the web server
+        run: cargo build -p counter --no-default-features --features web --target-dir target/web
+      - name: End-to-end in headless Chrome
+        run: CHROME="$(command -v google-chrome || command -v chromium)" node scripts/web-e2e.mjs
+        timeout-minutes: 5
+
+  # AppKit: the counter on every tab with the dev hooks. Fails on a crash, a
+  # blank window, a PRISM_CLICK that finds nothing, or a missing
+  # accessibility label/role/tab (PRISM_A11Y_DUMP).
+  macos-smoke:
+    runs-on: macos-15
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+      - name: Run each tab, snapshot and check
+        run: PRISM_SMOKE_OUT="$RUNNER_TEMP/macos-smoke" scripts/macos-smoke.sh
+        timeout-minutes: 20
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-smoke
+          path: ${{ runner.temp }}/macos-smoke
+          if-no-files-found: ignore
+
+  # UIKit in the iOS simulator: builds and installs the app (with its widget
+  # extension), launches it on each tab and checks the snapshot and the
+  # accessibility tree (tab bar items, selected tab, buttons).
+  ios-smoke:
+    runs-on: macos-15
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+      - name: Pick an iPhone simulator
+        run: |
+          udid="$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          ds = [d for r, l in json.load(sys.stdin)["devices"].items() if "SimRuntime.iOS-" in r for d in l]
+          print(next(d["udid"] for d in ds if d["name"].startswith("iPhone")))')"
+          echo "PRISM_SIM=$udid" >> "$GITHUB_ENV"
+      - name: Build, install, run each tab and check
+        run: PRISM_SMOKE_OUT="$RUNNER_TEMP/ios-smoke" scripts/ios-smoke.sh
+        timeout-minutes: 30
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-smoke
+          path: ${{ runner.temp }}/ios-smoke
+          if-no-files-found: ignore
+
+  # Android on an x86_64 emulator (KVM): builds the APK without Gradle,
+  # installs it, opens each tab by deep link and checks with adb only that the
+  # activity is resumed, the process alive, logcat free of crashes and the
+  # screen not blank (scripts/android-smoke.sh).
+  android-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools platforms;android-36 build-tools;37.0.0 ndk;30.0.16248370
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99"
+          targets: x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - name: GTK headers (the host build describes assets and widgets)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgtk-4-dev
+      - name: cargo-ndk
+        run: cargo install cargo-ndk --version 4.1.2 --locked
+      - name: Emulator, install, run each tab, check
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          PRISM_ANDROID_ABI: x86_64
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/30.0.16248370
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash scripts/android-smoke.sh "$RUNNER_TEMP/android-smoke"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-smoke
+          path: ${{ runner.temp }}/android-smoke
+          if-no-files-found: ignore

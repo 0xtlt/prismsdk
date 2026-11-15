@@ -155,6 +155,8 @@ struct MNode {
     swipe: (bool, bool),
     scroll_events: bool,
     clickable: bool,
+    /// A clickable view named by its descendants' text (no label of its own).
+    auto_label: bool,
     parent: Option<NodeId>,
     children: Vec<NodeId>,
 }
@@ -289,6 +291,8 @@ impl Reconciler {
             if new != node {
                 self.replace_child(parent, node, new);
             }
+            // Clickable ancestors read this entity's text in their label.
+            self.refresh_auto_labels(parent);
         }
         self.dirty.clear();
 
@@ -653,8 +657,10 @@ impl Reconciler {
         self.nodes.get_mut(&id).unwrap().children = new_children;
 
         // Accessibility, with defaults resolved here once for every backend.
+        let auto_label = kind == NodeKind::View && clickable && a11y.label.is_none();
         let effective = self.effective_a11y(id, a11y, clickable, value);
         let m = self.nodes.get_mut(&id).unwrap();
+        m.auto_label = auto_label;
         if m.a11y != effective {
             self.patches.push(Patch::SetAccessibility {
                 id,
@@ -663,6 +669,28 @@ impl Reconciler {
             m.a11y = effective;
         }
         id
+    }
+
+    /// Recomputes the automatic labels of `from` and its ancestors (after a
+    /// descendant entity re-rendered on its own).
+    fn refresh_auto_labels(&mut self, from: Option<NodeId>) {
+        let mut next = from;
+        while let Some(id) = next {
+            let Some(m) = self.nodes.get(&id) else { return };
+            next = m.parent;
+            if !m.auto_label {
+                continue;
+            }
+            let label = Some(self.collect_text(id)).filter(|t| !t.is_empty());
+            let m = self.nodes.get_mut(&id).expect("node exists");
+            if m.a11y.label != label {
+                m.a11y.label = label;
+                self.patches.push(Patch::SetAccessibility {
+                    id,
+                    a11y: m.a11y.clone(),
+                });
+            }
+        }
     }
 
     fn effective_a11y(
@@ -744,6 +772,7 @@ impl Reconciler {
                 swipe: (false, false),
                 scroll_events: false,
                 clickable: false,
+                auto_label: false,
                 parent: None,
                 children: Vec::new(),
             },

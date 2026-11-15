@@ -111,12 +111,17 @@ fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
+    let hex = |b: u8| (b as char).to_digit(16);
     while i < bytes.len() {
+        // Only `%` and two hex digits (other file names in the directory
+        // are listed as they are).
         if bytes[i] == b'%'
-            && i + 2 < bytes.len() + 1
-            && let Ok(b) = u8::from_str_radix(&s[i + 1..(i + 3).min(s.len())], 16)
+            && let (Some(h), Some(l)) = (
+                bytes.get(i + 1).copied().and_then(hex),
+                bytes.get(i + 2).copied().and_then(hex),
+            )
         {
-            out.push(b);
+            out.push((h * 16 + l) as u8);
             i += 3;
         } else {
             out.push(bytes[i]);

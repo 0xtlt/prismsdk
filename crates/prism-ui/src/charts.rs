@@ -299,7 +299,12 @@ refinable!(LineChart);
 impl Component for LineChart {
     fn render(self, cx: &mut App) -> Element {
         let t = Theme::of(cx);
-        let all: Vec<f64> = self.series.iter().flat_map(|s| s.values.clone()).collect();
+        // Missing values (NaN, infinities) are skipped.
+        let all: Vec<f64> = self
+            .series
+            .iter()
+            .flat_map(|s| s.values.iter().copied().filter(|v| v.is_finite()))
+            .collect();
         let (min, max) = self.range.unwrap_or_else(|| {
             let min = all.iter().copied().fold(f64::INFINITY, f64::min);
             let max = all.iter().copied().fold(f64::NEG_INFINITY, f64::max);
@@ -333,6 +338,7 @@ impl Component for LineChart {
                 .values
                 .iter()
                 .enumerate()
+                .filter(|(_, v)| v.is_finite())
                 .map(|(j, v)| (x(j), axis.y(*v)))
                 .collect();
             let line = if self.smooth {
@@ -770,17 +776,15 @@ impl Component for Sparkline {
     fn render(self, cx: &mut App) -> Element {
         let t = Theme::of(cx);
         let color = self.color.unwrap_or(t.accent);
-        let min = self.values.iter().copied().fold(f64::INFINITY, f64::min);
-        let max = self
-            .values
-            .iter()
-            .copied()
-            .fold(f64::NEG_INFINITY, f64::max);
+        let finite = || self.values.iter().copied().filter(|v| v.is_finite());
+        let min = finite().fold(f64::INFINITY, f64::min);
+        let max = finite().fold(f64::NEG_INFINITY, f64::max);
         let n = self.values.len();
         let pts: Vec<(f32, f32)> = self
             .values
             .iter()
             .enumerate()
+            .filter(|(_, v)| v.is_finite())
             .map(|(i, v)| {
                 let x = if n <= 1 {
                     1.

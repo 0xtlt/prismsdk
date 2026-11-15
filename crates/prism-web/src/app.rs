@@ -437,7 +437,7 @@ fn cookie_header(headers: &HeaderMap) -> Option<&str> {
 }
 
 /// `prism_sid` from a Cookie header, if well-formed.
-fn session_id(cookie_header: &str) -> Option<String> {
+pub(crate) fn session_id(cookie_header: &str) -> Option<String> {
     cookie_header
         .split(';')
         .filter_map(|kv| kv.trim().strip_prefix("prism_sid="))
@@ -467,7 +467,7 @@ pub(crate) fn new_session_id() -> String {
 }
 
 /// The browser's UTC offset (seconds east), from the `prism_tz` cookie.
-fn time_zone(cookie_header: &str) -> Option<i32> {
+pub(crate) fn time_zone(cookie_header: &str) -> Option<i32> {
     cookie_header
         .split(';')
         .find_map(|kv| kv.trim().strip_prefix("prism_tz="))
@@ -476,7 +476,7 @@ fn time_zone(cookie_header: &str) -> Option<i32> {
 }
 
 /// The last viewport the page reported (`prism_vw=1280x800`).
-fn viewport_cookie(cookie_header: &str) -> Option<(f32, f32)> {
+pub(crate) fn viewport_cookie(cookie_header: &str) -> Option<(f32, f32)> {
     let v = cookie_header
         .split(';')
         .find_map(|kv| kv.trim().strip_prefix("prism_vw="))?;
