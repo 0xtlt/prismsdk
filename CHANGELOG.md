@@ -62,6 +62,23 @@ The first version, not yet on crates.io.
   tvOS focus engine, Android touch, hover and focus listeners, SwiftUI
   pressed state); `cursor(…)`, with a pointing hand on clickable nodes.
 - `prism::ui` buttons react to hover and press; cards have a faint shadow.
+- Motion: loops that start over (`repeat_from_start`; `Pose::rotate(360.)`
+  is a full turn on every backend, for spinners), non-uniform scale
+  (`scale_x`, `scale_y` on styles and poses) and offsets in percent of the
+  element's own size (`translate_percent`, for anchoring labels).
+- Pictures from memory: `picture_data(bytes, mime)` (a `data:` URL, decoded
+  natively on every backend) and `svg(markup)` (SVG drawn as native vector
+  paths everywhere, widgets included, keeping its proportions);
+  `ui::qr_code(text)` with a built-in QR encoder (`prism_ui::qr`: byte
+  mode, versions 1–40, four error-correction levels), drawn as one shape.
+- Charts: reference lines with labels (`reference_line`), colored bands
+  (`band`, `band_labeled`), tick control (`y_ticks`, `y_tick_count`,
+  `format_y`, `x_label_every`), grouped bars (`bar_chart().labels(…)
+  .series(…)`), min–max bands (`min_max`) and dashed series (`dashed`) on
+  line charts, and a read-out of the selected point or bars (`selected`,
+  and `on_select` on line charts: one tap target per point).
+- Shapes: the even-odd fill rule (`Path::even_odd`) on every renderer;
+  `aspect_ratio` on styles (taffy, CSS `aspect-ratio`, widget snapshots).
 - Shipping: Android App Bundles and Google Play upload, App Store builds and
   upload, Developer ID notarization and DMGs, `.deb` packages, web Docker
   images, all with `--dry-run`.
@@ -150,6 +167,8 @@ The first version, not yet on crates.io.
   `crates/prism-apple-build/apple`, the Android host and the bundling scripts
   from `platform/android` and `scripts/` to `crates/prism-cli/platform`, so
   the published crates contain them.
+- Line charts leave a gap where a value is missing (NaN) instead of joining
+  its neighbours (`.connect_gaps()` bridges it); a lone point is a dot.
 - `AsyncApp::background` runs on a bounded process-wide pool (16 threads by
   default; `set_background_threads`, `PRISM_BACKGROUND_THREADS`) instead of
   one OS thread per call; a panicking job no longer leaves its work counted
@@ -166,5 +185,10 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- watchOS simulator release builds link clang's runtime (Swift availability
+  checks of the watchOS 26+ SDKs need `__isPlatformVersionAtLeast`).
+- The watch host clamps frames that are negative or not finite before
+  handing them to SwiftUI (absolutely positioned overlays next to chart
+  bars).
 - Tasks spawned by a screen built during navigation (a first load in its
   constructor) start at once instead of at the next event. (#23)

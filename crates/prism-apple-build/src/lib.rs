@@ -205,8 +205,15 @@ fn build_swift(dirs: &[&str], module: &str) {
     println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
     // Swift's availability checks call compiler-rt's
     // `__isPlatformVersionAtLeast`; rustc links with -nodefaultlibs, and only
-    // brings its own copy on some targets. watchOS devices need clang's.
-    if target == "aarch64-apple-watchos" {
+    // brings its own copy on some targets. watchOS devices need clang's, and
+    // so does the simulator in release builds with the watchOS 26+ SDKs
+    // (SwiftUI's `tag(_:includeOptional:)` checks availability).
+    if target == "aarch64-apple-watchos" || target == "aarch64-apple-watchos-sim" {
+        let lib = if target.ends_with("-sim") {
+            "clang_rt.watchossim"
+        } else {
+            "clang_rt.watchos"
+        };
         let clang = xcrun(&["-f", "clang"]);
         let versions = Path::new(&clang).parent().unwrap().join("../lib/clang");
         let darwin = std::fs::read_dir(&versions)
@@ -214,11 +221,11 @@ fn build_swift(dirs: &[&str], module: &str) {
             .flatten()
             .flatten()
             .map(|v| v.path().join("lib/darwin"))
-            .find(|d| d.join("libclang_rt.watchos.a").exists());
+            .find(|d| d.join(format!("lib{lib}.a")).exists());
         if let Some(darwin) = darwin {
             println!("cargo:rustc-link-search=native={}", darwin.display());
             // A fat archive: left for the final link (ld picks the slice).
-            println!("cargo:rustc-link-lib=static:-bundle=clang_rt.watchos");
+            println!("cargo:rustc-link-lib=static:-bundle={lib}");
         }
     }
     // Simulator builds read entitlements (App Groups…) from sections of the

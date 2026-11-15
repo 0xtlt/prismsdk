@@ -732,9 +732,21 @@ impl<W: Widgets> NativeRenderer<W> {
         let Ok(l) = self.taffy.layout(entry.layout) else {
             return;
         };
-        let (mut x, y, w, h) = (l.location.x, l.location.y, l.size.width, l.size.height);
+        let (mut x, mut y, w, h) = (l.location.x, l.location.y, l.size.width, l.size.height);
         if self.env.direction == Direction::Rtl {
             x = parent_width - x - w;
+        }
+        // Offsets in percent of the node's own size: a visual shift, after
+        // the layout (CSS `translate(x%, y%)`), leading like `transform.x`.
+        let (tx, ty) = entry.style.translate_percent;
+        if (tx, ty) != (0., 0.) {
+            let dir = if self.env.direction == Direction::Rtl {
+                -1.
+            } else {
+                1.
+            };
+            x += dir * w * tx / 100.;
+            y += h * ty / 100.;
         }
         self.set_frame(id, x, y, w, h);
         match self.stack_screens.get(&id).cloned() {
@@ -1011,6 +1023,7 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                         }
                         // A loop restarts when it, or what it loops from, changes.
                         if old.animations.repeat != s.animations.repeat
+                            || old.animations.restart != s.animations.restart
                             || (s.animations.repeat.is_some()
                                 && (old.opacity != s.opacity || old.transform != s.transform))
                         {
@@ -1285,6 +1298,7 @@ pub fn to_taffy(s: &Style, kind: NodeKind) -> taffy::Style {
             }
         },
         scrollbar_width: 0.,
+        // `aspect_ratio` (and its caps): `extras::apply`.
         ..Default::default()
     };
     extras::apply(&mut style, s, kind);

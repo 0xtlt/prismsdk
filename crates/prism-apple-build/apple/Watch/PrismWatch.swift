@@ -371,7 +371,7 @@ struct PrismShape: View {
             for p in paths {
                 let path = Self.path(p["d"] as? [Double] ?? [])
                 if let f = PrismColor(p["fill"]) {
-                    ctx.fill(path, with: .color(dark ? f.dark : f.light))
+                    ctx.fill(path, with: .color(dark ? f.dark : f.light), style: FillStyle(eoFill: p["eo"] as? Bool ?? false))
                 }
                 if let s = PrismColor(p["stroke"]) {
                     let round = p["round"] as? Bool ?? false
@@ -512,7 +512,8 @@ final class PrismStore: ObservableObject {
             case "exit": MainActor.assumeIsolated { exit(id, p) }
             case "repeat":
                 nodes[id]?.loop = (p["to"] as? [String: Any]).map {
-                    PrismLoop(from: PrismPose(p["from"]), to: PrismPose($0), anim: p["anim"] as? [String: Any] ?? [:])
+                    PrismLoop(from: PrismPose(p["from"]), to: PrismPose($0), anim: p["anim"] as? [String: Any] ?? [:],
+                              restart: p["restart"] as? Bool ?? false)
                 }
             case "create": nodes[id] = Node(kind: p["kind"] as? String ?? "view")
             case "destroy": nodes[id] = nil
@@ -543,7 +544,7 @@ final class PrismStore: ObservableObject {
                 lang = p["lang"] as? String ?? ""
             case "style": nodes[id]?.style = p["s"] as? [String: Any] ?? [:]
             case "frame":
-                if let f = p["f"] as? [Double], f.count == 4 { nodes[id]?.frame = CGRect(x: f[0], y: f[1], width: f[2], height: f[3]) }
+                if let f = p["f"] as? [Double], f.count == 4 { nodes[id]?.frame = prismFrame(f) }
             case "content":
                 if let c = p["size"] as? [Double], c.count == 2 { nodes[id]?.content = CGSize(width: c[0], height: c[1]) }
             case "menu": nodes[id]?.menu = p["menu"] as? [String: Any]
@@ -577,7 +578,7 @@ final class PrismStore: ObservableObject {
                         case "style": self.nodes[id]?.style = p["s"] as? [String: Any] ?? [:]
                         case "frame":
                             if let f = p["f"] as? [Double], f.count == 4 {
-                                self.nodes[id]?.frame = CGRect(x: f[0], y: f[1], width: f[2], height: f[3])
+                                self.nodes[id]?.frame = prismFrame(f)
                             }
                         default: break
                         }
@@ -612,16 +613,29 @@ extension PrismStore {
     }
 }
 
+/// `[x, y, width, height]` from Rust as a frame SwiftUI accepts: a size
+/// that is negative or not finite (a degenerate absolutely positioned
+/// overlay) would make `.frame(width:height:)` invalid and could take the
+/// siblings drawn in the same stack (chart bars) down with it.
+func prismFrame(_ f: [Double]) -> CGRect {
+    let v = f.map { $0.isFinite ? $0 : 0 }
+    return CGRect(x: v[0], y: v[1], width: max(0, v[2]), height: max(0, v[3]))
+}
+
 // MARK: Motion
 
 /// Opacity and transform (offset, scale, rotation around the center).
 struct PrismPose: Equatable {
     var o = 1.0, x = 0.0, y = 0.0, scale = 1.0, rotate = 0.0
+    /// Size factors on each axis (multiplied with `scale`).
+    var scaleX = 1.0, scaleY = 1.0
 
     init(_ v: Any?) {
         let d = v as? [String: Any] ?? [:]
         o = (d["o"] as? NSNumber)?.doubleValue ?? 1
-        if let tf = d["tf"] as? [Double], tf.count == 4 { (x, y, scale, rotate) = (tf[0], tf[1], tf[2], tf[3]) }
+        // `[x, y, scale, degrees]`, then `scale x, scale y`.
+        if let tf = d["tf"] as? [Double], tf.count >= 4 { (x, y, scale, rotate) = (tf[0], tf[1], tf[2], tf[3]) }
+        if let tf = d["tf"] as? [Double], tf.count >= 6 { (scaleX, scaleY) = (tf[4], tf[5]) }
     }
 
     init(opacity: Double, tf: Any?) { self.init(["o": opacity, "tf": tf ?? NSNull()]) }
@@ -631,8 +645,10 @@ struct PrismLoop: Equatable {
     var from: PrismPose
     var to: PrismPose
     var anim: [String: Any]
+    /// Starts over from `from` instead of swinging back (spinners).
+    var restart = false
     static func == (a: PrismLoop, b: PrismLoop) -> Bool {
-        a.from == b.from && a.to == b.to && NSDictionary(dictionary: a.anim).isEqual(to: b.anim)
+        a.from == b.from && a.to == b.to && a.restart == b.restart && NSDictionary(dictionary: a.anim).isEqual(to: b.anim)
     }
 }
 
@@ -654,7 +670,7 @@ func prismAnimation(_ a: [String: Any]) -> Animation {
 
 extension View {
     func prismPose(_ p: PrismPose) -> some View {
-        scaleEffect(p.scale).rotationEffect(.degrees(p.rotate)).offset(x: p.x, y: p.y).opacity(p.o)
+        scaleEffect(x: p.scale * p.scaleX, y: p.scale * p.scaleY).rotationEffect(.degrees(p.rotate)).offset(x: p.x, y: p.y).opacity(p.o)
     }
 }
 
@@ -676,8 +692,15 @@ struct PrismPosed: ViewModifier {
         withTransaction(t) { swing = false }
         guard let loop else { return }
         let d = loop.anim["d"] as? Double ?? 0.6
+        // A loop that starts over keeps its curve (linear for a spinner:
+        // the angle animates as a number, so 0 to 360 degrees is a full turn);
+        // swings, and curves that overshoot, ease in and out.
+        let e = loop.anim["ease"] as? [Double] ?? []
+        let overshoots = e.count < 4 || e.contains { $0 < 0 || $0 > 1 }
+        let curve: Animation = loop.restart && !overshoots
+            ? .timingCurve(e[0], e[1], e[2], e[3], duration: d) : .easeInOut(duration: d)
         DispatchQueue.main.async {
-            withAnimation(.easeInOut(duration: d).repeatForever(autoreverses: true).delay(loop.anim["delay"] as? Double ?? 0)) {
+            withAnimation(curve.repeatForever(autoreverses: !loop.restart).delay(loop.anim["delay"] as? Double ?? 0)) {
                 swing = true
             }
         }
@@ -1656,13 +1679,26 @@ struct Picture: View {
     let fit: Bool
 
     var body: some View {
-        if source.hasPrefix("http://") || source.hasPrefix("https://"), let url = URL(string: source) {
+        if source.hasPrefix("data:"), let image = Self.dataImage(source) {
+            Image(uiImage: image).resizable().aspectRatio(contentMode: fit ? .fit : .fill)
+        } else if source.hasPrefix("http://") || source.hasPrefix("https://"), let url = URL(string: source) {
             AsyncImage(url: url) { $0.resizable().aspectRatio(contentMode: fit ? .fit : .fill) } placeholder: { Color.gray.opacity(0.2) }
         } else if let image = UIImage(contentsOfFile: source.hasPrefix("/") ? source : Bundle.main.bundlePath + "/assets/" + source) {
             Image(uiImage: image).resizable().aspectRatio(contentMode: fit ? .fit : .fill)
         } else {
             Color.gray.opacity(0.2)
         }
+    }
+
+    /// Bytes in memory (`picture_data`): a base64 or percent-encoded `data:` URL.
+    static func dataImage(_ source: String) -> UIImage? {
+        guard let comma = source.firstIndex(of: ",") else { return nil }
+        let meta = source[source.index(source.startIndex, offsetBy: 5)..<comma]
+        let payload = String(source[source.index(after: comma)...])
+        let data = meta.hasSuffix(";base64")
+            ? Data(base64Encoded: payload, options: .ignoreUnknownCharacters)
+            : payload.removingPercentEncoding.map { Data($0.utf8) }
+        return data.flatMap(UIImage.init(data:))
     }
 }
 

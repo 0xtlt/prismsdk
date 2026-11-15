@@ -147,6 +147,9 @@
     "images": "Images",
     "river_alt": "A river between mountains",
     "logo_alt": "Prism logo",
+    "qr_alt": "QR code: example.com pairing link",
+    "memory_alt": "Prism logo, from bytes in memory",
+    "svg_alt": "A badge drawn from SVG markup",
     "list": "A list of {count} rows",
     "list_subtitle": "Virtualized: only visible rows exist",
     "network": "Network",
@@ -257,7 +260,16 @@
     "goal": "Goal",
     "done": "Done",
     "selected": "{day}: {count} orders",
-    "tap_bar": "Tap a bar to highlight it"
+    "tap_bar": "Tap a bar to highlight it",
+    "temperature": "Living room",
+    "measured": "Measured",
+    "forecast": "Forecast",
+    "average": "Average",
+    "comfort": "Comfort",
+    "target": "Target",
+    "updating": "Updating…",
+    "tap_point": "Tap the chart to read a value",
+    "hour": "{hour}:00"
   },
   "security": {
     "title": "Security",

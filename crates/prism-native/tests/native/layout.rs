@@ -232,6 +232,114 @@ fn right_to_left_mirrors_padding_offsets_and_text_alignment() {
 }
 
 #[test]
+fn translate_percent_shifts_by_the_nodes_own_size_after_layout() {
+    // A 40 × 10 label centred on 30 % of a 200 pt wide parent, above its top.
+    let mut h = tree(|| {
+        div().w(200.).h(50.).child(
+            div()
+                .absolute()
+                .left(relative(0.3))
+                .top(20.)
+                .w(40.)
+                .h(10.)
+                .translate_percent(-50., -100.),
+        )
+    });
+    let f = h.layout(400., 300.);
+    let label = f.of_kind(NodeKind::View)[1];
+    assert_eq!(f.frame(label), (40., 10., 40., 10.), "60 - 20, 20 - 10");
+
+    // Right to left: leading is the right edge, the shift mirrors too.
+    h.rt.app.set_locale(Some(Locale::new("ar")));
+    h.rerender();
+    let f = h.layout(400., 300.);
+    assert_eq!(f.frame(label).0, 120., "200 - 60 - 40, then + 20");
+}
+
+#[test]
+fn absolute_overlays_leave_their_sibling_bars_alone() {
+    // A bar chart's structure: the grid, the bars pulled up over it by a
+    // negative margin, then a zero-height absolute layer of labels and a
+    // read-out (what the watch, Android and every native backend lay out).
+    fn chart(overlays: bool) -> prism_core::Div {
+        let bar = |f: f32| {
+            div().flex_1().h_full().justify_end().items_center().child(
+                div()
+                    .w(relative(0.72))
+                    .h(relative(f))
+                    .bg(prism_core::rgb(0xff0000)),
+            )
+        };
+        div().w(300.).child(
+            div()
+                .child(prism_core::shape().h(100.).w_full())
+                .child(
+                    div()
+                        .flex_row()
+                        .h(100.)
+                        .with_style(|s| s.margin.top = -100.)
+                        .py(7.)
+                        .items_end()
+                        .child(bar(0.5))
+                        .child(bar(1.))
+                        .child(bar(0.25)),
+                )
+                .when(overlays, |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .top(7.)
+                            .left(0.)
+                            .right(0.)
+                            .h(0.)
+                            .child(
+                                text("Target")
+                                    .absolute()
+                                    .right(0.)
+                                    .top(20.)
+                                    .translate_percent(0., -100.),
+                            )
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left(relative(0.5))
+                                    .top(0.)
+                                    .w(60.)
+                                    .h(30.)
+                                    .bg(prism_core::rgb(0x00ff00)),
+                            ),
+                    )
+                }),
+        )
+    }
+    let bars = |overlays: bool| {
+        let mut h = if overlays {
+            tree(|| chart(true))
+        } else {
+            tree(|| chart(false))
+        };
+        let f = h.layout(400., 400.);
+        let red = Some(prism_core::rgb(0xff0000));
+        let mut out: Vec<(f32, f32, f32, f32)> = f
+            .styles
+            .iter()
+            .filter(|(_, s)| s.background == red)
+            .map(|(id, _)| f.frame(*id))
+            .collect();
+        // (Frames are relative to each bar's cell: sorted by height.)
+        out.sort_by(|a, b| a.3.total_cmp(&b.3));
+        out
+    };
+    let plain = bars(false);
+    assert_eq!(
+        plain.iter().map(|b| b.3).collect::<Vec<_>>(),
+        [21., 43., 86.],
+        "fractions of the 86 pt between the paddings (rounded to points)"
+    );
+    assert_eq!(bars(true), plain, "the overlay changes no bar");
+}
+
+#[test]
 fn text_scale_grows_text_but_not_containers() {
     let mut h = tree(|| div().text_size(10.).child(text("t").text_size(17.)));
     let root = h.w().root.unwrap();

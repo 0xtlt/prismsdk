@@ -665,7 +665,9 @@ pub struct Style {
     pub gap_x: Option<f32>,
     /// Space between rows (and between the items of a column), overriding `gap`.
     pub gap_y: Option<f32>,
-    /// Width ÷ height: the other side follows the one that is known.
+    /// Width ÷ height: the other side follows the one that is known (CSS
+    /// `aspect-ratio`). [`svg`](crate::svg()) pictures keep their `viewBox`
+    /// proportions with it.
     pub aspect_ratio: Option<f32>,
     /// Which way a scroll view scrolls.
     pub scroll_axis: crate::layout::ScrollAxis,
@@ -724,6 +726,12 @@ pub struct Style {
     pub cursor: Option<crate::decoration::Cursor>,
     /// Descendants' `group_*` refinements follow this node's states.
     pub group: bool,
+
+    // Motion: offsets relative to the element's own size.
+    /// Extra offset in percent of the element's own width and height (CSS
+    /// `translate(x%, y%)`; `(-50., 0.)` centers it on its position). Leading
+    /// / trailing like `transform.x`; no effect on the layout around it.
+    pub translate_percent: (f32, f32),
 }
 
 impl Style {
@@ -1240,6 +1248,7 @@ impl Default for Style {
             states: crate::interaction::States::default(),
             cursor: None,
             group: false,
+            translate_percent: (0., 0.),
         }
     }
 }
@@ -2075,5 +2084,29 @@ pub trait Styled: Sized {
                 std::rc::Rc::new(f),
             )
         })
+    }
+
+    // Motion: loops that start over, non-uniform scale, relative offsets.
+    /// Plays from its style to `pose`, then starts over, forever: with
+    /// `Pose::new().rotate(360.)` and a linear transition, a spinner.
+    fn repeat_from_start(self, pose: crate::animation::Pose, t: Transition) -> Self {
+        self.with_style(|s| {
+            s.animations.repeat = Some((pose, t));
+            s.animations.restart = true;
+        })
+    }
+    /// Scales it horizontally around its center (with [`scale`](Self::scale)).
+    fn scale_x(self, factor: f32) -> Self {
+        self.with_style(|s| s.transform.scale_x = factor)
+    }
+    /// Scales it vertically around its center (with [`scale`](Self::scale)).
+    fn scale_y(self, factor: f32) -> Self {
+        self.with_style(|s| s.transform.scale_y = factor)
+    }
+    /// Moves it by `x` % of its own width and `y` % of its own height,
+    /// without changing the layout: `.absolute().left(relative(0.3))
+    /// .translate_percent(-50., 0.)` centers a label on 30 % of its parent.
+    fn translate_percent(self, x: f32, y: f32) -> Self {
+        self.with_style(|s| s.translate_percent = (x, y))
     }
 }

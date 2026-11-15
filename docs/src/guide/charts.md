@@ -27,6 +27,37 @@ ui::sparkline([3., 5., 4., 8.])
 - **Bars** are native elements: tappable, read one by one by screen readers, and animated when values change. They stand on the baseline, so only their top corners are rounded by default (`bar_radius`, `bar_corners`). Other charts read as one element with their values.
 - Charts mirror in right-to-left languages, like the layout around them.
 
+## Reference lines, bands, ticks, gaps and read-outs
+
+```rust
+ui::line_chart()
+    .series("Measured", [19.4, 19.8, f64::NAN, 22.6, 23.4])   // NaN: a gap in the line
+    .min_max([18.9, 19.1, f64::NAN, 21.9, 22.5], [20.3, 20.7, f64::NAN, 23.5, 24.3])
+    .series("Forecast", [f64::NAN, f64::NAN, f64::NAN, 22.6, 22.0]).dashed()
+    .labels(hours).x_label_every(3)                             // every third x label
+    .y_ticks([16., 20., 24.])                                   // exactly these grid lines
+    .format_y(|v| format!("{v:.1} °C"))                        // axis, labels, read-out, screen readers
+    .band_labeled(19., 23., theme.success, "Comfort")           // behind the plot, 14 % opacity
+    .reference_line(average, "Average")                         // dashed, labelled at its end
+    .selected(self.hour)                                        // the read-out
+    .on_select(cx.listener(|this, e, _| this.hour = Some(e.index())))
+
+ui::bar_chart()
+    .labels(["Mon", "Tue", "Wed"])
+    .series("This week", [12., 18., 9.])                        // grouped bars, one per series
+    .series("Last week", [10., 14., 12.])
+    .reference_line(15., "Target")
+    .selected(self.day)
+    .on_select(cx.listener(|this, e, _| this.day = Some(e.index())))
+```
+
+- **Reference lines** (`reference_line`, `reference_line_colored`) are dashed lines across the plot with their label above the trailing end; screen readers hear them after the values. **Bands** (`band`, `band_labeled`) color a range of values behind the grid. Both count in the automatic range (reference lines) or are clamped to it (bands).
+- **Ticks**: `y_ticks([…])` puts the grid and its labels at exactly these values (unevenly spaced ones too: each label is centered on its line), `y_tick_count(n)` asks for about `n` round steps, `format_y(f)` writes every value (axis, labels, read-out, what screen readers say), `x_label_every(n)` thins the x labels (default: as many as fit, 7 on a phone, 4 on a watch).
+- **Gaps**: `f64::NAN` in a series leaves a gap (a lone point between gaps is a dot); `.connect_gaps()` bridges them. `.min_max(lows, highs)` shades a range around the last series, `.dashed()` dashes it.
+- **Grouped bars**: `.labels(…)` and several `.series(…)` (or `.series_colored(…)`) draw one bar per series in each category, with a legend; each category is one tappable element, spoken with every series' value.
+- **Read-out**: `.selected(Some(i))` draws a rule and dots on the `i`-th point (or keeps the `i`-th group opaque and fades the others) and a bubble with its label and values, placed beside what it reads, at the top or the bottom of the plot, so the selected point stays visible. With `.on_select(handler)`, a tap or click on a line chart picks the nearest point: the plot gets one tap target per point (a button for screen readers, "Tue: Sales: 5 k€, Costs: 2 k€"), as wide as the region nearest to it. The selection is the app's state, like `highlight`: a pointer-follow variant (hover on the web and macOS, scrubbing on touch) will call the same handler once pointer-move events exist, so code written against `on_select` + `selected` keeps working.
+- Labels and the read-out sit in a zero-height layer over the plot (`absolute()` plus `translate_percent`, see [Motion](motion.md)): they cover nothing, so the bars and tap targets under them stay tappable. In widgets (no absolute positioning there) reference lines and bands are drawn, their labels left out (they are still spoken), and there is no read-out. Axis labels stay in the flow, each centered on its grid line, so uneven ticks work in widgets too.
+
 Draw your own with `shape()`: coordinates are fractions of the frame, so drawings follow the layout size. `stroke_inset(x, y)` keeps points free around the drawing so thick strokes are not clipped; a shape is positioned like any element (`shape().absolute().inset(0.)` covers its parent).
 
 ```rust
@@ -38,7 +69,7 @@ shape()
     .label("Trend: up")                                         // decorative unless labelled
 ```
 
-`Path` also has `line`, `arc`, `circle`, `rect`, `move_to`/`line_to`/`curve_to`/`arc_to`/`close`, `.fill`, `.stroke`, `.dashed`.
+`Path` also has `line`, `arc`, `circle`, `rect`, `move_to`/`line_to`/`curve_to`/`arc_to`/`close`, `.fill`, `.stroke`, `.dashed`, `.even_odd` (holes where subpaths overlap). SVG markup becomes a drawing with `svg(markup)` (see [Images](images-lists-gestures.md)).
 
 ## Charts in widgets, Live Activities and car screens
 

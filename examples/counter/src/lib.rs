@@ -580,6 +580,8 @@ struct Gallery {
     taps: u32,
     /// The highlighted bar of the orders chart.
     day: Option<usize>,
+    /// The hour read out on the temperature chart.
+    hour: Option<usize>,
 }
 
 impl Gallery {
@@ -597,11 +599,82 @@ impl Gallery {
             email: String::new(),
             taps: 0,
             day: None,
+            hour: None,
         }
+    }
+
+    /// A sensor chart: a comfort band, a gap while the sensor was offline,
+    /// the min–max range, a dashed forecast, the day's average, and a
+    /// read-out of the tapped hour; a spinning "updating" indicator.
+    fn temperature(&self, cx: &mut Context<Self>) -> prism::Div {
+        let t = Theme::of(cx);
+        let nan = f64::NAN;
+        let measured = [
+            19.4, 19.8, 20.5, 21.2, nan, nan, 22.6, 23.4, 22.9, nan, nan, nan, nan,
+        ];
+        let forecast = [
+            nan, nan, nan, nan, nan, nan, nan, nan, 22.9, 22.3, 21.6, 20.8, 20.1,
+        ];
+        let lows = measured.map(|v| v - 0.7);
+        let highs = measured.map(|v| v + 0.9);
+        let known: Vec<f64> = measured.iter().copied().filter(|v| v.is_finite()).collect();
+        let average = known.iter().sum::<f64>() / known.len() as f64;
+        let hours: Vec<String> = (6..19).map(|h| strings::charts_hour(cx, h)).collect();
+        div()
+            .gap(8.)
+            .child(
+                div()
+                    .flex_row()
+                    .items_center()
+                    .gap(6.)
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(ui::heading(strings::charts_temperature(cx)).level(3)),
+                    )
+                    // A full turn, starting over: a spinner.
+                    .child(
+                        image("arrow.clockwise")
+                            .text_size(13.)
+                            .text_color(t.muted)
+                            .repeat_from_start(Pose::new().rotate(360.), Transition::linear(1200))
+                            .accessibility_hidden(),
+                    )
+                    .child(
+                        text(strings::charts_updating(cx))
+                            .text_size(12.)
+                            .text_color(t.muted),
+                    ),
+            )
+            .child(
+                text(strings::charts_tap_point(cx))
+                    .text_size(13.)
+                    .text_color(t.muted),
+            )
+            .child(
+                ui::line_chart()
+                    .title(strings::charts_temperature(cx))
+                    .series(strings::charts_measured(cx), measured)
+                    .min_max(lows, highs)
+                    .series(strings::charts_forecast(cx), forecast)
+                    .dashed()
+                    .labels(hours)
+                    .x_label_every(3)
+                    .y_ticks([16., 20., 24.])
+                    .unit("°")
+                    .band_labeled(19., 23., t.success, strings::charts_comfort(cx))
+                    .reference_line(average, strings::charts_average(cx))
+                    .selected(self.hour)
+                    .on_select(cx.listener(|this, e: &ChangeEvent, _| {
+                        this.hour = (this.hour != Some(e.index())).then_some(e.index());
+                    }))
+                    .height(170.),
+            )
     }
 
     /// Stat tiles, a line chart, tappable bars, a donut and rings.
     fn charts(&self, cx: &mut Context<Self>) -> ui::Card {
+        let temperature = self.temperature(cx);
         let t = Theme::of(cx);
         let days: Vec<String> = strings::charts_days(cx)
             .split(',')
@@ -649,12 +722,20 @@ impl Gallery {
                     .unit(" k€")
                     .height(160.),
             )
+            .child(temperature)
             .child(ui::heading(strings::charts_orders(cx)).level(3))
             .child(text(caption).text_size(13.).text_color(t.muted))
             .child(
+                // Grouped bars, a target line, and a read-out of the tapped day.
                 ui::bar_chart()
-                    .bars(days.iter().cloned().zip(orders))
-                    .highlight(self.day)
+                    .labels(days.clone())
+                    .series(strings::charts_this_week(cx), orders)
+                    .series(
+                        strings::charts_last_week(cx),
+                        [10., 14., 12., 19., 17., 22., 18.],
+                    )
+                    .reference_line(20., strings::charts_target(cx))
+                    .selected(self.day)
                     .height(150.)
                     .on_select(cx.listener(|this, e: &ChangeEvent, _| {
                         this.day = (this.day != Some(e.index())).then_some(e.index());
@@ -690,6 +771,16 @@ impl Gallery {
             )
     }
 }
+
+/// SVG markup as a server would send it: drawn as native vectors by `svg()`
+/// (a rounded rectangle, a ring with an even-odd hole, an arc path, a
+/// rotated, dashed stroke).
+const BADGE_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="96" height="64" viewBox="0 0 48 32">
+  <rect x="1" y="1" width="46" height="30" rx="7" fill="#5B5BD6"/>
+  <path d="M16 5a11 11 0 1 0 0.01 0Z M16 10a6 6 0 1 0 0.01 0Z" fill="#fff" fill-rule="evenodd"/>
+  <path d="M30 22 A6 6 0 0 1 42 22" fill="none" stroke="#FFD34D" stroke-width="2.5" stroke-linecap="round"/>
+  <g transform="rotate(-12 36 11)"><line x1="29" y1="11" x2="43" y2="11" stroke="#fff" stroke-width="1.5" stroke-dasharray="2 1.5"/></g>
+</svg>"##;
 
 impl Render for Gallery {
     fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -806,6 +897,26 @@ impl Render for Gallery {
                                     .rounded(12.),
                             )
                             .child(picture("prism.png").alt(strings::gallery_logo_alt(cx)).fit().size(px(120.)).rounded(24.)),
+                    )
+                    // From memory: a QR code, PNG bytes, SVG markup.
+                    .child(
+                        div()
+                            .flex_row()
+                            .flex_wrap()
+                            .items_center()
+                            .gap(12.)
+                            .child(
+                                ui::qr_code("https://example.com/pair/8F3K-22QZ")
+                                    .size(120.)
+                                    .alt(strings::gallery_qr_alt(cx)),
+                            )
+                            .child(
+                                picture_data(include_bytes!("../assets/prism.png"), "image/png")
+                                    .alt(strings::gallery_memory_alt(cx))
+                                    .fit()
+                                    .size(px(64.)),
+                            )
+                            .child(svg(BADGE_SVG).alt(strings::gallery_svg_alt(cx)).w(px(96.))),
                     )
                     .child(
                         ui::list_row(strings::gallery_list(cx, cx.format_number(10_000., 0)))

@@ -163,6 +163,9 @@
     "images": "الصور",
     "river_alt": "نهر بين الجبال",
     "logo_alt": "شعار Prism",
+    "qr_alt": "رمز QR: رابط الاقتران example.com",
+    "memory_alt": "شعار Prism من بايتات في الذاكرة",
+    "svg_alt": "شارة مرسومة من SVG",
     "list": "قائمة من {count} صف",
     "list_subtitle": "افتراضية: الصفوف المرئية فقط موجودة",
     "network": "الشبكة",
@@ -281,7 +284,16 @@
     "goal": "الهدف",
     "done": "منجزة",
     "selected": "{day}: {count} طلبات",
-    "tap_bar": "اضغط على عمود لإبرازه"
+    "tap_bar": "اضغط على عمود لإبرازه",
+    "temperature": "غرفة المعيشة",
+    "measured": "مقيس",
+    "forecast": "توقع",
+    "average": "المتوسط",
+    "comfort": "الراحة",
+    "target": "الهدف",
+    "updating": "جارٍ التحديث…",
+    "tap_point": "المس الرسم البياني لقراءة قيمة",
+    "hour": "الساعة {hour}"
   },
   "security": {
     "title": "الأمان",

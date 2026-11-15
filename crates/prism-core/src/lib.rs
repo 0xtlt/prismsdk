@@ -36,6 +36,7 @@ pub mod spans;
 pub mod storage;
 mod style;
 pub mod surfaces;
+pub mod svg;
 mod task;
 mod window;
 
@@ -67,6 +68,7 @@ pub use element::{
     unix_seconds, unix_time,
 };
 pub use element::{STACK_CLOSABLE, STACK_NO_HEADER};
+pub use element::{picture_data, svg};
 pub use i18n::{BasicFormatter, DateStyle, Direction, Formatter, Locale, Translations};
 pub use interaction::{Interaction, Interactions, States};
 pub use layout::{GridTrack, Repetition, ScrollAxis, auto_fill, auto_fit, fr, minmax, repeat};
@@ -537,6 +539,7 @@ pub mod prelude {
     // Box decorations and interaction states.
     pub use crate::decoration::{shadow_lg, shadow_md, shadow_sm};
     pub use crate::{Color, Cursor, Gradient, Shadow};
+    pub use crate::{picture_data, svg};
 }
 
 #[cfg(test)]

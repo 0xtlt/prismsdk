@@ -5,6 +5,7 @@ mod background;
 mod decoration;
 mod i18n;
 mod motion;
+mod pictures;
 mod reconcile;
 mod request;
 mod router;

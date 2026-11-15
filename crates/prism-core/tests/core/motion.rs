@@ -95,8 +95,22 @@ fn transforms_print_css_and_matrices() {
         y: -2.,
         scale: 1.5,
         rotate: 45.,
+        ..Transform::IDENTITY
     };
     assert_eq!(t.css(), "translate(4px,-2px) rotate(45deg) scale(1.5)");
+    let squashed = Transform {
+        scale: 2.,
+        scale_y: 0.25,
+        ..Transform::IDENTITY
+    };
+    assert_eq!(
+        squashed.css(),
+        "translate(0px,0px) rotate(0deg) scale(2,0.5)"
+    );
+    // Non-uniform scale around the center of a 10 × 10 box: x doubles, y halves.
+    let [a, b, c, d, tx, ty] = squashed.matrix_around_center(10., 10.);
+    assert_eq!((a, b, c, d), (2., 0., -0., 0.5));
+    assert_eq!((a * 5. + tx, d * 5. + ty), (5., 5.));
     // A pure translation moves every point by the offset.
     let m = Transform {
         x: 3.,
@@ -120,13 +134,49 @@ fn poses_build_and_mirror() {
         enter: Some(Pose::slide(10., 4.)),
         exit: Some(Pose::new().x(-3.)),
         repeat: Some((Pose::new().offset(1., 1.).rotate(10.), Transition::ease(1))),
+        restart: true,
     };
     let m = a.scaled(2., true);
     assert_eq!(m.enter.unwrap().offset, Some((-20., 8.)));
     assert_eq!(m.exit.unwrap().offset, Some((6., 0.)));
     let (rp, _) = m.repeat.unwrap();
     assert_eq!((rp.offset, rp.rotate), (Some((-2., 2.)), Some(10.)));
+    assert!(m.restart, "scaling keeps the loop mode");
     assert!(Animations::default().is_empty() && !a.is_empty());
+}
+
+#[test]
+fn poses_scale_each_axis_and_turn_fully() {
+    let rest = Transform {
+        scale: 2.,
+        ..Transform::IDENTITY
+    };
+    let (_, t) = Pose::new().scale_y(0.1).apply(1., rest);
+    assert_eq!((t.sx(), t.sy()), (2., 0.2));
+    // Halfway through a full turn is 180°, not the matrix average (identity).
+    let to = Transform {
+        rotate: 360.,
+        ..Transform::IDENTITY
+    };
+    assert_eq!(Transform::IDENTITY.lerp(to, 0.5).rotate, 180.);
+    assert_eq!(Transform::IDENTITY.lerp(to, 1.), to);
+}
+
+#[test]
+fn repeat_from_start_restarts_and_scale_builders_set_each_axis() {
+    use prism_core::{Styled, div};
+    let mut d = div()
+        .scale_x(1.5)
+        .scale_y(0.5)
+        .translate_percent(-50., -100.)
+        .repeat_from_start(Pose::new().rotate(360.), Transition::linear(800));
+    let s = d.style_mut().clone();
+    assert_eq!((s.transform.scale_x, s.transform.scale_y), (1.5, 0.5));
+    assert_eq!(s.translate_percent, (-50., -100.));
+    assert!(s.animations.restart);
+    assert_eq!(s.animations.repeat.unwrap().0.rotate, Some(360.));
+    let mut back_and_forth = div().repeat(Pose::new().scale(1.1), Transition::ease(500));
+    assert!(!back_and_forth.style_mut().animations.restart);
 }
 
 // --- with_animation and Reduce Motion ---------------------------------------

@@ -40,6 +40,7 @@ pub fn forget(w: &impl IsA<gtk::Widget>) {
     FRAMES.with(|f| f.borrow_mut().remove(&key(w)));
     STICKY.with(|s| s.borrow_mut().remove(&key(w)));
     TRANSFORMS.with(|f| f.borrow_mut().remove(&key(w)));
+    RESTARTS.with(|r| r.borrow_mut().remove(&key(w)));
     for channel in [Channel::Frame, Channel::Visual, Channel::Loop] {
         stop(w, channel);
     }
@@ -100,12 +101,7 @@ impl Visual {
         let l = |x: f32, y: f32| x + (y - x) * t;
         Visual {
             opacity: l(a.opacity, b.opacity).clamp(0., 1.),
-            transform: Transform {
-                x: l(a.transform.x, b.transform.x),
-                y: l(a.transform.y, b.transform.y),
-                scale: l(a.transform.scale, b.transform.scale),
-                rotate: l(a.transform.rotate, b.transform.rotate),
-            },
+            transform: a.transform.lerp(b.transform, t),
         }
     }
 }
@@ -175,6 +171,11 @@ fn run(
             return glib::ControlFlow::Continue;
         }
         let elapsed = now - begin;
+        if forever && RESTARTS.with(|r| r.borrow().contains(&k.0)) {
+            // Starts over at the end of every cycle (spinners).
+            step(w, t.ease_at((elapsed % duration) as f32 / duration as f32));
+            return glib::ControlFlow::Continue;
+        }
         if forever {
             let cycle = elapsed % (2 * duration);
             let p = if cycle < duration {
@@ -242,8 +243,36 @@ pub fn animate_frame(w: &impl IsA<gtk::Widget>, to: (i32, i32, i32, i32), t: Tra
     );
 }
 
+thread_local! {
+    /// Widgets whose loop starts over instead of swinging back.
+    static RESTARTS: RefCell<std::collections::HashSet<usize>> = RefCell::default();
+}
+
+/// From `a` to `b` and starting over, until stopped (a spinner: rotation
+/// 0° to 360°, every degree in between).
+pub fn repeat_from_start(w: &impl IsA<gtk::Widget>, a: Visual, b: Visual, t: Transition) {
+    let t = match t.curve {
+        prism_core::Curve::Spring => Transition {
+            curve: prism_core::Curve::EaseInOut,
+            ..t
+        },
+        _ => t,
+    };
+    let k = key(w);
+    RESTARTS.with(|r| r.borrow_mut().insert(k));
+    run(
+        w.as_ref(),
+        Channel::Loop,
+        t,
+        true,
+        move |w, p| set_visual(w, Visual::lerp(a, b, p)),
+        || {},
+    );
+}
+
 /// Back and forth between `a` and `b` until stopped.
 pub fn repeat(w: &impl IsA<gtk::Widget>, a: Visual, b: Visual, t: Transition) {
+    RESTARTS.with(|r| r.borrow_mut().remove(&key(w)));
     // Loops ease in and out (a spring would overshoot every swing).
     let t = Transition {
         curve: prism_core::Curve::EaseInOut,
@@ -266,7 +295,7 @@ fn child_transform(x: i32, y: i32, w: i32, h: i32, t: Transform) -> gtk::gsk::Tr
     gtk::gsk::Transform::new()
         .translate(&Point::new(x as f32 + cx + t.x, y as f32 + cy + t.y))
         .rotate(t.rotate)
-        .scale(t.scale, t.scale)
+        .scale(t.sx(), t.sy())
         .translate(&Point::new(-cx, -cy))
 }
 

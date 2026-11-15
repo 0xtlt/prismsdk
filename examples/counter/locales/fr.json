@@ -147,6 +147,9 @@
     "images": "Images",
     "river_alt": "Une rivière entre des montagnes",
     "logo_alt": "Logo Prism",
+    "qr_alt": "Code QR : lien d’appairage example.com",
+    "memory_alt": "Logo Prism, depuis des octets en mémoire",
+    "svg_alt": "Un badge dessiné depuis du SVG",
     "list": "Une liste de {count} lignes",
     "list_subtitle": "Virtualisée : seules les lignes visibles existent",
     "network": "Réseau",
@@ -257,7 +260,16 @@
     "goal": "Objectif",
     "done": "Faites",
     "selected": "{day} : {count} commandes",
-    "tap_bar": "Touchez une barre pour la mettre en avant"
+    "tap_bar": "Touchez une barre pour la mettre en avant",
+    "temperature": "Salon",
+    "measured": "Mesuré",
+    "forecast": "Prévision",
+    "average": "Moyenne",
+    "comfort": "Confort",
+    "target": "Objectif",
+    "updating": "Mise à jour…",
+    "tap_point": "Touchez le graphique pour lire une valeur",
+    "hour": "{hour} h"
   },
   "security": {
     "title": "Sécurité",

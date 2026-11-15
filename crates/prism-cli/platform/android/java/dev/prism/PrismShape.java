@@ -35,6 +35,7 @@ final class PrismShape extends View {
             JSONObject p = paths.optJSONObject(i);
             if (p == null) continue;
             Path path = path(p.optJSONArray("d"));
+            if (p.optBoolean("eo")) path.setFillType(Path.FillType.EVEN_ODD);
             Integer fill = PrismHost.color(p.optJSONArray("fill"));
             if (fill != null) {
                 paint.reset();

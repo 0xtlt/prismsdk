@@ -61,6 +61,9 @@ pub struct Path {
     pub round: bool,
     /// Dash and gap lengths, points.
     pub dash: Option<(f32, f32)>,
+    /// Fills with the even-odd rule (overlaps cut holes) instead of
+    /// non-zero winding (SVG `fill-rule="evenodd"`).
+    pub even_odd: bool,
 }
 
 impl Path {
@@ -216,6 +219,11 @@ impl Path {
         self.dash = Some((dash, gap));
         self
     }
+    /// Fills with the even-odd rule: where subpaths overlap, holes.
+    pub fn even_odd(mut self) -> Self {
+        self.even_odd = true;
+        self
+    }
 
     /// Flips horizontally in a `width`-wide box (right-to-left layouts).
     pub fn mirror_x(&mut self, width: f32) {
@@ -311,6 +319,7 @@ impl Drawing {
                     "s" => p.stroke = parse_color(v),
                     "w" => p.width = v.parse().unwrap_or(1.),
                     "r" => p.round = true,
+                    "e" => p.even_odd = true,
                     "d" => {
                         p.dash = v
                             .split_once(',')
@@ -434,6 +443,9 @@ impl Path {
         }
         if let Some((d, g)) = p.dash {
             let _ = write!(o, "d{d},{g} ");
+        }
+        if p.even_odd {
+            o.push_str("e ");
         }
         o.push('|');
         for s in &p.segments {

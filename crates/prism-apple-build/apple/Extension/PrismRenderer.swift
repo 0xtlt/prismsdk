@@ -257,6 +257,8 @@ struct PrismDrawing {
         var width = 1.0
         var round = false
         var dash: [Double] = []
+        /// Even-odd fill rule (`e`): overlapping subpaths cut holes.
+        var evenOdd = false
     }
     var inset = (0.0, 0.0)
     var layers: [Layer] = []
@@ -277,6 +279,7 @@ struct PrismDrawing {
                 case "s": layer.stroke = value
                 case "w": layer.width = Double(value) ?? 1
                 case "r": layer.round = true
+                case "e": layer.evenOdd = true
                 case "d": layer.dash = value.split(separator: ",").compactMap { Double($0) }
                 default: break
                 }
@@ -398,7 +401,7 @@ struct PrismShapeView: View {
                                 lineJoin: l.round ? .round : .miter,
                                 dash: l.dash.count == 2 ? l.dash.map { CGFloat($0) } : [])
         let fill: AnyView? = paint(l.fill).map { p in
-            AnyView(shape.fill(p.color).widgetAccentable(p.accent))
+            AnyView(shape.fill(p.color, style: FillStyle(eoFill: l.evenOdd)).widgetAccentable(p.accent))
         }
         let stroke: AnyView? = paint(l.stroke).map { p in
             AnyView(shape.stroke(p.color, style: style).widgetAccentable(p.accent))

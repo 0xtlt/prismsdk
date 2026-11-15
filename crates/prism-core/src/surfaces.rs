@@ -229,7 +229,15 @@ fn resolve(app: &mut App, element: Element, out: &mut Vec<SNode>) {
 }
 
 impl SNode {
-    fn from_vnode(v: VNode, children: Vec<SNode>) -> SNode {
+    fn from_vnode(mut v: VNode, children: Vec<SNode>) -> SNode {
+        // Renderers take explicit sizes: a missing side follows the ratio.
+        if let Some(r) = v.style.aspect_ratio {
+            match (v.style.width, v.style.height) {
+                (Length::Px(w), Length::Auto) => v.style.height = Length::Px(w / r),
+                (Length::Auto, Length::Px(h)) => v.style.width = Length::Px(h * r),
+                _ => {}
+            }
+        }
         SNode {
             kind: v.kind,
             heading: matches!(v.a11y.role, Some(Role::Heading(_))),

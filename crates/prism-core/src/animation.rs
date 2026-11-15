@@ -10,6 +10,8 @@
 //!     .spring(450);                     // and every change animates
 //!
 //! image("heart.fill").repeat(Pose::new().scale(1.15), Transition::ease(700));
+//! image("arrow.clockwise").repeat_from_start(Pose::new().rotate(360.), Transition::linear(900)); // spins
+//! div().repeat(Pose::new().scale_y(0.1), Transition::ease(120));   // blinks
 //!
 //! cx.with_animation(Transition::spring(400), |cx| store.update(cx, |s, _| s.expanded ^= true));
 //! ```
@@ -30,6 +32,10 @@ pub struct Transform {
     pub scale: f32,
     /// Degrees, clockwise.
     pub rotate: f32,
+    /// Horizontal size factor, multiplied with `scale`.
+    pub scale_x: f32,
+    /// Vertical size factor, multiplied with `scale`.
+    pub scale_y: f32,
 }
 
 impl Default for Transform {
@@ -45,11 +51,33 @@ impl Transform {
         y: 0.,
         scale: 1.,
         rotate: 0.,
+        scale_x: 1.,
+        scale_y: 1.,
     };
 
     /// Whether this is [`Transform::IDENTITY`].
     pub fn is_identity(&self) -> bool {
         *self == Transform::IDENTITY
+    }
+
+    /// The horizontal size factor: `scale × scale_x`.
+    pub fn sx(&self) -> f32 {
+        self.scale * self.scale_x
+    }
+
+    /// The vertical size factor: `scale × scale_y`.
+    pub fn sy(&self) -> f32 {
+        self.scale * self.scale_y
+    }
+
+    /// The `scale(…)` part of a CSS transform (`scale(s)`, or `scale(sx,sy)`
+    /// when they differ).
+    pub fn css_scale(&self) -> String {
+        if self.scale_x == self.scale_y {
+            format!("scale({})", self.sx())
+        } else {
+            format!("scale({},{})", self.sx(), self.sy())
+        }
     }
 
     /// CSS `transform` (`none` for the identity).
@@ -58,16 +86,48 @@ impl Transform {
             return "none".into();
         }
         format!(
-            "translate({}px,{}px) rotate({}deg) scale({})",
-            self.x, self.y, self.rotate, self.scale
+            "translate({}px,{}px) rotate({}deg) {}",
+            self.x,
+            self.y,
+            self.rotate,
+            self.css_scale()
         )
+    }
+
+    /// `t` of the way from `self` to `to` (`t` in `0..=1`), field by field:
+    /// angles go through every degree in between, so 0° to 360° is a full
+    /// turn (matrices would see no change).
+    pub fn lerp(&self, to: Transform, t: f32) -> Transform {
+        let l = |a: f32, b: f32| a + (b - a) * t;
+        Transform {
+            x: l(self.x, to.x),
+            y: l(self.y, to.y),
+            scale: l(self.scale, to.scale),
+            rotate: l(self.rotate, to.rotate),
+            scale_x: l(self.scale_x, to.scale_x),
+            scale_y: l(self.scale_y, to.scale_y),
+        }
+    }
+
+    /// The 2D affine matrix `[a, b, c, d, tx, ty]` of this transform around
+    /// the origin: scaled, rotated, then offset.
+    pub fn matrix(&self) -> [f64; 6] {
+        let (sx, sy) = (self.sx() as f64, self.sy() as f64);
+        let r = (self.rotate as f64).to_radians();
+        [
+            sx * r.cos(),
+            sx * r.sin(),
+            -sy * r.sin(),
+            sy * r.cos(),
+            self.x as f64,
+            self.y as f64,
+        ]
     }
 
     /// The 2D affine matrix `[a, b, c, d, tx, ty]` of this transform around a
     /// `w` × `h` box's center, for platforms whose origin is a corner.
     pub fn matrix_around_center(&self, w: f32, h: f32) -> [f64; 6] {
-        let (s, r) = (self.scale as f64, (self.rotate as f64).to_radians());
-        let (a, b, c, d) = (s * r.cos(), s * r.sin(), -s * r.sin(), s * r.cos());
+        let [a, b, c, d, _, _] = self.matrix();
         let (cx, cy) = (w as f64 / 2., h as f64 / 2.);
         // translate(center + offset) · rotate·scale · translate(-center)
         let tx = cx + self.x as f64 - (a * cx + c * cy);
@@ -88,6 +148,10 @@ pub struct Pose {
     pub scale: Option<f32>,
     /// Rotation in degrees, clockwise.
     pub rotate: Option<f32>,
+    /// Horizontal size factor (multiplied with `scale`).
+    pub scale_x: Option<f32>,
+    /// Vertical size factor (multiplied with `scale`).
+    pub scale_y: Option<f32>,
 }
 
 impl Pose {
@@ -132,9 +196,21 @@ impl Pose {
         self.scale = Some(s);
         self
     }
-    /// Sets the rotation, in degrees clockwise.
+    /// Sets the rotation, in degrees clockwise. Animations turn through
+    /// every degree in between: `rotate(360.)` looped with
+    /// [`repeat_from_start`](crate::Styled::repeat_from_start) spins.
     pub fn rotate(mut self, degrees: f32) -> Self {
         self.rotate = Some(degrees);
+        self
+    }
+    /// Sets the horizontal size factor alone (a bar growing sideways).
+    pub fn scale_x(mut self, s: f32) -> Self {
+        self.scale_x = Some(s);
+        self
+    }
+    /// Sets the vertical size factor alone (a blink, a bar growing upwards).
+    pub fn scale_y(mut self, s: f32) -> Self {
+        self.scale_y = Some(s);
         self
     }
 
@@ -148,6 +224,8 @@ impl Pose {
                 y,
                 scale: self.scale.unwrap_or(rest.scale),
                 rotate: self.rotate.unwrap_or(rest.rotate),
+                scale_x: self.scale_x.unwrap_or(rest.scale_x),
+                scale_y: self.scale_y.unwrap_or(rest.scale_y),
             },
         )
     }
@@ -172,6 +250,9 @@ pub struct Animations {
     pub exit: Option<Pose>,
     /// Back and forth between the style and this pose, forever.
     pub repeat: Option<(Pose, Transition)>,
+    /// The loop starts over from the style instead of reversing (spinners,
+    /// a pulse that only grows).
+    pub restart: bool,
 }
 
 impl Animations {
@@ -186,6 +267,7 @@ impl Animations {
             enter: self.enter.map(|p| p.scaled(factor, mirror)),
             exit: self.exit.map(|p| p.scaled(factor, mirror)),
             repeat: self.repeat.map(|(p, t)| (p.scaled(factor, mirror), t)),
+            restart: self.restart,
         }
     }
 }

@@ -581,6 +581,9 @@ impl PrismView {
                 ]);
                 shape.setLineDashPattern(Some(&pattern));
             }
+            if p.even_odd {
+                shape.setFillRule(unsafe { objc2_quartz_core::kCAFillRuleEvenOdd });
+            }
             layer.addSublayer(&shape);
             layers.push(shape);
         }
@@ -2845,9 +2848,11 @@ impl Widgets for AppKit {
         let (opacity, transform) = pose.apply(style.opacity, style.transform);
         motion::repeat(
             &layer,
-            (style.opacity, m(style.transform)),
-            (opacity, m(transform)),
+            (style.opacity, style.transform),
+            (opacity, transform),
             t,
+            style.animations.restart,
+            m,
         );
     }
 

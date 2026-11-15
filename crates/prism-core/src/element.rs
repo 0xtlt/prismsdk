@@ -1147,11 +1147,74 @@ pub fn picture(src: impl Into<String>) -> Picture {
     Picture(n)
 }
 
+/// An image from bytes in memory (`image/png`, `image/jpeg`, `image/gif`,
+/// `image/webp`…: what the platform decodes), sent as a `data:` URL. For
+/// SVG (`image/svg+xml`) this is [`svg`]: drawn as vectors everywhere.
+///
+/// ```ignore
+/// picture_data(png_bytes, "image/png").alt("Avatar").size(px(48.))
+/// ```
+pub fn picture_data(bytes: impl AsRef<[u8]>, mime: &str) -> Picture {
+    let bytes = bytes.as_ref();
+    if mime.trim().eq_ignore_ascii_case("image/svg+xml") {
+        return svg(String::from_utf8_lossy(bytes));
+    }
+    picture(format!("data:{};base64,{}", mime.trim(), base64(bytes)))
+}
+
+/// An SVG document (a server-made QR code, an icon), drawn natively as
+/// vector paths on every backend, widgets included (see
+/// [`crate::svg`](mod@crate::svg) for what is supported). It is as wide as
+/// the SVG's `width` (or `viewBox`) and keeps its proportions: change the
+/// width (`.w(px(64.))`) and the height follows. Decorative unless given
+/// [`Picture::alt`]. Unreadable markup draws nothing.
+pub fn svg(markup: impl AsRef<str>) -> Picture {
+    let mut n = VNode::new(NodeKind::Shape);
+    n.a11y.hidden = true;
+    match crate::svg::parse(markup.as_ref()) {
+        Some(s) => {
+            n.text = s.drawing.encode();
+            n.style.width = crate::style::Length::Px(s.width);
+            if s.width > 0. && s.height > 0. {
+                n.style.aspect_ratio = Some(s.width / s.height);
+            }
+        }
+        None => n.text = "i0,0\n".into(),
+    }
+    Picture(n)
+}
+
+/// Standard base64 with padding (`data:` URLs).
+fn base64(bytes: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(A[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
 impl Picture {
     /// Describes the image for screen readers (and makes it non-decorative).
     pub fn alt(mut self, alt: impl Into<String>) -> Self {
         self.0.a11y.hidden = false;
         self.0.a11y.label = Some(alt.into());
+        if self.0.kind == NodeKind::Shape {
+            // An SVG picture: announced as an image.
+            self.0.a11y.role = Some(Role::Image);
+        }
         self
     }
     /// Scales to fit inside the frame (letterboxed).

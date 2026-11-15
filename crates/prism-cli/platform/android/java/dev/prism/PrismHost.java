@@ -353,7 +353,7 @@ public final class PrismHost {
                 break;
             }
             case "exit": PrismMotion.exit(n.view, p.getJSONObject("to"), p.getJSONObject("anim")); break;
-            case "repeat": PrismMotion.repeat(id, n.view, p.optJSONObject("from"), p.optJSONObject("to"), p.optJSONObject("anim")); break;
+            case "repeat": PrismMotion.repeat(id, n.view, p.optJSONObject("from"), p.optJSONObject("to"), p.optJSONObject("anim"), p.optBoolean("restart")); break;
             case "text": setText(n, p.optString("text")); break;
             case "draw": if (n.view instanceof PrismShape) ((PrismShape) n.view).setPaths(p.optJSONArray("paths")); break;
             case "placeholder":
@@ -1229,6 +1229,21 @@ public final class PrismHost {
     // --- Pictures ---------------------------------------------------------------------------
 
     static void loadPicture(ImageView view, String src) {
+        if (src.startsWith("data:")) {
+            // Bytes in memory (`picture_data`): base64 or percent-encoded.
+            int comma = src.indexOf(',');
+            try {
+                String meta = src.substring(5, Math.max(5, comma));
+                String payload = src.substring(comma + 1);
+                byte[] bytes = meta.endsWith(";base64")
+                        ? android.util.Base64.decode(payload, android.util.Base64.DEFAULT)
+                        : java.net.URLDecoder.decode(payload, "UTF-8").getBytes("ISO-8859-1");
+                view.setImageBitmap(BitmapFactory.decodeByteArray(bytes, 0, bytes.length));
+            } catch (Exception e) {
+                android.util.Log.w("prism", "picture data: URL", e);
+            }
+            return;
+        }
         if (src.startsWith("http://") || src.startsWith("https://")) {
             new Thread(() -> {
                 try (InputStream in = new URL(src).openStream()) {
