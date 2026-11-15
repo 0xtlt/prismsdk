@@ -458,6 +458,8 @@ pub mod device {
                 json!({ "call": "share", "text": s.text, "url": s.url, "files": s.files })
             }
             DeviceCall::OpenUrl(u) => json!({ "call": "open_url", "url": u }),
+            // Android has no tabs to choose: an ACTION_VIEW intent either way.
+            DeviceCall::OpenUrlIn(u, _) => json!({ "call": "open_url", "url": u }),
             DeviceCall::SecureGet {
                 key,
                 prompt,

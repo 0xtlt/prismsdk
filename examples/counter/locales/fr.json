@@ -2,6 +2,14 @@
   "language": {
     "name": "Français"
   },
+  "page": {
+    "title": "Cette page",
+    "origin": "Adresse : {origin}",
+    "path": "Chemin : {path}",
+    "native": "Pas une page web : pas d’adresse ici.",
+    "reload": "Recharger (même onglet)",
+    "new_tab": "rust-lang.org (nouvel onglet)"
+  },
   "home": {
     "info": "Interface Rust · sur {backend}",
     "open": {

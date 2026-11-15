@@ -30,12 +30,40 @@ use prism::{Alert, Menu, MenuItem};
 
 prism::android_main!(run);
 
+/// The web page's head: icon, theme color, home-screen metas (nothing natively).
+trait WebHead {
+    fn web_head(self) -> Self;
+}
+
+impl WebHead for Application {
+    #[cfg(feature = "web")]
+    fn web_head(self) -> Self {
+        self.web(|w| {
+            w.favicon("prism.png")
+                .apple_touch_icon("prism.png")
+                .theme_color("#5856d6")
+                .meta("apple-mobile-web-app-title", "Prism")
+                .meta("apple-mobile-web-app-capable", "yes")
+                .meta(
+                    "description",
+                    "Prism: one Rust UI for the web and native platforms",
+                )
+        })
+    }
+
+    #[cfg(not(feature = "web"))]
+    fn web_head(self) -> Self {
+        self
+    }
+}
+
 /// Starts the app (every platform).
 pub fn run() {
     Application::new()
         .title("Prism")
         .size(460., 720.)
         .assets(concat!(env!("CARGO_MANIFEST_DIR"), "/assets"))
+        .web_head()
         .run(|cx| {
             strings::install(cx);
             background::install(cx);

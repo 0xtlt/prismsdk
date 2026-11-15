@@ -364,6 +364,11 @@ pub enum DeviceCall {
     /// Opens `url` in the system's sign-in browser and answers the URL it
     /// was redirected to (`Text`).
     WebAuth(crate::security::WebAuthRequest),
+
+    // --- Opening a URL in a chosen place (web: this tab or a new one) ---
+    /// Opens a URL: on the web in this tab or a new one; natively like
+    /// [`DeviceCall::OpenUrl`] (the system decides).
+    OpenUrlIn(String, crate::request::UrlTarget),
 }
 
 /// A backend's answer to a [`DeviceCall`].
@@ -546,6 +551,17 @@ impl App {
     /// Opens a web page, a `mailto:`/`tel:` link or another app.
     pub fn open_url(&mut self, url: impl Into<String>) {
         self.device_call(DeviceCall::OpenUrl(url.into()));
+    }
+
+    /// Opens `url` in `target`. On the web: this tab (leaving the app, e.g.
+    /// for the host's sign-out page) or a new one; [`UrlTarget::Auto`] is
+    /// what [`open_url`](App::open_url) does (this tab for the page's own
+    /// origin, a new tab otherwise). Natively the system opens it whatever
+    /// the target.
+    ///
+    /// [`UrlTarget::Auto`]: crate::request::UrlTarget::Auto
+    pub fn open_url_in(&mut self, url: impl Into<String>, target: crate::request::UrlTarget) {
+        self.device_call(DeviceCall::OpenUrlIn(url.into(), target));
     }
 }
 

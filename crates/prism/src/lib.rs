@@ -139,6 +139,34 @@ pub const PLATFORM: Platform = if cfg!(feature = "web") {
 #[derive(Clone, Debug, Default)]
 pub struct Application {
     config: AppConfig,
+    #[cfg(feature = "web")]
+    web: WebSetup,
+}
+
+/// What [`Application::web`] does to the web app.
+#[cfg(feature = "web")]
+#[derive(Clone, Default)]
+struct WebSetup(Option<Arc<dyn Fn(prism_web::WebApp) -> prism_web::WebApp + Send + Sync>>);
+
+#[cfg(feature = "web")]
+impl std::fmt::Debug for WebSetup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "WebSetup(..)"
+        } else {
+            "WebSetup(None)"
+        })
+    }
+}
+
+#[cfg(feature = "web")]
+impl WebSetup {
+    fn apply(&self, app: prism_web::WebApp) -> prism_web::WebApp {
+        match &self.0 {
+            Some(f) => f(app),
+            None => app,
+        }
+    }
 }
 
 impl Application {
@@ -172,6 +200,25 @@ impl Application {
         self
     }
 
+    /// Configures the web app (`web` feature): additions to the page's
+    /// `<head>` (favicon, fonts, metas, a stylesheet), socket origins,
+    /// session limits… Applied by [`run`](Self::run) and
+    /// [`web_app`](Self::web_app); natively there is no web app.
+    ///
+    /// ```ignore
+    /// Application::new()
+    ///     .web(|w| w.favicon("icon.png").theme_color("#0a84ff").body_background("#101418"))
+    ///     .run(|cx| cx.new_entity(Home::new));
+    /// ```
+    #[cfg(feature = "web")]
+    pub fn web(
+        mut self,
+        setup: impl Fn(prism_web::WebApp) -> prism_web::WebApp + Send + Sync + 'static,
+    ) -> Self {
+        self.web = WebSetup(Some(Arc::new(setup)));
+        self
+    }
+
     /// The app as a web rendering service, to mount in your own server
     /// instead of [`run`](Self::run) (`web` feature):
     ///
@@ -190,7 +237,7 @@ impl Application {
             let root = init(app);
             app.set_root(root);
         });
-        prism_web::WebApp::new(self.config, init)
+        self.web.apply(prism_web::WebApp::new(self.config, init))
     }
 
     /// Starts the backend selected at compile time. `init` creates the root
@@ -232,7 +279,7 @@ impl Application {
 
         #[cfg(feature = "web")]
         {
-            prism_web::run(config, init);
+            prism_web::run_app(self.web.apply(prism_web::WebApp::new(config, init)));
         }
         #[cfg(all(not(feature = "web"), feature = "native", target_os = "macos"))]
         {

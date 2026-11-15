@@ -182,7 +182,8 @@ impl LinuxServices {
                 self.window.clipboard().set_text(&t);
                 reply(id, Ok(DeviceValue::Done));
             }
-            DeviceCall::OpenUrl(url) => {
+            // No tabs here: the default handler opens it either way.
+            DeviceCall::OpenUrl(url) | DeviceCall::OpenUrlIn(url, _) => {
                 let ok = gio::AppInfo::launch_default_for_uri(&url, None::<&gio::AppLaunchContext>);
                 reply(
                     id,

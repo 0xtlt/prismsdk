@@ -25,6 +25,7 @@ pub mod menu;
 pub mod platform;
 pub mod push;
 mod reconcile;
+pub mod request;
 mod router;
 pub mod security;
 pub mod shape;
@@ -64,6 +65,7 @@ pub use push::{
     ActivityPushToken, PushEvent, PushFuture, PushMessage, PushService, PushSubscription,
 };
 pub use reconcile::{NodeId, Patch, Reconciler, RenderEnvironment, UiEvent};
+pub use request::{RequestKind, UrlTarget, WebRequest};
 pub use router::{Params, Router, RouterBuilder, go_back, navigate_to, normalize_path};
 pub use security::{
     AppleCredential, AppleSignIn, AuthRequest, Biometry, BiometryKind, SecureOptions,

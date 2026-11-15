@@ -264,6 +264,23 @@ impl Router {
         !self.modal.is_empty()
     }
 
+    /// Whether a declared route matches `path` (otherwise it opens on the
+    /// not-found screen, the app's own or Prism's).
+    pub fn has_route(&self, path: &str) -> bool {
+        let path = normalize_path(path);
+        self.routes.iter().any(|r| r.matches(&path).is_some())
+    }
+
+    /// Whether the visible screen is the not-found screen (no route matches
+    /// its path). The web answers such pages with `404 Not Found`.
+    pub fn shows_not_found(&self) -> bool {
+        let path = match self.modal.last() {
+            Some(e) => e.path.as_str(),
+            None => self.current_path(),
+        };
+        !self.has_route(path)
+    }
+
     fn select(&mut self, index: usize) {
         if index < self.tabs.len() {
             self.selected = index;

@@ -35,6 +35,39 @@ pub struct HtmlBackend {
     pub env: prism_core::RenderEnvironment,
     /// Hashed asset URLs (`/assets/logo.<hash>.png`); `/assets/<name>` if unset.
     pub asset_urls: Option<AssetUrls>,
+    /// While [`to_html_and_css`](HtmlBackend::to_html_and_css) runs: the
+    /// rules collected instead of `style` attributes.
+    sheet: std::cell::RefCell<Option<Sheet>>,
+}
+
+/// The first paint's styles as rules: one per distinct declaration set,
+/// matched by a `data-ps` attribute (no `style` attribute, so a strict
+/// `style-src` without `'unsafe-inline'` allows the page).
+#[derive(Default)]
+struct Sheet {
+    ids: HashMap<String, usize>,
+    css: String,
+}
+
+impl Sheet {
+    /// ` data-ps="N"` for `css` (nothing when empty), adding its rule once.
+    fn attr(&mut self, css: &str) -> String {
+        if css.is_empty() {
+            return String::new();
+        }
+        let next = self.ids.len();
+        let rules = &mut self.css;
+        let id = *self.ids.entry(css.to_string()).or_insert_with(|| {
+            // `#prism-root` outranks Prism's own sheet like an inline style.
+            let _ = writeln!(
+                rules,
+                "#prism-root [data-ps=\"{next}\"]{{{}}}",
+                crate::host::css_text(css)
+            );
+            next
+        });
+        format!(r#" data-ps="{id}""#)
+    }
 }
 
 impl Backend for HtmlBackend {
@@ -196,10 +229,13 @@ impl HtmlBackend {
         } else {
             a11y_attrs(kind, &n.a11y)
         };
+        let style = match self.sheet.borrow_mut().as_mut() {
+            Some(sheet) => sheet.attr(&css),
+            None => format!(r#" style="{}""#, escape(&css)),
+        };
         let attrs = format!(
-            r#"data-pid="{id}" data-kind="{}" style="{}"{hidden}{aria}"#,
+            r#"data-pid="{id}" data-kind="{}"{style}{hidden}{aria}"#,
             kind.name(),
-            escape(&css),
         );
         // Sheets attached to a stack or tab bar are not screens or tabs: they
         // open as dialogs on top (like the client does).
@@ -420,6 +456,16 @@ impl HtmlBackend {
                 let _ = write!(out, "</{tag}>");
             }
         }
+    }
+
+    /// The markup without any `style` attribute, and the CSS rules that
+    /// style it (for a `<style>` element, with the page's CSP nonce). Nodes
+    /// carry `data-ps="N"`; the rules match them inside `#prism-root`.
+    pub fn to_html_and_css(&self) -> (String, String) {
+        *self.sheet.borrow_mut() = Some(Sheet::default());
+        let html = self.to_html();
+        let sheet = self.sheet.borrow_mut().take().unwrap_or_default();
+        (html, sheet.css)
     }
 
     /// CSS `color-scheme` for the page.

@@ -48,8 +48,35 @@ The first version, not yet on crates.io.
 - The documentation site (`docs/`, mdBook), deployed with the API docs to
   GitHub Pages, and API documentation for every public item of `prism`,
   `prism-core` and `prism-ui`.
+- Web, embedding in a host server: additions to the page's `<head>`
+  (`WebApp::favicon`, `stylesheet`, `script`, `meta`, `theme_color`,
+  `preload_font`, `style`, `body_background`, `font_family`, `head`; or
+  `Application::web(...)`); a per-request context from the host
+  (`prism_web::RequestContext` as a request extension, `handle_with`,
+  `connect_with`, `connect_request`) read with `cx.request_context::<T>()`,
+  re-read at every reconnect; `cx.request()` (URL, origin, headers, cookies of
+  the page request or socket handshake), `cx.page_origin()` and
+  `cx.page_url()` (`None` natively); `cx.open_url_in(url, UrlTarget)`.
+- Web hardening: `WebApp::allow_origins`, `max_sessions`, `idle_timeout`,
+  `accept_socket`, `session_count`; a host-given CSP nonce
+  (`prism_web::CspNonce`) on Prism's tags.
+- Web client: reconnect back-off (0.5 s doubling to 30 s), a
+  `data-prism-connection` state on `<html>` with a « Reconnecting… » banner and
+  `prism:connection` events, and a page fetch after failed reconnects that
+  reloads when the host answers `401`, `403` or a redirect.
+- `crates/prism-web/examples/embed.rs`: Prism nested in an Axum host with its
+  own sign-in and a strict CSP.
 
 ### Changed
+
+- Web: an unknown path answers `404` with the not-found screen (it was `200`).
+- Web: the first paint has no `style` attributes: node styles are rules of a
+  `<style>` block (with the host's nonce), so `style-src` needs no
+  `'unsafe-inline'`. `HtmlBackend::to_html_and_css` returns both.
+- Web: `cx.open_url` stays in the tab for a URL of the page's own origin (a
+  new tab otherwise).
+- Web: socket handshakes from a foreign `Origin` are refused (`403`) unless
+  allowed.
 
 - The Swift sources moved from `platform/apple` to
   `crates/prism-apple-build/apple`, the Android host and the bundling scripts

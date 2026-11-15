@@ -33,6 +33,9 @@ mod app;
 mod assets;
 mod css;
 mod device_info;
+mod host;
+#[cfg(test)]
+mod host_tests;
 use prism_core::glyphs;
 mod html;
 mod security;
@@ -45,6 +48,7 @@ mod tests;
 pub use app::WebApp;
 pub use assets::{IMMUTABLE, REVALIDATE, StaticFile, content_hash};
 pub use css::css;
+pub use host::{CspNonce, RequestContext};
 pub use html::{AssetUrls, HtmlBackend};
 #[cfg(feature = "server")]
 pub use server::serve;
@@ -61,7 +65,12 @@ pub(crate) const SW_JS: &str = include_str!("sw.js");
 /// it; the host defaults to 127.0.0.1). `PRISM_EXPORT_STATIC=<dir>` writes
 /// the hashed static files for a CDN instead, then returns.
 pub fn run(config: AppConfig, init: AppInit) {
-    let app = WebApp::new(config, init);
+    run_app(WebApp::new(config, init))
+}
+
+/// [`run`] for an app already configured ([`WebApp::favicon`],
+/// [`WebApp::max_sessions`]…).
+pub fn run_app(app: WebApp) {
     if let Ok(dir) = std::env::var("PRISM_EXPORT_STATIC") {
         match app.export_static(std::path::Path::new(&dir)) {
             Ok(n) => println!("prism-web: wrote {n} static files to {dir}"),

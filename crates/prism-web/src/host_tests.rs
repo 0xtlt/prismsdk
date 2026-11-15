@@ -1,0 +1,448 @@
+//! Embedding in a host server: the page's head, strict CSP, request context,
+//! page origin, 404s, socket origins and session limits.
+
+use std::sync::{Arc, mpsc};
+use std::time::Duration;
+
+use http::{HeaderMap, HeaderValue, Request, Response, StatusCode, Uri};
+use prism_core::prelude::*;
+use prism_core::{AppConfig, AppInit};
+use serde_json::Value;
+
+use crate::{CspNonce, RequestContext, WebApp};
+
+/// The signed-in user, as a host would attach it.
+#[derive(Debug, PartialEq)]
+struct User {
+    id: u32,
+}
+
+/// Shows who it renders for and where.
+struct Whoami;
+
+impl Render for Whoami {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let user = cx
+            .request_context::<User>()
+            .map_or("nobody".to_string(), |u| format!("user {}", u.id));
+        let request = cx.request();
+        let kind = request.map_or("none", |r| match r.kind {
+            prism_core::RequestKind::Page => "page",
+            prism_core::RequestKind::Socket => "socket",
+        });
+        let theme = request.and_then(|r| r.cookie("theme")).unwrap_or("-");
+        div()
+            .p(8.)
+            .child(text(user))
+            .child(text(format!("origin {}", cx.page_origin().unwrap_or("-"))))
+            .child(text(format!("url {}", cx.page_url().unwrap_or("-"))))
+            .child(text(format!("kind {kind} theme {theme}")))
+            .child(text("same").p(8.))
+            .child(text("<b>").p(8.))
+    }
+}
+
+fn app(tag: &str, init: AppInit) -> (WebApp, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("prism-host-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    std::fs::write(dir.join("assets/icon.png"), b"png").unwrap();
+    std::fs::write(dir.join("assets/app.css"), b"body{}").unwrap();
+    let config = AppConfig {
+        title: "Host".into(),
+        assets: Some(dir.join("assets").to_string_lossy().into()),
+        ..Default::default()
+    };
+    (WebApp::new(config, init).data_dir(dir.join("data")), dir)
+}
+
+fn whoami() -> AppInit {
+    Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Whoami);
+        cx.set_root(root);
+    })
+}
+
+fn routed(custom_not_found: bool) -> AppInit {
+    Arc::new(move |cx: &mut App| {
+        let mut router = Router::new().route("/", |cx, _| cx.new_entity(|_| Whoami));
+        if custom_not_found {
+            router = router.not_found(|cx, _| cx.new_entity(|_| Whoami));
+        }
+        let root = router.build(cx);
+        cx.set_root(root);
+    })
+}
+
+fn body(r: &Response<Vec<u8>>) -> String {
+    String::from_utf8(r.body().clone()).unwrap()
+}
+
+#[test]
+fn the_app_adds_fonts_icons_metas_styles_and_scripts_to_the_head() {
+    let (app, dir) = app("head", whoami());
+    let app = app
+        .favicon("icon.png")
+        .apple_touch_icon("/static/touch.png")
+        .theme_color("#0a84ff")
+        .meta("apple-mobile-web-app-title", "Dash \"board\"")
+        .stylesheet("app.css")
+        .stylesheet("https://fonts.example.com/inter.css")
+        .preload_font("/fonts/inter.woff2")
+        .script("/static/analytics.js")
+        .inline_script("window.hostReady = true;</script>")
+        .style("@font-face{font-family:Inter;src:url(/fonts/inter.woff2)}")
+        .body_background("#101418")
+        .font_family("Inter, system-ui")
+        .head(r#"<link rel="manifest" href="/manifest.json">"#);
+    let mut req = Request::get("/").body(()).unwrap();
+    req.extensions_mut().insert(CspNonce("n0nce".into()));
+    let page = body(&app.handle(&req));
+    let head = page.split("</head>").next().unwrap();
+    let icon = format!(
+        r#"<link rel="icon" href="/assets/icon.{}.png" type="image/png" nonce="n0nce">"#,
+        crate::content_hash(b"png")
+    );
+    assert!(head.contains(&icon), "{head}");
+    assert!(head.contains(r#"<link rel="apple-touch-icon" href="/static/touch.png""#));
+    assert!(head.contains(r##"<meta name="theme-color" content="#0a84ff">"##));
+    assert!(
+        head.contains(
+            r#"<meta name="apple-mobile-web-app-title" content="Dash &quot;board&quot;">"#
+        )
+    );
+    let css = format!(
+        r#"<link rel="stylesheet" href="/assets/app.{}.css" nonce="n0nce">"#,
+        crate::content_hash(b"body{}")
+    );
+    assert!(head.contains(&css), "{head}");
+    // After Prism's own stylesheet, so its rules win.
+    assert!(head.find("/_prism/prism.").unwrap() < head.find(&css).unwrap());
+    assert!(head.contains(
+        r#"<link rel="preload" href="/fonts/inter.woff2" as="font" type="font/woff2" crossorigin nonce="n0nce">"#
+    ));
+    assert!(head.contains(r#"<script src="/static/analytics.js" defer nonce="n0nce"></script>"#));
+    assert!(head.contains(r#"<script nonce="n0nce">window.hostReady = true;<\/script></script>"#));
+    assert!(head.contains(r#"<link rel="manifest" href="/manifest.json">"#));
+    let page_css = head
+        .split(r#"<style id="prism-page" nonce="n0nce">"#)
+        .nth(1)
+        .unwrap();
+    assert!(
+        page_css.contains("@font-face{font-family:Inter;"),
+        "{page_css}"
+    );
+    assert!(page_css.contains("body{background:#101418}"));
+    assert!(page_css.contains("body{font-family:Inter, system-ui}"));
+    // Prism's own tags carry the nonce too.
+    assert!(page.contains(r#"<style id="prism-ssr" nonce="n0nce">"#));
+    assert!(page.contains(r#"data-base="" nonce="n0nce"></script>"#));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_first_paint_has_no_style_attribute() {
+    let (app, dir) = app("csp", whoami());
+    let page = body(&app.handle(&Request::get("/").body(()).unwrap()));
+    assert!(!page.contains("style="), "{page}");
+    assert!(
+        !page.contains(" nonce="),
+        "no nonce unless the host gives one"
+    );
+    let ssr = page
+        .split(r#"<style id="prism-ssr">"#)
+        .nth(1)
+        .unwrap()
+        .split("</style>")
+        .next()
+        .unwrap();
+    // One rule per distinct declaration set, scoped to the root.
+    let rules: Vec<&str> = ssr.lines().collect();
+    assert!(
+        rules
+            .iter()
+            .all(|r| r.starts_with("#prism-root [data-ps=\"")),
+        "{ssr}"
+    );
+    let ids: Vec<&str> = page
+        .split(r#"data-ps=""#)
+        .skip(1)
+        .map(|s| s.split('"').next().unwrap())
+        .collect();
+    let distinct: std::collections::HashSet<&str> = ids.iter().copied().collect();
+    assert_eq!(rules.len(), distinct.len(), "{ssr}");
+    assert!(
+        ids.len() > distinct.len(),
+        "the two padded texts share a rule: {page}"
+    );
+    // Text cannot close the style element.
+    assert_eq!(crate::host::css_text("a</style>"), "a\\3c /style>");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn unknown_paths_answer_404_with_the_not_found_screen() {
+    for custom in [false, true] {
+        let (app, dir) = app(&format!("404-{custom}"), routed(custom));
+        let ok = app.handle(&Request::get("/").body(()).unwrap());
+        assert_eq!(ok.status(), StatusCode::OK);
+        let missing = app.handle(&Request::get("/nope/nope").body(()).unwrap());
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND, "custom: {custom}");
+        // Still the page, with its not-found screen and a session cookie.
+        let page = body(&missing);
+        assert!(page.contains(r#"<main id="prism-root">"#));
+        if custom {
+            assert!(page.contains("nobody"), "{page}");
+        } else {
+            assert!(page.contains("/nope/nope"), "{page}");
+        }
+        let head = app.handle(&Request::head("/nope").body(()).unwrap());
+        assert_eq!(head.status(), StatusCode::NOT_FOUND);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    // Without a router, every path is the app.
+    let (app, dir) = app("404-none", whoami());
+    let any = app.handle(&Request::get("/whatever").body(()).unwrap());
+    assert_eq!(any.status(), StatusCode::OK);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_page_knows_its_request_origin_and_the_host_context() {
+    let (app, dir) = app("context", whoami());
+    let app = app.base_path("/dash");
+    // Behind a proxy, mounted with `nest` (the prefix stripped).
+    let mut req = Request::get("/orders?page=2")
+        .header("host", "10.0.0.5:8080")
+        .header("x-forwarded-host", "dash.example.com")
+        .header("x-forwarded-proto", "https")
+        .header("cookie", "theme=dark; other=1")
+        .body(())
+        .unwrap();
+    req.extensions_mut()
+        .insert(RequestContext::new(User { id: 42 }));
+    let page = body(&app.handle(&req));
+    assert!(page.contains("user 42"), "{page}");
+    assert!(page.contains("origin https://dash.example.com"), "{page}");
+    assert!(
+        page.contains("url https://dash.example.com/dash/orders?page=2"),
+        "{page}"
+    );
+    assert!(page.contains("kind page theme dark"), "{page}");
+    // `handle_with` instead of an extension; `Forwarded` too.
+    let req = Request::get("/dash")
+        .header("host", "internal")
+        .header("forwarded", "for=1.2.3.4;proto=https;host=\"a.example\"")
+        .body(())
+        .unwrap();
+    let page = body(&app.handle_with(&req, RequestContext::new(User { id: 7 })));
+    assert!(page.contains("user 7"), "{page}");
+    assert!(page.contains("url https://a.example/dash<"), "{page}");
+    // No context: nobody.
+    let page = body(&app.handle(&Request::get("/").header("host", "x").body(()).unwrap()));
+    assert!(
+        page.contains("nobody") && page.contains("origin http://x"),
+        "{page}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A live session over channels.
+fn open(
+    app: &WebApp,
+    uri: &str,
+    headers: &[(&str, &str)],
+    context: Option<User>,
+) -> mpsc::Receiver<String> {
+    let (tx, rx) = mpsc::channel();
+    let mut map = HeaderMap::new();
+    for (k, v) in headers {
+        map.insert(
+            http::header::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+            HeaderValue::from_str(v).unwrap(),
+        );
+    }
+    let uri: Uri = uri.parse().unwrap();
+    let send = move |m: String| tx.send(m).is_ok();
+    let session = match context {
+        Some(user) => app.connect_with(&uri, &map, RequestContext::new(user), send),
+        None => app.connect(&uri, &map, send),
+    };
+    // Keep the session open while the test reads.
+    std::mem::forget(session);
+    rx
+}
+
+fn next(rx: &mpsc::Receiver<String>) -> Value {
+    serde_json::from_str(&rx.recv_timeout(Duration::from_secs(10)).expect("a message")).unwrap()
+}
+
+fn texts(v: &Value) -> Vec<String> {
+    v["p"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|p| p["text"].as_str().map(str::to_string))
+        .collect()
+}
+
+#[test]
+fn a_session_sees_its_handshake_and_context() {
+    let (app, dir) = app("socket", whoami());
+    let rx = open(
+        &app,
+        "/ws?path=%2Forders&search=%3Fpage%3D2&w=800&h=600",
+        &[
+            ("host", "localhost:3000"),
+            ("origin", "http://localhost:3000"),
+            ("cookie", "theme=light"),
+        ],
+        Some(User { id: 42 }),
+    );
+    let reset = next(&rx);
+    let t = texts(&reset);
+    assert!(t.contains(&"user 42".to_string()), "{t:?}");
+    assert!(
+        t.contains(&"origin http://localhost:3000".to_string()),
+        "{t:?}"
+    );
+    assert!(
+        t.contains(&"url http://localhost:3000/orders?page=2".to_string()),
+        "{t:?}"
+    );
+    assert!(t.contains(&"kind socket theme light".to_string()), "{t:?}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn foreign_origins_are_refused_unless_allowed() {
+    let (app, dir) = app("origins", whoami());
+    let headers = |origin: &str, host: &str| {
+        let mut h = HeaderMap::new();
+        h.insert("origin", HeaderValue::from_str(origin).unwrap());
+        h.insert("host", HeaderValue::from_str(host).unwrap());
+        h
+    };
+    assert_eq!(
+        app.accept_socket(&headers("http://localhost:3000", "localhost:3000")),
+        Ok(())
+    );
+    assert_eq!(
+        app.accept_socket(&headers("https://app.example.com", "app.example.com:443")),
+        Ok(())
+    );
+    assert_eq!(
+        app.accept_socket(&headers("HTTPS://App.Example.com", "app.example.com")),
+        Ok(())
+    );
+    assert_eq!(
+        app.accept_socket(&headers("https://evil.example", "app.example.com")),
+        Err(StatusCode::FORBIDDEN)
+    );
+    assert_eq!(
+        app.accept_socket(&headers("null", "app.example.com")),
+        Err(StatusCode::FORBIDDEN)
+    );
+    assert_eq!(
+        app.accept_socket(&headers("http://localhost:3001", "localhost:3000")),
+        Err(StatusCode::FORBIDDEN)
+    );
+    // A proxy's public host.
+    let mut proxied = headers("https://app.example.com", "127.0.0.1:3000");
+    proxied.insert(
+        "x-forwarded-host",
+        HeaderValue::from_static("app.example.com"),
+    );
+    assert_eq!(app.accept_socket(&proxied), Ok(()));
+    // Not a browser: no Origin.
+    assert_eq!(app.accept_socket(&HeaderMap::new()), Ok(()));
+    // A refused session ends at once and says why.
+    let rx = open(
+        &app,
+        "/ws?path=%2F",
+        &[("origin", "https://evil.example"), ("host", "a")],
+        None,
+    );
+    assert_eq!(
+        next(&rx),
+        serde_json::json!({ "t": "refused", "status": 403 })
+    );
+    assert_eq!(app.session_count(), 0);
+    let allowed = app.allow_origins(["https://admin.example.com/"]);
+    assert_eq!(
+        allowed.accept_socket(&headers("https://admin.example.com", "app.example.com")),
+        Ok(())
+    );
+    let any = app_any(&dir);
+    assert_eq!(
+        any.accept_socket(&headers("https://evil.example", "app.example.com")),
+        Ok(())
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+fn app_any(dir: &std::path::Path) -> WebApp {
+    WebApp::new(AppConfig::default(), whoami())
+        .data_dir(dir.join("data2"))
+        .allow_origins(["*"])
+}
+
+#[test]
+fn sessions_are_capped_and_idle_ones_end() {
+    let (app, dir) = app("limits", whoami());
+    let app = app.max_sessions(1).idle_timeout(Duration::from_millis(300));
+    let first = open(&app, "/ws?path=%2F", &[], None);
+    assert_eq!(next(&first)["t"], "reset");
+    assert_eq!(app.session_count(), 1);
+    assert_eq!(
+        app.accept_socket(&HeaderMap::new()),
+        Err(StatusCode::SERVICE_UNAVAILABLE)
+    );
+    let second = open(&app, "/ws?path=%2F", &[], None);
+    assert_eq!(
+        next(&second),
+        serde_json::json!({ "t": "refused", "status": 503 })
+    );
+    // Nothing from the page: the session says so and ends, freeing its place.
+    assert_eq!(next(&first), serde_json::json!({ "t": "idle" }));
+    for _ in 0..100 {
+        if app.session_count() == 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(app.session_count(), 0);
+    assert_eq!(app.accept_socket(&HeaderMap::new()), Ok(()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn open_url_in_tells_the_page_where() {
+    let v = crate::session::device_json(
+        3,
+        prism_core::DeviceCall::OpenUrlIn("/logout".into(), prism_core::UrlTarget::SameTab),
+    );
+    assert_eq!(
+        v,
+        serde_json::json!({ "t": "device", "id": 3, "call": "open_url", "url": "/logout", "target": "same" })
+    );
+}
+
+#[test]
+fn the_reconnecting_banner_follows_the_language() {
+    let (app, dir) = app("banner", whoami());
+    let page = |lang: &str| {
+        body(
+            &app.handle(
+                &Request::get("/")
+                    .header("accept-language", lang)
+                    .body(())
+                    .unwrap(),
+            ),
+        )
+    };
+    assert!(page("en").contains(
+        r#"<div id="prism-connection" role="status" aria-live="polite" hidden>Reconnecting…</div>"#
+    ));
+    assert!(page("fr-FR").contains(">Reconnexion…</div>"));
+    let _ = std::fs::remove_dir_all(dir);
+}

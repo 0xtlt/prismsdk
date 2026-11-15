@@ -347,10 +347,11 @@ const CLIENT = new URL("../../src/client.js", import.meta.url);
  * Runs client.js on a page whose `<main id="prism-root">` holds `ssr`, and
  * returns the page, its window and the socket it opened.
  */
-export function boot({ ssr = "", path = "/", base = "", glyphs = { plus: "+", gear: "⚙", house: "⌂" } } = {}) {
+export function boot({ ssr = "", path = "/", base = "", glyphs = { plus: "+", gear: "⚙", house: "⌂" }, fetch = null, search = "" } = {}) {
   const document = new Document();
   document.body.innerHTML =
-    `<main id="prism-root">${ssr}</main><div id="prism-island"></div><div id="prism-toasts"></div>`;
+    `<main id="prism-root">${ssr}</main><div id="prism-island"></div><div id="prism-toasts"></div>` +
+    `<div id="prism-connection" role="status" hidden>Reconnecting…</div>`;
   const script = document.createElement("script");
   script.dataset.base = base;
   document.currentScript = script;
@@ -372,7 +373,18 @@ export function boot({ ssr = "", path = "/", base = "", glyphs = { plus: "+", ge
   }
   const win = {
     document,
-    location: { pathname: path, protocol: "http:", host: "localhost:3000", reload() { win.reloaded = true; } },
+    location: {
+      pathname: path, search, protocol: "http:", host: "localhost:3000", origin: "http://localhost:3000",
+      get href() { return `http://localhost:3000${this.pathname}${this.search}`; },
+      reload() { win.reloaded = true; },
+      assign(url) { win.assigned = url; },
+    },
+    open: (url, target, features) => { win.opened = { url, target, features }; return null; },
+    fetch: fetch && ((url, init) => { win.fetches.push({ url, init }); return fetch(url, init); }),
+    fetches: [],
+    sessionStorage: { items: {}, getItem(k) { return this.items[k] ?? null; }, setItem(k, v) { this.items[k] = String(v); } },
+    CustomEvent: class { constructor(type, init = {}) { this.type = type; this.detail = init.detail; } },
+    dispatchEvent: (e) => { (winListeners[e.type] || []).forEach((fn) => fn(e)); return true; },
     history,
     innerWidth: 1280,
     innerHeight: 800,
