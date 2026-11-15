@@ -7,6 +7,17 @@
 //! bundle_id = "com.example.counter"
 //! version = "1.0.0"
 //! icon = "icon.png"             # 1024×1024 PNG
+//! build = 7                     # build number: CFBundleVersion, Android versionCode
+//! category = "public.app-category.productivity"  # App Store category (macOS needs one)
+//! uses_encryption = false       # export compliance (ITSAppUsesNonExemptEncryption)
+//! description = "Counts things" # Linux packages
+//!
+//! [android]
+//! version_code = 7              # instead of [app] build
+//! track = "internal"            # `prism publish android` (internal, alpha, beta, production)
+//!
+//! [linux]
+//! maintainer = "Jane <jane@example.com>"  # .deb Maintainer
 //!
 //! [permissions]               # why the app asks (shown by the system)
 //! location = "Shows todos near you."
@@ -30,6 +41,20 @@ pub struct Project {
     pub bundle_id: String,
     pub version: String,
     pub icon: Option<PathBuf>,
+    /// `[app] build`: CFBundleVersion and the default Android versionCode.
+    pub build: Option<String>,
+    /// `[android] version_code` (default: `build`).
+    pub version_code: Option<String>,
+    /// `[android] track`: the Play track `prism publish android` releases to.
+    pub play_track: Option<String>,
+    /// `[app] category`: LSApplicationCategoryType (`public.app-category.…`).
+    pub category: Option<String>,
+    /// `[app] uses_encryption`: false declares export compliance up front.
+    pub uses_encryption: Option<bool>,
+    /// `[app] description`: one line, for Linux packages.
+    pub description: Option<String>,
+    /// `[linux] maintainer`: the .deb Maintainer field.
+    pub maintainer: Option<String>,
     /// `[permissions]`: why the app asks (Info.plist usage descriptions).
     pub permissions: Vec<(String, String)>,
     /// Languages with a catalog in `locales/` (`[app] locales` to move it).
@@ -103,6 +128,13 @@ impl Project {
                 .filter(|v| !v.contains("workspace"))
                 .unwrap_or_else(|| "0.1.0".into()),
             icon: get("app.icon").map(|i| crate::resolve(root, &i)),
+            build: get("app.build"),
+            version_code: get("android.version_code"),
+            play_track: get("android.track"),
+            category: get("app.category"),
+            uses_encryption: get("app.uses_encryption").map(|v| v == "true"),
+            description: get("app.description"),
+            maintainer: get("linux.maintainer"),
             permissions: {
                 let mut p: Vec<(String, String)> = config
                     .iter()
@@ -127,6 +159,28 @@ impl Project {
             target_dir,
             workspace_root,
         })
+    }
+}
+
+impl Project {
+    /// The Android versionCode: `[android] version_code`, else `[app] build`, else 1.
+    pub fn version_code(&self) -> Result<u32, String> {
+        let raw = self
+            .version_code
+            .as_deref()
+            .or(self.build.as_deref())
+            .unwrap_or("1");
+        parse_version_code(raw)
+    }
+}
+
+/// Play accepts versionCodes from 1 to 2,100,000,000.
+pub fn parse_version_code(raw: &str) -> Result<u32, String> {
+    match raw.trim().parse::<u32>() {
+        Ok(v) if (1..=2_100_000_000).contains(&v) => Ok(v),
+        _ => Err(format!(
+            "versionCode must be a whole number from 1 to 2100000000 (Prism.toml [app] build or [android] version_code), not {raw:?}"
+        )),
     }
 }
 
@@ -173,5 +227,24 @@ mod tests {
         assert_eq!(c["app.name"], "My App");
         assert_eq!(c["app.icon"], "icon.png");
         assert_eq!(c["ios.team"], "ABC");
+    }
+
+    #[test]
+    fn parses_store_settings() {
+        let c = super::parse(
+            "[app]\nbuild = 42\ncategory = \"public.app-category.games\"\n[android]\ntrack = \"beta\" # testers\n",
+        );
+        assert_eq!(c["app.build"], "42");
+        assert_eq!(c["app.category"], "public.app-category.games");
+        assert_eq!(c["android.track"], "beta");
+    }
+
+    #[test]
+    fn checks_version_codes() {
+        assert_eq!(super::parse_version_code("7"), Ok(7));
+        assert_eq!(super::parse_version_code("2100000000"), Ok(2_100_000_000));
+        assert!(super::parse_version_code("0").is_err());
+        assert!(super::parse_version_code("2100000001").is_err());
+        assert!(super::parse_version_code("1.2").is_err());
     }
 }

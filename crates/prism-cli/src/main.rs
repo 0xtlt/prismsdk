@@ -5,6 +5,8 @@
 //! prism run <target>               build and run (web, macos, ios, tvos, watchos, android)
 //! prism dev <target>               run, then rebuild and restart on every save
 //! prism build <target>             release artifacts (.app bundles, APK, server binary)
+//! prism publish <target>           store builds, uploaded (Google Play, App Store
+//!                                  Connect) or notarized (macOS Developer ID)
 //! prism devices                    simulators, emulators and devices
 //! ```
 //!
@@ -12,9 +14,14 @@
 //! bundling scripts and platform sources (Apple, Android) are embedded in this binary,
 //! so the command works in any project.
 
+mod appstore;
 mod config;
 mod embedded;
+mod jwt;
+mod linux;
 mod new;
+mod play;
+mod publish;
 mod watch;
 
 use std::path::{Path, PathBuf};
@@ -30,10 +37,11 @@ USAGE:
     prism run <target> [options]            Build and run
     prism dev <target> [options]            Run, rebuild and restart on save (keeps the screen)
     prism build <target> [options]          Build release artifacts
+    prism publish <target> [options]        Upload a store build (or notarize, macOS --direct)
     prism devices                           List simulators, emulators and devices
 
 TARGETS:
-    web, macos, ios, tvos, watchos, visionos, android
+    web, macos, ios, tvos, watchos, visionos, android, linux
 
 OPTIONS:
     --device <name|udid>    iOS: a real iPhone/iPad (signed with your team);
@@ -43,6 +51,23 @@ OPTIONS:
     --path </route>         Start on this screen
     --bundle                macOS: run as a full .app (widgets, notifications)
     --port <port>           Web: listen on this port
+    --aab                   Android: an App Bundle for Google Play (run: installed
+                            through bundletool, like Play does)
+    --store                 Apple: an App Store build (.ipa; macOS: a .pkg)
+    --direct                macOS: Developer ID, hardened runtime, a .dmg
+    --docker                Web: the production Docker image
+
+PUBLISH OPTIONS:
+    --dry-run               Build and check everything, send nothing
+    --file <path>           Publish this .aab/.ipa/.pkg/.dmg instead of building
+    --track <name>          Play: internal (default), alpha, beta, production
+    --rollout <fraction>    Play: staged rollout (0.1 = 10 %)
+    --draft                 Play: a draft release
+    --notes <text>          Play: release notes (en-US)
+    --service-account <p>   Play: the service account JSON (or PRISM_PLAY_SERVICE_ACCOUNT)
+    --direct                macOS: notarize and staple the Developer ID .dmg
+                            App Store Connect: PRISM_ASC_KEY_ID, PRISM_ASC_ISSUER_ID,
+                            PRISM_ASC_KEY (.p8); notarization also PRISM_NOTARY_PROFILE
 ";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -54,6 +79,7 @@ enum Target {
     Watchos,
     Visionos,
     Android,
+    Linux,
 }
 
 #[derive(Default, Debug)]
@@ -64,6 +90,68 @@ struct Options {
     path: Option<String>,
     bundle: bool,
     port: Option<String>,
+    /// Android App Bundle instead of an APK.
+    aab: bool,
+    /// Apple: App Store distribution build.
+    store: bool,
+    /// macOS: Developer ID distribution build.
+    direct: bool,
+    /// Web: the Docker image.
+    docker: bool,
+}
+
+/// The target's name in commands and output directories.
+fn os_name(target: Target) -> &'static str {
+    match target {
+        Target::Web => "web",
+        Target::Macos => "macos",
+        Target::Ios => "ios",
+        Target::Tvos => "tvos",
+        Target::Watchos => "watchos",
+        Target::Visionos => "visionos",
+        Target::Android => "android",
+        Target::Linux => "linux",
+    }
+}
+
+fn parse_target(name: Option<&str>) -> Option<Target> {
+    Some(match name? {
+        "web" => Target::Web,
+        "macos" | "mac" => Target::Macos,
+        "ios" => Target::Ios,
+        "tvos" | "tv" => Target::Tvos,
+        "watchos" | "watch" => Target::Watchos,
+        "visionos" | "vision" => Target::Visionos,
+        "android" => Target::Android,
+        "linux" => Target::Linux,
+        _ => return None,
+    })
+}
+
+const APPLE_MOBILE: [Target; 4] = [Target::Ios, Target::Tvos, Target::Watchos, Target::Visionos];
+
+/// Flags that only make sense for some targets.
+fn check_flags(target: Target, o: &Options) -> Result<(), String> {
+    let wrong = |flag: &str, for_what: &str| Err(format!("{flag} is for {for_what}"));
+    if o.aab && target != Target::Android {
+        return wrong("--aab", "android");
+    }
+    if o.store && !(target == Target::Macos || APPLE_MOBILE.contains(&target)) {
+        return wrong("--store", "Apple targets");
+    }
+    if o.direct && target != Target::Macos {
+        return wrong("--direct", "macos");
+    }
+    if o.store && o.direct {
+        return Err("--store (Mac App Store) or --direct (Developer ID), not both".into());
+    }
+    if o.docker && target != Target::Web {
+        return wrong(
+            "--docker",
+            "web (prism build linux uses Docker by itself off Linux)",
+        );
+    }
+    Ok(())
 }
 
 fn main() -> ExitCode {
@@ -88,29 +176,41 @@ fn run(args: &[String]) -> Result<(), String> {
             let prism = flag(args, "--prism").map(PathBuf::from);
             new::create(name, prism)
         }
+        "publish" => {
+            let target = parse_target(args.get(1).map(String::as_str)).ok_or(
+                "usage: prism publish <android|ios|tvos|watchos|visionos|macos> [--dry-run]",
+            )?;
+            let opts = publish::PublishOptions::parse(args)?;
+            let project = Project::find()?;
+            publish::publish(&project, target, &opts)
+        }
         "run" | "dev" | "build" => {
-            let target = match args.get(1).map(String::as_str) {
-                Some("web") => Target::Web,
-                Some("macos" | "mac") => Target::Macos,
-                Some("ios") => Target::Ios,
-                Some("tvos" | "tv") => Target::Tvos,
-                Some("watchos" | "watch") => Target::Watchos,
-                Some("visionos" | "vision") => Target::Visionos,
-                Some("android") => Target::Android,
-                _ => {
-                    return Err(format!(
-                        "usage: prism {cmd} <web|macos|ios|tvos|watchos|visionos|android>"
-                    ));
-                }
-            };
+            let target = parse_target(args.get(1).map(String::as_str)).ok_or_else(|| {
+                format!("usage: prism {cmd} <web|macos|ios|tvos|watchos|visionos|android|linux>")
+            })?;
+            let has = |f: &str| args.iter().any(|a| a == f);
             let opts = Options {
                 device: flag(args, "--device"),
                 sim: flag(args, "--sim"),
-                release: args.iter().any(|a| a == "--release") || cmd == "build",
+                release: has("--release") || cmd == "build",
                 path: flag(args, "--path"),
-                bundle: args.iter().any(|a| a == "--bundle"),
+                bundle: has("--bundle"),
                 port: flag(args, "--port"),
+                aab: has("--aab"),
+                store: has("--store"),
+                direct: has("--direct"),
+                docker: has("--docker"),
             };
+            check_flags(target, &opts)?;
+            if cmd != "build" && (opts.store || opts.direct || opts.docker) {
+                return Err("--store, --direct and --docker are for prism build / publish".into());
+            }
+            if target == Target::Linux && cmd != "build" && !cfg!(target_os = "linux") {
+                return Err(
+                    "run Linux apps on Linux (or in the dev image: see the README); prism build linux packages them from here"
+                        .into(),
+                );
+            }
             let project = Project::find()?;
             match cmd.as_str() {
                 "run" => run_target(&project, target, &opts),
@@ -145,6 +245,7 @@ fn run_target(p: &Project, target: Target, o: &Options) -> Result<(), String> {
         Target::Android => apple_script(p, "android-run.sh", o, false),
         Target::Macos if o.bundle => apple_script(p, "macos-app.sh", o, false),
         _ => {
+            // Linux (on Linux) runs like macOS: the native binary.
             build(p, target, o)?;
             let status = spawn(p, target, o, &[])?
                 .wait()
@@ -159,6 +260,16 @@ fn run_target(p: &Project, target: Target, o: &Options) -> Result<(), String> {
 
 fn build_target(p: &Project, target: Target, o: &Options) -> Result<(), String> {
     match target {
+        Target::Web if o.docker => {
+            let tag = linux::web_docker(p)?;
+            println!("Built the image {tag}");
+            println!(
+                "Run it: docker run -p 3000:3000 -v {}-data:/data {tag}",
+                p.package.replace('_', "-")
+            );
+            Ok(())
+        }
+        Target::Linux => linux::build(p),
         Target::Web => {
             build(p, target, o)?;
             let bin = binary(p, target, o);
@@ -294,6 +405,25 @@ fn apple_command(
         .env("PRISM_BUNDLE_ID", &p.bundle_id)
         .env("PRISM_APP_NAME", &p.name)
         .env("PRISM_VERSION", &p.version);
+    if script == "android-run.sh" {
+        cmd.env("PRISM_BUILD", p.version_code()?.to_string());
+        if o.aab {
+            cmd.env("PRISM_ANDROID_AAB", "1");
+        }
+    } else if let Some(build) = &p.build {
+        cmd.env("PRISM_BUILD", build);
+    }
+    if let Some(category) = &p.category {
+        cmd.env("PRISM_CATEGORY", category);
+    }
+    if p.uses_encryption == Some(false) {
+        cmd.env("PRISM_ENCRYPTION", "0");
+    }
+    if o.store {
+        cmd.env("PRISM_DIST", "appstore");
+    } else if o.direct {
+        cmd.env("PRISM_DIST", "developer-id");
+    }
     if build_only {
         cmd.arg(if script == "macos-app.sh" {
             "--no-open"

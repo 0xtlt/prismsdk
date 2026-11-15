@@ -11,3 +11,8 @@ path = "src/main.rs"
 
 [dependencies]
 serde_json.workspace = true
+# Google Play Developer API: HTTPS (rustls) and service-account JWTs (RS256);
+# App Store Connect key checks (ES256).
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+ring = "0.17"
+base64 = "0.22"

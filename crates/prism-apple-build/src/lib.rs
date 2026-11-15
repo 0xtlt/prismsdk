@@ -90,12 +90,15 @@ fn build_swift(dirs: &[&str], module: &str) {
                 env_or("WATCHOS_DEPLOYMENT_TARGET", "10.0")
             ),
         ),
+        // arm64 (not arm64_32) watches run watchOS 26+, rustc's minimum for
+        // this target: below it the Swift code needs compiler-rt's
+        // availability checks, which Rust does not link.
         "aarch64-apple-watchos" => (
             "watchos",
             "watchos",
             format!(
                 "arm64-apple-watchos{}",
-                env_or("WATCHOS_DEPLOYMENT_TARGET", "10.0")
+                at_least(&env_or("WATCHOS_DEPLOYMENT_TARGET", "10.0"), "26.0")
             ),
         ),
         "aarch64-apple-darwin" | "x86_64-apple-darwin" => (
@@ -167,6 +170,24 @@ fn build_swift(dirs: &[&str], module: &str) {
     println!("cargo:rustc-link-search=native={}", toolchain_lib.display());
     println!("cargo:rustc-link-search=native={sdk_path}/usr/lib/swift");
     println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
+    // Swift's availability checks call compiler-rt's
+    // `__isPlatformVersionAtLeast`; rustc links with -nodefaultlibs, and only
+    // brings its own copy on some targets. watchOS devices need clang's.
+    if target == "aarch64-apple-watchos" {
+        let clang = xcrun(&["-f", "clang"]);
+        let versions = Path::new(&clang).parent().unwrap().join("../lib/clang");
+        let darwin = std::fs::read_dir(&versions)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|v| v.path().join("lib/darwin"))
+            .find(|d| d.join("libclang_rt.watchos.a").exists());
+        if let Some(darwin) = darwin {
+            println!("cargo:rustc-link-search=native={}", darwin.display());
+            // A fat archive: left for the final link (ld picks the slice).
+            println!("cargo:rustc-link-lib=static:-bundle=clang_rt.watchos");
+        }
+    }
     // Simulator builds read entitlements (App Groups…) from sections of the
     // binary itself, like Xcode's `-sectcreate __TEXT __entitlements`. A
     // build script's link args do not reach the final executable, so the
@@ -215,7 +236,27 @@ fn build_swift(dirs: &[&str], module: &str) {
     }
 }
 
+/// The higher of two `major.minor` versions.
+fn at_least(version: &str, min: &str) -> String {
+    let parse = |v: &str| -> Vec<u32> { v.split('.').map(|p| p.parse().unwrap_or(0)).collect() };
+    if parse(version) < parse(min) {
+        min.to_string()
+    } else {
+        version.to_string()
+    }
+}
+
 fn env_or(key: &str, default: &str) -> String {
     println!("cargo:rerun-if-env-changed={key}");
     std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn clamps_deployment_targets() {
+        assert_eq!(super::at_least("10.0", "26.0"), "26.0");
+        assert_eq!(super::at_least("26.1", "26.0"), "26.1");
+        assert_eq!(super::at_least("27", "26.0"), "27");
+    }
 }

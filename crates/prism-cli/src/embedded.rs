@@ -1,5 +1,6 @@
 //! Bundling scripts and platform sources (Apple, Android), embedded so `prism` works in
-//! any project. Extracted under `<target>/prism/platform` when they change.
+//! any project. Extracted under `<target>/prism/platform` when they change
+//! (`scripts/…`, `apple/…`, `android/…`, `docker/…`).
 
 use std::path::{Path, PathBuf};
 
@@ -14,6 +15,10 @@ const FILES: &[(&str, &str)] = files![
     "scripts/macos-app.sh",
     "scripts/android-run.sh",
     "scripts/android-deps.py",
+    "scripts/bundletool.sh",
+    "scripts/linux-package.sh",
+    "docker/linux-dev.Dockerfile",
+    "docker/web.Dockerfile",
     "platform/apple/app-icon.sh",
     "platform/apple/generate_widgets.py",
     "platform/apple/Bridge/PrismBridge.swift",

@@ -57,6 +57,15 @@ jobs:
             cd examples/counter &&
             PRISM_SNAPSHOT=/tmp/linux.png PRISM_CLICK="+1" timeout 60 xvfb-run -a /tmp/target/debug/counter &&
             test -s /tmp/linux.png'
+      - name: Linux package (.deb), installed and run
+        run: |
+          docker run --rm -v "$PWD":/src -w /src/examples/counter -e CARGO_TARGET_DIR=/tmp/target prism-linux-dev sh -c '
+            PRISM_BUNDLE_ID=dev.prism.counter PRISM_APP_NAME=Counter PRISM_ICON=$PWD/icon.png \
+              bash /src/scripts/linux-package.sh counter &&
+            apt-get install -y /tmp/target/linux/counter_*.deb &&
+            dpkg -L counter | grep -q /usr/share/applications/dev.prism.counter.desktop &&
+            cd /tmp && PRISM_SNAPSHOT=/tmp/deb.png PRISM_CLICK="+1" timeout 60 xvfb-run -a counter &&
+            test -s /tmp/deb.png'
       - name: Production web image
         run: docker build -f docker/web.Dockerfile --build-arg PACKAGE=counter -t counter-web .
 
@@ -84,3 +93,74 @@ jobs:
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:3000/ >/dev/null && break; sleep 1; done
           curl -sf http://127.0.0.1:3000/ | grep -q 'id="prism-root"'
           curl -sf -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/assets/prism.png | grep -q 200
+
+  # Store packages and every `prism publish --dry-run`, with throwaway keys:
+  # no secrets, nothing sent. Real publishing needs the secrets listed in the
+  # README (Shipping to stores › Secrets for CI).
+  release-android:
+    runs-on: macos-15
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+      - name: Android SDK packages
+        run: |
+          yes | sdkmanager --sdk_root="$ANDROID_HOME" --licenses >/dev/null || true
+          sdkmanager --sdk_root="$ANDROID_HOME" "platform-tools" "platforms;android-36" "build-tools;37.0.0" "ndk;30.0.16248370"
+      - name: Install the prism CLI
+        run: cargo install --path crates/prism-cli --locked
+      - name: Throwaway upload key and service account
+        run: |
+          keytool -genkeypair -keystore "$RUNNER_TEMP/upload.jks" -storepass ci-upload -keypass ci-upload \
+            -alias upload -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Prism CI Upload"
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$RUNNER_TEMP/sa.pem"
+          python3 -c 'import json, sys; print(json.dumps({"type": "service_account", "private_key_id": "ci",
+            "private_key": open(sys.argv[1]).read(), "client_email": "ci@prism-ci.iam.gserviceaccount.com",
+            "token_uri": "https://oauth2.googleapis.com/token"}))' "$RUNNER_TEMP/sa.pem" > "$RUNNER_TEMP/service-account.json"
+      - name: App Bundle and Google Play dry run
+        working-directory: examples/counter
+        env:
+          PRISM_ANDROID_KEY_ALIAS: upload
+          PRISM_ANDROID_KEYSTORE_PASS: ci-upload
+        run: |
+          export PRISM_ANDROID_KEYSTORE="$RUNNER_TEMP/upload.jks" PRISM_PLAY_SERVICE_ACCOUNT="$RUNNER_TEMP/service-account.json"
+          prism publish android --dry-run --track beta --rollout 0.1 --notes "CI"
+      - name: Split APKs from the bundle, 16 KB aligned
+        run: |
+          echo '{"supportedAbis": ["arm64-v8a"], "supportedLocales": ["en"], "screenDensity": 420, "sdkVersion": 35}' > "$RUNNER_TEMP/device.json"
+          bash scripts/bundletool.sh build-apks --bundle=target/android/release/Counter.aab \
+            --output="$RUNNER_TEMP/counter.apks" --device-spec="$RUNNER_TEMP/device.json"
+          mkdir "$RUNNER_TEMP/apks" && unzip -q "$RUNNER_TEMP/counter.apks" -d "$RUNNER_TEMP/apks"
+          "$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/zipalign" -c -P 16 4 "$RUNNER_TEMP"/apks/splits/base-arm64_v8a.apk
+
+  release-apple:
+    runs-on: macos-15
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+      - name: Install the prism CLI
+        run: cargo install --path crates/prism-cli --locked
+      - name: Throwaway signing identity, profiles and App Store Connect key
+        run: |
+          bash scripts/test-signing.sh "$RUNNER_TEMP/signing" dev.prism.counter > "$RUNNER_TEMP/signing.env"
+          openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$RUNNER_TEMP/AuthKey_CITEST1234.p8"
+      # visionOS needs Xcode 26's SDK (XROS_DEPLOYMENT_TARGET 26): not on this image.
+      - name: App Store dry runs (iOS, tvOS, watchOS, macOS) and notarization dry run
+        working-directory: examples/counter
+        env:
+          PRISM_ASC_KEY_ID: CITEST1234
+          PRISM_ASC_ISSUER_ID: 00000000-0000-4000-8000-000000000000
+        run: |
+          source "$RUNNER_TEMP/signing.env"
+          export PRISM_ASC_KEY="$RUNNER_TEMP/AuthKey_CITEST1234.p8"
+          prism publish ios --dry-run
+          prism publish tvos --dry-run
+          prism publish watchos --dry-run
+          prism publish macos --dry-run
+          prism publish macos --direct --dry-run
+      - name: Remove the throwaway keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing/prism-test.keychain-db" || true
