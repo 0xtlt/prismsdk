@@ -89,7 +89,9 @@ pub fn message(kind: i32, json: &str, action: Option<String>, text: Option<Strin
     m
 }
 
-/// C strings from the bridge.
+/// C strings from the bridge (null or NUL-terminated, valid for the call:
+/// only the `prism_push_*` callbacks use it).
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn cstr(p: *const c_char) -> Option<String> {
     (!p.is_null()).then(|| unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned())
 }
