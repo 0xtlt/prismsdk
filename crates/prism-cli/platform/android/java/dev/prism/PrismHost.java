@@ -354,6 +354,9 @@ public final class PrismHost {
                 if (anim != null) PrismMotion.style(n.view, anim, () -> { applyStyle(n); applySticky(n); });
                 else applyStyle(n);
                 applySticky(n);
+                // Bar tint (#30).
+                if (n.kind.equals("tabs")) refreshTabs(n);
+                if (n.kind.equals("stack")) { styleChrome(n); PrismNavbar.refresh(n); }
                 break;
             }
             case "sticky": {
@@ -374,7 +377,11 @@ public final class PrismHost {
             case "placeholder":
                 if (!PrismForms.placeholder(n, p.optString("text")) && n.view instanceof EditText) ((EditText) n.view).setHint(p.optString("text"));
                 break;
-            case "config": PrismForms.config(n, p.optString("config")); break;
+            case "config":
+                // A screen's bar buttons (#30).
+                if (n.kind.equals("screen")) PrismNavbar.config(n, p.optString("config"), p.optJSONArray("glyphs"));
+                else PrismForms.config(n, p.optString("config"));
+                break;
             case "runs": {
                 JSONArray runs = p.optJSONArray("runs");
                 n.runs = runs != null && runs.length() > 0 ? runs : null;
@@ -706,6 +713,8 @@ public final class PrismHost {
         boolean bare = !screens.isEmpty() && screens.get(screens.size() - 1).value == 1;
         boolean hidden = (((int) n.value) & 2) != 0 || bare;
         n.header.setVisibility(hidden ? View.GONE : View.VISIBLE);
+        // The top screen's bar buttons (#30).
+        PrismNavbar.refresh(n);
     }
 
     static void back(Node stack) {
@@ -770,7 +779,7 @@ public final class PrismHost {
                 b.setContentDescription(tab.text);
             }
             b.setTextSize(TypedValue.COMPLEX_UNIT_SP, watch && !TextUtils.isEmpty(tab.glyph) ? 18 : 12);
-            b.setTextColor(i == selected ? accent() : (dark() ? 0xFF98989F : 0xFF6C6C72));
+            b.setTextColor(i == selected ? PrismNavbar.tint(n, accent()) : (dark() ? 0xFF98989F : 0xFF6C6C72));
             b.setLineSpacing(0, 0.9f);
             b.setTypeface(i == selected ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
             final int index = i;

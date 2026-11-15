@@ -553,12 +553,14 @@
     } else if (kind === "stack") {
       el.className = "prism-stack";
       el.innerHTML =
-        '<div class="prism-header"><button class="prism-back" aria-label="Back" hidden>‹ Back</button>' +
-        '<h1 class="prism-title" tabindex="-1"></h1></div><div class="prism-body"></div>';
+        '<div class="prism-header"><div class="prism-bar prism-bar-leading"><button class="prism-back" aria-label="Back" hidden>‹ Back</button></div>' +
+        '<h1 class="prism-title" tabindex="-1"></h1><div class="prism-bar prism-bar-trailing"></div></div><div class="prism-body"></div>';
       el._body = el.lastChild;
       el._header = el.firstChild;
       el._back = el.querySelector(".prism-back");
       el._title = el.querySelector(".prism-title");
+      el._leading = el.querySelector(".prism-bar-leading");
+      el._trailing = el.querySelector(".prism-bar-trailing");
       el._screens = [];
       el._back.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -779,10 +781,42 @@
     st._back.textContent = closable ? chrome.close : `‹ ${chrome.back}`;
     st._back.setAttribute("aria-label", closable ? chrome.close : chrome.back);
     st._title.textContent = title;
+    refreshBar(st, top);
     if (top) top.setAttribute("aria-label", title);
     if (isMainStack(st)) {
       document.title = title && title !== baseTitle ? `${title} · ${baseTitle}` : baseTitle;
     }
+  }
+
+  // --- Bar buttons of the top screen (#30) ----------------------------------------
+  /** A screen's config: `large`/`inline`, then `L|T \t icon \t title \t label` per button. */
+  function barItems(config) {
+    return (config || "").split("\n").slice(1).map((line, index) => {
+      const [side, icon = "", title = "", label = ""] = line.split("\t");
+      return { index, trailing: side !== "L", icon, title, label };
+    });
+  }
+  function refreshBar(st, top) {
+    if (!st._leading) return;
+    const items = barItems(top && top._barConfig);
+    const fill = (box, trailing) => {
+      box.querySelectorAll(":scope > .prism-bar-button").forEach((b) => b.remove());
+      items.filter((it) => it.trailing === trailing).forEach((it) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "prism-bar-button";
+        b.dataset.bar = String(it.index);
+        b.textContent = glyphs[it.icon] || it.title || (it.icon ? "•" : "");
+        b.setAttribute("aria-label", it.label || it.title || it.icon);
+        b.addEventListener("click", (e) => {
+          e.stopPropagation();
+          send({ t: "change", id: Number(top.dataset.pid), v: it.index });
+        });
+        box.appendChild(b);
+      });
+    };
+    fill(st._leading, false);
+    fill(st._trailing, true);
   }
 
   // --- Tabs: ARIA tablist with roving tabindex ----------------------------------
@@ -893,6 +927,13 @@
   }
   function applyConfig(el, config) {
     const kind = el.dataset.kind;
+    if (kind === "screen") {
+      // Bar buttons and title size (#30): its stack shows them.
+      el._barConfig = config;
+      const owner = el.parentElement && el.parentElement.parentElement;
+      if (owner && owner._screens) refreshStack(owner);
+      return;
+    }
     if (kind === "slider") {
       const [min, max, step] = config.split(" ").map(Number);
       Object.assign(el, { min, max, step: step > 0 ? step : "any" });

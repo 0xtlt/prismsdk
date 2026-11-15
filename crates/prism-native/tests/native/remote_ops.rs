@@ -1011,3 +1011,49 @@ fn a_padded_text_frame_includes_its_padding() {
         .expect("a style");
     assert_eq!(style["s"]["pad"], json!([4., 12., 4., 12.]));
 }
+
+#[test]
+fn screens_send_their_bar_buttons_with_glyphs_and_bars_their_tint() {
+    use prism_core::navbar::{BarItem, BarPlacement, ScreenConfig};
+    let mut w = RemoteWidgets::new(measure);
+    w.create(3, NodeKind::Screen);
+    let config = ScreenConfig {
+        large_title: None,
+        items: vec![
+            BarItem {
+                placement: BarPlacement::Trailing,
+                icon: "plus".into(),
+                label: "Add".into(),
+                ..Default::default()
+            },
+            BarItem {
+                placement: BarPlacement::Leading,
+                title: "Edit".into(),
+                ..Default::default()
+            },
+        ],
+    }
+    .encode();
+    w.set_config(&3, NodeKind::Screen, &config);
+    assert_eq!(
+        last(&w),
+        json!({"op": "config", "id": 3, "config": config, "glyphs": ["+", ""]})
+    );
+    // Other configs carry no glyphs.
+    w.create(4, NodeKind::Picker);
+    w.set_config(&4, NodeKind::Picker, "a\nb");
+    assert_eq!(last(&w).get("glyphs"), None);
+
+    w.create(5, NodeKind::Tabs);
+    w.set_style(&5, &Style::default());
+    assert_eq!(last(&w)["s"].get("tint"), None, "no tint: no key");
+    let tinted = Style {
+        tint: Some(prism_core::rgb(0xFF0000)),
+        ..Style::default()
+    };
+    w.set_style(&5, &tinted);
+    assert_eq!(
+        last(&w)["s"]["tint"],
+        json!([1., 0., 0., 1., 1., 0., 0., 1.])
+    );
+}

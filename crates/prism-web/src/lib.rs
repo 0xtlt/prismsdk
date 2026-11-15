@@ -40,6 +40,7 @@ mod host_tests;
 use prism_core::glyphs;
 mod html;
 mod pictures;
+mod navbar;
 mod security;
 #[cfg(feature = "server")]
 mod server;

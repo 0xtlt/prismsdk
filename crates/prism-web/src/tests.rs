@@ -234,8 +234,10 @@ fn ssr_stack_shows_only_the_top_screen() {
         html(&tree),
         concat!(
             r#"<div data-pid="1" data-kind="stack" style="" class="prism-stack">"#,
-            r#"<div class="prism-header"><button class="prism-back" aria-label="Retour">‹ Retour</button>"#,
-            r#"<h1 class="prism-title" tabindex="-1">Détail &lt;1&gt;</h1></div><div class="prism-body">"#,
+            r#"<div class="prism-header"><div class="prism-bar prism-bar-leading">"#,
+            r#"<button class="prism-back" aria-label="Retour">‹ Retour</button></div>"#,
+            r#"<h1 class="prism-title" tabindex="-1">Détail &lt;1&gt;</h1>"#,
+            r#"<div class="prism-bar prism-bar-trailing"></div></div><div class="prism-body">"#,
             r#"<section data-pid="2" data-kind="screen" style="" hidden aria-label="Home"></section>"#,
             r#"<section data-pid="3" data-kind="screen" style="" aria-label="Détail &lt;1&gt;">"#,
             r#"<div data-pid="4" data-kind="text" style="">body</div></section>"#,
@@ -2051,8 +2053,9 @@ fn ssr_hides_the_header_of_a_headerless_stack_or_a_bare_screen() {
             Patch::SetRoot { id: 1 },
         ])
     };
-    let header = r#"<div class="prism-header"><button"#;
-    let hidden = r#"<div class="prism-header" hidden><button"#;
+    let header = r#"<div class="prism-header"><div class="prism-bar prism-bar-leading"><button"#;
+    let hidden =
+        r#"<div class="prism-header" hidden><div class="prism-bar prism-bar-leading"><button"#;
     assert!(stack(0., 0.).contains(header));
     assert!(stack(prism_core::STACK_NO_HEADER as f64, 0.).contains(hidden));
     assert!(stack(0., 1.).contains(hidden));
@@ -2206,4 +2209,132 @@ fn tabs_leave_their_direction_to_the_stylesheet() {
     let sheet = include_str!("prism.css");
     assert!(sheet.contains(".prism-tabs { display: flex; flex-direction: column; }"));
     assert!(sheet.contains(".prism-tabs { flex-direction: row; }"));
+}
+
+// --- Bar buttons, tint (#30); signing out of a session (#31) ----------------------
+
+#[test]
+fn ssr_puts_the_top_screens_bar_buttons_in_the_header() {
+    use prism_core::navbar::{BarItem, BarPlacement, ScreenConfig};
+    let config = ScreenConfig {
+        large_title: Some(false),
+        items: vec![
+            BarItem {
+                placement: BarPlacement::Trailing,
+                icon: "plus".into(),
+                label: "Add a todo".into(),
+                ..Default::default()
+            },
+            BarItem {
+                placement: BarPlacement::Leading,
+                title: "Edit".into(),
+                ..Default::default()
+            },
+        ],
+    };
+    let page = html(&[
+        create(1, NodeKind::Stack),
+        create(2, NodeKind::Screen),
+        set_text(2, "Todos"),
+        Patch::SetConfig {
+            id: 2,
+            config: config.encode(),
+        },
+        children(1, &[2]),
+        Patch::SetRoot { id: 1 },
+    ]);
+    assert!(
+        page.contains(concat!(
+            r#"‹ Back</button><button type="button" class="prism-bar-button" data-bar="1" aria-label="Edit">Edit</button></div>"#,
+            r#"<h1 class="prism-title" tabindex="-1">Todos</h1>"#,
+            r#"<div class="prism-bar prism-bar-trailing"><button type="button" class="prism-bar-button" data-bar="0" aria-label="Add a todo">+</button></div>"#,
+        )),
+        "{page}"
+    );
+}
+
+#[test]
+fn tints_become_a_css_variable_on_tab_bars_and_stacks() {
+    let s = Style {
+        tint: Some(rgb(0xFF0000)),
+        ..Default::default()
+    };
+    assert!(css::css(NodeKind::Tabs, &s).contains("--prism-tint:rgba(255,0,0,1);"));
+    assert!(css::css(NodeKind::Stack, &s).contains("--prism-tint:rgba(255,0,0,1);"));
+    assert!(!css::css(NodeKind::View, &s).contains("--prism-tint"));
+}
+
+struct Signed;
+impl Render for Signed {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        screen("Start")
+            .trailing(bar_button("Sign out").on_click(std::rc::Rc::new(
+                |_: &ClickEvent, cx: &mut App| {
+                    let router = cx.global_mut::<WebSession>().router.take().unwrap();
+                    cx.release(router);
+                    let page = cx.new_entity(|_| SignedOut);
+                    cx.global_mut::<WebSession>().page = Some(page);
+                    cx.set_root(page);
+                },
+            )))
+            .child(text(format!("in: {}", cx.entity_count())))
+    }
+}
+
+struct SignedOut;
+impl Render for SignedOut {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let at = cx.current_path().unwrap_or("none").to_string();
+        div()
+            .child(text(format!("out: {} at {at}", cx.entity_count())))
+            .child(
+                button("Sign in").on_click(std::rc::Rc::new(|_: &ClickEvent, cx: &mut App| {
+                    web_sign_in(cx)
+                })),
+            )
+    }
+}
+
+#[derive(Default)]
+struct WebSession {
+    router: Option<Entity<Router>>,
+    page: Option<Entity<SignedOut>>,
+}
+
+fn web_sign_in(cx: &mut App) {
+    assert!(cx.global_mut::<WebSession>().router.is_none());
+    let router = Router::new()
+        .tab("Home", "house", "/")
+        .tab("More", "gear", "/more")
+        .route("/", |cx, _| cx.new_entity(|_| Signed))
+        .route("/more", |cx, _| cx.new_entity(|_| Signed))
+        .build(cx);
+    if let Some(page) = cx.global_mut::<WebSession>().page.take() {
+        cx.release(page);
+    }
+    cx.global_mut::<WebSession>().router = Some(router);
+    cx.set_root(router);
+}
+
+#[test]
+fn a_session_signs_out_and_in_again_without_leftover_screens() {
+    let init: AppInit = Arc::new(|cx: &mut App| web_sign_in(cx));
+    let (app, dir) = web_app(init, "signout");
+    let page = Page::open(&app, "/ws?path=%2F&w=390&h=800");
+    let reset = page.next();
+    // The router and the two tabs' screens.
+    op_with_text(&reset["p"], "in: 3");
+    let home = op_with_text(&reset["p"], "Start");
+    // The bar button: a change event of its index on the screen.
+    page.send(json!({ "t": "change", "id": home, "v": 0 }));
+    let out = page.next();
+    assert_eq!(out["t"], "patch", "{out}");
+    // Only the sign-in page is left, and the path is gone without a panic.
+    op_with_text(&out["p"], "out: 1 at none");
+    let sign_in = op_with_text(&out["p"], "Sign in");
+    page.send(json!({ "t": "click", "id": sign_in }));
+    let back_in = page.next();
+    op_with_text(&back_in["p"], "in: 3");
+    page.session.close();
+    let _ = std::fs::remove_dir_all(dir);
 }

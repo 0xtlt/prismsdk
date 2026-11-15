@@ -26,6 +26,8 @@ mod layout;
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "visionos"))]
 mod menus;
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "visionos"))]
+mod navbar;
+#[cfg(any(target_os = "ios", target_os = "tvos", target_os = "visionos"))]
 mod overlay;
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "visionos"))]
 mod padding;

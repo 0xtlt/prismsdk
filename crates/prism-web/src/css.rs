@@ -308,6 +308,12 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
     if shown_in_a_state {
         w.push_str("display:none;");
     }
+    // The selected tab, the header's buttons (#30): `prism.css` reads it.
+    if let Some(tint) = s.tint
+        && matches!(kind, NodeKind::Tabs | NodeKind::Stack)
+    {
+        let _ = write!(w, "--prism-tint:{};", tint.to_css());
+    }
     c
 }
 

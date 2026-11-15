@@ -1645,3 +1645,76 @@ impl Overlay {
         self.overlay_config(|c| c.medium = true)
     }
 }
+
+// --- Navigation bar options (#30) ---
+
+impl Screen {
+    /// `false`: a small title in the bar even where stacks show large
+    /// titles (iOS, iPadOS, visionOS), for a screen that draws its own hero;
+    /// `true`: always large. Other platforms have one title size.
+    pub fn large_title(mut self, large: bool) -> Self {
+        let mut c = crate::navbar::ScreenConfig::decode(&self.0.config);
+        c.large_title = Some(large);
+        self.0.config = c.encode();
+        self
+    }
+
+    /// Adds a button before the title (after Back, which stays):
+    /// `UIBarButtonItem`s on Apple platforms, buttons in the header bar
+    /// elsewhere. See [`bar_button`](crate::bar_button).
+    pub fn leading(self, button: crate::navbar::BarButton) -> Self {
+        self.bar_item(button, crate::navbar::BarPlacement::Leading)
+    }
+
+    /// Adds a button after the title ("Edit", "+"). See
+    /// [`bar_button`](crate::bar_button).
+    pub fn trailing(self, button: crate::navbar::BarButton) -> Self {
+        self.bar_item(button, crate::navbar::BarPlacement::Trailing)
+    }
+
+    fn bar_item(
+        mut self,
+        button: crate::navbar::BarButton,
+        placement: crate::navbar::BarPlacement,
+    ) -> Self {
+        let mut c = crate::navbar::ScreenConfig::decode(&self.0.config);
+        let index = c.items.len();
+        c.items.push(crate::navbar::BarItem {
+            placement,
+            ..button.item
+        });
+        self.0.config = c.encode();
+        // A tap on button `i` is a change event of value `i` on the screen.
+        let previous = self.0.on_change.take();
+        let on_click = button.on_click;
+        self.0.on_change = Some(Rc::new(move |e: &ChangeEvent, app: &mut App| {
+            if e.index() == index && e.value >= 0. {
+                if let Some(h) = &on_click {
+                    h(&ClickEvent, app);
+                }
+            } else if let Some(p) = &previous {
+                p(e, app);
+            }
+        }));
+        self
+    }
+}
+
+impl Tabs {
+    /// The color of the selected tab (`UITabBar.tintColor`, the selected
+    /// segment, the web's selected tab). The router sets it from
+    /// `RouterBuilder::tint` or the app's accent color.
+    pub fn tint(mut self, color: impl Into<Option<crate::style::Color>>) -> Self {
+        self.0.style.tint = color.into();
+        self
+    }
+}
+
+impl Stack {
+    /// The color of the header bar's buttons, Back included
+    /// (`UINavigationBar.tintColor`, the buttons' content tint).
+    pub fn tint(mut self, color: impl Into<Option<crate::style::Color>>) -> Self {
+        self.0.style.tint = color.into();
+        self
+    }
+}

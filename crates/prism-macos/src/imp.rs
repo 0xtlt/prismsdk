@@ -1432,6 +1432,9 @@ pub struct MacStack {
     // --- Hidden header (#8) ---
     /// No header bar at all (`Router::header(false)`).
     no_header: Cell<bool>,
+    // --- Bar buttons (#30) ---
+    /// The top screen's bar buttons, in the header.
+    bar: crate::navbar::Bar,
 }
 
 /// A sheet window presenting a modal stack over the main window.
@@ -2014,6 +2017,7 @@ impl AppKit {
             screens: RefCell::new(Vec::new()),
             closable: Cell::new(false),
             no_header: Cell::new(false),
+            bar: Default::default(),
         }
     }
 
@@ -2061,6 +2065,9 @@ impl AppKit {
         }
         let selected = bar.selected.get().min(tabs.len().saturating_sub(1));
         bar.segments.setSelectedSegment(selected as isize);
+        // The selected tab's symbol in the tint (#30).
+        let icon = tabs.get(selected).and_then(|t| self.icons.get(&t.id()));
+        crate::navbar::tint_selected_segment(bar.id, &bar.segments, selected, icon);
         let mut subviews: Vec<&NSView> = vec![&bar.bar, &bar.separator];
         if let Some(t) = tabs.get(selected) {
             subviews.push(t.ns());
@@ -2144,6 +2151,11 @@ impl AppKit {
             .unwrap_or("");
         let title = NSString::from_str(title);
         stack.title.setStringValue(&title);
+        // The top screen's bar buttons (#30).
+        let top = screens.last().map(View::id);
+        crate::navbar::refresh(self.mtm, stack.id, &stack.header, &stack.bar, top);
+        let size = stack.header.frame().size;
+        crate::navbar::layout(&stack.bar, &stack.back, size.width, size.height, self.rtl);
         if let Some(window) = stack.container.window()
             && title.length() > 0
         {
@@ -2424,6 +2436,18 @@ impl Widgets for AppKit {
 
     fn set_style(&mut self, view: &View, style: &Style) {
         view.ns().setAlphaValue(style.opacity as f64);
+        // Bar tint (#30).
+        match view {
+            View::Tabs(t) => {
+                crate::navbar::tint_tabs(t.id, &t.segments, style.tint.map(ns_color));
+                self.refresh_tabs(t);
+            }
+            View::Stack(st) => {
+                crate::navbar::set_stack_tint(st.id, &st.back, style.tint.map(ns_color));
+                self.refresh_stack(st);
+            }
+            _ => {}
+        }
         // `hit_test(false)` / `inert`: clicks go through the subtree.
         crate::interact::set_no_hit(view.ns(), !style.hit_test || style.inert);
         if crate::interact::set_inert(view.ns(), style.inert) {
@@ -2754,6 +2778,7 @@ impl Widgets for AppKit {
 
     fn destroy(&mut self, view: &View) {
         crate::sticky::forget(view.id());
+        crate::navbar::forget(view.id());
         crate::padding::forget(view.id());
         self.hover_areas.remove(&view.id());
         if let Some(v) = view.prism_view() {
@@ -2987,6 +3012,7 @@ impl Widgets for AppKit {
                 w,
                 t.height,
             ));
+            crate::navbar::layout(&st.bar, &st.back, w, HEADER_HEIGHT - 1., self.rtl);
         }
     }
 
@@ -3074,6 +3100,14 @@ impl Widgets for AppKit {
 
     fn set_config(&mut self, view: &View, _kind: NodeKind, config: &str) {
         match view {
+            // Bar buttons (#30): the stack showing the screen puts them up.
+            View::Screen(_) => {
+                if crate::navbar::set_config(view.id(), config) {
+                    for stack in &self.stacks {
+                        self.refresh_stack(stack);
+                    }
+                }
+            }
             // A rich text's runs.
             View::Label(l) => crate::label::set_runs(l, config),
             View::Slider(s) => {
@@ -3776,7 +3810,10 @@ fn find_pressable(view: &NSView, title: &str) -> Option<Pressable> {
             continue;
         }
         if let Ok(b) = sub.clone().downcast::<NSButton>()
-            && b.title().to_string() == title
+            && (b.title().to_string() == title
+                // A symbol alone (bar buttons): by its label.
+                || (b.title().length() == 0
+                    && b.accessibilityLabel().is_some_and(|l| l.to_string() == title)))
         {
             return Some(Pressable::Native(b));
         }

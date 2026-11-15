@@ -760,6 +760,13 @@ pub struct Style {
     /// `.border(0.)` was called: no border at all, not even the platform's
     /// default one around text inputs, text areas, pickers and date pickers.
     pub border_none: bool,
+
+    // --- Bar tint (#30) ---
+    /// The tint of a tab bar (its selected tab) or a stack's header bar
+    /// (its buttons, Back included): `Tabs::tint`, `Stack::tint`, set by
+    /// the router from `RouterBuilder::tint` or the app's accent color.
+    /// `None`: the platform's.
+    pub tint: Option<Color>,
 }
 
 impl Style {
@@ -1281,6 +1288,8 @@ impl Default for Style {
             inert: false,
 
             border_none: false,
+
+            tint: None,
         }
     }
 }

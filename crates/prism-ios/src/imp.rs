@@ -1342,6 +1342,8 @@ impl UiKit {
         } else {
             first.navigationItem().setLeftBarButtonItem(None);
         }
+        // The screen's own leading buttons follow Close (#30).
+        crate::navbar::refresh(&first);
     }
 }
 
@@ -1387,6 +1389,8 @@ impl UiKit {
         }
         let title = self.titles.get(&id).map(|t| NSString::from_str(t));
         vc.setTitle(title.as_deref());
+        // Bar buttons and title size (#30).
+        crate::navbar::apply(&vc, id);
         if let (Some(item), Some(icon)) = (vc.tabBarItem(), self.icons.get(&id)) {
             item.setImage(UIImage::systemImageNamed(&NSString::from_str(icon)).as_deref());
         }
@@ -1679,6 +1683,16 @@ impl Widgets for UiKit {
         if let View::Overlay(_) = view {
             return;
         }
+        // Bar tint (#30).
+        match view {
+            View::Tabs(t) => {
+                crate::navbar::tint_tabs(&t.controller, style.tint.map(ui_color).as_deref())
+            }
+            View::Stack(st) => {
+                crate::navbar::tint_stack(&st.nav, style.tint.map(ui_color).as_deref())
+            }
+            _ => {}
+        }
         self.set_hit(view, style);
         let v = view.ui();
         v.setAlpha(style.opacity as f64);
@@ -1859,6 +1873,11 @@ impl Widgets for UiKit {
     fn set_config(&mut self, view: &View, _kind: NodeKind, config: &str) {
         use prism_core::controls::{DateConfig, PickerConfig, SliderConfig};
         match view {
+            // Bar buttons and title size (#30).
+            View::Screen(_) => {
+                let id = view.id();
+                crate::navbar::set_config(id, config, self.screens.get(&id).map(|vc| &***vc));
+            }
             // A rich text's runs.
             View::Label(l) => crate::label::set_runs(l, config),
             View::Input(f) => {
@@ -2066,6 +2085,7 @@ impl Widgets for UiKit {
     fn destroy(&mut self, view: &View) {
         let id = view.id();
         crate::decor::destroy(id);
+        crate::navbar::forget(id);
         crate::padding::forget(id);
         SHAPES.with(|s| s.borrow_mut().remove(&id));
         crate::layout::forget(id);

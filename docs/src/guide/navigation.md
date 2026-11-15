@@ -92,3 +92,63 @@ The screen then gets the whole area and draws its own Back where it wants one (`
 | **Linux** | the header box is hidden |
 | **Android, Wear OS** | the header is `GONE`; the larger area is reported to the layout |
 | **watchOS** | `.toolbar(.hidden, for: .navigationBar)` (watchOS 9+) |
+
+## Bar buttons and the large title
+
+A screen puts its actions in the navigation bar rather than in its content, and chooses its title size:
+
+```rust
+screen("Todos")
+    .large_title(false)                                   // a small title, even on iOS
+    .leading(bar_button("Edit").on_click(cx.listener(|this, _, _| this.editing = !this.editing)))
+    .trailing(
+        bar_button("New todo")                            // announced by assistive technologies
+            .icon("plus")                                 // an SF Symbol; a glyph elsewhere
+            .on_click(Rc::new(|_: &ClickEvent, cx: &mut App| cx.present("/todos/new"))),
+    )
+```
+
+Leading buttons come after Back (which stays), trailing ones at the trailing edge, each side in the order they were added; right to left, the sides swap. A button with an icon shows the icon where the platform has symbols and is announced by its title (or `.accessibility_label(..)`). A screen marked `.bare()` hides them with its bar.
+
+| | Bar buttons | `large_title(false)` / `(true)` |
+|---|---|---|
+| **iOS, iPadOS, visionOS** | `UIBarButtonItem`s (`leftBarButtonItems` with `leftItemsSupplementBackButton`, `rightBarButtonItems`); a sheet's Close stays first | `largeTitleDisplayMode` `.never` / `.always` (default `.automatic`) |
+| **tvOS** | `UIBarButtonItem`s | no large titles on tvOS: ignored |
+| **macOS** | borderless `NSButton`s in the header bar (SF Symbol image or title) | one title size: ignored |
+| **Web** | `<button class="prism-bar-button">` in `.prism-header` (server-rendered too): the icon's glyph, else the title | ignored |
+| **Linux** | flat `GtkButton`s in the header: the icon's glyph, else the title | ignored |
+| **Android, Wear OS** | borderless buttons in the header: the icon's glyph, else the title | ignored |
+| **watchOS** | `ToolbarItemGroup`s (`.topBarLeading`, `.topBarTrailing`) with SF Symbols | ignored |
+
+A tap reaches the screen as a change event of the button's index (`UiEvent::Change(screen, i)`); the handler you gave runs. The options travel as the screen's config (`prism_core::navbar::ScreenConfig`).
+
+## Tinting the tab bar and the header bars
+
+The selected tab and the header bars' buttons (Back included) take the app's accent color: `ui::set_theme` sets it from the theme's accent (`cx.set_accent_color(Some(color))` without prism-ui). A router can have its own:
+
+```rust
+Router::new().tint(rgb(0xFF9500)) // wins over the accent color
+```
+
+| | Tab bar | Header bars |
+|---|---|---|
+| **iOS, iPadOS, tvOS, visionOS** | `UITabBar.tintColor` | `UINavigationBar.tintColor` (Back; bar buttons where the system tints them) |
+| **macOS** | the selected segment's symbol (and its bezel where the appearance draws one) | Back's and the bar buttons' `contentTintColor` |
+| **Web** | `--prism-tint` on `.prism-tabs`: the selected tab's color | `--prism-tint` on `.prism-stack`: Back and the bar buttons |
+| **Linux** | CSS: the checked tab button | CSS: the header's buttons |
+| **Android, Wear OS** | the selected tab's color | Back and the bar buttons |
+| **watchOS** | `.tint` on the `TabView` | `.tint` on the `NavigationStack` |
+
+## Closing the router (signing out)
+
+An app that signs out replaces its root (the tab router) with a sign-in screen. Release the router and everything it holds goes with it:
+
+```rust
+fn sign_out(cx: &mut App, router: Entity<Router>) {
+    cx.release(router);                       // every screen of every tab, and the sheet
+    let page = cx.new_entity(|_| SignIn);
+    cx.set_root(page);
+}
+```
+
+Releasing the router releases each screen it built (`Router::close` does it without releasing the router; `cx.reset(path)` opens screens again), and releasing an entity releases what it created with `cx.new`, drops the observers it registered with `cx.observe` and cancels its tasks spawned with `.cancel_on_release()`. A screen a route hands out without creating it (`.route("/focus", move |_, _| focus)`) is the app's: the router never releases it. Once the app's router is released, `cx.current_path()` is `None`; signing in again builds a new router, which becomes the navigator. `cx.entity_count()` counts live entities, for tests that check nothing is left behind.

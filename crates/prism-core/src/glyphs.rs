@@ -46,6 +46,13 @@ pub const GLYPHS: &[(&str, &str)] = &[
     ("sparkles", "✨"),
     ("app.badge", "🔔"),
     ("rectangle.stack", "▤"),
+    // Bar buttons (#30).
+    ("pencil", "✎"),
+    ("square.and.pencil", "✎"),
+    ("trash", "🗑"),
+    ("ellipsis", "…"),
+    ("ellipsis.circle", "…"),
+    ("square.and.arrow.up", "⇪"),
 ];
 
 /// The glyph for an SF Symbol name, `•` if unknown.

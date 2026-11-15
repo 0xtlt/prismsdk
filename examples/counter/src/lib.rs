@@ -254,40 +254,49 @@ impl Render for Home {
             info = format!("{info} · {}", strings::home_synced(cx, self.synced));
         }
         let today = cx.format_date(strings::now(), DateStyle::Long);
-        screen.child(
-            body
-                // Pull down to "sync" (a fake one-second task).
-                .refreshing(self.refreshing)
-                .on_refresh(cx.listener(|this, _, cx| {
-                    this.refreshing = true;
-                    cx.spawn(async move |this, cx| {
-                        cx.sleep(std::time::Duration::from_secs(1)).await;
-                        cx.update_entity(&this, |h, _| {
-                            h.refreshing = false;
-                            h.synced += 1;
+        screen
+            // A "+" in the navigation bar opens the new todo sheet (#30).
+            .trailing(
+                prism::bar_button(strings::todos_new(cx))
+                    .icon("plus")
+                    .on_click(std::rc::Rc::new(|_: &ClickEvent, app: &mut App| {
+                        app.present("/todos/new")
+                    })),
+            )
+            .child(
+                body
+                    // Pull down to "sync" (a fake one-second task).
+                    .refreshing(self.refreshing)
+                    .on_refresh(cx.listener(|this, _, cx| {
+                        this.refreshing = true;
+                        cx.spawn(async move |this, cx| {
+                            cx.sleep(std::time::Duration::from_secs(1)).await;
+                            cx.update_entity(&this, |h, _| {
+                                h.refreshing = false;
+                                h.synced += 1;
+                            });
                         });
-                    });
-                }))
-                .child(text(info).text_size(14.).text_color(t.muted))
-                .child(
-                    text(background::summary(cx))
-                        .text_size(14.)
-                        .text_color(t.muted),
-                )
-                .child(
-                    text(strings::home_today(cx, &today))
-                        .text_size(14.)
-                        .text_color(t.muted),
-                )
-                // Laptops and up: the counter beside the todo list.
-                .child(
-                    div()
-                        .gap(20.)
-                        .lg(|s| s.flex_row().items_start())
-                        .child(div().lg(|s| s.w(px(340.))).child(self.counter))
-                        .child(div().lg(|s| s.flex_1()).child(self.todos)),
-                ),
-        )
+                    }))
+                    .child(text(info).text_size(14.).text_color(t.muted))
+                    .child(
+                        text(background::summary(cx))
+                            .text_size(14.)
+                            .text_color(t.muted),
+                    )
+                    .child(
+                        text(strings::home_today(cx, &today))
+                            .text_size(14.)
+                            .text_color(t.muted),
+                    )
+                    // Laptops and up: the counter beside the todo list.
+                    .child(
+                        div()
+                            .gap(20.)
+                            .lg(|s| s.flex_row().items_start())
+                            .child(div().lg(|s| s.w(px(340.))).child(self.counter))
+                            .child(div().lg(|s| s.flex_1()).child(self.todos)),
+                    ),
+            )
     }
 }
 
@@ -521,7 +530,8 @@ impl Render for TodoDetail {
                 .child(body.child(text(strings::todo_missing(cx, id)).text_color(t.muted)));
         };
         let (screen, body) = page(todo.title.clone(), cx);
-        screen.child(
+        // A detail screen keeps a small title in the bar (iOS) (#30).
+        screen.large_title(false).child(
             body.child(
                 ui::card()
                     .child(

@@ -26,6 +26,7 @@ pub mod interaction;
 pub mod layout;
 pub mod list;
 pub mod menu;
+pub mod navbar;
 pub mod platform;
 pub mod push;
 mod reconcile;
@@ -83,6 +84,7 @@ pub use interaction::{Interaction, Interactions, States};
 pub use layout::{GridTrack, Repetition, ScrollAxis, auto_fill, auto_fit, fr, minmax, repeat};
 pub use list::VirtualList;
 pub use menu::{ActionRole, Alert, AlertStyle, Menu, MenuItem, Tray};
+pub use navbar::{BarButton, BarPlacement, bar_button};
 pub use platform::{Platform, Platforms};
 pub use push::{
     ActivityPushToken, PushEvent, PushFuture, PushMessage, PushService, PushSubscription,
@@ -589,6 +591,8 @@ pub mod prelude {
     pub use crate::decoration::{shadow_lg, shadow_md, shadow_sm};
     pub use crate::{Color, Cursor, Gradient, Shadow};
     pub use crate::{picture_data, svg};
+    // Navigation bar buttons (#30).
+    pub use crate::bar_button;
     // Pointer, keys, choice controls, overlays (#17, #18, #19).
     pub use crate::{
         DragEvent, DragPhase, HoverEvent, KeyEvent, Modifiers, PickFiles, Point, PointerEvent,

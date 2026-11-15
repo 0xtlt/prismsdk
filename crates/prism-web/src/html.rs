@@ -489,9 +489,16 @@ impl HtmlBackend {
                 } else {
                     &self.env.back
                 });
+                // The top screen's bar buttons, after Back and after the title (#30).
+                let bar = |trailing| {
+                    top.map_or(String::new(), |t| {
+                        crate::navbar::buttons(&t.config, trailing)
+                    })
+                };
+                let (leading, trailing) = (bar(false), bar(true));
                 let _ = write!(
                     out,
-                    r#"<div {attrs} class="prism-stack"><div class="prism-header"{header_hidden}><button class="prism-back" aria-label="{back}"{back_hidden}>‹ {back}</button><h1 class="prism-title" tabindex="-1">{}</h1></div><div class="prism-body">"#,
+                    r#"<div {attrs} class="prism-stack"><div class="prism-header"{header_hidden}><div class="prism-bar prism-bar-leading"><button class="prism-back" aria-label="{back}"{back_hidden}>‹ {back}</button>{leading}</div><h1 class="prism-title" tabindex="-1">{}</h1><div class="prism-bar prism-bar-trailing">{trailing}</div></div><div class="prism-body">"#,
                     escape(title)
                 );
                 let last = kids.len().saturating_sub(1);
