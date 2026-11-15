@@ -844,6 +844,10 @@ define_class!(
             let Some(doc) = clip.documentView().and_then(|d| d.downcast::<PrismView>().ok()) else {
                 return;
             };
+            crate::sticky::scrolled(&clip);
+            if !crate::sticky::wants_scroll_events(&clip) {
+                return;
+            }
             let b = clip.bounds();
             dispatch(UiEvent::Scroll(doc.ivars().id.get(), b.origin.y as f32, b.size.height as f32));
         }
@@ -1189,6 +1193,11 @@ pub struct AppKit {
 fn ca_equal(a: objc2_quartz_core::CATransform3D, b: objc2_quartz_core::CATransform3D) -> bool {
     let f = |t: objc2_quartz_core::CATransform3D| [t.m11, t.m12, t.m21, t.m22, t.m41, t.m42];
     f(a) == f(b)
+}
+
+/// The node a Prism view shows.
+pub(crate) fn node_id(view: &PrismView) -> NodeId {
+    view.ivars().id.get()
 }
 
 impl AppKit {
@@ -1891,6 +1900,20 @@ impl Widgets for AppKit {
             View::Scroll(sc) => {
                 *sc.document.ivars().background.borrow_mut() = style.background.map(ns_color);
                 sc.document.setNeedsDisplay(true);
+                // `scroll_x()`: sideways only (the document is as wide as
+                // `set_content_size` says, as tall as the view).
+                let sideways = style.scroll_axis == prism_core::ScrollAxis::Horizontal;
+                let (on, off) = (
+                    objc2_app_kit::NSScrollElasticity::Automatic,
+                    objc2_app_kit::NSScrollElasticity::None,
+                );
+                // No horizontal scroller: with legacy (always shown)
+                // scrollers, AppKit would take 15 pt of the row's height for
+                // it, after layout. Trackpad swipes and shift + wheel scroll.
+                sc.scroll.setHasHorizontalScroller(false);
+                sc.scroll.setHasVerticalScroller(!sideways);
+                sc.scroll
+                    .setVerticalScrollElasticity(if sideways { off } else { on });
             }
             View::Toggle(_) | View::Progress(_) => {}
             // No tint API: `controlTint` is "not respected on 10.15 and
@@ -2066,12 +2089,14 @@ impl Widgets for AppKit {
             View::Scroll(sc) => {
                 let views: Vec<&NSView> = children.iter().map(View::ns).collect();
                 sc.document.setSubviews(&NSArray::from_slice(&views));
+                crate::sticky::raise(&sc.document);
                 return;
             }
             _ => {}
         }
         let views: Vec<&NSView> = children.iter().map(View::ns).collect();
         parent.ns().setSubviews(&NSArray::from_slice(&views));
+        crate::sticky::raise(parent.ns());
     }
 
     fn set_root(&mut self, view: &View) {
@@ -2086,6 +2111,7 @@ impl Widgets for AppKit {
     }
 
     fn destroy(&mut self, view: &View) {
+        crate::sticky::forget(view.id());
         match view {
             View::Input(i) => {
                 unsafe { i.field().setDelegate(None) };
@@ -2186,8 +2212,10 @@ impl Widgets for AppKit {
     fn set_frame(&mut self, view: &View, x: f32, y: f32, w: f32, h: f32) {
         let rect =
             |x: f64, y: f64, w: f64, h: f64| NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));
-        view.ns()
-            .setFrame(rect(x as f64, y as f64, w as f64, h as f64));
+        // Sticky views add how far their scroll view has carried them.
+        let frame =
+            crate::sticky::frame_for(view.id(), rect(x as f64, y as f64, w as f64, h as f64));
+        view.ns().setFrame(frame);
         if self.transforms.contains_key(&view.id()) {
             self.apply_transform(view);
         }
@@ -2368,21 +2396,35 @@ impl Widgets for AppKit {
 
     fn set_scroll_events(&mut self, view: &View, on: bool) {
         let View::Scroll(sc) = view else { return };
-        let clip = sc.scroll.contentView();
-        let center = objc2_foundation::NSNotificationCenter::defaultCenter();
-        let name = unsafe { objc2_app_kit::NSViewBoundsDidChangeNotification };
-        unsafe { center.removeObserver_name_object(&self.target, Some(name), Some(&clip)) };
-        if on {
-            clip.setPostsBoundsChangedNotifications(true);
-            unsafe {
-                center.addObserver_selector_name_object(
-                    &self.target,
-                    sel!(onScrollBounds:),
-                    Some(name),
-                    Some(&clip),
-                )
-            };
-        }
+        // One observer per clip view, shared with sticky views.
+        crate::sticky::set_scroll_events(&self.target, &sc.scroll.contentView(), on);
+    }
+
+    /// Where the first line of text sits (`items_baseline()`). Labels draw
+    /// at the top; buttons and pop-ups center their content in taller frames.
+    fn baseline(&mut self, view: &View, _width: f32, height: f32) -> Option<f32> {
+        let h = height as f64;
+        let centered = |v: &NSView| {
+            v.firstBaselineOffsetFromTop() + ((h - v.fittingSize().height) / 2.).max(0.)
+        };
+        let b = match view {
+            View::Label(l) | View::Timer(l) => l.firstBaselineOffsetFromTop(),
+            View::Button(b) => centered(b),
+            View::Picker(p) => centered(&p.button),
+            View::Input(i) => i.field().firstBaselineOffsetFromTop(),
+            View::DatePicker(d) => d.firstBaselineOffsetFromTop(),
+            _ => return None,
+        };
+        (b > 0.).then_some(b as f32)
+    }
+
+    /// Follows the scroll view's clip view (see `sticky.rs`).
+    fn set_sticky(&mut self, view: &View, sticky: Option<(&View, prism_native::Sticky)>) {
+        let follow = sticky.and_then(|(scroll, st)| match scroll {
+            View::Scroll(sc) => Some((sc.scroll.contentView(), st)),
+            _ => None,
+        });
+        crate::sticky::set(&self.target, view.id(), view.ns(), follow);
     }
 
     fn set_swipe(&mut self, view: &View, left: bool, right: bool) {
@@ -3052,10 +3094,12 @@ fn run_automation(mtm: MainThreadMarker) {
                 return;
             }
             if let Some(sv) = view.downcast_ref::<NSScrollView>() {
-                // Text areas keep their own scroll position.
-                if sv
-                    .documentView()
-                    .is_some_and(|d| d.isKindOfClass(PrismTextView::class()))
+                // Text areas keep their own scroll position; rows that
+                // scroll sideways (`scroll_x()`) don't scroll down.
+                if !sv.hasVerticalScroller()
+                    || sv
+                        .documentView()
+                        .is_some_and(|d| d.isKindOfClass(PrismTextView::class()))
                 {
                     return;
                 }

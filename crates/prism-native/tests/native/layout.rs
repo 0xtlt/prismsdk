@@ -655,3 +655,21 @@ fn a_screen_starting_with_a_horizontal_scroll_keeps_its_safe_area() {
         "below the bar, unlike vertical page scrolls"
     );
 }
+
+#[test]
+fn aspect_ratio_with_a_capped_width_sizes_its_parent_by_the_cap() {
+    let mut h = tree(|| {
+        div().child(
+            div()
+                .p(10.)
+                .child(div().w_full().max_w(360.).aspect_ratio(2.))
+                .child(text("after")),
+        )
+    });
+    h.layout(900., 900.);
+    let v = views(&h);
+    let f = h.w();
+    assert_eq!(f.frame(v[2]), (10., 10., 360., 180.));
+    assert_eq!(f.frame(f.by_text("after")).1, 190.);
+    assert_eq!(f.frame(v[1]).3, 220.);
+}

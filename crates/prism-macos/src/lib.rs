@@ -13,6 +13,8 @@ mod imp;
 mod menus;
 #[cfg(target_os = "macos")]
 mod services;
+#[cfg(target_os = "macos")]
+mod sticky;
 
 #[cfg(target_os = "macos")]
 pub use imp::run;

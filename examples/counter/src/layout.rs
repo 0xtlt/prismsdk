@@ -128,15 +128,17 @@ pub fn card(cx: &App, taps: u32, on_tap: Handler<ClickEvent>) -> ui::Card {
         )
         // Fixed to the screen, wherever it is declared.
         .child(
-            button(format!("+{taps}"))
+            div()
                 .fixed()
                 .bottom(24.)
                 .right(24.)
                 .size(px(56.))
                 .rounded(28.)
                 .bg(t.accent)
-                .text_color(t.on_accent)
-                .bold()
+                .items_center()
+                .justify_center()
+                .child(text(format!("+{taps}")).bold().text_color(t.on_accent))
+                .accessibility_role(Role::Button)
                 .accessibility_label(strings::layout_fab(cx))
                 .on_click(on_tap),
         )

@@ -176,6 +176,19 @@ pub(crate) fn apply(t: &mut taffy::Style, s: &Style, kind: NodeKind) {
         t.align_self = Some(taffy::AlignItems::BASELINE);
     }
     t.aspect_ratio = s.aspect_ratio;
+    if let Some(r) = s.aspect_ratio {
+        // A cap on one side caps the other (taffy sizes the parent with the
+        // uncapped side otherwise, e.g. `w_full().max_w(360.)`).
+        match (s.max_width, s.max_height) {
+            (Length::Px(w), Length::Auto) => {
+                t.max_size.height = taffy::LengthPercentageAuto::length(w / r)
+            }
+            (Length::Auto, Length::Px(h)) => {
+                t.max_size.width = taffy::LengthPercentageAuto::length(h * r)
+            }
+            _ => {}
+        }
+    }
     match s.position {
         // Placed against its anchor (it is hoisted there), out of the flow.
         Position::Fixed => t.position = taffy::Position::Absolute,
