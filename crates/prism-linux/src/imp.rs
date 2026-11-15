@@ -786,6 +786,9 @@ impl Gtk {
             .and_then(|s| self.titles.get(&s.id()).cloned())
             .unwrap_or_default();
         stack.title.set_text(&title);
+        // The top screen's bar buttons (#30).
+        let top = stack.screens.borrow().last().map(View::id);
+        crate::navbar::refresh(&stack.header, &stack.back, &stack.title, top);
     }
 
     fn refresh_tabs(&self, tabs: &Rc<TabBar>) {
@@ -1312,6 +1315,11 @@ impl Widgets for Gtk {
         );
         let inner_focus = matches!(view, View::Input(..) | View::TextArea(..));
         extra += &crate::decor::state_rules(id, s, self.dark, text_on_self, inner_focus);
+        // Bar tint (#30).
+        if matches!(view, View::Tabs(..) | View::Stack(..)) {
+            let tabs = matches!(view, View::Tabs(..));
+            extra += &crate::navbar::tint_rules(id, tabs, s.tint, self.dark);
+        }
         self.rules.insert(id, format!(".p{id}{{{css}}}\n{extra}"));
         self.css_dirty = true;
         let w = view.widget();
@@ -1594,6 +1602,7 @@ impl Widgets for Gtk {
 
     fn destroy(&mut self, view: &View) {
         let id = view.id();
+        crate::navbar::forget(id);
         self.shapes.remove(&id);
         self.controls.remove(&id);
         self.date_pickers.remove(&id);
@@ -1943,6 +1952,14 @@ impl Widgets for Gtk {
 
     fn set_config(&mut self, view: &View, _kind: NodeKind, config: &str) {
         match view {
+            // Bar buttons (#30): the stack showing the screen puts them up.
+            View::Container(id, NodeKind::Screen, _) => {
+                if crate::navbar::set_config(*id, config) {
+                    for st in self.stacks.clone() {
+                        self.header_back(&st);
+                    }
+                }
+            }
             View::Slider(_, s, c) => {
                 let cfg = prism_core::controls::SliderConfig::decode(config);
                 c.set(cfg);

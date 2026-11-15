@@ -7,10 +7,10 @@
 //! | op | fields |
 //! |---|---|
 //! | `create` / `destroy` | `id`, `kind` |
-//! | `style` | `s`: `bg`, `radius`, `bw`, `bc`, `opacity`, `color`, `font`, `weight`, `talign` (colors `[r,g,b,a, dark r,g,b,a]`); `hit: false` (the subtree ignores pointer input) and `inert: true` (no input, no focus, hidden from assistive technologies) only when set |
+//! | `style` | `s`: `bg`, `radius`, `bw`, `bc`, `opacity`, `color`, `font`, `weight`, `talign` (colors `[r,g,b,a, dark r,g,b,a]`); `tint` on tab bars and stacks when set; `hit: false` (the subtree ignores pointer input) and `inert: true` (no input, no focus, hidden from assistive technologies) only when set |
 //! | `text`, `placeholder`, `icon`, `value`, `clickable`, `display` | the value |
 //! | `a11y` | `label`, `hidden`, `role` (ARIA name: `slider`, `combobox`, `status`…), `value` |
-//! | `config` | `config`: a control's config string (`prism_core::controls`: slider `min max step`, picker options one per line, date `mode min max`, input tokens) |
+//! | `config` | `config`: a control's config string (`prism_core::controls`: slider `min max step`, picker options one per line, date `mode min max`, input tokens; a screen's bar options, `prism_core::navbar`, with `glyphs`: each bar button's icon glyph, `""` if none) |
 //! | `children` | `children`: ids in order |
 //! | `frame` | `f`: `[x, y, w, h]` in the parent |
 //! | `content` | `size`: a scroll view's content size |
@@ -383,8 +383,20 @@ impl RemoteWidgets {
         if s.inert {
             op["s"]["inert"] = json!(true);
         }
+        // A tab bar's or a stack's tint (#30), only when set.
+        if s.tint.is_some() {
+            op["s"]["tint"] = color(s.tint);
+        }
         op
     }
+}
+
+/// The glyph of a bar button's icon, `""` when Prism has none for it.
+fn bar_glyph(icon: &str) -> String {
+    prism_core::glyphs::GLYPHS
+        .iter()
+        .find(|(s, _)| *s == icon)
+        .map_or(String::new(), |(_, g)| g.to_string())
 }
 
 /// Box decorations of a style op (only those set: older hosts ignore them).
@@ -710,8 +722,19 @@ impl Widgets for RemoteWidgets {
                 .push(json!({ "op": "runs", "id": id, "runs": runs_json(config) }));
             return;
         }
-        self.ops
-            .push(json!({ "op": "config", "id": id, "config": config }));
+        let mut op = json!({ "op": "config", "id": id, "config": config });
+        // A screen's bar buttons (#30): the glyph of each one's icon ("":
+        // none), for hosts without SF Symbols.
+        if kind == NodeKind::Screen {
+            let c = prism_core::navbar::ScreenConfig::decode(config);
+            op["glyphs"] = c
+                .items
+                .iter()
+                .map(|i| bar_glyph(&i.icon))
+                .collect::<Vec<_>>()
+                .into();
+        }
+        self.ops.push(op);
     }
 
     fn set_icon(&mut self, id: &NodeId, icon: &str) {

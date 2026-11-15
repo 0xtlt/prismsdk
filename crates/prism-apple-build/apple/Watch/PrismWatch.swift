@@ -1832,6 +1832,7 @@ struct ReportSize: ViewModifier {
 /// A navigation stack: the first screen is the root, the others are pushed.
 struct StackView: View {
     @ObservedObject var store = PrismStore.shared
+    @Environment(\.colorScheme) private var scheme
     let id: UInt64
     let node: Node
 
@@ -1848,6 +1849,8 @@ struct StackView: View {
                 screen(first).navigationDestination(for: UInt64.self) { screen($0) }
             }
         }
+        // The router's tint or the app's accent (#30): Back and bar buttons.
+        .tint(node.color("tint", dark: scheme == .dark))
     }
 
     private func screen(_ s: UInt64) -> some View {
@@ -1859,6 +1862,8 @@ struct StackView: View {
             // `Router::header(false)`) or a bare screen (value 1). Swiping
             // back still works; the larger area is reported as the viewport.
             .toolbar(barHidden(s) ? .hidden : .automatic, for: .navigationBar)
+            // The screen's bar buttons (#30).
+            .modifier(BarButtons(screen: s, config: store.nodes[s]?.config ?? ""))
     }
 
     private func barHidden(_ s: UInt64) -> Bool {
@@ -1869,6 +1874,7 @@ struct StackView: View {
 /// Tabs: pages scrolled with the Digital Crown.
 struct TabsView: View {
     @ObservedObject var store = PrismStore.shared
+    @Environment(\.colorScheme) private var scheme
     let id: UInt64
     let node: Node
 
@@ -1885,6 +1891,65 @@ struct TabsView: View {
             }
         }
         .tabViewStyle(.verticalPage)
+        // The router's tint or the app's accent (#30).
+        .tint(node.color("tint", dark: scheme == .dark))
+    }
+}
+
+// --- Bar buttons (#30) ---
+
+/// A screen's bar buttons as toolbar items, before and after the title.
+/// Config: `large`/`inline` (watchOS has one title size), then one button
+/// per line, `L|T`, icon, title and label separated by tabs. A tap reports
+/// `change` on the screen with the button's index.
+struct BarButtons: ViewModifier {
+    let screen: UInt64
+    let config: String
+
+    struct Item {
+        let index: Int
+        let leading: Bool
+        let icon: String
+        let title: String
+        let label: String
+    }
+
+    static func items(_ config: String) -> [Item] {
+        config.split(separator: "\n", omittingEmptySubsequences: false).dropFirst().enumerated().map { i, line in
+            let parts = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            let part = { (k: Int) in k < parts.count ? parts[k] : "" }
+            return Item(index: i, leading: part(0) == "L", icon: part(1), title: part(2), label: part(3))
+        }
+    }
+
+    func body(content: Content) -> some View {
+        let items = Self.items(config)
+        if items.isEmpty {
+            content
+        } else {
+            content.toolbar {
+                ToolbarItemGroup(placement: .topBarLeading) {
+                    ForEach(items.filter { $0.leading }, id: \.index) { button($0) }
+                }
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    ForEach(items.filter { !$0.leading }, id: \.index) { button($0) }
+                }
+            }
+        }
+    }
+
+    private func button(_ item: Item) -> some View {
+        let spoken = [item.label, item.title, item.icon].first { !$0.isEmpty } ?? ""
+        return Button {
+            send(["t": "change", "id": screen, "v": item.index])
+        } label: {
+            if !item.icon.isEmpty {
+                Image(systemName: item.icon)
+            } else {
+                Text(item.title)
+            }
+        }
+        .accessibilityLabel(spoken)
     }
 }
 

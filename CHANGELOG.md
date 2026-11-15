@@ -164,8 +164,28 @@ The first version, not yet on crates.io.
   `hit_test(false)` (`pointer-events: none`) and `inert(true)` styles (#19).
 - Runtime layers (`cx.add_layer`): entities mounted above the router, tabs,
   sheets and dialogs on every backend (#25).
+- Navigation bar options per screen (#30): `screen(..).leading(bar_button(..))`
+  and `.trailing(..)` (title or SF Symbol, an action, an accessibility label)
+  as `UIBarButtonItem`s, macOS header buttons, GTK header buttons, Android
+  header buttons, watchOS toolbar items and buttons in the web's
+  `.prism-header`; `.large_title(false | true)` (`largeTitleDisplayMode` on
+  iOS, iPadOS and visionOS). The tab bar's selected tab and the header bars'
+  buttons take the app's accent color (`App::set_accent_color`, set by
+  `prism_ui::set_theme`) or `RouterBuilder::tint`, on every backend
+  (`Style::tint`, `Tabs::tint`, `Stack::tint`).
+- `Router::close` releases every screen of every tab and the sheet (#31);
+  `App::entity_count` counts live entities.
 
 ### Changed
+
+- Releasing an entity also releases the entities it created with `cx.new`
+  and drops the observers it registered with `cx.observe`; releasing a
+  router releases its screens and, for the app's router, clears the
+  navigator (#31). A screen a route hands out without creating it is never
+  released by the router.
+- Web: the stack header holds Back and the leading bar buttons in
+  `.prism-bar-leading`, the trailing ones in `.prism-bar-trailing`, around a
+  centered title (#30).
 
 - Web: an unknown path answers `404` with the not-found screen (it was `200`).
 - Web: the first paint has no `style` attributes: node styles are rules of a
@@ -213,6 +233,9 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- `cx.current_path()` returns `None` once the router is released instead of
+  panicking, and an entity released by its own handler (a Sign out button
+  on a screen) stays released (#31).
 - Padding works on every kind of node (#14): `.p()`, `.px()`, `.pl()`… on a
   text, button, text input, text area, timer or control grow its box and
   inset its content on the web and every native backend (they were ignored
