@@ -899,6 +899,56 @@
     }
   }
 
+  // --- Remote push (Web Push): a service worker at <base>/prism-sw.js -----------
+  const swURL = `${BASE}/prism-sw.js`;
+  const pushQueue = [];
+  // Messages for the app wait for the socket (a click can open the page).
+  const sendPush = (msg) => (ws && ws.readyState === 1 ? send(msg) : pushQueue.push(msg));
+  const b64ToBytes = (s) => {
+    const raw = atob((s + "===".slice((s.length + 3) % 4)).replace(/-/g, "+").replace(/_/g, "/"));
+    return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+  };
+  async function pushRegister(key) {
+    try {
+      if (!("serviceWorker" in navigator) || !("PushManager" in window)) throw new Error("unavailable");
+      // Safari wants the permission asked from a user gesture: the app's
+      // button press is one (the message arrives right after the click).
+      if ("Notification" in window && Notification.permission === "default") await Notification.requestPermission();
+      if ("Notification" in window && Notification.permission === "denied") throw new Error("denied");
+      const reg = await navigator.serviceWorker.register(swURL, { scope: `${BASE}/` });
+      await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      // A subscription made with another VAPID key cannot be reused.
+      const current = sub && sub.options && sub.options.applicationServerKey;
+      if (sub && current && btoa(String.fromCharCode(...new Uint8Array(current))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "") !== key) {
+        await sub.unsubscribe();
+        sub = null;
+      }
+      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(key) });
+      sendPush({ t: "push_sub", sub: sub.toJSON() });
+    } catch (e) {
+      sendPush({ t: "push_err", err: String((e && e.message) || e) });
+    }
+  }
+  async function pushUnregister() {
+    const reg = "serviceWorker" in navigator && await navigator.serviceWorker.getRegistration(swURL);
+    const sub = reg && await reg.pushManager.getSubscription();
+    if (sub) await sub.unsubscribe();
+  }
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.addEventListener("message", (e) => {
+      const m = e.data || {};
+      if (m.prismPush) sendPush({ t: "push", event: m.prismPush, launched: !!m.launched, payload: JSON.stringify(m.payload || {}) });
+    });
+  }
+  // Connected: deliver queued pushes, and ask the worker for a click that
+  // opened this page.
+  const pushReady = async () => {
+    pushQueue.splice(0).forEach(send);
+    const reg = "serviceWorker" in navigator && await navigator.serviceWorker.getRegistration(swURL);
+    if (reg && reg.active) reg.active.postMessage({ prismReady: true });
+  };
+
   // Window size → responsive layouts (the server re-renders across breakpoints).
   let resizeTimer = null;
   const reportViewport = () => {
@@ -1071,6 +1121,8 @@
       case "notify_permission":
         if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
         return;
+      case "push_register": return pushRegister(msg.key);
+      case "push_unregister": return pushUnregister();
     }
   }
 
@@ -1131,6 +1183,7 @@
     ws.onclose = () => setTimeout(connect, 1000);
     ws.addEventListener("open", reportLifecycle);
     ws.addEventListener("open", reportDevice);
+    ws.addEventListener("open", () => { pushReady().catch(() => {}); });
   }
   connect();
 })();

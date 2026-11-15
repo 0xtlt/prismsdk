@@ -82,7 +82,7 @@ impl WebApp {
                         asset_urls: Some(app.asset_urls()),
                         ..Default::default()
                     },
-                    services: WebServices::default(),
+                    services: app.services(),
                     send: Box::new(send),
                     app,
                     sid,
@@ -218,6 +218,47 @@ impl Live {
                 Some("inactive") => prism_core::Lifecycle::Inactive,
                 _ => prism_core::Lifecycle::Active,
             }),
+            // Web Push: the browser's subscription, or why there is none.
+            Some("push_sub") => {
+                let sub = &v["sub"];
+                let s = |k: &str| sub["keys"][k].as_str().map(str::to_string);
+                match sub["endpoint"].as_str() {
+                    Some(endpoint) => {
+                        let mut s_ = prism_core::PushSubscription::new(
+                            prism_core::PushService::WebPush,
+                            endpoint,
+                        );
+                        s_.p256dh = s("p256dh");
+                        s_.auth = s("auth");
+                        rt.push_registered(Ok(s_))
+                    }
+                    None => Vec::new(),
+                }
+            }
+            Some("push_err") => {
+                let err = v["err"].as_str().unwrap_or("failed");
+                rt.push_registered(Err(prism_core::DeviceError::from_message(err)))
+            }
+            // A push reached the page (from the service worker), or its
+            // notification was clicked.
+            Some("push") => {
+                let event = match v["event"].as_str() {
+                    Some("opened") => prism_core::PushEvent::Opened,
+                    _ => prism_core::PushEvent::Received,
+                };
+                let payload = v["payload"].as_str().unwrap_or("{}");
+                match prism_core::PushMessage::from_payload(event, payload) {
+                    Some((mut m, _)) => {
+                        m.service = Some(prism_core::PushService::WebPush);
+                        // The click opened this page on the link already.
+                        if v["launched"].as_bool() == Some(true) {
+                            m.link = None;
+                        }
+                        rt.push_received(m, false)
+                    }
+                    None => Vec::new(),
+                }
+            }
             // A notification's body or action button was chosen.
             Some("notif") => {
                 let Some(id) = v.get("id").and_then(Value::as_str) else {
@@ -388,6 +429,8 @@ pub(crate) struct WebServices {
     /// Periodic background tasks: (id, next run, interval). On the web they
     /// run in each open page's session.
     background: Vec<(String, Instant, Duration)>,
+    /// The VAPID public key: Web Push is available.
+    vapid: Option<String>,
 }
 
 /// `PRISM_BACKGROUND_INTERVAL=<seconds>` shortens every background task's
@@ -400,6 +443,13 @@ fn background_interval(every: Duration) -> Duration {
 }
 
 impl WebServices {
+    pub(crate) fn new(vapid: Option<String>) -> Self {
+        WebServices {
+            vapid,
+            ..Default::default()
+        }
+    }
+
     /// Background tasks due now (removed until they reschedule themselves).
     fn due_background(&mut self) -> Vec<String> {
         let now = Instant::now();
@@ -438,6 +488,11 @@ impl PlatformServices for WebServices {
             clipboard: true,
             // Cloud storage is the server's, per browser.
             cloud_sync: false,
+            // The browser's push service, once a VAPID key is configured.
+            push: self
+                .vapid
+                .as_ref()
+                .map(|_| prism_core::PushService::WebPush),
         }
     }
 
@@ -467,6 +522,15 @@ impl PlatformServices for WebServices {
             }),
             PlatformRequest::CancelNotification(id) => json!({ "t": "notify_cancel", "id": id }),
             PlatformRequest::RequestNotificationPermission => json!({ "t": "notify_permission" }),
+            PlatformRequest::RegisterPush => match &self.vapid {
+                Some(key) => json!({ "t": "push_register", "key": key }),
+                // No VAPID key: capabilities().push is None (register_for_push
+                // fails with Unavailable before asking).
+                None => return,
+            },
+            PlatformRequest::UnregisterPush => json!({ "t": "push_unregister" }),
+            // Live Activities are an in-page banner here: no push tokens.
+            PlatformRequest::WatchActivityPushToStart => return,
             PlatformRequest::Device { id, call } => device_json(id, call),
             PlatformRequest::ScheduleBackgroundTask(task) => {
                 let every = background_interval(task.every);
