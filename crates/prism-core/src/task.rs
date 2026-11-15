@@ -82,6 +82,8 @@ impl Executor {
     pub(crate) fn cancel(&self, id: u64) {
         self.tasks.borrow_mut().remove(&id);
         self.keep_alive.borrow_mut().remove(&id);
+        // Already woken: it would still count as running until the next poll.
+        self.shared.ready.lock().unwrap().retain(|r| *r != id);
     }
 
     pub(crate) fn is_running(&self, id: u64) -> bool {

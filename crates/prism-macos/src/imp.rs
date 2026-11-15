@@ -2645,7 +2645,10 @@ pub fn run(config: AppConfig, init: AppInit) {
     observe_system(&target);
     window.makeKeyAndOrderFront(None);
     app.activate();
-    if std::env::var_os("PRISM_SNAPSHOT").is_some() || std::env::var_os("PRISM_CLICK").is_some() {
+    if std::env::var_os("PRISM_SNAPSHOT").is_some()
+        || std::env::var_os("PRISM_CLICK").is_some()
+        || std::env::var_os("PRISM_A11Y_DUMP").is_some()
+    {
         let none: Option<&AnyObject> = None;
         // `PRISM_DELAY` (seconds) leaves time for images or network to load.
         let delay: f64 = std::env::var("PRISM_DELAY")
@@ -3023,6 +3026,13 @@ fn run_automation(mtm: MainThreadMarker) {
             );
         }
     });
+    // `PRISM_A11Y_DUMP=tree.json`: the native view / accessibility tree.
+    if let Ok(path) = std::env::var("PRISM_A11Y_DUMP") {
+        crate::a11y_dump::write(&path, &root, &sheet_roots());
+        if std::env::var_os("PRISM_SNAPSHOT").is_none() {
+            std::process::exit(0);
+        }
+    }
     if let Ok(path) = std::env::var("PRISM_SNAPSHOT") {
         for (i, sheet) in sheet_roots().iter().enumerate() {
             write_png(sheet, &format!("{path}.sheet{i}.png"));

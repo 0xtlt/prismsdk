@@ -87,22 +87,41 @@ pub struct Project {
 }
 
 /// A minimal TOML reader for `[section]` and `key = "value"` lines.
-fn parse(source: &str) -> HashMap<String, String> {
+pub(crate) fn parse(source: &str) -> HashMap<String, String> {
     let mut out = HashMap::new();
     let mut section = String::new();
     for line in source.lines() {
-        let line = line.split(" #").next().unwrap_or("").trim();
-        if line.is_empty() || line.starts_with('#') {
+        let line = strip_comment(line).trim();
+        if line.is_empty() {
             continue;
         }
         if let Some(s) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
             section = s.trim().to_string();
         } else if let Some((k, v)) = line.split_once('=') {
-            let v = v.trim().trim_matches('"').to_string();
-            out.insert(format!("{section}.{}", k.trim()), v);
+            let v = v.trim();
+            // "basic" or 'literal' strings; anything else as written.
+            let v = ['"', '\'']
+                .iter()
+                .find_map(|q| v.strip_prefix(*q)?.strip_suffix(*q))
+                .unwrap_or(v);
+            out.insert(format!("{section}.{}", k.trim()), v.to_string());
         }
     }
     out
+}
+
+/// The line up to a `#` that is not inside a quoted string.
+fn strip_comment(line: &str) -> &str {
+    let mut quote = None;
+    for (i, c) in line.char_indices() {
+        match (c, quote) {
+            ('"' | '\'', None) => quote = Some(c),
+            (c, Some(q)) if c == q => quote = None,
+            ('#', None) => return &line[..i],
+            _ => {}
+        }
+    }
+    line
 }
 
 impl Project {
@@ -238,6 +257,10 @@ fn cargo_dirs(root: &Path) -> Result<(PathBuf, PathBuf), String> {
     };
     Ok((dir("target_directory")?, dir("workspace_root")?))
 }
+
+#[cfg(test)]
+#[path = "config_tests.rs"]
+pub(crate) mod more_tests;
 
 #[cfg(test)]
 mod tests {

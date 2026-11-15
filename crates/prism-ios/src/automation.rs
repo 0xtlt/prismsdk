@@ -4,6 +4,9 @@
 //! - `PRISM_CLICK="+1|Save"` presses buttons by title, or clickable views
 //!   by accessibility label, in order;
 //! - `PRISM_SNAPSHOT=/abs/out.png` then writes the window to a PNG and quits;
+//! - `PRISM_A11Y_DUMP=/abs/tree.json` writes the visible view tree with what
+//!   VoiceOver sees (label, traits as roles, title, text, frame) before the
+//!   snapshot (and quits if there is none);
 //! - `PRISM_DELAY` (seconds, default 1) before clicking, `PRISM_AFTER`
 //!   (default 0.5) between the clicks and the snapshot.
 
@@ -35,7 +38,8 @@ fn after(delay: Duration, f: impl FnOnce() + Send + 'static) {
 pub(crate) fn schedule() {
     let snapshot = std::env::var("PRISM_SNAPSHOT").ok();
     let clicks = std::env::var("PRISM_CLICK").ok();
-    if snapshot.is_none() && clicks.is_none() {
+    let dump = std::env::var("PRISM_A11Y_DUMP").ok();
+    if snapshot.is_none() && clicks.is_none() && dump.is_none() {
         return;
     }
     after(seconds("PRISM_DELAY", 1.), move || {
@@ -49,16 +53,22 @@ pub(crate) fn schedule() {
                 eprintln!("prism-ios: PRISM_CLICK: nothing labelled {title:?}");
             }
         }
-        if let Some(path) = snapshot {
-            after(seconds("PRISM_AFTER", 0.5), move || {
-                let mtm = MainThreadMarker::new().expect("main thread");
+        if snapshot.is_none() && dump.is_none() {
+            return;
+        }
+        after(seconds("PRISM_AFTER", 0.5), move || {
+            let mtm = MainThreadMarker::new().expect("main thread");
+            if let Some(path) = dump {
+                write_dump(mtm, &path);
+            }
+            if let Some(path) = snapshot {
                 match write_snapshot(mtm, &path) {
                     true => eprintln!("prism-ios: snapshot written to {path}"),
                     false => eprintln!("prism-ios: snapshot to {path} failed"),
                 }
-                std::process::exit(0);
-            });
-        }
+            }
+            std::process::exit(0);
+        });
     });
 }
 
@@ -134,5 +144,112 @@ fn write_snapshot(mtm: MainThreadMarker, path: &str) -> bool {
             msg_send![msg_send![class!(UIGraphicsImageRenderer), alloc], initWithBounds: bounds];
         let png: Retained<NSData> = msg_send![&*renderer, PNGDataWithActions: &*draw];
         png.writeToFile_atomically(&NSString::from_str(path), true)
+    }
+}
+
+fn json_str(s: &str) -> String {
+    let mut out = String::from('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn opt(s: Option<String>) -> String {
+    s.map_or("null".into(), |s| json_str(&s))
+}
+
+/// One view and its visible subviews as JSON, in the macOS dump's shape
+/// (`role`: `AXButton`, `AXHeading`… from the accessibility traits).
+fn dump_node(mtm: MainThreadMarker, view: &UIView) -> String {
+    use objc2_ui_kit::{
+        NSObjectUIAccessibility, UIAccessibilityTraitButton, UIAccessibilityTraitHeader,
+        UIAccessibilityTraitSelected, UIAccessibilityTraitStaticText, UILabel, UITabBar,
+        UITextField,
+    };
+    let class = view.class().name().to_str().unwrap_or("?").to_string();
+    let traits = view.accessibilityTraits(mtm);
+    let (button, header, text, selected) = unsafe {
+        (
+            UIAccessibilityTraitButton,
+            UIAccessibilityTraitHeader,
+            UIAccessibilityTraitStaticText,
+            UIAccessibilityTraitSelected,
+        )
+    };
+    let role = if traits & button != 0 {
+        Some("AXButton".to_string())
+    } else if traits & header != 0 {
+        Some("AXHeading".to_string())
+    } else if traits & text != 0 {
+        Some("AXStaticText".to_string())
+    } else {
+        None
+    };
+    let label = view.accessibilityLabel(mtm).map(|l| l.to_string());
+    let title = view
+        .downcast_ref::<UIButton>()
+        .and_then(|b| b.titleForState(UIControlState::Normal))
+        .map(|t| t.to_string());
+    let value = view
+        .downcast_ref::<UILabel>()
+        .and_then(|l| l.text())
+        .or_else(|| view.downcast_ref::<UITextField>().and_then(|f| f.text()))
+        .map(|t| t.to_string());
+    // Tab bars: their items are not views (iOS 26 draws them in a platter).
+    let segments = view.downcast_ref::<UITabBar>().map(|bar| {
+        let items = bar.items().map(|i| i.to_vec()).unwrap_or_default();
+        let selected = bar.selectedItem();
+        let labels: Vec<String> = items
+            .iter()
+            .map(|i| opt(i.title().map(|t| t.to_string())))
+            .collect();
+        let index = items
+            .iter()
+            .position(|i| selected.as_deref().is_some_and(|s| std::ptr::eq(s, &**i)))
+            .map_or(-1, |i| i as i64);
+        format!(r#"{{"labels":[{}],"selected":{index}}}"#, labels.join(","))
+    });
+    let f = view.convertRect_toView(view.bounds(), None);
+    let children: Vec<String> = view
+        .subviews()
+        .iter()
+        .filter(|c| !c.isHidden() && c.alpha() >= 0.01)
+        .map(|c| dump_node(mtm, &c))
+        .collect();
+    format!(
+        r#"{{"class":{},"role":{},"label":{},"title":{},"value":{},"segments":{},"selected":{},"a11y_element":{},"frame":[{},{},{},{}],"children":[{}]}}"#,
+        json_str(&class),
+        opt(role),
+        opt(label),
+        opt(title),
+        opt(value),
+        segments.unwrap_or_else(|| "null".into()),
+        traits & selected != 0,
+        view.isAccessibilityElement(mtm),
+        f.origin.x.round(),
+        f.origin.y.round(),
+        f.size.width.round(),
+        f.size.height.round(),
+        children.join(",")
+    )
+}
+
+/// Writes `{"root": <key window>, "sheets": []}` to `path`.
+fn write_dump(mtm: MainThreadMarker, path: &str) {
+    let Some(window) = key_window(mtm) else {
+        eprintln!("prism-ios: no window to dump");
+        return;
+    };
+    let json = format!(r#"{{"root":{},"sheets":[]}}"#, dump_node(mtm, &window));
+    match std::fs::write(path, json) {
+        Ok(()) => eprintln!("prism-ios: accessibility tree written to {path}"),
+        Err(e) => eprintln!("prism-ios: cannot write {path}: {e}"),
     }
 }

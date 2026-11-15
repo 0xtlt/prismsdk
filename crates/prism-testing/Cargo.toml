@@ -1,0 +1,10 @@
+[package]
+name = "prism-testing"
+description = "Test helpers for Prism: a mirrored host tree that checks the patch protocol."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+prism-core.workspace = true

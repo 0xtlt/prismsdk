@@ -322,7 +322,7 @@ impl Live {
     }
 }
 
-fn parse_event(v: &Value) -> Option<UiEvent> {
+pub(crate) fn parse_event(v: &Value) -> Option<UiEvent> {
     let id = v.get("id")?.as_u64()?;
     match v.get("t")?.as_str()? {
         "click" => Some(UiEvent::Click(id)),
@@ -351,7 +351,7 @@ fn parse_event(v: &Value) -> Option<UiEvent> {
 }
 
 /// Standard base64 (what `FileReader.readAsDataURL` produces).
-fn base64_decode(input: &str) -> Option<Vec<u8>> {
+pub(crate) fn base64_decode(input: &str) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(input.len() * 3 / 4);
     let (mut acc, mut bits) = (0u32, 0);
     for c in input.bytes() {
@@ -437,7 +437,7 @@ fn motion_from(v: &Value) -> prism_core::Motion {
 }
 
 /// A `device_reply` from the client.
-fn device_result(
+pub(crate) fn device_result(
     app: &WebApp,
     sid: &str,
     v: &Value,
@@ -521,6 +521,12 @@ impl WebServices {
 
     fn next_background(&self) -> Option<Instant> {
         self.background.iter().map(|(_, at, _)| *at).min()
+    }
+
+    /// Messages for the page so far (tests).
+    #[cfg(test)]
+    pub(crate) fn take_outbox(&mut self) -> Vec<Value> {
+        std::mem::take(&mut self.outbox)
     }
 }
 
@@ -730,7 +736,7 @@ impl Encoder {
 }
 
 /// A device call for the JS client.
-fn device_json(id: u64, call: prism_core::DeviceCall) -> Value {
+pub(crate) fn device_json(id: u64, call: prism_core::DeviceCall) -> Value {
     use prism_core::DeviceCall as C;
     let accuracy = |a: prism_core::Accuracy| match a {
         prism_core::Accuracy::Coarse => "coarse",

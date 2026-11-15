@@ -17,3 +17,6 @@ categories = ["gui"]
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]
+
+[dev-dependencies]
+prism-testing = { path = "../prism-testing" }
