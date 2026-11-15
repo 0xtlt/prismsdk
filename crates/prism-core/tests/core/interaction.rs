@@ -195,6 +195,25 @@ fn focus_scroll_and_autofocus_patches_name_mounted_nodes() {
     assert_eq!(h.host.focused.last(), Some(&h.host.by_text("Jump")));
 }
 
+#[test]
+fn dismiss_keyboard_goes_out_after_the_render() {
+    let mut h = Harness::new(|cx| {
+        let root = cx.new_entity(|_| Form { show_email: true });
+        mount(cx, root);
+    });
+    assert_eq!(h.host.keyboard_dismissals, 0);
+    // With a root swap in the same update (#29): the request still goes out.
+    h.update::<Form>(|f| f.show_email = false);
+    h.rt.app.dismiss_keyboard();
+    let p = h.rt.poll();
+    assert!(p.iter().any(|p| matches!(p, Patch::DismissKeyboard)));
+    h.apply(p);
+    assert_eq!(h.host.keyboard_dismissals, 1);
+    // Once.
+    let p = h.rt.poll();
+    assert!(!p.iter().any(|p| matches!(p, Patch::DismissKeyboard)));
+}
+
 struct Banner {
     text: String,
 }

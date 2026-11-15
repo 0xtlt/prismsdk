@@ -210,11 +210,21 @@ impl State {
 
     fn relayout(&mut self) {
         let size = self.renderer.widgets.root.frame().size;
-        // Responsive layouts: tell the app its window size (re-renders when
-        // it crosses a breakpoint: rotation, split view, resize).
+        // Responsive layouts: tell the app its window size and what covers
+        // it (a full-size content view's title bar and toolbar, #28):
+        // re-renders when it crosses a breakpoint or the insets move.
         let (w, h) = (size.width as f32, size.height as f32);
-        if w > 0. && (w, h) != self.runtime.app.viewport() {
-            let patches = self.runtime.set_viewport(w, h);
+        let i = self.renderer.widgets.root.safeAreaInsets();
+        let safe = prism_core::Edges {
+            top: i.top as f32,
+            right: i.right as f32,
+            bottom: i.bottom as f32,
+            left: i.left as f32,
+        };
+        if w > 0.
+            && ((w, h) != self.runtime.app.window_size() || safe != self.runtime.app.safe_area())
+        {
+            let patches = self.runtime.set_window(w, h, safe);
             if !patches.is_empty() {
                 self.renderer.apply(&patches);
             }
@@ -233,8 +243,14 @@ impl State {
             }
         }
 
+        let insets = Insets {
+            top: safe.top,
+            right: safe.right,
+            bottom: safe.bottom,
+            left: safe.left,
+        };
         self.renderer
-            .layout(size.width as f32, size.height as f32, Insets::default());
+            .layout(size.width as f32, size.height as f32, insets);
         let w = &self.renderer.widgets;
         if let Some(main) = w.root.window() {
             w.ix.follow(&main);
@@ -315,6 +331,15 @@ define_class!(
         #[unsafe(method(wantsUpdateLayer))]
         fn wants_update_layer(&self) -> bool {
             true
+        }
+
+        /// Light / dark (#36): every layer color here is a plain `CGColor`
+        /// (borders, shadows, gradients, shapes): `updateLayer` resolves
+        /// them again within the new appearance.
+        #[unsafe(method(viewDidChangeEffectiveAppearance))]
+        fn view_did_change_effective_appearance(&self) {
+            let _: () = unsafe { msg_send![super(self), viewDidChangeEffectiveAppearance] };
+            self.setNeedsDisplay(true);
         }
 
         #[unsafe(method(updateLayer))]
@@ -2876,6 +2901,14 @@ impl Widgets for AppKit {
         (size.width.ceil() as f32, size.height.ceil() as f32)
     }
 
+    /// A label wraps down to its longest word (CSS min-content).
+    fn measure_min_content(&mut self, view: &View) -> f32 {
+        match view {
+            View::Label(l) => crate::label::min_content_width(l) as f32,
+            _ => self.measure(view, None).0,
+        }
+    }
+
     fn set_frame(&mut self, view: &View, x: f32, y: f32, w: f32, h: f32) {
         let rect =
             |x: f64, y: f64, w: f64, h: f64| NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));
@@ -3392,6 +3425,20 @@ impl Widgets for AppKit {
                 set.remove(&id);
             }
         }
+    }
+
+    /// The key window's first responder lets go (the window keeps the
+    /// focus itself), after the layout like `focus`.
+    fn dismiss_keyboard(&mut self) {
+        on_main_after(std::time::Duration::ZERO, || {
+            let Some(mtm) = MainThreadMarker::new() else {
+                return;
+            };
+            let app = NSApplication::sharedApplication(mtm);
+            if let Some(w) = app.keyWindow().or_else(|| app.mainWindow()) {
+                w.makeFirstResponder(None);
+            }
+        });
     }
 
     /// First responder after the layout (sheets present then).

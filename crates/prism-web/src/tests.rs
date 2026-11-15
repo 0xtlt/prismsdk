@@ -555,6 +555,16 @@ fn default_styles_are_a_flex_column() {
     assert!(text.ends_with("font-size:1rem;font-weight:400;text-align:start;"));
     assert!(css(NodeKind::Timer, &Style::default()).contains("font-variant-numeric:tabular-nums"));
     assert!(css(NodeKind::Image, &Style::default()).contains("display:inline-flex;"));
+    // Switches and spinners keep the width prism.css gives them (#37);
+    // an explicit minimum still applies.
+    for kind in [NodeKind::Toggle, NodeKind::Spinner] {
+        assert!(!css(kind, &Style::default()).contains("min-width"));
+        let s = Style {
+            min_width: Length::Px(60.),
+            ..Default::default()
+        };
+        assert!(css(kind, &s).contains("min-width:60px;"));
+    }
 }
 
 #[test]
@@ -1213,6 +1223,23 @@ fn a_session_follows_the_viewport_and_lifecycle() {
 }
 
 #[test]
+fn the_viewport_leaves_out_the_reported_safe_area() {
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Wide);
+        cx.set_root(root);
+    });
+    let (app, dir) = web_app(init, "safe-area");
+    let page = Page::open(&app, "/ws?w=400&h=800");
+    op_with_text(&page.next()["p"], "narrow");
+    page.send(json!({ "t": "viewport", "w": 1100, "h": 800, "safe": [0, 0, 0, 0] }));
+    op_with_text(&page.next()["p"], "wide");
+    // 1100 wide, 100 of it under a side bar: 1000 left, under the breakpoint.
+    page.send(json!({ "t": "viewport", "w": 1100, "h": 800, "safe": [20, 0, 0, 100] }));
+    op_with_text(&page.next()["p"], "narrow");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn deep_links_from_the_page_navigate() {
     let init: AppInit = Arc::new(|cx: &mut App| {
         let router = Router::new()
@@ -1648,6 +1675,7 @@ fn new_patches_have_a_stable_json_encoding() {
         Patch::Focus { id: 1 },
         Patch::ScrollIntoView { id: 1 },
         Patch::SetLayers { ids: vec![1, 2] },
+        Patch::DismissKeyboard,
     ]);
     assert!(
         out[1]["css"]
@@ -1664,6 +1692,7 @@ fn new_patches_have_a_stable_json_encoding() {
             { "op": "focus", "id": 1 },
             { "op": "reveal", "id": 1 },
             { "op": "layers", "ids": [1, 2] },
+            { "op": "blur" },
         ])
     );
     // Hit-testable, not inert: nothing extra.

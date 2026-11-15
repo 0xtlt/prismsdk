@@ -95,8 +95,58 @@ pub fn custom_border(style: &Style) -> bool {
 
 fn cg_color(c: Color, view: &UIView) -> CFRetained<CGColor> {
     let ui = crate::imp::ui_color(c);
-    let resolved = ui.resolvedColorWithTraitCollection(&view.traitCollection());
+    let resolved = ui.resolvedColorWithTraitCollection(&traits_of(view));
     unsafe { resolved.CGColor() }.into()
+}
+
+// --- Adaptive layer colors (#36) ---
+
+thread_local! {
+    /// The root view: its appearance is the app's, for views not in a
+    /// window yet (a view's own traits are the defaults until then).
+    static ROOT: RefCell<Option<Retained<UIView>>> = const { RefCell::new(None) };
+    /// The app's traits as the root controller last reported them: views
+    /// update theirs lazily, after it.
+    static TRAITS: RefCell<Option<Retained<objc2_ui_kit::UITraitCollection>>> =
+        const { RefCell::new(None) };
+    /// Adaptive uniform borders drawn by a view's own layer (`borderColor`
+    /// is a plain `CGColor`), by view: resolved again with the appearance.
+    static BORDERS: RefCell<HashMap<usize, (Retained<UIView>, Color)>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Remembers the root view (see [`traits_of`]).
+pub fn set_root(view: &UIView) {
+    ROOT.with(|r| *r.borrow_mut() = Some(view.retain()));
+}
+
+/// The appearance `view` draws in: the app's (the root controller's last
+/// traits, else the root's), as every view shares it; its own before any.
+fn traits_of(view: &UIView) -> Retained<objc2_ui_kit::UITraitCollection> {
+    if let Some(t) = TRAITS.with(|t| t.borrow().clone()) {
+        return t;
+    }
+    if view.window().is_none()
+        && let Some(root) = ROOT.with(|r| r.borrow().clone())
+    {
+        return root.traitCollection();
+    }
+    view.traitCollection()
+}
+
+/// Sets the border color of `view`'s own layer, resolved for the current
+/// appearance, and again whenever it changes (an adaptive color).
+pub fn set_layer_border(view: &UIView, color: Option<Color>) {
+    let key = view as *const UIView as usize;
+    view.layer()
+        .setBorderColor(color.map(|c| cg_color(c, view)).as_deref());
+    BORDERS.with(|b| {
+        let mut b = b.borrow_mut();
+        match color {
+            Some(c) if c.dark.is_some() => b.insert(key, (view.retain(), c)),
+            _ => b.remove(&key),
+        };
+    });
 }
 
 fn add_segments(path: &CGMutablePath, segments: &[Segment]) {
@@ -536,6 +586,7 @@ pub fn destroy(id: NodeId) {
     {
         c.removeFromSuperview();
     }
+    BORDERS.with(|b| b.borrow_mut().retain(|_, (v, _)| v.tag() as NodeId != id));
     STATES.with(|s| s.borrow_mut().remove(&id));
     CURSORS.with(|s| s.borrow_mut().remove(&id));
     CLICKABLE.with(|s| s.borrow_mut().remove(&id));
@@ -544,13 +595,19 @@ pub fn destroy(id: NodeId) {
 }
 
 /// Colors resolved again for the new appearance (layers keep plain
-/// `CGColor`s): shadows, stroked borders, gradients.
-pub fn appearance_changed() {
+/// `CGColor`s): shadows, stroked borders, gradients, uniform borders.
+pub fn appearance_changed(traits: &objc2_ui_kit::UITraitCollection) {
+    TRAITS.with(|t| *t.borrow_mut() = Some(traits.retain()));
     DECOR.with(|d| {
         for e in d.borrow_mut().values_mut() {
             layout_entry(e);
         }
     });
+    let borders: Vec<(Retained<UIView>, Color)> =
+        BORDERS.with(|b| b.borrow().values().cloned().collect());
+    for (view, color) in borders {
+        view.layer().setBorderColor(Some(&cg_color(color, &view)));
+    }
 }
 
 // ---------------------------------------------------------------------------

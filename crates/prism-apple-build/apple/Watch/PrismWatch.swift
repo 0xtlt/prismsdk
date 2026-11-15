@@ -539,6 +539,8 @@ final class PrismStore: ObservableObject {
     /// `cx.focus` / `.autofocus()`: the node, and a count so asking again
     /// for the same node is a change.
     @Published var focus: (id: UInt64, n: Int) = (0, 0)
+    /// `cx.dismiss_keyboard()`: a count, so asking again unfocuses again.
+    @Published var blur = 0
     /// `cx.scroll_into_view`: the node, and a count.
     @Published var reveal: (id: UInt64, n: Int) = (0, 0)
 
@@ -611,6 +613,8 @@ final class PrismStore: ObservableObject {
             // No keyboard on a watch (and the Digital Crown scrolls): keys never come.
             case "keys": break
             case "focus": focus = (id, focus.n + 1)
+            // `cx.dismiss_keyboard()` (#29): every field lets go.
+            case "blur": blur += 1
             case "reveal": reveal = (id, reveal.n + 1)
             case "layers":
                 let ids = (p["ids"] as? [NSNumber] ?? []).map(\.uint64Value)
@@ -1364,6 +1368,7 @@ struct PrismTextField: View {
         }
             .focused($focused)
             .onChange(of: store.focus.n) { _, _ in if store.focus.id == id { focused = true } }
+            .onChange(of: store.blur) { _, _ in focused = false }
             .onAppear { if store.focus.id == id && store.focus.n > 0 { focused = true } }
             .font(font)
             .textContentType(traits.contentType)
@@ -1816,15 +1821,19 @@ struct ReportSize: ViewModifier {
     func body(content: Content) -> some View {
         content.background(GeometryReader { g in
             Color.clear
-                .onAppear { report(g.size) }
-                .onChange(of: g.size) { _, size in report(size) }
+                .onAppear { report(g.size, g.safeAreaInsets) }
+                .onChange(of: g.size) { _, size in report(size, g.safeAreaInsets) }
+                .onChange(of: g.safeAreaInsets) { _, safe in report(g.size, safe) }
         })
     }
 
-    private func report(_ size: CGSize) {
+    /// `safe`: what the screen's corners and the clock cover around it
+    /// (top, right, bottom, left; `cx.safe_area()`, #28).
+    private func report(_ size: CGSize, _ safe: EdgeInsets) {
         var e = event
         e["w"] = size.width
         e["h"] = size.height
+        e["safe"] = [safe.top, safe.trailing, safe.bottom, safe.leading]
         send(e)
     }
 }

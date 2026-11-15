@@ -183,6 +183,8 @@ pub struct App {
 pub(crate) enum UiCommand {
     Focus(String),
     ScrollIntoView(String),
+    /// `dismiss_keyboard` (#29).
+    DismissKeyboard,
 }
 
 impl Default for App {
@@ -544,6 +546,14 @@ impl App {
     /// button. Does nothing if no such element is mounted.
     pub fn focus(&mut self, id: impl Into<String>) {
         self.ui_commands.push(UiCommand::Focus(id.into()));
+    }
+
+    /// Takes the keyboard focus away from the focused text field (or other
+    /// focused element) and hides the on-screen keyboard, after the next
+    /// render: before swapping the root (`set_root`) away from a form, after
+    /// a submit. Does nothing if nothing has the focus.
+    pub fn dismiss_keyboard(&mut self) {
+        self.ui_commands.push(UiCommand::DismissKeyboard);
     }
 
     /// Scrolls the scroll views around the element named `id` (`.id(id)`)

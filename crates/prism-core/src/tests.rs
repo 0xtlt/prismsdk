@@ -1533,6 +1533,58 @@ fn responsive_styles_follow_the_window() {
     );
     find_text(&patches, "Medium");
     assert_eq!(rt.app.viewport(), (820., 1180.));
+    // A side bar covers 230 of a 830 window (#28): the content area is 600
+    // wide, still Medium; 240 of it falls under Medium.
+    let none = crate::Edges::default();
+    assert!(
+        rt.set_window(830., 1180., crate::Edges { left: 230., ..none })
+            .iter()
+            .all(|p| !matches!(p, Patch::SetText { .. })),
+    );
+    assert_eq!(rt.app.viewport(), (600., 1180.));
+    assert_eq!(rt.app.window_size(), (830., 1180.));
+    assert_eq!(rt.app.safe_area().left, 230.);
+    let patches = rt.set_window(830., 1180., crate::Edges { left: 240., ..none });
+    find_text(&patches, "Compact");
+    assert_eq!(rt.app.viewport(), (590., 1180.));
+    // `set_viewport`: no insets.
+    rt.set_viewport(830., 1180.);
+    assert_eq!(rt.app.safe_area(), none);
+    assert_eq!(rt.app.viewport(), rt.app.window_size());
+}
+
+#[test]
+fn the_safe_area_re_renders_and_resize_handlers_see_the_content_area() {
+    use std::sync::Mutex;
+    struct Insets;
+    impl Render for Insets {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            text(format!("top {}", cx.safe_area().top))
+        }
+    }
+    let seen: Arc<Mutex<Vec<(f32, f32)>>> = Arc::default();
+    let log = seen.clone();
+    let init: AppInit = Arc::new(move |cx: &mut App| {
+        let root = cx.new_entity(|_| Insets);
+        cx.set_root(root);
+        let log = log.clone();
+        cx.on_resize(move |size, _| log.lock().unwrap().push(size));
+    });
+    let mut rt = Runtime::new(&init);
+    find_text(&rt.render(), "top 0");
+    let top = crate::Edges {
+        top: 59.,
+        bottom: 34.,
+        ..crate::Edges::default()
+    };
+    // Same window, insets only: re-rendered.
+    rt.set_viewport(390., 844.);
+    find_text(&rt.set_window(390., 844., top), "top 59");
+    assert_eq!(seen.lock().unwrap().last().copied(), Some((390., 751.)));
+    // Nothing changed: nothing to do.
+    let n = seen.lock().unwrap().len();
+    assert!(rt.set_window(390., 844., top).is_empty());
+    assert_eq!(seen.lock().unwrap().len(), n);
 }
 
 #[test]

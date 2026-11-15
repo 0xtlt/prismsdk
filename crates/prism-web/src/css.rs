@@ -37,7 +37,14 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
     if kind == NodeKind::Overlay {
         return "display:contents;".into();
     }
-    let mut c = String::from("box-sizing:border-box;min-width:0;");
+    // Flex items shrink below their content (as on native, see
+    // `prism_native::to_taffy`), except switches and spinners, which can't
+    // (`prism.css` gives them their drawn width as a minimum).
+    let mut c = String::from(if matches!(kind, NodeKind::Toggle | NodeKind::Spinner) {
+        "box-sizing:border-box;"
+    } else {
+        "box-sizing:border-box;min-width:0;"
+    });
     let w = &mut c;
     // Hidden, but shown in some interaction state: a plain `display:none`
     // last, which the state's rule can override (`!important` inline can't be).

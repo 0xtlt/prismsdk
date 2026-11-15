@@ -232,6 +232,17 @@ final class PrismInput {
         }
     }
 
+    /** `cx.dismiss_keyboard()` (#29): the focused view lets go and the IME hides. */
+    static void dismissKeyboard() {
+        android.app.Activity a = PrismHost.activity;
+        View focused = a != null ? a.getCurrentFocus() : null;
+        View token = focused != null ? focused : PrismHost.root;
+        if (token == null) return;
+        InputMethodManager imm = (InputMethodManager) token.getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm != null) imm.hideSoftInputFromWindow(token.getWindowToken(), 0);
+        if (focused != null) focused.clearFocus();
+    }
+
     /** Scroll views around the view bring it on screen (smoothly). */
     static void reveal(PrismHost.Node n) {
         View v = n.view;

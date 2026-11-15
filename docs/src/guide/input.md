@@ -24,6 +24,7 @@ div().on_global_key_down(cx.listener(|this, e: &KeyEvent, _| {
 
 text_input().id("email").autofocus()
 cx.focus("email");                                              // after the next render
+cx.dismiss_keyboard();                                          // the field lets go, the keyboard hides
 cx.scroll_into_view("form");                                    // « jump to the form »
 ```
 
@@ -33,6 +34,7 @@ cx.scroll_into_view("form");                                    // « jump to th
 - **Keys** use the web's `KeyboardEvent.key` names everywhere: characters (`"a"`, `"A"`, `" "`), `"Escape"`, `"Enter"`, `"Tab"`, `"Backspace"`, `"Delete"`, `"ArrowUp"`…, `"Home"`, `"End"`, `"PageUp"`, `"PageDown"`, `"F1"`… with `e.modifiers` (`shift`, `control`, `alt`, `meta`, `command()` for ⌘ on Apple platforms and Ctrl elsewhere). A view with `on_key_down` can take the focus (Tab, a click, `cx.focus`, the tvOS focus engine, a D-pad). The handlers of the focused element and its ancestors run first, then every `on_global_key_down`, newest first; `cx.stop_propagation()` stops there. While a text field has the focus, global handlers only get keys that do not type (Escape, arrows, Enter, Tab, function keys) or come with Control / Command.
 - **TV remotes and D-pads**: the Siri Remote and Android TV / D-pad report their arrows and `"Enter"` (select / center), `"MediaPlayPause"`, and Menu / Back as `"Escape"` when the app listens for keys.
 - **Ids**: `.id("name")` names an element for `cx.focus` and `cx.scroll_into_view` (the last element given a name wins). Unknown names are ignored. `.autofocus()` focuses an element when it appears (a dialog's first field).
+- **Dismissing the keyboard**: `cx.dismiss_keyboard()` takes the focus away from whatever has it, after the next render, and the on-screen keyboard hides: after a submit, or before swapping the root (`cx.set_root`) away from a sign-in form. UIKit: the window ends editing; Android: the focused view clears its focus and the IME hides; macOS: the window's first responder lets go; GTK: the window's focus is unset; watchOS: SwiftUI's focus state is cleared; web: `document.activeElement.blur()`. On iOS the room made for the keyboard also goes when the root is swapped while it is up.
 - **Hit testing**: `.hit_test(false)` lets clicks, taps and hovers through the element and everything in it (CSS `pointer-events: none`: a label drawn over a bar, a decorative scrim). `.inert(true)` also takes the subtree out of the keyboard focus and the accessibility tree while keeping it visible.
 
 | | Click position | Hover / move | Drag | Keys | Focus, scroll into view |

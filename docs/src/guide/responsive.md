@@ -20,6 +20,34 @@ cx.on_resize(|(w, h), app| { … });                        // every size change
 
 Rules are resolved in the core for the current window, so every backend agrees and the web needs no media queries: the iOS window (rotation, Split View, iPad), the macOS window (resize) and the browser (resize, plus a cookie so the server's first render already fits) report their size, and the app re-renders when it crosses a breakpoint. On wide browser windows the tab bar becomes a sidebar.
 
+## The content area and the safe area
+
+```rust
+let (w, h) = cx.viewport();        // what the root screen lays out in
+let window = cx.window_size();     // the whole window, bars included
+let safe = cx.safe_area();         // what the system covers, per edge (Edges)
+```
+
+`cx.viewport()` is the window minus what the system covers: the status bar
+and home indicator, a notch or camera cutout, a foldable's side bar (the
+iPhone Duo's trailing tab bar and clock), the room a root tab bar takes from
+its screens (a bottom bar, an iPad sidebar). Breakpoints, `.md()`… and
+`.at_width(…)` resolve against its width, so a layout computed from it fits
+beside a side bar. `cx.safe_area()` gives the insets (top, right, bottom,
+left; the on-screen keyboard is not part of them) and `cx.window_size()` the
+whole window. They change with rotation, folding, Split View and resizes:
+the app re-renders when the insets move, and `on_resize` gets the new
+content size.
+
+| Backend | Safe area |
+|---|---|
+| iOS, iPadOS, tvOS, visionOS | the root's `safeAreaInsets` (without the keyboard), plus what a root `UITabBarController` takes from its selected tab (a bottom bar, a sidebar or side bar) |
+| macOS | the content view's `safeAreaInsets` (a full-size content view's title bar and toolbar; zero for a standard window) |
+| Android | system bars and display cutouts (`WindowInsets`), the round-watch margins, a TV's overscan margins; the keyboard is not counted |
+| watchOS | SwiftUI's safe area around the root (corners, the clock) |
+| Web | `env(safe-area-inset-*)`, reported by the page on connect and resize (zero unless the page is laid out under the notch with `viewport-fit=cover`) |
+| Linux | none: GTK windows have no system insets |
+
 ## Your own breakpoints, any width
 
 ```rust

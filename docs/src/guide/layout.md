@@ -51,6 +51,17 @@ Native backends measure each text leaf's first baseline (the font's ascent
 where the control draws its text: labels, buttons, inputs, pickers, timers);
 views without text sit on the baseline with their bottom edge, as in CSS.
 
+**Items shrink below their content.** Every node's minimum width is `0`
+unless it sets one (the web's `min-width: 0` on every node, and the native
+layout's default too), so a row that does not fit shrinks its items
+(weighted by `flex_shrink` and their size) rather than overflowing: a text
+wraps, a label beside an icon in a narrow cell takes two lines. Keep an item
+at its size with `.flex_shrink_0()` or `.min_w(px(…))`. Switches and spinners
+keep their own width. Heights keep CSS's automatic minimum (a column's
+children are at least as tall as their content). A text's narrowest natural
+width (its min-content, used by `items_start` columns and grid tracks) is its
+longest word.
+
 ## Padding on every node
 
 `.p()`, `.px()`, `.py()`, `.pt()`, `.pr()`, `.pb()` and `.pl()` work on

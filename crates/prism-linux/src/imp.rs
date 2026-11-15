@@ -694,6 +694,10 @@ pub struct Gtk {
     layers: Vec<gtk::Widget>,
     /// Nodes made inert (hidden from assistive technologies).
     inert: HashSet<NodeId>,
+    // --- Adaptive colors (#36) ---
+    /// Styles with an adaptive color: their CSS rule picks the light or the
+    /// dark variant, so it is rebuilt when the appearance changes.
+    adaptive: HashMap<NodeId, (View, Style)>,
 }
 
 /// Scroll view → its sticky views (node, widget, range).
@@ -1235,6 +1239,11 @@ impl Widgets for Gtk {
             };
             sw.set_policy(h, v);
         }
+        if crate::decor::adapts(s) {
+            self.adaptive.insert(id, (view.clone(), s.clone()));
+        } else {
+            self.adaptive.remove(&id);
+        }
         // Background, gradient, corners, borders (per side, dashed, dotted)
         // and shadows.
         let mut css = crate::decor::declarations(&crate::decor::paint(s, self.dark, false));
@@ -1600,6 +1609,7 @@ impl Widgets for Gtk {
         self.statuses.remove(&id);
         self.labels.remove(&id);
         self.rules.remove(&id);
+        self.adaptive.remove(&id);
         self.css_dirty = true;
         self.clickable.borrow_mut().remove(&id);
         self.reports.borrow_mut().remove(&id);
@@ -2237,6 +2247,22 @@ impl Widgets for Gtk {
         });
     }
 
+    /// The window keeps the focus but no widget has it (an on-screen
+    /// keyboard hides); sheets are their own windows.
+    fn dismiss_keyboard(&mut self) {
+        let windows: Vec<gtk::Window> = gtk::Window::list_toplevels()
+            .into_iter()
+            .filter_map(|w| w.downcast::<gtk::Window>().ok())
+            .filter(|w| w.is_active())
+            .chain(std::iter::once(self.window.clone().upcast()))
+            .collect();
+        glib::idle_add_local_once(move || {
+            for w in windows {
+                GtkWindowExt::set_focus(&w, None::<&gtk::Widget>);
+            }
+        });
+    }
+
     /// Scrolls every scroll view around the widget so its frame is visible.
     fn scroll_into_view(&mut self, view: &View) {
         let mut w = view.widget();
@@ -2320,8 +2346,17 @@ impl Widgets for Gtk {
         if let Some(settings) = gtk::Settings::default() {
             settings.set_gtk_application_prefer_dark_theme(dark);
         }
+        let changed = self.dark != dark;
         self.dark = dark;
         SHAPE_DARK.with(|d| d.set(dark));
+        // Backgrounds, borders, shadows, gradients: CSS rules of the
+        // light or the dark variant.
+        if changed {
+            let adaptive: Vec<(View, Style)> = self.adaptive.values().cloned().collect();
+            for (view, style) in adaptive {
+                self.set_style(&view, &style);
+            }
+        }
         // Run colors are Pango attributes: the light or the dark variant.
         for state in self.labels.values() {
             if let Some(l) = &state.label {
@@ -2671,6 +2706,7 @@ fn activate(app: &gtk::Application) {
         keys: keys.clone(),
         layers: Vec::new(),
         inert: HashSet::new(),
+        adaptive: HashMap::new(),
     });
     STATE.with(|s| {
         *s.borrow_mut() = Some(State {

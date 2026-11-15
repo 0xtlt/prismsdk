@@ -410,6 +410,8 @@ impl Render for TodoList {
                                     this.store.update(cx, |s, cx| s.add(title, cx))
                                 });
                                 this.draft.clear();
+                                // Added: the keyboard goes away.
+                                cx.dismiss_keyboard();
                             }
                         },
                     ))),

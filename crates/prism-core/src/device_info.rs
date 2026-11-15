@@ -547,7 +547,7 @@ impl App {
         self.device_info
             .info
             .clone()
-            .unwrap_or_else(|| DeviceInfo::guess(self.platform(), self.viewport()))
+            .unwrap_or_else(|| DeviceInfo::guess(self.platform(), self.window_size()))
     }
 
     /// Runs `f` whenever the device information changes (rotation, fold,
@@ -570,7 +570,7 @@ impl App {
     pub(crate) fn orientation(&self) -> Orientation {
         match &self.device_info.info {
             Some(info) => info.orientation,
-            None => Orientation::of(self.viewport().0, self.viewport().1),
+            None => Orientation::of(self.window_size().0, self.window_size().1),
         }
     }
 

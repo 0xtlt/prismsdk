@@ -49,6 +49,8 @@ pub struct Host {
     pub focused: Vec<NodeId>,
     /// Nodes scrolled into view, in order (`Patch::ScrollIntoView`).
     pub scrolled_to: Vec<NodeId>,
+    /// How many times the keyboard was dismissed (`Patch::DismissKeyboard`).
+    pub keyboard_dismissals: usize,
 }
 
 impl Host {
@@ -235,6 +237,7 @@ impl Backend for Host {
                     self.node(*id, "ScrollIntoView");
                     self.scrolled_to.push(*id);
                 }
+                Patch::DismissKeyboard => self.keyboard_dismissals += 1,
                 Patch::SetLayers { ids } => {
                     for id in ids {
                         self.node(*id, "SetLayers");

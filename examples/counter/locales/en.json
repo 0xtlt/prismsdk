@@ -216,6 +216,7 @@
     "screen": "Screen",
     "orientation": "Orientation",
     "window": "Window",
+    "content": "Content area",
     "foldable": "Foldable",
     "browser": "Browser",
     "portrait": "Portrait",
@@ -365,7 +366,10 @@
     "badges": "Paid,Pending,Overdue",
     "padding_note": "Padding on a text and on fields: the chip grows around its text, the field's text starts after its icon.",
     "search": "Search orders",
-    "borderless": "No border"
+    "borderless": "No border",
+    "outlined": "Outlined, 12 pt inside",
+    "off_peak": "OFF-PEAK HOURS",
+    "peak": "PEAK HOURS"
   },
   "typography": {
     "title": "Typography",
