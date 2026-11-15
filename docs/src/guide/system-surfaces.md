@@ -10,6 +10,8 @@ cx.register_widget(
         .link("/")
         .render(move |cx, family| text(format!("{} open", store.read(cx).open()))),
 );
+// A `.bg(..)` on the widget's root fills the whole widget (iOS and macOS:
+// its container background), not just the area inside the system's margins.
 cx.reload_widgets_on(&store);
 
 // A Live Activity: lock screen + Dynamic Island (compact, minimal, expanded).
@@ -24,6 +26,8 @@ let id = cx.start_activity(
         .link("/focus"),
 );
 cx.update_activity(id, …);  cx.end_activity(id, None, true);
+// Activities started by a push (`prism_push::Push::start_live_activity`) or by
+// an earlier run are picked up under their id too: see Remote push.
 
 // A local notification that opens a screen when tapped, with action buttons.
 cx.send_notification(

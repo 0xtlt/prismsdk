@@ -52,7 +52,7 @@ struct PrismWidgetView: View {
     let entry: PrismEntry
 
     var body: some View {
-        let node = (entry.doc?["families"] as? PNode)?[prismFamilyName(family)]
+        let (node, tile) = root()
         Group {
             if node != nil {
                 prismView(node)
@@ -61,8 +61,18 @@ struct PrismWidgetView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .containerBackground(.background, for: .widget)
+        .containerBackground(tile.map { AnyShapeStyle($0) } ?? AnyShapeStyle(.background), for: .widget)
         .widgetURL(prismURL(entry.doc?["link"]))
+    }
+
+    /// The family's root node, and its `bg` taken out: it fills the whole
+    /// widget (the container background) instead of the area inside the
+    /// system's margins.
+    private func root() -> (PNode?, Color?) {
+        guard var node = (entry.doc?["families"] as? PNode)?[prismFamilyName(family)] as? PNode else { return (nil, nil) }
+        let tile = prismColor(node["bg"])
+        if tile != nil { node["bg"] = nil }
+        return (node, tile)
     }
 }
 

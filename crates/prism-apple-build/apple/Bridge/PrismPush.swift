@@ -187,14 +187,23 @@ func prismInstallMacDelegate() {
 // MARK: Live Activity push tokens (iOS 16.1+; push-to-start 17.2+)
 
 #if os(iOS)
+/// Reports `activity`'s update token as `key`: the current one (an activity
+/// adopted after it started may have it already), then each new one.
 func prismWatchActivityToken(_ key: String, _ kind: String, _ activity: Activity<PrismActivityAttributes>) {
     Task {
-        for await data in activity.pushTokenUpdates {
-            let hex = prismHex(data)
-            await MainActor.run {
-                key.withCString { key in kind.withCString { kind in hex.withCString { prismRustActivityPushToken(key, kind, $0) } } }
-            }
+        var last = activity.pushToken
+        if let data = last { await prismReportActivityToken(key, kind, data) }
+        for await data in activity.pushTokenUpdates where data != last {
+            last = data
+            await prismReportActivityToken(key, kind, data)
         }
+    }
+}
+
+private func prismReportActivityToken(_ key: String, _ kind: String, _ data: Data) async {
+    let hex = prismHex(data)
+    await MainActor.run {
+        key.withCString { key in kind.withCString { kind in hex.withCString { prismRustActivityPushToken(key, kind, $0) } } }
     }
 }
 

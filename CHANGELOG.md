@@ -267,6 +267,14 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- iOS: a Live Activity started by a push reports its update token through
+  `on_activity_push_token`, with `activity: Some(id)`, and again whenever
+  the token changes (#43). `Push::start_live_activity(kind, id, ..)` gives the
+  activity its id, and the app reports the token with that id. The app now
+  registers activities it did not start in this run (started by a push, or
+  by an earlier run) at launch and as they start, so `update_activity` and
+  `end_activity` reach them (`App::adopt_activity` for backends). A widget's
+  root `.bg(..)` fills the whole widget (its container background).
 - An iOS app built outside the Prism checkout no longer stops at launch on
   `@rpath/libswift_Concurrency.dylib` (#27): `prism` sets
   `IPHONEOS_DEPLOYMENT_TARGET`, `TVOS_…`, `WATCHOS_…`, `XROS_…` and

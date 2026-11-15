@@ -88,7 +88,12 @@ pub fn payload(push: &Push) -> Value {
         if let Some(kind) = &la.kind {
             // Prism's ActivityKit attributes (prism-apple-build/apple/Shared).
             aps.insert("attributes-type".into(), "PrismActivityAttributes".into());
-            aps.insert("attributes".into(), json!({ "kind": kind }));
+            let mut attributes = json!({ "kind": kind });
+            if let Some(id) = la.id {
+                // A string: JSON numbers above 2^53 lose digits in some servers.
+                attributes["id"] = id.to_string().into();
+            }
+            aps.insert("attributes".into(), attributes);
         }
         if let Some(t) = la.stale_date {
             aps.insert("stale-date".into(), crate::unix(t).into());
@@ -273,6 +278,28 @@ mod tests {
         assert_eq!(body["aps"]["event"], "update");
         assert_eq!(body["aps"]["content-state"]["json"], "{\"sm\":\"5 min\"}");
         assert!(body["aps"]["timestamp"].is_u64());
+    }
+
+    #[test]
+    fn push_to_start_names_the_activity() {
+        let push = Push::new().title("Delivery").start_live_activity(
+            "delivery",
+            1_731_600_000_042,
+            r#"{"json":"{\"sm\":\"On its way\"}"}"#,
+        );
+        let r = request(&sub(), &push, "JWT").unwrap();
+        assert_eq!(r.header("apns-push-type"), Some("liveactivity"));
+        let body: Value = serde_json::from_slice(&r.body).unwrap();
+        assert_eq!(body["aps"]["event"], "start");
+        assert_eq!(body["aps"]["attributes-type"], "PrismActivityAttributes");
+        assert_eq!(
+            body["aps"]["attributes"],
+            json!({"kind": "delivery", "id": "1731600000042"})
+        );
+        assert_eq!(
+            body["aps"]["content-state"]["json"],
+            "{\"sm\":\"On its way\"}"
+        );
     }
 
     #[test]

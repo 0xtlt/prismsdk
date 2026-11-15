@@ -19,7 +19,7 @@ cx.spawn(async move |_, cx| {
 
 // Live Activities updated from the server (iOS): their tokens.
 cx.start_activity(Activity::new("focus").push_updates() /* … */);
-cx.on_activity_push_token(|t, app| { /* t.activity (None: push-to-start), t.token */ });
+cx.on_activity_push_token(|t, app| { /* t.activity (None: push-to-start), t.kind, t.token */ });
 ```
 
 On the server (Axum, a worker…):
@@ -37,8 +37,16 @@ match sender.send(&sub, &Push::new().title("Order shipped").body("Tomorrow").lin
     r => r?,
 }
 // Also: Push::new().silent().data("sync", "inbox"), .badge(3), .collapse_id(..), .ttl(..),
-// .urgency(..), .live_activity(&Activity::…content_state_json(), end) / .start_live_activity(kind, ..)
+// .urgency(..), .live_activity(&Activity::…content_state_json(), end) / .start_live_activity(kind, id, ..)
 ```
+
+**Live Activities from the server** (iOS). `on_activity_push_token` reports three kinds of token, each again whenever iOS changes it:
+
+- `activity: None`: the push-to-start token (iOS 17.2+). Send it `Push::new().title(..).start_live_activity("delivery", id, &Activity::…content_state_json())` to start an activity of that kind.
+- `activity: Some(id)` for an activity the app started with `.push_updates()`: `id` is what `start_activity` returned.
+- `activity: Some(id)` for an activity a push started: `id` is the one the push gave it. The push carries it in the activity's attributes (`"attributes": {"kind": "delivery", "id": "42"}`, a decimal string), so the token tells your server which of the activities it started this is. Send that token `Push::live_activity(.., end)` to update or end it. Pick ids that the app's own activities will not use: they count from 1 at each launch. A timestamp or a random number works.
+
+Prism registers the activities it did not start in this run: ones started by a push, and ones from an earlier run of the app. It picks them up at launch and as they start. iOS wakes the app in the background when a push starts one, which gives it time to report the token. The app can then `update_activity` or `end_activity` them with the same id. If one of the app's running activities already has the id, or the push gave none, the activity gets a new id, and its token arrives with that id and its `kind`.
 
 | | Service | How | Silent pushes | Verified |
 |---|---|---|---|---|
@@ -63,7 +71,7 @@ vapid_public_key = "BKv…"                   # Web Push (or PRISM_VAPID_PUBLIC_
 ```
 
 - **Apple:** `prism` adds the `aps-environment` entitlement (`com.apple.developer.aps-environment` on macOS), the `remote-notification` background mode and `PrismApsEnvironment` (the token's sandbox flag). Devices need the Push Notifications capability on the App ID (the profile's value wins). In the simulator the entitlement lives in the binary's entitlement sections only: the simulator refuses to launch an ad hoc signature that claims it. macOS restricts it: it needs `PRISM_MAC_PROFILE`, otherwise `capabilities().push` is `None`. Slimmed simulators keep the push daemons (`simslim … --except store`).
-- **Test in the simulator:** `xcrun simctl push <device> dev.prism.counter examples/counter/push/hello.apns` (an `.apns` file is the payload; `cargo run -p prism-push --example push -- apns-payload '{"title":"Hi","link":"/push"}'` writes one). The simulator delivers alerts (foreground banner, `Received`), but rejects pure silent pushes (`UNErrorDomain 1401`, "no user visible content") and turns `content-available` into a background fetch without the payload: test silent pushes on a device.
+- **Test in the simulator:** `xcrun simctl push <device> dev.prism.counter examples/counter/push/hello.apns` (an `.apns` file is the payload; `cargo run -p prism-push --example push -- apns-payload '{"title":"Hi","link":"/push"}'` writes one). The simulator delivers alerts (foreground banner, `Received`), but rejects pure silent pushes (`UNErrorDomain 1401`, "no user visible content") and turns `content-available` into a background fetch without the payload: test silent pushes on a device. `simctl push` cannot start a Live Activity either: a push-to-start payload shows up as a plain alert. Send push-to-start pushes through APNs.
 - **Android, FCM:** Firebase normally needs Gradle. Here the CLI fetches `firebase-messaging` and its dependencies from Google's Maven (Play services client libraries, Kotlin, AndroidX: about 75 artifacts, 2 dex files), merges their manifests (`crates/prism-cli/platform/scripts/android-manifest-merge.py`), and turns `google-services.json` into the resources Firebase reads. Firebase is Apache 2.0; the Play services client libraries are under the Android SDK license, redistributable inside apps (what every Gradle build ships). FCM needs Google Play services on the device, recent enough for the bundled `firebase-messaging` (26.0.2 requires Play services 26.12; older devices and emulator images fall back to UnifiedPush); auto-init is off, so a token is requested only by `register_for_push`. Prism sends **data messages**, which reach the app in the foreground and the background; Rust shows visible ones.
 - **Android, UnifiedPush:** an open standard with no library: the app broadcasts `REGISTER` to a distributor (ntfy, NextPush, Sunup…), receives `NEW_ENDPOINT`/`MESSAGE` broadcasts, and decrypts the Web Push message in Rust (RFC 8291). The subscription carries the device's keys, so the server sends Web Push to the endpoint (`Service::UnifiedPush`). No distributor installed and no FCM: `capabilities().push` is `None`.
 - **Web:** the page registers the service worker on `register_for_push` (it needs a VAPID key; generate one with `cargo run -p prism-push --example push -- vapid`). Pushes reach open pages as `Received`; with no visible page the worker shows a notification, and a click focuses the app (or opens it on the push's `link`) and reports `Opened`. Browsers require every push to show something: `silent` only skips the sound.

@@ -1288,6 +1288,25 @@ impl App {
         id
     }
 
+    /// For backends: a Live Activity the app did not start in this run
+    /// (started by a push-to-start push, or before a relaunch) joins the
+    /// app's activities, so `update_activity` and `end_activity` reach it.
+    /// It keeps `requested` (the id its push or earlier run gave it) when
+    /// there is one, or gets a new id. Ids `start_activity` hands out later
+    /// are above it.
+    pub fn adopt_activity(&mut self, requested: Option<ActivityId>) -> ActivityId {
+        match requested {
+            Some(id) if id.0 > 0 => {
+                self.surfaces.next_activity = self.surfaces.next_activity.max(id.0);
+                id
+            }
+            _ => {
+                self.surfaces.next_activity += 1;
+                ActivityId(self.surfaces.next_activity)
+            }
+        }
+    }
+
     /// Replaces a running activity's content (its kind is kept).
     pub fn update_activity(&mut self, id: ActivityId, activity: Activity) {
         let (_, content) = activity.render(self);
@@ -1414,5 +1433,17 @@ mod bundling_tests {
         app.register_widget(crate::Widget::new("w", "W"));
         assert!(!app.uses_live_activities());
         assert_ne!(app.describe_widgets(), "[]");
+    }
+
+    #[test]
+    fn adopted_activities_keep_their_id_and_the_app_counts_above_it() {
+        use crate::ActivityId;
+        let mut app = App::new();
+        assert_eq!(app.adopt_activity(Some(ActivityId(42))), ActivityId(42));
+        assert_eq!(app.adopt_activity(Some(ActivityId(7))), ActivityId(7));
+        assert_eq!(app.adopt_activity(None), ActivityId(43));
+        assert_eq!(app.adopt_activity(Some(ActivityId(0))), ActivityId(44));
+        let id = app.start_activity(crate::Activity::new("focus").summary("Focus"));
+        assert_eq!(id, ActivityId(45));
     }
 }

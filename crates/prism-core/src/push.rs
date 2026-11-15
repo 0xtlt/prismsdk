@@ -273,6 +273,10 @@ impl PushMessage {
 pub struct ActivityPushToken {
     /// The activity, or `None` for the push-to-start token (iOS 17.2+): it
     /// lets your server start an activity of `kind`.
+    ///
+    /// An activity the app started: the id `start_activity` returned. One
+    /// a push started: the id the push gave it (`prism_push::Push::start_live_activity`),
+    /// so your server knows which of its activities the token updates.
     pub activity: Option<ActivityId>,
     /// The activity's kind, as passed to `Activity::new`.
     pub kind: String,
@@ -368,8 +372,9 @@ impl App {
         self.push.background = Some(Rc::new(move |m, cx| Box::pin(job(m, cx))));
     }
 
-    /// Live Activity push tokens (started with [`Activity::push_updates`](crate::Activity::push_updates)),
-    /// and the push-to-start token (iOS 17.2+).
+    /// Live Activity push tokens: the push-to-start token (iOS 17.2+), the
+    /// update tokens of activities started with [`Activity::push_updates`](crate::Activity::push_updates)
+    /// and of those a push started (iOS 17.2+), each again when it changes.
     pub fn on_activity_push_token(&mut self, f: impl Fn(&ActivityPushToken, &mut App) + 'static) {
         if self.push.activity_handlers.is_empty() {
             self.surfaces
