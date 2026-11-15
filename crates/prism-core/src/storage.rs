@@ -5,7 +5,7 @@
 //! |---|---|---|
 //! | iOS / macOS | App Group / Application Support | iCloud key-value store (`[ios] icloud = true`) |
 //! | Web | server, per browser | server, per browser |
-//! | Android (planned) | app files | Block Store / Drive app data |
+//! | Android | app files | Android Backup (key/value): restored, not synced |
 //!
 //! Synced storage is for small things (settings, progress, favorites: iCloud
 //! allows 1 MB). For more, use a database (`prism-db`).

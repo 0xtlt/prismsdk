@@ -21,6 +21,7 @@ pub mod menu;
 pub mod platform;
 mod reconcile;
 mod router;
+pub mod security;
 pub mod shape;
 pub mod storage;
 mod style;
@@ -54,6 +55,10 @@ pub use menu::{ActionRole, Alert, AlertStyle, Menu, MenuItem, Tray};
 pub use platform::{Platform, Platforms};
 pub use reconcile::{NodeId, Patch, Reconciler, RenderEnvironment, UiEvent};
 pub use router::{Params, Router, RouterBuilder, go_back, navigate_to, normalize_path};
+pub use security::{
+    AppleCredential, AppleSignIn, AuthRequest, Biometry, BiometryKind, SecureOptions,
+    SecureStorage, WebAuthRequest,
+};
 pub use shape::{Drawing, Path, Segment};
 pub use storage::{FileStorage, MemoryStorage, Storage};
 pub use style::*;
@@ -436,16 +441,16 @@ impl Runtime {
 /// Everything an app usually needs.
 pub mod prelude {
     pub use crate::{
-        Accessible, Accuracy, Activity, Alert, Animations, App, AsyncApp, BackgroundTask,
-        Breakpoint, CarButton, CarButtonStyle, CarItem, CarSection, CarTab, CarTemplate,
-        ChangeEvent, ClickEvent, Context, DateStyle, DeviceInfo, DeviceKind, Entity, FluentBuilder,
-        Handler, Haptic, InputEvent, IntoElement, Lifecycle, Locale, Location, Menu, MenuItem,
-        Motion, Notification, NotificationAction, NotificationResponse, Orientation, Params,
-        ParentElement, Path, Permission, PermissionState, PickImages, PickedFile, Platform, Pose,
-        Posture, Render, Role, Router, ScrollEvent, Share, Styled, SwipeDirection, Transition,
-        Translations, Tray, VirtualList, Watch, Widget, WidgetFamily, adaptive, button, div,
-        go_back, image, lazy, navigate_to, picture, progress, px, relative, rgb, rgba, screen,
-        scroll, shape, text, text_input, timer, toggle,
+        Accessible, Accuracy, Activity, Alert, Animations, App, AppleSignIn, AsyncApp, AuthRequest,
+        BackgroundTask, BiometryKind, Breakpoint, CarButton, CarButtonStyle, CarItem, CarSection,
+        CarTab, CarTemplate, ChangeEvent, ClickEvent, Context, DateStyle, DeviceInfo, DeviceKind,
+        Entity, FluentBuilder, Handler, Haptic, InputEvent, IntoElement, Lifecycle, Locale,
+        Location, Menu, MenuItem, Motion, Notification, NotificationAction, NotificationResponse,
+        Orientation, Params, ParentElement, Path, Permission, PermissionState, PickImages,
+        PickedFile, Platform, Pose, Posture, Render, Role, Router, ScrollEvent, SecureOptions,
+        Share, Styled, SwipeDirection, Transition, Translations, Tray, VirtualList, Watch, Widget,
+        WidgetFamily, adaptive, button, div, go_back, image, lazy, navigate_to, picture, progress,
+        px, relative, rgb, rgba, screen, scroll, shape, text, text_input, timer, toggle,
     };
 }
 

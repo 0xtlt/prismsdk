@@ -9,6 +9,8 @@
 //! });
 //! ```
 
+pub mod oauth;
+
 use std::io::Read;
 use std::time::Duration;
 

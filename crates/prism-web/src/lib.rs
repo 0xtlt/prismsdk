@@ -33,6 +33,7 @@ mod css;
 mod device_info;
 use prism_core::glyphs;
 mod html;
+mod security;
 #[cfg(feature = "server")]
 mod server;
 mod session;

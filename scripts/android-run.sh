@@ -256,12 +256,30 @@ $CAR_FEATURES
   <uses-feature android:name="android.hardware.touchscreen" android:required="false"/>
   <uses-feature android:name="android.software.leanback" android:required="false"/>
   <uses-feature android:name="android.hardware.type.watch" android:required="false"/>
+  <!-- BiometricPrompt (normal permission, granted at install). -->
+  <uses-permission android:name="android.permission.USE_BIOMETRIC"/>
+  <!-- Package visibility (Android 11+): browsers with Custom Tabs, for sign-in. -->
+  <queries>
+    <intent><action android:name="android.support.customtabs.action.CustomTabsService"/></intent>
+    <intent>
+      <action android:name="android.intent.action.VIEW"/>
+      <category android:name="android.intent.category.BROWSABLE"/>
+      <data android:scheme="https"/>
+    </intent>
+  </queries>
+  <!-- cloud_storage: key/value backup (PrismBackup); secrets are not backed up. -->
   <application android:label="$APP_NAME" $ICON_ATTR android:extractNativeLibs="false" android:supportsRtl="true"
-      android:theme="@android:style/Theme.DeviceDefault.DayNight">
+      android:theme="@android:style/Theme.DeviceDefault.DayNight"
+      android:allowBackup="true" android:backupAgent="dev.prism.PrismBackup" android:restoreAnyVersion="true">
     <activity android:name="dev.prism.PrismActivity" android:exported="true" android:launchMode="singleTop"
         android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|locale|layoutDirection">
       <meta-data android:name="prism.lib" android:value="$LIB"/>
+      <meta-data android:name="prism.scheme" android:value="$SCHEME"/>
 $LAUNCHER
+    </activity>
+    <!-- Deep links and sign-in redirects, handed to the running PrismActivity. -->
+    <activity android:name="dev.prism.PrismLinkActivity" android:exported="true" android:noHistory="true"
+        android:excludeFromRecents="true" android:theme="@android:style/Theme.Translucent.NoTitleBar">
       <intent-filter>
         <action android:name="android.intent.action.VIEW"/>
         <category android:name="android.intent.category.DEFAULT"/>

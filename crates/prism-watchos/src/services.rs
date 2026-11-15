@@ -29,6 +29,8 @@ pub(crate) struct WatchServices {
 impl WatchServices {
     pub fn new() -> Self {
         let notifications = unsafe { prism_bridge_init() };
+        // No biometric sensor; the passcode and wrist detection check the owner.
+        let (biometry, device_auth, apple) = prism_native::apple::security_capabilities();
         WatchServices {
             caps: Capabilities {
                 car: false,
@@ -42,6 +44,11 @@ impl WatchServices {
                 share: true,
                 cloud_sync: prism_native::apple::ICloudStorage::new().is_some()
                     && prism_native::apple::ICloudStorage::signed_in(),
+                secure_storage: true,
+                biometry,
+                device_auth,
+                sign_in_with_apple: apple,
+                web_auth: true,
                 ..Default::default()
             },
             ops: Vec::new(),

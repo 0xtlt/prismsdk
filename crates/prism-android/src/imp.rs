@@ -206,6 +206,10 @@ fn make_runtime(
             path: s("path").unwrap_or_else(|| "/".into()),
             capabilities: prism_core::PlatformServices::capabilities(services),
             storage: Some(Box::new(prism_core::FileStorage::new(data_dir.clone()))),
+            // files/cloud, backed up key by key (PrismBackup.java).
+            cloud_storage: Some(Box::new(BackedUp(prism_core::FileStorage::new(
+                data_dir.join("cloud"),
+            )))),
             wake_ui: Some(std::sync::Arc::new(|| jni::post(0))),
             environment,
             data_dir: Some(data_dir),
@@ -215,6 +219,26 @@ fn make_runtime(
             ..Default::default()
         },
     )
+}
+
+/// `cloud_storage`: files the Backup Service backs up; each change tells it.
+struct BackedUp(prism_core::FileStorage);
+
+impl prism_core::Storage for BackedUp {
+    fn get(&self, key: &str) -> Option<String> {
+        self.0.get(key)
+    }
+    fn set(&mut self, key: &str, value: &str) {
+        self.0.set(key, value);
+        jni::cloud_changed();
+    }
+    fn remove(&mut self, key: &str) {
+        self.0.remove(key);
+        jni::cloud_changed();
+    }
+    fn keys(&self) -> Vec<String> {
+        self.0.keys()
+    }
 }
 
 fn with_state(f: impl FnOnce(&mut State)) {

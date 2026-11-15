@@ -145,7 +145,7 @@ pub fn model_id() -> Option<String> {
 }
 
 #[cfg(feature = "apple-bridge")]
-pub use bridge::{DeviceMessage, device_call, set_device_sink};
+pub use bridge::{DeviceMessage, device_call, security_capabilities, set_device_sink};
 
 /// Device APIs through the Swift bridge (`platform/apple/Bridge/PrismDevice.swift`).
 #[cfg(feature = "apple-bridge")]
@@ -169,6 +169,49 @@ mod bridge {
         fn prism_device_paste(id: u64);
         fn prism_device_share(text: *const c_char, url: *const c_char, files: *const c_char);
         fn prism_device_open_url(url: *const c_char);
+        // PrismSecurity.swift
+        fn prism_secure_get(id: u64, key: *const c_char, prompt: *const c_char, shared: bool);
+        fn prism_secure_set(
+            id: u64,
+            key: *const c_char,
+            value: *const c_char,
+            biometric: bool,
+            shared: bool,
+        );
+        fn prism_secure_delete(id: u64, key: *const c_char, shared: bool);
+        fn prism_biometry_kind() -> i32;
+        fn prism_device_auth_available() -> bool;
+        fn prism_biometry_status(id: u64);
+        fn prism_authenticate(id: u64, reason: *const c_char, passcode: bool);
+        fn prism_apple_sign_in(
+            id: u64,
+            email: bool,
+            name: bool,
+            nonce: *const c_char,
+            state: *const c_char,
+        );
+        fn prism_apple_sign_in_available() -> bool;
+        fn prism_auth_redirect(id: u64, preferred: *const c_char);
+        fn prism_web_auth(id: u64, url: *const c_char, redirect: *const c_char, ephemeral: bool);
+    }
+
+    /// What the Keychain and LocalAuthentication offer here:
+    /// `(biometry, device_auth, sign_in_with_apple)`.
+    pub fn security_capabilities() -> (prism_core::BiometryKind, bool, bool) {
+        use prism_core::BiometryKind as K;
+        unsafe {
+            let kind = match prism_biometry_kind() {
+                1 => K::TouchId,
+                2 => K::FaceId,
+                3 => K::OpticId,
+                _ => K::None,
+            };
+            (
+                kind,
+                prism_device_auth_available(),
+                prism_apple_sign_in_available(),
+            )
+        }
     }
 
     /// What the bridge reports back, for the backend to hand to its runtime.
@@ -228,6 +271,51 @@ mod bridge {
                     prism_device_share(ptr(&text), ptr(&url), ptr(&files))
                 }
                 DeviceCall::OpenUrl(u) => prism_device_open_url(c(&u).as_ptr()),
+                DeviceCall::SecureGet {
+                    key,
+                    prompt,
+                    shared,
+                } => {
+                    let prompt = prompt.as_deref().map(c);
+                    prism_secure_get(
+                        id,
+                        c(&key).as_ptr(),
+                        prompt.as_ref().map_or(std::ptr::null(), |p| p.as_ptr()),
+                        shared,
+                    )
+                }
+                DeviceCall::SecureSet {
+                    key,
+                    value,
+                    options,
+                } => prism_secure_set(
+                    id,
+                    c(&key).as_ptr(),
+                    c(&value).as_ptr(),
+                    options.biometric,
+                    options.shared,
+                ),
+                DeviceCall::SecureDelete { key, shared } => {
+                    prism_secure_delete(id, c(&key).as_ptr(), shared)
+                }
+                DeviceCall::BiometryStatus => prism_biometry_status(id),
+                DeviceCall::Authenticate(r) => {
+                    prism_authenticate(id, c(&r.reason).as_ptr(), r.passcode)
+                }
+                DeviceCall::SignInWithApple(r) => {
+                    let nonce = r.nonce.as_deref().map(c);
+                    let state = r.state.as_deref().map(c);
+                    let ptr =
+                        |o: &Option<CString>| o.as_ref().map_or(std::ptr::null(), |s| s.as_ptr());
+                    prism_apple_sign_in(id, r.email, r.full_name, ptr(&nonce), ptr(&state))
+                }
+                DeviceCall::AuthRedirect(preferred) => {
+                    let p = preferred.as_deref().map(c);
+                    prism_auth_redirect(id, p.as_ref().map_or(std::ptr::null(), |p| p.as_ptr()))
+                }
+                DeviceCall::WebAuth(r) => {
+                    prism_web_auth(id, c(&r.url).as_ptr(), c(&r.redirect).as_ptr(), r.ephemeral)
+                }
             }
         }
     }
@@ -327,6 +415,21 @@ mod bridge {
             id,
             Ok(DeviceValue::Text(string(text))),
         ));
+    }
+
+    /// A JSON object of strings (`DeviceValue::Fields`).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn prism_device_reply_fields(id: u64, json: *const c_char) {
+        let fields = string(json)
+            .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok())
+            .and_then(|v| v.as_object().cloned())
+            .map(|o| {
+                o.into_iter()
+                    .filter_map(|(k, v)| Some((k, v.as_str()?.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        send(DeviceMessage::Reply(id, Ok(DeviceValue::Fields(fields))));
     }
 
     #[unsafe(no_mangle)]

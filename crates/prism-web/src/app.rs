@@ -165,7 +165,15 @@ impl WebApp {
         }
         let path = percent_decode(self.app_path(req.uri().path()));
         let headers = req.headers();
-        let mut response = if let Some(file) = path
+        let mut response = if path == "/_prism/auth/callback" {
+            // A sign-in provider's redirect: hand it to the session that asked.
+            let mut r = Response::new(
+                crate::security::redirect_page(req.uri().query().unwrap_or("")).into_bytes(),
+            );
+            set(&mut r, header::CONTENT_TYPE, "text/html; charset=utf-8");
+            set(&mut r, header::CACHE_CONTROL, "no-store");
+            r
+        } else if let Some(file) = path
             .strip_prefix('/')
             .filter(|p| p.starts_with("_prism/") || p.starts_with("assets/"))
         {

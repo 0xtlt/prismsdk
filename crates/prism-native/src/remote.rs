@@ -421,6 +421,37 @@ pub mod device {
                 json!({ "call": "share", "text": s.text, "url": s.url, "files": s.files })
             }
             DeviceCall::OpenUrl(u) => json!({ "call": "open_url", "url": u }),
+            DeviceCall::SecureGet {
+                key,
+                prompt,
+                shared,
+            } => json!({ "call": "secure_get", "key": key, "prompt": prompt, "shared": shared }),
+            DeviceCall::SecureSet {
+                key,
+                value,
+                options,
+            } => json!({
+                "call": "secure_set", "key": key, "value": value,
+                "biometric": options.biometric, "shared": options.shared,
+            }),
+            DeviceCall::SecureDelete { key, shared } => {
+                json!({ "call": "secure_delete", "key": key, "shared": shared })
+            }
+            DeviceCall::BiometryStatus => json!({ "call": "biometry" }),
+            DeviceCall::Authenticate(r) => {
+                json!({ "call": "authenticate", "reason": r.reason, "passcode": r.passcode })
+            }
+            DeviceCall::SignInWithApple(r) => json!({
+                "call": "apple_sign_in", "email": r.email, "name": r.full_name,
+                "nonce": r.nonce, "state": r.state,
+            }),
+            DeviceCall::AuthRedirect(preferred) => {
+                json!({ "call": "auth_redirect", "preferred": preferred })
+            }
+            DeviceCall::WebAuth(r) => json!({
+                "call": "web_auth", "url": r.url, "redirect": r.redirect,
+                "ephemeral": r.ephemeral, "provider": r.provider,
+            }),
         };
         body["op"] = json!("device");
         body["id"] = json!(id);
@@ -459,10 +490,27 @@ pub mod device {
     }
 
     /// A `device_reply`: `{"err":…}`, `{"permission":…}`, `{"location":{…}}`,
-    /// `{"files":[{path,name,mime,size}]}`, `{"text":…}` or nothing (done).
+    /// `{"files":[{path,name,mime,size}]}`, `{"text":…}`, `{"fields":{…}}`
+    /// or nothing (done).
     pub fn reply(v: &Value) -> Result<DeviceValue, DeviceError> {
         if let Some(err) = v.get("err").and_then(Value::as_str) {
             return Err(DeviceError::from_message(err));
+        }
+        if let Some(fields) = v.get("fields").and_then(Value::as_object) {
+            return Ok(DeviceValue::Fields(
+                fields
+                    .iter()
+                    .filter_map(|(k, v)| {
+                        let v = match v {
+                            Value::String(s) => s.clone(),
+                            Value::Bool(b) => (if *b { "1" } else { "0" }).to_string(),
+                            Value::Number(n) => n.to_string(),
+                            _ => return None,
+                        };
+                        Some((k.clone(), v))
+                    })
+                    .collect(),
+            ));
         }
         if let Some(p) = v.get("permission").and_then(Value::as_str) {
             return Ok(DeviceValue::Permission(PermissionState::from_name(p)));

@@ -17,6 +17,7 @@
 #   PRISM_APP_NAME   display name (default: package name, capitalized)
 #   PRISM_ICON       1024×1024 PNG app icon
 #   PRISM_RELEASE=1  release build
+#   PRISM_APPLE_SIGNIN=1  Sign in with Apple (com.apple.developer.applesignin)
 #   PRISM_PROJECT    project root (default: this repository)
 #   PRISM_PLATFORM   Prism platform files (default: <project>/platform)
 set -euo pipefail
@@ -155,7 +156,7 @@ print(best[1] if best else "")
   [[ -n "$PROFILE" ]] || { echo "No provisioning profile for $BUNDLE_ID: open the project once in Xcode with your team, or set PRISM_PROFILE" >&2; exit 1; }
   security cms -D -i "$PROFILE" > "$GEN/profile.plist"
   # Entitlements granted by the profile (app id, team, debugging, groups).
-  ICLOUD="${PRISM_ICLOUD:-}" python3 - "$GEN/profile.plist" "$GEN/entitlements.plist" "$BUNDLE_ID" <<'PY'
+  ICLOUD="${PRISM_ICLOUD:-}" APPLE="${PRISM_APPLE_SIGNIN:-}" python3 - "$GEN/profile.plist" "$GEN/entitlements.plist" "$BUNDLE_ID" <<'PY'
 import os, plistlib, sys
 p = plistlib.load(open(sys.argv[1], "rb"))
 e = dict(p["Entitlements"])
@@ -170,8 +171,16 @@ if os.environ.get("ICLOUD") == "1":
         print("note: the provisioning profile has no iCloud: cloud_storage stays local (enable iCloud for the App ID in Xcode)", file=sys.stderr)
 else:
     e.pop(kv, None)
+siwa = "com.apple.developer.applesignin"
+if os.environ.get("APPLE") != "1":
+    e.pop(siwa, None)
+elif siwa not in e:
+    print("note: the provisioning profile has no Sign in with Apple: enable the capability for the App ID", file=sys.stderr)
 plistlib.dump(e, open(sys.argv[2], "wb"))
 PY
+  if [[ "${PRISM_APPLE_SIGNIN:-}" == 1 ]] && ! /usr/libexec/PlistBuddy -c "Print :com.apple.developer.applesignin" "$GEN/entitlements.plist" >/dev/null 2>&1; then
+    PRISM_APPLE_SIGNIN=0
+  fi
   if [[ "${PRISM_ICLOUD:-}" == 1 ]] && ! /usr/libexec/PlistBuddy -c "Print :com.apple.developer.ubiquity-kvstore-identifier" "$GEN/entitlements.plist" >/dev/null 2>&1; then
     PRISM_ICLOUD=0
   fi
@@ -188,6 +197,11 @@ else
   if [[ "${PRISM_ICLOUD:-}" == 1 ]]; then
     echo "note: iCloud needs a signed build (a device): on the simulator cloud_storage stays local" >&2
     PRISM_ICLOUD=0
+  fi
+  # Same for Sign in with Apple: the app would not launch.
+  if [[ "${PRISM_APPLE_SIGNIN:-}" == 1 ]]; then
+    echo "note: Sign in with Apple needs a signed build (a device): capabilities().sign_in_with_apple is false on the simulator" >&2
+    PRISM_APPLE_SIGNIN=0
   fi
   cat > "$GEN/entitlements.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -251,6 +265,7 @@ keys = {
     "photos": ["NSPhotoLibraryUsageDescription", "NSPhotoLibraryAddUsageDescription"],
     "microphone": ["NSMicrophoneUsageDescription"],
     "motion": ["NSMotionUsageDescription"],
+    "face_id": ["NSFaceIDUsageDescription"],
 }
 for line in os.environ.get("PRISM_PERMISSIONS", "").splitlines():
     name, _, text = line.partition("\t")
@@ -299,6 +314,7 @@ $LOC_PLIST
 $BG_PLIST
 $USAGE_PLIST
 $( [[ "${PRISM_ICLOUD:-}" == 1 ]] && echo "  <key>PrismICloud</key><true/>" )
+$( [[ "${PRISM_APPLE_SIGNIN:-}" == 1 ]] && echo "  <key>PrismAppleSignIn</key><true/>" )
 $( [[ "$OS" == ios ]] && printf '%s\n' "  <key>LSRequiresIPhoneOS</key><true/>" "  <key>UILaunchScreen</key><dict/>" "  <key>NSSupportsLiveActivities</key><true/>" )
   <key>CFBundleURLTypes</key>
   <array><dict>

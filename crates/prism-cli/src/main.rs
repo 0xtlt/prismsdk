@@ -308,6 +308,9 @@ fn apple_command(
     if p.icloud {
         cmd.env("PRISM_ICLOUD", "1");
     }
+    if p.apple_sign_in {
+        cmd.env("PRISM_APPLE_SIGNIN", "1");
+    }
     if !p.permissions.is_empty() {
         let lines: Vec<String> = p
             .permissions
