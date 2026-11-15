@@ -93,6 +93,18 @@ pub(crate) fn dispatch(event: UiEvent) {
     });
 }
 
+/// A view entered or left an interaction state (hover, press, focus):
+/// restyled on the next turn (UIKit may call while views change).
+pub(crate) fn set_interaction(id: NodeId, state: prism_core::Interaction, on: bool) {
+    dispatch2::DispatchQueue::main().exec_async(move || {
+        with_state(|s| {
+            if s.renderer.set_interaction(id, state, on) {
+                s.relayout();
+            }
+        })
+    });
+}
+
 /// Opens a deep link (widget, Live Activity or notification tap).
 pub(crate) fn open_link(path: &str) {
     with_state(|s| {
@@ -269,6 +281,12 @@ define_class!(
         #[unsafe(method(onBeginEditing:))]
         fn on_begin_editing(&self, sender: &UITextField) {
             scroll_into_view(sender);
+            crate::decor::focus(sender.tag() as NodeId, true);
+        }
+
+        #[unsafe(method(onEndEditing:))]
+        fn on_end_editing(&self, sender: &UITextField) {
+            crate::decor::focus(sender.tag() as NodeId, false);
         }
 
         /// The return key (the field resigns, hiding the keyboard).
@@ -394,6 +412,12 @@ define_class!(
         #[unsafe(method(textViewDidBeginEditing:))]
         fn text_view_did_begin_editing(&self, view: &objc2_ui_kit::UITextView) {
             scroll_into_view(view);
+            crate::decor::focus(view.tag() as NodeId, true);
+        }
+
+        #[unsafe(method(textViewDidEndEditing:))]
+        fn text_view_did_end_editing(&self, view: &objc2_ui_kit::UITextView) {
+            crate::decor::focus(view.tag() as NodeId, false);
         }
     }
 
@@ -471,6 +495,14 @@ define_class!(
         fn view_did_layout_subviews(&self) {
             let _: () = unsafe { msg_send![super(self), viewDidLayoutSubviews] };
             with_state(State::relayout);
+        }
+
+        /// Light / dark: layer colors (borders, shadows, gradients) are
+        /// plain `CGColor`s, resolved again.
+        #[unsafe(method(traitCollectionDidChange:))]
+        fn trait_collection_did_change(&self, previous: Option<&UITraitCollection>) {
+            let _: () = unsafe { msg_send![super(self), traitCollectionDidChange: previous] };
+            crate::decor::appearance_changed();
         }
     }
 );
@@ -1186,8 +1218,9 @@ impl Widgets for UiKit {
         let mtm = self.mtm;
         let target: &AnyObject = &self.target;
         let view = match kind {
+            // Reports presses for `.active(|s| …)`.
             #[cfg(not(target_os = "tvos"))]
-            NodeKind::View => View::Container(UIView::new(mtm)),
+            NodeKind::View => View::Container(crate::decor::container(mtm)),
             // tvOS: containers can take the remote's focus when clickable.
             #[cfg(target_os = "tvos")]
             NodeKind::View => View::Container(crate::tv::focus_view(mtm)),
@@ -1291,6 +1324,11 @@ impl Widgets for UiKit {
                     );
                     f.addTarget_action_forControlEvents(
                         Some(target),
+                        sel!(onEndEditing:),
+                        UIControlEvents::EditingDidEnd,
+                    );
+                    f.addTarget_action_forControlEvents(
+                        Some(target),
                         sel!(onSubmit:),
                         UIControlEvents::EditingDidEndOnExit,
                     );
@@ -1361,6 +1399,11 @@ impl Widgets for UiKit {
 
     fn set_hidden(&mut self, view: &View, hidden: bool) {
         view.ui().setHidden(hidden);
+        crate::decor::set_hidden(view.ui(), hidden);
+    }
+
+    fn set_interactions(&mut self, view: &View, states: prism_core::Interactions) {
+        crate::decor::set_interactions(view.ui(), states);
     }
 
     fn set_style(&mut self, view: &View, style: &Style) {
@@ -1469,6 +1512,8 @@ impl Widgets for UiKit {
                 b.setTitleColor_forState(text_color.as_deref(), UIControlState::Normal);
             }
         }
+        // Shadows, per-side and dashed borders, clip, gradient, blur.
+        crate::decor::apply(v, style);
     }
 
     fn set_text(&mut self, view: &View, text: &str) {
@@ -1589,6 +1634,7 @@ impl Widgets for UiKit {
             return;
         }
         let View::Container(v) = view else { return };
+        crate::decor::set_clickable(v, clickable);
         if let Some(existing) = v.gestureRecognizers() {
             for g in existing.iter() {
                 if g.isKindOfClass(UITapGestureRecognizer::class()) {
@@ -1668,6 +1714,7 @@ impl Widgets for UiKit {
                 sub.removeFromSuperview();
             }
         }
+        crate::decor::after_children(parent);
     }
 
     fn set_root(&mut self, view: &View) {
@@ -1700,6 +1747,7 @@ impl Widgets for UiKit {
 
     fn destroy(&mut self, view: &View) {
         let id = view.id();
+        crate::decor::destroy(id);
         SHAPES.with(|s| s.borrow_mut().remove(&id));
         crate::layout::forget(id);
         self.screens.remove(&id);
@@ -1799,6 +1847,7 @@ impl Widgets for UiKit {
                 .layer()
                 .setCornerRadius(r.min(w.min(h) as f64 / 2.).max(0.));
         }
+        crate::decor::layout(view.ui());
     }
 
     fn set_frame_animated(
@@ -1816,9 +1865,19 @@ impl Widgets for UiKit {
         let new = (v.bounds(), v.center());
         v.setBounds(old.0);
         v.setCenter(old.1);
+        // Drop shadows move along.
+        let shadow = crate::decor::companion(view.id());
+        if let Some(c) = &shadow {
+            c.setBounds(old.0);
+            c.setCenter(old.1);
+        }
         animate(self.mtm, t, move || {
             v.setBounds(new.0);
             v.setCenter(new.1);
+            if let Some(c) = &shadow {
+                c.setBounds(new.0);
+                c.setCenter(new.1);
+            }
         });
     }
 
@@ -1830,10 +1889,19 @@ impl Widgets for UiKit {
         v.setAlpha(alpha);
         v.setBackgroundColor(bg.as_deref());
         v.setTransform(transform);
+        let shadow = crate::decor::companion(view.id());
+        if let Some(c) = &shadow {
+            c.setAlpha(alpha);
+            c.setTransform(transform);
+        }
         animate(self.mtm, t, move || {
             v.setAlpha(new_alpha);
             v.setBackgroundColor(new_bg.as_deref());
             v.setTransform(new_transform);
+            if let Some(c) = &shadow {
+                c.setAlpha(new_alpha);
+                c.setTransform(new_transform);
+            }
         });
     }
 

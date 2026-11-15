@@ -24,6 +24,10 @@ struct HtmlNode {
     children: Vec<NodeId>,
     /// A horizontal scroll view (`prism-scroll-x`).
     hscroll: bool,
+    /// Interaction refinements as CSS rules (`css::states_css`).
+    states: String,
+    /// Descendants' `group_*` refinements follow it (`data-group`).
+    group: bool,
 }
 
 /// Turns a picture source (`logo.png`, `https://…`) into its URL.
@@ -89,6 +93,9 @@ impl Backend for HtmlBackend {
                     if let Some(n) = self.nodes.get_mut(id) {
                         n.css = css(n.kind.unwrap_or(NodeKind::View), style);
                         n.hscroll = style.scroll_axis == prism_core::ScrollAxis::Horizontal;
+                        n.group = style.group;
+                        n.states =
+                            crate::css::states_css(n.kind.unwrap_or(NodeKind::View), *id, style);
                     }
                 }
                 Patch::SetText { id, text } => self.with(*id, |n| n.text = text.clone()),
@@ -208,6 +215,31 @@ impl HtmlBackend {
 
     pub fn to_html(&self) -> String {
         let mut out = String::new();
+        // Hover, press and focus rules until the client takes over (it
+        // replaces the root, and this with it).
+        let mut ids: Vec<&NodeId> = self
+            .nodes
+            .iter()
+            .filter(|(_, n)| !n.states.is_empty())
+            .map(|(id, _)| id)
+            .collect();
+        if !ids.is_empty() {
+            ids.sort();
+            // Rules never contain `<`: nothing can close the element.
+            let rules: String = ids
+                .into_iter()
+                .map(|id| self.nodes[id].states.replace('<', ""))
+                .collect();
+            match self.sheet.borrow_mut().as_mut() {
+                // A page: in its one `<style>` block, with the CSP nonce.
+                Some(sheet) => sheet.css.push_str(&rules),
+                None => {
+                    out.push_str("<style data-prism-states>");
+                    out.push_str(&rules);
+                    out.push_str("</style>");
+                }
+            }
+        }
         if let Some(root) = self.root {
             self.write(root, false, &mut out);
         }
@@ -232,12 +264,13 @@ impl HtmlBackend {
         } else {
             a11y_attrs(kind, &n.a11y)
         };
+        let group = if n.group { " data-group" } else { "" };
         let style = match self.sheet.borrow_mut().as_mut() {
             Some(sheet) => sheet.attr(&css),
             None => format!(r#" style="{}""#, escape(&css)),
         };
         let attrs = format!(
-            r#"data-pid="{id}" data-kind="{}"{style}{hidden}{aria}"#,
+            r#"data-pid="{id}" data-kind="{}"{style}{hidden}{aria}{group}"#,
             kind.name(),
         );
         // Sheets attached to a stack or tab bar are not screens or tabs: they

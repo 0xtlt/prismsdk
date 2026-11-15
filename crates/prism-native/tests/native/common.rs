@@ -62,6 +62,8 @@ pub struct Fake {
     pub screen_insets: Insets,
     /// What each sticky view was last told: its scroll view and range.
     pub sticky: HashMap<NodeId, Option<(NodeId, Sticky)>>,
+    /// The interaction states each view was asked to report.
+    pub interactions: HashMap<NodeId, prism_core::Interactions>,
 }
 
 impl Fake {
@@ -259,6 +261,9 @@ impl Widgets for Fake {
     }
     fn set_sticky(&mut self, v: &NodeId, sticky: Option<(&NodeId, Sticky)>) {
         self.sticky.insert(*v, sticky.map(|(s, st)| (*s, st)));
+    }
+    fn set_interactions(&mut self, v: &NodeId, states: prism_core::Interactions) {
+        self.interactions.insert(*v, states);
     }
 }
 

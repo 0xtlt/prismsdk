@@ -49,6 +49,19 @@ The first version, not yet on crates.io.
 - Per-corner rounding (`rounded_top`, `rounded_bottom`, `rounded_corners` with
   `Corners`, leading/trailing aware) on every backend; bar charts round only
   the top of their bars by default (`bar_radius`, `bar_corners`).
+- Box decorations on every backend: shadows (several, offset, blur, spread,
+  inset; `shadow_sm/md/lg`, `Shadow::ring`), per-side borders
+  (`border_top`…), dashed and dotted borders, `clip()` to the rounded box,
+  linear and radial gradients (`bg_gradient`), backdrop blur
+  (`backdrop_blur`; no blur on GTK), and `Color::current()`, a color relative
+  to the text color (`color-mix()` with `currentColor` on the web).
+- Interaction states: `.hover`, `.active`, `.focus`, `.focus_within`,
+  `.disabled` style refinements and group states (`.group()`,
+  `.group_hover`, `.group_active`, `.group_focus_within`), resolved natively
+  (CSS and GTK pseudo-classes, AppKit tracking areas, UIKit gestures and the
+  tvOS focus engine, Android touch, hover and focus listeners, SwiftUI
+  pressed state); `cursor(…)`, with a pointing hand on clickable nodes.
+- `prism::ui` buttons react to hover and press; cards have a faint shadow.
 - Shipping: Android App Bundles and Google Play upload, App Store builds and
   upload, Developer ID notarization and DMGs, `.deb` packages, web Docker
   images, all with `--dry-run`.
@@ -97,21 +110,6 @@ The first version, not yet on crates.io.
 - `TaskHandle::cancel_on_release` and `cancel_with(&entity)`: a task stops
   when its entity is released, skipping background work not started yet.
   (#23)
-
-### Changed
-
-- Web: an unknown path answers `404` with the not-found screen (it was `200`).
-- Web: the first paint has no `style` attributes: node styles are rules of a
-  `<style>` block (with the host's nonce), so `style-src` needs no
-  `'unsafe-inline'`. `HtmlBackend::to_html_and_css` returns both.
-- Web: `cx.open_url` stays in the tab for a URL of the page's own origin (a
-  new tab otherwise).
-- Web: socket handshakes from a foreign `Origin` are refused (`403`) unless
-  allowed.
-- `Styled::flex_grow()` takes a weight: `flex_grow(1.)`.
-- The Settings tab of the example lays its cards out with `grid().cols(2)`
-  instead of wrapped flex cells.
-
 - Typography on every backend: font families (`font_mono`, `font_serif`,
   `font_rounded`, `font_family("Inter")`), any weight from 100 to 900
   (`weight(650)`, `FontWeight::Thin` … `Black`), `italic`, `line_height` /
@@ -130,10 +128,24 @@ The first version, not yet on crates.io.
 
 ### Changed
 
+- Web: an unknown path answers `404` with the not-found screen (it was `200`).
+- Web: the first paint has no `style` attributes: node styles are rules of a
+  `<style>` block (with the host's nonce), so `style-src` needs no
+  `'unsafe-inline'`. `HtmlBackend::to_html_and_css` returns both.
+- Web: `cx.open_url` stays in the tab for a URL of the page's own origin (a
+  new tab otherwise).
+- Web: socket handshakes from a foreign `Origin` are refused (`403`) unless
+  allowed.
+- `Styled::flex_grow()` takes a weight: `flex_grow(1.)`.
+- The Settings tab of the example lays its cards out with `grid().cols(2)`
+  instead of wrapped flex cells.
 - `FontWeight` has the whole CSS scale (`Thin`, `ExtraLight`, `Light`,
   `ExtraBold`, `Black`, `Custom(u16)`); matches on it need the new variants.
 - Links (`Div::link`, `Text::link`, `link(…)` runs) to a URL with a scheme
   (`https://…`, `mailto:`) open it instead of navigating in the app.
+- Android: rounded views no longer clip their children unless they ask for it
+  with `clip()` (pictures still do), like the other backends; this also lets
+  their shadows show.
 - The Swift sources moved from `platform/apple` to
   `crates/prism-apple-build/apple`, the Android host and the bundling scripts
   from `platform/android` and `scripts/` to `crates/prism-cli/platform`, so

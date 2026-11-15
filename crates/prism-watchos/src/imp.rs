@@ -391,6 +391,19 @@ pub extern "C" fn prism_watch_event(json: *const c_char) {
             });
             return;
         }
+        // Pressed, focused (`.active(|s| …)`…): restyled here, drawn there.
+        Some("state") => {
+            if let Some((id, state, on)) = prism_native::remote::state_event(&v) {
+                dispatch2::DispatchQueue::main().exec_async(move || {
+                    with_state(|s| {
+                        if s.renderer.set_interaction(id, state, on) {
+                            relayout(s);
+                        }
+                    })
+                });
+            }
+            return;
+        }
         _ => {}
     }
     let Some(event) = parse(&v) else { return };

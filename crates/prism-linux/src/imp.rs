@@ -359,6 +359,13 @@ pub struct Gtk {
     bare: HashSet<NodeId>,
     /// Sticky views of each scroll view, moved as it scrolls.
     stickies: Stickies,
+    /// Interaction states each widget reports to prism-native (refinements
+    /// CSS cannot draw, groups, the focus of text fields), and the widgets
+    /// that have the controllers reporting them.
+    reports: Rc<RefCell<HashMap<NodeId, prism_core::Interactions>>>,
+    watched: HashSet<NodeId>,
+    /// Cursors set by `Style::cursor` (they win over the clickable default).
+    cursors: HashMap<NodeId, prism_core::Cursor>,
 }
 
 /// Scroll view → its sticky views (node, widget, range).
@@ -374,13 +381,7 @@ fn place_sticky(stickies: &Stickies, scroll: NodeId, value: f64) {
 }
 
 fn css_color(c: Color, dark: bool) -> String {
-    let c = if dark {
-        c.dark_variant()
-    } else {
-        c.light_variant()
-    };
-    let v = |x: f32| (x.clamp(0., 1.) * 255.).round() as u8;
-    format!("rgba({},{},{},{})", v(c.r), v(c.g), v(c.b), c.a)
+    crate::decor::color(c, dark)
 }
 
 fn rect(x: f32, y: f32, w: f32, h: f32) -> (i32, i32, i32, i32) {
@@ -506,6 +507,115 @@ impl Gtk {
     }
 }
 
+// Interaction states prism-native resolves (refinements CSS cannot draw:
+// sizes, visibility, opacity, transforms; group states; focus-within).
+impl Gtk {
+    /// Decides which states `id` reports to prism-native and adds the event
+    /// controllers reporting them (once): pointer motion (hover), raw
+    /// presses (also setting GTK's `:active`, which plain boxes don't get),
+    /// and keyboard focus.
+    fn watch_states(&mut self, id: NodeId, w: &gtk::Widget, s: &Style, text_field: bool) {
+        use prism_core::Interaction as I;
+        let used = s.states.used();
+        let mut report = prism_core::Interactions::NONE;
+        if crate::decor::needs_engine(s) {
+            for i in [I::Hover, I::Active, I::Focus] {
+                report = report.with(i, used.contains(i));
+            }
+        }
+        if s.group {
+            report = report.with(I::Hover, true).with(I::Active, true);
+        }
+        // Text fields always report their focus: ancestors' focus-within
+        // and group refinements follow it.
+        if text_field {
+            report = report.with(I::Focus, true);
+        }
+        // GTK only sets `:active` on widgets that handle presses themselves.
+        let pressable = used.contains(I::Active) || s.group;
+        if report.is_empty() && !pressable {
+            self.reports.borrow_mut().remove(&id);
+            return;
+        }
+        self.reports.borrow_mut().insert(id, report);
+        if !self.watched.insert(id) {
+            return;
+        }
+        let reports = self.reports.clone();
+        let reports_on = move |i: I| reports.borrow().get(&id).is_some_and(|r| r.contains(i));
+        let motion = gtk::EventControllerMotion::new();
+        let on = reports_on.clone();
+        motion.connect_enter(move |_, _, _| {
+            if on(I::Hover) {
+                report_state(id, I::Hover, true)
+            }
+        });
+        let on = reports_on.clone();
+        motion.connect_leave(move |_| {
+            if on(I::Hover) {
+                report_state(id, I::Hover, false)
+            }
+        });
+        w.add_controller(motion);
+        // Raw presses and releases, seen before children (buttons still get
+        // them): a click gesture would stop tracking at the double-click
+        // timeout while the button is still down.
+        let press = gtk::EventControllerLegacy::new();
+        press.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let on = reports_on.clone();
+        press.connect_event(move |c, event| {
+            let down = match event.event_type() {
+                gdk::EventType::ButtonPress | gdk::EventType::TouchBegin => true,
+                gdk::EventType::ButtonRelease
+                | gdk::EventType::TouchEnd
+                | gdk::EventType::TouchCancel => false,
+                _ => return glib::Propagation::Proceed,
+            };
+            if let Some(w) = c.widget() {
+                if down {
+                    w.set_state_flags(gtk::StateFlags::ACTIVE, false);
+                } else {
+                    w.unset_state_flags(gtk::StateFlags::ACTIVE);
+                }
+            }
+            if on(I::Active) {
+                report_state(id, I::Active, down)
+            }
+            glib::Propagation::Proceed
+        });
+        w.add_controller(press);
+        let focus = gtk::EventControllerFocus::new();
+        let on = reports_on.clone();
+        focus.connect_enter(move |_| {
+            if on(I::Focus) {
+                report_state(id, I::Focus, true)
+            }
+        });
+        focus.connect_leave(move |_| {
+            if reports_on(I::Focus) {
+                report_state(id, I::Focus, false)
+            }
+        });
+        w.add_controller(focus);
+    }
+}
+
+/// A widget entered or left an interaction state: prism-native restyles it
+/// (and its group's descendants, its ancestors for focus-within), then the
+/// window is laid out again. On the next turn: GTK may be mid-update.
+fn report_state(id: NodeId, state: prism_core::Interaction, on: bool) {
+    glib::idle_add_local_once(move || {
+        with_state(|s| {
+            if s.renderer.set_interaction(id, state, on) {
+                UPDATING.set(true);
+                s.renderer.widgets.flush_css();
+                relayout(s);
+                UPDATING.set(false);
+            }
+        })
+    });
+}
+
 fn tabs_id(tabs: &Rc<TabBar>) -> NodeId {
     tabs.root
         .widget_name()
@@ -581,6 +691,7 @@ impl Widgets for Gtk {
             }
             NodeKind::Button => {
                 let b = gtk::Button::new();
+                b.set_cursor_from_name(Some("pointer"));
                 b.connect_clicked(move |_| dispatch(UiEvent::Click(id)));
                 View::Button(id, b)
             }
@@ -750,37 +861,12 @@ impl Widgets for Gtk {
             };
             sw.set_policy(h, v);
         }
-        let mut css = String::new();
-        if let Some(bg) = s.background {
-            css += &format!("background-color:{};", css_color(bg, self.dark));
-            // The theme paints buttons with an image over their color.
-            if matches!(view, View::Button(..)) {
-                css += "background-image:none;";
-            }
-        }
-        if s.corner_radius > 0. {
-            // Top left, top right, bottom right, bottom left: prism-native
-            // already mirrored the corners for right-to-left layouts.
-            let r = |c: prism_core::Corners| {
-                if s.rounded_corners.contains(c) {
-                    s.corner_radius
-                } else {
-                    0.
-                }
-            };
-            css += &format!(
-                "border-radius:{}px {}px {}px {}px;",
-                r(prism_core::Corners::TOP_LEADING),
-                r(prism_core::Corners::TOP_TRAILING),
-                r(prism_core::Corners::BOTTOM_TRAILING),
-                r(prism_core::Corners::BOTTOM_LEADING)
-            );
-        }
-        if s.border_width > 0. {
-            let c = s
-                .border_color
-                .map_or("currentColor".into(), |c| css_color(c, self.dark));
-            css += &format!("border:{}px solid {c};", s.border_width);
+        // Background, gradient, corners, borders (per side, dashed, dotted)
+        // and shadows.
+        let mut css = crate::decor::declarations(&crate::decor::paint(s, self.dark, false));
+        // The theme paints buttons with an image over their color.
+        if s.background.is_some() && s.gradient.is_none() && matches!(view, View::Button(..)) {
+            css += "background-image:none;";
         }
         if let Some(t) = s.transition {
             // Colors animate in GTK's CSS; opacity and transforms in `layout`.
@@ -809,7 +895,7 @@ impl Widgets for Gtk {
         }
         if let View::TextArea(_, t) = view {
             // Prism draws the field: the text view is transparent inside.
-            let drawn = s.background.is_some() || s.border_width > 0.;
+            let drawn = s.background.is_some() || s.borders().iter().any(|b| b.width > 0.);
             t.scroll.set_has_frame(!drawn);
             if drawn {
                 extra += &format!(
@@ -825,9 +911,35 @@ impl Widgets for Gtk {
         if let View::Text(..) = view {
             extra += &text::link_css(id);
         }
+        // Hover, press and focus refinements: GTK's own pseudo-classes.
+        let text_on_self = !matches!(
+            view,
+            View::Slider(..) | View::Picker(..) | View::DatePicker(..)
+        );
+        let inner_focus = matches!(view, View::Input(..) | View::TextArea(..));
+        extra += &crate::decor::state_rules(id, s, self.dark, text_on_self, inner_focus);
         self.rules.insert(id, format!(".p{id}{{{css}}}\n{extra}"));
         self.css_dirty = true;
         let w = view.widget();
+        if s.group {
+            w.add_css_class("prism-group");
+        } else {
+            w.remove_css_class("prism-group");
+        }
+        self.watch_states(id, &w, s, inner_focus);
+        match s.cursor {
+            Some(c) => {
+                self.cursors.insert(id, c);
+                w.set_cursor_from_name(Some(c.css()));
+            }
+            None => {
+                if self.cursors.remove(&id).is_some() {
+                    let pointer =
+                        self.clickable.borrow().contains(&id) || matches!(view, View::Button(..));
+                    w.set_cursor_from_name(pointer.then_some("pointer"));
+                }
+            }
+        }
         layout::stop(&w, layout::Channel::Visual);
         layout::set_visual(
             &w,
@@ -857,11 +969,13 @@ impl Widgets for Gtk {
                 });
             }
             View::Container(..) | View::TextArea(..) => {
-                view.widget().set_overflow(if s.corner_radius > 0. {
-                    gtk::Overflow::Hidden
-                } else {
-                    gtk::Overflow::Visible
-                })
+                // `clip()`: children clipped to the (rounded) box.
+                view.widget()
+                    .set_overflow(if s.corner_radius > 0. || s.clip {
+                        gtk::Overflow::Hidden
+                    } else {
+                        gtk::Overflow::Visible
+                    })
             }
             _ => {}
         }
@@ -939,16 +1053,20 @@ impl Widgets for Gtk {
         if let View::Container(id, _, c) = view {
             if clickable {
                 self.clickable.borrow_mut().insert(*id);
-                c.set_cursor_from_name(Some("pointer"));
             } else {
                 self.clickable.borrow_mut().remove(id);
-                c.set_cursor_from_name(None);
+            }
+            // A pointing hand, unless the style chose a cursor.
+            if !self.cursors.contains_key(id) {
+                c.set_cursor_from_name(clickable.then_some("pointer"));
             }
         }
         if let View::Text(id, l) = view {
             if clickable {
                 self.clickable.borrow_mut().insert(*id);
-                l.set_cursor_from_name(Some("pointer"));
+                if !self.cursors.contains_key(id) {
+                    l.set_cursor_from_name(Some("pointer"));
+                }
                 // A button for assistive technologies (the role can only
                 // change before the widget is realized).
                 if !l.is_realized() {
@@ -956,7 +1074,9 @@ impl Widgets for Gtk {
                 }
             } else {
                 self.clickable.borrow_mut().remove(id);
-                l.set_cursor_from_name(None);
+                if !self.cursors.contains_key(id) {
+                    l.set_cursor_from_name(None);
+                }
             }
             self.update_text_focus(*id, l);
         }
@@ -1060,6 +1180,9 @@ impl Widgets for Gtk {
         self.rules.remove(&id);
         self.css_dirty = true;
         self.clickable.borrow_mut().remove(&id);
+        self.reports.borrow_mut().remove(&id);
+        self.watched.remove(&id);
+        self.cursors.remove(&id);
         self.timers.remove(&id);
         if let Some(p) = self.menus.borrow_mut().remove(&id) {
             p.unparent();
@@ -1828,6 +1951,9 @@ fn activate(app: &gtk::Application) {
         bare: HashSet::new(),
         stickies: Rc::new(RefCell::new(HashMap::new())),
         labels: HashMap::new(),
+        reports: Rc::default(),
+        watched: HashSet::new(),
+        cursors: HashMap::new(),
     });
     STATE.with(|s| {
         *s.borrow_mut() = Some(State {

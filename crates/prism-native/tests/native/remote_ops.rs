@@ -537,6 +537,86 @@ fn style_sends_rounded_corners_only_when_some_are_square() {
 }
 
 #[test]
+fn style_ops_carry_decorations_only_when_set() {
+    use prism_core::{Cursor, Gradient, Interaction, Interactions, Shadow, Styled};
+    let mut w = RemoteWidgets::new(measure);
+    let style = Style::default()
+        .shadow(Shadow::new(0., 2., 4., rgb(0x000000)).spread(1.))
+        .shadow(Shadow::new(1., 1., 0., rgb(0xff0000)).inset())
+        .border(1.)
+        .border_color(rgb(0x00ff00))
+        .border_bottom(2., rgb(0x0000ff))
+        .border_dashed()
+        .clip()
+        .bg_gradient(Gradient::linear(90., [rgb(0xff0000), rgb(0x0000ff)]))
+        .backdrop_blur(12.)
+        .cursor(Cursor::Pointer);
+    w.set_style(&4, &style);
+    let s = &last(&w)["s"];
+    assert_eq!(
+        s["shadows"],
+        json!([
+            {"x": 0., "y": 2., "blur": 4., "spread": 1., "color": [0., 0., 0., 1., 0., 0., 0., 1.], "inset": false},
+            {"x": 1., "y": 1., "blur": 0., "spread": 0., "color": [1., 0., 0., 1., 1., 0., 0., 1.], "inset": true},
+        ])
+    );
+    let green = json!([0., 1., 0., 1., 0., 1., 0., 1.]);
+    assert_eq!(
+        s["sides"],
+        json!([
+            [1., green],
+            [1., green],
+            [2., [0., 0., 1., 1., 0., 0., 1., 1.]],
+            [1., green]
+        ])
+    );
+    assert_eq!(s["bstyle"], json!("dashed"));
+    assert_eq!(s["clip"], json!(true));
+    assert_eq!(
+        s["grad"],
+        json!({"kind": "linear", "angle": 90., "stops": [
+            [[1., 0., 0., 1., 1., 0., 0., 1.], 0.],
+            [[0., 0., 1., 1., 0., 0., 1., 1.], 1.],
+        ]})
+    );
+    assert_eq!(s["blur"], json!(12.));
+    assert_eq!(s["cursor"], json!("pointer"));
+
+    // None of them by default: older hosts see the same op.
+    w.set_style(&4, &Style::default());
+    let s = last(&w)["s"].clone();
+    for key in [
+        "shadows", "sides", "bstyle", "clip", "grad", "blur", "cursor",
+    ] {
+        assert!(s.get(key).is_none(), "{key} sent by default");
+    }
+
+    // Which states to report; derived ones are not asked for.
+    let states = Interactions::from(Interaction::Hover)
+        | Interaction::FocusWithin.into()
+        | Interaction::GroupHover.into();
+    w.set_interactions(&4, states);
+    assert_eq!(last(&w), json!({"op": "states", "id": 4, "on": ["hover"]}));
+
+    // What hosts send back.
+    let event = json!({"t": "state", "id": 4, "s": "active", "on": true});
+    assert_eq!(
+        prism_native::remote::state_event(&event),
+        Some((4, Interaction::Active, true))
+    );
+    assert_eq!(
+        prism_native::remote::state_event(&json!({"t": "click", "id": 4})),
+        None
+    );
+    assert_eq!(
+        prism_native::remote::state_event(
+            &json!({"t": "state", "id": 4, "s": "wiggle", "on": true})
+        ),
+        None
+    );
+}
+
+#[test]
 fn hosts_learn_which_stacks_and_screens_hide_the_header() {
     use prism_core::{
         AppInit, Context, IntoElement, Render, Router, Runtime, STACK_NO_HEADER, screen,

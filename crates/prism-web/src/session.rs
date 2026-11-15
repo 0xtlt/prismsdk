@@ -753,6 +753,14 @@ impl Encoder {
                     json!({ "op": "style", "id": id, "css": css(kind, style), "motion": motion })
                 };
                 crate::css::layout_op_fields(kind, style, &mut op);
+                // Hover, press and focus refinements: pseudo-class rules.
+                let states = crate::css::states_css(kind, *id, style);
+                if !states.is_empty() {
+                    op["states"] = json!(states);
+                }
+                if style.group {
+                    op["group"] = json!(true);
+                }
                 op
             }
             Patch::SetText { id, text } => {

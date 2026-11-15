@@ -74,6 +74,8 @@ define_class!(
                 msg_send![super(self), didUpdateFocusInContext: context, withAnimationCoordinator: coordinator]
             };
             raise(self, self.isFocused());
+            // `.focus(|s| …)`, `.hover(|s| …)`: the focused view hovers too.
+            crate::decor::tv_focus(self.tag() as NodeId, self.isFocused());
         }
     }
 );

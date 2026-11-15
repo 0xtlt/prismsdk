@@ -39,6 +39,19 @@
 //! `lower`, `capitalize`), `ls` letter spacing and `lh` line height in
 //! points, `ml` maximum lines (ellipsized), `nw` no wrapping. `weight` is any
 //! CSS weight from 100 to 900.
+//! | `states` | `on`: the interaction states the host reports for the node (`hover`, `active`, `focus`) |
+//!
+//! Box decorations, in `style` only when set: `shadows`: `[{x, y, blur,
+//! spread, color, inset}]` (the first on top); `sides`: per-side borders
+//! `[[w, color] × 4]` top, right, bottom, left (already mirrored right to
+//! left); `bstyle`: `dashed` or `dotted`; `clip`: children clipped to the
+//! rounded box; `grad`: `{kind: "linear" | "radial", angle, stops: [[color,
+//! at]]}` (angle in CSS degrees, 180 top to bottom); `blur`: backdrop blur
+//! radius; `cursor`: a CSS cursor name. Colors are already resolved
+//! ([`prism_core::Color::current`] included).
+//!
+//! The host reports interaction states as `{"t":"state","id":…,"s":"hover",
+//! "on":true}` (see [`state_event`]).
 
 use std::collections::HashMap;
 
@@ -279,8 +292,79 @@ impl RemoteWidgets {
         if s.scroll_axis == prism_core::ScrollAxis::Horizontal {
             op["s"]["hscroll"] = json!(true);
         }
+        decorations(&mut op["s"], s);
         op
     }
+}
+
+/// Box decorations of a style op (only those set: older hosts ignore them).
+fn decorations(o: &mut Value, s: &Style) {
+    use prism_core::{BorderStyle, GradientKind};
+    if !s.shadows.is_empty() {
+        o["shadows"] = s
+            .shadows
+            .iter()
+            .map(|sh| {
+                json!({
+                    "x": sh.x, "y": sh.y, "blur": sh.blur, "spread": sh.spread,
+                    "color": color(Some(sh.color)), "inset": sh.inset,
+                })
+            })
+            .collect();
+    }
+    if s.has_side_borders() {
+        o["sides"] = s
+            .borders()
+            .iter()
+            .map(|b| {
+                json!([
+                    b.width,
+                    if b.width > 0. {
+                        color(b.color)
+                    } else {
+                        Value::Null
+                    }
+                ])
+            })
+            .collect();
+    }
+    if s.border_style != BorderStyle::Solid {
+        o["bstyle"] = json!(s.border_style.css());
+    }
+    if s.clip {
+        o["clip"] = json!(true);
+    }
+    if let Some(g) = &s.gradient {
+        let (kind, angle) = match g.kind {
+            GradientKind::Linear { angle } => ("linear", angle),
+            GradientKind::Radial => ("radial", 0.),
+        };
+        o["grad"] = json!({
+            "kind": kind,
+            "angle": angle,
+            "stops": g.stops.iter().map(|st| json!([color(Some(st.color)), st.at])).collect::<Vec<_>>(),
+        });
+    }
+    if s.backdrop_blur > 0. {
+        o["blur"] = json!(s.backdrop_blur);
+    }
+    if let Some(c) = s.cursor {
+        o["cursor"] = json!(c.css());
+    }
+}
+
+/// A host's `{"t":"state","id":…,"s":"hover"|"active"|"focus","on":bool}`:
+/// the node entered or left an interaction state. Hand it to
+/// [`NativeRenderer::set_interaction`](crate::NativeRenderer::set_interaction).
+pub fn state_event(v: &Value) -> Option<(NodeId, prism_core::Interaction, bool)> {
+    if v.get("t")?.as_str()? != "state" {
+        return None;
+    }
+    Some((
+        v.get("id")?.as_u64()?,
+        prism_core::Interaction::from_name(v.get("s")?.as_str()?)?,
+        v.get("on")?.as_bool()?,
+    ))
 }
 
 impl Widgets for RemoteWidgets {
@@ -527,6 +611,19 @@ impl Widgets for RemoteWidgets {
     fn set_scroll_events(&mut self, id: &NodeId, on: bool) {
         self.ops
             .push(json!({ "op": "scrollev", "id": id, "on": on }));
+    }
+
+    /// Which interaction states the host reports for the node. Focus-within
+    /// and group states are derived (hosts always report the focus of text
+    /// inputs and text areas); disabled is resolved before the host sees it.
+    fn set_interactions(&mut self, id: &NodeId, states: prism_core::Interactions) {
+        use prism_core::Interaction as I;
+        let on: Vec<&str> = [I::Hover, I::Active, I::Focus]
+            .into_iter()
+            .filter(|i| states.contains(*i))
+            .map(I::name)
+            .collect();
+        self.ops.push(json!({ "op": "states", "id": id, "on": on }));
     }
 
     /// Language direction and the chrome's words (the host's header, bars).

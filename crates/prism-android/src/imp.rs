@@ -560,6 +560,14 @@ pub extern "system" fn Java_dev_prism_PrismHost_nativeEvent(
                 Some(path) => s.runtime.open_link(path),
                 None => Vec::new(),
             },
+            // Hovered, pressed, focused: restyled in its new states (the
+            // style ops go out with the relayout below).
+            Some("state") => {
+                if let Some((id, state, on)) = prism_native::remote::state_event(&v) {
+                    s.renderer.set_interaction(id, state, on);
+                }
+                Vec::new()
+            }
             Some(t) if t.starts_with("device") || t == "notif" => {
                 crate::services::event(&mut s.runtime, &v)
             }

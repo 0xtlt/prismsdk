@@ -15,11 +15,13 @@ mod apple_models;
 pub mod background;
 pub mod car;
 pub mod controls;
+pub mod decoration;
 pub mod device;
 pub mod device_info;
 mod element;
 pub mod glyphs;
 pub mod i18n;
+pub mod interaction;
 pub mod layout;
 pub mod list;
 pub mod menu;
@@ -43,6 +45,9 @@ pub use app::{AnyEntity, App, Appearance, Context, Entity, EntityId, Environment
 pub use background::{BackgroundKind, BackgroundTask, Lifecycle};
 pub use car::{CarButton, CarButtonStyle, CarItem, CarSection, CarTab, CarTemplate};
 pub use controls::{Capitalize, DateMode, Keyboard, ReturnKey};
+pub use decoration::{
+    BorderSide, BorderSides, BorderStyle, Cursor, Gradient, GradientKind, GradientStop, Shadow,
+};
 pub use device::{
     Accuracy, DeviceCall, DeviceError, DeviceEvent, DeviceValue, Haptic, Location, Motion,
     Permission, PermissionState, PickImages, PickedFile, Share, Watch,
@@ -63,6 +68,7 @@ pub use element::{
 };
 pub use element::{STACK_CLOSABLE, STACK_NO_HEADER};
 pub use i18n::{BasicFormatter, DateStyle, Direction, Formatter, Locale, Translations};
+pub use interaction::{Interaction, Interactions, States};
 pub use layout::{GridTrack, Repetition, ScrollAxis, auto_fill, auto_fit, fr, minmax, repeat};
 pub use list::VirtualList;
 pub use menu::{ActionRole, Alert, AlertStyle, Menu, MenuItem, Tray};
@@ -528,6 +534,9 @@ pub mod prelude {
     pub use crate::{GridTrack, ScrollAxis, auto_fill, auto_fit, fr, minmax, repeat, scroll_x};
     // Typography and rich text.
     pub use crate::{FontFamily, FontWeight, Span, TextTransform, icon, link, rich_text, span};
+    // Box decorations and interaction states.
+    pub use crate::decoration::{shadow_lg, shadow_md, shadow_sm};
+    pub use crate::{Color, Cursor, Gradient, Shadow};
 }
 
 #[cfg(test)]

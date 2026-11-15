@@ -375,5 +375,20 @@
       "one": "inline taps: {count}",
       "other": "inline taps: {count}"
     }
+  },
+  "decor": {
+    "title": "Decorations",
+    "shadow": "Shadow",
+    "inset": "Inset",
+    "offline": "Offline",
+    "rows": "Hover or press a row",
+    "row": "Row {n}",
+    "gradient": "Linear gradient",
+    "radial": "Radial",
+    "clip": "Clipped to the corners",
+    "frosted": "Frosted bar",
+    "search": "Search",
+    "clear": "Clear",
+    "focus_hint": "Focus the field: the card rings, the Clear button appears."
   }
 }

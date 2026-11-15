@@ -65,6 +65,103 @@ pub(crate) fn dispatch(event: UiEvent) {
     with_state(|s| s.dispatch(event));
 }
 
+/// A node entered or left an interaction state (hover, press, focus):
+/// restyled, and laid out again if a refinement changed its size.
+fn report_state(id: NodeId, state: prism_core::Interaction, on: bool) {
+    with_state(|s| {
+        if s.renderer.set_interaction(id, state, on) {
+            s.relayout();
+        }
+    });
+}
+
+thread_local! {
+    /// The node with the keyboard focus, as last reported.
+    static FOCUSED: Cell<Option<NodeId>> = const { Cell::new(None) };
+}
+
+/// The Prism node a first responder belongs to: a clickable Prism view, a
+/// text area, a text input (through the field editor), a control.
+fn focused_node(responder: Option<&NSResponder>) -> Option<NodeId> {
+    let r = responder?;
+    if let Some(v) = r.downcast_ref::<PrismView>() {
+        return v.ivars().clickable.get().then(|| v.ivars().id.get());
+    }
+    if let Some(t) = r.downcast_ref::<PrismTextView>() {
+        return Some(t.ivars().id.get());
+    }
+    if let Some(tv) = r.downcast_ref::<NSTextView>()
+        && tv.isFieldEditor()
+    {
+        let delegate = tv.delegate()?;
+        let obj: &AnyObject = delegate.as_ref();
+        let field = obj.downcast_ref::<NSTextField>()?;
+        return (field.tag() > 0).then(|| field.tag() as NodeId);
+    }
+    let control = r.downcast_ref::<NSControl>()?;
+    (control.tag() > 0).then(|| control.tag() as NodeId)
+}
+
+/// The window's first responder changed: focus moves between nodes. Read
+/// on the next turn: AppKit may be inside a Prism update, and a text
+/// field hands the focus to its field editor right after taking it.
+fn focus_changed(window: &NSWindow) {
+    let window: Retained<NSWindow> = objc2::Message::retain(window);
+    on_main_after(std::time::Duration::ZERO, move || {
+        let id = focused_node(window.firstResponder().as_deref());
+        let old = FOCUSED.with(|f| f.replace(id));
+        if old == id {
+            return;
+        }
+        if let Some(old) = old {
+            report_state(old, prism_core::Interaction::Focus, false);
+        }
+        if let Some(id) = id {
+            report_state(id, prism_core::Interaction::Focus, true);
+        }
+    });
+}
+
+/// Watches which view has the keyboard focus in `window`.
+fn observe_focus(window: &NSWindow, target: &Target) {
+    use objc2_foundation::{NSKeyValueObservingOptions, NSObjectNSKeyValueObserverRegistration};
+    unsafe {
+        window.addObserver_forKeyPath_options_context(
+            target,
+            &NSString::from_str("firstResponder"),
+            NSKeyValueObservingOptions::New,
+            std::ptr::null_mut(),
+        )
+    };
+}
+
+fn stop_observing_focus(window: &NSWindow, target: &Target) {
+    use objc2_foundation::NSObjectNSKeyValueObserverRegistration;
+    unsafe { window.removeObserver_forKeyPath(target, &NSString::from_str("firstResponder")) };
+}
+
+/// The pointer entered or left a tracking area of `set_interactions`.
+fn hover_event(event: &NSEvent, on: bool) {
+    let Some(area) = event.trackingArea() else {
+        return;
+    };
+    with_state(|s| {
+        let id = s
+            .renderer
+            .widgets
+            .hover_areas
+            .iter()
+            .find(|(_, a)| ***a == *area)
+            .map(|(id, _)| *id);
+        if let Some(id) = id
+            && s.renderer
+                .set_interaction(id, prism_core::Interaction::Hover, on)
+        {
+            s.relayout();
+        }
+    });
+}
+
 /// Opens a deep link (notification or menu bar activity).
 pub(crate) fn open_link(path: &str) {
     with_state(|s| {
@@ -167,6 +264,11 @@ pub struct ViewIvars {
     /// `maskedCorners` is skipped by `renderInContext`, so snapshots and
     /// the screen would differ).
     box_layer: RefCell<Option<Retained<objc2_quartz_core::CAShapeLayer>>>,
+    /// Shadows, gradient, dashed or per-side borders, clipping, blur and
+    /// cursor (see `decor.rs`).
+    pub(crate) decor: RefCell<crate::decor::DecorState>,
+    /// Reports presses (`.active(|s| …)` refinements).
+    report_active: Cell<bool>,
 }
 
 define_class!(
@@ -201,11 +303,20 @@ define_class!(
             // Called within the view's appearance: dynamic colors resolve to
             // light or dark here.
             let cg = |c: &NSColor| c.CGColor();
-            layer.setBackgroundColor(iv.background.borrow().as_deref().map(cg).as_deref());
+            // Under a backdrop blur, the background is the blur's tint.
+            let blurs = iv.decor.borrow().blurs();
+            let background = iv.background.borrow().clone().filter(|_| !blurs);
+            layer.setBackgroundColor(background.as_deref().map(cg).as_deref());
             // A radius over half the size draws garbage: clamp (pills).
             let b = self.bounds().size;
             let radius = iv.radius.get().min(b.width.min(b.height) / 2.).max(0.);
-            let bw = if iv.border_color.borrow().is_some() { iv.border.get() } else { 0. };
+            // Dashed and per-side borders are shape layers (decor.rs).
+            let custom_border = iv.decor.borrow().decor.custom_border();
+            let bw = if iv.border_color.borrow().is_some() && !custom_border {
+                iv.border.get()
+            } else {
+                0.
+            };
             if radius > 0. && iv.corners.get() != prism_core::Corners::ALL {
                 self.update_box_layer(&layer, radius, bw);
             } else {
@@ -232,10 +343,45 @@ define_class!(
                     objc2_quartz_core::kCAGravityResizeAspectFill
                 });
             }
-            // Pictures are cropped to their rounded frame.
-            layer.setMasksToBounds(image.is_some());
+            // Pictures are cropped to their rounded frame; `clip` crops the
+            // children (per-corner boxes: `maskedCorners`).
+            let clip = iv.decor.borrow().decor.clip;
+            layer.setMasksToBounds(image.is_some() || clip);
+            let flipped = crate::decor::is_flipped(&layer);
+            if clip {
+                crate::decor::round(&layer, radius, iv.corners.get(), flipped);
+            } else if iv.corners.get() == prism_core::Corners::ALL {
+                crate::decor::round(&layer, radius, prism_core::Corners::ALL, flipped);
+            }
             drop(image);
             self.update_shape_layers(&layer);
+            let tint = iv.background.borrow().clone().filter(|_| blurs);
+            crate::decor::update(
+                self,
+                &layer,
+                &mut iv.decor.borrow_mut(),
+                radius,
+                iv.corners.get(),
+                tint.as_deref(),
+            );
+        }
+
+        /// Cursor: the style's, or a pointing hand on clickable views.
+        #[unsafe(method(resetCursorRects))]
+        fn reset_cursor_rects(&self) {
+            let iv = self.ivars();
+            let cursor = iv.decor.borrow().decor.cursor.or(
+                iv.clickable.get().then_some(prism_core::Cursor::Pointer),
+            );
+            if let Some(c) = cursor {
+                self.addCursorRect_cursor(self.bounds(), &crate::decor::ns_cursor(c));
+            }
+        }
+
+        /// Outer shadows follow the view into its new superview (or go).
+        #[unsafe(method(viewDidMoveToSuperview))]
+        fn view_did_move_to_superview(&self) {
+            crate::decor::sync_shadow_host(self, &self.ivars().decor.borrow());
         }
 
         /// Three-finger (or two-finger, per System Settings) swipes.
@@ -332,6 +478,9 @@ define_class!(
 
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
+            if self.ivars().report_active.get() {
+                report_state(self.ivars().id.get(), prism_core::Interaction::Active, true);
+            }
             if !self.ivars().clickable.get() {
                 unsafe { msg_send![super(self), mouseDown: event] }
             }
@@ -339,6 +488,9 @@ define_class!(
 
         #[unsafe(method(mouseUp:))]
         fn mouse_up(&self, event: &NSEvent) {
+            if self.ivars().report_active.get() {
+                report_state(self.ivars().id.get(), prism_core::Interaction::Active, false);
+            }
             if !self.ivars().clickable.get() {
                 return unsafe { msg_send![super(self), mouseUp: event] };
             }
@@ -526,6 +678,7 @@ impl PrismView {
         let mut slot = iv.box_layer.borrow_mut();
         let shape = slot.get_or_insert_with(|| {
             let shape = CAShapeLayer::new();
+            shape.setName(Some(&NSString::from_str(crate::decor::BOX_LAYER)));
             layer.insertSublayer_atIndex(&shape, 0);
             shape
         });
@@ -862,6 +1015,31 @@ define_class!(
         fn on_back_menu(&self, _sender: Option<&AnyObject>) {
             go_back(None);
         }
+
+        /// Hover tracking areas (`.hover(|s| …)`).
+        #[unsafe(method(mouseEntered:))]
+        fn mouse_entered(&self, event: &NSEvent) {
+            hover_event(event, true);
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn mouse_exited(&self, event: &NSEvent) {
+            hover_event(event, false);
+        }
+
+        /// A window's `firstResponder` changed (key-value observing).
+        #[unsafe(method(observeValueForKeyPath:ofObject:change:context:))]
+        fn observe_value(
+            &self,
+            _key: Option<&NSString>,
+            object: Option<&AnyObject>,
+            _change: Option<&AnyObject>,
+            _context: *mut std::ffi::c_void,
+        ) {
+            if let Some(window) = object.and_then(|o| o.downcast_ref::<NSWindow>()) {
+                focus_changed(window);
+            }
+        }
     }
 
     impl Target {
@@ -1132,6 +1310,16 @@ impl View {
         }
     }
 
+    /// The Prism view drawing this node's box, if any.
+    fn prism_view(&self) -> Option<&Retained<PrismView>> {
+        match self {
+            View::Container(v) | View::Screen(v) | View::Tab(v) | View::Picture(v) => Some(v),
+            View::TextArea(t) => Some(&t.container),
+            View::Input(i) => Some(&i.host),
+            _ => None,
+        }
+    }
+
     fn id(&self) -> NodeId {
         match self {
             View::Container(v) | View::Screen(v) | View::Tab(v) => v.ivars().id.get(),
@@ -1193,6 +1381,8 @@ pub struct AppKit {
     // --- Hidden header (#8) ---
     /// Screens that hide their stack's header while on top (`.bare()`).
     bare: std::collections::HashSet<NodeId>,
+    /// Hover tracking areas, by node (`set_interactions`).
+    hover_areas: HashMap<NodeId, Retained<objc2_app_kit::NSTrackingArea>>,
 }
 
 fn ca_equal(a: objc2_quartz_core::CATransform3D, b: objc2_quartz_core::CATransform3D) -> bool {
@@ -1206,6 +1396,22 @@ pub(crate) fn node_id(view: &PrismView) -> NodeId {
 }
 
 impl AppKit {
+    /// Shadows, gradient, borders, clipping, blur and cursor of a Prism view.
+    fn apply_decor(&self, v: &PrismView, style: &Style) {
+        let decor = crate::decor::Decor::from_style(style);
+        let mut st = v.ivars().decor.borrow_mut();
+        if st.decor == decor {
+            return;
+        }
+        let cursor_changed = st.decor.cursor != decor.cursor;
+        st.decor = decor;
+        crate::decor::set_blur(v, &mut st, self.mtm);
+        drop(st);
+        if cursor_changed && let Some(w) = v.window() {
+            w.invalidateCursorRectsForView(v);
+        }
+    }
+
     /// The view's transform around its center (AppKit layers turn around
     /// their corner).
     fn apply_transform(&self, view: &View) {
@@ -1758,6 +1964,7 @@ impl Widgets for AppKit {
                     )
                 };
                 unsafe { window.setReleasedWhenClosed(false) };
+                observe_focus(&window, &self.target);
                 window.setContentView(Some(&host));
                 host.setSubviews(&NSArray::from_slice(&[&*content as &NSView]));
                 View::Sheet(Rc::new(MacSheet {
@@ -1890,6 +2097,9 @@ impl Widgets for AppKit {
 
     fn set_hidden(&mut self, view: &View, hidden: bool) {
         view.ns().setHidden(hidden);
+        if let Some(v) = view.prism_view() {
+            crate::decor::sync_shadow_host(v, &v.ivars().decor.borrow());
+        }
     }
 
     fn set_style(&mut self, view: &View, style: &Style) {
@@ -1954,6 +2164,7 @@ impl Widgets for AppKit {
                 iv.radius.set(style.corner_radius as f64);
                 iv.corners.set(style.rounded_corners);
                 iv.border.set(style.border_width as f64);
+                self.apply_decor(&t.container, style);
                 t.container.setNeedsDisplay(true);
                 // Unstyled (`.native()`): the standard bezeled, white field.
                 let bare = style.background.is_none() && style.border_color.is_none();
@@ -1999,6 +2210,7 @@ impl Widgets for AppKit {
                 iv.radius.set(style.corner_radius as f64);
                 iv.corners.set(style.rounded_corners);
                 iv.border.set(style.border_width as f64);
+                self.apply_decor(v, style);
                 v.setNeedsDisplay(true);
             }
             View::Label(l) => crate::label::set_style(l, style),
@@ -2017,6 +2229,10 @@ impl Widgets for AppKit {
                 b.setFont(Some(&font(style)));
                 b.setBezelColor(style.background.map(ns_color).as_deref());
             }
+        }
+        // Outer shadows follow the opacity and transform.
+        if let Some(v) = view.prism_view() {
+            crate::decor::sync_shadow_host(v, &v.ivars().decor.borrow());
         }
     }
 
@@ -2077,9 +2293,48 @@ impl Widgets for AppKit {
     fn set_clickable(&mut self, view: &View, clickable: bool) {
         if let View::Container(v) = view {
             v.ivars().clickable.set(clickable);
+            if let Some(w) = v.window() {
+                w.invalidateCursorRectsForView(v);
+            }
         }
         if let View::Label(l) = view {
             crate::label::set_clickable(l, clickable);
+        }
+    }
+
+    /// Hover: a tracking area (owned by the target, which reports it);
+    /// presses: the view's mouse down and up. Focus is always reported
+    /// (first responder observation).
+    fn set_interactions(&mut self, view: &View, states: prism_core::Interactions) {
+        use objc2_app_kit::{NSTrackingArea, NSTrackingAreaOptions as O};
+        let id = view.id();
+        let hover = states.contains(prism_core::Interaction::Hover);
+        match (hover, self.hover_areas.contains_key(&id)) {
+            (true, false) => {
+                let target: &AnyObject = &self.target;
+                let area = unsafe {
+                    NSTrackingArea::initWithRect_options_owner_userInfo(
+                        <NSTrackingArea as objc2::AllocAnyThread>::alloc(),
+                        NSRect::ZERO,
+                        O::MouseEnteredAndExited | O::ActiveAlways | O::InVisibleRect,
+                        Some(target),
+                        None,
+                    )
+                };
+                view.ns().addTrackingArea(&area);
+                self.hover_areas.insert(id, area);
+            }
+            (false, true) => {
+                if let Some(area) = self.hover_areas.remove(&id) {
+                    view.ns().removeTrackingArea(&area);
+                }
+            }
+            _ => {}
+        }
+        if let Some(v) = view.prism_view() {
+            v.ivars()
+                .report_active
+                .set(states.contains(prism_core::Interaction::Active));
         }
     }
 
@@ -2112,9 +2367,21 @@ impl Widgets for AppKit {
             }
             _ => {}
         }
-        let views: Vec<&NSView> = children.iter().map(View::ns).collect();
+        // A backdrop blur stays under the children.
+        let blur = parent
+            .prism_view()
+            .and_then(|v| v.ivars().decor.borrow().blur_view());
+        let mut views: Vec<&NSView> = children.iter().map(View::ns).collect();
+        if let Some(b) = &blur {
+            views.insert(0, b);
+        }
         parent.ns().setSubviews(&NSArray::from_slice(&views));
         crate::sticky::raise(parent.ns());
+        for c in children {
+            if let Some(v) = c.prism_view() {
+                crate::decor::sync_shadow_host(v, &v.ivars().decor.borrow());
+            }
+        }
     }
 
     fn set_root(&mut self, view: &View) {
@@ -2130,6 +2397,10 @@ impl Widgets for AppKit {
 
     fn destroy(&mut self, view: &View) {
         crate::sticky::forget(view.id());
+        self.hover_areas.remove(&view.id());
+        if let Some(v) = view.prism_view() {
+            crate::decor::detach(&v.ivars().decor.borrow());
+        }
         match view {
             View::Input(i) => {
                 unsafe { i.field().setDelegate(None) };
@@ -2142,7 +2413,10 @@ impl Widgets for AppKit {
             }
             View::Stack(st) => self.stacks.retain(|s| s.id != st.id),
             View::Tabs(t) => self.tab_bars.retain(|b| b.id != t.id),
-            View::Sheet(sheet) => self.dismiss_sheet(sheet),
+            View::Sheet(sheet) => {
+                self.dismiss_sheet(sheet);
+                stop_observing_focus(&sheet.window, &self.target);
+            }
             View::Timer(_) => {
                 self.timers.remove(&view.id());
             }
@@ -2236,6 +2510,9 @@ impl Widgets for AppKit {
         view.ns().setFrame(frame);
         if self.transforms.contains_key(&view.id()) {
             self.apply_transform(view);
+        }
+        if let Some(v) = view.prism_view() {
+            crate::decor::sync_shadow_host(v, &v.ivars().decor.borrow());
         }
         if let View::Input(i) = view {
             i.field().setFrame(rect(0., 0., w as f64, h as f64));
@@ -2774,6 +3051,7 @@ pub fn run(config: AppConfig, init: AppInit) {
     window.setTitle(&NSString::from_str(&config.title));
     window.setContentView(Some(&root));
     window.setDelegate(Some(ProtocolObject::from_ref(&*target)));
+    observe_focus(&window, &target);
     window.center();
 
     let path = std::env::var("PRISM_PATH").unwrap_or_else(|_| "/".into());
@@ -2822,6 +3100,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         announced: HashMap::new(),
         lang: String::new(),
         bare: Default::default(),
+        hover_areas: HashMap::new(),
     });
     let first = runtime.render();
     let mut state = State {
@@ -3161,6 +3440,21 @@ fn run_automation(mtm: MainThreadMarker) {
             }
         }
         scroll_all(&root, y);
+    }
+
+    // `PRISM_HOVER=<label>`: the view with that accessibility label is
+    // hovered, as when the pointer enters its tracking area (snapshots of
+    // `.hover(|s| …)` styles without moving the user's pointer).
+    thread_local! {
+        static HOVERED: Cell<bool> = const { Cell::new(false) };
+    }
+    if let Ok(label) = std::env::var("PRISM_HOVER")
+        && !HOVERED.with(|h| h.replace(true))
+    {
+        match find_labelled(&root, &label).and_then(|v| v.downcast::<PrismView>().ok()) {
+            Some(v) => report_state(v.ivars().id.get(), prism_core::Interaction::Hover, true),
+            None => eprintln!("prism-macos: PRISM_HOVER: no Prism view labelled {label:?}"),
+        }
     }
 
     // `PRISM_TAP=<label>`: a click (mouse down and up) in the middle of the

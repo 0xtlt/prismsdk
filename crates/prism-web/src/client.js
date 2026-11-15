@@ -15,6 +15,15 @@
     return (BASE && p.startsWith(BASE) ? p.slice(BASE.length) || "/" : p) + location.search;
   };
   const mount = document.getElementById("prism-root");
+  // The host's CSP nonce (`prism_web::CspNonce`): `<style>` elements the
+  // client adds carry it, so a strict `style-src` lets them apply.
+  const styleNonce = (document.currentScript && document.currentScript.nonce)
+    || (document.getElementById("prism-ssr") || {}).nonce || "";
+  const newStyle = () => {
+    const el = document.createElement("style");
+    if (styleNonce) el.nonce = styleNonce;
+    return el;
+  };
   const baseTitle = document.title.split(" · ").pop();
   const nodes = new Map();
   const tags = {
@@ -350,6 +359,31 @@
     nodes.set(id, el);
   }
 
+  // --- Interaction states (prism-core `interaction`) ------------------------------
+  // `.hover(|s| …)`, `.active(…)`, `.focus(…)`, `.focus_within(…)`: the
+  // server sends each node's pseudo-class rules; one <style> per node.
+  const stateSheets = new Map();
+  function setStates(id, rules) {
+    let sheet = stateSheets.get(id);
+    if (!rules) {
+      if (sheet) { sheet.remove(); stateSheets.delete(id); }
+      return;
+    }
+    if (!sheet) {
+      sheet = newStyle();
+      sheet.dataset.prismStates = String(id);
+      document.head.appendChild(sheet);
+      stateSheets.set(id, sheet);
+    }
+    if (sheet.textContent !== rules) sheet.textContent = rules;
+  }
+  function clearStates() {
+    stateSheets.forEach((sheet) => sheet.remove());
+    stateSheets.clear();
+  }
+  // iOS Safari only applies `:active` once a touch listener exists.
+  document.addEventListener("touchstart", () => {}, { passive: true });
+
   // Orders Prism children; helper elements (no data-pid) are left in place.
   // --- Motion (prism-core `animation`) ------------------------------------------
   const reducedMotion = window.matchMedia ? matchMedia("(prefers-reduced-motion: reduce)") : null;
@@ -605,6 +639,8 @@
         el.style.cssText = p.css;
         if (el.dataset.kind === "scroll") el.className = p.hx ? "prism-scroll prism-scroll-x" : "prism-scroll";
         ownWidth(el, p.css, p.cq);
+        setStates(p.id, p.states);
+        if (p.group) el.dataset.group = ""; else delete el.dataset.group;
         if (el.dataset.kind === "text_area") grow(el);
         motion(el, p.motion, hidden);
         return;
@@ -726,6 +762,7 @@
       case "destroy":
         if (el) el.remove();
         nodes.delete(p.id);
+        setStates(p.id, null);
         stacks = stacks.filter((s) => s !== el);
         return;
     }
@@ -1594,7 +1631,7 @@
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
       if (!msg.p) return service(msg);
-      if (msg.t === "reset") { nodes.clear(); stacks = []; hist = null; userNavigated = false; }
+      if (msg.t === "reset") { nodes.clear(); clearStates(); stacks = []; hist = null; userNavigated = false; }
       quiet = msg.t === "reset";
       msg.p.forEach(apply);
       quiet = false;

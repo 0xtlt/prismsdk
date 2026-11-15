@@ -347,13 +347,14 @@ const CLIENT = new URL("../../src/client.js", import.meta.url);
  * Runs client.js on a page whose `<main id="prism-root">` holds `ssr`, and
  * returns the page, its window and the socket it opened.
  */
-export function boot({ ssr = "", path = "/", base = "", glyphs = { plus: "+", gear: "⚙", house: "⌂" }, fetch = null, search = "" } = {}) {
+export function boot({ ssr = "", path = "/", base = "", glyphs = { plus: "+", gear: "⚙", house: "⌂" }, fetch = null, search = "", nonce = "" } = {}) {
   const document = new Document();
   document.body.innerHTML =
     `<main id="prism-root">${ssr}</main><div id="prism-island"></div><div id="prism-toasts"></div>` +
     `<div id="prism-connection" role="status" hidden>Reconnecting…</div>`;
   const script = document.createElement("script");
   script.dataset.base = base;
+  if (nonce) script.nonce = nonce;
   document.currentScript = script;
   document.title = "Prism";
   const timers = [];

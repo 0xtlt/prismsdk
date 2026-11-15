@@ -304,6 +304,15 @@ impl Component for Button {
             );
         if let (Some(h), false) = (self.on_click, self.disabled) {
             el = el.on_click(h);
+            // Feedback under the pointer and while pressed.
+            el = match self.variant {
+                Variant::Ghost => {
+                    let accent = t.accent;
+                    el.hover(move |s| s.bg(accent.with_alpha(0.08)))
+                        .active(move |s| s.bg(accent.with_alpha(0.16)))
+                }
+                _ => el.hover(|s| s.opacity(0.9)).active(|s| s.opacity(0.75)),
+            };
         }
         self.refine.apply(el).into_element()
     }
@@ -680,6 +689,13 @@ impl Component for Card {
             .gap(12.)
             .border(1.)
             .border_color(t.border)
+            // A faint elevation.
+            .shadow(prism_core::Shadow::new(
+                0.,
+                1.,
+                3.,
+                prism_core::Color::BLACK.with_alpha(0.06),
+            ))
             .children(self.children);
         self.refine.apply(el).into_element()
     }

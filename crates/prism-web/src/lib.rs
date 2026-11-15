@@ -33,10 +33,10 @@ mod app;
 mod assets;
 mod css;
 mod device_info;
+mod fonts;
 mod host;
 #[cfg(test)]
 mod host_tests;
-mod fonts;
 use prism_core::glyphs;
 mod html;
 mod security;

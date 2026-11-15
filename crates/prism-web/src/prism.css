@@ -90,6 +90,8 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 .prism-body { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 /* Absolute children (Style::position) sit at their insets from their parent, like taffy. */
 [data-pid]:not(dialog) { position: relative; }
+/* Clickable views show a pointing hand (an explicit `cursor` wins: inline). */
+[data-clickable="1"] { cursor: pointer; }
 .prism-slider { width: 100%; min-width: 120px; margin: 0; accent-color: currentColor; }
 .prism-select, .prism-date { font: inherit; padding: 6px 10px; border-radius: 8px; border: 1px solid rgba(128,128,128,.45); background: Field; max-width: 100%; }
 .prism-date { accent-color: currentColor; min-height: 34px; }
