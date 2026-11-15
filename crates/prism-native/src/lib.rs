@@ -60,6 +60,11 @@ pub trait Widgets {
     /// turned into curves; colors may adapt to dark mode). Called when the
     /// drawing or the shape's size changes.
     fn set_drawing(&mut self, _view: &Self::View, _paths: &[prism_core::Path]) {}
+    /// Control configuration (see `prism_core::controls`), before the value:
+    /// `SliderConfig` (slider), `PickerConfig` (picker), `DateConfig` (date
+    /// picker), `InputConfig` (text input, text area). Decode it with the
+    /// matching `decode`.
+    fn set_config(&mut self, _view: &Self::View, _kind: NodeKind, _config: &str) {}
     /// Tab icon (SF Symbol name on Apple platforms).
     fn set_icon(&mut self, _view: &Self::View, _icon: &str) {}
     /// Context menu of a view (`None` removes it). Items report
@@ -738,6 +743,12 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                         self.widgets.set_value(&e.view, *value);
                     }
                 }
+                Patch::SetConfig { id, config } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.set_config(&e.view, e.kind, config);
+                        let _ = self.taffy.mark_dirty(e.layout);
+                    }
+                }
                 Patch::SetIcon { id, icon } => {
                     if let Some(e) = self.nodes.get(id) {
                         self.widgets.set_icon(&e.view, icon);
@@ -845,6 +856,16 @@ pub fn to_taffy(s: &Style, kind: NodeKind) -> taffy::Style {
         },
         border: Rect::zero(),
         margin,
+        position: match s.position {
+            prism_core::Position::Relative => taffy::Position::Relative,
+            prism_core::Position::Absolute => taffy::Position::Absolute,
+        },
+        inset: Rect {
+            top: lpa(s.inset.top),
+            right: lpa(s.inset.right),
+            bottom: lpa(s.inset.bottom),
+            left: lpa(s.inset.left),
+        },
         size: Size {
             width: dim(s.width),
             height: dim(s.height),
@@ -1021,6 +1042,34 @@ mod tests {
         let f = &renderer.widgets.frames;
         assert_eq!(f[&2].0, 350., "RTL: first item on the right");
         assert_eq!(f[&3].0, 300.);
+    }
+
+    struct Overlay;
+    impl Render for Overlay {
+        fn render(&mut self, _: &mut prism_core::Context<Self>) -> impl IntoElement {
+            div()
+                .flex_1()
+                .child(text("in flow"))
+                .child(div().absolute().left(10.).bottom(20.).w(100.).h(30.))
+        }
+    }
+
+    #[test]
+    fn absolute_nodes_sit_at_their_insets_mirrored_right_to_left() {
+        let init: AppInit = Arc::new(|cx: &mut prism_core::App| {
+            let r = cx.new_entity(|_| Overlay);
+            cx.set_root(r);
+        });
+        let mut rt = Runtime::new(&init);
+        let mut renderer = NativeRenderer::new(Fake::default());
+        renderer.apply(&rt.render());
+        renderer.layout(400., 300., Insets::default());
+        assert_eq!(renderer.widgets.frames[&3], (10., 250., 100., 30.));
+        assert_eq!(renderer.widgets.frames[&2].1, 0., "out of the flow");
+        rt.app.set_locale(Some(prism_core::Locale::new("ar")));
+        renderer.apply(&rt.render());
+        renderer.layout(400., 300., Insets::default());
+        assert_eq!(renderer.widgets.frames[&3], (290., 250., 100., 30.));
     }
 
     struct Chart;

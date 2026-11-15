@@ -28,6 +28,13 @@ pub enum Role {
     Main,
     Alert,
     ProgressBar,
+    /// An adjustable value (increment / decrement with assistive technologies).
+    Slider,
+    /// A control that opens a list of options (a select, a pop-up button).
+    ComboBox,
+    /// A polite live region: its `value` is announced whenever it changes
+    /// (toasts, "Saved"). Not an element by itself: children stay reachable.
+    Status,
 }
 
 impl Role {
@@ -51,6 +58,9 @@ impl Role {
             Role::Main => "main",
             Role::Alert => "alert",
             Role::ProgressBar => "progressbar",
+            Role::Slider => "slider",
+            Role::ComboBox => "combobox",
+            Role::Status => "status",
         }
     }
 
@@ -59,7 +69,13 @@ impl Role {
     pub fn is_interactive(self) -> bool {
         matches!(
             self,
-            Role::Button | Role::Link | Role::Switch | Role::Checkbox | Role::Tab
+            Role::Button
+                | Role::Link
+                | Role::Switch
+                | Role::Checkbox
+                | Role::Tab
+                | Role::Slider
+                | Role::ComboBox
         )
     }
 }

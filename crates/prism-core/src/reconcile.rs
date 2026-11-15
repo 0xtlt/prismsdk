@@ -71,6 +71,13 @@ pub enum Patch {
         id: NodeId,
         value: f64,
     },
+    /// Control configuration (see [`crate::controls`]): a slider's range,
+    /// a picker's options, a date picker's mode, a text input's keyboard.
+    /// Sent before the node's value.
+    SetConfig {
+        id: NodeId,
+        config: String,
+    },
     /// Icon name (SF Symbol on Apple platforms).
     SetIcon {
         id: NodeId,
@@ -137,6 +144,8 @@ pub enum UiEvent {
     /// A scroll view moved: (id, content offset, viewport height).
     Scroll(NodeId, f32, f32),
     Swipe(NodeId, SwipeDirection),
+    /// The return key was pressed in a text input.
+    Submit(NodeId),
 }
 
 /// A mounted host node.
@@ -150,6 +159,7 @@ struct MNode {
     placeholder: String,
     icon: String,
     value: Option<f64>,
+    config: String,
     a11y: Accessibility,
     menu: Option<crate::menu::MenuSpec>,
     swipe: (bool, bool),
@@ -179,6 +189,7 @@ pub struct Reconciler {
     change: HashMap<NodeId, Handler<ChangeEvent>>,
     scroll: HashMap<NodeId, Handler<ScrollEvent>>,
     swipe: HashMap<(NodeId, SwipeDirection), Handler<ClickEvent>>,
+    submit: HashMap<NodeId, Handler<ClickEvent>>,
     /// Context menu items: (node id << 16 | n) → handler.
     menu_items: HashMap<u64, Handler<ClickEvent>>,
     // Per-frame scratch state.
@@ -221,6 +232,10 @@ impl Reconciler {
 
     pub fn swipe_handler(&self, id: NodeId, dir: SwipeDirection) -> Option<Handler<ClickEvent>> {
         self.swipe.get(&(id, dir)).cloned()
+    }
+
+    pub fn submit_handler(&self, id: NodeId) -> Option<Handler<ClickEvent>> {
+        self.submit.get(&id).cloned()
     }
 
     pub fn menu_handler(&self, item: u64) -> Option<Handler<ClickEvent>> {
@@ -437,6 +452,7 @@ impl Reconciler {
             placeholder,
             icon,
             value,
+            config,
             a11y,
             children,
             on_click,
@@ -449,6 +465,7 @@ impl Reconciler {
             on_scroll,
             on_swipe_left,
             on_swipe_right,
+            on_submit,
             ..
         } = *vnode;
         let mut style = style.resolve(app.style_context());
@@ -562,6 +579,14 @@ impl Reconciler {
                 });
                 m.icon = icon;
             }
+            // Before the value: a slider clamps it to its range.
+            if m.config != config {
+                self.patches.push(Patch::SetConfig {
+                    id,
+                    config: config.clone(),
+                });
+                m.config = config;
+            }
             if let Some(v) = value
                 && m.value != Some(v)
             {
@@ -588,6 +613,10 @@ impl Reconciler {
         match on_change {
             Some(h) => self.change.insert(id, h),
             None => self.change.remove(&id),
+        };
+        match on_submit {
+            Some(h) => self.submit.insert(id, h),
+            None => self.submit.remove(&id),
         };
 
         // Children.
@@ -682,13 +711,29 @@ impl Reconciler {
         if m.kind == NodeKind::Toggle && a.checked.is_none() {
             a.checked = value.map(|v| v != 0.);
         }
+        if a.value.is_none() {
+            a.value = match (m.kind, value) {
+                (NodeKind::Slider, Some(v)) => Some(format_value(v)),
+                (NodeKind::Picker, Some(v)) if v >= 0. => {
+                    crate::controls::PickerConfig::decode(&m.config)
+                        .options
+                        .get(v as usize)
+                        .cloned()
+                }
+                _ => None,
+            };
+        }
         if a.label.is_none() {
             a.label = match m.kind {
                 // A clickable container reads as one button named by its text.
                 NodeKind::View if clickable => {
                     Some(self.collect_text(id)).filter(|t| !t.is_empty())
                 }
-                NodeKind::TextInput if !m.placeholder.is_empty() => Some(m.placeholder.clone()),
+                NodeKind::TextInput | NodeKind::TextArea | NodeKind::Picker
+                    if !m.placeholder.is_empty() =>
+                {
+                    Some(m.placeholder.clone())
+                }
                 NodeKind::Tab | NodeKind::Screen if !m.text.is_empty() => Some(m.text.clone()),
                 _ => None,
             };
@@ -739,6 +784,7 @@ impl Reconciler {
                 placeholder: String::new(),
                 icon: String::new(),
                 value: None,
+                config: String::new(),
                 a11y: Accessibility::default(),
                 menu: None,
                 swipe: (false, false),
@@ -768,9 +814,20 @@ impl Reconciler {
         self.back.remove(&id);
         self.navigate.remove(&id);
         self.change.remove(&id);
+        self.submit.remove(&id);
         self.menu_items.retain(|k, _| k >> 16 != id);
         self.scroll.remove(&id);
         self.swipe.retain(|(n, _), _| *n != id);
         self.destroyed.push(id);
+    }
+}
+
+/// A slider's value as read out: `3`, `0.25`, `12.5`.
+fn format_value(v: f64) -> String {
+    if v.fract() == 0. && v.abs() < 1e15 {
+        format!("{}", v as i64)
+    } else {
+        let s = format!("{v:.2}");
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
     }
 }

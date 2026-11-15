@@ -17,6 +17,7 @@ struct HtmlNode {
     text: String,
     placeholder: String,
     icon: String,
+    config: String,
     value: f64,
     a11y: Accessibility,
     clickable: bool,
@@ -66,6 +67,7 @@ impl Backend for HtmlBackend {
                 // Menus open on interaction, once the client runs.
                 Patch::SetMenu { .. } | Patch::SetSwipe { .. } | Patch::SetScrollEvents { .. } => {}
                 Patch::SetValue { id, value } => self.with(*id, |n| n.value = *value),
+                Patch::SetConfig { id, config } => self.with(*id, |n| n.config = config.clone()),
                 Patch::SetIcon { id, icon } => self.with(*id, |n| n.icon = icon.clone()),
                 Patch::SetAccessibility { id, a11y } => self.with(*id, |n| n.a11y = a11y.clone()),
                 Patch::SetChildren { id, children } => {

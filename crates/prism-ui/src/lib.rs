@@ -111,6 +111,12 @@ macro_rules! refinable {
     };
 }
 
+mod forms;
+pub use forms::{
+    DateField, Select, Slider, Spinner, TextArea, Toast, Toaster, date_field, dismiss_toasts,
+    select, show_toast, slider, spinner, text_area, toast, toaster,
+};
+
 mod charts;
 pub use charts::{
     BarChart, LineChart, PieChart, Ring, Series, Sparkline, Stat, bar_chart, line_chart, pie_chart,
@@ -452,7 +458,10 @@ pub struct TextField {
     pub placeholder: String,
     pub helper: Option<String>,
     pub error: Option<String>,
+    /// Password, keyboard, return key, capitalization, autocorrection.
+    pub config: prism_core::controls::InputConfig,
     pub on_input: Option<Handler<InputEvent>>,
+    pub on_submit: Option<Handler<ClickEvent>>,
     refine: Refine,
 }
 
@@ -463,7 +472,9 @@ pub fn text_field(label: impl Into<String>, value: impl Into<String>) -> TextFie
         placeholder: String::new(),
         helper: None,
         error: None,
+        config: Default::default(),
         on_input: None,
+        on_submit: None,
         refine: Refine::default(),
     }
 }
@@ -479,6 +490,32 @@ impl TextField {
     }
     pub fn error(mut self, e: Option<impl Into<String>>) -> Self {
         self.error = e.map(Into::into);
+        self
+    }
+    /// A password field (characters hidden, no autocorrection).
+    pub fn secure(mut self) -> Self {
+        self.config.secure = true;
+        self
+    }
+    pub fn keyboard(mut self, k: prism_core::Keyboard) -> Self {
+        self.config.keyboard = k;
+        self
+    }
+    pub fn return_key(mut self, k: prism_core::ReturnKey) -> Self {
+        self.config.return_key = k;
+        self
+    }
+    pub fn capitalize(mut self, c: prism_core::Capitalize) -> Self {
+        self.config.capitalize = c;
+        self
+    }
+    pub fn autocorrect(mut self, on: bool) -> Self {
+        self.config.autocorrect = on;
+        self
+    }
+    /// The return key was pressed.
+    pub fn on_submit(mut self, handler: Handler<ClickEvent>) -> Self {
+        self.on_submit = Some(handler);
         self
     }
     pub fn on_input(mut self, handler: Handler<InputEvent>) -> Self {
@@ -501,6 +538,16 @@ impl Component for TextField {
             .when(self.error.is_some(), |i| {
                 i.border(1.).border_color(t.danger).rounded(6.)
             });
+        let c = self.config;
+        input = input
+            .secure(c.secure)
+            .keyboard(c.keyboard)
+            .return_key(c.return_key)
+            .capitalize(c.capitalize)
+            .autocorrect(c.autocorrect);
+        if let Some(h) = self.on_submit {
+            input = input.on_submit(h);
+        }
         if let Some(h) = self.on_input {
             input = input.on_input(h);
         }

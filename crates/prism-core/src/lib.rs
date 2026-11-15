@@ -11,6 +11,7 @@ mod app;
 mod apple_models;
 pub mod background;
 pub mod car;
+pub mod controls;
 pub mod device;
 pub mod device_info;
 mod element;
@@ -33,6 +34,7 @@ pub use animation::{Animations, Pose, Transform};
 pub use app::{AnyEntity, App, Appearance, Context, Entity, EntityId, Environment, Render};
 pub use background::{BackgroundKind, BackgroundTask, Lifecycle};
 pub use car::{CarButton, CarButtonStyle, CarItem, CarSection, CarTab, CarTemplate};
+pub use controls::{Capitalize, DateMode, Keyboard, ReturnKey};
 pub use device::{
     Accuracy, DeviceCall, DeviceError, DeviceEvent, DeviceValue, Haptic, Location, Motion,
     Permission, PermissionState, PickImages, PickedFile, Share, Watch,
@@ -42,11 +44,12 @@ pub use device_info::{
     ScreenInfo, Version, WindowMode,
 };
 pub use element::{
-    BackEvent, Button, ChangeEvent, ClickEvent, Div, Element, FluentBuilder, Handler, Image,
-    InputEvent, IntoElement, Modal, NavigateEvent, NodeKind, ParentElement, Picture, Progress,
-    Screen, Scroll, ScrollEvent, Shape, Stack, SwipeDirection, Tab, Tabs, Text, TextInput, Timer,
-    Toggle, VNode, button, div, format_remaining, image, lazy, modal, picture, progress, screen,
-    scroll, shape, stack, tab, tabs, text, text_input, timer, toggle,
+    BackEvent, Button, ChangeEvent, ClickEvent, DatePicker, Div, Element, FluentBuilder, Handler,
+    Image, InputEvent, IntoElement, Modal, NavigateEvent, NodeKind, ParentElement, Picker, Picture,
+    Progress, Screen, Scroll, ScrollEvent, Shape, Slider, Spinner, Stack, SwipeDirection, Tab,
+    Tabs, Text, TextArea, TextInput, Timer, Toggle, VNode, button, date_picker, div,
+    format_remaining, image, lazy, modal, picker, picture, progress, screen, scroll, shape, slider,
+    spinner, stack, tab, tabs, text, text_area, text_input, timer, toggle, unix_seconds, unix_time,
 };
 pub use i18n::{BasicFormatter, DateStyle, Direction, Formatter, Locale, Translations};
 pub use list::VirtualList;
@@ -249,6 +252,11 @@ impl Runtime {
                     h(&NavigateEvent { path }, &mut self.app);
                 }
             }
+            UiEvent::Submit(id) => {
+                if let Some(h) = self.reconciler.submit_handler(id) {
+                    h(&ClickEvent, &mut self.app);
+                }
+            }
         }
         // Tasks spawned by the handler start right away.
         task::poll_tasks(&mut self.app);
@@ -437,15 +445,16 @@ impl Runtime {
 pub mod prelude {
     pub use crate::{
         Accessible, Accuracy, Activity, Alert, Animations, App, AsyncApp, BackgroundTask,
-        Breakpoint, CarButton, CarButtonStyle, CarItem, CarSection, CarTab, CarTemplate,
-        ChangeEvent, ClickEvent, Context, DateStyle, DeviceInfo, DeviceKind, Entity, FluentBuilder,
-        Handler, Haptic, InputEvent, IntoElement, Lifecycle, Locale, Location, Menu, MenuItem,
-        Motion, Notification, NotificationAction, NotificationResponse, Orientation, Params,
-        ParentElement, Path, Permission, PermissionState, PickImages, PickedFile, Platform, Pose,
-        Posture, Render, Role, Router, ScrollEvent, Share, Styled, SwipeDirection, Transition,
-        Translations, Tray, VirtualList, Watch, Widget, WidgetFamily, adaptive, button, div,
-        go_back, image, lazy, navigate_to, picture, progress, px, relative, rgb, rgba, screen,
-        scroll, shape, text, text_input, timer, toggle,
+        Breakpoint, Capitalize, CarButton, CarButtonStyle, CarItem, CarSection, CarTab,
+        CarTemplate, ChangeEvent, ClickEvent, Context, DateMode, DateStyle, DeviceInfo, DeviceKind,
+        Entity, FluentBuilder, Handler, Haptic, InputEvent, IntoElement, Keyboard, Lifecycle,
+        Locale, Location, Menu, MenuItem, Motion, Notification, NotificationAction,
+        NotificationResponse, Orientation, Params, ParentElement, Path, Permission,
+        PermissionState, PickImages, PickedFile, Platform, Pose, Posture, Render, ReturnKey, Role,
+        Router, ScrollEvent, Share, Styled, SwipeDirection, Transition, Translations, Tray,
+        VirtualList, Watch, Widget, WidgetFamily, adaptive, button, date_picker, div, go_back,
+        image, lazy, navigate_to, picker, picture, progress, px, relative, rgb, rgba, screen,
+        scroll, shape, slider, spinner, text, text_area, text_input, timer, toggle,
     };
 }
 

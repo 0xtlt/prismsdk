@@ -1077,6 +1077,12 @@ impl Widgets for AppKit {
             }
             NodeKind::Picture => View::Picture(PrismView::new(mtm, id)),
             NodeKind::Shape => View::Container(PrismView::new(mtm, id)),
+            // TODO(forms): native controls.
+            NodeKind::Slider
+            | NodeKind::Picker
+            | NodeKind::DatePicker
+            | NodeKind::TextArea
+            | NodeKind::Spinner => View::Container(PrismView::new(mtm, id)),
             NodeKind::Timer => {
                 let l = NSTextField::labelWithString(&empty, mtm);
                 l.setTag(id as isize);

@@ -8,7 +8,9 @@
 //! |---|---|
 //! | `create` / `destroy` | `id`, `kind` |
 //! | `style` | `s`: `bg`, `radius`, `bw`, `bc`, `opacity`, `color`, `font`, `weight`, `talign` (colors `[r,g,b,a, dark r,g,b,a]`) |
-//! | `text`, `placeholder`, `icon`, `value`, `clickable`, `display`, `a11y` | the value |
+//! | `text`, `placeholder`, `icon`, `value`, `clickable`, `display` | the value |
+//! | `a11y` | `label`, `hidden`, `role` (ARIA name: `slider`, `combobox`, `status`…), `value` |
+//! | `config` | `config`: a control's config string (`prism_core::controls`: slider `min max step`, picker options one per line, date `mode min max`, input tokens) |
 //! | `children` | `children`: ids in order |
 //! | `frame` | `f`: `[x, y, w, h]` in the parent |
 //! | `content` | `size`: a scroll view's content size |
@@ -38,7 +40,9 @@ use crate::{Insets, Viewport, Widgets};
 pub struct MeasureRequest<'a> {
     /// `text`, `button`, `text_input`, `toggle`, `progress`, `image`, `timer`…
     pub kind: &'a str,
-    /// The text, or the icon name of an `image`.
+    /// The text, the icon name of an `image`, a picker's widest option, a
+    /// date picker's config (`date`, `time`, `datetime` first), `large` for a
+    /// large spinner.
     pub text: &'a str,
     pub font_size: f32,
     /// 400, 500, 600, 700.
@@ -56,6 +60,8 @@ pub struct RemoteWidgets {
     texts: HashMap<NodeId, String>,
     /// Icon names of images (what they measure).
     icons: HashMap<NodeId, String>,
+    /// Control configs (a picker measures its options).
+    configs: HashMap<NodeId, String>,
     styles: HashMap<NodeId, Style>,
     /// Content size of each stack or tab container, reported by the host.
     pub viewports: HashMap<NodeId, (f32, f32)>,
@@ -70,6 +76,7 @@ impl RemoteWidgets {
             kinds: HashMap::new(),
             texts: HashMap::new(),
             icons: HashMap::new(),
+            configs: HashMap::new(),
             styles: HashMap::new(),
             viewports: HashMap::new(),
             frames: HashMap::new(),
@@ -239,6 +246,7 @@ impl Widgets for RemoteWidgets {
         self.kinds.remove(id);
         self.texts.remove(id);
         self.icons.remove(id);
+        self.configs.remove(id);
         self.styles.remove(id);
         self.viewports.remove(id);
         self.frames.remove(id);
@@ -251,6 +259,16 @@ impl Widgets for RemoteWidgets {
         let text = match kind {
             NodeKind::Timer => "00:00".to_string(),
             NodeKind::Image => self.icons.get(id).cloned().unwrap_or_default(),
+            // The widest option decides the width; the host adds its chrome.
+            NodeKind::Picker => self
+                .configs
+                .get(id)
+                .map(|c| prism_core::controls::PickerConfig::decode(c).options)
+                .unwrap_or_default()
+                .into_iter()
+                .max_by_key(|o| o.chars().count())
+                .unwrap_or_default(),
+            NodeKind::DatePicker => self.configs.get(id).cloned().unwrap_or_default(),
             _ => self.texts.get(id).cloned().unwrap_or_default(),
         };
         (self.measure)(&MeasureRequest {
@@ -311,12 +329,25 @@ impl Widgets for RemoteWidgets {
     fn set_accessibility(&mut self, id: &NodeId, a11y: &Accessibility) {
         self.ops.push(json!({
             "op": "a11y", "id": id, "label": a11y.label, "hidden": a11y.hidden,
+            "role": a11y.role.map(|r| r.aria()), "value": a11y.value,
         }));
     }
 
     fn set_value(&mut self, id: &NodeId, value: f64) {
+        if self.kinds.get(id) == Some(&NodeKind::Spinner) {
+            // What it measures: `large` or the regular size.
+            let size = if value != 0. { "large" } else { "" };
+            self.texts.insert(*id, size.to_string());
+        }
         self.ops
             .push(json!({ "op": "value", "id": id, "value": value }));
+    }
+
+    /// Raw config string (see `prism_core::controls`); hosts decode it.
+    fn set_config(&mut self, id: &NodeId, _kind: NodeKind, config: &str) {
+        self.configs.insert(*id, config.to_string());
+        self.ops
+            .push(json!({ "op": "config", "id": id, "config": config }));
     }
 
     fn set_icon(&mut self, id: &NodeId, icon: &str) {
