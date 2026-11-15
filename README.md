@@ -325,6 +325,54 @@ shape()
 
 `Path` also has `line`, `arc`, `circle`, `rect`, `move_to`/`line_to`/`curve_to`/`arc_to`/`close`, `.fill`, `.stroke`, `.dashed`.
 
+## Forms and feedback
+
+Native form controls everywhere: dragging, menus, calendars and keyboards behave like the platform's own.
+
+```rust
+slider(self.volume).range(0., 100.).step(1.)
+    .accessibility_label("Volume")
+    .on_change(cx.listener(|this, e, _| this.volume = e.value))
+picker(["Small", "Medium", "Large"], self.size).placeholder("Choose…")
+    .on_change(cx.listener(|this, e, _| this.size = Some(e.index())))
+date_picker(self.due).min(SystemTime::now())                  // .time(), .date_time()
+    .on_change(cx.listener(|this, e, _| this.due = e.date()))
+text_input().secure(true).return_key(ReturnKey::Go)
+    .on_submit(cx.listener(|this, _, cx| this.sign_in(cx)))
+text_input().keyboard(Keyboard::Email).capitalize(Capitalize::None).autocorrect(false)
+text_area().value(&self.notes).max_h(px(160.))                // grows, then scrolls
+spinner().large()
+
+// Themed (label, value, accent), with `.native()` for the bare control
+ui::slider("Volume", v).range(0., 100.).step(1.).format(|v| format!("{v:.0} %"))
+ui::select("Size", sizes, self.size)
+ui::date_field("Due", self.due)
+ui::text_field("Password", &self.password).secure().on_submit(…)
+ui::text_area("Notes", &self.notes).max_lines(5)
+ui::spinner().label("Syncing…")
+
+// Toasts: put `ui::toaster()` once, last in the screen it covers
+ui::show_toast(cx, ui::toast("Saved").action("Undo", undo));  // .tone(Variant::Danger), .duration(…)
+```
+
+| | Slider | Picker | Date / time | Text area | Spinner |
+|---|---|---|---|---|---|
+| iOS, visionOS | `UISlider` | `UIButton` + `UIMenu` | `UIDatePicker` (compact) | `UITextView` | `UIActivityIndicatorView` |
+| tvOS | FORMS_TV_SLIDER | `UIButton` + `UIMenu` | FORMS_TV_DATE | `UITextView` | `UIActivityIndicatorView` |
+| macOS | `NSSlider` | `NSPopUpButton` | `NSDatePicker` | `NSTextView` | spinning `NSProgressIndicator` |
+| Web | `<input type=range>` | `<select>` | `<input type=date / time / datetime-local>` | `<textarea>` | CSS |
+| Linux | `GtkScale` | `GtkDropDown` | `GtkCalendar` in a popover | `GtkTextView` | `GtkSpinner` |
+| Android | `SeekBar` | `Spinner` | `DatePickerDialog` / `TimePickerDialog` | multi-line `EditText` | indeterminate `ProgressBar` |
+| watchOS | SwiftUI `Slider` (Digital Crown) | SwiftUI `Picker` | FORMS_WATCH_DATE | FORMS_WATCH_AREA | `ProgressView` |
+
+- **Values**: sliders report `e.value` while dragging (snapped to the step), pickers `e.index()`, date pickers `e.date()` (an instant, shown in the device's time zone).
+- **Text inputs**: `secure` (password entry), `keyboard` (email, number, decimal, phone, URL), `return_key` (Done, Go, Next, Search, Send), `capitalize`, `autocorrect`, and `on_submit` for the return key. Each maps to the platform's own setting where it has one (FORMS_INPUT_GAPS).
+- **Accessibility**: sliders are adjustable (VoiceOver swipe up/down, TalkBack, arrow keys) and read their value (`accessibility_value("40 %")` overrides it); pickers read their label and choice; spinners are busy indicators. Toasts are announced politely (`Role::Status`: ARIA live region, VoiceOver and TalkBack announcements, `gtk_accessible_announce`).
+- **Right to left**: sliders fill from the right, menus and calendars follow the language.
+- **Tint**: `text_color` tints a control (`ui::*` uses the theme's accent).
+
+**Overlays**: `div().absolute().bottom(16.).left(16.).right(16.)` takes an element out of the flex flow and places it at its insets from the parent (`.top()`, `.inset(0.)`…), like CSS `position: absolute` (taffy on native). Later siblings draw on top; `left`/`right` are the leading and trailing edges.
+
 ## Accessibility
 
 Accessibility is built in, not opt-in. The core resolves one description per node (role, label, hint, value, checked, disabled, hidden) and each backend maps it to the platform API:
@@ -345,7 +393,7 @@ text("›").accessibility_hidden()
 
 ## Components (`prism::ui`)
 
-A themed, accessible component library: `button`, `switch`, `checkbox`, `text_field`, `card`, `heading`, `badge`, `list_row`, `divider`, and charts (see [Charts](#charts-and-vector-drawing)).
+A themed, accessible component library: `button`, `switch`, `checkbox`, `text_field`, `card`, `heading`, `badge`, `list_row`, `divider`, form controls and toasts (see [Forms](#forms-and-feedback)), and charts (see [Charts](#charts-and-vector-drawing)).
 
 Three levels of customization:
 
@@ -353,7 +401,7 @@ Three levels of customization:
 2. **Per instance**: `ui::button("Delete").danger().large()`, plus `.style(|s| s.corner_radius = 0.)` for anything else.
 3. **Replace a component app-wide**: `Theme::light().override_component(|b: ui::Button, cx| my_button(b, cx))`, or implement `ui::Component` for your own and register it with `prism_ui::component!(MyThing)`.
 
-Custom or native: `ui::button("Save").native()` / `ui::switch(..).native()` per instance, or `Theme::prefer_native(true)` everywhere (UIButton/UISwitch, NSButton/NSSwitch, `<button>`/`<input role=switch>`). Raw native primitives remain available: `button()`, `toggle()`, `text_input()`.
+Custom or native: `ui::button("Save").native()` / `ui::switch(..).native()` (also `ui::slider`, `ui::select`, `ui::date_field`, `ui::text_area`) per instance, or `Theme::prefer_native(true)` everywhere (UIButton/UISwitch, NSButton/NSSwitch, `<button>`/`<input role=switch>`). Raw native primitives remain available: `button()`, `toggle()`, `text_input()`.
 
 ## Widgets, Live Activities, Dynamic Island, notifications
 
@@ -636,6 +684,6 @@ The app runs in Rust, and a small Java host (`platform/android`) creates real An
 
 ## Status
 
-Primitives: `div`, `text`, `button`, `text_input`, `toggle`, `scroll`, `picture`, `VirtualList`, `screen`, `Router` (stacks, tabs, sheets). Component library `prism::ui`. Accessibility on all backends. Light/dark appearance.
+Primitives: `div`, `text`, `button`, `text_input` (secure, keyboards, submit), `text_area`, `toggle`, `slider`, `picker`, `date_picker`, `spinner`, `scroll`, `picture`, `shape`, `VirtualList`, `screen`, `Router` (stacks, tabs, sheets). Component library `prism::ui`. Accessibility on all backends. Light/dark appearance.
 Widgets, Live Activities (Dynamic Island), car screens (CarPlay, Android Auto, Automotive), notifications with actions, background tasks, device APIs (location, motion, photos, camera, haptics, clipboard, share), alerts, context menus, tray and app menus, async tasks, HTTP, storage, i18n/RTL, Dynamic Type, animations, `prism` CLI.
 Platforms: web, macOS, iOS/iPadOS, tvOS, watchOS, visionOS, Linux (GTK 4), Android (phones, tablets, Wear OS, Android TV). Not yet: Windows (the `Widgets` trait and `PlatformServices` are the extension points).
