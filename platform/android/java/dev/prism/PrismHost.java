@@ -63,6 +63,8 @@ public final class PrismHost {
     static native void nativeBackgroundExpired(String task);
     /** The car (PrismCarService): `connected` (1/0), `select` (id), `back` (depth). */
     static native void nativeCarEvent(String kind, long value, String info);
+    /** Remote push (PrismPush, PrismFcm): a token, an endpoint, a message, an error. */
+    static native void nativePush(String json, String info);
 
     /** The application (also set when a background job starts without the Activity). */
     static android.content.Context context;
@@ -106,6 +108,9 @@ public final class PrismHost {
             o.put("biometricReady", PrismSecurity.canAuthenticate() == android.hardware.biometrics.BiometricManager.BIOMETRIC_SUCCESS);
             o.put("browser", c.getPackageManager().resolveActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW,
                     android.net.Uri.parse("https://example.com")), 0) != null);
+            // Remote push: "fcm", "unifiedpush", or none (PrismPush).
+            String push = PrismPush.service(c);
+            if (push != null) o.put("push", push);
         } catch (JSONException ignored) {
         }
         return o;
@@ -259,6 +264,8 @@ public final class PrismHost {
             case "notify_permission": PrismDevice.requestNotificationPermission(); return;
             case "alert": alert(p.getJSONObject("alert")); return;
             case "bg_schedule": PrismJob.schedule(context, p); return;
+            case "push_register": PrismPush.register(context); return;
+            case "push_unregister": PrismPush.unregister(context); return;
             case "activity": PrismSurface.activity(context, p, false); return;
             case "widgets": PrismWidget.reload(context, p.getJSONArray("snaps")); return;
             case "car": car(p.getString("json")); return;

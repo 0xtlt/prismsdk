@@ -48,6 +48,8 @@ pub(crate) struct LinuxServices {
     pub background: Vec<(String, std::time::Instant, std::time::Duration)>,
     /// Sign-ins waiting for their loopback redirect.
     loopback: crate::security::Loopback,
+    /// The app's data directory (push keys).
+    data_dir: std::path::PathBuf,
 }
 
 fn reply(id: u64, result: Result<DeviceValue, DeviceError>) {
@@ -63,7 +65,11 @@ fn system_bus() -> Option<gio::DBusConnection> {
 }
 
 impl LinuxServices {
-    pub fn new(app: gtk::Application, window: gtk::ApplicationWindow) -> Self {
+    pub fn new(
+        app: gtk::Application,
+        window: gtk::ApplicationWindow,
+        data_dir: std::path::PathBuf,
+    ) -> Self {
         // GNotification needs the session bus; location needs GeoClue on the
         // system bus.
         let session = gio::bus_get_sync(gio::BusType::Session, None::<&gio::Cancellable>).is_ok();
@@ -98,8 +104,11 @@ impl LinuxServices {
                 // fprintd only: no desktop standard checks a password for an app.
                 device_auth: biometry.is_biometric(),
                 web_auth: true,
+                // UnifiedPush over D-Bus, when a distributor runs (push.rs).
+                push: crate::push::distributor().map(|_| prism_core::PushService::UnifiedPush),
                 ..Default::default()
             },
+            data_dir,
             app,
             window,
             location_streams: Rc::new(RefCell::new(HashMap::new())),
@@ -512,6 +521,18 @@ impl PlatformServices for LinuxServices {
                 self.app.withdraw_notification(&id);
             }
             PlatformRequest::RequestNotificationPermission => {}
+            PlatformRequest::RegisterPush => crate::push::register(
+                self.data_dir.clone(),
+                |r| {
+                    glib::idle_add_local_once(move || imp::push_registered(r));
+                },
+                |m| {
+                    glib::idle_add_local_once(move || imp::push_received(m));
+                },
+            ),
+            PlatformRequest::UnregisterPush => crate::push::unregister(&self.data_dir),
+            // No Live Activities on Linux desktops.
+            PlatformRequest::WatchActivityPushToStart => {}
             PlatformRequest::ShowAlert(spec) => self.alert(spec),
             PlatformRequest::SetAppMenu(menus) => {
                 let bar = gio::Menu::new();

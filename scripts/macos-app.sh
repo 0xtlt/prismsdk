@@ -109,8 +109,22 @@ fi
 if [[ "${PRISM_APPLE_SIGNIN:-}" == 1 ]]; then
   echo "note: Sign in with Apple on macOS needs a Mac provisioning profile with the capability; capabilities().sign_in_with_apple stays false" >&2
 fi
+# Remote push (PRISM_PUSH): com.apple.developer.aps-environment is restricted
+# on macOS: ad hoc signed apps claiming it are killed at launch, so it needs a
+# provisioning profile with Push Notifications (PRISM_MAC_PROFILE).
+PUSH_PLIST="" PUSH_ENT=""
+if [[ -n "${PRISM_PUSH:-}" ]]; then
+  if [[ -n "${PRISM_MAC_PROFILE:-}" ]]; then
+    cp "$PRISM_MAC_PROFILE" "$APP/Contents/embedded.provisionprofile"
+    PUSH_PLIST="  <key>PrismApsEnvironment</key><string>$PRISM_PUSH</string>"
+    PUSH_ENT="  <key>com.apple.developer.aps-environment</key><string>$PRISM_PUSH</string>"
+  else
+    echo "note: push on macOS needs PRISM_MAC_PROFILE (a Mac provisioning profile with Push Notifications); capabilities().push stays None" >&2
+  fi
+fi
 plist "$PKG" "$BUNDLE_ID" APPL "$ICON_PLIST
 $LOC_PLIST
+$PUSH_PLIST
 $USAGE_PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>CFBundleURLTypes</key>
@@ -134,6 +148,7 @@ cat > "$GEN/app.entitlements" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>com.apple.security.application-groups</key><array><string>$GROUP</string></array>
+$PUSH_ENT
 </dict></plist>
 PLIST
 cat > "$GEN/appex.entitlements" <<PLIST

@@ -211,6 +211,40 @@ pub(crate) fn notification_response(
     });
 }
 
+pub(crate) fn push_registered(
+    result: Result<prism_core::PushSubscription, prism_core::DeviceError>,
+) {
+    dispatch2::DispatchQueue::main().exec_async(move || {
+        with_state(|s| {
+            let patches = s.runtime.push_registered(result);
+            commit(s, &patches);
+        })
+    });
+}
+
+/// A push; silent ones run the app's job and complete WatchKit's handler
+/// (`completion`) when it is done.
+pub(crate) fn push_received(message: prism_core::PushMessage, completion: u64) {
+    dispatch2::DispatchQueue::main().exec_async(move || {
+        let mut waiting = false;
+        with_state(|s| {
+            let patches = if message.event == prism_core::PushEvent::Background {
+                if let Some(task) = s.runtime.run_background_push(message) {
+                    s.background.push((format!("push:{completion}"), task));
+                    waiting = true;
+                }
+                s.runtime.poll()
+            } else {
+                s.runtime.push_received(message, false)
+            };
+            commit(s, &patches);
+        });
+        if !waiting && completion != 0 {
+            prism_native::apple::push::complete(completion, true);
+        }
+    });
+}
+
 /// `PRISM_BACKGROUND_INTERVAL=<seconds>` shortens background intervals (development).
 pub(crate) fn background_interval(every: std::time::Duration) -> std::time::Duration {
     std::env::var("PRISM_BACKGROUND_INTERVAL")

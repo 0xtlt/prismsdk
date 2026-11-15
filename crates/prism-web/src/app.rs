@@ -36,6 +36,9 @@ pub(crate) struct Inner {
     pub asset_url: Option<String>,
     pub data_root: PathBuf,
     pub assets: Assets,
+    /// The VAPID public key (base64url) browsers subscribe with: Web Push is
+    /// available when set.
+    pub vapid_public_key: Option<String>,
 }
 
 impl WebApp {
@@ -63,6 +66,7 @@ impl WebApp {
                     .unwrap_or_else(|| ".prism-data".into())
                     .into(),
                 assets,
+                vapid_public_key: env("PRISM_VAPID_PUBLIC_KEY"),
             }),
         };
         let app = match env("PRISM_BASE_PATH") {
@@ -92,6 +96,13 @@ impl WebApp {
     pub fn asset_url(self, url: &str) -> Self {
         let url = url.trim_end_matches('/').to_string();
         self.configure(|i| i.asset_url = Some(url))
+    }
+
+    /// Enables Web Push: the public half of your server's VAPID key
+    /// (`prism_push::webpush::VapidKey::public_key`; or `PRISM_VAPID_PUBLIC_KEY`).
+    pub fn vapid_public_key(self, key: &str) -> Self {
+        let key = key.trim().to_string();
+        self.configure(|i| i.vapid_public_key = Some(key))
     }
 
     /// Where each browser's data lives (`cx.storage()`, uploads).
@@ -183,6 +194,17 @@ impl WebApp {
             }
         } else if let Some(name) = path.strip_prefix("/files/") {
             self.upload(headers, name)
+        } else if path == "/prism-sw.js" {
+            // The push service worker: at the app's root (its scope), from
+            // this origin (never a CDN), revalidated so updates reach browsers.
+            let mut r = Response::new(crate::SW_JS.as_bytes().to_vec());
+            set(
+                &mut r,
+                header::CONTENT_TYPE,
+                "text/javascript; charset=utf-8",
+            );
+            set(&mut r, header::CACHE_CONTROL, "no-cache");
+            r
         } else if path == "/favicon.ico" || path == "/ws" {
             status(StatusCode::NOT_FOUND)
         } else {
@@ -264,11 +286,16 @@ impl WebApp {
         r
     }
 
+    /// Platform services for one browser session.
+    pub(crate) fn services(&self) -> crate::session::WebServices {
+        crate::session::WebServices::new(self.inner.vapid_public_key.clone())
+    }
+
     pub(crate) fn options(&self, visitor: Visitor, path: String) -> prism_core::RuntimeOptions {
         let sid = visitor.sid;
         prism_core::RuntimeOptions {
             path,
-            capabilities: crate::session::WebServices::default().capabilities(),
+            capabilities: self.services().capabilities(),
             storage: Some(Box::new(prism_core::FileStorage::new(
                 self.session_dir(sid),
             ))),
@@ -640,6 +667,23 @@ mod tests {
         assert!(head.status().is_success() && head.body().is_empty());
         let post = app.handle(&Request::post("/app/").body(()).unwrap());
         assert_eq!(post.status(), StatusCode::METHOD_NOT_ALLOWED);
+        // The push service worker stays on this origin, at the app's root.
+        let sw = get(&app, "/app/prism-sw.js", &[]);
+        assert_eq!(sw.status(), StatusCode::OK);
+        assert_eq!(header(&sw, "cache-control"), "no-cache");
+        assert!(String::from_utf8_lossy(sw.body()).contains("showNotification"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn push_needs_a_vapid_key() {
+        let (app, dir) = app("push");
+        assert_eq!(app.services().capabilities().push, None);
+        let app = app.vapid_public_key("BKVqC4g3");
+        assert_eq!(
+            app.services().capabilities().push,
+            Some(prism_core::PushService::WebPush)
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -238,7 +238,11 @@ impl Focus {
     fn start_for(&mut self, total: Duration, cx: &mut Context<Self>) {
         let ends = SystemTime::now() + total;
         let accent = Theme::of(cx).accent;
-        let a = activity(cx, ends, total, accent);
+        let mut a = activity(cx, ends, total, accent);
+        if cx.capabilities().push.is_some() {
+            // The server can update it too (its token: push::install).
+            a = a.push_updates();
+        }
         let id = cx.start_activity(a);
         let n = done_notification(cx, total);
         cx.send_notification(n);

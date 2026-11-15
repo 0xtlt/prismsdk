@@ -21,6 +21,10 @@
 #   PRISM_NO_INSTALL=1 build only
 #   PRISM_ANDROID_AUTOMOTIVE=1  a build for cars running Android (default:
 #                      when the device is one); car screens need cx.register_car
+#   PRISM_PUSH         remote push (Prism.toml [push]): the UnifiedPush receiver
+#   PRISM_GOOGLE_SERVICES  Firebase's google-services.json: FCM, with the Firebase
+#                      SDK fetched from Google's Maven and bundled (opt-in)
+#   PRISM_VAPID_PUBLIC_KEY  given to UnifiedPush distributors that require VAPID
 #   PRISM_ANDROID_KEYSTORE, PRISM_ANDROID_KEYSTORE_PASS, PRISM_ANDROID_KEY_ALIAS
 #                      signing key for store builds (default: the debug key)
 set -euo pipefail
@@ -117,10 +121,22 @@ AUTOMOTIVE="${PRISM_ANDROID_AUTOMOTIVE:-}"
 if [[ -z "$AUTOMOTIVE" && -n "$SERIAL" && "${PRISM_NO_INSTALL:-}" != 1 ]]; then
   "$ADB" -s "$SERIAL" shell pm has-feature android.hardware.type.automotive 2>/dev/null | grep -q true && AUTOMOTIVE=1
 fi
-LIB_JARS="" LIB_RES=() LIB_PKGS=""
+# Remote push (PRISM_PUSH): UnifiedPush needs no library. FCM
+# (PRISM_GOOGLE_SERVICES) needs Google's Firebase SDK: firebase-messaging and
+# its dependencies (Play services client libraries, Kotlin…), fetched like the
+# car library. Their manifests are merged below (android-manifest-merge.py).
+GSERVICES="${PRISM_GOOGLE_SERVICES:-}"
+[[ -n "$GSERVICES" && ! -f "$GSERVICES" ]] && { echo "PRISM_GOOGLE_SERVICES: $GSERVICES not found" >&2; exit 1; }
+[[ -n "$GSERVICES" ]] && PRISM_PUSH="${PRISM_PUSH:-1}"
+LIB_JARS="" LIB_RES=() LIB_PKGS="" ROOTS=() FCM_DIRS=()
 if [[ "$CAR" == 1 ]]; then
-  ROOTS=(androidx.car.app:app:1.7.0)
+  ROOTS+=(androidx.car.app:app:1.7.0)
   [[ "$AUTOMOTIVE" == 1 ]] && ROOTS+=(androidx.car.app:app-automotive:1.7.0)
+  mkdir -p "$OUT/res/xml"
+  printf '<automotiveApp><uses name="template"/></automotiveApp>\n' > "$OUT/res/xml/automotive_app_desc.xml"
+fi
+[[ -n "$GSERVICES" ]] && ROOTS+=(com.google.firebase:firebase-messaging:26.0.2)
+if [[ ${#ROOTS[@]} -gt 0 ]]; then
   CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/prism/maven"
   mkdir -p "$OUT/libres"
   while IFS=$'\t' read -r kind a b; do
@@ -130,18 +146,48 @@ if [[ "$CAR" == 1 ]]; then
         zip="$OUT/libres/${b//./_}.zip"
         "$BUILD_TOOLS/aapt2" compile --dir "$a" -o "$zip"
         LIB_RES+=(-R "$zip") LIB_PKGS="${LIB_PKGS:+$LIB_PKGS:}$b" ;;
+      aar) FCM_DIRS+=("$a") ;;
     esac
   done < <(python3 "$(dirname "$0")/android-deps.py" "$CACHE" "${ROOTS[@]}" | python3 -c '
-import json, sys
+import json, os, sys
 for e in json.load(sys.stdin):
     for j in e["jars"]:
         print(f"jar\t{j}\t")
     res, package = e["res"], e["package"]
     if res and package:
         print(f"res\t{res}\t{package}")
+    # Firebase / Play services manifests (components, permissions) to merge.
+    if package and e["id"].startswith(("com.google.firebase:", "com.google.android.gms:", "com.google.android.datatransport:")) and e["jars"]:
+        first = e["jars"][0]
+        print("aar\t" + os.path.dirname(first) + "\t")
 ')
-  mkdir -p "$OUT/res/xml"
-  printf '<automotiveApp><uses name="template"/></automotiveApp>\n' > "$OUT/res/xml/automotive_app_desc.xml"
+fi
+# google-services.json → the resources Firebase reads at startup (what the
+# google-services Gradle plugin generates).
+if [[ -n "$GSERVICES" ]]; then
+  mkdir -p "$OUT/res/values"
+  python3 - "$GSERVICES" "$APP_ID" > "$OUT/res/values/google_services.xml" <<'PY'
+import json, sys
+from xml.sax.saxutils import escape
+g, app_id = json.load(open(sys.argv[1])), sys.argv[2]
+clients = [c for c in g.get("client", []) if c["client_info"]["android_client_info"]["package_name"] == app_id]
+if not clients:
+    sys.exit(f"google-services.json has no Android app for {app_id}")
+c, p = clients[0], g["project_info"]
+values = {
+    "google_app_id": c["client_info"]["mobilesdk_app_id"],
+    "gcm_defaultSenderId": p["project_number"],
+    "google_api_key": c["api_key"][0]["current_key"],
+    "google_crash_reporting_api_key": c["api_key"][0]["current_key"],
+    "project_id": p["project_id"],
+}
+if p.get("storage_bucket"):
+    values["google_storage_bucket"] = p["storage_bucket"]
+print("<resources>")
+for k, v in values.items():
+    print(f'  <string name="{k}" translatable="false">{escape(str(v))}</string>')
+print("</resources>")
+PY
 fi
 
 # 4. Manifest: permissions from Prism.toml, deep links, the file provider.
@@ -247,11 +293,42 @@ if [[ "$CAR" == 1 ]]; then
     <meta-data android:name=\"com.google.android.gms.car.application\" android:resource=\"@xml/automotive_app_desc\"/>"
   fi
 fi
+# Remote push: the UnifiedPush connector (PrismPush.Receiver), FCM's service
+# and the Firebase libraries' own entries.
+PUSH_PERMS="" PUSH_QUERIES="" PUSH_APP=""
+if [[ -n "${PRISM_PUSH:-}" ]]; then
+  # Finds distributors (Android 11+ package visibility).
+  PUSH_QUERIES='  <queries><intent><action android:name="org.unifiedpush.android.distributor.REGISTER"/></intent></queries>'
+  PUSH_APP='    <receiver android:name="dev.prism.PrismPush$Receiver" android:exported="true">
+      <intent-filter>
+        <action android:name="org.unifiedpush.android.connector.MESSAGE"/>
+        <action android:name="org.unifiedpush.android.connector.NEW_ENDPOINT"/>
+        <action android:name="org.unifiedpush.android.connector.REGISTRATION_FAILED"/>
+        <action android:name="org.unifiedpush.android.connector.UNREGISTERED"/>
+        <action android:name="org.unifiedpush.android.connector.TEMP_UNAVAILABLE"/>
+      </intent-filter>
+    </receiver>'
+  [[ -n "${PRISM_VAPID_PUBLIC_KEY:-}" ]] && PUSH_APP="$PUSH_APP
+    <meta-data android:name=\"prism.vapid\" android:value=\"$PRISM_VAPID_PUBLIC_KEY\"/>"
+fi
+if [[ -n "$GSERVICES" ]]; then
+  MERGED="$(python3 "$(dirname "$0")/android-manifest-merge.py" "$APP_ID" "${FCM_DIRS[@]}")"
+  PUSH_PERMS="$(sed '/^--$/,$d' <<< "$MERGED")"
+  PUSH_APP="$PUSH_APP
+    <service android:name=\"dev.prism.PrismFcm\" android:exported=\"false\">
+      <intent-filter><action android:name=\"com.google.firebase.MESSAGING_EVENT\"/></intent-filter>
+    </service>
+    <!-- A token only when the app calls register_for_push. -->
+    <meta-data android:name=\"firebase_messaging_auto_init_enabled\" android:value=\"false\"/>
+$(sed '1,/^--$/d' <<< "$MERGED")"
+fi
 cat > "$OUT/AndroidManifest.xml" <<XML
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="$APP_ID">
 $PERMS
+$PUSH_PERMS
 $CAR_FEATURES
+$PUSH_QUERIES
   <!-- Also for TVs (no touch screen) and watches. -->
   <uses-feature android:name="android.hardware.touchscreen" android:required="false"/>
   <uses-feature android:name="android.software.leanback" android:required="false"/>
@@ -291,6 +368,7 @@ $LAUNCHER
     <meta-data android:name="com.google.android.wearable.standalone" android:value="true"/>
 $RECEIVERS
 $CAR_APP
+$PUSH_APP
     <service android:name="dev.prism.PrismJob" android:exported="false"
         android:permission="android.permission.BIND_JOB_SERVICE"/>
     <provider android:name="dev.prism.PrismFiles" android:authorities="$APP_ID.prism.files"
@@ -309,12 +387,14 @@ rm -rf "$OUT/rjava" && mkdir -p "$OUT/rjava"
 rm -rf "$OUT/classes" && mkdir -p "$OUT/classes"
 SOURCES=("$PLATFORM/android/java" "$OUT/gen")
 [[ "$CAR" == 1 ]] && SOURCES+=("$PLATFORM/android/car" "$OUT/rjava")
+[[ -n "$GSERVICES" ]] && SOURCES+=("$PLATFORM/android/fcm")
 javac --release 17 -nowarn -classpath "$ANDROID_JAR$LIB_JARS" -d "$OUT/classes" $(find "${SOURCES[@]}" -name '*.java')
 "$BUILD_TOOLS/d8" --min-api "$MIN_SDK" --lib "$ANDROID_JAR" --output "$STAGE" \
   $(find "$OUT/classes" -name '*.class') ${LIB_JARS//:/ }
 
 # 6. Add code and native libraries, align (16 KB pages), sign.
-(cd "$STAGE" && zip -q "$OUT/base.apk" classes.dex && zip -q -0 -r "$OUT/base.apk" lib)
+# Large libraries (Firebase) need several dex files: classes2.dex…
+(cd "$STAGE" && zip -q "$OUT/base.apk" classes*.dex && zip -q -0 -r "$OUT/base.apk" lib)
 # The libraries' Java resources (car-app-api.level…), as Gradle packages them.
 if [[ -n "$LIB_JARS" ]]; then
   # Unzipped entries can be read-only: make them removable first.

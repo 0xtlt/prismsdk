@@ -117,6 +117,10 @@ while queue:
 
 result = []
 for (g, a), v in sorted(chosen.items()):
+    # Kotlin Multiplatform libraries publish -android and -jvm variants of the
+    # same classes; Gradle's module metadata picks Android's: so do we.
+    if a.endswith("-jvm") and (g, a[:-4] + "-android") in chosen:
+        continue
     base = f"{g.replace('.', '/')}/{a}/{v}/{a}-{v}"
     kind = "aar" if packaging[(g, a)] == "aar" else "jar"
     data = fetch(f"{base}.{kind}") or fetch(f"{base}.{'jar' if kind == 'aar' else 'aar'}")

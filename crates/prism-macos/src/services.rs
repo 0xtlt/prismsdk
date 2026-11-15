@@ -102,6 +102,12 @@ impl MacServices {
                 device_auth,
                 sign_in_with_apple: apple,
                 web_auth: true,
+                // A bundled app declaring com.apple.developer.aps-environment.
+                push: if bundled {
+                    prism_native::apple::push::service()
+                } else {
+                    None
+                },
             },
             activities: HashMap::new(),
         }
@@ -221,6 +227,16 @@ impl PlatformServices for MacServices {
                     NSStatusBar::systemStatusBar().removeStatusItem(&a.item);
                 }
             }
+            PlatformRequest::RegisterPush => {
+                if self.caps.push.is_some() {
+                    prism_native::apple::push::register()
+                } else {
+                    crate::imp::push_registered(Err(prism_core::DeviceError::Unavailable))
+                }
+            }
+            PlatformRequest::UnregisterPush => prism_native::apple::push::unregister(),
+            // No Live Activities on macOS (a menu bar item stands in).
+            PlatformRequest::WatchActivityPushToStart => {}
             PlatformRequest::Notify(n) => {
                 if !self.caps.notifications {
                     eprintln!(
@@ -288,6 +304,49 @@ impl PlatformServices for MacServices {
             }
         }
     }
+}
+
+/// The APNs device token (hex) or a registration error (PrismPush.swift's
+/// app delegate).
+#[unsafe(no_mangle)]
+pub extern "C" fn prism_push_token(token: *const c_char, error: *const c_char) {
+    use prism_native::apple::push;
+    let result = match (push::cstr(token), push::cstr(error)) {
+        (Some(hex), _) => Ok(push::subscription(&hex)),
+        (None, e) => Err(prism_core::DeviceError::Failed(
+            e.unwrap_or_else(|| "registration failed".into()),
+        )),
+    };
+    crate::imp::push_registered(result);
+}
+
+/// A push: 0 in the foreground, 1 tapped, 2 silent (macOS has no
+/// completion handler: the app keeps running anyway).
+#[unsafe(no_mangle)]
+pub extern "C" fn prism_push_received(
+    kind: i32,
+    json: *const c_char,
+    action: *const c_char,
+    text: *const c_char,
+    _completion: u64,
+) {
+    use prism_native::apple::push;
+    let Some(json) = push::cstr(json) else { return };
+    crate::imp::push_received(push::message(
+        kind,
+        &json,
+        push::cstr(action),
+        push::cstr(text),
+    ));
+}
+
+/// Live Activity tokens do not exist on macOS (the bridge declares it).
+#[unsafe(no_mangle)]
+pub extern "C" fn prism_activity_push_token(
+    _key: *const c_char,
+    _kind: *const c_char,
+    _token: *const c_char,
+) {
 }
 
 /// Called by the Swift bridge when a notification is tapped.

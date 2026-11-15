@@ -18,6 +18,7 @@ mod car;
 mod device;
 mod focus;
 mod menus;
+mod push;
 mod security;
 mod strings;
 mod widgets;
@@ -37,6 +38,7 @@ pub fn run() {
         .run(|cx| {
             strings::install(cx);
             background::install(cx);
+            push::install(cx);
             let theme = load_theme(cx);
             ui::set_theme(cx, theme);
             let store = cx.new_entity(|cx| Store::load(cx));
@@ -69,6 +71,7 @@ pub fn run() {
                 })
                 .route("/focus", move |_, _| focus)
                 .route("/components/list", |cx, _| cx.new_entity(LongList::new))
+                .route("/push", |cx, _| cx.new_entity(|_| push::PushScreen))
                 .build(cx)
         });
 }
@@ -903,7 +906,8 @@ impl Render for Settings {
                                 },
                             ))),
                     ))
-                    .child(cell(language_card(cx))),
+                    .child(cell(language_card(cx)))
+                    .child(cell(push::card(cx))),
             )
             .child(
                 text(strings::settings_a11y_note(cx))

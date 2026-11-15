@@ -17,6 +17,7 @@ unsafe extern "C" {
         kind: *const c_char,
         json: *const c_char,
         stale: f64,
+        push: bool,
     ) -> bool;
     fn prism_activity_update(key: *const c_char, json: *const c_char, stale: f64);
     fn prism_activity_end(key: *const c_char, json: *const c_char, immediately: bool);
@@ -97,6 +98,8 @@ impl IosServices {
                 sign_in_with_apple: apple,
                 // ASWebAuthenticationSession (tvOS 16+ included).
                 web_auth: true,
+                // The build declares aps-environment (`[push]` in Prism.toml).
+                push: prism_native::apple::push::service(),
             },
             controller,
         }
@@ -133,6 +136,7 @@ impl PlatformServices for IosServices {
                         c(&kind).as_ptr(),
                         c(&content.to_json()).as_ptr(),
                         stale(&content),
+                        content.push_updates,
                     )
                 };
                 if !ok {
@@ -170,6 +174,11 @@ impl PlatformServices for IosServices {
                 prism_notify_cancel(c(&id).as_ptr())
             },
             PlatformRequest::RequestNotificationPermission => unsafe { prism_notify_permission() },
+            PlatformRequest::RegisterPush => prism_native::apple::push::register(),
+            PlatformRequest::UnregisterPush => prism_native::apple::push::unregister(),
+            PlatformRequest::WatchActivityPushToStart => {
+                prism_native::apple::push::watch_activity_start_tokens()
+            }
             PlatformRequest::ShowAlert(spec) => {
                 let mtm = objc2::MainThreadMarker::new().expect("main thread");
                 crate::menus::show_alert(mtm, &self.controller, &spec, crate::imp::dispatch)
@@ -235,6 +244,58 @@ pub extern "C" fn prism_notification_response(
         text: s(text),
     };
     crate::imp::notification_response(response, s(link));
+}
+
+/// The APNs device token (hex), from the app delegate (imp.rs), or why
+/// registration failed. Also exported for the bridge.
+#[unsafe(no_mangle)]
+pub extern "C" fn prism_push_token(token: *const c_char, error: *const c_char) {
+    use prism_native::apple::push;
+    let result = match (push::cstr(token), push::cstr(error)) {
+        (Some(hex), _) => Ok(push::subscription(&hex)),
+        (None, e) => Err(prism_core::DeviceError::Failed(
+            e.unwrap_or_else(|| "registration failed".into()),
+        )),
+    };
+    crate::imp::push_registered(result);
+}
+
+/// A push in the foreground (0) or tapped (1), from the notification
+/// delegate (PrismBridge.swift). Silent pushes (2) come from the app
+/// delegate (imp.rs).
+#[unsafe(no_mangle)]
+pub extern "C" fn prism_push_received(
+    kind: i32,
+    json: *const c_char,
+    action: *const c_char,
+    text: *const c_char,
+    _completion: u64,
+) {
+    use prism_native::apple::push;
+    let Some(json) = push::cstr(json) else { return };
+    let message = push::message(kind, &json, push::cstr(action), push::cstr(text));
+    crate::imp::push_received(message);
+}
+
+/// A Live Activity's push token (`key` null: the push-to-start token).
+#[unsafe(no_mangle)]
+pub extern "C" fn prism_activity_push_token(
+    key: *const c_char,
+    kind: *const c_char,
+    token: *const c_char,
+) {
+    use prism_native::apple::push;
+    let Some(token) = push::cstr(token) else {
+        return;
+    };
+    let token = prism_core::ActivityPushToken {
+        activity: push::cstr(key)
+            .and_then(|k| k.parse().ok())
+            .map(prism_core::ActivityId),
+        kind: push::cstr(kind).unwrap_or_default(),
+        token,
+    };
+    crate::imp::with_runtime(|rt| rt.activity_push_token(token));
 }
 
 /// CarPlay (PrismCarPlay.swift): connected or not, a selection, Back.

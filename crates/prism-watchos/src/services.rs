@@ -49,6 +49,8 @@ impl WatchServices {
                 device_auth,
                 sign_in_with_apple: apple,
                 web_auth: true,
+                // WKApplication.registerForRemoteNotifications (watchOS 6+).
+                push: prism_native::apple::push::service(),
                 ..Default::default()
             },
             ops: Vec::new(),
@@ -72,6 +74,8 @@ impl PlatformServices for WatchServices {
                 prism_notify_cancel(c(&id).as_ptr())
             },
             PlatformRequest::RequestNotificationPermission => unsafe { prism_notify_permission() },
+            PlatformRequest::RegisterPush => prism_native::apple::push::register(),
+            PlatformRequest::UnregisterPush => prism_native::apple::push::unregister(),
             PlatformRequest::Device { id, call } => prism_native::apple::device_call(id, call),
             PlatformRequest::ShowAlert(a) => {
                 let alert =
@@ -94,7 +98,8 @@ impl PlatformServices for WatchServices {
             | PlatformRequest::SetTray(_)
             | PlatformRequest::RemoveTray(_)
             | PlatformRequest::SetAppMenu(_)
-            | PlatformRequest::SetCar(_) => {}
+            | PlatformRequest::SetCar(_)
+            | PlatformRequest::WatchActivityPushToStart => {}
         }
     }
 }
@@ -134,5 +139,47 @@ pub extern "C" fn prism_background_run(id: *const c_char) {
 pub extern "C" fn prism_background_expired(_id: *const c_char) {}
 
 pub(crate) fn complete_background(id: &str) {
+    // Silent pushes wait as `push:<completion>` (prism_push_received).
+    if let Some(n) = id.strip_prefix("push:").and_then(|n| n.parse().ok()) {
+        return prism_native::apple::push::complete(n, true);
+    }
     unsafe { prism_watch_bg_complete(c(id).as_ptr()) }
+}
+
+/// The APNs device token (hex), or why registration failed.
+#[unsafe(no_mangle)]
+pub extern "C" fn prism_push_token(token: *const c_char, error: *const c_char) {
+    use prism_native::apple::push;
+    let result = match (push::cstr(token), push::cstr(error)) {
+        (Some(hex), _) => Ok(push::subscription(&hex)),
+        (None, e) => Err(prism_core::DeviceError::Failed(
+            e.unwrap_or_else(|| "registration failed".into()),
+        )),
+    };
+    crate::imp::push_registered(result);
+}
+
+/// A push: 0 in the foreground, 1 tapped, 2 silent (`completion`: WatchKit's
+/// handler, called once the app's job finishes).
+#[unsafe(no_mangle)]
+pub extern "C" fn prism_push_received(
+    kind: i32,
+    json: *const c_char,
+    action: *const c_char,
+    text: *const c_char,
+    completion: u64,
+) {
+    use prism_native::apple::push;
+    let Some(json) = push::cstr(json) else { return };
+    let message = push::message(kind, &json, push::cstr(action), push::cstr(text));
+    crate::imp::push_received(message, completion);
+}
+
+/// No Live Activities on watchOS (the bridge declares it).
+#[unsafe(no_mangle)]
+pub extern "C" fn prism_activity_push_token(
+    _key: *const c_char,
+    _kind: *const c_char,
+    _token: *const c_char,
+) {
 }

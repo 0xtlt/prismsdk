@@ -1742,3 +1742,134 @@ fn with_animation_animates_one_update_only() {
     assert!(styles(&plain).iter().all(|(_, tr)| tr.is_none()));
     assert!(styles(&rt.dispatch(UiEvent::Click(find_text(&first, "plain")))).is_empty());
 }
+
+#[test]
+fn push_registration_messages_and_background_jobs() {
+    use crate::{
+        Capabilities, Lifecycle, NotificationResponse, PlatformRequest, PushEvent, PushMessage,
+        PushService, PushSubscription,
+    };
+    use std::sync::Mutex;
+    struct Plain;
+    impl Render for Plain {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+    let log: Arc<Mutex<Vec<String>>> = Default::default();
+    let seen = log.clone();
+    let init: AppInit = Arc::new(move |cx: &mut App| {
+        let (a, b, c, d) = (seen.clone(), seen.clone(), seen.clone(), seen.clone());
+        cx.on_push_token(move |s, _| a.lock().unwrap().push(format!("token {}", s.token)));
+        cx.on_push(move |p, _| {
+            b.lock().unwrap().push(format!(
+                "{:?} {}",
+                p.event,
+                p.title.clone().unwrap_or_default()
+            ))
+        });
+        cx.on_background_push(move |p, cx| {
+            let c = c.clone();
+            async move {
+                cx.sleep(std::time::Duration::from_millis(20)).await;
+                c.lock()
+                    .unwrap()
+                    .push(format!("synced {}", p.get("sync").unwrap_or("")));
+            }
+        });
+        cx.spawn(async move |cx| {
+            let r = cx.register_for_push().await;
+            d.lock()
+                .unwrap()
+                .push(format!("awaited {:?}", r.map(|s| s.service)));
+        });
+        let root = cx.new_entity(|_| Plain);
+        cx.set_root(root);
+    });
+    let caps = Capabilities {
+        push: Some(PushService::UnifiedPush),
+        ..Default::default()
+    };
+    let mut rt = Runtime::with_capabilities(&init, "/", caps);
+    rt.render();
+    assert!(
+        rt.take_requests()
+            .iter()
+            .any(|r| matches!(r, PlatformRequest::RegisterPush))
+    );
+    let mut sub = PushSubscription::new(PushService::UnifiedPush, "https://up.example/1");
+    sub.p256dh = Some("BCV".into());
+    sub.auth = Some("BTB".into());
+    rt.push_registered(Ok(sub.clone()));
+    // The same token again is not news.
+    rt.push_registered(Ok(sub));
+    assert_eq!(
+        rt.app.push_subscription().unwrap().token,
+        "https://up.example/1"
+    );
+
+    // In the background, a visible push becomes a notification; its tap is
+    // an `Opened` push.
+    rt.set_lifecycle(Lifecycle::Background);
+    let (m, _) = PushMessage::from_payload(
+        PushEvent::Received,
+        r#"{"title":"Hi","body":"There","id":"m1"}"#,
+    )
+    .unwrap();
+    rt.push_received(m, true);
+    let notify = rt
+        .take_requests()
+        .into_iter()
+        .find_map(|r| match r {
+            PlatformRequest::Notify(n) => Some(n),
+            _ => None,
+        })
+        .expect("shown as a notification");
+    assert_eq!(notify.id, "prism-push:m1");
+    rt.notification_response(
+        NotificationResponse {
+            id: notify.id,
+            action: None,
+            text: None,
+        },
+        None,
+    );
+
+    // A silent push runs the background job.
+    let (silent, is_silent) =
+        PushMessage::from_payload(PushEvent::Received, r#"{"data":{"sync":"inbox"}}"#).unwrap();
+    assert!(is_silent && silent.event == PushEvent::Background);
+    let task = rt.run_background_push(silent).unwrap();
+    assert!(rt.is_task_running(task));
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    rt.poll();
+    assert!(!rt.is_task_running(task));
+    assert_eq!(
+        *log.lock().unwrap(),
+        [
+            "token https://up.example/1",
+            "awaited Ok(UnifiedPush)",
+            "Received Hi",
+            "Opened Hi",
+            "Background ",
+            "synced inbox"
+        ]
+    );
+}
+
+#[test]
+fn push_is_unavailable_without_the_capability() {
+    use std::sync::Mutex;
+    let out: Arc<Mutex<Option<String>>> = Default::default();
+    let o = out.clone();
+    let init: AppInit = Arc::new(move |cx: &mut App| {
+        let o = o.clone();
+        cx.spawn(async move |cx| {
+            let r = cx.register_for_push().await;
+            *o.lock().unwrap() = Some(format!("{r:?}"));
+        });
+    });
+    let mut rt = Runtime::new(&init);
+    rt.poll();
+    assert_eq!(out.lock().unwrap().as_deref(), Some("Err(Unavailable)"));
+}

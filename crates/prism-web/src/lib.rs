@@ -50,6 +50,8 @@ use prism_core::{AppConfig, AppInit};
 
 pub(crate) const CLIENT_JS: &str = include_str!("client.js");
 pub(crate) const PRISM_CSS: &str = include_str!("prism.css");
+/// The service worker for Web Push (`<base>/prism-sw.js`).
+pub(crate) const SW_JS: &str = include_str!("sw.js");
 
 /// Serves the app alone on `config.port` (`PRISM_PORT`, `PRISM_HOST` override
 /// it; the host defaults to 127.0.0.1). `PRISM_EXPORT_STATIC=<dir>` writes

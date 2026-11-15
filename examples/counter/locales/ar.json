@@ -308,5 +308,22 @@
     "enrolled": "جاهزة",
     "passcode": "رمز القفل فقط",
     "not_enrolled": "لا شيء مسجّل"
+  },
+  "push": {
+    "title": "الإشعارات الفورية",
+    "unavailable": "الإشعارات الفورية غير متاحة هنا.",
+    "service": "الخدمة: {service}",
+    "enable": "تفعيل الإشعارات",
+    "registering": "جارٍ التسجيل…",
+    "registered": "الرمز: {token}",
+    "copy": "نسخ الاشتراك",
+    "disable": "إيقاف",
+    "error": "لم يتم التسجيل: {error}",
+    "none": "لم يصل شيء بعد.",
+    "received": "مستلمة",
+    "opened": "مفتوحة",
+    "background": "صامتة",
+    "hint": "أرسل إشعارًا من خادمك باستخدام prism-push، أو في محاكي iOS: xcrun simctl push booted dev.prism.counter push/hello.apns",
+    "activity": "رمز النشاط المباشر: {token}"
   }
 }

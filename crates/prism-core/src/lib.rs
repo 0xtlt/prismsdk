@@ -19,6 +19,7 @@ pub mod i18n;
 pub mod list;
 pub mod menu;
 pub mod platform;
+pub mod push;
 mod reconcile;
 mod router;
 pub mod security;
@@ -53,6 +54,9 @@ pub use i18n::{BasicFormatter, DateStyle, Direction, Formatter, Locale, Translat
 pub use list::VirtualList;
 pub use menu::{ActionRole, Alert, AlertStyle, Menu, MenuItem, Tray};
 pub use platform::{Platform, Platforms};
+pub use push::{
+    ActivityPushToken, PushEvent, PushFuture, PushMessage, PushService, PushSubscription,
+};
 pub use reconcile::{NodeId, Patch, Reconciler, RenderEnvironment, UiEvent};
 pub use router::{Params, Router, RouterBuilder, go_back, navigate_to, normalize_path};
 pub use security::{
@@ -344,6 +348,43 @@ impl Runtime {
         self.render_dirty()
     }
 
+    /// The platform's answer to a push registration, or a refreshed token.
+    /// Returns the resulting patches.
+    pub fn push_registered(
+        &mut self,
+        result: Result<push::PushSubscription, device::DeviceError>,
+    ) -> Vec<Patch> {
+        self.app.push_registered(result);
+        self.poll()
+    }
+
+    /// A push arrived while the app runs, or was tapped (its link opens).
+    /// `display`: the platform does not show pushes itself, so a visible
+    /// one becomes a notification while the app is in the background.
+    pub fn push_received(&mut self, push: push::PushMessage, display: bool) -> Vec<Patch> {
+        self.app.push_received(push, display);
+        task::poll_tasks(&mut self.app);
+        self.app.flush_effects();
+        self.render_dirty()
+    }
+
+    /// A silent push: runs the push handlers and the app's
+    /// `on_background_push` job. Returns the job's task id (watch it with
+    /// [`is_task_running`](Self::is_task_running), then tell the platform),
+    /// or `None` if the app has no such job.
+    pub fn run_background_push(&mut self, push: push::PushMessage) -> Option<u64> {
+        let handle = self.app.start_background_push(push);
+        task::poll_tasks(&mut self.app);
+        self.app.flush_effects();
+        handle.map(|h| h.id())
+    }
+
+    /// A Live Activity push token arrived or changed.
+    pub fn activity_push_token(&mut self, token: push::ActivityPushToken) -> Vec<Patch> {
+        self.app.activity_push_token(token);
+        self.poll()
+    }
+
     /// Renders dirty entities, then remembers the route for `prism dev`.
     fn render_dirty(&mut self) -> Vec<Patch> {
         let patches = self.reconciler.render(&mut self.app);
@@ -447,10 +488,11 @@ pub mod prelude {
         Entity, FluentBuilder, Handler, Haptic, InputEvent, IntoElement, Lifecycle, Locale,
         Location, Menu, MenuItem, Motion, Notification, NotificationAction, NotificationResponse,
         Orientation, Params, ParentElement, Path, Permission, PermissionState, PickImages,
-        PickedFile, Platform, Pose, Posture, Render, Role, Router, ScrollEvent, SecureOptions,
-        Share, Styled, SwipeDirection, Transition, Translations, Tray, VirtualList, Watch, Widget,
-        WidgetFamily, adaptive, button, div, go_back, image, lazy, navigate_to, picture, progress,
-        px, relative, rgb, rgba, screen, scroll, shape, text, text_input, timer, toggle,
+        PickedFile, Platform, Pose, Posture, PushEvent, PushMessage, PushService, PushSubscription,
+        Render, Role, Router, ScrollEvent, SecureOptions, Share, Styled, SwipeDirection,
+        Transition, Translations, Tray, VirtualList, Watch, Widget, WidgetFamily, adaptive, button,
+        div, go_back, image, lazy, navigate_to, picture, progress, px, relative, rgb, rgba, screen,
+        scroll, shape, text, text_input, timer, toggle,
     };
 }
 

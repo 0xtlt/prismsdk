@@ -284,5 +284,22 @@
     "enrolled": "prête",
     "passcode": "code uniquement",
     "not_enrolled": "rien d’enregistré"
+  },
+  "push": {
+    "title": "Notifications push",
+    "unavailable": "Les notifications push ne sont pas disponibles ici.",
+    "service": "Service : {service}",
+    "enable": "Activer les push",
+    "registering": "Inscription…",
+    "registered": "Jeton : {token}",
+    "copy": "Copier l’abonnement",
+    "disable": "Désactiver",
+    "error": "Pas inscrit : {error}",
+    "none": "Rien reçu pour l’instant.",
+    "received": "Reçue",
+    "opened": "Ouverte",
+    "background": "Silencieuse",
+    "hint": "Envoyez-en une depuis votre serveur avec prism-push, ou dans le simulateur iOS : xcrun simctl push booted dev.prism.counter push/hello.apns",
+    "activity": "Jeton de l’activité en direct : {token}"
   }
 }

@@ -242,6 +242,29 @@ pub(crate) fn device_reply(
     });
 }
 
+pub(crate) fn push_registered(
+    result: Result<prism_core::PushSubscription, prism_core::DeviceError>,
+) {
+    with_state(|s| {
+        let patches = s.runtime.push_registered(result);
+        commit(s, patches);
+    });
+}
+
+/// A UnifiedPush message: shown as a notification unless the window is
+/// active; silent ones run `on_background_push`.
+pub(crate) fn push_received(message: prism_core::PushMessage) {
+    with_state(|s| {
+        let patches = if message.event == prism_core::PushEvent::Background {
+            s.runtime.run_background_push(message);
+            s.runtime.poll()
+        } else {
+            s.runtime.push_received(message, true)
+        };
+        commit(s, patches);
+    });
+}
+
 pub(crate) fn device_event(id: u64, event: prism_core::DeviceEvent) {
     with_state(|s| {
         let patches = s.runtime.device_event(id, event);
@@ -1300,7 +1323,7 @@ fn activate(app: &gtk::Application) {
     SHAPE_DARK.with(|d| d.set(dark));
 
     let data = data_dir(&config.title);
-    let services = crate::services::LinuxServices::new(app.clone(), window.clone());
+    let services = crate::services::LinuxServices::new(app.clone(), window.clone(), data.clone());
     // Notification clicks and buttons: (id, action, link).
     let respond = gio::SimpleAction::new(
         "prism-notification",

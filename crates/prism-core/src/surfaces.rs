@@ -68,6 +68,8 @@ pub struct Capabilities {
     pub sign_in_with_apple: bool,
     /// Browser sign-in sessions (`prism::oauth`).
     pub web_auth: bool,
+    /// Remote pushes (`register_for_push`), and the service they use.
+    pub push: Option<crate::push::PushService>,
 }
 
 /// Work the app asked the platform to do. Backends drain these with
@@ -97,6 +99,12 @@ pub enum PlatformRequest {
     SetAppMenu(Vec<crate::menu::MenuSpec>),
     CancelNotification(String),
     RequestNotificationPermission,
+    /// Get a push token (answer with `Runtime::push_registered`).
+    RegisterPush,
+    UnregisterPush,
+    /// Report the Live Activity push-to-start token (iOS 17.2+) with
+    /// `Runtime::activity_push_token`.
+    WatchActivityPushToStart,
     /// The car's template stack changed (JSON, see [`crate::car`]).
     SetCar(String),
     /// Run this task periodically (see [`crate::background`]); re-sent after
@@ -560,6 +568,9 @@ pub struct ActivityContent {
     pub stale_after: Option<SystemTime>,
     /// A one-line summary: accessibility, and fallbacks (menu bar, web banner).
     pub summary: String,
+    /// Started with [`Activity::push_updates`]: the platform reports a push
+    /// token for it (`Runtime::activity_push_token`).
+    pub push_updates: bool,
 }
 
 impl ActivityContent {
@@ -606,6 +617,7 @@ pub struct Activity {
     tint: Option<Color>,
     stale_after: Option<SystemTime>,
     summary: String,
+    push_updates: bool,
 }
 
 impl Activity {
@@ -624,7 +636,26 @@ impl Activity {
             tint: None,
             stale_after: None,
             summary: String::new(),
+            push_updates: false,
         }
+    }
+
+    /// Lets your server update this activity with pushes (ActivityKit
+    /// `pushType: .token`): its token arrives in
+    /// [`App::on_activity_push_token`]. The app needs push enabled
+    /// (`[push]` in Prism.toml).
+    pub fn push_updates(mut self) -> Self {
+        self.push_updates = true;
+        self
+    }
+
+    /// The content-state JSON that ActivityKit pushes carry
+    /// (`{"json":"…"}`): render it on your server and send it with
+    /// `prism_push::Push::live_activity`.
+    pub fn content_state_json(self) -> String {
+        let mut app = App::new();
+        let (_, content) = self.render(&mut app);
+        format!(r#"{{"json":{}}}"#, json_str(&content.to_json()))
     }
 
     /// Lock screen and notification banner presentation.
@@ -697,6 +728,7 @@ impl Activity {
             tint: self.tint,
             stale_after: self.stale_after,
             summary: self.summary,
+            push_updates: self.push_updates,
         };
         (self.kind, content)
     }
@@ -969,6 +1001,7 @@ impl App {
         if let Some(link) = link {
             self.navigate(link);
         }
+        self.push_notification_opened(&response);
         if let Some(handler) = self.surfaces.notification_handler.clone() {
             handler(&response, self);
         }

@@ -443,6 +443,80 @@ How it works: Prism resolves the elements into a static snapshot (compact JSON, 
 
 **Light & dark**: colors can be adaptive, `adaptive(rgb(0xFFFFFF), rgb(0x1C1C22))`, resolved natively everywhere: CSS `light-dark()`, dynamic `UIColor`/`NSColor`, SwiftUI color scheme in widgets and Live Activities. `Theme::system()` makes the whole component library follow the system appearance live.
 
+## Remote push notifications
+
+The app registers and gets a subscription to give your server; the server sends with the `prism-push` crate. Payloads use the same keys everywhere (`title`, `subtitle`, `body`, `link`, custom `data`), so a tap opens `link` on every platform.
+
+```rust
+// At startup: a push can launch the app.
+cx.on_push_token(|sub, app| upload(app, sub.to_json()));   // the first token, and every refresh
+cx.on_push(|push, app| match push.event {
+    PushEvent::Received => {}                               // arrived while the app is open
+    PushEvent::Opened => {}                                 // tapped (its `link` is already open)
+    PushEvent::Background => {}                             // silent (data only)
+});
+cx.on_background_push(|push, cx| async move { sync(&cx).await });  // the system waits for it
+
+cx.spawn(async move |_, cx| {
+    let sub = cx.register_for_push().await?;   // asks to show notifications first
+    // sub.service: Apns / Fcm / WebPush / UnifiedPush
+});
+
+// Live Activities updated from the server (iOS): their tokens.
+cx.start_activity(Activity::new("focus").push_updates() /* … */);
+cx.on_activity_push_token(|t, app| { /* t.activity (None: push-to-start), t.token */ });
+```
+
+On the server (Axum, a worker…):
+
+```rust
+use prism_push::{Push, Sender, Subscription, apns::ApnsKey, fcm::ServiceAccount, webpush::VapidKey};
+
+let sender = Sender::new()
+    .apns(ApnsKey::from_p8(&p8, "KEYID12345", "TEAMID1234")?)   // token-based .p8 key, HTTP/2
+    .fcm(ServiceAccount::from_json(&service_account_json)?)     // FCM HTTP v1, OAuth (RS256)
+    .vapid(VapidKey::from_base64(&vapid_private)?, "mailto:ops@example.com");
+let sub = Subscription::from_json(&json_from_the_app)?;
+match sender.send(&sub, &Push::new().title("Order shipped").body("Tomorrow").link("/orders/42")).await {
+    Err(prism_push::PushError::Gone) => forget(sub),   // uninstalled, token changed
+    r => r?,
+}
+// Also: Push::new().silent().data("sync", "inbox"), .badge(3), .collapse_id(..), .ttl(..),
+// .urgency(..), .live_activity(&Activity::…content_state_json(), end) / .start_live_activity(kind, ..)
+```
+
+| | Service | How | Silent pushes | Verified |
+|---|---|---|---|---|
+| iOS, iPadOS | APNs | `registerForRemoteNotifications`; app delegate in Rust | `content-available` → `on_background_push` (~30 s) | simulator: real sandbox token, `simctl push` shown in the foreground, Live Activity and push-to-start tokens |
+| tvOS, visionOS | APNs | same UIKit delegate | yes | compiled |
+| macOS | APNs | `NSApplication` delegate (bridge) | `didReceiveRemoteNotification` | compiled (needs a Mac provisioning profile) |
+| watchOS | APNs | `WKApplication` delegate | `didReceiveRemoteNotification:fetchCompletionHandler:` | compiled |
+| Android | FCM (opt-in) or UnifiedPush | `FirebaseMessagingService` / UnifiedPush connector (AND_3) | data messages | Firebase bundled without Gradle and initialized on the emulator; UnifiedPush built (its decryption is Linux's, verified) |
+| Web | Web Push | service worker `<base>/prism-sw.js`, `pushManager.subscribe` with VAPID | – (browsers always show one) | service worker, session events, click → focus/open |
+| Linux | UnifiedPush over D-Bus | `org.unifiedpush.Connector2` on the session bus | yes, while the app runs | end to end with a local distributor |
+
+`cx.capabilities().push` says which service `register_for_push` will use (`None`: unavailable, and the call fails with `Unavailable`).
+
+**Configuration** (`Prism.toml`):
+
+```toml
+[push]
+enabled = true
+apns_environment = "development"            # "production" for TestFlight / App Store
+google_services = "google-services.json"    # Android: FCM (otherwise UnifiedPush only)
+vapid_public_key = "BKv…"                   # Web Push (or PRISM_VAPID_PUBLIC_KEY), and UnifiedPush's VAPID
+```
+
+- **Apple:** `prism` adds the `aps-environment` entitlement (`com.apple.developer.aps-environment` on macOS), the `remote-notification` background mode and `PrismApsEnvironment` (the token's sandbox flag). Devices need the Push Notifications capability on the App ID (the profile's value wins). In the simulator the entitlement lives in the binary's entitlement sections only: the simulator refuses to launch an ad hoc signature that claims it. macOS restricts it: it needs `PRISM_MAC_PROFILE`, otherwise `capabilities().push` is `None`. Slimmed simulators keep the push daemons (`simslim … --except store`).
+- **Test in the simulator:** `xcrun simctl push <device> dev.prism.counter examples/counter/push/hello.apns` (an `.apns` file is the payload; `cargo run -p prism-push --example push -- apns-payload '{"title":"Hi","link":"/push"}'` writes one). The simulator delivers alerts (foreground banner, `Received`), but rejects pure silent pushes (`UNErrorDomain 1401`, "no user visible content") and turns `content-available` into a background fetch without the payload: test silent pushes on a device.
+- **Android, FCM:** Firebase normally needs Gradle. Here the CLI fetches `firebase-messaging` and its dependencies from Google's Maven (Play services client libraries, Kotlin, AndroidX: about 75 artifacts, 2 dex files), merges their manifests (`scripts/android-manifest-merge.py`), and turns `google-services.json` into the resources Firebase reads. Firebase is Apache 2.0; the Play services client libraries are under the Android SDK license, redistributable inside apps (what every Gradle build ships). FCM needs Google Play services on the device, recent enough for the bundled `firebase-messaging` (26.0.2 requires Play services 26.12; older devices and emulator images fall back to UnifiedPush); auto-init is off, so a token is requested only by `register_for_push`. Prism sends **data messages**, which reach the app in the foreground and the background; Rust shows visible ones.
+- **Android, UnifiedPush:** an open standard with no library: the app broadcasts `REGISTER` to a distributor (ntfy, NextPush, Sunup…), receives `NEW_ENDPOINT`/`MESSAGE` broadcasts, and decrypts the Web Push message in Rust (RFC 8291). The subscription carries the device's keys, so the server sends Web Push to the endpoint (`Service::UnifiedPush`). No distributor installed and no FCM: `capabilities().push` is `None`.
+- **Web:** the page registers the service worker on `register_for_push` (it needs a VAPID key; generate one with `cargo run -p prism-push --example push -- vapid`). Pushes reach open pages as `Received`; with no visible page the worker shows a notification, and a click focuses the app (or opens it on the push's `link`) and reports `Opened`. Browsers require every push to show something: `silent` only skips the sound.
+- **Linux:** there is no desktop push service. Prism speaks UnifiedPush's D-Bus protocol (`org.unifiedpush.Distributor2`), so a distributor such as KUnifiedPush delivers Web Push messages while the app runs (Prism apps are not D-Bus-activatable services). `crates/prism-linux/examples/fake_distributor.rs` is a local distributor for tests.
+- **Pushes shown by Prism** (UnifiedPush, FCM data, Linux) become local notifications when the app is not in the foreground; tapping one is an `Opened` push.
+
+`prism-push` is plain Rust on RustCrypto (`p256`, AES-GCM, HKDF) and ring (RS256 for Google's OAuth), with an HTTP/2 `reqwest` client (rustls). It is tested against RFC 8291's example (intermediate values, encryption and decryption), RFC 8292's VAPID token, and RFC 7515's ES256 and RS256 signatures. Every service also builds plain `HttpRequest`s for servers with another HTTP client. Without its `send` feature it is pure Rust: the Android and Linux receivers use it to decrypt.
+
 ## In the car (CarPlay, Android Auto, Android Automotive)
 
 Cars only show the platform's templates, so a car screen is described with them: lists in sections, grids, panes (rows and up to two actions) and tabs. They are rebuilt whenever the app changes, like widgets; the car only receives what differs.
@@ -575,6 +649,7 @@ Measured on the example app (release build, Apple silicon):
 - **`prism-macos`** / **`prism-ios`**: `Widgets` implementations over objc2.
 - **`prism-ui`**: component library on top of the core (themes, overrides, native escape hatch).
 - **`prism`**: facade; picks the backend from features (`web`, `native`) and the target OS.
+- **`prism-push`**: for your server: sends pushes to APNs, FCM and Web Push / UnifiedPush (see [Remote push](#remote-push-notifications)).
 
 Layout is a flexbox subset (column by default, like React Native) and maps 1:1 to CSS on the web and to taffy on native, so all targets lay out the same way.
 
@@ -683,5 +758,5 @@ The app runs in Rust, and a small Java host (`platform/android`) creates real An
 ## Status
 
 Primitives: `div`, `text`, `button`, `text_input`, `toggle`, `scroll`, `picture`, `VirtualList`, `screen`, `Router` (stacks, tabs, sheets). Component library `prism::ui`. Accessibility on all backends. Light/dark appearance.
-Widgets, Live Activities (Dynamic Island), car screens (CarPlay, Android Auto, Automotive), notifications with actions, background tasks, device APIs (location, motion, photos, camera, haptics, clipboard, share), secure storage, biometrics, Sign in with Apple, OAuth/OIDC sign-in, alerts, context menus, tray and app menus, async tasks, HTTP, storage, i18n/RTL, Dynamic Type, animations, `prism` CLI.
+Widgets, Live Activities (Dynamic Island), car screens (CarPlay, Android Auto, Automotive), notifications with actions, remote push (APNs, FCM, Web Push, UnifiedPush) with a server-side sender, background tasks, device APIs (location, motion, photos, camera, haptics, clipboard, share), secure storage, biometrics, Sign in with Apple, OAuth/OIDC sign-in, alerts, context menus, tray and app menus, async tasks, HTTP, storage, i18n/RTL, Dynamic Type, animations, `prism` CLI.
 Platforms: web, macOS, iOS/iPadOS, tvOS, watchOS, visionOS, Linux (GTK 4), Android (phones, tablets, Wear OS, Android TV). Not yet: Windows (the `Widgets` trait and `PlatformServices` are the extension points).
