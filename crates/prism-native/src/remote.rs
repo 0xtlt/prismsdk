@@ -9,6 +9,7 @@
 //! | `create` / `destroy` | `id`, `kind` |
 //! | `style` | `s`: `bg`, `radius`, `bw`, `bc`, `opacity`, `color`, `font`, `weight`, `talign` (colors `[r,g,b,a, dark r,g,b,a]`); `hit: false` (the subtree ignores pointer input) and `inert: true` (no input, no focus, hidden from assistive technologies) only when set |
 //! | `text`, `placeholder`, `icon`, `value`, `clickable`, `display` | the value |
+//! | `text` of a `picture` | its source: for a remote one, the URL, then one `name: value` line per header to send (`Picture::header`) |
 //! | `a11y` | `label`, `hidden`, `role` (ARIA name: `slider`, `combobox`, `status`…), `value` |
 //! | `config` | `config`: a control's config string (`prism_core::controls`: slider `min max step`, picker options one per line, date `mode min max`, input tokens) |
 //! | `children` | `children`: ids in order |

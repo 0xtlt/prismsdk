@@ -141,7 +141,7 @@ impl WebApp {
                     device: device.unwrap_or_else(|| runtime.app.device_info()),
                     runtime,
                     encoder: Encoder {
-                        asset_urls: Some(app.asset_urls()),
+                        asset_urls: Some(app.session_asset_urls(&sid)),
                         ..Default::default()
                     },
                     services: WebServices {

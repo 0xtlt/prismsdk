@@ -1322,6 +1322,51 @@ impl Picture {
     }
 }
 
+// --- Pictures behind authentication (#32) ---------------------------------------------------
+
+impl Picture {
+    /// Sends an HTTP header with the request for a remote picture
+    /// (`https://…`), such as a bearer token for a per-user image:
+    ///
+    /// ```ignore
+    /// picture(format!("{api}/me/avatar.png"))
+    ///     .header("Authorization", format!("Bearer {access_token}"))
+    /// ```
+    ///
+    /// Native backends fetch it themselves with the header (and keep it out
+    /// of the on-disk image cache). On the web the server fetches it: the
+    /// page gets a same-origin URL that only this browser's session can load,
+    /// and the header never reaches the browser. Ignored for assets, files,
+    /// `data:` URLs and SVG. Line breaks in `name` or `value` are dropped.
+    pub fn header(mut self, name: impl AsRef<str>, value: impl AsRef<str>) -> Self {
+        let clean = |s: &str| s.replace(['\r', '\n'], "");
+        let (name, value) = (clean(name.as_ref()), clean(value.as_ref()));
+        let remote = self.0.text.starts_with("http://") || self.0.text.starts_with("https://");
+        if self.0.kind == NodeKind::Picture && remote && !name.trim().is_empty() {
+            // The source is the URL, then one `name: value` line per header
+            // (URLs and header values never contain line breaks).
+            self.0.text.push('\n');
+            self.0.text.push_str(name.trim());
+            self.0.text.push_str(": ");
+            self.0.text.push_str(value.trim());
+        }
+        self
+    }
+}
+
+/// A picture's source split into its URL and the headers given with
+/// [`Picture::header`] (backends load it with them).
+pub fn picture_source(text: &str) -> (&str, Vec<(&str, &str)>) {
+    let mut lines = text.split('\n');
+    let url = lines.next().unwrap_or_default();
+    let headers = lines
+        .filter_map(|l| l.split_once(':'))
+        .map(|(k, v)| (k.trim(), v.trim()))
+        .filter(|(k, _)| !k.is_empty())
+        .collect();
+    (url, headers)
+}
+
 /// A vector drawing (lines, curves, arcs; see [`crate::shape`](mod@crate::shape)). It has no
 /// natural size: give it one (`.size(…)`, `.flex_grow(1.)`). Decorative
 /// unless given [`Shape::label`].

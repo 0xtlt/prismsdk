@@ -59,6 +59,7 @@ pub use device_info::{
     Browser, DeviceInfo, DeviceKind, Engine, Fold, Orientation, Os, OsName, Posture, Rotation,
     ScreenInfo, Version, WindowMode,
 };
+pub use element::picture_source;
 pub use element::scroll_x;
 pub use element::{
     BackEvent, Button, ChangeEvent, ClickEvent, DatePicker, Div, Element, FluentBuilder, Handler,

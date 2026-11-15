@@ -3,12 +3,27 @@
 ```rust
 picture("https://…/photo.jpg").alt("A river").fill()   // cached on disk; or picture("logo.png") from assets/
 picture_data(png_bytes, "image/png").alt("Avatar")      // bytes in memory (a data: URL)
+picture(avatar_url).header("Authorization", format!("Bearer {token}"))  // behind a token
 svg(server_made_svg).alt("Pairing code").w(px(160.))    // SVG markup, drawn as vectors
 ui::qr_code("https://example.com/pair/42").size(180.)    // a QR code, no image involved
 VirtualList::new(10_000, 56., |i| row(i))               // only the visible rows exist
 scroll().on_refresh(handler).refreshing(self.loading)   // pull to refresh (UIRefreshControl)
 div().on_swipe(SwipeDirection::Left, handler)           // swipe gestures
 ```
+
+## Pictures behind a token
+
+`picture(url).header(name, value)` (any number of headers) loads a remote image that needs credentials, such as a per-user rendering behind the API's bearer token:
+
+| | Loaded by | Cache |
+|---|---|---|
+| iOS, iPadOS, tvOS, visionOS, macOS | Prism's HTTP client (rustls), off the main thread | memory only (never the on-disk image cache) |
+| watchOS | `URLRequest` with the headers on an ephemeral `URLSession` | memory only |
+| Android | `HttpURLConnection.setRequestProperty`, off the main thread | `setUseCaches(false)` |
+| Linux | Prism's HTTP client on a GIO worker thread, decoded by `GdkTexture` | none |
+| Web | **the server**: the page gets `<base>/_prism/picture/<id>` | `private, max-age=300` |
+
+On the web the app runs on the server, so the server fetches the image with the headers and streams it to the page; the token never reaches the browser (not in the HTML, the socket or JavaScript). The `<id>` is a keyed hash (random key per server process) of the session and the source: it reveals nothing about the token, and it is bound to the session that rendered it, so another browser gets a 404 even with the URL. Only `image/*` answers are passed on, with `X-Content-Type-Options: nosniff` and a sandboxing `Content-Security-Policy`. The server remembers the last 4096 such sources (an older one loads again once its page re-renders). Headers never appear in logs. They are ignored for assets, files, `data:` URLs and `svg()`; line breaks in names or values are dropped. Widgets show no remote pictures.
 
 ## Pictures from memory, SVG and QR codes
 

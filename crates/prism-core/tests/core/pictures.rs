@@ -58,3 +58,31 @@ fn even_odd_paths_survive_the_text_form() {
     assert!(back.paths[0].even_odd);
     assert!(!back.paths[1].even_odd);
 }
+
+#[test]
+fn headers_travel_with_a_remote_picture() {
+    let mut app = App::new();
+    let node = snapshot_one(
+        &mut app,
+        picture("https://api.example/me.png")
+            .header("Authorization", "Bearer abc")
+            .header("X-Evil\r\n", "a\nb"),
+    );
+    assert_eq!(
+        node.text,
+        "https://api.example/me.png\nAuthorization: Bearer abc\nX-Evil: ab"
+    );
+    let (url, headers) = prism_core::picture_source(&node.text);
+    assert_eq!(url, "https://api.example/me.png");
+    assert_eq!(
+        headers,
+        vec![("Authorization", "Bearer abc"), ("X-Evil", "ab")]
+    );
+    // Assets, data: URLs and SVG ignore headers.
+    let asset = snapshot_one(&mut app, picture("logo.png").header("A", "b"));
+    assert_eq!(asset.text, "logo.png");
+    assert_eq!(
+        prism_core::picture_source("logo.png"),
+        ("logo.png", Vec::new())
+    );
+}

@@ -2328,6 +2328,7 @@ dependencies = [
  "futures-util",
  "http",
  "prism-core",
+ "prism-http",
  "ring",
  "serde_json",
  "sha2",

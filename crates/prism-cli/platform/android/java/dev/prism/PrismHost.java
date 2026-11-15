@@ -1338,6 +1338,7 @@ public final class PrismHost {
     // --- Pictures ---------------------------------------------------------------------------
 
     static void loadPicture(ImageView view, String src) {
+        view.setTag(src); // the source shown now (a late download checks it)
         if (src.startsWith("data:")) {
             // Bytes in memory (`picture_data`): base64 or percent-encoded.
             int comma = src.indexOf(',');
@@ -1354,12 +1355,29 @@ public final class PrismHost {
             return;
         }
         if (src.startsWith("http://") || src.startsWith("https://")) {
+            // The URL, then one `name: value` line per header (`Picture::header`).
+            String[] lines = src.split("\n");
+            String url = lines[0];
             new Thread(() -> {
-                try (InputStream in = new URL(src).openStream()) {
-                    Bitmap b = BitmapFactory.decodeStream(in);
-                    main.post(() -> view.setImageBitmap(b));
+                try {
+                    java.net.HttpURLConnection c = (java.net.HttpURLConnection) new URL(url).openConnection();
+                    for (int i = 1; i < lines.length; i++) {
+                        int colon = lines[i].indexOf(':');
+                        if (colon > 0) {
+                            c.setRequestProperty(lines[i].substring(0, colon).trim(), lines[i].substring(colon + 1).trim());
+                        }
+                    }
+                    if (lines.length > 1) c.setUseCaches(false); // private: not in the HTTP cache
+                    try (InputStream in = c.getInputStream()) {
+                        Bitmap b = BitmapFactory.decodeStream(in);
+                        // Only if the view still shows this source.
+                        main.post(() -> { if (src.equals(view.getTag())) view.setImageBitmap(b); });
+                    } finally {
+                        c.disconnect();
+                    }
                 } catch (Exception e) {
-                    android.util.Log.w("prism", "picture " + src, e);
+                    // Never log the headers: they hold tokens.
+                    android.util.Log.w("prism", "picture " + url, e);
                 }
             }).start();
             return;

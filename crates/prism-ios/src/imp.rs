@@ -1274,7 +1274,10 @@ impl UiKit {
         let Some(img) =
             bytes.and_then(|b| UIImage::imageWithData(&objc2_foundation::NSData::from_vec(b)))
         else {
-            eprintln!("prism-ios: could not load image {src:?}");
+            eprintln!(
+                "prism-ios: could not load image {:?}",
+                prism_core::picture_source(src).0
+            );
             return;
         };
         for (_, view) in waiting {
