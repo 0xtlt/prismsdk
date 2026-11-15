@@ -21,6 +21,8 @@ thread_local! {
     static TRANSFORMS: RefCell<HashMap<usize, Transform>> = RefCell::new(HashMap::new());
     /// Running animations.
     static TICKS: RefCell<HashMap<(usize, Channel), gtk::TickCallbackId>> = RefCell::new(HashMap::new());
+    /// Sticky children → how far they are pushed down (their scroll view scrolled).
+    static STICKY: RefCell<HashMap<usize, i32>> = RefCell::new(HashMap::new());
 }
 
 fn key(w: &impl IsA<gtk::Widget>) -> usize {
@@ -36,9 +38,47 @@ pub fn set_frame(w: &impl IsA<gtk::Widget>, frame: (i32, i32, i32, i32)) {
 
 pub fn forget(w: &impl IsA<gtk::Widget>) {
     FRAMES.with(|f| f.borrow_mut().remove(&key(w)));
+    STICKY.with(|s| s.borrow_mut().remove(&key(w)));
     TRANSFORMS.with(|f| f.borrow_mut().remove(&key(w)));
     for channel in [Channel::Frame, Channel::Visual, Channel::Loop] {
         stop(w, channel);
+    }
+}
+
+/// A sticky child is drawn `offset` points below its frame (`None`: it is
+/// not sticky anymore), above its siblings.
+pub fn set_sticky_offset(w: &impl IsA<gtk::Widget>, offset: Option<f32>) {
+    let w = w.as_ref();
+    let changed = STICKY.with(|s| {
+        let mut s = s.borrow_mut();
+        let old = s.get(&key(w)).copied();
+        let new = offset.map(|o| o.round() as i32);
+        match new {
+            Some(o) => s.insert(key(w), o),
+            None => s.remove(&key(w)),
+        };
+        old != new
+    });
+    if offset.is_some() {
+        raise(w);
+    }
+    if changed && let Some(parent) = w.parent() {
+        parent.queue_allocate();
+    }
+}
+
+/// Whether `w` is a sticky child.
+pub fn is_sticky(w: &impl IsA<gtk::Widget>) -> bool {
+    STICKY.with(|s| s.borrow().contains_key(&key(w)))
+}
+
+/// Moves `w` after its siblings: GTK draws children in order.
+pub fn raise(w: &impl IsA<gtk::Widget>) {
+    let w = w.as_ref();
+    if let Some(parent) = w.parent()
+        && parent.last_child().as_ref() != Some(w)
+    {
+        w.insert_before(&parent, None::<&gtk::Widget>);
     }
 }
 
@@ -274,6 +314,8 @@ mod imp {
                 let (x, y, w, h) = FRAMES
                     .with(|f| f.borrow().get(&key(&c)).copied())
                     .unwrap_or_default();
+                // Sticky: pushed down as its scroll view scrolls.
+                let y = y + STICKY.with(|s| s.borrow().get(&key(&c)).copied().unwrap_or(0));
                 // GTK never allocates less than a widget's minimum.
                 let (min_w, _, _, _) = c.measure(gtk::Orientation::Horizontal, -1);
                 let (min_h, _, _, _) = c.measure(gtk::Orientation::Vertical, w.max(min_w));
