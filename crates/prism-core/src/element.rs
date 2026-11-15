@@ -71,6 +71,21 @@ pub enum NodeKind {
     TextArea,
     /// An indeterminate activity indicator. Value 1: large.
     Spinner,
+
+    // --- Overlays and choice controls (#18, #19) ---
+    /// Content presented over the app without a route: a sheet, a popover
+    /// anchored to the overlay's parent, or a dialog (config:
+    /// [`OverlayConfig`](crate::controls::OverlayConfig)). Value 1 while
+    /// open. Takes no room in its parent; its one child is the content, laid
+    /// out on its own. Reports `UiEvent::Back(id, 0)` when the user closes
+    /// it (Escape, Back, a tap outside, a swipe down).
+    Overlay,
+    /// A native checkbox with an optional label (text). Value 0 or 1.
+    Checkbox,
+    /// A group of native radio buttons (config:
+    /// [`RadioConfig`](crate::controls::RadioConfig)). Value: the selected
+    /// index (-1: none).
+    RadioGroup,
 }
 
 impl NodeKind {
@@ -98,6 +113,9 @@ impl NodeKind {
             NodeKind::DatePicker => "date_picker",
             NodeKind::TextArea => "text_area",
             NodeKind::Spinner => "spinner",
+            NodeKind::Overlay => "overlay",
+            NodeKind::Checkbox => "checkbox",
+            NodeKind::RadioGroup => "radio_group",
         }
     }
 
@@ -113,14 +131,29 @@ impl NodeKind {
             NodeKind::Slider => Some(Role::Slider),
             NodeKind::Picker => Some(Role::ComboBox),
             NodeKind::Picture | NodeKind::Shape => Some(Role::Image),
+            NodeKind::Checkbox => Some(Role::Checkbox),
+            NodeKind::RadioGroup => Some(Role::RadioGroup),
             _ => None,
         }
     }
 }
 
 /// Fired when a clickable view or a button is activated.
-#[derive(Clone, Debug, Default)]
-pub struct ClickEvent;
+///
+/// `position` is where it was clicked or tapped, in the element (see
+/// [`Point`](crate::Point)); `None` when it was activated from the keyboard
+/// or an assistive technology. `ClickEvent` alone is the event without a
+/// position.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ClickEvent {
+    /// Where the pointer was, in the element's coordinates.
+    pub position: Option<crate::events::Point>,
+}
+
+/// A click without a position (keyboard, assistive technologies), so
+/// `ClickEvent` reads as a value too: `handler(&ClickEvent, cx)`.
+#[allow(non_upper_case_globals)]
+pub const ClickEvent: ClickEvent = ClickEvent { position: None };
 
 /// Fired on every edit of a text input, with its new content.
 #[derive(Clone, Debug)]
@@ -274,6 +307,23 @@ pub struct VNode {
     pub on_swipe_right: Option<Handler<ClickEvent>>,
     /// The return key of a text input.
     pub on_submit: Option<Handler<ClickEvent>>,
+
+    // --- Pointer, keys, focus (#17) ---
+    /// A name to address the element from code: `cx.focus(name)`,
+    /// `cx.scroll_into_view(name)`.
+    pub id: Option<String>,
+    /// Takes the keyboard focus when it appears.
+    pub autofocus: bool,
+    /// The pointer came over the element or left it.
+    pub on_hover: Option<Handler<crate::events::HoverEvent>>,
+    /// The pointer moved over the element.
+    pub on_pointer_move: Option<Handler<crate::events::PointerEvent>>,
+    /// A drag started on the element.
+    pub on_drag: Option<Handler<crate::events::DragEvent>>,
+    /// A key pressed while the element, or something in it, has the focus.
+    pub on_key_down: Option<Handler<crate::events::KeyEvent>>,
+    /// A key pressed anywhere in the window while the element is mounted.
+    pub on_global_key_down: Option<Handler<crate::events::KeyEvent>>,
 }
 
 impl VNode {
@@ -300,6 +350,13 @@ impl VNode {
             on_swipe_left: None,
             on_swipe_right: None,
             on_submit: None,
+            id: None,
+            autofocus: false,
+            on_hover: None,
+            on_pointer_move: None,
+            on_drag: None,
+            on_key_down: None,
+            on_global_key_down: None,
         }
     }
 }
@@ -415,6 +472,40 @@ macro_rules! builder {
             /// Stable identity among siblings, so reordered lists keep their native views.
             pub fn key(mut self, key: impl Into<String>) -> Self {
                 self.0.key = Some(key.into());
+                self
+            }
+
+            /// A name to address the element from code: [`App::focus`],
+            /// [`App::scroll_into_view`]. Unique in the window (the last
+            /// element given a name wins).
+            pub fn id(mut self, id: impl Into<String>) -> Self {
+                self.0.id = Some(id.into());
+                self
+            }
+
+            /// Takes the keyboard focus when it appears (a text field in a
+            /// form or a dialog, a pad driven by arrow keys).
+            pub fn autofocus(mut self) -> Self {
+                self.0.autofocus = true;
+                self
+            }
+
+            /// Called when a key is pressed while this element, or
+            /// something in it, has the focus. A view with this handler can
+            /// take the focus (Tab, a click, [`App::focus`], the tvOS focus
+            /// engine, an Android D-pad).
+            pub fn on_key_down(mut self, handler: Handler<crate::events::KeyEvent>) -> Self {
+                self.0.on_key_down = Some(handler);
+                self
+            }
+
+            /// Called for every key pressed in the window while this element
+            /// is mounted, whatever has the focus (Escape to close, arrows
+            /// for a remote pad). While a text field has the focus, only
+            /// keys that do not type (Escape, arrows, Enter, Tab, function
+            /// keys) or come with Control / Command are reported.
+            pub fn on_global_key_down(mut self, handler: Handler<crate::events::KeyEvent>) -> Self {
+                self.0.on_global_key_down = Some(handler);
                 self
             }
         }
@@ -1105,5 +1196,242 @@ impl Shape {
         self.0.a11y.role = Some(Role::Image);
         self.0.a11y.label = Some(label.into());
         self
+    }
+}
+
+// --- Pointer and drag (#17) --------------------------------------------------
+
+impl Div {
+    /// Called when the pointer (mouse, trackpad, pen; Apple Vision Pro
+    /// gaze) comes over the container or leaves it. Touch screens have no
+    /// hover: do not hide anything essential behind it.
+    pub fn on_hover(mut self, handler: Handler<crate::events::HoverEvent>) -> Self {
+        self.0.on_hover = Some(handler);
+        self
+    }
+
+    /// Called as the pointer moves over the container, with its position
+    /// in the container (a chart read-out that follows the pointer). On
+    /// touch screens it is reported while a finger touches it.
+    pub fn on_pointer_move(mut self, handler: Handler<crate::events::PointerEvent>) -> Self {
+        self.0.on_pointer_move = Some(handler);
+        self
+    }
+
+    /// Called as the container is dragged (mouse, finger, pen): `Start`
+    /// once the pointer moved past the platform's slop, `Move`s, then `End`
+    /// or `Cancel`. Enough for drag to reorder or a custom slider (with
+    /// [`on_click`](Div::on_click)'s position for taps). A drag does not
+    /// also click. Also offer the action another way (buttons, keys): not
+    /// every user can drag.
+    pub fn on_drag(mut self, handler: Handler<crate::events::DragEvent>) -> Self {
+        self.0.on_drag = Some(handler);
+        self
+    }
+}
+
+// --- Text input extras (#18) --------------------------------------------------
+
+impl TextInput {
+    /// The most characters the field accepts (`maxlength`, a length
+    /// filter natively).
+    pub fn max_length(self, max: u32) -> Self {
+        self.input_config(|c| c.max_length = Some(max))
+    }
+
+    /// An icon inside the field, before the text (an SF Symbol name such as
+    /// `"magnifyingglass"`, mapped to the platform's icons): `leftView`,
+    /// `GtkEntry` primary icon, a compound drawable, a glyph on the web.
+    pub fn leading_icon(mut self, symbol: impl Into<String>) -> Self {
+        self.0.icon = symbol.into();
+        self
+    }
+
+    /// Values offered as the user types (web `<datalist>`, the platform's
+    /// completion list natively). The user can still type anything else.
+    pub fn suggestions<S: Into<String>>(
+        mut self,
+        suggestions: impl IntoIterator<Item = S>,
+    ) -> Self {
+        let list: Vec<String> = suggestions.into_iter().map(Into::into).collect();
+        self.0.config = crate::controls::with_suggestions(&self.0.config, &list);
+        self
+    }
+}
+
+// --- Checkbox and radio group (#18) ------------------------------------------
+
+builder!(
+    /// A native checkbox. See [`checkbox`].
+    Checkbox
+);
+builder!(
+    /// A group of native radio buttons. See [`radio_group`].
+    RadioGroup
+);
+
+/// A native checkbox (`NSButton` checkbox, `GtkCheckButton`, `CheckBox`,
+/// `<input type=checkbox>`; drawn on iOS, tvOS and visionOS, which have
+/// none, with the toggle-button trait):
+/// `checkbox(self.remember).label("Remember me").on_change(cx.listener(|this, e, _| this.remember = e.checked()))`.
+pub fn checkbox(checked: bool) -> Checkbox {
+    let mut n = VNode::new(NodeKind::Checkbox);
+    n.value = Some(if checked { 1. } else { 0. });
+    Checkbox(n)
+}
+
+impl Checkbox {
+    /// The text next to the box (also its accessibility label); clicking it
+    /// toggles the box.
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.0.text = label.into();
+        self
+    }
+
+    /// Called when the user checks or unchecks it ([`ChangeEvent::checked`]).
+    pub fn on_change(mut self, handler: Handler<ChangeEvent>) -> Self {
+        self.0.on_change = Some(handler);
+        self
+    }
+}
+
+/// Native radio buttons, one per option, as one group (arrow keys move
+/// between them; screen readers announce "1 of 3"):
+/// `radio_group(["Daily", "Weekly"], Some(self.every)).on_change(cx.listener(|this, e, _| this.every = e.index()))`.
+/// Give it a label: `.accessibility_label("Frequency")`.
+pub fn radio_group<S: Into<String>>(
+    options: impl IntoIterator<Item = S>,
+    selected: Option<usize>,
+) -> RadioGroup {
+    let mut n = VNode::new(NodeKind::RadioGroup);
+    n.config = crate::controls::RadioConfig {
+        options: options.into_iter().map(Into::into).collect(),
+        horizontal: false,
+    }
+    .encode();
+    n.value = Some(selected.map_or(-1., |i| i as f64));
+    RadioGroup(n)
+}
+
+impl RadioGroup {
+    /// Options side by side instead of stacked.
+    pub fn horizontal(mut self) -> Self {
+        let mut c = crate::controls::RadioConfig::decode(&self.0.config);
+        c.horizontal = true;
+        self.0.config = c.encode();
+        self
+    }
+
+    /// Called with the chosen index ([`ChangeEvent::index`]).
+    pub fn on_change(mut self, handler: Handler<ChangeEvent>) -> Self {
+        self.0.on_change = Some(handler);
+        self
+    }
+}
+
+// --- Time of day (#18) -------------------------------------------------------
+
+/// A native picker for a time of day that does not depend on the time
+/// zone (an alarm, opening hours): `minutes` since midnight
+/// (`7 * 60 + 30` is 07:30). Read the new value with
+/// [`ChangeEvent::minutes`].
+pub fn time_picker(minutes: u32) -> DatePicker {
+    let mut n = VNode::new(NodeKind::DatePicker);
+    n.value = Some(f64::from(minutes.min(24 * 60 - 1)) * 60.);
+    n.config = crate::controls::DateConfig {
+        mode: crate::controls::DateMode::TimeOfDay,
+        min: None,
+        max: None,
+    }
+    .encode();
+    DatePicker(n)
+}
+
+impl ChangeEvent {
+    /// A [`time_picker`]'s new value, in minutes since midnight.
+    pub fn minutes(&self) -> u32 {
+        ((self.value / 60.).round().max(0.) as u32) % (24 * 60)
+    }
+}
+
+// --- Overlays (#19) ----------------------------------------------------------
+
+builder!(
+    /// A sheet, popover or dialog. See [`sheet`], [`popover`], [`dialog`].
+    Overlay
+);
+
+fn overlay(kind: crate::controls::OverlayKind, content: Element) -> Overlay {
+    let mut n = VNode::new(NodeKind::Overlay);
+    n.config = crate::controls::OverlayConfig {
+        kind,
+        ..Default::default()
+    }
+    .encode();
+    n.value = Some(0.);
+    n.children.push(content);
+    Overlay(n)
+}
+
+/// `content` in a sheet over the app, shown while [`open`](Overlay::open)
+/// is true: `sheet(gallery).open(self.picking).on_dismiss(cx.listener(|this, _, _| this.picking = false))`.
+/// Place it anywhere in the screen: it covers the whole window (bars and
+/// tabs too), keeps the keyboard focus inside, and closes on Escape, Back
+/// or a swipe down (then [`on_dismiss`](Overlay::on_dismiss) runs).
+pub fn sheet(content: impl IntoElement) -> Overlay {
+    overlay(crate::controls::OverlayKind::Sheet, content.into_element())
+}
+
+/// `content` in a popover anchored to the element that contains the
+/// popover: `div().child(button("Filters")).child(popover(filters).open(self.filters))`.
+/// It closes on Escape or a click outside. Phones may present it as a
+/// sheet.
+pub fn popover(content: impl IntoElement) -> Overlay {
+    overlay(
+        crate::controls::OverlayKind::Popover,
+        content.into_element(),
+    )
+}
+
+/// `content` in a centered modal dialog over a dimmed window.
+pub fn dialog(content: impl IntoElement) -> Overlay {
+    overlay(crate::controls::OverlayKind::Dialog, content.into_element())
+}
+
+impl Overlay {
+    fn overlay_config(mut self, f: impl FnOnce(&mut crate::controls::OverlayConfig)) -> Self {
+        let mut c = crate::controls::OverlayConfig::decode(&self.0.config);
+        f(&mut c);
+        self.0.config = c.encode();
+        self
+    }
+
+    /// Shows the overlay (`true`) or closes it. Its content is only built
+    /// while it is open.
+    pub fn open(mut self, open: bool) -> Self {
+        self.0.value = Some(if open { 1. } else { 0. });
+        if !open {
+            self.0.children.clear();
+        }
+        self
+    }
+
+    /// Called when the user closes it (Escape, Back, a tap outside, a
+    /// swipe down): set your `open` state to false there.
+    pub fn on_dismiss(mut self, handler: Handler<BackEvent>) -> Self {
+        self.0.on_back = Some(handler);
+        self
+    }
+
+    /// Whether Escape, Back, a tap outside or a swipe down close it (yes by
+    /// default). A fixed overlay must offer its own way out.
+    pub fn dismissible(self, dismissible: bool) -> Self {
+        self.overlay_config(|c| c.fixed = !dismissible)
+    }
+
+    /// A sheet that starts at half height (a medium detent); it can be
+    /// pulled up where the platform allows.
+    pub fn half(self) -> Self {
+        self.overlay_config(|c| c.medium = true)
     }
 }

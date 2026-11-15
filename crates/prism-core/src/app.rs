@@ -172,6 +172,17 @@ pub struct App {
     storage: Box<dyn crate::storage::Storage>,
     pub(crate) cloud: crate::storage::Cloud,
     pub(crate) window: crate::window::Window,
+    // Focus, scrolling, layers, key propagation (#17, #25).
+    pub(crate) ui_commands: Vec<UiCommand>,
+    pub(crate) layers: Vec<AnyEntity>,
+    pub(crate) stop_propagation: bool,
+}
+
+/// A request for the UI, applied after the next render.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum UiCommand {
+    Focus(String),
+    ScrollIntoView(String),
 }
 
 impl Default for App {
@@ -203,6 +214,9 @@ impl Default for App {
             cloud: Default::default(),
             window: Default::default(),
             device_info: Default::default(),
+            ui_commands: Vec::new(),
+            layers: Vec::new(),
+            stop_propagation: false,
         }
     }
 }
@@ -447,9 +461,59 @@ impl App {
         self.dirty.extend(ids);
     }
 
-    /// Whether some entity waits to be re-rendered.
+    /// Whether some entity waits to be re-rendered (or a focus / scroll
+    /// request waits for the next render).
     pub fn has_dirty(&self) -> bool {
-        !self.dirty.is_empty()
+        !self.dirty.is_empty() || !self.ui_commands.is_empty()
+    }
+
+    // --- Focus, scrolling, layers (#17, #25) ---
+
+    /// Gives the keyboard focus to the element named `id` (`.id(id)`)
+    /// after the next render: a text field, a view with `on_key_down`, a
+    /// button. Does nothing if no such element is mounted.
+    pub fn focus(&mut self, id: impl Into<String>) {
+        self.ui_commands.push(UiCommand::Focus(id.into()));
+    }
+
+    /// Scrolls the scroll views around the element named `id` (`.id(id)`)
+    /// so it is visible, after the next render (a link to a form, the row
+    /// just added).
+    pub fn scroll_into_view(&mut self, id: impl Into<String>) {
+        self.ui_commands.push(UiCommand::ScrollIntoView(id.into()));
+    }
+
+    /// Mounts `entity` above the whole UI (router, tabs, sheets and
+    /// dialogs), covering the window: it lets pointer input through
+    /// wherever it has no child. For app-wide feedback such as
+    /// `prism_ui::show_toast`. Adding it again does nothing.
+    pub fn add_layer<T: Render>(&mut self, entity: Entity<T>) {
+        if !self.layers.iter().any(|l| l.id() == entity.id) {
+            self.layers.push(entity.into_any());
+            self.dirty.insert(entity.id);
+        }
+    }
+
+    /// Unmounts a layer added with [`add_layer`](App::add_layer).
+    pub fn remove_layer<T>(&mut self, entity: &Entity<T>) {
+        let before = self.layers.len();
+        self.layers.retain(|l| l.id() != entity.id);
+        if self.layers.len() != before
+            && let Some(root) = self.root
+        {
+            self.dirty.insert(root.id());
+        }
+    }
+
+    /// Whether `entity` is mounted as a layer.
+    pub fn has_layer<T>(&self, entity: &Entity<T>) -> bool {
+        self.layers.iter().any(|l| l.id() == entity.id)
+    }
+
+    /// Called from a key handler: the key press reaches no further handler
+    /// (an overlay's Escape does not also close the screen under it).
+    pub fn stop_propagation(&mut self) {
+        self.stop_propagation = true;
     }
 
     /// Makes `entity` the root of the UI and marks it for rendering.

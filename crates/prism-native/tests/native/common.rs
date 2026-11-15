@@ -60,6 +60,12 @@ pub struct Fake {
     pub measured: HashMap<NodeId, Vec<Option<f32>>>,
     /// Safe area the fake platform gives stack screens.
     pub screen_insets: Insets,
+    // Pointer, keys, focus, layers (#17, #25).
+    pub pointer: HashMap<NodeId, u8>,
+    pub keys: HashMap<NodeId, (bool, bool)>,
+    pub focused: Vec<NodeId>,
+    pub revealed: Vec<NodeId>,
+    pub layers: Vec<NodeId>,
 }
 
 impl Fake {
@@ -254,6 +260,31 @@ impl Widgets for Fake {
     }
     fn set_repeat(&mut self, v: &NodeId, _style: &Style, repeat: Option<(Pose, Transition)>) {
         self.calls.push(Call::Repeat(*v, repeat));
+    }
+    fn set_pointer_events(&mut self, v: &NodeId, mask: u8) {
+        self.pointer.insert(*v, mask);
+    }
+    fn set_key_events(&mut self, v: &NodeId, local: bool, global: bool) {
+        self.keys.insert(*v, (local, global));
+    }
+    fn focus(&mut self, v: &NodeId) {
+        self.focused.push(*v);
+    }
+    fn scroll_into_view(&mut self, v: &NodeId) {
+        self.revealed.push(*v);
+    }
+    fn set_layers(&mut self, layers: &[NodeId]) {
+        self.layers = layers.to_vec();
+    }
+    /// Overlays get a 300 x 400 area at (10, 20).
+    fn overlay_viewport(&mut self, _: &NodeId, _: &NodeId) -> Viewport {
+        Viewport {
+            x: 10.,
+            y: 20.,
+            width: 300.,
+            height: 400.,
+            insets: Insets::default(),
+        }
     }
 }
 

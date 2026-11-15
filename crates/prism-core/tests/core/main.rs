@@ -3,6 +3,7 @@
 
 mod background;
 mod i18n;
+mod interaction;
 mod motion;
 mod reconcile;
 mod router;

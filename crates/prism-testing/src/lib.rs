@@ -30,6 +30,10 @@ pub struct HNode {
     pub scroll_events: bool,
     /// Control configuration (`Patch::SetConfig`).
     pub config: String,
+    /// Pointer events reported (`Patch::SetPointerEvents`).
+    pub pointer_mask: u8,
+    /// Key events reported: (local, global).
+    pub keys: (bool, bool),
 }
 
 #[derive(Default)]
@@ -39,6 +43,12 @@ pub struct Host {
     pub destroyed: HashSet<NodeId>,
     pub env: Option<RenderEnvironment>,
     pub appearance: Option<Appearance>,
+    /// Runtime-mounted layers (`Patch::SetLayers`).
+    pub layers: Vec<NodeId>,
+    /// Nodes given the focus, in order (`Patch::Focus`).
+    pub focused: Vec<NodeId>,
+    /// Nodes scrolled into view, in order (`Patch::ScrollIntoView`).
+    pub scrolled_to: Vec<NodeId>,
 }
 
 impl Host {
@@ -57,6 +67,7 @@ impl Host {
         let Some(root) = self.root else { return };
         let mut seen = HashSet::new();
         let mut todo = vec![root];
+        todo.extend(self.layers.iter().copied());
         while let Some(id) = todo.pop() {
             assert!(seen.insert(id), "node {id} is mounted twice");
             let n = self
@@ -71,7 +82,7 @@ impl Host {
         &self.nodes[&id]
     }
 
-    /// Mounted node ids, depth first.
+    /// Mounted node ids, depth first (the root, then the layers).
     pub fn mounted(&self) -> Vec<NodeId> {
         fn walk(h: &Host, id: NodeId, out: &mut Vec<NodeId>) {
             out.push(id);
@@ -82,6 +93,9 @@ impl Host {
         let mut out = Vec::new();
         if let Some(r) = self.root {
             walk(self, r, &mut out);
+        }
+        for l in &self.layers {
+            walk(self, *l, &mut out);
         }
         out
     }
@@ -159,6 +173,8 @@ impl Backend for Host {
                             swipe: (false, false),
                             scroll_events: false,
                             config: String::new(),
+                            pointer_mask: 0,
+                            keys: (false, false),
                         },
                     );
                 }
@@ -205,6 +221,26 @@ impl Backend for Host {
                 }
                 Patch::SetEnvironment { env } => self.env = Some(env.clone()),
                 Patch::SetAppearance { appearance } => self.appearance = Some(*appearance),
+                Patch::SetPointerEvents { id, mask } => {
+                    self.node(*id, "SetPointerEvents").pointer_mask = *mask
+                }
+                Patch::SetKeyEvents { id, local, global } => {
+                    self.node(*id, "SetKeyEvents").keys = (*local, *global)
+                }
+                Patch::Focus { id } => {
+                    self.node(*id, "Focus");
+                    self.focused.push(*id);
+                }
+                Patch::ScrollIntoView { id } => {
+                    self.node(*id, "ScrollIntoView");
+                    self.scrolled_to.push(*id);
+                }
+                Patch::SetLayers { ids } => {
+                    for id in ids {
+                        self.node(*id, "SetLayers");
+                    }
+                    self.layers = ids.clone();
+                }
             }
         }
         // Destroyed nodes are gone from the mounted tree once a frame is applied.

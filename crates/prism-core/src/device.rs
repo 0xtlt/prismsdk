@@ -215,6 +215,78 @@ impl PickImages {
     }
 }
 
+// --- Files (#18) ---------------------------------------------------------------
+
+/// Options for [`AsyncApp::pick_files`]: which files, and how many.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct PickFiles {
+    /// Accepted types: MIME types (`"image/*"`, `"application/pdf"`) or
+    /// extensions (`".csv"`). Empty: any file.
+    pub types: Vec<String>,
+    /// Several files can be chosen.
+    pub multiple: bool,
+}
+
+impl PickFiles {
+    /// One file of any type.
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// Only these types (`["image/*", ".pdf"]`).
+    pub fn types<S: Into<String>>(mut self, types: impl IntoIterator<Item = S>) -> Self {
+        self.types = types.into_iter().map(Into::into).collect();
+        self
+    }
+    /// Lets the user choose several files.
+    pub fn multiple(mut self) -> Self {
+        self.multiple = true;
+        self
+    }
+    /// Whether a file named `name` of type `mime` is accepted.
+    pub fn accepts(&self, name: &str, mime: &str) -> bool {
+        self.types.is_empty()
+            || self.types.iter().any(|t| {
+                let t = t.trim().to_ascii_lowercase();
+                if let Some(ext) = t.strip_prefix('.') {
+                    name.to_ascii_lowercase().ends_with(&format!(".{ext}"))
+                } else if let Some(family) = t.strip_suffix("/*") {
+                    mime.to_ascii_lowercase().starts_with(&format!("{family}/"))
+                } else {
+                    mime.eq_ignore_ascii_case(&t)
+                }
+            })
+    }
+}
+
+/// Files whose `path` is a URL (web uploads) and where their bytes are.
+static LOCAL_FILES: std::sync::Mutex<Option<HashMap<String, std::path::PathBuf>>> =
+    std::sync::Mutex::new(None);
+
+/// Remembers where the bytes of a picked file whose `path` is a URL are
+/// (the web backend saves uploads on the server), for [`PickedFile::read`].
+#[doc(hidden)]
+pub fn register_local_file(url: &str, file: std::path::PathBuf) {
+    if let Ok(mut m) = LOCAL_FILES.lock() {
+        m.get_or_insert_with(HashMap::new)
+            .insert(url.to_string(), file);
+    }
+}
+
+impl PickedFile {
+    /// The file's bytes (natively the picked file; on the web the copy the
+    /// browser uploaded to the server).
+    pub fn read(&self) -> std::io::Result<Vec<u8>> {
+        let local = LOCAL_FILES
+            .lock()
+            .ok()
+            .and_then(|m| m.as_ref()?.get(&self.path).cloned());
+        let path = local.unwrap_or_else(|| {
+            std::path::PathBuf::from(self.path.strip_prefix("file://").unwrap_or(&self.path))
+        });
+        std::fs::read(path)
+    }
+}
+
 /// A haptic feedback pattern (`UIFeedbackGenerator` styles on iOS).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Haptic {
@@ -310,6 +382,9 @@ pub enum DeviceCall {
     CurrentLocation(Accuracy),
     /// Opens the photo picker or the camera.
     PickImages(PickImages),
+    /// Opens the file picker (`<input type=file>`, `UIDocumentPickerViewController`,
+    /// `NSOpenPanel`, `GtkFileDialog`, `ACTION_OPEN_DOCUMENT`).
+    PickFiles(PickFiles),
     /// The clipboard's text.
     ReadClipboard,
     /// Starts a stream; events use this call's id.
@@ -611,6 +686,17 @@ impl AsyncApp {
     /// Lets the user choose images (or take a photo). Empty if they cancel.
     pub async fn pick_images(&self, options: PickImages) -> Result<Vec<PickedFile>, DeviceError> {
         match self.device(DeviceCall::PickImages(options)).await {
+            Ok(DeviceValue::Files(f)) => Ok(f),
+            Err(DeviceError::Cancelled) => Ok(Vec::new()),
+            Err(e) => Err(e),
+            Ok(other) => Err(DeviceError::Failed(format!("unexpected answer {other:?}"))),
+        }
+    }
+
+    /// Lets the user choose files (documents, photos from the Files app).
+    /// Empty if they cancel. Read them with [`PickedFile::read`].
+    pub async fn pick_files(&self, options: PickFiles) -> Result<Vec<PickedFile>, DeviceError> {
+        match self.device(DeviceCall::PickFiles(options)).await {
             Ok(DeviceValue::Files(f)) => Ok(f),
             Err(DeviceError::Cancelled) => Ok(Vec::new()),
             Err(e) => Err(e),

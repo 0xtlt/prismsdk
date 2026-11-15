@@ -451,6 +451,16 @@ pub struct Style {
     pub responsive: Responsive,
     /// Platforms where the element exists (`.only(…)`, `.except(…)`).
     pub platforms: Option<crate::platform::Platforms>,
+
+    // --- Hit testing (#19) ---
+    /// The element and everything in it take pointer input (`true` by
+    /// default). `false`: clicks, taps and hovers go to what is underneath
+    /// (`pointer-events: none`).
+    pub hit_test: bool,
+    /// The element and everything in it are out of reach: no pointer input,
+    /// no keyboard focus, hidden from assistive technologies (`inert`).
+    /// Still drawn.
+    pub inert: bool,
 }
 
 /// Window size classes, by width in points (CSS pixels on the web).
@@ -805,6 +815,8 @@ impl Default for Style {
             animations: crate::animation::Animations::default(),
             responsive: Responsive::default(),
             platforms: None,
+            hit_test: true,
+            inert: false,
         }
     }
 }
@@ -1299,5 +1311,21 @@ pub trait Styled: Sized {
     /// breathing, loading indicators).
     fn repeat(self, pose: crate::animation::Pose, t: Transition) -> Self {
         self.with_style(|s| s.animations.repeat = Some((pose, t)))
+    }
+
+    // --- Hit testing (#19) ---
+
+    /// `false`: the element and everything in it let clicks, taps and
+    /// hovers through to what is underneath (`pointer-events: none`): a
+    /// decorative overlay, a scrim drawn over content.
+    fn hit_test(self, on: bool) -> Self {
+        self.with_style(|s| s.hit_test = on)
+    }
+
+    /// Makes the element and everything in it unreachable while `on`: no
+    /// pointer input, no keyboard focus, hidden from screen readers (the
+    /// screen behind a custom overlay). It stays visible.
+    fn inert(self, on: bool) -> Self {
+        self.with_style(|s| s.inert = on)
     }
 }
