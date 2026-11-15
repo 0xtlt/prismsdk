@@ -97,3 +97,19 @@ its leading (right) edge, native scroll views at offset 0.
 | Sticky | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Fixed | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Horizontal scroll | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+Notes per platform:
+
+- Baselines come from the platform's text metrics: `firstBaselineOffsetFromTop`
+  (AppKit), the font's ascender where UIKit and SwiftUI place the text,
+  `getBaseline()` (Android), GTK's measured baseline. Views without text
+  align their bottom edge.
+- Sticky views move with the scroll view natively (UIKit's
+  `scrollViewDidScroll`, AppKit's clip-view bounds, GTK's vertical
+  adjustment, Android's scroll listener, the watch's scroll offset) and are
+  drawn above their siblings. On macOS that means they are last among their
+  siblings, so VoiceOver reaches them last.
+- macOS horizontal scroll views have no visible scroller (legacy scrollers
+  would take height from the row): trackpad swipes and shift + wheel scroll
+  them. Scroll events (`on_scroll`) stay vertical.
+- Sticky only follows vertical scroll views.
