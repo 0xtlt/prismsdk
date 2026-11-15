@@ -212,6 +212,10 @@ mod tests {
             simulator: None,
             device: None,
             icloud: false,
+            apple_sign_in: false,
+            push: None,
+            google_services: None,
+            vapid_public_key: None,
             target_dir: "/w/target".into(),
             workspace_root: "/w".into(),
         }
