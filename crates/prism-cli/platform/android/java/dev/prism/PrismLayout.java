@@ -25,6 +25,38 @@ public final class PrismLayout extends ViewGroup {
         super(context);
         setClipChildren(false);
         setClipToPadding(false);
+        setChildrenDrawingOrderEnabled(true);
+    }
+
+    /** Children drawn (and touched) above their siblings: sticky headers. */
+    private static final java.util.Set<View> RAISED =
+            java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
+    private int[] order = new int[0];
+
+    static void setRaised(View v, boolean raised) {
+        boolean changed = raised ? RAISED.add(v) : RAISED.remove(v);
+        if (changed && v.getParent() instanceof View) ((View) v.getParent()).invalidate();
+    }
+
+    /** Raised children last, the others in order (accessibility order is unchanged). */
+    private void updateOrder() {
+        int count = getChildCount();
+        if (order.length != count) order = new int[count];
+        int k = 0;
+        for (int i = 0; i < count; i++) if (!RAISED.contains(getChildAt(i))) order[k++] = i;
+        for (int i = 0; i < count; i++) if (RAISED.contains(getChildAt(i))) order[k++] = i;
+    }
+
+    @Override
+    protected void dispatchDraw(android.graphics.Canvas canvas) {
+        updateOrder();
+        super.dispatchDraw(canvas);
+    }
+
+    @Override
+    protected int getChildDrawingOrder(int count, int i) {
+        if (order.length != count) updateOrder();
+        return i < order.length ? order[i] : i;
     }
 
     public static Frame frameOf(View v) {
