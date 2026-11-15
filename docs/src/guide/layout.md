@@ -1,0 +1,99 @@
+# Layout: grids, sticky and fixed, scrolling sideways
+
+Every node is a flex container (a column by default, like React Native).
+Beyond flexbox, Prism has CSS grid, weighted grow and shrink, per-axis gaps,
+baseline alignment, aspect ratios, sticky and fixed positioning, and
+horizontal scroll views. The web emits the matching CSS; native backends lay
+out with the same algorithms (taffy's flexbox and CSS grid in
+`prism-native`), so both agree.
+
+## Grid
+
+```rust
+// As many 172 pt columns as fit, sharing what is left (CSS
+// `repeat(auto-fill, minmax(172px, 1fr))`): no column count to compute
+// from the window, no padding cells.
+div().grid().grid_cols([auto_fill(minmax(172., fr(1.)))]).gap(12.)
+    .children(cards)
+
+div().grid().cols(3)                                  // 3 equal columns
+div().grid().grid_cols([px(240.).into(), fr(1.)])     // sidebar + content
+div().grid().grid_rows([px(48.).into(), fr(1.)]).grid_auto_rows(fr(1.))
+
+card().col_span(2)                    // spans two columns
+card().col_start(1).row_start(2)      // explicit placement (lines from 1)
+```
+
+Tracks: points (`172.`, `px(172.)`), `relative(0.25)`, `fr(1.)`,
+`GridTrack::Auto`, `MinContent`, `MaxContent`, `minmax(min, max)`,
+`repeat(n, track)`, `auto_fill(track)`, `auto_fit(track)` (empty columns
+collapse, so the items stretch). The cells of a row are as tall as the row
+(equal-height cards) unless the grid says otherwise (`items_start()`).
+
+## Flex weights, gaps, baselines, aspect ratio
+
+```rust
+div().flex_row()
+    .child(list.flex_1())
+    .child(detail.flex_1().flex_grow(2.))   // twice the list's share
+    .child(badge.flex_shrink(0.))           // never shrinks
+div().flex_row().flex_wrap().gap_x(8.).gap_y(12.)   // per-axis gaps
+
+// A big figure and its unit on one baseline, an icon beside a label.
+div().flex_row().items_baseline()
+    .child(text("42").text_size(40.)).child(text("kg"))
+text("…").self_baseline()
+
+picture("cover.jpg").w_full().aspect_ratio(16. / 9.)  // height follows width
+```
+
+Native backends measure each text leaf's first baseline (the font's ascent
+where the control draws its text: labels, buttons, inputs, pickers, timers);
+views without text sit on the baseline with their bottom edge, as in CSS.
+
+## Sticky and fixed
+
+```rust
+scroll().child(
+    div().child(section_header.sticky().top(0.)).children(rows)
+)
+button("+").fixed().bottom(24.).right(24.)   // a floating action button
+```
+
+- `.sticky()` stays in the flow, then stays `.top(…)` points from the top of
+  its scroll view while its parent is in view, and leaves with it (CSS
+  `position: sticky`). It is drawn above the content scrolling under it:
+  give it a background.
+- `.fixed()` is placed at its insets from the **screen** it is on (the
+  stack screen, tab or sheet; the window when there is none), never
+  scrolls, and ignores its parents' positions: declare it anywhere.
+  Natively it is shown by the screen itself, inside the safe area, above
+  the rest; on the web screens are containing blocks (`contain: layout`), so
+  `position: fixed` sits below the navigation header and above the tab bar
+  too. `.absolute()` stays relative to the parent.
+
+Natively the layout pass works out where each sticky node sits in its scroll
+view; the backend moves it as the content scrolls without a round trip
+through the app.
+
+## Scrolling sideways
+
+```rust
+scroll_x().gap(8.).children(chips)      // or scroll().horizontal()
+scroll_x().child(wide_table.w(900.))
+```
+
+A horizontal scroll view is a row, as tall as its content; its children keep
+their size (they never shrink to the view) and the view scrolls when they
+are wider. Right to left its content is mirrored; the browser opens it at
+its leading (right) edge, native scroll views at offset 0.
+
+## Backends
+
+| | Web | macOS | iOS · tvOS · visionOS | watchOS | Linux | Android |
+|---|---|---|---|---|---|---|
+| Grid, weights, gaps, aspect ratio | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Baselines | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Sticky | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Fixed | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Horizontal scroll | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |

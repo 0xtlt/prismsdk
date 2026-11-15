@@ -329,5 +329,18 @@
     "signed_in": "Connecté ({count} caractères)",
     "error": "Afficher une erreur",
     "toast_error": "Serveur injoignable"
+  },
+  "layout": {
+    "heading": "Mise en page",
+    "grid_note": "Une grille de colonnes de 140 pt, autant qu’il en tient ; les tuiles d’une rangée ont sa hauteur.",
+    "wide": "Large : sur deux colonnes",
+    "short": "Court",
+    "long": "Une tuile plus longue dont le texte passe sur plusieurs lignes",
+    "baseline": "sur une même ligne de base",
+    "chips": "Tout,Ouvertes,Faites,Aujourd’hui,Cette semaine,Favoris,Partagées,Archivées",
+    "own_width": "Requête de conteneur",
+    "own_width_note": "En ligne dès que cette carte fait 420 pt de large, en colonne en dessous, quelle que soit la fenêtre.",
+    "wide_window": "Visible dans les fenêtres d’au moins 768 pt.",
+    "fab": "Ajouter un appui"
   }
 }

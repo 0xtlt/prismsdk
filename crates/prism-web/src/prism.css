@@ -14,6 +14,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sa
 /* Horizontal scroll views: a row whose items keep their size. */
 .prism-scroll-x { overflow-x: auto; overflow-y: hidden; }
 .prism-scroll-x > * { flex-shrink: 0 !important; }
+/* `.fixed()` nodes are placed against the screen (or tab) they are on, like
+   natively: below its header, above the tab bar, never scrolling. */
+[data-kind="screen"], [data-kind="tab"] { contain: layout; }
 .prism-tabs { display: flex; flex-direction: column; }
 .prism-panels { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .prism-panels > * { flex: 1; display: flex; flex-direction: column; }

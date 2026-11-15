@@ -11,6 +11,7 @@
 - [Async, network, storage](guide/async.md)
 - [Navigation](guide/navigation.md)
 - [Responsive](guide/responsive.md)
+- [Layout: grids, sticky, sideways](guide/layout.md)
 - [Platform-specific UI](guide/platform-ui.md)
 - [Device information](guide/device-info.md)
 - [Components](guide/components.md)

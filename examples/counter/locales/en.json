@@ -329,5 +329,18 @@
     "signed_in": "Signed in ({count} characters)",
     "error": "Show an error",
     "toast_error": "Couldn’t reach the server"
+  },
+  "layout": {
+    "heading": "Layout",
+    "grid_note": "A grid of 140 pt columns, as many as fit; tiles in a row share its height.",
+    "wide": "Wide: spans two columns",
+    "short": "Short",
+    "long": "A longer tile whose text wraps onto several lines",
+    "baseline": "on one baseline",
+    "chips": "All,Open,Done,Today,This week,Starred,Shared,Archived",
+    "own_width": "Container query",
+    "own_width_note": "A row once this card is 420 pt wide, a column below, whatever the window.",
+    "wide_window": "Shown in windows at least 768 pt wide.",
+    "fab": "Add one tap"
   }
 }
