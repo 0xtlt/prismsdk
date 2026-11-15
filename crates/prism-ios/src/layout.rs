@@ -7,7 +7,9 @@ use std::collections::{HashMap, HashSet};
 use objc2::Message;
 use objc2::rc::Retained;
 use objc2_core_foundation::{CGPoint, CGSize};
-use objc2_ui_kit::{UIFont, UIScrollView, UIScrollViewContentInsetAdjustmentBehavior, UIView};
+use objc2_ui_kit::{
+    UIFont, UILabel, UIScrollView, UIScrollViewContentInsetAdjustmentBehavior, UIView,
+};
 use prism_core::{NodeId, ScrollAxis};
 use prism_native::Sticky;
 
@@ -59,14 +61,16 @@ pub fn baseline(view: &View, width: f32, height: f32) -> Option<f32> {
     let font = FONTS.with(|f| f.borrow().get(&view.id()).cloned())?;
     let (ascent, line) = unsafe { (font.ascender(), font.lineHeight()) };
     let h = height as f64;
+    let label = |l: &UILabel| {
+        let text = l
+            .sizeThatFits(CGSize::new(width as f64, f64::MAX / 4.))
+            .height
+            .ceil();
+        ((h - text) / 2.).max(0.) + ascent
+    };
     let b = match view {
-        View::Label(l) | View::Timer(l) => {
-            let text = l
-                .sizeThatFits(CGSize::new(width as f64, f64::MAX / 4.))
-                .height
-                .ceil();
-            ((h - text) / 2.).max(0.) + ascent
-        }
+        View::Label(l) => label(l),
+        View::Timer(l) => label(l),
         View::Button(_) | View::Input(_) | View::Picker(_) | View::DatePicker(_) => {
             (h - line) / 2. + ascent
         }

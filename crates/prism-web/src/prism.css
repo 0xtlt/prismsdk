@@ -44,6 +44,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sa
 .prism-switch:checked { background: #34c759; }
 .prism-switch:checked::after { transform: translateX(18px); }
 .prism-symbol { display: inline-flex; align-items: center; justify-content: center; line-height: 1; }
+/* Rich text: links take the text's color; runs set their own decoration. */
+.prism-link { color: inherit; text-decoration-line: none; cursor: pointer; }
+[data-kind="text"] .prism-symbol { display: inline; line-height: inherit; }
+[data-kind="text"][data-clickable="1"] { cursor: pointer; }
 progress { width: 100%; accent-color: currentColor; }
 #prism-island { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 1000; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
 .prism-island { pointer-events: auto; min-width: 180px; max-width: min(92vw, 420px); padding: 8px 14px; border-radius: 22px; background: #000; color: #fff; box-shadow: 0 6px 24px rgba(0,0,0,.25); cursor: pointer; border: 0; font: inherit; text-align: left; }

@@ -67,6 +67,8 @@ pub fn content_type(path: &str) -> &'static str {
         "json" => "application/json",
         "txt" => "text/plain; charset=utf-8",
         "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
         "woff" => "font/woff",
         "mp4" => "video/mp4",
         "webm" => "video/webm",
@@ -103,6 +105,27 @@ impl Assets {
         let mut assets = Assets {
             dir: dir.clone(),
             ..Default::default()
+        };
+        // Bundled fonts (`assets/fonts/`): `@font-face` rules in the base
+        // stylesheet, pointing at their hashed files (`_prism/` → `../assets/`).
+        let fonts = dir.as_ref().map_or_else(String::new, |dir| {
+            let mut files = Vec::new();
+            walk(dir, dir, &mut files);
+            let fonts: Vec<(String, String, Vec<u8>)> = files
+                .into_iter()
+                .filter(|(logical, _)| logical.starts_with("fonts/"))
+                .filter_map(|(logical, file)| {
+                    let bytes = std::fs::read(&file).ok()?;
+                    let url = format!("../assets/{}", hashed_name(&logical, &content_hash(&bytes)));
+                    Some((logical, url, bytes))
+                })
+                .collect();
+            crate::fonts::font_faces(&fonts)
+        });
+        let css = if fonts.is_empty() {
+            css
+        } else {
+            format!("{css}\n/* App fonts (assets/fonts). */\n{fonts}")
         };
         for (name, body) in [("client.js", client_js), ("prism.css", css)] {
             let hash = content_hash(body.as_bytes());

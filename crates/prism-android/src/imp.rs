@@ -74,7 +74,7 @@ fn measure(r: &MeasureRequest) -> (f32, f32) {
         "image" => prism_core::glyphs::glyph(r.text),
         _ => r.text,
     };
-    jni::measure(r.kind, text, r.font_size, r.weight, r.max_width)
+    jni::measure(r.kind, text, r.font_size, r.weight, r.max_width, r.spec)
 }
 
 /// What the host tells about the device (JSON from `PrismHost.deviceInfo`).

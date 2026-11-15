@@ -24,6 +24,7 @@ mod push;
 mod report;
 mod security;
 mod strings;
+mod typography;
 mod widgets;
 
 use prism::prelude::*;
@@ -567,6 +568,7 @@ impl Render for TodoDetail {
 struct Gallery {
     device: Entity<device::DeviceDemo>,
     forms: Entity<forms::Forms>,
+    typography: Entity<typography::Typography>,
     quote: Option<Result<String, String>>,
     loading: bool,
     wifi: bool,
@@ -583,6 +585,7 @@ impl Gallery {
         Gallery {
             device: cx.new(|_| device::DeviceDemo::default()),
             forms: cx.new(|_| forms::Forms::default()),
+            typography: cx.new(|_| typography::Typography::default()),
             quote: None,
             loading: false,
             wifi: false,
@@ -695,6 +698,7 @@ impl Render for Gallery {
         screen.child(
             body.child(self.forms)
             .child(report::card())
+            .child(self.typography)
             .child(charts)
             .child(layout::card(
                 cx,

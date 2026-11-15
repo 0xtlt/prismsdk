@@ -15,6 +15,7 @@
 - [Platform-specific UI](guide/platform-ui.md)
 - [Device information](guide/device-info.md)
 - [Components](guide/components.md)
+- [Text and typography](guide/typography.md)
 - [Forms and feedback](guide/forms.md)
 - [Charts and vector drawing](guide/charts.md)
 - [Motion](guide/motion.md)

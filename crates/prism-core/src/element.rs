@@ -274,6 +274,9 @@ pub struct VNode {
     pub on_swipe_right: Option<Handler<ClickEvent>>,
     /// The return key of a text input.
     pub on_submit: Option<Handler<ClickEvent>>,
+    /// Runs of a rich text (`rich_text`): its text and config are derived
+    /// from them when mounted.
+    pub spans: Vec<crate::spans::Span>,
 }
 
 impl VNode {
@@ -300,6 +303,7 @@ impl VNode {
             on_swipe_left: None,
             on_swipe_right: None,
             on_submit: None,
+            spans: Vec::new(),
         }
     }
 }
@@ -516,6 +520,36 @@ pub fn text(content: impl Into<String>) -> Text {
     let mut n = VNode::new(NodeKind::Text);
     n.text = content.into();
     Text(n)
+}
+
+/// A paragraph of runs with their own style, links and icons:
+/// `rich_text([span("Signed in as "), span("Ada").bold(), link("settings", "/settings")])`.
+/// See [`spans`](crate::spans).
+pub fn rich_text(spans: impl IntoIterator<Item = crate::spans::Span>) -> Text {
+    text("").spans(spans)
+}
+
+impl Text {
+    /// Replaces the text with runs (see [`rich_text`]).
+    pub fn spans(mut self, spans: impl IntoIterator<Item = crate::spans::Span>) -> Self {
+        self.0.spans = spans.into_iter().collect();
+        self.0.text = self.0.spans.iter().map(|s| s.run.text.as_str()).collect();
+        self
+    }
+
+    /// Makes the whole text clickable (a button for assistive technologies,
+    /// reachable from the keyboard).
+    pub fn on_click(mut self, handler: Handler<ClickEvent>) -> Self {
+        self.0.on_click = Some(handler);
+        self
+    }
+
+    /// Makes the whole text a link to an app path (or a URL): it navigates
+    /// when activated, and is announced as a link.
+    pub fn link(mut self, path: impl Into<String>) -> Self {
+        self.0.link = Some(path.into());
+        self
+    }
 }
 
 /// A native push button with a title.

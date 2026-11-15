@@ -15,21 +15,20 @@ use objc2_app_kit::{
     NSAccessibilityTabGroupRole, NSAnimatablePropertyContainer, NSAppearance, NSApplication,
     NSApplicationActivationPolicy, NSBackingStoreType, NSBezierPath, NSButton, NSColor, NSControl,
     NSControlSize, NSControlStateValueOff, NSControlStateValueOn, NSControlTextEditingDelegate,
-    NSDatePicker, NSDatePickerElementFlags, NSDatePickerStyle, NSEvent, NSFont, NSFontWeightBold,
-    NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold, NSImage,
-    NSImageSymbolConfiguration, NSImageView, NSMenu, NSMenuItem, NSPopUpButton,
-    NSProgressIndicator, NSProgressIndicatorStyle, NSResponder, NSScrollView, NSSegmentedControl,
-    NSSlider, NSSwitch, NSText, NSTextAlignment, NSTextDelegate, NSTextField, NSTextFieldDelegate,
-    NSTextView, NSTextViewDelegate, NSUserInterfaceItemIdentification, NSView, NSWindow,
-    NSWindowDelegate, NSWindowStyleMask,
+    NSDatePicker, NSDatePickerElementFlags, NSDatePickerStyle, NSEvent, NSFont,
+    NSFontWeightSemibold, NSImage, NSImageSymbolConfiguration, NSImageView, NSMenu, NSMenuItem,
+    NSPopUpButton, NSProgressIndicator, NSProgressIndicatorStyle, NSResponder, NSScrollView,
+    NSSegmentedControl, NSSlider, NSSwitch, NSText, NSTextAlignment, NSTextDelegate, NSTextField,
+    NSTextFieldDelegate, NSTextView, NSTextViewDelegate, NSUserInterfaceItemIdentification, NSView,
+    NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_foundation::{
     NSArray, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
 };
 use prism_core::controls::{DateConfig, DateMode, InputConfig, PickerConfig, SliderConfig};
 use prism_core::{
-    Accessibility, AppConfig, AppInit, Appearance, Backend, Color, FontWeight, NodeId, NodeKind,
-    Role, Runtime, Style, TextAlign, UiEvent,
+    Accessibility, AppConfig, AppInit, Appearance, Backend, Color, NodeId, NodeKind, Role, Runtime,
+    Style, TextAlign, UiEvent,
 };
 use prism_native::{Insets, NativeRenderer, Viewport, Widgets};
 
@@ -1099,7 +1098,7 @@ pub enum View {
     Progress(Retained<NSProgressIndicator>),
     Timer(Retained<NSTextField>),
     Picture(Retained<PrismView>),
-    Label(Retained<NSTextField>),
+    Label(Retained<crate::label::PrismLabel>),
     Button(Retained<NSButton>),
     Input(Rc<MacInput>),
     Slider(Retained<PrismSlider>),
@@ -1656,7 +1655,7 @@ fn plain_color(c: Color) -> Retained<NSColor> {
 }
 
 /// Adaptive colors become dynamic `NSColor`s, resolved per appearance.
-fn ns_color(c: Color) -> Retained<NSColor> {
+pub(crate) fn ns_color(c: Color) -> Retained<NSColor> {
     if c.dark.is_none() {
         return plain_color(c);
     }
@@ -1679,26 +1678,19 @@ fn ns_color(c: Color) -> Retained<NSColor> {
 }
 
 fn font_weight(style: &Style) -> objc2_app_kit::NSFontWeight {
-    unsafe {
-        match style.font_weight {
-            FontWeight::Regular => NSFontWeightRegular,
-            FontWeight::Medium => NSFontWeightMedium,
-            FontWeight::Semibold => NSFontWeightSemibold,
-            FontWeight::Bold => NSFontWeightBold,
-        }
-    }
+    crate::label::ns_weight(style.font_weight)
 }
 
+/// The font of a button, input or text area: size, any weight, family,
+/// italic and tabular digits of its style.
 fn font(style: &Style) -> Retained<NSFont> {
-    let weight = unsafe {
-        match style.font_weight {
-            FontWeight::Regular => NSFontWeightRegular,
-            FontWeight::Medium => NSFontWeightMedium,
-            FontWeight::Semibold => NSFontWeightSemibold,
-            FontWeight::Bold => NSFontWeightBold,
-        }
-    };
-    NSFont::systemFontOfSize_weight(style.font_size as f64, weight)
+    crate::label::ns_font(&prism_native::text::FontSpec {
+        family: style.font_family.clone(),
+        size: style.font_size,
+        weight: style.font_weight,
+        italic: style.italic,
+        tabular: style.tabular_numbers,
+    })
 }
 
 fn alignment(a: TextAlign) -> NSTextAlignment {
@@ -1869,7 +1861,7 @@ impl Widgets for AppKit {
                 self.stacks.push(stack.clone());
                 View::Stack(stack)
             }
-            NodeKind::Text => View::Label(NSTextField::wrappingLabelWithString(&empty, mtm)),
+            NodeKind::Text => View::Label(crate::label::new_label(mtm, id)),
             NodeKind::Button => {
                 let target: &AnyObject = &self.target;
                 let b = unsafe {
@@ -2009,10 +2001,10 @@ impl Widgets for AppKit {
                 iv.border.set(style.border_width as f64);
                 v.setNeedsDisplay(true);
             }
-            View::Label(_) | View::Input(_) => {
+            View::Label(l) => crate::label::set_style(l, style),
+            View::Input(_) => {
                 let l = match view {
                     View::Input(i) => i.field(),
-                    View::Label(l) => l.clone(),
                     _ => unreachable!(),
                 };
                 l.setFont(Some(&font(style)));
@@ -2031,7 +2023,8 @@ impl Widgets for AppKit {
     fn set_text(&mut self, view: &View, text: &str) {
         let s = NSString::from_str(text);
         match view {
-            View::Label(l) | View::Timer(l) => l.setStringValue(&s),
+            View::Label(l) => crate::label::set_text(l, text),
+            View::Timer(l) => l.setStringValue(&s),
             View::Picture(v) => self.load_picture(view.id(), v, text),
             View::Input(i) => {
                 let f = i.field();
@@ -2084,6 +2077,9 @@ impl Widgets for AppKit {
     fn set_clickable(&mut self, view: &View, clickable: bool) {
         if let View::Container(v) = view {
             v.ivars().clickable.set(clickable);
+        }
+        if let View::Label(l) = view {
+            crate::label::set_clickable(l, clickable);
         }
     }
 
@@ -2362,6 +2358,8 @@ impl Widgets for AppKit {
 
     fn set_config(&mut self, view: &View, _kind: NodeKind, config: &str) {
         match view {
+            // A rich text's runs.
+            View::Label(l) => crate::label::set_runs(l, config),
             View::Slider(s) => {
                 let c = SliderConfig::decode(config);
                 s.ivars().config.set(c);
@@ -2444,7 +2442,8 @@ impl Widgets for AppKit {
             v.firstBaselineOffsetFromTop() + ((h - v.fittingSize().height) / 2.).max(0.)
         };
         let b = match view {
-            View::Label(l) | View::Timer(l) => l.firstBaselineOffsetFromTop(),
+            View::Label(l) => l.firstBaselineOffsetFromTop(),
+            View::Timer(l) => l.firstBaselineOffsetFromTop(),
             View::Button(b) => centered(b),
             View::Picker(p) => centered(&p.button),
             View::Input(i) => i.field().firstBaselineOffsetFromTop(),
@@ -2682,6 +2681,12 @@ impl Widgets for AppKit {
                 && matches!(a.role, Some(Role::Heading(_)))
             {
                 v.setAccessibilityRole(Some(role));
+            } else if let View::Label(_) = view {
+                // A clickable text is a button (or a link), a plain one text.
+                let role = role.filter(|_| matches!(a.role, Some(Role::Button | Role::Link)));
+                v.setAccessibilityRole(Some(
+                    role.unwrap_or(unsafe { NSAccessibilityStaticTextRole }),
+                ));
             }
             if let Some(checked) = a.checked {
                 let value = NSString::from_str(if checked { "1" } else { "0" });
@@ -3075,6 +3080,8 @@ fn run_automation(mtm: MainThreadMarker) {
                     let _: objc2::runtime::Bool =
                         unsafe { msg_send![&*p, accessibilityPerformPress] };
                 }
+                // A clickable text, or an inline link, by its text.
+                None if crate::label::press_in(&root, title) => {}
                 None => eprintln!("prism-macos: PRISM_CLICK: nothing labelled {title:?}"),
             }
         }
@@ -3358,6 +3365,8 @@ fn image_sources(dev_assets: Option<&str>) -> prism_native::images::ImageSources
     if let Some(dev) = dev_assets {
         asset_dirs.push(dev.into());
     }
+    // Fonts in assets/fonts: found by family name from now on.
+    prism_native::fonts::register_apple_fonts(&asset_dirs);
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     prism_native::images::ImageSources {
         asset_dirs,

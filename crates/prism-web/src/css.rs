@@ -224,7 +224,92 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
         }
         _ => {}
     }
+    if kind != NodeKind::View {
+        typography(kind, s, &mut c);
+    }
     c
+}
+
+/// Font family, italic, spacing, case, decoration and truncation (only
+/// what differs from the defaults). Sizes in rem, like `font-size`, so they
+/// follow the browser's text size.
+pub fn typography(kind: NodeKind, s: &Style, w: &mut String) {
+    use prism_core::{FontFamily, TextTransform};
+    if s.font_family != FontFamily::System {
+        let _ = write!(w, "font-family:{};", s.font_family.css());
+    }
+    if s.italic {
+        w.push_str("font-style:italic;");
+    }
+    match s.line_height {
+        Length::Auto => {}
+        Length::Px(v) => {
+            let _ = write!(w, "line-height:{}rem;", v / 16.);
+        }
+        Length::Fraction(f) => {
+            let _ = write!(w, "line-height:{f};");
+        }
+    }
+    if s.letter_spacing != 0. {
+        let _ = write!(w, "letter-spacing:{}rem;", s.letter_spacing / 16.);
+    }
+    if s.text_transform != TextTransform::None {
+        let _ = write!(w, "text-transform:{};", s.text_transform.css());
+    }
+    match (s.underline, s.strikethrough) {
+        (true, true) => w.push_str("text-decoration-line:underline line-through;"),
+        (true, false) => w.push_str("text-decoration-line:underline;"),
+        (false, true) => w.push_str("text-decoration-line:line-through;"),
+        (false, false) => {}
+    }
+    if s.tabular_numbers {
+        w.push_str("font-variant-numeric:tabular-nums;");
+    }
+    if kind != NodeKind::Text {
+        return;
+    }
+    match s.max_lines {
+        // One line: cut mid-word with an ellipsis, like native labels.
+        Some(1) => w.push_str("white-space:pre;overflow:hidden;text-overflow:ellipsis;"),
+        Some(n) => {
+            let _ = write!(
+                w,
+                "display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:{n};line-clamp:{n};overflow:hidden;"
+            );
+        }
+        None if s.no_wrap => w.push_str("white-space:pre;overflow:hidden;"),
+        None => {}
+    }
+}
+
+/// Inline CSS of one rich-text run (see `prism_core::spans`).
+pub fn run_css(r: &prism_core::TextRun) -> String {
+    let mut w = String::new();
+    if let Some(weight) = r.weight {
+        let _ = write!(w, "font-weight:{};", weight.css());
+    }
+    if r.italic {
+        w.push_str("font-style:italic;");
+    }
+    match (r.underline, r.strikethrough) {
+        (true, true) => w.push_str("text-decoration-line:underline line-through;"),
+        (true, false) => w.push_str("text-decoration-line:underline;"),
+        (false, true) => w.push_str("text-decoration-line:line-through;"),
+        (false, false) => {}
+    }
+    if let Some(c) = r.color {
+        let _ = write!(w, "color:{};", c.to_css());
+    }
+    if let Some(c) = r.background {
+        let _ = write!(w, "background-color:{};border-radius:3px;", c.to_css());
+    }
+    if let Some(f) = &r.family {
+        let _ = write!(w, "font-family:{};", f.css());
+    }
+    if let Some(z) = r.size {
+        let _ = write!(w, "font-size:{z}em;");
+    }
+    w
 }
 
 /// Enter, exit and loop animations for the client (Web Animations API), or

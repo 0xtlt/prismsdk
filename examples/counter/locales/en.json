@@ -350,5 +350,30 @@
     "own_width_note": "A row once this card is 420 pt wide, a column below, whatever the window.",
     "wide_window": "Shown in windows at least 768 pt wide.",
     "fab": "Add one tap"
+  },
+  "typography": {
+    "title": "Typography",
+    "overline": "Orders this week",
+    "figure_caption": "Tabular figures, 650 weight, tight line height",
+    "order_id": "Order ID",
+    "clamp": "Long descriptions are clamped to two lines with an ellipsis, so every card keeps the same height whatever the content says, in every language and at every text size.",
+    "truncate": "quarterly-report-final-version-reviewed-2026.pdf",
+    "italic": "Italic",
+    "underline": "Underline",
+    "strike": "Struck",
+    "serif": "Serif",
+    "rounded": "Rounded",
+    "mono": "Monospace",
+    "signed_in": "Signed in as ",
+    "settings_link": "account settings",
+    "tap_run": "tap me",
+    "tap_text": {
+      "one": "This whole text is clickable: tapped {count} time",
+      "other": "This whole text is clickable: tapped {count} times"
+    },
+    "run_taps": {
+      "one": "inline taps: {count}",
+      "other": "inline taps: {count}"
+    }
   }
 }

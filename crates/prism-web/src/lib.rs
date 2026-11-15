@@ -36,6 +36,7 @@ mod device_info;
 mod host;
 #[cfg(test)]
 mod host_tests;
+mod fonts;
 use prism_core::glyphs;
 mod html;
 mod security;
@@ -44,6 +45,8 @@ mod server;
 mod session;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod typography_tests;
 
 pub use app::WebApp;
 pub use assets::{IMMUTABLE, REVALIDATE, StaticFile, content_hash};

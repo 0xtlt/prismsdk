@@ -23,6 +23,7 @@ unsafe extern "C" {
         font: f64,
         weight: i32,
         max_width: f64,
+        spec: *const c_char,
         out_w: *mut f64,
         out_h: *mut f64,
     );
@@ -50,6 +51,7 @@ thread_local! {
 fn measure(r: &MeasureRequest) -> (f32, f32) {
     let kind = CString::new(r.kind).unwrap_or_default();
     let text = CString::new(r.text).unwrap_or_default();
+    let spec = CString::new(r.spec).unwrap_or_default();
     let (mut w, mut h) = (0f64, 0f64);
     unsafe {
         prism_watch_measure(
@@ -58,6 +60,7 @@ fn measure(r: &MeasureRequest) -> (f32, f32) {
             r.font_size as f64,
             r.weight,
             r.max_width.map_or(f64::INFINITY, f64::from),
+            spec.as_ptr(),
             &mut w,
             &mut h,
         )

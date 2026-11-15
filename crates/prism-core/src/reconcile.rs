@@ -522,6 +522,7 @@ impl Reconciler {
             on_swipe_left,
             on_swipe_right,
             on_submit,
+            spans,
             ..
         } = *vnode;
         app.window.watch_widths(&style);
@@ -586,14 +587,20 @@ impl Reconciler {
                 m.menu = menu_spec;
             }
         }
+        // Rich text: the runs are the config; clickable runs get item ids
+        // (after the menu above, which drops this node's old items).
+        let (config, rich_label) = if spans.is_empty() {
+            (config, None)
+        } else {
+            self.mount_spans(id, style.font_size, spans)
+        };
         // A link navigates when activated in the app.
-        let on_click = on_click.or_else(|| {
-            link.clone().map(|path| -> Handler<ClickEvent> {
-                std::rc::Rc::new(move |_: &ClickEvent, app: &mut App| app.navigate(path.clone()))
-            })
-        });
+        let on_click = on_click.or_else(|| link.clone().map(link_handler));
         let a11y = {
             let mut a = a11y;
+            if a.label.is_none() {
+                a.label = rich_label;
+            }
             if link.is_some() && a.role.is_none() {
                 a.role = Some(Role::Link);
             }
@@ -786,6 +793,7 @@ impl Reconciler {
         if a.role.is_none() {
             a.role = match m.kind {
                 NodeKind::View if clickable => Some(Role::Button),
+                NodeKind::Text if clickable => Some(Role::Button),
                 kind => kind.default_role(),
             };
         }
@@ -846,6 +854,45 @@ impl Reconciler {
         parts.join(", ")
     }
 
+    /// Registers the handlers of a rich text's clickable runs and returns
+    /// its encoded runs, plus an accessibility label when some runs read
+    /// differently than they show (icons, labelled runs).
+    fn mount_spans(
+        &mut self,
+        id: NodeId,
+        font_size: f32,
+        spans: Vec<crate::spans::Span>,
+    ) -> (String, Option<String>) {
+        let mut runs = Vec::with_capacity(spans.len());
+        let mut spoken = String::new();
+        let mut relabelled = false;
+        for (i, span) in spans.into_iter().enumerate() {
+            let mut run = span.run;
+            if let Some(size) = span.size.filter(|_| font_size > 0.) {
+                run.size = Some(size / font_size);
+            }
+            let handler = span.on_click.or_else(|| run.href.clone().map(link_handler));
+            if let Some(h) = handler {
+                let item = crate::spans::link_id(id, i);
+                self.menu_items.insert(item, h);
+                run.link = Some(item);
+            }
+            match (&span.label, &run.icon) {
+                (Some(label), _) => {
+                    spoken.push_str(label);
+                    relabelled = true;
+                }
+                (None, Some(_)) => relabelled = true,
+                (None, None) => spoken.push_str(&run.text),
+            }
+            runs.push(run);
+        }
+        let label = relabelled
+            .then(|| spoken.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|l| !l.is_empty());
+        (crate::spans::encode_runs(&runs), label)
+    }
+
     fn create(&mut self, kind: NodeKind, key: Option<String>) -> NodeId {
         self.next_id += 1;
         let id = self.next_id;
@@ -902,6 +949,17 @@ impl Reconciler {
         self.swipe.retain(|(n, _), _| *n != id);
         self.destroyed.push(id);
     }
+}
+
+/// What activating a link to `path` does: navigate in the app, or open a URL.
+fn link_handler(path: String) -> Handler<ClickEvent> {
+    std::rc::Rc::new(move |_: &ClickEvent, app: &mut App| {
+        if crate::spans::is_external(&path) {
+            app.open_url(path.clone());
+        } else {
+            app.navigate(path.clone());
+        }
+    })
 }
 
 /// A slider's value as read out: `3`, `0.25`, `12.5`.

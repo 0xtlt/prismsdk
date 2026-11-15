@@ -148,6 +148,75 @@
     }));
   }
 
+  // Rich text (prism-core spans.rs): runs separated by U+001E, fields by
+  // U+001F (text first, then `k=v`): inline spans, links and symbols.
+  function decodeRuns(config) {
+    if (!config) return [];
+    return config.split("\u001e").map((r) => {
+      const [text, ...fields] = r.split("\u001f");
+      const run = { text };
+      for (const f of fields) {
+        const i = f.indexOf("=");
+        run[i < 0 ? f : f.slice(0, i)] = i < 0 ? true : f.slice(i + 1);
+      }
+      return run;
+    });
+  }
+  // The same stacks as `FontFamily::css` (style.rs).
+  const SYSTEM_FONT = '-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif';
+  const fam = {
+    system: SYSTEM_FONT,
+    mono: 'ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace',
+    serif: 'ui-serif,"New York",Georgia,"Times New Roman",serif',
+    rounded: `ui-rounded,"SF Pro Rounded",${SYSTEM_FONT}`,
+  };
+  const runCss = (r) => {
+    const d = [r.u && "underline", r.s && "line-through"].filter(Boolean).join(" ");
+    return [
+      r.w && `font-weight:${r.w}`, r.i && "font-style:italic", d && `text-decoration-line:${d}`,
+      r.c && `color:${shapeColor(r.c)}`, r.b && `background-color:${shapeColor(r.b)};border-radius:3px`,
+      r.f && `font-family:${fam[r.f] || `"${r.f.replace(/["\\<>]/g, "")}",${SYSTEM_FONT}`}`,
+      r.z && `font-size:${r.z}em`,
+    ].filter(Boolean).join(";");
+  };
+  function renderRuns(el) {
+    const runs = decodeRuns(el._runs);
+    if (!runs.length) { el.replaceChildren(document.createTextNode(el._text || "")); return; }
+    el.replaceChildren(...runs.map((r) => {
+      const css = runCss(r);
+      let node;
+      if (r.g) {
+        node = document.createElement("span");
+        node.className = "prism-symbol";
+        node.setAttribute("aria-hidden", "true");
+      } else if (r.l) {
+        const external = r.h && /^[a-z][a-z0-9+.-]*:/i.test(r.h);
+        node = document.createElement(r.h ? "a" : "span");
+        node.className = "prism-link";
+        node.dataset.link = r.l;
+        if (r.h) node.setAttribute("href", external ? r.h : urlFor(r.h));
+        else { node.setAttribute("role", "link"); node.tabIndex = 0; }
+      } else if (css) {
+        node = document.createElement("span");
+      } else {
+        return document.createTextNode(r.text);
+      }
+      node.textContent = r.text;
+      if (css) node.style.cssText = css;
+      return node;
+    }));
+  }
+  // A link inside a text: reported like a menu item (the app navigates).
+  function activateRun(e) {
+    const a = e.target.closest && e.target.closest("[data-link]");
+    if (!a) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    userNavigated = true;
+    send({ t: "menu", id: Number(a.dataset.link) });
+    return true;
+  }
+
   function create(id, kind) {
     const el = document.createElement(tags[kind]);
     el.dataset.pid = id;
@@ -255,6 +324,20 @@
           e.preventDefault();
           activate(el, id);
         }
+      });
+    } else if (kind === "text") {
+      el.addEventListener("click", (e) => {
+        if (activateRun(e) || el.dataset.clickable !== "1") return;
+        e.stopPropagation();
+        activate(el, id);
+      });
+      el.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        // Anchors activate on Enter by themselves (a click event).
+        if (e.target !== el && e.target.tagName !== "A" && activateRun(e)) return;
+        if (el.dataset.clickable !== "1" || e.target !== el) return;
+        e.preventDefault();
+        activate(el, id);
       });
     } else if (kind === "button") {
       el.type = "button";
@@ -475,6 +558,9 @@
       if (el._secs !== undefined) el.value = dateString(el._secs, el.type);
     } else if (kind === "text_input" || kind === "text_area") {
       applyInputConfig(el, config);
+    } else if (kind === "text") {
+      el._runs = config;
+      renderRuns(el);
     }
   }
 
@@ -507,7 +593,7 @@
     if (["INPUT", "BUTTON", "SELECT", "TEXTAREA"].includes(el.tagName)) el.disabled = !!a.disabled;
     // Custom interactive elements must be reachable from the keyboard.
     const interactive = ["button", "link", "switch", "checkbox", "tab", "slider", "combobox"].includes(role);
-    if (kind === "view") set("tabindex", interactive && !a.hidden && !a.disabled ? "0" : null);
+    if (kind === "view" || kind === "text") set("tabindex", interactive && !a.hidden && !a.disabled ? "0" : null);
   }
 
   function apply(p) {
@@ -548,6 +634,12 @@
           // Never fight the user's typing: a focused field owns its value.
           if (el.value !== p.text && document.activeElement !== el) el.value = p.text;
           if (el.tagName === "TEXTAREA") grow(el);
+        } else if (kind === "text") {
+          el._text = p.text;
+          if (!el._runs) {
+            if (el.childNodes.length !== 1 || el.firstChild.nodeType !== 3) el.replaceChildren(document.createTextNode(""));
+            el.firstChild.data = p.text;
+          }
         } else {
           let t = el.firstChild && el.firstChild.nodeType === 3 ? el.firstChild : null;
           if (!t) { t = document.createTextNode(""); el.prepend(t); }

@@ -56,17 +56,70 @@ func prismColor(_ value: Any?) -> Color? {
 
 private func num(_ v: Any?) -> Double? { (v as? NSNumber)?.doubleValue }
 
+/// `fw`: 1-3 medium, semibold, bold; larger values are CSS weights (100-900),
+/// rounded to SwiftUI's nine weights (650 draws as bold).
 private func weight(_ n: PNode) -> Font.Weight {
-    switch num(n["fw"]) ?? 0 {
+    let fw = Int(num(n["fw"]) ?? 0)
+    switch fw {
     case 1: return .medium
     case 2: return .semibold
     case 3: return .bold
+    case 100...900:
+        let steps: [Font.Weight] = [.ultraLight, .thin, .light, .regular, .medium, .semibold, .bold, .heavy, .black]
+        return steps[min(max((fw + 50) / 100 - 1, 0), 8)]
     default: return .regular
     }
 }
 
 private func font(_ n: PNode) -> Font {
-    .system(size: num(n["fs"]) ?? 16, weight: weight(n))
+    let size = num(n["fs"]) ?? 16
+    var f: Font
+    switch n["ff"] as? String {
+    case "mono": f = .system(size: size, weight: weight(n), design: .monospaced)
+    case "serif": f = .system(size: size, weight: weight(n), design: .serif)
+    case "rounded": f = .system(size: size, weight: weight(n), design: .rounded)
+    case let name? where !name.isEmpty && name != "system": f = .custom(name, fixedSize: size).weight(weight(n))
+    default: f = .system(size: size, weight: weight(n))
+    }
+    if num(n["it"]) == 1 { f = f.italic() }
+    if num(n["tn"]) == 1 { f = f.monospacedDigit() }
+    return f
+}
+
+/// The text as drawn: `tt` u/l/c (upper, lower, capitalized words).
+private func transformed(_ s: String, _ n: PNode) -> String {
+    switch n["tt"] as? String {
+    case "u": return s.uppercased()
+    case "l": return s.lowercased()
+    case "c":
+        var out = "", start = true
+        for c in s {
+            out += start && (c.isLetter || c.isNumber) ? c.uppercased() : String(c)
+            start = !(c.isLetter || c.isNumber) && c != "'" && c != "\u{2019}"
+        }
+        return out
+    default: return s
+    }
+}
+
+/// A text node: typography keys `ff` `it` `ul` `st` `tn` `tt` `ls` `lh` `ml`
+/// `nw` (see prism-core `write_typography`).
+private func prismText(_ n: PNode, _ fg: Color?) -> AnyView {
+    let align: TextAlignment = (n["ta"] as? String) == "c" ? .center : (n["ta"] as? String) == "r" ? .trailing : .leading
+    var t = Text(transformed(n["s"] as? String ?? "", n)).font(font(n))
+    if let ls = num(n["ls"]) { t = t.tracking(ls) }
+    if num(n["ul"]) == 1 { t = t.underline() }
+    if num(n["st"]) == 1 { t = t.strikethrough() }
+    let size = num(n["fs"]) ?? 16
+    // Line height: the extra space between lines (SwiftUI cannot tighten).
+    let extra = num(n["lh"]).map { max($0 - size * 1.2, 0) } ?? 0
+    var v = AnyView(t.foregroundStyle(fg ?? .primary).multilineTextAlignment(align).lineSpacing(extra))
+    if let ml = num(n["ml"]), ml > 0 {
+        v = AnyView(v.lineLimit(Int(ml)).truncationMode(.tail))
+    } else if num(n["nw"]) == 1 {
+        v = AnyView(v.fixedSize(horizontal: true, vertical: false).frame(maxWidth: .infinity, alignment: .leading).clipped())
+    }
+    return v
 }
 
 /// Renders a node, or nothing.
@@ -81,9 +134,7 @@ func prismBuild(_ n: PNode) -> AnyView {
     var view: AnyView
     switch kind {
     case "t":
-        let align: TextAlignment = (n["ta"] as? String) == "c" ? .center : (n["ta"] as? String) == "r" ? .trailing : .leading
-        view = AnyView(Text(n["s"] as? String ?? "").font(font(n)).foregroundStyle(fg ?? .primary)
-            .multilineTextAlignment(align))
+        view = prismText(n, fg)
     case "i":
         view = AnyView(Image(systemName: n["s"] as? String ?? "questionmark")
             .font(.system(size: num(n["fs"]) ?? 16, weight: weight(n)))

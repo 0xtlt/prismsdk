@@ -216,8 +216,11 @@ pub enum Justify {
     SpaceEvenly,
 }
 
-/// Font weight (system font).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+/// Font weight: the CSS scale from 100 (thin) to 900 (black). Any number
+/// in between works too ([`FontWeight::Custom`], e.g. 650): variable fonts
+/// (the system fonts, most web fonts) render it exactly, others use the
+/// nearest face.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum FontWeight {
     /// 400 (the default).
     #[default]
@@ -228,17 +231,62 @@ pub enum FontWeight {
     Semibold,
     /// 700.
     Bold,
+    /// 100.
+    Thin,
+    /// 200.
+    ExtraLight,
+    /// 300.
+    Light,
+    /// 800.
+    ExtraBold,
+    /// 900.
+    Black,
+    /// Any weight from 100 to 900 (clamped), e.g. `FontWeight::Custom(650)`.
+    Custom(u16),
 }
 
 impl FontWeight {
-    /// The CSS `font-weight` number (400, 500, 600, 700).
+    /// The CSS `font-weight` number (100 to 900).
     pub fn css(self) -> u16 {
         match self {
+            FontWeight::Thin => 100,
+            FontWeight::ExtraLight => 200,
+            FontWeight::Light => 300,
             FontWeight::Regular => 400,
             FontWeight::Medium => 500,
             FontWeight::Semibold => 600,
             FontWeight::Bold => 700,
+            FontWeight::ExtraBold => 800,
+            FontWeight::Black => 900,
+            FontWeight::Custom(w) => w.clamp(100, 900),
         }
+    }
+
+    /// The weight for a CSS number (named when it is a multiple of 100).
+    pub fn from_css(w: u16) -> FontWeight {
+        match w.clamp(100, 900) {
+            100 => FontWeight::Thin,
+            200 => FontWeight::ExtraLight,
+            300 => FontWeight::Light,
+            400 => FontWeight::Regular,
+            500 => FontWeight::Medium,
+            600 => FontWeight::Semibold,
+            700 => FontWeight::Bold,
+            800 => FontWeight::ExtraBold,
+            900 => FontWeight::Black,
+            w => FontWeight::Custom(w),
+        }
+    }
+
+    /// The nearest multiple of 100 (for platforms with nine fixed weights).
+    pub fn nearest_hundred(self) -> u16 {
+        (self.css() + 50) / 100 * 100
+    }
+}
+
+impl From<u16> for FontWeight {
+    fn from(w: u16) -> Self {
+        FontWeight::from_css(w)
     }
 }
 
@@ -379,6 +427,129 @@ impl std::ops::BitOr for Corners {
     }
 }
 
+/// A font family. `System` is the platform's UI font (San Francisco,
+/// Roboto, Cantarell…, `system-ui` on the web); `Monospace`, `Serif` and
+/// `Rounded` are the platform's own designs of those (SF Mono, New York and
+/// SF Rounded on Apple platforms). `Named` is a family by name: an installed
+/// font, or one the app bundles in `assets/fonts/` (see the typography
+/// guide).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
+pub enum FontFamily {
+    /// The platform's UI font (the default).
+    #[default]
+    System,
+    /// A fixed-width font (codes, identifiers, addresses).
+    Monospace,
+    /// A serif font.
+    Serif,
+    /// A rounded font (the system font where there is none).
+    Rounded,
+    /// A family by name (`"Inter"`), with the system font as fallback.
+    Named(String),
+}
+
+impl FontFamily {
+    /// A CSS `font-family` value (with fallbacks).
+    pub fn css(&self) -> String {
+        const SYSTEM: &str = "-apple-system,BlinkMacSystemFont,\"Segoe UI\",system-ui,sans-serif";
+        match self {
+            FontFamily::System => SYSTEM.into(),
+            FontFamily::Monospace => {
+                "ui-monospace,SFMono-Regular,Menlo,Consolas,\"Liberation Mono\",monospace".into()
+            }
+            FontFamily::Serif => "ui-serif,\"New York\",Georgia,\"Times New Roman\",serif".into(),
+            FontFamily::Rounded => format!("ui-rounded,\"SF Pro Rounded\",{SYSTEM}"),
+            FontFamily::Named(name) => {
+                format!("\"{}\",{SYSTEM}", name.replace(['"', '\\', '<', '>'], ""))
+            }
+        }
+    }
+
+    /// Short name: `system`, `mono`, `serif`, `rounded`, or the family name
+    /// (what hosts and text runs receive).
+    pub fn encode(&self) -> &str {
+        match self {
+            FontFamily::System => "system",
+            FontFamily::Monospace => "mono",
+            FontFamily::Serif => "serif",
+            FontFamily::Rounded => "rounded",
+            FontFamily::Named(name) => name,
+        }
+    }
+
+    /// Parses [`encode`](Self::encode)'s output.
+    pub fn decode(s: &str) -> FontFamily {
+        match s {
+            "" | "system" => FontFamily::System,
+            "mono" => FontFamily::Monospace,
+            "serif" => FontFamily::Serif,
+            "rounded" => FontFamily::Rounded,
+            name => FontFamily::Named(name.to_string()),
+        }
+    }
+}
+
+impl From<&str> for FontFamily {
+    fn from(name: &str) -> Self {
+        FontFamily::Named(name.to_string())
+    }
+}
+
+impl From<String> for FontFamily {
+    fn from(name: String) -> Self {
+        FontFamily::Named(name)
+    }
+}
+
+/// Case of the rendered text (`text-transform`). The content itself, and
+/// what screen readers read, is unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum TextTransform {
+    /// As written (the default).
+    #[default]
+    None,
+    /// ALL CAPITALS.
+    Uppercase,
+    /// all lower case.
+    Lowercase,
+    /// The First Letter Of Each Word In Capitals.
+    Capitalize,
+}
+
+impl TextTransform {
+    /// `text` transformed (Unicode case mapping, like CSS).
+    pub fn apply(self, text: &str) -> String {
+        match self {
+            TextTransform::None => text.to_string(),
+            TextTransform::Uppercase => text.to_uppercase(),
+            TextTransform::Lowercase => text.to_lowercase(),
+            TextTransform::Capitalize => {
+                let mut out = String::with_capacity(text.len());
+                let mut start = true;
+                for c in text.chars() {
+                    if start && c.is_alphanumeric() {
+                        out.extend(c.to_uppercase());
+                    } else {
+                        out.push(c);
+                    }
+                    start = !c.is_alphanumeric() && c != '\'' && c != '\u{2019}';
+                }
+                out
+            }
+        }
+    }
+
+    /// The CSS keyword.
+    pub fn css(self) -> &'static str {
+        match self {
+            TextTransform::None => "none",
+            TextTransform::Uppercase => "uppercase",
+            TextTransform::Lowercase => "lowercase",
+            TextTransform::Capitalize => "capitalize",
+        }
+    }
+}
+
 /// Default text size, in points.
 pub const DEFAULT_FONT_SIZE: f32 = 16.;
 
@@ -491,6 +662,50 @@ pub struct Style {
     pub aspect_ratio: Option<f32>,
     /// Which way a scroll view scrolls.
     pub scroll_axis: crate::layout::ScrollAxis,
+    // Typography (text, buttons, inputs; not inherited, like the other text
+    // styles).
+    /// Font family (the system font by default).
+    pub font_family: FontFamily,
+    /// Italic (the font's italic face, or a slanted one).
+    pub italic: bool,
+    /// Line height: points (`line_height(20.)`), or a multiple of the font
+    /// size (`line_height(relative(1.4))`, `leading(1.4)`); `Auto`: the
+    /// font's own. Extra space is split above and below each line, like CSS.
+    pub line_height: Length,
+    /// Extra space after each character, points (negative tightens).
+    pub letter_spacing: f32,
+    /// Rendered case (upper, lower, capitalized).
+    pub text_transform: TextTransform,
+    /// Underlined.
+    pub underline: bool,
+    /// Struck through.
+    pub strikethrough: bool,
+    /// Digits of equal width (`font-variant-numeric: tabular-nums`):
+    /// counters, clocks, columns of figures.
+    pub tabular_numbers: bool,
+    /// At most this many lines, the last cut with an ellipsis (`Some(1)`:
+    /// one line, see [`Styled::truncate`]). `None`: as many as needed.
+    pub max_lines: Option<u32>,
+    /// Never wraps: one line per paragraph, cut at the node's edge
+    /// (`white-space: pre`, clipped).
+    pub no_wrap: bool,
+}
+
+impl Style {
+    /// Line height in points for this style's font size, if set.
+    pub fn line_height_points(&self) -> Option<f32> {
+        match self.line_height {
+            Length::Auto => None,
+            Length::Px(v) => Some(v),
+            Length::Fraction(f) => Some(f * self.font_size),
+        }
+    }
+
+    /// Whether the text is cut to fit its box (a line clamp, or no
+    /// wrapping): the box can then be narrower than the text's words.
+    pub fn truncates(&self) -> bool {
+        self.max_lines.is_some() || self.no_wrap
+    }
 }
 
 /// Window size classes, by width in points (CSS pixels on the web).
@@ -770,6 +985,8 @@ impl Style {
             grid_columns: self.grid_columns.iter().map(|t| t.scaled(factor)).collect(),
             grid_rows: self.grid_rows.iter().map(|t| t.scaled(factor)).collect(),
             grid_auto_rows: self.grid_auto_rows.as_ref().map(|t| t.scaled(factor)),
+            line_height: len(self.line_height),
+            letter_spacing: self.letter_spacing * factor,
             ..self.clone()
         }
     }
@@ -948,6 +1165,16 @@ impl Default for Style {
             gap_y: None,
             aspect_ratio: None,
             scroll_axis: crate::layout::ScrollAxis::Vertical,
+            font_family: FontFamily::System,
+            italic: false,
+            line_height: Length::Auto,
+            letter_spacing: 0.,
+            text_transform: TextTransform::None,
+            underline: false,
+            strikethrough: false,
+            tabular_numbers: false,
+            max_lines: None,
+            no_wrap: false,
         }
     }
 }
@@ -1546,5 +1773,91 @@ pub trait Styled: Sized {
     /// element's own width, or they would flip back and forth.
     fn when_width_at_least(self, width: f32, f: impl Fn(Style) -> Style + 'static) -> Self {
         self.style_when(Condition::OwnWidth(width), f)
+    }
+
+    // Typography
+    /// Text weight as a CSS number, 100 to 900 (`.weight(650)`).
+    fn weight(self, w: u16) -> Self {
+        self.font_weight(FontWeight::from_css(w))
+    }
+    /// Font family: `FontFamily::Serif`, or a name (`.font_family("Inter")`).
+    fn font_family(self, family: impl Into<FontFamily>) -> Self {
+        let family = family.into();
+        self.with_style(|s| s.font_family = family)
+    }
+    /// The platform's monospaced font (SF Mono, monospace, `ui-monospace`).
+    fn font_mono(self) -> Self {
+        self.font_family(FontFamily::Monospace)
+    }
+    /// The platform's serif font (New York on Apple platforms).
+    fn font_serif(self) -> Self {
+        self.font_family(FontFamily::Serif)
+    }
+    /// The platform's rounded font (SF Rounded on Apple platforms).
+    fn font_rounded(self) -> Self {
+        self.font_family(FontFamily::Rounded)
+    }
+    /// Italic text.
+    fn italic(self) -> Self {
+        self.with_style(|s| s.italic = true)
+    }
+    /// Line height: points, or a multiple of the font size with
+    /// `relative(1.4)` (see [`leading`](Self::leading)).
+    fn line_height(self, v: impl Into<Length>) -> Self {
+        let v = v.into();
+        self.with_style(|s| s.line_height = v)
+    }
+    /// Line height as a multiple of the font size (`leading(1.2)`).
+    fn leading(self, multiple: f32) -> Self {
+        self.line_height(Length::Fraction(multiple))
+    }
+    /// Extra space between letters, points (`letter_spacing(0.8)` for
+    /// small capital titles).
+    fn letter_spacing(self, points: f32) -> Self {
+        self.with_style(|s| s.letter_spacing = points)
+    }
+    /// Shorthand for [`letter_spacing`](Self::letter_spacing).
+    fn tracking(self, points: f32) -> Self {
+        self.letter_spacing(points)
+    }
+    /// Rendered case of the text.
+    fn text_transform(self, t: TextTransform) -> Self {
+        self.with_style(|s| s.text_transform = t)
+    }
+    /// Renders the text in capitals (screen readers read it as written).
+    fn uppercase(self) -> Self {
+        self.text_transform(TextTransform::Uppercase)
+    }
+    /// Renders the text in lower case.
+    fn lowercase(self) -> Self {
+        self.text_transform(TextTransform::Lowercase)
+    }
+    /// Underlined text.
+    fn underline(self) -> Self {
+        self.with_style(|s| s.underline = true)
+    }
+    /// Struck-through text.
+    fn strikethrough(self) -> Self {
+        self.with_style(|s| s.strikethrough = true)
+    }
+    /// Shorthand for [`strikethrough`](Self::strikethrough) (CSS `line-through`).
+    fn line_through(self) -> Self {
+        self.strikethrough()
+    }
+    /// Digits of equal width, so changing figures don't move.
+    fn tabular_nums(self) -> Self {
+        self.with_style(|s| s.tabular_numbers = true)
+    }
+    /// One line, cut with an ellipsis when too long.
+    fn truncate(self) -> Self {
+        self.line_clamp(1)
+    }
+    /// At most `lines` lines, the last cut with an ellipsis (`0`: no limit).
+    fn line_clamp(self, lines: u32) -> Self {
+        self.with_style(|s| s.max_lines = (lines > 0).then_some(lines))
+    }
+    /// Never wraps (each paragraph on one line, cut at the edge).
+    fn nowrap(self) -> Self {
+        self.with_style(|s| s.no_wrap = true)
     }
 }

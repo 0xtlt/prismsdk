@@ -350,5 +350,30 @@
     "own_width_note": "En ligne dès que cette carte fait 420 pt de large, en colonne en dessous, quelle que soit la fenêtre.",
     "wide_window": "Visible dans les fenêtres d’au moins 768 pt.",
     "fab": "Ajouter un appui"
+  },
+  "typography": {
+    "title": "Typographie",
+    "overline": "Commandes cette semaine",
+    "figure_caption": "Chiffres tabulaires, graisse 650, interligne serré",
+    "order_id": "N° de commande",
+    "clamp": "Les longues descriptions sont limitées à deux lignes avec des points de suspension, pour que chaque carte garde la même hauteur quel que soit le contenu, dans toutes les langues et à toutes les tailles de texte.",
+    "truncate": "rapport-trimestriel-version-finale-relue-2026.pdf",
+    "italic": "Italique",
+    "underline": "Souligné",
+    "strike": "Barré",
+    "serif": "Serif",
+    "rounded": "Arrondi",
+    "mono": "Chasse fixe",
+    "signed_in": "Connecté en tant que ",
+    "settings_link": "réglages du compte",
+    "tap_run": "touchez-moi",
+    "tap_text": {
+      "one": "Tout ce texte est cliquable : touché {count} fois",
+      "other": "Tout ce texte est cliquable : touché {count} fois"
+    },
+    "run_taps": {
+      "one": "touchers en ligne : {count}",
+      "other": "touchers en ligne : {count}"
+    }
   }
 }
