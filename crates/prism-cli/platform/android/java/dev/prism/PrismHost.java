@@ -137,6 +137,8 @@ public final class PrismHost {
 
     static Activity activity;
     static PrismLayout root;
+    /** What the system bars and cutouts cover, top, right, bottom, left (px; #28). */
+    static int[] safeInsets = new int[4];
     static final Handler main = new Handler(Looper.getMainLooper());
     static float density = 1;
     /** Set while Prism changes widgets: their listeners stay quiet. */
@@ -344,6 +346,7 @@ public final class PrismHost {
             case "env": setEnvironment(p); return;
             case "appearance": appearance = p.optString("mode", "system"); restyle(); return;
             case "layers": PrismInput.setLayers(p.optJSONArray("ids")); return;
+            case "blur": PrismInput.dismissKeyboard(); return;
         }
         if (n == null) return;
         switch (op) {

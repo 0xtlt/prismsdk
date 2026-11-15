@@ -176,6 +176,9 @@ pub trait Widgets {
     fn layer_insets(&mut self, safe_area: Insets) -> Insets {
         safe_area
     }
+    /// Takes the focus away from whatever has it and hides the on-screen
+    /// keyboard (`cx.dismiss_keyboard()`, #29).
+    fn dismiss_keyboard(&mut self) {}
 }
 
 /// `style` at `pose` (its opacity and transform replaced).
@@ -1401,6 +1404,7 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                         self.widgets.scroll_into_view(&e.view);
                     }
                 }
+                Patch::DismissKeyboard => self.widgets.dismiss_keyboard(),
                 Patch::SetLayers { ids } => {
                     let views: Vec<W::View> = ids
                         .iter()
@@ -1443,6 +1447,21 @@ fn align(a: Align) -> taffy::AlignItems {
         Align::End => taffy::AlignItems::FLEX_END,
         Align::Stretch => taffy::AlignItems::STRETCH,
         Align::Baseline => taffy::AlignItems::BASELINE,
+    }
+}
+
+/// A flex item's minimum width when the style sets none: `0`, like the web
+/// backend's `min-width:0` on every node, so a row shrinks its items below
+/// their content (a text wraps, then breaks its words) the same way on both.
+/// Switches and spinners keep their automatic minimum (their content size),
+/// as on the web (`min-width:auto`): the platform control can't draw smaller.
+/// The height keeps CSS's automatic minimum on both backends.
+fn min_width(s: &Style, kind: NodeKind) -> LengthPercentageAuto {
+    match s.min_width {
+        Length::Auto if !matches!(kind, NodeKind::Toggle | NodeKind::Spinner) => {
+            LengthPercentageAuto::length(0.)
+        }
+        other => lpa(other),
     }
 }
 
@@ -1512,7 +1531,7 @@ pub fn to_taffy(s: &Style, kind: NodeKind) -> taffy::Style {
             height: dim(s.height),
         },
         min_size: Size {
-            width: lpa(s.min_width),
+            width: min_width(s, kind),
             height: lpa(s.min_height),
         },
         max_size: Size {

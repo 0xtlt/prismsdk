@@ -84,6 +84,17 @@ fn window(cx: &App, d: &DeviceInfo) -> String {
     }
 }
 
+/// `cx.viewport()` (what the root lays out in, breakpoints included) and
+/// what the system covers of the window on each side (`cx.safe_area()`).
+fn content(cx: &App) -> String {
+    let (w, h) = cx.viewport();
+    let s = cx.safe_area();
+    format!(
+        "{w:.0} × {h:.0} · ↑{:.0} →{:.0} ↓{:.0} ←{:.0}",
+        s.top, s.right, s.bottom, s.left
+    )
+}
+
 fn posture(cx: &App, d: &DeviceInfo) -> String {
     let posture = match d.posture {
         Posture::Flat => strings::about_flat(cx),
@@ -136,6 +147,7 @@ pub fn card(cx: &mut App) -> impl IntoElement {
         .child(row(strings::about_screen(cx), screen(cx, &d)))
         .child(row(strings::about_orientation(cx), orientation(cx, &d)))
         .child(row(strings::about_window(cx), window(cx, &d)))
+        .child(row(strings::about_content(cx), content(cx)))
         // Foldables only (or whenever the platform reports a posture).
         .when(d.is_folded(), |c| {
             c.child(row(strings::about_foldable(cx), posture(cx, &d)))

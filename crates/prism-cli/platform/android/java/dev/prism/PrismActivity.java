@@ -44,16 +44,21 @@ public class PrismActivity extends Activity {
             if (PrismHost.tv) return insets; // The safe area above already covers it.
             int side = PrismHost.round ? Math.round(getResources().getDisplayMetrics().widthPixels * 0.09f) : 0;
             v.setPadding(bars.left + side, bars.top, bars.right + side, bars.bottom);
+            // `cx.safe_area()` (#28): the bars and cutouts, not the keyboard.
+            android.graphics.Insets sys = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+            PrismHost.safeInsets = new int[] {sys.top, sys.right + side, sys.bottom, sys.left + side};
             return insets;
         });
         if (PrismHost.round) {
             // Before any insets arrive (watches have no system bars to report).
             int side = Math.round(getResources().getDisplayMetrics().widthPixels * 0.09f);
             outer.setPadding(side, 0, side, 0);
+            PrismHost.safeInsets = new int[] {0, side, 0, side};
         } else if (PrismHost.tv) {
             // Android TV's safe area: TVs may crop the picture's edges (overscan).
             float d = getResources().getDisplayMetrics().density;
             outer.setPadding(Math.round(48 * d), Math.round(27 * d), Math.round(48 * d), Math.round(27 * d));
+            PrismHost.safeInsets = new int[] {Math.round(27 * d), Math.round(48 * d), Math.round(27 * d), Math.round(48 * d)};
         }
         outer.addView(PrismHost.root, new android.widget.FrameLayout.LayoutParams(-1, -1));
         setContentView(outer);
@@ -65,12 +70,12 @@ public class PrismActivity extends Activity {
                 ready = true;
                 PrismHost.main.post(() -> {
                     PrismHost.nativeReady(w, h, PrismHost.density, deviceInfo());
+                    PrismHost.send(resized(w, h));
                     // Launched by a notification tap or action while the app was closed.
                     PrismDevice.notificationTapped(getIntent());
                 });
             } else {
-                JSONObject e = PrismHost.event("resize", -1);
-                try { e.put("w", w); e.put("h", h); } catch (JSONException ignored) {}
+                JSONObject e = resized(w, h);
                 PrismHost.main.post(() -> PrismHost.send(e));
             }
         });
@@ -81,6 +86,26 @@ public class PrismActivity extends Activity {
                     });
         }
         handleLink(getIntent());
+    }
+
+    /**
+     * The root's new size, what surrounds it in the window (`pad`: bars, cutouts and the
+     * keyboard) and what of that the system covers for good (`safe`: not the keyboard),
+     * top, right, bottom, left, in pixels (#28).
+     */
+    JSONObject resized(float w, float h) {
+        JSONObject e = PrismHost.event("resize", -1);
+        try {
+            e.put("w", w);
+            e.put("h", h);
+            android.view.View outer = (android.view.View) PrismHost.root.getParent();
+            if (outer != null) {
+                e.put("pad", new org.json.JSONArray(new int[] {
+                        outer.getPaddingTop(), outer.getPaddingRight(), outer.getPaddingBottom(), outer.getPaddingLeft()}));
+            }
+            e.put("safe", new org.json.JSONArray(PrismHost.safeInsets));
+        } catch (JSONException ignored) {}
+        return e;
     }
 
     /** Keys for Prism (`on_key_down`, `on_global_key_down`): D-pad, keyboards, TV remotes. */

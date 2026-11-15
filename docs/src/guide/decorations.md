@@ -85,3 +85,12 @@ Each state is resolved natively: the platform says when the pointer enters, a pr
 | Android | drawn with `BlurMaskFilter` on the box's path | `DashPathEffect` | outline, or a path clip | `LinearGradient`, `RadialGradient` | no per-view backdrop API: Prism draws what is behind into a bitmap and blurs it (`RenderEffect` on Android 12+, a downscale before) |
 
 Drop shadows don't follow animated frame changes yet on Apple platforms (they jump to the end). Widgets and Live Activities don't draw the new decorations.
+
+**Adaptive colors on layers.** Core Animation keeps plain `CGColor`s, so
+borders, border sides, shadows, gradient stops and shape strokes of an
+`adaptive(light, dark)` color are resolved again when the appearance changes
+(the system's, or `cx.set_appearance`): on iOS, tvOS and visionOS from the
+root controller's new traits (`traitCollectionDidChange:`), on macOS in
+`updateLayer` (views redraw on `viewDidChangeEffectiveAppearance`). GTK
+rebuilds the CSS rules of styles with an adaptive color; Android restyles
+every node; the web uses `light-dark()`.

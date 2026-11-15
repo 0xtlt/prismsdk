@@ -1158,6 +1158,12 @@
       case "keys": return setKeys(el, p.local, p.global);
       case "focus": return el && focusNode(el);
       case "reveal": return el && reveal(el);
+      // `cx.dismiss_keyboard()` (#29): the focused field lets go (phones
+      // hide their keyboard).
+      case "blur": {
+        const active = document.activeElement;
+        return active && active !== document.body && active.blur && active.blur();
+      }
       case "layers":
         layerHost.replaceChildren(...p.ids.map((i) => nodes.get(i)).filter(Boolean));
         return raiseLayers();
@@ -1651,10 +1657,25 @@
   };
 
   // Window size → responsive layouts (the server re-renders across breakpoints).
+  // `cx.safe_area()` (#28): what the notch, bars and rounded corners cover,
+  // as `env(safe-area-inset-*)` reports it (zero unless the page is laid
+  // out under them, `viewport-fit=cover`).
+  let safeProbe = null;
+  const safeArea = () => {
+    if (!safeProbe) {
+      safeProbe = document.createElement("div");
+      safeProbe.setAttribute("aria-hidden", "true");
+      safeProbe.style.cssText = "position:fixed;left:0;top:0;width:0;height:0;visibility:hidden;pointer-events:none;" +
+        "padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px)";
+      document.documentElement.appendChild(safeProbe);
+    }
+    const s = getComputedStyle(safeProbe);
+    return ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"].map((k) => parseFloat(s[k]) || 0);
+  };
   let resizeTimer = null;
   const reportViewport = () => {
     document.cookie = `prism_vw=${innerWidth}x${innerHeight}; Path=/; Max-Age=31536000; SameSite=Lax`;
-    send({ t: "viewport", w: innerWidth, h: innerHeight });
+    send({ t: "viewport", w: innerWidth, h: innerHeight, safe: safeArea() });
   };
   addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(reportViewport, 120); });
   document.cookie = `prism_vw=${innerWidth}x${innerHeight}; Path=/; Max-Age=31536000; SameSite=Lax`;
@@ -2068,6 +2089,8 @@
     ws.addEventListener("open", () => { conn.attempt = 0; conn.opened = true; setConnection("online"); });
     ws.addEventListener("open", reportLifecycle);
     ws.addEventListener("open", reportDevice);
+    // The insets are not in the query string: report them when there are any.
+    ws.addEventListener("open", () => { if (safeArea().some((v) => v > 0)) reportViewport(); });
     ws.addEventListener("open", () => { pushReady().catch(() => {}); });
   }
   setConnection("connecting");

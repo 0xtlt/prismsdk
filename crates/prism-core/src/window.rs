@@ -27,6 +27,11 @@ pub(crate) struct Window {
     pub breakpoints: [f32; 3],
     /// Window widths `.at_width(…)` rules switch at (re-render when crossed).
     pub thresholds: Vec<f32>,
+    // --- Safe area (#28) ---
+    /// The whole window, system bars included (`size` is what they leave).
+    pub full: (f32, f32),
+    /// What the system's bars, cutouts and side bars cover of the window.
+    pub safe_area: crate::style::Edges,
 }
 
 impl Default for Window {
@@ -38,14 +43,34 @@ impl Default for Window {
             handlers: Vec::new(),
             breakpoints: Breakpoint::DEFAULT_WIDTHS,
             thresholds: Vec::new(),
+            full: (390., 844.),
+            safe_area: crate::style::Edges::default(),
         }
     }
 }
 
 impl App {
-    /// Width and height of the window (CSS pixels on the web, points natively).
+    /// Width and height of the area the root screen lays out in: the window
+    /// minus what the system's bars, cutouts and side bars cover (see
+    /// [`safe_area`](Self::safe_area)), in CSS pixels on the web and points
+    /// natively. Breakpoints, `.md()`… and `.at_width(…)` resolve against
+    /// this width.
     pub fn viewport(&self) -> (f32, f32) {
         self.window.size
+    }
+
+    /// The whole window, system bars included: [`viewport`](Self::viewport)
+    /// plus [`safe_area`](Self::safe_area).
+    pub fn window_size(&self) -> (f32, f32) {
+        self.window.full
+    }
+
+    /// What the system covers on each edge of the window: status bar, home
+    /// indicator, notch and cutouts, a foldable's or iPad's side bars, the
+    /// tab bar beside the content, the browser's `env(safe-area-inset-*)`.
+    /// Updated on rotation, fold, split view and resize (`on_resize` runs).
+    pub fn safe_area(&self) -> crate::style::Edges {
+        self.window.safe_area
     }
 
     /// The window's size class.
@@ -60,12 +85,25 @@ impl App {
     }
 
     pub(crate) fn set_viewport(&mut self, size: (f32, f32)) {
-        if self.window.size == size {
+        self.set_window(size, crate::style::Edges::default());
+    }
+
+    /// The window is `full` large and the system covers `safe_area` of it.
+    pub(crate) fn set_window(&mut self, full: (f32, f32), safe_area: crate::style::Edges) {
+        let size = (
+            (full.0 - safe_area.left - safe_area.right).max(0.),
+            (full.1 - safe_area.top - safe_area.bottom).max(0.),
+        );
+        if (self.window.full, self.window.safe_area, self.window.size) == (full, safe_area, size) {
             return;
         }
         let before = (self.breakpoint(), self.window.band(self.window.size.0));
+        // Renders that read `safe_area()` see the new insets.
+        let moved_insets = self.window.safe_area != safe_area;
+        self.window.full = full;
+        self.window.safe_area = safe_area;
         self.window.size = size;
-        if (self.breakpoint(), self.window.band(size.0)) != before {
+        if moved_insets || (self.breakpoint(), self.window.band(size.0)) != before {
             self.refresh();
         }
         for handler in self.window.handlers.clone() {

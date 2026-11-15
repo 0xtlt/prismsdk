@@ -63,6 +63,8 @@ struct State {
     services: crate::services::IosServices,
     /// The window size `device_info` was last reported for.
     device_size: Option<(f32, f32)>,
+    /// The last `report_window` re-rendered something (#28).
+    window_rerendered: bool,
 }
 
 thread_local! {
@@ -140,17 +142,7 @@ impl State {
 
     fn relayout(&mut self) {
         let size = self.renderer.widgets.root.bounds().size;
-        // Responsive layouts: tell the app its window size (re-renders when
-        // it crosses a breakpoint: rotation, split view, resize).
-        // The app sees Prism points (window ÷ zoom: TVs).
-        let zoom = self.renderer.zoom();
-        let (w, h) = (size.width as f32 / zoom, size.height as f32 / zoom);
-        if w > 0. && (w, h) != self.runtime.app.viewport() {
-            let patches = self.runtime.set_viewport(w, h);
-            if !patches.is_empty() {
-                self.renderer.apply(&patches);
-            }
-        }
+        let (w, h) = self.report_window().unwrap_or((0., 0.));
         // Rotation, Split View: `cx.device_info()` (re-renders if it changed).
         if w > 0.
             && self.device_size != Some((w, h))
@@ -163,6 +155,53 @@ impl State {
                 self.renderer.apply(&patches);
             }
         }
+        self.layout_root(size);
+        // A root tab bar's own insets (a sidebar, a side tab bar) are known
+        // once UIKit laid it out: lay out again if they changed the app.
+        if let Some(v) = self
+            .renderer
+            .widgets
+            .root_tabs
+            .as_ref()
+            .and_then(|t| t.view())
+        {
+            v.layoutIfNeeded();
+            if self.report_window().is_some() && self.window_rerendered {
+                self.layout_root(size);
+            }
+        }
+    }
+
+    /// Tells the app its window and what the system covers of it
+    /// (`cx.viewport()`, `cx.safe_area()`; #28): re-renders when it crosses a
+    /// breakpoint (rotation, split view, resize) or the insets move. The app
+    /// sees Prism points (window / zoom: TVs). Returns the window size.
+    fn report_window(&mut self) -> Option<(f32, f32)> {
+        self.window_rerendered = false;
+        let size = self.renderer.widgets.root.bounds().size;
+        let zoom = self.renderer.zoom();
+        let (w, h) = (size.width as f32 / zoom, size.height as f32 / zoom);
+        if w <= 0. {
+            return None;
+        }
+        let i = self.renderer.widgets.content_insets();
+        let safe = prism_core::Edges {
+            top: i.top / zoom,
+            right: i.right / zoom,
+            bottom: i.bottom / zoom,
+            left: i.left / zoom,
+        };
+        if (w, h) != self.runtime.app.window_size() || safe != self.runtime.app.safe_area() {
+            let patches = self.runtime.set_window(w, h, safe);
+            if !patches.is_empty() {
+                self.renderer.apply(&patches);
+                self.window_rerendered = true;
+            }
+        }
+        Some((w, h))
+    }
+
+    fn layout_root(&mut self, size: CGSize) {
         let root = &self.renderer.widgets.root;
         let i = root.safeAreaInsets();
         let insets = Insets {
@@ -627,7 +666,10 @@ define_class!(
         #[unsafe(method(traitCollectionDidChange:))]
         fn trait_collection_did_change(&self, previous: Option<&UITraitCollection>) {
             let _: () = unsafe { msg_send![super(self), traitCollectionDidChange: previous] };
-            crate::decor::appearance_changed();
+            // The controller's traits are the new ones; its views get theirs
+            // later, at their next layout (#36).
+            let traits: Retained<UITraitCollection> = unsafe { msg_send![self, traitCollection] };
+            crate::decor::appearance_changed(&traits);
         }
 
         #[unsafe(method(canBecomeFirstResponder))]
@@ -691,6 +733,15 @@ define_class!(
         fn view_did_layout_subviews(&self) {
             let _: () = unsafe { msg_send![super(self), viewDidLayoutSubviews] };
             with_state(State::relayout);
+        }
+
+        /// The screen's safe area moved (a tab shown for the first time, a
+        /// side bar, rotation; #28): lay out again once UIKit is done, as
+        /// a layout already running would skip it.
+        #[unsafe(method(viewSafeAreaInsetsDidChange))]
+        fn view_safe_area_insets_did_change(&self) {
+            let _: () = unsafe { msg_send![super(self), viewSafeAreaInsetsDidChange] };
+            dispatch2::DispatchQueue::main().exec_async(|| with_state(State::relayout));
         }
 
         /// Shows or hides the navigation bar for this screen as it comes
@@ -942,6 +993,7 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
     let controller = PrismViewController::new(mtm);
     let root = controller.view().expect("view controller has a view");
     root.setBackgroundColor(Some(&UIColor::systemBackgroundColor()));
+    crate::decor::set_root(&root);
 
     let path = std::env::var("PRISM_PATH").unwrap_or_else(|_| "/".into());
     // Dynamic Island iPhones have a taller status bar (≥ 54 pt).
@@ -1004,6 +1056,7 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
         renderer,
         services,
         device_size: None,
+        window_rerendered: false,
     };
     state.commit(first);
     STATE.with(|cell| *cell.borrow_mut() = Some(state));
@@ -1182,6 +1235,50 @@ pub struct UiKit {
     layer_window: Option<(Retained<UIWindow>, Retained<UIView>)>,
     /// The root tab bar, which layers (toasts) keep clear of.
     root_tabs: Option<Retained<UITabBarController>>,
+}
+
+// --- Content area (#28) ---
+impl UiKit {
+    /// What the system covers of the root (points): its safe area without
+    /// the keyboard, and with a root tab bar, what the selected tab's
+    /// screens lose to it too (a bottom bar, an iPad sidebar, a foldable's
+    /// side bar): the area screens lay out in.
+    fn content_insets(&self) -> Insets {
+        let root = &self.root;
+        let i = root.safeAreaInsets();
+        // The keyboard (a root without stacks takes it as its own inset).
+        let kb = self.controller.additionalSafeAreaInsets();
+        let mut out = Insets {
+            top: (i.top - kb.top).max(0.) as f32,
+            right: (i.right - kb.right).max(0.) as f32,
+            bottom: (i.bottom - kb.bottom).max(0.) as f32,
+            left: (i.left - kb.left).max(0.) as f32,
+        };
+        let Some(tabs) = &self.root_tabs else {
+            return out;
+        };
+        let Some(tab) = (unsafe { tabs.selectedViewController() })
+            .filter(|vc| vc.isViewLoaded())
+            .and_then(|vc| vc.view())
+            .filter(|v| v.window().is_some())
+        else {
+            return out;
+        };
+        let f = tab.convertRect_toView(tab.bounds(), Some(root));
+        let si = tab.safeAreaInsets();
+        let b = root.bounds().size;
+        if f.size.width <= 0. || f.size.height <= 0. {
+            return out;
+        }
+        let (left, top) = (f.origin.x + si.left, f.origin.y + si.top);
+        let right = b.width - (f.origin.x + f.size.width - si.right);
+        let bottom = b.height - (f.origin.y + f.size.height - si.bottom);
+        out.top = out.top.max(top.max(0.) as f32);
+        out.left = out.left.max(left.max(0.) as f32);
+        out.right = out.right.max(right.max(0.) as f32);
+        out.bottom = out.bottom.max(bottom.max(0.) as f32);
+        out
+    }
 }
 
 impl UiKit {
@@ -1717,8 +1814,7 @@ impl Widgets for UiKit {
             true,
         ));
         layer.setBorderWidth(style.border_width as f64);
-        let border = style.border_color.map(|c| unsafe { ui_color(c).CGColor() });
-        layer.setBorderColor(border.as_deref());
+        crate::decor::set_layer_border(v, style.border_color);
 
         if let View::Scroll(s) = view {
             crate::layout::set_axis(s, style.scroll_axis);
@@ -2709,6 +2805,15 @@ impl Widgets for UiKit {
         scroll_into_view(view.ui());
     }
 
+    /// Every field of the window resigns (the keyboard hides; sheets and
+    /// overlays are in the same window).
+    fn dismiss_keyboard(&mut self) {
+        match self.root.window() {
+            Some(w) => w.endEditing(true),
+            None => self.root.endEditing(true),
+        };
+    }
+
     fn set_layers(&mut self, layers: &[View]) {
         self.layers = layers.iter().map(|l| l.ui().retain()).collect();
         for l in &self.layers {
@@ -2994,33 +3099,49 @@ fn keyboard_changed(n: &objc2_foundation::NSNotification) {
         .map_or(0.25, |d| unsafe { msg_send![&*d, doubleValue] });
     let keyboard: Option<CGRect> = get(unsafe { objc2_ui_kit::UIKeyboardFrameEndUserInfoKey })
         .map(|v| unsafe { msg_send![&*v, CGRectValue] });
-    // Screens in a stack, or the root controller when there is none.
-    let mut controllers: Vec<Retained<UIViewController>> = Vec::new();
+    keyboard_moved(hiding, keyboard.map(|k| k.origin.y), duration);
+}
+
+/// The keyboard's new top edge (window coordinates), if known.
+#[cfg(not(target_os = "tvos"))]
+fn keyboard_moved(hiding: bool, keyboard: Option<f64>, duration: f64) {
+    // Screens in a stack, or the root controller when there is none; each
+    // with whether it is on screen. Screens off screen, and the root
+    // controller once screens show, lose a keyboard inset they kept (#29:
+    // the root swapped while the keyboard was up).
+    let mut controllers: Vec<(Retained<UIViewController>, bool)> = Vec::new();
+    let mut ran = false;
     with_state(|s| {
+        ran = true;
         let w = &s.renderer.widgets;
-        controllers.extend(
-            w.screens
-                .values()
-                .map(|c| Retained::into_super(c.clone()))
-                .filter(|c: &Retained<UIViewController>| {
-                    c.isViewLoaded() && c.view().is_some_and(|v| v.window().is_some())
-                }),
-        );
-        if controllers.is_empty() {
-            controllers.push(Retained::into_super(w.controller.clone()));
-        }
+        controllers.extend(w.screens.values().map(|c| {
+            let c: Retained<UIViewController> = Retained::into_super(c.clone());
+            let shown = c.isViewLoaded() && c.view().is_some_and(|v| v.window().is_some());
+            (c, shown)
+        }));
+        let none_shown = !controllers.iter().any(|(_, shown)| *shown);
+        controllers.push((Retained::into_super(w.controller.clone()), none_shown));
     });
-    let Some(mtm) = controllers.first().map(|c| c.mtm()) else {
+    if !ran {
+        // Posted while Prism changes views (the focused field went away
+        // with the root it was in): once that is done.
+        dispatch2::DispatchQueue::main()
+            .exec_async(move || keyboard_moved(hiding, keyboard, duration));
+        return;
+    }
+    let Some(mtm) = controllers.first().map(|(c, _)| c.mtm()) else {
         return;
     };
     let mut changes = Vec::new();
     let mut window = None;
-    for vc in controllers {
-        let Some(view) = vc.view() else { continue };
+    for (vc, shown) in controllers {
+        let Some(view) = vc.view().filter(|_| vc.isViewLoaded()) else {
+            continue;
+        };
         let frame = view.convertRect_toView(view.bounds(), None);
         let overlap = match (hiding, keyboard) {
-            (false, Some(kb)) => {
-                (frame.origin.y + frame.size.height - kb.origin.y).clamp(0., frame.size.height)
+            (false, Some(top)) if shown => {
+                (frame.origin.y + frame.size.height - top).clamp(0., frame.size.height)
             }
             _ => 0.,
         };

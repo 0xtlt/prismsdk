@@ -127,6 +127,7 @@ impl Backend for HtmlBackend {
                 Patch::SetPointerEvents { .. }
                 | Patch::SetKeyEvents { .. }
                 | Patch::Focus { .. }
+                | Patch::DismissKeyboard
                 | Patch::ScrollIntoView { .. }
                 | Patch::SetLayers { .. } => {}
             }

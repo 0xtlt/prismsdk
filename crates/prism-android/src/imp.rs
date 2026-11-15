@@ -22,6 +22,11 @@ struct State {
     services: crate::services::AndroidServices,
     /// The root's size in pixels.
     size: (f32, f32),
+    // --- Safe area (#28) ---
+    /// Around the root in the window (bars, cutouts, keyboard), and what of
+    /// it the system covers for good (not the keyboard): pixels.
+    pad: prism_core::Edges,
+    safe: prism_core::Edges,
 }
 
 #[derive(Clone)]
@@ -167,6 +172,8 @@ pub extern "system" fn Java_dev_prism_PrismHost_nativeReady(
             renderer,
             services,
             size: (width, height),
+            pad: prism_core::Edges::default(),
+            safe: prism_core::Edges::default(),
         })
     });
     with_state(|s| {
@@ -273,8 +280,18 @@ fn commit(s: &mut State, patches: &[prism_core::Patch]) {
 fn relayout(s: &mut State) {
     let (w, h) = s.size;
     let zoom = s.renderer.zoom();
-    if (w / zoom, h / zoom) != s.runtime.app.viewport() {
-        let patches = s.runtime.set_viewport(w / zoom, h / zoom);
+    // The window is the root plus what surrounds it; the app's viewport is
+    // what the bars leave (the keyboard does not shrink it).
+    let (p, i) = (s.pad, s.safe);
+    let full = ((w + p.left + p.right) / zoom, (h + p.top + p.bottom) / zoom);
+    let safe = prism_core::Edges {
+        top: i.top / zoom,
+        right: i.right / zoom,
+        bottom: i.bottom / zoom,
+        left: i.left / zoom,
+    };
+    if full != s.runtime.app.window_size() || safe != s.runtime.app.safe_area() {
+        let patches = s.runtime.set_window(full.0, full.1, safe);
         if !patches.is_empty() {
             s.renderer.apply(&patches);
         }
@@ -536,6 +553,22 @@ pub extern "system" fn Java_dev_prism_PrismHost_nativeEvent(
                 if let (Some(w), Some(h)) = (num("w"), num("h")) {
                     s.size = (w, h);
                 }
+                let edges = |k: &str| {
+                    let side = |i: usize| {
+                        v.get(k)
+                            .and_then(|a| a.get(i))
+                            .and_then(Value::as_f64)
+                            .unwrap_or(0.) as f32
+                    };
+                    prism_core::Edges {
+                        top: side(0),
+                        right: side(1),
+                        bottom: side(2),
+                        left: side(3),
+                    }
+                };
+                s.pad = edges("pad");
+                s.safe = edges("safe");
                 Vec::new()
             }
             // The area a stack, tab view or modal gives its screens.

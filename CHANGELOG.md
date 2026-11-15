@@ -11,6 +11,8 @@ The first version, not yet on crates.io.
 
 ### Added
 
+- `cx.safe_area()` and `cx.window_size()`: what the system's bars, cutouts, side bars and a root tab bar cover of the window, and the whole window (#28). Reported by iOS / iPadOS / tvOS / visionOS, macOS, Android, watchOS and the web (`env(safe-area-inset-*)`); `Runtime::set_window` for hosts.
+- `cx.dismiss_keyboard()`: the focused field lets go and the on-screen keyboard hides, on every backend (#29).
 - Elements, styles, entities and the reconciler (`prism-core`); flexbox layout
   shared by the native backends (`prism-native`).
 - Backends: web (server-rendered, DOM patches over a WebSocket, no WASM),
@@ -210,6 +212,8 @@ The first version, not yet on crates.io.
   `.prism-bar-leading`, the trailing ones in `.prism-bar-trailing`, around a
   centered title (#30).
 
+- `cx.viewport()` is the content area: the window minus the safe area (side tab bars on foldables, iPad sidebars, notches, status bars). Breakpoints and `.at_width(…)` resolve against its width (#28).
+- Native layout: a node's minimum width defaults to `0`, like the web's `min-width: 0`, so rows shrink their items instead of overflowing (a label beside an icon wraps in a narrow cell); switches and spinners keep their width on both. Texts' min-content is their longest word on macOS too (#37).
 - Web: an unknown path answers `404` with the not-found screen (it was `200`).
 - Web: the first paint has no `style` attributes: node styles are rules of a
   `<style>` block (with the host's nonce), so `style-src` needs no
@@ -276,6 +280,10 @@ The first version, not yet on crates.io.
 - `cx.current_path()` returns `None` once the router is released instead of
   panicking, and an entity released by its own handler (a Sign out button
   on a screen) stays released (#31).
+- iOS: the keyboard's inset no longer stays when the root is swapped while the keyboard is up (#29).
+- iOS / tvOS / visionOS: borders (and field borders) of an adaptive color follow the appearance; layer colors resolve with the app's new traits rather than the views' stale ones. macOS redraws layer colors on appearance changes; GTK rebuilds adaptive CSS rules when the appearance changes (#36).
+- iOS: a tab's screen shown for the first time lays out inside its safe area (content no longer runs under a foldable's side tab bar) (#28).
+- iOS: bordered text inputs inset their text and placeholder by their padding, checked with a 44 pt field `.px(12.)` (#33).
 - Padding works on every kind of node (#14): `.p()`, `.px()`, `.pl()`… on a
   text, button, text input, text area, timer or control grow its box and
   inset its content on the web and every native backend (they were ignored

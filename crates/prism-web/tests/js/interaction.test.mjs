@@ -127,6 +127,17 @@ test("the app can focus a node and scroll it into view", () => {
   assert.equal(page.document.activeElement, page.node(3).firstChild, "a checkbox focuses its box");
 });
 
+test("the app can dismiss the keyboard (#29)", () => {
+  const page = live([{ op: "create", id: 2, kind: "text_input" }, ...root([2])]);
+  page.ws.deliver({ t: "patch", p: [{ op: "focus", id: 2 }] });
+  assert.equal(page.document.activeElement, page.node(2));
+  page.ws.deliver({ t: "patch", p: [{ op: "blur" }] });
+  assert.equal(page.document.activeElement, page.document.body);
+  // Nothing focused: nothing to do.
+  page.ws.deliver({ t: "patch", p: [{ op: "blur" }] });
+  assert.equal(page.document.activeElement, page.document.body);
+});
+
 test("layers are mounted above everything", () => {
   const page = live([
     { op: "create", id: 2, kind: "view" }, { op: "create", id: 3, kind: "text" }, { op: "text", id: 3, text: "Saved" },

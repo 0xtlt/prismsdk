@@ -42,6 +42,9 @@ struct State {
     renderer: NativeRenderer<RemoteWidgets>,
     /// The root's size in watch points (reported by the host).
     size: (f32, f32),
+    // --- Safe area (#28) ---
+    /// What the screen's corners and the clock cover around the root.
+    safe: prism_core::Edges,
 }
 
 thread_local! {
@@ -176,6 +179,7 @@ pub extern "C" fn prism_watch_ready(
             background: Vec::new(),
             renderer,
             size: (w, h),
+            safe: prism_core::Edges::default(),
         })
     });
     prism_native::apple::set_device_sink(on_device);
@@ -316,8 +320,18 @@ fn commit(s: &mut State, patches: &[prism_core::Patch]) {
 fn relayout(s: &mut State) {
     let (w, h) = s.size;
     let zoom = s.renderer.zoom();
-    if (w / zoom, h / zoom) != s.runtime.app.viewport() {
-        let patches = s.runtime.set_viewport(w / zoom, h / zoom);
+    // The root is laid out inside SwiftUI's safe area: the window is the
+    // root plus it.
+    let i = s.safe;
+    let full = ((w + i.left + i.right) / zoom, (h + i.top + i.bottom) / zoom);
+    let safe = prism_core::Edges {
+        top: i.top / zoom,
+        right: i.right / zoom,
+        bottom: i.bottom / zoom,
+        left: i.left / zoom,
+    };
+    if full != s.runtime.app.window_size() || safe != s.runtime.app.safe_area() {
+        let patches = s.runtime.set_window(full.0, full.1, safe);
         if !patches.is_empty() {
             s.renderer.apply(&patches);
         }
@@ -348,11 +362,24 @@ pub extern "C" fn prism_watch_event(json: *const c_char) {
     match v.get("t").and_then(Value::as_str) {
         // The root's size (safe area, rotation of the crown side…).
         Some("resize") => {
+            let side = |i: usize| {
+                v.get("safe")
+                    .and_then(|a| a.get(i))
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.) as f32
+            };
+            let safe = prism_core::Edges {
+                top: side(0),
+                right: side(1),
+                bottom: side(2),
+                left: side(3),
+            };
             if let (Some(w), Some(h)) = (num("w"), num("h")) {
                 dispatch2::DispatchQueue::main().exec_async(move || {
                     with_state(|s| {
-                        if s.size != (w, h) {
+                        if (s.size, s.safe) != ((w, h), safe) {
                             s.size = (w, h);
+                            s.safe = safe;
                             relayout(s);
                         }
                     })

@@ -136,6 +136,39 @@ pub fn card(cx: &App, taps: u32, on_tap: Handler<ClickEvent>) -> ui::Card {
                 .px(2.)
                 .py(4.),
         )
+        // A bordered, rounded field of a fixed height: its text and
+        // placeholder start 12 pt in.
+        .child(
+            text_input()
+                .placeholder(strings::layout_outlined(cx))
+                .accessibility_label(strings::layout_outlined(cx))
+                .border(1.)
+                .border_color(t.border)
+                .rounded(10.)
+                .h(44.)
+                .px(12.),
+        )
+        // 110 pt cells: a label beside an icon wraps before it overflows
+        // (flex items shrink below their content, like the web).
+        .child(div().flex_row().gap(8.).children(
+            [strings::layout_off_peak(cx), strings::layout_peak(cx)].map(|label| {
+                div()
+                    .w(110.)
+                    .p(8.)
+                    .rounded(10.)
+                    .border(1.)
+                    .border_color(t.border)
+                    .child(
+                        div()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .gap(6.)
+                            .child(text(label).text_size(12.).semibold().text_color(t.text))
+                            .child(image("clock").text_color(t.accent).flex_shrink_0()),
+                    )
+            }),
+        ))
         // Rearranges by its own width, whatever the window.
         .child(
             div()

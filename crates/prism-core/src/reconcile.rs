@@ -189,6 +189,9 @@ pub enum Patch {
         /// The node.
         id: NodeId,
     },
+    /// Take the keyboard focus away from whatever has it and hide the
+    /// on-screen keyboard (`cx.dismiss_keyboard`).
+    DismissKeyboard,
     /// Scroll the scroll views around the node so it is visible
     /// (`cx.scroll_into_view`).
     ScrollIntoView {
@@ -560,6 +563,10 @@ impl Reconciler {
             let (name, focus) = match &command {
                 crate::app::UiCommand::Focus(n) => (n, true),
                 crate::app::UiCommand::ScrollIntoView(n) => (n, false),
+                crate::app::UiCommand::DismissKeyboard => {
+                    patches.push(Patch::DismissKeyboard);
+                    continue;
+                }
             };
             let Some(id) = self.node_named(name) else {
                 continue;

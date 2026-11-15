@@ -13,6 +13,30 @@
 
 use prism_core::{BorderStyle, Color, Corners, GradientKind, Interaction, NodeId, Shadow, Style};
 
+/// Whether a color the style paints with has a dark variant (its CSS rule
+/// changes with the appearance): background, text, borders (per side too),
+/// shadows, gradient stops, state refinements.
+pub(crate) fn adapts(s: &Style) -> bool {
+    let adaptive = |c: Option<Color>| c.is_some_and(|c| c.dark.is_some());
+    adaptive(s.background)
+        || adaptive(s.text_color)
+        || adaptive(s.border_color)
+        || [
+            s.border_sides.top,
+            s.border_sides.right,
+            s.border_sides.bottom,
+            s.border_sides.left,
+        ]
+        .iter()
+        .flatten()
+        .any(|side| adaptive(side.color))
+        || s.shadows.iter().any(|sh| adaptive(Some(sh.color)))
+        || s.gradient
+            .as_ref()
+            .is_some_and(|g| g.stops.iter().any(|st| adaptive(Some(st.color))))
+        || s.states.resolved().any(|(_, st)| adapts(st))
+}
+
 /// GTK CSS color of the light or dark variant (GTK 4.8 has no `light-dark()`).
 pub(crate) fn color(c: Color, dark: bool) -> String {
     let c = if dark {
@@ -266,6 +290,21 @@ mod tests {
         assert!(light.contains("border-bottom:1px dotted rgba(0,0,0,1);"));
         let dark = declarations(&paint(&s, true, false));
         assert!(dark.contains("border-bottom:1px dotted rgba(255,255,255,1);"));
+    }
+
+    #[test]
+    fn adaptive_colors_are_found_wherever_they_paint() {
+        let c = prism_core::adaptive(rgb(0xFFFFFF), rgb(0x000000));
+        assert!(!adapts(&Style::default().bg(rgb(0xFFFFFF)).border(1.)));
+        assert!(adapts(&Style::default().border(1.).border_color(c)));
+        assert!(adapts(&Style::default().border_bottom(1., c)));
+        assert!(adapts(&Style::default().shadow(Shadow::new(0., 1., 2., c))));
+        assert!(adapts(
+            &Style::default().bg_gradient(Gradient::linear(90., [rgb(0), c]))
+        ));
+        assert!(adapts(&resolved(
+            Style::default().hover(move |s| s.border_color(c))
+        )));
     }
 
     #[test]

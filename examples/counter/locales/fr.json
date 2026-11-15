@@ -216,6 +216,7 @@
     "screen": "Écran",
     "orientation": "Orientation",
     "window": "Fenêtre",
+    "content": "Zone de contenu",
     "foldable": "Pliable",
     "browser": "Navigateur",
     "portrait": "Portrait",
@@ -368,7 +369,10 @@
     "badges": "Payée,En attente,En retard",
     "padding_note": "Du padding sur un texte et sur des champs : la puce grandit autour de son texte, le texte du champ commence après son icône.",
     "search": "Rechercher des commandes",
-    "borderless": "Sans bordure"
+    "borderless": "Sans bordure",
+    "outlined": "Bordé, 12 pt à l’intérieur",
+    "off_peak": "HEURES CREUSES",
+    "peak": "HEURES PLEINES"
   },
   "typography": {
     "title": "Typographie",

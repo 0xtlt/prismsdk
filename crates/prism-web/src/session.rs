@@ -327,12 +327,14 @@ impl Live {
                 };
                 rt.device_event(id, event)
             }
-            // The browser window was resized.
+            // The browser window was resized; `safe`: what the device's
+            // notch, bars and rounded corners cover (`env(safe-area-inset-*)`,
+            // top, right, bottom, left).
             Some("viewport") => match (
                 v.get("w").and_then(Value::as_f64),
                 v.get("h").and_then(Value::as_f64),
             ) {
-                (Some(w), Some(h)) => rt.set_viewport(w as f32, h as f32),
+                (Some(w), Some(h)) => rt.set_window(w as f32, h as f32, safe_area(&v)),
                 _ => Vec::new(),
             },
             // The page described its device (on connect, rotation, fold).
@@ -892,6 +894,7 @@ impl Encoder {
             }
             Patch::Focus { id } => json!({ "op": "focus", "id": id }),
             Patch::ScrollIntoView { id } => json!({ "op": "reveal", "id": id }),
+            Patch::DismissKeyboard => json!({ "op": "blur" }),
             Patch::SetLayers { ids } => json!({ "op": "layers", "ids": ids }),
         }
     }
@@ -1090,5 +1093,23 @@ impl WebServices {
             }),
             Err(e) => Err(E::from_message(&e)),
         }
+    }
+}
+
+/// A viewport report's `safe: [top, right, bottom, left]` (#28): zero when
+/// absent or malformed.
+fn safe_area(v: &Value) -> prism_core::Edges {
+    let side = |i: usize| {
+        v.get("safe")
+            .and_then(|s| s.get(i))
+            .and_then(Value::as_f64)
+            .filter(|x| x.is_finite() && *x >= 0.)
+            .unwrap_or(0.) as f32
+    };
+    prism_core::Edges {
+        top: side(0),
+        right: side(1),
+        bottom: side(2),
+        left: side(3),
     }
 }

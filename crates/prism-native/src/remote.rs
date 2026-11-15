@@ -870,6 +870,10 @@ impl Widgets for RemoteWidgets {
         self.ops.push(json!({ "op": "reveal", "id": id }));
     }
 
+    fn dismiss_keyboard(&mut self) {
+        self.ops.push(json!({ "op": "blur" }));
+    }
+
     fn set_layers(&mut self, layers: &[NodeId]) {
         self.ops.push(json!({ "op": "layers", "ids": layers }));
     }

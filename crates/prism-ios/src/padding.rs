@@ -130,8 +130,7 @@ pub fn style_field(f: &UITextField, style: &Style) {
         {
             let layer = f.layer();
             layer.setBorderWidth(w as f64);
-            let color = c.map(|c| unsafe { crate::imp::ui_color(c).CGColor() });
-            layer.setBorderColor(color.as_deref());
+            crate::decor::set_layer_border(f, c);
             if style.corner_radius <= 0. {
                 layer.setCornerRadius(6.);
             }

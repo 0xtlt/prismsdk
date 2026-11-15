@@ -38,8 +38,10 @@ time_picker(self.alarm)                                       // minutes since m
 text_input().leading_icon("magnifyingglass").max_length(24)
     .suggestions(["Paris", "Lyon", "Marseille"])
 // Your own field: padding replaces its inset, `.border(0.)` drops its
-// default border (see Layout → Padding on every node).
+// default border (see Layout → Padding on every node). Text and
+// placeholder start inside the padding (and the border) on every backend.
 text_input().pl(36.).py(8.).bg(surface).rounded(10.).border(0.)
+text_input().border(1.).border_color(line).rounded(10.).h(44.).px(12.)
 ui::file_input("Photo").accept(["image/*"])
     .on_pick(|files, cx| { let bytes = files[0].read(); /* … */ })
 let files = cx.pick_files(PickFiles::new().types([".csv"]).multiple()).await?;   // the same, from a task

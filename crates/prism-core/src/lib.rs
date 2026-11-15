@@ -509,6 +509,16 @@ impl Runtime {
         self.poll()
     }
 
+    /// The window is `width` × `height` and the system's bars, cutouts and
+    /// side bars cover `safe_area` of it (not the on-screen keyboard):
+    /// `cx.viewport()` becomes what they leave, and breakpoints follow its
+    /// width. Re-renders when the insets or a breakpoint change. Returns
+    /// the resulting patches.
+    pub fn set_window(&mut self, width: f32, height: f32, safe_area: style::Edges) -> Vec<Patch> {
+        self.app.set_window((width, height), safe_area);
+        self.poll()
+    }
+
     /// The device changed (rotation, fold, split view, browser report).
     /// Re-renders everything if anything differs. Returns the resulting patches.
     pub fn set_device_info(&mut self, info: DeviceInfo) -> Vec<Patch> {

@@ -519,8 +519,19 @@ test("window resizes are reported once settled", () => {
   const timer = page.timers.at(-1);
   assert.equal(timer.ms, 120);
   timer.fn();
-  assert.deepEqual(lastSent(page), { t: "viewport", w: 390, h: 800 });
+  assert.deepEqual(lastSent(page), { t: "viewport", w: 390, h: 800, safe: [0, 0, 0, 0] });
   assert.ok(page.document.cookies.some((c) => c.startsWith("prism_vw=390x800")));
+});
+
+test("resizes report the safe-area insets (#28)", () => {
+  const page = live([create(1, "view"), root(1)]);
+  const css = page.window.getComputedStyle;
+  page.window.getComputedStyle = (el) => el.style.cssText?.includes("safe-area-inset")
+    ? { paddingTop: "47px", paddingRight: "0px", paddingBottom: "34px", paddingLeft: "59px" }
+    : css(el);
+  page.fire("resize");
+  page.timers.at(-1).fn();
+  assert.deepEqual(lastSent(page).safe, [47, 0, 34, 59]);
 });
 
 test("a closed socket reconnects with back-off and the reset replaces the page", () => {

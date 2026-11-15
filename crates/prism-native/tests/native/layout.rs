@@ -82,7 +82,9 @@ fn text_wraps_to_its_container_width() {
 }
 
 #[test]
-fn shrinking_text_stops_at_its_longest_word() {
+fn shrinking_text_goes_below_its_longest_word_like_the_web() {
+    // Every node has `min-width: 0` on the web: a squeezed text takes the
+    // room left (and breaks its words) instead of overflowing its row.
     let mut h = tree(|| {
         div().child(
             div()
@@ -94,8 +96,86 @@ fn shrinking_text_stops_at_its_longest_word() {
     });
     let f = h.layout(400., 300.);
     let t = f.frame(f.by_text("aaaa bbbb"));
-    // min-content (one 4-letter word = 32 pt), so the text wraps to 2 lines.
-    assert_eq!((t.2, t.3), (32., 40.));
+    assert_eq!((t.2, t.3), (20., 40.));
+}
+
+#[test]
+fn a_label_beside_an_icon_wraps_in_a_narrow_cell() {
+    // #37: a 110 pt cell, a two-word label and a 16 pt icon spread apart.
+    let mut h = tree(|| {
+        div().flex_row().child(
+            div().w(110.).child(
+                div()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(6.)
+                    .child(text("HEURES CREUSES").text_size(12.).semibold())
+                    .child(div().w(16.).h(16.).flex_shrink_0()),
+            ),
+        )
+    });
+    let f = h.layout(400., 300.);
+    let t = f.frame(f.by_text("HEURES CREUSES"));
+    // 112 pt on one line; the row leaves it 110 - 6 - 16 = 88: two lines,
+    // inside the cell.
+    assert_eq!((t.0, t.2, t.3), (0., 88., 40.));
+    let icon = f.of_kind(NodeKind::View)[3];
+    assert_eq!(f.frame(icon), (94., 12., 16., 16.));
+}
+
+#[test]
+fn a_fixed_width_shrinks_too_unless_told_not_to() {
+    let mut h = tree(|| {
+        div()
+            .child(
+                div()
+                    .flex_row()
+                    .w(100.)
+                    .child(div().w(80.).h(10.))
+                    .child(div().w(80.).h(10.)),
+            )
+            .child(
+                div()
+                    .flex_row()
+                    .w(100.)
+                    .child(div().w(80.).h(10.).min_w(prism_core::px(80.)))
+                    .child(div().w(80.).h(10.)),
+            )
+    });
+    let f = h.layout(400., 300.);
+    let v = f.of_kind(NodeKind::View);
+    assert_eq!(f.frame(v[2]).2, 50., "shrinks like the web's min-width:0");
+    assert_eq!(f.frame(v[3]).2, 50.);
+    assert_eq!(f.frame(v[5]).2, 80., "an explicit minimum holds");
+    assert_eq!(f.frame(v[6]).2, 20.);
+}
+
+#[test]
+fn fit_content_text_wraps_at_its_longest_word() {
+    // Not stretched: its width is its content, capped by the room, never
+    // narrower than its longest word (min-content).
+    let mut h = tree(|| div().w(50.).items_start().child(text("aaaa bbbbbbbb cc")));
+    let f = h.layout(400., 300.);
+    let t = f.frame(f.by_text("aaaa bbbbbbbb cc"));
+    assert_eq!((t.2, t.3), (64., 60.));
+}
+
+#[test]
+fn switches_keep_their_width_in_a_crowded_row() {
+    let mut h = tree(|| {
+        div().child(
+            div()
+                .flex_row()
+                .w(100.)
+                .child(text("aaaa bbbb cccc dddd"))
+                .child(prism_core::toggle(false)),
+        )
+    });
+    let f = h.layout(400., 300.);
+    let toggle = f.of_kind(NodeKind::Toggle)[0];
+    assert_eq!(f.frame(toggle).2, 50.);
+    assert_eq!(f.frame(f.by_text("aaaa bbbb cccc dddd")).2, 50.);
 }
 
 #[test]

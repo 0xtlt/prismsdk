@@ -622,3 +622,20 @@ pub fn press_in(view: &NSView, title: &str) -> bool {
     }
     false
 }
+
+/// The label's longest word, as drawn (CSS min-content): a squeezed text
+/// wraps down to it before breaking words.
+pub fn min_content_width(l: &PrismLabel) -> f64 {
+    use objc2_app_kit::NSAttributedStringNSStringDrawing;
+    let shown = l.attributedStringValue();
+    let text = shown.string().to_string();
+    let mut widest = 0f64;
+    for word in text.split_whitespace() {
+        let start = word.as_ptr() as usize - text.as_ptr() as usize;
+        // UTF-16 offsets, as `NSRange` counts them.
+        let at = text[..start].encode_utf16().count();
+        let range = NSRange::new(at, word.encode_utf16().count());
+        widest = widest.max(shown.attributedSubstringFromRange(range).size().width);
+    }
+    widest.ceil()
+}
