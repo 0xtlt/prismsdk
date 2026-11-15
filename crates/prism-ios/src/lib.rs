@@ -8,6 +8,8 @@
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "visionos"))]
 mod automation;
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "visionos"))]
+mod decor;
+#[cfg(any(target_os = "ios", target_os = "tvos", target_os = "visionos"))]
 mod device_info;
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "visionos"))]
 mod forms;

@@ -10,6 +10,8 @@
 #[cfg(target_os = "linux")]
 mod controls;
 #[cfg(target_os = "linux")]
+mod decor;
+#[cfg(target_os = "linux")]
 mod imp;
 #[cfg(target_os = "linux")]
 mod layout;

@@ -1501,3 +1501,160 @@ fn some_corners_rounded_use_logical_properties() {
     );
     assert!(!all.contains("-radius:0"), "{all}");
 }
+
+// --- Box decorations and interaction states -----------------------------------------
+
+#[test]
+fn decorations_become_css() {
+    let s = Style::default()
+        .border(1.)
+        .border_color(rgb(0x00FF00))
+        .border_dashed()
+        .shadow(Shadow::new(0., 2., 4., rgba(0x000000, 0.5)))
+        .shadow(Shadow::new(0., 0., 0., rgb(0xFF0000)).spread(2.).inset())
+        .clip()
+        .bg_gradient(Gradient::linear(90., [rgb(0xFF0000), rgb(0x0000FF)]))
+        .backdrop_blur(8.)
+        .cursor(Cursor::Grab);
+    let c = css(NodeKind::View, &s);
+    for part in [
+        "border:1px dashed rgba(0,255,0,1);",
+        "box-shadow:0px 2px 4px 0px rgba(0,0,0,0.5),inset 0px 0px 0px 2px rgba(255,0,0,1);",
+        "overflow:hidden;",
+        "background-image:linear-gradient(90deg, rgba(255,0,0,1) 0%, rgba(0,0,255,1) 100%);",
+        "backdrop-filter:blur(8px);",
+        "-webkit-backdrop-filter:blur(8px);",
+        "cursor:grab;",
+    ] {
+        assert!(c.contains(part), "{part} missing in {c}");
+    }
+    // A scroll view keeps scrolling.
+    assert!(!css(NodeKind::Scroll, &s).contains("overflow:hidden"));
+
+    // Per-side borders are logical (they follow `dir`).
+    let sides = css(
+        NodeKind::View,
+        &Style::default()
+            .border_bottom(1., rgb(0x000000))
+            .border_left(2., rgb(0xFF0000)),
+    );
+    assert!(
+        sides.contains("border-block-end:1px solid rgba(0,0,0,1);"),
+        "{sides}"
+    );
+    assert!(sides.contains("border-inline-start:2px solid rgba(255,0,0,1);"));
+    assert!(!sides.contains("border:"));
+    assert!(!sides.contains("border-block-start"));
+    // A button with only a bottom border keeps it.
+    let b = css(
+        NodeKind::Button,
+        &Style::default().bg(rgb(0xFFFFFF)).border_bottom(1., rgb(0)),
+    );
+    assert!(!b.contains("border:none"), "{b}");
+    let input = css(
+        NodeKind::TextInput,
+        &Style::default().border_bottom(1., rgb(0)),
+    );
+    assert!(!input.contains("rgba(128,128,128,.45)"), "{input}");
+
+    // `Color::current()`: currentColor, or the node's own text color.
+    let tint = Color::current().with_alpha(0.12);
+    let plain = css(NodeKind::View, &Style::default().bg(tint));
+    assert!(plain.contains("background:color-mix(in srgb, currentColor 12%, transparent);"));
+    let own = css(
+        NodeKind::Text,
+        &Style::default().text_color(rgb(0x0000FF)).bg(tint),
+    );
+    assert!(own.contains("background:rgba(0,0,255,0.12);"), "{own}");
+}
+
+#[test]
+fn interaction_states_become_pseudo_class_rules() {
+    let s = Style::default()
+        .bg(rgb(0xFFFFFF))
+        .shadow(Shadow::new(0., 1., 2., rgb(0)))
+        .hover(|s| s.bg(rgb(0xEEEEEE)))
+        .active(|s| s.shadow_none())
+        .focus(|s| s.border(2.).border_color(rgb(0x0000FF)))
+        .focus_within(|s| s.opacity(0.9))
+        .group_hover(|s| s.text_color(rgb(0xFF0000)))
+        .resolve(Default::default());
+    let rules = css::states_css(NodeKind::View, 7, &s);
+    for part in [
+        r#"@media (hover:hover){[data-pid="7"]:hover{background:rgba(238,238,238,1) !important;}}"#,
+        r#"[data-pid="7"]:active{box-shadow:unset !important;}"#,
+        r#"[data-pid="7"]:focus-visible{border:2px solid rgba(0,0,255,1) !important;}"#,
+        r#"[data-pid="7"]:focus-within{opacity:0.9 !important;}"#,
+    ] {
+        assert!(rules.contains(part), "{part} missing in {rules}");
+    }
+    // Views have no text properties: the group rule changes nothing here.
+    assert!(!rules.contains("[data-group]"));
+    let t = css::states_css(NodeKind::Text, 8, &s);
+    assert!(
+        t.contains(r#"@media (hover:hover){[data-group]:hover [data-pid="8"]{color:rgba(255,0,0,1) !important;}}"#),
+        "{t}"
+    );
+    // Hidden until a state shows it: a plain `display:none` the rule beats.
+    let clear = Style::default()
+        .with_style(|s| s.display_none = true)
+        .group_focus_within(|s| s.with_style(|s| s.display_none = false))
+        .resolve(Default::default());
+    let base = css(NodeKind::View, &clear);
+    assert!(
+        base.ends_with("display:none;") && !base.contains("!important"),
+        "{base}"
+    );
+    assert_eq!(
+        css::states_css(NodeKind::View, 9, &clear),
+        r#"[data-group]:focus-within [data-pid="9"]{display:flex !important;}"#
+    );
+    // Precedence: rules come in the order states apply (active after hover).
+    assert!(rules.find(":hover").unwrap() < rules.find(":active").unwrap());
+    assert!(css::states_css(NodeKind::View, 7, &Style::default()).is_empty());
+
+    // The style op carries them, and the group flag.
+    let mut e = Encoder::default();
+    let out = e.encode(&[
+        create(7, NodeKind::View),
+        Patch::SetStyle {
+            id: 7,
+            style: Style::default()
+                .group()
+                .hover(|s| s.opacity(0.5))
+                .resolve(Default::default()),
+        },
+        Patch::SetStyle {
+            id: 7,
+            style: Style::default(),
+        },
+    ]);
+    assert!(
+        out[1]["states"]
+            .as_str()
+            .unwrap()
+            .contains(":hover{opacity:0.5 !important;}")
+    );
+    assert_eq!(out[1]["group"], json!(true));
+    assert!(out[2].get("states").is_none() && out[2].get("group").is_none());
+
+    // Server-rendered pages carry them until the client takes over.
+    let mut b = HtmlBackend::default();
+    b.apply(&[
+        create(3, NodeKind::View),
+        Patch::SetStyle {
+            id: 3,
+            style: Style::default()
+                .group()
+                .active(|s| s.opacity(0.5))
+                .resolve(Default::default()),
+        },
+        Patch::SetRoot { id: 3 },
+    ]);
+    let page = b.to_html();
+    assert!(
+        page.starts_with(r#"<style data-prism-states>[data-pid="3"]:active{opacity:0.5 !important;}</style><div data-pid="3""#),
+        "{page}"
+    );
+    assert!(page.contains(" data-group>"), "{page}");
+}

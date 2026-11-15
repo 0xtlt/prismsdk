@@ -225,6 +225,8 @@ struct Node {
     var loop: PrismLoop?
     /// A shape's paths, in points (see `PrismShape`).
     var paths: [[String: Any]] = []
+    /// Interaction states Rust wants reported (`states` op): `active`.
+    var states: Set<String> = []
 
     func num(_ k: String, _ d: Double = 0) -> Double { (style[k] as? NSNumber)?.doubleValue ?? d }
     /// The node's box: its radius on the corners it rounds (`corners` bits:
@@ -315,6 +317,7 @@ final class PrismStore: ObservableObject {
                 nodes[id]?.swipeLeft = p["left"] as? Bool ?? false
                 nodes[id]?.swipeRight = p["right"] as? Bool ?? false
             case "scrollev": nodes[id]?.scrollEvents = p["on"] as? Bool ?? false
+            case "states": nodes[id]?.states = Set(p["on"] as? [String] ?? [])
             case "alert": alert = p["alert"] as? [String: Any]
             default: break
             }
@@ -475,16 +478,17 @@ struct NodeView: View {
             let dark = scheme == .dark
             // Snapshots show a scroll view's whole content.
             let height = store.snapshotting && n.kind == "scroll" ? max(n.content.height, n.frame.height) : n.frame.height
+            let pressable = n.states.contains("active")
             content(n, dark: dark)
                 .frame(width: n.frame.width, height: height, alignment: .topLeading)
-                .background(n.color("bg", dark: dark).map { n.box().fill($0) })
-                .overlay(n.color("bc", dark: dark).map {
-                    n.box().strokeBorder($0, lineWidth: n.num("bw", 1))
-                })
-                .modifier(RoundedClip(radius: n.num("radius"), shape: n.box()))
+                .background(BoxFill(node: n, dark: dark))
+                .overlay(BoxBorder(node: n, dark: dark))
+                .modifier(RoundedClip(radius: n.num("radius"), clip: n.style["clip"] as? Bool ?? false, shape: n.box()))
+                .background(DropShadows(node: n, dark: dark))
                 .modifier(PrismPosed(pose: PrismPose(opacity: n.num("opacity", 1), tf: n.style["tf"]), loop: n.loop))
+                .modifier(PressReport(id: id, on: pressable, clickable: n.clickable))
                 .contentShape(Rectangle())
-                .onTapGesture { if n.clickable { send(["t": "click", "id": id]) } }
+                .onTapGesture { if n.clickable && !pressable { send(["t": "click", "id": id]) } }
                 // Context menus: a long press opens them as a dialog (SwiftUI's
                 // contextMenu is deprecated on watchOS).
                 .onLongPressGesture { if n.menu != nil { store.menuNode = id } }
@@ -892,6 +896,8 @@ struct PrismTextField: View {
     let id: UInt64
     let node: Node
     let font: Font
+    /// Reported to Rust: `.focus` / `.focus_within` refinements.
+    @FocusState private var focused: Bool
 
     var body: some View {
         let traits = InputTraits(node.config)
@@ -904,6 +910,8 @@ struct PrismTextField: View {
             .textInputAutocapitalization(traits.secure ? .never : traits.autocapitalization)
             .autocorrectionDisabled(traits.secure || !traits.autocorrect)
             .submitLabel(traits.submitLabel)
+            .focused($focused)
+            .onChange(of: focused) { _, on in send(["t": "state", "id": id, "s": "focus", "on": on]) }
     }
 
     @ViewBuilder
@@ -924,15 +932,214 @@ struct PrismTextField: View {
     }
 }
 
-/// Rounded corners clip their content; square views let it overflow (like
-/// the other backends without `overflow: hidden`).
+/// Rounded corners clip their content; square views let it overflow unless
+/// they clip (`clip`: CSS `overflow: hidden`).
 struct RoundedClip: ViewModifier {
     let radius: Double
+    var clip = false
     let shape: UnevenRoundedRectangle
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        if radius > 0 { content.clipShape(shape) } else { content }
+        if radius > 0 || clip { content.clipShape(shape) } else { content }
+    }
+}
+
+// MARK: Box decorations (Style::shadows, border_sides, border_style,
+// gradient, backdrop_blur): drawn like CSS draws them.
+
+/// A dash pattern for a border `width` wide (prism_core `BorderStyle::dash`):
+/// dashes 3w on, 2w off; dots are round caps 2w apart.
+private func dashPattern(_ style: String?, _ width: Double) -> (dash: [CGFloat], cap: CGLineCap) {
+    let w = max(width, 1)
+    switch style {
+    case "dashed": return ([3 * w, 2 * w], .butt)
+    case "dotted": return ([0, 2 * w], .round)
+    default: return ([], .butt)
+    }
+}
+
+/// Background: backdrop material, color, gradient, then inner shadows.
+struct BoxFill: View {
+    let node: Node
+    let dark: Bool
+
+    var body: some View {
+        let box = node.box()
+        ZStack {
+            let blur = node.num("blur")
+            if blur > 0 {
+                // A material blurs what is behind (watchOS 10+); the
+                // background color tints it from above, like CSS.
+                box.fill(blur < 10 ? .ultraThinMaterial : blur < 20 ? .thinMaterial : blur < 30 ? .regularMaterial : .thickMaterial)
+            }
+            if let bg = node.color("bg", dark: dark) { box.fill(bg) }
+            if let g = node.style["grad"] as? [String: Any] { gradient(g, box) }
+            // CSS paints the first shadow on top.
+            ForEach(Array(shadows.enumerated().reversed()), id: \.offset) { _, sh in
+                InnerShadow(shadow: sh, box: box, size: node.frame.size)
+            }
+        }
+    }
+
+    private var shadows: [PrismShadow] {
+        (node.style["shadows"] as? [[String: Any]] ?? []).compactMap { PrismShadow($0, dark: dark) }.filter(\.inset)
+    }
+
+    @ViewBuilder
+    private func gradient(_ g: [String: Any], _ box: UnevenRoundedRectangle) -> some View {
+        let stops = (g["stops"] as? [[Any]] ?? []).compactMap { s -> Gradient.Stop? in
+            guard s.count == 2, let c = PrismColor(s[0]), let at = (s[1] as? NSNumber)?.doubleValue else { return nil }
+            return Gradient.Stop(color: dark ? c.dark : c.light, location: at)
+        }
+        let gradient = Gradient(stops: stops)
+        if g["kind"] as? String == "radial" {
+            // CSS: an ellipse the box's shape reaching the corners (0.5 is
+            // the inscribed ellipse).
+            box.fill(EllipticalGradient(gradient: gradient, center: .center, startRadiusFraction: 0, endRadiusFraction: 0.5 * 2.squareRoot()))
+        } else {
+            // The CSS gradient line (prism_core `Gradient::geometry`).
+            let a = ((g["angle"] as? NSNumber)?.doubleValue ?? 180) * .pi / 180
+            let (dx, dy) = (sin(a), -cos(a))
+            let w = max(node.frame.width, 1), h = max(node.frame.height, 1)
+            let half = (w * abs(dx) + h * abs(dy)) / 2
+            let start = UnitPoint(x: (w / 2 - dx * half) / w, y: (h / 2 - dy * half) / h)
+            let end = UnitPoint(x: (w / 2 + dx * half) / w, y: (h / 2 + dy * half) / h)
+            box.fill(LinearGradient(gradient: gradient, startPoint: start, endPoint: end))
+        }
+    }
+}
+
+/// One `shadows` entry.
+struct PrismShadow {
+    var x, y, blur, spread: Double
+    var color: Color
+    var inset: Bool
+
+    init?(_ v: [String: Any], dark: Bool) {
+        guard let c = PrismColor(v["color"]) else { return nil }
+        func n(_ k: String) -> Double { (v[k] as? NSNumber)?.doubleValue ?? 0 }
+        x = n("x"); y = n("y"); blur = n("blur"); spread = n("spread")
+        color = dark ? c.dark : c.light
+        inset = v["inset"] as? Bool ?? false
+    }
+}
+
+/// Drop shadows outside the box only (like CSS `box-shadow`): the box's
+/// shape grown by the spread, offset and blurred, with the box cut out.
+/// CSS blur radii are twice the Gaussian's: SwiftUI's `blur` takes half.
+struct DropShadows: View {
+    let node: Node
+    let dark: Bool
+
+    var body: some View {
+        let shadows = (node.style["shadows"] as? [[String: Any]] ?? []).compactMap { PrismShadow($0, dark: dark) }.filter { !$0.inset }
+        if !shadows.isEmpty {
+            let box = node.box()
+            ZStack {
+                ForEach(Array(shadows.enumerated().reversed()), id: \.offset) { _, sh in
+                    box.inset(by: -sh.spread).fill(sh.color)
+                        .offset(x: sh.x, y: sh.y)
+                        .blur(radius: sh.blur / 2)
+                }
+                box.fill(Color.black).blendMode(.destinationOut)
+            }
+            .compositingGroup()
+            .allowsHitTesting(false)
+        }
+    }
+}
+
+/// An inner shadow: everything outside the box shrunk by the spread and
+/// offset, blurred, kept inside the box.
+struct InnerShadow: View {
+    let shadow: PrismShadow
+    let box: UnevenRoundedRectangle
+    let size: CGSize
+
+    var body: some View {
+        let margin = shadow.blur + abs(shadow.x) + abs(shadow.y) + abs(shadow.spread) + 4
+        ZStack {
+            Rectangle().fill(shadow.color).padding(-margin)
+            box.inset(by: shadow.spread).fill(Color.black)
+                .offset(x: shadow.x, y: shadow.y)
+                .blendMode(.destinationOut)
+        }
+        .compositingGroup()
+        .blur(radius: shadow.blur / 2)
+        .clipShape(box)
+        .allowsHitTesting(false)
+    }
+}
+
+/// The border: one outline (solid, dashed or dotted) or, with `sides`, each
+/// side on its own (top, right, bottom, left; Rust mirrored them).
+struct BoxBorder: View {
+    let node: Node
+    let dark: Bool
+
+    var body: some View {
+        let style = node.str("bstyle")
+        if let sides = node.style["sides"] as? [[Any]], sides.count == 4 {
+            let w = node.frame.width, h = node.frame.height
+            ZStack {
+                ForEach(0..<4, id: \.self) { i in
+                    let width = (sides[i].first as? NSNumber)?.doubleValue ?? 0
+                    if width > 0, let c = PrismColor(sides[i].count > 1 ? sides[i][1] : nil) {
+                        let (dash, cap) = dashPattern(style, width)
+                        let half = width / 2
+                        Path { p in
+                            switch i {
+                            case 0: p.move(to: CGPoint(x: 0, y: half)); p.addLine(to: CGPoint(x: w, y: half))
+                            case 1: p.move(to: CGPoint(x: w - half, y: 0)); p.addLine(to: CGPoint(x: w - half, y: h))
+                            case 2: p.move(to: CGPoint(x: 0, y: h - half)); p.addLine(to: CGPoint(x: w, y: h - half))
+                            default: p.move(to: CGPoint(x: half, y: 0)); p.addLine(to: CGPoint(x: half, y: h))
+                            }
+                        }
+                        .stroke(dark ? c.dark : c.light, style: StrokeStyle(lineWidth: width, lineCap: cap, dash: dash))
+                    }
+                }
+            }
+            .allowsHitTesting(false)
+        } else if let c = node.color("bc", dark: dark) {
+            let width = node.num("bw", 1)
+            let (dash, cap) = dashPattern(style, width)
+            node.box().strokeBorder(c, style: StrokeStyle(lineWidth: width, lineCap: cap, dash: dash))
+        }
+    }
+}
+
+// MARK: Interaction states (`.active(|s| …)`)
+
+/// Reports presses of a node Rust has `active` refinements for: the node
+/// becomes a plain button, whose pressed state SwiftUI tracks (and cancels
+/// when the crown or a finger scrolls). Its action is the node's click.
+/// watchOS has no pointer (`onHover` is unavailable) and no keyboard focus
+/// on custom views: only presses, and text fields' focus, are reported.
+struct PressReport: ViewModifier {
+    let id: UInt64
+    let on: Bool
+    let clickable: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if on {
+            Button { if clickable { send(["t": "click", "id": id]) } } label: { content }
+                .buttonStyle(PressStyle(id: id))
+        } else {
+            content
+        }
+    }
+}
+
+struct PressStyle: ButtonStyle {
+    let id: UInt64
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .onChange(of: configuration.isPressed) { _, pressed in
+                send(["t": "state", "id": id, "s": "active", "on": pressed])
+            }
     }
 }
 

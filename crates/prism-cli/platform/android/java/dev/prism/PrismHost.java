@@ -179,6 +179,11 @@ public final class PrismHost {
         // Form controls (PrismForms): the config string, accessibility.
         String config = "";
         String a11yLabel, a11yValue, announced;
+        // Interaction states the app styles (op `states`), and the
+        // listeners they share with taps, menus and swipes.
+        java.util.Set<String> states = new java.util.HashSet<>();
+        GestureDetector gesture;
+        boolean focusRing, touchInstalled;
     }
 
     static void send(JSONObject event) {
@@ -213,6 +218,8 @@ public final class PrismHost {
             android.util.Log.e("prism", "bad ops", e);
         } finally {
             updating = false;
+            // What blurred backdrops show may have changed.
+            PrismDecor.Backdrops.changed();
         }
     }
 
@@ -260,7 +267,13 @@ public final class PrismHost {
         long id = p.optLong("id", -1);
         Node n = nodes.get(id);
         switch (op) {
-            case "create": nodes.put(id, create(id, p.getString("kind"))); return;
+            case "create": {
+                Node created = create(id, p.getString("kind"));
+                nodes.put(id, created);
+                // Text fields always report focus (for focus-within).
+                installFocus(created);
+                return;
+            }
             case "destroy": destroy(n); return;
             case "root": setRoot(id); return;
             case "device": PrismDevice.call(p); return;
@@ -302,7 +315,7 @@ public final class PrismHost {
                 refreshTabs(parentOf(n));
                 break;
             case "value": setValue(n, p.optDouble("value")); break;
-            case "clickable": n.clickable = p.optBoolean("on"); setClickable(n); break;
+            case "clickable": n.clickable = p.optBoolean("on"); setClickable(n); applyCursor(n); break;
             case "display": n.view.setVisibility(p.optBoolean("hidden") ? View.GONE : View.VISIBLE); break;
             case "a11y":
                 String label = p.optString("label", null);
@@ -344,6 +357,13 @@ public final class PrismHost {
             case "menu": n.menu = p.optJSONObject("menu"); setClickable(n); break;
             case "swipe": n.swipeLeft = p.optBoolean("left"); n.swipeRight = p.optBoolean("right"); setClickable(n); break;
             case "scrollev": n.scrollEvents = p.optBoolean("on"); break;
+            case "states": {
+                n.states.clear();
+                JSONArray on = p.optJSONArray("on");
+                for (int i = 0; on != null && i < on.length(); i++) n.states.add(on.optString(i));
+                installInteractions(n);
+                break;
+            }
         }
     }
 
@@ -809,7 +829,10 @@ public final class PrismHost {
         Integer bg = color(s.optJSONArray("bg"));
         Integer border = color(s.optJSONArray("bc"));
         float radius = (float) s.optDouble("radius", 0);
-        if (bg != null || border != null || radius > 0) {
+        if (PrismDecor.needed(s)) {
+            // Shadows, per-side or dashed borders, gradients, backdrop blur.
+            if (!(n.view instanceof Button) || bg != null || s.has("grad")) n.view.setBackground(new PrismDecor.Box(n.view, s));
+        } else if (bg != null || border != null || radius > 0) {
             GradientDrawable d = new GradientDrawable();
             d.setColor(bg != null ? bg : Color.TRANSPARENT);
             int corners = s.optInt("corners", 15);
@@ -823,11 +846,11 @@ public final class PrismHost {
             }
             if (border != null) d.setStroke(Math.max(1, Math.round((float) s.optDouble("bw", 1))), border);
             if (!(n.view instanceof Button) || bg != null) n.view.setBackground(d);
-            // Outlines clip to one radius only.
-            n.view.setClipToOutline(radius > 0 && corners == 15);
         } else if (n.host != null && !(n.view instanceof ScrollView)) {
             n.view.setBackground(null);
         }
+        PrismDecor.clip(n);
+        applyCursor(n);
         n.view.setAlpha((float) s.optDouble("opacity", 1));
         PrismMotion.transform(n.view, s.optJSONArray("tf"));
         if (n.view instanceof TextView) {
@@ -877,14 +900,111 @@ public final class PrismHost {
                 return false;
             }
         });
-        v.setOnTouchListener((view, e) -> g.onTouchEvent(e));
+        n.gesture = g;
+        installTouch(n);
         v.setClickable(true);
         // Remotes and keyboards (Android TV, D-pad): select clicks, holding it
         // opens the menu. Touches never get here (the gesture detector takes them).
         v.setOnClickListener(n.clickable ? x -> send(event("click", n.id)) : null);
         v.setOnLongClickListener(n.menu != null ? x -> { showMenu(n); return true; } : null);
         v.setFocusable(n.clickable || n.menu != null);
-        v.setOnFocusChangeListener((view, focused) -> focusEffect(n, focused));
+        n.focusRing = true;
+        installFocus(n);
+        applyCursor(n);
+    }
+
+    // --- Interaction states (prism_core `interaction`) ---------------------------------------
+
+    /** Reports that `n` entered or left a state (`hover`, `active`, `focus`). */
+    static void state(Node n, String s, boolean on) {
+        JSONObject ev = event("state", n.id);
+        try { ev.put("s", s); ev.put("on", on); } catch (JSONException ignored) {}
+        // Not while Prism changes views (focus moves when views go away).
+        if (updating) main.post(() -> send(ev));
+        else send(ev);
+    }
+
+    /** Listens for the states the app styles: hover (mouse, stylus), press, focus. */
+    static void installInteractions(Node n) {
+        View v = n.view;
+        boolean hover = n.states.contains("hover");
+        // Containers: over any child too (a child's own hover would end the parent's).
+        if (n.host != null && v == n.host) {
+            n.host.onHover = hover ? in -> state(n, "hover", in) : null;
+            installTouch(n);
+            installFocus(n);
+            return;
+        }
+        v.setOnHoverListener(hover ? (x, e) -> {
+            int a = e.getActionMasked();
+            if (a == MotionEvent.ACTION_HOVER_ENTER) state(n, "hover", true);
+            else if (a == MotionEvent.ACTION_HOVER_EXIT) state(n, "hover", false);
+            return false;
+        } : null);
+        installTouch(n);
+        installFocus(n);
+    }
+
+    /** One touch listener: taps, menus and swipes (the gesture detector) and the pressed state. */
+    static void installTouch(Node n) {
+        View v = n.view;
+        // A text area scrolls its own text with its own listener.
+        if (n.kind.equals("text_area")) return;
+        boolean active = n.states.contains("active");
+        if (n.gesture == null && !active) {
+            if (n.touchInstalled) v.setOnTouchListener(null);
+            n.touchInstalled = false;
+            return;
+        }
+        n.touchInstalled = true;
+        // Containers take the touch to see it end; controls handle their own.
+        boolean container = n.host != null && v == n.host;
+        v.setOnTouchListener((view, e) -> {
+            if (n.states.contains("active")) {
+                switch (e.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN: state(n, "active", true); break;
+                    case MotionEvent.ACTION_UP: case MotionEvent.ACTION_CANCEL: state(n, "active", false); break;
+                }
+            }
+            if (n.gesture != null) return n.gesture.onTouchEvent(e);
+            return container && e.getActionMasked() == MotionEvent.ACTION_DOWN;
+        });
+    }
+
+    /** One focus listener: the TV focus ring, and the focus state (text fields always). */
+    static void installFocus(Node n) {
+        boolean field = n.kind.equals("text_input") || n.kind.equals("text_area");
+        boolean report = field || n.states.contains("focus");
+        if (!report && !n.focusRing) return;
+        n.view.setOnFocusChangeListener((view, focused) -> {
+            if (n.focusRing) focusEffect(n, focused);
+            if (field || n.states.contains("focus")) state(n, "focus", focused);
+        });
+    }
+
+    /** The style's cursor; a pointing hand over clickable views (mouse, trackpad). */
+    static void applyCursor(Node n) {
+        String name = n.style.isNull("cursor") ? null : n.style.optString("cursor", null);
+        int type;
+        if (name == null) {
+            type = n.clickable || n.kind.equals("button") ? android.view.PointerIcon.TYPE_HAND : -1;
+        } else {
+            switch (name) {
+                case "pointer": type = android.view.PointerIcon.TYPE_HAND; break;
+                case "text": type = android.view.PointerIcon.TYPE_TEXT; break;
+                case "crosshair": type = android.view.PointerIcon.TYPE_CROSSHAIR; break;
+                case "move": type = android.view.PointerIcon.TYPE_ALL_SCROLL; break;
+                case "grab": type = android.view.PointerIcon.TYPE_GRAB; break;
+                case "grabbing": type = android.view.PointerIcon.TYPE_GRABBING; break;
+                case "not-allowed": type = android.view.PointerIcon.TYPE_NO_DROP; break;
+                case "ew-resize": type = android.view.PointerIcon.TYPE_HORIZONTAL_DOUBLE_ARROW; break;
+                case "ns-resize": type = android.view.PointerIcon.TYPE_VERTICAL_DOUBLE_ARROW; break;
+                case "help": type = android.view.PointerIcon.TYPE_HELP; break;
+                case "progress": type = android.view.PointerIcon.TYPE_WAIT; break;
+                default: type = android.view.PointerIcon.TYPE_ARROW;
+            }
+        }
+        n.view.setPointerIcon(type < 0 ? null : android.view.PointerIcon.getSystemIcon(activity, type));
     }
 
     /** The focused view rises, like tvOS: visible from the sofa. */

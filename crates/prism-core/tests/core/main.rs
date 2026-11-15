@@ -2,6 +2,7 @@
 //! mirrored host tree ([`prism_testing::Host`]) that checks the protocol invariants.
 
 mod background;
+mod decoration;
 mod i18n;
 mod motion;
 mod reconcile;

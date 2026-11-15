@@ -599,6 +599,10 @@ impl Reconciler {
             a
         };
         let clickable = kind == NodeKind::Button || on_click.is_some();
+        // Disabled: its `disabled` refinement, and no hover, press or focus.
+        if a11y.disabled && !style.states.is_empty() {
+            style = style.disabled_applied();
+        }
         {
             let m = self.nodes.get_mut(&id).expect("node exists");
             m.entity = entity;

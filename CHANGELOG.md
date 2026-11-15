@@ -37,6 +37,19 @@ The first version, not yet on crates.io.
 - Per-corner rounding (`rounded_top`, `rounded_bottom`, `rounded_corners` with
   `Corners`, leading/trailing aware) on every backend; bar charts round only
   the top of their bars by default (`bar_radius`, `bar_corners`).
+- Box decorations on every backend: shadows (several, offset, blur, spread,
+  inset; `shadow_sm/md/lg`, `Shadow::ring`), per-side borders
+  (`border_top`…), dashed and dotted borders, `clip()` to the rounded box,
+  linear and radial gradients (`bg_gradient`), backdrop blur
+  (`backdrop_blur`; no blur on GTK), and `Color::current()`, a color relative
+  to the text color (`color-mix()` with `currentColor` on the web).
+- Interaction states: `.hover`, `.active`, `.focus`, `.focus_within`,
+  `.disabled` style refinements and group states (`.group()`,
+  `.group_hover`, `.group_active`, `.group_focus_within`), resolved natively
+  (CSS and GTK pseudo-classes, AppKit tracking areas, UIKit gestures and the
+  tvOS focus engine, Android touch, hover and focus listeners, SwiftUI
+  pressed state); `cursor(…)`, with a pointing hand on clickable nodes.
+- `prism::ui` buttons react to hover and press; cards have a faint shadow.
 - Shipping: Android App Bundles and Google Play upload, App Store builds and
   upload, Developer ID notarization and DMGs, `.deb` packages, web Docker
   images, all with `--dry-run`.
@@ -51,6 +64,9 @@ The first version, not yet on crates.io.
 
 ### Changed
 
+- Android: rounded views no longer clip their children unless they ask for it
+  with `clip()` (pictures still do), like the other backends; this also lets
+  their shadows show.
 - The Swift sources moved from `platform/apple` to
   `crates/prism-apple-build/apple`, the Android host and the bundling scripts
   from `platform/android` and `scripts/` to `crates/prism-cli/platform`, so

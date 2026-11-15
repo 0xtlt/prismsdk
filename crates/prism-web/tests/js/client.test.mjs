@@ -255,6 +255,32 @@ test("styles replace the inline CSS and play enter animations once", () => {
   assert.equal((again.document.animations || []).length, 0);
 });
 
+test("interaction states: one style sheet per node, groups flagged, all gone on destroy and reset", () => {
+  const page = live([create(1, "view"), create(2, "view"), root(1)]);
+  const sheets = () => page.document.head.children.filter((c) => c.localName === "style");
+  const hover = '@media (hover:hover){[data-pid="1"]:hover{opacity:0.5 !important;}}';
+  page.ws.deliver({ t: "patch", p: [
+    { op: "style", id: 1, css: "display:flex;", states: hover, group: true },
+    { op: "style", id: 2, css: "", states: '[data-pid="2"]:active{opacity:0.2 !important;}' },
+  ] });
+  assert.equal(sheets().length, 2);
+  assert.equal(sheets()[0].textContent, hover);
+  assert.equal(sheets()[0].dataset.prismStates, "1");
+  assert.equal(page.node(1).dataset.group, "");
+  // A restyle replaces the rules in place; no rules: no sheet, no group.
+  page.ws.deliver({ t: "patch", p: [{ op: "style", id: 1, css: "", states: "[data-pid=\"1\"]:hover{}" }] });
+  assert.equal(sheets().length, 2);
+  assert.equal(sheets()[0].textContent, "[data-pid=\"1\"]:hover{}");
+  assert.equal(page.node(1).dataset.group, undefined);
+  page.ws.deliver({ t: "patch", p: [{ op: "style", id: 1, css: "" }] });
+  assert.equal(sheets().length, 1);
+  page.ws.deliver({ t: "patch", p: [{ op: "destroy", id: 2 }] });
+  assert.equal(sheets().length, 0);
+  page.ws.deliver({ t: "patch", p: [{ op: "style", id: 1, css: "", states: hover }] });
+  page.ws.deliver({ t: "reset", p: [create(1, "view"), root(1)] });
+  assert.equal(sheets().length, 0, "a reset starts over");
+});
+
 test("stacks show the top screen, its title and a Back button", () => {
   const page = live([
     create(1, "stack"), textOp(1, "/"), create(2, "screen"), textOp(2, "Home"), children(1, [2]), root(1),

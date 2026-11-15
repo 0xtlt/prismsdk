@@ -15,6 +15,7 @@
 mod about;
 mod background;
 mod car;
+mod decor;
 mod device;
 mod focus;
 mod forms;
@@ -533,6 +534,7 @@ impl Render for TodoDetail {
 
 struct Gallery {
     device: Entity<device::DeviceDemo>,
+    decor: Entity<decor::Decor>,
     forms: Entity<forms::Forms>,
     quote: Option<Result<String, String>>,
     loading: bool,
@@ -549,6 +551,7 @@ impl Gallery {
     fn new(cx: &mut Context<Self>) -> Self {
         Gallery {
             device: cx.new(|_| device::DeviceDemo::default()),
+            decor: cx.new(|_| decor::Decor::default()),
             forms: cx.new(|_| forms::Forms::default()),
             quote: None,
             loading: false,
@@ -660,7 +663,8 @@ impl Render for Gallery {
         let (screen, body) = page(strings::screens_components(cx), cx);
         let charts = self.charts(cx);
         screen.child(
-            body.child(self.forms)
+            body.child(self.decor)
+            .child(self.forms)
             .child(charts)
             .child(
                 ui::card()

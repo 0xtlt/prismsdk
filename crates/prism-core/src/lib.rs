@@ -15,11 +15,13 @@ mod apple_models;
 pub mod background;
 pub mod car;
 pub mod controls;
+pub mod decoration;
 pub mod device;
 pub mod device_info;
 mod element;
 pub mod glyphs;
 pub mod i18n;
+pub mod interaction;
 pub mod list;
 pub mod menu;
 pub mod platform;
@@ -40,6 +42,9 @@ pub use app::{AnyEntity, App, Appearance, Context, Entity, EntityId, Environment
 pub use background::{BackgroundKind, BackgroundTask, Lifecycle};
 pub use car::{CarButton, CarButtonStyle, CarItem, CarSection, CarTab, CarTemplate};
 pub use controls::{Capitalize, DateMode, Keyboard, ReturnKey};
+pub use decoration::{
+    BorderSide, BorderSides, BorderStyle, Cursor, Gradient, GradientKind, GradientStop, Shadow,
+};
 pub use device::{
     Accuracy, DeviceCall, DeviceError, DeviceEvent, DeviceValue, Haptic, Location, Motion,
     Permission, PermissionState, PickImages, PickedFile, Share, Watch,
@@ -57,6 +62,7 @@ pub use element::{
     spinner, stack, tab, tabs, text, text_area, text_input, timer, toggle, unix_seconds, unix_time,
 };
 pub use i18n::{BasicFormatter, DateStyle, Direction, Formatter, Locale, Translations};
+pub use interaction::{Interaction, Interactions, States};
 pub use list::VirtualList;
 pub use menu::{ActionRole, Alert, AlertStyle, Menu, MenuItem, Tray};
 pub use platform::{Platform, Platforms};
@@ -514,6 +520,9 @@ pub mod prelude {
         navigate_to, picker, picture, progress, px, relative, rgb, rgba, screen, scroll, shape,
         slider, spinner, text, text_area, text_input, timer, toggle,
     };
+    // Box decorations and interaction states.
+    pub use crate::decoration::{shadow_lg, shadow_md, shadow_sm};
+    pub use crate::{Color, Cursor, Gradient, Shadow};
 }
 
 #[cfg(test)]

@@ -86,8 +86,15 @@ impl Color {
         }
     }
 
-    /// CSS notation; adaptive colors use `light-dark()`.
+    /// CSS notation; adaptive colors use `light-dark()`, [`Color::current`]
+    /// `color-mix()` with `currentColor`.
     pub fn to_css(self) -> String {
+        if self.is_current() {
+            return format!(
+                "color-mix(in srgb, currentColor {}%, transparent)",
+                (self.a.clamp(0., 1.) * 1000.).round() / 10.
+            );
+        }
         let one = |c: Color| {
             let v = |v: f32| (v.clamp(0., 1.) * 255.).round() as u8;
             format!("rgba({},{},{},{})", v(c.r), v(c.g), v(c.b), c.a)
@@ -451,6 +458,34 @@ pub struct Style {
     pub responsive: Responsive,
     /// Platforms where the element exists (`.only(…)`, `.except(…)`).
     pub platforms: Option<crate::platform::Platforms>,
+
+    // Box decorations (shadows, per-side and dashed borders, clipping,
+    // gradients, backdrop blur).
+    /// Drop and inner shadows, the first drawn on top (like CSS `box-shadow`).
+    pub shadows: Vec<crate::decoration::Shadow>,
+    /// Borders of single sides, replacing `border_width` / `border_color` on
+    /// those sides (see [`Style::borders`]).
+    pub border_sides: crate::decoration::BorderSides,
+    /// Solid (the default), dashed or dotted borders.
+    pub border_style: crate::decoration::BorderStyle,
+    /// Children are clipped to the box, rounded corners included (CSS
+    /// `overflow: hidden`).
+    pub clip: bool,
+    /// Background gradient, drawn over `background`.
+    pub gradient: Option<crate::decoration::Gradient>,
+    /// Blurs what is behind the node by this radius, points (`0`: none): a
+    /// translucent bar over scrolling content. Give it a translucent
+    /// `background` to tint it.
+    pub backdrop_blur: f32,
+
+    // Interaction states.
+    /// Refinements while hovered, pressed, focused… (`.hover(|s| …)`).
+    pub states: crate::interaction::States,
+    /// The pointer's shape over the node (`None`: the platform's default,
+    /// a pointing hand on clickable nodes).
+    pub cursor: Option<crate::decoration::Cursor>,
+    /// Descendants' `group_*` refinements follow this node's states.
+    pub group: bool,
 }
 
 /// Window size classes, by width in points (CSS pixels on the web).
@@ -573,7 +608,9 @@ impl Style {
     /// the smallest breakpoint up.
     pub fn resolve(&self, cx: StyleContext) -> Style {
         if self.responsive.is_empty() {
-            return self.clone();
+            let mut s = self.clone();
+            s.resolve_states(cx);
+            return s;
         }
         let mut rules = self.responsive.0.clone();
         rules.sort_by_key(|(c, _)| match c {
@@ -594,6 +631,7 @@ impl Style {
                 s = rule(s);
             }
         }
+        s.resolve_states(cx);
         s
     }
 
@@ -640,6 +678,24 @@ impl Style {
                 ..self.transform
             },
             animations: self.animations.scaled(factor, false),
+            shadows: self.shadows.iter().map(|sh| sh.scaled(factor)).collect(),
+            border_sides: {
+                let side = |b: Option<crate::decoration::BorderSide>| {
+                    b.map(|b| crate::decoration::BorderSide {
+                        width: b.width * factor,
+                        ..b
+                    })
+                };
+                let b = self.border_sides;
+                crate::decoration::BorderSides {
+                    top: side(b.top),
+                    right: side(b.right),
+                    bottom: side(b.bottom),
+                    left: side(b.left),
+                }
+            },
+            backdrop_blur: self.backdrop_blur * factor,
+            states: self.states.map_resolved(|s| s.scaled(factor)),
             ..self.clone()
         }
     }
@@ -805,6 +861,15 @@ impl Default for Style {
             animations: crate::animation::Animations::default(),
             responsive: Responsive::default(),
             platforms: None,
+            shadows: Vec::new(),
+            border_sides: crate::decoration::BorderSides::default(),
+            border_style: crate::decoration::BorderStyle::Solid,
+            clip: false,
+            gradient: None,
+            backdrop_blur: 0.,
+            states: crate::interaction::States::default(),
+            cursor: None,
+            group: false,
         }
     }
 }
@@ -1299,5 +1364,156 @@ pub trait Styled: Sized {
     /// breathing, loading indicators).
     fn repeat(self, pose: crate::animation::Pose, t: Transition) -> Self {
         self.with_style(|s| s.animations.repeat = Some((pose, t)))
+    }
+
+    // Box decorations (see the `decoration` module)
+    /// Adds a shadow (several stack, the first on top):
+    /// `.shadow(Shadow::new(0., 4., 12., rgba(0x000000, 0.15)))`.
+    fn shadow(self, shadow: crate::decoration::Shadow) -> Self {
+        self.with_style(|s| s.shadows.push(shadow))
+    }
+    /// Removes every shadow (e.g. in a state refinement).
+    fn shadow_none(self) -> Self {
+        self.with_style(|s| s.shadows.clear())
+    }
+    /// The border of the top side only: `width` points of `color`.
+    fn border_top(self, width: f32, color: Color) -> Self {
+        let side = crate::decoration::BorderSide {
+            width,
+            color: Some(color),
+        };
+        self.with_style(|s| s.border_sides.top = Some(side))
+    }
+    /// The border of the bottom side only (a row separator).
+    fn border_bottom(self, width: f32, color: Color) -> Self {
+        let side = crate::decoration::BorderSide {
+            width,
+            color: Some(color),
+        };
+        self.with_style(|s| s.border_sides.bottom = Some(side))
+    }
+    /// The border of the leading side only (left in left-to-right languages).
+    fn border_left(self, width: f32, color: Color) -> Self {
+        let side = crate::decoration::BorderSide {
+            width,
+            color: Some(color),
+        };
+        self.with_style(|s| s.border_sides.left = Some(side))
+    }
+    /// The border of the trailing side only (right in left-to-right languages).
+    fn border_right(self, width: f32, color: Color) -> Self {
+        let side = crate::decoration::BorderSide {
+            width,
+            color: Some(color),
+        };
+        self.with_style(|s| s.border_sides.right = Some(side))
+    }
+    /// Dashed borders.
+    fn border_dashed(self) -> Self {
+        self.with_style(|s| s.border_style = crate::decoration::BorderStyle::Dashed)
+    }
+    /// Dotted borders.
+    fn border_dotted(self) -> Self {
+        self.with_style(|s| s.border_style = crate::decoration::BorderStyle::Dotted)
+    }
+    /// Clips the children to the box, rounded corners included (CSS
+    /// `overflow: hidden`).
+    fn clip(self) -> Self {
+        self.with_style(|s| s.clip = true)
+    }
+    /// A gradient background: `.bg_gradient(Gradient::linear(180., [a, b]))`.
+    fn bg_gradient(self, gradient: crate::decoration::Gradient) -> Self {
+        self.with_style(|s| s.gradient = Some(gradient))
+    }
+    /// Blurs what is behind the node (`radius` points), under a translucent
+    /// `bg`: frosted bars and panels.
+    fn backdrop_blur(self, radius: f32) -> Self {
+        self.with_style(|s| s.backdrop_blur = radius)
+    }
+
+    // Interaction states (see the `interaction` module)
+    /// Style changes while the pointer is over the node:
+    /// `.hover(|s| s.bg(rgb(0xEEEEF2)))`.
+    fn hover(self, f: impl Fn(Style) -> Style + 'static) -> Self {
+        self.with_style(|s| {
+            s.states
+                .push(crate::interaction::Interaction::Hover, std::rc::Rc::new(f))
+        })
+    }
+    /// Style changes while the node is pressed.
+    fn active(self, f: impl Fn(Style) -> Style + 'static) -> Self {
+        self.with_style(|s| {
+            s.states
+                .push(crate::interaction::Interaction::Active, std::rc::Rc::new(f))
+        })
+    }
+    /// Style changes while the node has the keyboard focus.
+    fn focus(self, f: impl Fn(Style) -> Style + 'static) -> Self {
+        self.with_style(|s| {
+            s.states
+                .push(crate::interaction::Interaction::Focus, std::rc::Rc::new(f))
+        })
+    }
+    /// Style changes while the node or a descendant has the keyboard focus
+    /// (a row whose field is being edited).
+    fn focus_within(self, f: impl Fn(Style) -> Style + 'static) -> Self {
+        self.with_style(|s| {
+            s.states.push(
+                crate::interaction::Interaction::FocusWithin,
+                std::rc::Rc::new(f),
+            )
+        })
+    }
+    /// Style changes while the node is disabled (`accessibility_disabled`);
+    /// a disabled node ignores its hover, press and focus refinements.
+    fn disabled(self, f: impl Fn(Style) -> Style + 'static) -> Self {
+        self.with_style(|s| {
+            s.states.push(
+                crate::interaction::Interaction::Disabled,
+                std::rc::Rc::new(f),
+            )
+        })
+    }
+    /// The pointer's shape over the node (clickable nodes default to
+    /// [`Cursor::Pointer`](crate::decoration::Cursor::Pointer)).
+    fn cursor(self, cursor: crate::decoration::Cursor) -> Self {
+        self.with_style(|s| s.cursor = Some(cursor))
+    }
+    /// Marks the node as a group: descendants' `group_hover`,
+    /// `group_active` and `group_focus_within` refinements follow its states.
+    fn group(self) -> Self {
+        self.with_style(|s| s.group = true)
+    }
+    /// Style changes while the nearest [`group`](Self::group) ancestor is
+    /// hovered (a row's actions appear under the pointer).
+    fn group_hover(self, f: impl Fn(Style) -> Style + 'static) -> Self {
+        self.with_style(|s| {
+            s.states.push(
+                crate::interaction::Interaction::GroupHover,
+                std::rc::Rc::new(f),
+            )
+        })
+    }
+    /// Style changes while a [`group`](Self::group) ancestor is pressed.
+    fn group_active(self, f: impl Fn(Style) -> Style + 'static) -> Self {
+        self.with_style(|s| {
+            s.states.push(
+                crate::interaction::Interaction::GroupActive,
+                std::rc::Rc::new(f),
+            )
+        })
+    }
+    /// Style changes while a [`group`](Self::group) ancestor contains the
+    /// keyboard focus: a field's clear button with
+    /// `.with_style(|s| s.display_none = true)` and
+    /// `.group_focus_within(|s| s.with_style(|s| s.display_none = false))`
+    /// shows only while the field is edited.
+    fn group_focus_within(self, f: impl Fn(Style) -> Style + 'static) -> Self {
+        self.with_style(|s| {
+            s.states.push(
+                crate::interaction::Interaction::GroupFocusWithin,
+                std::rc::Rc::new(f),
+            )
+        })
     }
 }

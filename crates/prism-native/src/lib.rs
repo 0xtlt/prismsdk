@@ -118,6 +118,12 @@ pub trait Widgets {
         _repeat: Option<(Pose, Transition)>,
     ) {
     }
+    /// The interaction states `view` has style refinements for (called when
+    /// that set changes): report them with
+    /// [`NativeRenderer::set_interaction`] (pointer over it, pressed,
+    /// keyboard focus; focus-within is derived). Backends that resolve
+    /// states themselves (GTK CSS) read `style.states` instead.
+    fn set_interactions(&mut self, _view: &Self::View, _states: prism_core::Interactions) {}
 }
 
 /// `style` at `pose` (its opacity and transform replaced).
@@ -128,6 +134,82 @@ pub fn posed(style: &Style, pose: Pose) -> Style {
         transform,
         ..style.clone()
     }
+}
+
+/// What [`prism_core::Color::current`] resolves to on a node without a text
+/// color: black, white in dark mode (the platforms' label colors).
+pub fn label_color() -> prism_core::Color {
+    prism_core::Color::adaptive(prism_core::Color::BLACK, prism_core::Color::WHITE)
+}
+
+/// The outline of a box `w` × `h` at `(x, y)` (top-left origin, y down),
+/// rounding `corners` (leading = left) by `radius` (clamped to half the
+/// smaller side), clockwise from the top-left: quarter circles as cubics.
+/// Backends draw per-corner backgrounds, borders, clips and shadows with it.
+pub fn box_path(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    corners: prism_core::Corners,
+) -> Vec<prism_core::Segment> {
+    use prism_core::{Corners as C, Segment as S};
+    let max = (w.min(h) / 2.).max(0.);
+    let r = |c: C| {
+        if corners.contains(c) {
+            radius.clamp(0., max)
+        } else {
+            0.
+        }
+    };
+    let (tl, tr, br, bl) = (
+        r(C::TOP_LEADING),
+        r(C::TOP_TRAILING),
+        r(C::BOTTOM_TRAILING),
+        r(C::BOTTOM_LEADING),
+    );
+    let k = 0.5523;
+    let (x1, y1) = (x + w, y + h);
+    let mut p = vec![S::Move(x + tl, y), S::Line(x1 - tr, y)];
+    if tr > 0. {
+        p.push(S::Cubic(
+            x1 - tr + k * tr,
+            y,
+            x1,
+            y + tr - k * tr,
+            x1,
+            y + tr,
+        ));
+    }
+    p.push(S::Line(x1, y1 - br));
+    if br > 0. {
+        p.push(S::Cubic(
+            x1,
+            y1 - br + k * br,
+            x1 - br + k * br,
+            y1,
+            x1 - br,
+            y1,
+        ));
+    }
+    p.push(S::Line(x + bl, y1));
+    if bl > 0. {
+        p.push(S::Cubic(
+            x + bl - k * bl,
+            y1,
+            x,
+            y1 - bl + k * bl,
+            x,
+            y1 - bl,
+        ));
+    }
+    p.push(S::Line(x, y + tl));
+    if tl > 0. {
+        p.push(S::Cubic(x, y + tl - k * tl, x + tl - k * tl, y, x + tl, y));
+    }
+    p.push(S::Close);
+    p
 }
 
 /// Containers whose children are positioned by the platform, not by flexbox.
@@ -176,6 +258,16 @@ struct Entry<V> {
     frame: Option<(f32, f32, f32, f32)>,
     /// What a shape draws (resolved again when its size changes).
     drawing: Option<prism_core::Drawing>,
+    /// Interaction states: the style as rendered (`style` is it in the
+    /// current states), the states the node is in, and those it refines.
+    states: EntryStates,
+}
+
+#[derive(Default)]
+struct EntryStates {
+    declared: Style,
+    current: prism_core::Interactions,
+    used: Option<prism_core::Interactions>,
 }
 
 /// Applies patches to native widgets and lays them out.
@@ -193,6 +285,8 @@ pub struct NativeRenderer<W: Widgets> {
     env: RenderEnvironment,
     /// Every length is multiplied by this (TVs: bigger than phone sizes).
     zoom: f32,
+    /// The node with the keyboard focus (its ancestors are focus-within).
+    focused: Option<NodeId>,
 }
 
 impl<W: Widgets> NativeRenderer<W> {
@@ -215,6 +309,7 @@ impl<W: Widgets> NativeRenderer<W> {
                 ..Default::default()
             },
             zoom: 1.,
+            focused: None,
         }
     }
 
@@ -241,9 +336,22 @@ impl<W: Widgets> NativeRenderer<W> {
     }
 
     /// The style handed to the platform: Dynamic Type scaling and
-    /// right-to-left text alignment applied.
+    /// right-to-left text alignment applied, [`prism_core::Color::current`]
+    /// resolved; the same for each interaction state's style.
     fn effective_style(&self, style: &Style, kind: NodeKind) -> Style {
-        let mut s = style.scaled(self.zoom);
+        let mut s = self.effective_one(style, kind);
+        if !style.states.is_empty() {
+            s.states = style.states.map_resolved(|st| self.effective_one(st, kind));
+        }
+        s
+    }
+
+    fn effective_one(&self, style: &Style, kind: NodeKind) -> Style {
+        let mut s = style.scaled(self.zoom).with_current_color(label_color());
+        if self.env.direction == Direction::Rtl {
+            // Leading/trailing borders, like margins.
+            s.border_sides = s.border_sides.mirrored();
+        }
         if kind != NodeKind::View && self.env.text_scale != 1. {
             s.font_size = (s.font_size * self.env.text_scale).round();
         }
@@ -620,6 +728,162 @@ impl<W: Widgets> NativeRenderer<W> {
     }
 }
 
+// Interaction states (`.hover(|s| …)`…): the platform reports them, the
+// node is restyled in its new states.
+impl<W: Widgets> NativeRenderer<W> {
+    /// Stores the style `id` was given and returns it in the node's current
+    /// interaction states; tells the platform which states to report.
+    fn declare(&mut self, id: NodeId, style: &Style) -> Style {
+        let Some(e) = self.nodes.get_mut(&id) else {
+            return style.clone();
+        };
+        e.states.declared = style.clone();
+        let mut used = style.states.used();
+        if style.group {
+            // A group reports its states for its descendants' refinements.
+            use prism_core::Interaction as I;
+            for i in [I::Hover, I::Active, I::FocusWithin] {
+                used = used.with(i, true);
+            }
+        }
+        if e.states.used != Some(used) && (e.states.used.is_some() || !used.is_empty()) {
+            e.states.used = Some(used);
+            let view = e.view.clone();
+            self.widgets.set_interactions(&view, used);
+        }
+        let e = &self.nodes[&id];
+        style.interacted(e.states.current)
+    }
+
+    /// The platform saw `id` enter or leave `state` (pointer over it,
+    /// pressed, keyboard focus): restyles it, and its ancestors for
+    /// focus-within. Returns whether a style changed (the backend lays out
+    /// again: a refinement may change sizes).
+    pub fn set_interaction(
+        &mut self,
+        id: NodeId,
+        state: prism_core::Interaction,
+        on: bool,
+    ) -> bool {
+        use prism_core::Interaction;
+        if state != Interaction::Focus {
+            return self.set_state_bit(id, state, on);
+        }
+        let mut changed = false;
+        if on {
+            if let Some(previous) = self.focused.replace(id)
+                && previous != id
+            {
+                changed |= self.set_state_bit(previous, Interaction::Focus, false);
+                changed |= self.set_focus_within(previous, false);
+            }
+        } else if self.focused == Some(id) {
+            self.focused = None;
+        }
+        changed |= self.set_state_bit(id, Interaction::Focus, on);
+        changed |= self.set_focus_within(id, on);
+        changed
+    }
+
+    /// The interaction states `id` is in.
+    pub fn interactions(&self, id: NodeId) -> prism_core::Interactions {
+        self.nodes
+            .get(&id)
+            .map_or_else(Default::default, |e| e.states.current)
+    }
+
+    fn set_focus_within(&mut self, id: NodeId, on: bool) -> bool {
+        let mut changed = false;
+        let mut node = Some(id);
+        while let Some(n) = node {
+            changed |= self.set_state_bit(n, prism_core::Interaction::FocusWithin, on);
+            node = self.parent_of(n);
+        }
+        changed
+    }
+
+    fn parent_of(&self, id: NodeId) -> Option<NodeId> {
+        let e = self.nodes.get(&id)?;
+        match self.taffy.parent(e.layout) {
+            Some(p) => self.by_layout.get(&p).copied(),
+            // Screens are laid out on their own: their stack is the parent.
+            None => self
+                .stack_screens
+                .iter()
+                .find(|(_, screens)| screens.contains(&id))
+                .map(|(stack, _)| *stack),
+        }
+    }
+
+    fn set_state_bit(&mut self, id: NodeId, state: prism_core::Interaction, on: bool) -> bool {
+        let Some(e) = self.nodes.get_mut(&id) else {
+            return false;
+        };
+        let current = e.states.current.with(state, on);
+        if current == e.states.current {
+            return false;
+        }
+        e.states.current = current;
+        let mut changed = false;
+        // A group's hover, press and focus-within reach its descendants.
+        if e.states.declared.group
+            && let Some(group_state) = state.for_group()
+        {
+            for d in self.descendants(id) {
+                changed |= self.set_state_bit(d, group_state, on);
+            }
+        }
+        let Some(e) = self.nodes.get_mut(&id) else {
+            return changed;
+        };
+        if !e.states.declared.states.used().contains(state) {
+            return changed;
+        }
+        let style = e.states.declared.interacted(current);
+        if style == e.style {
+            return changed;
+        }
+        let was_hidden = e.style.display_none;
+        e.style = style;
+        let e = &self.nodes[&id];
+        let s = self.effective_style(&e.style, e.kind);
+        let view = e.view.clone();
+        if was_hidden != s.display_none {
+            self.widgets.set_hidden(&view, s.display_none);
+        }
+        match s.transition {
+            Some(t) if e.frame.is_some() => self.widgets.set_style_animated(&view, &s, t),
+            _ => self.widgets.set_style(&view, &s),
+        }
+        self.sync_layout_style(id);
+        true
+    }
+
+    /// Every node under `id` (screens of stacks included).
+    fn descendants(&self, id: NodeId) -> Vec<NodeId> {
+        let mut out = Vec::new();
+        let mut todo = vec![id];
+        while let Some(n) = todo.pop() {
+            let Some(e) = self.nodes.get(&n) else {
+                continue;
+            };
+            let mut kids: Vec<NodeId> = self
+                .taffy
+                .children(e.layout)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|c| self.by_layout.get(c).copied())
+                .collect();
+            if let Some(screens) = self.stack_screens.get(&n) {
+                kids.extend(screens.iter().copied());
+            }
+            out.extend(kids.iter().copied());
+            todo.extend(kids);
+        }
+        out
+    }
+}
+
 impl<W: Widgets> Backend for NativeRenderer<W> {
     fn apply(&mut self, patches: &[Patch]) {
         let destroyed: HashSet<NodeId> = patches
@@ -652,10 +916,13 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                             layout,
                             frame: None,
                             drawing: None,
+                            states: EntryStates::default(),
                         },
                     );
                 }
                 Patch::SetStyle { id, style } => {
+                    // The style in the node's current interaction states.
+                    let style = &self.declare(*id, style);
                     if let Some(e) = self.nodes.get(id) {
                         let s = self.effective_style(style, e.kind);
                         let was_hidden = e.style.display_none;
@@ -799,6 +1066,10 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                     }
                 }
                 Patch::Destroy { id } => {
+                    if self.focused == Some(*id) {
+                        self.focused = None;
+                        self.set_focus_within(*id, false);
+                    }
                     if let Some(e) = self.nodes.remove(id) {
                         self.widgets.destroy(&e.view);
                         self.by_layout.remove(&e.layout);

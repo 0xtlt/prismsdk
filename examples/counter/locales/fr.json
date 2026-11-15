@@ -329,5 +329,20 @@
     "signed_in": "Connecté ({count} caractères)",
     "error": "Afficher une erreur",
     "toast_error": "Serveur injoignable"
+  },
+  "decor": {
+    "title": "Décorations",
+    "shadow": "Ombre",
+    "inset": "Intérieure",
+    "offline": "Hors ligne",
+    "rows": "Survolez ou appuyez sur une ligne",
+    "row": "Ligne {n}",
+    "gradient": "Dégradé linéaire",
+    "radial": "Radial",
+    "clip": "Rogné aux coins",
+    "frosted": "Barre givrée",
+    "search": "Rechercher",
+    "clear": "Effacer",
+    "focus_hint": "Activez le champ : la carte s’entoure, le bouton Effacer apparaît."
   }
 }

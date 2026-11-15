@@ -60,6 +60,8 @@ pub struct Fake {
     pub measured: HashMap<NodeId, Vec<Option<f32>>>,
     /// Safe area the fake platform gives stack screens.
     pub screen_insets: Insets,
+    /// The interaction states each view was asked to report.
+    pub interactions: HashMap<NodeId, prism_core::Interactions>,
 }
 
 impl Fake {
@@ -254,6 +256,9 @@ impl Widgets for Fake {
     }
     fn set_repeat(&mut self, v: &NodeId, _style: &Style, repeat: Option<(Pose, Transition)>) {
         self.calls.push(Call::Repeat(*v, repeat));
+    }
+    fn set_interactions(&mut self, v: &NodeId, states: prism_core::Interactions) {
+        self.interactions.insert(*v, states);
     }
 }
 
