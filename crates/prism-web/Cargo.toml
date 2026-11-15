@@ -21,6 +21,8 @@ server = ["dep:axum", "dep:tokio", "dep:futures-util"]
 
 [dependencies]
 prism-core.workspace = true
+# Pictures with headers (`Picture::header`): fetched by the server.
+prism-http.workspace = true
 serde_json.workspace = true
 http = "1"
 sha2 = "0.10"

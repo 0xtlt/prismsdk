@@ -1896,6 +1896,9 @@ struct Picture: View {
     var body: some View {
         if source.hasPrefix("data:"), let image = Self.dataImage(source) {
             Image(uiImage: image).resizable().aspectRatio(contentMode: fit ? .fit : .fill)
+        } else if source.contains("\n") {
+            // A remote picture with headers (`Picture::header`).
+            AuthorizedPicture(source: source, fit: fit)
         } else if source.hasPrefix("http://") || source.hasPrefix("https://"), let url = URL(string: source) {
             AsyncImage(url: url) { $0.resizable().aspectRatio(contentMode: fit ? .fit : .fill) } placeholder: { Color.gray.opacity(0.2) }
         } else if let image = UIImage(contentsOfFile: source.hasPrefix("/") ? source : Bundle.main.bundlePath + "/assets/" + source) {
@@ -1914,6 +1917,45 @@ struct Picture: View {
             ? Data(base64Encoded: payload, options: .ignoreUnknownCharacters)
             : payload.removingPercentEncoding.map { Data($0.utf8) }
         return data.flatMap(UIImage.init(data:))
+    }
+}
+
+/// A remote picture loaded with the headers it carries (`Picture::header`):
+/// the URL, then one `name: value` line per header. `AsyncImage` cannot send
+/// headers, so this loads it with a `URLRequest`, outside the URL cache.
+struct AuthorizedPicture: View {
+    let source: String
+    let fit: Bool
+    @State private var image: UIImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image).resizable().aspectRatio(contentMode: fit ? .fit : .fill)
+            } else {
+                Color.gray.opacity(0.2)
+            }
+        }
+        .task(id: source) { image = await Self.load(source) }
+    }
+
+    /// No cookies, no cache on disk: the images are private.
+    static let session = URLSession(configuration: .ephemeral)
+
+    static func load(_ source: String) async -> UIImage? {
+        let lines = source.components(separatedBy: "\n")
+        guard let url = URL(string: lines[0]) else { return nil }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
+        for line in lines.dropFirst() {
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let name = line[..<colon].trimmingCharacters(in: .whitespaces)
+            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            request.setValue(value, forHTTPHeaderField: name)
+        }
+        guard let (data, response) = try? await session.data(for: request),
+              (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? false
+        else { return nil }
+        return UIImage(data: data)
     }
 }
 

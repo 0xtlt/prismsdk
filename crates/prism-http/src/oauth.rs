@@ -24,6 +24,22 @@
 //! The code is exchanged at the token endpoint from the app (public client,
 //! no secret). With [`OAuth::code_only`], the app gets the code and the
 //! PKCE verifier to exchange on its own server instead.
+//!
+//! Endpoints come from the issuer's metadata: RFC 8414
+//! (`/.well-known/oauth-authorization-server`) or OpenID Connect discovery
+//! (`/.well-known/openid-configuration`), whichever it publishes. A server
+//! with no client registered for the app can register one (RFC 7591,
+//! [`OAuth::dynamic_registration`]): once, then kept in secure storage.
+//!
+//! ```ignore
+//! let server = OAuth::server("https://git.example.com", "")
+//!     .dynamic_registration("My App")
+//!     .scope("read");
+//! let server = server.resolve(&cx).await?;   // endpoints + client id: keep it
+//! let tokens = server.sign_in(&cx).await?;
+//! // Later, on any thread (a blocking API client after a 401):
+//! let fresh = server.refresh_blocking(tokens.refresh_token.as_deref().unwrap())?;
+//! ```
 
 use std::collections::HashMap;
 
@@ -37,8 +53,8 @@ use crate::Request;
 pub struct OAuth {
     /// Shown by the web's "Continue" button when a popup is blocked.
     pub name: String,
-    /// OpenID Connect issuer: endpoints left empty are discovered from
-    /// `<issuer>/.well-known/openid-configuration`.
+    /// The issuer: endpoints left empty are discovered from its metadata
+    /// (RFC 8414 or OpenID Connect, see [`discovery_urls`]).
     pub issuer: Option<String>,
     pub authorize_url: String,
     pub token_url: String,
@@ -57,6 +73,20 @@ pub struct OAuth {
     pub ephemeral: bool,
     /// Return the code instead of exchanging it.
     pub code_only: bool,
+
+    // --- Dynamic client registration (RFC 7591) ---
+    /// The registration endpoint (discovered: `registration_endpoint`).
+    pub registration_url: String,
+    /// Register a client under this name when `client_id` is empty (see
+    /// [`OAuth::dynamic_registration`]).
+    pub client_name: Option<String>,
+    /// An initial access token the registration endpoint requires (sent as
+    /// a bearer token), if any.
+    pub registration_token: Option<String>,
+    /// How the token endpoint expects the client secret:
+    /// `client_secret_basic` (HTTP Basic) or `client_secret_post` (in the
+    /// form, the default). Set from a registration's answer.
+    pub token_endpoint_auth_method: Option<String>,
 }
 
 /// What the provider granted.
@@ -172,6 +202,18 @@ impl OAuth {
         }
     }
 
+    /// A plain OAuth 2 authorization server (RFC 8414): endpoints come from
+    /// its metadata (`/.well-known/oauth-authorization-server`, or OpenID
+    /// Connect discovery if that is what it publishes); no scopes. Pass an
+    /// empty `client_id` with [`dynamic_registration`](Self::dynamic_registration)
+    /// when the app has none.
+    pub fn server(issuer: impl Into<String>, client_id: impl Into<String>) -> Self {
+        OAuth {
+            scopes: Vec::new(),
+            ..Self::oidc(issuer, client_id)
+        }
+    }
+
     /// Google (OpenID Connect). With an iOS client id
     /// (`<id>.apps.googleusercontent.com`), Apple platforms redirect to the
     /// reversed id, as Google requires.
@@ -224,6 +266,46 @@ impl OAuth {
         self
     }
 
+    /// When `client_id` is empty, registers a client named `client_name`
+    /// at the server's registration endpoint (RFC 7591): a public client
+    /// (`token_endpoint_auth_method: none`) with this platform's redirect
+    /// URI and the `authorization_code` and `refresh_token` grants. The
+    /// answer (client id, and a secret if the server issues one) is kept in
+    /// secure storage, so the app registers once per device (again if the
+    /// redirect URI changes, the secret expires, or the server forgets the
+    /// client). Where there is no secure storage it registers at every launch.
+    pub fn dynamic_registration(mut self, client_name: impl Into<String>) -> Self {
+        self.client_name = Some(client_name.into());
+        self
+    }
+
+    /// An initial access token for the registration endpoint (RFC 7591 §3),
+    /// for servers that only let known apps register.
+    pub fn registration_token(mut self, token: impl Into<String>) -> Self {
+        self.registration_token = Some(token.into());
+        self
+    }
+
+    /// The client registered by [`register_blocking`](Self::register_blocking)
+    /// (or kept from an earlier run): its id, secret and auth method.
+    pub fn with_registration(mut self, r: &Registration) -> Self {
+        self.client_id = r.client_id.clone();
+        self.client_secret = r.client_secret.clone();
+        self.token_endpoint_auth_method = r.token_endpoint_auth_method.clone();
+        self
+    }
+
+    fn wants_registration(&self) -> bool {
+        self.client_id.is_empty() && self.client_name.is_some()
+    }
+
+    fn needs_discovery(&self) -> bool {
+        self.issuer.is_some()
+            && (self.authorize_url.is_empty()
+                || self.token_url.is_empty()
+                || (self.wants_registration() && self.registration_url.is_empty()))
+    }
+
     fn is_oidc(&self) -> bool {
         self.scopes.iter().any(|s| s == "openid")
     }
@@ -262,46 +344,190 @@ impl OAuth {
         format!("{}{sep}{}", self.authorize_url, form(&q))
     }
 
-    /// Fills the endpoints from the issuer's discovery document.
+    /// Fills the endpoints from the issuer's metadata: each of
+    /// [`discovery_urls`] in turn until one answers with a document for
+    /// this issuer (RFC 8414 §3.3: its `issuer` must match). Does nothing
+    /// when the endpoints are already known.
     pub fn discover_blocking(&mut self) -> Result<(), OAuthError> {
-        let Some(issuer) = &self.issuer else {
+        if !self.needs_discovery() {
+            return Ok(());
+        }
+        let Some(issuer) = self.issuer.clone() else {
             return Ok(());
         };
-        if !self.authorize_url.is_empty() && !self.token_url.is_empty() {
-            return Ok(());
+        let mut last = OAuthError::Failed(format!("discovery: no metadata for {issuer}"));
+        for url in discovery_urls(&issuer, self.is_oidc()) {
+            let res = match Request::get(&url)
+                .header("accept", "application/json")
+                .send_blocking()
+            {
+                Ok(res) => res,
+                Err(e) => {
+                    last = OAuthError::Network(e.0);
+                    continue;
+                }
+            };
+            if !res.ok() {
+                last = OAuthError::Failed(format!("discovery: HTTP {} from {url}", res.status));
+                continue;
+            }
+            match serde_json::from_slice::<serde_json::Value>(&res.body) {
+                Ok(doc) if doc.is_object() => match self.apply_metadata(&issuer, &doc) {
+                    Ok(()) => return Ok(()),
+                    Err(e) => last = e,
+                },
+                Ok(_) => {
+                    last = OAuthError::Failed(format!("discovery: not a JSON object at {url}"))
+                }
+                Err(e) => last = OAuthError::Failed(format!("discovery: {e} at {url}")),
+            }
         }
-        let res = Request::get(format!("{issuer}/.well-known/openid-configuration"))
-            .send_blocking()
-            .map_err(|e| OAuthError::Network(e.0))?;
-        if !res.ok() {
+        Err(last)
+    }
+
+    /// Takes the endpoints left empty from a metadata document (RFC 8414
+    /// or OpenID Connect), after checking it is `issuer`'s.
+    pub fn apply_metadata(
+        &mut self,
+        issuer: &str,
+        doc: &serde_json::Value,
+    ) -> Result<(), OAuthError> {
+        let field = |k: &str| doc.get(k).and_then(|v| v.as_str()).map(str::to_string);
+        if let Some(claimed) = field("issuer")
+            && claimed.trim_end_matches('/') != issuer.trim_end_matches('/')
+        {
             return Err(OAuthError::Failed(format!(
-                "discovery: HTTP {} from {issuer}",
-                res.status
+                "discovery: metadata for {claimed}, not {issuer}"
             )));
         }
-        let doc: serde_json::Value = serde_json::from_slice(&res.body)
-            .map_err(|e| OAuthError::Failed(format!("discovery: {e}")))?;
-        let field = |k: &str| doc.get(k).and_then(|v| v.as_str()).map(str::to_string);
+        let authorize = field("authorization_endpoint");
         if self.authorize_url.is_empty() {
-            self.authorize_url = field("authorization_endpoint")
+            self.authorize_url = authorize
                 .ok_or_else(|| OAuthError::Failed("discovery: no authorization_endpoint".into()))?;
         }
         if self.token_url.is_empty() {
             self.token_url = field("token_endpoint").unwrap_or_default();
         }
+        if self.registration_url.is_empty() {
+            self.registration_url = field("registration_endpoint").unwrap_or_default();
+        }
         Ok(())
+    }
+
+    /// This provider ready to use: endpoints discovered, and a client id
+    /// (registered once if [`dynamic_registration`](Self::dynamic_registration)
+    /// asks for it, then read back from secure storage). Keep it for
+    /// [`refresh_blocking`](Self::refresh_blocking) on other threads.
+    pub async fn resolve(&self, cx: &AsyncApp) -> Result<OAuth, OAuthError> {
+        self.resolve_with_redirect(cx)
+            .await
+            .map(|(config, _)| config)
+    }
+
+    /// [`resolve`](Self::resolve), and the redirect URI if it asked for one
+    /// (a loopback redirect is a listening socket: use it, not another).
+    async fn resolve_with_redirect(
+        &self,
+        cx: &AsyncApp,
+    ) -> Result<(OAuth, Option<String>), OAuthError> {
+        let mut config = self.clone();
+        if config.needs_discovery() {
+            config = cx
+                .background(move || config.discover_blocking().map(|_| config))
+                .await?;
+        }
+        if !config.wants_registration() {
+            return Ok((config, None));
+        }
+        let redirect = cx.auth_redirect(config.redirect_uri.as_deref()).await?;
+        let key = config.registration_key();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let stored = cx
+            .secure_storage()
+            .get(&key)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|s| Registration::from_json(&s))
+            .filter(|r| r.fits(&redirect, now));
+        let registration = match stored {
+            Some(r) => r,
+            None => {
+                let (c, uri) = (config.clone(), redirect.clone());
+                let r = cx.background(move || c.register_blocking(&uri)).await?;
+                // Best effort: without secure storage, register next time again.
+                let _ = cx.secure_storage().set(&key, &r.to_json()).await;
+                r
+            }
+        };
+        Ok((config.with_registration(&registration), Some(redirect)))
+    }
+
+    /// Registers a client for `redirect_uri` (RFC 7591), on this thread.
+    /// [`resolve`](Self::resolve) calls it when needed and keeps the answer.
+    pub fn register_blocking(&self, redirect_uri: &str) -> Result<Registration, OAuthError> {
+        let mut config = self.clone();
+        config.discover_blocking()?;
+        if config.registration_url.is_empty() {
+            return Err(OAuthError::Failed(
+                "registration: the server has no registration_endpoint".into(),
+            ));
+        }
+        let res = config
+            .registration_request(redirect_uri)
+            .send_blocking()
+            .map_err(|e| OAuthError::Network(e.0))?;
+        let mut r = parse_registration_response(res.status, &res.body)?;
+        if r.redirect_uris.is_empty() {
+            r.redirect_uris.push(redirect_uri.to_string());
+        }
+        Ok(r)
+    }
+
+    /// The registration request (RFC 7591 §3.1) for `redirect_uri`.
+    pub fn registration_request(&self, redirect_uri: &str) -> Request {
+        let web = redirect_uri.starts_with("https://")
+            || (redirect_uri.starts_with("http://") && !is_loopback(redirect_uri));
+        let mut body = serde_json::json!({
+            "client_name": self.client_name.clone().unwrap_or_else(|| self.name.clone()),
+            "redirect_uris": [redirect_uri],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "token_endpoint_auth_method": "none",
+            // OpenID Connect Dynamic Registration: custom schemes and
+            // loopback redirects are native apps.
+            "application_type": if web { "web" } else { "native" },
+        });
+        if !self.scopes.is_empty() {
+            body["scope"] = self.scopes.join(" ").into();
+        }
+        let mut request = Request::post(&self.registration_url)
+            .header("accept", "application/json")
+            .json(body.to_string());
+        if let Some(token) = &self.registration_token {
+            request = request.header("authorization", format!("Bearer {token}"));
+        }
+        request
+    }
+
+    /// The secure storage key of the client registered with this server.
+    fn registration_key(&self) -> String {
+        let server = self.issuer.as_deref().unwrap_or(&self.registration_url);
+        let name = self.client_name.as_deref().unwrap_or_default();
+        let hash = Sha256::digest(format!("{server}\n{name}").as_bytes());
+        format!("prism.oauth.client.{}", base64url(&hash[..12]))
     }
 
     /// Signs in: opens the provider in the platform's sign-in browser, checks
     /// the redirect, exchanges the code (PKCE) unless [`code_only`](Self::code_only).
     pub async fn sign_in(&self, cx: &AsyncApp) -> Result<Tokens, OAuthError> {
-        let mut config = self.clone();
-        if config.authorize_url.is_empty() || config.token_url.is_empty() {
-            config = cx
-                .background(move || config.discover_blocking().map(|_| config))
-                .await?;
-        }
-        let redirect = cx.auth_redirect(config.redirect_uri.as_deref()).await?;
+        let (config, redirect) = self.resolve_with_redirect(cx).await?;
+        let redirect = match redirect {
+            Some(r) => r,
+            None => cx.auth_redirect(config.redirect_uri.as_deref()).await?,
+        };
         let pkce = Pkce::new();
         let state = random_token(16);
         let nonce = config.is_oidc().then(|| random_token(16));
@@ -330,7 +556,8 @@ impl OAuth {
             ("redirect_uri", &tokens.redirect_uri),
             ("code_verifier", &tokens.code_verifier),
         ]);
-        let granted = cx.background(move || exchange(request)).await?;
+        let granted = cx.background(move || exchange(request)).await;
+        let granted = self.forget_rejected_client(cx, granted).await?;
         tokens = Tokens {
             code: tokens.code,
             code_verifier: tokens.code_verifier,
@@ -345,31 +572,245 @@ impl OAuth {
 
     /// New tokens from a refresh token.
     pub async fn refresh(&self, cx: &AsyncApp, refresh_token: &str) -> Result<Tokens, OAuthError> {
-        let mut config = self.clone();
+        let config = self.resolve(cx).await?;
         let refresh_token = refresh_token.to_string();
-        cx.background(move || {
-            config.discover_blocking()?;
-            let mut t = exchange(config.token_request(&[
-                ("grant_type", "refresh_token"),
-                ("refresh_token", &refresh_token),
-            ]))?;
-            t.refresh_token.get_or_insert(refresh_token);
-            Ok(t)
-        })
-        .await
+        let r = cx
+            .background(move || config.refresh_blocking(&refresh_token))
+            .await;
+        self.forget_rejected_client(cx, r).await
     }
 
-    fn token_request(&self, fields: &[(&str, &str)]) -> Request {
-        let mut body: Vec<(&str, &str)> = fields.to_vec();
-        body.push(("client_id", &self.client_id));
-        if let Some(secret) = &self.client_secret {
-            body.push(("client_secret", secret));
+    /// New tokens from a refresh token, on this thread (like
+    /// [`Request::send_blocking`]): for code already on a background thread,
+    /// such as an API client that refreshes after a 401 and retries.
+    /// Discovers the endpoints first if they are unknown (keep the provider
+    /// from [`resolve`](Self::resolve) to do it once). The refresh token
+    /// stays the same unless the server rotates it.
+    pub fn refresh_blocking(&self, refresh_token: &str) -> Result<Tokens, OAuthError> {
+        let mut config = self.clone();
+        config.discover_blocking()?;
+        if config.token_url.is_empty() {
+            return Err(OAuthError::Failed("no token endpoint".into()));
         }
-        Request::post(&self.token_url)
-            .header("content-type", "application/x-www-form-urlencoded")
-            .header("accept", "application/json")
-            .body(form(&body))
+        if config.client_id.is_empty() {
+            return Err(OAuthError::Failed(
+                "no client id: refresh with the provider resolve() returned".into(),
+            ));
+        }
+        let mut t = exchange(config.token_request(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token),
+        ]))?;
+        t.refresh_token
+            .get_or_insert_with(|| refresh_token.to_string());
+        Ok(t)
     }
+
+    /// A registered client the server no longer knows (`invalid_client`):
+    /// forget it, so the next sign-in registers again.
+    async fn forget_rejected_client(
+        &self,
+        cx: &AsyncApp,
+        r: Result<Tokens, OAuthError>,
+    ) -> Result<Tokens, OAuthError> {
+        // `client_name`: also a provider `resolve` already filled in.
+        if self.client_name.is_some()
+            && matches!(&r, Err(OAuthError::Provider { error, .. }) if error == "invalid_client")
+        {
+            let _ = cx.secure_storage().delete(&self.registration_key()).await;
+        }
+        r
+    }
+
+    /// A request to the token endpoint with `fields` (`grant_type`…) and the
+    /// client's credentials: `client_id` in the form, and the secret in it
+    /// too or as HTTP Basic (`client_secret_basic`).
+    pub fn token_request(&self, fields: &[(&str, &str)]) -> Request {
+        let mut body: Vec<(&str, &str)> = fields.to_vec();
+        let basic = self.token_endpoint_auth_method.as_deref() == Some("client_secret_basic");
+        let mut request = Request::post(&self.token_url)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .header("accept", "application/json");
+        match &self.client_secret {
+            // RFC 6749 §2.3.1: both form-encoded, then base64.
+            Some(secret) if basic => {
+                let pair = format!("{}:{}", encode(&self.client_id), encode(secret));
+                request = request.header(
+                    "authorization",
+                    format!("Basic {}", base64(pair.as_bytes())),
+                );
+            }
+            Some(secret) => {
+                body.push(("client_id", &self.client_id));
+                body.push(("client_secret", secret));
+            }
+            None => body.push(("client_id", &self.client_id)),
+        }
+        request.body(form(&body))
+    }
+}
+
+/// What a registration endpoint issued (RFC 7591 §3.2.1).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Registration {
+    /// The client id to use from now on.
+    pub client_id: String,
+    /// Only if the server made a confidential client anyway.
+    pub client_secret: Option<String>,
+    /// When the secret expires (Unix seconds; `0` or `None`: never).
+    pub client_secret_expires_at: Option<u64>,
+    /// How the token endpoint expects the secret (`none` for public clients).
+    pub token_endpoint_auth_method: Option<String>,
+    /// For reading or updating the registration (RFC 7592).
+    pub registration_access_token: Option<String>,
+    /// Where to read or update the registration (RFC 7592).
+    pub registration_client_uri: Option<String>,
+    /// The redirect URIs registered.
+    pub redirect_uris: Vec<String>,
+}
+
+impl Registration {
+    /// As stored in secure storage.
+    pub fn to_json(&self) -> String {
+        serde_json::json!({
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "client_secret_expires_at": self.client_secret_expires_at,
+            "token_endpoint_auth_method": self.token_endpoint_auth_method,
+            "registration_access_token": self.registration_access_token,
+            "registration_client_uri": self.registration_client_uri,
+            "redirect_uris": self.redirect_uris,
+        })
+        .to_string()
+    }
+
+    /// From [`to_json`](Self::to_json) or a registration response.
+    pub fn from_json(json: &str) -> Option<Registration> {
+        let v: serde_json::Value = serde_json::from_str(json).ok()?;
+        Self::from_value(&v)
+    }
+
+    fn from_value(v: &serde_json::Value) -> Option<Registration> {
+        let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+        Some(Registration {
+            client_id: s("client_id").filter(|id| !id.is_empty())?,
+            client_secret: s("client_secret"),
+            client_secret_expires_at: v.get("client_secret_expires_at").and_then(|x| x.as_u64()),
+            token_endpoint_auth_method: s("token_endpoint_auth_method"),
+            registration_access_token: s("registration_access_token"),
+            registration_client_uri: s("registration_client_uri"),
+            redirect_uris: v
+                .get("redirect_uris")
+                .and_then(|x| x.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|u| u.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        })
+    }
+
+    /// Still usable for `redirect` at `now` (Unix seconds): registered for
+    /// it (a loopback redirect on any port, RFC 8252 §7.3), secret not expired.
+    pub fn fits(&self, redirect: &str, now: u64) -> bool {
+        let expired = self
+            .client_secret_expires_at
+            .is_some_and(|t| t != 0 && t <= now);
+        let target = without_loopback_port(redirect);
+        !expired
+            && self
+                .redirect_uris
+                .iter()
+                .any(|u| without_loopback_port(u) == target)
+    }
+}
+
+/// A registration endpoint's answer: the client, or the server's error
+/// (`invalid_redirect_uri`, `invalid_client_metadata`…).
+pub fn parse_registration_response(status: u16, body: &[u8]) -> Result<Registration, OAuthError> {
+    let v: serde_json::Value = serde_json::from_slice(body)
+        .map_err(|_| OAuthError::Failed(format!("registration: HTTP {status}")))?;
+    if let Some(error) = v.get("error").and_then(|x| x.as_str()) {
+        return Err(OAuthError::Provider {
+            error: error.to_string(),
+            description: v
+                .get("error_description")
+                .and_then(|x| x.as_str())
+                .map(str::to_string),
+        });
+    }
+    if !(200..300).contains(&status) {
+        return Err(OAuthError::Failed(format!("registration: HTTP {status}")));
+    }
+    Registration::from_value(&v)
+        .ok_or_else(|| OAuthError::Failed("registration: no client_id".into()))
+}
+
+/// The metadata documents tried for `issuer`, in order: RFC 8414
+/// (`/.well-known/oauth-authorization-server`, inserted before the
+/// issuer's path: `https://h/.well-known/oauth-authorization-server/tenant`)
+/// and OpenID Connect discovery (`<issuer>/.well-known/openid-configuration`),
+/// OpenID Connect first when `oidc_first`; then, for an issuer with a path,
+/// the OpenID document inserted the RFC 8414 way (RFC 8414 §5).
+pub fn discovery_urls(issuer: &str, oidc_first: bool) -> Vec<String> {
+    let issuer = issuer.trim_end_matches('/');
+    let after_scheme = issuer.find("://").map_or(0, |i| i + 3);
+    let (origin, path) = match issuer[after_scheme..].find('/') {
+        Some(i) => issuer.split_at(after_scheme + i),
+        None => (issuer, ""),
+    };
+    let oauth = format!("{origin}/.well-known/oauth-authorization-server{path}");
+    let oidc = format!("{issuer}/.well-known/openid-configuration");
+    let mut urls = if oidc_first {
+        vec![oidc, oauth]
+    } else {
+        vec![oauth, oidc]
+    };
+    if !path.is_empty() {
+        urls.push(format!("{origin}/.well-known/openid-configuration{path}"));
+    }
+    urls
+}
+
+/// `http://<host>[:port]…` split at the host's end: (host, port, rest).
+fn loopback_parts(uri: &str) -> Option<(&str, &str)> {
+    let rest = uri.strip_prefix("http://")?;
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..end];
+    let host = match authority.rsplit_once(':') {
+        Some((h, port)) if port.bytes().all(|b| b.is_ascii_digit()) => h,
+        _ => authority,
+    };
+    matches!(host, "127.0.0.1" | "[::1]" | "localhost").then_some((host, &rest[end..]))
+}
+
+fn is_loopback(uri: &str) -> bool {
+    loopback_parts(uri).is_some()
+}
+
+/// `http://127.0.0.1:5123/callback` → `http://127.0.0.1/callback`.
+fn without_loopback_port(uri: &str) -> String {
+    match loopback_parts(uri) {
+        Some((host, rest)) => format!("http://{host}{rest}"),
+        None => uri.to_string(),
+    }
+}
+
+/// Standard base64 with padding (HTTP Basic).
+fn base64(data: &[u8]) -> String {
+    let mut s: String = base64url(data)
+        .chars()
+        .map(|c| match c {
+            '-' => '+',
+            '_' => '/',
+            c => c,
+        })
+        .collect();
+    while !s.len().is_multiple_of(4) {
+        s.push('=');
+    }
+    s
 }
 
 fn exchange(request: Request) -> Result<Tokens, OAuthError> {
@@ -712,6 +1153,283 @@ mod tests {
         assert_eq!(
             OAuth::oidc("https://id.example.com/", "c").name,
             "id.example.com"
+        );
+    }
+
+    // --- RFC 8414 discovery, RFC 7591 registration, blocking refresh (#32) ---
+
+    /// A local server: `answer(method, path, headers, body)` gives
+    /// `(status, JSON body)`. Returns its origin.
+    fn serve(answer: impl Fn(&str, &str, &str, &str) -> (u16, String) + Send + 'static) -> String {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                let mut parts = line.split_whitespace();
+                let (method, path) = (
+                    parts.next().unwrap_or("").to_string(),
+                    parts.next().unwrap_or("").to_string(),
+                );
+                let (mut headers, mut len) = (String::new(), 0);
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).unwrap_or(0) == 0 || h == "\r\n" {
+                        break;
+                    }
+                    let lower = h.to_ascii_lowercase();
+                    if let Some(v) = lower.strip_prefix("content-length:") {
+                        len = v.trim().parse().unwrap_or(0);
+                    }
+                    headers.push_str(&h);
+                }
+                let mut body = vec![0u8; len];
+                let _ = reader.read_exact(&mut body);
+                let (status, json) =
+                    answer(&method, &path, &headers, &String::from_utf8_lossy(&body));
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{json}",
+                    json.len()
+                );
+            }
+        });
+        origin
+    }
+
+    #[test]
+    fn discovery_urls_follow_rfc8414_path_insertion() {
+        assert_eq!(
+            discovery_urls("https://as.example/", false),
+            [
+                "https://as.example/.well-known/oauth-authorization-server",
+                "https://as.example/.well-known/openid-configuration",
+            ]
+        );
+        assert_eq!(
+            discovery_urls("https://as.example/tenant/1", true),
+            [
+                "https://as.example/tenant/1/.well-known/openid-configuration",
+                "https://as.example/.well-known/oauth-authorization-server/tenant/1",
+                "https://as.example/.well-known/openid-configuration/tenant/1",
+            ]
+        );
+    }
+
+    #[test]
+    fn metadata_must_be_the_issuers() {
+        let mut o = OAuth::server("https://as.example", "c");
+        let doc = serde_json::json!({
+            "issuer": "https://evil.example",
+            "authorization_endpoint": "https://evil.example/a",
+        });
+        assert!(o.apply_metadata("https://as.example", &doc).is_err());
+        assert!(o.authorize_url.is_empty());
+        let doc = serde_json::json!({
+            "issuer": "https://as.example/",
+            "authorization_endpoint": "https://as.example/a",
+            "token_endpoint": "https://as.example/t",
+            "registration_endpoint": "https://as.example/r",
+        });
+        o.apply_metadata("https://as.example", &doc).unwrap();
+        assert_eq!(
+            (
+                o.authorize_url.as_str(),
+                o.token_url.as_str(),
+                o.registration_url.as_str()
+            ),
+            (
+                "https://as.example/a",
+                "https://as.example/t",
+                "https://as.example/r"
+            )
+        );
+        assert!(o.scopes.is_empty());
+    }
+
+    #[test]
+    fn falls_back_from_rfc8414_to_openid_connect_and_back() {
+        // Only OpenID Connect discovery: a plain OAuth server tries RFC 8414 first.
+        let oidc_only = serve(|_, path, _, _| {
+            if path == "/.well-known/openid-configuration" {
+                (
+                    200,
+                    r#"{"authorization_endpoint":"A","token_endpoint":"T"}"#.into(),
+                )
+            } else {
+                (404, "{}".into())
+            }
+        });
+        let mut o = OAuth::server(&oidc_only, "c");
+        o.discover_blocking().unwrap();
+        assert_eq!((o.authorize_url.as_str(), o.token_url.as_str()), ("A", "T"));
+        // Only RFC 8414, with the issuer's path inserted.
+        let plain = serve(|_, path, _, _| {
+            if path == "/.well-known/oauth-authorization-server/realm" {
+                (200, r#"{"authorization_endpoint":"A2","token_endpoint":"T2","registration_endpoint":"R2"}"#.into())
+            } else {
+                (404, "{}".into())
+            }
+        });
+        let mut o = OAuth::oidc(format!("{plain}/realm"), "c");
+        o.discover_blocking().unwrap();
+        assert_eq!(
+            (o.authorize_url.as_str(), o.registration_url.as_str()),
+            ("A2", "R2")
+        );
+        // Nothing anywhere: the last error.
+        let none = serve(|_, _, _, _| (404, "{}".into()));
+        assert!(matches!(
+            OAuth::server(&none, "c").discover_blocking(),
+            Err(OAuthError::Failed(m)) if m.contains("HTTP 404")
+        ));
+    }
+
+    #[test]
+    fn registers_a_public_client() {
+        let origin = serve(|method, path, headers, body| {
+            match (method, path) {
+            ("GET", "/.well-known/oauth-authorization-server") => (
+                200,
+                r#"{"authorization_endpoint":"A","token_endpoint":"T","registration_endpoint":"REG"}"#
+                    .replace("REG", &format!("http://{}/register", host(headers))),
+            ),
+            ("POST", "/register") => {
+                let req: serde_json::Value = serde_json::from_str(body).unwrap();
+                assert_eq!(req["client_name"], "My App");
+                assert_eq!(req["token_endpoint_auth_method"], "none");
+                assert_eq!(req["application_type"], "native");
+                assert_eq!(req["grant_types"][1], "refresh_token");
+                assert_eq!(req["scope"], "read");
+                assert!(headers.contains("Bearer init-token"));
+                (
+                    201,
+                    serde_json::json!({
+                        "client_id": "dyn-1",
+                        "redirect_uris": req["redirect_uris"],
+                        "token_endpoint_auth_method": "none",
+                    })
+                    .to_string(),
+                )
+            }
+            _ => (404, "{}".into()),
+        }
+        });
+        let o = OAuth::server(&origin, "")
+            .dynamic_registration("My App")
+            .registration_token("init-token")
+            .scope("read");
+        assert!(o.wants_registration() && o.needs_discovery());
+        let r = o
+            .register_blocking("http://127.0.0.1:5000/callback")
+            .unwrap();
+        assert_eq!(r.client_id, "dyn-1");
+        assert_eq!(r.redirect_uris, ["http://127.0.0.1:5000/callback"]);
+        // Kept as JSON; a loopback redirect fits on any port.
+        let back = Registration::from_json(&r.to_json()).unwrap();
+        assert_eq!(back, r);
+        assert!(back.fits("http://127.0.0.1:6123/callback", 0));
+        assert!(!back.fits("prism-app:/oauth", 0));
+        let o = o.with_registration(&back);
+        assert_eq!(o.client_id, "dyn-1");
+        assert!(!o.wants_registration());
+    }
+
+    fn host(headers: &str) -> String {
+        headers
+            .lines()
+            .find_map(|l| l.strip_prefix("host: ").or(l.strip_prefix("Host: ")))
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn registration_answers_and_secrets() {
+        assert!(matches!(
+            parse_registration_response(400, br#"{"error":"invalid_redirect_uri","error_description":"no"}"#),
+            Err(OAuthError::Provider { error, .. }) if error == "invalid_redirect_uri"
+        ));
+        assert!(parse_registration_response(201, br#"{"client_secret":"s"}"#).is_err());
+        let r = parse_registration_response(
+            201,
+            br#"{"client_id":"c 1","client_secret":"p:w","client_secret_expires_at":100,"token_endpoint_auth_method":"client_secret_basic","redirect_uris":["x:/o"]}"#,
+        )
+        .unwrap();
+        assert!(r.fits("x:/o", 99) && !r.fits("x:/o", 100));
+        // A secret the server issued: HTTP Basic, both parts form-encoded.
+        let o = OAuth::new("A", "https://as.example/t", "").with_registration(&r);
+        let req = o.token_request(&[("grant_type", "refresh_token")]);
+        let auth = req
+            .headers
+            .iter()
+            .find(|(k, _)| k == "authorization")
+            .map(|(_, v)| v.clone())
+            .unwrap();
+        assert_eq!(
+            base64url_decode(auth.strip_prefix("Basic ").unwrap()).unwrap(),
+            b"c%201:p%3Aw"
+        );
+        let body = String::from_utf8(req.body.unwrap()).unwrap();
+        assert_eq!(body, "grant_type=refresh_token");
+        // client_secret_post: in the form.
+        let o = OAuth::new("A", "T", "c").client_secret("s");
+        let body = String::from_utf8(o.token_request(&[]).body.unwrap()).unwrap();
+        assert_eq!(body, "client_id=c&client_secret=s");
+        assert_eq!(base64(b"ab"), "YWI=");
+    }
+
+    #[test]
+    fn refreshes_on_this_thread() {
+        let origin = serve(|method, path, _, body| match (method, path) {
+            ("GET", "/.well-known/oauth-authorization-server") => (404, "{}".into()),
+            ("GET", "/.well-known/openid-configuration") => (
+                200,
+                r#"{"authorization_endpoint":"A","token_endpoint":"TOKEN"}"#.into(),
+            ),
+            ("POST", "/token") => {
+                let f = parse_query(body);
+                if f["grant_type"] == "refresh_token"
+                    && f["refresh_token"] == "rt"
+                    && f["client_id"] == "c"
+                {
+                    (
+                        200,
+                        r#"{"access_token":"new","token_type":"Bearer","expires_in":60}"#.into(),
+                    )
+                } else {
+                    (400, r#"{"error":"invalid_grant"}"#.into())
+                }
+            }
+            _ => (404, "{}".into()),
+        });
+        let mut o = OAuth::server(&origin, "c");
+        // Discovery points the token endpoint at this server.
+        o.token_url = format!("{origin}/token");
+        o.authorize_url = format!("{origin}/authorize");
+        let t = std::thread::spawn(move || o.refresh_blocking("rt"))
+            .join()
+            .unwrap()
+            .unwrap();
+        assert_eq!(t.access_token.as_deref(), Some("new"));
+        assert_eq!(t.refresh_token.as_deref(), Some("rt"));
+        // Endpoints unknown: discovered first (RFC 8414 404, then OpenID).
+        let mut o = OAuth::server(&origin, "c");
+        o.discover_blocking().unwrap();
+        assert_eq!(o.token_url, "TOKEN");
+        let bad = OAuth::new("A", format!("{origin}/token"), "c");
+        assert!(matches!(
+            bad.refresh_blocking("wrong"),
+            Err(OAuthError::Provider { error, .. }) if error == "invalid_grant"
+        ));
+        assert!(
+            OAuth::new("A", format!("{origin}/token"), "")
+                .refresh_blocking("rt")
+                .is_err()
         );
     }
 }

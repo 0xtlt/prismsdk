@@ -164,6 +164,19 @@ The first version, not yet on crates.io.
   `hit_test(false)` (`pointer-events: none`) and `inert(true)` styles (#19).
 - Runtime layers (`cx.add_layer`): entities mounted above the router, tabs,
   sheets and dialogs on every backend (#25).
+- `prism::oauth`: RFC 8414 discovery (`/.well-known/oauth-authorization-server`,
+  path inserted for issuers with a path) with fallback to and from OpenID
+  Connect discovery, `OAuth::server(issuer, client_id)` for plain OAuth 2
+  servers; RFC 7591 dynamic client registration (`.dynamic_registration(name)`,
+  a public client registered once and kept in secure storage, a returned
+  secret used as `client_secret_basic` or `_post`); `resolve`,
+  `refresh_blocking` for background threads and a public `token_request`
+  (#32).
+- `picture(url).header(name, value)`: remote images behind a bearer token,
+  loaded natively with the header on every backend (Rust loader on Apple,
+  `HttpURLConnection` on Android, `URLRequest` on watchOS, GTK) and fetched by
+  the server on the web (a session-bound `/_prism/picture/<id>`: the token
+  never reaches the browser). GTK now loads remote pictures at all (#32).
 
 ### Changed
 

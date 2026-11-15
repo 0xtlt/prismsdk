@@ -1414,6 +1414,11 @@ impl Widgets for Gtk {
                 }
             }
             View::Check(_, b) => b.set_label((!text.is_empty()).then_some(text)),
+            // A remote image (with its headers, `Picture::header`): loaded
+            // on a background thread.
+            View::Picture(_, p) if prism_native::images::is_remote(text) => {
+                load_remote_picture(p, text);
+            }
             View::Picture(_, p) => {
                 let path = if text.starts_with('/') {
                     Some(std::path::PathBuf::from(text))
@@ -3090,4 +3095,41 @@ fn save_png(window: &gtk::Widget, path: &str) {
         Ok(()) => eprintln!("prism-linux: snapshot written to {path}"),
         Err(e) => eprintln!("prism-linux: snapshot failed: {e}"),
     }
+}
+
+// --- Remote pictures (#32) ----------------------------------------------------------------
+
+/// Downloads `src` (a URL, maybe with header lines) off the main thread and
+/// shows it in `p`, unless `p` was given another source meanwhile.
+fn load_remote_picture(p: &gtk::Picture, src: &str) {
+    p.set_paintable(None::<&gdk::Paintable>);
+    // SAFETY: the key only ever holds a `String`.
+    unsafe { p.set_data("prism-src", src.to_string()) };
+    let (picture, src) = (p.clone(), src.to_string());
+    glib::spawn_future_local(async move {
+        let source = src.clone();
+        let bytes =
+            gio::spawn_blocking(move || prism_native::images::load(&source, &Default::default()))
+                .await
+                .ok()
+                .flatten();
+        // SAFETY: as above, a `String`.
+        let current = unsafe {
+            picture
+                .data::<String>("prism-src")
+                .map(|s| s.as_ref().clone())
+        };
+        if current.as_deref() != Some(src.as_str()) {
+            return;
+        }
+        let texture =
+            bytes.and_then(|b| gdk::Texture::from_bytes(&glib::Bytes::from_owned(b)).ok());
+        match texture {
+            Some(t) => picture.set_paintable(Some(&t)),
+            None => eprintln!(
+                "prism-linux: could not load image {:?}",
+                prism_core::picture_source(&src).0
+            ),
+        }
+    });
 }

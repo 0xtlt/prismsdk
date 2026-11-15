@@ -755,7 +755,10 @@ fn runs_html_with(config: &str, style: &mut dyn FnMut(&str) -> String) -> String
 }
 
 /// Remote URLs as-is; anything else is an app asset under `/assets/`.
+/// Headers (`Picture::header`) are dropped: only a [`WebApp`](crate::WebApp)
+/// can serve such a picture (its server fetches it with them).
 pub fn picture_url(src: &str) -> String {
+    let src = prism_core::picture_source(src).0;
     if src.starts_with("http://")
         || src.starts_with("https://")
         || src.starts_with("data:")

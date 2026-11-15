@@ -149,8 +149,20 @@ impl WebApp {
     }
 
     /// The URL of a picture source: remote and absolute URLs as they are,
-    /// app assets hashed (`/assets/logo.<hash>.png`, maybe on the CDN).
+    /// app assets hashed (`/assets/logo.<hash>.png`, maybe on the CDN). A
+    /// remote picture with headers (`Picture::header`) is fetched by this
+    /// server: its URL is `<base>/_prism/picture/<id>` (the headers stay
+    /// here). Pages bind it to their session; this one to none.
     pub fn picture_url(&self, src: &str) -> String {
+        self.session_picture_url(None, src)
+    }
+
+    /// [`picture_url`](Self::picture_url) for the session `sid`: a picture
+    /// with headers only loads for that browser.
+    fn session_picture_url(&self, sid: Option<&str>, src: &str) -> String {
+        if let Some(url) = crate::pictures::proxied(&self.inner.base, sid, src) {
+            return url;
+        }
         if src.starts_with("http://")
             || src.starts_with("https://")
             || src.starts_with("data:")
@@ -165,9 +177,11 @@ impl WebApp {
         )
     }
 
-    pub(crate) fn asset_urls(&self) -> AssetUrls {
-        let app = self.clone();
-        Arc::new(move |src: &str| app.picture_url(src))
+    /// Picture URLs ([`picture_url`](Self::picture_url)) for the pages of
+    /// session `sid`.
+    pub(crate) fn session_asset_urls(&self, sid: &str) -> AssetUrls {
+        let (app, sid) = (self.clone(), sid.to_string());
+        Arc::new(move |src: &str| app.session_picture_url(Some(&sid), src))
     }
 
     /// The path inside the app for a request path (`/app/todos` → `/todos`).
@@ -210,7 +224,10 @@ impl WebApp {
         }
         let path = percent_decode(self.app_path(req.uri().path()));
         let headers = req.headers();
-        let mut response = if path == "/_prism/auth/callback" {
+        let mut response = if let Some(id) = path.strip_prefix("/_prism/picture/") {
+            // A picture with headers, fetched here for its session.
+            crate::pictures::serve(id, cookie_header(headers).and_then(session_id).as_deref())
+        } else if path == "/_prism/auth/callback" {
             // A sign-in provider's redirect: hand it to the session that asked.
             let mut r = Response::new(
                 crate::security::redirect_page(
@@ -423,10 +440,11 @@ impl WebApp {
         nonce: Option<&crate::CspNonce>,
     ) -> (String, bool) {
         let config = &self.inner.config;
+        let asset_urls = self.session_asset_urls(visitor.sid);
         let mut runtime =
             Runtime::with_options(&self.init_with(request), self.options(visitor, path.into()));
         let mut html = HtmlBackend::default();
-        html.asset_urls = Some(self.asset_urls());
+        html.asset_urls = Some(asset_urls);
         html.apply(&runtime.render());
         let not_found = runtime.app.shows_not_found();
         let title = match html.screen_title() {
@@ -936,6 +954,73 @@ mod tests {
         assert_eq!(sw.status(), StatusCode::OK);
         assert_eq!(header(&sw, "cache-control"), "no-cache");
         assert!(String::from_utf8_lossy(sw.body()).contains("showNotification"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn pictures_with_headers_are_fetched_by_the_server_for_their_session() {
+        use std::io::{Read, Write};
+        static UPSTREAM: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let n = s.read(&mut buf).unwrap_or(0);
+            let ok = String::from_utf8_lossy(&buf[..n]).contains("Bearer s3cret");
+            let _ = s.write_all(if ok {
+                b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 4\r\n\r\npng!"
+            } else {
+                b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n"
+            });
+        });
+        UPSTREAM.get_or_init(|| format!("http://{addr}/me.png"));
+        struct Avatar;
+        impl Render for Avatar {
+            fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+                picture(UPSTREAM.get().unwrap().as_str()).header("Authorization", "Bearer s3cret")
+            }
+        }
+        let config = AppConfig {
+            title: "Test".into(),
+            ..Default::default()
+        };
+        let init: AppInit = Arc::new(|cx: &mut App| {
+            let root = cx.new_entity(|_| Avatar);
+            cx.set_root(root);
+        });
+        let dir = std::env::temp_dir().join(format!("prism-webapp-pic-{}", std::process::id()));
+        let app = WebApp::new(config, init)
+            .data_dir(dir.join("data"))
+            .base_path("/app");
+        let page = get(
+            &app,
+            "/app/",
+            &[("cookie", "prism_sid=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")],
+        );
+        let html = String::from_utf8(page.body().clone()).unwrap();
+        assert!(!html.contains("s3cret"), "{html}");
+        let src = html
+            .split("src=\"/app/_prism/picture/")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .map(|id| format!("/app/_prism/picture/{id}"))
+            .expect("a proxied picture");
+        // Another browser cannot load it, even with the URL.
+        let other = get(
+            &app,
+            &src,
+            &[("cookie", "prism_sid=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")],
+        );
+        assert_eq!(other.status(), StatusCode::NOT_FOUND);
+        let image = get(
+            &app,
+            &src,
+            &[("cookie", "prism_sid=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")],
+        );
+        assert_eq!(image.status(), StatusCode::OK);
+        assert_eq!(image.body().as_slice(), b"png!");
+        assert_eq!(header(&image, "content-type"), "image/png");
         let _ = std::fs::remove_dir_all(dir);
     }
 

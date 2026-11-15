@@ -1744,7 +1744,10 @@ impl AppKit {
         let Some(img) =
             data.and_then(|d| NSImage::initWithData(objc2::AllocAnyThread::alloc(), &d))
         else {
-            eprintln!("prism-macos: could not load image {src:?}");
+            eprintln!(
+                "prism-macos: could not load image {:?}",
+                prism_core::picture_source(src).0
+            );
             return;
         };
         for (_, view) in waiting {

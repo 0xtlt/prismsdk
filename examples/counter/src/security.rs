@@ -6,6 +6,13 @@
 //! `PRISM_OAUTH_ISSUER`, by default `http://127.0.0.1:8765` (the Android
 //! emulator reaches the computer at 10.0.2.2). Real apps use
 //! `OAuth::google(client_id)` or `OAuth::oidc(issuer, client_id)`.
+//!
+//! The demo has no client id: it registers one (RFC 7591) the first time,
+//! kept in secure storage. Signed in, it shows the user's picture, which
+//! needs the access token (`picture(url).header(…)`), and refreshes the
+//! tokens on a background thread (`refresh_blocking`).
+//! `PRISM_OAUTH_TOKEN` starts with that access token (for screenshots:
+//! `mock-oidc.py --token <it>` accepts it).
 
 use prism::oauth::OAuth;
 use prism::prelude::*;
@@ -23,6 +30,10 @@ pub struct SecurityDemo {
     gated: bool,
     status: Option<String>,
     user: Option<String>,
+    /// The provider as `resolve` returned it (endpoints, registered client).
+    provider: Option<OAuth>,
+    access_token: Option<String>,
+    refresh_token: Option<String>,
 }
 
 fn issuer() -> String {
@@ -42,7 +53,18 @@ impl SecurityDemo {
             let b = cx.biometry().await;
             cx.update_entity(&this, |d, _| d.biometry = Some(b));
         });
-        SecurityDemo::default()
+        SecurityDemo {
+            access_token: std::env::var("PRISM_OAUTH_TOKEN").ok(),
+            ..Default::default()
+        }
+    }
+
+    fn provider() -> OAuth {
+        OAuth::oidc(issuer(), "")
+            .dynamic_registration("Prism Counter")
+            .name("Prism ID")
+            .scope("email")
+            .scope("profile")
     }
 
     fn error(cx: &App, e: &DeviceError) -> String {
@@ -129,13 +151,13 @@ impl SecurityDemo {
 
     fn oauth(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
-            let provider = OAuth::oidc(issuer(), "prism-demo")
-                .name("Prism ID")
-                .scope("email")
-                .scope("profile");
-            let r = provider.sign_in(&cx).await;
+            // Discovery and (once) registration, then the sign-in.
+            let r = match Self::provider().resolve(&cx).await {
+                Ok(provider) => provider.sign_in(&cx).await.map(|t| (provider, t)),
+                Err(e) => Err(e),
+            };
             cx.update_entity(&this, |d, cx| match r {
-                Ok(tokens) => {
+                Ok((provider, tokens)) => {
                     let claims = tokens.id_claims().unwrap_or_default();
                     let who = claims["email"]
                         .as_str()
@@ -145,8 +167,15 @@ impl SecurityDemo {
                     d.user = Some(who);
                     d.status = Some(strings::security_tokens(
                         cx,
-                        tokens.access_token.map_or(0, |t| t.len()).to_string(),
+                        tokens
+                            .access_token
+                            .as_ref()
+                            .map_or(0, |t| t.len())
+                            .to_string(),
                     ));
+                    d.provider = Some(provider);
+                    d.access_token = tokens.access_token;
+                    d.refresh_token = tokens.refresh_token;
                 }
                 Err(prism::oauth::OAuthError::Cancelled) => {
                     d.status = Some(strings::security_cancelled(cx))
@@ -154,6 +183,39 @@ impl SecurityDemo {
                 Err(e) => d.status = Some(strings::device_error(cx, e)),
             });
         });
+    }
+}
+
+impl SecurityDemo {
+    /// New tokens, from a background thread (as a blocking API client would
+    /// after a 401).
+    fn refresh(&mut self, cx: &mut Context<Self>) {
+        let (Some(provider), Some(refresh)) = (self.provider.clone(), self.refresh_token.clone())
+        else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let r = cx
+                .background(move || provider.refresh_blocking(&refresh))
+                .await;
+            cx.update_entity(&this, |d, cx| match r {
+                Ok(t) => {
+                    d.status = Some(strings::security_refreshed(
+                        cx,
+                        t.access_token.as_ref().map_or(0, |a| a.len()).to_string(),
+                    ));
+                    d.access_token = t.access_token;
+                    d.refresh_token = t.refresh_token;
+                }
+                Err(e) => d.status = Some(strings::device_error(cx, e)),
+            });
+        });
+    }
+
+    fn sign_out(&mut self) {
+        self.user = None;
+        self.access_token = None;
+        self.refresh_token = None;
     }
 }
 
@@ -239,10 +301,29 @@ impl Render for SecurityDemo {
             )
             .child(ui::divider())
             .child(text(strings::security_sign_in(cx)).semibold())
-            .child(muted(match &self.user {
-                Some(u) => strings::security_signed_in(cx, u),
-                None => strings::security_signed_out(cx),
-            }))
+            .child(
+                div()
+                    .flex_row()
+                    .items_center()
+                    .gap(12.)
+                    // The user's picture: it only loads with the access token.
+                    .when_some(self.access_token.clone(), |d, token| {
+                        d.child(
+                            picture(format!("{}/picture", issuer()))
+                                .header("Authorization", format!("Bearer {token}"))
+                                .alt(strings::security_avatar(cx))
+                                .size(px(40.))
+                                .rounded(20.),
+                        )
+                    })
+                    .child(muted(match &self.user {
+                        Some(u) => strings::security_signed_in(cx, u),
+                        None if self.access_token.is_some() => {
+                            strings::security_signed_in(cx, "Test User")
+                        }
+                        None => strings::security_signed_out(cx),
+                    })),
+            )
             .child(
                 div()
                     .flex_row()
@@ -263,12 +344,20 @@ impl Render for SecurityDemo {
                                 .on_click(cx.listener(|this, _, cx| this.oauth(cx))),
                         )
                     })
-                    .when(self.user.is_some(), |d| {
+                    .when(self.refresh_token.is_some(), |d| {
+                        d.child(
+                            ui::button(strings::security_refresh(cx))
+                                .small()
+                                .secondary()
+                                .on_click(cx.listener(|this, _, cx| this.refresh(cx))),
+                        )
+                    })
+                    .when(self.user.is_some() || self.access_token.is_some(), |d| {
                         d.child(
                             ui::button(strings::security_sign_out(cx))
                                 .small()
                                 .ghost()
-                                .on_click(cx.listener(|this, _, _| this.user = None)),
+                                .on_click(cx.listener(|this, _, _| this.sign_out())),
                         )
                     }),
             )
