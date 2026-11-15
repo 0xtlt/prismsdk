@@ -2,9 +2,9 @@
 
 use prism_core::{
     Backend, Context, Environment, FluentBuilder, IntoElement, Locale, NodeKind, ParentElement,
-    Path, Pose, Render, Segment, Styled, Transition, UiEvent,
+    Path, Pose, Render, Router, Segment, Styled, Transition, UiEvent,
     animation::{DEFAULT_ENTER, DEFAULT_EXIT},
-    button, div, rgb, shape,
+    button, div, rgb, screen, shape,
 };
 
 use crate::common::{Call, Harness};
@@ -76,6 +76,80 @@ fn first_placement_is_instant_then_changes_animate() {
             .iter()
             .any(|c| matches!(c, Call::StyleAnimated(id, s, tr) if *id == b && *tr == t && s.background == Some(rgb(0xff0000)))),
         "the color change animates: {calls:?}"
+    );
+}
+
+/// A screen with a card that fills a row beside a box the button widens.
+struct Card {
+    wide: bool,
+}
+
+impl Render for Card {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        screen("Cards").child(
+            div()
+                .child(button("widen").on_click(cx.listener(|this, _, _| this.wide ^= true)))
+                .child(
+                    div()
+                        .flex_row()
+                        .child(div().h(10.).w(if self.wide { 100. } else { 50. }))
+                        .child(div().key("card").flex_1().h(10.).animate(250)),
+                ),
+        )
+    }
+}
+
+fn animated_frames(calls: &[Call]) -> Vec<&Call> {
+    calls
+        .iter()
+        .filter(|c| matches!(c, Call::FrameAnimated(..)))
+        .collect()
+}
+
+#[test]
+fn frames_the_platform_resizes_are_placed_not_animated() {
+    let mut h = Harness::new(|cx| {
+        let r = Router::new()
+            .route("/", |cx, _| cx.new_entity(|_| Card { wide: false }))
+            .build(cx);
+        cx.set_root(r);
+    });
+    h.layout(400., 800.);
+    let card = *h.w().of_kind(NodeKind::View).last().unwrap();
+    let before = h.w().frame(card);
+    h.r.widgets.take_calls();
+
+    // The screen's safe area becomes known (#41: a screen shown for the
+    // first time, a side bar).
+    h.r.widgets.screen_insets.left = 40.;
+    h.layout(400., 800.);
+    let calls = h.r.widgets.take_calls();
+    assert_ne!(h.w().frame(card), before);
+    assert_eq!(animated_frames(&calls), Vec::<&Call>::new());
+
+    // The window resizes (rotation, a foldable unfolding).
+    h.layout(700., 800.);
+    let calls = h.r.widgets.take_calls();
+    assert_eq!(h.w().frame(card).2, 700. - 40. - 50.);
+    assert_eq!(animated_frames(&calls), Vec::<&Call>::new());
+
+    // The same pass again: nothing moves, nothing animates.
+    h.layout(700., 800.);
+    assert!(h.r.widgets.take_calls().is_empty());
+
+    // The app's state changes the card's width: animated.
+    let b = h.w().by_text("widen");
+    let patches = h.rt.dispatch(UiEvent::Click(b));
+    h.r.apply(&patches);
+    h.layout(700., 800.);
+    let calls = h.r.widgets.take_calls();
+    assert_eq!(
+        animated_frames(&calls),
+        vec![&Call::FrameAnimated(
+            card,
+            (100., 0., 700. - 40. - 100., 10.),
+            Transition::ease(250)
+        )]
     );
 }
 

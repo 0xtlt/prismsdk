@@ -391,6 +391,12 @@ pub struct NativeRenderer<W: Widgets> {
     window: (f32, f32),
     /// What layers keep clear of (`Widgets::layer_insets`).
     layer_insets: Insets,
+    /// The area each screen and overlay content was last laid out in.
+    areas: HashMap<NodeId, Viewport>,
+    /// Set while laying out what the platform resized (the window, its safe
+    /// area, a screen shown for the first time): frames are placed, not
+    /// animated, as `transition` animates what the app changes (#41).
+    settling: bool,
 }
 
 impl<W: Widgets> NativeRenderer<W> {
@@ -419,6 +425,8 @@ impl<W: Widgets> NativeRenderer<W> {
             overlays: HashMap::new(),
             window: (0., 0.),
             layer_insets: Insets::default(),
+            areas: HashMap::new(),
+            settling: false,
         }
     }
 
@@ -514,7 +522,10 @@ impl<W: Widgets> NativeRenderer<W> {
         if previous == Some(frame) {
             return;
         }
-        let transition = e.style.transition.filter(|_| !self.env.reduce_motion);
+        let transition = e
+            .style
+            .transition
+            .filter(|_| !self.env.reduce_motion && !self.settling);
         let enter = e
             .style
             .animations
@@ -626,6 +637,7 @@ impl<W: Widgets> NativeRenderer<W> {
     /// `insets` (e.g. the iOS safe area) are added to the root's padding, so the
     /// root's background still fills the screen edge to edge.
     pub fn layout(&mut self, width: f32, height: f32, insets: Insets) {
+        self.settling = (width, height) != self.window || insets != self.insets;
         if insets != self.insets {
             self.insets = insets;
             if let Some(root) = self.root {
@@ -650,6 +662,16 @@ impl<W: Widgets> NativeRenderer<W> {
         self.update_sticky();
         self.window = (width, height);
         self.layout_layers();
+        self.settling = false;
+    }
+
+    /// Runs `f`, the layout of `id` in `area`, settling if the area changed
+    /// since `id` was last laid out.
+    fn in_area(&mut self, id: NodeId, area: Viewport, f: impl FnOnce(&mut Self)) {
+        let outer = self.settling;
+        self.settling |= self.areas.insert(id, area) != Some(area);
+        f(self);
+        self.settling = outer;
     }
 
     /// Lays each layer out over the whole window, inside the safe area.
@@ -707,8 +729,10 @@ impl<W: Widgets> NativeRenderer<W> {
                 .taffy
                 .layout(layout)
                 .map_or((0., 0.), |l| (l.size.width, l.size.height));
-            self.set_frame(content, vp.x, vp.y, size.0, size.1);
-            self.place_children(content);
+            self.in_area(content, vp, |r| {
+                r.set_frame(content, vp.x, vp.y, size.0, size.1);
+                r.place_children(content);
+            });
             self.widgets.set_content_size(&view, size.0, size.1);
         }
     }
@@ -869,8 +893,12 @@ impl<W: Widgets> NativeRenderer<W> {
         let layout = sc.layout;
         let _ = self.taffy.set_style(layout, style);
         if self.compute_with_rules(layout, vp.width, vp.height) {
-            self.set_frame(screen, vp.x, vp.y, vp.width, vp.height);
-            self.place_children(screen);
+            // A screen not shown yet is laid out in the platform's default
+            // size, then again once shown: not an animation (#41).
+            self.in_area(screen, vp, |r| {
+                r.set_frame(screen, vp.x, vp.y, vp.width, vp.height);
+                r.place_children(screen);
+            });
         }
     }
 
@@ -1381,6 +1409,7 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                         self.by_layout.remove(&e.layout);
                         self.stack_screens.remove(id);
                         self.overlays.remove(id);
+                        self.areas.remove(id);
                         let _ = self.taffy.remove(e.layout);
                     }
                 }
