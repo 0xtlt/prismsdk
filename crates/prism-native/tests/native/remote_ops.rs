@@ -576,3 +576,52 @@ fn hosts_learn_which_stacks_and_screens_hide_the_header() {
     assert_eq!(value_of("stack"), Some(STACK_NO_HEADER as f64));
     assert_eq!(value_of("screen"), Some(1.));
 }
+
+#[test]
+fn sticky_horizontal_scroll_and_baseline_ops() {
+    let mut w = RemoteWidgets::new(|r| match r.kind {
+        // A host that knows baselines: 80% of the font size from the top.
+        "baseline" => (0., r.font_size * 0.8),
+        _ => measure(r),
+    });
+    w.create(4, NodeKind::Scroll);
+    let s = Style {
+        scroll_axis: prism_core::ScrollAxis::Horizontal,
+        ..Style::default()
+    };
+    w.set_style(&4, &s);
+    assert_eq!(last(&w)["s"]["hscroll"], json!(true));
+    w.set_style(&4, &Style::default());
+    assert_eq!(last(&w)["s"].get("hscroll"), None, "vertical: no key");
+
+    let sticky = prism_native::Sticky {
+        top: 20.,
+        inset: 8.,
+        max_offset: 300.,
+    };
+    w.set_sticky(&9, Some((&4, sticky)));
+    assert_eq!(
+        last(&w),
+        json!({"op": "sticky", "id": 9, "scroll": 4, "top": 20., "inset": 8., "max": 300.})
+    );
+    w.set_sticky(&9, None);
+    assert_eq!(last(&w), json!({"op": "sticky", "id": 9, "scroll": null}));
+
+    w.create(5, NodeKind::Text);
+    w.set_style(
+        &5,
+        &Style {
+            font_size: 20.,
+            ..Style::default()
+        },
+    );
+    assert_eq!(w.baseline(&5, 100., 24.), Some(16.));
+    w.create(6, NodeKind::View);
+    assert_eq!(w.baseline(&6, 100., 24.), None, "no text, no baseline");
+    let mut old = RemoteWidgets::new(|r| match r.kind {
+        "baseline" => (0., 0.),
+        _ => measure(r),
+    });
+    old.create(5, NodeKind::Text);
+    assert_eq!(old.baseline(&5, 100., 24.), None, "unknown: estimated");
+}

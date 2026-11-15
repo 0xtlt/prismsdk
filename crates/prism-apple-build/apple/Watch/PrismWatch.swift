@@ -81,6 +81,20 @@ public func prismWatchMeasure(_ kind: UnsafePointer<CChar>, _ text: UnsafePointe
     }
     var result: CGSize
     switch kind {
+    case "baseline":
+        // `items_baseline()`: `text` is the leaf's kind, `maxWidth` its
+        // height; the answer is the distance from its top to the first
+        // baseline. Text sits at the top of its frame; fields and picker
+        // rows center one line.
+        let height = maxWidth.isFinite ? maxWidth : 0
+        switch String(cString: text) {
+        case "text", "button", "timer":
+            result = CGSize(width: 0, height: uiFont.ascender)
+        case "text_input", "picker", "date_picker":
+            result = CGSize(width: 0, height: max(0, (height - uiFont.lineHeight) / 2) + uiFont.ascender)
+        default:
+            result = .zero
+        }
     case "text", "button", "timer":
         result = textSize(String(cString: text))
         if String(cString: text).isEmpty && kind != "timer" { result.width = 0 }
@@ -225,6 +239,8 @@ struct Node {
     var loop: PrismLoop?
     /// A shape's paths, in points (see `PrismShape`).
     var paths: [[String: Any]] = []
+    /// `.sticky()`: the scroll view it follows and its range there.
+    var sticky: PrismSticky?
 
     func num(_ k: String, _ d: Double = 0) -> Double { (style[k] as? NSNumber)?.doubleValue ?? d }
     /// The node's box: its radius on the corners it rounds (`corners` bits:
@@ -315,6 +331,10 @@ final class PrismStore: ObservableObject {
                 nodes[id]?.swipeLeft = p["left"] as? Bool ?? false
                 nodes[id]?.swipeRight = p["right"] as? Bool ?? false
             case "scrollev": nodes[id]?.scrollEvents = p["on"] as? Bool ?? false
+            case "sticky":
+                let sticky = PrismSticky(p)
+                nodes[id]?.sticky = sticky
+                if let sticky { PrismScrollState.shared.watched.insert(sticky.scroll) }
             case "alert": alert = p["alert"] as? [String: Any]
             default: break
             }
@@ -554,12 +574,15 @@ struct NodeView: View {
             if store.snapshotting {
                 placed(n.children)
             } else {
+                let horizontal = n.style["hscroll"] as? Bool ?? false
                 ScrollViewReader { proxy in
-                    ScrollView {
+                    ScrollView(horizontal ? .horizontal : .vertical) {
                         placed(n.children)
                             .frame(width: n.content.width, height: n.content.height, alignment: .topLeading)
                             .background(GeometryReader { g in
                                 Color.clear.onChange(of: g.frame(in: .named("s\(id)")).minY) { _, y in
+                                    guard !horizontal else { return }
+                                    PrismScrollState.shared.scrolled(id, -y)
                                     if n.scrollEvents { send(["t": "scroll", "id": id, "o": -y, "v": n.frame.height]) }
                                 }
                             })
@@ -588,7 +611,11 @@ struct NodeView: View {
             Color.clear
             ForEach(children, id: \.self) { c in
                 let f = store.nodes[c]?.frame ?? .zero
-                NodeView(id: c).offset(x: f.minX, y: f.minY)
+                if let sticky = store.nodes[c]?.sticky {
+                    NodeView(id: c).offset(x: f.minX, y: f.minY).modifier(StickyShift(sticky: sticky)).zIndex(1)
+                } else {
+                    NodeView(id: c).offset(x: f.minX, y: f.minY)
+                }
             }
             ForEach(store.ghosts.filter { $0.value.parent == id }.map(\.key), id: \.self) { g in
                 if let ghost = store.ghosts[g] {
@@ -607,6 +634,47 @@ struct NodeView: View {
                 send(["t": "back", "id": stack, "depth": 0])
             }
         })
+    }
+}
+
+/// Where a `.sticky()` node sits in its scroll view (Rust's `sticky` op).
+struct PrismSticky: Equatable {
+    var scroll: UInt64
+    var top: Double
+    var inset: Double
+    var max: Double
+
+    init?(_ p: [String: Any]) {
+        guard let scroll = (p["scroll"] as? NSNumber)?.uint64Value else { return nil }
+        self.scroll = scroll
+        top = (p["top"] as? NSNumber)?.doubleValue ?? 0
+        inset = (p["inset"] as? NSNumber)?.doubleValue ?? 0
+        max = (p["max"] as? NSNumber)?.doubleValue ?? 0
+    }
+
+    /// How far down it moves with the content scrolled by `y`.
+    func offset(_ y: Double) -> Double { Swift.min(Swift.max(y + inset - top, 0), Swift.max(max, 0)) }
+}
+
+/// Scroll offsets of the scroll views that have sticky children: only the
+/// sticky views observe them, so scrolling does not redraw the tree.
+final class PrismScrollState: ObservableObject {
+    static let shared = PrismScrollState()
+    @Published var offsets: [UInt64: Double] = [:]
+    var watched: Set<UInt64> = []
+
+    func scrolled(_ id: UInt64, _ y: Double) {
+        if watched.contains(id), offsets[id] != y { offsets[id] = y }
+    }
+}
+
+/// Moves a sticky view down as its scroll view scrolls (its frame stays).
+struct StickyShift: ViewModifier {
+    @ObservedObject var scroll = PrismScrollState.shared
+    let sticky: PrismSticky
+
+    func body(content: Content) -> some View {
+        content.offset(y: sticky.offset(scroll.offsets[sticky.scroll] ?? 0))
     }
 }
 

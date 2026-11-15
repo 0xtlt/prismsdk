@@ -1586,3 +1586,113 @@ fn the_root_stack_and_its_screens_fill_the_window() {
         assert!(sheet.contains(rule), "{rule}");
     }
 }
+
+// --- Grid, baseline, aspect ratio, sticky/fixed, own width (#13) -------------------
+
+fn style_of(mut d: impl Styled) -> Style {
+    d.style_mut().clone()
+}
+
+#[test]
+fn grids_gaps_and_placement_become_css_grid() {
+    let s = style_of(
+        div()
+            .grid()
+            .grid_cols([auto_fill(minmax(172., fr(1.)))])
+            .grid_rows([px(40.).into(), GridTrack::Auto])
+            .grid_auto_rows(fr(1.))
+            .gap_x(12.)
+            .gap_y(8.),
+    );
+    let c = css(NodeKind::View, &s);
+    assert!(c.contains("display:grid;justify-items:stretch;"), "{c}");
+    assert!(!c.contains("display:flex"), "{c}");
+    assert!(c.contains("grid-template-columns:repeat(auto-fill,minmax(172px,1fr));"));
+    assert!(c.contains("grid-template-rows:40px auto;"));
+    assert!(c.contains("grid-auto-rows:1fr;"));
+    assert!(c.contains("column-gap:12px;row-gap:8px;"));
+    let c = css(NodeKind::View, &style_of(div().grid().cols(3)));
+    assert!(
+        c.contains("grid-template-columns:repeat(3,minmax(0px,1fr));"),
+        "{c}"
+    );
+
+    let item = |d: prism_core::Div| css(NodeKind::View, &style_of(d));
+    assert!(item(div().col_span(2)).contains("grid-column:span 2;"));
+    assert!(item(div().col_start(2).col_span(3)).contains("grid-column:2 / span 3;"));
+    assert!(item(div().row_start(-1)).contains("grid-row:-1;"));
+    assert!(
+        !item(div()).contains("grid-"),
+        "no grid properties by default"
+    );
+}
+
+#[test]
+fn baseline_aspect_ratio_weights_sticky_and_fixed_css() {
+    let c = |d: prism_core::Div| css(NodeKind::View, &style_of(d));
+    assert!(c(div().flex_row().items_baseline()).contains("align-items:baseline;"));
+    assert!(c(div().self_baseline()).contains("align-self:baseline;"));
+    assert!(c(div().aspect_ratio(1.5)).contains("aspect-ratio:1.5;"));
+    assert!(c(div().flex_grow(3.).flex_shrink(0.)).contains("flex:3 0 auto;"));
+    let sticky = c(div().sticky().top(8.));
+    assert!(
+        sticky.contains("position:sticky;z-index:1;inset-block-start:8px;"),
+        "{sticky}"
+    );
+    let fixed = c(div().fixed().bottom(16.).right(16.));
+    assert!(fixed.contains("position:fixed;"), "{fixed}");
+    assert!(
+        fixed.contains("inset-block-end:16px;inset-inline-end:16px;"),
+        "{fixed}"
+    );
+}
+
+#[test]
+fn horizontal_scrolls_and_own_width_rules_in_ops_and_markup() {
+    let mut e = Encoder::default();
+    let mut sx = scroll_x();
+    let hs = sx.style_mut().clone();
+    let card = style_of(
+        div()
+            .when_width_at_least(600., |s| s.gap(24.))
+            .when_width_at_least(300., |s| s.flex_row()),
+    )
+    .resolve(Default::default());
+    let out = e.encode(&[
+        create(1, NodeKind::Scroll),
+        Patch::SetStyle {
+            id: 1,
+            style: hs.clone(),
+        },
+        create(2, NodeKind::View),
+        Patch::SetStyle {
+            id: 2,
+            style: card.clone(),
+        },
+    ]);
+    assert_eq!(out[1]["hx"], json!(true));
+    assert!(out[1]["css"].as_str().unwrap().contains("overflow-x:auto;"));
+    assert!(out[1].get("cq").is_none());
+    // Base CSS, then one variant per threshold, smallest first.
+    let base = out[3]["css"].as_str().unwrap();
+    assert!(base.contains("flex-direction:column;"));
+    let cq = out[3]["cq"].as_array().unwrap();
+    assert_eq!(cq.len(), 2);
+    assert_eq!(cq[0][0], json!(300.));
+    assert!(cq[0][1].as_str().unwrap().contains("flex-direction:row;"));
+    assert!(!cq[0][1].as_str().unwrap().contains("gap:24px"));
+    assert_eq!(cq[1][0], json!(600.));
+    let wide = cq[1][1].as_str().unwrap();
+    assert!(wide.contains("flex-direction:row;") && wide.contains("gap:24px;"));
+
+    let mut b = HtmlBackend::default();
+    b.apply(&[
+        create(1, NodeKind::Scroll),
+        Patch::SetStyle { id: 1, style: hs },
+        Patch::SetRoot { id: 1 },
+    ]);
+    assert!(
+        b.to_html()
+            .contains(r#"class="prism-scroll prism-scroll-x""#)
+    );
+}

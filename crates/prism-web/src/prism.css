@@ -17,6 +17,15 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sa
 :focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
 .prism-title { margin: 0; font: inherit; }
 .prism-scroll { overflow-y: auto; overscroll-behavior: contain; }
+/* Horizontal scroll views: a row whose items keep their size. */
+.prism-scroll-x { overflow-x: auto; overflow-y: hidden; }
+.prism-scroll-x > * { flex-shrink: 0 !important; }
+/* `.fixed()` nodes are placed against the screen (or tab) they are on, like
+   natively: below its header, above the tab bar, never scrolling. The
+   containing block is the area holding the screen (a stack's body, the tab
+   panels), not the screen itself: a screen taller than the window scrolls by
+   itself, and a fixed node must not scroll with it. */
+.prism-body, .prism-panels, :not(.prism-body) > [data-kind="screen"] { contain: layout; }
 .prism-tabs { display: flex; flex-direction: column; }
 .prism-panels { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .prism-panels > * { flex: 1; display: flex; flex-direction: column; }

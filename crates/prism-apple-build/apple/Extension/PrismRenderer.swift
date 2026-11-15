@@ -136,7 +136,7 @@ private func prismContainer(_ n: PNode) -> AnyView {
     }
     let content = ForEach(0..<items.count, id: \.self) { items[$0] }
     if row {
-        let a: VerticalAlignment = ai == "s" ? .top : ai == "e" ? .bottom : .center
+        let a: VerticalAlignment = ai == "s" ? .top : ai == "e" ? .bottom : ai == "b" ? .firstTextBaseline : .center
         return AnyView(HStack(alignment: a, spacing: spacing) { content })
     }
     let a: HorizontalAlignment = ai == "c" ? .center : ai == "e" ? .trailing : .leading

@@ -2987,6 +2987,7 @@ dependencies = [
  "arrayvec",
  "serde",
  "slotmap",
+ "smallvec",
 ]
 
 [[package]]

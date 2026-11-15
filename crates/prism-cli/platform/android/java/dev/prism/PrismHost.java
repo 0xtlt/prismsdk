@@ -31,6 +31,7 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.PopupMenu;
 import android.widget.ProgressBar;
+import android.widget.HorizontalScrollView;
 import android.widget.ScrollView;
 import android.widget.Switch;
 import android.widget.TextView;
@@ -179,6 +180,9 @@ public final class PrismHost {
         // Form controls (PrismForms): the config string, accessibility.
         String config = "";
         String a11yLabel, a11yValue, announced;
+        // `.sticky()`: the scroll view it follows (-1: none) and its range.
+        long stickyScroll = -1;
+        float stickyTop, stickyInset, stickyMax;
     }
 
     static void send(JSONObject event) {
@@ -218,6 +222,7 @@ public final class PrismHost {
 
     /** Natural size of a leaf, in pixels: {width, height}. */
     public static float[] measure(String kind, String text, float size, int weight, float maxWidth) {
+        if (kind.equals("baseline")) return baseline(text, size, weight, maxWidth);
         float[] form = PrismForms.measure(kind, text, size, weight, maxWidth);
         if (form != null) return form;
         TextView v;
@@ -253,6 +258,36 @@ public final class PrismHost {
         return new float[]{w, v.getMeasuredHeight()};
     }
 
+    /**
+     * `items_baseline()`: {0, distance from the top of a `kind` leaf drawn
+     * `height` px tall to its first text baseline}, {0, 0} if unknown.
+     */
+    static float[] baseline(String kind, float size, int weight, float height) {
+        TextView v;
+        switch (kind) {
+            case "text": v = new TextView(activity); v.setPadding(0, 0, 0, 0); break;
+            case "timer": v = new TextView(activity); v.setPadding(0, 0, 0, 0); v.setGravity(Gravity.CENTER); break;
+            case "button": v = new Button(activity); ((Button) v).setAllCaps(false); break;
+            case "text_input": v = new EditText(activity); v.setSingleLine(true); break;
+            case "date_picker": {
+                View d = PrismForms.dateField(new Node());
+                if (!(d instanceof TextView)) return new float[]{0, 0};
+                v = (TextView) d;
+                break;
+            }
+            default: return new float[]{0, 0};
+        }
+        v.setText("Ag");
+        v.setTextSize(TypedValue.COMPLEX_UNIT_PX, size > 0 ? size : 17 * density);
+        v.setTypeface(Typeface.create(Typeface.DEFAULT, Math.max(100, Math.min(900, weight)), false));
+        int unspecified = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED);
+        int h = Math.round(height);
+        v.measure(unspecified, h > 0 ? View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY) : unspecified);
+        v.layout(0, 0, v.getMeasuredWidth(), v.getMeasuredHeight());
+        int b = v.getBaseline();
+        return new float[]{0, Math.max(0, b)};
+    }
+
     // --- Ops --------------------------------------------------------------------------------
 
     static void op(JSONObject p) throws JSONException {
@@ -282,9 +317,22 @@ public final class PrismHost {
         switch (op) {
             case "style": {
                 n.style = p.getJSONObject("s");
+                if (n.kind.equals("scroll")) setScrollAxis(n, n.style.optBoolean("hscroll"));
                 JSONObject anim = p.optJSONObject("anim");
-                if (anim != null) PrismMotion.style(n.view, anim, () -> applyStyle(n));
+                if (anim != null) PrismMotion.style(n.view, anim, () -> { applyStyle(n); applySticky(n); });
                 else applyStyle(n);
+                applySticky(n);
+                break;
+            }
+            case "sticky": {
+                long was = n.stickyScroll;
+                n.stickyScroll = p.isNull("scroll") ? -1 : p.optLong("scroll", -1);
+                n.stickyTop = (float) p.optDouble("top", 0);
+                n.stickyInset = (float) p.optDouble("inset", 0);
+                n.stickyMax = (float) p.optDouble("max", 0);
+                PrismLayout.setRaised(n.view, n.stickyScroll >= 0);
+                if (n.stickyScroll < 0 && was >= 0) PrismMotion.transform(n.view, n.style.optJSONArray("tf"));
+                applySticky(n);
                 break;
             }
             case "exit": PrismMotion.exit(n.view, p.getJSONObject("to"), p.getJSONObject("anim")); break;
@@ -416,17 +464,8 @@ public final class PrismHost {
                 break;
             }
             case "scroll": {
-                ScrollView s = new ScrollView(activity);
-                s.setFillViewport(false);
                 n.host = new PrismLayout(activity);
-                s.addView(n.host, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-                s.setOnScrollChangeListener((v, x, y, ox, oy) -> {
-                    if (!n.scrollEvents) return;
-                    JSONObject ev = event("scroll", id);
-                    try { ev.put("o", y); ev.put("v", v.getHeight()); } catch (JSONException ignored) {}
-                    send(ev);
-                });
-                n.view = s;
+                n.view = newScroll(n, false);
                 break;
             }
             case "stack": {
@@ -837,7 +876,7 @@ public final class PrismHost {
             if (!(n.view instanceof Button) || bg != null) n.view.setBackground(d);
             // Outlines clip to one radius only.
             n.view.setClipToOutline(radius > 0 && corners == 15);
-        } else if (n.host != null && !(n.view instanceof ScrollView)) {
+        } else if (n.host != null && !(n.view instanceof ScrollView) && !(n.view instanceof HorizontalScrollView)) {
             n.view.setBackground(null);
         }
         n.view.setAlpha((float) s.optDouble("opacity", 1));
@@ -857,6 +896,68 @@ public final class PrismHost {
             }
         }
         PrismForms.style(n);
+    }
+
+    // --- Scroll views: axis and sticky children ----------------------------------------------
+
+    /** A vertical or horizontal scroll view around `n.host`, reporting scrolls. */
+    static FrameLayout newScroll(Node n, boolean horizontal) {
+        FrameLayout s;
+        if (horizontal) {
+            HorizontalScrollView h = new HorizontalScrollView(activity);
+            h.setFillViewport(false);
+            s = h;
+        } else {
+            ScrollView v = new ScrollView(activity);
+            v.setFillViewport(false);
+            s = v;
+        }
+        s.addView(n.host, horizontal
+                ? new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT)
+                : new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        long id = n.id;
+        s.setOnScrollChangeListener((v, x, y, ox, oy) -> {
+            if (horizontal) return;
+            for (Node c : nodes.values()) if (c.stickyScroll == id) applySticky(c);
+            if (!n.scrollEvents) return;
+            JSONObject ev = event("scroll", id);
+            try { ev.put("o", y); ev.put("v", v.getHeight()); } catch (JSONException ignored) {}
+            send(ev);
+        });
+        return s;
+    }
+
+    /** `scroll_x()`: swaps the scroll view for one of the other axis, in place. */
+    static void setScrollAxis(Node n, boolean horizontal) {
+        if (n.host == null || horizontal == (n.view instanceof HorizontalScrollView)) return;
+        View old = n.view;
+        ((ViewGroup) old).removeView(n.host);
+        FrameLayout s = newScroll(n, horizontal);
+        ViewGroup.LayoutParams lp = old.getLayoutParams();
+        ViewGroup parent = (ViewGroup) old.getParent();
+        if (parent != null) {
+            int i = parent.indexOfChild(old);
+            parent.removeViewAt(i);
+            parent.addView(s, i, lp);
+        } else if (lp != null) {
+            s.setLayoutParams(lp);
+        }
+        s.setContentDescription(old.getContentDescription());
+        s.setImportantForAccessibility(old.getImportantForAccessibility());
+        s.setVisibility(old.getVisibility());
+        n.view = s;
+        setClickable(n);
+    }
+
+    /** Moves a sticky view down as its scroll view scrolls (its frame stays). */
+    static void applySticky(Node n) {
+        if (n.stickyScroll < 0) return;
+        Node scroll = nodes.get(n.stickyScroll);
+        if (scroll == null) return;
+        float y = scroll.view.getScrollY();
+        float offset = Math.max(0, Math.min(Math.max(0, n.stickyMax), y + n.stickyInset - n.stickyTop));
+        JSONArray tf = n.style.optJSONArray("tf");
+        n.view.setTranslationY((tf == null ? 0 : (float) tf.optDouble(1)) + offset);
     }
 
     // --- Interaction ------------------------------------------------------------------------

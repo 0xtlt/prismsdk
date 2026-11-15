@@ -354,6 +354,20 @@ pub struct Gtk {
     // --- Hidden header (#8) ---
     /// Screens that hide their stack's header while on top (`.bare()`).
     bare: HashSet<NodeId>,
+    /// Sticky views of each scroll view, moved as it scrolls.
+    stickies: Stickies,
+}
+
+/// Scroll view → its sticky views (node, widget, range).
+type Stickies = Rc<RefCell<HashMap<NodeId, HashMap<NodeId, (gtk::Widget, prism_native::Sticky)>>>>;
+
+/// Pushes the sticky views of a scroll view scrolled to `value`.
+fn place_sticky(stickies: &Stickies, scroll: NodeId, value: f64) {
+    if let Some(views) = stickies.borrow().get(&scroll) {
+        for (w, st) in views.values() {
+            layout::set_sticky_offset(w, Some(st.offset(value as f32)));
+        }
+    }
 }
 
 fn css_color(c: Color, dark: bool) -> String {
@@ -583,7 +597,9 @@ impl Widgets for Gtk {
                 s.set_child(Some(&content));
                 let events = self.scroll_events.clone();
                 let adj = s.vadjustment();
+                let stickies = self.stickies.clone();
                 adj.connect_value_changed(move |a| {
+                    place_sticky(&stickies, id, a.value());
                     if events.borrow().contains(&id) {
                         dispatch(UiEvent::Scroll(id, a.value() as f32, a.page_size() as f32));
                     }
@@ -683,9 +699,22 @@ impl Widgets for Gtk {
 
     fn set_style(&mut self, view: &View, s: &Style) {
         let id = view.id();
+        if let View::Scroll(_, sw, _) = view {
+            // `scroll_x()`: sideways only.
+            let (h, v) = if s.scroll_axis == prism_core::ScrollAxis::Horizontal {
+                (gtk::PolicyType::Automatic, gtk::PolicyType::Never)
+            } else {
+                (gtk::PolicyType::Never, gtk::PolicyType::Automatic)
+            };
+            sw.set_policy(h, v);
+        }
         let mut css = String::new();
         if let Some(bg) = s.background {
             css += &format!("background-color:{};", css_color(bg, self.dark));
+            // The theme paints buttons with an image over their color.
+            if matches!(view, View::Button(..)) {
+                css += "background-image:none;";
+            }
         }
         if s.corner_radius > 0. {
             // Top left, top right, bottom right, bottom left: prism-native
@@ -914,6 +943,13 @@ impl Widgets for Gtk {
             }
             w.set_parent(&host);
         }
+        // Sticky views draw over the content that scrolls under them.
+        for c in &children {
+            let w = c.widget();
+            if layout::is_sticky(&w) {
+                layout::raise(&w);
+            }
+        }
         // The header and the tab bar draw over the screens.
         for bar in &keep {
             bar.unparent();
@@ -967,6 +1003,13 @@ impl Widgets for Gtk {
         self.titles.remove(&id);
         self.icons.remove(&id);
         self.sizes.remove(&id);
+        {
+            let mut stickies = self.stickies.borrow_mut();
+            stickies.remove(&id);
+            for views in stickies.values_mut() {
+                views.remove(&id);
+            }
+        }
         if let View::Stack(_, st) = view {
             self.stacks.retain(|s| !Rc::ptr_eq(s, st));
         }
@@ -1338,6 +1381,46 @@ impl Widgets for Gtk {
         view.widget().set_visible(!hidden);
     }
 
+    /// Labels, buttons and fields report their first baseline from GTK's
+    /// measure at the width they were given.
+    fn baseline(&mut self, view: &View, width: f32, _height: f32) -> Option<f32> {
+        let w = match view {
+            View::Text(..)
+            | View::Timer(..)
+            | View::Image(..)
+            | View::Button(..)
+            | View::Input(..)
+            | View::Picker(..)
+            | View::DatePicker(..) => view.widget(),
+            _ => return None,
+        };
+        let (_, _, _, natural) = w.measure(gtk::Orientation::Vertical, width.ceil() as i32);
+        (natural >= 0).then_some(natural as f32)
+    }
+
+    fn set_sticky(&mut self, view: &View, sticky: Option<(&View, prism_native::Sticky)>) {
+        let id = view.id();
+        let w = view.widget();
+        let mut stickies = self.stickies.borrow_mut();
+        for views in stickies.values_mut() {
+            views.remove(&id);
+        }
+        match sticky {
+            Some((View::Scroll(sid, sw, _), st)) => {
+                stickies
+                    .entry(*sid)
+                    .or_default()
+                    .insert(id, (w.clone(), st));
+                drop(stickies);
+                layout::set_sticky_offset(&w, Some(st.offset(sw.vadjustment().value() as f32)));
+            }
+            _ => {
+                drop(stickies);
+                layout::set_sticky_offset(&w, None);
+            }
+        }
+    }
+
     fn set_content_size(&mut self, view: &View, width: f32, height: f32) {
         if let View::Scroll(_, _, content) = view {
             content.set_size_request(width.ceil() as i32, height.ceil() as i32);
@@ -1656,6 +1739,7 @@ fn activate(app: &gtk::Application) {
         date_pickers: HashMap::new(),
         statuses: HashMap::new(),
         bare: HashSet::new(),
+        stickies: Rc::new(RefCell::new(HashMap::new())),
     });
     STATE.with(|s| {
         *s.borrow_mut() = Some(State {
@@ -1740,6 +1824,7 @@ fn activate(app: &gtk::Application) {
 /// placeholder (or picks option `text` of the picker showing it;
 /// `fill:@slider=40` drags the first slider), `submit:Placeholder` presses
 /// Enter in it.
+/// `PRISM_SCROLL=600` scrolls the visible scroll views.
 /// `PRISM_SNAPSHOT=out.png` then saves the window (and open popovers) and
 /// quits. `PRISM_DELAY` (seconds, default 1) before.
 fn automation(window: gtk::ApplicationWindow) {
@@ -1774,6 +1859,26 @@ fn automation(window: gtk::ApplicationWindow) {
             if !found {
                 eprintln!("prism-linux: PRISM_CLICK: nothing labelled {title:?}");
             }
+        }
+        // `PRISM_SCROLL=<y>` scrolls the visible vertical scroll views.
+        if let Some(y) = std::env::var("PRISM_SCROLL")
+            .ok()
+            .and_then(|y| y.parse::<f64>().ok())
+        {
+            fn scroll_all(w: &gtk::Widget, y: f64) {
+                if let Some(sw) = w.downcast_ref::<gtk::ScrolledWindow>()
+                    && w.is_mapped()
+                {
+                    let adj = sw.vadjustment();
+                    adj.set_value(y.min(adj.upper() - adj.page_size()));
+                }
+                let mut child = w.first_child();
+                while let Some(c) = child {
+                    scroll_all(&c, y);
+                    child = c.next_sibling();
+                }
+            }
+            scroll_all(&window.clone().upcast(), y);
         }
         let Some(path) = snapshot else { return };
         // `PRISM_AFTER` (seconds, default 0.7): time for async work first.

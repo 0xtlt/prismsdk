@@ -10,8 +10,11 @@ use std::collections::{HashMap, HashSet};
 
 #[cfg(target_vendor = "apple")]
 pub mod apple;
+mod extras;
 pub mod images;
 pub mod remote;
+
+pub use extras::Sticky;
 
 use prism_core::{
     Accessibility, Align, Appearance, Backend, Direction, FlexDirection, Justify, Length, NodeId,
@@ -118,6 +121,19 @@ pub trait Widgets {
         _repeat: Option<(Pose, Transition)>,
     ) {
     }
+    /// Distance from the top of a measured leaf (`width` × `height`, view
+    /// units) to the baseline of its first line of text, for
+    /// `items_baseline()`. `None`: estimated from the font size (text at
+    /// the top, controls centered); views without text align their bottom.
+    fn baseline(&mut self, _view: &Self::View, _width: f32, _height: f32) -> Option<f32> {
+        None
+    }
+    /// `view` is `.sticky()` in the scroll view `scroll`: as the content
+    /// scrolls, move it down by [`Sticky::offset`] (without changing its
+    /// layout) and draw it above its siblings. `None`: not sticky anymore
+    /// (back at its frame). Frames set later are unscrolled: keep adding the
+    /// current offset.
+    fn set_sticky(&mut self, _view: &Self::View, _sticky: Option<(&Self::View, Sticky)>) {}
 }
 
 /// `style` at `pose` (its opacity and transform replaced).
@@ -193,6 +209,8 @@ pub struct NativeRenderer<W: Widgets> {
     env: RenderEnvironment,
     /// Every length is multiplied by this (TVs: bigger than phone sizes).
     zoom: f32,
+    /// Grids, sticky/fixed nodes, own-width rules (see `extras`).
+    extras: extras::Extras,
 }
 
 impl<W: Widgets> NativeRenderer<W> {
@@ -215,6 +233,7 @@ impl<W: Widgets> NativeRenderer<W> {
                 ..Default::default()
             },
             zoom: 1.,
+            extras: extras::Extras::default(),
         }
     }
 
@@ -407,26 +426,32 @@ impl<W: Widgets> NativeRenderer<W> {
             ..Default::default()
         };
         let _ = self.taffy.set_style(self.viewport, viewport_style);
-        if self.compute(self.viewport, width, height)
+        self.shift_root_fixed();
+        if self.compute_with_rules(self.viewport, width, height)
             && let Some(root) = self.root
         {
             self.place(root, width);
         }
+        self.update_sticky();
     }
 
     /// Runs flexbox on the subtree at `node`, measuring leaves natively.
     fn compute(&mut self, node: taffy::NodeId, width: f32, height: f32) -> bool {
         let widgets = &mut self.widgets;
+        let baselines = self.extras.baselines;
+        let (by_layout, nodes) = (&self.by_layout, &self.nodes);
+        let font = self.zoom * self.env.text_scale;
         let result = self.taffy.compute_layout_with_measure(
             node,
             Size {
                 width: AvailableSpace::Definite(width),
                 height: AvailableSpace::Definite(height),
             },
-            |input, _node, view, style| {
+            |input, node, view, style| {
+                let view: Option<&W::View> = view.map(|v| &*v);
                 // Leaf layout (style size, min/max, padding) is taffy's; we only
                 // provide the content size of native leaves.
-                taffy::compute_leaf_layout(
+                let mut out = taffy::compute_leaf_layout(
                     input,
                     style,
                     |_, _| 0.0,
@@ -445,7 +470,16 @@ impl<W: Widgets> NativeRenderer<W> {
                             height: known.height.unwrap_or(h),
                         }
                     },
-                )
+                );
+                // `items_baseline()`: where the first line of text sits.
+                if baselines && let Some(view) = view {
+                    let (w, h) = (out.size.width, out.size.height);
+                    out.baselines.first = widgets.baseline(view, w, h).or_else(|| {
+                        let e = by_layout.get(&node).and_then(|id| nodes.get(id))?;
+                        extras::estimated_baseline(e.kind, e.style.font_size * font, h)
+                    });
+                }
+                out
             },
         );
         match result {
@@ -476,7 +510,9 @@ impl<W: Widgets> NativeRenderer<W> {
             .and_then(|c| c.first().copied())
             .and_then(|c| self.by_layout.get(&c))
             .and_then(|c| self.nodes.get(c));
-        if first_child.is_some_and(|c| c.kind == NodeKind::Scroll) {
+        if first_child.is_some_and(|c| {
+            c.kind == NodeKind::Scroll && c.style.scroll_axis == prism_core::ScrollAxis::Vertical
+        }) {
             i.top = 0.;
             i.bottom = 0.;
         }
@@ -501,8 +537,11 @@ impl<W: Widgets> NativeRenderer<W> {
             .into_iter()
             .filter_map(|c| {
                 let n = self.by_layout.get(&c).and_then(|id| self.nodes.get(id))?;
-                (n.style.position == prism_core::Position::Absolute)
-                    .then(|| (c, n.style.scaled(self.zoom).inset))
+                matches!(
+                    n.style.position,
+                    prism_core::Position::Absolute | prism_core::Position::Fixed
+                )
+                .then(|| (c, n.style.scaled(self.zoom).inset))
             })
             .collect();
         let shift = |l: Length, by: f32| match l {
@@ -522,7 +561,7 @@ impl<W: Widgets> NativeRenderer<W> {
         }
         let layout = sc.layout;
         let _ = self.taffy.set_style(layout, style);
-        if self.compute(layout, vp.width, vp.height) {
+        if self.compute_with_rules(layout, vp.width, vp.height) {
             self.set_frame(screen, vp.x, vp.y, vp.width, vp.height);
             self.place_children(screen);
         }
@@ -542,6 +581,10 @@ impl<W: Widgets> NativeRenderer<W> {
         if self.root == Some(id) {
             // Like `#prism-root > *` on the web: the root fills the viewport.
             style.flex_grow = 1.;
+        }
+        if self.in_horizontal_scroll(id) {
+            // A row that scrolls: children keep their size.
+            style.flex_shrink = 0.;
         }
         // A root stack handles the safe area itself (navigation bar, screens).
         if self.root == Some(id) && !is_managed(e.kind) {
@@ -600,8 +643,8 @@ impl<W: Widgets> NativeRenderer<W> {
             }
         }
         let height = (bottom + entry.style.padding.bottom).max(frame.height);
-        self.widgets
-            .set_content_size(&entry.view, frame.width, height);
+        let width = self.content_width(id).unwrap_or(frame.width);
+        self.widgets.set_content_size(&entry.view, width, height);
     }
 
     fn place_children(&mut self, id: NodeId) {
@@ -609,6 +652,8 @@ impl<W: Widgets> NativeRenderer<W> {
             return;
         };
         let width = self.taffy.layout(entry.layout).map_or(0., |l| l.size.width);
+        // Right to left, a row that scrolls mirrors across its content.
+        let width = self.content_width(id).unwrap_or(width);
         let children = self.taffy.children(entry.layout).unwrap_or_default();
         let ids: Vec<NodeId> = children
             .iter()
@@ -656,6 +701,10 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                     );
                 }
                 Patch::SetStyle { id, style } => {
+                    // Rules on its own width: resolved at its last width.
+                    let own = self.own_width_style(*id, style);
+                    let style = own.as_ref().unwrap_or(style);
+                    self.note_style(*id, style);
                     if let Some(e) = self.nodes.get(id) {
                         let s = self.effective_style(style, e.kind);
                         let was_hidden = e.style.display_none;
@@ -688,6 +737,7 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                         e.style = style.clone();
                     }
                     self.sync_layout_style(*id);
+                    self.style_changed(*id);
                 }
                 Patch::SetEnvironment { env } => {
                     let changed_text = env.text_scale != self.env.text_scale
@@ -748,6 +798,7 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                     } else {
                         let _ = self.taffy.set_children(parent.layout, &layouts);
                     }
+                    self.children_changed(*id, children);
                 }
                 Patch::SetAccessibility { id, a11y } => {
                     if let Some(e) = self.nodes.get(id) {
@@ -799,6 +850,7 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                     }
                 }
                 Patch::Destroy { id } => {
+                    self.forget_extras(*id);
                     if let Some(e) = self.nodes.remove(id) {
                         self.widgets.destroy(&e.view);
                         self.by_layout.remove(&e.layout);
@@ -807,6 +859,9 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                     }
                 }
             }
+        }
+        if self.extras.rehoist {
+            self.rehoist();
         }
     }
 }
@@ -833,6 +888,7 @@ fn align(a: Align) -> taffy::AlignItems {
         Align::Center => taffy::AlignItems::CENTER,
         Align::End => taffy::AlignItems::FLEX_END,
         Align::Stretch => taffy::AlignItems::STRETCH,
+        Align::Baseline => taffy::AlignItems::BASELINE,
     }
 }
 
@@ -851,7 +907,7 @@ pub fn to_taffy(s: &Style, kind: NodeKind) -> taffy::Style {
         left: LengthPercentageAuto::length(s.margin.left),
     };
     let container = is_container(kind);
-    taffy::Style {
+    let mut style = taffy::Style {
         display: if s.display_none {
             taffy::Display::None
         } else {
@@ -891,6 +947,9 @@ pub fn to_taffy(s: &Style, kind: NodeKind) -> taffy::Style {
         position: match s.position {
             prism_core::Position::Relative => taffy::Position::Relative,
             prism_core::Position::Absolute => taffy::Position::Absolute,
+            // Fixed nodes are hoisted into their screen (see `extras`).
+            prism_core::Position::Sticky => taffy::Position::Relative,
+            prism_core::Position::Fixed => taffy::Position::Absolute,
         },
         inset: Rect {
             top: lpa(s.inset.top),
@@ -927,7 +986,9 @@ pub fn to_taffy(s: &Style, kind: NodeKind) -> taffy::Style {
         },
         scrollbar_width: 0.,
         ..Default::default()
-    }
+    };
+    extras::apply(&mut style, s, kind);
+    style
 }
 
 #[cfg(test)]

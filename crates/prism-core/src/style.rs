@@ -193,6 +193,9 @@ pub enum Align {
     /// Stretched to fill the cross axis (the default).
     #[default]
     Stretch,
+    /// First text baselines lined up (a unit beside a big figure, an icon
+    /// beside a label). Native backends measure each leaf's baseline.
+    Baseline,
 }
 
 /// Main-axis distribution (`justify-content`).
@@ -286,6 +289,15 @@ pub enum Position {
     /// Out of the flow, at its [`Inset`] from the parent's edges (padding
     /// box), drawn over earlier siblings: overlays, toasts, badges.
     Absolute,
+    /// In the flow, but stays `inset.top` points from the top of its scroll
+    /// view while its parent is visible (`position: sticky`): section
+    /// headers, a toolbar that stays.
+    Sticky,
+    /// Out of the flow, at its [`Inset`] from the window's edges (natively:
+    /// from the screen it is on, inside the safe area), whatever its parent
+    /// and however far its scroll view is scrolled: floating action
+    /// buttons, a floating tab bar.
+    Fixed,
 }
 
 /// Distances from the parent's edges of an absolutely positioned node
@@ -451,6 +463,34 @@ pub struct Style {
     pub responsive: Responsive,
     /// Platforms where the element exists (`.only(…)`, `.except(…)`).
     pub platforms: Option<crate::platform::Platforms>,
+
+    // Grid, per-axis gaps, aspect ratio, scroll axis (see `crate::layout`).
+    /// Lays the children out on a grid (`display: grid`) instead of flexbox.
+    pub grid: bool,
+    /// Column tracks of a grid (`grid-template-columns`; empty: one column).
+    pub grid_columns: Vec<crate::layout::GridTrack>,
+    /// Row tracks of a grid (`grid-template-rows`; empty: rows as tall as
+    /// their content, every cell of a row as tall as the row).
+    pub grid_rows: Vec<crate::layout::GridTrack>,
+    /// Size of the rows not listed in `grid_rows` (`grid-auto-rows`; `None`: auto).
+    pub grid_auto_rows: Option<crate::layout::GridTrack>,
+    /// The column line this grid item starts at, from 1 (negative: from the
+    /// end); `None`: placed automatically.
+    pub col_start: Option<i16>,
+    /// How many columns this grid item spans (1 by default).
+    pub col_span: u16,
+    /// The row line this grid item starts at, from 1; `None`: automatic.
+    pub row_start: Option<i16>,
+    /// How many rows this grid item spans (1 by default).
+    pub row_span: u16,
+    /// Space between columns (and between the items of a row), overriding `gap`.
+    pub gap_x: Option<f32>,
+    /// Space between rows (and between the items of a column), overriding `gap`.
+    pub gap_y: Option<f32>,
+    /// Width ÷ height: the other side follows the one that is known.
+    pub aspect_ratio: Option<f32>,
+    /// Which way a scroll view scrolls.
+    pub scroll_axis: crate::layout::ScrollAxis,
 }
 
 /// Window size classes, by width in points (CSS pixels on the web).
@@ -475,7 +515,21 @@ pub enum Breakpoint {
 }
 
 impl Breakpoint {
-    /// The class of a window `width` points wide.
+    /// The default smallest widths of `Medium`, `Expanded` and `Large`.
+    pub const DEFAULT_WIDTHS: [f32; 3] = [600., 1024., 1440.];
+
+    /// The class of a window `width` points wide, with the smallest widths
+    /// of `Medium`, `Expanded` and `Large` in `widths`.
+    pub fn for_width_in(width: f32, widths: [f32; 3]) -> Self {
+        match width {
+            w if w >= widths[2] => Breakpoint::Large,
+            w if w >= widths[1] => Breakpoint::Expanded,
+            w if w >= widths[0] => Breakpoint::Medium,
+            _ => Breakpoint::Compact,
+        }
+    }
+
+    /// The class of a window `width` points wide (default breakpoints).
     pub fn for_width(width: f32) -> Self {
         match width {
             w if w >= 1440. => Breakpoint::Large,
@@ -499,7 +553,7 @@ impl Breakpoint {
 type Rule = std::rc::Rc<dyn Fn(Style) -> Style>;
 
 /// When a rule applies.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Condition {
     /// The window is at least this wide.
     From(Breakpoint),
@@ -511,10 +565,16 @@ pub enum Condition {
     Posture(crate::device_info::Posture),
     /// The device is of this kind.
     Kind(crate::device_info::DeviceKind),
+    /// The window is at least this many points wide (`.at_width(768., …)`).
+    Width(f32),
+    /// The element itself is at least this many points wide
+    /// (`.when_width_at_least(480., …)`): resolved by the backend from the
+    /// element's laid-out width, not by the app.
+    OwnWidth(f32),
 }
 
 /// What responsive rules are resolved against.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct StyleContext {
     /// The window's size class.
     pub breakpoint: Breakpoint,
@@ -526,6 +586,8 @@ pub struct StyleContext {
     pub posture: crate::device_info::Posture,
     /// The kind of device.
     pub kind: crate::device_info::DeviceKind,
+    /// The window's width, points (for [`Condition::Width`]).
+    pub width: f32,
 }
 
 impl StyleContext {
@@ -577,11 +639,14 @@ impl Style {
         }
         let mut rules = self.responsive.0.clone();
         rules.sort_by_key(|(c, _)| match c {
-            Condition::From(b) => Some(*b),
+            Condition::From(b) => Some((b.min_width() * 64.) as i64),
+            Condition::Width(w) => Some((w * 64.) as i64),
             _ => None,
         });
         let mut s = self.clone();
         s.responsive = Responsive::default();
+        // Rules on the element's own width wait for the layout.
+        let mut own_width = Vec::new();
         for (condition, rule) in rules {
             let applies = match condition {
                 Condition::From(b) => b <= cx.breakpoint,
@@ -589,8 +654,68 @@ impl Style {
                 Condition::Orientation(o) => o == cx.orientation,
                 Condition::Posture(p) => p == cx.posture,
                 Condition::Kind(k) => k == cx.kind,
+                Condition::Width(w) => cx.width >= w,
+                Condition::OwnWidth(_) => {
+                    own_width.push((condition, rule.clone()));
+                    false
+                }
             };
             if applies {
+                s = rule(s);
+            }
+        }
+        s.responsive = Responsive(own_width);
+        s
+    }
+
+    /// The widths of the element's own width rules
+    /// (`.when_width_at_least(…)`), smallest first: the backend resolves them
+    /// with [`resolve_own_width`](Self::resolve_own_width) once it knows the
+    /// element's width.
+    pub fn own_width_thresholds(&self) -> Vec<f32> {
+        let mut t: Vec<f32> = self
+            .responsive
+            .0
+            .iter()
+            .filter_map(|(c, _)| match c {
+                Condition::OwnWidth(w) => Some(*w),
+                _ => None,
+            })
+            .collect();
+        t.sort_by(f32::total_cmp);
+        t.dedup();
+        t
+    }
+
+    /// The window widths this style's `.at_width(…)` rules switch at.
+    pub fn window_width_thresholds(&self) -> impl Iterator<Item = f32> + '_ {
+        self.responsive.0.iter().filter_map(|(c, _)| match c {
+            Condition::Width(w) => Some(*w),
+            _ => None,
+        })
+    }
+
+    /// This (resolved) style for an element `width` points wide: its own
+    /// width rules applied, smallest first. Other rules are dropped (resolve
+    /// them first with [`resolve`](Self::resolve)).
+    pub fn resolve_own_width(&self, width: f32) -> Style {
+        if self.responsive.is_empty() {
+            return self.clone();
+        }
+        let mut rules: Vec<(f32, Rule)> = self
+            .responsive
+            .0
+            .iter()
+            .filter_map(|(c, r)| match c {
+                Condition::OwnWidth(w) => Some((*w, r.clone())),
+                _ => None,
+            })
+            .collect();
+        rules.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut s = self.clone();
+        s.responsive = Responsive::default();
+        for (w, rule) in rules {
+            if width >= w {
                 s = rule(s);
             }
         }
@@ -640,6 +765,11 @@ impl Style {
                 ..self.transform
             },
             animations: self.animations.scaled(factor, false),
+            gap_x: self.gap_x.map(|g| g * factor),
+            gap_y: self.gap_y.map(|g| g * factor),
+            grid_columns: self.grid_columns.iter().map(|t| t.scaled(factor)).collect(),
+            grid_rows: self.grid_rows.iter().map(|t| t.scaled(factor)).collect(),
+            grid_auto_rows: self.grid_auto_rows.as_ref().map(|t| t.scaled(factor)),
             ..self.clone()
         }
     }
@@ -805,6 +935,19 @@ impl Default for Style {
             animations: crate::animation::Animations::default(),
             responsive: Responsive::default(),
             platforms: None,
+
+            grid: false,
+            grid_columns: Vec::new(),
+            grid_rows: Vec::new(),
+            grid_auto_rows: None,
+            col_start: None,
+            col_span: 1,
+            row_start: None,
+            row_span: 1,
+            gap_x: None,
+            gap_y: None,
+            aspect_ratio: None,
+            scroll_axis: crate::layout::ScrollAxis::Vertical,
         }
     }
 }
@@ -899,9 +1042,15 @@ pub trait Styled: Sized {
             s.flex_basis = Length::Px(0.)
         })
     }
-    /// Grows into the free space.
-    fn flex_grow(self) -> Self {
-        self.with_style(|s| s.flex_grow = 1.)
+    /// Grows into the free space, `weight` times as much as a sibling
+    /// with `flex_grow(1.)` (`flex-grow`).
+    fn flex_grow(self, weight: f32) -> Self {
+        self.with_style(|s| s.flex_grow = weight.max(0.))
+    }
+    /// Shrinks when space is short, `weight` times as much as a sibling with
+    /// `flex_shrink(1.)` (`flex-shrink`; `0`: never shrinks).
+    fn flex_shrink(self, weight: f32) -> Self {
+        self.with_style(|s| s.flex_shrink = weight.max(0.))
     }
     /// Never shrinks below its size.
     fn flex_shrink_0(self) -> Self {
@@ -1299,5 +1448,103 @@ pub trait Styled: Sized {
     /// breathing, loading indicators).
     fn repeat(self, pose: crate::animation::Pose, t: Transition) -> Self {
         self.with_style(|s| s.animations.repeat = Some((pose, t)))
+    }
+
+    // Grid (see `crate::layout`)
+    /// Lays the children out on a grid (`display: grid`); set its columns
+    /// with [`grid_cols`](Self::grid_cols) or [`cols`](Self::cols). Cells of
+    /// a row are as tall as the row (equal-height cards).
+    fn grid(self) -> Self {
+        self.with_style(|s| s.grid = true)
+    }
+    /// The grid's column tracks: `grid_cols([auto_fill(minmax(172., fr(1.)))])`,
+    /// `grid_cols([px(240.).into(), fr(1.)])`.
+    fn grid_cols(self, tracks: impl IntoIterator<Item = crate::layout::GridTrack>) -> Self {
+        let tracks: Vec<_> = tracks.into_iter().collect();
+        self.with_style(|s| s.grid_columns = tracks)
+    }
+    /// `n` equal columns (`grid-template-columns: repeat(n, minmax(0, 1fr))`).
+    fn cols(self, n: u16) -> Self {
+        use crate::layout::{fr, minmax, repeat};
+        self.grid_cols([repeat(n, minmax(0f32, fr(1.)))])
+    }
+    /// The grid's row tracks (`grid-template-rows`).
+    fn grid_rows(self, tracks: impl IntoIterator<Item = crate::layout::GridTrack>) -> Self {
+        let tracks: Vec<_> = tracks.into_iter().collect();
+        self.with_style(|s| s.grid_rows = tracks)
+    }
+    /// Size of the grid's other rows (`grid-auto-rows`): `fr(1.)` makes every
+    /// row as tall as the tallest.
+    fn grid_auto_rows(self, track: impl Into<crate::layout::GridTrack>) -> Self {
+        let track = track.into();
+        self.with_style(|s| s.grid_auto_rows = Some(track))
+    }
+    /// This grid item spans `n` columns.
+    fn col_span(self, n: u16) -> Self {
+        self.with_style(|s| s.col_span = n.max(1))
+    }
+    /// This grid item spans `n` rows.
+    fn row_span(self, n: u16) -> Self {
+        self.with_style(|s| s.row_span = n.max(1))
+    }
+    /// This grid item starts at column line `line` (1 is the first column;
+    /// negative counts from the end).
+    fn col_start(self, line: i16) -> Self {
+        self.with_style(|s| s.col_start = Some(line))
+    }
+    /// This grid item starts at row line `line` (1 is the first row).
+    fn row_start(self, line: i16) -> Self {
+        self.with_style(|s| s.row_start = Some(line))
+    }
+    /// Space between columns, and between the items of a row, points.
+    fn gap_x(self, v: f32) -> Self {
+        self.with_style(|s| s.gap_x = Some(v))
+    }
+    /// Space between rows, and between the items of a column, points.
+    fn gap_y(self, v: f32) -> Self {
+        self.with_style(|s| s.gap_y = Some(v))
+    }
+
+    // Alignment, sizing, positioning
+    /// Lines the children up on their first text baseline.
+    fn items_baseline(self) -> Self {
+        self.with_style(|s| s.align_items = Align::Baseline)
+    }
+    /// Lines this node up on its siblings' text baseline.
+    fn self_baseline(self) -> Self {
+        self.with_style(|s| s.align_self = Some(Align::Baseline))
+    }
+    /// Keeps width ÷ height at `ratio` (`16. / 9.`): the height follows the
+    /// width (or the width the height, when only that is known).
+    fn aspect_ratio(self, ratio: f32) -> Self {
+        self.with_style(|s| s.aspect_ratio = (ratio > 0.).then_some(ratio))
+    }
+    /// Stays `.top(…)` points (0 by default) from the top of its scroll view
+    /// while its parent is in view, then scrolls away with it.
+    fn sticky(self) -> Self {
+        self.with_style(|s| s.position = Position::Sticky)
+    }
+    /// Positioned at its insets (`.bottom(16.).right(16.)`) from the window
+    /// (natively: the screen it is on, inside the safe area), not from its
+    /// parent, and never scrolls.
+    fn fixed(self) -> Self {
+        self.with_style(|s| s.position = Position::Fixed)
+    }
+
+    // Width rules
+    /// Style changes when the window is at least `width` points wide: like
+    /// `.md(…)` with any threshold. The app re-renders when the window
+    /// crosses it.
+    fn at_width(self, width: f32, f: impl Fn(Style) -> Style + 'static) -> Self {
+        self.style_when(Condition::Width(width), f)
+    }
+    /// Style changes when this element itself is at least `width` points
+    /// wide, whatever the window (a container query): a card that turns
+    /// into a row in a wide column. The backend applies them after layout,
+    /// from the element's laid-out width; they should change how the
+    /// children are arranged (direction, gaps, sizes, visibility), not the
+    /// element's own width, or they would flip back and forth.
+    fn when_width_at_least(self, width: f32, f: impl Fn(Style) -> Style + 'static) -> Self {
+        self.style_when(Condition::OwnWidth(width), f)
     }
 }

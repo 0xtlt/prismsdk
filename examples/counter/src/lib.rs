@@ -18,6 +18,7 @@ mod car;
 mod device;
 mod focus;
 mod forms;
+mod layout;
 mod menus;
 mod push;
 mod report;
@@ -695,6 +696,11 @@ impl Render for Gallery {
             body.child(self.forms)
             .child(report::card())
             .child(charts)
+            .child(layout::card(
+                cx,
+                self.taps,
+                cx.listener(|this, _, _| this.taps += 1),
+            ))
             .child(
                 ui::card()
                     .child(ui::heading(strings::gallery_buttons(cx)))
@@ -899,14 +905,13 @@ impl Render for Settings {
                 update_and_save_theme(app, |th| f(th, e.value))
             })
         };
-        // Phones: one column. Tablets and up: a two-column grid.
-        let grid = div()
-            .gap(20.)
-            .md(|s| s.flex_row().flex_wrap().items_start());
+        // Phones: one column. Tablets and up: a two-column grid whose
+        // cards in a row are as tall as each other.
+        let grid = div().gap(20.).md(|s| s.grid().cols(2));
         screen.child(
             body.child(
-                grid.child(cell(self.security))
-                    .child(cell(
+                grid.child(self.security)
+                    .child(
                         ui::card()
                             .child(ui::heading(strings::settings_appearance(cx)))
                             .child(appearance_picker(&t, cx))
@@ -921,8 +926,8 @@ impl Render for Settings {
                                     update(|th, v| th.radius = if v != 0. { 0. } else { 10. }),
                                 ),
                             ),
-                    ))
-                    .child(cell(
+                    )
+                    .child(
                         ui::card()
                             .child(ui::heading(strings::settings_accent(cx)))
                             .child(div().flex_row().gap(12.).children(ACCENTS.iter().map(
@@ -945,9 +950,9 @@ impl Render for Settings {
                                         ))
                                 },
                             ))),
-                    ))
-                    .child(cell(language_card(cx)))
-                    .child(cell(push::card(cx))),
+                    )
+                    .child(language_card(cx))
+                    .child(push::card(cx)),
             )
             .child(
                 text(strings::settings_a11y_note(cx))
@@ -956,18 +961,6 @@ impl Render for Settings {
             ),
         )
     }
-}
-
-/// A grid cell: full width on phones, half a row from tablets up.
-fn cell(content: impl IntoElement) -> prism::Div {
-    div()
-        .md(|s| {
-            s.with_style(|s| {
-                s.flex_basis = relative(0.4);
-                s.flex_grow = 1.;
-            })
-        })
-        .child(content)
 }
 
 /// System / English / Français / العربية, plus formatting samples.

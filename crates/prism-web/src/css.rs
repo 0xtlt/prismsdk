@@ -18,6 +18,7 @@ fn align(a: Align) -> &'static str {
         Align::Center => "center",
         Align::End => "flex-end",
         Align::Stretch => "stretch",
+        Align::Baseline => "baseline",
     }
 }
 
@@ -36,6 +37,7 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
         NodeKind::Picker | NodeKind::DatePicker | NodeKind::TextArea => {
             w.push_str("display:block;")
         }
+        _ if s.grid => w.push_str("display:grid;justify-items:stretch;"),
         _ => {
             let dir = match s.direction {
                 FlexDirection::Row => "row",
@@ -82,9 +84,14 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
             p.top, p.bottom, p.left, p.right
         );
     }
-    if s.position == Position::Absolute {
+    if s.position != Position::Relative {
         // Logical insets: left/right are leading/trailing, like margins.
-        w.push_str("position:absolute;");
+        w.push_str(match s.position {
+            // Above the content that scrolls under it.
+            Position::Sticky => "position:sticky;z-index:1;",
+            Position::Fixed => "position:fixed;z-index:50;",
+            _ => "position:absolute;",
+        });
         for (prop, v) in [
             ("inset-block-start", s.inset.top),
             ("inset-block-end", s.inset.bottom),
@@ -116,6 +123,7 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
     }
     let basis = len(s.flex_basis).unwrap_or_else(|| "auto".into());
     let _ = write!(w, "flex:{} {} {basis};", s.flex_grow, s.flex_shrink);
+    layout_extras(kind, s, w);
 
     if let Some(bg) = s.background {
         let _ = write!(w, "background:{};", bg.to_css());
@@ -244,4 +252,82 @@ pub fn motion(s: &Style) -> serde_json::Value {
         "t": anim(t.unwrap_or(DEFAULT_ENTER)),
         "xt": anim(t.map_or(DEFAULT_EXIT, |t| Transition { delay: 0., ..t })),
     })
+}
+
+/// Grid, per-axis gaps, aspect ratio and scroll axis (`crate::layout` in
+/// prism-core), after the flexbox properties.
+fn layout_extras(kind: NodeKind, s: &Style, w: &mut String) {
+    let tracks = |t: &[prism_core::GridTrack]| {
+        t.iter()
+            .map(prism_core::GridTrack::css)
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    if s.grid {
+        if !s.grid_columns.is_empty() {
+            let _ = write!(w, "grid-template-columns:{};", tracks(&s.grid_columns));
+        }
+        if !s.grid_rows.is_empty() {
+            let _ = write!(w, "grid-template-rows:{};", tracks(&s.grid_rows));
+        }
+        if let Some(t) = &s.grid_auto_rows {
+            let _ = write!(w, "grid-auto-rows:{};", t.css());
+        }
+    }
+    let line = |start: Option<i16>, span: u16| match (start.filter(|s| *s != 0), span) {
+        (Some(l), 1) => Some(format!("{l}")),
+        (Some(l), n) => Some(format!("{l} / span {n}")),
+        (None, n) if n > 1 => Some(format!("span {n}")),
+        _ => None,
+    };
+    if let Some(c) = line(s.col_start, s.col_span) {
+        let _ = write!(w, "grid-column:{c};");
+    }
+    if let Some(r) = line(s.row_start, s.row_span) {
+        let _ = write!(w, "grid-row:{r};");
+    }
+    if let Some(g) = s.gap_x {
+        let _ = write!(w, "column-gap:{g}px;");
+    }
+    if let Some(g) = s.gap_y {
+        let _ = write!(w, "row-gap:{g}px;");
+    }
+    if let Some(r) = s.aspect_ratio {
+        let _ = write!(w, "aspect-ratio:{r};");
+    }
+    if kind == NodeKind::Scroll && s.scroll_axis == prism_core::ScrollAxis::Horizontal {
+        w.push_str("overflow-x:auto;overflow-y:hidden;");
+    }
+}
+
+/// The CSS of a node with rules on its own width
+/// (`.when_width_at_least(…)`), for each width they switch at:
+/// `[[480, "css…"], [768, "css…"]]`, or null. The client watches the
+/// element's width (`ResizeObserver`) and applies the widest variant it
+/// reaches (the style op's `css` below the first).
+pub fn own_width_variants(kind: NodeKind, s: &Style) -> serde_json::Value {
+    use serde_json::{Value, json};
+    let thresholds = s.own_width_thresholds();
+    if thresholds.is_empty() {
+        return Value::Null;
+    }
+    Value::Array(
+        thresholds
+            .into_iter()
+            .map(|t| json!([t, css(kind, &s.resolve_own_width(t))]))
+            .collect(),
+    )
+}
+
+/// What a style op adds for the client beyond `css`: `hx` (a horizontal
+/// scroll view: class `prism-scroll-x`, its children keep their size) and
+/// `cq` (see [`own_width_variants`]).
+pub fn layout_op_fields(kind: NodeKind, s: &Style, op: &mut serde_json::Value) {
+    if kind == NodeKind::Scroll && s.scroll_axis == prism_core::ScrollAxis::Horizontal {
+        op["hx"] = serde_json::json!(true);
+    }
+    let cq = own_width_variants(kind, s);
+    if !cq.is_null() {
+        op["cq"] = cq;
+    }
 }

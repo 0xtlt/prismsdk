@@ -2285,3 +2285,125 @@ fn tasks_spawned_by_a_screen_opened_by_navigation_start_at_once() {
         "the task ran before the screen was first shown: {patches:?}"
     );
 }
+
+#[test]
+fn custom_breakpoints_and_any_width_rules_re_render_when_crossed() {
+    use crate::style::{Breakpoint, FlexDirection};
+    struct Page;
+    impl Render for Page {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .flex_col()
+                .at_width(768., |s| s.flex_row())
+                .child(text(format!("{:?}", cx.breakpoint())))
+        }
+    }
+    let (mut rt, first) = boot(|cx| {
+        cx.set_breakpoints([480., 900., 1280.]);
+        let root = cx.new_entity(|_| Page);
+        cx.set_root(root);
+    });
+    let has_dir = |patches: &[Patch], dir: FlexDirection| {
+        patches
+            .iter()
+            .any(|p| matches!(p, Patch::SetStyle { style, .. } if style.direction == dir))
+    };
+    assert!(has_dir(&first, FlexDirection::Column));
+    find_text(&first, "Compact");
+    assert_eq!(rt.app.breakpoints(), [480., 900., 1280.]);
+    // 500 is Medium with these breakpoints (Compact by default).
+    find_text(&rt.set_viewport(500., 800.), "Medium");
+    assert!(rt.set_viewport(700., 800.).is_empty(), "nothing crossed");
+    // 768: the `.at_width` rule's threshold re-renders by itself.
+    let patches = rt.set_viewport(800., 800.);
+    assert!(has_dir(&patches, FlexDirection::Row), "{patches:?}");
+    assert_eq!(rt.app.breakpoint(), Breakpoint::Medium);
+    find_text(&rt.set_viewport(1300., 800.), "Large");
+    assert!(has_dir(&rt.set_viewport(600., 800.), FlexDirection::Column));
+    assert_eq!(
+        Breakpoint::for_width_in(899., [480., 900., 1280.]),
+        Breakpoint::Medium
+    );
+}
+
+#[test]
+fn own_width_rules_wait_for_the_backend() {
+    use crate::style::{FlexDirection, StyleContext};
+    let mut d = div()
+        .gap(4.)
+        .when_width_at_least(600., |s| s.gap(24.))
+        .when_width_at_least(300., |s| s.flex_row())
+        .md(|s| s.p(10.));
+    let s = d.style_mut().clone();
+    let resolved = s.resolve(StyleContext {
+        breakpoint: crate::Breakpoint::Medium,
+        ..Default::default()
+    });
+    // Window rules are applied; own-width rules are kept for the backend.
+    assert_eq!(resolved.padding.top, 10.);
+    assert_eq!(resolved.own_width_thresholds(), [300., 600.]);
+    assert_eq!(resolved.direction, FlexDirection::Column);
+    let narrow = resolved.resolve_own_width(200.);
+    assert!(narrow.responsive.is_empty());
+    assert_eq!((narrow.direction, narrow.gap), (FlexDirection::Column, 4.));
+    let mid = resolved.resolve_own_width(300.);
+    assert_eq!((mid.direction, mid.gap), (FlexDirection::Row, 4.));
+    let wide = resolved.resolve_own_width(1000.);
+    assert_eq!(
+        (wide.direction, wide.gap, wide.padding.top),
+        (FlexDirection::Row, 24., 10.)
+    );
+}
+
+#[test]
+fn layout_builders_set_their_fields() {
+    use crate::style::{Align, Position};
+    let mut d = div()
+        .grid()
+        .cols(2)
+        .col_span(2)
+        .row_span(0)
+        .row_start(3)
+        .gap_x(3.)
+        .gap_y(5.)
+        .items_baseline()
+        .self_baseline()
+        .aspect_ratio(-1.)
+        .flex_grow(2.5)
+        .flex_shrink(-1.)
+        .sticky();
+    let s = d.style_mut().clone();
+    assert!(s.grid);
+    assert_eq!(s.grid_columns, [repeat(2, minmax(0f32, fr(1.)))]);
+    assert_eq!((s.col_span, s.row_span, s.row_start), (2, 1, Some(3)));
+    assert_eq!((s.gap_x, s.gap_y), (Some(3.), Some(5.)));
+    assert_eq!(
+        (s.align_items, s.align_self),
+        (Align::Baseline, Some(Align::Baseline))
+    );
+    assert_eq!(s.aspect_ratio, None, "nonsense ratios are ignored");
+    assert_eq!((s.flex_grow, s.flex_shrink), (2.5, 0.));
+    assert_eq!(s.position, Position::Sticky);
+    let mut f = div().fixed();
+    assert_eq!(f.style_mut().position, Position::Fixed);
+    let mut sx = scroll_x();
+    let s = sx.style_mut().clone();
+    assert_eq!(s.scroll_axis, ScrollAxis::Horizontal);
+    assert_eq!((s.flex_grow, s.direction), (0., crate::FlexDirection::Row));
+    // Zoom scales point tracks and gaps, not fractions.
+    let z = crate::Style {
+        grid_columns: vec![px(10.).into(), minmax(20., fr(1.)), auto_fill(30.)],
+        gap_x: Some(2.),
+        ..Default::default()
+    }
+    .scaled(2.);
+    assert_eq!(
+        z.grid_columns,
+        [GridTrack::Px(20.), minmax(40., fr(1.)), auto_fill(60.)]
+    );
+    assert_eq!(z.gap_x, Some(4.));
+    assert_eq!(
+        auto_fit(minmax(172, fr(1.))).css(),
+        "repeat(auto-fit,minmax(172px,1fr))"
+    );
+}

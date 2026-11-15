@@ -310,3 +310,366 @@ fn right_to_left_swaps_leading_and_trailing_corners() {
     );
     assert_eq!(f.styles[&top].rounded_corners, Corners::TOP, "symmetric");
 }
+
+// --- Grid, weights, per-axis gaps, baselines, aspect ratio (#13) -----------
+
+fn views(h: &Harness) -> Vec<prism_core::NodeId> {
+    h.w().of_kind(NodeKind::View)
+}
+
+#[test]
+fn auto_fill_grids_fit_as_many_columns_as_the_minimum_allows() {
+    use prism_core::{auto_fill, fr, minmax};
+    let mut h = tree(|| {
+        div().child(
+            div()
+                .grid()
+                .grid_cols([auto_fill(minmax(172., fr(1.)))])
+                .gap(12.)
+                .children((0..5).map(|i| text(format!("c{i}")))),
+        )
+    });
+    let f = h.layout(400., 600.);
+    // (400 + 12) / (172 + 12) = 2 columns of (400 - 12) / 2 = 194.
+    assert_eq!(f.frame(f.by_text("c0")), (0., 0., 194., 20.));
+    assert_eq!(f.frame(f.by_text("c1")), (206., 0., 194., 20.));
+    assert_eq!(f.frame(f.by_text("c2")), (0., 32., 194., 20.));
+    assert_eq!(f.frame(f.by_text("c4")), (0., 64., 194., 20.));
+    let f = h.layout(800., 600.);
+    // 4 columns now: (800 - 36) / 4 = 191.
+    assert_eq!(f.frame(f.by_text("c3")), (609., 0., 191., 20.));
+    assert_eq!(f.frame(f.by_text("c4")).1, 32.);
+}
+
+#[test]
+fn grid_cells_of_a_row_share_its_height_and_spans_cover_columns() {
+    let mut h = tree(|| {
+        div().child(
+            div()
+                .grid()
+                .cols(3)
+                .gap_x(10.)
+                .gap_y(4.)
+                .child(div().child(text("short")))
+                .child(div().child(text("a much longer text that wraps")))
+                .child(div().child(text("x")))
+                .child(div().col_span(2).child(text("wide")))
+                .child(div().child(text("y"))),
+        )
+    });
+    h.layout(320., 600.);
+    let cells = views(&h)[2..].to_vec();
+    let f = h.w();
+    // 3 columns of (320 - 20) / 3 = 100.
+    let (_, _, w0, h0) = f.frame(cells[0]);
+    let (x1, _, _, h1) = f.frame(cells[1]);
+    assert_eq!((w0, x1), (100., 110.));
+    assert!(h1 > 20., "the long text wraps: {h1}");
+    assert_eq!(h0, h1, "equal-height cells");
+    assert_eq!(f.frame(cells[2]).3, h1);
+    // Second row, after the 4 pt row gap: the wide cell spans 2 columns.
+    assert_eq!(f.frame(cells[3]), (0., h1 + 4., 210., 20.));
+    assert_eq!(f.frame(cells[4]).0, 220.);
+}
+
+#[test]
+fn fixed_tracks_and_explicit_placement() {
+    use prism_core::{fr, px};
+    let mut h = tree(|| {
+        div().child(
+            div()
+                .grid()
+                .grid_cols([px(100.).into(), fr(1.), fr(2.)])
+                .child(text("a"))
+                .child(text("b").col_start(3))
+                .child(text("c").row_start(2).col_start(1).col_span(3)),
+        )
+    });
+    let f = h.layout(400., 300.);
+    assert_eq!(f.frame(f.by_text("a")), (0., 0., 100., 20.));
+    // 300 left: 1fr = 100, 2fr = 200.
+    assert_eq!(f.frame(f.by_text("b")), (200., 0., 200., 20.));
+    assert_eq!(f.frame(f.by_text("c")), (0., 20., 400., 20.));
+}
+
+#[test]
+fn grow_and_shrink_take_any_weight() {
+    let mut h = tree(|| {
+        div()
+            .child(
+                div()
+                    .flex_row()
+                    .child(div().h(10.).flex_1())
+                    .child(div().h(10.).flex_1().flex_grow(2.)),
+            )
+            .child(
+                div()
+                    .flex_row()
+                    .w(100.)
+                    .child(div().h(10.).w(100.))
+                    .child(div().h(10.).w(100.).flex_shrink(3.)),
+            )
+    });
+    h.layout(300., 300.);
+    let v = views(&h);
+    let f = h.w();
+    assert_eq!(f.frame(v[2]).2, 100.);
+    assert_eq!(f.frame(v[3]), (100., 0., 200., 10.));
+    // 100 pt too wide, shrunk 1 : 3 (weighted by width): 25 and 75.
+    assert_eq!(f.frame(v[5]).2, 75.);
+    assert_eq!(f.frame(v[6]).2, 25.);
+}
+
+#[test]
+fn per_axis_gaps_override_gap() {
+    let mut h = tree(|| {
+        div().child(
+            div()
+                .flex_row()
+                .flex_wrap()
+                .w(100.)
+                .gap(50.)
+                .gap_x(4.)
+                .gap_y(6.)
+                .children((0..3).map(|_| div().w(40.).h(10.))),
+        )
+    });
+    h.layout(300., 300.);
+    let v = views(&h);
+    let f = h.w();
+    assert_eq!(f.frame(v[2]).0, 0.);
+    assert_eq!(f.frame(v[3]).0, 44.);
+    assert_eq!(f.frame(v[4]), (0., 16., 40., 10.), "next line after gap_y");
+}
+
+#[test]
+fn items_baseline_lines_up_first_lines_of_text() {
+    let mut h = tree(|| {
+        div().child(
+            div()
+                .flex_row()
+                .items_baseline()
+                .child(text("42").text_size(40.))
+                .child(text("kg").text_size(12.))
+                .child(div().w(10.).h(8.)),
+        )
+    });
+    let f = h.layout(300., 300.);
+    let big = f.frame(f.by_text("42"));
+    let small = f.frame(f.by_text("kg"));
+    // Estimated ascent 0.95 em: 38 and 11.4 (frames are rounded).
+    assert_eq!(big.1, 0.);
+    assert_eq!(small.1, (38f32 - 11.4).round(), "{small:?}");
+    // A box without text sits on the baseline with its bottom edge.
+    let boxed = f.frame(f.of_kind(NodeKind::View)[2]);
+    assert_eq!(boxed.1 + boxed.3, 38., "{boxed:?}");
+}
+
+#[test]
+fn aspect_ratio_derives_the_missing_side() {
+    let mut h = tree(|| {
+        div()
+            .items_start()
+            .child(div().w(200.).aspect_ratio(2.))
+            .child(div().h(30.).aspect_ratio(0.5))
+    });
+    h.layout(400., 400.);
+    let v = views(&h);
+    assert_eq!(h.w().frame(v[1]), (0., 0., 200., 100.));
+    assert_eq!(h.w().frame(v[2]), (0., 100., 15., 30.));
+}
+
+// --- Sticky, fixed, horizontal scroll ---------------------------------------
+
+#[test]
+fn fixed_nodes_are_placed_against_the_root_not_their_parent() {
+    let mut h = tree(|| {
+        div().child(
+            scroll().p(20.).child(text("row")).child(
+                div()
+                    .p(30.)
+                    .child(button("+").fixed().bottom(16.).right(16.).w(56.).h(56.)),
+            ),
+        )
+    });
+    h.r.layout(
+        400.,
+        800.,
+        Insets {
+            bottom: 34.,
+            ..Default::default()
+        },
+    );
+    let f = h.w();
+    let root = f.root.unwrap();
+    let fab = f.of_kind(NodeKind::Button)[0];
+    assert_eq!(f.children[&root].last(), Some(&fab), "shown by the root");
+    let card = f.of_kind(NodeKind::View)[1];
+    assert!(f.children[&card].is_empty(), "not by its parent");
+    // Inside the safe area: 16 + 34 from the bottom.
+    assert_eq!(f.frame(fab), (400. - 16. - 56., 800. - 50. - 56., 56., 56.));
+}
+
+thread_local!(static FIXED: std::cell::Cell<bool> = const { std::cell::Cell::new(true) });
+
+struct FixedScreen;
+impl Render for FixedScreen {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        let fixed = FIXED.with(std::cell::Cell::get);
+        screen("Home").child(
+            scroll().child(
+                div()
+                    .child(text("row"))
+                    .child(text("fab").when(fixed, |t| t.fixed().top(10.).left(10.))),
+            ),
+        )
+    }
+}
+
+#[test]
+fn fixed_nodes_float_over_their_screen_and_come_back_when_not_fixed() {
+    FIXED.with(|f| f.set(true));
+    let mut h = Harness::new(|cx| {
+        let r = Router::new()
+            .route("/", |cx, _| cx.new_entity(|_| FixedScreen))
+            .build(cx);
+        cx.set_root(r);
+    });
+    let f = h.layout(400., 800.);
+    let screen_id = f.of_kind(NodeKind::Screen)[0];
+    let fab = f.by_text("fab");
+    assert_eq!(f.children[&screen_id].last(), Some(&fab));
+    assert_eq!(f.frame(fab), (10., 10., 24., 20.));
+
+    FIXED.with(|f| f.set(false));
+    h.rt.app.refresh();
+    h.rerender();
+    let f = h.layout(400., 800.);
+    let fab = f.by_text("fab");
+    assert!(!f.children[&screen_id].contains(&fab));
+    let card = f.of_kind(NodeKind::View)[0];
+    assert_eq!(f.children[&card].last(), Some(&fab), "back in its parent");
+    assert_eq!(f.frame(fab).1, 20., "in the flow, below the row");
+}
+
+#[test]
+fn sticky_nodes_get_their_range_in_the_scroll_view() {
+    let mut h = tree(|| {
+        div().child(
+            scroll()
+                .child(text("intro"))
+                .child(
+                    div()
+                        .child(text("header").sticky().top(8.))
+                        .child(div().h(300.)),
+                )
+                .child(div().h(500.)),
+        )
+    });
+    let f = h.layout(400., 600.);
+    let header = f.by_text("header");
+    let scroll_id = f.of_kind(NodeKind::Scroll)[0];
+    let (s, st) = f.sticky[&header].expect("sticky");
+    assert_eq!(s, scroll_id);
+    // Below the 20 pt intro; its section ends at 20 + 20 + 300.
+    assert_eq!(st.top, 20.);
+    assert_eq!(st.inset, 8.);
+    assert_eq!(st.max_offset, 300.);
+    assert_eq!(st.offset(0.), 0.);
+    assert_eq!(st.offset(100.), 88.);
+    assert_eq!(st.offset(1000.), 300.);
+    // In the flow, at its natural place.
+    assert_eq!(f.frame(header).1, 0.);
+}
+
+#[test]
+fn horizontal_scrolls_keep_children_at_their_size() {
+    let mut h = tree(|| {
+        div().child(
+            prism_core::scroll_x()
+                .gap(8.)
+                .px(10.)
+                .children((0..6).map(|i| text(format!("chip number {i}")))),
+        )
+    });
+    let f = h.layout(200., 600.);
+    let scroll_id = f.of_kind(NodeKind::Scroll)[0];
+    let first = f.frame(f.by_text("chip number 0"));
+    // 13 characters, never shrunk or wrapped.
+    assert_eq!(first, (10., 0., 104., 20.));
+    assert_eq!(f.frame(f.by_text("chip number 1")).0, 122.);
+    // As tall as a chip, not grown to the window.
+    assert_eq!(f.frame(scroll_id).3, 20.);
+    let (w, _) = f.content[&scroll_id];
+    assert_eq!(w, 10. + 6. * 104. + 5. * 8. + 10.);
+}
+
+#[test]
+fn own_width_rules_follow_the_element_not_the_window() {
+    let mut h = tree(|| {
+        div().flex_row().child(
+            div().w(relative(0.5)).child(
+                div()
+                    .when_width_at_least(300., |s| s.flex_row())
+                    .child(text("a"))
+                    .child(text("b")),
+            ),
+        )
+    });
+    let f = h.layout(400., 300.);
+    // 200 wide: a column.
+    assert_eq!(f.frame(f.by_text("b")).1, 20.);
+    let f = h.layout(800., 300.);
+    // 400 wide: a row.
+    assert_eq!(f.frame(f.by_text("b")), (8., 0., 8., 20.));
+    let f = h.layout(500., 300.);
+    assert_eq!(f.frame(f.by_text("b")).1, 20.);
+}
+
+struct ChipsScreen;
+impl Render for ChipsScreen {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        screen("Chips").child(prism_core::scroll_x().child(text("chip")))
+    }
+}
+
+#[test]
+fn a_screen_starting_with_a_horizontal_scroll_keeps_its_safe_area() {
+    let mut h = Harness::new(|cx| {
+        let r = Router::new()
+            .route("/", |cx, _| cx.new_entity(|_| ChipsScreen))
+            .build(cx);
+        cx.set_root(r);
+    });
+    h.r.widgets.screen_insets = Insets {
+        top: 10.,
+        right: 0.,
+        bottom: 10.,
+        left: 0.,
+    };
+    let f = h.layout(400., 800.);
+    let s = f.of_kind(NodeKind::Scroll)[0];
+    assert_eq!(
+        f.frame(s).1,
+        10.,
+        "below the bar, unlike vertical page scrolls"
+    );
+}
+
+#[test]
+fn aspect_ratio_with_a_capped_width_sizes_its_parent_by_the_cap() {
+    let mut h = tree(|| {
+        div().child(
+            div()
+                .p(10.)
+                .child(div().w_full().max_w(360.).aspect_ratio(2.))
+                .child(text("after")),
+        )
+    });
+    h.layout(900., 900.);
+    let v = views(&h);
+    let f = h.w();
+    assert_eq!(f.frame(v[2]), (10., 10., 360., 180.));
+    assert_eq!(f.frame(f.by_text("after")).1, 190.);
+    assert_eq!(f.frame(v[1]).3, 220.);
+}
