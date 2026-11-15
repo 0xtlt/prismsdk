@@ -77,6 +77,12 @@ impl Backend for HtmlBackend {
                 Patch::Destroy { id } => {
                     self.nodes.remove(id);
                 }
+                // Applied by the client once it runs.
+                Patch::SetPointerEvents { .. }
+                | Patch::SetKeyEvents { .. }
+                | Patch::Focus { .. }
+                | Patch::ScrollIntoView { .. }
+                | Patch::SetLayers { .. } => {}
             }
         }
     }
@@ -266,7 +272,7 @@ impl HtmlBackend {
                 let c = prism_core::controls::DateConfig::decode(&n.config);
                 let ty = match c.mode {
                     prism_core::DateMode::Date => "date",
-                    prism_core::DateMode::Time => "time",
+                    prism_core::DateMode::Time | prism_core::DateMode::TimeOfDay => "time",
                     prism_core::DateMode::DateTime => "datetime-local",
                 };
                 let _ = write!(

@@ -18,6 +18,7 @@ mod car;
 mod device;
 mod focus;
 mod forms;
+mod interact;
 mod menus;
 mod push;
 mod security;
@@ -534,6 +535,7 @@ impl Render for TodoDetail {
 struct Gallery {
     device: Entity<device::DeviceDemo>,
     forms: Entity<forms::Forms>,
+    interact: Entity<interact::Interact>,
     quote: Option<Result<String, String>>,
     loading: bool,
     wifi: bool,
@@ -550,6 +552,7 @@ impl Gallery {
         Gallery {
             device: cx.new(|_| device::DeviceDemo::default()),
             forms: cx.new(|_| forms::Forms::default()),
+            interact: cx.new(|_| interact::Interact::default()),
             quote: None,
             loading: false,
             wifi: false,
@@ -661,6 +664,7 @@ impl Render for Gallery {
         let charts = self.charts(cx);
         screen.child(
             body.child(self.forms)
+            .child(self.interact)
             .child(charts)
             .child(
                 ui::card()
@@ -835,8 +839,6 @@ impl Render for Gallery {
                     ),
             ),
         )
-        // Over the scroll view, at the bottom of the screen.
-        .child(ui::toaster())
     }
 }
 

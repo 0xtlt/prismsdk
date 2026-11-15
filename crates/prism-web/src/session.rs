@@ -323,6 +323,9 @@ impl Live {
 }
 
 pub(crate) fn parse_event(v: &Value) -> Option<UiEvent> {
+    if let Some(event) = parse_input_event(v) {
+        return Some(event);
+    }
     let id = v.get("id")?.as_u64()?;
     match v.get("t")?.as_str()? {
         "click" => Some(UiEvent::Click(id)),
@@ -346,6 +349,48 @@ pub(crate) fn parse_event(v: &Value) -> Option<UiEvent> {
         )),
         "alert" => Some(UiEvent::AlertAction(id, v.get("index")?.as_u64()? as usize)),
         "navigate" => Some(UiEvent::Navigate(id, v.get("path")?.as_str()?.to_string())),
+        _ => None,
+    }
+}
+
+/// Pointer, drag and key events (#17): `{"t":"click","id","x","y"}` (a
+/// click with its position), `{"t":"pointer","id","phase","x","y"}`,
+/// `{"t":"drag","id","phase","x","y","dx","dy"}`,
+/// `{"t":"key","id","key","mods","repeat"}` (`id` 0 or absent: nothing
+/// Prism knows has the focus).
+fn parse_input_event(v: &Value) -> Option<UiEvent> {
+    use prism_core::{
+        DragEvent, DragPhase, KeyEvent, Modifiers, Point, PointerEvent, PointerPhase,
+    };
+    let num = |k: &str| v.get(k).and_then(Value::as_f64).map(|n| n as f32);
+    let id = v.get("id").and_then(Value::as_u64);
+    match v.get("t")?.as_str()? {
+        "click" => Some(UiEvent::ClickAt(id?, Point::new(num("x")?, num("y")?))),
+        "pointer" => Some(UiEvent::Pointer(
+            id?,
+            PointerEvent {
+                phase: PointerPhase::from_name(v.get("phase")?.as_str()?)?,
+                position: Point::new(num("x").unwrap_or(0.), num("y").unwrap_or(0.)),
+            },
+        )),
+        "drag" => Some(UiEvent::Drag(
+            id?,
+            DragEvent {
+                phase: DragPhase::from_name(v.get("phase")?.as_str()?)?,
+                start: Point::new(num("x").unwrap_or(0.), num("y").unwrap_or(0.)),
+                translation: Point::new(num("dx").unwrap_or(0.), num("dy").unwrap_or(0.)),
+            },
+        )),
+        "key" => Some(UiEvent::Key(
+            id.filter(|i| *i != 0),
+            KeyEvent {
+                key: v.get("key")?.as_str()?.to_string(),
+                modifiers: Modifiers::from_bits(
+                    v.get("mods").and_then(Value::as_u64).unwrap_or(0) as u8
+                ),
+                repeat: v.get("repeat").and_then(Value::as_bool).unwrap_or(false),
+            },
+        )),
         _ => None,
     }
 }
@@ -395,6 +440,8 @@ fn save_files(app: &WebApp, sid: &str, files: &[Value]) -> Vec<prism_core::Picke
                 .to_ascii_lowercase();
             let stored = format!("{}.{ext}", crate::app::new_session_id());
             std::fs::write(dir.join(&stored), &data).ok()?;
+            // `PickedFile::read` finds the bytes behind the URL.
+            prism_core::device::register_local_file(&app.file_url(&stored), dir.join(&stored));
             Some(prism_core::PickedFile {
                 path: app.file_url(&stored),
                 name: name.to_string(),
@@ -731,6 +778,16 @@ impl Encoder {
                 self.kinds.remove(id);
                 json!({ "op": "destroy", "id": id })
             }
+            // Pointer, keys, focus, layers (#17, #25).
+            Patch::SetPointerEvents { id, mask } => {
+                json!({ "op": "pointer", "id": id, "mask": mask })
+            }
+            Patch::SetKeyEvents { id, local, global } => {
+                json!({ "op": "keys", "id": id, "local": local, "global": global })
+            }
+            Patch::Focus { id } => json!({ "op": "focus", "id": id }),
+            Patch::ScrollIntoView { id } => json!({ "op": "reveal", "id": id }),
+            Patch::SetLayers { ids } => json!({ "op": "layers", "ids": ids }),
         }
     }
 }
@@ -753,6 +810,9 @@ pub(crate) fn device_json(id: u64, call: prism_core::DeviceCall) -> Value {
         }
         C::StopWatch => json!({ "call": "stop" }),
         C::PickImages(o) => json!({ "call": "pick_images", "limit": o.limit, "camera": o.camera }),
+        C::PickFiles(o) => {
+            json!({ "call": "pick_files", "types": o.types, "multiple": o.multiple })
+        }
         C::ReadClipboard => json!({ "call": "paste" }),
         C::Haptic(h) => json!({ "call": "haptic", "kind": h.name() }),
         C::CopyText(t) => json!({ "call": "copy", "text": t }),
