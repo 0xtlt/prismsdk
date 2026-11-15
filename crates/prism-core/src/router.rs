@@ -284,6 +284,13 @@ pub struct Router {
     header: bool,
     /// The value for the next screen built (`navigate_with`).
     next_state: RefCell<Option<Rc<dyn Any>>>,
+    // --- Closing the router (#31) ---
+    /// Screens a route returned but did not create (`.route("/focus", move
+    /// |_, _| focus)`): shared with the app, never released by the router.
+    shared: RefCell<std::collections::HashSet<crate::app::EntityId>>,
+    // --- Bar options (#30) ---
+    /// Tint of the tab bar and the header bars (`RouterBuilder::tint`).
+    tint: Option<crate::style::Color>,
 }
 
 /// Declares the routes (and optionally tabs), then [`build`](RouterBuilder::build)s the router.
@@ -294,6 +301,8 @@ pub struct RouterBuilder {
     tabs: Vec<(TabTitle, String, String)>,
     /// `Some(false)`: no header bar ([`RouterBuilder::header`]).
     header: Option<bool>,
+    // --- Bar options (#30) ---
+    tint: Option<crate::style::Color>,
 }
 
 impl Router {
@@ -379,7 +388,7 @@ impl Router {
                 let path = normalize_path(&path);
                 let tab = self.selected;
                 if let Some(old) = self.tabs[tab].entries.pop() {
-                    cx.release_any(old.entity);
+                    release_screen(&self.shared, old.entity, cx);
                 }
                 let entity = self.open(&path, cx);
                 self.tabs[tab].entries.push(Entry { path, entity });
@@ -424,14 +433,14 @@ impl Router {
         };
         while t.entries.len() > depth.max(1) {
             let old = t.entries.pop().expect("non-empty");
-            cx.release_any(old.entity);
+            release_screen(&self.shared, old.entity, cx);
         }
     }
 
     /// Closes the sheet, releasing its screens.
     fn dismiss(&mut self, cx: &mut Context<Self>) {
         for old in self.modal.drain(..) {
-            cx.release_any(old.entity);
+            release_screen(&self.shared, old.entity, cx);
         }
     }
 
@@ -439,7 +448,7 @@ impl Router {
     fn truncate_modal(&mut self, depth: usize, cx: &mut Context<Self>) {
         while self.modal.len() > depth {
             let old = self.modal.pop().expect("non-empty");
-            cx.release_any(old.entity);
+            release_screen(&self.shared, old.entity, cx);
         }
     }
 
@@ -488,7 +497,7 @@ impl Router {
             .map_or(0, |(i, _)| i);
         for i in 0..self.tabs.len() {
             for old in std::mem::take(&mut self.tabs[i].entries) {
-                cx.release_any(old.entity);
+                release_screen(&self.shared, old.entity, cx);
             }
             let root = self.tabs[i].root.clone();
             let has_root_route = self.routes.iter().any(|r| r.matches(&root).is_some());
@@ -505,6 +514,42 @@ impl Router {
     }
 
     fn open(&self, path: &str, app: &mut App) -> AnyEntity {
+        let before = app.last_entity_id();
+        let entity = self.build_screen(path, app);
+        // Built before: the app keeps it (and releases it).
+        if entity.id() <= before {
+            self.shared.borrow_mut().insert(entity.id());
+        }
+        entity
+    }
+
+    /// Releases every screen of every tab and the sheet: their entities,
+    /// the entities they created with `cx.new`, their observers and the
+    /// tasks tied to them. Screens a route hands out without creating them
+    /// (`.route("/focus", move |_, _| focus)`) stay. Call it before dropping
+    /// the router (signing out), or just release the router entity
+    /// (`cx.release(router)`), which closes it. Until then it shows no
+    /// screen; `cx.reset(path)` opens one again.
+    pub fn close(&mut self, cx: &mut App) {
+        for entity in self.take_screens() {
+            cx.release_any(entity);
+        }
+    }
+
+    /// Empties every stack and the sheet, returning the screens the router
+    /// owns (what releasing it must release).
+    pub(crate) fn take_screens(&mut self) -> Vec<AnyEntity> {
+        let shared = self.shared.borrow();
+        self.tabs
+            .iter_mut()
+            .flat_map(|t| t.entries.drain(..))
+            .chain(self.modal.drain(..))
+            .map(|e| e.entity)
+            .filter(|e| !shared.contains(&e.id()))
+            .collect()
+    }
+
+    fn build_screen(&self, path: &str, app: &mut App) -> AnyEntity {
         let state = self.next_state.borrow_mut().take();
         for route in &self.routes {
             if let Some(mut params) = route.matches(path) {
@@ -591,6 +636,17 @@ impl RouterBuilder {
         self
     }
 
+    /// The tint of the tab bar's selected tab and of the header bars'
+    /// buttons (Back included): `UITabBar` / `UINavigationBar` `tintColor`,
+    /// the selected segment on macOS, accent colors on Linux, Android and
+    /// the web. Without it they take the app's accent color
+    /// ([`App::set_accent_color`], which `prism_ui::set_theme` sets), else
+    /// the platform's.
+    pub fn tint(mut self, color: crate::style::Color) -> Self {
+        self.tint = Some(color);
+        self
+    }
+
     /// The screen shown when no route matches.
     pub fn not_found<V: Render>(
         mut self,
@@ -632,10 +688,23 @@ impl RouterBuilder {
             modal: Vec::new(),
             header: self.header.unwrap_or(true),
             next_state: RefCell::new(None),
+            shared: RefCell::default(),
+            tint: self.tint,
         });
         app.set_navigator(router);
         router.update(app, |r, cx| r.reset(&initial, cx));
         router
+    }
+}
+
+/// Releases a screen the router built (not one shared with the app).
+fn release_screen(
+    shared: &RefCell<std::collections::HashSet<crate::app::EntityId>>,
+    entity: AnyEntity,
+    app: &mut App,
+) {
+    if !shared.borrow().contains(&entity.id()) {
+        app.release_any(entity);
     }
 }
 
@@ -654,7 +723,12 @@ fn tab_stack(
 }
 
 /// The sheet: a closable stack; closing it (button, swipe, Escape) dismisses.
-fn modal_sheet(entries: &[Entry], header: bool, cx: &Context<Router>) -> Element {
+fn modal_sheet(
+    entries: &[Entry],
+    header: bool,
+    tint: Option<crate::style::Color>,
+    cx: &Context<Router>,
+) -> Element {
     if entries.is_empty() {
         return Element::Empty;
     }
@@ -665,6 +739,7 @@ fn modal_sheet(entries: &[Entry], header: bool, cx: &Context<Router>) -> Element
             stack()
                 .closable(true)
                 .header(header)
+                .tint(tint)
                 .path(entries.last().map_or("/", |e| e.path.as_str()))
                 .on_back(cx.listener(|this, e: &BackEvent, cx| this.truncate_modal(e.depth, cx)))
                 .on_navigate(cx.listener(|this, e: &NavigateEvent, cx| {
@@ -677,19 +752,23 @@ fn modal_sheet(entries: &[Entry], header: bool, cx: &Context<Router>) -> Element
 
 impl Render for Router {
     fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let sheet = modal_sheet(&self.modal, self.header, cx);
+        // The router's tint, else the app's accent color (#30).
+        let tint = self.tint.or_else(|| cx.accent_color());
+        let sheet = modal_sheet(&self.modal, self.header, tint, cx);
         if !self.tab_bar {
             return tab_stack(&self.tabs[0], 0, self.header, cx)
+                .tint(tint)
                 .child(sheet)
                 .into_element();
         }
         tabs(self.selected)
+            .tint(tint)
             .path(self.current_path())
             .on_change(cx.listener(|this, e: &ChangeEvent, _| this.select(e.index())))
             .children(self.tabs.iter().enumerate().map(|(i, t)| {
                 tab(t.title.resolve(cx), t.icon.clone())
                     .key(i.to_string())
-                    .child(tab_stack(t, i, self.header, cx))
+                    .child(tab_stack(t, i, self.header, cx).tint(tint))
             }))
             .child(sheet)
             .into_element()

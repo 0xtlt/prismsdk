@@ -173,7 +173,8 @@ impl Theme {
 }
 
 /// Installs `theme` app-wide and matches native chrome (bars, native controls)
-/// to its light/dark appearance.
+/// to its light/dark appearance; the router's tab bar and header bars take
+/// its accent ([`App::set_accent_color`]).
 pub fn set_theme(cx: &mut App, theme: Theme) {
     cx.set_appearance(if theme.follows_system {
         Appearance::System
@@ -182,6 +183,8 @@ pub fn set_theme(cx: &mut App, theme: Theme) {
     } else {
         Appearance::Light
     });
+    // The tab bar and header bars follow the accent (#30).
+    cx.set_accent_color(Some(theme.accent));
     cx.set_global(theme);
 }
 

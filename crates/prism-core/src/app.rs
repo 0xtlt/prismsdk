@@ -176,6 +176,13 @@ pub struct App {
     pub(crate) ui_commands: Vec<UiCommand>,
     pub(crate) layers: Vec<AnyEntity>,
     pub(crate) stop_propagation: bool,
+    // --- Releasing what an entity made (#31) ---
+    /// Entities created with `cx.new` in an entity's context, by creator:
+    /// released with it.
+    children: HashMap<EntityId, Vec<EntityId>>,
+    /// Observers an entity registered (`cx.observe`), by that entity:
+    /// `(observed, observer)`, dropped when it is released.
+    observing: HashMap<EntityId, Vec<(EntityId, Observer)>>,
 }
 
 /// A request for the UI, applied after the next render.
@@ -217,6 +224,8 @@ impl Default for App {
             ui_commands: Vec::new(),
             layers: Vec::new(),
             stop_propagation: false,
+            children: HashMap::new(),
+            observing: HashMap::new(),
         }
     }
 }
@@ -424,8 +433,11 @@ impl App {
     }
 
     /// Path of the visible screen, if a router is active.
+    /// `None` once the router is released (`cx.release(router)`).
     pub fn current_path(&self) -> Option<&str> {
-        self.navigator.map(|r| self.read(&r).current_path())
+        self.navigator
+            .and_then(|r| self.try_read(&r))
+            .map(Router::current_path)
     }
 
     /// Whether the app's router shows its not-found screen (no route matches
@@ -433,7 +445,8 @@ impl App {
     /// without a router.
     pub fn shows_not_found(&self) -> bool {
         self.navigator
-            .is_some_and(|r| self.contains(r.id()) && self.read(&r).shows_not_found())
+            .and_then(|r| self.try_read(&r))
+            .is_some_and(Router::shows_not_found)
     }
 
     /// The path the app was opened with (request URL on the web).
@@ -494,7 +507,11 @@ impl App {
                 entity: *entity,
             },
         );
-        self.entities.insert(entity.id, Some(boxed));
+        // Released while it was being updated (a Sign out button that
+        // releases its own screen): it stays released.
+        if let Some(slot) = self.entities.get_mut(&entity.id) {
+            *slot = Some(boxed);
+        }
         result
     }
 
@@ -505,18 +522,67 @@ impl App {
 
     /// Drops an entity's state and its observers, and cancels the tasks
     /// tied to it ([`TaskHandle::cancel_on_release`](crate::TaskHandle::cancel_on_release)).
+    /// The entities it created with [`cx.new`](Context::new) and the
+    /// observers it registered ([`cx.observe`](Context::observe)) go with
+    /// it. Releasing a [`Router`] releases every screen it holds (see
+    /// [`Router::close`]); releasing the app's router also clears the
+    /// navigator: [`current_path`](App::current_path) is then `None`.
     pub fn release<T>(&mut self, entity: Entity<T>) {
-        self.entities.remove(&entity.id);
-        self.observers.remove(&entity.id);
-        self.dirty.remove(&entity.id);
-        self.executor.release_owner(entity.id);
+        self.release_id(entity.id);
     }
 
     pub(crate) fn release_any(&mut self, entity: AnyEntity) {
-        self.entities.remove(&entity.id());
-        self.observers.remove(&entity.id());
-        self.dirty.remove(&entity.id());
-        self.executor.release_owner(entity.id());
+        self.release_id(entity.id());
+    }
+
+    /// Releases `id`, what it created and, for a router, its screens.
+    fn release_id(&mut self, id: EntityId) {
+        let mut queue = vec![id];
+        while let Some(id) = queue.pop() {
+            if let Some(router) = self
+                .entities
+                .get_mut(&id)
+                .and_then(Option::as_mut)
+                .and_then(|b| b.downcast_mut::<Router>())
+            {
+                queue.extend(router.take_screens().into_iter().map(|e| e.id()));
+            }
+            if self.navigator.is_some_and(|n| n.id == id) {
+                self.navigator = None;
+            }
+            let existed = self.entities.remove(&id).is_some();
+            self.observers.remove(&id);
+            self.dirty.remove(&id);
+            self.executor.release_owner(id);
+            for (observed, observer) in self.observing.remove(&id).unwrap_or_default() {
+                if let Some(list) = self.observers.get_mut(&observed) {
+                    list.retain(|o| !Rc::ptr_eq(o, &observer));
+                }
+            }
+            self.layers.retain(|l| l.id() != id);
+            if existed {
+                queue.extend(self.children.remove(&id).unwrap_or_default());
+            }
+        }
+    }
+
+    /// The number of live entities: a test checks that closing a screen,
+    /// a router or a session leaves none behind.
+    pub fn entity_count(&self) -> usize {
+        self.entities.len()
+    }
+
+    /// An entity's state, or `None` if it is released or being updated.
+    pub(crate) fn try_read<T: 'static>(&self, entity: &Entity<T>) -> Option<&T> {
+        self.entities
+            .get(&entity.id)
+            .and_then(|slot| slot.as_ref())
+            .and_then(|b| b.downcast_ref::<T>())
+    }
+
+    /// The id the next entity will get is above this one.
+    pub(crate) fn last_entity_id(&self) -> EntityId {
+        EntityId(self.next_entity)
     }
 
     /// Marks one entity for re-render and queues its observers.
@@ -644,10 +710,20 @@ impl<T: 'static> Context<'_, T> {
         self.entity
     }
 
-    /// Creates a child entity (GPUI's `cx.new`).
+    /// Creates a child entity (GPUI's `cx.new`): it is released with this
+    /// one (and its own children with it). For an entity that outlives
+    /// this one, use [`App::new_entity`].
     #[allow(clippy::new_ret_no_self)]
     pub fn new<U: 'static>(&mut self, build: impl FnOnce(&mut Context<U>) -> U) -> Entity<U> {
-        self.app.new_entity(build)
+        let child = self.app.new_entity(build);
+        let app = &mut *self.app;
+        let list = app.children.entry(self.entity.id).or_default();
+        list.push(child.id);
+        // Children released on their own: forgotten now and then.
+        if list.len() >= 64 && list.len().is_power_of_two() {
+            list.retain(|c| app.entities.contains_key(c));
+        }
+        child
     }
 
     /// Re-renders this entity on the next frame. Listeners call it for you.
@@ -697,7 +773,12 @@ impl<T: 'static> Context<'_, T> {
             .observers
             .entry(other.id)
             .or_default()
-            .push(observer);
+            .push(observer.clone());
+        self.app
+            .observing
+            .entry(this.id)
+            .or_default()
+            .push((other.id, observer));
     }
 }
 

@@ -31,7 +31,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sa
 .prism-panels > * { flex: 1; display: flex; flex-direction: column; }
 .prism-tabbar { flex: 0 0 auto; display: flex; justify-content: center; gap: 4px; padding: 6px; border-top: 1px solid rgba(128,128,128,.25); background: Canvas; }
 .prism-tab { flex: 0 1 140px; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px 8px; border: 0; border-radius: 8px; background: none; color: GrayText; font: inherit; font-size: 12px; cursor: pointer; }
-.prism-tab[aria-selected="true"] { color: LinkText; background: rgba(128,128,128,.12); }
+.prism-tab[aria-selected="true"] { color: var(--prism-tint, LinkText); background: rgba(128,128,128,.12); }
 .prism-tab-icon { font-size: 18px; line-height: 1; }
 /* Wide screens: the tab bar becomes a sidebar. */
 @media (min-width: 1024px) {
@@ -85,8 +85,15 @@ dialog.prism-sheet > * { flex: 1; }
 .prism-refreshing { text-align: center; padding: 10px; font-size: 13px; opacity: .7; }
 dialog::backdrop { background: rgba(0,0,0,.35); }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
-.prism-header { position: relative; flex: 0 0 44px; display: flex; align-items: center; justify-content: center; border-bottom: 1px solid rgba(128,128,128,.25); background: Canvas; font-size: 15px; font-weight: 600; }
-.prism-back { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); font: inherit; font-size: 14px; font-weight: 400; cursor: pointer; }
+/* Header: Back and the leading bar buttons, the title centered, the trailing
+   bar buttons (#30). Both sides share the room left, so the title stays
+   centered; right to left, they swap. */
+.prism-header { position: relative; flex: 0 0 44px; display: flex; align-items: center; gap: 8px; padding-inline: 8px; border-bottom: 1px solid rgba(128,128,128,.25); background: Canvas; font-size: 15px; font-weight: 600; }
+.prism-header > .prism-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
+.prism-bar { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 4px; }
+.prism-bar-trailing { justify-content: flex-end; }
+.prism-back, .prism-bar-button { flex: 0 0 auto; font: inherit; font-size: 14px; font-weight: 400; cursor: pointer; color: var(--prism-tint, ButtonText); }
+.prism-bar-button { min-width: 32px; }
 .prism-body { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 /* Absolute children (Style::position) sit at their insets from their parent, like taffy. */
 [data-pid]:not(dialog) { position: relative; }
