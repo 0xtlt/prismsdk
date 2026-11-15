@@ -588,6 +588,12 @@ public final class PrismHost {
         }
         n.back.setVisibility(screens.size() > 1 && !watch ? View.VISIBLE : View.GONE);
         n.title.setText(screens.isEmpty() ? "" : screens.get(screens.size() - 1).text);
+        // No header bar: for the whole stack (value flag 2, Router::header(false))
+        // or while a bare screen (value 1) is on top. The screens' area grows,
+        // and the new size is reported to Rust (reportViewport).
+        boolean bare = !screens.isEmpty() && screens.get(screens.size() - 1).value == 1;
+        boolean hidden = (((int) n.value) & 2) != 0 || bare;
+        n.header.setVisibility(hidden ? View.GONE : View.VISIBLE);
     }
 
     static void back(Node stack) {
@@ -721,6 +727,12 @@ public final class PrismHost {
                 if (!ticking) { ticking = true; tick(); }
                 break;
             case "tabs": refreshTabs(n); break;
+            case "stack": refreshStack(n); break;
+            case "screen": {
+                Node parent = parentOf(n);
+                if (parent != null && parent.kind.equals("stack")) refreshStack(parent);
+                break;
+            }
         }
     }
 

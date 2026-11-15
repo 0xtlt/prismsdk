@@ -4,10 +4,15 @@
 (() => {
   // Where the app is mounted (`/app` when nested in another server's routes).
   const BASE = ((document.currentScript && document.currentScript.dataset.base) || "").replace(/\/$/, "");
-  const urlFor = (path) => (path === "/" && BASE ? BASE : BASE + path);
+  // App paths keep their query string (`/analytics?period=7d`).
+  const urlFor = (path) => {
+    const q = path.indexOf("?");
+    const [p, query] = q < 0 ? [path, ""] : [path.slice(0, q), path.slice(q)];
+    return (p === "/" && BASE ? BASE : BASE + p) + query;
+  };
   const appPath = () => {
     const p = location.pathname;
-    return BASE && p.startsWith(BASE) ? p.slice(BASE.length) || "/" : p;
+    return (BASE && p.startsWith(BASE) ? p.slice(BASE.length) || "/" : p) + location.search;
   };
   const mount = document.getElementById("prism-root");
   const baseTitle = document.title.split(" · ").pop();
@@ -161,6 +166,7 @@
         '<div class="prism-header"><button class="prism-back" aria-label="Back" hidden>‹ Back</button>' +
         '<h1 class="prism-title" tabindex="-1"></h1></div><div class="prism-body"></div>';
       el._body = el.lastChild;
+      el._header = el.firstChild;
       el._back = el.querySelector(".prism-back");
       el._title = el.querySelector(".prism-title");
       el._screens = [];
@@ -317,6 +323,9 @@
     const title = (top && top._titleText) || "";
     // Stacks inside sheets show Close on their first screen.
     const closable = st._closable && screens.length <= 1;
+    // No header bar: for the whole stack (`Router::header(false)`) or while a
+    // bare screen is on top (`screen(..).bare()`).
+    st._header.hidden = !!st._noHeader || !!(top && top._bare);
     st._back.hidden = screens.length <= 1 && !closable;
     st._back.textContent = closable ? chrome.close : `‹ ${chrome.back}`;
     st._back.setAttribute("aria-label", closable ? chrome.close : chrome.back);
@@ -537,7 +546,12 @@
         if (el.dataset.kind === "spinner") el.dataset.size = p.value === 1 ? "large" : "";
         if (el.dataset.kind === "picture") el.style.objectFit = p.value === 1 ? "contain" : "cover";
         if (el.dataset.kind === "scroll") setRefreshing(el, p.value === 1);
-        if (el.dataset.kind === "stack") { el._closable = p.value === 1; refreshStack(el); }
+        if (el.dataset.kind === "stack") { el._closable = (p.value & 1) === 1; el._noHeader = (p.value & 2) === 2; refreshStack(el); }
+        if (el.dataset.kind === "screen") {
+          el._bare = p.value === 1;
+          const owner = el.parentElement && el.parentElement.parentElement;
+          if (owner && owner._screens) refreshStack(owner);
+        }
         if (el.dataset.kind === "timer") { el.dataset.end = p.value; tick(); }
         if (el.dataset.kind === "tabs") { el._selected = p.value; refreshTabs(el); }
         return;

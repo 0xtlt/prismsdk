@@ -11,10 +11,17 @@
 //! `cx.reset(..)`. Each route's view should return a [`screen`](crate::screen)
 //! (its title goes in the native navigation bar).
 //!
+//! Paths keep their query string (`/analytics?period=7d&room=3`): a route
+//! reads it with [`Params::query`], a screen rewrites it in place with
+//! `cx.replace_query(..)`, and `cx.navigate_with(path, value)` hands a typed
+//! value to the next screen ([`Params::state`]).
+//!
 //! - iOS: `UINavigationController` (push animation, swipe back, large titles).
 //! - macOS: a native header bar with a Back button, plus ⌘[.
 //! - Web: real URLs via the History API; server-side rendering of deep links.
 
+use std::any::Any;
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::str::FromStr;
 
@@ -25,10 +32,25 @@ use crate::element::{
 };
 use crate::style::Styled;
 
-/// Path parameters captured by a route pattern (`/todos/:id`, `/files/*rest`).
-#[derive(Clone, Debug, Default)]
+/// What a route is opened with: the path parameters captured by its pattern
+/// (`/todos/:id`, `/files/*rest`), the query string (`?period=7d`), and the
+/// value passed with [`App::navigate_with`], if any.
+#[derive(Clone, Default)]
 pub struct Params {
     values: Vec<(String, String)>,
+    /// Decoded `name=value` pairs, in order (a name may repeat).
+    query: Vec<(String, String)>,
+    state: Option<Rc<dyn Any>>,
+}
+
+impl std::fmt::Debug for Params {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Params")
+            .field("values", &self.values)
+            .field("query", &self.query)
+            .field("state", &self.state.is_some())
+            .finish()
+    }
 }
 
 impl Params {
@@ -44,6 +66,111 @@ impl Params {
     pub fn parse<T: FromStr>(&self, name: &str) -> Option<T> {
         self.get(name)?.parse().ok()
     }
+
+    /// The first value of query parameter `name`, decoded (`7d` for
+    /// `?period=7d`; `""` for `?edit`).
+    pub fn query(&self, name: &str) -> Option<&str> {
+        self.query
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// Every value of query parameter `name`, in order (`?room=1&room=3`).
+    pub fn query_all(&self, name: &str) -> Vec<&str> {
+        self.query
+            .iter()
+            .filter(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+            .collect()
+    }
+
+    /// `p.parse_query::<u32>("room")`: the first value, parsed.
+    pub fn parse_query<T: FromStr>(&self, name: &str) -> Option<T> {
+        self.query(name)?.parse().ok()
+    }
+
+    /// Every query parameter, decoded, in order.
+    pub fn query_pairs(&self) -> &[(String, String)] {
+        &self.query
+    }
+
+    /// The value handed over with [`App::navigate_with`] (or
+    /// [`App::replace_with`]), if it is a `T`. Only the screen built by that
+    /// navigation gets it: a reload or a deep link opens without it.
+    pub fn state<T: 'static>(&self) -> Option<&T> {
+        self.state.as_deref()?.downcast_ref()
+    }
+}
+
+/// Splits `/a/b?x=1` into `("/a/b", "x=1")`.
+pub(crate) fn split_query(path: &str) -> (&str, &str) {
+    path.split_once('?').unwrap_or((path, ""))
+}
+
+/// `+` and `%XX` escapes decoded (invalid escapes are kept as they are).
+fn decode_component(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => out.push(b' '),
+            b'%' if i + 2 < bytes.len() => {
+                let hex = |b: u8| (b as char).to_digit(16);
+                match (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                    (Some(h), Some(l)) => {
+                        out.push((h * 16 + l) as u8);
+                        i += 3;
+                        continue;
+                    }
+                    _ => out.push(b'%'),
+                }
+            }
+            b => out.push(b),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Decodes a query string (`period=7d&room=3&room=4&edit`) into pairs.
+pub fn parse_query(query: &str) -> Vec<(String, String)> {
+    query
+        .split('&')
+        .filter(|kv| !kv.is_empty())
+        .map(|kv| {
+            let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
+            (decode_component(k), decode_component(v))
+        })
+        .collect()
+}
+
+/// Encodes pairs as a query string (no leading `?`), escaping what must be:
+/// `encode_query([("q", "a&b c")])` → `q=a%26b%20c`. Build links with it:
+/// `format!("/analytics?{}", encode_query([("period", "7d")]))`.
+pub fn encode_query<K: AsRef<str>, V: AsRef<str>>(
+    pairs: impl IntoIterator<Item = (K, V)>,
+) -> String {
+    fn escape(s: &str, out: &mut String) {
+        for b in s.bytes() {
+            if b.is_ascii_alphanumeric() || b"-._~!$'()*,;:@/?".contains(&b) {
+                out.push(b as char);
+            } else {
+                out.push_str(&format!("%{b:02X}"));
+            }
+        }
+    }
+    let mut out = String::new();
+    for (k, v) in pairs {
+        if !out.is_empty() {
+            out.push('&');
+        }
+        escape(k.as_ref(), &mut out);
+        out.push('=');
+        escape(v.as_ref(), &mut out);
+    }
+    out
 }
 
 type Build = Rc<dyn Fn(&mut App, &Params) -> AnyEntity>;
@@ -61,8 +188,12 @@ struct Route {
 
 impl Route {
     fn matches(&self, path: &str) -> Option<Params> {
+        let (path, query) = split_query(path);
         let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-        let mut params = Params::default();
+        let mut params = Params {
+            query: parse_query(query),
+            ..Params::default()
+        };
         for (i, seg) in self.segments.iter().enumerate() {
             match seg {
                 Segment::Rest(name) => {
@@ -83,11 +214,18 @@ impl Route {
     }
 }
 
-/// `/a/b?x=1#y` → `/a/b`; always starts with `/`, no trailing `/`.
+/// `/a/b/?x=1#y` → `/a/b?x=1`: always starts with `/`, no trailing `/`,
+/// the query string kept as it is (an empty one dropped), the fragment
+/// dropped.
 pub fn normalize_path(path: &str) -> String {
-    let path = path.split(['?', '#']).next().unwrap_or("");
+    let path = path.split('#').next().unwrap_or("");
+    let (path, query) = split_query(path);
     let trimmed = path.trim_matches('/');
-    format!("/{trimmed}")
+    if query.is_empty() {
+        format!("/{trimmed}")
+    } else {
+        format!("/{trimmed}?{query}")
+    }
 }
 
 pub(crate) enum NavOp {
@@ -97,6 +235,10 @@ pub(crate) enum NavOp {
     Back,
     Present(String),
     Dismiss,
+    /// The visible screen's query string becomes this (no new screen).
+    ReplaceQuery(String),
+    /// Handed to the screen the next operation builds.
+    State(Rc<dyn Any>),
 }
 
 struct Entry {
@@ -138,6 +280,10 @@ pub struct Router {
     tab_bar: bool,
     /// Screens presented modally (a sheet with its own stack), if any.
     modal: Vec<Entry>,
+    /// Whether stacks show their header bar (`RouterBuilder::header`).
+    header: bool,
+    /// The value for the next screen built (`navigate_with`).
+    next_state: RefCell<Option<Rc<dyn Any>>>,
 }
 
 /// Declares the routes (and optionally tabs), then [`build`](RouterBuilder::build)s the router.
@@ -146,6 +292,8 @@ pub struct RouterBuilder {
     routes: Vec<Route>,
     not_found: Option<Build>,
     tabs: Vec<(TabTitle, String, String)>,
+    /// `Some(false)`: no header bar ([`RouterBuilder::header`]).
+    header: Option<bool>,
 }
 
 impl Router {
@@ -175,7 +323,37 @@ impl Router {
     }
 
     pub(crate) fn apply(&mut self, op: NavOp, cx: &mut Context<Self>) {
+        if let NavOp::State(state) = op {
+            *self.next_state.borrow_mut() = Some(state);
+            return;
+        }
+        self.apply_op(op, cx);
+        // Only the screen this operation built gets the value.
+        self.next_state.borrow_mut().take();
+    }
+
+    /// Sets the query string of the visible screen (of the sheet, if one
+    /// is up), keeping the screen.
+    fn replace_query(&mut self, query: &str) {
+        let entries = if self.modal.is_empty() {
+            &mut self.tabs[self.selected].entries
+        } else {
+            &mut self.modal
+        };
+        if let Some(top) = entries.last_mut() {
+            let (path, _) = split_query(&top.path);
+            top.path = if query.is_empty() {
+                path.to_string()
+            } else {
+                format!("{path}?{query}")
+            };
+        }
+    }
+
+    fn apply_op(&mut self, op: NavOp, cx: &mut Context<Self>) {
         match op {
+            NavOp::State(_) => {}
+            NavOp::ReplaceQuery(query) => self.replace_query(&query),
             NavOp::Present(path) => {
                 let path = normalize_path(&path);
                 self.dismiss(cx);
@@ -215,14 +393,20 @@ impl Router {
         cx.notify();
     }
 
-    /// Pushes `path` on the current tab, or switches tab if `path` is a tab's root.
+    /// Pushes `path` on the current tab, or switches tab if `path` is a tab's
+    /// root (and pushes it there if it carries a query the tab doesn't show).
     fn push(&mut self, path: &str, cx: &mut Context<Self>) {
         let path = normalize_path(path);
         if self.tab_bar
-            && let Some(i) = self.tabs.iter().position(|t| t.root == path)
+            && let Some(i) = self
+                .tabs
+                .iter()
+                .position(|t| t.root == split_query(&path).0)
         {
             self.selected = i;
-            return;
+            if path == self.tabs[i].root {
+                return;
+            }
         }
         if self.current_path() == path {
             return;
@@ -290,7 +474,9 @@ impl Router {
     /// Opens `path` in the tab whose root best matches it. Each tab's root
     /// screen sits underneath, so "back" has somewhere to go.
     fn reset(&mut self, path: &str, cx: &mut Context<Self>) {
-        let path = normalize_path(path);
+        let full = normalize_path(path);
+        // Tabs and their roots are matched on the path, without the query.
+        let path = split_query(&full).0.to_string();
         let tab = self
             .tabs
             .iter()
@@ -312,20 +498,27 @@ impl Router {
             }
         }
         if path != self.tabs[tab].root || self.tabs[tab].entries.is_empty() {
-            let entity = self.open(&path, cx);
-            self.tabs[tab].entries.push(Entry { path, entity });
+            let entity = self.open(&full, cx);
+            self.tabs[tab].entries.push(Entry { path: full, entity });
         }
         self.selected = tab;
     }
 
     fn open(&self, path: &str, app: &mut App) -> AnyEntity {
+        let state = self.next_state.borrow_mut().take();
         for route in &self.routes {
-            if let Some(params) = route.matches(path) {
+            if let Some(mut params) = route.matches(path) {
+                params.state = state;
                 return (route.build)(app, &params);
             }
         }
+        let params = Params {
+            query: parse_query(split_query(path).1),
+            state,
+            ..Params::default()
+        };
         match &self.not_found {
-            Some(build) => build(app, &Params::default()),
+            Some(build) => build(app, &params),
             None => {
                 let path = path.to_string();
                 app.new_entity(|_| NotFound { path }).into_any()
@@ -389,6 +582,15 @@ impl RouterBuilder {
         self
     }
 
+    /// Shows or hides the header bar (title and Back) of every stack:
+    /// `.header(false)` for an app that draws its own chrome. Back stays
+    /// available natively (swipe, system Back, browser Back, ⌘[) and through
+    /// `cx.back()`. One screen can hide it with [`Screen::bare`](crate::Screen::bare).
+    pub fn header(mut self, shown: bool) -> Self {
+        self.header = Some(shown);
+        self
+    }
+
     /// The screen shown when no route matches.
     pub fn not_found<V: Render>(
         mut self,
@@ -428,6 +630,8 @@ impl RouterBuilder {
             selected: 0,
             tab_bar,
             modal: Vec::new(),
+            header: self.header.unwrap_or(true),
+            next_state: RefCell::new(None),
         });
         app.set_navigator(router);
         router.update(app, |r, cx| r.reset(&initial, cx));
@@ -435,8 +639,14 @@ impl RouterBuilder {
     }
 }
 
-fn tab_stack(t: &TabState, index: usize, cx: &Context<Router>) -> crate::element::Stack {
+fn tab_stack(
+    t: &TabState,
+    index: usize,
+    header: bool,
+    cx: &Context<Router>,
+) -> crate::element::Stack {
     stack()
+        .header(header)
         .path(t.entries.last().map_or("/", |e| e.path.as_str()))
         .on_back(cx.listener(move |this, e: &BackEvent, cx| this.truncate(index, e.depth, cx)))
         .on_navigate(cx.listener(|this, e: &NavigateEvent, cx| this.push(&e.path, cx)))
@@ -444,7 +654,7 @@ fn tab_stack(t: &TabState, index: usize, cx: &Context<Router>) -> crate::element
 }
 
 /// The sheet: a closable stack; closing it (button, swipe, Escape) dismisses.
-fn modal_sheet(entries: &[Entry], cx: &Context<Router>) -> Element {
+fn modal_sheet(entries: &[Entry], header: bool, cx: &Context<Router>) -> Element {
     if entries.is_empty() {
         return Element::Empty;
     }
@@ -454,6 +664,7 @@ fn modal_sheet(entries: &[Entry], cx: &Context<Router>) -> Element {
         .child(
             stack()
                 .closable(true)
+                .header(header)
                 .path(entries.last().map_or("/", |e| e.path.as_str()))
                 .on_back(cx.listener(|this, e: &BackEvent, cx| this.truncate_modal(e.depth, cx)))
                 .on_navigate(cx.listener(|this, e: &NavigateEvent, cx| {
@@ -466,9 +677,11 @@ fn modal_sheet(entries: &[Entry], cx: &Context<Router>) -> Element {
 
 impl Render for Router {
     fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let sheet = modal_sheet(&self.modal, cx);
+        let sheet = modal_sheet(&self.modal, self.header, cx);
         if !self.tab_bar {
-            return tab_stack(&self.tabs[0], 0, cx).child(sheet).into_element();
+            return tab_stack(&self.tabs[0], 0, self.header, cx)
+                .child(sheet)
+                .into_element();
         }
         tabs(self.selected)
             .path(self.current_path())
@@ -476,7 +689,7 @@ impl Render for Router {
             .children(self.tabs.iter().enumerate().map(|(i, t)| {
                 tab(t.title.resolve(cx), t.icon.clone())
                     .key(i.to_string())
-                    .child(tab_stack(t, i, cx))
+                    .child(tab_stack(t, i, self.header, cx))
             }))
             .child(sheet)
             .into_element()

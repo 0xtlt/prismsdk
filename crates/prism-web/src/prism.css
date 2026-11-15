@@ -6,6 +6,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sa
 #prism-root { display: flex; flex-direction: column; min-height: 100%; }
 #prism-root > * { flex-grow: 1; }
 #prism-root:has(> .prism-tabs) { height: 100%; }
+/* The root, its stack and the visible screen fill the window, like native
+   apps: a frame stays put and `scroll().flex_1()` scrolls inside it. A screen
+   taller than the window (no scroll view) scrolls by itself. */
+#prism-root:has(> .prism-stack) { height: 100%; height: 100dvh; min-height: 0; }
+.prism-stack { min-height: 0; }
+.prism-body > [data-kind=screen] { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .prism-panels > * { overflow: auto; }
 [hidden] { display: none !important; }
 :focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }

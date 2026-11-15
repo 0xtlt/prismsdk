@@ -1110,6 +1110,14 @@ struct StackView: View {
             .overlay(alignment: .topLeading) { NodeView(id: s) }
             .modifier(ReportSize(event: ["t": "viewport", "id": id]))
             .navigationTitle(store.nodes[s]?.text ?? "")
+            // No navigation bar: for the whole stack (value flag 2,
+            // `Router::header(false)`) or a bare screen (value 1). Swiping
+            // back still works; the larger area is reported as the viewport.
+            .toolbar(barHidden(s) ? .hidden : .automatic, for: .navigationBar)
+    }
+
+    private func barHidden(_ s: UInt64) -> Bool {
+        (Int(node.value) & 2) != 0 || store.nodes[s]?.value == 1
     }
 }
 

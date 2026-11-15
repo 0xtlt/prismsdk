@@ -362,10 +362,16 @@ export function boot({ ssr = "", path = "/", base = "", glyphs = { plus: "+", ge
     entries: [{ state: null, url: path }],
     index: 0,
     get state() { return this.entries[this.index].state; },
-    pushState(state, _, url) { this.entries.splice(this.index + 1, Infinity, { state, url }); this.index++; win.location.pathname = url; },
-    replaceState(state, _, url) { this.entries[this.index] = { state, url }; win.location.pathname = url; },
-    go(n) { this.index += n; win.location.pathname = this.entries[this.index].url; },
+    pushState(state, _, url) { this.entries.splice(this.index + 1, Infinity, { state, url }); this.index++; go(url); },
+    replaceState(state, _, url) { this.entries[this.index] = { state, url }; go(url); },
+    go(n) { this.index += n; go(this.entries[this.index].url); },
   };
+  // `location.pathname` and `location.search` of a URL like `/a?x=1`.
+  const split = (url) => {
+    const q = url.indexOf("?");
+    return q < 0 ? { pathname: url, search: "" } : { pathname: url.slice(0, q), search: url.slice(q) };
+  };
+  const go = (url) => Object.assign(win.location, split(url));
   const winListeners = {};
   const sockets = [];
   class Socket extends FakeSocket {
@@ -374,7 +380,7 @@ export function boot({ ssr = "", path = "/", base = "", glyphs = { plus: "+", ge
   const win = {
     document,
     location: {
-      pathname: path, search, protocol: "http:", host: "localhost:3000", origin: "http://localhost:3000",
+      ...split(path), ...(search ? { search } : {}), protocol: "http:", host: "localhost:3000", origin: "http://localhost:3000",
       get href() { return `http://localhost:3000${this.pathname}${this.search}`; },
       reload() { win.reloaded = true; },
       assign(url) { win.assigned = url; },

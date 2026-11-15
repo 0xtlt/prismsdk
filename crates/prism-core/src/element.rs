@@ -813,6 +813,8 @@ pub fn screen(title: impl Into<String>) -> Screen {
     let mut n = VNode::new(NodeKind::Screen);
     n.text = title.into();
     n.style.flex_grow = 1.;
+    // 1: bare (no header bar while it is on top), see `Screen::bare`.
+    n.value = Some(0.);
     Screen(n)
 }
 
@@ -826,6 +828,15 @@ impl Screen {
     /// Sets the title shown in the navigation bar.
     pub fn title(mut self, title: impl Into<String>) -> Self {
         self.0.text = title.into();
+        self
+    }
+
+    /// Hides the stack's header bar while this screen is on top (a screen
+    /// with its own header, a full-bleed photo, a sign-in page). Its title
+    /// still names the window and the page for assistive technologies.
+    /// Every screen at once: [`RouterBuilder::header`](crate::RouterBuilder::header).
+    pub fn bare(mut self) -> Self {
+        self.0.value = Some(1.);
         self
     }
 }
@@ -879,7 +890,9 @@ impl Toggle {
     }
 }
 
-/// A vertically scrolling container. Give it a bounded height (e.g. `.flex_1()`).
+/// A vertically scrolling container. By default it fills the space left in
+/// its parent (`flex: 1 1 0`) and scrolls what does not fit; use
+/// [`Scroll::fit`] for one as tall as its content up to a `max_h`.
 pub fn scroll() -> Scroll {
     let mut n = VNode::new(NodeKind::Scroll);
     n.style.flex_grow = 1.;
@@ -905,6 +918,18 @@ impl Scroll {
     /// Whether a refresh is in progress (spinner visible).
     pub fn refreshing(mut self, on: bool) -> Self {
         self.0.value = Some(if on { 1. } else { 0. });
+        self
+    }
+
+    /// Sizes the scroll view to its content instead of filling its parent:
+    /// as tall as what it holds, up to its `max_h`, then it scrolls
+    /// (`flex: 0 1 auto`). For lists in sheets, cards and popovers:
+    /// `scroll().fit().max_h(px(320.))`. It still shrinks when its parent
+    /// is shorter than its content.
+    pub fn fit(mut self) -> Self {
+        self.0.style.flex_grow = 0.;
+        self.0.style.flex_shrink = 1.;
+        self.0.style.flex_basis = crate::style::Length::Auto;
         self
     }
 }
@@ -1034,10 +1059,30 @@ impl Modal {
 impl Stack {
     /// Shows a Close button on the first screen (stacks inside sheets).
     pub fn closable(mut self, closable: bool) -> Self {
-        self.0.value = Some(if closable { 1. } else { 0. });
+        self.set_flag(STACK_CLOSABLE, closable);
         self
     }
+
+    /// Shows or hides the header bar (title, Back/Close) above every screen
+    /// (default: shown). Screens then get the whole area; Back stays
+    /// available natively and through `cx.back()`.
+    pub fn header(mut self, shown: bool) -> Self {
+        self.set_flag(STACK_NO_HEADER, !shown);
+        self
+    }
+
+    fn set_flag(&mut self, flag: u32, on: bool) {
+        let bits = self.0.value.unwrap_or(0.) as u32;
+        let bits = if on { bits | flag } else { bits & !flag };
+        self.0.value = Some(bits as f64);
+    }
 }
+
+/// A stack's value is a set of flags: bit 1, a Close button on the first
+/// screen ([`Stack::closable`]).
+pub const STACK_CLOSABLE: u32 = 1;
+/// Bit 2 of a stack's value: no header bar ([`Stack::header`]).
+pub const STACK_NO_HEADER: u32 = 2;
 
 /// An image from a URL (`https://…`) or an app asset (`"logo.png"`, served
 /// from `assets/`). Decorative unless given [`Picture::alt`].
@@ -1088,8 +1133,10 @@ impl Shape {
     pub fn paths(self, paths: impl IntoIterator<Item = crate::shape::Path>) -> Self {
         paths.into_iter().fold(self, Shape::path)
     }
-    /// Points kept free around the drawing, horizontally and vertically.
-    pub fn inset(mut self, x: f32, y: f32) -> Self {
+    /// Points kept free around the drawing, horizontally and vertically, so
+    /// thick strokes are not clipped at the frame's edges. (Named apart from
+    /// [`Styled::inset`], which positions an absolute element.)
+    pub fn stroke_inset(mut self, x: f32, y: f32) -> Self {
         let rest = self
             .0
             .text

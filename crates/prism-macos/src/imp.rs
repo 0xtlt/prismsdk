@@ -978,6 +978,9 @@ pub struct MacStack {
     screens: RefCell<Vec<View>>,
     /// Shows "Close" on the first screen (stacks inside sheets).
     closable: Cell<bool>,
+    // --- Hidden header (#8) ---
+    /// No header bar at all (`Router::header(false)`).
+    no_header: Cell<bool>,
 }
 
 /// A sheet window presenting a modal stack over the main window.
@@ -1184,6 +1187,9 @@ pub struct AppKit {
     announced: HashMap<NodeId, String>,
     /// App language (BCP 47): date pickers format in it.
     lang: String,
+    // --- Hidden header (#8) ---
+    /// Screens that hide their stack's header while on top (`.bare()`).
+    bare: std::collections::HashSet<NodeId>,
 }
 
 fn ca_equal(a: objc2_quartz_core::CATransform3D, b: objc2_quartz_core::CATransform3D) -> bool {
@@ -1497,6 +1503,7 @@ impl AppKit {
             title,
             screens: RefCell::new(Vec::new()),
             closable: Cell::new(false),
+            no_header: Cell::new(false),
         }
     }
 
@@ -1587,10 +1594,25 @@ impl AppKit {
         self.sheets.retain(|s| s.content.ivars().id.get() != id);
     }
 
+    /// Whether `stack` shows no header bar: none at all, or a bare screen on top.
+    fn header_hidden(&self, stack: &MacStack) -> bool {
+        stack.no_header.get()
+            || stack
+                .screens
+                .borrow()
+                .last()
+                .is_some_and(|top| self.bare.contains(&top.id()))
+    }
+
     /// Shows the top screen, its title, and Back when there is somewhere to go.
     fn refresh_stack(&self, stack: &MacStack) {
+        let hidden = self.header_hidden(stack);
         let screens = stack.screens.borrow();
-        let mut subviews: Vec<&NSView> = vec![&stack.header, &stack.separator];
+        let mut subviews: Vec<&NSView> = if hidden {
+            Vec::new()
+        } else {
+            vec![&stack.header, &stack.separator]
+        };
         if let Some(top) = screens.last() {
             subviews.push(top.ns());
         }
@@ -2244,8 +2266,22 @@ impl Widgets for AppKit {
     fn set_value(&mut self, view: &View, value: f64) {
         match view {
             View::Stack(st) => {
-                st.closable.set(value != 0.);
+                let flags = value as u32;
+                st.closable.set(flags & prism_core::STACK_CLOSABLE != 0);
+                st.no_header.set(flags & prism_core::STACK_NO_HEADER != 0);
                 self.refresh_stack(st);
+            }
+            View::Screen(_) => {
+                let changed = if value == 1. {
+                    self.bare.insert(view.id())
+                } else {
+                    self.bare.remove(&view.id())
+                };
+                if changed {
+                    for stack in &self.stacks {
+                        self.refresh_stack(stack);
+                    }
+                }
             }
             View::Progress(p) => p.setDoubleValue(value),
             View::Picture(v) => {
@@ -2644,11 +2680,16 @@ impl Widgets for AppKit {
             };
         }
         let size = stack.ns().frame().size;
+        // No header bar: the screen gets the whole stack.
+        let header = match stack {
+            View::Stack(st) if self.header_hidden(st) => 0.,
+            _ => HEADER_HEIGHT,
+        };
         Viewport {
             x: 0.,
-            y: HEADER_HEIGHT as f32,
+            y: header as f32,
             width: size.width as f32,
-            height: (size.height - HEADER_HEIGHT).max(0.) as f32,
+            height: (size.height - header).max(0.) as f32,
             insets: Insets::default(),
         }
     }
@@ -2733,6 +2774,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         inputs: HashMap::new(),
         announced: HashMap::new(),
         lang: String::new(),
+        bare: Default::default(),
     });
     let first = runtime.render();
     let mut state = State {

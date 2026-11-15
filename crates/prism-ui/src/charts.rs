@@ -404,7 +404,7 @@ impl Component for LineChart {
             .collect::<Vec<_>>()
             .join(". ");
         let plot = shape()
-            .inset(if labelled { 0. } else { 5. }, LABEL_H / 2.)
+            .stroke_inset(if labelled { 0. } else { 5. }, LABEL_H / 2.)
             .paths(paths)
             .h(px(self.height))
             .w_full()
@@ -615,7 +615,7 @@ impl Component for BarChart {
                 div()
                     .child(
                         shape()
-                            .inset(0., LABEL_H / 2.)
+                            .stroke_inset(0., LABEL_H / 2.)
                             .paths(if self.y_axis {
                                 axis.grid(&t)
                             } else {
@@ -698,7 +698,7 @@ impl BarChart {
                     .gap(4.)
                     .child(
                         shape()
-                            .inset(0., LABEL_H / 2.)
+                            .stroke_inset(0., LABEL_H / 2.)
                             .paths(paths)
                             .h(px(h))
                             .w_full()
@@ -829,32 +829,35 @@ impl Component for PieChart {
             .collect::<Vec<_>>()
             .join(", ");
         let size = self.size;
-        let chart =
-            div()
-                .size(px(size))
-                .flex_shrink_0()
-                .child(shape().inset(1., 1.).paths(paths).size(px(size)).label(
-                    match &self.center {
+        let chart = div()
+            .size(px(size))
+            .flex_shrink_0()
+            .child(
+                shape()
+                    .stroke_inset(1., 1.)
+                    .paths(paths)
+                    .size(px(size))
+                    .label(match &self.center {
                         Some(c) => format!("{c}. {spoken}"),
                         None => spoken,
-                    },
-                ))
-                .when_some(self.center.clone(), |d, center| {
-                    d.child(
-                        div()
-                            .size(px(size))
-                            .with_style(move |s| s.margin.top = -size)
-                            .items_center()
-                            .justify_center()
-                            .accessibility_hidden()
-                            .child(
-                                text(center)
-                                    .text_size((size * 0.14).round())
-                                    .bold()
-                                    .text_color(t.text),
-                            ),
-                    )
-                });
+                    }),
+            )
+            .when_some(self.center.clone(), |d, center| {
+                d.child(
+                    div()
+                        .size(px(size))
+                        .with_style(move |s| s.margin.top = -size)
+                        .items_center()
+                        .justify_center()
+                        .accessibility_hidden()
+                        .child(
+                            text(center)
+                                .text_size((size * 0.14).round())
+                                .bold()
+                                .text_color(t.text),
+                        ),
+                )
+            });
         let rows = self.slices.iter().zip(&colors).map(|(s, c)| {
             div()
                 .flex_row()
@@ -992,7 +995,7 @@ impl Component for Sparkline {
         let t = Theme::of(cx);
         let paths = self.paths(&t);
         let el = shape()
-            .inset(3., 3.)
+            .stroke_inset(3., 3.)
             .paths(paths)
             .h(px(self.height))
             .w_full()
@@ -1102,7 +1105,12 @@ impl Component for Ring {
             .accessibility_role(Role::ProgressBar)
             .accessibility_label(self.caption.clone().unwrap_or_default())
             .accessibility_value(self.label.clone().unwrap_or(pct))
-            .child(shape().inset(th / 2., th / 2.).paths(paths).size(px(size)))
+            .child(
+                shape()
+                    .stroke_inset(th / 2., th / 2.)
+                    .paths(paths)
+                    .size(px(size)),
+            )
             .child(
                 div()
                     .size(px(size))
