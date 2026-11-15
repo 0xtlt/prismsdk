@@ -17,8 +17,7 @@ use objc2_ui_kit::{
     UIAccessibilityTraitTabBar, UIAccessibilityTraitToggleButton,
     UIAdaptivePresentationControllerDelegate, UIApplication, UIApplicationDelegate, UIButton,
     UIButtonType, UIColor, UIContextMenuInteractionDelegate, UIControlEvents, UIControlState,
-    UIFont, UIFontWeightBold, UIFontWeightMedium, UIFontWeightRegular, UIFontWeightSemibold,
-    UIImage, UIImageSymbolConfiguration, UIImageView, UILabel, UINavigationController,
+    UIFont, UIImage, UIImageSymbolConfiguration, UIImageView, UILabel, UINavigationController,
     UINavigationControllerDelegate, UIProgressView, UIResponder, UIScene, UISceneConnectionOptions,
     UISceneDelegate, UISceneSession, UIScrollView, UIScrollViewContentInsetAdjustmentBehavior,
     UIScrollViewDelegate, UIScrollViewKeyboardDismissMode, UISwitch, UITabBarController,
@@ -746,7 +745,7 @@ pub enum View {
     Progress(Retained<UIProgressView>),
     Timer(Retained<UILabel>),
     Picture(Retained<UIImageView>),
-    Label(Retained<UILabel>),
+    Label(Retained<crate::label::PrismLabel>),
     Button(Retained<UIButton>),
     Input(Retained<UITextField>),
     Slider(Retained<SliderView>),
@@ -985,7 +984,7 @@ fn plain_color(c: Color) -> Retained<UIColor> {
 }
 
 /// Adaptive colors become dynamic `UIColor`s, resolved live by UIKit.
-fn ui_color(c: Color) -> Retained<UIColor> {
+pub(crate) fn ui_color(c: Color) -> Retained<UIColor> {
     if c.dark.is_none() {
         return plain_color(c);
     }
@@ -1005,36 +1004,39 @@ fn ui_color(c: Color) -> Retained<UIColor> {
 }
 
 fn font_weight(style: &Style) -> objc2_ui_kit::UIFontWeight {
-    unsafe {
-        match style.font_weight {
-            FontWeight::Regular => UIFontWeightRegular,
-            FontWeight::Medium => UIFontWeightMedium,
-            FontWeight::Semibold => UIFontWeightSemibold,
-            FontWeight::Bold => UIFontWeightBold,
-        }
-    }
+    crate::label::ui_weight(style.font_weight)
 }
 
 fn symbol_weight(style: &Style) -> objc2_ui_kit::UIImageSymbolWeight {
+    symbol_weight_for(style.font_weight)
+}
+
+/// The SF Symbol weight nearest to a CSS weight (symbols have nine).
+pub(crate) fn symbol_weight_for(w: FontWeight) -> objc2_ui_kit::UIImageSymbolWeight {
     use objc2_ui_kit::UIImageSymbolWeight as W;
-    match style.font_weight {
-        FontWeight::Regular => W::Regular,
-        FontWeight::Medium => W::Medium,
-        FontWeight::Semibold => W::Semibold,
-        FontWeight::Bold => W::Bold,
+    match w.nearest_hundred() {
+        100 => W::UltraLight,
+        200 => W::Thin,
+        300 => W::Light,
+        400 => W::Regular,
+        500 => W::Medium,
+        600 => W::Semibold,
+        700 => W::Bold,
+        800 => W::Heavy,
+        _ => W::Black,
     }
 }
 
+/// The font of a button or input: size, any weight, family, italic and
+/// tabular digits of its style.
 fn font(style: &Style) -> Retained<UIFont> {
-    let weight = unsafe {
-        match style.font_weight {
-            FontWeight::Regular => UIFontWeightRegular,
-            FontWeight::Medium => UIFontWeightMedium,
-            FontWeight::Semibold => UIFontWeightSemibold,
-            FontWeight::Bold => UIFontWeightBold,
-        }
-    };
-    UIFont::systemFontOfSize_weight(style.font_size as f64, weight)
+    crate::label::ui_font(&prism_native::text::FontSpec {
+        family: style.font_family.clone(),
+        size: style.font_size,
+        weight: style.font_weight,
+        italic: style.italic,
+        tabular: style.tabular_numbers,
+    })
 }
 
 fn alignment(a: TextAlign) -> NSTextAlignment {
@@ -1127,11 +1129,7 @@ impl Widgets for UiKit {
             }
             #[cfg(target_os = "tvos")]
             NodeKind::Toggle => View::Toggle(crate::tv::toggle(mtm, target)),
-            NodeKind::Text => {
-                let l = UILabel::new(mtm);
-                l.setNumberOfLines(0);
-                View::Label(l)
-            }
+            NodeKind::Text => View::Label(crate::label::new_label(mtm, id)),
             NodeKind::Button => {
                 let b = UIButton::buttonWithType(UIButtonType::System, mtm);
                 // tvOS: the remote's select press (there is no touch).
@@ -1312,16 +1310,13 @@ impl Widgets for UiKit {
                 };
             }
             View::Progress(p) => p.setProgressTintColor(text_color.as_deref()),
-            View::Label(l) | View::Timer(l) => {
-                let f = if matches!(view, View::Timer(_)) {
-                    // Digits keep a fixed width while the countdown ticks.
-                    UIFont::monospacedDigitSystemFontOfSize_weight(
-                        style.font_size as f64,
-                        font_weight(style),
-                    )
-                } else {
-                    font(style)
-                };
+            View::Label(l) => crate::label::set_style(l, style),
+            View::Timer(l) => {
+                // Digits keep a fixed width while the countdown ticks.
+                let f = UIFont::monospacedDigitSystemFontOfSize_weight(
+                    style.font_size as f64,
+                    font_weight(style),
+                );
                 unsafe { l.setFont(Some(&f)) };
                 unsafe { l.setTextColor(Some(&text_color.unwrap_or_else(UIColor::labelColor))) };
                 l.setTextAlignment(alignment(style.text_align));
@@ -1343,7 +1338,8 @@ impl Widgets for UiKit {
     fn set_text(&mut self, view: &View, text: &str) {
         let s = NSString::from_str(text);
         match view {
-            View::Label(l) | View::Timer(l) => l.setText(Some(&s)),
+            View::Label(l) => crate::label::set_text(l, text),
+            View::Timer(l) => l.setText(Some(&s)),
             View::Picture(v) => self.load_picture(view.id(), v, text),
             View::Input(f) => {
                 if f.text().map(|t| t.to_string()).unwrap_or_default() != text {
@@ -1391,6 +1387,8 @@ impl Widgets for UiKit {
     fn set_config(&mut self, view: &View, _kind: NodeKind, config: &str) {
         use prism_core::controls::{DateConfig, PickerConfig, SliderConfig};
         match view {
+            // A rich text's runs.
+            View::Label(l) => crate::label::set_runs(l, config),
             View::Input(f) => crate::forms::apply_input_config(f, config),
             #[cfg(not(target_os = "tvos"))]
             View::TextArea(t) => crate::forms::apply_input_config(&t.view, config),
@@ -1448,6 +1446,10 @@ impl Widgets for UiKit {
             } else {
                 s.setRefreshControl(None);
             }
+            return;
+        }
+        if let View::Label(l) = view {
+            crate::label::set_clickable(l, clickable);
             return;
         }
         let View::Container(v) = view else { return };
@@ -2155,6 +2157,8 @@ fn image_sources(dev_assets: Option<&str>) -> prism_native::images::ImageSources
     if let Some(dev) = dev_assets {
         asset_dirs.push(dev.into());
     }
+    // Fonts in assets/fonts: found by family name from now on.
+    prism_native::fonts::register_apple_fonts(&asset_dirs);
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     prism_native::images::ImageSources {
         asset_dirs,

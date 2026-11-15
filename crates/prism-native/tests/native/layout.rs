@@ -310,3 +310,40 @@ fn right_to_left_swaps_leading_and_trailing_corners() {
     );
     assert_eq!(f.styles[&top].rounded_corners, Corners::TOP, "symmetric");
 }
+
+#[test]
+fn truncated_and_unwrapped_texts_shrink_below_their_words_on_one_line() {
+    let mut h = tree(|| {
+        div()
+            .child(
+                div()
+                    .flex_row()
+                    .w(100.)
+                    .child(text("aaaa bbbb").truncate())
+                    .child(div().w(80.).h(10.).flex_shrink_0()),
+            )
+            .child(
+                div()
+                    .flex_row()
+                    .w(100.)
+                    .child(text("cccc dddd").nowrap())
+                    .child(div().w(80.).h(10.).flex_shrink_0()),
+            )
+            .child(div().w(40.).child(text("eeee ffff gggg").line_clamp(2)))
+    });
+    let f = h.layout(400., 300.);
+    // One line (measured without a width limit), cut to the 20 pt left.
+    let t = f.frame(f.by_text("aaaa bbbb"));
+    assert_eq!((t.2, t.3), (20., 20.));
+    let id = f.by_text("cccc dddd");
+    let t = f.frame(id);
+    assert_eq!((t.2, t.3), (20., 20.));
+    assert!(
+        f.measured[&id].iter().all(Option::is_none),
+        "{:?}",
+        f.measured[&id]
+    );
+    // A clamp wraps at the width; the platform caps the lines it draws.
+    let t = f.frame(f.by_text("eeee ffff gggg"));
+    assert_eq!(t.2, 40.);
+}

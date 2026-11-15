@@ -10,8 +10,10 @@ use std::collections::{HashMap, HashSet};
 
 #[cfg(target_vendor = "apple")]
 pub mod apple;
+pub mod fonts;
 pub mod images;
 pub mod remote;
+pub mod text;
 
 use prism_core::{
     Accessibility, Align, Appearance, Backend, Direction, FlexDirection, Justify, Length, NodeId,
@@ -246,6 +248,11 @@ impl<W: Widgets> NativeRenderer<W> {
         let mut s = style.scaled(self.zoom);
         if kind != NodeKind::View && self.env.text_scale != 1. {
             s.font_size = (s.font_size * self.env.text_scale).round();
+            // Spacing in points grows with the text (fractions follow the size).
+            if let Length::Px(lh) = s.line_height {
+                s.line_height = Length::Px(lh * self.env.text_scale);
+            }
+            s.letter_spacing *= self.env.text_scale;
         }
         if self.env.direction == Direction::Rtl {
             s.text_align = match s.text_align {
@@ -434,11 +441,21 @@ impl<W: Widgets> NativeRenderer<W> {
                         let Some(view) = view else {
                             return Size::ZERO;
                         };
-                        let max_width = known.width.or(match available.width {
-                            AvailableSpace::Definite(w) => Some(w),
-                            AvailableSpace::MinContent => Some(widgets.measure_min_content(view)),
-                            AvailableSpace::MaxContent => None,
-                        });
+                        // Single-line text (see `to_taffy`): its natural width,
+                        // cut by its frame.
+                        let single_line = style.overflow.y == taffy::Overflow::Hidden;
+                        let max_width =
+                            known
+                                .width
+                                .filter(|_| !single_line)
+                                .or(match available.width {
+                                    _ if single_line => None,
+                                    AvailableSpace::Definite(w) => Some(w),
+                                    AvailableSpace::MinContent => {
+                                        Some(widgets.measure_min_content(view))
+                                    }
+                                    AvailableSpace::MaxContent => None,
+                                });
                         let (w, h) = widgets.measure(view, max_width);
                         Size {
                             width: known.width.unwrap_or(w),
@@ -918,6 +935,18 @@ pub fn to_taffy(s: &Style, kind: NodeKind) -> taffy::Style {
             taffy::Point {
                 x: taffy::Overflow::Hidden,
                 y: taffy::Overflow::Scroll,
+            }
+        } else if kind == NodeKind::Text && s.truncates() {
+            // Cut text (ellipsis, no wrapping) can be narrower than its
+            // words, like CSS `overflow: hidden`. Single-line text (both axes
+            // hidden, like the web) is measured on one line.
+            taffy::Point {
+                x: taffy::Overflow::Hidden,
+                y: if s.no_wrap || s.max_lines == Some(1) {
+                    taffy::Overflow::Hidden
+                } else {
+                    taffy::Overflow::Visible
+                },
             }
         } else {
             taffy::Point {

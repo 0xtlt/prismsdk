@@ -192,17 +192,53 @@ final class PrismSurface {
 
     private void text(RemoteViews v, JSONObject n, String s) {
         if (s != null) {
+            s = PrismText.transform(s, transform(n.optString("tt")));
             SpannableString span = new SpannableString(s);
-            int fw = n.optInt("fw", 0);
-            if (fw >= 2) span.setSpan(new StyleSpan(Typeface.BOLD), 0, s.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            else if (fw == 1) span.setSpan(new TypefaceSpan("sans-serif-medium"), 0, s.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            int all = Spanned.SPAN_EXCLUSIVE_EXCLUSIVE, len = s.length();
+            // Parcelable spans only (the launcher draws them): weight as bold
+            // or medium, families by name, decorations.
+            int w = weight(n);
+            boolean italic = n.optInt("it", 0) == 1;
+            int style = (w >= 600 ? Typeface.BOLD : 0) | (italic ? Typeface.ITALIC : 0);
+            if (style != 0) span.setSpan(new StyleSpan(style), 0, len, all);
+            String ff = n.optString("ff");
+            String family = ff.equals("mono") ? "monospace" : ff.equals("serif") ? "serif"
+                    : w == 500 && ff.isEmpty() ? "sans-serif-medium" : !ff.isEmpty() && !ff.equals("rounded") && !ff.equals("system") ? ff : null;
+            if (family != null) span.setSpan(new TypefaceSpan(family), 0, len, all);
+            if (n.optInt("ul", 0) == 1) span.setSpan(new android.text.style.UnderlineSpan(), 0, len, all);
+            if (n.optInt("st", 0) == 1) span.setSpan(new android.text.style.StrikethroughSpan(), 0, len, all);
             v.setTextViewText(node, span);
         }
+        int maxLines = n.optInt("ml", 0);
+        if (maxLines > 0) v.setInt(node, "setMaxLines", maxLines);
+        else if (n.optInt("nw", 0) == 1) v.setInt(node, "setMaxLines", 1);
         v.setTextViewTextSize(node, TypedValue.COMPLEX_UNIT_DIP, (float) n.optDouble("fs", 16));
         int[] fg = colors(n.opt("fg"));
         setColor(v, "setTextColor", fg != null ? fg : new int[]{0xFF1C1C1E, 0xFFF2F2F7});
         String ta = n.optString("ta");
         v.setInt(node, "setGravity", ta.equals("c") ? Gravity.CENTER_HORIZONTAL : ta.equals("r") ? Gravity.END : Gravity.START);
+    }
+
+    /** `fw`: 1–3 medium/semibold/bold, larger values a CSS weight (100–900). */
+    private static int weight(JSONObject n) {
+        int fw = n.optInt("fw", 0);
+        switch (fw) {
+            case 0: return 400;
+            case 1: return 500;
+            case 2: return 600;
+            case 3: return 700;
+            default: return fw;
+        }
+    }
+
+    /** SNode `tt` (`u`, `l`, `c`) as PrismText's names. */
+    private static String transform(String tt) {
+        switch (tt) {
+            case "u": return "upper";
+            case "l": return "lower";
+            case "c": return "capitalize";
+            default: return "";
+        }
     }
 
     /** A flexbox container as a LinearLayout; gaps and `justify-content` as spacers. */
@@ -290,8 +326,12 @@ final class PrismSurface {
             case "m": {
                 TextPaint p = new TextPaint(Paint.ANTI_ALIAS_FLAG);
                 p.setTextSize(fs * density);
-                if (n.optInt("fw", 0) >= 2) p.setTypeface(Typeface.DEFAULT_BOLD);
-                String s = k.equals("t") ? n.optString("s") : k.equals("i") ? n.optString("gl", "•") : "00:00";
+                String ff = n.optString("ff");
+                p.setTypeface(Typeface.create(ff.equals("mono") ? Typeface.MONOSPACE : ff.equals("serif") ? Typeface.SERIF : Typeface.DEFAULT,
+                        weight(n), n.optInt("it", 0) == 1));
+                p.setLetterSpacing(fs > 0 ? (float) n.optDouble("ls", 0) / fs : 0);
+                String s = k.equals("t") ? PrismText.transform(n.optString("s"), transform(n.optString("tt")))
+                        : k.equals("i") ? n.optString("gl", "•") : "00:00";
                 return p.measureText(s) / density + pad;
             }
             case "p":

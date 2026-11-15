@@ -79,7 +79,7 @@ define_class!(
 );
 
 /// Scales the view up with a soft shadow while it has the focus.
-fn raise(view: &UIView, focused: bool) {
+pub(crate) fn raise(view: &UIView, focused: bool) {
     let scale = if focused { 1.06 } else { 1. };
     view.setTransform(CGAffineTransform {
         a: scale,

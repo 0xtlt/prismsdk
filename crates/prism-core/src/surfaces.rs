@@ -250,7 +250,9 @@ impl SNode {
     /// `sh` shape), `d` 1 = row, `g` gap, `pd` padding and `m` margin
     /// `[t,r,b,l]`, `w`/`h` size (number or `"f"` = fill), `f` flex grow,
     /// `ai`/`jc` alignment, `bg`/`fg`/`bc` colors (`"#RRGGBBAA"` or
-    /// `["#light","#dark"]`), `r` radius, `bw` border, `fs`/`fw`/`ta` font,
+    /// `["#light","#dark"]`), `r` radius, `bw` border, `fs`/`fw`/`ta` font (`fw` 1-3
+    /// medium/semibold/bold, else a CSS weight; typography keys
+    /// `ff`/`it`/`ul`/`st`/`tn`/`tt`/`ls`/`lh`/`ml`/`nw`, see `write_typography`),
     /// `o` opacity, `s` text, symbol or drawing, `v` value, `l` link,
     /// `al` accessibility label, `ah` hidden, `hd` heading, `c` children.
     ///
@@ -377,15 +379,19 @@ impl SNode {
         if s.font_size != crate::style::DEFAULT_FONT_SIZE {
             let _ = write!(o, r#","fs":{}"#, num(s.font_size));
         }
+        // 1-3: medium, semibold, bold (the first renderers' scale); other
+        // weights as their CSS number (100-900).
         let fw = match s.font_weight {
             FontWeight::Regular => 0,
             FontWeight::Medium => 1,
             FontWeight::Semibold => 2,
             FontWeight::Bold => 3,
+            w => w.css(),
         };
         if fw > 0 {
             let _ = write!(o, r#","fw":{fw}"#);
         }
+        write_typography(o, s);
         match s.text_align {
             TextAlign::Center => o.push_str(r#","ta":"c""#),
             TextAlign::Right => o.push_str(r#","ta":"r""#),
@@ -431,6 +437,47 @@ impl SNode {
             o.push(']');
         }
         o.push('}');
+    }
+}
+
+/// Typography keys of a node (only what differs from the defaults): `ff`
+/// family (`mono`, `serif`, `rounded` or a name), `it` italic, `ul`
+/// underline, `st` strikethrough, `tn` tabular digits, `tt` case (`u`, `l`,
+/// `c`), `ls` letter spacing, `lh` line height in points, `ml` maximum
+/// lines, `nw` no wrapping.
+fn write_typography(o: &mut String, s: &crate::style::Style) {
+    use crate::style::{FontFamily, TextTransform};
+    if s.font_family != FontFamily::System {
+        let _ = write!(o, r#","ff":{}"#, json_str(s.font_family.encode()));
+    }
+    for (key, on) in [
+        ("it", s.italic),
+        ("ul", s.underline),
+        ("st", s.strikethrough),
+        ("tn", s.tabular_numbers),
+        ("nw", s.no_wrap),
+    ] {
+        if on {
+            let _ = write!(o, r#","{key}":1"#);
+        }
+    }
+    let tt = match s.text_transform {
+        TextTransform::None => None,
+        TextTransform::Uppercase => Some("u"),
+        TextTransform::Lowercase => Some("l"),
+        TextTransform::Capitalize => Some("c"),
+    };
+    if let Some(t) = tt {
+        let _ = write!(o, r#","tt":"{t}""#);
+    }
+    if s.letter_spacing != 0. {
+        let _ = write!(o, r#","ls":{}"#, num(s.letter_spacing));
+    }
+    if let Some(lh) = s.line_height_points() {
+        let _ = write!(o, r#","lh":{}"#, num(lh));
+    }
+    if let Some(n) = s.max_lines {
+        let _ = write!(o, r#","ml":{n}"#);
     }
 }
 

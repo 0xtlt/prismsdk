@@ -7,4 +7,5 @@ mod motion;
 mod reconcile;
 mod router;
 mod storage;
+mod typography;
 mod virtual_list;

@@ -48,9 +48,28 @@ The first version, not yet on crates.io.
 - The documentation site (`docs/`, mdBook), deployed with the API docs to
   GitHub Pages, and API documentation for every public item of `prism`,
   `prism-core` and `prism-ui`.
+- Typography on every backend: font families (`font_mono`, `font_serif`,
+  `font_rounded`, `font_family("Inter")`), any weight from 100 to 900
+  (`weight(650)`, `FontWeight::Thin` … `Black`), `italic`, `line_height` /
+  `leading`, `letter_spacing`, `uppercase` / `lowercase` / `text_transform`,
+  `underline`, `strikethrough`, `tabular_nums`, `truncate`, `line_clamp(n)`
+  and `nowrap`, measured natively by the shared layout.
+- Bundled fonts: files in `assets/fonts/` are registered on every platform
+  (Core Text, `Typeface.createFromAsset`, fontconfig) and become `@font-face`
+  rules on the web.
+- Rich text: `rich_text([span(…).bold(), link("settings", "/settings"),
+  icon("star.fill"), …])`, one paragraph of styled runs with inline links
+  (keyboard and screen reader reachable) and SF Symbols, mapped to
+  `NSAttributedString`, `AttributedString`, `SpannableString`, Pango
+  attributes and inline HTML.
+- Clickable texts: `text(…).on_click(…)` and `text(…).link(path)`.
 
 ### Changed
 
+- `FontWeight` has the whole CSS scale (`Thin`, `ExtraLight`, `Light`,
+  `ExtraBold`, `Black`, `Custom(u16)`); matches on it need the new variants.
+- Links (`Div::link`, `Text::link`, `link(…)` runs) to a URL with a scheme
+  (`https://…`, `mailto:`) open it instead of navigating in the app.
 - The Swift sources moved from `platform/apple` to
   `crates/prism-apple-build/apple`, the Android host and the bundling scripts
   from `platform/android` and `scripts/` to `crates/prism-cli/platform`, so

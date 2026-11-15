@@ -7,6 +7,7 @@
 // (`prism_watch_event`). Layout is SwiftUI's: rows/columns, padding, sizes,
 // grow, backgrounds and borders map to stacks and modifiers.
 import Accessibility
+import CoreText
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
@@ -68,9 +69,19 @@ enum PickerChrome {
 
 @_cdecl("prism_watch_measure")
 public func prismWatchMeasure(_ kind: UnsafePointer<CChar>, _ text: UnsafePointer<CChar>, _ font: Double,
-                              _ weight: Int32, _ maxWidth: Double,
+                              _ weight: Int32, _ maxWidth: Double, _ spec: UnsafePointer<CChar>,
                               _ outW: UnsafeMutablePointer<Double>, _ outH: UnsafeMutablePointer<Double>) {
     let kind = String(cString: kind)
+    // A styled text (typography or runs, see prism-native remote.rs).
+    if kind == "text", spec.pointee != 0,
+       let data = String(cString: spec).data(using: .utf8),
+       let d = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+        let typo = PrismTypo(d, size: font > 0 ? font : 17, weight: Double(weight))
+        let result = typo.measure(String(cString: text), runs: d["runs"] as? [[String: Any]] ?? [], maxWidth: maxWidth)
+        outW.pointee = Double(result.width)
+        outH.pointee = Double(result.height)
+        return
+    }
     let size = font > 0 ? font : 17
     let uiFont = UIFont.systemFont(ofSize: size, weight: uiWeight(weight))
     func textSize(_ s: String, width: Double = maxWidth) -> CGSize {
@@ -127,6 +138,210 @@ public func prismWatchMeasure(_ kind: UnsafePointer<CChar>, _ text: UnsafePointe
     }
     outW.pointee = Double(result.width)
     outH.pointee = Double(result.height)
+}
+
+// MARK: Typography (prism-core typography styles and rich-text runs)
+
+/// UIFont weights at CSS 100, 200 … 900 (UIFontDescriptor.h); weights in
+/// between (650) are interpolated: the system font is variable.
+private let uiWeightSteps: [UIFont.Weight] = [.ultraLight, .thin, .light, .regular, .medium, .semibold, .bold, .heavy, .black]
+
+func prismUIWeight(_ css: Double) -> UIFont.Weight {
+    let w = min(max(css, 100), 900)
+    let i = min(Int((w - 100) / 100), 7)
+    let t = (w - 100 - Double(i) * 100) / 100
+    let a = uiWeightSteps[i].rawValue, b = uiWeightSteps[i + 1].rawValue
+    return UIFont.Weight(a + (b - a) * t)
+}
+
+/// The font of a run: family (`mono`, `serif`, `rounded`, a name), size,
+/// CSS weight, italic, tabular digits. Drawing and measuring use the same one.
+func prismUIFont(family: String?, size: Double, weight: Double, italic: Bool, tabular: Bool) -> UIFont {
+    var font = UIFont.systemFont(ofSize: size, weight: prismUIWeight(weight))
+    switch family {
+    case nil, "", "system": break
+    case "mono":
+        font = UIFont.monospacedSystemFont(ofSize: size, weight: prismUIWeight(weight))
+    case "serif", "rounded":
+        if let d = font.fontDescriptor.withDesign(family == "serif" ? .serif : .rounded) {
+            font = UIFont(descriptor: d, size: size)
+        }
+    case let name?:
+        // An installed or bundled family (`assets/fonts`), its nearest face.
+        if UIFont.familyNames.contains(name) {
+            let d = UIFontDescriptor(fontAttributes: [
+                .family: name,
+                .traits: [UIFontDescriptor.TraitKey.weight: prismUIWeight(weight)],
+            ])
+            font = UIFont(descriptor: d, size: size)
+        } else if let named = UIFont(name: name, size: size) {
+            font = named
+        }
+    }
+    var d = font.fontDescriptor
+    if italic, let it = d.withSymbolicTraits(d.symbolicTraits.union(.traitItalic)) { d = it }
+    if tabular {
+        d = d.addingAttributes([.featureSettings: [[
+            UIFontDescriptor.FeatureKey.type: kNumberSpacingType,
+            UIFontDescriptor.FeatureKey.selector: kMonospacedNumbersSelector,
+        ]]])
+    }
+    return italic || tabular ? UIFont(descriptor: d, size: size) : font
+}
+
+/// The text as drawn (`tt`): CSS `text-transform` (capitalize only raises
+/// the first letter of each word).
+func prismTransform(_ s: String, _ tt: String?) -> String {
+    switch tt {
+    case "upper": return s.uppercased()
+    case "lower": return s.lowercased()
+    case "capitalize":
+        var out = "", start = true
+        for c in s {
+            out += start && (c.isLetter || c.isNumber) ? c.uppercased() : String(c)
+            start = !(c.isLetter || c.isNumber) && c != "'" && c != "\u{2019}"
+        }
+        return out
+    default: return s
+    }
+}
+
+/// A text's typography: the style op's keys (`font`, `weight`, `ff`, `it`,
+/// `ul`, `st`, `tn`, `tt`, `ls`, `lh`, `ml`, `nw`), or a measure spec.
+struct PrismTypo {
+    var size: Double
+    var weight: Double
+    var family: String?
+    var italic = false, underline = false, strike = false, tabular = false, nowrap = false
+    var transform: String?
+    var letterSpacing = 0.0
+    var lineHeight: Double?
+    var maxLines: Int?
+
+    init(_ d: [String: Any], size: Double, weight: Double) {
+        func flag(_ k: String) -> Bool { d[k] as? Bool ?? false }
+        func n(_ k: String) -> Double? { (d[k] as? NSNumber)?.doubleValue }
+        self.size = size
+        self.weight = weight
+        family = d["ff"] as? String
+        italic = flag("it"); underline = flag("ul"); strike = flag("st"); tabular = flag("tn"); nowrap = flag("nw")
+        transform = d["tt"] as? String
+        letterSpacing = n("ls") ?? 0
+        lineHeight = n("lh")
+        maxLines = n("ml").map { Int($0) }
+    }
+
+    init(_ n: Node) {
+        self.init(n.style, size: n.num("font", 17), weight: n.num("weight", 400))
+    }
+
+    /// The node's own font.
+    var font: UIFont { prismUIFont(family: family, size: size, weight: weight, italic: italic, tabular: tabular) }
+
+    /// A run's font: its own family, size (`z` × the text's), weight and italic.
+    func font(_ r: [String: Any]) -> UIFont {
+        let z = (r["z"] as? NSNumber)?.doubleValue
+        return prismUIFont(family: (r["ff"] as? String) ?? family,
+                           size: z.map { max(($0 * size).rounded(), 1) } ?? size,
+                           weight: (r["w"] as? NSNumber)?.doubleValue ?? weight,
+                           italic: italic || (r["i"] as? Bool ?? false), tabular: tabular)
+    }
+
+    /// Extra space between lines for the line height (SwiftUI's `lineSpacing`
+    /// cannot tighten lines below the font's own height).
+    var lineSpacing: Double { lineHeight.map { max($0 - font.lineHeight, 0) } ?? 0 }
+
+    /// The runs, or the plain text as one run.
+    func runs(_ text: String, _ runs: [[String: Any]]) -> [[String: Any]] { runs.isEmpty ? [["t": text]] : runs }
+
+    /// What `prism_watch_measure` returns: the attributed text's size, capped
+    /// at `maxLines`; one line per paragraph when it never wraps.
+    func measure(_ text: String, runs: [[String: Any]], maxWidth: Double) -> CGSize {
+        let s = NSMutableAttributedString()
+        var lineH = font.lineHeight
+        for r in self.runs(text, runs) {
+            let f = font(r)
+            lineH = max(lineH, f.lineHeight)
+            if let icon = r["icon"] as? String {
+                let config = UIImage.SymbolConfiguration(pointSize: f.pointSize, weight: .regular)
+                let attachment = NSTextAttachment()
+                attachment.image = UIImage(systemName: icon, withConfiguration: config)
+                s.append(NSAttributedString(attachment: attachment))
+                continue
+            }
+            s.append(NSAttributedString(string: prismTransform(r["t"] as? String ?? "", transform),
+                                        attributes: [.font: f, .kern: letterSpacing]))
+        }
+        if s.length == 0 { return .zero }
+        let para = NSMutableParagraphStyle()
+        para.lineSpacing = lineSpacing
+        s.addAttribute(.paragraphStyle, value: para, range: NSRange(location: 0, length: s.length))
+        let single = nowrap || maxLines == 1
+        let width = single || !maxWidth.isFinite ? CGFloat.greatestFiniteMagnitude : maxWidth
+        let r = s.boundingRect(with: CGSize(width: width, height: .greatestFiniteMagnitude),
+                               options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
+        var size = CGSize(width: ceil(r.width), height: ceil(r.height))
+        if let n = maxLines, n > 0 {
+            size.height = min(size.height, ceil(Double(n) * lineH + Double(n - 1) * lineSpacing))
+            if maxWidth.isFinite { size.width = min(size.width, maxWidth) }
+        }
+        return size
+    }
+
+    /// The SwiftUI text: one attributed run after another (inline symbols as
+    /// images in the text), links as `prism-link://<id>` URLs.
+    func text(_ text: String, runs: [[String: Any]], dark: Bool) -> Text {
+        var out: Text?
+        var pending = AttributedString()
+        func flush() {
+            guard !pending.characters.isEmpty else { return }
+            let t = Text(pending)
+            out = out.map { Text("\($0)\(t)") } ?? t
+            pending = AttributedString()
+        }
+        for r in self.runs(text, runs) {
+            let f = Font(font(r) as CTFont)
+            let color = PrismColor(r["c"]).map { dark ? $0.dark : $0.light }
+            if let icon = r["icon"] as? String {
+                flush()
+                var t = Text(Image(systemName: icon)).font(f)
+                if let color { t = t.foregroundColor(color) }
+                out = out.map { Text("\($0)\(t)") } ?? t
+                continue
+            }
+            var a = AttributedString(prismTransform(r["t"] as? String ?? "", transform))
+            a.font = f
+            if let color { a.foregroundColor = color }
+            if let bg = PrismColor(r["bg"]) { a.backgroundColor = dark ? bg.dark : bg.light }
+            if underline || (r["u"] as? Bool ?? false) { a.underlineStyle = .single }
+            if strike || (r["s"] as? Bool ?? false) { a.strikethroughStyle = .single }
+            if letterSpacing != 0 { a.kern = letterSpacing }
+            if let link = (r["link"] as? NSNumber)?.uint64Value { a.link = URL(string: "prism-link://\(link)") }
+            pending += a
+        }
+        flush()
+        return out ?? Text("")
+    }
+}
+
+/// Activates a rich text's links (`prism-link://<id>`): reported like a menu item.
+let prismOpenLink = OpenURLAction { url in
+    guard url.scheme == "prism-link", let id = UInt64(url.host ?? "") else { return .systemAction }
+    send(["t": "menu", "id": id])
+    return .handled
+}
+
+/// Registers the fonts the app bundles in `assets/fonts` (`.ttf`, `.otf`,
+/// `.ttc`), so `font_family("Name")` finds them.
+func prismRegisterFonts() {
+    let dir = URL(fileURLWithPath: Bundle.main.bundlePath).appendingPathComponent("assets/fonts")
+    let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+    for f in files where ["ttf", "otf", "ttc"].contains(f.pathExtension.lowercased()) {
+        var error: Unmanaged<CFError>?
+        if !CTFontManagerRegisterFontsForURL(f as CFURL, .process, &error) {
+            NSLog("prism: font %@ not registered: %@", f.lastPathComponent, "\(String(describing: error?.takeRetainedValue()))")
+        }
+    }
 }
 
 // MARK: Tree
@@ -225,6 +440,8 @@ struct Node {
     var loop: PrismLoop?
     /// A shape's paths, in points (see `PrismShape`).
     var paths: [[String: Any]] = []
+    /// A rich text's runs (`runs` op).
+    var runs: [[String: Any]] = []
 
     func num(_ k: String, _ d: Double = 0) -> Double { (style[k] as? NSNumber)?.doubleValue ?? d }
     /// The node's box: its radius on the corners it rounds (`corners` bits:
@@ -302,6 +519,7 @@ final class PrismStore: ObservableObject {
                 nodes[id]?.role = role
                 nodes[id]?.a11yValue = value
             case "config": nodes[id]?.config = p["config"] as? String ?? ""
+            case "runs": nodes[id]?.runs = p["runs"] as? [[String: Any]] ?? []
             case "env":
                 rtl = p["rtl"] as? Bool ?? false
                 lang = p["lang"] as? String ?? ""
@@ -510,8 +728,22 @@ struct NodeView: View {
         case "text":
             // Lines align in the text's frame too (right-aligned in RTL: Rust
             // swaps left and right).
-            Text(n.text).font(font(n)).foregroundStyle(fg).multilineTextAlignment(textAlign(n.str("talign")))
-                .frame(maxWidth: .infinity, alignment: frameAlign(n.str("talign")))
+            let typo = PrismTypo(n)
+            let linkColor = n.runs.first { $0["link"] != nil }.flatMap { PrismColor($0["c"]) }.map { dark ? $0.dark : $0.light }
+            let t = typo.text(n.text, runs: n.runs, dark: dark)
+                .foregroundStyle(fg).multilineTextAlignment(textAlign(n.str("talign")))
+                .lineSpacing(typo.lineSpacing)
+                .tint(linkColor ?? fg)
+                .environment(\.openURL, prismOpenLink)
+                .accessibilityAddTraits(n.clickable ? (n.role == "link" ? .isLink : .isButton) : [])
+            if typo.nowrap {
+                // One line per paragraph, cut at the frame's edge.
+                t.fixedSize(horizontal: true, vertical: false)
+                    .frame(maxWidth: .infinity, alignment: frameAlign(n.str("talign"))).clipped()
+            } else {
+                t.lineLimit(typo.maxLines).truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: frameAlign(n.str("talign")))
+            }
         case "button":
             Button { send(["t": "click", "id": id]) } label: { Text(n.text).font(font(n)).foregroundStyle(fg) }
                 .buttonStyle(.plain)
@@ -1326,5 +1558,6 @@ struct PrismWatchApp: App {
 /// Called from Rust's `main`: runs the SwiftUI app (never returns).
 @_cdecl("prism_watch_main")
 public func prismWatchMain() {
+    prismRegisterFonts()
     PrismWatchApp.main()
 }

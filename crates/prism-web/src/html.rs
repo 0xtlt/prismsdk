@@ -143,7 +143,7 @@ pub fn a11y_attrs(kind: NodeKind, a: &Accessibility) -> String {
             out.push_str(" disabled");
         }
     }
-    if kind == NodeKind::View
+    if matches!(kind, NodeKind::View | NodeKind::Text)
         && a.role.is_some_and(Role::is_interactive)
         && !a.hidden
         && !a.disabled
@@ -413,7 +413,13 @@ impl HtmlBackend {
                 } else {
                     n.text.as_str()
                 };
-                let _ = write!(out, "<{tag} {attrs}{class}{label}>{}", escape(content));
+                // A rich text's runs become inline spans and links.
+                let content = if kind == NodeKind::Text && !n.config.is_empty() {
+                    runs_html(&n.config)
+                } else {
+                    escape(content)
+                };
+                let _ = write!(out, "<{tag} {attrs}{class}{label}>{content}");
                 for c in &n.children {
                     self.write(*c, false, out);
                 }
@@ -520,6 +526,50 @@ pub fn escape(s: &str) -> String {
         }
     }
     o
+}
+
+/// A rich text's runs (`prism_core::spans`) as inline HTML, the same
+/// markup `client.js` builds: `<span>` per styled run, `<a class="prism-link"
+/// href data-link>` per link (`<span role="link" tabindex="0">` for a
+/// clickable run without a path), `<span class="prism-symbol">` per icon.
+pub fn runs_html(config: &str) -> String {
+    let mut out = String::new();
+    for r in prism_core::decode_runs(config) {
+        let css = crate::css::run_css(&r);
+        let style = if css.is_empty() {
+            String::new()
+        } else {
+            format!(r#" style="{}""#, escape(&css))
+        };
+        let text = escape(&r.text);
+        if r.icon.is_some() {
+            let _ = write!(
+                out,
+                r#"<span class="prism-symbol" aria-hidden="true"{style}>{text}</span>"#
+            );
+        } else if let Some(link) = r.link {
+            match &r.href {
+                Some(href) => {
+                    let _ = write!(
+                        out,
+                        r#"<a class="prism-link" href="{}" data-link="{link}"{style}>{text}</a>"#,
+                        escape(href)
+                    );
+                }
+                None => {
+                    let _ = write!(
+                        out,
+                        r#"<span class="prism-link" role="link" tabindex="0" data-link="{link}"{style}>{text}</span>"#
+                    );
+                }
+            }
+        } else if style.is_empty() {
+            out.push_str(&text);
+        } else {
+            let _ = write!(out, "<span{style}>{text}</span>");
+        }
+    }
+    out
 }
 
 /// Remote URLs as-is; anything else is an app asset under `/assets/`.

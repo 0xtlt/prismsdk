@@ -28,6 +28,7 @@ mod reconcile;
 mod router;
 pub mod security;
 pub mod shape;
+pub mod spans;
 pub mod storage;
 mod style;
 pub mod surfaces;
@@ -53,8 +54,9 @@ pub use element::{
     Image, InputEvent, IntoElement, Modal, NavigateEvent, NodeKind, ParentElement, Picker, Picture,
     Progress, Screen, Scroll, ScrollEvent, Shape, Slider, Spinner, Stack, SwipeDirection, Tab,
     Tabs, Text, TextArea, TextInput, Timer, Toggle, VNode, button, date_picker, div,
-    format_remaining, image, lazy, modal, picker, picture, progress, screen, scroll, shape, slider,
-    spinner, stack, tab, tabs, text, text_area, text_input, timer, toggle, unix_seconds, unix_time,
+    format_remaining, image, lazy, modal, picker, picture, progress, rich_text, screen, scroll,
+    shape, slider, spinner, stack, tab, tabs, text, text_area, text_input, timer, toggle,
+    unix_seconds, unix_time,
 };
 pub use i18n::{BasicFormatter, DateStyle, Direction, Formatter, Locale, Translations};
 pub use list::VirtualList;
@@ -70,6 +72,7 @@ pub use security::{
     SecureStorage, WebAuthRequest,
 };
 pub use shape::{Drawing, Path, Segment};
+pub use spans::{Span, TextRun, decode_runs, encode_runs, icon, link, span};
 pub use storage::{FileStorage, MemoryStorage, Storage};
 pub use style::*;
 pub use surfaces::{
@@ -514,6 +517,8 @@ pub mod prelude {
         navigate_to, picker, picture, progress, px, relative, rgb, rgba, screen, scroll, shape,
         slider, spinner, text, text_area, text_input, timer, toggle,
     };
+    // Typography and rich text.
+    pub use crate::{FontFamily, FontWeight, Span, TextTransform, icon, link, rich_text, span};
 }
 
 #[cfg(test)]

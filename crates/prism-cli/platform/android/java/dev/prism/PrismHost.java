@@ -178,6 +178,8 @@ public final class PrismHost {
         int[] viewport = {0, 0};
         // Form controls (PrismForms): the config string, accessibility.
         String config = "";
+        /** A rich text's runs (PrismText), null when plain. */
+        JSONArray runs;
         String a11yLabel, a11yValue, announced;
     }
 
@@ -217,9 +219,11 @@ public final class PrismHost {
     }
 
     /** Natural size of a leaf, in pixels: {width, height}. */
-    public static float[] measure(String kind, String text, float size, int weight, float maxWidth) {
+    public static float[] measure(String kind, String text, float size, int weight, float maxWidth, String spec) {
         float[] form = PrismForms.measure(kind, text, size, weight, maxWidth);
         if (form != null) return form;
+        // Texts: styled exactly like PrismText draws them (typography, runs).
+        if (kind.equals("text")) return PrismText.measure(text, size > 0 ? size : 17 * density, weight, maxWidth, spec);
         TextView v;
         switch (kind) {
             case "button": v = new Button(activity); ((Button) v).setAllCaps(false); break;
@@ -295,6 +299,12 @@ public final class PrismHost {
                 if (!PrismForms.placeholder(n, p.optString("text")) && n.view instanceof EditText) ((EditText) n.view).setHint(p.optString("text"));
                 break;
             case "config": PrismForms.config(n, p.optString("config")); break;
+            case "runs": {
+                JSONArray runs = p.optJSONArray("runs");
+                n.runs = runs != null && runs.length() > 0 ? runs : null;
+                PrismText.render(n);
+                break;
+            }
             case "icon":
                 n.icon = p.optString("icon");
                 n.glyph = p.optString("glyph");
@@ -668,7 +678,8 @@ public final class PrismHost {
     static void setText(Node n, String text) {
         n.text = text;
         switch (n.kind) {
-            case "text": case "button": ((TextView) n.view).setText(text); break;
+            case "text": PrismText.render(n); break;
+            case "button": ((TextView) n.view).setText(text); break;
             case "text_input": case "text_area": {
                 EditText e = (EditText) n.view;
                 // Typing echoes back the same text; only a change from the app (clearing
@@ -836,7 +847,7 @@ public final class PrismHost {
             if (fg != null) t.setTextColor(fg);
             float size = (float) s.optDouble("font", 0);
             if (size > 0) t.setTextSize(TypedValue.COMPLEX_UNIT_PX, size);
-            t.setTypeface(Typeface.create(Typeface.DEFAULT, s.optInt("weight", 400), false));
+            t.setTypeface(PrismText.font(s.optString("ff", "system"), s.optInt("weight", 400), s.optBoolean("it")));
             if (!n.kind.equals("image") && !n.kind.equals("timer") && !(t instanceof Button)) {
                 String a = s.optString("talign", "left");
                 // Absolute: Prism already mirrors alignment for right-to-left languages
@@ -844,6 +855,8 @@ public final class PrismHost {
                 t.setGravity(a.equals("center") ? Gravity.CENTER_HORIZONTAL : a.equals("right") ? Gravity.RIGHT : Gravity.LEFT);
             }
         }
+        // Texts: typography and runs (their colors follow light/dark too).
+        if (n.kind.equals("text")) PrismText.render(n);
         PrismForms.style(n);
     }
 
@@ -851,6 +864,7 @@ public final class PrismHost {
 
     static void setClickable(Node n) {
         View v = n.view;
+        PrismText.clickable(n);
         boolean gestures = n.clickable || n.menu != null || n.swipeLeft || n.swipeRight;
         if (!gestures) return;
         switch (n.kind) {
@@ -861,6 +875,8 @@ public final class PrismHost {
         GestureDetector g = new GestureDetector(activity, new GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onDown(MotionEvent e) { return true; }
             @Override public boolean onSingleTapUp(MotionEvent e) {
+                // A link inside a clickable text wins over the text's own click.
+                if (PrismText.tapLink(n, e)) return true;
                 if (n.clickable) { send(event("click", n.id)); return true; }
                 return false;
             }

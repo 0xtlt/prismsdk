@@ -24,6 +24,14 @@
 //! `exit` and `repeat` may carry `anim`: `{d, delay, ease}` (seconds, cubic
 //! Bézier `[x1, y1, x2, y2]`): animate to the new values.
 //! | `appearance` | `mode`: `system`, `light` or `dark` (no `id`) |
+//! | `runs` | a rich text's runs (instead of `config` for texts): `[{t, w, i, u, s, c, bg, ff, z, link, href, icon, glyph}]` (see [`runs_json`]) |
+//!
+//! Styles of texts carry typography keys when set (see [`typography`]): `ff`
+//! family (`mono`, `serif`, `rounded` or a name), `it` italic, `ul`
+//! underline, `st` strikethrough, `tn` tabular digits, `tt` case (`upper`,
+//! `lower`, `capitalize`), `ls` letter spacing and `lh` line height in
+//! points, `ml` maximum lines (ellipsized), `nw` no wrapping. `weight` is any
+//! CSS weight from 100 to 900.
 
 use std::collections::HashMap;
 
@@ -45,9 +53,13 @@ pub struct MeasureRequest<'a> {
     /// large spinner.
     pub text: &'a str,
     pub font_size: f32,
-    /// 400, 500, 600, 700.
+    /// CSS weight, 100 to 900.
     pub weight: i32,
     pub max_width: Option<f32>,
+    /// Texts: their typography and runs as a JSON object (the style op's
+    /// [`typography`] keys plus `runs`, see [`runs_json`]); empty when the
+    /// text is plain (font size and weight only).
+    pub spec: &'a str,
 }
 
 /// Measures a leaf in the host (synchronously, on the UI thread).
@@ -143,12 +155,95 @@ fn pose(opacity: f32, t: Transform) -> Value {
 }
 
 fn weight(w: FontWeight) -> i32 {
-    match w {
-        FontWeight::Regular => 400,
-        FontWeight::Medium => 500,
-        FontWeight::Semibold => 600,
-        FontWeight::Bold => 700,
+    w.css() as i32
+}
+
+/// The typography keys of a style that differ from the defaults (see the
+/// module docs), as a JSON object.
+pub fn typography(s: &Style) -> serde_json::Map<String, Value> {
+    use prism_core::{FontFamily, TextTransform};
+    let mut m = serde_json::Map::new();
+    if s.font_family != FontFamily::System {
+        m.insert("ff".into(), json!(s.font_family.encode()));
     }
+    for (key, on) in [
+        ("it", s.italic),
+        ("ul", s.underline),
+        ("st", s.strikethrough),
+        ("tn", s.tabular_numbers),
+        ("nw", s.no_wrap),
+    ] {
+        if on {
+            m.insert(key.into(), json!(true));
+        }
+    }
+    let tt = match s.text_transform {
+        TextTransform::None => None,
+        TextTransform::Uppercase => Some("upper"),
+        TextTransform::Lowercase => Some("lower"),
+        TextTransform::Capitalize => Some("capitalize"),
+    };
+    if let Some(t) = tt {
+        m.insert("tt".into(), json!(t));
+    }
+    if s.letter_spacing != 0. {
+        m.insert("ls".into(), json!(s.letter_spacing));
+    }
+    if let Some(lh) = s.line_height_points() {
+        m.insert("lh".into(), json!(lh));
+    }
+    if let Some(n) = s.max_lines {
+        m.insert("ml".into(), json!(n));
+    }
+    m
+}
+
+/// A rich text's runs for a host: `[{t, w, i, u, s, c, bg, ff, z, link,
+/// href, icon, glyph}]`, only the keys a run sets (`t` text, `w` CSS weight,
+/// `i`/`u`/`s` italic, underline, strikethrough, `c`/`bg` colors, `ff`
+/// family, `z` size as a multiple of the text's, `link` the id to report as
+/// `{"t":"menu","id":link}`, `href` its path, `icon` an SF Symbol name and
+/// `glyph` its fallback glyph).
+pub fn runs_json(config: &str) -> Value {
+    let runs: Vec<Value> = prism_core::decode_runs(config)
+        .into_iter()
+        .map(|r| {
+            let mut m = serde_json::Map::new();
+            m.insert("t".into(), json!(r.text));
+            if let Some(w) = r.weight {
+                m.insert("w".into(), json!(w.css()));
+            }
+            for (key, on) in [("i", r.italic), ("u", r.underline), ("s", r.strikethrough)] {
+                if on {
+                    m.insert(key.into(), json!(true));
+                }
+            }
+            if r.color.is_some() {
+                m.insert("c".into(), color(r.color));
+            }
+            if r.background.is_some() {
+                m.insert("bg".into(), color(r.background));
+            }
+            if let Some(f) = &r.family {
+                m.insert("ff".into(), json!(f.encode()));
+            }
+            if let Some(z) = r.size {
+                m.insert("z".into(), json!(z));
+            }
+            if let Some(l) = r.link {
+                m.insert("link".into(), json!(l));
+            }
+            if let Some(h) = r.href {
+                m.insert("href".into(), json!(h));
+            }
+            if let Some(g) = r.icon {
+                m.insert("glyph".into(), json!(prism_core::glyphs::glyph(&g)));
+                m.insert("icon".into(), json!(g));
+            }
+            Value::Object(m)
+        })
+        .collect();
+    Value::Array(runs)
 }
 
 impl RemoteWidgets {
@@ -166,6 +261,9 @@ impl RemoteWidgets {
             "weight": weight(s.font_weight),
             "talign": match s.text_align { TextAlign::Left => "left", TextAlign::Center => "center", TextAlign::Right => "right" },
         }});
+        for (k, v) in typography(s) {
+            op["s"][k] = v;
+        }
         // Only some corners rounded: bits 1 top left, 2 top right, 4 bottom
         // right, 8 bottom left (already mirrored for right to left).
         if s.rounded_corners != prism_core::Corners::ALL {
@@ -277,12 +375,28 @@ impl Widgets for RemoteWidgets {
             NodeKind::DatePicker => self.configs.get(id).cloned().unwrap_or_default(),
             _ => self.texts.get(id).cloned().unwrap_or_default(),
         };
+        let spec = match kind {
+            NodeKind::Text => {
+                let mut spec = typography(&style);
+                let runs = self.configs.get(id).map(String::as_str).unwrap_or("");
+                if !runs.is_empty() {
+                    spec.insert("runs".into(), runs_json(runs));
+                }
+                if spec.is_empty() {
+                    String::new()
+                } else {
+                    Value::Object(spec).to_string()
+                }
+            }
+            _ => String::new(),
+        };
         (self.measure)(&MeasureRequest {
             kind: kind.name(),
             text: &text,
             font_size: style.font_size,
             weight: weight(style.font_weight),
             max_width,
+            spec: &spec,
         })
     }
 
@@ -295,6 +409,9 @@ impl Widgets for RemoteWidgets {
         }
         let words: Vec<String> = text.split_whitespace().map(str::to_string).collect();
         let full = self.texts.insert(*id, String::new());
+        // Words are measured as plain text in the text's style (runs set
+        // their own sizes and weights per run, not per word).
+        let runs = self.configs.remove(id);
         let mut widest = 0f32;
         for word in words {
             self.texts.insert(*id, word);
@@ -302,6 +419,9 @@ impl Widgets for RemoteWidgets {
         }
         if let Some(full) = full {
             self.texts.insert(*id, full);
+        }
+        if let Some(runs) = runs {
+            self.configs.insert(*id, runs);
         }
         widest
     }
@@ -350,8 +470,14 @@ impl Widgets for RemoteWidgets {
     }
 
     /// Raw config string (see `prism_core::controls`); hosts decode it.
-    fn set_config(&mut self, id: &NodeId, _kind: NodeKind, config: &str) {
+    /// A text's runs are sent decoded, as a `runs` op.
+    fn set_config(&mut self, id: &NodeId, kind: NodeKind, config: &str) {
         self.configs.insert(*id, config.to_string());
+        if kind == NodeKind::Text {
+            self.ops
+                .push(json!({ "op": "runs", "id": id, "runs": runs_json(config) }));
+            return;
+        }
         self.ops
             .push(json!({ "op": "config", "id": id, "config": config }));
     }

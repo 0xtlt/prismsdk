@@ -20,6 +20,8 @@ mod security;
 #[cfg(target_os = "linux")]
 mod services;
 #[cfg(target_os = "linux")]
+mod text;
+#[cfg(target_os = "linux")]
 mod tray;
 
 #[cfg(target_os = "linux")]

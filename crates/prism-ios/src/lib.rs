@@ -14,6 +14,8 @@ mod forms;
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "visionos"))]
 mod imp;
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "visionos"))]
+mod label;
+#[cfg(any(target_os = "ios", target_os = "tvos", target_os = "visionos"))]
 mod menus;
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "visionos"))]
 mod services;

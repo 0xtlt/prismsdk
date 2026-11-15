@@ -535,3 +535,110 @@ fn style_sends_rounded_corners_only_when_some_are_square() {
     );
     assert!(last(&w)["s"].get("corners").is_none());
 }
+
+#[test]
+fn typography_and_runs_reach_the_host_and_its_measure() {
+    use prism_core::{FontFamily, Length, TextRun, TextTransform, encode_runs};
+    let mut w = RemoteWidgets::new(measure);
+    w.create(1, NodeKind::Text);
+    let style = Style {
+        font_size: 10.,
+        font_weight: FontWeight::Custom(650),
+        font_family: FontFamily::Monospace,
+        italic: true,
+        line_height: Length::Fraction(1.5),
+        letter_spacing: 0.5,
+        text_transform: TextTransform::Uppercase,
+        underline: true,
+        tabular_numbers: true,
+        max_lines: Some(2),
+        ..Style::default()
+    };
+    w.set_style(&1, &style);
+    let s = last(&w)["s"].clone();
+    assert_eq!(s["weight"], json!(650));
+    for (k, v) in [
+        ("ff", json!("mono")),
+        ("it", json!(true)),
+        ("lh", json!(15.0)),
+        ("ls", json!(0.5)),
+        ("tt", json!("upper")),
+        ("ul", json!(true)),
+        ("tn", json!(true)),
+        ("ml", json!(2)),
+    ] {
+        assert_eq!(s[k], v, "{k}");
+    }
+    assert_eq!(s.get("st"), None, "only what is set");
+    // Plain styles carry no typography keys.
+    w.set_style(&1, &Style::default());
+    assert_eq!(last(&w)["s"].get("ff"), None);
+
+    let runs = encode_runs(&[
+        TextRun {
+            text: "Hi ".into(),
+            ..TextRun::default()
+        },
+        TextRun {
+            text: "you".into(),
+            weight: Some(FontWeight::Bold),
+            color: Some(rgb(0xff0000)),
+            link: Some(9),
+            href: Some("/me".into()),
+            ..TextRun::default()
+        },
+        TextRun {
+            text: "★".into(),
+            icon: Some("star.fill".into()),
+            ..TextRun::default()
+        },
+    ]);
+    w.set_config(&1, NodeKind::Text, &runs);
+    assert_eq!(
+        last(&w),
+        json!({ "op": "runs", "id": 1, "runs": [
+            { "t": "Hi " },
+            { "t": "you", "w": 700, "c": [1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0], "link": 9, "href": "/me" },
+            { "t": "★", "icon": "star.fill", "glyph": prism_core::glyphs::glyph("star.fill") },
+        ]})
+    );
+    // Controls still get their raw config.
+    w.create(2, NodeKind::Slider);
+    w.set_config(&2, NodeKind::Slider, "0 10 1");
+    assert_eq!(
+        last(&w),
+        json!({ "op": "config", "id": 2, "config": "0 10 1" })
+    );
+
+    // The measure gets the same typography and runs.
+    thread_local! {
+        static SPEC: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    fn spec(r: &MeasureRequest) -> (f32, f32) {
+        SPEC.with(|s| s.borrow_mut().push(r.spec.to_string()));
+        measure(r)
+    }
+    let mut w = RemoteWidgets::new(spec);
+    w.create(1, NodeKind::Text);
+    w.set_style(&1, &style);
+    w.set_text(&1, "Hi you★");
+    w.set_config(&1, NodeKind::Text, &runs);
+    w.measure(&1, Some(100.));
+    w.measure_min_content(&1);
+    let seen = SPEC.with(|s| s.borrow().clone());
+    let full: Value = serde_json::from_str(&seen[0]).unwrap();
+    assert_eq!(full["ff"], json!("mono"));
+    assert_eq!(full["runs"][1]["w"], json!(700));
+    // Words of the min-content pass: the style, without the runs.
+    let word: Value = serde_json::from_str(&seen[1]).unwrap();
+    assert_eq!(word.get("runs"), None);
+    assert_eq!(word["ml"], json!(2));
+    // A plain text has no spec.
+    w.create(3, NodeKind::Text);
+    w.set_text(&3, "plain");
+    w.measure(&3, None);
+    assert_eq!(
+        SPEC.with(|s| s.borrow().last().cloned()),
+        Some(String::new())
+    );
+}

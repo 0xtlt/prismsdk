@@ -559,3 +559,85 @@ test("timers count down by themselves", () => {
   const past = live([create(1, "timer"), root(1), { op: "value", id: 1, value: now - 10 }]);
   assert.equal(past.node(1).textContent, "0:00");
 });
+
+// Rich text runs (prism-core spans.rs): U+001E between runs, U+001F between fields.
+const RS = "\u001e", FS = "\u001f";
+const runsConfig = [
+  "Signed in as ",
+  ["Ada", "w=700", "c=#FF0000FF/#00FF00FF", "z=1.5"].join(FS),
+  ["settings", "u", "l=42", "h=/settings"].join(FS),
+  ["★", "g=star.fill"].join(FS),
+  ["tap", "l=43", "f=mono"].join(FS),
+  ["docs", "l=44", "h=https://example.com/docs"].join(FS),
+].join(RS);
+
+test("rich text: runs become spans, links and symbols; links report their id", () => {
+  const page = live([
+    create(1, "view"), create(2, "text"), children(1, [2]), root(1),
+    textOp(2, "Signed in as Adasettings★tapdocs"),
+    { op: "config", id: 2, config: runsConfig },
+  ], { base: "/app" });
+  const el = page.node(2);
+  assert.equal(el.textContent, "Signed in as Adasettings★tapdocs");
+  const [plain, bold, link, symbol, run, external] = el.childNodes;
+  assert.equal(plain.nodeType, 3);
+  assert.equal(bold.localName, "span");
+  assert.match(bold.style.cssText, /font-weight:\s*700/);
+  assert.match(bold.style.cssText, /light-dark\(#FF0000FF, #00FF00FF\)/);
+  assert.match(bold.style.cssText, /font-size:\s*1.5em/);
+  assert.equal(link.localName, "a");
+  assert.equal(link.getAttribute("href"), "/app/settings", "app paths under the mount point");
+  assert.equal(external.getAttribute("href"), "https://example.com/docs");
+  assert.match(link.style.cssText, /text-decoration-line:\s*underline/);
+  assert.equal(symbol.getAttribute("aria-hidden"), "true");
+  assert.equal(run.getAttribute("role"), "link");
+  assert.equal(run.getAttribute("tabindex"), "0");
+
+  // A click on a link: the app navigates (no page load).
+  const click = { type: "click" };
+  click.target = link;
+  link.dispatchEvent(click);
+  assert.ok(click.defaultPrevented);
+  assert.deepEqual(lastSent(page), { t: "menu", id: 42 });
+  // Enter on a clickable run without a path.
+  const key = { type: "keydown", key: "Enter" };
+  key.target = run;
+  run.dispatchEvent(key);
+  assert.deepEqual(lastSent(page), { t: "menu", id: 43 });
+  assert.ok(key.defaultPrevented);
+  // A text without click handler sends nothing for clicks outside links.
+  page.ws.sent.length = 0;
+  el.click();
+  assert.deepEqual(sent(page), []);
+
+  // A text update keeps the runs; clearing the runs shows the plain text.
+  page.ws.deliver({ t: "patch", p: [textOp(2, "Signed in as Adasettings★tapdocs!")] });
+  assert.equal(el.childNodes.length, 6);
+  page.ws.deliver({ t: "patch", p: [{ op: "config", id: 2, config: "" }] });
+  assert.equal(el.textContent, "Signed in as Adasettings★tapdocs!");
+  assert.equal(el.childNodes.length, 1);
+});
+
+test("clickable texts: click, Enter and Space, focusable as buttons", () => {
+  const page = live([
+    create(1, "view"), create(2, "text"), children(1, [2]), root(1), textOp(2, "Tap me"),
+    { op: "clickable", id: 2, on: true },
+    { op: "a11y", id: 2, a11y: { role: "button" } },
+  ]);
+  const el = page.node(2);
+  assert.equal(el.getAttribute("role"), "button");
+  assert.equal(el.getAttribute("tabindex"), "0");
+  el.click();
+  assert.deepEqual(lastSent(page), { t: "click", id: 2 });
+  for (const k of ["Enter", " "]) {
+    page.ws.sent.length = 0;
+    const e = { type: "keydown", key: k };
+    e.target = el;
+    el.dispatchEvent(e);
+    assert.deepEqual(sent(page), [{ t: "click", id: 2 }], JSON.stringify(k));
+  }
+  page.ws.deliver({ t: "patch", p: [{ op: "clickable", id: 2, on: false }] });
+  page.ws.sent.length = 0;
+  el.click();
+  assert.deepEqual(sent(page), []);
+});

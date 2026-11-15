@@ -8,13 +8,14 @@ use std::sync::OnceLock;
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 use prism_core::{
-    Accessibility, AppConfig, AppInit, Appearance, Backend, Color, FontWeight, NodeId, NodeKind,
-    Runtime, Style, TextAlign, UiEvent,
+    Accessibility, AppConfig, AppInit, Appearance, Backend, Color, NodeId, NodeKind, Runtime,
+    Style, TextAlign, UiEvent,
 };
 use prism_native::{Insets, NativeRenderer, Viewport, Widgets};
 
 use crate::controls;
 use crate::layout;
+use crate::text;
 
 const HEADER: f32 = 44.;
 const TAB_BAR: f32 = 52.;
@@ -348,6 +349,8 @@ pub struct Gtk {
     date_pickers: HashMap<NodeId, Rc<controls::DatePicker>>,
     /// Status regions and what they last announced.
     statuses: HashMap<NodeId, String>,
+    /// Text labels: their text, runs and style (rebuilt when one changes).
+    labels: HashMap<NodeId, text::LabelState>,
 }
 
 fn css_color(c: Color, dark: bool) -> String {
@@ -504,6 +507,45 @@ impl Widgets for Gtk {
                 l.set_wrap_mode(gtk::pango::WrapMode::WordChar);
                 l.set_xalign(0.);
                 l.set_yalign(0.);
+                // Inline links (rich text): reported like menu items.
+                l.connect_activate_link(|_, uri| match text::link_id(uri) {
+                    Some(item) => {
+                        dispatch(UiEvent::MenuSelect(item));
+                        glib::Propagation::Stop
+                    }
+                    None => glib::Propagation::Proceed,
+                });
+                // A clickable text: click, or Enter / Space when focused
+                // (not on one of its links, which handle themselves).
+                let gesture = gtk::GestureClick::new();
+                let clickable = self.clickable.clone();
+                gesture.connect_released(move |g, _, _, _| {
+                    let on_link = g
+                        .widget()
+                        .and_then(|w| w.downcast::<gtk::Label>().ok())
+                        .is_some_and(|l| l.current_uri().is_some());
+                    if clickable.borrow().contains(&id) && !on_link {
+                        dispatch(UiEvent::Click(id));
+                    }
+                });
+                l.add_controller(gesture);
+                let keys = gtk::EventControllerKey::new();
+                let clickable = self.clickable.clone();
+                keys.connect_key_pressed(move |k, key, _, _| {
+                    let on_link = k
+                        .widget()
+                        .and_then(|w| w.downcast::<gtk::Label>().ok())
+                        .is_some_and(|l| l.current_uri().is_some());
+                    let activate =
+                        matches!(key, gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::space);
+                    if activate && !on_link && clickable.borrow().contains(&id) {
+                        dispatch(UiEvent::Click(id));
+                        glib::Propagation::Stop
+                    } else {
+                        glib::Propagation::Proceed
+                    }
+                });
+                l.add_controller(keys);
                 View::Text(id, l)
             }
             NodeKind::Button => {
@@ -731,13 +773,11 @@ impl Widgets for Gtk {
         css += &format!(
             "font-size:{}px;font-weight:{};",
             s.font_size,
-            match s.font_weight {
-                FontWeight::Regular => 400,
-                FontWeight::Medium => 500,
-                FontWeight::Semibold => 600,
-                FontWeight::Bold => 700,
-            }
+            s.font_weight.css()
         );
+        if let View::Text(..) = view {
+            extra += &text::link_css(id);
+        }
         self.rules.insert(id, format!(".p{id}{{{css}}}\n{extra}"));
         self.css_dirty = true;
         let w = view.widget();
@@ -754,6 +794,12 @@ impl Widgets for Gtk {
             TextAlign::Center => 0.5,
             TextAlign::Right => 1.,
         };
+        if let View::Text(id, l) = view {
+            let state = self.labels.entry(*id).or_default();
+            state.label = Some(l.clone());
+            state.style = s.clone();
+            text::apply(l, state, self.dark);
+        }
         match view {
             View::Text(_, l) | View::Timer(_, l) => {
                 l.set_xalign(xalign);
@@ -776,7 +822,12 @@ impl Widgets for Gtk {
 
     fn set_text(&mut self, view: &View, text: &str) {
         match view {
-            View::Text(_, l) => l.set_text(text),
+            View::Text(id, l) => {
+                let state = self.labels.entry(*id).or_default();
+                state.label = Some(l.clone());
+                state.text = text.to_string();
+                text::apply(l, state, self.dark);
+            }
             View::Button(_, b) => b.set_label(text),
             View::Input(_, e) => {
                 if e.text() != text && !e.has_focus() {
@@ -846,6 +897,21 @@ impl Widgets for Gtk {
                 self.clickable.borrow_mut().remove(id);
                 c.set_cursor_from_name(None);
             }
+        }
+        if let View::Text(id, l) = view {
+            if clickable {
+                self.clickable.borrow_mut().insert(*id);
+                l.set_cursor_from_name(Some("pointer"));
+                // A button for assistive technologies (the role can only
+                // change before the widget is realized).
+                if !l.is_realized() {
+                    l.set_property("accessible-role", gtk::AccessibleRole::Button);
+                }
+            } else {
+                self.clickable.borrow_mut().remove(id);
+                l.set_cursor_from_name(None);
+            }
+            self.update_text_focus(*id, l);
         }
     }
 
@@ -936,6 +1002,7 @@ impl Widgets for Gtk {
         self.controls.remove(&id);
         self.date_pickers.remove(&id);
         self.statuses.remove(&id);
+        self.labels.remove(&id);
         self.rules.remove(&id);
         self.css_dirty = true;
         self.clickable.borrow_mut().remove(&id);
@@ -1229,6 +1296,14 @@ impl Widgets for Gtk {
             View::DatePicker(_, p) => p.set_config(config),
             View::Input(_, e) => controls::configure_entry(e, config),
             View::TextArea(_, t) => controls::configure_text_view(&t.view, config),
+            // A rich text's runs.
+            View::Text(id, l) => {
+                let state = self.labels.entry(*id).or_default();
+                state.label = Some(l.clone());
+                state.config = config.to_string();
+                text::apply(l, state, self.dark);
+                self.update_text_focus(*id, l);
+            }
             _ => {}
         }
     }
@@ -1312,6 +1387,12 @@ impl Widgets for Gtk {
         }
         self.dark = dark;
         SHAPE_DARK.with(|d| d.set(dark));
+        // Run colors are Pango attributes: the light or the dark variant.
+        for state in self.labels.values() {
+            if let Some(l) = &state.label {
+                text::apply(l, state, dark);
+            }
+        }
         for area in self.shapes.values() {
             area.queue_draw();
         }
@@ -1485,6 +1566,12 @@ fn device_info(window: &gtk::ApplicationWindow) -> prism_core::DeviceInfo {
 
 /// Opens a window and runs the GTK main loop.
 pub fn run(config: AppConfig, init: AppInit) {
+    // App fonts, before GTK creates Pango's font map.
+    let assets: Option<std::path::PathBuf> = std::env::var("PRISM_ASSETS_DIR")
+        .ok()
+        .or_else(|| config.assets.clone())
+        .map(Into::into);
+    text::register_fonts(assets.as_deref());
     let _ = APP.set((config, init));
     // Installed packages set PRISM_APP_ID (the .desktop file's name), so
     // desktops match the window to its launcher and icon.
@@ -1612,6 +1699,7 @@ fn activate(app: &gtk::Application) {
         controls: HashMap::new(),
         date_pickers: HashMap::new(),
         statuses: HashMap::new(),
+        labels: HashMap::new(),
     });
     STATE.with(|s| {
         *s.borrow_mut() = Some(State {
@@ -1773,6 +1861,18 @@ fn automation(window: gtk::ApplicationWindow) {
     });
 }
 
+impl Gtk {
+    /// A text is focusable when it is clickable or has links.
+    fn update_text_focus(&self, id: NodeId, l: &gtk::Label) {
+        let links = self.labels.get(&id).is_some_and(|s| {
+            prism_core::decode_runs(&s.config)
+                .iter()
+                .any(|r| r.is_link())
+        });
+        l.set_focusable(links || self.clickable.borrow().contains(&id));
+    }
+}
+
 fn label_of(w: &gtk::Widget) -> Option<String> {
     w.downcast_ref::<gtk::Label>()
         .map(|l| l.text().to_string())
@@ -1817,7 +1917,29 @@ fn press(w: &gtk::Widget, title: &str) -> bool {
         }
         false
     }
-    let has_label = shows(w, title);
+    // An inline link reading `title` (rich text): activated like a click on it.
+    if let Some(l) = w.downcast_ref::<gtk::Label>()
+        && let Some(id) = w
+            .css_classes()
+            .iter()
+            .find_map(|c| c.strip_prefix('p').and_then(|n| n.parse::<NodeId>().ok()))
+        && let Some(item) = STATE.with(|s| {
+            s.borrow().as_ref().and_then(|s| {
+                let state = s.renderer.widgets.labels.get(&id)?;
+                prism_core::decode_runs(&state.config)
+                    .into_iter()
+                    .find(|r| r.text == title)
+                    .and_then(|r| r.link)
+            })
+        })
+    {
+        let uri = format!("{}{item}", text::LINK_SCHEME);
+        l.emit_by_name::<bool>("activate-link", &[&uri]);
+        return true;
+    }
+    // A clickable container showing `title`, or a clickable text reading it.
+    let has_label =
+        shows(w, title) || (w.is::<gtk::Label>() && label_of(w).is_some_and(|l| l == title));
     if has_label
         && let Some(id) = w
             .css_classes()

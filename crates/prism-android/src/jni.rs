@@ -77,7 +77,10 @@ pub(crate) fn init_host(env: *mut JNIEnv) {
         let host = Host {
             class,
             apply: method(c"apply", c"(Ljava/lang/String;)V"),
-            measure: method(c"measure", c"(Ljava/lang/String;Ljava/lang/String;FIF)[F"),
+            measure: method(
+                c"measure",
+                c"(Ljava/lang/String;Ljava/lang/String;FIFLjava/lang/String;)[F",
+            ),
             post: method(c"post", c"(J)V"),
             job_finished: method(c"jobFinished", c"(Ljava/lang/String;Z)V"),
             cloud_changed: method(c"cloudChanged", c"()V"),
@@ -127,12 +130,13 @@ pub(crate) fn measure(
     size: f32,
     weight: i32,
     max_width: Option<f32>,
+    spec: &str,
 ) -> (f32, f32) {
     let (Some(env), Some(h)) = (env(), HOST.get()) else {
         return (0., 0.);
     };
     unsafe {
-        let (k, t) = (string(env, kind), string(env, text));
+        let (k, t, sp) = (string(env, kind), string(env, text), string(env, spec));
         let args = [
             jvalue { l: k },
             jvalue { l: t },
@@ -141,6 +145,7 @@ pub(crate) fn measure(
             jvalue {
                 f: max_width.unwrap_or(-1.),
             },
+            jvalue { l: sp },
         ];
         let array = ((**env).v1_6.CallStaticObjectMethodA)(env, h.class, h.measure, args.as_ptr());
         check(env);
@@ -151,6 +156,7 @@ pub(crate) fn measure(
         }
         ((**env).v1_6.DeleteLocalRef)(env, k);
         ((**env).v1_6.DeleteLocalRef)(env, t);
+        ((**env).v1_6.DeleteLocalRef)(env, sp);
         (out[0], out[1])
     }
 }
