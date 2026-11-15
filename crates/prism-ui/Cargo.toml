@@ -3,7 +3,18 @@ name = "prism-ui"
 description = "Prism's customizable component library: themed, accessible, overridable, with a native escape hatch."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/prism-ui"
+readme = "README.md"
+keywords = ["ui", "components", "theme", "gui", "accessibility"]
+categories = ["gui", "accessibility"]
 
 [dependencies]
 prism-core.workspace = true
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]

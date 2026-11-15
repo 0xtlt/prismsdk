@@ -3,7 +3,15 @@ name = "prism-push"
 description = "Send push notifications from your server: APNs (token-based, HTTP/2), FCM HTTP v1 and Web Push (RFC 8291 + VAPID). Also decrypts Web Push messages for UnifiedPush receivers."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/prism-push"
+readme = "README.md"
+keywords = ["push", "apns", "fcm", "webpush", "notifications"]
+categories = ["web-programming", "network-programming"]
 
 [features]
 default = ["send"]
@@ -32,3 +40,7 @@ tokio = { version = "1", features = ["rt"] }
 [[example]]
 name = "push"
 required-features = ["send"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

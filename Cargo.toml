@@ -2,27 +2,33 @@
 resolver = "3"
 members = ["crates/*", "examples/*"]
 
+# Shared by every crate (`<field>.workspace = true`). The version is bumped
+# here and in the `[workspace.dependencies]` entries below (RELEASING.md).
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
+authors = ["Prism contributors"]
+repository = "https://github.com/0xtlt/prism"
+homepage = "https://0xtlt.github.io/prism/"
 
 [workspace.dependencies]
-prism = { path = "crates/prism", default-features = false }
-prism-core = { path = "crates/prism-core" }
-prism-native = { path = "crates/prism-native" }
-prism-web = { path = "crates/prism-web" }
-prism-macos = { path = "crates/prism-macos" }
-prism-ios = { path = "crates/prism-ios" }
-prism-watchos = { path = "crates/prism-watchos" }
-prism-linux = { path = "crates/prism-linux" }
-prism-android = { path = "crates/prism-android" }
-prism-ui = { path = "crates/prism-ui" }
-prism-http = { path = "crates/prism-http" }
-prism-apple-build = { path = "crates/prism-apple-build" }
-prism-build = { path = "crates/prism-build" }
-prism-db = { path = "crates/prism-db" }
-prism-push = { path = "crates/prism-push", default-features = false }
+prism = { path = "crates/prism", version = "0.1.0", default-features = false }
+prism-core = { path = "crates/prism-core", version = "0.1.0" }
+prism-native = { path = "crates/prism-native", version = "0.1.0" }
+prism-web = { path = "crates/prism-web", version = "0.1.0" }
+prism-macos = { path = "crates/prism-macos", version = "0.1.0" }
+prism-ios = { path = "crates/prism-ios", version = "0.1.0" }
+prism-watchos = { path = "crates/prism-watchos", version = "0.1.0" }
+prism-linux = { path = "crates/prism-linux", version = "0.1.0" }
+prism-android = { path = "crates/prism-android", version = "0.1.0" }
+prism-ui = { path = "crates/prism-ui", version = "0.1.0" }
+prism-http = { path = "crates/prism-http", version = "0.1.0" }
+prism-apple-build = { path = "crates/prism-apple-build", version = "0.1.0" }
+prism-build = { path = "crates/prism-build", version = "0.1.0" }
+prism-db = { path = "crates/prism-db", version = "0.1.0" }
+prism-push = { path = "crates/prism-push", version = "0.1.0", default-features = false }
 taffy = { version = "0.14", default-features = false, features = ["std", "flexbox", "taffy_tree"] }
 tungstenite = "0.30"
 serde_json = "1"
@@ -35,6 +41,9 @@ objc2-ui-kit = "0.3"
 objc2-quartz-core = "0.3"
 objc2-core-graphics = "0.3"
 objc2-core-foundation = "0.3"
+
+# Path dependencies carry a version: crates.io resolves it, the workspace
+# the path.
 
 # Smaller, faster release builds (apps ship these).
 [profile.release]

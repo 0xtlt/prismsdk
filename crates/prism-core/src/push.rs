@@ -54,6 +54,7 @@ pub enum PushService {
 }
 
 impl PushService {
+    /// The lowercase identifier used in the subscription JSON (`apns`, `fcm`, `webpush`, `unifiedpush`).
     pub fn name(self) -> &'static str {
         match self {
             PushService::Apns => "apns",
@@ -63,6 +64,7 @@ impl PushService {
         }
     }
 
+    /// The service called `name`, if there is one (the inverse of [`name`](Self::name)).
     pub fn from_name(name: &str) -> Option<Self> {
         [
             PushService::Apns,
@@ -79,6 +81,7 @@ impl PushService {
 /// [`to_json`](Self::to_json) (`prism_push::Subscription` reads it).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PushSubscription {
+    /// The push service the token belongs to.
     pub service: PushService,
     /// APNs: the device token (hex). FCM: the registration token. Web Push
     /// and UnifiedPush: the endpoint URL.
@@ -95,6 +98,7 @@ pub struct PushSubscription {
 }
 
 impl PushSubscription {
+    /// A subscription with only a service and a token; the other fields are unset.
     pub fn new(service: PushService, token: impl Into<String>) -> Self {
         PushSubscription {
             service,
@@ -173,23 +177,30 @@ pub enum PushEvent {
 /// A push notification the app received.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PushMessage {
+    /// How the push reached the app.
     pub event: PushEvent,
+    /// The service that delivered it, when the backend knows.
     pub service: Option<PushService>,
     /// The service's message id (`apns-id`, FCM message id), if any.
     pub id: Option<String>,
+    /// The notification's title.
     pub title: Option<String>,
+    /// The notification's subtitle.
     pub subtitle: Option<String>,
+    /// The notification's body text.
     pub body: Option<String>,
     /// A deep link in the app (`/orders/42`): opened when the push is tapped.
     pub link: Option<String>,
     /// Opened with an action button: its id (and typed text for a reply).
     pub action: Option<String>,
+    /// The text typed for a reply action.
     pub text: Option<String>,
     /// Custom keys: strings as-is, other values as JSON.
     pub data: Vec<(String, String)>,
 }
 
 impl PushMessage {
+    /// An empty message for `event`.
     pub fn new(event: PushEvent) -> Self {
         PushMessage {
             event,
@@ -263,6 +274,7 @@ pub struct ActivityPushToken {
     /// The activity, or `None` for the push-to-start token (iOS 17.2+): it
     /// lets your server start an activity of `kind`.
     pub activity: Option<ActivityId>,
+    /// The activity's kind, as passed to `Activity::new`.
     pub kind: String,
     /// Hex.
     pub token: String,

@@ -1,0 +1,30 @@
+[book]
+title = "Prism"
+description = "Write a UI once in Rust, ship it on the web, Apple platforms, Linux and Android."
+authors = ["Prism contributors"]
+language = "en"
+src = "src"
+
+[rust]
+edition = "2024"
+
+[build]
+build-dir = "book"
+# A typo in SUMMARY.md must fail the build, not create an empty chapter.
+create-missing = false
+
+[output.html]
+site-url = "/prism/"
+git-repository-url = "https://github.com/0xtlt/prism"
+edit-url-template = "https://github.com/0xtlt/prism/edit/main/docs/{path}"
+default-theme = "light"
+preferred-dark-theme = "ayu"
+smart-punctuation = true
+
+# Snippets use the `prism` crate, which the Rust playground doesn't have.
+[output.html.playground]
+runnable = false
+
+[output.html.fold]
+enable = true
+level = 1

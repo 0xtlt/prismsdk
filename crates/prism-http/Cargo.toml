@@ -3,7 +3,15 @@ name = "prism-http"
 description = "HTTP for Prism apps: `cx.fetch(Request::get(url)).await`, off the UI thread, same code on every platform."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/prism-http"
+readme = "README.md"
+keywords = ["http", "client", "ui", "rustls", "async"]
+categories = ["web-programming::http-client", "gui"]
 
 [dependencies]
 prism-core.workspace = true
@@ -12,3 +20,6 @@ serde_json.workspace = true
 # OAuth: PKCE (S256) and random state.
 sha2 = "0.10"
 getrandom = "0.3"
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]

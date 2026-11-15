@@ -2,6 +2,7 @@
 //! Symbols do not exist (web, Linux).
 //! Decorative only: meaning must come from labels, never from the glyph.
 
+/// SF Symbol name → glyph, for the symbols Prism's components and examples use.
 pub const GLYPHS: &[(&str, &str)] = &[
     ("house", "⌂"),
     ("house.fill", "⌂"),
@@ -46,6 +47,7 @@ pub const GLYPHS: &[(&str, &str)] = &[
     ("rectangle.stack", "▤"),
 ];
 
+/// The glyph for an SF Symbol name, `•` if unknown.
 pub fn glyph(symbol: &str) -> &'static str {
     GLYPHS
         .iter()

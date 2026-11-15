@@ -61,7 +61,7 @@ jobs:
         run: |
           docker run --rm -v "$PWD":/src -w /src/examples/counter -e CARGO_TARGET_DIR=/tmp/target prism-linux-dev sh -c '
             PRISM_BUNDLE_ID=dev.prism.counter PRISM_APP_NAME=Counter PRISM_ICON=$PWD/icon.png \
-              bash /src/scripts/linux-package.sh counter &&
+              bash /src/crates/prism-cli/platform/scripts/linux-package.sh counter &&
             apt-get install -y /tmp/target/linux/counter_*.deb &&
             dpkg -L counter | grep -q /usr/share/applications/dev.prism.counter.desktop &&
             cd /tmp && PRISM_SNAPSHOT=/tmp/deb.png PRISM_CLICK="+1" timeout 60 xvfb-run -a counter &&
@@ -129,7 +129,7 @@ jobs:
       - name: Split APKs from the bundle, 16 KB aligned
         run: |
           echo '{"supportedAbis": ["arm64-v8a"], "supportedLocales": ["en"], "screenDensity": 420, "sdkVersion": 35}' > "$RUNNER_TEMP/device.json"
-          bash scripts/bundletool.sh build-apks --bundle=target/android/release/Counter.aab \
+          bash crates/prism-cli/platform/scripts/bundletool.sh build-apks --bundle=target/android/release/Counter.aab \
             --output="$RUNNER_TEMP/counter.apks" --device-spec="$RUNNER_TEMP/device.json"
           mkdir "$RUNNER_TEMP/apks" && unzip -q "$RUNNER_TEMP/counter.apks" -d "$RUNNER_TEMP/apks"
           "$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/zipalign" -c -P 16 4 "$RUNNER_TEMP"/apks/splits/base-arm64_v8a.apk

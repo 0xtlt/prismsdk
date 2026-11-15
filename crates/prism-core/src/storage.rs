@@ -18,10 +18,16 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// A string key-value store. Backends provide one per app (`cx.storage()`)
+/// and one synced between devices (`cx.cloud_storage()`).
 pub trait Storage {
+    /// The value stored under `key`, if any.
     fn get(&self, key: &str) -> Option<String>;
+    /// Stores `value` under `key`, replacing any previous value.
     fn set(&mut self, key: &str, value: &str);
+    /// Deletes `key` (nothing happens if it is absent).
     fn remove(&mut self, key: &str);
+    /// Every stored key, in no particular order.
     fn keys(&self) -> Vec<String>;
 }
 
@@ -50,12 +56,14 @@ pub struct FileStorage {
 }
 
 impl FileStorage {
+    /// Storage in `dir`, created if missing.
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         let dir = dir.into();
         let _ = std::fs::create_dir_all(&dir);
         FileStorage { dir }
     }
 
+    /// The directory holding the files.
     pub fn dir(&self) -> &std::path::Path {
         &self.dir
     }
@@ -156,6 +164,8 @@ impl crate::App {
         &mut *self.cloud.store
     }
 
+    /// Replaces the synced store. Backends call it at startup (iCloud
+    /// key-value store on Apple platforms).
     pub fn set_cloud_storage(&mut self, store: Box<dyn Storage>) {
         self.cloud.store = store;
     }

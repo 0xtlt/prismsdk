@@ -3,7 +3,15 @@ name = "prism-watchos"
 description = "Prism backend for watchOS: the app runs in Rust, a SwiftUI host draws it."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/prism-watchos"
+readme = "README.md"
+keywords = ["watchos", "swiftui", "apple-watch", "ui", "gui"]
+categories = ["gui"]
 
 [target.'cfg(target_os = "watchos")'.dependencies]
 prism-core.workspace = true
@@ -13,3 +21,12 @@ dispatch2.workspace = true
 
 [build-dependencies]
 prism-apple-build.workspace = true
+
+[package.metadata.docs.rs]
+# docs.rs builds on Linux, without Xcode or the Android NDK, and C dependencies
+# (ring, through prism-http) cannot be cross-compiled there. This crate's only
+# public item is `run`, which the `prism` facade calls on watchOS; on the default
+# target the page shows the crate overview. `cargo doc --target aarch64-apple-watchos`
+# documents it locally.
+targets = []
+rustdoc-args = ["--cfg", "docsrs"]

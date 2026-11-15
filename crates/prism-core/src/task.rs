@@ -311,6 +311,7 @@ impl TaskHandle {
         self
     }
 
+    /// Stops the task: its future is dropped and never polled again.
     pub fn cancel(self) {
         if let Some(exec) = self.exec.upgrade() {
             exec.cancel(self.id);

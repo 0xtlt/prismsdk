@@ -8,25 +8,39 @@
 /// What an element *is* for assistive technologies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
+    /// Performs an action when activated.
     Button,
+    /// Navigates somewhere (a `link(...)` destination).
     Link,
     /// A heading, level 1–6.
     Heading(u8),
+    /// A picture; its label describes it.
     Image,
     /// Static text.
     Text,
     /// Groups children (announced together on Apple platforms).
     Group,
+    /// A list of items.
     List,
+    /// One item of a [`Role::List`].
     ListItem,
+    /// An on/off control.
     Switch,
+    /// A checkable box.
     Checkbox,
+    /// One tab of a [`Role::TabList`].
     Tab,
+    /// A tab bar.
     TabList,
+    /// The content shown for the selected tab.
     TabPanel,
+    /// Navigation landmark (bars, sidebars).
     Navigation,
+    /// Main content landmark.
     Main,
+    /// Important, time-sensitive information, announced when it appears.
     Alert,
+    /// Progress of a task.
     ProgressBar,
     /// An adjustable value (increment / decrement with assistive technologies).
     Slider,
@@ -83,6 +97,7 @@ impl Role {
 /// The accessibility description of a node.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Accessibility {
+    /// What the element is. `None` lets the backend infer it (a clickable `div` becomes a button).
     pub role: Option<Role>,
     /// What is read out. Defaults to the element's text.
     pub label: Option<String>,
@@ -92,6 +107,7 @@ pub struct Accessibility {
     pub value: Option<String>,
     /// Checked state for switches, checkboxes and selected tabs.
     pub checked: Option<bool>,
+    /// Shown as unavailable and not operable.
     pub disabled: bool,
     /// Removed from the accessibility tree (decorations, duplicates).
     pub hidden: bool,
@@ -99,33 +115,40 @@ pub struct Accessibility {
 
 /// Accessibility modifiers, available on every element builder.
 pub trait Accessible: Sized {
+    /// The description these modifiers edit.
     fn a11y_mut(&mut self) -> &mut Accessibility;
 
+    /// Overrides the inferred role.
     fn accessibility_role(mut self, role: Role) -> Self {
         self.a11y_mut().role = Some(role);
         self
     }
 
+    /// Sets what is read out instead of the element's text.
     fn accessibility_label(mut self, label: impl Into<String>) -> Self {
         self.a11y_mut().label = Some(label.into());
         self
     }
 
+    /// Adds guidance read after the label ("Opens the detail screen").
     fn accessibility_hint(mut self, hint: impl Into<String>) -> Self {
         self.a11y_mut().hint = Some(hint.into());
         self
     }
 
+    /// Sets the current value ("On", "3 of 5").
     fn accessibility_value(mut self, value: impl Into<String>) -> Self {
         self.a11y_mut().value = Some(value.into());
         self
     }
 
+    /// Sets the checked state (switches, checkboxes, selected tabs).
     fn accessibility_checked(mut self, checked: bool) -> Self {
         self.a11y_mut().checked = Some(checked);
         self
     }
 
+    /// Marks the element as unavailable.
     fn accessibility_disabled(mut self, disabled: bool) -> Self {
         self.a11y_mut().disabled = disabled;
         self

@@ -1,4 +1,4 @@
-// watchOS host (compiled with platform/apple/Shared and Bridge: device
+// watchOS host (compiled with apple/Shared and Bridge: device
 // APIs and notifications come from there). watchOS apps have no UIKit views (UIView.h:
 // API_UNAVAILABLE(watchos)), so Prism's tree is drawn with SwiftUI.
 //
@@ -1234,10 +1234,15 @@ private func snapshotIfAsked(size: CGSize) {
         // The whole content (scrolled parts included), screen-wide.
         let shown = store.root.map(visible) ?? 0
         let first = store.nodes[shown]?.children.first.flatMap { store.nodes[$0] }
-        let height = max(size.height, (first.map { $0.kind == "scroll" ? $0.content.height : $0.frame.height } ?? 0) + (first?.frame.minY ?? 0))
+        let full = max(size.height, (first.map { $0.kind == "scroll" ? $0.content.height : $0.frame.height } ?? 0) + (first?.frame.minY ?? 0))
+        // ImageRenderer fails on very tall images (long screens): render a
+        // window of at most 1200 points, starting at PRISM_SCROLL.
+        let top = min(max(0, CGFloat(DevScrollMark.offset ?? 0)), max(0, full - size.height))
+        let height = min(full - top, 1200)
         let content = Color.clear
-            .overlay(alignment: .topLeading) { NodeView(id: shown) }
+            .overlay(alignment: .topLeading) { NodeView(id: shown).offset(y: -top) }
             .frame(width: size.width, height: height, alignment: .topLeading)
+            .clipped()
         .background(Color.black)
         .environment(\.colorScheme, .dark)
         let renderer = ImageRenderer(content: content)

@@ -74,6 +74,7 @@ pub enum NodeKind {
 }
 
 impl NodeKind {
+    /// Snake-case name (`"view"`, `"text_input"`…), used in patches and by the web client.
     pub fn name(self) -> &'static str {
         match self {
             NodeKind::View => "view",
@@ -124,6 +125,7 @@ pub struct ClickEvent;
 /// Fired on every edit of a text input, with its new content.
 #[derive(Clone, Debug)]
 pub struct InputEvent {
+    /// The field's text after the edit.
     pub value: String,
 }
 
@@ -131,26 +133,31 @@ pub struct InputEvent {
 /// back button, macOS back button): only the first `depth` screens remain.
 #[derive(Clone, Debug)]
 pub struct BackEvent {
+    /// How many screens remain on the stack.
     pub depth: usize,
 }
 
 /// Reported by a stack when the host asks for a path (browser forward button).
 #[derive(Clone, Debug)]
 pub struct NavigateEvent {
+    /// The requested path.
     pub path: String,
 }
 
 /// Fired when a control's value changes: a toggle (0/1), a tab bar (index).
 #[derive(Clone, Debug)]
 pub struct ChangeEvent {
+    /// The new value: 0 or 1 for a toggle, the selected index for a tab bar.
     pub value: f64,
 }
 
 impl ChangeEvent {
+    /// A toggle's new state.
     pub fn checked(&self) -> bool {
         self.value != 0.
     }
 
+    /// A tab bar's newly selected tab.
     pub fn index(&self) -> usize {
         self.value.max(0.) as usize
     }
@@ -182,13 +189,18 @@ pub fn unix_seconds(t: std::time::SystemTime) -> f64 {
 /// A scroll view moved: offset of the content and size of the viewport (pt).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScrollEvent {
+    /// How far the content is scrolled, in points.
     pub offset: f32,
+    /// Height of the visible area, in points.
     pub viewport: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// Direction of a horizontal swipe ([`Div::on_swipe`]).
 pub enum SwipeDirection {
+    /// Finger moving to the left.
     Left,
+    /// Finger moving to the right.
     Right,
 }
 
@@ -198,12 +210,16 @@ pub type Handler<E> = Rc<dyn Fn(&E, &mut App)>;
 /// An unresolved element: host nodes plus references to entities, which are
 /// rendered lazily when the tree is resolved.
 pub enum Element {
+    /// A host node (view, text, button…) and its children.
     Node(Box<VNode>),
+    /// A child entity, rendered by itself.
     Entity(AnyEntity),
+    /// Several elements in a row, without a wrapper.
     Fragment(Vec<Element>),
     /// Built when the tree is resolved, with access to the app (themes,
     /// globals). This is how stateless components are implemented.
     Lazy(Box<dyn FnOnce(&mut App) -> Element>),
+    /// Nothing (an absent optional child).
     Empty,
 }
 
@@ -215,9 +231,13 @@ pub fn lazy<E: IntoElement>(f: impl FnOnce(&mut App) -> E + 'static) -> Element 
 
 /// A host node under construction.
 pub struct VNode {
+    /// What host view this node becomes.
     pub kind: NodeKind,
+    /// Layout and appearance.
     pub style: Style,
+    /// Text content: a label, a button title, a field's value, a screen title, a picture source.
     pub text: String,
+    /// Placeholder of a text input.
     pub placeholder: String,
     /// Icon name (SF Symbol on Apple platforms), used by tabs.
     pub icon: String,
@@ -225,21 +245,32 @@ pub struct VNode {
     pub value: Option<f64>,
     /// Control configuration (see [`crate::controls`]).
     pub config: String,
+    /// Accessibility overrides (role, label, hint…).
     pub a11y: Accessibility,
     /// Deep link (`/todos/1`): navigates in the app, opens it from widgets,
     /// Live Activities and notifications.
     pub link: Option<String>,
     /// Long press (iOS), right-click (macOS, web) menu.
     pub context_menu: Option<crate::menu::Menu>,
+    /// Identity among siblings, so reordered children are moved rather than rebuilt.
     pub key: Option<String>,
+    /// Child elements.
     pub children: Vec<Element>,
+    /// Click or tap (also pull to refresh on scroll views).
     pub on_click: Option<Handler<ClickEvent>>,
+    /// Every edit of a text input.
     pub on_input: Option<Handler<InputEvent>>,
+    /// The user went back natively on a stack.
     pub on_back: Option<Handler<BackEvent>>,
+    /// The host asked a stack for a path.
     pub on_navigate: Option<Handler<NavigateEvent>>,
+    /// A toggle or tab bar changed value.
     pub on_change: Option<Handler<ChangeEvent>>,
+    /// A scroll view moved.
     pub on_scroll: Option<Handler<ScrollEvent>>,
+    /// A swipe to the left.
     pub on_swipe_left: Option<Handler<ClickEvent>>,
+    /// A swipe to the right.
     pub on_swipe_right: Option<Handler<ClickEvent>>,
     /// The return key of a text input.
     pub on_submit: Option<Handler<ClickEvent>>,
@@ -275,6 +306,7 @@ impl VNode {
 
 /// Anything that can be placed in the tree.
 pub trait IntoElement {
+    /// Converts into an [`Element`].
     fn into_element(self) -> Element;
 }
 
@@ -316,13 +348,16 @@ impl<T: Render> IntoElement for Entity<T> {
 
 /// Builders that accept children.
 pub trait ParentElement: Sized {
+    /// The builder's children, for the provided methods.
     fn children_mut(&mut self) -> &mut Vec<Element>;
 
+    /// Appends a child.
     fn child(mut self, child: impl IntoElement) -> Self {
         self.children_mut().push(child.into_element());
         self
     }
 
+    /// Appends several children.
     fn children<E: IntoElement>(mut self, children: impl IntoIterator<Item = E>) -> Self {
         self.children_mut()
             .extend(children.into_iter().map(IntoElement::into_element));
@@ -332,10 +367,12 @@ pub trait ParentElement: Sized {
 
 /// Conditional builder helpers (`.when(cond, |this| ...)`).
 pub trait FluentBuilder: Sized {
+    /// Applies `f` only if `cond` holds.
     fn when(self, cond: bool, f: impl FnOnce(Self) -> Self) -> Self {
         if cond { f(self) } else { self }
     }
 
+    /// Applies `f` with the value, if there is one.
     fn when_some<T>(self, value: Option<T>, f: impl FnOnce(Self, T) -> Self) -> Self {
         match value {
             Some(v) => f(self, v),
@@ -343,6 +380,7 @@ pub trait FluentBuilder: Sized {
         }
     }
 
+    /// Applies `f` (keeps long builder chains readable).
     fn map(self, f: impl FnOnce(Self) -> Self) -> Self {
         f(self)
     }
@@ -473,18 +511,21 @@ pub fn div() -> Div {
     Div(VNode::new(NodeKind::View))
 }
 
+/// A text label.
 pub fn text(content: impl Into<String>) -> Text {
     let mut n = VNode::new(NodeKind::Text);
     n.text = content.into();
     Text(n)
 }
 
+/// A native push button with a title.
 pub fn button(label: impl Into<String>) -> Button {
     let mut n = VNode::new(NodeKind::Button);
     n.text = label.into();
     Button(n)
 }
 
+/// A single-line text field. Controlled: set its value with [`TextInput::value`] from [`TextInput::on_input`].
 pub fn text_input() -> TextInput {
     TextInput(VNode::new(NodeKind::TextInput))
 }
@@ -528,6 +569,7 @@ impl Div {
 }
 
 impl Button {
+    /// Called when the button is pressed.
     pub fn on_click(mut self, handler: Handler<ClickEvent>) -> Self {
         self.0.on_click = Some(handler);
         self
@@ -541,11 +583,13 @@ impl TextInput {
         self
     }
 
+    /// Text shown while the field is empty (also its default accessibility label).
     pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
         self.0.placeholder = placeholder.into();
         self
     }
 
+    /// Called on every edit, with the new text.
     pub fn on_input(mut self, handler: Handler<InputEvent>) -> Self {
         self.0.on_input = Some(handler);
         self
@@ -613,11 +657,13 @@ impl TextArea {
         self
     }
 
+    /// Text shown while the field is empty.
     pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
         self.0.placeholder = placeholder.into();
         self
     }
 
+    /// Called with the new text on every edit.
     pub fn on_input(mut self, handler: Handler<InputEvent>) -> Self {
         self.0.on_input = Some(handler);
         self
@@ -643,6 +689,7 @@ impl Slider {
         self
     }
 
+    /// The lowest and highest values (swapped if given in the wrong order).
     pub fn range(self, min: f64, max: f64) -> Self {
         self.slider_config(|c| {
             c.min = min.min(max);
@@ -710,6 +757,7 @@ impl DatePicker {
         self
     }
 
+    /// What the picker edits: a day, a time of day or both.
     pub fn mode(self, mode: crate::controls::DateMode) -> Self {
         self.date_config(|c| c.mode = mode)
     }
@@ -775,6 +823,7 @@ impl ParentElement for Screen {
 }
 
 impl Screen {
+    /// Sets the title shown in the navigation bar.
     pub fn title(mut self, title: impl Into<String>) -> Self {
         self.0.text = title.into();
         self
@@ -801,11 +850,13 @@ impl Stack {
         self
     }
 
+    /// Called when the user goes back natively (swipe, back button); [`BackEvent::depth`] screens remain.
     pub fn on_back(mut self, handler: Handler<BackEvent>) -> Self {
         self.0.on_back = Some(handler);
         self
     }
 
+    /// Called when the host asks for a path (browser forward button).
     pub fn on_navigate(mut self, handler: Handler<NavigateEvent>) -> Self {
         self.0.on_navigate = Some(handler);
         self
@@ -821,6 +872,7 @@ pub fn toggle(on: bool) -> Toggle {
 }
 
 impl Toggle {
+    /// Called when the user flips the switch ([`ChangeEvent::checked`]).
     pub fn on_change(mut self, handler: Handler<ChangeEvent>) -> Self {
         self.0.on_change = Some(handler);
         self
@@ -878,6 +930,7 @@ impl ParentElement for Tabs {
 }
 
 impl Tabs {
+    /// Called when the user picks a tab ([`ChangeEvent::index`]).
     pub fn on_change(mut self, handler: Handler<ChangeEvent>) -> Self {
         self.0.on_change = Some(handler);
         self
@@ -1015,7 +1068,7 @@ impl Picture {
     }
 }
 
-/// A vector drawing (lines, curves, arcs; see [`crate::shape`]). It has no
+/// A vector drawing (lines, curves, arcs; see [`crate::shape`](mod@crate::shape)). It has no
 /// natural size: give it one (`.size(…)`, `.flex_grow(1.)`). Decorative
 /// unless given [`Shape::label`].
 pub fn shape() -> Shape {
@@ -1031,6 +1084,7 @@ impl Shape {
         path.encode(&mut self.0.text);
         self
     }
+    /// Adds several paths, in order.
     pub fn paths(self, paths: impl IntoIterator<Item = crate::shape::Path>) -> Self {
         paths.into_iter().fold(self, Shape::path)
     }

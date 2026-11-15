@@ -22,6 +22,7 @@ use crate::element::{
 };
 use crate::style::Style;
 
+/// Identifies a host node in patches and events.
 pub type NodeId = u64;
 
 /// What backends need to know about the environment to render.
@@ -29,11 +30,15 @@ pub type NodeId = u64;
 pub struct RenderEnvironment {
     /// BCP 47 tag (`lang` attribute on the web).
     pub lang: String,
+    /// Layout direction (right to left mirrors layouts).
     pub direction: crate::i18n::Direction,
+    /// Text size multiplier (1.0 = default size).
     pub text_scale: f32,
+    /// Animations are skipped.
     pub reduce_motion: bool,
     /// Header buttons drawn by backends (web, macOS) in the app's language.
     pub back: String,
+    /// Label of the button closing a modal.
     pub close: String,
 }
 
@@ -44,84 +49,117 @@ pub struct RenderEnvironment {
 pub enum Patch {
     /// Which swipe directions a node listens to.
     SetSwipe {
+        /// The node.
         id: NodeId,
+        /// It listens to swipes to the left.
         left: bool,
+        /// It listens to swipes to the right.
         right: bool,
     },
     /// Whether a scroll view reports scroll events.
     SetScrollEvents {
+        /// The scroll view.
         id: NodeId,
+        /// Report scroll events.
         on: bool,
     },
     /// Context menu of a node (`None` removes it).
     SetMenu {
+        /// The node.
         id: NodeId,
+        /// The menu to show.
         menu: Option<crate::menu::MenuSpec>,
     },
     /// Language, layout direction, text scale and motion settings.
     SetEnvironment {
+        /// The new settings.
         env: RenderEnvironment,
     },
     /// Light/dark appearance of native chrome.
     SetAppearance {
+        /// The new appearance.
         appearance: Appearance,
     },
     /// Toggle state (0/1), selected tab index.
     SetValue {
+        /// The node.
         id: NodeId,
+        /// The new value.
         value: f64,
     },
     /// Control configuration (see [`crate::controls`]): a slider's range,
     /// a picker's options, a date picker's mode, a text input's keyboard.
     /// Sent before the node's value.
     SetConfig {
+        /// The node whose config changes.
         id: NodeId,
+        /// The encoded config (see [`crate::controls`]).
         config: String,
     },
     /// Icon name (SF Symbol on Apple platforms).
     SetIcon {
+        /// The node.
         id: NodeId,
+        /// The icon name.
         icon: String,
     },
     /// The effective accessibility description (defaults already applied).
     SetAccessibility {
+        /// The node.
         id: NodeId,
+        /// The full description.
         a11y: Accessibility,
     },
     /// Create a detached node.
     Create {
+        /// The new node's id.
         id: NodeId,
+        /// What host view to create.
         kind: NodeKind,
     },
+    /// The node's complete style (layout and appearance).
     SetStyle {
+        /// The node.
         id: NodeId,
+        /// The new style.
         style: Style,
     },
     /// Text content, button label, or text input value.
     SetText {
+        /// The node.
         id: NodeId,
+        /// The new text.
         text: String,
     },
+    /// Placeholder of a text input.
     SetPlaceholder {
+        /// The text input.
         id: NodeId,
+        /// The new placeholder.
         text: String,
     },
     /// Whether a `View` reacts to clicks (buttons always do).
     SetClickable {
+        /// The view.
         id: NodeId,
+        /// It reacts to clicks.
         clickable: bool,
     },
     /// Replace the ordered child list. Children not listed are detached.
     SetChildren {
+        /// The parent.
         id: NodeId,
+        /// Its children, in order.
         children: Vec<NodeId>,
     },
     /// Mount this node as the root of the window/page.
     SetRoot {
+        /// The new root.
         id: NodeId,
     },
     /// The node and its native resources can be freed.
     Destroy {
+        /// The destroyed node.
         id: NodeId,
     },
 }
@@ -129,7 +167,9 @@ pub enum Patch {
 /// An event reported by a backend.
 #[derive(Clone, Debug, PartialEq)]
 pub enum UiEvent {
+    /// A button or clickable view was activated.
     Click(NodeId),
+    /// A text input was edited: (id, new text).
     Input(NodeId, String),
     /// A stack was popped natively down to `depth` screens.
     Back(NodeId, usize),
@@ -143,6 +183,7 @@ pub enum UiEvent {
     AlertAction(u64, usize),
     /// A scroll view moved: (id, content offset, viewport height).
     Scroll(NodeId, f32, f32),
+    /// A horizontal swipe on a node.
     Swipe(NodeId, SwipeDirection),
     /// The return key was pressed in a text input.
     Submit(NodeId),
@@ -177,6 +218,7 @@ enum Item {
 }
 
 #[derive(Default)]
+/// Diffs entity renders against the mounted tree and keeps the event handlers of mounted nodes.
 pub struct Reconciler {
     nodes: HashMap<NodeId, MNode>,
     root: Option<NodeId>,
@@ -206,42 +248,52 @@ pub struct Reconciler {
 }
 
 impl Reconciler {
+    /// An empty reconciler (nothing mounted).
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// The click handler of node `id`, if any.
     pub fn click_handler(&self, id: NodeId) -> Option<Handler<ClickEvent>> {
         self.click.get(&id).cloned()
     }
 
+    /// The input handler of node `id`, if any.
     pub fn input_handler(&self, id: NodeId) -> Option<Handler<InputEvent>> {
         self.input.get(&id).cloned()
     }
 
+    /// The back handler of stack `id`, if any.
     pub fn back_handler(&self, id: NodeId) -> Option<Handler<BackEvent>> {
         self.back.get(&id).cloned()
     }
 
+    /// The navigate handler of stack `id`, if any.
     pub fn navigate_handler(&self, id: NodeId) -> Option<Handler<NavigateEvent>> {
         self.navigate.get(&id).cloned()
     }
 
+    /// The scroll handler of node `id`, if any.
     pub fn scroll_handler(&self, id: NodeId) -> Option<Handler<ScrollEvent>> {
         self.scroll.get(&id).cloned()
     }
 
+    /// The handler of node `id` for swipes in `dir`, if any.
     pub fn swipe_handler(&self, id: NodeId, dir: SwipeDirection) -> Option<Handler<ClickEvent>> {
         self.swipe.get(&(id, dir)).cloned()
     }
 
+    /// The handler of node `id` for the return key (`on_submit`), if any.
     pub fn submit_handler(&self, id: NodeId) -> Option<Handler<ClickEvent>> {
         self.submit.get(&id).cloned()
     }
 
+    /// The handler of context menu item `item`, if any.
     pub fn menu_handler(&self, item: u64) -> Option<Handler<ClickEvent>> {
         self.menu_items.get(&item).cloned()
     }
 
+    /// The change handler of node `id`, if any.
     pub fn change_handler(&self, id: NodeId) -> Option<Handler<ChangeEvent>> {
         self.change.get(&id).cloned()
     }

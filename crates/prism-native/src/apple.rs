@@ -152,7 +152,7 @@ pub use bridge::{DeviceMessage, device_call, security_capabilities, set_device_s
 #[path = "apple_push.rs"]
 pub mod push;
 
-/// Device APIs through the Swift bridge (`platform/apple/Bridge/PrismDevice.swift`).
+/// Device APIs through the Swift bridge (`apple/Bridge/PrismDevice.swift` in `prism-apple-build`).
 #[cfg(feature = "apple-bridge")]
 mod bridge {
     use std::ffi::{CStr, CString, c_char};

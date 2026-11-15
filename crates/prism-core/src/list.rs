@@ -27,6 +27,7 @@ pub struct VirtualList {
 }
 
 impl VirtualList {
+    /// A list of `count` rows of `row_height` points; `render_row` builds row `i` when it scrolls into view.
     pub fn new<E: IntoElement>(
         cx: &mut App,
         count: usize,
@@ -44,11 +45,13 @@ impl VirtualList {
         })
     }
 
+    /// Changes the number of rows and re-renders.
     pub fn set_count(&mut self, count: usize, cx: &mut Context<Self>) {
         self.count = count;
         cx.notify();
     }
 
+    /// Number of rows.
     pub fn count(&self) -> usize {
         self.count
     }

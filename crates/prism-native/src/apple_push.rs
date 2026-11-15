@@ -1,4 +1,4 @@
-//! APNs through the Swift bridge (`platform/apple/Bridge/PrismPush.swift`),
+//! APNs through the Swift bridge (`prism-apple-build/apple/Bridge/PrismPush.swift`),
 //! shared by the iOS, macOS and watchOS backends.
 
 use std::ffi::{CStr, CString, c_char, c_void};

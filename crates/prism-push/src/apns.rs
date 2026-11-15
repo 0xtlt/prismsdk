@@ -86,7 +86,7 @@ pub fn payload(push: &Push) -> Value {
         aps.insert("event".into(), la.event.into());
         aps.insert("content-state".into(), la.content_state.clone());
         if let Some(kind) = &la.kind {
-            // Prism's ActivityKit attributes (platform/apple/Shared).
+            // Prism's ActivityKit attributes (prism-apple-build/apple/Shared).
             aps.insert("attributes-type".into(), "PrismActivityAttributes".into());
             aps.insert("attributes".into(), json!({ "kind": kind }));
         }

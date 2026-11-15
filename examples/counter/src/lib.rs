@@ -634,6 +634,7 @@ impl Gallery {
             .child(
                 div()
                     .flex_row()
+                    .flex_wrap()
                     .justify_center()
                     .gap(24.)
                     .child(

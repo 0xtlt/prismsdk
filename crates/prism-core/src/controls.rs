@@ -13,8 +13,11 @@
 /// A slider's range. `step == 0` is continuous.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SliderConfig {
+    /// Lowest value.
     pub min: f64,
+    /// Highest value.
     pub max: f64,
+    /// Increment values snap to; `0` is continuous.
     pub step: f64,
 }
 
@@ -29,10 +32,12 @@ impl Default for SliderConfig {
 }
 
 impl SliderConfig {
+    /// `min max step`, space-separated.
     pub fn encode(&self) -> String {
         format!("{} {} {}", self.min, self.max, self.step)
     }
 
+    /// Parses [`encode`](Self::encode)'s output; missing or invalid parts fall back to the defaults.
     pub fn decode(s: &str) -> Self {
         let mut it = s.split_whitespace().map(|v| v.parse::<f64>().ok());
         let d = SliderConfig::default();
@@ -76,6 +81,7 @@ impl SliderConfig {
 /// A picker's options, in order.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct PickerConfig {
+    /// The option labels, in display order.
     pub options: Vec<String>,
 }
 
@@ -89,6 +95,7 @@ impl PickerConfig {
             .join("\n")
     }
 
+    /// Parses [`encode`](Self::encode)'s output; the empty string is no options.
     pub fn decode(s: &str) -> Self {
         PickerConfig {
             options: if s.is_empty() {
@@ -113,6 +120,7 @@ pub enum DateMode {
 }
 
 impl DateMode {
+    /// The name used in the encoded config.
     pub fn name(self) -> &'static str {
         match self {
             DateMode::Date => "date",
@@ -125,8 +133,11 @@ impl DateMode {
 /// A date picker's mode and bounds (Unix seconds).
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct DateConfig {
+    /// What the picker edits.
     pub mode: DateMode,
+    /// Earliest selectable moment (Unix seconds), if bounded.
     pub min: Option<f64>,
+    /// Latest selectable moment (Unix seconds), if bounded.
     pub max: Option<f64>,
 }
 
@@ -137,6 +148,7 @@ impl DateConfig {
         format!("{} {} {}", self.mode.name(), b(self.min), b(self.max))
     }
 
+    /// Parses [`encode`](Self::encode)'s output; unknown modes become `Date`, missing or `-` bounds are unbounded.
     pub fn decode(s: &str) -> Self {
         let mut it = s.split_whitespace();
         let mode = match it.next() {
@@ -160,26 +172,36 @@ impl DateConfig {
 /// The on-screen keyboard a text field asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Keyboard {
+    /// The platform's standard keyboard.
     #[default]
     Default,
+    /// Email address layout.
     Email,
     /// Digits only.
     Number,
     /// Digits and a decimal separator.
     Decimal,
+    /// Phone number pad.
     Phone,
+    /// URL layout.
     Url,
 }
 
 /// The label of the keyboard's return key (and what it means).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ReturnKey {
+    /// The platform's standard return key.
     #[default]
     Default,
+    /// "Done": ends editing.
     Done,
+    /// "Go": submits, e.g. to open an address.
     Go,
+    /// "Next": moves on to the next field.
     Next,
+    /// "Search": submits a search.
     Search,
+    /// "Send": submits a message.
     Send,
 }
 
@@ -189,8 +211,11 @@ pub enum Capitalize {
     /// The platform default (sentences on phones).
     #[default]
     Sentences,
+    /// Never capitalize automatically.
     None,
+    /// Capitalize the first letter of every word.
     Words,
+    /// Capitalize every letter.
     All,
 }
 
@@ -199,9 +224,13 @@ pub enum Capitalize {
 pub struct InputConfig {
     /// Hidden characters (passwords). Single-line inputs only.
     pub secure: bool,
+    /// The on-screen keyboard layout.
     pub keyboard: Keyboard,
+    /// The label and action of the return key.
     pub return_key: ReturnKey,
+    /// Automatic capitalization.
     pub capitalize: Capitalize,
+    /// Whether the platform corrects spelling as the user types.
     pub autocorrect: bool,
 }
 
@@ -253,6 +282,7 @@ impl InputConfig {
         t.join(" ")
     }
 
+    /// Parses [`encode`](Self::encode)'s output; unknown tokens are ignored.
     pub fn decode(s: &str) -> Self {
         let mut c = InputConfig::default();
         for token in s.split_whitespace() {

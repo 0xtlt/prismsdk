@@ -32,23 +32,31 @@ use crate::style::{Align, Color, FlexDirection, FontWeight, Justify, Length, Tex
 /// What the running platform can show outside the app window.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Capabilities {
+    /// Home-screen / desktop widgets (`cx.register_widget`).
     pub widgets: bool,
     /// CarPlay / Android Auto templates.
     pub car: bool,
+    /// Live Activities (`cx.start_activity`), natively or as a fallback.
     pub live_activities: bool,
     /// Live Activities also appear in a Dynamic Island (iPhone 14 Pro and later).
     pub dynamic_island: bool,
+    /// Local notifications (`cx.send_notification`).
     pub notifications: bool,
     /// Tray / menu bar extras (`cx.set_tray`).
     pub tray: bool,
     /// A menu bar for app menus (`cx.set_app_menu`).
     pub app_menu: bool,
-    /// Device APIs (see [`crate::device`]).
+    /// Device APIs (see [`crate::device`]): `current_location`, `watch_location`.
     pub location: bool,
+    /// `watch_motion` (accelerometer, gyroscope, attitude).
     pub motion: bool,
+    /// `take_photo`.
     pub camera: bool,
+    /// `pick_images`.
     pub photos: bool,
+    /// `haptic` feedback.
     pub haptics: bool,
+    /// The system share sheet (`share`).
     pub share: bool,
     /// `copy_text` / `read_clipboard` (none on tvOS and watchOS).
     pub clipboard: bool,
@@ -78,29 +86,48 @@ pub struct Capabilities {
 pub enum PlatformRequest {
     /// Re-rendered snapshots of every registered widget.
     ReloadWidgets(Vec<WidgetSnapshot>),
+    /// Show a new Live Activity ([`App::start_activity`]).
     StartActivity {
+        /// Identifies the activity in later updates.
         id: ActivityId,
+        /// The activity's kind, as passed to [`Activity::new`].
         kind: String,
+        /// Rendered regions.
         content: ActivityContent,
     },
+    /// Replace a running activity's content ([`App::update_activity`]).
     UpdateActivity {
+        /// The activity to update.
         id: ActivityId,
+        /// Its new regions.
         content: ActivityContent,
     },
+    /// Stop an activity ([`App::end_activity`]).
     EndActivity {
+        /// The activity to end.
         id: ActivityId,
+        /// A final state left on the lock screen, if any.
         content: Option<ActivityContent>,
+        /// Remove it at once instead of letting the system dismiss it later.
         immediately: bool,
     },
+    /// Post a local notification ([`App::send_notification`]).
     Notify(Notification),
+    /// Present an alert or action sheet.
     ShowAlert(crate::menu::AlertSpec),
+    /// Create or replace a tray / menu bar item.
     SetTray(crate::menu::TraySpec),
+    /// Remove the tray item with this id.
     RemoveTray(String),
+    /// Replace the app's menu bar.
     SetAppMenu(Vec<crate::menu::MenuSpec>),
+    /// Withdraw a pending or delivered notification, by id.
     CancelNotification(String),
+    /// Ask the user for permission to show notifications.
     RequestNotificationPermission,
     /// Get a push token (answer with `Runtime::push_registered`).
     RegisterPush,
+    /// Forget the push token (stop receiving pushes).
     UnregisterPush,
     /// Report the Live Activity push-to-start token (iOS 17.2+) with
     /// `Runtime::activity_push_token`.
@@ -113,7 +140,9 @@ pub enum PlatformRequest {
     /// A device call (answer with `Runtime::device_reply`) or a stream
     /// (events with `Runtime::device_event`, keyed by `id`).
     Device {
+        /// Matches the reply or the stream's events.
         id: u64,
+        /// What to do.
         call: crate::device::DeviceCall,
     },
 }
@@ -121,7 +150,9 @@ pub enum PlatformRequest {
 /// Implemented by each backend. Unsupported requests should fall back
 /// gracefully (log, in-app banner, …), never panic.
 pub trait PlatformServices {
+    /// What this platform supports; reported to the app by [`App::capabilities`].
     fn capabilities(&self) -> Capabilities;
+    /// Carries out one request from the app.
     fn handle(&mut self, request: PlatformRequest);
 }
 
@@ -133,15 +164,25 @@ pub trait PlatformServices {
 /// by platforms that cannot run the app (WidgetKit, ActivityKit, Android…).
 #[derive(Clone, Debug, PartialEq)]
 pub struct SNode {
+    /// View, text, image, progress bar or timer.
     pub kind: NodeKind,
+    /// The element's resolved style.
     pub style: crate::style::Style,
+    /// Text content (text and button nodes).
     pub text: String,
+    /// SF Symbol name (image nodes).
     pub icon: String,
+    /// Progress fraction, or a timer's end as a Unix timestamp.
     pub value: Option<f64>,
+    /// Accessibility label.
     pub label: Option<String>,
+    /// Hidden from assistive technologies.
     pub hidden: bool,
+    /// Announced as a heading.
     pub heading: bool,
+    /// Deep link opened when the node is tapped.
     pub link: Option<String>,
+    /// Child nodes, in order.
     pub children: Vec<SNode>,
 }
 
@@ -515,17 +556,24 @@ pub fn json_str(s: &str) -> String {
 /// Widget sizes (WidgetKit families; Android maps them to Glance sizes).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WidgetFamily {
+    /// Small square (`systemSmall`).
     Small,
+    /// Wide rectangle (`systemMedium`).
     Medium,
+    /// Large square (`systemLarge`).
     Large,
+    /// Extra large, iPad and Mac only (`systemExtraLarge`).
     ExtraLarge,
     /// Lock screen / watch complications.
     AccessoryCircular,
+    /// Lock screen / watch: a small rectangle (`accessoryRectangular`).
     AccessoryRectangular,
+    /// Lock screen / watch: one line of text (`accessoryInline`).
     AccessoryInline,
 }
 
 impl WidgetFamily {
+    /// The WidgetKit family name (`"systemSmall"`).
     pub fn name(self) -> &'static str {
         match self {
             WidgetFamily::Small => "systemSmall",
@@ -544,9 +592,13 @@ type WidgetRender = Rc<dyn Fn(&mut App, WidgetFamily) -> Element>;
 /// A home-screen / desktop widget, rendered from app state.
 #[derive(Clone)]
 pub struct Widget {
+    /// Stable identifier (`"todos"`).
     pub kind: String,
+    /// Shown in the widget gallery.
     pub name: String,
+    /// Shown under the name in the widget gallery.
     pub description: String,
+    /// The sizes offered (default: small and medium).
     pub families: Vec<WidgetFamily>,
     /// Deep link opened when the widget background is tapped.
     pub link: Option<String>,
@@ -566,16 +618,19 @@ impl Widget {
         }
     }
 
+    /// Shown under the name in the widget gallery.
     pub fn description(mut self, d: impl Into<String>) -> Self {
         self.description = d.into();
         self
     }
 
+    /// The sizes offered (default: small and medium).
     pub fn families(mut self, families: &[WidgetFamily]) -> Self {
         self.families = families.to_vec();
         self
     }
 
+    /// Deep link opened when the widget background is tapped.
     pub fn link(mut self, path: impl Into<String>) -> Self {
         self.link = Some(path.into());
         self
@@ -622,12 +677,16 @@ impl Widget {
 /// A widget's content for each family, as JSON snapshots.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WidgetSnapshot {
+    /// The widget's [`Widget::kind`].
     pub kind: String,
+    /// Deep link opened when the widget background is tapped.
     pub link: Option<String>,
+    /// Each family with its [`SNode`] JSON.
     pub families: Vec<(WidgetFamily, String)>,
 }
 
 impl WidgetSnapshot {
+    /// JSON for the widget extension: kind, link, update time and families.
     pub fn to_json(&self) -> String {
         let fams: Vec<String> = self
             .families
@@ -648,19 +707,28 @@ impl WidgetSnapshot {
 // Live Activities (lock screen + Dynamic Island)
 // ---------------------------------------------------------------------------
 
+/// Identifies a running Live Activity ([`App::start_activity`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ActivityId(pub u64);
 
 /// The rendered regions of a Live Activity.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ActivityContent {
+    /// Lock screen and notification banner presentation.
     pub lock_screen: Option<SNode>,
+    /// Dynamic Island, compact: left of the camera.
     pub compact_leading: Option<SNode>,
+    /// Dynamic Island, compact: right of the camera.
     pub compact_trailing: Option<SNode>,
+    /// Dynamic Island, minimal: when several activities share the island.
     pub minimal: Option<SNode>,
+    /// Dynamic Island, expanded: leading region.
     pub expanded_leading: Option<SNode>,
+    /// Dynamic Island, expanded: trailing region.
     pub expanded_trailing: Option<SNode>,
+    /// Dynamic Island, expanded: center region.
     pub expanded_center: Option<SNode>,
+    /// Dynamic Island, expanded: bottom region.
     pub expanded_bottom: Option<SNode>,
     /// Deep link opened when the activity is tapped.
     pub link: Option<String>,
@@ -676,6 +744,7 @@ pub struct ActivityContent {
 }
 
 impl ActivityContent {
+    /// Compact JSON for ActivityKit (under its 4 KB limit) and the fallbacks.
     pub fn to_json(&self) -> String {
         let mut parts = Vec::new();
         for (key, node) in [
@@ -769,6 +838,7 @@ pub struct Activity {
 }
 
 impl Activity {
+    /// An empty activity; `kind` is a stable identifier (`"focus"`).
     pub fn new(kind: impl Into<String>) -> Self {
         Activity {
             kind: kind.into(),
@@ -840,16 +910,19 @@ impl Activity {
         self
     }
 
+    /// Deep link opened when the activity is tapped.
     pub fn link(mut self, path: impl Into<String>) -> Self {
         self.link = Some(path.into());
         self
     }
 
+    /// Background tint of the lock-screen presentation.
     pub fn tint(mut self, c: Color) -> Self {
         self.tint = Some(c);
         self
     }
 
+    /// Marks the content as outdated after `at`.
     pub fn stale_after(mut self, at: SystemTime) -> Self {
         self.stale_after = Some(at);
         self
@@ -892,12 +965,19 @@ impl Activity {
 pub struct Notification {
     /// Re-using an id replaces the pending/delivered notification.
     pub id: String,
+    /// The bold first line.
     pub title: String,
+    /// A second line under the title.
     pub subtitle: Option<String>,
+    /// The message.
     pub body: String,
+    /// Deep link opened when the notification is tapped.
     pub link: Option<String>,
+    /// Delivered after this delay; `None` delivers immediately.
     pub delay: Option<Duration>,
+    /// Plays the default sound (default: true).
     pub sound: bool,
+    /// Sets the app icon's badge number.
     pub badge: Option<u32>,
     /// Groups related notifications.
     pub thread: Option<String>,
@@ -909,17 +989,22 @@ pub struct Notification {
 /// [`App::on_notification_response`] handler (and opens `link`, if any).
 #[derive(Clone, Debug, PartialEq)]
 pub struct NotificationAction {
+    /// Reported as [`NotificationResponse::action`].
     pub id: String,
+    /// The button's label.
     pub title: String,
+    /// Shown in red (deletes or cancels something).
     pub destructive: bool,
     /// Brings the app to the foreground (otherwise handled in the background).
     pub foreground: bool,
     /// Shows a text field (quick reply); the text arrives in the response.
     pub reply: Option<String>,
+    /// Deep link opened in the app when the action is chosen.
     pub link: Option<String>,
 }
 
 impl NotificationAction {
+    /// A button with an id (reported in the response) and a label.
     pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
         NotificationAction {
             id: id.into(),
@@ -930,10 +1015,12 @@ impl NotificationAction {
             link: None,
         }
     }
+    /// Shown in red (deletes or cancels something).
     pub fn destructive(mut self) -> Self {
         self.destructive = true;
         self
     }
+    /// Brings the app to the foreground when chosen.
     pub fn opens_app(mut self) -> Self {
         self.foreground = true;
         self
@@ -1001,6 +1088,7 @@ impl Notification {
 }
 
 impl Notification {
+    /// A notification with a title, delivered immediately with a sound.
     pub fn new(title: impl Into<String>) -> Self {
         Notification {
             id: format!("prism-{}", unix_now()),
@@ -1022,18 +1110,22 @@ impl Notification {
         self
     }
 
+    /// A stable id: re-using it replaces the pending or delivered notification.
     pub fn id(mut self, id: impl Into<String>) -> Self {
         self.id = id.into();
         self
     }
+    /// A second line under the title.
     pub fn subtitle(mut self, s: impl Into<String>) -> Self {
         self.subtitle = Some(s.into());
         self
     }
+    /// The message.
     pub fn body(mut self, b: impl Into<String>) -> Self {
         self.body = b.into();
         self
     }
+    /// Deep link opened when the notification is tapped.
     pub fn link(mut self, path: impl Into<String>) -> Self {
         self.link = Some(path.into());
         self
@@ -1043,14 +1135,17 @@ impl Notification {
         self.delay = Some(delay);
         self
     }
+    /// Delivers without a sound.
     pub fn silent(mut self) -> Self {
         self.sound = false;
         self
     }
+    /// Sets the app icon's badge number.
     pub fn badge(mut self, n: u32) -> Self {
         self.badge = Some(n);
         self
     }
+    /// Groups related notifications under this thread id.
     pub fn thread(mut self, t: impl Into<String>) -> Self {
         self.thread = Some(t.into());
         self
@@ -1088,6 +1183,7 @@ impl App {
         self.surfaces.capabilities
     }
 
+    /// Called by backends at startup with what the platform supports.
     pub fn set_capabilities(&mut self, caps: Capabilities) {
         self.surfaces.capabilities = caps;
     }
@@ -1107,6 +1203,7 @@ impl App {
         self.surfaces.widgets_dirty = true;
     }
 
+    /// The registered widgets.
     pub fn widgets(&self) -> &[Widget] {
         &self.surfaces.widgets
     }
@@ -1128,6 +1225,7 @@ impl App {
         id
     }
 
+    /// Replaces a running activity's content (its kind is kept).
     pub fn update_activity(&mut self, id: ActivityId, activity: Activity) {
         let (_, content) = activity.render(self);
         self.surfaces
@@ -1171,12 +1269,15 @@ impl App {
         self.surfaces.requests.push(PlatformRequest::Notify(n));
     }
 
+    /// Withdraws a pending or delivered notification, by id.
     pub fn cancel_notification(&mut self, id: impl Into<String>) {
         self.surfaces
             .requests
             .push(PlatformRequest::CancelNotification(id.into()));
     }
 
+    /// Asks for permission to show notifications now (otherwise asked on the
+    /// first notification).
     pub fn request_notification_permission(&mut self) {
         self.surfaces
             .requests

@@ -49,7 +49,9 @@ pub enum BackgroundKind {
     /// Longer maintenance (iOS runs it while the device is idle, often
     /// charging): clean-ups, big syncs.
     Processing {
+        /// Run only when the network is available.
         requires_network: bool,
+        /// Run only while the device is charging.
         requires_power: bool,
     },
 }
@@ -60,6 +62,7 @@ pub enum BackgroundKind {
 pub struct BackgroundTask {
     /// Short id (`sync`). On iOS the full identifier is `<bundle id>.<id>`.
     pub id: String,
+    /// Short refresh or longer processing work.
     pub kind: BackgroundKind,
     /// The earliest delay between runs (the platform may wait longer).
     pub every: Duration,
@@ -87,6 +90,7 @@ impl BackgroundTask {
         }
     }
 
+    /// The earliest delay between runs (the platform may wait longer).
     pub fn every(mut self, every: Duration) -> Self {
         self.every = every;
         self

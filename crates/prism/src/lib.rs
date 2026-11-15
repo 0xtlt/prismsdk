@@ -5,12 +5,26 @@
 //!
 //! - a **web server** (`--features web`): server-rendered HTML/CSS + a tiny JS
 //!   client receiving DOM patches. No WASM.
-//! - a **native app** (`--features native`, default): real AppKit views on
-//!   macOS, real UIKit views on iOS.
+//! - a **native app** (`--features native`, default): AppKit on macOS, UIKit
+//!   on iOS, iPadOS, tvOS and visionOS, SwiftUI on watchOS, GTK 4 on Linux,
+//!   Android views on phones, tablets, Wear OS and Android TV.
 //!
-//! Backends are separate crates behind the [`Backend`](prism_core::Backend)
-//! patch protocol; adding Android, Windows or Linux means adding a crate that
-//! implements `prism_native::Widgets`, plus one line in [`Application::run`].
+//! This crate re-exports [`prism_core`] (elements, styles, entities, the
+//! router, device APIs), [`ui`] (the component library) and [`http`], and
+//! picks the backend from the target and its features:
+//!
+//! | Feature | |
+//! |---|---|
+//! | `native` (default) | the native backend for the compilation target |
+//! | `web` | the web backend (`prism::web`): a server, or a router inside Axum |
+//! | `db` | SQL with sqlx (`prism::db`) |
+//!
+//! Backends are separate crates behind the [`Backend`] patch protocol; adding
+//! a platform (Windows…) means adding a crate that implements
+//! `prism_native::Widgets`, plus one line in [`Application::run`].
+//!
+//! The guide is at <https://0xtlt.github.io/prism/>; the `prism` command
+//! (`cargo install prism-cli`) creates, runs and bundles apps.
 //!
 //! ```no_run
 //! use prism::prelude::*;
@@ -30,6 +44,9 @@
 //!     prism::Application::new().title("Counter").run(|cx| cx.new_entity(|_| Counter { count: 0 }));
 //! }
 //! ```
+
+#![cfg_attr(docsrs, feature(doc_cfg))]
+#![warn(missing_docs)]
 
 pub use prism_core::*;
 
@@ -71,7 +88,7 @@ macro_rules! include_strings {
 ///
 /// ```ignore
 /// // lib.rs
-/// pub fn run() { prism::Application::new().run(|cx| …) }
+/// pub fn run() { prism::Application::new().run(|cx| cx.new_entity(|_| Home)) }
 /// prism::android_main!(run);
 /// // main.rs (every other platform)
 /// fn main() { my_app::run() }
@@ -125,6 +142,7 @@ pub struct Application {
 }
 
 impl Application {
+    /// An app with default settings.
     pub fn new() -> Self {
         Self::default()
     }
@@ -264,6 +282,7 @@ impl Application {
     }
 }
 
+/// `use prism::prelude::*;`: the core prelude plus [`Application`].
 pub mod prelude {
     pub use crate::Application;
     pub use prism_core::prelude::*;

@@ -3,11 +3,21 @@ name = "prism-cli"
 description = "The `prism` command: create, run, build and live-restart Prism apps."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://0xtlt.github.io/prism/cli.html"
+readme = "README.md"
+keywords = ["cli", "ios", "android", "bundler", "ui"]
+categories = ["command-line-utilities", "development-tools", "gui"]
 
 [[bin]]
 name = "prism"
 path = "src/main.rs"
+# Its docs would overwrite the `prism` library's (same name).
+doc = false
 
 [dependencies]
 serde_json.workspace = true
@@ -16,3 +26,5 @@ serde_json.workspace = true
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 ring = "0.17"
 base64 = "0.22"
+# The Apple sources it writes out for bundling (widget extension, icons).
+prism-apple-build.workspace = true

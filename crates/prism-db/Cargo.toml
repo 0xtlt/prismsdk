@@ -3,9 +3,20 @@ name = "prism-db"
 description = "SQL for Prism apps (sqlx): SQLite on the device, the server's database on the web."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/prism-db"
+readme = "README.md"
+keywords = ["sqlx", "sqlite", "database", "ui", "offline"]
+categories = ["database", "gui"]
 
 [dependencies]
 prism-core.workspace = true
 sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio", "derive"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]

@@ -131,18 +131,36 @@ impl Axis {
 
 /// Category labels under a plot, one cell per point (some skipped when
 /// they would not fit).
-fn x_labels(labels: &[String], t: &Theme, gap: f32) -> Element {
-    let stride = (labels.len() as f32 / 7.).ceil().max(1.) as usize;
+fn x_labels(cx: &App, labels: &[String], t: &Theme, gap: f32) -> Element {
+    // Seven labels fit a phone; a watch (~170 pt) fits four.
+    let room = if cx.device_info().kind == prism_core::DeviceKind::Watch {
+        4.
+    } else {
+        7.
+    };
+    let stride = (labels.len() as f32 / room).ceil().max(1.) as usize;
     div()
         .flex_row()
         .gap(gap)
         .accessibility_hidden()
         .children(labels.iter().enumerate().map(|(i, l)| {
-            div().flex_1().items_center().child(
-                text(if i % stride == 0 { l.as_str() } else { "" })
-                    .text_size(LABEL_SIZE)
-                    .text_color(t.muted),
-            )
+            // A label never widens its column (nor the chart): it is as wide
+            // as the `stride` columns it stands for, centered on its own
+            // (overflowing both sides), so it stays on one line.
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .items_center()
+                .when(i % stride == 0, |d| {
+                    d.child(
+                        text(l.as_str())
+                            .w(relative(stride as f32))
+                            .text_size(LABEL_SIZE)
+                            .text_color(t.muted)
+                            .text_center(),
+                    )
+                })
+                .when(i % stride != 0, |d| d.h(px(LABEL_H)))
         }))
         .into_element()
 }
@@ -192,7 +210,9 @@ fn summary(cx: &App, title: &str, values: &[f64], unit: &str) -> String {
 /// One line of a [`LineChart`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct Series {
+    /// Spoken before the values; shown in the legend when there are several series.
     pub name: String,
+    /// One value per label.
     pub values: Vec<f64>,
     /// Default: the theme's chart colors, in order.
     pub color: Option<Color>,
@@ -200,17 +220,25 @@ pub struct Series {
 
 /// Lines over a value axis and category labels.
 pub struct LineChart {
+    /// The lines, drawn in order.
     pub series: Vec<Series>,
+    /// Category labels under the plot.
     pub labels: Vec<String>,
+    /// Curves instead of straight segments.
     pub smooth: bool,
+    /// Fills under each line.
     pub area: bool,
+    /// Marks each value with a dot.
     pub points: bool,
+    /// Shows the value axis and its grid (default).
     pub y_axis: bool,
+    /// Plot height in points.
     pub height: f32,
     /// Forced value range (default: the data, rounded to nice ticks).
     pub range: Option<(f64, f64)>,
     /// Appended to axis labels and spoken values (`" €"`, `"%"`).
     pub unit: String,
+    /// Spoken before the values.
     pub title: String,
     refine: Refine,
 }
@@ -233,6 +261,7 @@ pub fn line_chart() -> LineChart {
 }
 
 impl LineChart {
+    /// Adds a line named `name`.
     pub fn series(
         mut self,
         name: impl Into<String>,
@@ -252,6 +281,7 @@ impl LineChart {
         }
         self
     }
+    /// Category labels under the plot, one per value.
     pub fn labels<S: Into<String>>(mut self, labels: impl IntoIterator<Item = S>) -> Self {
         self.labels = labels.into_iter().map(Into::into).collect();
         self
@@ -271,18 +301,22 @@ impl LineChart {
         self.points = true;
         self
     }
+    /// Plot height in points (default 180).
     pub fn height(mut self, h: f32) -> Self {
         self.height = h;
         self
     }
+    /// Forces the value range instead of fitting the data.
     pub fn range(mut self, min: f64, max: f64) -> Self {
         self.range = Some((min, max));
         self
     }
+    /// Hides the value axis and its grid.
     pub fn hide_y_axis(mut self) -> Self {
         self.y_axis = false;
         self
     }
+    /// Appended to axis labels and spoken values (`" €"`, `"%"`).
     pub fn unit(mut self, unit: impl Into<String>) -> Self {
         self.unit = unit.into();
         self
@@ -397,7 +431,7 @@ impl Component for LineChart {
                             .flex_1()
                             .gap(4.)
                             .child(plot)
-                            .when(labelled, |d| d.child(x_labels(&self.labels, &t, 0.))),
+                            .when(labelled, |d| d.child(x_labels(cx, &self.labels, &t, 0.))),
                     ),
             );
         self.refine.apply(el).into_element()
@@ -413,13 +447,19 @@ component!(LineChart);
 pub struct BarChart {
     /// Label, value, color (default: the chart's color).
     pub bars: Vec<(String, f64, Option<Color>)>,
+    /// Color of every bar without its own (default: the accent).
     pub color: Option<Color>,
+    /// Plot height in points.
     pub height: f32,
+    /// Shows the value axis and its grid (default).
     pub y_axis: bool,
+    /// Forced value range (default: zero to the largest value).
     pub range: Option<(f64, f64)>,
     /// The other bars fade.
     pub highlight: Option<usize>,
+    /// Appended to axis labels and spoken values.
     pub unit: String,
+    /// Called with the tapped bar's index; bars are then buttons.
     pub on_select: Option<Handler<ChangeEvent>>,
     refine: Refine,
 }
@@ -441,10 +481,12 @@ pub fn bar_chart() -> BarChart {
 }
 
 impl BarChart {
+    /// Adds a bar.
     pub fn bar(mut self, label: impl Into<String>, value: f64) -> Self {
         self.bars.push((label.into(), value, None));
         self
     }
+    /// Adds bars from `(label, value)` pairs.
     pub fn bars<S: Into<String>>(self, bars: impl IntoIterator<Item = (S, f64)>) -> Self {
         bars.into_iter().fold(self, |c, (l, v)| c.bar(l, v))
     }
@@ -453,26 +495,32 @@ impl BarChart {
         self.bars.push((label.into(), value, Some(c)));
         self
     }
+    /// Color of every bar without its own.
     pub fn color(mut self, c: Color) -> Self {
         self.color = Some(c);
         self
     }
+    /// Plot height in points (default 180).
     pub fn height(mut self, h: f32) -> Self {
         self.height = h;
         self
     }
+    /// Forces the value range.
     pub fn range(mut self, min: f64, max: f64) -> Self {
         self.range = Some((min, max));
         self
     }
+    /// Hides the value axis and its grid.
     pub fn hide_y_axis(mut self) -> Self {
         self.y_axis = false;
         self
     }
+    /// Highlights one bar (the others fade); `None` for none.
     pub fn highlight(mut self, index: Option<usize>) -> Self {
         self.highlight = index;
         self
     }
+    /// Appended to axis labels and spoken values.
     pub fn unit(mut self, unit: impl Into<String>) -> Self {
         self.unit = unit.into();
         self
@@ -563,7 +611,7 @@ impl Component for BarChart {
                             .children(bars),
                     ),
             )
-            .child(x_labels(&labels, &t, gap));
+            .child(x_labels(cx, &labels, &t, gap));
         let el = div()
             .flex_row()
             .items_start()
@@ -633,7 +681,7 @@ impl BarChart {
                             .label(spoken),
                     )
                     .when(!labels.iter().all(String::is_empty), |d| {
-                        d.child(x_labels(&labels, t, 0.))
+                        d.child(x_labels(cx, &labels, t, 0.))
                     }),
             );
         self.refine.apply(el).into_element()
@@ -646,13 +694,17 @@ component!(BarChart);
 
 /// Slices of a whole, with a legend.
 pub struct PieChart {
+    /// Label, value, color (default: the theme's chart colors, in order).
     pub slices: Vec<(String, f64, Option<Color>)>,
     /// Inner radius (fraction of the radius): a donut.
     pub hole: f32,
     /// Shown in the hole.
     pub center: Option<String>,
+    /// Diameter in points.
     pub size: f32,
+    /// Shows the legend with each slice's percentage (default).
     pub legend: bool,
+    /// Unit of the values (slices are shown and read as percentages).
     pub unit: String,
     refine: Refine,
 }
@@ -672,13 +724,16 @@ pub fn pie_chart() -> PieChart {
 }
 
 impl PieChart {
+    /// Adds a slice; negative values count as zero.
     pub fn slice(mut self, label: impl Into<String>, value: f64) -> Self {
         self.slices.push((label.into(), value, None));
         self
     }
+    /// Adds slices from `(label, value)` pairs.
     pub fn slices<S: Into<String>>(self, slices: impl IntoIterator<Item = (S, f64)>) -> Self {
         slices.into_iter().fold(self, |c, (l, v)| c.slice(l, v))
     }
+    /// Adds a slice in its own color.
     pub fn slice_colored(mut self, label: impl Into<String>, value: f64, c: Color) -> Self {
         self.slices.push((label.into(), value, Some(c)));
         self
@@ -689,14 +744,17 @@ impl PieChart {
         self.center = Some(center.into()).filter(|c| !c.is_empty());
         self
     }
+    /// Diameter in points (default 150).
     pub fn size(mut self, size: f32) -> Self {
         self.size = size;
         self
     }
+    /// Hides the legend.
     pub fn hide_legend(mut self) -> Self {
         self.legend = false;
         self
     }
+    /// Unit of the values (slices are shown and read as percentages).
     pub fn unit(mut self, unit: impl Into<String>) -> Self {
         self.unit = unit.into();
         self
@@ -782,13 +840,24 @@ impl Component for PieChart {
                 .child(text(s.0.clone()).text_size(14.).text_color(t.text).flex_1())
                 .child(text(pct(s.1)).text_size(14.).text_color(t.muted))
         });
+        // The legend goes under the chart when there is no room beside it
+        // (watches, narrow columns).
         let el = div()
             .flex_row()
+            .flex_wrap()
             .items_center()
+            .justify_center()
             .gap(20.)
             .child(chart)
             .when(self.legend, |d| {
-                d.child(div().flex_1().gap(8.).accessibility_hidden().children(rows))
+                d.child(
+                    div()
+                        .flex_1()
+                        .min_w(px(140.))
+                        .gap(8.)
+                        .accessibility_hidden()
+                        .children(rows),
+                )
             });
         self.refine.apply(el).into_element()
     }
@@ -800,13 +869,18 @@ component!(PieChart);
 
 /// A small trend line without axes (in a stat tile, a list row).
 pub struct Sparkline {
+    /// The values, left to right, scaled to fit the height.
     pub values: Vec<f64>,
+    /// Line color (default: the accent).
     pub color: Option<Color>,
+    /// Height in points.
     pub height: f32,
+    /// Fills under the line (default).
     pub area: bool,
     refine: Refine,
 }
 
+/// A sparkline of `values`.
 pub fn sparkline(values: impl IntoIterator<Item = f64>) -> Sparkline {
     Sparkline {
         values: values.into_iter().collect(),
@@ -818,10 +892,12 @@ pub fn sparkline(values: impl IntoIterator<Item = f64>) -> Sparkline {
 }
 
 impl Sparkline {
+    /// Line color.
     pub fn color(mut self, c: Color) -> Self {
         self.color = Some(c);
         self
     }
+    /// Height in points (default 32).
     pub fn height(mut self, h: f32) -> Self {
         self.height = h;
         self
@@ -909,11 +985,17 @@ component!(Sparkline);
 
 /// A circular progress (goal, quota), with a label in the middle.
 pub struct Ring {
+    /// Fill, from `0.0` to `1.0`.
     pub value: f64,
+    /// Large text in the middle, also the spoken value (default: the percentage).
     pub label: Option<String>,
+    /// Small text under the label, also the accessibility label.
     pub caption: Option<String>,
+    /// Ring color (default: the accent).
     pub color: Option<Color>,
+    /// Diameter in points.
     pub size: f32,
+    /// Stroke width in points.
     pub thickness: f32,
     refine: Refine,
 }
@@ -942,14 +1024,17 @@ impl Ring {
         self.caption = Some(caption.into());
         self
     }
+    /// Ring color.
     pub fn color(mut self, c: Color) -> Self {
         self.color = Some(c);
         self
     }
+    /// Diameter in points (default 96).
     pub fn size(mut self, size: f32) -> Self {
         self.size = size;
         self
     }
+    /// Stroke width in points (default 10).
     pub fn thickness(mut self, t: f32) -> Self {
         self.thickness = t;
         self
@@ -1029,14 +1114,18 @@ component!(Ring);
 
 /// A key figure: label, value, change, and an optional trend line.
 pub struct Stat {
+    /// What the figure is ("Revenue").
     pub label: String,
+    /// The figure, already formatted ("12 480 €").
     pub value: String,
     /// Text and whether it is good news (green) or bad (red).
     pub delta: Option<(String, bool)>,
+    /// Values of an optional sparkline.
     pub trend: Vec<f64>,
     refine: Refine,
 }
 
+/// A stat tile: `label` ("Revenue") above `value` ("12 480 €").
 pub fn stat(label: impl Into<String>, value: impl Into<String>) -> Stat {
     Stat {
         label: label.into(),

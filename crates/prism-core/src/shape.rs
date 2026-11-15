@@ -19,29 +19,41 @@ use std::fmt::Write;
 
 use crate::style::Color;
 
+/// One step of a [`Path`]; coordinates are fractions of the frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Segment {
+    /// Starts a new subpath at `(x, y)`.
     Move(f32, f32),
+    /// A straight line to `(x, y)`.
     Line(f32, f32),
     /// Control point 1, control point 2, end.
     Cubic(f32, f32, f32, f32, f32, f32),
     /// Center, radius, start and end angles (degrees, clockwise from the
     /// top). Joined to the current point by a line, if any.
     Arc {
+        /// Center x.
         cx: f32,
+        /// Center y.
         cy: f32,
+        /// Radius, a fraction of the frame's smaller side.
         r: f32,
+        /// Start angle, degrees.
         start: f32,
+        /// End angle, degrees.
         end: f32,
     },
+    /// Closes the subpath with a line to its start.
     Close,
 }
 
 /// One path and how it is painted.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Path {
+    /// The segments, in drawing order.
     pub segments: Vec<Segment>,
+    /// Fill color, if filled.
     pub fill: Option<Color>,
+    /// Stroke color, if stroked.
     pub stroke: Option<Color>,
     /// Stroke width, points.
     pub width: f32,
@@ -52,6 +64,7 @@ pub struct Path {
 }
 
 impl Path {
+    /// An empty path, stroke width 1 point, neither filled nor stroked.
     pub fn new() -> Self {
         Path {
             width: 1.,
@@ -59,14 +72,17 @@ impl Path {
         }
     }
 
+    /// Starts a new subpath at `(x, y)`.
     pub fn move_to(mut self, x: f32, y: f32) -> Self {
         self.segments.push(Segment::Move(x, y));
         self
     }
+    /// A straight line to `(x, y)`.
     pub fn line_to(mut self, x: f32, y: f32) -> Self {
         self.segments.push(Segment::Line(x, y));
         self
     }
+    /// A cubic Bézier curve to `to`, with control points `c1` and `c2`.
     pub fn curve_to(mut self, c1: (f32, f32), c2: (f32, f32), to: (f32, f32)) -> Self {
         self.segments
             .push(Segment::Cubic(c1.0, c1.1, c2.0, c2.1, to.0, to.1));
@@ -84,6 +100,7 @@ impl Path {
         });
         self
     }
+    /// Closes the current subpath.
     pub fn close(mut self) -> Self {
         self.segments.push(Segment::Close);
         self
@@ -163,6 +180,7 @@ impl Path {
         }
     }
 
+    /// A rectangle with its top-left corner at `(x, y)`, `w` wide and `h` tall.
     pub fn rect(x: f32, y: f32, w: f32, h: f32) -> Self {
         Path::new()
             .move_to(x, y)
@@ -172,23 +190,28 @@ impl Path {
             .close()
     }
 
+    /// A full circle around `(cx, cy)`.
     pub fn circle(cx: f32, cy: f32, r: f32) -> Self {
         Path::arc(cx, cy, r, 0., 360.).close()
     }
 
+    /// Fills the path with `color`.
     pub fn fill(mut self, color: Color) -> Self {
         self.fill = Some(color);
         self
     }
+    /// Strokes the path with `color`, `width` points wide.
     pub fn stroke(mut self, color: Color, width: f32) -> Self {
         self.stroke = Some(color);
         self.width = width;
         self
     }
+    /// Round caps and joins.
     pub fn round(mut self) -> Self {
         self.round = true;
         self
     }
+    /// Dashed stroke: `dash` points drawn, `gap` points skipped.
     pub fn dashed(mut self, dash: f32, gap: f32) -> Self {
         self.dash = Some((dash, gap));
         self
@@ -221,6 +244,7 @@ pub struct Drawing {
     /// Points kept free on the left/right and top/bottom (so strokes on the
     /// edges are not clipped).
     pub inset: (f32, f32),
+    /// The paths, painted in order (later ones on top).
     pub paths: Vec<Path>,
 }
 

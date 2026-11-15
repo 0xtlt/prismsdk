@@ -5,6 +5,9 @@
 //! [`Patch`]es; a [`Backend`] applies the patches to a real host (DOM, AppKit,
 //! UIKit, ...) and feeds [`UiEvent`]s back through a [`Runtime`].
 
+#![cfg_attr(docsrs, feature(doc_cfg))]
+#![warn(missing_docs)]
+
 mod a11y;
 pub mod animation;
 mod app;
@@ -86,6 +89,7 @@ pub type AppInit = Arc<dyn Fn(&mut App) + Send + Sync>;
 pub struct RuntimeOptions {
     /// Initial path (deep link, request URL).
     pub path: String,
+    /// What the platform supports (`cx.capabilities()`).
     pub capabilities: Capabilities,
     /// Where `cx.storage()` persists data (in memory if `None`).
     pub storage: Option<Box<dyn Storage>>,
@@ -114,8 +118,11 @@ pub struct RuntimeOptions {
 /// Window/page settings shared by every backend.
 #[derive(Clone, Debug)]
 pub struct AppConfig {
+    /// Window title (the page title on the web).
     pub title: String,
+    /// Initial window width, in points.
     pub width: f32,
+    /// Initial window height, in points.
     pub height: f32,
     /// TCP port used by the web backend (`PRISM_PORT` overrides it).
     pub port: u16,
@@ -138,11 +145,13 @@ impl Default for AppConfig {
 
 /// A host that can display a tree described by patches.
 pub trait Backend {
+    /// Applies `patches`, in order, to the host's views.
     fn apply(&mut self, patches: &[Patch]);
 }
 
 /// The app plus its reconciler: everything a backend needs to drive a UI.
 pub struct Runtime {
+    /// The app state: entities, globals and platform services.
     pub app: App,
     reconciler: Reconciler,
     /// `prism dev`: where the current route is saved, so a restart reopens it.
@@ -150,6 +159,7 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    /// Starts the app on `/`.
     pub fn new(init: &AppInit) -> Self {
         Self::with_path(init, "/")
     }
@@ -467,6 +477,7 @@ impl Runtime {
         Some(handle.id())
     }
 
+    /// Whether the task returned by [`run_background_task`](Self::run_background_task) is still running.
     pub fn is_task_running(&self, id: u64) -> bool {
         self.app.executor.is_running(id)
     }

@@ -50,13 +50,16 @@ pub struct SecureOptions {
 }
 
 impl SecureOptions {
+    /// Default options: not biometric, not shared.
     pub fn new() -> Self {
         Self::default()
     }
+    /// Require the device owner to read the secret.
     pub fn biometric(mut self) -> Self {
         self.biometric = true;
         self
     }
+    /// Share the secret with the app's extensions.
     pub fn shared(mut self) -> Self {
         self.shared = true;
         self
@@ -66,14 +69,20 @@ impl SecureOptions {
 /// What the device can check the owner with.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum BiometryKind {
+    /// No sensor.
     #[default]
     None,
+    /// Touch ID.
     TouchId,
+    /// Face ID.
     FaceId,
     /// Apple Vision Pro.
     OpticId,
+    /// A fingerprint sensor (Android).
     Fingerprint,
+    /// Face recognition (Android).
     Face,
+    /// Iris recognition (Android).
     Iris,
     /// A browser's platform authenticator (Touch ID, Windows Hello, an
     /// Android phone's lock…): the browser does not say which.
@@ -81,6 +90,7 @@ pub enum BiometryKind {
 }
 
 impl BiometryKind {
+    /// The identifier used across the backend bridge (`touch_id`, `face_id`...).
     pub fn name(self) -> &'static str {
         match self {
             BiometryKind::None => "none",
@@ -94,6 +104,7 @@ impl BiometryKind {
         }
     }
 
+    /// The kind called `name` (the inverse of [`name`](Self::name)); unknown names are `None`.
     pub fn from_name(name: &str) -> Self {
         match name {
             "touch_id" => BiometryKind::TouchId,
@@ -155,6 +166,7 @@ pub struct AuthRequest {
 }
 
 impl AuthRequest {
+    /// A request with `reason`, accepting the device passcode as a fallback.
     pub fn new(reason: impl Into<String>) -> Self {
         AuthRequest {
             reason: reason.into(),
@@ -171,29 +183,37 @@ impl AuthRequest {
 /// What Sign in with Apple asks for.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AppleSignIn {
+    /// Ask for the user's email address.
     pub email: bool,
+    /// Ask for the user's full name.
     pub full_name: bool,
     /// Your server's nonce, hashed (SHA-256, hex) into the identity token.
     pub nonce: Option<String>,
+    /// An opaque value returned unchanged in the credential, to tie the response to your request.
     pub state: Option<String>,
 }
 
 impl AppleSignIn {
+    /// A request for the user's identity only.
     pub fn new() -> Self {
         Self::default()
     }
+    /// Also ask for the email address.
     pub fn email(mut self) -> Self {
         self.email = true;
         self
     }
+    /// Also ask for the full name.
     pub fn full_name(mut self) -> Self {
         self.full_name = true;
         self
     }
+    /// Sets the nonce your server expects, hashed into the identity token.
     pub fn nonce(mut self, nonce: impl Into<String>) -> Self {
         self.nonce = Some(nonce.into());
         self
     }
+    /// Sets the opaque `state` value returned in the credential.
     pub fn state(mut self, state: impl Into<String>) -> Self {
         self.state = Some(state.into());
         self
@@ -206,16 +226,22 @@ impl AppleSignIn {
 pub struct AppleCredential {
     /// Stable per app and Apple ID.
     pub user: String,
+    /// A JWT signed by Apple: verify it on your server.
     pub identity_token: Option<String>,
+    /// A one-time code your server can exchange with Apple.
     pub authorization_code: Option<String>,
     /// Only on the first sign-in (Apple sends them once).
     pub email: Option<String>,
+    /// The user's given name.
     pub given_name: Option<String>,
+    /// The user's family name.
     pub family_name: Option<String>,
+    /// The `state` of the request, echoed back.
     pub state: Option<String>,
 }
 
 impl AppleCredential {
+    /// From a backend's `Fields` (`user`, `identity_token`...); empty values are `None`.
     pub fn from_fields(f: &BTreeMap<String, String>) -> Self {
         let get = |k: &str| f.get(k).filter(|v| !v.is_empty()).cloned();
         AppleCredential {
@@ -281,6 +307,7 @@ impl SecureStorage<'_> {
         }
     }
 
+    /// Stores a secret under `key` (replacing the previous one) with the default options.
     pub async fn set(&self, key: &str, value: &str) -> Result<(), DeviceError> {
         let options = SecureOptions {
             shared: self.shared,
@@ -340,6 +367,7 @@ impl AsyncApp {
         self.authenticate_with(AuthRequest::new(reason)).await
     }
 
+    /// Like [`authenticate`](Self::authenticate), with a full [`AuthRequest`].
     pub async fn authenticate_with(&self, request: AuthRequest) -> Result<(), DeviceError> {
         self.device(DeviceCall::Authenticate(request))
             .await

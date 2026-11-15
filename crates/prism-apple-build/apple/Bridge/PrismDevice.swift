@@ -24,7 +24,7 @@ import AppKit
 import WatchKit
 
 // Pickers and the share sheet are SwiftUI views on the watch: the host
-// (platform/apple/Watch) presents them.
+// (apple/Watch) presents them.
 @_silgen_name("prism_watch_pick_images")
 func prismWatchPickImages(_ id: UInt64, _ limit: UInt32)
 @_silgen_name("prism_watch_share")

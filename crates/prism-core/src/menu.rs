@@ -18,6 +18,7 @@ use crate::surfaces::json_str;
 /// Visual role of a menu item or alert button.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ActionRole {
+    /// A regular item or button.
     #[default]
     Normal,
     /// Shown in red; never the default button.
@@ -29,26 +30,38 @@ pub enum ActionRole {
 /// One entry of a [`Menu`].
 #[derive(Clone)]
 pub enum MenuItem {
+    /// A selectable item.
     Action {
+        /// Its label.
         title: String,
         /// SF Symbol name (Apple platforms).
         icon: Option<String>,
         /// `"cmd+shift+n"` style shortcut (menu bar menus).
         shortcut: Option<String>,
+        /// How it is drawn (normal, destructive, cancel).
         role: ActionRole,
+        /// `Some` shows a check mark (on) or none (off); `None` is not checkable.
         checked: Option<bool>,
+        /// Disabled items are shown dimmed and cannot be chosen.
         enabled: bool,
+        /// Runs when the item is chosen; an item without one is disabled.
         handler: Option<Handler<ClickEvent>>,
     },
+    /// A line between groups of items.
     Separator,
+    /// An item opening a nested menu.
     Submenu {
+        /// Its label.
         title: String,
+        /// SF Symbol name (Apple platforms).
         icon: Option<String>,
+        /// The nested menu.
         menu: Menu,
     },
 }
 
 impl MenuItem {
+    /// An enabled action item titled `title`, without a handler yet.
     pub fn new(title: impl Into<String>) -> Self {
         MenuItem::Action {
             title: title.into(),
@@ -61,6 +74,7 @@ impl MenuItem {
         }
     }
 
+    /// Sets the SF Symbol shown next to the title (Apple platforms).
     pub fn icon(mut self, symbol: impl Into<String>) -> Self {
         match &mut self {
             MenuItem::Action { icon, .. } | MenuItem::Submenu { icon, .. } => {
@@ -70,30 +84,35 @@ impl MenuItem {
         }
         self
     }
+    /// Sets a keyboard shortcut such as `"cmd+shift+n"` (menu bar menus).
     pub fn shortcut(mut self, keys: impl Into<String>) -> Self {
         if let MenuItem::Action { shortcut, .. } = &mut self {
             *shortcut = Some(keys.into());
         }
         self
     }
+    /// Draws the item as destructive (red).
     pub fn destructive(mut self) -> Self {
         if let MenuItem::Action { role, .. } = &mut self {
             *role = ActionRole::Destructive;
         }
         self
     }
+    /// Makes the item checkable, with a check mark when `on`.
     pub fn checked(mut self, on: bool) -> Self {
         if let MenuItem::Action { checked, .. } = &mut self {
             *checked = Some(on);
         }
         self
     }
+    /// Enables or disables the item.
     pub fn enabled(mut self, on: bool) -> Self {
         if let MenuItem::Action { enabled, .. } = &mut self {
             *enabled = on;
         }
         self
     }
+    /// Sets the handler run when the item is chosen.
     pub fn on_select(mut self, h: Handler<ClickEvent>) -> Self {
         if let MenuItem::Action { handler, .. } = &mut self {
             *handler = Some(h);
@@ -101,6 +120,7 @@ impl MenuItem {
         self
     }
 
+    /// An item opening `menu` as a submenu.
     pub fn submenu(title: impl Into<String>, menu: Menu) -> Self {
         MenuItem::Submenu {
             title: title.into(),
@@ -113,11 +133,14 @@ impl MenuItem {
 /// An ordered list of menu items, optionally titled (menu bar menus).
 #[derive(Clone, Default)]
 pub struct Menu {
+    /// Title shown in the menu bar (empty for context menus and trays).
     pub title: String,
+    /// The entries, in order.
     pub items: Vec<MenuItem>,
 }
 
 impl Menu {
+    /// An empty, untitled menu (context menus, trays).
     pub fn new() -> Self {
         Menu::default()
     }
@@ -130,6 +153,7 @@ impl Menu {
         }
     }
 
+    /// Appends an item.
     pub fn item(mut self, item: MenuItem) -> Self {
         self.items.push(item);
         self
@@ -140,6 +164,7 @@ impl Menu {
         self.item(MenuItem::new(title).on_select(h))
     }
 
+    /// Appends a separator.
     pub fn separator(self) -> Self {
         self.item(MenuItem::Separator)
     }
@@ -206,30 +231,47 @@ fn compile_items(
 /// one is chosen the backend reports `UiEvent::MenuSelect(id)`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MenuSpec {
+    /// Title shown in the menu bar (empty for context menus and trays).
     pub title: String,
+    /// The entries, in order.
     pub items: Vec<MenuItemSpec>,
 }
 
+/// One entry of a [`MenuSpec`], as platforms see it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MenuItemSpec {
+    /// A selectable item.
     Action {
+        /// Reported with `UiEvent::MenuSelect(id)` when chosen.
         id: u64,
+        /// Its label.
         title: String,
+        /// SF Symbol name (Apple platforms).
         icon: Option<String>,
+        /// `"cmd+shift+n"` style shortcut.
         shortcut: Option<String>,
+        /// How it is drawn.
         role: ActionRole,
+        /// `Some` for checkable items: whether the check mark shows.
         checked: Option<bool>,
+        /// `false` when disabled or without a handler.
         enabled: bool,
     },
+    /// A line between groups of items.
     Separator,
+    /// An item opening a nested menu.
     Submenu {
+        /// Its label.
         title: String,
+        /// SF Symbol name (Apple platforms).
         icon: Option<String>,
+        /// The nested menu.
         menu: MenuSpec,
     },
 }
 
 impl MenuSpec {
+    /// The JSON form, for hosts that receive menus as text.
     pub fn to_json(&self) -> String {
         let items: Vec<String> = self.items.iter().map(MenuItemSpec::to_json).collect();
         format!(
@@ -241,6 +283,7 @@ impl MenuSpec {
 }
 
 impl MenuItemSpec {
+    /// The JSON of this item (see [`MenuSpec::to_json`]).
     pub fn to_json(&self) -> String {
         let opt = |s: &Option<String>| s.as_deref().map_or("null".into(), json_str);
         match self {
@@ -279,6 +322,7 @@ impl MenuItemSpec {
 // Alerts
 // ---------------------------------------------------------------------------
 
+/// How an [`Alert`] is presented.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AlertStyle {
     /// A centered alert.
@@ -297,6 +341,7 @@ pub struct Alert {
 }
 
 impl Alert {
+    /// A centered alert titled `title`, without buttons yet.
     pub fn new(title: impl Into<String>) -> Self {
         Alert {
             title: title.into(),
@@ -314,23 +359,27 @@ impl Alert {
         }
     }
 
+    /// Sets the text shown under the title.
     pub fn message(mut self, m: impl Into<String>) -> Self {
         self.message = Some(m.into());
         self
     }
 
+    /// Adds a regular button running `h`.
     pub fn action(mut self, title: impl Into<String>, h: Handler<ClickEvent>) -> Self {
         self.actions
             .push((title.into(), ActionRole::Normal, Some(h)));
         self
     }
 
+    /// Adds a destructive (red) button running `h`.
     pub fn destructive(mut self, title: impl Into<String>, h: Handler<ClickEvent>) -> Self {
         self.actions
             .push((title.into(), ActionRole::Destructive, Some(h)));
         self
     }
 
+    /// Adds the button that dismisses the alert without doing anything.
     pub fn cancel(mut self, title: impl Into<String>) -> Self {
         self.actions.push((title.into(), ActionRole::Cancel, None));
         self
@@ -341,14 +390,20 @@ impl Alert {
 /// `UiEvent::AlertAction(id, index)`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AlertSpec {
+    /// Identifies the alert in `UiEvent::AlertAction`.
     pub id: u64,
+    /// The title.
     pub title: String,
+    /// The text under the title.
     pub message: Option<String>,
+    /// Centered alert or action sheet.
     pub style: AlertStyle,
+    /// The buttons (title and role), in order.
     pub actions: Vec<(String, ActionRole)>,
 }
 
 impl AlertSpec {
+    /// The JSON form, for hosts that receive alerts as text.
     pub fn to_json(&self) -> String {
         let actions: Vec<String> = self
             .actions
@@ -416,18 +471,25 @@ impl Tray {
         self.tooltip = Some(t.into());
         self
     }
+    /// Sets the menu opened by clicking the item.
     pub fn menu(mut self, m: Menu) -> Self {
         self.menu = m;
         self
     }
 }
 
+/// A tray item as platforms see it (`PlatformRequest::SetTray`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TraySpec {
+    /// Identifies the item across updates.
     pub id: String,
+    /// SF Symbol name (template image).
     pub icon: Option<String>,
+    /// Short text next to the icon.
     pub title: Option<String>,
+    /// Help text, also the accessibility label.
     pub tooltip: Option<String>,
+    /// The menu opened by clicking the item.
     pub menu: MenuSpec,
 }
 
@@ -516,6 +578,7 @@ impl App {
             }));
     }
 
+    /// Removes the tray item set with this id.
     pub fn remove_tray(&mut self, id: impl Into<String>) {
         self.surfaces
             .requests

@@ -1,2 +1,4 @@
 /target
 .prism-data/
+# mdBook output (mise run docs)
+/docs/book
