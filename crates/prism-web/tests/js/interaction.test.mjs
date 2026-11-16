@@ -142,6 +142,30 @@ test("clicks say their keys and count; released keys are reported (#159)", () =>
   assert.deepEqual(lastSent(page), { t: "keyup", id: 0, key: "Shift", mods: 0 });
 });
 
+test("the app menus' shortcuts are taken before the browser (#161)", () => {
+  const page = live([
+    { op: "create", id: 2, kind: "view" }, { op: "keys", id: 2, local: false, global: true },
+    ...root([2]),
+  ]);
+  page.ws.deliver({ t: "shortcuts", list: [["cmd+z", 7], ["cmd+shift+z", 8]] });
+  // Not an Apple platform here: `cmd` is Ctrl.
+  const key = (init) => {
+    const e = { type: "keydown", key: "z", defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, ...init };
+    page.window.dispatchEvent(e);
+    if (!e.prismShortcut) page.document.body.dispatchEvent(e);
+    return e;
+  };
+  const undo = key({ ctrlKey: true });
+  assert.equal(undo.defaultPrevented, true);
+  assert.deepEqual(lastSent(page), { t: "menu", id: 7 }, "the item runs, the key is not reported");
+  key({ key: "Z", ctrlKey: true, shiftKey: true });
+  assert.deepEqual(lastSent(page), { t: "menu", id: 8 });
+  // Other keys go on as keys.
+  const plain = key({ key: "z" });
+  assert.equal(plain.defaultPrevented, false);
+  assert.equal(lastSent(page).t, "key");
+});
+
 test("keys reach the focused element, and global listeners skip typing", () => {
   const page = live([
     { op: "create", id: 2, kind: "view" }, { op: "keys", id: 2, local: true, global: false },

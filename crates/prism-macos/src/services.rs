@@ -261,6 +261,9 @@ impl PlatformServices for MacServices {
             PlatformRequest::ShowAlert(spec) => {
                 crate::menus::show_alert(self.mtm, &self.window, &spec, crate::imp::dispatch)
             }
+            PlatformRequest::SetMenuBar(menus) => {
+                crate::menus::install_menu_bar(self.mtm, &self.target, &menus)
+            }
             PlatformRequest::SetAppMenu(menus) => {
                 crate::menus::install_main_menu(self.mtm, &self.title, &self.target, &menus)
             }

@@ -1630,6 +1630,13 @@ define_class!(
         }
 
         /// Any Prism menu item (context menus, tray, app menus).
+        /// App items keep the state the app gave them in menus that enable
+        /// system items automatically (#161).
+        #[unsafe(method(validateMenuItem:))]
+        fn validate_menu_item(&self, item: &objc2_app_kit::NSMenuItem) -> bool {
+            item.isEnabled()
+        }
+
         /// The Quit item: with unsaved changes, asks first (#158).
         #[unsafe(method(prismQuit:))]
         fn prism_quit(&self, _sender: Option<&AnyObject>) {

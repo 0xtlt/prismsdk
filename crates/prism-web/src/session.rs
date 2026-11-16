@@ -1084,10 +1084,14 @@ impl PlatformServices for WebServices {
                 "t": "alert",
                 "a": serde_json::from_str::<Value>(&a.to_json()).unwrap_or(Value::Null),
             }),
-            // No tray or menu bar in a browser tab (capabilities say so).
+            // No tray or menu bar in a browser tab (capabilities say so),
+            // but the app menus' shortcuts are the app's (#161): the page
+            // takes them before the browser and runs the item.
+            PlatformRequest::SetAppMenu(menus) | PlatformRequest::SetMenuBar(menus) => {
+                json!({ "t": "shortcuts", "list": menu_shortcuts(&menus) })
+            }
             PlatformRequest::SetTray(_)
             | PlatformRequest::RemoveTray(_)
-            | PlatformRequest::SetAppMenu(_)
             | PlatformRequest::SetCar(_) => return,
             // A `FontFace` in `document.fonts`, for this page.
             PlatformRequest::LoadFont(font) => font_message(&font),
@@ -1306,6 +1310,30 @@ impl Encoder {
             Patch::SetRichValue { id, runs } => json!({ "op": "rich", "id": id, "runs": runs }),
         }
     }
+}
+
+/// The shortcuts of the app menus' enabled items, as `[keys, id]` (#161).
+fn menu_shortcuts(menus: &[prism_core::menu::MenuSpec]) -> Vec<Value> {
+    use prism_core::menu::MenuItemSpec;
+    fn walk(items: &[MenuItemSpec], out: &mut Vec<Value>) {
+        for item in items {
+            match item {
+                MenuItemSpec::Action {
+                    id,
+                    shortcut: Some(keys),
+                    enabled: true,
+                    ..
+                } => out.push(json!([keys.to_ascii_lowercase(), id])),
+                MenuItemSpec::Submenu { menu, .. } => walk(&menu.items, out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for m in menus {
+        walk(&m.items, &mut out);
+    }
+    out
 }
 
 /// A device call for the JS client.

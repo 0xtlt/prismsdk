@@ -103,7 +103,7 @@ pub use layout::{
     GridTrack, Repetition, ScrollAxis, Scrollbar, auto_fill, auto_fit, fr, minmax, repeat,
 };
 pub use list::VirtualList;
-pub use menu::{ActionRole, Alert, AlertStyle, Menu, MenuItem, Tray};
+pub use menu::{ActionRole, Alert, AlertStyle, Menu, MenuItem, SystemAction, Tray};
 pub use navbar::{BarButton, BarPlacement, bar_button};
 pub use platform::{Platform, Platforms};
 pub use push::{
@@ -771,11 +771,11 @@ pub mod prelude {
         ParentElement, Path, Permission, PermissionState, PickImages, PickedFile, Platform, Pose,
         Posture, PushEvent, PushMessage, PushService, PushSubscription, Render, ReturnKey, Role,
         Router, ScrollEvent, SecureOptions, SelectionEvent, Share, Styled, SwipeDirection,
-        Transition, Translations, Tray, UploadProgress, VirtualList, Watch, Widget, WidgetConfig,
-        WidgetFamily, WidgetOption, WidgetParameter, WindowChrome, WindowControls, adaptive,
-        button, date_picker, date_picker_opt, div, go_back, image, lazy, navigate_to, picker,
-        picture, progress, px, relative, rgb, rgba, screen, scroll, shape, slider, spinner, text,
-        text_area, text_input, timer, toggle,
+        SystemAction, Transition, Translations, Tray, UploadProgress, VirtualList, Watch, Widget,
+        WidgetConfig, WidgetFamily, WidgetOption, WidgetParameter, WindowChrome, WindowControls,
+        adaptive, button, date_picker, date_picker_opt, div, go_back, image, lazy, navigate_to,
+        picker, picture, progress, px, relative, rgb, rgba, screen, scroll, shape, slider, spinner,
+        text, text_area, text_input, timer, toggle,
     };
     pub use crate::{
         GridTrack, ScrollAxis, Scrollbar, auto_fill, auto_fit, fr, minmax, repeat, scroll_x,

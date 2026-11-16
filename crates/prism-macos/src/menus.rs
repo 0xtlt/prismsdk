@@ -9,7 +9,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::NSString;
 use prism_core::UiEvent;
-use prism_core::menu::{ActionRole, AlertSpec, MenuItemSpec, MenuSpec};
+use prism_core::menu::{ActionRole, AlertSpec, MenuItemSpec, MenuSpec, SystemAction};
 
 /// `"cmd+shift+n"` → ("n", ⌘⇧).
 pub fn parse_shortcut(s: &str) -> (String, NSEventModifierFlags) {
@@ -51,6 +51,17 @@ pub fn build_menu(mtm: MainThreadMarker, spec: &MenuSpec, target: &AnyObject) ->
     for it in &spec.items {
         match it {
             MenuItemSpec::Separator => menu.addItem(&NSMenuItem::separatorItem(mtm)),
+            MenuItemSpec::System {
+                action,
+                title,
+                shortcut,
+            } => menu.addItem(&system_item(
+                mtm,
+                *action,
+                title,
+                shortcut.as_deref(),
+                target,
+            )),
             MenuItemSpec::Submenu {
                 title,
                 icon,
@@ -100,6 +111,57 @@ pub fn build_menu(mtm: MainThreadMarker, spec: &MenuSpec, target: &AnyObject) ->
     menu
 }
 
+/// A system item (#161): the action AppKit sends along the responder chain
+/// (the focused field, the window), like its own menus' items; Quit goes to
+/// Prism, which asks first with unsaved changes.
+fn system_item(
+    mtm: MainThreadMarker,
+    action: SystemAction,
+    title: &str,
+    shortcut: Option<&str>,
+    target: &AnyObject,
+) -> Retained<NSMenuItem> {
+    let selector = match action {
+        SystemAction::Undo => sel!(undo:),
+        SystemAction::Redo => sel!(redo:),
+        SystemAction::Cut => sel!(cut:),
+        SystemAction::Copy => sel!(copy:),
+        SystemAction::Paste => sel!(paste:),
+        SystemAction::PasteAndMatchStyle => sel!(pasteAsPlainText:),
+        SystemAction::Delete => sel!(delete:),
+        SystemAction::SelectAll => sel!(selectAll:),
+        SystemAction::Minimize => sel!(performMiniaturize:),
+        SystemAction::Zoom => sel!(performZoom:),
+        SystemAction::ToggleFullScreen => sel!(toggleFullScreen:),
+        SystemAction::CloseWindow => sel!(performClose:),
+        SystemAction::Hide => sel!(hide:),
+        SystemAction::HideOthers => sel!(hideOtherApplications:),
+        SystemAction::ShowAll => sel!(unhideAllApplications:),
+        SystemAction::About => sel!(orderFrontStandardAboutPanel:),
+        SystemAction::Quit => sel!(prismQuit:),
+        SystemAction::Services => {
+            // A submenu AppKit fills.
+            let entry = item(mtm, title, None, "");
+            let services = NSMenu::new(mtm);
+            services.setTitle(&NSString::from_str(title));
+            entry.setSubmenu(Some(&services));
+            NSApplication::sharedApplication(mtm).setServicesMenu(Some(&services));
+            return entry;
+        }
+    };
+    let (key, mask) = shortcut
+        .map(parse_shortcut)
+        .unwrap_or((String::new(), NSEventModifierFlags::empty()));
+    let entry = item(mtm, title, Some(selector), &key);
+    if !key.is_empty() {
+        entry.setKeyEquivalentModifierMask(mask);
+    }
+    if action == SystemAction::Quit {
+        unsafe { entry.setTarget(Some(target)) };
+    }
+    entry
+}
+
 fn symbol(name: &Option<String>) -> Option<Retained<NSImage>> {
     name.as_deref().and_then(|n| {
         NSImage::imageWithSystemSymbolName_accessibilityDescription(&NSString::from_str(n), None)
@@ -134,6 +196,8 @@ pub fn install_main_menu(
     edit.setTitle(&NSString::from_str("Edit"));
     for (t, a, k) in [
         ("Undo", sel!(undo:), "z"),
+        // ⇧⌘Z: a capital Z means Shift (#161).
+        ("Redo", sel!(redo:), "Z"),
         ("Cut", sel!(cut:), "x"),
         ("Copy", sel!(copy:), "c"),
         ("Paste", sel!(paste:), "v"),
@@ -149,6 +213,36 @@ pub fn install_main_menu(
     go.addItem(&back);
     add(go);
     NSApplication::sharedApplication(mtm).setMainMenu(Some(&bar));
+}
+
+/// The whole menu bar, defined by the app (#161): its menus only, the first
+/// being the application menu (titled with the app's name by macOS). A menu
+/// holding Minimize is the Window menu (AppKit lists the windows there).
+pub fn install_menu_bar(mtm: MainThreadMarker, target: &AnyObject, menus: &[MenuSpec]) {
+    let bar = NSMenu::new(mtm);
+    let app = NSApplication::sharedApplication(mtm);
+    for spec in menus {
+        let menu = build_menu(mtm, spec, target);
+        // System items follow the focus (Copy is enabled in a field with a
+        // selection); app items keep the state the app gave them.
+        menu.setAutoenablesItems(true);
+        let windows = spec.items.iter().any(|i| {
+            matches!(
+                i,
+                MenuItemSpec::System {
+                    action: SystemAction::Minimize,
+                    ..
+                }
+            )
+        });
+        if windows {
+            app.setWindowsMenu(Some(&menu));
+        }
+        let holder = NSMenuItem::new(mtm);
+        holder.setSubmenu(Some(&menu));
+        bar.addItem(&holder);
+    }
+    app.setMainMenu(Some(&bar));
 }
 
 /// Shows an alert as a sheet on `window`; reports the chosen action index.

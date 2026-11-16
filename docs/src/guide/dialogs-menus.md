@@ -11,6 +11,40 @@ cx.set_app_menu(vec![Menu::titled("File").item(MenuItem::new("New").shortcut("cm
 
 Context menus open with a long press (iOS), right click or ⌃-click (macOS), right click / Shift+F10 (web), and from VoiceOver.
 
+## The whole menu bar
+
+`cx.set_app_menu(menus)` adds the app's menus between Prism's own (an English
+application menu, Edit with Undo and Redo, Go). `cx.set_menu_bar(menus)` makes
+the app define the whole bar (#161): localized, with its own Undo and Redo,
+and the system's actions where it wants them.
+
+```rust
+cx.set_menu_bar(vec![
+    Menu::titled("App")                                    // the application menu: macOS titles it
+        .item(MenuItem::system(SystemAction::About).title("À propos"))
+        .item(MenuItem::new("Réglages…").shortcut("cmd+,").on_select(settings))
+        .separator()
+        .item(MenuItem::system(SystemAction::Hide).title("Masquer"))
+        .item(MenuItem::system(SystemAction::HideOthers).title("Masquer les autres"))
+        .item(MenuItem::system(SystemAction::Quit).title("Quitter")),
+    Menu::titled("Édition")
+        .item(MenuItem::new("Annuler").shortcut("cmd+z").on_select(undo))         // the app's history
+        .item(MenuItem::new("Rétablir").shortcut("cmd+shift+z").on_select(redo))
+        .separator()
+        .item(MenuItem::system(SystemAction::Cut).title("Couper"))
+        .item(MenuItem::system(SystemAction::Copy).title("Copier"))
+        .item(MenuItem::system(SystemAction::Paste).title("Coller"))
+        .item(MenuItem::system(SystemAction::SelectAll).title("Tout sélectionner")),
+    Menu::titled("Fenêtre")
+        .item(MenuItem::system(SystemAction::Minimize).title("Réduire"))
+        .item(MenuItem::system(SystemAction::Zoom)),
+]);
+```
+
+- `MenuItem::system(SystemAction::…)` is an action the platform performs, sent like the system's own items: Cut, Copy, Paste, Select All and Undo / Redo of a text field go to the focused view (and are enabled when it can), Minimize, Zoom, full screen and Close to the window, Hide, Hide Others, Show All, About and Services to the app; Quit asks first with unsaved changes. Each has the usual shortcut unless given one, and an English title unless given `.title(…)`. A menu with Minimize is the Window menu (macOS lists the windows there).
+- An app item with a shortcut takes it from everything, focused text fields included: an `Annuler` item on ⌘Z runs the app's undo, not the field's. Use `MenuItem::system(SystemAction::Undo)` instead to keep the fields' own.
+- Web: no menu bar, but the shortcuts of the app's menus (`set_app_menu` or `set_menu_bar`) are the app's: the page takes them before the browser (⌘Z in a field, ⌘S, ⌘K; `cmd` is ⌘ on Apple devices and Ctrl elsewhere) and runs the item. Linux: `set_menu_bar` is the GTK menu bar, without the system items (GTK fields have their own). Phones, tablets and watches show no menu bar.
+
 ## Sheets, popovers and dialogs without a route
 
 A screen can show its own content over itself, without a route (`cx.present` needs one):
