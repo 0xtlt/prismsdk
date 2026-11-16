@@ -357,6 +357,41 @@ test("sheets open as modal dialogs and Escape asks the app", () => {
   assert.equal(dialog.isConnected, false);
 });
 
+test("lazy tabs: the shown panel stays until the server renders the new one", () => {
+  const page = live(fixture.reset);
+  const tabs = page.mount.querySelector("[data-kind=tabs]");
+  const bar = tabs.querySelector(".prism-tabbar");
+  const panels = () => tabs.querySelectorAll("[data-kind=tab]");
+  const stackOf = (panel) => panel.querySelector("[data-kind=stack]");
+  // The server rendered the selected tab only: the other has an empty stack.
+  assert.equal(stackOf(panels()[1])._screens.length, 0);
+  assert.ok(stackOf(panels()[0])._screens.length > 0);
+  bar.children[1].click();
+  // The tab is selected at once, but no empty panel flashes meanwhile.
+  assert.deepEqual(bar.children.map((b) => b.getAttribute("aria-selected")), ["false", "true"]);
+  assert.deepEqual(panels().map((p) => p.hidden), [false, true]);
+  // The server's answer (the tab, now rendered) shows it.
+  const answer = fixture.events.find((e) => e.send.t === "change" && e.send.id === Number(tabs.dataset.pid));
+  page.ws.deliver({ t: "patch", p: answer.patches });
+  assert.deepEqual(panels().map((p) => p.hidden), [true, false]);
+  assert.ok(stackOf(panels()[1])._screens.length > 0);
+  // Back to a rendered tab: switches at once, its nodes kept.
+  const first = stackOf(panels()[0])._screens[0];
+  bar.children[0].click();
+  assert.deepEqual(panels().map((p) => p.hidden), [false, true]);
+  assert.equal(stackOf(panels()[0])._screens[0], first);
+});
+
+test("lazy tabs: without an answer, the selected tab shows after a while", () => {
+  const page = live(fixture.reset);
+  const tabs = page.mount.querySelector("[data-kind=tabs]");
+  tabs.querySelector(".prism-tabbar").children[1].click();
+  const panels = () => tabs.querySelectorAll("[data-kind=tab]");
+  assert.deepEqual(panels().map((p) => p.hidden), [false, true]);
+  page.timers.at(-1).fn();
+  assert.deepEqual(panels().map((p) => p.hidden), [true, false]);
+});
+
 test("tabs: keyboard moves the selection", () => {
   const page = live(fixture.reset);
   const tabs = page.mount.querySelector("[data-kind=tabs]");

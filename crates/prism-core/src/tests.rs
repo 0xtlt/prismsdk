@@ -574,8 +574,8 @@ fn tabs_keep_one_stack_each() {
         id: tabs,
         value: 0.
     }));
-    // Both tabs' root screens exist from the start (native tab bars need them).
-    find_text(&first, "Item 99");
+    // Both tabs are in the bar from the start; tab 1 renders when selected.
+    assert_eq!(count_created(&first, NodeKind::Tab), 2);
 
     rt.dispatch(UiEvent::Click(find_text(&first, "open 7")));
     assert_eq!(rt.app.current_path(), Some("/items/7"));
@@ -604,6 +604,193 @@ fn deep_link_selects_the_matching_tab_and_navigating_to_a_root_switches_tab() {
     rt.app.navigate("/");
     rt.render();
     assert_eq!(rt.app.current_path(), Some("/"));
+}
+
+// --- Lazy tabs ---------------------------------------------------------------
+
+fn has_text(patches: &[Patch], text: &str) -> bool {
+    patches
+        .iter()
+        .any(|p| matches!(p, Patch::SetText { text: t, .. } if t == text))
+}
+
+fn count_created(patches: &[Patch], kind: NodeKind) -> usize {
+    patches
+        .iter()
+        .filter(|p| matches!(p, Patch::Create { kind: k, .. } if *k == kind))
+        .count()
+}
+
+/// A screen with a counter, to check a tab keeps its state.
+struct Tally(u32);
+impl Render for Tally {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        screen("Tally").child(
+            button(format!("count {}", self.0))
+                .on_click(cx.listener(|this: &mut Self, _: &ClickEvent, _| this.0 += 1)),
+        )
+    }
+}
+
+/// The router of [`lazy_tabs`], kept to ask it which tabs are rendered.
+struct LazyRouter(Entity<Router>);
+
+fn lazy_tabs(path: &str, eager: bool) -> (Runtime, Vec<Patch>) {
+    let init: AppInit = Arc::new(move |cx: &mut App| {
+        let mut router = Router::new()
+            .tab("Home", "house", "/")
+            .tab("Tally", "number", "/tally");
+        if eager {
+            router = router.eager();
+        }
+        let router = router
+            .tab("Settings", "gear", "/settings")
+            .route("/", |cx, _| cx.new_entity(|_| Home))
+            .route("/tally", |cx, _| cx.new_entity(|_| Tally(0)))
+            .route("/settings", |cx, _| cx.new_entity(|_| Item(99)))
+            .route("/settings/:id", |cx, p| {
+                let id = p.parse("id").unwrap_or(0);
+                cx.new_entity(move |_| Item(id))
+            })
+            .build(cx);
+        cx.set_global(LazyRouter(router));
+        cx.set_root(router);
+    });
+    let mut rt = Runtime::with_path(&init, path);
+    let first = rt.render();
+    (rt, first)
+}
+
+fn rendered(rt: &Runtime, tab: usize) -> bool {
+    let router = rt.app.global::<LazyRouter>().0;
+    rt.app.read(&router).tab_rendered(tab)
+}
+
+#[test]
+fn unvisited_tabs_have_an_entry_and_an_empty_panel() {
+    let (rt, first) = lazy_tabs("/", false);
+    // Every tab is in the bar, with its title and icon...
+    assert_eq!(count_created(&first, NodeKind::Tab), 3);
+    for title in ["Home", "Tally", "Settings"] {
+        find_text(&first, title);
+    }
+    // ...and a stack each, but only the selected tab has a screen.
+    assert_eq!(count_created(&first, NodeKind::Stack), 3);
+    assert_eq!(count_created(&first, NodeKind::Screen), 1);
+    assert!(!has_text(&first, "count 0"));
+    assert!(!has_text(&first, "Item 99"));
+    assert!(rendered(&rt, 0));
+    assert!(!rendered(&rt, 1));
+    assert!(!rendered(&rt, 2));
+}
+
+#[test]
+fn selecting_a_tab_renders_it_and_it_stays_rendered() {
+    let (mut rt, first) = lazy_tabs("/", false);
+    let tabs = tabs_id(&first);
+
+    let opened = rt.dispatch(UiEvent::Change(tabs, 1.));
+    assert!(opened.contains(&Patch::SetValue {
+        id: tabs,
+        value: 1.
+    }));
+    let count = find_text(&opened, "count 0");
+    assert_eq!(count_created(&opened, NodeKind::Screen), 1);
+    assert!(rendered(&rt, 1));
+    assert!(!rendered(&rt, 2));
+
+    // Its state and nodes stay while another tab shows.
+    rt.dispatch(UiEvent::Click(count));
+    rt.dispatch(UiEvent::Change(tabs, 0.));
+    assert!(rendered(&rt, 1));
+    let back = rt.dispatch(UiEvent::Change(tabs, 1.));
+    assert_eq!(count_created(&back, NodeKind::Screen), 0);
+    assert!(!has_text(&back, "count 0"));
+    let more = rt.dispatch(UiEvent::Click(count));
+    assert_eq!(
+        more,
+        vec![Patch::SetText {
+            id: count,
+            text: "count 2".into()
+        }]
+    );
+}
+
+#[test]
+fn navigating_to_a_tab_root_renders_that_tab() {
+    let (mut rt, _) = lazy_tabs("/", false);
+    rt.app.navigate("/settings");
+    let patches = rt.render();
+    find_text(&patches, "Item 99");
+    assert!(rendered(&rt, 2));
+}
+
+#[test]
+fn deep_links_render_their_tab_only() {
+    let (rt, first) = lazy_tabs("/settings/5", false);
+    let tabs = tabs_id(&first);
+    assert!(first.contains(&Patch::SetValue {
+        id: tabs,
+        value: 2.
+    }));
+    // The linked screen and the tab's root underneath.
+    find_text(&first, "Item 5");
+    find_text(&first, "Item 99");
+    assert!(!has_text(&first, "open 7"));
+    assert!(!has_text(&first, "count 0"));
+    assert!(!rendered(&rt, 0));
+    assert!(rendered(&rt, 2));
+}
+
+#[test]
+fn eager_tabs_render_up_front() {
+    let (rt, first) = lazy_tabs("/", true);
+    find_text(&first, "count 0");
+    // The tabs not marked eager stay lazy.
+    assert!(!has_text(&first, "Item 99"));
+    assert_eq!(count_created(&first, NodeKind::Screen), 2);
+    assert!(rendered(&rt, 1));
+    assert!(!rendered(&rt, 2));
+}
+
+#[test]
+fn on_watchos_the_pages_next_to_the_selected_tab_render_too() {
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let router = Router::new()
+            .tab("Home", "house", "/")
+            .tab("Tally", "number", "/tally")
+            .tab("Settings", "gear", "/settings")
+            .route("/", |cx, _| cx.new_entity(|_| Home))
+            .route("/tally", |cx, _| cx.new_entity(|_| Tally(0)))
+            .route("/settings", |cx, _| cx.new_entity(|_| Item(99)))
+            .build(cx);
+        cx.set_root(router);
+    });
+    let mut rt = Runtime::with_options(
+        &init,
+        crate::RuntimeOptions {
+            path: "/".into(),
+            platform: Some(Platform::Watchos),
+            ..Default::default()
+        },
+    );
+    // The Digital Crown shows the next page while it scrolls.
+    let first = rt.render();
+    find_text(&first, "count 0");
+    assert!(!has_text(&first, "Item 99"));
+    let next = rt.dispatch(UiEvent::Change(tabs_id(&first), 1.));
+    find_text(&next, "Item 99");
+}
+
+#[test]
+fn a_reset_makes_visited_tabs_lazy_again() {
+    let (mut rt, first) = lazy_tabs("/", false);
+    let tabs = tabs_id(&first);
+    rt.dispatch(UiEvent::Change(tabs, 1.));
+    rt.app.reset("/");
+    rt.render();
+    assert!(rendered(&rt, 0));
+    assert!(!rendered(&rt, 1));
 }
 
 // --- Surfaces: widgets, live activities, notifications, links ----------------

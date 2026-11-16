@@ -30,6 +30,17 @@ div().on_click(navigate_to("/todos/2"))   // handler helpers: navigate_to, go_ba
 
 **Tabs**: `.tab("Todos", "checklist", "/")` per tab (SF Symbol name; a glyph on the web). Each tab keeps its own stack. `navigate()` to a tab's root path switches tab. iOS: `UITabBarController`. macOS: segmented control. Web: ARIA tablist, URL follows the tab.
 
+**Lazy tabs**: a tab renders when it is first selected (a tap, `navigate()` to its root, a deep link), then stays rendered: switching away keeps its screens, their state and their views (a half-typed field is still there when you come back). Until then it shows only its tab-bar entry (title and icon) over an empty panel, and its screens are built but not rendered. A page then ships only the visible tab: on the example app, `/` went from 715 nodes, 150 KB of HTML and a 384 KB first WebSocket update to 44 nodes, 16 KB and 24 KB. A deep link (`/components`, `/components/list`) renders its tab on the server, in the first paint. `cx.reset(..)` makes every tab lazy again. Opt a tab out with `.eager()` right after it, to render it up front:
+
+```rust
+Router::new()
+    .tab("Todos", "checklist", "/")
+    .tab("Player", "play.circle", "/player")
+    .eager() // rendered from the start, not on first selection
+```
+
+Make a tab eager when its views must exist while hidden, or when switching to it must not wait for a render. On the web the first switch to a lazy tab takes one round trip to the server: the tab is selected at once and the panel shown stays up until the new one arrives, so no empty panel flashes (a timeout shows it after a second if no answer comes). Native backends render in the app's process, with no round trip. watchOS pages through tabs with the Digital Crown, which shows the next page while it scrolls, so the tabs next to the selected one render too. `router.tab_rendered(i)` tells whether a tab is rendered.
+
 **Scrolling**: `scroll()` (`UIScrollView` / `NSScrollView` / `overflow:auto`) fills the space left in its parent (`flex: 1 1 0`) and scrolls the rest. A screen starting with a scroll view lets it run under the bars, so iOS large titles collapse natively. For a list as tall as its content up to a maximum (in a sheet, a card, a popover), use `scroll().fit().max_h(px(320.))`: it sizes to its rows (`flex: 0 1 auto`), stops at `max_h`, then scrolls. Same layout on every backend (taffy natively, CSS on the web).
 
 **Window-sized screens (web)**: the root stack and its visible screen fill the browser window, like a native app: a frame (your own header, a sidebar) stays put and `scroll().flex_1()` scrolls inside it. A screen taller than the window without a scroll view scrolls by itself (its header stays). A tab bar root already worked this way. A root that is not a stack or tabs (a plain view) still scrolls the page.

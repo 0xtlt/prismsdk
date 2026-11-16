@@ -3882,6 +3882,30 @@ fn find_pressable(view: &NSView, title: &str) -> Option<Pressable> {
     None
 }
 
+/// Dev hook (`PRISM_CLICK`): picks the visible segment titled `title` (a
+/// tab of the tab bar), as a click on it would.
+fn press_segment(view: &NSView, title: &str) -> bool {
+    for sub in view.subviews().iter() {
+        if sub.isHiddenOrHasHiddenAncestor() {
+            continue;
+        }
+        if let Some(seg) = sub.downcast_ref::<NSSegmentedControl>()
+            && let Some(i) = (0..seg.segmentCount()).find(|i| {
+                seg.labelForSegment(*i)
+                    .is_some_and(|l| l.to_string() == title)
+            })
+        {
+            seg.setSelectedSegment(i);
+            dispatch(UiEvent::Change(seg.tag() as NodeId, i as f64));
+            return true;
+        }
+        if press_segment(&sub, title) {
+            return true;
+        }
+    }
+    false
+}
+
 /// The visible view whose accessibility label, button title or placeholder
 /// is `label` (dev hooks).
 fn find_labelled(view: &NSView, label: &str) -> Option<Retained<NSView>> {
@@ -4110,6 +4134,8 @@ fn run_automation(mtm: MainThreadMarker) {
                 }
                 // A clickable text, or an inline link, by its text.
                 None if crate::label::press_in(&root, title) => {}
+                // A tab of the tab bar, by its title.
+                None if press_segment(&root, title) => {}
                 None => eprintln!("prism-macos: PRISM_CLICK: nothing labelled {title:?}"),
             }
         }
