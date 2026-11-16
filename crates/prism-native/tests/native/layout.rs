@@ -257,6 +257,84 @@ fn stack_screens_get_the_platform_safe_area_unless_they_scroll() {
     assert_eq!(f.frame(s), (5., 0., 395., 800. - HEADER));
 }
 
+/// A card centred in a full-height column of a scroll view (#76), with a
+/// sticky title and, optionally, a footer below the scroll view.
+struct CenteredScreen {
+    footer: bool,
+}
+impl Render for CenteredScreen {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        screen("Centered")
+            .child(
+                scroll().child(
+                    div()
+                        .min_h(relative(1.))
+                        .justify_center()
+                        .child(text("title").sticky())
+                        .child(div().h(100.).child(text("card"))),
+                ),
+            )
+            .when(self.footer, |s| s.child(text("footer")))
+    }
+}
+
+fn centered(footer: bool) -> Harness {
+    let mut h = Harness::new(move |cx| {
+        let r = Router::new()
+            .header(false)
+            .route("/", move |cx, _| {
+                cx.new_entity(|_| CenteredScreen { footer })
+            })
+            .build(cx);
+        cx.set_root(r);
+    });
+    h.r.widgets.screen_insets = Insets {
+        top: 46.,
+        right: 0.,
+        bottom: 34.,
+        left: 0.,
+    };
+    h
+}
+
+#[test]
+fn a_scroll_view_under_the_bars_lays_its_content_out_between_them() {
+    let mut h = centered(false);
+    let f = h.layout(400., 800.);
+    let s = f.of_kind(NodeKind::Scroll)[0];
+    let visible = 800. - HEADER - 46. - 34.;
+    // The scroll view still runs under the bars; the platform insets its
+    // content by them, so `relative(1.)` is what is visible between them.
+    assert_eq!(f.frame(s), (0., 0., 400., 800. - HEADER));
+    let column = f.children[&s][0];
+    assert_eq!(f.frame(column), (0., 0., 400., visible));
+    // Centred there: the title and the 100 pt card, 120 pt together.
+    let card = f.children[&column][1];
+    assert_eq!(f.frame(f.by_text("title")).1, (visible - 120.) / 2.);
+    assert_eq!(f.frame(card).1, (visible - 120.) / 2. + 20.);
+    // Nothing to scroll: the content fits what is visible.
+    assert_eq!(f.content[&s], (400., visible));
+    // A sticky title counts from the top of the content, as the platform
+    // reports its scrolling; it sticks to the end of the column.
+    let (_, st) = f.sticky[&f.by_text("title")].expect("sticky");
+    let top = (visible - 120.) / 2.;
+    assert_eq!(st.top, top);
+    assert_eq!(st.max_offset, visible - top - 20.);
+}
+
+#[test]
+fn a_scroll_view_above_a_footer_only_takes_the_bar_it_runs_under() {
+    let mut h = centered(true);
+    let f = h.layout(400., 800.);
+    let s = f.of_kind(NodeKind::Scroll)[0];
+    // The 20 pt footer covers 20 of the 34 pt bottom bar.
+    let height = 800. - HEADER - 20.;
+    assert_eq!(f.frame(s), (0., 0., 400., height));
+    let column = f.children[&s][0];
+    assert_eq!(f.frame(column).3, height - 46. - 14.);
+    assert_eq!(f.content[&s], (400., height - 46. - 14.));
+}
+
 struct Rows {
     n: usize,
 }

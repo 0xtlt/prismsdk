@@ -406,6 +406,19 @@ pub struct NativeRenderer<W: Widgets> {
     /// area, a screen shown for the first time): frames are placed, not
     /// animated, as `transition` animates what the app changes (#41).
     settling: bool,
+    /// Scroll views that run under a screen's bars, by node id: the platform
+    /// insets their content by the bars, so it is laid out in what is
+    /// visible between them (#76).
+    under_bars: HashMap<NodeId, UnderBars>,
+}
+
+/// What the platform insets a scroll view's content by, at the top and the
+/// bottom, because it runs under the bars of `screen`.
+#[derive(Clone, Copy, PartialEq)]
+struct UnderBars {
+    screen: NodeId,
+    top: f32,
+    bottom: f32,
 }
 
 impl<W: Widgets> NativeRenderer<W> {
@@ -436,6 +449,7 @@ impl<W: Widgets> NativeRenderer<W> {
             layer_insets: Insets::default(),
             areas: HashMap::new(),
             settling: false,
+            under_bars: HashMap::new(),
         }
     }
 
@@ -672,7 +686,7 @@ impl<W: Widgets> NativeRenderer<W> {
         if self.compute_with_rules(self.viewport, width, height)
             && let Some(root) = self.root
         {
-            self.place(root, width);
+            self.place(root, width, 0.);
         }
         self.update_sticky();
         self.window = (width, height);
@@ -849,16 +863,19 @@ impl<W: Widgets> NativeRenderer<W> {
         // A screen that starts with a scroll view lets it run under the bars,
         // like native apps: the platform insets its content (and collapses
         // large titles) itself.
-        let first_child = self
+        let leading = self
             .taffy
             .children(sc.layout)
             .ok()
             .and_then(|c| c.first().copied())
-            .and_then(|c| self.by_layout.get(&c))
-            .and_then(|c| self.nodes.get(c));
-        if first_child.is_some_and(|c| {
-            c.kind == NodeKind::Scroll && c.style.scroll_axis == prism_core::ScrollAxis::Vertical
-        }) {
+            .and_then(|c| self.by_layout.get(&c).copied())
+            .filter(|c| {
+                self.nodes.get(c).is_some_and(|c| {
+                    c.kind == NodeKind::Scroll
+                        && c.style.scroll_axis == prism_core::ScrollAxis::Vertical
+                })
+            });
+        if leading.is_some() {
             i.top = 0.;
             i.bottom = 0.;
         }
@@ -907,14 +924,79 @@ impl<W: Widgets> NativeRenderer<W> {
         }
         let layout = sc.layout;
         let _ = self.taffy.set_style(layout, style);
-        if self.compute_with_rules(layout, vp.width, vp.height) {
-            // A screen not shown yet is laid out in the platform's default
-            // size, then again once shown: not an animation (#41).
-            self.in_area(screen, vp, |r| {
-                r.set_frame(screen, vp.x, vp.y, vp.width, vp.height);
-                r.place_children(screen);
+        // Its content is laid out in what the bars leave visible, as the
+        // platform insets it by them: first where the screen's padding
+        // puts it, then where it really is (a row below it, a margin).
+        let guess = leading.map(|s| {
+            let last = self.under_bars.get(&s).filter(|u| u.screen == screen);
+            let guess = last.copied().unwrap_or(UnderBars {
+                screen,
+                top: (vp.insets.top - p.top).max(0.),
+                bottom: (vp.insets.bottom - p.bottom).max(0.),
             });
+            (s, guess)
+        });
+        self.set_under_bars(screen, guess);
+        if !self.compute_with_rules(layout, vp.width, vp.height) {
+            return;
         }
+        if let Some((scroll, guess)) = guess {
+            let frame = self
+                .nodes
+                .get(&scroll)
+                .and_then(|e| self.taffy.layout(e.layout).ok())
+                .map(|l| (l.location.y, l.location.y + l.size.height));
+            if let Some((top, bottom)) = frame {
+                let real = UnderBars {
+                    screen,
+                    top: (vp.insets.top - top).max(0.),
+                    bottom: (vp.insets.bottom - (vp.height - bottom)).max(0.),
+                };
+                if real != guess {
+                    self.set_under_bars(screen, Some((scroll, real)));
+                    if !self.compute_with_rules(layout, vp.width, vp.height) {
+                        return;
+                    }
+                }
+            }
+        }
+        // A screen not shown yet is laid out in the platform's default
+        // size, then again once shown: not an animation (#41).
+        self.in_area(screen, vp, |r| {
+            r.set_frame(screen, vp.x, vp.y, vp.width, vp.height);
+            r.place_children(screen);
+        });
+    }
+
+    /// Records the scroll view that runs under `screen`'s bars (or none):
+    /// its layout padding takes them in (`sync_layout_style`).
+    fn set_under_bars(&mut self, screen: NodeId, scroll: Option<(NodeId, UnderBars)>) {
+        // No bar to run under (Android, macOS, a screen without a safe area).
+        let scroll = scroll.filter(|(_, u)| u.top > 0. || u.bottom > 0.);
+        let stale: Vec<NodeId> = self
+            .under_bars
+            .iter()
+            .filter(|(id, u)| u.screen == screen && scroll.is_none_or(|(s, _)| s != **id))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in stale {
+            self.under_bars.remove(&id);
+            self.sync_layout_style(id);
+        }
+        if let Some((id, u)) = scroll
+            && self.under_bars.insert(id, u) != Some(u)
+        {
+            self.sync_layout_style(id);
+        }
+    }
+
+    /// How far down the platform moves a scroll view's content (by the
+    /// bars it runs under): its children are placed that much higher, as
+    /// their layout includes it.
+    fn content_shift(&self, scroll: NodeId) -> (f32, f32) {
+        self.under_bars
+            .get(&scroll)
+            .map_or((0., 0.), |u| (u.top, u.bottom))
     }
 
     /// Forces leaves to be measured again (e.g. an image finished loading).
@@ -991,6 +1073,11 @@ impl<W: Widgets> NativeRenderer<W> {
             // A row that scrolls: children keep their size.
             style.flex_shrink = 0.;
         }
+        // A scroll view under bars: its content is laid out between them.
+        if let Some(u) = self.under_bars.get(&id) {
+            style.padding.top = LengthPercentage::length(zoomed.padding.top + u.top);
+            style.padding.bottom = LengthPercentage::length(zoomed.padding.bottom + u.bottom);
+        }
         // A root stack handles the safe area itself (navigation bar, screens).
         if self.root == Some(id) && !is_managed(e.kind) {
             let (p, i) = (zoomed.padding, self.insets);
@@ -1004,15 +1091,21 @@ impl<W: Widgets> NativeRenderer<W> {
         let _ = self.taffy.set_style(e.layout, style);
     }
 
-    /// Places `id` inside a parent `parent_width` wide (mirrored in RTL).
-    fn place(&mut self, id: NodeId, parent_width: f32) {
+    /// Places `id` inside a parent `parent_width` wide (mirrored in RTL),
+    /// `shift` higher than its layout (see `content_shift`).
+    fn place(&mut self, id: NodeId, parent_width: f32, shift: f32) {
         let Some(entry) = self.nodes.get(&id) else {
             return;
         };
         let Ok(l) = self.taffy.layout(entry.layout) else {
             return;
         };
-        let (mut x, mut y, w, h) = (l.location.x, l.location.y, l.size.width, l.size.height);
+        let (mut x, mut y, w, h) = (
+            l.location.x,
+            l.location.y - shift,
+            l.size.width,
+            l.size.height,
+        );
         if self.env.direction == Direction::Rtl {
             x = parent_width - x - w;
         }
@@ -1069,7 +1162,10 @@ impl<W: Widgets> NativeRenderer<W> {
                 bottom = bottom.max(l.location.y + l.size.height);
             }
         }
-        let height = (bottom + entry.style.padding.bottom).max(frame.height);
+        // Under bars, the platform adds them around the content.
+        let (top_bar, bottom_bar) = self.content_shift(id);
+        let height = (bottom - top_bar + entry.style.padding.bottom)
+            .max(frame.height - top_bar - bottom_bar);
         let width = self.content_width(id).unwrap_or(frame.width);
         self.widgets.set_content_size(&entry.view, width, height);
     }
@@ -1086,8 +1182,9 @@ impl<W: Widgets> NativeRenderer<W> {
             .iter()
             .filter_map(|c| self.by_layout.get(c).copied())
             .collect();
+        let shift = self.content_shift(id).0;
         for child in ids {
-            self.place(child, width);
+            self.place(child, width, shift);
         }
     }
 }
@@ -1480,6 +1577,7 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                         self.stack_screens.remove(id);
                         self.overlays.remove(id);
                         self.areas.remove(id);
+                        self.under_bars.remove(id);
                         let _ = self.taffy.remove(e.layout);
                     }
                 }
