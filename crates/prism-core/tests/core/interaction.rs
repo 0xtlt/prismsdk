@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use prism_core::prelude::*;
-use prism_core::{NodeKind, Patch, UiEvent};
+use prism_core::{NodeKind, Patch, UiEvent, unix_time};
 use prism_testing::{Harness, mount};
 
 type Log = Rc<RefCell<Vec<String>>>;
@@ -419,6 +419,7 @@ fn choice_controls_carry_their_state_and_semantics() {
     let tp = h.host.find(|n| n.kind == NodeKind::DatePicker).unwrap();
     assert_eq!(h.host.get(tp).value, Some(27000.));
     assert_eq!(h.host.get(tp).config, "timeofday - -");
+    assert_eq!(h.host.env.as_ref().unwrap().clear, "Clear");
     let e = ChangeEvent { value: 27000. };
     assert_eq!(e.minutes(), 450);
     let input = h.host.find(|n| n.kind == NodeKind::TextInput).unwrap();
@@ -477,6 +478,95 @@ fn drawn_choices_are_radios_with_their_state() {
     h.dispatch(UiEvent::Click(yearly));
     assert_eq!(h.host.get(yearly).a11y.checked, Some(true));
     assert_eq!(h.host.get(monthly).a11y.checked, Some(false));
+}
+
+struct Optional {
+    published: Option<std::time::SystemTime>,
+    opens: Option<u32>,
+    due: std::time::SystemTime,
+}
+
+impl Render for Optional {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .child(
+                date_picker_opt(self.published)
+                    .placeholder("Not published")
+                    .on_change(cx.listener(|this, e: &ChangeEvent, _| {
+                        this.published = e.date_opt();
+                    })),
+            )
+            .child(
+                time_picker_opt(self.opens)
+                    .placeholder("Opens at")
+                    .on_change(cx.listener(|this, e: &ChangeEvent, _| {
+                        this.opens = e.minutes_opt();
+                    })),
+            )
+            .child(
+                date_picker(self.due)
+                    .on_change(cx.listener(|this, e: &ChangeEvent, _| this.due = e.date())),
+            )
+    }
+}
+
+/// Optional date and time pickers: empty is `NaN`, cleared is `None` (#89).
+#[test]
+fn optional_date_pickers_can_be_empty_and_cleared() {
+    let mut h = Harness::new(|cx| {
+        let root = cx.new_entity(|_| Optional {
+            published: None,
+            opens: Some(9 * 60),
+            due: unix_time(1000.),
+        });
+        mount(cx, root);
+    });
+    let pickers: Vec<_> = {
+        let mut ids: Vec<_> = h
+            .host
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.kind == NodeKind::DatePicker)
+            .map(|(id, _)| *id)
+            .collect();
+        ids.sort();
+        ids
+    };
+    let [published, opens, due] = pickers[..] else {
+        panic!("three pickers")
+    };
+    let p = h.host.get(published);
+    assert!(p.value.unwrap().is_nan());
+    assert_eq!(p.config, "date - - optional");
+    assert_eq!(p.placeholder, "Not published");
+    // The placeholder names the picker.
+    assert_eq!(p.a11y.label.as_deref(), Some("Not published"));
+    assert_eq!(h.host.get(opens).config, "timeofday - - optional");
+    assert_eq!(h.host.get(opens).value, Some(9. * 3600.));
+    assert_eq!(h.host.get(due).config, "date - -");
+    // An unchanged empty value is not sent again.
+    let patches = h.render().to_vec();
+    assert!(!patches.iter().any(|p| matches!(p, Patch::SetValue { .. })));
+    // The user picks a day, then clears it; then clears the time.
+    h.dispatch(UiEvent::Change(published, 86_400.));
+    assert_eq!(h.host.get(published).value, Some(86_400.));
+    let cleared = h.dispatch(UiEvent::Change(published, f64::NAN)).to_vec();
+    assert!(
+        cleared.iter().any(
+            |p| matches!(p, Patch::SetValue { id, value } if *id == published && value.is_nan())
+        )
+    );
+    h.dispatch(UiEvent::Change(opens, f64::NAN));
+    assert!(h.host.get(opens).value.unwrap().is_nan());
+    // A picker that is not optional is never emptied (its handler would
+    // have read the epoch).
+    h.dispatch(UiEvent::Change(due, f64::NAN));
+    assert_eq!(h.host.get(due).value, Some(1000.));
+    // Reading a cleared value with the plain accessors never panics.
+    let empty = ChangeEvent { value: f64::NAN };
+    assert_eq!((empty.date(), empty.minutes()), (std::time::UNIX_EPOCH, 0));
+    assert_eq!((empty.date_opt(), empty.minutes_opt()), (None, None));
+    assert_eq!(ChangeEvent { value: 60. }.date_opt(), Some(unix_time(60.)));
 }
 
 #[test]

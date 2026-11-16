@@ -40,6 +40,8 @@ pub struct RenderEnvironment {
     pub back: String,
     /// Label of the button closing a modal.
     pub close: String,
+    /// Label of the action emptying an optional date picker (#89).
+    pub clear: String,
 }
 
 /// A mutation of the host tree.
@@ -491,6 +493,16 @@ impl Reconciler {
         self.change.get(&id).cloned()
     }
 
+    /// Whether node `id` takes an empty value (`NaN`): an optional date
+    /// picker (#89). Hosts report a cleared picker as `NaN`; no other
+    /// control has an empty value.
+    pub fn accepts_empty(&self, id: NodeId) -> bool {
+        self.nodes.get(&id).is_some_and(|m| {
+            m.kind == NodeKind::DatePicker
+                && crate::controls::DateConfig::decode(&m.config).optional
+        })
+    }
+
     /// The hover handler of node `id`, if any.
     pub fn hover_handler(&self, id: NodeId) -> Option<Handler<crate::events::HoverEvent>> {
         self.hover.get(&id).cloned()
@@ -622,6 +634,7 @@ impl Reconciler {
             reduce_motion: app.reduce_motion(),
             back: app.chrome_text("back"),
             close: app.chrome_text("close"),
+            clear: app.chrome_text("clear"),
         };
         if self.environment.as_ref() != Some(&env) {
             // Before any node patch: text is created at the right scale/direction.
@@ -1036,8 +1049,11 @@ impl Reconciler {
                 });
                 m.config = config;
             }
+            // `NaN` (an empty optional date picker) equals itself here.
             if let Some(v) = value
-                && m.value != Some(v)
+                && !m
+                    .value
+                    .is_some_and(|old| old == v || (old.is_nan() && v.is_nan()))
             {
                 self.patches.push(Patch::SetValue { id, value: v });
                 m.value = Some(v);
@@ -1351,7 +1367,10 @@ impl Reconciler {
                 NodeKind::View if clickable => {
                     Some(self.collect_text(id)).filter(|t| !t.is_empty())
                 }
-                NodeKind::TextInput | NodeKind::TextArea | NodeKind::Picker
+                NodeKind::TextInput
+                | NodeKind::TextArea
+                | NodeKind::Picker
+                | NodeKind::DatePicker
                     if !m.placeholder.is_empty() =>
                 {
                     Some(m.placeholder.clone())

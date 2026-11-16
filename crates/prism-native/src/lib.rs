@@ -1536,6 +1536,11 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                 Patch::SetValue { id, value } => {
                     if let Some(e) = self.nodes.get(id) {
                         self.widgets.set_value(&e.view, *value);
+                        // An optional date picker is as wide as its
+                        // placeholder while empty (#89).
+                        if e.kind == NodeKind::DatePicker {
+                            let _ = self.taffy.mark_dirty(e.layout);
+                        }
                     }
                 }
                 Patch::SetConfig { id, config } => {

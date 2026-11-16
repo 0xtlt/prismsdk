@@ -183,6 +183,8 @@ public final class PrismHost {
         int[] viewport = {0, 0};
         // Form controls (PrismForms): the config string, accessibility.
         String config = "";
+        /** An optional date picker's text while it is empty (#89). */
+        String placeholder = "";
         /** A rich text's runs (PrismText), null when plain. */
         JSONArray runs;
         String a11yLabel, a11yValue, announced;
@@ -891,6 +893,8 @@ public final class PrismHost {
     static String appearance = "system";
     static boolean rtl;
     static String backLabel = "Back";
+    /** The action emptying an optional date picker (#89), in the app's language. */
+    static String clearLabel = "Clear";
     /** The app's language (BCP 47), for formatted dates. */
     static String lang = "";
 
@@ -913,6 +917,7 @@ public final class PrismHost {
     static void setEnvironment(JSONObject p) {
         rtl = p.optBoolean("rtl");
         backLabel = p.optString("back", "Back");
+        clearLabel = p.optString("clear", "Clear");
         lang = p.isNull("lang") ? "" : p.optString("lang", "");
         View decor = activity.getWindow().getDecorView();
         decor.setLayoutDirection(rtl ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);

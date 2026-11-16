@@ -373,6 +373,24 @@ define_class!(
             dispatch(UiEvent::Submit(sender.tag() as NodeId));
         }
 
+        /// The placeholder pill of an empty optional date picker (#89).
+        #[unsafe(method(onDateFill:))]
+        fn on_date_fill(&self, sender: &UIView) {
+            #[cfg(not(target_os = "tvos"))]
+            crate::dates::fill(sender.tag() as NodeId);
+            #[cfg(target_os = "tvos")]
+            let _ = sender;
+        }
+
+        /// The clear button of an optional date picker (#89).
+        #[unsafe(method(onDateClear:))]
+        fn on_date_clear(&self, sender: &UIView) {
+            #[cfg(not(target_os = "tvos"))]
+            crate::dates::clear(sender.tag() as NodeId);
+            #[cfg(target_os = "tvos")]
+            let _ = sender;
+        }
+
         #[unsafe(method(onDate:))]
         fn on_date(&self, sender: &AnyObject) {
             #[cfg(not(target_os = "tvos"))]
@@ -1998,6 +2016,11 @@ impl Widgets for UiKit {
                     crate::forms::refresh_picker(b, p);
                 }
             }
+            // Shown while an optional date picker is empty (#89).
+            #[cfg(not(target_os = "tvos"))]
+            View::DatePicker(p) => crate::dates::set_placeholder(p, text),
+            #[cfg(target_os = "tvos")]
+            View::DatePicker(p) => p.set_placeholder(text),
             _ => {}
         }
     }
@@ -2055,6 +2078,8 @@ impl Widgets for UiKit {
                     |v: Option<f64>| v.map(objc2_foundation::NSDate::dateWithTimeIntervalSince1970);
                 p.setMinimumDate(date(c.min).as_deref());
                 p.setMaximumDate(date(c.max).as_deref());
+                let target: &AnyObject = &self.target;
+                crate::dates::configure(p, c, target);
             }
             #[cfg(target_os = "tvos")]
             View::DatePicker(p) => p.set_date_config(DateConfig::decode(config)),
@@ -2239,6 +2264,8 @@ impl Widgets for UiKit {
         self.timers.remove(&id);
         self.pickers.remove(&id);
         self.date_pickers.remove(&id);
+        #[cfg(not(target_os = "tvos"))]
+        crate::dates::forget(id);
         self.announced.remove(&id);
         if let Some(o) = self.overlays.remove(&id) {
             o.close();
@@ -2319,9 +2346,13 @@ impl Widgets for UiKit {
             #[cfg(not(target_os = "tvos"))]
             // Compact pickers have no intrinsic size (-1); Auto Layout's
             // fitting size is their button's.
-            View::DatePicker(p) => p.systemLayoutSizeFittingSize(unsafe {
-                objc2_ui_kit::UILayoutFittingCompressedSize
-            }),
+            View::DatePicker(p) => {
+                let size = p.systemLayoutSizeFittingSize(unsafe {
+                    objc2_ui_kit::UILayoutFittingCompressedSize
+                });
+                // With its placeholder or clear button (#89).
+                crate::dates::natural_size(p, size).unwrap_or(size)
+            }
             View::Spinner(s) => s.intrinsicContentSize(),
             View::Checkbox(c) => c.button.sizeThatFits(limit),
             View::Radio(r) => r.measure(max_width),
@@ -2366,6 +2397,10 @@ impl Widgets for UiKit {
         }
         place(view.ui(), x, y, w, h);
         crate::layout::framed(view.id());
+        #[cfg(not(target_os = "tvos"))]
+        if let View::DatePicker(p) = view {
+            crate::dates::framed(p);
+        }
         #[cfg(not(target_os = "tvos"))]
         if let View::TextArea(t) = view {
             t.layout_placeholder();
@@ -2504,6 +2539,8 @@ impl Widgets for UiKit {
         self.semantic = Some(attr);
         set_appearance_semantic(attr);
         // Date pickers speak the app's language (month names, digits).
+        #[cfg(not(target_os = "tvos"))]
+        crate::dates::set_clear_label(&env.clear);
         if self.lang != env.lang {
             self.lang = env.lang.clone();
             for p in self.date_pickers.values() {
@@ -2582,7 +2619,9 @@ impl Widgets for UiKit {
             }
             #[cfg(not(target_os = "tvos"))]
             View::DatePicker(p) => {
-                if (p.date().timeIntervalSince1970() - value).abs() >= 0.5 {
+                // An optional picker shows NaN as its placeholder (#89).
+                crate::dates::set_value(p, value);
+                if !value.is_nan() && (p.date().timeIntervalSince1970() - value).abs() >= 0.5 {
                     let d = objc2_foundation::NSDate::dateWithTimeIntervalSince1970(value);
                     p.setDate_animated(&d, false);
                 }

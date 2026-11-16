@@ -1205,7 +1205,20 @@ define_class!(
         #[unsafe(method(onDate:))]
         fn on_date(&self, sender: &NSDatePicker) {
             let secs = sender.dateValue().timeIntervalSince1970();
+            crate::dates::edited(sender.tag() as NodeId, secs);
             dispatch(UiEvent::Change(sender.tag() as NodeId, secs));
+        }
+
+        /// The placeholder of an empty optional date picker (#89).
+        #[unsafe(method(onDateFill:))]
+        fn on_date_fill(&self, sender: &NSButton) {
+            crate::dates::fill(sender.tag() as NodeId);
+        }
+
+        /// The clear button of an optional date picker (#89).
+        #[unsafe(method(onDateClear:))]
+        fn on_date_clear(&self, sender: &NSButton) {
+            crate::dates::clear(sender.tag() as NodeId);
         }
 
         /// Any Prism menu item (context menus, tray, app menus).
@@ -2853,6 +2866,7 @@ impl Widgets for AppKit {
                 *p.placeholder.borrow_mut() = text.to_string();
                 p.rebuild();
             }
+            View::DatePicker(d) => crate::dates::set_placeholder(d, text),
             _ => {}
         }
     }
@@ -2972,6 +2986,7 @@ impl Widgets for AppKit {
         self.ix.pending_selection.remove(&view.id());
         crate::interact::forget_selection(view.id());
         crate::sticky::forget(view.id());
+        crate::dates::forget(view.id());
         crate::navbar::forget(view.id());
         crate::padding::forget(view.id());
         self.hover_areas.remove(&view.id());
@@ -3073,7 +3088,11 @@ impl Widgets for AppKit {
             // The widest option plus the chevron (NSPopUpButtonCell sizes to
             // its widest item).
             View::Picker(p) => p.button.fittingSize(),
-            View::DatePicker(d) => d.fittingSize(),
+            // With its placeholder or clear button (#89).
+            View::DatePicker(d) => {
+                let size = d.fittingSize();
+                crate::dates::natural_size(d, size).unwrap_or(size)
+            }
             View::Spinner(p) => {
                 let s = p.fittingSize();
                 if s.width > 0. {
@@ -3125,6 +3144,9 @@ impl Widgets for AppKit {
             );
         }
         view.ns().setFrame(frame);
+        if let View::DatePicker(d) = view {
+            crate::dates::framed(d);
+        }
         if self.transforms.contains_key(&view.id()) {
             self.apply_transform(view);
         }
@@ -3289,7 +3311,9 @@ impl Widgets for AppKit {
                 }
             }
             View::DatePicker(d) => {
-                if d.dateValue().timeIntervalSince1970() != value {
+                // An optional picker shows NaN as its placeholder (#89).
+                crate::dates::set_value(d, value);
+                if !value.is_nan() && d.dateValue().timeIntervalSince1970() != value {
                     d.setDateValue(&objc2_foundation::NSDate::dateWithTimeIntervalSince1970(
                         value,
                     ));
@@ -3341,7 +3365,12 @@ impl Widgets for AppKit {
                 *p.options.borrow_mut() = PickerConfig::decode(config).options;
                 p.rebuild();
             }
-            View::DatePicker(d) => configure_date_picker(d, DateConfig::decode(config)),
+            View::DatePicker(d) => {
+                let c = DateConfig::decode(config);
+                configure_date_picker(d, c);
+                let target: &AnyObject = &self.target;
+                crate::dates::configure(d, c, target);
+            }
             View::Radios(r) => {
                 let target: &AnyObject = &self.target;
                 r.set_config(config, target);
@@ -3554,6 +3583,7 @@ impl Widgets for AppKit {
     fn set_environment(&mut self, env: &prism_core::RenderEnvironment) {
         self.rtl = env.direction == prism_core::Direction::Rtl;
         self.chrome = (env.back.clone(), env.close.clone());
+        crate::dates::set_clear_label(&env.clear);
         let dir = if self.rtl {
             objc2_app_kit::NSUserInterfaceLayoutDirection::RightToLeft
         } else {

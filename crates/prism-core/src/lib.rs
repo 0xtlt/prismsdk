@@ -73,13 +73,14 @@ pub use element::{
     BackEvent, Button, ChangeEvent, ClickEvent, DatePicker, Div, Element, FluentBuilder, Handler,
     Image, InputEvent, IntoElement, Modal, NavigateEvent, NodeKind, ParentElement, Picker, Picture,
     Progress, Screen, Scroll, ScrollEvent, Shape, Slider, Spinner, Stack, SwipeDirection, Tab,
-    Tabs, Text, TextArea, TextInput, Timer, Toggle, VNode, button, date_picker, div,
-    format_remaining, image, lazy, modal, picker, picture, progress, rich_text, screen, scroll,
-    shape, slider, spinner, stack, tab, tabs, text, text_area, text_input, timer, toggle,
+    Tabs, Text, TextArea, TextInput, Timer, Toggle, VNode, button, date_picker, date_picker_opt,
+    div, format_remaining, image, lazy, modal, picker, picture, progress, rich_text, screen,
+    scroll, shape, slider, spinner, stack, tab, tabs, text, text_area, text_input, timer, toggle,
     unix_seconds, unix_time,
 };
 pub use element::{
     Checkbox, Overlay, RadioGroup, checkbox, dialog, popover, radio_group, sheet, time_picker,
+    time_picker_opt,
 };
 pub use element::{STACK_CLOSABLE, STACK_NO_HEADER};
 pub use element::{SelectionEvent, byte_to_char, char_to_byte};
@@ -321,7 +322,9 @@ impl Runtime {
                 }
             }
             UiEvent::Change(id, value) => {
-                if let Some(h) = self.reconciler.change_handler(id) {
+                // Only an optional date picker can be emptied (#89).
+                let accepted = !value.is_nan() || self.reconciler.accepts_empty(id);
+                if accepted && let Some(h) = self.reconciler.change_handler(id) {
                     h(&ChangeEvent { value }, &mut self.app);
                 }
             }
@@ -672,9 +675,10 @@ pub mod prelude {
         PushMessage, PushService, PushSubscription, Render, ReturnKey, Role, Router, ScrollEvent,
         SecureOptions, SelectionEvent, Share, Styled, SwipeDirection, Transition, Translations,
         Tray, VirtualList, Watch, Widget, WidgetConfig, WidgetFamily, WidgetOption,
-        WidgetParameter, WindowChrome, WindowControls, adaptive, button, date_picker, div, go_back,
-        image, lazy, navigate_to, picker, picture, progress, px, relative, rgb, rgba, screen,
-        scroll, shape, slider, spinner, text, text_area, text_input, timer, toggle,
+        WidgetParameter, WindowChrome, WindowControls, adaptive, button, date_picker,
+        date_picker_opt, div, go_back, image, lazy, navigate_to, picker, picture, progress, px,
+        relative, rgb, rgba, screen, scroll, shape, slider, spinner, text, text_area, text_input,
+        timer, toggle,
     };
     pub use crate::{GridTrack, ScrollAxis, auto_fill, auto_fit, fr, minmax, repeat, scroll_x};
     // App assets compiled into the binary (#61).
@@ -690,7 +694,7 @@ pub mod prelude {
     // Pointer, keys, choice controls, overlays (#17, #18, #19).
     pub use crate::{
         DragEvent, DragPhase, HoverEvent, KeyEvent, Modifiers, PickFiles, Point, PointerEvent,
-        PointerPhase, checkbox, dialog, popover, radio_group, sheet, time_picker,
+        PointerPhase, checkbox, dialog, popover, radio_group, sheet, time_picker, time_picker_opt,
     };
     // Islands: client-side Web Components.
     pub use crate::{IslandEvent, island, web_component};

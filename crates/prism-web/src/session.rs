@@ -418,6 +418,16 @@ impl Live {
     }
 }
 
+/// A `change` event's value: a number, or `null` for an optional date
+/// picker the user cleared (`NaN`, #89).
+fn change_value(v: &Value) -> Option<f64> {
+    if v.is_null() {
+        Some(f64::NAN)
+    } else {
+        v.as_f64()
+    }
+}
+
 pub(crate) fn parse_event(v: &Value) -> Option<UiEvent> {
     if let Some(event) = parse_input_event(v) {
         return Some(event);
@@ -428,7 +438,8 @@ pub(crate) fn parse_event(v: &Value) -> Option<UiEvent> {
         "submit" => Some(UiEvent::Submit(id)),
         "input" => Some(UiEvent::Input(id, v.get("v")?.as_str()?.to_string())),
         "back" => Some(UiEvent::Back(id, v.get("depth")?.as_u64()? as usize)),
-        "change" => Some(UiEvent::Change(id, v.get("v")?.as_f64()?)),
+        // `null`: an optional date picker was cleared (#89).
+        "change" => Some(UiEvent::Change(id, change_value(v.get("v")?)?)),
         "menu" => Some(UiEvent::MenuSelect(id)),
         "scroll" => Some(UiEvent::Scroll(
             id,
