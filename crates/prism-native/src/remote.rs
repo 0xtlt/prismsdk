@@ -224,8 +224,28 @@ pub fn parse_input_event(v: &Value) -> Option<prism_core::UiEvent> {
             id?,
             v.get("url")?.as_str()?.to_string(),
         )),
+        // Files dropped on a drop target (#111), copied where the app reads
+        // them: `{"t":"drop","id","files":[{path,name,mime,size}]}`.
+        "drop" => Some(prism_core::UiEvent::DropFiles(
+            id?,
+            picked_files(v.get("files")?.as_array()?),
+        )),
         _ => None,
     }
+}
+
+/// `[{path, name, mime, size}]` from a host.
+pub fn picked_files(files: &[Value]) -> Vec<prism_core::PickedFile> {
+    let s = |f: &Value, k: &str| f.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    files
+        .iter()
+        .map(|f| prism_core::PickedFile {
+            path: s(f, "path"),
+            name: s(f, "name"),
+            mime: s(f, "mime"),
+            size: f.get("size").and_then(Value::as_u64).unwrap_or(0),
+        })
+        .collect()
 }
 
 /// A key event's `sel`: `[start, end]` in characters, the focused text
@@ -951,6 +971,11 @@ impl Widgets for RemoteWidgets {
             .push(json!({ "op": "pointer", "id": id, "mask": mask }));
     }
 
+    fn set_drop_target(&mut self, id: &NodeId, types: Option<&[String]>) {
+        self.ops
+            .push(json!({ "op": "drop", "id": id, "types": types }));
+    }
+
     fn set_key_events(&mut self, id: &NodeId, local: bool, global: bool) {
         self.ops
             .push(json!({ "op": "keys", "id": id, "local": local, "global": global }));
@@ -1014,7 +1039,7 @@ impl Widgets for RemoteWidgets {
 pub mod device {
     use prism_core::{
         Accuracy, DeviceCall, DeviceError, DeviceEvent, DeviceValue, Location, Motion,
-        PermissionState, PickedFile,
+        PermissionState,
     };
     use serde_json::{Value, json};
 
@@ -1159,18 +1184,7 @@ pub mod device {
             return Ok(DeviceValue::Location(l));
         }
         if let Some(files) = v.get("files").and_then(Value::as_array) {
-            let s = |f: &Value, k: &str| f.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-            return Ok(DeviceValue::Files(
-                files
-                    .iter()
-                    .map(|f| PickedFile {
-                        path: s(f, "path"),
-                        name: s(f, "name"),
-                        mime: s(f, "mime"),
-                        size: f.get("size").and_then(Value::as_u64).unwrap_or(0),
-                    })
-                    .collect(),
-            ));
+            return Ok(DeviceValue::Files(super::picked_files(files)));
         }
         if let Some(t) = v.get("text") {
             return Ok(DeviceValue::Text(t.as_str().map(str::to_string)));

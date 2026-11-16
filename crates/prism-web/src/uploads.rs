@@ -9,8 +9,14 @@
 //! the reply hands the app the files. A `device_reply` with an error (the
 //! user or the app cancelled) deletes what arrived.
 //!
-//! Only pick calls the app made are accepted, each file gets no more than
-//! the size the page declared, and files of an unfinished upload are
+//! Files dropped on a drop target (#111) travel the same way: `drop_start`
+//! (a `drop` number the page picks, the target `node`, the files), the
+//! chunks with that `drop` number, then `drop_end` (with `err` if it
+//! failed).
+//!
+//! Only pick calls the app made and drops on the page's drop targets are
+//! accepted (at most [`MAX_DROPS`] drops at once), each file gets no more
+//! than the size the page declared, and files of an unfinished upload are
 //! deleted when the session ends.
 //!
 //! [`DeviceEvent::Upload`]: prism_core::DeviceEvent::Upload
@@ -27,10 +33,22 @@ use crate::app::WebApp;
 /// sends them.
 pub(crate) const CHUNK: usize = 256 * 1024;
 
-/// The uploads of one session, by pick call id.
+/// The most drops uploading at once in one session.
+pub(crate) const MAX_DROPS: usize = 4;
+
+/// What an upload is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Key {
+    /// A pick call (its device call id).
+    Call(u64),
+    /// Files dropped on a drop target (the page's drop number).
+    Drop(u64),
+}
+
+/// The uploads of one session.
 #[derive(Default)]
 pub(crate) struct Uploads {
-    calls: HashMap<u64, Call>,
+    calls: HashMap<Key, Call>,
 }
 
 enum Call {
@@ -79,12 +97,27 @@ impl Drop for Uploads {
 impl Uploads {
     /// The app asked to pick files (or images) with call `id`.
     pub(crate) fn expect(&mut self, id: u64) {
-        self.calls.insert(id, Call::Waiting);
+        self.calls.insert(Key::Call(id), Call::Waiting);
     }
 
-    /// Whether call `id` is a pick call still waiting for its files.
-    pub(crate) fn has(&self, id: u64) -> bool {
-        self.calls.contains_key(&id)
+    /// A drop is about to upload: `false` when its number is taken or too
+    /// many drops are uploading already.
+    pub(crate) fn expect_drop(&mut self, drop: u64) -> bool {
+        let drops = self
+            .calls
+            .keys()
+            .filter(|k| matches!(k, Key::Drop(_)))
+            .count();
+        if drops >= MAX_DROPS || self.calls.contains_key(&Key::Drop(drop)) {
+            return false;
+        }
+        self.calls.insert(Key::Drop(drop), Call::Waiting);
+        true
+    }
+
+    /// Whether `key` is an upload still waiting for its files.
+    pub(crate) fn has(&self, key: Key) -> bool {
+        self.calls.contains_key(&key)
     }
 
     /// `upload_start`: the files the user chose. Returns `(sent, total)`,
@@ -93,7 +126,7 @@ impl Uploads {
         &mut self,
         app: &WebApp,
         sid: &str,
-        id: u64,
+        id: Key,
         files: &[Value],
     ) -> Option<(u64, u64)> {
         if !matches!(self.calls.get(&id), Some(Call::Waiting)) {
@@ -146,7 +179,7 @@ impl Uploads {
     /// `upload_chunk`: bytes of file `index`. Returns `(sent, total)`, or
     /// `None` when the chunk is refused (the upload then fails: see
     /// [`finish`](Self::finish)).
-    pub(crate) fn chunk(&mut self, id: u64, index: usize, data: &str) -> Option<(u64, u64)> {
+    pub(crate) fn chunk(&mut self, id: Key, index: usize, data: &str) -> Option<(u64, u64)> {
         let Some(Call::Receiving(batch)) = self.calls.get_mut(&id) else {
             return None;
         };
@@ -184,7 +217,7 @@ impl Uploads {
     pub(crate) fn finish(
         &mut self,
         app: &WebApp,
-        id: u64,
+        id: Key,
         failed: bool,
     ) -> Option<Result<Vec<prism_core::PickedFile>, String>> {
         match self.calls.remove(&id)? {

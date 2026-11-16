@@ -106,6 +106,8 @@ impl LinuxServices {
                 web_auth: true,
                 // UnifiedPush over D-Bus, when a distributor runs (push.rs).
                 push: crate::push::distributor().map(|_| prism_core::PushService::UnifiedPush),
+                // GtkDropTarget (#111).
+                drop_files: true,
                 ..Default::default()
             },
             data_dir,
@@ -843,7 +845,12 @@ mod geoclue {
 
 /// Copies a picked file under the cache directory, like the other backends.
 fn copy_picked(file: &gio::File) -> Option<PickedFile> {
-    let src = file.path()?;
+    copy_picked_path(file.path()?)
+}
+
+/// [`copy_picked`] for a local path (any thread: dropped files are copied
+/// off the main loop, #111).
+pub(crate) fn copy_picked_path(src: std::path::PathBuf) -> Option<PickedFile> {
     let dir = glib::user_cache_dir().join("prism-picked");
     std::fs::create_dir_all(&dir).ok()?;
     let name = src.file_name()?.to_string_lossy().to_string();

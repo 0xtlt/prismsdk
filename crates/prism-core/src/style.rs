@@ -2241,6 +2241,17 @@ pub trait Styled: Sized {
             )
         })
     }
+    /// Style changes while files are dragged over a drop target that
+    /// accepts them ([`Div::on_drop_files`](crate::Div::on_drop_files),
+    /// #111): the highlight of an upload zone.
+    fn drop_hover(self, f: impl Fn(Style) -> Style + 'static) -> Self {
+        self.with_style(|s| {
+            s.states.push(
+                crate::interaction::Interaction::DropHover,
+                std::rc::Rc::new(f),
+            )
+        })
+    }
     /// The pointer's shape over the node (clickable nodes default to
     /// [`Cursor::Pointer`](crate::decoration::Cursor::Pointer)).
     fn cursor(self, cursor: crate::decoration::Cursor) -> Self {

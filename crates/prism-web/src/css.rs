@@ -535,6 +535,8 @@ pub fn states_css(kind: NodeKind, id: prism_core::NodeId, s: &Style) -> String {
             Interaction::GroupHover => (format!("[data-group]:hover {node}"), true),
             Interaction::GroupFocusWithin => (format!("[data-group]:focus-within {node}"), false),
             Interaction::GroupActive => (format!("[data-group]:active {node}"), false),
+            // Set by the client while accepted files are over it (#111).
+            Interaction::DropHover => (format!("{node}[data-prism-drop]"), false),
             // Resolved by the server (the disabled refinement is applied).
             Interaction::Disabled => continue,
         };

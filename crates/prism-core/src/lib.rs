@@ -92,7 +92,8 @@ pub use element::{STACK_CLOSABLE, STACK_NO_HEADER};
 pub use element::{SelectionEvent, byte_to_char, char_to_byte};
 pub use element::{picture_data, svg};
 pub use events::{
-    DragEvent, DragPhase, HoverEvent, KeyEvent, Modifiers, Point, PointerEvent, PointerPhase,
+    DragEvent, DragPhase, FileDropEvent, HoverEvent, KeyEvent, Modifiers, Point, PointerEvent,
+    PointerPhase,
 };
 pub use fonts::{FontFace, FontSource, Stylesheet};
 pub use i18n::{BasicFormatter, DateStyle, Direction, Formatter, Locale, Translations};
@@ -401,6 +402,17 @@ impl Runtime {
             UiEvent::Drag(id, e) => {
                 if let Some(h) = self.reconciler.drag_handler(id) {
                     h(&e, &mut self.app);
+                }
+            }
+            UiEvent::DropFiles(id, files) => {
+                if let Some((accept, h)) = self.reconciler.drop_files_handler(id) {
+                    let files: Vec<_> = files
+                        .into_iter()
+                        .filter(|f| accept.accepts(&f.name, &f.mime))
+                        .collect();
+                    if !files.is_empty() {
+                        h(&FileDropEvent { files }, &mut self.app);
+                    }
                 }
             }
             UiEvent::Island(id, name, detail) => {
@@ -746,9 +758,9 @@ pub mod prelude {
     pub use crate::bar_button;
     // Pointer, keys, choice controls, overlays (#17, #18, #19).
     pub use crate::{
-        DragEvent, DragPhase, HoverEvent, KeyEvent, Modifiers, PickFiles, Point, PointerEvent,
-        PointerPhase, PopoverAlign, PopoverSide, checkbox, dialog, popover, radio_group, sheet,
-        time_picker, time_picker_opt,
+        DragEvent, DragPhase, FileDropEvent, HoverEvent, KeyEvent, Modifiers, PickFiles, Point,
+        PointerEvent, PointerPhase, PopoverAlign, PopoverSide, checkbox, dialog, popover,
+        radio_group, sheet, time_picker, time_picker_opt,
     };
     // Anchored overlays without a dim (#79).
     pub use crate::Backdrop;

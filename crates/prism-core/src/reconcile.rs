@@ -200,6 +200,17 @@ pub enum Patch {
         /// `HOVER | MOVE | DRAG` bits; 0 reports none.
         mask: u8,
     },
+    /// Whether files can be dropped on a view (#111): the types it accepts
+    /// (MIME types or extensions, empty for any file), `None` for none.
+    /// Backends report drops as [`UiEvent::DropFiles`] and the
+    /// [`DropHover`](crate::Interaction::DropHover) state while accepted
+    /// files are over it.
+    SetDropTarget {
+        /// The view.
+        id: NodeId,
+        /// Accepted types, `None`: not a drop target.
+        types: Option<Vec<String>>,
+    },
     /// Whether a node reports key presses: `local` while it or something
     /// in it has the focus (a view can then take the focus), `global`
     /// whatever has the focus.
@@ -375,6 +386,11 @@ pub enum UiEvent {
     WebMessage(NodeId, String, String),
     /// A web view finished loading a page: (id, its URL).
     WebLoad(NodeId, String),
+    // --- Drop targets (#111) ---
+    /// Files were dropped on a drop target (natively their copies the app
+    /// can read; on the web the uploaded files). The runtime keeps those
+    /// the target accepts.
+    DropFiles(NodeId, Vec<crate::PickedFile>),
 }
 
 /// A mounted host node.
@@ -425,6 +441,8 @@ struct MNode {
     attributes: Vec<(String, String)>,
     /// A rich input's encoded runs, as last sent (#115).
     runs: String,
+    /// The file types it accepts dropped (#111), as last sent.
+    drop_types: Option<Vec<String>>,
 }
 
 /// What backends last got about a mounted island.
@@ -510,6 +528,14 @@ pub struct Reconciler {
     /// Web views' handlers (#62).
     web_message: HashMap<NodeId, Handler<crate::web_view::WebMessageEvent>>,
     web_load: HashMap<NodeId, Handler<crate::web_view::WebLoadEvent>>,
+    /// Drop targets' accepted types and handlers (#111).
+    drop_files: HashMap<
+        NodeId,
+        (
+            crate::device::PickFiles,
+            Handler<crate::events::FileDropEvent>,
+        ),
+    >,
 }
 
 impl Reconciler {
@@ -644,6 +670,17 @@ impl Reconciler {
     /// The drag handler of node `id`, if any.
     pub fn drag_handler(&self, id: NodeId) -> Option<Handler<crate::events::DragEvent>> {
         self.drag.get(&id).cloned()
+    }
+
+    /// The accepted types and the handler of drop target `id` (#111).
+    pub fn drop_files_handler(
+        &self,
+        id: NodeId,
+    ) -> Option<(
+        crate::device::PickFiles,
+        Handler<crate::events::FileDropEvent>,
+    )> {
+        self.drop_files.get(&id).cloned()
     }
 
     /// The handlers a key press in node `focused` reaches, in order: the
@@ -1044,6 +1081,7 @@ impl Reconciler {
             attributes,
             on_web_message,
             on_web_load,
+            on_drop_files,
             ..
         } = *vnode;
         app.window.watch_widths(&style);
@@ -1299,6 +1337,20 @@ impl Reconciler {
         match on_web_load {
             Some(h) => self.web_load.insert(id, h),
             None => self.web_load.remove(&id),
+        };
+        {
+            let types = on_drop_files
+                .as_ref()
+                .map(|(accept, _)| accept.types.clone());
+            let m = self.nodes.get_mut(&id).expect("node exists");
+            if m.drop_types != types {
+                m.drop_types = types.clone();
+                self.patches.push(Patch::SetDropTarget { id, types });
+            }
+        }
+        match on_drop_files {
+            Some(d) => self.drop_files.insert(id, d),
+            None => self.drop_files.remove(&id),
         };
 
         // Children.
@@ -1708,6 +1760,7 @@ impl Reconciler {
                 parent: None,
                 children: Vec::new(),
                 pointer_mask: 0,
+                drop_types: None,
                 keys: (false, false),
                 selection: None,
                 shown_selection: None,
@@ -1760,6 +1813,7 @@ impl Reconciler {
         self.submit.remove(&id);
         self.web_message.remove(&id);
         self.web_load.remove(&id);
+        self.drop_files.remove(&id);
         self.menu_items.retain(|k, _| k >> 16 != id);
         self.scroll.remove(&id);
         self.swipe.retain(|(n, _), _| *n != id);

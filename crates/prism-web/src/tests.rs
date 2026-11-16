@@ -1552,6 +1552,68 @@ fn op_with_text(patches: &Value, text: &str) -> u64 {
         .unwrap_or_else(|| panic!("no text {text:?} in {patches}"))
 }
 
+/// #111: files dropped on a drop target reach its handler, checked by the
+/// server (the target exists, accepts them, at most their size).
+#[test]
+fn dropped_files_reach_the_drop_target() {
+    struct Zone {
+        got: String,
+    }
+    impl Render for Zone {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .child(
+                    div()
+                        .on_drop_files(
+                            ["image/*"],
+                            cx.listener(|this, e: &FileDropEvent, _| {
+                                let f = &e.files[0];
+                                this.got = format!("{} {}", f.name, f.read().unwrap().len());
+                            }),
+                        )
+                        .drop_hover(|s| s.bg(rgb(0xeeeeff)))
+                        .child(text(self.got.clone())),
+                )
+                .child(text("elsewhere"))
+        }
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Zone { got: "…".into() });
+        cx.set_root(root);
+    });
+    let (app, dir) = web_app(init, "drop");
+    let page = Page::open(&app, "/ws?path=%2F&w=1280&h=800");
+    let reset = page.next();
+    let ops = reset["p"].as_array().unwrap();
+    let drop = ops.iter().find(|p| p["op"] == "drop").expect("a drop op");
+    assert_eq!(drop["types"], json!(["image/*"]));
+    let zone = drop["id"].as_u64().unwrap();
+    let got = op_with_text(&reset["p"], "…");
+    let other = op_with_text(&reset["p"], "elsewhere");
+    let png = json!([{ "name": "cat.png", "mime": "image/png", "size": 3 }]);
+    // Refused: not a drop target, a type it does not take, too many bytes.
+    page.send(json!({ "t": "drop_start", "drop": 1, "node": other, "files": png }));
+    page.send(json!({ "t": "upload_chunk", "drop": 1, "file": 0, "data": "AQID" }));
+    page.send(json!({ "t": "drop_end", "drop": 1 }));
+    let txt = json!([{ "name": "a.txt", "mime": "text/plain", "size": 2 }]);
+    page.send(json!({ "t": "drop_start", "drop": 2, "node": zone, "files": txt }));
+    page.send(json!({ "t": "upload_chunk", "drop": 2, "file": 0, "data": "aGk=" }));
+    page.send(json!({ "t": "drop_end", "drop": 2 }));
+    page.send(json!({ "t": "drop_start", "drop": 3, "node": zone, "files": png }));
+    page.send(json!({ "t": "upload_chunk", "drop": 3, "file": 0, "data": "AQIDBA==" }));
+    page.send(json!({ "t": "drop_end", "drop": 3 }));
+    // Accepted: the handler gets the file.
+    page.send(json!({ "t": "drop_start", "drop": 4, "node": zone, "files": png }));
+    page.send(json!({ "t": "upload_chunk", "drop": 4, "file": 0, "data": "AQID" }));
+    page.send(json!({ "t": "drop_end", "drop": 4 }));
+    assert_eq!(
+        page.next(),
+        json!({ "t": "patch", "p": [{ "op": "text", "id": got, "text": "cat.png 3" }] })
+    );
+    page.session.close();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn a_session_resets_the_page_then_answers_events_with_patches() {
     let (app, dir) = web_app(counter_init(), "session");
@@ -1902,7 +1964,7 @@ fn device_replies_become_values() {
 /// #112: picked files arrive in chunks, written as they come.
 #[test]
 fn uploads_arrive_in_chunks_for_pick_calls_only() {
-    use crate::uploads::Uploads;
+    use crate::uploads::{Key::Call, Uploads};
     let (app, dir) = web_app(counter_init(), "uploads");
     let sid = "0123456789abcdef0123456789abcdef";
     let files_dir = app.files_dir(sid);
@@ -1913,15 +1975,15 @@ fn uploads_arrive_in_chunks_for_pick_calls_only() {
         json!({ "name": "notes", "mime": "", "size": 0 }),
     ];
     // Not a pick call: refused.
-    assert_eq!(u.start(&app, sid, 7, &two), None);
+    assert_eq!(u.start(&app, sid, Call(7), &two), None);
     u.expect(7);
-    assert!(u.has(7));
-    assert_eq!(u.start(&app, sid, 7, &two), Some((0, 5)));
-    assert_eq!(u.start(&app, sid, 7, &two), None, "once");
-    assert_eq!(u.chunk(7, 0, "aGVs"), Some((3, 5))); // "hel"
-    assert_eq!(u.chunk(7, 0, "bG8="), Some((5, 5))); // "lo"
-    let files = u.finish(&app, 7, false).unwrap().unwrap();
-    assert!(!u.has(7));
+    assert!(u.has(Call(7)));
+    assert_eq!(u.start(&app, sid, Call(7), &two), Some((0, 5)));
+    assert_eq!(u.start(&app, sid, Call(7), &two), None, "once");
+    assert_eq!(u.chunk(Call(7), 0, "aGVs"), Some((3, 5))); // "hel"
+    assert_eq!(u.chunk(Call(7), 0, "bG8="), Some((5, 5))); // "lo"
+    let files = u.finish(&app, Call(7), false).unwrap().unwrap();
+    assert!(!u.has(Call(7)));
     assert_eq!(files.len(), 2);
     let f = &files[0];
     assert_eq!(
@@ -1940,28 +2002,38 @@ fn uploads_arrive_in_chunks_for_pick_calls_only() {
 
     // More than declared: refused, and the upload fails.
     u.expect(8);
-    u.start(&app, sid, 8, &[json!({ "name": "a.txt", "size": 2 })]);
+    u.start(&app, sid, Call(8), &[json!({ "name": "a.txt", "size": 2 })]);
     assert_eq!(count(), 3);
-    assert_eq!(u.chunk(8, 0, "aGVsbG8="), None);
-    assert_eq!(u.chunk(8, 0, "aGk="), None, "stays refused");
-    assert!(matches!(u.finish(&app, 8, false), Some(Err(_))));
+    assert_eq!(u.chunk(Call(8), 0, "aGVsbG8="), None);
+    assert_eq!(u.chunk(Call(8), 0, "aGk="), None, "stays refused");
+    assert!(matches!(u.finish(&app, Call(8), false), Some(Err(_))));
     assert_eq!(count(), 2, "deleted");
     // Missing bytes fail too.
     u.expect(9);
-    u.start(&app, sid, 9, &[json!({ "name": "a.txt", "size": 2 })]);
-    assert!(matches!(u.finish(&app, 9, false), Some(Err(_))));
+    u.start(&app, sid, Call(9), &[json!({ "name": "a.txt", "size": 2 })]);
+    assert!(matches!(u.finish(&app, Call(9), false), Some(Err(_))));
     // Cancelled (an error reply): deleted, and the reply's error is the answer.
     u.expect(10);
-    u.start(&app, sid, 10, &[json!({ "name": "a.txt", "size": 2 })]);
-    u.chunk(10, 0, "aA==");
-    assert!(u.finish(&app, 10, true).is_none());
+    u.start(
+        &app,
+        sid,
+        Call(10),
+        &[json!({ "name": "a.txt", "size": 2 })],
+    );
+    u.chunk(Call(10), 0, "aA==");
+    assert!(u.finish(&app, Call(10), true).is_none());
     assert_eq!(count(), 2);
     // The user cancelled the picker: nothing staged, no files.
     u.expect(11);
-    assert!(u.finish(&app, 11, true).is_none());
+    assert!(u.finish(&app, Call(11), true).is_none());
     // An unfinished upload goes with the session.
     u.expect(12);
-    u.start(&app, sid, 12, &[json!({ "name": "a.txt", "size": 2 })]);
+    u.start(
+        &app,
+        sid,
+        Call(12),
+        &[json!({ "name": "a.txt", "size": 2 })],
+    );
     assert_eq!(count(), 3);
     drop(u);
     assert_eq!(count(), 2);
@@ -2819,6 +2891,14 @@ fn interaction_states_become_pseudo_class_rules() {
     );
     // Precedence: rules come in the order states apply (active after hover).
     assert!(rules.find(":hover").unwrap() < rules.find(":active").unwrap());
+    // Files over a drop target (#111): set by the client.
+    let drop = Style::default()
+        .drop_hover(|s| s.bg(rgb(0xEEEEFF)))
+        .resolve(Default::default());
+    assert_eq!(
+        css::states_css(NodeKind::View, 10, &drop),
+        r#"[data-pid="10"][data-prism-drop]{background:rgba(238,238,255,1) !important;}"#
+    );
     assert!(css::states_css(NodeKind::View, 7, &Style::default()).is_empty());
 
     // The style op carries them, and the group flag.

@@ -163,6 +163,12 @@ pub trait Widgets {
     /// Which pointer events a view reports (`prism_core::events::pointer_mask`
     /// bits): `UiEvent::Pointer` for hover / move, `UiEvent::Drag`.
     fn set_pointer_events(&mut self, _view: &Self::View, _mask: u8) {}
+    /// Whether files can be dropped on the view (#111): the types it
+    /// accepts (MIME types or extensions, empty for any file), `None` for
+    /// none. Report `UiEvent::DropFiles` with copies the app can read, and
+    /// [`NativeRenderer::set_interaction`] with `DropHover` while accepted
+    /// files are over it.
+    fn set_drop_target(&mut self, _view: &Self::View, _types: Option<&[String]>) {}
     /// Whether key presses are reported (`UiEvent::Key`): `local` while the
     /// view or a descendant has the focus (the view becomes focusable),
     /// `global` wherever the focus is.
@@ -1675,6 +1681,11 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                 Patch::SetPointerEvents { id, mask } => {
                     if let Some(e) = self.nodes.get(id) {
                         self.widgets.set_pointer_events(&e.view, *mask);
+                    }
+                }
+                Patch::SetDropTarget { id, types } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.set_drop_target(&e.view, types.as_deref());
                     }
                 }
                 Patch::SetKeyEvents { id, local, global } => {

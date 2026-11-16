@@ -102,6 +102,8 @@ impl IosServices {
                 push: prism_native::apple::push::service(),
                 // WKWebView (#62); tvOS has no WebKit.
                 web_view: cfg!(not(target_os = "tvos")),
+                // UIDropInteraction (#111); none on tvOS.
+                drop_files: cfg!(not(target_os = "tvos")),
             },
             controller,
         }
@@ -238,6 +240,22 @@ impl PlatformServices for IosServices {
 pub extern "C" fn prism_web_view_event(id: u64, kind: i32, a: *const c_char, b: *const c_char) {
     if let Some(event) = unsafe { prism_native::apple::web::event(id, kind, a, b) } {
         dispatch2::DispatchQueue::main().exec_async(move || crate::imp::dispatch(event));
+    }
+}
+
+/// Called by the Swift bridge for drop targets (#111): accepted files left
+/// or came over a node, or were dropped (their copies). On the next turn.
+#[cfg(not(target_os = "tvos"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn prism_drop_event(node: u64, kind: i32, files: *const c_char) {
+    use prism_native::apple::drops::DropReport;
+    match unsafe { prism_native::apple::drops::report(node, kind, files) } {
+        Some(DropReport::Files(id, files)) => dispatch2::DispatchQueue::main()
+            .exec_async(move || crate::imp::dispatch(prism_core::UiEvent::DropFiles(id, files))),
+        Some(DropReport::Hover(id, on)) => {
+            crate::imp::set_interaction(id, prism_core::Interaction::DropHover, on)
+        }
+        None => {}
     }
 }
 

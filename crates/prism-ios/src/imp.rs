@@ -2965,6 +2965,21 @@ impl Widgets for UiKit {
         let _ = (view, mask);
     }
 
+    fn set_drop_target(&mut self, view: &View, types: Option<&[String]>) {
+        // A UIDropInteraction (#111); tvOS has no drag and drop.
+        // SAFETY: the node's view, alive, on the main thread.
+        #[cfg(not(target_os = "tvos"))]
+        unsafe {
+            prism_native::apple::drops::set_target(
+                view.ui() as *const UIView as *const std::ffi::c_void,
+                view.id(),
+                types,
+            )
+        };
+        #[cfg(target_os = "tvos")]
+        let _ = (view, types);
+    }
+
     fn set_key_events(&mut self, view: &View, local: bool, global: bool) {
         crate::interaction::set_keys(view.id(), local, global);
         if let View::Container(v) = view {

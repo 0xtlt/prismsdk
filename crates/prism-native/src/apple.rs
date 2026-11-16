@@ -259,6 +259,104 @@ pub mod web {
     }
 }
 
+/// Drop targets (#111) through the Swift bridge (`apple/Bridge/PrismDrop.swift`):
+/// on macOS the backend's views implement `NSDraggingDestination` and the
+/// bridge reads the pasteboard; on iOS, iPadOS and visionOS the bridge adds
+/// a `UIDropInteraction`. tvOS and watchOS have no drag and drop.
+#[cfg(all(
+    feature = "apple-bridge",
+    not(any(target_os = "watchos", target_os = "tvos"))
+))]
+pub mod drops {
+    use std::ffi::{CStr, CString, c_char, c_void};
+
+    use prism_core::{NodeId, PickedFile};
+
+    unsafe extern "C" {
+        #[cfg(target_os = "macos")]
+        fn prism_drop_accepts(info: *const c_void, types: *const c_char) -> bool;
+        #[cfg(target_os = "macos")]
+        fn prism_drop_perform(node: u64, info: *const c_void, types: *const c_char) -> bool;
+        #[cfg(not(target_os = "macos"))]
+        fn prism_drop_target(view: *const c_void, node: u64, types: *const c_char);
+    }
+
+    fn lines(types: &[String]) -> CString {
+        CString::new(types.join("\n").replace('\0', "")).unwrap_or_default()
+    }
+
+    /// Whether the drag (an `NSDraggingInfo`) holds files `types` accept.
+    ///
+    /// # Safety
+    /// `info` is a live `NSDraggingInfo`.
+    #[cfg(target_os = "macos")]
+    pub unsafe fn accepts(info: *const c_void, types: &[String]) -> bool {
+        unsafe { prism_drop_accepts(info, lines(types).as_ptr()) }
+    }
+
+    /// Copies the dropped files `types` accept where the app can read them,
+    /// then reports them for `node` (see [`report`]). `false` if none.
+    ///
+    /// # Safety
+    /// `info` is a live `NSDraggingInfo`.
+    #[cfg(target_os = "macos")]
+    pub unsafe fn perform(node: NodeId, info: *const c_void, types: &[String]) -> bool {
+        unsafe { prism_drop_perform(node, info, lines(types).as_ptr()) }
+    }
+
+    /// Makes `view` (a `UIView`, borrowed) a drop target of `types` for
+    /// `node`, or not (`None`).
+    ///
+    /// # Safety
+    /// `view` is a live `UIView`, on the main thread.
+    #[cfg(not(target_os = "macos"))]
+    pub unsafe fn set_target(view: *const c_void, node: NodeId, types: Option<&[String]>) {
+        let types = types.map(lines);
+        let ptr = types.as_ref().map_or(std::ptr::null(), |t| t.as_ptr());
+        unsafe { prism_drop_target(view, node, ptr) }
+    }
+
+    /// What the bridge reports through `prism_drop_event` (each backend
+    /// exports it).
+    #[derive(Debug, PartialEq)]
+    pub enum DropReport {
+        /// Accepted files came over the node (`true`) or left it.
+        Hover(NodeId, bool),
+        /// Files were dropped: their copies.
+        Files(NodeId, Vec<PickedFile>),
+    }
+
+    /// `kind` 0 / 1: files left / came over `node`; 2: dropped, `files`
+    /// one per line (`path\tname\tmime\tsize`).
+    ///
+    /// # Safety
+    /// `files` is null or a valid C string.
+    pub unsafe fn report(node: u64, kind: i32, files: *const c_char) -> Option<DropReport> {
+        match kind {
+            0 | 1 => Some(DropReport::Hover(node, kind == 1)),
+            2 if !files.is_null() => {
+                let text = unsafe { CStr::from_ptr(files) }.to_string_lossy();
+                Some(DropReport::Files(node, parse(&text)))
+            }
+            _ => None,
+        }
+    }
+
+    fn parse(text: &str) -> Vec<PickedFile> {
+        text.lines()
+            .filter_map(|line| {
+                let mut p = line.split('\t');
+                Some(PickedFile {
+                    path: p.next()?.to_string(),
+                    name: p.next()?.to_string(),
+                    mime: p.next()?.to_string(),
+                    size: p.next()?.parse().unwrap_or(0),
+                })
+            })
+            .collect()
+    }
+}
+
 /// Device APIs through the Swift bridge (`apple/Bridge/PrismDevice.swift` in `prism-apple-build`).
 #[cfg(feature = "apple-bridge")]
 mod bridge {

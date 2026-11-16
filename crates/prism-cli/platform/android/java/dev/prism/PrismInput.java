@@ -65,6 +65,90 @@ final class PrismInput {
     }
 
     /** Hover (mouse, stylus): enter, move, leave. */
+    // --- Drop targets (#111) --------------------------------------------------------------
+
+    /**
+     * Files dragged from another app (a split screen, a desktop window) onto
+     * the node: `drop_hover` while accepted ones are over it, then their
+     * copies in the cache (like picked files) as a `drop` event. `types`:
+     * MIME types or extensions (empty: any file), null: not a drop target.
+     */
+    static void setDropTarget(PrismHost.Node n, JSONArray types) {
+        if (types == null) {
+            n.view.setOnDragListener(null);
+            return;
+        }
+        n.view.setOnDragListener((v, e) -> {
+            switch (e.getAction()) {
+                case android.view.DragEvent.ACTION_DRAG_STARTED:
+                    return e.getClipDescription() != null && offers(e.getClipDescription(), types);
+                case android.view.DragEvent.ACTION_DRAG_ENTERED:
+                    PrismHost.state(n, "drop_hover", true);
+                    return true;
+                case android.view.DragEvent.ACTION_DRAG_EXITED:
+                case android.view.DragEvent.ACTION_DRAG_ENDED:
+                    PrismHost.state(n, "drop_hover", false);
+                    return true;
+                case android.view.DragEvent.ACTION_DROP:
+                    PrismHost.state(n, "drop_hover", false);
+                    drop(n, e, types);
+                    return true;
+                default:
+                    return true;
+            }
+        });
+    }
+
+    /** Whether the drag may hold files `types` accept (extensions are checked on drop). */
+    private static boolean offers(android.content.ClipDescription d, JSONArray types) {
+        if (types.length() == 0) return d.getMimeTypeCount() > 0;
+        for (int i = 0; i < types.length(); i++) {
+            String t = types.optString(i).trim().toLowerCase();
+            if (t.startsWith(".") || d.hasMimeType(t)) return true;
+        }
+        return false;
+    }
+
+    /** `PickFiles::accepts`: MIME types (`image/*`) or extensions (`.pdf`). */
+    static boolean accepts(JSONArray types, String name, String mime) {
+        if (types.length() == 0) return true;
+        String m = mime == null ? "" : mime.toLowerCase();
+        for (int i = 0; i < types.length(); i++) {
+            String t = types.optString(i).trim().toLowerCase();
+            if (t.startsWith(".") ? name.toLowerCase().endsWith(t)
+                    : t.endsWith("/*") ? m.startsWith(t.substring(0, t.length() - 1)) : m.equals(t)) return true;
+        }
+        return false;
+    }
+
+    /** Copies the dropped files (off the main thread), then reports them. */
+    private static void drop(PrismHost.Node n, android.view.DragEvent e, JSONArray types) {
+        android.content.ClipData clip = e.getClipData();
+        if (clip == null) return;
+        // Reading another app's content needs the drop's permission.
+        android.view.DragAndDropPermissions grant = PrismHost.activity == null ? null
+                : PrismHost.activity.requestDragAndDropPermissions(e);
+        java.util.List<android.net.Uri> uris = new java.util.ArrayList<>();
+        for (int i = 0; i < clip.getItemCount(); i++) {
+            android.net.Uri u = clip.getItemAt(i).getUri();
+            if (u != null) uris.add(u);
+        }
+        new Thread(() -> {
+            JSONArray files = new JSONArray();
+            for (android.net.Uri u : uris) {
+                JSONObject f = PrismDevice.copy(u, true);
+                if (f != null && accepts(types, f.optString("name"), f.optString("mime"))) files.put(f);
+            }
+            if (grant != null) grant.release();
+            if (files.length() == 0) return;
+            PrismHost.main.post(() -> {
+                JSONObject ev = PrismHost.event("drop", n.id);
+                try { ev.put("files", files); } catch (JSONException ignored) {}
+                PrismHost.send(ev);
+            });
+        }, "prism-drop").start();
+    }
+
     static void hover(PrismHost.Node n) {
         // Shared with the hover state (`.hover(|s| …)`): one listener.
         PrismHost.installHover(n);

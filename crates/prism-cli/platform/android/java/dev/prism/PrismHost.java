@@ -493,6 +493,9 @@ public final class PrismHost {
                 installInteractions(n);
                 break;
             }
+            case "drop":
+                PrismInput.setDropTarget(n, p.optJSONArray("types"));
+                break;
             case "pointer":
                 n.pointerMask = p.optInt("mask");
                 setClickable(n);

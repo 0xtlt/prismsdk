@@ -288,7 +288,7 @@ public func prismDeviceStop(_ id: UInt64) {
 // MARK: Photos and camera
 
 /// Copies picked files where the app can read them (Caches/prism-picked).
-private func keep(_ url: URL, ext: String? = nil) -> String? {
+func prismKeep(_ url: URL, ext: String? = nil) -> String? {
     let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("prism-picked")
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     let dest = dir.appendingPathComponent(UUID().uuidString).appendingPathExtension(ext ?? url.pathExtension)
@@ -296,7 +296,7 @@ private func keep(_ url: URL, ext: String? = nil) -> String? {
     return dest.path
 }
 
-private func describe(_ path: String, name: String) -> String {
+func prismDescribe(_ path: String, name: String) -> String {
     let url = URL(fileURLWithPath: path)
     let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? NSNumber)?.int64Value ?? 0
     let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
@@ -334,8 +334,8 @@ final class PrismPhotoPicker: NSObject, PHPickerViewControllerDelegate {
             guard let type = provider.registeredTypeIdentifiers.first(where: { UTType($0)?.conforms(to: .image) == true }) else { continue }
             group.enter()
             provider.loadFileRepresentation(forTypeIdentifier: type) { url, _ in
-                if let url, let path = keep(url, ext: UTType(type)?.preferredFilenameExtension) {
-                    lock.lock(); lines.append(describe(path, name: provider.suggestedName ?? url.lastPathComponent)); lock.unlock()
+                if let url, let path = prismKeep(url, ext: UTType(type)?.preferredFilenameExtension) {
+                    lock.lock(); lines.append(prismDescribe(path, name: provider.suggestedName ?? url.lastPathComponent)); lock.unlock()
                 }
                 group.leave()
             }
@@ -354,7 +354,7 @@ final class PrismCamera: NSObject, UIImagePickerControllerDelegate, UINavigation
         var lines: [String] = []
         if let image = info[.originalImage] as? UIImage, let data = image.jpegData(compressionQuality: 0.9) {
             let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".jpg")
-            if (try? data.write(to: tmp)) != nil, let path = keep(tmp) { lines.append(describe(path, name: "Photo.jpg")) }
+            if (try? data.write(to: tmp)) != nil, let path = prismKeep(tmp) { lines.append(prismDescribe(path, name: "Photo.jpg")) }
         }
         replyFiles(id, lines)
         pickers[id] = nil
@@ -411,7 +411,7 @@ public func prismDevicePickImages(_ id: UInt64, _ limit: UInt32, _ camera: Bool)
         guard response == .OK else { return replyFiles(id, []) }
         var urls = panel.urls
         if limit > 0 { urls = Array(urls.prefix(Int(limit))) }
-        replyFiles(id, urls.compactMap { url in keep(url).map { describe($0, name: url.lastPathComponent) } })
+        replyFiles(id, urls.compactMap { url in prismKeep(url).map { prismDescribe($0, name: url.lastPathComponent) } })
     }
     #endif
 }
@@ -420,7 +420,7 @@ public func prismDevicePickImages(_ id: UInt64, _ limit: UInt32, _ camera: Bool)
 
 /// UTTypes for `types` (one per line: MIME types such as `image/*`, or
 /// extensions such as `.pdf`). Empty: any file.
-private func contentTypes(_ types: String) -> [UTType] {
+func prismContentTypes(_ types: String) -> [UTType] {
     let list = types.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }.filter { !$0.isEmpty }
     if list.isEmpty { return [.item] }
     let found: [UTType] = list.compactMap { t in
@@ -446,7 +446,7 @@ final class PrismDocumentPicker: NSObject, UIDocumentPickerDelegate {
 
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         // `asCopy`: the files are already in the app's sandbox (tmp/Inbox).
-        replyFiles(id, urls.compactMap { url in keep(url).map { describe($0, name: url.lastPathComponent) } })
+        replyFiles(id, urls.compactMap { url in prismKeep(url).map { prismDescribe($0, name: url.lastPathComponent) } })
         pickers[id] = nil
     }
 
@@ -459,7 +459,7 @@ final class PrismDocumentPicker: NSObject, UIDocumentPickerDelegate {
 
 @_cdecl("prism_device_pick_files")
 public func prismDevicePickFiles(_ id: UInt64, _ types: UnsafePointer<CChar>, _ multiple: Bool) {
-    let types = contentTypes(String(cString: types))
+    let types = prismContentTypes(String(cString: types))
     #if os(watchOS) || os(tvOS)
     _ = types
     fail(id, "unavailable") // no document picker on the watch or the TV
@@ -479,7 +479,7 @@ public func prismDevicePickFiles(_ id: UInt64, _ types: UnsafePointer<CChar>, _ 
     panel.canChooseFiles = true
     panel.begin { response in
         guard response == .OK else { return replyFiles(id, []) }
-        replyFiles(id, panel.urls.compactMap { url in keep(url).map { describe($0, name: url.lastPathComponent) } })
+        replyFiles(id, panel.urls.compactMap { url in prismKeep(url).map { prismDescribe($0, name: url.lastPathComponent) } })
     }
     #endif
 }
