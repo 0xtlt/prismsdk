@@ -2383,6 +2383,101 @@ fn the_page_has_a_layer_host() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A message shown at startup, mounted as a layer (`cx.add_layer`).
+struct Flash;
+
+impl Render for Flash {
+    fn render(&mut self, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().child(
+            div()
+                .p(8.)
+                .bg(rgb(0x222222))
+                .child(text("Signed in").hover(|s| s.opacity(0.5))),
+        )
+    }
+}
+
+#[test]
+fn layers_are_in_the_first_paint() {
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Counter {
+            count: 0,
+            name: String::new(),
+        });
+        cx.set_root(root);
+        let flash = cx.new_entity(|_| Flash);
+        cx.add_layer(flash);
+    });
+    let (app, dir) = web_app(init, "ssr-layers");
+    let r = app.handle(&Request::get("/").body(()).unwrap());
+    let page = String::from_utf8(r.body().clone()).unwrap();
+    let layers = page
+        .split(r#"<div id="prism-layers" popover="manual">"#)
+        .nth(1)
+        .and_then(|s| s.split(r#"<div id="prism-connection""#).next())
+        .unwrap();
+    assert!(layers.contains(">Signed in</div>"), "{page}");
+    assert!(layers.starts_with(r#"<div data-pid=""#), "{layers}");
+    // The root keeps its own content; the layer is not in it.
+    let root = page
+        .split(r#"<main id="prism-root">"#)
+        .nth(1)
+        .and_then(|s| s.split("</main>").next())
+        .unwrap();
+    assert!(root.contains("Count: 0") && !root.contains("Signed in"));
+    // The layer's styles are rules of the page's sheet that reach it.
+    let ssr = page
+        .split(r#"<style id="prism-ssr">"#)
+        .nth(1)
+        .and_then(|s| s.split("</style>").next())
+        .unwrap();
+    let ids: Vec<&str> = layers
+        .split(r#"data-ps=""#)
+        .skip(1)
+        .filter_map(|s| s.split('"').next())
+        .collect();
+    assert!(!ids.is_empty(), "{layers}");
+    for id in ids {
+        let rule = format!(r#":is(#prism-root,#prism-layers) [data-ps="{id}"]{{"#);
+        assert!(ssr.contains(&rule), "{rule} in {ssr}");
+    }
+    assert!(ssr.contains("background:rgba(34,34,34,1)"), "{ssr}");
+    // Its hover state is in the page too.
+    assert!(ssr.contains(":hover"), "{ssr}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_html_backend_keeps_the_layers_apart() {
+    let mut b = HtmlBackend::default();
+    b.apply(&[
+        create(1, NodeKind::View),
+        create(2, NodeKind::Text),
+        set_text(2, "Root"),
+        Patch::SetChildren {
+            id: 1,
+            children: vec![2],
+        },
+        Patch::SetRoot { id: 1 },
+        create(3, NodeKind::Text),
+        set_text(3, "Toast"),
+        create(4, NodeKind::Text),
+        set_text(4, "Dialog"),
+        Patch::SetLayers { ids: vec![4, 3] },
+    ]);
+    assert_eq!(b.layers(), &[4, 3]);
+    let page = b.to_page();
+    assert!(page.root.contains("Root") && !page.root.contains("Toast"));
+    let (dialog, toast) = (
+        page.layers.find("Dialog").unwrap(),
+        page.layers.find("Toast").unwrap(),
+    );
+    assert!(dialog < toast, "bottom first: {}", page.layers);
+    assert_eq!(b.to_html_and_css().0, page.root);
+    b.apply(&[Patch::SetLayers { ids: vec![] }]);
+    assert!(b.to_page().layers.is_empty());
+}
+
 // --- Box decorations and interaction states -----------------------------------------
 
 #[test]

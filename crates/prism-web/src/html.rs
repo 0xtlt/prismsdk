@@ -40,6 +40,19 @@ struct HtmlNode {
     attributes: Vec<(String, String)>,
 }
 
+/// A server-rendered page's parts ([`HtmlBackend::to_page`]).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PageHtml {
+    /// The root's markup, the content of `<main id="prism-root">`.
+    pub root: String,
+    /// The layers' markup (`cx.add_layer`), bottom first, the content of
+    /// `<div id="prism-layers">`.
+    pub layers: String,
+    /// The rules styling both (`data-ps="pHASH"` attributes), for a
+    /// `<style>` element.
+    pub css: String,
+}
+
 /// Turns a picture source (`logo.png`, `https://…`) into its URL.
 pub type AssetUrls = std::sync::Arc<dyn Fn(&str) -> String + Send + Sync>;
 
@@ -47,6 +60,8 @@ pub type AssetUrls = std::sync::Arc<dyn Fn(&str) -> String + Send + Sync>;
 pub struct HtmlBackend {
     nodes: HashMap<NodeId, HtmlNode>,
     root: Option<NodeId>,
+    /// The app's layers (`cx.add_layer`), bottom first (`Patch::SetLayers`).
+    layers: Vec<NodeId>,
     appearance: Appearance,
     pub env: prism_core::RenderEnvironment,
     /// Hashed asset URLs (`/assets/logo.<hash>.png`); `/assets/<name>` if unset.
@@ -107,10 +122,11 @@ impl Sheet {
             id = format!("{base}-{n}");
             n += 1;
         }
-        // `#prism-root` outranks Prism's own sheet like an inline style.
+        // An id outranks Prism's own sheet like an inline style; layers
+        // (`#prism-layers`) are outside the root.
         let _ = writeln!(
             self.css,
-            "#prism-root [data-ps=\"{id}\"]{{{}}}",
+            ":is(#prism-root,#prism-layers) [data-ps=\"{id}\"]{{{}}}",
             crate::host::css_text(css)
         );
         self.taken.insert(id.clone());
@@ -171,8 +187,8 @@ impl Backend for HtmlBackend {
                 | Patch::SetSelectEvents { .. }
                 | Patch::Focus { .. }
                 | Patch::DismissKeyboard
-                | Patch::ScrollIntoView { .. }
-                | Patch::SetLayers { .. } => {}
+                | Patch::ScrollIntoView { .. } => {}
+                Patch::SetLayers { ids } => self.layers.clone_from(ids),
                 Patch::SetIsland {
                     id, tag, source, ..
                 } => {
@@ -738,12 +754,36 @@ impl HtmlBackend {
 
     /// The markup without any `style` attribute, and the CSS rules that
     /// style it (for a `<style>` element, with the page's CSP nonce). Nodes
-    /// carry `data-ps="pHASH"`; the rules match them inside `#prism-root`.
+    /// carry `data-ps="pHASH"`; the rules match them inside `#prism-root`
+    /// and `#prism-layers`. The layers are left out: see
+    /// [`to_page`](HtmlBackend::to_page).
     pub fn to_html_and_css(&self) -> (String, String) {
+        let page = self.to_page();
+        (page.root, page.css)
+    }
+
+    /// The first paint of a page: the root's markup (for `#prism-root`),
+    /// the layers' (`cx.add_layer`: a toaster, an app-wide dialog, for
+    /// `#prism-layers`, bottom first) and the CSS rules that style both,
+    /// without any `style` attribute.
+    pub fn to_page(&self) -> PageHtml {
         *self.sheet.borrow_mut() = Some(Sheet::default());
-        let html = self.to_html();
+        let root = self.to_html();
+        let mut layers = String::new();
+        for id in &self.layers {
+            self.write(*id, false, &mut layers);
+        }
         let sheet = self.sheet.borrow_mut().take().unwrap_or_default();
-        (html, sheet.css)
+        PageHtml {
+            root,
+            layers,
+            css: sheet.css,
+        }
+    }
+
+    /// The layers' roots (`cx.add_layer`), bottom first.
+    pub fn layers(&self) -> &[NodeId] {
+        &self.layers
     }
 
     /// CSS `color-scheme` for the page.

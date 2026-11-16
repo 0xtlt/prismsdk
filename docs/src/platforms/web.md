@@ -48,6 +48,10 @@ Application::new()
 
 The page is rendered, then while `background` work started by `init`, a screen's constructor or a `render` is in flight, the server waits for it, runs the tasks it resumes and renders again; work those tasks start next is waited for too. It sends the page when no work is left, or at the deadline with what is still loading in its loading state, as without a wait (the data then comes over the socket). Timers and channels are not waited for, so a clock, a refresh every 30 seconds or a live feed does not hold the page. The live session's first tree waits the same way before it replaces the page, so the page does not flash back to its loading state when the socket connects. The data is loaded twice, once for the page and once for the session, as any task is today. The default, zero, sends the page at once. Hosts with a `Runtime` of their own get the same with `Runtime::render_settled(timeout)`.
 
+### Layers in the first paint
+
+Layers (`cx.add_layer`: the toaster of `ui::show_toast`, an app-wide confirmation dialog) are part of the server-rendered page, in `<div id="prism-layers">` after `<main id="prism-root">`, styled by the same rules. A toast shown while the page is built, by `init` or a screen's constructor (« Signed in », a flash after a redirect), is on the first paint, before any script runs. The live session builds its own tree, layers included, and replaces both when the socket connects. A toast's timer starts again in the live session: it stays on screen for its whole duration from then on.
+
 ### Assets compiled into the binary
 
 `Application::assets(dir)` (or `PRISM_ASSETS_DIR`) names a folder read when the server starts. A server shipped as one file, or in a scratch container, can carry its assets inside the binary instead:
