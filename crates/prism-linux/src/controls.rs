@@ -422,13 +422,15 @@ impl TextArea {
     }
 
     /// Its padding replaces the text's own insets (10 × 8), left and right
-    /// as drawn (already mirrored right to left).
-    pub fn set_padding(&self, p: prism_core::Edges) {
-        let pad = if p.is_zero() {
-            (AREA_PAD_X, AREA_PAD_X, AREA_PAD_Y, AREA_PAD_Y)
-        } else {
-            let r = |v: f32| v.round() as i32;
-            (r(p.left), r(p.right), r(p.top), r(p.bottom))
+    /// as drawn (already mirrored right to left); `None`: none set (an
+    /// explicit zero is a real one, #69).
+    pub fn set_padding(&self, p: Option<prism_core::Edges>) {
+        let pad = match p {
+            None => (AREA_PAD_X, AREA_PAD_X, AREA_PAD_Y, AREA_PAD_Y),
+            Some(p) => {
+                let r = |v: f32| v.round() as i32;
+                (r(p.left), r(p.right), r(p.top), r(p.bottom))
+            }
         };
         if self.pad.replace(pad) == pad {
             return;

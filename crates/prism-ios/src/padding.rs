@@ -65,9 +65,10 @@ pub fn button_content(fit: CGSize, style: &Style) -> CGSize {
 }
 
 /// Whether a text input draws Prism's box instead of the rounded-rect
-/// field: it has padding, a background, a border, or `.border(0.)`.
+/// field: it has padding (an explicit zero included, #69), a background, a
+/// border, or `.border(0.)`.
 pub fn custom_field(style: &Style) -> bool {
-    !style.padding.is_zero()
+    style.has_padding()
         || style.background.is_some()
         || style.border_width > 0.
         || style.border_none
@@ -86,12 +87,13 @@ fn field_border(style: &Style) -> Option<(f32, Option<prism_core::Color>)> {
 }
 
 /// Where a custom field's text sits inside its box: its padding (or the
-/// default 6 × 8 inset, like the web) inside its border.
+/// default 6 × 8 inset, like the web, when it sets none: `.p(0.)` is no
+/// inset at all, #69) inside its border.
 pub fn field_inset(style: &Style) -> Edges {
     if !custom_field(style) {
         return Edges::default();
     }
-    let p = if style.padding.is_zero() {
+    let p = if !style.has_padding() {
         Edges {
             top: 6.,
             right: 8.,
@@ -137,7 +139,7 @@ pub fn style_field(f: &UITextField, style: &Style) {
         }
     }
     if let Some(field) = f.downcast_ref::<PrismField>() {
-        field.ivars().insets.set(field_inset(style));
+        field.ivars().insets.set(custom.then(|| field_inset(style)));
         f.setNeedsLayout();
     }
 }
@@ -156,10 +158,10 @@ pub fn field_content(f: &UITextField, style: &Style) -> CGSize {
 }
 
 /// A text area's padding replaces its text container's inset (8 above and
-/// below by default).
+/// below by default; `.p(0.)`: none, #69).
 #[cfg(not(target_os = "tvos"))]
 pub fn style_text_area(t: &crate::forms::TextArea, style: &Style) {
-    let inset = if style.padding.is_zero() {
+    let inset = if !style.has_padding() {
         UIEdgeInsets {
             top: 8.,
             left: 0.,
@@ -174,8 +176,9 @@ pub fn style_text_area(t: &crate::forms::TextArea, style: &Style) {
 }
 
 pub struct FieldIvars {
-    /// Where the text sits inside the bounds (zero: UIKit's own inset).
-    insets: Cell<Edges>,
+    /// Where the text sits inside the bounds (`None`: UIKit's own inset; a
+    /// zero inset is a real one, #69).
+    insets: Cell<Option<Edges>>,
 }
 
 define_class!(
@@ -214,10 +217,9 @@ define_class!(
         /// The leading icon (32 wide) just before the text.
         #[unsafe(method(leftViewRectForBounds:))]
         fn left_view_rect(&self, bounds: CGRect) -> CGRect {
-            let e = self.ivars().insets.get();
-            if e.is_zero() {
+            let Some(e) = self.ivars().insets.get() else {
                 return unsafe { msg_send![super(self), leftViewRectForBounds: bounds] };
-            }
+            };
             let lead = self.leading(e);
             let w = bounds.size.width;
             let x = if self.rtl() { w - lead } else { lead - ICON };
@@ -249,10 +251,7 @@ impl PrismField {
 
     /// The text's rectangle inside the padding (`None`: UIKit's own).
     fn text_area(&self, bounds: CGRect) -> Option<CGRect> {
-        let mut e = self.ivars().insets.get();
-        if e.is_zero() {
-            return None;
-        }
+        let mut e = self.ivars().insets.get()?;
         let lead = self.leading(e) as f32;
         if self.rtl() {
             e.right = lead;
@@ -264,7 +263,7 @@ impl PrismField {
 
     pub fn field(mtm: MainThreadMarker) -> Retained<UITextField> {
         let this = Self::alloc(mtm).set_ivars(FieldIvars {
-            insets: Cell::new(Edges::default()),
+            insets: Cell::new(None),
         });
         let f: Retained<PrismField> = unsafe { msg_send![super(this), init] };
         Retained::into_super(f)

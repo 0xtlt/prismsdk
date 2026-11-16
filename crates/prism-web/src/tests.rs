@@ -774,6 +774,47 @@ fn buttons_and_inputs_get_their_defaults() {
 }
 
 #[test]
+fn an_explicit_zero_padding_replaces_a_fields_own_inset() {
+    use prism_core::{Styled, text_area, text_input};
+    fn style<S: Styled>(mut el: S) -> Style {
+        el.style_mut().clone()
+    }
+    // An inline editor that sits exactly where its text was (#69).
+    let inline = style(
+        text_input()
+            .border(0.)
+            .p(0.)
+            .text_size(16.)
+            .line_height(24.),
+    );
+    let c = css(NodeKind::TextInput, &inline);
+    assert!(
+        c.contains("padding-block:0px 0px;padding-inline:0px 0px;"),
+        "{c}"
+    );
+    assert!(!c.contains("padding:6px 8px"), "{c}");
+    assert!(!c.contains("height:36px"), "{c}");
+    // One side at zero is a padding too: the others are zero.
+    let c = css(NodeKind::TextInput, &style(text_input().pt(0.)));
+    assert!(!c.contains("padding:6px 8px"), "{c}");
+    // A filled button's own inset too.
+    let c = css(
+        NodeKind::Button,
+        &style(prism_core::button("Go").bg(rgb(0x0000FF)).p(0.)),
+    );
+    assert!(!c.contains("padding:6px 14px"), "{c}");
+    // A text area: no default inset, and its three-line minimum without it.
+    let c = css(NodeKind::TextArea, &style(text_area().p(0.)));
+    assert!(c.contains("padding-block:0px 0px;"), "{c}");
+    assert!(c.contains("min-height:3lh;"), "{c}");
+    let c = css(NodeKind::TextArea, &style(text_area()));
+    assert!(!c.contains("min-height"), "{c}");
+    // No padding given: the default inset stays.
+    let c = css(NodeKind::TextInput, &style(text_input()));
+    assert!(c.contains("padding:6px 8px;"), "{c}");
+}
+
+#[test]
 fn padding_works_on_every_leaf_and_replaces_a_fields_own() {
     use prism_core::{Styled, div, text, text_input};
     fn style<S: Styled>(mut el: S) -> Style {

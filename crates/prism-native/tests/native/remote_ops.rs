@@ -952,6 +952,63 @@ fn padded_leaves_carry_pad_and_measure_their_content_alone() {
 }
 
 #[test]
+fn a_zero_padded_field_carries_pad_and_measures_its_line_alone() {
+    use prism_core::{Patch, Styled, text_input};
+    let mut el = text_input().border(0.).p(0.);
+    let zero = el.style_mut().clone();
+    // `.p(0.)` is sent (a real zero inset, #69); no padding is not.
+    let mut w = RemoteWidgets::new(measure);
+    w.create(1, NodeKind::TextInput);
+    w.set_style(&1, &Style::default());
+    assert!(last(&w)["s"].get("pad").is_none());
+    w.set_style(&1, &zero);
+    assert_eq!(last(&w)["s"]["pad"], json!([0., 0., 0., 0.]));
+    // Measured as its line of text, without the control's own insets.
+    SEEN.with(|s| s.borrow_mut().clear());
+    let mut w = RemoteWidgets::new(recording);
+    w.create(1, NodeKind::TextInput);
+    w.set_style(&1, &zero);
+    assert_eq!(w.measure(&1, None), (160., 16.));
+    let seen = SEEN.with(|s| s.borrow().clone());
+    assert_eq!((seen[0].0.as_str(), seen[0].1.as_str()), ("text", "Ag"));
+    let mut r = NativeRenderer::new(RemoteWidgets::new(measure));
+    r.apply(&[
+        Patch::Create {
+            id: 1,
+            kind: NodeKind::View,
+        },
+        Patch::Create {
+            id: 2,
+            kind: NodeKind::TextInput,
+        },
+        Patch::SetStyle {
+            id: 1,
+            style: Style {
+                align_items: prism_core::Align::Start,
+                ..Style::default()
+            },
+        },
+        Patch::SetStyle { id: 2, style: zero },
+        Patch::SetChildren {
+            id: 1,
+            children: vec![2],
+        },
+        Patch::SetRoot { id: 1 },
+    ]);
+    r.layout(400., 800., prism_native::Insets::default());
+    let frame = r
+        .widgets
+        .ops
+        .iter()
+        .rev()
+        .find(|o| o["op"] == "frame" && o["id"] == 2)
+        .cloned()
+        .expect("a frame");
+    // As wide as offered (an input fills), as tall as its line: no inset.
+    assert_eq!(frame["f"], json!([0., 0., 400., 16.]));
+}
+
+#[test]
 fn a_padded_text_frame_includes_its_padding() {
     use prism_core::{Edges, Patch};
     let mut r = NativeRenderer::new(RemoteWidgets::new(measure));

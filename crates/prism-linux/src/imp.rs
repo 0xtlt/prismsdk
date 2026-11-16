@@ -1302,10 +1302,12 @@ impl Widgets for Gtk {
         // view's margins; `.border(0.)`: not even the theme's frame.
         crate::padding::remember(id, s);
         match view {
-            View::Text(..) | View::Timer(..) | View::Button(..) | View::Input(..) => {
-                css += &crate::padding::css(s)
+            View::Text(..) | View::Timer(..) | View::Button(..) => css += &crate::padding::css(s),
+            View::Input(..) => {
+                css += &crate::padding::css(s);
+                css += crate::padding::entry_css(s);
             }
-            View::TextArea(_, t) => t.set_padding(s.padding),
+            View::TextArea(_, t) => t.set_padding(s.has_padding().then_some(s.padding)),
             _ => {}
         }
         if s.border_none && !s.borders().iter().any(|b| b.width > 0.) {

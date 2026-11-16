@@ -83,7 +83,10 @@ What padding means per kind:
 - **Texts and timers**: the text is inset by it.
 - **Buttons, text inputs, text areas**: it replaces the control's own
   inset around its title or text (the default look, with its built-in
-  inset, is kept when no padding is set). A field with padding, a
+  inset, is kept when no padding is set). An explicit zero counts:
+  `.p(0.)` (or `.px(0.)`, `.pt(0.)`…) leaves no inset at all, and the
+  field is as tall as its line unless `.h(…)` is set, e.g. an inline
+  editor that sits exactly where its text was. A field with padding, a
   background, a border or `.border(0.)` draws Prism's box instead of the
   platform's bezel: its own background and border, else a 1-point gray
   border rounded 6, and a default 6 × 8 inset when it sets no padding (as on

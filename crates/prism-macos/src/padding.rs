@@ -107,7 +107,7 @@ pub fn draw_box(view: &NSView, style: &Style) {
 /// fixed); its title stays centered in it.
 pub fn style_button(b: &NSButton, style: &Style) {
     use objc2_app_kit::NSBezelStyle;
-    let bezel = if style.padding.is_zero() {
+    let bezel = if !style.has_padding() {
         NSBezelStyle::Push
     } else {
         NSBezelStyle::FlexiblePush
@@ -125,21 +125,23 @@ pub fn button_content(b: &NSButton) -> NSSize {
 }
 
 /// Whether a text input draws Prism's box instead of the bezeled field: it
-/// has padding, a background, a border, or `.border(0.)`.
+/// has padding (an explicit zero included, #69), a background, a border,
+/// or `.border(0.)`.
 pub fn custom_field(style: &Style) -> bool {
-    !style.padding.is_zero()
+    style.has_padding()
         || style.background.is_some()
         || style.border_width > 0.
         || style.border_none
 }
 
 /// Where a custom field's text sits inside its box: its padding (or the
-/// default 6 × 8 inset, like the web) inside its border.
+/// default 6 × 8 inset, like the web, when it sets none: `.p(0.)` is no
+/// inset at all, #69) inside its border.
 pub fn field_inset(style: &Style) -> Edges {
     if !custom_field(style) {
         return Edges::default();
     }
-    let p = if style.padding.is_zero() {
+    let p = if !style.has_padding() {
         Edges {
             top: 6.,
             right: 8.,

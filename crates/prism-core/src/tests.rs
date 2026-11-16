@@ -3029,3 +3029,33 @@ fn fullscreen_and_window_controls_re_render() {
     assert!(rt.app.is_fullscreen());
     assert_eq!(rt.app.window_controls(), None);
 }
+
+#[test]
+fn an_explicit_zero_padding_is_set_and_survives_scaling() {
+    use crate::{Edges, Style, Styled, text_area, text_input};
+    fn style<S: Styled>(mut el: S) -> Style {
+        el.style_mut().clone()
+    }
+    // No padding given: the control keeps its own inset.
+    assert!(!style(text_input()).has_padding());
+    // `.p(0.)` and every side setter: a real zero inset (#69).
+    for s in [
+        style(text_input().p(0.)),
+        style(text_input().px(0.)),
+        style(text_input().py(0.)),
+        style(text_area().pt(0.)),
+        style(text_area().pr(0.)),
+        style(text_area().pb(0.)),
+        style(text_area().pl(0.)),
+    ] {
+        assert!(s.has_padding(), "{s:?}");
+        assert_eq!(s.padding, Edges::default());
+        assert!(s.scaled(2.).has_padding(), "kept when zoomed");
+    }
+    // A padding set directly counts when it isn't zero.
+    let direct = Style {
+        padding: Edges::all(4.),
+        ..Style::default()
+    };
+    assert!(direct.has_padding());
+}

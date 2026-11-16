@@ -64,7 +64,8 @@
 //! ([`prism_core::Color::current`] included).
 //!
 //! A leaf's `style` carries `pad`: `[top, right, bottom, left]` (already
-//! mirrored right to left) when it has padding: a text, timer, button, text
+//! mirrored right to left) when it has padding (`[0, 0, 0, 0]` for an
+//! explicit `.p(0.)`: no inset at all, #69): a text, timer, button, text
 //! input or text area draws its content inset by it inside its frame, in
 //! place of the control's own inset (the frame already includes it; other
 //! leaves get a frame inside their padding and no `pad`). `bnone: true`
@@ -368,9 +369,10 @@ impl RemoteWidgets {
         }
         decorations(&mut op["s"], s);
         // A leaf's padding (#14), only when set: inset the content (text,
-        // title, an input's text) by it, in place of the control's own.
+        // title, an input's text) by it, in place of the control's own. An
+        // explicit zero (`.p(0.)`) is sent too: no inset at all (#69).
         let p = s.padding;
-        if !p.is_zero() {
+        if s.has_padding() {
             op["s"]["pad"] = json!([p.top, p.right, p.bottom, p.left]);
         }
         // `.border(0.)`: not even a field's own frame.
@@ -600,7 +602,7 @@ impl Widgets for RemoteWidgets {
     fn measure(&mut self, id: &NodeId, max_width: Option<f32>) -> (f32, f32) {
         let kind = self.kinds.get(id).copied().unwrap_or(NodeKind::View);
         let style = self.styles.get(id).cloned().unwrap_or_default();
-        if !style.padding.is_zero() && kind != NodeKind::Text && kind != NodeKind::Timer {
+        if style.has_padding() && kind != NodeKind::Text && kind != NodeKind::Timer {
             return self.measure_padded(id, kind, &style, max_width);
         }
         let text = match kind {
