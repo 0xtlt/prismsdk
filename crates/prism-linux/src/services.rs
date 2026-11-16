@@ -232,6 +232,9 @@ impl LinuxServices {
             DeviceCall::WebAuth(r) => self
                 .loopback
                 .start(&r.url, &r.redirect, move |r| imp::device_reply(id, r)),
+            // No cookies here (secure storage keeps secrets), no live session.
+            DeviceCall::SetCookie(_) => reply(id, Err(DeviceError::Unavailable)),
+            DeviceCall::Reconnect => {}
         }
     }
 

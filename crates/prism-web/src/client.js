@@ -2451,6 +2451,7 @@
           if (navigator.share) return navigator.share({ text: msg.text || undefined, url: msg.url || undefined }).catch(() => {});
           return navigator.clipboard?.writeText([msg.text, msg.url].filter(Boolean).join(" "));
         case "open_url": return openUrl(msg.url, msg.target);
+        case "set_cookie": return setCookie(msg, reply);
         case "web_auth": return webAuth(msg, reply);
         case "webauthn": return webauthn(msg, reply);
         default: return reply({ err: "unavailable" });
@@ -2472,12 +2473,39 @@
     return window.open(url, "_blank", "noopener");
   }
 
+  /**
+   * `cx.set_cookie` (#91): the socket cannot set a cookie, so the page posts
+   * the cookie's one-time ticket to the app (same origin, in a header), whose
+   * answer sets it. One after the other, in the order the app set them;
+   * `cookies` settles once the browser has them all. The server answers the
+   * app when the ticket is redeemed: only failures are reported from here.
+   */
+  let cookies = Promise.resolve();
+  function setCookie(msg, reply) {
+    if (typeof fetch !== "function") return reply({ err: "unavailable" });
+    cookies = cookies.then(() => fetch(msg.url, {
+      method: "POST", credentials: "same-origin", cache: "no-store", redirect: "error",
+      headers: { "X-Prism-Cookie": msg.ticket },
+    })).then((r) => {
+      if (r.status !== 204) reply({ err: `the cookie was refused (${r.status})` });
+    }, (e) => reply({ err: String((e && e.message) || e) }));
+    return cookies;
+  }
+
   function service(msg) {
     switch (msg.t) {
       // The session ended for lack of activity: reconnect at the next one.
       case "idle": conn.idle = true; return;
       // The server refused the session (foreign origin, too many sessions).
       case "refused": conn.refused = msg.status || 0; return;
+      // `cx.reconnect()`: once the cookies set before it are stored, a new
+      // session at once (the host sees them in its handshake), no banner.
+      case "reconnect": {
+        const socket = ws;
+        conn.renew = true;
+        cookies.then(() => { if (socket && socket.readyState < 2) socket.close(); });
+        return;
+      }
       case "device": return device(msg);
       case "activity": return showActivity(msg.id, msg.c);
       case "activity_end": {
@@ -2551,7 +2579,7 @@
   // `<html data-prism-connection="connecting|online|reconnecting|offline|idle">`
   // styles the page (prism.css dims it and shows #prism-connection while
   // reconnecting); `prism:connection` events on window tell scripts.
-  const conn = { attempt: 0, timer: null, idle: false, refused: 0, opened: false };
+  const conn = { attempt: 0, timer: null, idle: false, refused: 0, opened: false, renew: false };
   function setConnection(state) {
     const root = document.documentElement;
     if (root.getAttribute("data-prism-connection") === state) return;
@@ -2587,6 +2615,11 @@
   }
   function closed() {
     ws = null;
+    if (conn.renew) {
+      conn.renew = false;
+      clearTimeout(conn.timer);
+      return cookies.then(connect);
+    }
     if (conn.idle) return setConnection("idle");
     conn.attempt++;
     setConnection(conn.opened || conn.attempt > 1 ? "reconnecting" : "connecting");

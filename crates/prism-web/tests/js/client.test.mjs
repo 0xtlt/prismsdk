@@ -881,6 +881,63 @@ test("a session the server refused probes at once", async () => {
   assert.equal(page.window.fetches.length, 1);
 });
 
+test("set_cookie posts each ticket in a header, one after the other, and reports refusals", async () => {
+  const answers = [];
+  const page = live(null, { fetch: (url, init) => new Promise((resolve) => answers.push({ url, init, resolve })) });
+  const flush = () => new Promise((r) => setImmediate(r));
+  page.ws.deliver({ t: "device", id: 7, call: "set_cookie", url: "/app/_prism/cookie", ticket: "T1" });
+  page.ws.deliver({ t: "device", id: 8, call: "set_cookie", url: "/app/_prism/cookie", ticket: "T2" });
+  await flush();
+  // The second waits for the first: the browser stores them in order.
+  assert.equal(answers.length, 1);
+  const { url, init } = answers[0];
+  assert.equal(url, "/app/_prism/cookie");
+  assert.equal(init.method, "POST");
+  assert.equal(init.credentials, "same-origin");
+  assert.equal(init.cache, "no-store");
+  assert.deepEqual(Object.entries(init.headers), [["X-Prism-Cookie", "T1"]]);
+  answers[0].resolve({ status: 204 });
+  await flush();
+  assert.equal(answers.length, 2);
+  assert.equal(answers[1].init.headers["X-Prism-Cookie"], "T2");
+  answers[1].resolve({ status: 403 });
+  await flush();
+  // The server answers successes itself (it redeemed the ticket); the page
+  // reports what failed.
+  const replies = page.ws.sent.filter((m) => m.t === "device_reply");
+  assert.deepEqual(replies, [{ t: "device_reply", id: 8, err: "the cookie was refused (403)" }]);
+});
+
+test("reconnect waits for the cookies, then opens a new session at once without the banner", async () => {
+  const answers = [];
+  const page = live([create(1, "text"), root(1)], { fetch: () => new Promise((resolve) => answers.push(resolve)) });
+  const flush = () => new Promise((r) => setImmediate(r));
+  const html = page.document.documentElement;
+  const states = [];
+  page.window.addEventListener("prism:connection", (e) => states.push(e.detail.state));
+  page.ws.deliver({ t: "device", id: 3, call: "set_cookie", url: "/_prism/cookie", ticket: "T" });
+  page.ws.deliver({ t: "reconnect" });
+  await flush();
+  assert.ok(!page.ws.closed, "the cookie is not stored yet");
+  answers[0]({ status: 204 });
+  await flush();
+  assert.ok(page.ws.closed, "the page closes the old session");
+  await flush();
+  assert.equal(page.sockets.length, 2, "a new session at once");
+  const timers = page.timers.length;
+  assert.equal(html.getAttribute("data-prism-connection"), "online");
+  assert.ok(page.document.getElementById("prism-connection").hidden);
+  assert.deepEqual(states, []);
+  page.sockets[1].open();
+  assert.equal(page.timers.length, timers, "no retry scheduled");
+  // The server closing first works the same.
+  page.sockets[1].deliver({ t: "reconnect" });
+  page.sockets[1].close();
+  await flush();
+  assert.equal(page.sockets.length, 3);
+  assert.deepEqual(states, []);
+});
+
 test("an idle session waits for the user before reconnecting", () => {
   const page = live([create(1, "text"), root(1)]);
   page.ws.deliver({ t: "idle" });

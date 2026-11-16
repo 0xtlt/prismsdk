@@ -267,6 +267,10 @@ impl WebApp {
         req: &Request<B>,
         context: Option<crate::RequestContext>,
     ) -> Response<Vec<u8>> {
+        // `cx.set_cookie`: the page redeems its ticket (#91).
+        if req.method() == Method::POST && self.app_path(req.uri().path()) == "/_prism/cookie" {
+            return crate::cookies::redeem(req.headers());
+        }
         if req.method() != Method::GET && req.method() != Method::HEAD {
             return status(StatusCode::METHOD_NOT_ALLOWED);
         }

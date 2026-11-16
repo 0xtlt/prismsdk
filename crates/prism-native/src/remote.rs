@@ -1037,6 +1037,10 @@ pub mod device {
                 "call": "web_auth", "url": r.url, "redirect": r.redirect,
                 "ephemeral": r.ephemeral, "provider": r.provider,
             }),
+            // No cookies natively: the host answers « unavailable ».
+            DeviceCall::SetCookie(_) => json!({ "call": "set_cookie" }),
+            // No live session to renew: the host ignores it.
+            DeviceCall::Reconnect => json!({ "call": "reconnect" }),
         };
         body["op"] = json!("device");
         body["id"] = json!(id);

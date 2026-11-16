@@ -25,6 +25,9 @@ pub(crate) enum Inbound {
     Close,
     /// A sign-in provider redirected (to `/_prism/auth/callback`) for call `id`.
     AuthRedirect(u64, String),
+    /// The page fetched the cookie of call `id` (`/_prism/cookie`): the
+    /// browser has it.
+    CookieSet(u64, prism_core::Cookie),
 }
 
 /// The server side of one open page. Pass it the page's messages; drop it
@@ -155,6 +158,7 @@ impl WebApp {
                         base: app.base().to_string(),
                         title: app.config().title.clone(),
                         inbox: Some(inbox),
+                        sid: Some(sid.clone()),
                         ..app.services()
                     },
                     send: Box::new(send),
@@ -212,6 +216,10 @@ impl Live {
             if !self.flush_requests() {
                 return;
             }
+            // `cx.reconnect()`: the page was told, it opens a new session.
+            if self.services.reconnect {
+                return;
+            }
             // Idle for too long: the page reconnects at its next interaction.
             if self.idle.is_some_and(|d| self.last_seen.elapsed() >= d) {
                 (self.send)(json!({ "t": "idle" }).to_string());
@@ -256,6 +264,16 @@ impl Live {
                 Ok(Inbound::AuthRedirect(id, url)) => self
                     .runtime
                     .device_reply(id, Ok(prism_core::DeviceValue::Text(Some(url)))),
+                // The browser has the cookie: so does the session's request.
+                Ok(Inbound::CookieSet(id, cookie)) => {
+                    let app = &mut self.runtime.app;
+                    if let Some(mut request) = app.request().cloned() {
+                        request.apply_cookie(&cookie);
+                        app.set_request(request);
+                    }
+                    self.runtime
+                        .device_reply(id, Ok(prism_core::DeviceValue::Done))
+                }
                 Ok(Inbound::Wake) | Err(mpsc::RecvTimeoutError::Timeout) => self.tick(),
                 Ok(Inbound::Close) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
             };
@@ -311,6 +329,7 @@ impl Live {
                 Some(id) => {
                     if v.get("err").is_some() {
                         crate::security::forget_redirect(id);
+                        crate::cookies::forget(id, &self.sid);
                     }
                     let result = device_result(&self.app, &self.sid, &v);
                     rt.device_reply(id, result)
@@ -655,6 +674,10 @@ pub(crate) struct WebServices {
     pub title: String,
     /// The session's own inbox (sign-in redirects arrive there).
     pub inbox: Option<mpsc::Sender<Inbound>>,
+    /// The browser's `prism_sid` (`None` while rendering a page).
+    pub sid: Option<String>,
+    /// `cx.reconnect()`: end the session once the page is told.
+    pub reconnect: bool,
     /// WebAuthn ceremonies waiting for the page, by call id.
     pub ceremonies: HashMap<u64, (crate::security::Ceremony, Gate)>,
     /// The browser has a platform authenticator with user verification.
@@ -1113,6 +1136,32 @@ impl WebServices {
                     "t": "device", "id": id, "call": "web_auth",
                     "url": r.url, "provider": r.provider,
                 }))
+            }
+            C::SetCookie(cookie) => {
+                let refused = cookie
+                    .check()
+                    .err()
+                    .or_else(|| crate::cookies::refused(&cookie, &self.origin));
+                if let Some(why) = refused {
+                    self.reply(id, Err(E::Failed(why)));
+                    return None;
+                }
+                let (Some(sid), Some(tx)) = (self.sid.clone(), self.inbox.clone()) else {
+                    // The first paint: no page to fetch it yet.
+                    self.reply(id, Err(E::Unavailable));
+                    return None;
+                };
+                let ticket = crate::cookies::issue(&sid, cookie, tx, id);
+                Some(json!({
+                    "t": "device", "id": id, "call": "set_cookie",
+                    "url": format!("{}/_prism/cookie", self.base), "ticket": ticket,
+                }))
+            }
+            C::Reconnect => {
+                // Not during the first paint: there is no session to renew.
+                self.inbox.as_ref()?;
+                self.reconnect = true;
+                Some(json!({ "t": "reconnect" }))
             }
             other => Some(device_json(id, other)),
         }

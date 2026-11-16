@@ -370,3 +370,29 @@ fn pages_files_and_socket_messages_are_compressed() {
     assert!(serde_json::from_str::<serde_json::Value>(&frame(&mut ws)).is_ok());
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn the_cookie_endpoint_is_reached_through_the_host_router() {
+    let dir = std::env::temp_dir().join(format!("prism-axum-cookie-{}", std::process::id()));
+    let addr = start(&dir);
+    let post = |ticket: &str| {
+        let mut s = TcpStream::connect(&addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        write!(
+            s,
+            "POST /app/_prism/cookie HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://{addr}\r\n\
+             Sec-Fetch-Site: same-origin\r\nCookie: host_session=42; prism_sid=0123456789abcdef0123456789abcdef\r\n\
+             X-Prism-Cookie: {ticket}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut raw = Vec::new();
+        s.read_to_end(&mut raw).unwrap();
+        parse(&raw)
+    };
+    // Prism's answer (not the router's 405): an unknown ticket, refused.
+    let r = post("not-a-ticket");
+    assert_eq!(r.status, 403, "{}", r.head);
+    assert_eq!(r.header("cache-control"), Some("no-store"));
+    assert!(r.header("set-cookie").is_none());
+    let _ = std::fs::remove_dir_all(dir);
+}
