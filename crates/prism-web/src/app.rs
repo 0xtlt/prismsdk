@@ -540,7 +540,13 @@ impl WebApp {
             ));
         }
         let code = runtime.app.page_status();
-        let title = match html.screen_title() {
+        // The app's own title (`cx.set_title`, #154), else the top screen's.
+        let shown = runtime
+            .app
+            .title()
+            .map(str::to_string)
+            .or_else(|| html.screen_title());
+        let title = match shown {
             Some(screen) if screen != config.title => format!("{screen} · {}", config.title),
             _ => config.title.clone(),
         };

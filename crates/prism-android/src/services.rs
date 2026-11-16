@@ -165,6 +165,8 @@ impl PlatformServices for AndroidServices {
             PlatformRequest::LoadFont(_)
             | PlatformRequest::AddStylesheet(_)
             | PlatformRequest::RemoveStylesheet(_) => return,
+            // `cx.set_title` (#154): the activity's title (null: the app's label).
+            PlatformRequest::SetTitle(title) => json!({ "op": "title", "title": title }),
         };
         self.ops.push(op);
     }

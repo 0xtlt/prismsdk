@@ -612,7 +612,9 @@ impl PlatformServices for LinuxServices {
             // (imp.rs, `load_font`); stylesheets are a web thing.
             PlatformRequest::LoadFont(_)
             | PlatformRequest::AddStylesheet(_)
-            | PlatformRequest::RemoveStylesheet(_) => {}
+            | PlatformRequest::RemoveStylesheet(_)
+            // The window's title is set by the backend (imp.rs), which has it.
+            | PlatformRequest::SetTitle(_) => {}
             // No widgets or Live Activities on Linux desktops.
             PlatformRequest::ReloadWidgets(_)
             | PlatformRequest::StartActivity { .. }

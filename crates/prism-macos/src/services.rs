@@ -302,7 +302,9 @@ impl PlatformServices for MacServices {
             // (imp.rs, `load_font`); stylesheets are a web thing.
             PlatformRequest::LoadFont(_)
             | PlatformRequest::AddStylesheet(_)
-            | PlatformRequest::RemoveStylesheet(_) => {}
+            | PlatformRequest::RemoveStylesheet(_)
+            // Applied by the backend, which has the window (imp.rs).
+            | PlatformRequest::SetTitle(_) => {}
             PlatformRequest::RemoveTray(id) => {
                 if let Some(item) = self.trays.remove(&id) {
                     NSStatusBar::systemStatusBar().removeStatusItem(&item);

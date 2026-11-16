@@ -736,6 +736,12 @@ fn commit(s: &mut State, patches: Vec<prism_core::Patch>) {
             load_font(s, face);
             continue;
         }
+        // `cx.set_title` (#154): the window's title, else the app's name.
+        if let prism_core::PlatformRequest::SetTitle(title) = &request {
+            let w = &s.renderer.widgets;
+            w.window
+                .set_title(Some(title.as_deref().unwrap_or(&w.app_title)));
+        }
         prism_core::PlatformServices::handle(&mut s.services, request);
     }
     if let Some(at) = s.runtime.next_timer() {
@@ -846,6 +852,8 @@ fn poll() {
 pub struct Gtk {
     root: gtk::Box,
     window: gtk::ApplicationWindow,
+    /// The window's own title (the app's name), for `cx.clear_title`.
+    app_title: String,
     app: gtk::Application,
     /// Context menus by node (right-click / press and hold).
     menus: Rc<RefCell<HashMap<NodeId, gtk::PopoverMenu>>>,
@@ -3115,6 +3123,7 @@ fn activate(app: &gtk::Application) {
     let renderer = NativeRenderer::new(Gtk {
         root: root.clone(),
         window: window.clone(),
+        app_title: config.title.clone(),
         app: app.clone(),
         menus: Rc::new(RefCell::new(HashMap::new())),
         swipes: Rc::new(RefCell::new(HashMap::new())),

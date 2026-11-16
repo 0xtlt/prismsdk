@@ -104,7 +104,9 @@ impl PlatformServices for WatchServices {
             // (imp.rs, `load_font`); stylesheets are a web thing.
             PlatformRequest::LoadFont(_)
             | PlatformRequest::AddStylesheet(_)
-            | PlatformRequest::RemoveStylesheet(_) => {}
+            | PlatformRequest::RemoveStylesheet(_)
+            // A watch app has no title of its own to show.
+            | PlatformRequest::SetTitle(_) => {}
         }
     }
 }

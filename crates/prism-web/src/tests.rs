@@ -2194,6 +2194,33 @@ fn pages_and_files_by_path() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// #154: the app's own title, in the first paint and the live session.
+#[test]
+fn the_apps_title_is_the_pages() {
+    struct Titled;
+    impl Render for Titled {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            div().child(text("Orders page"))
+        }
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        cx.set_title("Orders");
+        let root = cx.new_entity(|_| Titled);
+        cx.set_root(root);
+    });
+    let (app, dir) = web_app(init, "app-title");
+    let r = app.handle(&Request::get("/").body(()).unwrap());
+    let html = String::from_utf8(r.body().clone()).unwrap();
+    assert!(html.contains("<title>Orders · Test</title>"), "{html}");
+    // The live page gets it with its first tree, then as a message.
+    let page = Page::open(&app, "/ws?path=%2F&w=1280&h=800");
+    let reset = page.next();
+    assert_eq!(reset["t"], "reset");
+    assert_eq!(reset["title"], "Orders");
+    page.session.close();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn ssr_pages_are_titled_by_the_visible_screen() {
     let init: AppInit = Arc::new(|cx: &mut App| {

@@ -231,6 +231,9 @@ impl State {
                 self.load_font(face);
                 continue;
             }
+            if let prism_core::PlatformRequest::SetTitle(title) = &request {
+                self.renderer.widgets.set_app_title(title.clone());
+            }
             prism_core::PlatformServices::handle(&mut self.services, request);
         }
         schedule_timer(self.runtime.next_timer());
@@ -2208,6 +2211,10 @@ pub struct AppKit {
     stacks: Vec<Rc<MacStack>>,
     tab_bars: Vec<Rc<MacTabs>>,
     titles: HashMap<NodeId, String>,
+    /// The app's title (`cx.set_title`, #154): the window's while set, over
+    /// the top screen's; and the window's own (the app's name).
+    app_title: Option<String>,
+    window_title: String,
     icons: HashMap<NodeId, String>,
     /// Countdown labels and their end time (Unix seconds).
     timers: HashMap<NodeId, (Retained<NSTextField>, f64)>,
@@ -2737,6 +2744,7 @@ impl AppKit {
         crate::navbar::layout(&stack.bar, &stack.back, size.width, size.height, self.rtl);
         if let Some(window) = stack.container.window()
             && title.length() > 0
+            && self.app_title.is_none()
         {
             window.setTitle(&title);
         }
@@ -2822,6 +2830,18 @@ fn text_area_size(t: &MacTextArea, max_width: Option<f32>) -> NSSize {
         _ => 54.,
     };
     NSSize::new(width, content + 2. * inset.height + 2. * border)
+}
+
+impl AppKit {
+    /// `cx.set_title` (#154): the window's title while set; back to the
+    /// app's name otherwise (the next screen change titles it again).
+    fn set_app_title(&mut self, title: Option<String>) {
+        self.app_title = title;
+        if let Some(window) = self.root.window() {
+            let shown = self.app_title.as_deref().unwrap_or(&self.window_title);
+            window.setTitle(&NSString::from_str(shown));
+        }
+    }
 }
 
 impl Widgets for AppKit {
@@ -4445,6 +4465,8 @@ pub fn run(config: AppConfig, init: AppInit) {
         stacks: Vec::new(),
         tab_bars: Vec::new(),
         titles: HashMap::new(),
+        app_title: None,
+        window_title: config.title.clone(),
         icons: HashMap::new(),
         timers: HashMap::new(),
         sheets: Vec::new(),

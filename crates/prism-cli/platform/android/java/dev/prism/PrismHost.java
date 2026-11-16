@@ -356,6 +356,14 @@ public final class PrismHost {
             case "notify_cancel": PrismDevice.cancelNotification(p.getString("nid")); return;
             case "notify_permission": PrismDevice.requestNotificationPermission(); return;
             case "alert": alert(p.getJSONObject("alert")); return;
+            // `cx.set_title` (#154): the activity's title (what TalkBack and
+            // the recents screen read); null: the app's label.
+            case "title": {
+                if (activity == null) return;
+                String t = p.isNull("title") ? null : p.optString("title");
+                activity.setTitle(t != null ? t : activity.getApplicationInfo().loadLabel(activity.getPackageManager()));
+                return;
+            }
             case "font": PrismText.addFont(p.getString("path"), p.optString("alias")); return;
             case "bg_schedule": PrismJob.schedule(context, p); return;
             case "push_register": PrismPush.register(context); return;
