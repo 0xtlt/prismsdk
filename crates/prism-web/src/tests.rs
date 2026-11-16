@@ -1363,6 +1363,105 @@ fn a_session_resets_the_page_then_answers_events_with_patches() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A field with a formatting command (#86): its selection, Bold, and the
+/// caret the last Enter was pressed at.
+#[derive(Default)]
+struct Formatter {
+    text: String,
+    sel: prism_core::SelectionEvent,
+    enter_at: Option<prism_core::SelectionEvent>,
+}
+
+impl Render for Formatter {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .child(
+                text_input()
+                    .value(self.text.clone())
+                    .on_input(cx.listener(|this: &mut Formatter, e: &InputEvent, _| {
+                        this.text = e.value.clone()
+                    }))
+                    .on_select(cx.listener(
+                        |this: &mut Formatter, e: &prism_core::SelectionEvent, _| this.sel = *e,
+                    ))
+                    .selection(self.sel)
+                    .on_key_down(cx.listener(|this: &mut Formatter, e: &KeyEvent, _| {
+                        if e.is("Enter") {
+                            this.enter_at = e.selection;
+                        }
+                    })),
+            )
+            .child(text(format!("sel {}..{}", self.sel.start, self.sel.end)))
+            .child(text(format!(
+                "enter {:?}",
+                self.enter_at.map(|s| s.range())
+            )))
+            .child(
+                button("Bold").on_click(cx.listener(|this: &mut Formatter, _, _| {
+                    let r = this.sel.byte_range(&this.text);
+                    let t = &this.text;
+                    this.text = format!("{}**{}**{}", &t[..r.start], &t[r.clone()], &t[r.end..]);
+                    this.sel = (this.sel.start + 2..this.sel.end + 2).into();
+                })),
+            )
+    }
+}
+
+#[test]
+fn selections_from_the_page_reach_on_select_and_app_selections_reach_the_page() {
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Formatter {
+            text: "héllo world".into(),
+            ..Default::default()
+        });
+        cx.set_root(root);
+    });
+    let (app, dir) = web_app(init, "selection");
+    let page = Page::open(&app, "/ws?path=%2F&w=1280&h=800");
+    let reset = page.next();
+    let ops = reset["p"].as_array().unwrap();
+    let input = ops
+        .iter()
+        .find(|p| p["op"] == "create" && p["kind"] == "text_input")
+        .and_then(|p| p["id"].as_u64())
+        .unwrap();
+    assert!(ops.contains(&json!({ "op": "selev", "id": input, "on": true })));
+    let bold = op_with_text(&reset["p"], "Bold");
+
+    // The user selects "world" (characters): on_select runs, and the
+    // selection rendered back is not sent to the field again.
+    page.send(json!({ "t": "select", "id": input, "start": 6, "end": 11 }));
+    let moved = page.next();
+    assert_eq!(
+        moved["p"],
+        json!([{ "op": "text", "id": op_with_text(&moved["p"], "sel 6..11"), "text": "sel 6..11" }]),
+        "an echo: no `sel` op"
+    );
+
+    // A key in the field carries its caret.
+    page.send(json!({ "t": "key", "id": input, "key": "Enter", "mods": 0, "sel": [2, 2] }));
+    let keyed = page.next();
+    op_with_text(&keyed["p"], "enter Some(2..2)");
+
+    // Bold: the app's new text, then its selection, applied to the field.
+    page.send(json!({ "t": "click", "id": bold }));
+    let bolded = page.next();
+    let p = bolded["p"].as_array().unwrap();
+    let text = p
+        .iter()
+        .position(|o| o["op"] == "text" && o["id"] == input)
+        .unwrap();
+    assert_eq!(p[text]["text"], "héllo **world**");
+    let sel = p.iter().position(|o| o["op"] == "sel").expect("a `sel` op");
+    assert_eq!(
+        p[sel],
+        json!({ "op": "sel", "id": input, "start": 8, "end": 13 })
+    );
+    assert!(text < sel, "after the text it selects in");
+    page.session.close();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Starts loading on its first render, with no event after it.
 #[derive(Default)]
 struct LazyLoad {
@@ -1919,6 +2018,12 @@ fn new_patches_have_a_stable_json_encoding() {
         Patch::ScrollIntoView { id: 1 },
         Patch::SetLayers { ids: vec![1, 2] },
         Patch::DismissKeyboard,
+        Patch::SetSelection {
+            id: 1,
+            start: 2,
+            end: 5,
+        },
+        Patch::SetSelectEvents { id: 1, on: true },
     ]);
     assert!(
         out[1]["css"]
@@ -1936,6 +2041,8 @@ fn new_patches_have_a_stable_json_encoding() {
             { "op": "reveal", "id": 1 },
             { "op": "layers", "ids": [1, 2] },
             { "op": "blur" },
+            { "op": "sel", "id": 1, "start": 2, "end": 5 },
+            { "op": "selev", "id": 1, "on": true },
         ])
     );
     // Hit-testable, not inert: nothing extra.
@@ -1978,6 +2085,18 @@ fn pointer_drag_and_key_messages_become_ui_events() {
         panic!("key")
     };
     assert!(k.is("ArrowUp") && k.modifiers.control && k.repeat);
+    assert_eq!(k.selection, None);
+    // In a text field: its selection, in characters (#86).
+    let Some(UiEvent::Key(Some(3), k)) =
+        ev(json!({"t": "key", "id": 3, "key": "Enter", "sel": [4, 1]}))
+    else {
+        panic!("key in a field")
+    };
+    assert_eq!(k.selection, Some(prism_core::SelectionEvent::new(1, 4)));
+    assert_eq!(
+        ev(json!({"t": "select", "id": 3, "start": 2, "end": 7})),
+        Some(UiEvent::Select(3, 2, 7))
+    );
     // No focused node: id 0.
     assert!(matches!(
         ev(json!({"t": "key", "id": 0, "key": "Escape"})),
@@ -1987,6 +2106,7 @@ fn pointer_drag_and_key_messages_become_ui_events() {
         json!({"t": "drag", "id": 3, "phase": "fly"}),
         json!({"t": "pointer", "id": 3}),
         json!({"t": "key", "id": 3}),
+        json!({"t": "select", "id": 3, "start": 2}),
     ] {
         assert_eq!(ev(bad.clone()), None, "{bad}");
     }

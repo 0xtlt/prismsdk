@@ -459,8 +459,10 @@ pub(crate) fn parse_event(v: &Value) -> Option<UiEvent> {
 /// Pointer, drag and key events (#17): `{"t":"click","id","x","y"}` (a
 /// click with its position), `{"t":"pointer","id","phase","x","y"}`,
 /// `{"t":"drag","id","phase","x","y","dx","dy"}`,
-/// `{"t":"key","id","key","mods","repeat"}` (`id` 0 or absent: nothing
-/// Prism knows has the focus).
+/// `{"t":"key","id","key","mods","repeat","sel"}` (`id` 0 or absent:
+/// nothing Prism knows has the focus; `sel`: `[start, end]`, the focused
+/// text field's selection in characters, #86) and
+/// `{"t":"select","id","start","end"}` (a text field's selection, #86).
 fn parse_input_event(v: &Value) -> Option<UiEvent> {
     use prism_core::{
         DragEvent, DragPhase, KeyEvent, Modifiers, Point, PointerEvent, PointerPhase,
@@ -492,7 +494,17 @@ fn parse_input_event(v: &Value) -> Option<UiEvent> {
                     v.get("mods").and_then(Value::as_u64).unwrap_or(0) as u8
                 ),
                 repeat: v.get("repeat").and_then(Value::as_bool).unwrap_or(false),
+                selection: v.get("sel").and_then(Value::as_array).and_then(|a| {
+                    let at = |i: usize| a.get(i).and_then(Value::as_u64).map(|n| n as usize);
+                    Some(prism_core::SelectionEvent::new(at(0)?, at(1)?))
+                }),
             },
+        )),
+        // A text field's selection moved (#86), in characters.
+        "select" => Some(UiEvent::Select(
+            id?,
+            v.get("start")?.as_u64()? as usize,
+            v.get("end")?.as_u64()? as usize,
         )),
         _ => None,
     }
@@ -905,6 +917,11 @@ impl Encoder {
                 json!({ "op": "keys", "id": id, "local": local, "global": global })
             }
             Patch::Focus { id } => json!({ "op": "focus", "id": id }),
+            // Text field selections (#86), in characters.
+            Patch::SetSelection { id, start, end } => {
+                json!({ "op": "sel", "id": id, "start": start, "end": end })
+            }
+            Patch::SetSelectEvents { id, on } => json!({ "op": "selev", "id": id, "on": on }),
             Patch::ScrollIntoView { id } => json!({ "op": "reveal", "id": id }),
             Patch::DismissKeyboard => json!({ "op": "blur" }),
             Patch::SetLayers { ids } => json!({ "op": "layers", "ids": ids }),

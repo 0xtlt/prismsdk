@@ -79,6 +79,7 @@ pub use element::{
     Checkbox, Overlay, RadioGroup, checkbox, dialog, popover, radio_group, sheet, time_picker,
 };
 pub use element::{STACK_CLOSABLE, STACK_NO_HEADER};
+pub use element::{SelectionEvent, byte_to_char, char_to_byte};
 pub use element::{picture_data, svg};
 pub use events::{
     DragEvent, DragPhase, HoverEvent, KeyEvent, Modifiers, Point, PointerEvent, PointerPhase,
@@ -296,6 +297,14 @@ impl Runtime {
             UiEvent::Input(id, value) => {
                 if let Some(h) = self.reconciler.input_handler(id) {
                     h(&InputEvent { value }, &mut self.app);
+                }
+            }
+            UiEvent::Select(id, start, end) => {
+                let e = SelectionEvent::new(start, end);
+                // What the field shows: rendered back, it is an echo.
+                self.reconciler.selection_reported(id, e);
+                if let Some(h) = self.reconciler.select_handler(id) {
+                    h(&e, &mut self.app);
                 }
             }
             UiEvent::Back(id, depth) => {
@@ -654,11 +663,11 @@ pub mod prelude {
         NotificationAction, NotificationResponse, Orientation, Params, ParentElement, Path,
         Permission, PermissionState, PickImages, PickedFile, Platform, Pose, Posture, PushEvent,
         PushMessage, PushService, PushSubscription, Render, ReturnKey, Role, Router, ScrollEvent,
-        SecureOptions, Share, Styled, SwipeDirection, Transition, Translations, Tray, VirtualList,
-        Watch, Widget, WidgetConfig, WidgetFamily, WidgetOption, WidgetParameter, WindowChrome,
-        WindowControls, adaptive, button, date_picker, div, go_back, image, lazy, navigate_to,
-        picker, picture, progress, px, relative, rgb, rgba, screen, scroll, shape, slider, spinner,
-        text, text_area, text_input, timer, toggle,
+        SecureOptions, SelectionEvent, Share, Styled, SwipeDirection, Transition, Translations,
+        Tray, VirtualList, Watch, Widget, WidgetConfig, WidgetFamily, WidgetOption,
+        WidgetParameter, WindowChrome, WindowControls, adaptive, button, date_picker, div, go_back,
+        image, lazy, navigate_to, picker, picture, progress, px, relative, rgb, rgba, screen,
+        scroll, shape, slider, spinner, text, text_area, text_input, timer, toggle,
     };
     pub use crate::{GridTrack, ScrollAxis, auto_fill, auto_fit, fr, minmax, repeat, scroll_x};
     // Typography and rich text.

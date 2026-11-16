@@ -18,7 +18,7 @@ use crate::a11y::{Accessibility, Role};
 use crate::app::{AnyEntity, App, Appearance, EntityId};
 use crate::element::{
     BackEvent, ChangeEvent, ClickEvent, Element, Handler, InputEvent, NavigateEvent, NodeKind,
-    ScrollEvent, SwipeDirection, VNode,
+    ScrollEvent, SelectionEvent, SwipeDirection, VNode,
 };
 use crate::style::Style;
 
@@ -130,6 +130,24 @@ pub enum Patch {
         id: NodeId,
         /// The new text.
         text: String,
+    },
+    /// Select `start..end` (characters) in a text input or area (#86):
+    /// the app's `.selection(..)` changed. Sent after the node's text.
+    SetSelection {
+        /// The text input or area.
+        id: NodeId,
+        /// First selected character.
+        start: usize,
+        /// End of the selection (excluded), `start` for a caret.
+        end: usize,
+    },
+    /// Whether a text input or area reports its selection
+    /// (`UiEvent::Select`): it has an `on_select` handler (#86).
+    SetSelectEvents {
+        /// The text input or area.
+        id: NodeId,
+        /// Report selection changes.
+        on: bool,
     },
     /// Placeholder of a text input.
     SetPlaceholder {
@@ -253,6 +271,9 @@ pub enum UiEvent {
     Click(NodeId),
     /// A text input was edited: (id, new text).
     Input(NodeId, String),
+    /// The selection of a text input or area moved: (id, start, end) in
+    /// characters (#86).
+    Select(NodeId, usize, usize),
     /// A stack was popped natively down to `depth` screens.
     Back(NodeId, usize),
     /// A stack was asked to show `path` (e.g. browser forward).
@@ -312,6 +333,13 @@ struct MNode {
     pointer_mask: u8,
     /// Key events reported: (local, global).
     keys: (bool, bool),
+    /// The selection the app last rendered (`.selection`, #86).
+    selection: Option<SelectionEvent>,
+    /// The selection the field shows, as far as Prism knows: the last one
+    /// sent to it or reported by it.
+    shown_selection: Option<SelectionEvent>,
+    /// It reports its selection (`on_select`).
+    select_events: bool,
     /// Its `.id(…)`.
     name: Option<String>,
     /// An island's tag, source, props and events.
@@ -347,6 +375,7 @@ pub struct Reconciler {
     next_id: NodeId,
     click: HashMap<NodeId, Handler<ClickEvent>>,
     input: HashMap<NodeId, Handler<InputEvent>>,
+    select: HashMap<NodeId, Handler<SelectionEvent>>,
     back: HashMap<NodeId, Handler<BackEvent>>,
     navigate: HashMap<NodeId, Handler<NavigateEvent>>,
     change: HashMap<NodeId, Handler<ChangeEvent>>,
@@ -398,6 +427,19 @@ impl Reconciler {
     /// The input handler of node `id`, if any.
     pub fn input_handler(&self, id: NodeId) -> Option<Handler<InputEvent>> {
         self.input.get(&id).cloned()
+    }
+
+    /// The selection handler of text field `id`, if any (#86).
+    pub fn select_handler(&self, id: NodeId) -> Option<Handler<SelectionEvent>> {
+        self.select.get(&id).cloned()
+    }
+
+    /// Text field `id` reported `selection` (#86): the field shows it, so
+    /// the app rendering it back is an echo, not a change to apply.
+    pub fn selection_reported(&mut self, id: NodeId, selection: SelectionEvent) {
+        if let Some(m) = self.nodes.get_mut(&id) {
+            m.shown_selection = Some(selection);
+        }
     }
 
     /// The back handler of stack `id`, if any.
@@ -805,6 +847,8 @@ impl Reconciler {
             children,
             on_click,
             on_input,
+            on_select,
+            selection,
             on_back,
             on_navigate,
             on_change,
@@ -937,6 +981,9 @@ impl Reconciler {
                     text: text.clone(),
                 });
                 m.text = text;
+                // The field's caret may have moved with its text: what it
+                // last reported no longer tells an echo (#86).
+                m.shown_selection = None;
             }
             if m.placeholder != placeholder {
                 self.patches.push(Patch::SetPlaceholder {
@@ -970,6 +1017,27 @@ impl Reconciler {
                 self.patches.push(Patch::SetValue { id, value: v });
                 m.value = Some(v);
             }
+            // After the text (#86): applied when the app's value changes,
+            // unless the field already shows it (the user made it).
+            if m.selection != selection {
+                if let Some(sel) = selection
+                    && m.shown_selection != Some(sel)
+                {
+                    self.patches.push(Patch::SetSelection {
+                        id,
+                        start: sel.start,
+                        end: sel.end,
+                    });
+                    m.shown_selection = Some(sel);
+                }
+                m.selection = selection;
+            }
+            let reports = on_select.is_some();
+            if m.select_events != reports {
+                self.patches
+                    .push(Patch::SetSelectEvents { id, on: reports });
+                m.select_events = reports;
+            }
         }
         match on_click {
             Some(h) => self.click.insert(id, h),
@@ -978,6 +1046,10 @@ impl Reconciler {
         match on_input {
             Some(h) => self.input.insert(id, h),
             None => self.input.remove(&id),
+        };
+        match on_select {
+            Some(h) => self.select.insert(id, h),
+            None => self.select.remove(&id),
         };
         match on_back {
             Some(h) => self.back.insert(id, h),
@@ -1362,6 +1434,9 @@ impl Reconciler {
                 children: Vec::new(),
                 pointer_mask: 0,
                 keys: (false, false),
+                selection: None,
+                shown_selection: None,
+                select_events: false,
                 name: None,
                 island: None,
                 link: None,
@@ -1397,6 +1472,7 @@ impl Reconciler {
         }
         self.click.remove(&id);
         self.input.remove(&id);
+        self.select.remove(&id);
         self.back.remove(&id);
         self.navigate.remove(&id);
         self.change.remove(&id);

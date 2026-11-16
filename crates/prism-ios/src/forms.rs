@@ -43,6 +43,169 @@ pub fn set_field_text<T: objc2_ui_kit::UITextInput + objc2::Message>(
 }
 
 // ---------------------------------------------------------------------------
+// Selections (#86)
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    /// Fields reporting their selection (`on_select`).
+    static SELECT_EVENTS: std::cell::RefCell<std::collections::HashSet<NodeId>> = Default::default();
+    /// The selection last reported for each field.
+    static REPORTED: std::cell::RefCell<std::collections::HashMap<NodeId, prism_core::SelectionEvent>> = Default::default();
+    /// Fields whose report (or pending selection) is scheduled for the
+    /// next turn (the closure only carries the id: views stay here).
+    static SCHEDULED: std::cell::RefCell<std::collections::HashMap<NodeId, Retained<objc2_ui_kit::UIView>>> = Default::default();
+    static BEGAN: std::cell::RefCell<std::collections::HashMap<NodeId, Retained<objc2_ui_kit::UITextField>>> = Default::default();
+    /// Selections set on text inputs not being edited: applied when the
+    /// app focuses them (`cx.focus`), dropped when the user does (their tap
+    /// places the caret). Characters.
+    static PENDING: std::cell::RefCell<std::collections::HashMap<NodeId, (usize, usize)>> = Default::default();
+    /// The input the app asked to focus last.
+    static APP_FOCUS: std::cell::Cell<Option<NodeId>> = const { std::cell::Cell::new(None) };
+}
+
+/// The selection of `field` (showing `text`) in characters.
+fn selection_of<T: objc2_ui_kit::UITextInput + objc2::Message>(
+    field: &T,
+    text: &str,
+) -> Option<prism_core::SelectionEvent> {
+    let r = field.selectedTextRange()?;
+    let begin = field.beginningOfDocument();
+    let at = |p: &objc2_ui_kit::UITextPosition| {
+        let units = field.offsetFromPosition_toPosition(&begin, p).max(0) as usize;
+        prism_native::fields::utf16_to_chars(text, units)
+    };
+    Some(prism_core::SelectionEvent::new(
+        at(&r.start()),
+        at(&r.end()),
+    ))
+}
+
+/// Selects `start..end` (characters, clamped) in `field` showing `text`.
+fn select_in<T: objc2_ui_kit::UITextInput + objc2::Message>(
+    field: &T,
+    text: &str,
+    start: usize,
+    end: usize,
+) {
+    let begin = field.beginningOfDocument();
+    let at = |c: usize| {
+        let units = prism_native::fields::chars_to_utf16(text, c) as isize;
+        field.positionFromPosition_offset(&begin, units)
+    };
+    if let (Some(a), Some(b)) = (at(start), at(end.max(start)))
+        && let Some(r) = field.textRangeFromPosition_toPosition(&a, &b)
+    {
+        field.setSelectedTextRange(Some(&r));
+    }
+}
+
+/// The selection of a text field or text view, in characters.
+pub fn current_selection(view: &objc2_ui_kit::UIView) -> Option<prism_core::SelectionEvent> {
+    if let Some(f) = view.downcast_ref::<objc2_ui_kit::UITextField>() {
+        let text = f.text().map(|t| t.to_string()).unwrap_or_default();
+        return selection_of(f, &text);
+    }
+    let tv = view.downcast_ref::<objc2_ui_kit::UITextView>()?;
+    selection_of(tv, &tv.text().to_string())
+}
+
+/// Selects `start..end` (characters) in a text field or text view. A text
+/// field not being edited takes it when it begins editing.
+pub fn set_selection(view: &objc2_ui_kit::UIView, start: usize, end: usize) {
+    if let Some(f) = view.downcast_ref::<objc2_ui_kit::UITextField>() {
+        if !f.isEditing() {
+            PENDING.with(|p| p.borrow_mut().insert(f.tag() as NodeId, (start, end)));
+            return;
+        }
+        let text = f.text().map(|t| t.to_string()).unwrap_or_default();
+        select_in(f, &text, start, end);
+    } else if let Some(tv) = view.downcast_ref::<objc2_ui_kit::UITextView>() {
+        select_in(tv, &tv.text().to_string(), start, end);
+    }
+}
+
+/// The app focuses input `id` (`cx.focus`).
+pub fn app_focuses(id: NodeId) {
+    APP_FOCUS.set(Some(id));
+}
+
+/// Text field `field` began editing: if the app focused it, the selection
+/// it set meanwhile, after UIKit placed its caret.
+pub fn began_editing(field: &objc2_ui_kit::UITextField) {
+    let id = field.tag() as NodeId;
+    let by_app = APP_FOCUS.get() == Some(id);
+    if by_app {
+        APP_FOCUS.set(None);
+    }
+    let pending = PENDING.with(|p| p.borrow_mut().remove(&id));
+    let Some((start, end)) = pending.filter(|_| by_app) else {
+        return;
+    };
+    BEGAN.with(|b| b.borrow_mut().insert(id, objc2::Message::retain(field)));
+    dispatch2::DispatchQueue::main().exec_async(move || {
+        let Some(field) = BEGAN.with(|b| b.borrow_mut().remove(&id)) else {
+            return;
+        };
+        let text = field.text().map(|t| t.to_string()).unwrap_or_default();
+        select_in(&*field, &text, start, end);
+    });
+}
+
+/// Whether field `id` reports its selection (`on_select`).
+pub fn set_select_events(id: NodeId, on: bool) {
+    SELECT_EVENTS.with(|s| {
+        if on {
+            s.borrow_mut().insert(id);
+        } else {
+            s.borrow_mut().remove(&id);
+        }
+    });
+    if !on {
+        REPORTED.with(|r| r.borrow_mut().remove(&id));
+    }
+}
+
+/// Field `id` is gone.
+pub fn forget_selection(id: NodeId) {
+    set_select_events(id, false);
+    PENDING.with(|p| p.borrow_mut().remove(&id));
+}
+
+/// The selection of `view` (a text field or view) changed
+/// (`textFieldDidChangeSelection:`, `textViewDidChangeSelection:`):
+/// reported on the next turn, once UIKit finished the edit (so after its
+/// `UiEvent::Input`), at most once per turn and only when it moved.
+pub fn selection_changed(view: &objc2_ui_kit::UIView) {
+    let id = view.tag() as NodeId;
+    if !SELECT_EVENTS.with(|s| s.borrow().contains(&id)) {
+        return;
+    }
+    let first = SCHEDULED.with(|s| {
+        s.borrow_mut()
+            .insert(id, objc2::Message::retain(view))
+            .is_none()
+    });
+    if !first {
+        return;
+    }
+    dispatch2::DispatchQueue::main().exec_async(move || {
+        let Some(view) = SCHEDULED.with(|s| s.borrow_mut().remove(&id)) else {
+            return;
+        };
+        if !SELECT_EVENTS.with(|s| s.borrow().contains(&id)) {
+            return;
+        }
+        let Some(sel) = current_selection(&view) else {
+            return;
+        };
+        let old = REPORTED.with(|r| r.borrow_mut().insert(id, sel));
+        if old != Some(sel) {
+            crate::imp::dispatch(UiEvent::Select(id, sel.start, sel.end));
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Slider (iOS, visionOS)
 // ---------------------------------------------------------------------------
 

@@ -165,6 +165,8 @@ impl Backend for HtmlBackend {
                 // Applied by the client once it runs.
                 Patch::SetPointerEvents { .. }
                 | Patch::SetKeyEvents { .. }
+                | Patch::SetSelection { .. }
+                | Patch::SetSelectEvents { .. }
                 | Patch::Focus { .. }
                 | Patch::DismissKeyboard
                 | Patch::ScrollIntoView { .. }

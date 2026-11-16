@@ -1,5 +1,6 @@
 //! Text fields: telling the echo of what the user typed from a value the
-//! app set (#73).
+//! app set (#73), and converting selections between the platforms' UTF-16
+//! offsets and Prism's characters (#86).
 //!
 //! A text input or area sends each value the user types; the app stores
 //! it (or changes it: a Markdown shortcut strips "# ", a command clears the
@@ -56,9 +57,43 @@ pub fn caret_from_end(old_len: usize, caret: usize, new_len: usize) -> usize {
     new_len.saturating_sub(old_len.saturating_sub(caret))
 }
 
+/// The character offset of UTF-16 offset `utf16` in `text` (clamped; a
+/// unit inside a surrogate pair counts its character as before it): what
+/// AppKit, UIKit and Android selections are in, to Prism's characters
+/// (#86).
+pub fn utf16_to_chars(text: &str, utf16: usize) -> usize {
+    let mut units = 0;
+    for (i, c) in text.chars().enumerate() {
+        if units >= utf16 {
+            return i;
+        }
+        units += c.len_utf16();
+    }
+    text.chars().count()
+}
+
+/// The UTF-16 offset of character `chars` in `text` (clamped to its end).
+pub fn chars_to_utf16(text: &str, chars: usize) -> usize {
+    text.chars().take(chars).map(char::len_utf16).sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn utf16_offsets_to_characters_and_back() {
+        let t = "a😀b";
+        // a = 1 unit, 😀 = 2 units, b = 1 unit.
+        assert_eq!(utf16_to_chars(t, 0), 0);
+        assert_eq!(utf16_to_chars(t, 1), 1);
+        assert_eq!(utf16_to_chars(t, 3), 2);
+        assert_eq!(utf16_to_chars(t, 4), 3);
+        assert_eq!(utf16_to_chars(t, 99), 3);
+        assert_eq!(chars_to_utf16(t, 2), 3);
+        assert_eq!(chars_to_utf16(t, 3), 4);
+        assert_eq!(chars_to_utf16(t, 9), 4);
+    }
 
     #[test]
     fn echoes_are_skipped_app_values_applied() {

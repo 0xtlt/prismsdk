@@ -200,6 +200,9 @@ public final class PrismHost {
         // Pointer, keys, hit testing, overlays (PrismInput).
         int pointerMask;
         boolean keysLocal, keysGlobal, noHit, inert, a11yHidden, dragging;
+        // Text field selections (#86): reported (`selev`), last sent, a report posted.
+        boolean selectEvents, selPosted;
+        int[] lastSel;
         /** Where the pointer went down: view x, y, then raw x, y (pixels). */
         float[] down = {0, 0, 0, 0};
         android.widget.PopupWindow popup;
@@ -466,6 +469,8 @@ public final class PrismHost {
                 PrismInput.hover(n);
                 break;
             case "keys": PrismInput.keys(n, p.optBoolean("local"), p.optBoolean("global")); break;
+            case "sel": PrismInput.select(n, p.optInt("start"), p.optInt("end")); break;
+            case "selev": PrismInput.selectEvents(n, p.optBoolean("on")); break;
             case "focus": PrismInput.focus(n); break;
             case "reveal": PrismInput.reveal(n); break;
         }
@@ -500,7 +505,12 @@ public final class PrismHost {
             }
             case "text_input": {
                 // Completes from the config's suggestions (an EditText without them).
-                android.widget.AutoCompleteTextView e = new android.widget.AutoCompleteTextView(activity);
+                android.widget.AutoCompleteTextView e = new android.widget.AutoCompleteTextView(activity) {
+                    @Override protected void onSelectionChanged(int start, int end) {
+                        super.onSelectionChanged(start, end);
+                        PrismInput.selectionChanged(this);
+                    }
+                };
                 e.setThreshold(1);
                 e.setSingleLine(true);
                 e.addTextChangedListener(new TextWatcher() {

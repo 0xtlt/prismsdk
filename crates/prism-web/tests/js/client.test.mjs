@@ -256,6 +256,92 @@ test("an app value waits for the end of an IME composition (#73)", () => {
   assert.equal(field.value, "", "the app's value lands once it ends");
 });
 
+// --- Text field selection and caret (#86) ---------------------------------------
+
+const flush = (page) => page.frames.splice(0).forEach((f) => f());
+const selects = (page) => page.ws.sent.filter((m) => m.t === "select").map((m) => [m.start, m.end]);
+
+test("a field with on_select reports its selection in characters, once per frame (#86)", () => {
+  const { page, field, type } = focusedField("text_input");
+  // Without `on_select`, nothing is sent.
+  type("a");
+  flush(page);
+  assert.deepEqual(selects(page), []);
+  page.ws.deliver({ t: "patch", p: [{ op: "selev", id: 1, on: true }] });
+  flush(page);
+  assert.deepEqual(selects(page), [[1, 1]], "where the caret is when reporting starts");
+  // "a😀b": the emoji is 2 UTF-16 units, 1 character.
+  type("a😀b", 3);
+  flush(page);
+  const order = page.ws.sent.filter((m) => m.t === "input" || m.t === "select").map((m) => m.t);
+  assert.deepEqual(order.slice(-2), ["input", "select"], "after the input that moved it");
+  assert.deepEqual(selects(page).at(-1), [2, 2]);
+  // Selecting backwards, then moving twice in one frame: one report, in order.
+  field.setSelectionRange(4, 0);
+  field.dispatchEvent({ type: "select" });
+  field.setSelectionRange(1, 4);
+  field.dispatchEvent({ type: "selectionchange" });
+  page.document.dispatchEvent({ type: "selectionchange" });
+  flush(page);
+  assert.deepEqual(selects(page).slice(-1), [[1, 3]]);
+  assert.equal(selects(page).length, 3);
+  // Unmoved: not sent again.
+  field.dispatchEvent({ type: "keyup" });
+  flush(page);
+  assert.equal(selects(page).length, 3);
+});
+
+test("key presses in a field carry its selection before the key (#86)", () => {
+  const page = live([
+    create(1, "view"), { op: "keys", id: 1, local: true, global: false },
+    create(2, "text_input"), textOp(2, "héllo"), { op: "selev", id: 2, on: true },
+    children(1, [2]), root(1),
+  ]);
+  const field = page.node(2);
+  field.focus();
+  field.setSelectionRange(2, 2);
+  field.dispatchEvent({ type: "mouseup" });
+  field.dispatchEvent({ type: "keydown", key: "Enter" });
+  const key = page.ws.sent.find((m) => m.t === "key");
+  assert.deepEqual(key.sel, [2, 2]);
+  const i = page.ws.sent.indexOf(key);
+  assert.deepEqual(page.ws.sent[i - 1], { t: "select", id: 2, start: 2, end: 2 }, "pending selection flushed first");
+});
+
+test("the app's selection is applied in characters, never against typing in flight (#86)", () => {
+  const { page, field, type } = focusedField("text_area", "a😀bc");
+  const patch = (p) => page.ws.deliver({ t: "patch", p });
+  patch([{ op: "sel", id: 1, start: 1, end: 3 }]);
+  assert.deepEqual([field.selectionStart, field.selectionEnd], [1, 4], "UTF-16 units");
+  patch([{ op: "sel", id: 1, start: 9, end: 9 }]);
+  assert.deepEqual([field.selectionStart, field.selectionEnd], [5, 5], "clamped to the end");
+
+  // Typing ahead: the echo of "x" and a selection computed for it.
+  type("x");
+  type("xy");
+  patch([textOp(1, "x"), { op: "sel", id: 1, start: 0, end: 1 }]);
+  assert.equal(field.value, "xy");
+  assert.deepEqual([field.selectionStart, field.selectionEnd], [2, 2], "the user's caret stays");
+  // All echoed: the app's selection lands (bold the word, select it).
+  patch([textOp(1, "xy"), { op: "sel", id: 1, start: 0, end: 2 }]);
+  assert.deepEqual([field.selectionStart, field.selectionEnd], [0, 2]);
+  // An app value with a caret: both apply, in order.
+  patch([textOp(1, "Title"), { op: "sel", id: 1, start: 0, end: 0 }]);
+  assert.equal(field.value, "Title");
+  assert.deepEqual([field.selectionStart, field.selectionEnd], [0, 0]);
+});
+
+test("the app's selection waits for the end of an IME composition (#86)", () => {
+  const { page, field, type } = focusedField("text_input", "ab");
+  field.dispatchEvent({ type: "compositionstart" });
+  type("abk");
+  page.ws.deliver({ t: "patch", p: [textOp(1, "abk")] });
+  page.ws.deliver({ t: "patch", p: [{ op: "sel", id: 1, start: 0, end: 0 }] });
+  assert.deepEqual([field.selectionStart, field.selectionEnd], [3, 3]);
+  field.dispatchEvent({ type: "compositionend" });
+  assert.deepEqual([field.selectionStart, field.selectionEnd], [0, 0]);
+});
+
 test("accessibility patches set and clear ARIA", () => {
   const page = live([create(1, "view"), root(1)]);
   const el = page.node(1);

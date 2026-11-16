@@ -381,7 +381,13 @@ final class PrismForms {
     // --- Text area and text input configs ----------------------------------------------------
 
     static View textArea(PrismHost.Node n) {
-        EditText e = new EditText(ctx());
+        EditText e = new EditText(ctx()) {
+            // The caret or selection moved, typing included (#86).
+            @Override protected void onSelectionChanged(int start, int end) {
+                super.onSelectionChanged(start, end);
+                PrismInput.selectionChanged(this);
+            }
+        };
         e.setSingleLine(false);
         e.setHorizontallyScrolling(false);
         e.setMinLines(3);

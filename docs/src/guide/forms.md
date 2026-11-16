@@ -72,6 +72,44 @@ let files = cx.pick_files(PickFiles::new().types([".csv"]).multiple()).await?;  
 - **Platform notes**: tvOS has no `UISlider`, `UIDatePicker` or editable `UITextView` (`API_UNAVAILABLE(tvos)`), hence the focus-driven stand-ins. watchOS sliders always step (a continuous one moves by a tenth of its range), and dates open the system wheels in a sheet. `GtkCalendar` has no min/max, so out-of-range days snap back. Before GTK 4.14, Linux has no `gtk_accessible_announce`: the status text changes but may not be spoken. Android announces through a polite live region (`announceForAccessibility` is deprecated in API 36), and the date dialog's header follows the device language, not the app's.
 - **Dev hooks for forms**: macOS `PRISM_TAP=<label>`, `PRISM_TYPE=<text>` (`\n` is Return), `PRISM_INCREMENT=<label>` (VoiceOver increment), `PRISM_A11Y_LOG=1`; Linux `PRISM_CLICK` opens pickers and date pickers, `fill:<placeholder>=<text>`, `fill:@slider=40`, `submit:<placeholder>`, open popovers saved as `out-N.png`; watchOS `PRISM_SCROLL=<pt>`, `PRISM_PRESENT=<label>` (opens a date picker), `PRISM_DEBUG_A11Y=1`. The watch's `ImageRenderer` snapshot can't draw native controls: use `xcrun simctl io <udid> screenshot`.
 
+## Selection and caret
+
+A text input or area reports where its selection is with `on_select`, and takes one from the app with `.selection(range)`. Offsets are **characters** (Rust `char`s), not UTF-8 bytes nor UTF-16 units, on every backend; `start == end` is a caret. `e.byte_range(&text)` (and `prism::char_to_byte` / `byte_to_char`) converts them to slice a `&str`. Key presses in a focused field carry its selection in `KeyEvent::selection`, read before the key acts, so `on_key_down` can split or merge blocks:
+
+```rust
+struct Block { text: String, sel: SelectionEvent }
+
+text_input()
+    .value(self.text.clone())
+    .on_input(cx.listener(|this, e: &InputEvent, _| this.text = e.value.clone()))
+    // The selection or caret moved: selecting, clicking, arrows, typing.
+    .on_select(cx.listener(|this, e: &SelectionEvent, _| this.sel = *e))
+    // Rendered back as is: an echo, the field is left alone.
+    .selection(self.sel)
+    .on_key_down(cx.listener(|this, e: &KeyEvent, cx| {
+        let Some(sel) = e.selection else { return };
+        if e.is("b") && e.modifiers.command() && !sel.is_caret() {
+            // ⌘B / Ctrl+B: bold the selection, keep it selected.
+            let r = sel.byte_range(&this.text);
+            this.text.replace_range(r.clone(), &format!("**{}**", &this.text[r]));
+            this.sel = (sel.start + 2..sel.end + 2).into();
+            cx.stop_propagation();
+        } else if e.is("Enter") {
+            // Split the block at the caret: the new block starts with the rest.
+            let r = sel.byte_range(&this.text);
+            let rest = this.text.split_off(r.end);
+            this.text.truncate(r.start);
+            this.split_off(rest, cx);
+        } else if e.is("Backspace") && sel.start == 0 && sel.end == 0 {
+            this.merge_with_previous(cx);
+        }
+    }))
+```
+
+- **When `on_select` runs**: after every move of the caret or selection, typing included (after that edit's `on_input`), and only when it moved. The web sends at most one per animation frame; native backends one per run-loop turn. A key press first delivers a pending selection, then the key with `selection` as it was before the key.
+- **`.selection(range)`** is applied when the app's value changes, after the field's text, focused or not. A selection the user made and the app renders back is an echo and leaves the field alone, and a value that did not change is not applied again, so keeping it in sync with `on_select` never fights the user. On the web, a selection computed while the user has typed further (values not yet echoed) is dropped, like a stale text echo; during an IME composition it waits for the composition to end. Offsets past the end are clamped.
+- **Backends**: web (`selectionchange`, `select`, keys, pointer), AppKit (the field editor's and text view's `NSTextViewDidChangeSelectionNotification`), UIKit (`textFieldDidChangeSelection:`, `textViewDidChangeSelection:`), GTK (`notify::cursor-position` / `selection-bound`, the text buffer's marks), Android (`onSelectionChanged`). On macOS and iOS, a single-line input that is not being edited takes the app's selection when the app focuses it (`cx.focus`); a click or tap places the caret where the user put it. watchOS has no selection API (`on_select` never runs, `KeyEvent::selection` is `None`, `.selection` is ignored).
+
 **Sheets, popovers, dialogs** that a screen opens without a route: see [Dialogs, menus, tray](dialogs-menus.md#sheets-popovers-and-dialogs-without-a-route).
 
 **Absolute positioning**: `div().absolute().bottom(16.).left(16.).right(16.)` takes an element out of the flex flow and places it at its insets from the parent (`.top()`, `.inset(0.)`…), like CSS `position: absolute` (taffy on native). Later siblings draw on top; `left`/`right` are the leading and trailing edges.

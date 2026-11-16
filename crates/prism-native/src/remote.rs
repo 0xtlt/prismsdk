@@ -24,12 +24,17 @@
 //! | `pointer` | `mask`: pointer events to report (1 hover, 2 move, 4 drag) |
 //! | `keys` | `local`, `global`: report key presses (focus in the node / anywhere) |
 //! | `focus`, `reveal` | give the node the focus / scroll it into view |
+//! | `sel` | `start`, `end`: select these characters of a text field (#86) |
+//! | `selev` | `on`: a text field reports its selection (`select` events) |
 //! | `layers` | `ids`: runtime layers above everything, bottom first (no `id`) |
 //!
 //! Hosts report the new input events as `{"t":"click","id","x","y"}`
 //! (position optional), `{"t":"pointer","id","phase","x","y"}`,
 //! `{"t":"drag","id","phase","x","y","dx","dy"}` and
-//! `{"t":"key","id","key","mods","repeat"}` (see [`parse_input_event`]).
+//! `{"t":"key","id","key","mods","repeat","sel"}` (`sel`: `[start, end]`,
+//! the focused text field's selection in characters, #86) and
+//! `{"t":"select","id","start","end"}` (a text field's selection moved, in
+//! characters) (see [`parse_input_event`]).
 //! An overlay's host reports its content area like a modal's
 //! (`{"t":"viewport","id":overlay,"w","h"}`).
 //!
@@ -178,10 +183,24 @@ pub fn parse_input_event(v: &Value) -> Option<prism_core::UiEvent> {
                     v.get("mods").and_then(Value::as_u64).unwrap_or(0) as u8
                 ),
                 repeat: v.get("repeat").and_then(Value::as_bool).unwrap_or(false),
+                selection: selection(v.get("sel")),
             },
+        )),
+        "select" => Some(UiEvent::Select(
+            id?,
+            v.get("start")?.as_u64()? as usize,
+            v.get("end")?.as_u64()? as usize,
         )),
         _ => None,
     }
+}
+
+/// A key event's `sel`: `[start, end]` in characters, the focused text
+/// field's selection (#86).
+pub fn selection(v: Option<&Value>) -> Option<prism_core::SelectionEvent> {
+    let a = v?.as_array()?;
+    let at = |i: usize| a.get(i).and_then(Value::as_u64).map(|n| n as usize);
+    Some(prism_core::SelectionEvent::new(at(0)?, at(1)?))
 }
 
 fn color(c: Option<Color>) -> Value {
@@ -868,6 +887,15 @@ impl Widgets for RemoteWidgets {
 
     fn focus(&mut self, id: &NodeId) {
         self.ops.push(json!({ "op": "focus", "id": id }));
+    }
+
+    fn set_selection(&mut self, id: &NodeId, start: usize, end: usize) {
+        self.ops
+            .push(json!({ "op": "sel", "id": id, "start": start, "end": end }));
+    }
+
+    fn set_select_events(&mut self, id: &NodeId, on: bool) {
+        self.ops.push(json!({ "op": "selev", "id": id, "on": on }));
     }
 
     fn scroll_into_view(&mut self, id: &NodeId) {

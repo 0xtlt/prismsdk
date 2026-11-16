@@ -95,6 +95,7 @@ pub(crate) fn key_event(event: &NSEvent) -> Option<KeyEvent> {
         key: key_name(event.keyCode(), &chars)?,
         modifiers: modifiers(event.modifierFlags()),
         repeat: event.isARepeat(),
+        selection: None,
     })
 }
 
@@ -837,6 +838,14 @@ pub struct Interaction {
     pub(crate) layers: Vec<Retained<NSView>>,
     pub(crate) layer_window: Option<Retained<NSWindow>>,
     pub(crate) layer_host: Option<Retained<PrismView>>,
+    /// Text fields reporting their selection (`on_select`, #86).
+    pub(crate) select_events: HashSet<NodeId>,
+    /// Selections set on single-line inputs not being edited: applied
+    /// when the app focuses them (`cx.focus`), dropped when the user does
+    /// (their click places the caret). Characters.
+    pub(crate) pending_selection: HashMap<NodeId, (usize, usize)>,
+    /// The input the app asked to focus last.
+    pub(crate) app_focus: Option<NodeId>,
 }
 
 impl Interaction {
@@ -977,4 +986,74 @@ mod tests {
         };
         assert_eq!(overlay_area(pop, NSSize::new(300., 400.)), (260., 360.));
     }
+}
+
+// ---------------------------------------------------------------------------
+// Text field selections (#86)
+// ---------------------------------------------------------------------------
+
+/// The selection of `tv` (a text area, or the field editor of an input) in
+/// characters.
+pub(crate) fn text_selection(tv: &objc2_app_kit::NSTextView) -> prism_core::SelectionEvent {
+    let text = tv.string().to_string();
+    let r = tv.selectedRange();
+    let at = |u: usize| prism_native::fields::utf16_to_chars(&text, u);
+    prism_core::SelectionEvent::new(at(r.location), at(r.location + r.length))
+}
+
+/// Selects `start..end` (characters) in `tv`, clamped to its text.
+pub(crate) fn select_text(tv: &objc2_app_kit::NSTextView, start: usize, end: usize) {
+    let text = tv.string().to_string();
+    let at = |c: usize| prism_native::fields::chars_to_utf16(&text, c);
+    let (s, e) = (at(start), at(end.max(start)));
+    tv.setSelectedRange(objc2_foundation::NSRange::new(s, e - s));
+}
+
+/// The text field node `tv` edits: a text area, or the field editor of a
+/// text input (its delegate).
+pub(crate) fn text_node(tv: &objc2_app_kit::NSTextView) -> Option<NodeId> {
+    if let Some(t) = tv.downcast_ref::<crate::imp::PrismTextView>() {
+        return Some(t.ivars().id.get());
+    }
+    if !tv.isFieldEditor() {
+        return None;
+    }
+    let delegate = tv.delegate()?;
+    let obj: &AnyObject = delegate.as_ref();
+    let field = obj.downcast_ref::<objc2_app_kit::NSTextField>()?;
+    (field.tag() > 0).then(|| field.tag() as NodeId)
+}
+
+thread_local! {
+    /// The selection last reported for each field, and the fields whose
+    /// report is scheduled.
+    static REPORTED: RefCell<HashMap<NodeId, prism_core::SelectionEvent>> = RefCell::new(HashMap::new());
+    static SCHEDULED: RefCell<HashSet<NodeId>> = RefCell::new(HashSet::new());
+}
+
+/// `tv`'s selection changed (`NSTextViewDidChangeSelectionNotification`):
+/// reported on the next turn, once AppKit finished the edit (so after its
+/// `UiEvent::Input`), at most once per turn and only when it moved.
+pub(crate) fn selection_changed(tv: &objc2_app_kit::NSTextView, id: NodeId) {
+    if !SCHEDULED.with(|s| s.borrow_mut().insert(id)) {
+        return;
+    }
+    let tv: Retained<objc2_app_kit::NSTextView> = objc2::Message::retain(tv);
+    crate::imp::on_main_after(std::time::Duration::ZERO, move || {
+        SCHEDULED.with(|s| s.borrow_mut().remove(&id));
+        // The field editor moved on to another field meanwhile.
+        if text_node(&tv) != Some(id) {
+            return;
+        }
+        let sel = text_selection(&tv);
+        let old = REPORTED.with(|r| r.borrow_mut().insert(id, sel));
+        if old != Some(sel) {
+            crate::imp::dispatch(prism_core::UiEvent::Select(id, sel.start, sel.end));
+        }
+    });
+}
+
+/// Field `id` stopped reporting (or is gone).
+pub(crate) fn forget_selection(id: NodeId) {
+    REPORTED.with(|r| r.borrow_mut().remove(&id));
 }

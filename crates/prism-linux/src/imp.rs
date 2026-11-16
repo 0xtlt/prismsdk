@@ -452,6 +452,15 @@ fn attach_keys(window: &gtk::Window, keys: Rc<KeyState>) {
         let editing = focus
             .as_ref()
             .is_some_and(|f| f.is::<gtk::Text>() || f.is::<gtk::TextView>());
+        // In a text field: its selection before the key (#86).
+        let selection = focus.as_ref().and_then(|f| {
+            if let Some(t) = f.downcast_ref::<gtk::Text>() {
+                Some(editable_selection(t))
+            } else {
+                f.downcast_ref::<gtk::TextView>()
+                    .map(|v| buffer_selection(&v.buffer()))
+            }
+        });
         // The nearest focused node with `on_key_down`.
         let mut target = None;
         let mut next = focus.clone();
@@ -478,6 +487,7 @@ fn attach_keys(window: &gtk::Window, keys: Rc<KeyState>) {
                 key: name,
                 modifiers,
                 repeat,
+                selection,
             },
         ));
         if claimed {
@@ -539,6 +549,75 @@ thread_local! {
     static UPDATING: Cell<bool> = const { Cell::new(false) };
     /// What each text field sent and the app has not rendered back yet (#73).
     static TYPED: RefCell<HashMap<NodeId, prism_native::fields::Typed>> = RefCell::new(HashMap::new());
+}
+
+// ---------------------------------------------------------------------------
+// Text field selections (#86): GTK counts characters, like Prism
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    /// Fields reporting their selection (`on_select`).
+    static SELECT_EVENTS: RefCell<HashSet<NodeId>> = RefCell::new(HashSet::new());
+    /// The selection last reported, and the one waiting to be, by field.
+    static REPORTED: RefCell<HashMap<NodeId, prism_core::SelectionEvent>> = RefCell::new(HashMap::new());
+    static PENDING_SELECTION: RefCell<HashMap<NodeId, prism_core::SelectionEvent>> = RefCell::new(HashMap::new());
+    /// Entries the app set a selection on: `cx.focus` keeps it (instead of
+    /// selecting everything).
+    static APP_SELECTED: RefCell<HashSet<NodeId>> = RefCell::new(HashSet::new());
+}
+
+/// The selection of an editable (an entry, its inner `GtkText`), in characters.
+pub(crate) fn editable_selection(e: &impl IsA<gtk::Editable>) -> prism_core::SelectionEvent {
+    match e.selection_bounds() {
+        Some((a, b)) => prism_core::SelectionEvent::new(a.max(0) as usize, b.max(0) as usize),
+        None => prism_core::SelectionEvent::caret(e.position().max(0) as usize),
+    }
+}
+
+/// The selection of a text buffer, in characters.
+pub(crate) fn buffer_selection(b: &gtk::TextBuffer) -> prism_core::SelectionEvent {
+    match b.selection_bounds() {
+        Some((s, e)) => {
+            prism_core::SelectionEvent::new(s.offset().max(0) as usize, e.offset().max(0) as usize)
+        }
+        None => prism_core::SelectionEvent::caret(
+            b.iter_at_mark(&b.get_insert()).offset().max(0) as usize
+        ),
+    }
+}
+
+/// Field `id`'s selection may have moved to `sel` (typing, the pointer,
+/// keys): reported once per main-loop turn, after the `Input` of the same
+/// edit (a lower priority than `dispatch`), only when it moved, and never
+/// for Prism's own changes.
+pub(crate) fn report_selection(id: NodeId, sel: prism_core::SelectionEvent) {
+    if UPDATING.get() || !SELECT_EVENTS.with(|s| s.borrow().contains(&id)) {
+        return;
+    }
+    let first = PENDING_SELECTION.with(|p| p.borrow_mut().insert(id, sel).is_none());
+    if !first {
+        return;
+    }
+    glib::idle_add_local_full(glib::Priority::LOW, move || {
+        let sel = PENDING_SELECTION.with(|p| p.borrow_mut().remove(&id));
+        if let Some(sel) = sel
+            && SELECT_EVENTS.with(|s| s.borrow().contains(&id))
+            && REPORTED.with(|r| r.borrow_mut().insert(id, sel)) != Some(sel)
+        {
+            with_state(|s| {
+                let patches = s.runtime.dispatch(UiEvent::Select(id, sel.start, sel.end));
+                commit(s, patches);
+            });
+        }
+        glib::ControlFlow::Break
+    });
+}
+
+fn forget_selection(id: NodeId) {
+    APP_SELECTED.with(|s| s.borrow_mut().remove(&id));
+    SELECT_EVENTS.with(|s| s.borrow_mut().remove(&id));
+    REPORTED.with(|r| r.borrow_mut().remove(&id));
+    PENDING_SELECTION.with(|p| p.borrow_mut().remove(&id));
 }
 
 /// The user typed `text` in field `id`: remembered until the app renders it
@@ -1103,6 +1182,12 @@ impl Widgets for Gtk {
             NodeKind::TextInput => {
                 let e = gtk::Entry::new();
                 e.connect_changed(move |e| dispatch_typed(id, e.text().to_string()));
+                // The caret and the selection's other end (#86).
+                for prop in ["cursor-position", "selection-bound"] {
+                    e.connect_notify_local(Some(prop), move |e, _| {
+                        report_selection(id, editable_selection(e))
+                    });
+                }
                 // Enter.
                 e.connect_activate(move |_| dispatch(UiEvent::Submit(id)));
                 View::Input(id, e)
@@ -1676,6 +1761,7 @@ impl Widgets for Gtk {
     fn destroy(&mut self, view: &View) {
         let id = view.id();
         TYPED.with(|t| t.borrow_mut().remove(&id));
+        forget_selection(id);
         crate::navbar::forget(id);
         self.shapes.remove(&id);
         self.controls.remove(&id);
@@ -2296,6 +2382,28 @@ impl Widgets for Gtk {
         }
     }
 
+    /// Text field selections (#86), in characters like GTK.
+    fn set_selection(&mut self, view: &View, start: usize, end: usize) {
+        match view {
+            View::Input(id, e) => {
+                let len = e.text().chars().count();
+                e.select_region(start.min(len) as i32, end.min(len) as i32);
+                APP_SELECTED.with(|s| s.borrow_mut().insert(*id));
+            }
+            View::TextArea(_, t) => t.select(start, end),
+            _ => {}
+        }
+    }
+
+    fn set_select_events(&mut self, view: &View, on: bool) {
+        let id = view.id();
+        if on {
+            SELECT_EVENTS.with(|s| s.borrow_mut().insert(id));
+        } else {
+            forget_selection(id);
+        }
+    }
+
     fn set_key_events(&mut self, view: &View, local: bool, global: bool) {
         let id = view.id();
         let set = |s: &RefCell<HashSet<NodeId>>, on: bool| {
@@ -2345,9 +2453,19 @@ impl Widgets for Gtk {
         if target.is::<gtk::Box>() && !target.is_focusable() {
             target.set_focusable(true);
         }
+        // An entry keeps the selection the app gave it (#86).
+        let keep = match view {
+            View::Input(id, _) => APP_SELECTED.with(|s| s.borrow().contains(id)),
+            _ => false,
+        };
         // After the layout pass: a new widget is not mapped yet.
-        glib::idle_add_local_once(move || {
-            target.grab_focus();
+        glib::idle_add_local_once(move || match target.downcast_ref::<gtk::Entry>() {
+            Some(e) if keep => {
+                e.grab_focus_without_selecting();
+            }
+            _ => {
+                target.grab_focus();
+            }
         });
     }
 

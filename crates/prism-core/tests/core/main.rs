@@ -14,6 +14,7 @@ mod pictures;
 mod reconcile;
 mod request;
 mod router;
+mod selection;
 mod spawn;
 mod storage;
 mod typography;
