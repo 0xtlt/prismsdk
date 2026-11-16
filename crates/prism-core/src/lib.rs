@@ -266,6 +266,25 @@ impl Runtime {
         self.render_dirty()
     }
 
+    /// The first render, then the work it started, for a first paint with
+    /// its data (the web backend's server-rendered page): while
+    /// [`background`](AsyncApp::background) work (HTTP, database, files)
+    /// started by `init`, a constructor or a `render` is in flight, waits
+    /// for it, runs the tasks it resumes and renders what they changed,
+    /// until none is left or `timeout` passes. Returns every patch, in
+    /// order. Timers and channels are not waited for, so a clock or a live
+    /// feed does not hold the paint; past `timeout`, what is still loading
+    /// shows its loading state and updates later through [`poll`](Self::poll).
+    /// A zero `timeout` is [`render`](Self::render).
+    pub fn render_settled(&mut self, timeout: std::time::Duration) -> Vec<Patch> {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut patches = self.render();
+        while self.app.executor.wait_for_work(deadline) {
+            patches.extend(self.poll());
+        }
+        patches
+    }
+
     /// Runs the handler for `event`, then re-renders the entities it touched.
     pub fn dispatch(&mut self, event: UiEvent) -> Vec<Patch> {
         match event {

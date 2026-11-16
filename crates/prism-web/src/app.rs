@@ -51,6 +51,9 @@ pub(crate) struct Inner {
     pub idle_timeout: Option<std::time::Duration>,
     /// Live sessions now.
     pub sessions: Arc<std::sync::atomic::AtomicUsize>,
+    /// How long a first render waits for the background work it started
+    /// (`first_paint_wait`).
+    pub first_paint_wait: std::time::Duration,
 
     // --- Islands: client-side Web Components ---
     /// The WASM islands `prism` built (`PRISM_ISLANDS_DIR`).
@@ -94,6 +97,7 @@ impl WebApp {
                 max_sessions: None,
                 idle_timeout: None,
                 sessions: Default::default(),
+                first_paint_wait: std::time::Duration::ZERO,
                 islands,
                 strict_csp: env("PRISM_STRICT_CSP").is_some_and(|v| v != "0"),
             }),
@@ -460,7 +464,7 @@ impl WebApp {
         let mut html = HtmlBackend::default();
         html.asset_urls = Some(asset_urls);
         html.base.clone_from(&self.inner.base);
-        html.apply(&runtime.render());
+        html.apply(&runtime.render_settled(self.inner.first_paint_wait));
         let not_found = runtime.app.shows_not_found();
         let title = match html.screen_title() {
             Some(screen) if screen != config.title => format!("{screen} · {}", config.title),
@@ -662,6 +666,21 @@ impl WebApp {
     /// reconnects (to a fresh session) at the next interaction.
     pub fn idle_timeout(self, timeout: std::time::Duration) -> Self {
         self.configure(|i| i.idle_timeout = Some(timeout))
+    }
+
+    /// Lets the first paint wait up to `timeout` for the data it loads.
+    ///
+    /// A screen that loads with `cx.spawn` + `cx.background` (HTTP, a
+    /// database, files), from `init`, its constructor or `render`, otherwise
+    /// ships its loading state in the server-rendered page and gets its data
+    /// once the socket connects. With a wait, the page is rendered after
+    /// that work ends (each step it starts is waited for too), or at
+    /// `timeout` with what is still loading as today. The live session's
+    /// first tree waits the same way, so the page does not go back to its
+    /// loading state when the socket connects. Timers and channels are not
+    /// waited for. Zero (the default) renders at once.
+    pub fn first_paint_wait(self, timeout: std::time::Duration) -> Self {
+        self.configure(|i| i.first_paint_wait = timeout)
     }
 
     /// Live sessions right now.

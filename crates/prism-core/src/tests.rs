@@ -1473,6 +1473,105 @@ fn tasks_sleep_update_state_and_await_background_work() {
     assert!(!rt.has_tasks());
 }
 
+/// Loads in two steps of background work from its first render, next to a
+/// clock that ticks forever.
+struct Loader {
+    /// How long each step of background work takes.
+    step: Duration,
+    started: bool,
+    loaded: Option<u32>,
+}
+
+impl Render for Loader {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.started {
+            self.started = true;
+            let step = self.step;
+            cx.spawn(async move |this, cx| {
+                let first = cx
+                    .background(move || {
+                        std::thread::sleep(step);
+                        1
+                    })
+                    .await;
+                let second = cx
+                    .background(move || {
+                        std::thread::sleep(step);
+                        first + 1
+                    })
+                    .await;
+                cx.update_entity(&this, |l, _| l.loaded = Some(second));
+            });
+            cx.spawn(async move |_, cx| {
+                loop {
+                    cx.sleep(Duration::from_millis(5)).await;
+                }
+            });
+        }
+        text(match self.loaded {
+            Some(n) => format!("loaded {n}"),
+            None => "loading".into(),
+        })
+    }
+}
+
+fn loader(step: Duration) -> Runtime {
+    let init: AppInit = Arc::new(move |cx: &mut App| {
+        let root = cx.new_entity(|_| Loader {
+            step,
+            started: false,
+            loaded: None,
+        });
+        cx.set_root(root);
+    });
+    Runtime::new(&init)
+}
+
+fn shows(patches: &[Patch], text: &str) -> bool {
+    patches
+        .iter()
+        .any(|p| matches!(p, Patch::SetText { text: t, .. } if t == text))
+}
+
+#[test]
+fn a_settled_render_waits_for_the_background_work_it_started() {
+    let mut rt = loader(Duration::from_millis(30));
+    let start = Instant::now();
+    let patches = rt.render_settled(Duration::from_secs(5));
+    // Both steps ran; the clock, a timer, did not hold the render up.
+    assert!(shows(&patches, "loaded 2"), "{patches:?}");
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        start.elapsed()
+    );
+    assert!(rt.has_tasks(), "the clock still runs");
+}
+
+#[test]
+fn a_settled_render_stops_at_its_deadline() {
+    let mut rt = loader(Duration::from_millis(400));
+    let start = Instant::now();
+    let patches = rt.render_settled(Duration::from_millis(50));
+    assert!(start.elapsed() < Duration::from_millis(350));
+    assert!(shows(&patches, "loading") && !shows(&patches, "loaded 2"));
+    // What was still loading arrives later, as without a wait.
+    let start = Instant::now();
+    let mut later = Vec::new();
+    while !shows(&later, "loaded 2") {
+        assert!(start.elapsed() < Duration::from_secs(5), "timed out");
+        std::thread::sleep(Duration::from_millis(5));
+        later.extend(rt.poll());
+    }
+}
+
+#[test]
+fn a_settled_render_without_a_wait_is_a_render() {
+    let mut rt = loader(Duration::from_millis(30));
+    let patches = rt.render_settled(Duration::ZERO);
+    assert!(shows(&patches, "loading") && !shows(&patches, "loaded 2"));
+}
+
 #[test]
 fn cancelled_tasks_never_run() {
     let mut app = App::new();

@@ -1385,6 +1385,36 @@ fn a_task_spawned_during_render_reaches_the_page_without_a_message() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+#[test]
+fn the_first_paint_waits_for_the_data_it_loads() {
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| LazyLoad::default());
+        cx.set_root(root);
+    });
+    let page = |app: &WebApp| {
+        let r = app.handle(&Request::get("/").body(()).unwrap());
+        String::from_utf8(r.body().clone()).unwrap()
+    };
+    let (app, dir) = web_app(init.clone(), "first-paint-now");
+    assert!(
+        page(&app).contains(">loading<"),
+        "no wait: the loading state"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+
+    let (app, dir) = web_app(init, "first-paint-wait");
+    let app = app.first_paint_wait(Duration::from_secs(5));
+    let html = page(&app);
+    assert!(html.contains(">loaded 7<"), "{html}");
+    // The live tree that replaces it has the data too: no loading flash.
+    let live = Page::open(&app, "/ws?path=%2F&w=1280&h=800");
+    let reset = live.next();
+    assert_eq!(reset["t"], "reset");
+    op_with_text(&reset["p"], "loaded 7");
+    live.session.close();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 struct Wide;
 impl Render for Wide {
     fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {

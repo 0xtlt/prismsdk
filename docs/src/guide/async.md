@@ -42,3 +42,5 @@ cx.spawn(async move |this, cx| {
 })
 .cancel_on_release();                                          // stops when the screen closes
 ```
+
+**On the web**, data loaded this way is not in the server-rendered first paint unless the app sets `WebApp::first_paint_wait(timeout)`: the page then waits, up to `timeout`, for the `background` work its first render started. See [Web](../platforms/web.md#data-in-the-first-paint).
