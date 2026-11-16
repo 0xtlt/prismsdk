@@ -147,6 +147,28 @@ pub fn model_id() -> Option<String> {
 #[cfg(feature = "apple-bridge")]
 pub use bridge::{DeviceMessage, device_call, security_capabilities, set_device_sink};
 
+/// The configurations of a configurable widget kind that the widget
+/// extension recorded in the App Group (the instances the system shows): the
+/// source for [`prism_core::App::set_widget_configurations_source`].
+#[cfg(feature = "apple-bridge")]
+pub fn widget_configurations(kind: &str) -> Vec<prism_core::WidgetConfig> {
+    use std::ffi::{CStr, CString, c_char, c_void};
+    unsafe extern "C" {
+        fn prism_widgets_configurations(kind: *const c_char) -> *mut c_char;
+        fn free(p: *mut c_void);
+    }
+    let Ok(kind) = CString::new(kind) else {
+        return Vec::new();
+    };
+    let p = unsafe { prism_widgets_configurations(kind.as_ptr()) };
+    if p.is_null() {
+        return Vec::new();
+    }
+    let json = unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
+    unsafe { free(p.cast()) };
+    prism_core::WidgetConfig::list_from_json(&json)
+}
+
 /// Remote push (APNs) through the Swift bridge.
 #[cfg(feature = "apple-bridge")]
 #[path = "apple_push.rs"]

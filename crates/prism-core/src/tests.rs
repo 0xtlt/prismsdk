@@ -779,6 +779,276 @@ fn widgets_rerender_from_state_once_per_event() {
     );
 }
 
+// --- Configurable widgets ---------------------------------------------------
+
+use crate::surfaces::WidgetSnapshot;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+/// Rooms an app could add at runtime, and the widget showing one of them.
+fn rooms_widget(rooms: Rc<RefCell<Vec<(&'static str, &'static str)>>>) -> Widget {
+    Widget::new("reading", "Reading")
+        .families(&[WidgetFamily::Small])
+        .parameter(
+            WidgetParameter::new("place", "Place")
+                .options(move |_| {
+                    rooms
+                        .borrow()
+                        .iter()
+                        .map(|(id, title)| WidgetOption::new(*id, *title))
+                        .collect()
+                })
+                .default("all"),
+        )
+        .parameter(WidgetParameter::new("metric", "Measure").options(|_| {
+            vec![
+                WidgetOption::new("co2", "CO2"),
+                WidgetOption::new("temp", "Temperature"),
+            ]
+        }))
+        .render_configured(|_, _, config| {
+            text(format!(
+                "{}/{}",
+                config.get("place").unwrap_or("-"),
+                config.get("metric").unwrap_or("-")
+            ))
+        })
+}
+
+fn widget_snapshots(app: &mut App) -> Vec<WidgetSnapshot> {
+    app.take_requests()
+        .into_iter()
+        .find_map(|r| match r {
+            PlatformRequest::ReloadWidgets(snaps) => Some(snaps),
+            _ => None,
+        })
+        .expect("a widget reload")
+}
+
+fn config(place: &str, metric: &str) -> WidgetConfig {
+    WidgetConfig::new()
+        .with("place", place)
+        .with("metric", metric)
+}
+
+#[test]
+fn widget_parameters_are_described_for_the_bundler() {
+    let rooms = Rc::new(RefCell::new(vec![("all", "Everywhere")]));
+    let mut app = App::new();
+    app.register_widget(rooms_widget(rooms));
+    app.register_widget(Widget::new("plain", "Plain"));
+    assert_eq!(
+        app.describe_widgets(),
+        concat!(
+            r#"[{"kind":"reading","name":"Reading","description":"","families":["systemSmall"],"#,
+            r#""parameters":[{"id":"place","title":"Place"},{"id":"metric","title":"Measure"}]},"#,
+            r#"{"kind":"plain","name":"Plain","description":"","families":["systemSmall","systemMedium"],"parameters":[]}]"#
+        )
+    );
+}
+
+#[test]
+fn small_option_sets_render_every_configuration() {
+    let rooms = Rc::new(RefCell::new(vec![("all", "Everywhere"), ("1", "Kitchen")]));
+    let mut app = App::new();
+    app.register_widget(rooms_widget(rooms));
+    let snaps = widget_snapshots(&mut app);
+    let snap = &snaps[0];
+    // Explicit default for "place", the first option for "metric".
+    assert_eq!(snap.default, config("all", "co2"));
+    assert!(snap.families[0].1.contains("all/co2"));
+    // 2 × 2 combinations: the default plus the three others.
+    let mut others: Vec<_> = snap.configs.iter().map(|(c, _)| c.clone()).collect();
+    others.sort_by_key(WidgetConfig::to_json);
+    assert_eq!(
+        others,
+        vec![
+            config("1", "co2"),
+            config("1", "temp"),
+            config("all", "temp")
+        ]
+    );
+    for (c, fams) in &snap.configs {
+        let label = format!("{}/{}", c.get("place").unwrap(), c.get("metric").unwrap());
+        assert!(fams[0].1.contains(&label), "{label} in {}", fams[0].1);
+    }
+    assert!(
+        snap.families_for(&config("1", "temp"))[0]
+            .1
+            .contains("1/temp")
+    );
+    // An unknown configuration falls back to the default's snapshot.
+    assert!(
+        snap.families_for(&config("9", "temp"))[0]
+            .1
+            .contains("all/co2")
+    );
+    // The extension reads the options and the configurations from the JSON.
+    let json = snap.to_json();
+    assert!(json.contains(
+        r#""parameters":[{"id":"place","default":"all","options":[{"id":"all","title":"Everywhere"},{"id":"1","title":"Kitchen"}]},"#
+    ));
+    assert!(json.contains(r#""default":{"metric":"co2","place":"all"}"#));
+    assert!(json.contains(r#"{"values":{"metric":"temp","place":"1"},"families":{"systemSmall":"#));
+    assert!(
+        crate::push::Json::parse(&json).is_some(),
+        "valid JSON: {json}"
+    );
+}
+
+#[test]
+fn static_widgets_keep_their_snapshot_format() {
+    let mut app = App::new();
+    app.register_widget(Widget::new("plain", "Plain").render(|_, _| text("hi")));
+    let snaps = widget_snapshots(&mut app);
+    let json = snaps[0].to_json();
+    assert!(
+        !json.contains("parameters") && !json.contains("configs"),
+        "{json}"
+    );
+    assert!(snaps[0].configs.is_empty() && snaps[0].default.is_empty());
+}
+
+#[test]
+fn large_option_sets_render_the_default_and_the_recorded_configurations() {
+    let many: Vec<(&'static str, &'static str)> = (0..20)
+        .map(|i| -> (&'static str, &'static str) {
+            let id: &'static str = Box::leak(i.to_string().into_boxed_str());
+            (id, id)
+        })
+        .collect();
+    let rooms = Rc::new(RefCell::new(many));
+    let mut app = App::new();
+    app.register_widget(rooms_widget(rooms));
+    // Without a record: only the default ("all" is no option here: the first is).
+    let snaps = widget_snapshots(&mut app);
+    assert_eq!(snaps[0].default, config("0", "co2"));
+    assert!(snaps[0].configs.is_empty());
+
+    let recorded = Rc::new(RefCell::new(vec![
+        config("5", "temp"),
+        // A removed option falls back to the default; an unknown parameter is dropped.
+        WidgetConfig::new()
+            .with("place", "gone")
+            .with("metric", "temp")
+            .with("x", "y"),
+        config("5", "temp"),
+    ]));
+    let source = recorded.clone();
+    app.set_widget_configurations_source(move |kind| {
+        assert_eq!(kind, "reading");
+        source.borrow().clone()
+    });
+    app.reload_widgets();
+    let snaps = widget_snapshots(&mut app);
+    let configs: Vec<_> = snaps[0].configs.iter().map(|(c, _)| c.clone()).collect();
+    assert_eq!(configs, vec![config("5", "temp"), config("0", "temp")]);
+    assert!(snaps[0].configs[0].1[0].1.contains("5/temp"));
+
+    // Never more than MAX_CONFIGURATIONS per kind.
+    *recorded.borrow_mut() = (0..20).map(|i| config(&i.to_string(), "temp")).collect();
+    app.reload_widgets();
+    let snaps = widget_snapshots(&mut app);
+    assert_eq!(snaps[0].configs.len() + 1, Widget::MAX_CONFIGURATIONS);
+}
+
+#[test]
+fn options_are_read_again_on_each_reload() {
+    let rooms = Rc::new(RefCell::new(vec![("all", "Everywhere")]));
+    let mut app = App::new();
+    app.register_widget(rooms_widget(rooms.clone()));
+    let snaps = widget_snapshots(&mut app);
+    assert_eq!(snaps[0].parameters[0].2.len(), 1);
+    rooms.borrow_mut().push(("2", "Bedroom"));
+    app.reload_widgets();
+    let snaps = widget_snapshots(&mut app);
+    assert_eq!(
+        snaps[0].parameters[0].2,
+        vec![
+            WidgetOption::new("all", "Everywhere"),
+            WidgetOption::new("2", "Bedroom")
+        ]
+    );
+    assert!(
+        snaps[0].families_for(&config("2", "temp"))[0]
+            .1
+            .contains("2/temp")
+    );
+}
+
+#[test]
+fn becoming_active_reloads_widgets_for_new_configurations() {
+    let many: Vec<(&'static str, &'static str)> = (0..20)
+        .map(|i| -> (&'static str, &'static str) {
+            let id: &'static str = Box::leak(format!("r{i}").into_boxed_str());
+            (id, id)
+        })
+        .collect();
+    let rooms = Rc::new(RefCell::new(many));
+    let recorded = Rc::new(RefCell::new(Vec::<WidgetConfig>::new()));
+    let mut app = App::new();
+    let source = recorded.clone();
+    app.set_widget_configurations_source(move |_| source.borrow().clone());
+    app.register_widget(rooms_widget(rooms));
+    widget_snapshots(&mut app);
+    // Nothing new: no reload.
+    app.set_lifecycle(Lifecycle::Background);
+    app.set_lifecycle(Lifecycle::Active);
+    assert!(app.take_requests().is_empty());
+    // A widget added on the home screen while the app was away.
+    recorded.borrow_mut().push(config("r3", "temp"));
+    app.set_lifecycle(Lifecycle::Background);
+    app.set_lifecycle(Lifecycle::Active);
+    let snaps = widget_snapshots(&mut app);
+    assert!(
+        snaps[0].families_for(&config("r3", "temp"))[0]
+            .1
+            .contains("r3/temp")
+    );
+}
+
+#[test]
+fn recorded_configurations_parse_from_the_extension_json() {
+    let list = WidgetConfig::list_from_json(
+        r#"[{"place":"1","metric":"co2"},{"metric":"temp"},"junk",{"n":3}]"#,
+    );
+    assert_eq!(
+        list,
+        vec![
+            config("1", "co2"),
+            WidgetConfig::new().with("metric", "temp"),
+            WidgetConfig::new(),
+        ]
+    );
+    assert!(WidgetConfig::list_from_json("not json").is_empty());
+    assert_eq!(
+        config("1", "co2").to_json(),
+        r#"{"metric":"co2","place":"1"}"#
+    );
+}
+
+#[test]
+fn render_without_configuration_still_works_with_parameters() {
+    // `render(cx, family)` ignores the configuration: every instance looks the same.
+    let mut app = App::new();
+    app.register_widget(
+        Widget::new("w", "W")
+            .families(&[WidgetFamily::Small])
+            .parameter(
+                WidgetParameter::new("p", "P")
+                    .options(|_| vec![WidgetOption::new("a", "A"), WidgetOption::new("b", "B")]),
+            )
+            .render(|_, _| text("same")),
+    );
+    let snaps = widget_snapshots(&mut app);
+    assert_eq!(snaps[0].configs.len(), 1);
+    assert!(
+        snaps[0].families_for(&WidgetConfig::new().with("p", "b"))[0]
+            .1
+            .contains("same")
+    );
+}
+
 #[test]
 fn activities_and_notifications_become_requests() {
     let mut app = App::new();

@@ -3704,6 +3704,10 @@ pub fn run(config: AppConfig, init: AppInit) {
             device_info: Some(crate::device_info::current(&window)),
         },
     );
+    // Configurable widgets: the instances the extension saw on screen.
+    runtime
+        .app
+        .set_widget_configurations_source(prism_native::apple::widget_configurations);
     let renderer = NativeRenderer::new(AppKit {
         mtm,
         target: target.clone(),

@@ -189,6 +189,9 @@ impl App {
             return;
         }
         self.background.lifecycle = phase;
+        if phase == Lifecycle::Active {
+            self.check_widget_configurations();
+        }
         for handler in self.background.handlers.clone() {
             handler(phase, self);
         }

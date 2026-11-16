@@ -103,7 +103,8 @@ pub use storage::{FileStorage, MemoryStorage, Storage};
 pub use style::*;
 pub use surfaces::{
     Activity, ActivityId, Capabilities, Notification, NotificationAction, NotificationResponse,
-    PlatformRequest, PlatformServices, SNode, Widget, WidgetFamily,
+    PlatformRequest, PlatformServices, SNode, Widget, WidgetConfig, WidgetFamily, WidgetOption,
+    WidgetParameter,
 };
 pub use task::{AsyncApp, Background, Sleep, TaskHandle, WakeUi};
 pub use task::{DEFAULT_BACKGROUND_THREADS, background_threads, set_background_threads};
@@ -590,9 +591,10 @@ pub mod prelude {
         Permission, PermissionState, PickImages, PickedFile, Platform, Pose, Posture, PushEvent,
         PushMessage, PushService, PushSubscription, Render, ReturnKey, Role, Router, ScrollEvent,
         SecureOptions, Share, Styled, SwipeDirection, Transition, Translations, Tray, VirtualList,
-        Watch, Widget, WidgetFamily, adaptive, button, date_picker, div, go_back, image, lazy,
-        navigate_to, picker, picture, progress, px, relative, rgb, rgba, screen, scroll, shape,
-        slider, spinner, text, text_area, text_input, timer, toggle,
+        Watch, Widget, WidgetConfig, WidgetFamily, WidgetOption, WidgetParameter, adaptive, button,
+        date_picker, div, go_back, image, lazy, navigate_to, picker, picture, progress, px,
+        relative, rgb, rgba, screen, scroll, shape, slider, spinner, text, text_area, text_input,
+        timer, toggle,
     };
     pub use crate::{GridTrack, ScrollAxis, auto_fill, auto_fit, fr, minmax, repeat, scroll_x};
     // Typography and rich text.

@@ -46,4 +46,47 @@ cx.on_notification_response(|r, app| match r.action.as_deref() { Some("note") =>
 
 How it works: Prism resolves the elements into a static snapshot (compact JSON, under ActivityKit's 4 KB limit). A **generic SwiftUI renderer** shipped with Prism (`crates/prism-apple-build/apple/Extension`) draws it in a WidgetKit extension. `crates/prism-cli/platform/scripts/ios-run.sh` generates that extension from the app's registered widgets, then builds and signs it with the App Group. Apps that register no widget and declare no Live Activity (`cx.enable_live_activities()` at startup, or a push-to-start handler `cx.on_activity_push_token`) are bundled without the extension, its provisioning profile and the App Group: on iOS, `start_activity` then fails with a log line saying so. macOS draws Live Activities in the app (a menu bar item), so there only widgets need the extension. Android adds one widget receiver per registered widget. The Rust app talks to WidgetKit/ActivityKit/UserNotifications through a small Swift bridge linked automatically (`crates/prism-apple-build`). Platforms implement `PlatformServices`; apps query `cx.capabilities()` instead of checking the OS.
 
+## Configurable widgets
+
+A widget can have **parameters** the user picks per instance in the system's « Edit widget » sheet (long-press the widget), like the city of a weather widget. Several instances of one kind then show different things:
+
+```rust
+cx.register_widget(
+    Widget::new("reading", "Measure")
+        .families(&[WidgetFamily::Small, WidgetFamily::Medium])
+        // One row of the edit sheet. The options come from app state and are
+        // read again on every widget reload: the sheet lists the current ones.
+        .parameter(
+            WidgetParameter::new("place", "Place")
+                .options(move |cx| rooms.read(cx).iter().map(|r| WidgetOption::new(r.id.to_string(), &r.name)).collect())
+                .default("all"), // otherwise the first option
+        )
+        .parameter(WidgetParameter::new("metric", "Measure").options(|_| vec![
+            WidgetOption::new("co2", "CO2"),
+            WidgetOption::new("temp", "Temperature"),
+        ]))
+        // The instance's configuration: every parameter has a value (the
+        // default where the user picked nothing, or picked an option that is gone).
+        .render_configured(move |cx, family, config| {
+            let place = config.get("place").unwrap_or("all");
+            text(format!("{} · {}", place, config.get("metric").unwrap_or("co2")))
+        }),
+);
+cx.reload_widgets_on(&rooms); // new rooms show up in the sheet, every configuration is redrawn
+```
+
+`render(|cx, family| …)` keeps working (every instance then looks the same); `render_configured` adds the configuration. Widgets without parameters are unchanged (a `StaticConfiguration` on Apple platforms).
+
+**Apple (iOS 17+, iPadOS, macOS 14+, visionOS 26)**: the generated extension declares an `AppIntentConfiguration` for a kind with parameters: a `WidgetConfigurationIntent` with one optional `@Parameter` per parameter, each an `AppEntity` whose `EntityQuery` lists the options the app last wrote to the App Group (`suggestedEntities`, `entities(for:)`, and `defaultResult` for the default). The bundler also runs the App Intents metadata extraction Xcode would (`appintentsmetadataprocessor`), which WidgetKit needs to show the sheet. On a simulator slimmed with `simslim`, `prism run ios` keeps `linkd` and `siriactionsd` running for such apps: without them the widget stays a grey placeholder with no « Edit widget » (re-slim a simulator slimmed before with `simslim on <udid> --except widgets --keep com.apple.linkd,com.apple.siriactionsd`).
+
+**Which configurations are drawn**: the extension cannot run the app, so the app renders snapshots ahead of time, on every reload, at most `Widget::MAX_CONFIGURATIONS` (16) per kind, in this order:
+
+1. the default configuration;
+2. the configurations of the instances on screen: each time WidgetKit asks the extension for a timeline, it records them (the one asked for first, then `WidgetCenter`'s current configurations) in the App Group, and the app reads them back on its next reload;
+3. when every combination of options fits in the limit (here 3 rooms × 2 measures = 6), all of them, so any choice in the sheet shows at once.
+
+A choice that was not drawn yet (many options, freshly picked in the sheet) shows « Open the app to set up this widget. » rather than another configuration's content. The app redraws as soon as it becomes active again when the instances on screen changed while it was away, and on every `reload_widgets`. Options are a list in the edit sheet: keep them to what a person can scroll through.
+
+**Android** has no edit sheet for app widgets yet (a configuration activity is not generated): configurable widgets show their default configuration. Web and Linux have no home-screen widgets.
+
 **Light & dark**: colors can be adaptive, `adaptive(rgb(0xFFFFFF), rgb(0x1C1C22))`, resolved natively everywhere: CSS `light-dark()`, dynamic `UIColor`/`NSColor`, SwiftUI color scheme in widgets and Live Activities. `Theme::system()` makes the whole component library follow the system appearance live.
