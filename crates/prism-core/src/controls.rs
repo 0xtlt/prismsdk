@@ -11,7 +11,7 @@
 //! | `TextInput`, `TextArea` | [`InputConfig`]: `secure keyboard=email return=done capitalize=none autocorrect=off max=40`, then one suggestion per line ([`input_suggestions`]) | – |
 //! | `Checkbox` | – | 0 or 1 |
 //! | `RadioGroup` | [`RadioConfig`]: `row` or `column`, then options one per line | the selected index (-1: none) |
-//! | `Overlay` | [`OverlayConfig`]: `sheet`/`popover`/`dialog`, `fixed`, `medium`, `manual`, `keepfocus`, `side=top`/`trailing`/`leading`, `align=center`/`end` | 1 open, 0 closed |
+//! | `Overlay` | [`OverlayConfig`]: `sheet`/`popover`/`dialog`, `fixed`, `medium`, `manual`, `keepfocus`, `side=top`/`trailing`/`leading`, `align=center`/`end`, `placed`, `backdrop=clear`, `size=320x400` | 1 open, 0 closed |
 
 /// A slider's range. `step == 0` is continuous.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -461,6 +461,16 @@ impl PopoverSide {
             PopoverSide::Leading => PopoverSide::Trailing,
         }
     }
+
+    /// Whether it puts the overlay to the right of its anchor, given the
+    /// layout direction (`None` below and above).
+    pub fn is_right(self, rtl: bool) -> Option<bool> {
+        match self {
+            PopoverSide::Leading => Some(rtl),
+            PopoverSide::Trailing => Some(!rtl),
+            _ => None,
+        }
+    }
 }
 
 /// How a popover lines up with its anchor along the side it opens on
@@ -502,6 +512,98 @@ impl PopoverAlign {
     }
 }
 
+/// What a sheet or dialog shows over the page behind it (#79). See
+/// [`Overlay::backdrop`](crate::Overlay::backdrop).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Backdrop {
+    /// Nothing: the page stays as it is (still out of reach while the
+    /// overlay is open, and a click on it still closes the overlay).
+    Clear,
+    /// A plain dim.
+    Dim,
+    /// A dim with the page blurred under it (where the platform can).
+    Blur,
+}
+
+impl Backdrop {
+    fn token(self) -> &'static str {
+        match self {
+            Backdrop::Clear => "clear",
+            Backdrop::Dim => "dim",
+            Backdrop::Blur => "blur",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "clear" => Backdrop::Clear,
+            "dim" => Backdrop::Dim,
+            "blur" => Backdrop::Blur,
+            _ => return None,
+        })
+    }
+}
+
+/// Where an overlay of `size` goes on `side` of `anchor`, inside `area`
+/// (rectangles are `(x, y, width, height)`, y down), `gap` away: on its
+/// side, or on the opposite one when its side has no room, lined up with
+/// the anchor as `align` says and kept inside `area`. `None` when neither
+/// side has room: a placed dialog is then centered (#79).
+pub fn place_beside(
+    anchor: (f32, f32, f32, f32),
+    size: (f32, f32),
+    area: (f32, f32, f32, f32),
+    side: PopoverSide,
+    align: PopoverAlign,
+    rtl: bool,
+    gap: f32,
+) -> Option<(f32, f32)> {
+    let (ax, ay, aw, ah) = anchor;
+    let (w, h) = size;
+    let (bx, by, bw, bh) = area;
+    let clamp = |v: f32, lo: f32, len: f32, max: f32| v.min(lo + max - len).max(lo);
+    let fits = |s: PopoverSide| match s.is_right(rtl) {
+        Some(true) => ax + aw + gap + w <= bx + bw,
+        Some(false) => ax - gap - w >= bx,
+        None if s == PopoverSide::Bottom => ay + ah + gap + h <= by + bh,
+        None => ay - gap - h >= by,
+    };
+    let side = [side, side.opposite()].into_iter().find(|&s| fits(s))?;
+    Some(match side.is_right(rtl) {
+        Some(right) => {
+            let y = match align {
+                PopoverAlign::Start => ay,
+                PopoverAlign::Center => ay + (ah - h) / 2.,
+                PopoverAlign::End => ay + ah - h,
+            };
+            (
+                if right { ax + aw + gap } else { ax - gap - w },
+                clamp(y, by, h, bh),
+            )
+        }
+        None => {
+            let (start, end) = if rtl {
+                (ax + aw - w, ax)
+            } else {
+                (ax, ax + aw - w)
+            };
+            let x = match align {
+                PopoverAlign::Start => start,
+                PopoverAlign::Center => ax + (aw - w) / 2.,
+                PopoverAlign::End => end,
+            };
+            (
+                clamp(x, bx, w, bw),
+                if side == PopoverSide::Bottom {
+                    ay + ah + gap
+                } else {
+                    ay - gap - h
+                },
+            )
+        }
+    })
+}
+
 /// An overlay's presentation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct OverlayConfig {
@@ -527,12 +629,25 @@ pub struct OverlayConfig {
     /// How a popover lines up with its anchor. See
     /// [`Overlay::align`](crate::Overlay::align).
     pub align: PopoverAlign,
+    /// A dialog placed on [`side`](Self::side) of its anchor instead of
+    /// centered (#79). Set by [`Overlay::side`](crate::Overlay::side) on a
+    /// dialog; popovers are always placed.
+    pub placed: bool,
+    /// What a sheet or dialog shows over the page (`None`: the platform's
+    /// default). See [`Overlay::backdrop`](crate::Overlay::backdrop).
+    pub backdrop: Option<Backdrop>,
+    /// The content area's width in points (`0`: the platform's default).
+    /// See [`Overlay::size`](crate::Overlay::size).
+    pub width: u32,
+    /// The content area's height in points (`0`: fit the content).
+    pub height: u32,
 }
 
 impl OverlayConfig {
     /// `sheet` / `popover` / `dialog`, then `fixed`, `medium`, `manual`,
     /// `keepfocus`, `side=…` and `align=…` (left out when they are the
-    /// defaults).
+    /// defaults), `placed`, `backdrop=<clear|dim|blur>`,
+    /// `size=<width>x<height>`.
     pub fn encode(&self) -> String {
         let mut out = String::from(match self.kind {
             OverlayKind::Sheet => "sheet",
@@ -562,7 +677,28 @@ impl OverlayConfig {
             PopoverAlign::Center => out.push_str(" align=center"),
             PopoverAlign::End => out.push_str(" align=end"),
         }
+        if self.placed {
+            out.push_str(" placed");
+        }
+        if let Some(b) = self.backdrop {
+            out.push_str(" backdrop=");
+            out.push_str(b.token());
+        }
+        if self.width > 0 || self.height > 0 {
+            out.push_str(&format!(" size={}x{}", self.width, self.height));
+        }
         out
+    }
+
+    /// The side of its anchor the overlay opens on: a popover's
+    /// [`side`](Self::side), a placed dialog's, `None` for a centered
+    /// dialog and for sheets (#79).
+    pub fn anchored_side(&self) -> Option<PopoverSide> {
+        match self.kind {
+            OverlayKind::Popover => Some(self.side),
+            OverlayKind::Dialog if self.placed => Some(self.side),
+            OverlayKind::Dialog | OverlayKind::Sheet => None,
+        }
     }
 
     /// Parses [`encode`](Self::encode)'s output.
@@ -581,7 +717,18 @@ impl OverlayConfig {
                 "side=leading" => c.side = PopoverSide::Leading,
                 "align=center" => c.align = PopoverAlign::Center,
                 "align=end" => c.align = PopoverAlign::End,
-                _ => {}
+                "placed" => c.placed = true,
+                _ => {
+                    if let Some(b) = t.strip_prefix("backdrop=") {
+                        c.backdrop = Backdrop::parse(b);
+                    } else if let Some((w, h)) = t
+                        .strip_prefix("size=")
+                        .and_then(|s| s.split_once('x'))
+                        .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
+                    {
+                        (c.width, c.height) = (w, h);
+                    }
+                }
             }
         }
         c
@@ -722,6 +869,46 @@ mod tests {
         assert_eq!(PopoverAlign::End.arrow_span(24., 100., true), (0., 24.));
         assert_eq!(PopoverAlign::End.arrow_span(24., 0., true), (0., 24.));
         assert!(PopoverSide::Trailing.beside() && !PopoverSide::Top.beside());
+        // A choice panel beside its column, the page left undimmed (#79).
+        let beside = OverlayConfig {
+            kind: OverlayKind::Dialog,
+            side: PopoverSide::Trailing,
+            placed: true,
+            backdrop: Some(Backdrop::Clear),
+            width: 320,
+            height: 0,
+            ..Default::default()
+        };
+        assert_eq!(
+            beside.encode(),
+            "dialog side=trailing placed backdrop=clear size=320x0"
+        );
+        assert_eq!(OverlayConfig::decode(&beside.encode()), beside);
+        assert_eq!(beside.anchored_side(), Some(PopoverSide::Trailing));
+        for b in [Backdrop::Clear, Backdrop::Dim, Backdrop::Blur] {
+            let c = OverlayConfig {
+                backdrop: Some(b),
+                height: 200,
+                ..Default::default()
+            };
+            assert_eq!(OverlayConfig::decode(&c.encode()), c);
+        }
+        // A dialog without a side stays centered; a popover is always placed.
+        let centered = OverlayConfig::decode("dialog side=trailing");
+        assert_eq!(centered.anchored_side(), None);
+        assert_eq!(
+            OverlayConfig::decode("popover").anchored_side(),
+            Some(PopoverSide::Bottom)
+        );
+        assert_eq!(OverlayConfig::decode("sheet placed").anchored_side(), None);
+        // Unknown values are ignored.
+        assert_eq!(
+            OverlayConfig::decode("dialog backdrop=fog size=ax2"),
+            OverlayConfig {
+                kind: OverlayKind::Dialog,
+                ..Default::default()
+            }
+        );
         let d = DateConfig {
             mode: DateMode::TimeOfDay,
             ..Default::default()
@@ -755,6 +942,145 @@ mod tests {
         assert_eq!(
             of_day.start(86_400. * 3. + 23.5 * 3600. + 12., 7200.),
             5400.
+        );
+    }
+
+    #[test]
+    fn overlays_are_placed_beside_their_anchor() {
+        let area = (0., 0., 1000., 800.);
+        // A column from x 0 to 300, a row at y 100.
+        let column = (0., 100., 300., 40.);
+        let size = (320., 400.);
+        // Trailing: right of it, aligned with its top.
+        assert_eq!(
+            place_beside(
+                column,
+                size,
+                area,
+                PopoverSide::Trailing,
+                PopoverAlign::Start,
+                false,
+                8.
+            ),
+            Some((308., 100.))
+        );
+        // A column on the right: no room after it, so before it, in both
+        // directions.
+        let right_column = (700., 100., 300., 40.);
+        assert_eq!(
+            place_beside(
+                right_column,
+                size,
+                area,
+                PopoverSide::Trailing,
+                PopoverAlign::Start,
+                true,
+                8.
+            ),
+            Some((372., 100.))
+        );
+        assert_eq!(
+            place_beside(
+                right_column,
+                size,
+                area,
+                PopoverSide::Trailing,
+                PopoverAlign::Start,
+                false,
+                8.
+            ),
+            Some((372., 100.))
+        );
+        // Kept inside vertically.
+        let low = (0., 700., 300., 40.);
+        assert_eq!(
+            place_beside(
+                low,
+                size,
+                area,
+                PopoverSide::Trailing,
+                PopoverAlign::Start,
+                false,
+                8.
+            ),
+            Some((308., 400.))
+        );
+        // Below, flipped above without room below.
+        let field = (100., 600., 200., 30.);
+        assert_eq!(
+            place_beside(
+                field,
+                (200., 180.),
+                area,
+                PopoverSide::Bottom,
+                PopoverAlign::Start,
+                false,
+                6.
+            ),
+            Some((100., 414.))
+        );
+        assert_eq!(
+            place_beside(
+                field,
+                (200., 100.),
+                area,
+                PopoverSide::Bottom,
+                PopoverAlign::Start,
+                false,
+                6.
+            ),
+            Some((100., 636.))
+        );
+        // Lined up with the anchor's end or center (#113's alignment).
+        assert_eq!(
+            place_beside(
+                column,
+                (320., 100.),
+                area,
+                PopoverSide::Trailing,
+                PopoverAlign::End,
+                false,
+                8.
+            ),
+            Some((308., 40.))
+        );
+        assert_eq!(
+            place_beside(
+                field,
+                (100., 50.),
+                area,
+                PopoverSide::Top,
+                PopoverAlign::Center,
+                false,
+                6.
+            ),
+            Some((150., 544.))
+        );
+        assert_eq!(
+            place_beside(
+                field,
+                (100., 50.),
+                area,
+                PopoverSide::Top,
+                PopoverAlign::End,
+                true,
+                6.
+            ),
+            Some((100., 544.))
+        );
+        // A phone: room on neither side, the caller centers it.
+        let phone = (0., 0., 390., 800.);
+        assert_eq!(
+            place_beside(
+                (0., 100., 390., 40.),
+                size,
+                phone,
+                PopoverSide::Trailing,
+                PopoverAlign::Start,
+                false,
+                8.
+            ),
+            None
         );
     }
 }

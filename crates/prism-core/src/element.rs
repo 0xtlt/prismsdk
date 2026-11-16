@@ -1908,7 +1908,7 @@ impl Overlay {
     /// handlers). For inline suggestion menus (slash commands, mentions,
     /// autocomplete):
     ///
-    /// ```ignore
+    /// ```text
     /// div()
     ///     .child(text_input().value(text).on_input(..))
     ///     .children(text.starts_with('/').then(|| {
@@ -1945,10 +1945,36 @@ impl Overlay {
     /// placed exactly); iPad: the matching
     /// `permittedArrowDirections`; Linux: `GtkPopover::set_position`;
     /// Android: the `PopupWindow` is placed beside or above the anchor.
-    /// Phones that present popovers as sheets ignore it, as do sheets and
-    /// dialogs.
+    /// Phones that present popovers as sheets ignore it, as do sheets.
+    ///
+    /// On a dialog it places the dialog beside its anchor instead of
+    /// centering it (#79), lined up as [`align`](Overlay::align) says, and
+    /// the dialog stays modal (focus kept inside, the rest out of reach,
+    /// Escape and a click outside close it): a choice panel beside the
+    /// column that asked for it, with
+    /// [`backdrop(Backdrop::Clear)`](Overlay::backdrop) to keep the page in
+    /// sight:
+    ///
+    /// ```text
+    /// div()
+    ///     .child(row("Colour", value).on_click(…))
+    ///     .child(dialog(picker).open(self.picking)
+    ///         .side(PopoverSide::Trailing)
+    ///         .backdrop(Backdrop::Clear)
+    ///         .size(320., 0.)
+    ///         .on_dismiss(cx.listener(|this, _, _| this.picking = false)))
+    /// ```
+    ///
+    /// A dialog with room on neither side (a phone) is centered as usual.
+    /// Web: positioned beside the anchor, still `showModal`ed; macOS: an
+    /// `NSPopover` on that edge instead of a sheet; iOS, iPadOS, visionOS:
+    /// the dialog's card beside the anchor; Linux: a `GtkPopover` instead of
+    /// a window; Android: the dialog's window beside the anchor.
     pub fn side(self, side: crate::PopoverSide) -> Self {
-        self.overlay_config(|c| c.side = side)
+        self.overlay_config(|c| {
+            c.side = side;
+            c.placed = c.kind == crate::OverlayKind::Dialog;
+        })
     }
 
     /// How a popover lines up with its anchor along its
@@ -1962,6 +1988,35 @@ impl Overlay {
     /// anchor along that edge, and are centered on it otherwise.
     pub fn align(self, align: crate::PopoverAlign) -> Self {
         self.overlay_config(|c| c.align = align)
+    }
+
+    /// What a sheet or dialog shows over the page behind it: nothing
+    /// ([`Backdrop::Clear`](crate::Backdrop::Clear), the page stays in
+    /// sight, still out of reach while it is open), a plain dim, or a dim
+    /// with a blur. Defaults: a blur on the web and tvOS, a dim elsewhere
+    /// (macOS window sheets have none). Web: the `::backdrop`; iOS: the
+    /// dialog's backdrop, and no dim under a clear sheet; Android: the
+    /// dialog's dim, the blur from Android 12; macOS and Linux show no
+    /// backdrop (sheets are windows). Popovers have none.
+    pub fn backdrop(self, backdrop: crate::controls::Backdrop) -> Self {
+        self.overlay_config(|c| c.backdrop = Some(backdrop))
+    }
+
+    /// The content area's size in points, instead of the platform's
+    /// default width (`0`: keep it) and the content's height (`0`: fit
+    /// it). Kept inside the window; on phones a sheet stays full width.
+    pub fn size(self, width: f32, height: f32) -> Self {
+        let points = |v: f32| {
+            if v.is_finite() {
+                v.max(0.).round() as u32
+            } else {
+                0
+            }
+        };
+        self.overlay_config(|c| {
+            c.width = points(width);
+            c.height = points(height);
+        })
     }
 }
 

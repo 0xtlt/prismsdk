@@ -393,9 +393,12 @@ final class PrismInput {
     }
 
     /** `sheet`/`popover`/`dialog`, `fixed`, `medium`, `manual`, `keepfocus`,
-     *  `side=top`/`trailing`/`leading`, `align=center`/`end`. */
+     *  `side=top`/`trailing`/`leading`, `align=center`/`end`, `placed`,
+     *  `backdrop=…` (the size is Rust's layout). */
     static void overlayConfig(PrismHost.Node n, String config) {
         n.overlay = "sheet";
+        n.placed = false;
+        n.backdrop = "";
         n.fixed = false;
         n.medium = false;
         n.manual = false;
@@ -409,9 +412,11 @@ final class PrismInput {
                 case "medium": n.medium = true; break;
                 case "manual": n.manual = true; break;
                 case "keepfocus": n.keepFocus = true; break;
+                case "placed": n.placed = true; break;
                 default:
                     if (t.startsWith("side=")) n.side = t.substring(5);
                     else if (t.startsWith("align=")) n.align = t.substring(6);
+                    else if (t.startsWith("backdrop=")) n.backdrop = t.substring(9);
             }
         }
         reportArea(n);
@@ -428,6 +433,13 @@ final class PrismInput {
      *  lined up with the anchor's start, center or end, kept inside the
      *  window (#113). */
     static int[] popoverOrigin(PrismHost.Node n, View anchor) {
+        return placeOrigin(n, anchor, Math.round(4 * PrismHost.density));
+    }
+
+    /** As `place_beside` in prism-core: on the node's side of `anchor`,
+     *  `gap` away, else the opposite side, lined up as it says, kept in the
+     *  window: {x, y, 1 when that side has room, else 0} (#113, #79). */
+    static int[] placeOrigin(PrismHost.Node n, View anchor, int gap) {
         float d = PrismHost.density;
         int w = Math.max(1, n.contentSize[0]), h = Math.max(1, n.contentSize[1]);
         View win = anchor.getRootView();
@@ -435,7 +447,7 @@ final class PrismInput {
         int[] loc = new int[2];
         anchor.getLocationInWindow(loc);
         int x0 = loc[0], y0 = loc[1], x1 = x0 + anchor.getWidth(), y1 = y0 + anchor.getHeight();
-        int m = Math.round(8 * d), gap = Math.round(4 * d);
+        int m = Math.round(8 * d);
         boolean rtl = anchor.getLayoutDirection() == View.LAYOUT_DIRECTION_RTL;
         String side;
         switch (n.side) {
@@ -457,9 +469,10 @@ final class PrismInput {
             x = side.equals("right") ? x1 + gap : x0 - gap - w;
             y = n.align.equals("center") ? y0 + (y1 - y0 - h) / 2 : n.align.equals("end") ? y1 - h : y0;
         }
+        boolean room = fits(side, x0, y0, x1, y1, w, h, vw, vh, m, gap);
         x = Math.max(m, Math.min(x, vw - w - m));
         y = Math.max(m, Math.min(y, vh - h - m));
-        return new int[]{x, y};
+        return new int[]{x, y, room ? 1 : 0};
     }
 
     static boolean fits(String side, int x0, int y0, int x1, int y1, int w, int h, int vw, int vh, int m, int gap) {
@@ -524,6 +537,47 @@ final class PrismInput {
     static void size(PrismHost.Node n, Window w) {
         int cw = Math.max(1, n.contentSize[0]), ch = Math.max(1, n.contentSize[1]);
         w.setLayout(n.overlay.equals("sheet") && PrismHost.root.getWidth() <= cw ? ViewGroup.LayoutParams.MATCH_PARENT : cw, ch);
+        placeDialog(n, w);
+    }
+
+    /** A dialog with a side: its window beside the anchor (still a modal
+     *  dialog), centered when neither side has room (#79). */
+    static void placeDialog(PrismHost.Node n, Window w) {
+        if (!n.overlay.equals("dialog") || !n.placed) return;
+        WindowManager.LayoutParams lp = w.getAttributes();
+        View anchor = n.view.getParent() instanceof View ? (View) n.view.getParent() : null;
+        int[] at = anchor == null || anchor.getWindowToken() == null ? null
+                : placeOrigin(n, anchor, Math.round(8 * PrismHost.density));
+        if (at == null || at[2] == 0) {
+            lp.gravity = Gravity.CENTER;
+            lp.x = 0;
+            lp.y = 0;
+        } else {
+            // Window coordinates of the app's full-screen window.
+            lp.gravity = Gravity.TOP | Gravity.LEFT;
+            lp.x = at[0];
+            lp.y = at[1];
+            w.addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN);
+        }
+        w.setAttributes(lp);
+    }
+
+    /** What shows behind a sheet or dialog: nothing, a dim, or a dim with
+     *  the window blurred (Android 12 and later; a dim before). */
+    static void backdrop(PrismHost.Node n, Window w) {
+        String b = n.backdrop.isEmpty() ? "dim" : n.backdrop;
+        if (b.equals("clear")) {
+            w.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            return;
+        }
+        w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+        w.setDimAmount(b.equals("blur") ? 0.25f : 0.4f);
+        if (b.equals("blur") && android.os.Build.VERSION.SDK_INT >= 31) {
+            w.addFlags(WindowManager.LayoutParams.FLAG_BLUR_BEHIND);
+            WindowManager.LayoutParams lp = w.getAttributes();
+            lp.setBlurBehindRadius(Math.round(16 * PrismHost.density));
+            w.setAttributes(lp);
+        }
     }
 
     static void open(PrismHost.Node n, boolean open) {
@@ -578,8 +632,7 @@ final class PrismInput {
         if (w != null) {
             float r = (sheet ? 16 : 28) * d;
             w.setBackgroundDrawable(surface(sheet ? new float[]{r, r, r, r, 0, 0, 0, 0} : new float[]{r, r, r, r, r, r, r, r}));
-            w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-            w.setDimAmount(0.4f);
+            backdrop(n, w);
             if (sheet) {
                 w.setGravity(Gravity.BOTTOM);
                 w.setWindowAnimations(android.R.style.Animation_InputMethod);

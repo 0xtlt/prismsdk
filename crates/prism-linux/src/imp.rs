@@ -245,6 +245,13 @@ fn place_popover(
     p.set_pointing_to(Some(&rect));
 }
 
+/// Shown in a `GtkPopover`: popovers, and dialogs placed beside their
+/// anchor (#79). An autohiding popover keeps the focus inside and closes
+/// on Escape or a click outside, like the dialog.
+fn popover_kind(config: prism_core::controls::OverlayConfig) -> bool {
+    config.anchored_side().is_some()
+}
+
 pub struct OverlayView {
     id: NodeId,
     /// Zero-size placeholder in the parent (the popover's anchor is the
@@ -271,8 +278,8 @@ impl OverlayView {
         use prism_core::OverlayKind;
         let old = self.config.replace(config);
         let built = self.popover.borrow().is_some() || self.window.borrow().is_some();
-        let popover_kind = config.kind == OverlayKind::Popover;
-        if built && (old.kind == OverlayKind::Popover) == popover_kind {
+        let as_popover = popover_kind(config);
+        if built && popover_kind(old) == as_popover {
             if let Some(p) = self.popover.borrow().as_ref() {
                 set_popover_mode(p, config);
                 if let Some(parent) = p.parent() {
@@ -286,7 +293,7 @@ impl OverlayView {
         }
         self.teardown();
         let id = self.id;
-        if popover_kind {
+        if as_popover {
             let p = gtk::Popover::new();
             set_popover_mode(&p, config);
             p.set_child(Some(&self.content));

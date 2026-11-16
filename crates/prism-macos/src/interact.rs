@@ -538,6 +538,12 @@ impl MacOverlay {
         c.kind == OverlayKind::Popover && c.keep_focus
     }
 
+    /// Shown in an `NSPopover`: popovers, and dialogs placed beside their
+    /// anchor (#79), on the platform's own anchored panel.
+    fn popover_kind(c: OverlayConfig) -> bool {
+        c.anchored_side().is_some()
+    }
+
     pub(crate) fn set_config(&self, config: &str) {
         let c = OverlayConfig::decode(config);
         self.host.ivars().overlay_fixed.set(c.fixed);
@@ -545,7 +551,10 @@ impl MacOverlay {
         let old = self.config.get();
         let moved = !self.in_panel.get() && (c.side, c.align) != (old.side, old.align);
         if self.presented.get()
-            && (Self::panel_kind(c) != self.in_panel.get() || c.kind != old.kind || moved)
+            && (Self::panel_kind(c) != self.in_panel.get()
+                || c.kind != old.kind
+                || Self::popover_kind(c) != Self::popover_kind(old)
+                || moved)
         {
             self.dismiss(None);
         }
@@ -605,8 +614,8 @@ impl MacOverlay {
         let Some(main) = main else { return };
         match self.config.get().kind {
             OverlayKind::Popover if Self::panel_kind(self.config.get()) => self.show_panel(size),
-            OverlayKind::Popover => self.show_popover(size, delegate),
-            OverlayKind::Sheet | OverlayKind::Dialog => {
+            _ if Self::popover_kind(self.config.get()) => self.show_popover(size, delegate),
+            OverlayKind::Sheet | OverlayKind::Dialog | OverlayKind::Popover => {
                 let mtm = main.mtm();
                 let window = self.window.borrow_mut().take().unwrap_or_else(|| {
                     let w = unsafe {

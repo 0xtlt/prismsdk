@@ -316,7 +316,9 @@
   }
 
   // --- Overlays (#19): sheets, dialogs, popovers without a route ---------------
-  const openPopovers = new Set();
+  /** Open popovers, and dialogs placed beside their anchor (#79): placed
+   *  again when the window resizes or scrolls. */
+  const placedOverlays = new Set();
   /** Open overlays not shown yet: inserted already open, their box is not
    *  in the document until the patch that places their parent (#70). */
   const pendingOverlays = new Set();
@@ -331,7 +333,7 @@
   function overlayDismissed(el) {
     if (!el._open || el._closing) return;
     el._open = false;
-    openPopovers.delete(el);
+    placedOverlays.delete(el);
     hideOverlay(el);
     send({ t: "back", id: Number(el.dataset.pid), depth: 0 });
   }
@@ -346,6 +348,11 @@
     // The side of the anchor it opens on and how it lines up (#113).
     el._side = (t.find((x) => x.startsWith("side=")) || "side=bottom").slice(5);
     el._align = (t.find((x) => x.startsWith("align=")) || "align=start").slice(6);
+    // A dialog beside its anchor instead of centered, the backdrop and the
+    // size (#79).
+    el._placed = kind === "dialog" && t.includes("placed");
+    const opt = (name) => (t.find((x) => x.startsWith(`${name}=`)) || "").slice(name.length + 1);
+    const [w, h] = opt("size").split("x").map(Number);
     let box = el._box;
     if (!box || el._boxKind !== kind) {
       const old = box;
@@ -391,6 +398,12 @@
     // the anchor's field would close it).
     if (kind === "popover") box.setAttribute("popover", el._fixed || el._manual || el._keepFocus ? "manual" : "auto");
     box.dataset.medium = t.includes("medium") ? "1" : "";
+    box.dataset.prismBackdrop = ["clear", "dim", "blur"].includes(opt("backdrop")) ? opt("backdrop") : "";
+    for (const [axis, v] of [["w", w], ["h", h]]) {
+      if (v > 0) { box.dataset[`prism${axis.toUpperCase()}`] = "1"; box.style.setProperty(`--prism-ov-${axis}`, `${v}px`); }
+      else delete box.dataset[`prism${axis.toUpperCase()}`];
+    }
+    if (kind === "dialog" && !el._placed) unplace(el);
     if (el._open) showOverlay(el);
   }
   function showOverlay(el) {
@@ -407,13 +420,21 @@
       } else box.dataset.open = "1";
       // The anchor's field keeps the focus.
       if (el._keepFocus && focused && focused !== document.activeElement && box.contains(document.activeElement)) focused.focus?.();
-      openPopovers.add(el);
-      placePopover(el);
-      requestAnimationFrame(() => placePopover(el));
-    } else if (!box.open && !box.hasAttribute("open")) {
-      if (typeof box.showModal === "function" && box.isConnected) box.showModal();
-      else box.setAttribute("open", "");
-      userNavigated = true;
+      placedOverlays.add(el);
+      placeOverlay(el);
+      requestAnimationFrame(() => placeOverlay(el));
+    } else {
+      if (!box.open && !box.hasAttribute("open")) {
+        if (typeof box.showModal === "function" && box.isConnected) box.showModal();
+        else box.setAttribute("open", "");
+        userNavigated = true;
+      }
+      // Still modal, beside its anchor instead of centered.
+      if (el._boxKind === "dialog" && el._placed) {
+        placedOverlays.add(el);
+        placeOverlay(el);
+        requestAnimationFrame(() => placeOverlay(el));
+      }
     }
     raiseLayers();
   }
@@ -423,8 +444,8 @@
     if (!box) return;
     el._closing = true;
     try {
+      placedOverlays.delete(el);
       if (el._boxKind === "popover") {
-        openPopovers.delete(el);
         if (typeof box.hidePopover === "function") { if (box.matches(":popover-open")) box.hidePopover(); }
         else delete box.dataset.open;
       } else if (typeof box.close === "function") box.close();
@@ -432,44 +453,66 @@
     } catch {}
     el._closing = false;
   }
-  /** On its side of its anchor (the overlay's parent): below by default,
-   *  above, or beside it (trailing is the right in left-to-right pages),
-   *  on the opposite side when there is no room, lined up with the
-   *  anchor's start, center or end, kept inside the window (#113). */
-  function placePopover(el) {
-    const box = el._box, anchor = el.parentElement;
-    if (!box || !anchor || !el._open || el._boxKind !== "popover") return;
-    const a = anchor.getBoundingClientRect(), b = box.getBoundingClientRect();
-    const m = 8, gap = 6;
-    const rtl = document.documentElement.dir === "rtl";
+  /** Where a box of `w` × `h` goes on `side` of the rectangle `a` (below
+   *  by default, above, or beside it: trailing is the right in
+   *  left-to-right pages), `gap` away: on the opposite side when there is
+   *  no room, lined up with the anchor's start, center or end, kept inside
+   *  the window less `m` (#113). `fits`: false when neither side has room.
+   *  As `place_beside` in prism-core. */
+  function placeBeside(a, w, h, sideName, align, rtl, gap, m) {
     const physical = { trailing: rtl ? "left" : "right", leading: rtl ? "right" : "left", top: "top" };
-    let side = physical[el._side] || "bottom";
+    let side = physical[sideName] || "bottom";
     const fits = {
-      bottom: a.bottom + gap + b.height <= innerHeight - m,
-      top: a.top - gap - b.height >= m,
-      right: a.right + gap + b.width <= innerWidth - m,
-      left: a.left - gap - b.width >= m,
+      bottom: a.bottom + gap + h <= innerHeight - m,
+      top: a.top - gap - h >= m,
+      right: a.right + gap + w <= innerWidth - m,
+      left: a.left - gap - w >= m,
     };
     const opposite = { bottom: "top", top: "bottom", right: "left", left: "right" };
     if (!fits[side] && fits[opposite[side]]) side = opposite[side];
-    const align = el._align;
     let left, top;
     if (side === "bottom" || side === "top") {
-      top = side === "bottom" ? a.bottom + gap : a.top - gap - b.height;
+      top = side === "bottom" ? a.bottom + gap : a.top - gap - h;
       // Start is the leading edge: the right one in right-to-left pages.
-      const start = rtl ? a.right - b.width : a.left, end = rtl ? a.left : a.right - b.width;
-      left = align === "center" ? a.left + (a.width - b.width) / 2 : align === "end" ? end : start;
+      const start = rtl ? a.right - w : a.left, end = rtl ? a.left : a.right - w;
+      left = align === "center" ? a.left + (a.width - w) / 2 : align === "end" ? end : start;
     } else {
-      left = side === "right" ? a.right + gap : a.left - gap - b.width;
-      top = align === "center" ? a.top + (a.height - b.height) / 2 : align === "end" ? a.bottom - b.height : a.top;
+      left = side === "right" ? a.right + gap : a.left - gap - w;
+      top = align === "center" ? a.top + (a.height - h) / 2 : align === "end" ? a.bottom - h : a.top;
     }
-    left = Math.max(m, Math.min(left, innerWidth - b.width - m));
-    top = Math.max(m, Math.min(top, innerHeight - b.height - m));
+    left = Math.max(m, Math.min(left, innerWidth - w - m));
+    top = Math.max(m, Math.min(top, innerHeight - h - m));
+    return { left, top, side, fits: fits[side] };
+  }
+  /** A popover on its side of its anchor (the overlay's parent); a placed
+   *  dialog beside it, or centered when neither side has room (a phone,
+   *  #79). */
+  function placeOverlay(el) {
+    const box = el._box, anchor = el.parentElement;
+    if (!box || !anchor || !el._open) return;
+    const popover = el._boxKind === "popover";
+    if (!popover && !(el._boxKind === "dialog" && el._placed)) return;
+    const a = anchor.getBoundingClientRect(), b = box.getBoundingClientRect();
+    const rtl = document.documentElement.dir === "rtl";
+    const { left, top, side, fits } = placeBeside(a, b.width, b.height, el._side, el._align, rtl, popover ? 6 : 8, 8);
+    if (!popover) {
+      if (!fits) return unplace(el);
+      box.dataset.prismPlaced = "1";
+    }
     box.style.left = `${round(left)}px`;
     box.style.top = `${round(top)}px`;
     box.dataset.side = side;
   }
-  const replace = () => openPopovers.forEach(placePopover);
+  /** A dialog back in the middle of the window. */
+  function unplace(el) {
+    const box = el._box;
+    if (!box || !box.dataset.prismPlaced) return;
+    delete box.dataset.prismPlaced;
+    delete box.dataset.side;
+    box.style.left = "";
+    box.style.top = "";
+  }
+  const replace = () => placedOverlays.forEach(placeOverlay);
   addEventListener("resize", replace);
   addEventListener("scroll", replace, true);
 
@@ -1650,7 +1693,7 @@
           // The content goes in the dialog or popover box.
           if (!el._box) overlayBox(el, "sheet");
           setChildren(el._box, p.children);
-          if (el._open) requestAnimationFrame(() => placePopover(el));
+          if (el._open) requestAnimationFrame(() => placeOverlay(el));
         } else {
           setChildren(el, p.children);
         }
@@ -1686,7 +1729,7 @@
           el.remove();
           if (el._kGlobal) globalKeys--;
           if (el._list) el._list.remove();
-          openPopovers.delete(el);
+          placedOverlays.delete(el);
           pendingOverlays.delete(el);
         }
         nodes.delete(p.id);
@@ -2849,7 +2892,7 @@
     if (!msg.p) return service(msg);
     if (msg.t === "reset") {
       nodes.clear(); clearStates(); stacks = []; hist = null; userNavigated = false;
-      globalKeys = 0; openPopovers.clear(); pendingOverlays.clear(); layerHost.replaceChildren();
+      globalKeys = 0; placedOverlays.clear(); pendingOverlays.clear(); layerHost.replaceChildren();
       document.querySelectorAll("datalist[id^=prism-list-]").forEach((d) => d.remove());
     }
     quiet = msg.t === "reset";
