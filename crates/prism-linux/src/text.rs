@@ -199,25 +199,24 @@ unsafe extern "C" {
     fn FcConfigAppFontAddFile(config: *mut std::ffi::c_void, file: *const u8) -> std::ffi::c_int;
 }
 
-/// Adds the app's fonts (`<assets>/fonts/*.ttf|otf|ttc`) to fontconfig's
-/// current configuration. Called before GTK creates Pango's font map, so
-/// `font_family("Inter")` finds them by family name.
-pub(crate) fn register_fonts(assets: Option<&std::path::Path>) -> usize {
-    let Some(dir) = assets.map(|a| a.join("fonts")) else {
-        return 0;
-    };
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return 0;
-    };
-    let mut files: Vec<std::path::PathBuf> = entries
+/// Adds the app's fonts (`<assets>/fonts/*.ttf|otf|ttc`, then those
+/// compiled into the binary) to fontconfig's current configuration. Called
+/// before GTK creates Pango's font map, so `font_family("Inter")` finds them
+/// by family name.
+pub(crate) fn register_fonts(
+    assets: Option<&std::path::Path>,
+    embedded: &prism_core::EmbeddedAssets,
+) -> usize {
+    let mut files: Vec<std::path::PathBuf> = assets
+        .map(|a| a.join("fonts"))
+        .and_then(|dir| std::fs::read_dir(dir).ok())
+        .into_iter()
+        .flatten()
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc"))
-        })
+        .filter(|p| prism_native::fonts::is_font(p))
         .collect();
     files.sort();
+    files.extend(embedded_font_files(embedded, &glib::user_cache_dir()));
     let mut added = 0;
     for f in files {
         use std::os::unix::ffi::OsStrExt;
@@ -232,9 +231,54 @@ pub(crate) fn register_fonts(assets: Option<&std::path::Path>) -> usize {
     added
 }
 
+/// The embedded fonts as files, since fontconfig only reads files:
+/// `<cache>/prism-fonts/<content hash>/<file name>`, written when missing.
+fn embedded_font_files(
+    embedded: &prism_core::EmbeddedAssets,
+    cache: &std::path::Path,
+) -> Vec<std::path::PathBuf> {
+    use std::hash::{Hash, Hasher};
+    let mut out = Vec::new();
+    for (name, bytes) in prism_native::fonts::embedded_fonts(embedded) {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        bytes.hash(&mut hasher);
+        let file_name = name.rsplit('/').next().unwrap_or(name);
+        let file = cache
+            .join("prism-fonts")
+            .join(format!("{:016x}", hasher.finish()))
+            .join(file_name);
+        let current = std::fs::metadata(&file).is_ok_and(|m| m.len() == bytes.len() as u64);
+        let written = current
+            || file
+                .parent()
+                .is_some_and(|dir| std::fs::create_dir_all(dir).is_ok())
+                && std::fs::write(&file, bytes).is_ok();
+        if written {
+            out.push(file);
+        } else {
+            eprintln!("prism-linux: could not write the embedded font {name}");
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_fonts_are_written_once_for_fontconfig() {
+        let cache = std::env::temp_dir().join(format!("prism-linux-fonts-{}", std::process::id()));
+        let embedded = prism_core::EmbeddedAssets::new()
+            .file("fonts/sub/Brand.ttf", &b"font"[..])
+            .file("logo.png", &b"png"[..]);
+        let files = embedded_font_files(&embedded, &cache);
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("Brand.ttf") && files[0].starts_with(cache.join("prism-fonts")));
+        assert_eq!(std::fs::read(&files[0]).unwrap(), b"font");
+        assert_eq!(embedded_font_files(&embedded, &cache), files);
+        let _ = std::fs::remove_dir_all(cache);
+    }
 
     #[test]
     fn link_uris_carry_the_run_id() {

@@ -3932,7 +3932,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         sheets: Vec::new(),
         pictures: HashMap::new(),
         image_cache: HashMap::new(),
-        image_sources: image_sources(config.assets.as_deref()),
+        image_sources: image_sources(config.assets.as_deref(), &config.embedded_assets),
         rtl: false,
         chrome: ("Back".into(), "Close".into()),
         transforms: HashMap::new(),
@@ -4657,9 +4657,12 @@ fn write_png(view: &NSView, path: &str) {
     }
 }
 
-/// Assets: the bundle's Resources/assets, then the dev directory; downloads
-/// are cached in ~/Library/Caches.
-fn image_sources(dev_assets: Option<&str>) -> prism_native::images::ImageSources {
+/// Assets: those compiled into the binary, the bundle's Resources/assets,
+/// then the dev directory; downloads are cached in ~/Library/Caches.
+fn image_sources(
+    dev_assets: Option<&str>,
+    embedded: &prism_core::EmbeddedAssets,
+) -> prism_native::images::ImageSources {
     let mut asset_dirs = Vec::new();
     if let Some(res) = objc2_foundation::NSBundle::mainBundle().resourcePath() {
         asset_dirs.push(std::path::PathBuf::from(res.to_string()).join("assets"));
@@ -4668,9 +4671,10 @@ fn image_sources(dev_assets: Option<&str>) -> prism_native::images::ImageSources
         asset_dirs.push(dev.into());
     }
     // Fonts in assets/fonts: found by family name from now on.
-    prism_native::fonts::register_apple_fonts(&asset_dirs);
+    prism_native::fonts::register_apple_fonts(&asset_dirs, embedded);
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     prism_native::images::ImageSources {
+        embedded: embedded.clone(),
         asset_dirs,
         cache_dir: Some(std::path::PathBuf::from(home).join("Library/Caches/prism-images")),
     }

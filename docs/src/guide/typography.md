@@ -49,6 +49,10 @@ assets/fonts/Inter-Italic.ttf
 text("Hello").font_family("Inter").weight(650)
 ```
 
+Fonts compiled into the binary (`Application::embedded_assets`, names under
+`fonts/`: see [Assets compiled into the binary](../platforms/web.md#assets-compiled-into-the-binary))
+count too, on the web, macOS, iOS and Linux.
+
 Every backend registers them at startup:
 
 - **Web**: one `@font-face` per file in Prism's stylesheet, pointing at the
@@ -57,10 +61,14 @@ Every backend registers them at startup:
   `.otf`; `.woff2` / `.woff` files are named `Family-WeightStyle`
   (`Inter-SemiBoldItalic.woff2`) and preferred when both exist.
 - **macOS, iOS, iPadOS, tvOS, visionOS, watchOS**: `CTFontManagerRegisterFontsForURL`
-  (process scope) from the bundle's `assets/fonts` (and the dev assets folder).
+  (process scope) from the bundle's `assets/fonts` (and the dev assets folder);
+  embedded fonts with `CTFontManagerRegisterGraphicsFont`, from memory (macOS,
+  iOS, iPadOS, tvOS, visionOS; the first face of a `.ttc`).
 - **Android**: `Typeface.createFromAsset`, found by the family name read from
-  the font file (also by its file name).
-- **Linux**: fontconfig (`FcConfigAppFontAddFile`), seen by Pango.
+  the font file (also by its file name). Only the APK's assets: keep the fonts
+  in the assets folder too.
+- **Linux**: fontconfig (`FcConfigAppFontAddFile`), seen by Pango. Embedded
+  fonts are written once to `~/.cache/prism-fonts/` (fontconfig reads files).
 
 An unknown family falls back to the system font.
 

@@ -1,7 +1,8 @@
 //! Static files with content hashes in their names, for CDNs.
 //!
 //! - Prism's client: `/_prism/client.<hash>.js` and `/_prism/prism.<hash>.css`.
-//! - App assets (`picture("logo.png")`): `/assets/logo.<hash>.png`.
+//! - App assets (`picture("logo.png")`): `/assets/logo.<hash>.png`, from the
+//!   assets directory or compiled into the binary ([`EmbeddedAssets`]).
 //!
 //! Hashed URLs never change content, so they are served with
 //! `Cache-Control: public, max-age=31536000, immutable`; a new build gets new
@@ -9,8 +10,11 @@
 //! [`WebApp::export_static`](crate::WebApp::export_static) writes everything
 //! to a directory to upload to a CDN; `asset_url` then points pages at it.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+use prism_core::EmbeddedAssets;
 
 use sha2::{Digest, Sha256};
 
@@ -79,10 +83,11 @@ pub fn content_type(path: &str) -> &'static str {
     }
 }
 
-/// One app asset: where it is on disk and its hashed name.
+/// One app asset: where its bytes are and its hashed name.
 #[derive(Clone, Debug)]
 struct Asset {
-    file: PathBuf,
+    /// The file on disk, or `None` for an embedded one.
+    file: Option<PathBuf>,
     hashed: String,
     hash: String,
 }
@@ -94,38 +99,61 @@ pub(crate) struct Assets {
     builtin: HashMap<String, (Vec<u8>, String)>,
     client: String,
     css: String,
-    /// `logo.png` → its file and hashed name.
+    /// `logo.png` → where it is and its hashed name.
     app: HashMap<String, Asset>,
     /// `logo.<hash>.png` → `logo.png`.
     by_hash: HashMap<String, String>,
     dir: Option<PathBuf>,
+    /// Files compiled into the binary: found before the directory's.
+    embedded: EmbeddedAssets,
     /// WASM islands: name → served module path (for `manifest.json`).
     islands: Vec<(String, String)>,
 }
 
 impl Assets {
-    /// Hashes the client, the base CSS and every file under `dir`.
-    pub fn new(client_js: String, css: String, dir: Option<PathBuf>) -> Self {
+    /// Hashes the client, the base CSS, the `embedded` files and every file
+    /// under `dir` (an embedded file wins over the directory's of the same
+    /// name).
+    pub fn new(
+        client_js: String,
+        css: String,
+        dir: Option<PathBuf>,
+        embedded: EmbeddedAssets,
+    ) -> Self {
         let mut assets = Assets {
             dir: dir.clone(),
+            embedded,
             ..Default::default()
         };
+        // Every app file: (logical name, file on disk or none, contents).
+        let mut files: Vec<(String, Option<PathBuf>, Cow<'_, [u8]>)> = assets
+            .embedded
+            .iter()
+            .map(|(name, bytes)| (name.to_string(), None, Cow::Borrowed(bytes)))
+            .collect();
+        if let Some(dir) = &dir {
+            let mut found = Vec::new();
+            walk(dir, dir, &mut found);
+            for (logical, file) in found {
+                if assets.embedded.get(&logical).is_some() {
+                    continue;
+                }
+                if let Ok(bytes) = std::fs::read(&file) {
+                    files.push((logical, Some(file), Cow::Owned(bytes)));
+                }
+            }
+        }
         // Bundled fonts (`assets/fonts/`): `@font-face` rules in the base
         // stylesheet, pointing at their hashed files (`_prism/` → `../assets/`).
-        let fonts = dir.as_ref().map_or_else(String::new, |dir| {
-            let mut files = Vec::new();
-            walk(dir, dir, &mut files);
-            let fonts: Vec<(String, String, Vec<u8>)> = files
-                .into_iter()
-                .filter(|(logical, _)| logical.starts_with("fonts/"))
-                .filter_map(|(logical, file)| {
-                    let bytes = std::fs::read(&file).ok()?;
-                    let url = format!("../assets/{}", hashed_name(&logical, &content_hash(&bytes)));
-                    Some((logical, url, bytes))
-                })
-                .collect();
-            crate::fonts::font_faces(&fonts)
-        });
+        let fonts: Vec<(String, String, Vec<u8>)> = files
+            .iter()
+            .filter(|(logical, ..)| logical.starts_with("fonts/"))
+            .map(|(logical, _, bytes)| {
+                let url = format!("../assets/{}", hashed_name(logical, &content_hash(bytes)));
+                (logical.clone(), url, bytes.to_vec())
+            })
+            .collect();
+        let fonts = crate::fonts::font_faces(&fonts);
         let css = if fonts.is_empty() {
             css
         } else {
@@ -141,20 +169,18 @@ impl Assets {
             }
             assets.builtin.insert(served, (body.into_bytes(), hash));
         }
-        if let Some(dir) = dir {
-            let mut files = Vec::new();
-            walk(&dir, &dir, &mut files);
-            for (logical, file) in files {
-                let Ok(bytes) = std::fs::read(&file) else {
-                    continue;
-                };
-                let hash = content_hash(&bytes);
-                let hashed = hashed_name(&logical, &hash);
-                assets.by_hash.insert(hashed.clone(), logical.clone());
-                assets.app.insert(logical, Asset { file, hashed, hash });
-            }
+        for (logical, file, bytes) in files {
+            let hash = content_hash(&bytes);
+            let hashed = hashed_name(&logical, &hash);
+            assets.by_hash.insert(hashed.clone(), logical.clone());
+            assets.app.insert(logical, Asset { file, hashed, hash });
         }
         assets
+    }
+
+    /// The directory and the embedded files the assets were read from.
+    pub fn sources(&self) -> (Option<PathBuf>, EmbeddedAssets) {
+        (self.dir.clone(), self.embedded.clone())
     }
 
     /// Served path (no leading slash) of the client script.
@@ -176,6 +202,14 @@ impl Assets {
         }
     }
 
+    /// The contents of app asset `logical`.
+    fn read(&self, logical: &str, asset: &Asset) -> Option<Vec<u8>> {
+        match &asset.file {
+            Some(file) => std::fs::read(file).ok(),
+            None => self.embedded.get(logical).map(<[u8]>::to_vec),
+        }
+    }
+
     /// The file for served path `path` (`_prism/…` or `assets/…`).
     pub fn get(&self, path: &str) -> Option<StaticFile> {
         if let Some((body, hash)) = self.builtin.get(path) {
@@ -190,17 +224,21 @@ impl Assets {
         if let Some(logical) = self.by_hash.get(name) {
             let asset = &self.app[logical];
             return Some(StaticFile {
-                body: std::fs::read(&asset.file).ok()?,
+                body: self.read(logical, asset)?,
                 content_type: content_type(name),
                 etag: format!("\"{}\"", asset.hash),
                 cache_control: IMMUTABLE,
             });
         }
-        // Unhashed: read now (it may have changed), revalidate every time.
+        // Unhashed: read now (a file on disk may have changed), revalidate
+        // every time.
         if !safe(name) {
             return None;
         }
-        let body = std::fs::read(self.dir.as_ref()?.join(name)).ok()?;
+        let body = match self.embedded.get(name) {
+            Some(bytes) => bytes.to_vec(),
+            None => std::fs::read(self.dir.as_ref()?.join(name)).ok()?,
+        };
         Some(StaticFile {
             etag: format!("\"{}\"", content_hash(&body)),
             body,
@@ -232,10 +270,10 @@ impl Assets {
             manifest.insert(format!("islands/{name}"), module.clone().into());
         }
         for (logical, asset) in &self.app {
-            write(
-                &format!("assets/{}", asset.hashed),
-                &std::fs::read(&asset.file)?,
-            )?;
+            let body = self.read(logical, asset).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, logical.clone())
+            })?;
+            write(&format!("assets/{}", asset.hashed), &body)?;
             manifest.insert(
                 format!("assets/{logical}"),
                 format!("assets/{}", asset.hashed).into(),
@@ -315,7 +353,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("prism-assets-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("img")).unwrap();
         std::fs::write(dir.join("img/logo.png"), b"png").unwrap();
-        let assets = Assets::new("js".into(), "css".into(), Some(dir.clone()));
+        let assets = Assets::new(
+            "js".into(),
+            "css".into(),
+            Some(dir.clone()),
+            EmbeddedAssets::new(),
+        );
         let path = assets.app_path("img/logo.png");
         assert_eq!(
             path,
@@ -336,6 +379,29 @@ mod tests {
         assert!(out.join(&path).exists() && out.join(assets.client()).exists());
         let manifest = std::fs::read_to_string(out.join("manifest.json")).unwrap();
         assert!(manifest.contains(&path));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn embedded_files_win_over_the_directory() {
+        let dir = std::env::temp_dir().join(format!("prism-assets-embed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("logo.png"), b"disk").unwrap();
+        std::fs::write(dir.join("other.png"), b"other").unwrap();
+        let embedded = EmbeddedAssets::new().file("logo.png", &b"binary"[..]);
+        let assets = Assets::new("js".into(), "css".into(), Some(dir.clone()), embedded);
+        let logo = assets.app_path("logo.png");
+        assert_eq!(logo, format!("assets/logo.{}.png", content_hash(b"binary")));
+        assert_eq!(assets.get(&logo).unwrap().body, b"binary");
+        assert_eq!(assets.get("assets/logo.png").unwrap().body, b"binary");
+        assert_eq!(
+            assets.get(&assets.app_path("other.png")).unwrap().body,
+            b"other"
+        );
+
+        let out = dir.join("public");
+        assert_eq!(assets.export(&out).unwrap(), 5);
+        assert_eq!(std::fs::read(out.join(&logo)).unwrap(), b"binary");
         let _ = std::fs::remove_dir_all(dir);
     }
 }
