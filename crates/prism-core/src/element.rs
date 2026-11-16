@@ -2338,6 +2338,31 @@ impl Overlay {
         self.overlay_config(|c| c.backdrop = Some(backdrop))
     }
 
+    /// A dialog that draws no box of its own (#166): no background,
+    /// border, corners, shadow or entry animation, so its content is the
+    /// whole panel, drawn by the app. With [`side`](Overlay::side) and
+    /// [`backdrop(Backdrop::Clear)`](Overlay::backdrop) a picker the app
+    /// styles itself opens beside its anchor; the dialog stays modal
+    /// (focus kept inside, Escape and a click outside close it).
+    ///
+    /// ```text
+    /// dialog(div().bg(rgb(0x1c1c1e)).rounded(12.).shadow_lg().child(swatches))
+    ///     .open(self.picking)
+    ///     .side(PopoverSide::Trailing)
+    ///     .backdrop(Backdrop::Clear)
+    ///     .bare()
+    /// ```
+    ///
+    /// Web: the `<dialog>` without Prism's styles; macOS: a borderless,
+    /// transparent panel instead of a sheet or an `NSPopover`; iOS, iPadOS,
+    /// visionOS, tvOS: a clear card, shown without a cross-fade; Android: a
+    /// transparent dialog window without animation; Linux: a `GtkPopover`
+    /// without arrow or background, or an undecorated transparent window.
+    /// Sheets and popovers keep their platform's box.
+    pub fn bare(self) -> Self {
+        self.overlay_config(|c| c.bare = c.kind == crate::OverlayKind::Dialog)
+    }
+
     /// The content area's size in points, instead of the platform's
     /// default width (`0`: keep it) and the content's height (`0`: fit
     /// it). Kept inside the window; on phones a sheet stays full width.

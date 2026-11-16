@@ -478,11 +478,12 @@ final class PrismInput {
 
     /** `sheet`/`popover`/`dialog`, `fixed`, `medium`, `manual`, `keepfocus`,
      *  `side=top`/`trailing`/`leading`, `align=center`/`end`, `placed`,
-     *  `backdrop=…` (the size is Rust's layout). */
+     *  `backdrop=…`, `bare` (the size is Rust's layout). */
     static void overlayConfig(PrismHost.Node n, String config) {
         n.overlay = "sheet";
         n.placed = false;
         n.backdrop = "";
+        n.bareDialog = false;
         n.fixed = false;
         n.medium = false;
         n.manual = false;
@@ -497,6 +498,7 @@ final class PrismInput {
                 case "manual": n.manual = true; break;
                 case "keepfocus": n.keepFocus = true; break;
                 case "placed": n.placed = true; break;
+                case "bare": n.bareDialog = true; break;
                 default:
                     if (t.startsWith("side=")) n.side = t.substring(5);
                     else if (t.startsWith("align=")) n.align = t.substring(6);
@@ -736,7 +738,12 @@ final class PrismInput {
         Window w = dialog.getWindow();
         if (w != null) {
             float r = (sheet ? 16 : 28) * d;
-            w.setBackgroundDrawable(surface(sheet ? new float[]{r, r, r, r, 0, 0, 0, 0} : new float[]{r, r, r, r, r, r, r, r}));
+            if (n.bareDialog && !sheet) {
+                // No box of its own (#166): a transparent window (no
+                // surface, so no shadow either), shown without animation.
+                w.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT));
+                w.setWindowAnimations(0);
+            } else w.setBackgroundDrawable(surface(sheet ? new float[]{r, r, r, r, 0, 0, 0, 0} : new float[]{r, r, r, r, r, r, r, r}));
             backdrop(n, w);
             if (sheet) {
                 w.setGravity(Gravity.BOTTOM);

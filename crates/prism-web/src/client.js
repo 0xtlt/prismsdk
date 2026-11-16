@@ -548,6 +548,8 @@
     if (kind === "popover") box.setAttribute("popover", el._fixed || el._manual || el._keepFocus ? "manual" : "auto");
     box.dataset.medium = t.includes("medium") ? "1" : "";
     box.dataset.prismBackdrop = ["clear", "dim", "blur"].includes(opt("backdrop")) ? opt("backdrop") : "";
+    // A dialog without Prism's box: the app draws the panel (#166).
+    box.dataset.prismBare = kind === "dialog" && t.includes("bare") ? "1" : "";
     for (const [axis, v] of [["w", w], ["h", h]]) {
       if (v > 0) { box.dataset[`prism${axis.toUpperCase()}`] = "1"; box.style.setProperty(`--prism-ov-${axis}`, `${v}px`); }
       else delete box.dataset[`prism${axis.toUpperCase()}`];

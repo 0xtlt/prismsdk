@@ -641,13 +641,17 @@ pub struct OverlayConfig {
     pub width: u32,
     /// The content area's height in points (`0`: fit the content).
     pub height: u32,
+    /// A dialog that draws no box of its own: no background, border,
+    /// corners, shadow or entry animation; its content is the panel. See
+    /// [`Overlay::bare`](crate::Overlay::bare).
+    pub bare: bool,
 }
 
 impl OverlayConfig {
     /// `sheet` / `popover` / `dialog`, then `fixed`, `medium`, `manual`,
     /// `keepfocus`, `side=…` and `align=…` (left out when they are the
     /// defaults), `placed`, `backdrop=<clear|dim|blur>`,
-    /// `size=<width>x<height>`.
+    /// `size=<width>x<height>`, `bare`.
     pub fn encode(&self) -> String {
         let mut out = String::from(match self.kind {
             OverlayKind::Sheet => "sheet",
@@ -687,6 +691,9 @@ impl OverlayConfig {
         if self.width > 0 || self.height > 0 {
             out.push_str(&format!(" size={}x{}", self.width, self.height));
         }
+        if self.bare {
+            out.push_str(" bare");
+        }
         out
     }
 
@@ -718,6 +725,7 @@ impl OverlayConfig {
                 "align=center" => c.align = PopoverAlign::Center,
                 "align=end" => c.align = PopoverAlign::End,
                 "placed" => c.placed = true,
+                "bare" => c.bare = true,
                 _ => {
                     if let Some(b) = t.strip_prefix("backdrop=") {
                         c.backdrop = Backdrop::parse(b);
@@ -885,6 +893,16 @@ mod tests {
         );
         assert_eq!(OverlayConfig::decode(&beside.encode()), beside);
         assert_eq!(beside.anchored_side(), Some(PopoverSide::Trailing));
+        // The app draws the panel itself.
+        let bare = OverlayConfig {
+            bare: true,
+            ..beside
+        };
+        assert_eq!(
+            bare.encode(),
+            "dialog side=trailing placed backdrop=clear size=320x0 bare"
+        );
+        assert_eq!(OverlayConfig::decode(&bare.encode()), bare);
         for b in [Backdrop::Clear, Backdrop::Dim, Backdrop::Blur] {
             let c = OverlayConfig {
                 backdrop: Some(b),

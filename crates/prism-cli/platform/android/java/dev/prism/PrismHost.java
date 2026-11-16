@@ -222,6 +222,8 @@ public final class PrismHost {
          *  unset) of the overlay config (#79). */
         boolean placed;
         String backdrop = "";
+        /** A dialog without a box of its own: the app draws the panel (#166). */
+        boolean bareDialog;
         // Padding (#14): the view's own padding while the app's replaces it,
         // and its own background while `.border(0.)` removes it.
         int[] basePad;

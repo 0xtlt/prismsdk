@@ -453,6 +453,37 @@ test("a dialog opens beside its anchor, undimmed, at its size (#79)", () => {
   assert.equal(box.dataset.prismW, undefined);
 });
 
+test("a bare dialog drops Prism's box and stays modal (#166)", async () => {
+  const page = live([
+    { op: "create", id: 2, kind: "view" },
+    { op: "create", id: 3, kind: "overlay" },
+    { op: "config", id: 3, config: "dialog side=trailing placed backdrop=clear bare" },
+    { op: "children", id: 2, children: [3] },
+    ...root([2]),
+  ]);
+  placed(page.node(2));
+  const box = page.node(3).firstChild;
+  box.getBoundingClientRect = () => ({ left: 0, top: 0, width: 320, height: 400, right: 320, bottom: 400 });
+  assert.equal(box.dataset.prismBare, "1");
+  page.ws.deliver({ t: "patch", p: [{ op: "value", id: 3, value: 1 }] });
+  assert.equal(box.hasAttribute("open"), true, "still a modal dialog");
+  assert.equal(box.dataset.prismPlaced, "1");
+  box.dispatchEvent({ type: "click", target: box, clientX: 900, clientY: 700 });
+  assert.deepEqual(lastSent(page), { t: "back", id: 3, depth: 0, reason: "outside" });
+  // Prism's box back without `bare`; popovers and sheets are never bare.
+  page.ws.deliver({ t: "patch", p: [{ op: "config", id: 3, config: "dialog side=trailing placed" }] });
+  assert.equal(box.dataset.prismBare, "");
+  page.ws.deliver({ t: "patch", p: [{ op: "config", id: 3, config: "sheet bare" }] });
+  assert.equal(page.node(3).firstChild.dataset.prismBare, "");
+  // The stylesheet takes the box away: background, border, corners, shadow, animation.
+  const { readFile } = await import("node:fs/promises");
+  const css = await readFile(new URL("../../src/prism.css", import.meta.url), "utf8");
+  const rule = css.split("\n").find((l) => l.startsWith('dialog.prism-overlay-box[data-prism-bare="1"] {'));
+  assert.ok(rule, "a rule for bare dialogs");
+  for (const d of ["background: transparent", "border: 0", "border-radius: 0", "box-shadow: none", "animation: none"]) assert.ok(rule.includes(d), d);
+  assert.ok(css.indexOf(rule) > css.indexOf('[data-prism-backdrop="clear"] {'), "after the clear backdrop's border and shadow");
+});
+
 test("an overlay inserted already open is shown (#70)", () => {
   const page = live([...root([])]);
   // A menu that appears with its parent, open, in one patch.

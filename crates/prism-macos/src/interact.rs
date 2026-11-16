@@ -369,6 +369,23 @@ define_class!(
     }
 );
 
+define_class!(
+    /// A bare dialog's window (#166): borderless and transparent, yet it
+    /// becomes key (a plain borderless window cannot), so its fields take
+    /// the keys and Escape reaches its content.
+    #[unsafe(super(NSPanel, NSWindow, objc2_app_kit::NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PrismDialogPanel"]
+    pub struct PrismDialogPanel;
+
+    impl PrismDialogPanel {
+        #[unsafe(method(canBecomeKeyWindow))]
+        fn can_become_key_window(&self) -> bool {
+            true
+        }
+    }
+);
+
 /// Gives `field` a cell leaving `leading` points before its text (copying
 /// the look of its current cell), and an SF Symbol image view in that room.
 pub(crate) fn set_leading_icon(
@@ -492,7 +509,9 @@ pub(crate) type Delegate = objc2::runtime::ProtocolObject<dyn objc2_app_kit::NSP
 /// sheet window or an `NSPopover` while open. A popover that leaves the
 /// focus to its anchor (`keep_focus`, #70) is a borderless child panel
 /// instead: it never becomes key, so the anchor's field keeps the keys,
-/// and its views still take clicks (`acceptsFirstMouse`).
+/// and its views still take clicks (`acceptsFirstMouse`). A bare dialog
+/// (#166) is a borderless, transparent child panel too, one that becomes
+/// key: no sheet or popover box around the app's panel.
 pub struct MacOverlay {
     pub(crate) id: NodeId,
     pub(crate) anchor: Retained<PrismView>,
@@ -508,8 +527,9 @@ pub struct MacOverlay {
     window: RefCell<Option<Retained<NSWindow>>>,
     pub(crate) popover: RefCell<Option<Retained<NSPopover>>>,
     /// The non-activating panel of a `keep_focus` popover, and its
-    /// background (a menu material with rounded corners).
-    panel: RefCell<Option<(Retained<NSPanel>, Retained<NSVisualEffectView>)>>,
+    /// background (a menu material with rounded corners), or a bare
+    /// dialog's panel (a [`PrismDialogPanel`]) and its plain content view.
+    panel: RefCell<Option<(Retained<NSPanel>, Retained<NSView>)>>,
     /// Whether the panel is the window it shows in.
     in_panel: Cell<bool>,
     /// A placed dialog's event monitor (#79): presses outside close it and
@@ -543,18 +563,29 @@ impl MacOverlay {
     /// was clicked. Presses in the dialog, and in menus or popovers opened
     /// from it, go on as usual.
     fn hold_outside_presses(&self, popover: &Retained<NSPopover>, page: Retained<NSWindow>) {
-        self.release_outside_presses();
         let popover = popover.clone();
+        self.hold_presses_behind(page, move || {
+            if !popover.isShown() {
+                return false;
+            }
+            // SAFETY: the sender may be nil.
+            unsafe { popover.performClose(None) };
+            true
+        });
+    }
+
+    /// While open, presses on the window behind (`page`) go to `outside`,
+    /// and no further when it says so (it handled them).
+    fn hold_presses_behind(&self, page: Retained<NSWindow>, outside: impl Fn() -> bool + 'static) {
+        self.release_outside_presses();
         let block =
             block2::RcBlock::new(move |event: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
                 let e = unsafe { event.as_ref() };
                 let mtm = MainThreadMarker::new().expect("main thread");
                 let behind = e.window(mtm).is_some_and(|w| *w == *page);
-                if !popover.isShown() || !behind {
+                if !behind || !outside() {
                     return event.as_ptr();
                 }
-                // SAFETY: the sender may be nil.
-                unsafe { popover.performClose(None) };
                 std::ptr::null_mut()
             });
         let mask =
@@ -570,9 +601,11 @@ impl MacOverlay {
         }
     }
 
-    /// A popover shown in a non-activating panel (see [`MacOverlay`]).
+    /// Shown in a panel (see [`MacOverlay`]): a popover that leaves the
+    /// focus to its anchor, and a bare dialog (#166).
     fn panel_kind(c: OverlayConfig) -> bool {
-        c.kind == OverlayKind::Popover && c.keep_focus
+        (c.kind == OverlayKind::Popover && c.keep_focus)
+            || (c.kind == OverlayKind::Dialog && c.bare)
     }
 
     /// Shown in an `NSPopover`: popovers, and dialogs placed beside their
@@ -650,7 +683,7 @@ impl MacOverlay {
         }
         let Some(main) = main else { return };
         match self.config.get().kind {
-            OverlayKind::Popover if Self::panel_kind(self.config.get()) => self.show_panel(size),
+            _ if Self::panel_kind(self.config.get()) => self.show_panel(size),
             _ if Self::popover_kind(self.config.get()) => self.show_popover(size, delegate),
             OverlayKind::Sheet | OverlayKind::Dialog | OverlayKind::Popover => {
                 let mtm = main.mtm();
@@ -733,7 +766,8 @@ impl MacOverlay {
     }
 
     /// Shows a `keep_focus` popover: a borderless panel, a child of the
-    /// anchor's window (it moves with it), that never becomes key.
+    /// anchor's window (it moves with it), that never becomes key. A bare
+    /// dialog's panel becomes key instead, and holds the presses behind it.
     fn show_panel(&self, size: NSSize) {
         let Some(parent) = (unsafe { self.anchor.superview() }) else {
             return;
@@ -742,7 +776,34 @@ impl MacOverlay {
             return;
         };
         let mtm = self.host.mtm();
-        let (panel, background) = self.panel.borrow_mut().take().unwrap_or_else(|| {
+        let dialog = self.config.get().kind == OverlayKind::Dialog;
+        let cached = self
+            .panel
+            .borrow_mut()
+            .take()
+            .filter(|(p, _)| p.isKindOfClass(PrismDialogPanel::class()) == dialog);
+        let (panel, background) = cached.unwrap_or_else(|| {
+            if dialog {
+                let panel: Retained<PrismDialogPanel> = unsafe {
+                    msg_send![
+                        PrismDialogPanel::alloc(mtm),
+                        initWithContentRect: NSRect::new(NSPoint::ZERO, size),
+                        styleMask: NSWindowStyleMask::Borderless,
+                        backing: NSBackingStoreType::Buffered,
+                        defer: false,
+                    ]
+                };
+                let panel = Retained::into_super(panel);
+                unsafe { panel.setReleasedWhenClosed(false) };
+                panel.setHidesOnDeactivate(false);
+                // No box: the app's content is the whole panel.
+                panel.setOpaque(false);
+                panel.setBackgroundColor(Some(&NSColor::clearColor()));
+                panel.setHasShadow(false);
+                let background = NSView::new(mtm);
+                panel.setContentView(Some(&background));
+                return (panel, background);
+            }
             let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
             let panel = NSPanel::initWithContentRect_styleMask_backing_defer(
                 NSPanel::alloc(mtm),
@@ -768,9 +829,9 @@ impl MacOverlay {
                 l.setMasksToBounds(true);
             }
             panel.setContentView(Some(&background));
-            (panel, background)
+            (panel, Retained::into_super(background))
         });
-        if unsafe { self.host.superview() }.as_deref() != Some(&**background) {
+        if unsafe { self.host.superview() }.as_deref() != Some(&*background) {
             self.host.removeFromSuperview();
             background.addSubview(&self.host);
         }
@@ -780,7 +841,29 @@ impl MacOverlay {
         self.place_panel(size);
         // SAFETY: both windows are alive; `dismiss` detaches the panel.
         unsafe { window.addChildWindow_ordered(&panel, NSWindowOrderingMode::Above) };
-        panel.orderFront(None);
+        if !dialog {
+            panel.orderFront(None);
+            return;
+        }
+        // Modal like any dialog: the keys go to it (Escape reaches the
+        // host, `cancelOperation:`), presses behind close it and go no
+        // further.
+        panel.makeKeyAndOrderFront(None);
+        panel.makeFirstResponder(Some(&self.host));
+        let (host, shown) = (self.host.clone(), panel.clone());
+        let id = self.id;
+        self.hold_presses_behind(window, move || {
+            if !shown.isVisible() {
+                return false;
+            }
+            if !host.ivars().overlay_fixed.get() {
+                crate::imp::dispatch(prism_core::UiEvent::Dismiss(
+                    id,
+                    prism_core::DismissReason::Outside,
+                ));
+            }
+            true
+        });
     }
 
     /// On its side of the anchor (the opposite one without room there), at
@@ -797,14 +880,21 @@ impl MacOverlay {
         };
         let anchor = window.convertRectToScreen(parent.convertRect_toView(parent.bounds(), None));
         let c = self.config.get();
-        let frame = panel_frame(
-            anchor,
-            size,
-            window.screen().map(|s| s.visibleFrame()),
-            parent.userInterfaceLayoutDirection() == NSUserInterfaceLayoutDirection::RightToLeft,
-            c.side,
-            c.align,
-        );
+        let rtl =
+            parent.userInterfaceLayoutDirection() == NSUserInterfaceLayoutDirection::RightToLeft;
+        let frame = if c.kind == OverlayKind::Dialog {
+            let content = window.contentRectForFrameRect(window.frame());
+            dialog_panel_frame(anchor, size, content, rtl, c)
+        } else {
+            panel_frame(
+                anchor,
+                size,
+                window.screen().map(|s| s.visibleFrame()),
+                rtl,
+                c.side,
+                c.align,
+            )
+        };
         if panel.frame() != frame {
             panel.setFrame_display(frame, true);
         }
@@ -819,9 +909,15 @@ impl MacOverlay {
             return;
         }
         if self.in_panel.replace(false) {
+            self.release_outside_presses();
             if let Some((p, _)) = self.panel.borrow().as_ref() {
+                let key = p.isKeyWindow();
                 if let Some(parent) = p.parentWindow() {
                     parent.removeChildWindow(p);
+                    // A bare dialog gives the keys back to the page.
+                    if key {
+                        parent.makeKeyWindow();
+                    }
                 }
                 p.orderOut(None);
             }
@@ -949,6 +1045,50 @@ pub(crate) fn panel_frame(
             .max(s.origin.y);
     }
     NSRect::new(NSPoint::new(x, y), size)
+}
+
+/// Where a bare dialog's panel goes (#166), in screen coordinates (y up):
+/// beside its anchor as [`place_beside`](prism_core::controls::place_beside)
+/// says when it is placed, inside `window` (its content area), 8 points
+/// away; centered on the window otherwise, or when neither side has room.
+pub(crate) fn dialog_panel_frame(
+    anchor: NSRect,
+    size: NSSize,
+    window: NSRect,
+    rtl: bool,
+    c: OverlayConfig,
+) -> NSRect {
+    let (wx, wy) = (window.origin.x, window.origin.y);
+    let (ww, wh) = (window.size.width, window.size.height);
+    // Screen y up to the window's y down, and back (the same flip).
+    let flip = |y: f64, h: f64| wy + wh - y - h;
+    let beside = c
+        .placed
+        .then(|| {
+            prism_core::controls::place_beside(
+                (
+                    (anchor.origin.x - wx) as f32,
+                    flip(anchor.origin.y, anchor.size.height) as f32,
+                    anchor.size.width as f32,
+                    anchor.size.height as f32,
+                ),
+                (size.width as f32, size.height as f32),
+                (0., 0., ww as f32, wh as f32),
+                c.side,
+                c.align,
+                rtl,
+                8.,
+            )
+        })
+        .flatten();
+    let origin = match beside {
+        Some((x, y)) => NSPoint::new(wx + x as f64, flip(y as f64, size.height)),
+        None => NSPoint::new(
+            wx + ((ww - size.width) / 2.).round(),
+            wy + ((wh - size.height) / 2.).round(),
+        ),
+    };
+    NSRect::new(origin, size)
 }
 
 /// The edge of the anchor an `NSPopover` opens on (AppKit takes the
@@ -1194,6 +1334,40 @@ mod tests {
         assert_eq!(at(item, true, S::Bottom, A::End), (100., 394.));
         // Above.
         assert_eq!(at(item, false, S::Top, A::Start), (100., 530.));
+    }
+
+    #[test]
+    fn bare_dialogs_go_beside_their_anchor_or_in_the_middle() {
+        // A window content area 1000 × 800 at (100, 50) on screen, y up.
+        let window = NSRect::new(NSPoint::new(100., 50.), NSSize::new(1000., 800.));
+        let size = NSSize::new(320., 200.);
+        // A 200 × 40 anchor whose top left is (150, 100) in the window
+        // (y down): on screen its bottom is at 50 + 800 - 140.
+        let anchor = NSRect::new(NSPoint::new(250., 710.), NSSize::new(200., 40.));
+        let placed = OverlayConfig {
+            kind: OverlayKind::Dialog,
+            side: PopoverSide::Trailing,
+            placed: true,
+            bare: true,
+            ..Default::default()
+        };
+        let f = dialog_panel_frame(anchor, size, window, false, placed);
+        // 8 points after the anchor, tops lined up.
+        assert_eq!((f.origin.x, f.origin.y), (458., 550.));
+        assert_eq!(f.size, size);
+        // Right to left: trailing is the left, with no room: the right.
+        let f = dialog_panel_frame(anchor, size, window, true, placed);
+        assert_eq!(f.origin.x, 458.);
+        // Not placed, or no room on either side: centered on the window.
+        let centered = OverlayConfig {
+            placed: false,
+            ..placed
+        };
+        let f = dialog_panel_frame(anchor, size, window, false, centered);
+        assert_eq!((f.origin.x, f.origin.y), (440., 350.));
+        let wide = NSSize::new(900., 200.);
+        let f = dialog_panel_frame(anchor, wide, window, false, placed);
+        assert_eq!((f.origin.x, f.origin.y), (150., 350.));
     }
 
     #[test]
