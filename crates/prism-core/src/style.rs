@@ -561,20 +561,28 @@ pub enum TextTransform {
 impl TextTransform {
     /// `text` transformed (Unicode case mapping, like CSS).
     pub fn apply(self, text: &str) -> String {
+        self.apply_after("", text)
+    }
+
+    /// `text` transformed as it reads after `before`, the text drawn just
+    /// before it in the same paragraph. Rich-text runs pass the previous
+    /// run, so a word cut by a run boundary (`span("Hel")`, `span("lo")`)
+    /// is capitalized once, like CSS across inline elements.
+    pub fn apply_after(self, before: &str, text: &str) -> String {
         match self {
             TextTransform::None => text.to_string(),
             TextTransform::Uppercase => text.to_uppercase(),
             TextTransform::Lowercase => text.to_lowercase(),
             TextTransform::Capitalize => {
                 let mut out = String::with_capacity(text.len());
-                let mut start = true;
+                let mut start = before.chars().last().is_none_or(starts_word_after);
                 for c in text.chars() {
                     if start && c.is_alphanumeric() {
                         out.extend(c.to_uppercase());
                     } else {
                         out.push(c);
                     }
-                    start = !c.is_alphanumeric() && c != '\'' && c != '\u{2019}';
+                    start = starts_word_after(c);
                 }
                 out
             }
@@ -590,6 +598,12 @@ impl TextTransform {
             TextTransform::Capitalize => "capitalize",
         }
     }
+}
+
+/// Whether a word starts after `c`: anything but a letter, a digit or an
+/// apostrophe (« it's », « l'été » keep one capital, like CSS).
+fn starts_word_after(c: char) -> bool {
+    !c.is_alphanumeric() && c != '\'' && c != '\u{2019}'
 }
 
 /// Default text size, in points.
@@ -2039,6 +2053,13 @@ pub trait Styled: Sized {
     /// Renders the text in lower case.
     fn lowercase(self) -> Self {
         self.text_transform(TextTransform::Lowercase)
+    }
+    /// Renders the first letter of each word in capitals (CSS
+    /// `text-transform: capitalize`; screen readers read it as written).
+    /// Text fields have their own `capitalize(Capitalize)`, the keyboard's
+    /// automatic capitalization.
+    fn capitalize(self) -> Self {
+        self.text_transform(TextTransform::Capitalize)
     }
     /// Underlined text.
     fn underline(self) -> Self {

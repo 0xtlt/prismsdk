@@ -20,14 +20,19 @@ text("Deprecated").strikethrough().italic()
 | `.italic()` | `italic` | `font-style` | italic trait | italic typeface | Pango style |
 | `.line_height(20.)`, `.line_height(relative(1.4))`, `.leading(1.4)` | `line_height` | `line-height` | paragraph line height | `setLineHeight` | absolute line height |
 | `.letter_spacing(0.8)`, `.tracking(0.8)` | `letter_spacing` (points) | `letter-spacing` | kern | `setLetterSpacing` | letter spacing |
-| `.uppercase()`, `.lowercase()`, `.text_transform(…)` | `text_transform` | `text-transform` | transformed text | transformed text | transformed text |
+| `.uppercase()`, `.lowercase()`, `.capitalize()`, `.text_transform(…)` | `text_transform` | `text-transform` | transformed text | transformed text | transformed text |
 | `.underline()`, `.strikethrough()` / `.line_through()` | `underline`, `strikethrough` | `text-decoration-line` | underline / strikethrough style | spans | Pango attributes |
 | `.tabular_nums()` | `tabular_numbers` | `font-variant-numeric` | `tnum` feature | `tnum` | `tnum` |
 | `.truncate()`, `.line_clamp(n)` | `max_lines` | `text-overflow`, `line-clamp` | number of lines, tail truncation | `maxLines` + ellipsis | lines + ellipsize |
 | `.nowrap()` | `no_wrap` | `white-space: pre` | clipping | horizontal scrolling off, clipped | ellipsized (see below) |
 
-Screen readers read the text as written (`uppercase()` only changes how it
-looks). Line heights and letter spacings in points grow with Dynamic Type
+Screen readers read the text as written (`uppercase()` and `capitalize()`
+only change how it looks), so put data in as it is (`text(name).capitalize()`
+rather than capitalizing it in Rust). `capitalize()` raises the first letter
+of each word, like CSS: « l'été à paris » reads « L'été À Paris », and a word
+split across rich-text spans is capitalized once. On text fields,
+`capitalize(Capitalize::Words)` is something else: the keyboard's automatic
+capitalization while typing. Line heights and letter spacings in points grow with Dynamic Type
 like the font size; `relative(…)` line heights follow the size.
 
 Measuring is native: the shared flexbox layout asks each platform for the
