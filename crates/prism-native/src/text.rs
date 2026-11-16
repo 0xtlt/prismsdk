@@ -5,7 +5,7 @@
 //! merging and link ids are the same everywhere, and measuring the native
 //! label measures exactly what is drawn.
 
-use prism_core::{Color, FontFamily, FontWeight, Style, TextAlign, TextRun, decode_runs};
+use prism_core::{Color, FontFamily, FontWeight, Style, TextAlign, TextRun, TextWrap, decode_runs};
 
 /// The font of one run.
 #[derive(Clone, Debug, PartialEq)]
@@ -72,6 +72,8 @@ pub struct StyledText {
     pub max_lines: Option<u32>,
     /// One line per paragraph, clipped.
     pub no_wrap: bool,
+    /// How wrapping lines are broken (#95).
+    pub wrap: TextWrap,
 }
 
 impl StyledText {
@@ -151,6 +153,7 @@ impl StyledText {
             letter_spacing: style.letter_spacing,
             max_lines: style.max_lines,
             no_wrap: style.no_wrap,
+            wrap: style.text_wrap,
         }
     }
 
@@ -230,6 +233,17 @@ mod tests {
         assert!(t.runs[0].font.italic);
         assert!(!t.is_simple());
         assert!(StyledText::new("a", "", &Style::default()).is_simple());
+    }
+
+    #[test]
+    fn the_paragraph_keeps_its_line_breaking() {
+        use prism_core::{Styled, TextWrap};
+        let plain = StyledText::new("a b c", "", &Style::default());
+        assert_eq!(plain.wrap, TextWrap::Auto);
+        let t = StyledText::new("a b c", "", &Style::default().text_balance());
+        assert_eq!(t.wrap, TextWrap::Balance);
+        // Labels set it themselves: a plain text stays on the fast path.
+        assert!(t.is_simple());
     }
 
     #[test]

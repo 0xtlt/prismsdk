@@ -60,7 +60,8 @@
 //! family (`mono`, `serif`, `rounded` or a name), `it` italic, `ul`
 //! underline, `st` strikethrough, `tn` tabular digits, `tt` case (`upper`,
 //! `lower`, `capitalize`), `ls` letter spacing and `lh` line height in
-//! points, `ml` maximum lines (ellipsized), `nw` no wrapping. `weight` is any
+//! points, `ml` maximum lines (ellipsized), `nw` no wrapping, `tw` line
+//! breaking (`pretty`, `balance`; #95). `weight` is any
 //! CSS weight from 100 to 900.
 //! | `states` | `on`: the interaction states the host reports for the node (`hover`, `active`, `focus`) |
 //!
@@ -344,6 +345,9 @@ pub fn typography(s: &Style) -> serde_json::Map<String, Value> {
     }
     if let Some(n) = s.max_lines {
         m.insert("ml".into(), json!(n));
+    }
+    if s.text_wrap != prism_core::TextWrap::Auto {
+        m.insert("tw".into(), json!(s.text_wrap.css()));
     }
     m
 }

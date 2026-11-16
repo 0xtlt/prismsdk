@@ -18,15 +18,15 @@ use objc2::{
 use objc2_app_kit::{
     NSAccessibilityCustomAction, NSApplication, NSBezierPath, NSColor, NSControl, NSEvent, NSFont,
     NSFontDescriptor, NSFontDescriptorSymbolicTraits, NSFontManager, NSFontTraitMask, NSImage,
-    NSImageSymbolConfiguration, NSLayoutManager, NSLineBreakMode, NSMutableParagraphStyle,
-    NSResponder, NSTextAlignment, NSTextAttachment, NSTextContainer, NSTextField, NSTextStorage,
-    NSView,
+    NSImageSymbolConfiguration, NSLayoutManager, NSLineBreakMode, NSLineBreakStrategy,
+    NSMutableParagraphStyle, NSResponder, NSTextAlignment, NSTextAttachment, NSTextContainer,
+    NSTextField, NSTextStorage, NSView,
 };
 use objc2_foundation::{
     NSArray, NSAttributedString, NSDictionary, NSMutableAttributedString, NSNumber, NSObject,
     NSPoint, NSRange, NSRect, NSSize, NSString,
 };
-use prism_core::{FontFamily, NodeId, Style, TextAlign, UiEvent};
+use prism_core::{FontFamily, NodeId, Style, TextAlign, TextWrap, UiEvent};
 use prism_native::text::{FontSpec, StyledText, interpolate_weight};
 
 use crate::imp::{dispatch, ns_color};
@@ -480,6 +480,7 @@ pub fn attributed(t: &StyledText, focused: Option<usize>) -> Retained<NSAttribut
     let paragraph = NSMutableParagraphStyle::new();
     paragraph.setAlignment(alignment(t.align));
     paragraph.setLineBreakMode(line_break(t));
+    paragraph.setLineBreakStrategy(line_strategy(t));
     if let Some(lh) = t.line_height {
         paragraph.setMinimumLineHeight(lh as f64);
         paragraph.setMaximumLineHeight(lh as f64);
@@ -554,6 +555,15 @@ pub fn attributed(t: &StyledText, focused: Option<usize>) -> Retained<NSAttribut
     Retained::into_super(out)
 }
 
+/// Line breaking for pretty and balanced wrapping (#95): AppKit avoids a
+/// lone word on the last line (`pushOut`) but has no balanced breaking.
+fn line_strategy(t: &StyledText) -> NSLineBreakStrategy {
+    match t.wrap {
+        TextWrap::Auto => NSLineBreakStrategy::None,
+        TextWrap::Pretty | TextWrap::Balance => NSLineBreakStrategy::PushOut,
+    }
+}
+
 fn line_break(t: &StyledText) -> NSLineBreakMode {
     match (t.max_lines, t.no_wrap) {
         (Some(1), _) => NSLineBreakMode::ByTruncatingTail,
@@ -592,6 +602,7 @@ fn apply(l: &NSTextField, t: &StyledText, focused: Option<usize>) {
         _ => NSLineBreakMode::ByWordWrapping,
     });
     l.setAlignment(alignment(t.align));
+    l.setLineBreakStrategy(line_strategy(t));
     if t.is_simple() && t.max_lines.is_none() && !t.no_wrap {
         let run = &t.runs[0];
         l.setFont(Some(&ns_font(&run.font)));

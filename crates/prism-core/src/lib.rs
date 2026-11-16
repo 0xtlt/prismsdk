@@ -708,8 +708,8 @@ pub mod prelude {
     pub use crate::EmbeddedAssets;
     // Typography and rich text.
     pub use crate::{
-        FontFace, FontFamily, FontWeight, Span, Stylesheet, TextTransform, icon, link, rich_text,
-        span,
+        FontFace, FontFamily, FontWeight, Span, Stylesheet, TextTransform, TextWrap, icon, link,
+        rich_text, span,
     };
     // Box decorations and interaction states.
     pub use crate::decoration::{shadow_lg, shadow_md, shadow_sm};
