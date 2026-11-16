@@ -295,6 +295,10 @@ fn commit(s: &mut State, patches: &[prism_core::Patch]) {
         s.renderer.apply(patches);
     }
     for request in s.runtime.take_requests() {
+        if let prism_core::PlatformRequest::LoadFont(face) = request {
+            load_font(s, face);
+            continue;
+        }
         prism_core::PlatformServices::handle(&mut s.services, request);
     }
     s.renderer.widgets.ops.append(&mut s.services.ops);
@@ -314,6 +318,17 @@ fn commit(s: &mut State, patches: &[prism_core::Patch]) {
         let delay = at.saturating_duration_since(std::time::Instant::now());
         let when = dispatch2::DispatchTime::try_from(delay).unwrap_or(dispatch2::DispatchTime::NOW);
         let _ = dispatch2::DispatchQueue::main().after(when, poll);
+    }
+}
+
+/// Registers a run-time font (`cx.load_font`) with Core Text (the SwiftUI
+/// host runs in this process) and sends every node's style again, its family
+/// resolved to the file's. A URL comes back here with its bytes once loaded.
+fn load_font(s: &mut State, face: prism_core::FontFace) {
+    let sources = prism_native::images::ImageSources::default();
+    if let Some(font) = prism_native::fonts::prepare(&mut s.runtime.app, face, &sources) {
+        prism_native::fonts::register_apple_font_data(&font.bytes);
+        s.renderer.restyle_all();
     }
 }
 

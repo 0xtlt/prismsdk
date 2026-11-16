@@ -289,6 +289,8 @@ final class PrismText {
     /** A bundled font file: its family, weight and style, from its tables. */
     static final class Face {
         String path;
+        /** A file on disk (`cx.load_font`) rather than an asset. */
+        boolean file;
         String family;
         int weight = 400;
         boolean italic;
@@ -339,14 +341,19 @@ final class PrismText {
         }
         AssetManager assets = PrismHost.context.getAssets();
         if (best.variable) {
-            Typeface v = new Typeface.Builder(assets, best.path)
+            Typeface.Builder builder = best.file
+                    ? new Typeface.Builder(new java.io.File(best.path))
+                    : new Typeface.Builder(assets, best.path);
+            Typeface v = builder
                     .setFontVariationSettings("'wght' " + weight + (italic ? ", 'ital' 1" : ""))
                     .setWeight(weight).setItalic(italic).build();
             if (v != null) return v;
         }
         if (best.typeface == null) {
             try {
-                best.typeface = Typeface.createFromAsset(assets, best.path);
+                best.typeface = best.file
+                        ? Typeface.createFromFile(best.path)
+                        : Typeface.createFromAsset(assets, best.path);
             } catch (RuntimeException e) {
                 return null;
             }
@@ -390,6 +397,33 @@ final class PrismText {
             android.util.Log.w("prism", "fonts: " + e);
         }
         bundled = out;
+    }
+
+    /**
+     * Registers a font file loaded while the app runs (`cx.load_font`) under its own family
+     * and under `alias` (the name the app gave), like a bundled one. Texts get it once the
+     * backend sends their styles again.
+     */
+    static synchronized void addFont(String path, String alias) {
+        if (bundled == null) loadBundled();
+        Face f = new Face();
+        f.path = path;
+        f.file = true;
+        try (InputStream in = new java.io.FileInputStream(path)) {
+            parse(readAll(in), f);
+        } catch (Exception e) {
+            android.util.Log.w("prism", "font " + path + ": " + e);
+            return;
+        }
+        List<String> keys = new ArrayList<>();
+        if (f.family != null) keys.add(f.family.toLowerCase(Locale.ROOT));
+        if (alias != null && !alias.isEmpty()) keys.add(alias.toLowerCase(Locale.ROOT));
+        for (String k : keys) {
+            List<Face> list = bundled.get(k);
+            if (list == null) bundled.put(k, list = new ArrayList<>());
+            list.add(0, f);
+        }
+        cache.clear();
     }
 
     private static byte[] readAll(InputStream in) throws java.io.IOException {

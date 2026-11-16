@@ -500,6 +500,21 @@ impl WebApp {
         html.asset_urls = Some(asset_urls);
         html.base.clone_from(&self.inner.base);
         html.apply(&runtime.render_settled(self.inner.first_paint_wait));
+        // Run-time fonts (by URL) and stylesheets of the first paint; the
+        // live page registers them again (`client.js` keeps these).
+        let (mut fonts, mut sheets) = (Vec::new(), String::new());
+        for request in runtime.take_requests() {
+            if let prism_core::PlatformRequest::LoadFont(font) = request {
+                fonts.push(crate::session::font_at(font, &|src| self.picture_url(src)));
+            }
+        }
+        for url in runtime.app.stylesheets() {
+            sheets.push_str(&format!(
+                "<link rel=\"stylesheet\" href=\"{}\" data-prism-sheet{}>\n",
+                html::escape(&url),
+                crate::host::nonce_attr(nonce),
+            ));
+        }
         let code = runtime.app.page_status();
         let title = match html.screen_title() {
             Some(screen) if screen != config.title => format!("{screen} · {}", config.title),
@@ -516,8 +531,8 @@ impl WebApp {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
 <link rel="stylesheet" href="{prefix}/{css}"{n}>
-{app_head}<style id="prism-page"{n}>:root{{color-scheme:{scheme}}}
-{app_css}</style>
+{app_head}{sheets}<style id="prism-page"{n}>:root{{color-scheme:{scheme}}}
+{app_css}{font_css}</style>
 <style id="prism-ssr"{n}>{ssr_css}</style>
 </head>
 <body>
@@ -532,6 +547,7 @@ impl WebApp {
             n = crate::host::nonce_attr(nonce),
             app_head = head.render(nonce, &|src: &str| self.picture_url(src)),
             app_css = crate::host::css_text(&head.css),
+            font_css = crate::session::font_face_css(&fonts),
             reconnecting = html::escape(&crate::host::reconnecting_text(&runtime.app)),
             title = html::escape(&title),
             scheme = html.color_scheme(),

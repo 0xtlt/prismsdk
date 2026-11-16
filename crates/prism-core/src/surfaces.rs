@@ -145,6 +145,14 @@ pub enum PlatformRequest {
         /// What to do.
         call: crate::device::DeviceCall,
     },
+    /// Register a font face for the session or process
+    /// ([`App::load_font`]); see [`crate::fonts`].
+    LoadFont(crate::fonts::FontFace),
+    /// Add the stylesheet at this URL to the page (web;
+    /// [`App::add_stylesheet`]).
+    AddStylesheet(String),
+    /// Remove the stylesheet at this URL (its last handle was dropped).
+    RemoveStylesheet(String),
 }
 
 /// Implemented by each backend. Unsupported requests should fall back
@@ -2026,6 +2034,8 @@ impl App {
         if let Some(json) = self.car_update() {
             self.surfaces.requests.push(PlatformRequest::SetCar(json));
         }
+        let sheets = self.take_stylesheet_requests();
+        self.surfaces.requests.extend(sheets);
         std::mem::take(&mut self.surfaces.requests)
     }
 

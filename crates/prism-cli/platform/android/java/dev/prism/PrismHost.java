@@ -346,6 +346,7 @@ public final class PrismHost {
             case "notify_cancel": PrismDevice.cancelNotification(p.getString("nid")); return;
             case "notify_permission": PrismDevice.requestNotificationPermission(); return;
             case "alert": alert(p.getJSONObject("alert")); return;
+            case "font": PrismText.addFont(p.getString("path"), p.optString("alias")); return;
             case "bg_schedule": PrismJob.schedule(context, p); return;
             case "push_register": PrismPush.register(context); return;
             case "push_unregister": PrismPush.unregister(context); return;

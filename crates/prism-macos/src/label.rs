@@ -375,6 +375,8 @@ pub fn ns_font(f: &FontSpec) -> Retained<NSFont> {
     let system = || NSFont::systemFontOfSize_weight(size, ns_weight(f.weight));
     let font = match &f.family {
         FontFamily::Named(name) => {
+            // A run-time font's alias (`cx.load_font`) → its file's family.
+            let family = prism_native::fonts::resolve_name(name);
             let Some(mtm) = MainThreadMarker::new() else {
                 return system();
             };
@@ -397,7 +399,12 @@ pub fn ns_font(f: &FontSpec) -> Retained<NSFont> {
                 NSFontTraitMask::empty()
             };
             manager
-                .fontWithFamily_traits_weight_size(&NSString::from_str(name), traits, weight, size)
+                .fontWithFamily_traits_weight_size(
+                    &NSString::from_str(&family),
+                    traits,
+                    weight,
+                    size,
+                )
                 .unwrap_or_else(system)
         }
         family => {

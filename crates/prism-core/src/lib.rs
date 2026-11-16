@@ -23,6 +23,7 @@ pub mod device;
 pub mod device_info;
 mod element;
 pub mod events;
+pub mod fonts;
 pub mod glyphs;
 pub mod i18n;
 pub mod interaction;
@@ -88,6 +89,7 @@ pub use element::{picture_data, svg};
 pub use events::{
     DragEvent, DragPhase, HoverEvent, KeyEvent, Modifiers, Point, PointerEvent, PointerPhase,
 };
+pub use fonts::{FontFace, FontSource, Stylesheet};
 pub use i18n::{BasicFormatter, DateStyle, Direction, Formatter, Locale, Translations};
 pub use interaction::{Interaction, Interactions, States};
 pub use island::{Island, IslandEvent, IslandSource, island, web_component};
@@ -684,7 +686,10 @@ pub mod prelude {
     // App assets compiled into the binary (#61).
     pub use crate::EmbeddedAssets;
     // Typography and rich text.
-    pub use crate::{FontFamily, FontWeight, Span, TextTransform, icon, link, rich_text, span};
+    pub use crate::{
+        FontFace, FontFamily, FontWeight, Span, Stylesheet, TextTransform, icon, link, rich_text,
+        span,
+    };
     // Box decorations and interaction states.
     pub use crate::decoration::{shadow_lg, shadow_md, shadow_sm};
     pub use crate::{Color, Cursor, Gradient, Shadow};

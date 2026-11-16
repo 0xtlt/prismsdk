@@ -5,6 +5,8 @@
 
 #[path = "native/common.rs"]
 mod common;
+#[path = "native/fonts.rs"]
+mod fonts;
 #[path = "native/interaction.rs"]
 mod interaction;
 #[path = "native/layout.rs"]

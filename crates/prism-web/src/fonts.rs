@@ -21,95 +21,19 @@ pub struct FontFace {
     pub italic: bool,
 }
 
-fn be16(b: &[u8], at: usize) -> Option<u16> {
-    Some(u16::from_be_bytes([*b.get(at)?, *b.get(at + 1)?]))
-}
-
-fn be32(b: &[u8], at: usize) -> Option<u32> {
-    Some(u32::from_be_bytes([
-        *b.get(at)?,
-        *b.get(at + 1)?,
-        *b.get(at + 2)?,
-        *b.get(at + 3)?,
-    ]))
-}
-
-/// The offset of table `tag` in a TrueType / OpenType font.
-fn table(b: &[u8], tag: &[u8; 4]) -> Option<(usize, usize)> {
-    let tables = be16(b, 4)? as usize;
-    (0..tables).find_map(|i| {
-        let rec = 12 + i * 16;
-        (b.get(rec..rec + 4)? == tag)
-            .then(|| Some((be32(b, rec + 8)? as usize, be32(b, rec + 12)? as usize)))
-            .flatten()
-    })
-}
-
-/// Family name from the `name` table: the typographic family (16) when
-/// there is one, else the family (1); Windows Unicode or Mac Roman records.
-fn family(b: &[u8]) -> Option<String> {
-    let (at, _) = table(b, b"name")?;
-    let count = be16(b, at + 2)? as usize;
-    let strings = at + be16(b, at + 4)? as usize;
-    let mut best: Option<(u16, String)> = None;
-    for i in 0..count {
-        let rec = at + 6 + i * 12;
-        let (platform, name_id) = (be16(b, rec)?, be16(b, rec + 6)?);
-        if name_id != 1 && name_id != 16 {
-            continue;
-        }
-        let (len, off) = (be16(b, rec + 8)? as usize, be16(b, rec + 10)? as usize);
-        let raw = b.get(strings + off..strings + off + len)?;
-        let text = match platform {
-            // Windows / Unicode: UTF-16 big endian.
-            0 | 3 => {
-                let units: Vec<u16> = raw
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|c| u16::from_be_bytes(*c))
-                    .collect();
-                String::from_utf16(&units).ok()?
-            }
-            // Macintosh Roman: ASCII is enough for family names.
-            1 => raw.iter().map(|&c| c as char).collect(),
-            _ => continue,
-        };
-        if text.is_empty() {
-            continue;
-        }
-        if best.as_ref().is_none_or(|(id, _)| name_id > *id) {
-            best = Some((name_id, text));
-        }
-    }
-    best.map(|(_, t)| t)
-}
-
-/// A TrueType / OpenType font's family, weight and style.
+/// A TrueType / OpenType font's family, weight and style (read by
+/// [`prism_core::fonts::font_file_info`]).
 pub fn sfnt_face(b: &[u8]) -> Option<FontFace> {
-    let magic = b.get(0..4)?;
-    if magic != [0, 1, 0, 0] && magic != b"OTTO" && magic != b"true" {
-        return None;
-    }
-    let family = family(b)?;
-    let (os2, _) = table(b, b"OS/2")?;
-    let weight = be16(b, os2 + 4)?;
-    let selection = be16(b, os2 + 62)?;
-    // A variable font with a weight axis covers the whole range.
-    let variable = table(b, b"fvar").is_some_and(|(at, _)| {
-        let axes = be16(b, at + 8).unwrap_or(0) as usize;
-        let start = at + be16(b, at + 4).unwrap_or(16) as usize;
-        let size = be16(b, at + 10).unwrap_or(20) as usize;
-        (0..axes).any(|i| b.get(start + i * size..start + i * size + 4) == Some(b"wght"))
-    });
+    let info = prism_core::fonts::font_file_info(b)?;
     Some(FontFace {
-        family,
-        weight: if variable {
+        family: info.family,
+        // A variable font with a weight axis covers the whole range.
+        weight: if info.variable {
             "100 900".into()
         } else {
-            weight.clamp(1, 1000).to_string()
+            info.weight.to_string()
         },
-        italic: selection & 1 == 1,
+        italic: info.italic,
     })
 }
 

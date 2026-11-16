@@ -1349,3 +1349,41 @@ test("own-width rules: an inline style the client set is kept", () => {
   assert.equal(el.style.position, "relative");
   assert.equal(cssOf(el), "padding:28px;position:relative;transition:opacity 1s;");
 });
+
+test("run-time fonts become FontFaces, once each (#81)", () => {
+  const page = live([create(1, "view"), root(1)]);
+  page.ws.deliver({ t: "font", family: "Lora", url: "https://fonts.example/lora.woff2", weight: "400 700", style: "normal" });
+  page.ws.deliver({ t: "font", family: "Lora", url: "https://fonts.example/lora.woff2", weight: "400 700", style: "normal" });
+  // "OTTO" in base64url, without padding.
+  page.ws.deliver({ t: "font", family: "Brand", data: "T1RUTw", style: "italic" });
+  const [lora, brand, ...rest] = page.document.fonts.added;
+  assert.equal(rest.length, 0, "the same face is added once");
+  assert.equal(lora.family, "Lora");
+  assert.equal(lora.source, 'url("https://fonts.example/lora.woff2")');
+  assert.deepEqual({ ...lora.descriptors }, { style: "normal", display: "swap", weight: "400 700" });
+  assert.equal(brand.family, "Brand");
+  assert.deepEqual([...brand.source], [0x4f, 0x54, 0x54, 0x4f]);
+  assert.deepEqual({ ...brand.descriptors }, { style: "italic", display: "swap" });
+});
+
+test("app stylesheets follow the set the server sends, first paint's included (#81)", () => {
+  const page = boot({ nonce: "n0nce" });
+  const ssr = page.document.createElement("link");
+  ssr.setAttribute("rel", "stylesheet");
+  ssr.setAttribute("href", "/fonts.css");
+  ssr.setAttribute("data-prism-sheet", "");
+  page.document.head.appendChild(ssr);
+  page.ws.open();
+  const hrefs = () => page.document.querySelectorAll("link[data-prism-sheet]").map((l) => l.getAttribute("href"));
+  page.ws.deliver({ t: "reset", p: [create(1, "view"), root(1)], sheets: ["/fonts.css", "/picker.css"] });
+  assert.deepEqual(hrefs(), ["/fonts.css", "/picker.css"], "the first paint's link is kept");
+  assert.equal(page.document.querySelector('link[href="/picker.css"]').nonce, "n0nce");
+  page.ws.deliver({ t: "sheets", urls: ["/picker.css"] });
+  assert.deepEqual(hrefs(), ["/picker.css"]);
+  page.ws.deliver({ t: "sheets", urls: [] });
+  assert.deepEqual(hrefs(), []);
+  // A new session without stylesheets drops the previous one's.
+  page.ws.deliver({ t: "sheets", urls: ["/old.css"] });
+  page.ws.deliver({ t: "reset", p: [create(1, "view"), root(1)] });
+  assert.deepEqual(hrefs(), []);
+});

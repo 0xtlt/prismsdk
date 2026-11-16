@@ -461,6 +461,13 @@ impl<W: Widgets> NativeRenderer<W> {
             return;
         }
         self.zoom = zoom;
+        self.restyle_all();
+    }
+
+    /// Hands every node its style again and measures every leaf again: what
+    /// a style resolves to changed (the zoom, a font registered while the
+    /// app runs). Lay out afterwards.
+    pub fn restyle_all(&mut self) {
         let ids: Vec<NodeId> = self.nodes.keys().copied().collect();
         for id in ids {
             let e = &self.nodes[&id];

@@ -77,6 +77,61 @@ Every backend registers them at startup:
 
 An unknown family falls back to the system font.
 
+## Fonts loaded at run time
+
+Fonts known only while the app runs (a catalogue your server offers, a file
+the user uploaded) are registered with `cx.load_font`, for the session on
+the web and for the process natively. Texts already shown in that family
+are drawn again once it is ready.
+
+```rust
+cx.load_font(FontFace::url("Lora", "https://cdn.example.com/lora.woff2").weights(400, 700));
+cx.load_font(FontFace::bytes("Uploaded 1", uploaded_bytes).weight(400));
+cx.load_font(FontFace::url("Extra", "fonts/extra.ttf"));   // an asset, embedded ones included
+text("Lora").font_family("Lora")
+```
+
+Asking for the same face again does nothing, so it can be called from
+`render` (only for the screens that need it).
+
+| | Registers with | Formats | URLs |
+|---|---|---|---|
+| Web | `new FontFace(…)` + `document.fonts` | WOFF2, WOFF, TTF, OTF | loaded by the browser (the page's `font-src` applies); an asset's name becomes its hashed URL, like a picture's; bytes are sent with the message |
+| macOS, iOS, iPadOS, tvOS, visionOS, watchOS | `CTFontManagerRegisterGraphicsFont` (process scope) | TTF, OTF | loaded in the background, like pictures (`https://`, `file://`, assets: embedded ones on macOS, iOS and Linux) |
+| Android | `Typeface.Builder(File)` / `createFromFile` | TTF, OTF, TTC | same |
+| Linux | fontconfig (`FcConfigAppFontAddFile`), then Pango's font map reloads | TTF, OTF, TTC | same |
+
+- **The family name**: on the web the face is registered under the name you
+  give. Natively the platform knows a font by the family its file declares,
+  so Prism reads it and makes your name an alias of it: `FontFace::bytes("Uploaded 1", …)`
+  then `.font_family("Uploaded 1")` works whatever the file calls itself.
+- **Weights**: `.weight(700)` for a static face, `.weights(100, 900)` for a
+  variable one; without them the web treats the face as regular (bold is
+  synthesized) and native platforms read the file.
+- **First paint**: faces given by URL during the first render are in the
+  page's `@font-face` rules; bytes arrive with the live page.
+- WOFF and WOFF2 are web formats: native platforms refuse them (logged). A
+  catalogue for every platform serves TTF or OTF files natively.
+
+### A stylesheet for one screen (web)
+
+`cx.add_stylesheet(url)` adds a `<link rel="stylesheet">` to the page while
+the returned `Stylesheet` lives. Keep it in the entity of the screen that
+needs it: when the screen closes, the entity and the handle go, and so does
+the link (handles for the same URL share one link).
+
+```rust
+struct FontPicker { _fonts_css: Stylesheet }
+
+let picker = cx.new_entity(|cx| FontPicker {
+    _fonts_css: cx.add_stylesheet("/fonts/catalogue.css"),
+});
+```
+
+It is in the first paint's `<head>`, carries the page's CSP nonce when the
+host gives one, and a reconnected page keeps exactly the session's sheets.
+Native backends ignore it: register the fonts with `cx.load_font` there.
+
 ## Rich text
 
 `rich_text` is one paragraph made of runs: it wraps between words (not

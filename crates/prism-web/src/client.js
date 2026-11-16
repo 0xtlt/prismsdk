@@ -2529,6 +2529,43 @@
         return;
       case "push_register": return pushRegister(msg.key);
       case "push_unregister": return pushUnregister();
+      case "font": return loadFont(msg);
+      case "sheets": return syncSheets(msg.urls || []);
+    }
+  }
+
+  // --- Run-time fonts and stylesheets (`cx.load_font`, `cx.add_stylesheet`) ----------
+  const fontsLoaded = new Set();
+  /** Registers a font face for this page: a URL or the file (base64url). */
+  function loadFont(msg) {
+    const key = JSON.stringify([msg.family, msg.url || msg.data, msg.weight, msg.style]);
+    if (fontsLoaded.has(key) || !("FontFace" in window) || !document.fonts) return;
+    fontsLoaded.add(key);
+    const desc = { style: msg.style || "normal", display: "swap" };
+    if (msg.weight) desc.weight = msg.weight;
+    try {
+      const source = msg.url ? `url(${JSON.stringify(msg.url)})` : unb64u(msg.data);
+      const face = new FontFace(msg.family, source, desc);
+      document.fonts.add(face);
+      face.load().catch((err) => console.warn(`prism: font ${msg.family}`, err));
+    } catch (err) {
+      console.warn(`prism: font ${msg.family}`, err);
+    }
+  }
+  /** Makes the page's app stylesheets exactly `urls` (the first paint's included). */
+  function syncSheets(urls) {
+    const want = new Set(urls);
+    for (const link of document.querySelectorAll("link[data-prism-sheet]")) {
+      if (want.has(link.getAttribute("href"))) want.delete(link.getAttribute("href"));
+      else link.remove();
+    }
+    for (const url of want) {
+      const link = document.createElement("link");
+      link.setAttribute("rel", "stylesheet");
+      link.setAttribute("href", url);
+      link.setAttribute("data-prism-sheet", "");
+      if (styleNonce) link.nonce = styleNonce;
+      document.head.appendChild(link);
     }
   }
 
@@ -2684,8 +2721,12 @@
     flushOverlays();
     flushStates();
     quiet = false;
-    // The live tree replaced the first paint: its style rules can go.
-    if (msg.t === "reset") document.getElementById("prism-ssr")?.remove();
+    // The live tree replaced the first paint: its style rules can go, and
+    // the app's stylesheets are the session's.
+    if (msg.t === "reset") {
+      document.getElementById("prism-ssr")?.remove();
+      syncSheets(msg.sheets || []);
+    }
     syncHistory();
   }
 
