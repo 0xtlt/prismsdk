@@ -2443,6 +2443,15 @@ fn pointer_drag_and_key_messages_become_ui_events() {
     };
     assert_eq!(d.phase, DragPhase::Start);
     assert_eq!(d.position(), Point::new(15., -1.));
+    assert_eq!(d.button, prism_core::PointerButton::Primary);
+    // Another button and keys (#136).
+    let Some(UiEvent::Drag(3, d)) = ev(json!({"t": "drag", "id": 3, "phase": "move",
+        "button": "middle", "mods": 1}))
+    else {
+        panic!("middle drag")
+    };
+    assert_eq!(d.button, prism_core::PointerButton::Middle);
+    assert!(d.modifiers.shift);
     let Some(UiEvent::Key(Some(3), k)) =
         ev(json!({"t": "key", "id": 3, "key": "ArrowUp", "mods": 2, "repeat": true}))
     else {

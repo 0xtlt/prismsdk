@@ -93,7 +93,7 @@ pub use element::{SelectionEvent, byte_to_char, char_to_byte};
 pub use element::{picture_data, svg};
 pub use events::{
     DragEvent, DragPhase, FileDropEvent, GesturePhase, HoverEvent, KeyEvent, MagnifyEvent,
-    Modifiers, Point, PointerEvent, PointerPhase, WheelEvent,
+    Modifiers, Point, PointerButton, PointerEvent, PointerPhase, WheelEvent,
 };
 pub use fonts::{FontFace, FontSource, Stylesheet};
 pub use i18n::{BasicFormatter, DateStyle, Direction, Formatter, Locale, Translations};
@@ -769,8 +769,9 @@ pub mod prelude {
     // Pointer, keys, choice controls, overlays (#17, #18, #19).
     pub use crate::{
         DragEvent, DragPhase, FileDropEvent, GesturePhase, HoverEvent, KeyEvent, MagnifyEvent,
-        Modifiers, PickFiles, Point, PointerEvent, PointerPhase, PopoverAlign, PopoverSide,
-        WheelEvent, checkbox, dialog, popover, radio_group, sheet, time_picker, time_picker_opt,
+        Modifiers, PickFiles, Point, PointerButton, PointerEvent, PointerPhase, PopoverAlign,
+        PopoverSide, WheelEvent, checkbox, dialog, popover, radio_group, sheet, time_picker,
+        time_picker_opt,
     };
     // Anchored overlays without a dim (#79).
     pub use crate::Backdrop;

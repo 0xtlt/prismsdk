@@ -107,6 +107,8 @@ fn pointer_and_drag_events_reach_their_handlers() {
             phase: DragPhase::Move,
             start: Point::new(10., 0.),
             translation: Point::new(5., 0.),
+            button: prism_core::PointerButton::Primary,
+            modifiers: Default::default(),
         },
     ));
     assert_eq!(

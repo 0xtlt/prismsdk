@@ -2530,6 +2530,8 @@ impl Widgets for Gtk {
                         phase,
                         start: point(start.0, start.1),
                         translation: point(dx, dy),
+                        button: prism_core::PointerButton::Primary,
+                        modifiers: Default::default(),
                     },
                 )
             };

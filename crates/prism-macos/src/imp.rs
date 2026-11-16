@@ -368,6 +368,11 @@ pub struct ViewIvars {
     /// Where the mouse went down (window coordinates), while pressed.
     press: Cell<Option<NSPoint>>,
     dragging: Cell<bool>,
+    /// The button and keys of the press being dragged (#136).
+    drag_button: Cell<prism_core::PointerButton>,
+    drag_modifiers: Cell<prism_core::Modifiers>,
+    /// A middle or secondary press that may become a drag (#136): where.
+    other_press: Cell<Option<NSPoint>>,
     /// Reports keys while focused (it can take the focus).
     pub(crate) key_local: Cell<bool>,
     // --- Custom window chrome (#67) ---
@@ -695,6 +700,59 @@ define_class!(
             }
         }
 
+        /// Middle (wheel) and other buttons (#136): a drag when the view
+        /// lets the middle button drag.
+        #[unsafe(method(otherMouseDown:))]
+        fn other_mouse_down(&self, event: &NSEvent) {
+            if !self.button_down(event, button_of(event)) {
+                unsafe { msg_send![super(self), otherMouseDown: event] }
+            }
+        }
+
+        #[unsafe(method(otherMouseDragged:))]
+        fn other_mouse_dragged(&self, event: &NSEvent) {
+            if !self.button_dragged(event) {
+                unsafe { msg_send![super(self), otherMouseDragged: event] }
+            }
+        }
+
+        #[unsafe(method(otherMouseUp:))]
+        fn other_mouse_up(&self, event: &NSEvent) {
+            if self.button_up(event).is_none() {
+                unsafe { msg_send![super(self), otherMouseUp: event] }
+            }
+        }
+
+        /// The secondary button (#136): a drag when the view lets it drag;
+        /// a press that does not move still opens the context menu.
+        #[unsafe(method(rightMouseDown:))]
+        fn right_mouse_down(&self, event: &NSEvent) {
+            if !self.button_down(event, prism_core::PointerButton::Secondary) {
+                unsafe { msg_send![super(self), rightMouseDown: event] }
+            }
+        }
+
+        #[unsafe(method(rightMouseDragged:))]
+        fn right_mouse_dragged(&self, event: &NSEvent) {
+            if !self.button_dragged(event) {
+                unsafe { msg_send![super(self), rightMouseDragged: event] }
+            }
+        }
+
+        #[unsafe(method(rightMouseUp:))]
+        fn right_mouse_up(&self, event: &NSEvent) {
+            match self.button_up(event) {
+                None => unsafe { msg_send![super(self), rightMouseUp: event] },
+                // Not dragged: the menu it held back.
+                Some(false) => {
+                    if let Some(menu) = self.context_menu() {
+                        NSMenu::popUpContextMenu_withEvent_forView(&menu, event, self);
+                    }
+                }
+                Some(true) => {}
+            }
+        }
+
         /// Right-click / ⌃-click.
         #[unsafe(method(menuForEvent:))]
         fn menu_for_event(&self, _event: &NSEvent) -> *mut NSMenu {
@@ -796,6 +854,8 @@ define_class!(
             let iv = self.ivars();
             let drags = iv.pointer_mask.get() & prism_core::events::pointer_mask::DRAG != 0;
             iv.dragging.set(false);
+            iv.drag_button.set(prism_core::PointerButton::Primary);
+            iv.drag_modifiers.set(crate::interact::modifiers(event.modifierFlags()));
             iv.press.set(Some(event.locationInWindow()));
             if iv.key_local.get()
                 && let Some(w) = self.window()
@@ -838,6 +898,14 @@ define_class!(
         }
     }
 );
+
+/// The mouse button of an `otherMouse…` event: 2 is the middle one.
+fn button_of(event: &NSEvent) -> prism_core::PointerButton {
+    match event.buttonNumber() {
+        2 => prism_core::PointerButton::Middle,
+        n => prism_core::PointerButton::Other(n.clamp(0, 255) as u8),
+    }
+}
 
 /// A trackpad gesture's phase from AppKit's (`None` to skip the event:
 /// fingers resting without moving).
@@ -885,14 +953,65 @@ impl PrismView {
     /// (`dx`, `dy`) points, y down.
     fn drag(&self, phase: DragPhase, start: NSPoint, dx: f64, dy: f64) {
         let p = self.convertPoint_fromView(start, None);
+        let iv = self.ivars();
         dispatch(UiEvent::Drag(
-            self.ivars().id.get(),
+            iv.id.get(),
             DragEvent {
                 phase,
                 start: Point::new(p.x as f32, p.y as f32),
                 translation: Point::new(dx as f32, dy as f32),
+                button: iv.drag_button.get(),
+                modifiers: iv.drag_modifiers.get(),
             },
         ));
+    }
+
+    /// A middle or secondary press (#136): taken (`true`) when the view lets
+    /// that button drag.
+    fn button_down(&self, event: &NSEvent, button: prism_core::PointerButton) -> bool {
+        let iv = self.ivars();
+        let bit = button.drag_bit();
+        if bit == 0 || iv.pointer_mask.get() & bit == 0 || iv.dragging.get() {
+            return false;
+        }
+        iv.drag_button.set(button);
+        iv.drag_modifiers
+            .set(crate::interact::modifiers(event.modifierFlags()));
+        iv.other_press.set(Some(event.locationInWindow()));
+        true
+    }
+
+    /// The pressed middle or secondary button moved: past 3 points, a drag.
+    fn button_dragged(&self, event: &NSEvent) -> bool {
+        let iv = self.ivars();
+        let Some(start) = iv.other_press.get() else {
+            return false;
+        };
+        let at = event.locationInWindow();
+        let (dx, dy) = (at.x - start.x, start.y - at.y);
+        if !iv.dragging.get() {
+            if dx.hypot(dy) < 3. {
+                return true;
+            }
+            iv.dragging.set(true);
+            self.drag(DragPhase::Start, start, dx, dy);
+        } else {
+            self.drag(DragPhase::Move, start, dx, dy);
+        }
+        true
+    }
+
+    /// The middle or secondary button went up: `None` if the view did not
+    /// take the press, else whether it was dragged.
+    fn button_up(&self, event: &NSEvent) -> Option<bool> {
+        let iv = self.ivars();
+        let start = iv.other_press.take()?;
+        let dragged = iv.dragging.replace(false);
+        if dragged {
+            let at = event.locationInWindow();
+            self.drag(DragPhase::End, start, at.x - start.x, start.y - at.y);
+        }
+        Some(dragged)
     }
 
     /// Hover and move events through a tracking area (key window only).

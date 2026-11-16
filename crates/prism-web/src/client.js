@@ -166,6 +166,17 @@
     el._pmask = mask;
     setGestures(el, id);
     toggleClass(el, "prism-draggable", (mask & 4) !== 0);
+    // A middle-button drag (#136): no autoscroll, no paste, no new tab.
+    if ((mask & 32) && !el._middleBound) {
+      el._middleBound = true;
+      el.addEventListener("mousedown", (e) => { if (e.button === 1 && (el._pmask & 32)) e.preventDefault(); });
+      el.addEventListener("auxclick", (e) => { if (e.button === 1 && (el._pmask & 32)) e.preventDefault(); });
+    }
+    // After a secondary-button drag, no context menu (#136).
+    if ((mask & 64) && !el._secondaryBound) {
+      el._secondaryBound = true;
+      el.addEventListener("contextmenu", (e) => { if (el._rightDragged) { el._rightDragged = false; e.preventDefault(); e.stopPropagation(); } }, true);
+    }
     // A draggable link: the app's drag, not the browser's link drag.
     if (el.localName === "a") (mask & 4) ? el.setAttribute("draggable", "false") : el.removeAttribute("draggable");
     if (el._pointerBound) return;
@@ -179,16 +190,22 @@
       send({ t: "pointer", id, phase: "leave", ...local(el, e) });
     });
     el.addEventListener("pointerdown", (e) => {
-      // The innermost draggable element takes the drag.
-      if (!(el._pmask & 4) || e.button > 0 || e.prismDrag) return;
+      // The innermost element the button may drag takes the drag: the
+      // primary (4), middle (32) or secondary (64) button (#136).
+      const bit = [4, 32, 64][e.button] || 0;
+      if (!(el._pmask & bit) || e.prismDrag) return;
       e.prismDrag = true;
+      if (e.button === 1) e.preventDefault();
       const at = local(el, e);
-      drag = { pointer: e.pointerId, cx: e.clientX, cy: e.clientY, x: at.x, y: at.y, started: false };
+      const mods = (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
+      // Only what differs from a plain primary drag goes up.
+      const extra = { ...(e.button ? { button: ["primary", "middle", "secondary"][e.button] } : {}), ...(mods ? { mods } : {}) };
+      drag = { pointer: e.pointerId, cx: e.clientX, cy: e.clientY, x: at.x, y: at.y, started: false, button: e.button, extra };
     });
     el.addEventListener("pointermove", (e) => {
       if (drag && e.pointerId === drag.pointer) {
         const dx = round(e.clientX - drag.cx), dy = round(e.clientY - drag.cy);
-        const msg = { t: "drag", id, x: drag.x, y: drag.y, dx, dy };
+        const msg = { t: "drag", id, x: drag.x, y: drag.y, dx, dy, ...drag.extra };
         if (!drag.started) {
           // Past the slop: a drag, not a click.
           if (Math.hypot(dx, dy) < 4) return;
@@ -205,7 +222,8 @@
       drag = null;
       if (!d.started) return;
       drags.drop();
-      send({ t: "drag", id, phase, x: d.x, y: d.y, dx: round(e.clientX - d.cx), dy: round(e.clientY - d.cy) });
+      if (d.button === 2) el._rightDragged = true;
+      send({ t: "drag", id, phase, x: d.x, y: d.y, dx: round(e.clientX - d.cx), dy: round(e.clientY - d.cy), ...d.extra });
       dragJustEnded = true;
       setTimeout(() => { dragJustEnded = false; }, 0);
     };

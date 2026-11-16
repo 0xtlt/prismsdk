@@ -133,6 +133,61 @@ pub struct DragEvent {
     pub start: Point,
     /// How far the pointer moved since it went down, in points.
     pub translation: Point,
+    /// The mouse button held (#136): [`PointerButton::Primary`] for a
+    /// finger, a pen or the main button.
+    pub button: PointerButton,
+    /// Keys held when the drag started (Shift to constrain, Option to
+    /// duplicate…).
+    pub modifiers: Modifiers,
+}
+
+/// A mouse button (#136): which one drags ([`DragEvent::button`]) and which
+/// ones may start a drag ([`Div::drag_buttons`](crate::Div::drag_buttons)).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum PointerButton {
+    /// The main button (left, or right for left-handed setups), a finger,
+    /// a pen.
+    #[default]
+    Primary,
+    /// The middle button (pressing the wheel): panning a canvas.
+    Middle,
+    /// The secondary button (right).
+    Secondary,
+    /// Another button, numbered as the platform does (back, forward…).
+    Other(u8),
+}
+
+impl PointerButton {
+    /// `primary`, `middle`, `secondary` or `other:N` (as backends report it).
+    pub fn name(self) -> String {
+        match self {
+            PointerButton::Primary => "primary".into(),
+            PointerButton::Middle => "middle".into(),
+            PointerButton::Secondary => "secondary".into(),
+            PointerButton::Other(n) => format!("other:{n}"),
+        }
+    }
+
+    /// Parses [`name`](Self::name)'s output.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "primary" => PointerButton::Primary,
+            "middle" => PointerButton::Middle,
+            "secondary" => PointerButton::Secondary,
+            other => PointerButton::Other(other.strip_prefix("other:")?.parse().ok()?),
+        })
+    }
+
+    /// The [`pointer_mask`] bit that lets this button start a drag (none
+    /// for other buttons).
+    pub fn drag_bit(self) -> u8 {
+        match self {
+            PointerButton::Primary => pointer_mask::DRAG,
+            PointerButton::Middle => pointer_mask::DRAG_MIDDLE,
+            PointerButton::Secondary => pointer_mask::DRAG_SECONDARY,
+            PointerButton::Other(_) => 0,
+        }
+    }
 }
 
 impl DragEvent {
@@ -263,6 +318,12 @@ pub mod pointer_mask {
     pub const WHEEL: u8 = 8;
     /// Pinches over the node (#133).
     pub const MAGNIFY: u8 = 16;
+    /// Drags with the middle button (#136). `DRAG` is the primary button's.
+    pub const DRAG_MIDDLE: u8 = 32;
+    /// Drags with the secondary button (#136).
+    pub const DRAG_SECONDARY: u8 = 64;
+    /// Every drag bit.
+    pub const DRAG_ANY: u8 = DRAG | DRAG_MIDDLE | DRAG_SECONDARY;
 }
 
 /// Where a trackpad gesture is: [`WheelEvent::phase`],
@@ -375,7 +436,18 @@ mod tests {
             phase: DragPhase::Move,
             start: Point::new(10., 5.),
             translation: Point::new(-4., 20.),
+            button: PointerButton::Middle,
+            modifiers: Modifiers::default(),
         };
+        for b in [
+            PointerButton::Primary,
+            PointerButton::Middle,
+            PointerButton::Secondary,
+            PointerButton::Other(4),
+        ] {
+            assert_eq!(PointerButton::from_name(&b.name()), Some(b));
+        }
+        assert_eq!(PointerButton::from_name("other:x"), None);
         assert_eq!(d.position(), Point::new(6., 25.));
     }
 }

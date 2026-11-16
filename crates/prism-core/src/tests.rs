@@ -2453,6 +2453,47 @@ fn drop_targets_get_the_files_they_accept() {
     assert!(patches.contains(&Patch::SetDropTarget { id, types: None }));
 }
 
+/// #136: the buttons that may drag become pointer bits.
+#[test]
+fn drag_buttons_become_pointer_bits() {
+    use crate::events::pointer_mask::{DRAG, DRAG_MIDDLE, DRAG_SECONDARY};
+    struct Pad(&'static [PointerButton]);
+    impl Render for Pad {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            let d = div().on_drag(cx.listener(|_, _: &DragEvent, _| {}));
+            if self.0.is_empty() {
+                d
+            } else {
+                d.drag_buttons(self.0)
+            }
+        }
+    }
+    for (buttons, mask) in [
+        (&[][..], DRAG),
+        (&[PointerButton::Middle][..], DRAG_MIDDLE),
+        (
+            &[PointerButton::Primary, PointerButton::Secondary][..],
+            DRAG | DRAG_SECONDARY,
+        ),
+        (&[PointerButton::Other(4)][..], 0),
+    ] {
+        let init: AppInit = Arc::new(move |cx: &mut App| {
+            let root = cx.new_entity(|_| Pad(buttons));
+            cx.set_root(root);
+        });
+        let mut rt = Runtime::new(&init);
+        let patches = rt.render();
+        let got = patches
+            .iter()
+            .find_map(|p| match p {
+                Patch::SetPointerEvents { mask, .. } => Some(*mask),
+                _ => None,
+            })
+            .unwrap_or(0);
+        assert_eq!(got, mask, "{buttons:?}");
+    }
+}
+
 /// #133: wheel and pinch handlers set their pointer bits and get their events.
 #[test]
 fn wheel_and_magnify_reach_their_element() {
