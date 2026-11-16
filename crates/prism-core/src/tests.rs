@@ -2938,3 +2938,94 @@ fn layout_builders_set_their_fields() {
         "repeat(auto-fit,minmax(172px,1fr))"
     );
 }
+
+// --- Custom window chrome (#67) ---------------------------------------------
+
+#[test]
+fn window_chrome_defaults_to_the_standard_title_bar() {
+    let config = crate::AppConfig::default();
+    assert_eq!(config.window_chrome, WindowChrome::Standard);
+    assert!(!config.window_chrome.is_custom());
+    let custom = WindowChrome::Custom {
+        traffic_lights: Some(Point::new(16., 13.)),
+    };
+    assert!(custom.is_custom());
+    assert!(
+        WindowChrome::Custom {
+            traffic_lights: None
+        }
+        .is_custom()
+    );
+}
+
+#[test]
+fn window_drag_reaches_the_backend_as_a_style() {
+    struct Bar {
+        drag: bool,
+    }
+    impl Render for Bar {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            let bar = div().h(40.).child(
+                button("Tab").on_click(cx.listener(|this: &mut Bar, _, _| this.drag = !this.drag)),
+            );
+            if self.drag { bar.window_drag() } else { bar }
+        }
+    }
+    let (mut rt, first) = boot(|cx| {
+        let root = cx.new_entity(|_| Bar { drag: true });
+        cx.set_root(root);
+    });
+    let dragged: Vec<u64> = first
+        .iter()
+        .filter_map(|p| match p {
+            Patch::SetStyle { id, style } if style.window_drag => Some(*id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(dragged.len(), 1, "only the bar drags the window");
+    let bar = dragged[0];
+    // The button inside keeps its own style and its clicks.
+    let tab = find_text(&first, "Tab");
+    assert_ne!(tab, bar);
+    let patches = rt.dispatch(UiEvent::Click(tab));
+    let restyled = patches.iter().find_map(|p| match p {
+        Patch::SetStyle { id, style } if *id == bar => Some(style.window_drag),
+        _ => None,
+    });
+    assert_eq!(restyled, Some(false), "turning it off restyles the bar");
+    assert!(!div().style_mut().window_drag);
+    assert!(div().window_drag().style_mut().window_drag);
+}
+
+#[test]
+fn fullscreen_and_window_controls_re_render() {
+    struct Title;
+    impl Render for Title {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            let lead = cx.window_controls().map_or(12., |c| c.right() + 12.);
+            text(format!("fs {} lead {lead}", cx.is_fullscreen()))
+        }
+    }
+    let (mut rt, first) = boot(|cx| {
+        let root = cx.new_entity(|_| Title);
+        cx.set_root(root);
+    });
+    find_text(&first, "fs false lead 12");
+    let lights = WindowControls {
+        x: 16.,
+        y: 13.,
+        width: 52.,
+        height: 14.,
+    };
+    assert_eq!((lights.right(), lights.bottom()), (68., 27.));
+    find_text(
+        &rt.set_window_chrome(false, Some(lights)),
+        "fs false lead 80",
+    );
+    // Nothing changed: nothing to do.
+    assert!(rt.set_window_chrome(false, Some(lights)).is_empty());
+    // Full screen hides the traffic lights: the title bar drops their room.
+    find_text(&rt.set_window_chrome(true, None), "fs true lead 12");
+    assert!(rt.app.is_fullscreen());
+    assert_eq!(rt.app.window_controls(), None);
+}

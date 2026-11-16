@@ -43,6 +43,7 @@ pub mod surfaces;
 pub mod svg;
 mod task;
 mod window;
+pub use window::{WindowChrome, WindowControls};
 
 pub use a11y::{Accessibility, Accessible, Role};
 pub use animation::{Animations, Pose, Transform};
@@ -165,6 +166,9 @@ pub struct AppConfig {
     /// Directory of app assets (`picture("logo.png")`), used in development;
     /// bundles copy it into their resources.
     pub assets: Option<String>,
+    /// The desktop window's frame: the system's title bar, or none
+    /// (`WindowChrome::Custom`, macOS). Ignored on the web and mobile.
+    pub window_chrome: WindowChrome,
 }
 
 impl Default for AppConfig {
@@ -175,6 +179,7 @@ impl Default for AppConfig {
             height: 640.,
             port: 3000,
             assets: None,
+            window_chrome: WindowChrome::Standard,
         }
     }
 }
@@ -547,6 +552,18 @@ impl Runtime {
         self.poll()
     }
 
+    /// The window entered or left full screen, or its buttons moved
+    /// (`cx.is_fullscreen()`, `cx.window_controls()`). Re-renders
+    /// everything if anything differs. Returns the resulting patches.
+    pub fn set_window_chrome(
+        &mut self,
+        fullscreen: bool,
+        controls: Option<WindowControls>,
+    ) -> Vec<Patch> {
+        self.app.set_window_chrome_state(fullscreen, controls);
+        self.poll()
+    }
+
     /// The device changed (rotation, fold, split view, browser report).
     /// Re-renders everything if anything differs. Returns the resulting patches.
     pub fn set_device_info(&mut self, info: DeviceInfo) -> Vec<Patch> {
@@ -619,10 +636,10 @@ pub mod prelude {
         Permission, PermissionState, PickImages, PickedFile, Platform, Pose, Posture, PushEvent,
         PushMessage, PushService, PushSubscription, Render, ReturnKey, Role, Router, ScrollEvent,
         SecureOptions, Share, Styled, SwipeDirection, Transition, Translations, Tray, VirtualList,
-        Watch, Widget, WidgetConfig, WidgetFamily, WidgetOption, WidgetParameter, adaptive, button,
-        date_picker, div, go_back, image, lazy, navigate_to, picker, picture, progress, px,
-        relative, rgb, rgba, screen, scroll, shape, slider, spinner, text, text_area, text_input,
-        timer, toggle,
+        Watch, Widget, WidgetConfig, WidgetFamily, WidgetOption, WidgetParameter, WindowChrome,
+        WindowControls, adaptive, button, date_picker, div, go_back, image, lazy, navigate_to,
+        picker, picture, progress, px, relative, rgb, rgba, screen, scroll, shape, slider, spinner,
+        text, text_area, text_input, timer, toggle,
     };
     pub use crate::{GridTrack, ScrollAxis, auto_fill, auto_fit, fr, minmax, repeat, scroll_x};
     // Typography and rich text.
