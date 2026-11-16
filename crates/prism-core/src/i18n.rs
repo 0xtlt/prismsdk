@@ -529,14 +529,24 @@ impl Formatter for BasicFormatter {
     }
 }
 
-/// Texts drawn by Prism itself (stack headers, default screens), built in
-/// for common languages. Apps override them with `prism.back`,
-/// `prism.close`, `prism.not_found` and `prism.no_route` keys.
-const CHROME: &[(&str, [&str; 4])] = &[
-    ("en", ["Back", "Close", "Not found", "Nothing at {path}"]),
+/// Texts drawn by Prism itself (stack headers, default screens, the clear
+/// action of optional date pickers), built in for common languages. Apps
+/// override them with `prism.back`, `prism.close`, `prism.not_found`,
+/// `prism.no_route` and `prism.clear` keys.
+const CHROME: &[(&str, [&str; 5])] = &[
+    (
+        "en",
+        ["Back", "Close", "Not found", "Nothing at {path}", "Clear"],
+    ),
     (
         "fr",
-        ["Retour", "Fermer", "Introuvable", "Rien à l’adresse {path}"],
+        [
+            "Retour",
+            "Fermer",
+            "Introuvable",
+            "Rien à l’adresse {path}",
+            "Effacer",
+        ],
     ),
     (
         "de",
@@ -545,20 +555,57 @@ const CHROME: &[(&str, [&str; 4])] = &[
             "Schließen",
             "Nicht gefunden",
             "Nichts unter {path}",
+            "Löschen",
         ],
     ),
-    ("es", ["Atrás", "Cerrar", "No encontrado", "Nada en {path}"]),
+    (
+        "es",
+        [
+            "Atrás",
+            "Cerrar",
+            "No encontrado",
+            "Nada en {path}",
+            "Borrar",
+        ],
+    ),
     (
         "it",
-        ["Indietro", "Chiudi", "Non trovato", "Niente in {path}"],
+        [
+            "Indietro",
+            "Chiudi",
+            "Non trovato",
+            "Niente in {path}",
+            "Cancella",
+        ],
     ),
     (
         "pt",
-        ["Voltar", "Fechar", "Não encontrado", "Nada em {path}"],
+        [
+            "Voltar",
+            "Fechar",
+            "Não encontrado",
+            "Nada em {path}",
+            "Limpar",
+        ],
     ),
-    ("nl", ["Terug", "Sluit", "Niet gevonden", "Niets op {path}"]),
-    ("ar", ["رجوع", "إغلاق", "غير موجود", "لا شيء في {path}"]),
-    ("he", ["חזרה", "סגירה", "לא נמצא", "אין כלום ב־{path}"]),
+    (
+        "nl",
+        [
+            "Terug",
+            "Sluit",
+            "Niet gevonden",
+            "Niets op {path}",
+            "Wissen",
+        ],
+    ),
+    (
+        "ar",
+        ["رجوع", "إغلاق", "غير موجود", "لا شيء في {path}", "مسح"],
+    ),
+    (
+        "he",
+        ["חזרה", "סגירה", "לא נמצא", "אין כלום ב־{path}", "ניקוי"],
+    ),
     (
         "ja",
         [
@@ -566,16 +613,24 @@ const CHROME: &[(&str, [&str; 4])] = &[
             "閉じる",
             "見つかりません",
             "{path} には何もありません",
+            "消去",
         ],
     ),
-    ("zh", ["返回", "关闭", "未找到", "{path} 没有内容"]),
+    ("zh", ["返回", "关闭", "未找到", "{path} 没有内容", "清除"]),
     (
         "ko",
-        ["뒤로", "닫기", "찾을 수 없음", "{path}에 아무것도 없습니다"],
+        [
+            "뒤로",
+            "닫기",
+            "찾을 수 없음",
+            "{path}에 아무것도 없습니다",
+            "지우기",
+        ],
     ),
 ];
 
-/// A built-in Prism text: `back`, `close`, `not_found` or `no_route`.
+/// A built-in Prism text: `back`, `close`, `not_found`, `no_route` or
+/// `clear`.
 pub fn chrome_text(translations: Option<&Translations>, locale: &Locale, key: &str) -> String {
     if let Some(t) = translations.and_then(|t| t.lookup(locale, &format!("prism.{key}"))) {
         return t.to_string();
@@ -584,6 +639,7 @@ pub fn chrome_text(translations: Option<&Translations>, locale: &Locale, key: &s
         "back" => 0,
         "close" => 1,
         "not_found" => 2,
+        "clear" => 4,
         _ => 3,
     };
     CHROME
@@ -595,8 +651,8 @@ pub fn chrome_text(translations: Option<&Translations>, locale: &Locale, key: &s
 }
 
 impl App {
-    /// A built-in Prism text (`back`, `close`, `not_found`, `no_route`) in
-    /// the current language.
+    /// A built-in Prism text (`back`, `close`, `not_found`, `no_route`,
+    /// `clear`) in the current language.
     pub fn chrome_text(&self, key: &str) -> String {
         chrome_text(self.try_global::<Translations>(), self.locale(), key)
     }

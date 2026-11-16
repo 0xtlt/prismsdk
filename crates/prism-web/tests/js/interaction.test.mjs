@@ -396,6 +396,44 @@ test("a time of day ignores the time zone", () => {
   assert.deepEqual(lastSent(page), { t: "change", id: 2, v: 22 * 3600 + 5 * 60 });
 });
 
+test("an optional date picker can be empty and cleared (#89)", () => {
+  const page = live([
+    { op: "create", id: 2, kind: "date_picker" }, { op: "config", id: 2, config: "date - - optional" },
+    { op: "value", id: 2, value: null },
+    { op: "create", id: 3, kind: "date_picker" }, { op: "config", id: 3, config: "date - -" },
+    { op: "value", id: 3, value: 0 },
+    ...root([2, 3]),
+  ]);
+  const el = page.node(2);
+  assert.equal(el.type, "date");
+  assert.equal(el.value, "");
+  // Browsers offer to clear optional inputs only.
+  assert.equal(el.required, false);
+  assert.equal(page.node(3).required, true);
+  // Picking a day fills it.
+  el.value = "2026-11-18";
+  el.dispatchEvent({ type: "change" });
+  const picked = lastSent(page).v;
+  assert.equal(new Date(picked * 1000).getDate(), 18);
+  page.ws.deliver({ t: "patch", p: [{ op: "value", id: 2, value: picked }] });
+  assert.equal(el.value, "2026-11-18");
+  // The browser's clear (or every part erased) reports null.
+  el.value = "";
+  el.dispatchEvent({ type: "change" });
+  assert.deepEqual(lastSent(page), { t: "change", id: 2, v: null });
+  // The app's empty value does not write over parts being typed.
+  let writes = 0;
+  let typed = "";
+  Object.defineProperty(el, "value", { get: () => typed, set: (v) => { writes += 1; typed = v; }, configurable: true });
+  page.ws.deliver({ t: "patch", p: [{ op: "value", id: 2, value: null }] });
+  assert.equal(writes, 0);
+  // A picker that is not optional never reports an empty value.
+  const count = sent(page).length;
+  page.node(3).value = "";
+  page.node(3).dispatchEvent({ type: "change" });
+  assert.equal(sent(page).length, count);
+});
+
 test("inert styles and hit testing", () => {
   const page = live([
     { op: "create", id: 2, kind: "view" }, { op: "style", id: 2, css: "pointer-events:none;", inert: true },

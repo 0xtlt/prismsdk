@@ -207,6 +207,8 @@ fn chrome_texts_are_built_in_and_overridable() {
     let t = Translations::new().add("fr", &[("prism.back", "Précédent")]);
     assert_eq!(chrome_text(Some(&t), &fr, "back"), "Précédent");
     assert_eq!(chrome_text(Some(&t), &fr, "close"), "Fermer");
+    assert_eq!(chrome_text(None, &fr, "clear"), "Effacer");
+    assert_eq!(chrome_text(None, &Locale::new("sw"), "clear"), "Clear");
 }
 
 #[test]

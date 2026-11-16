@@ -271,9 +271,16 @@ impl ChangeEvent {
         self.value.max(0.) as usize
     }
 
-    /// A date picker's new value.
+    /// A date picker's new value (the Unix epoch when an optional picker
+    /// was cleared: read those with [`date_opt`](Self::date_opt)).
     pub fn date(&self) -> std::time::SystemTime {
-        unix_time(self.value)
+        self.date_opt().unwrap_or(std::time::UNIX_EPOCH)
+    }
+
+    /// An optional date picker's new value ([`date_picker_opt`]): `None`
+    /// when the user cleared it.
+    pub fn date_opt(&self) -> Option<std::time::SystemTime> {
+        self.value.is_finite().then(|| unix_time(self.value))
     }
 }
 
@@ -1035,6 +1042,23 @@ pub fn date_picker(value: std::time::SystemTime) -> DatePicker {
     DatePicker(n)
 }
 
+/// A date picker that may be empty (#89): `None` shows its
+/// [`placeholder`](DatePicker::placeholder), and the user can clear a date
+/// (the browser's own clear, a clear button, "Clear" in the dialog).
+/// Starting to edit an empty picker fills it with the current moment
+/// (within the bounds):
+/// `date_picker_opt(self.published).placeholder("Not published").on_change(cx.listener(|this, e, _| this.published = e.date_opt()))`.
+pub fn date_picker_opt(value: Option<std::time::SystemTime>) -> DatePicker {
+    let mut n = VNode::new(NodeKind::DatePicker);
+    n.value = Some(value.map_or(f64::NAN, |v| unix_seconds(v).round()));
+    n.config = crate::controls::DateConfig {
+        optional: true,
+        ..Default::default()
+    }
+    .encode();
+    DatePicker(n)
+}
+
 impl DatePicker {
     fn date_config(mut self, f: impl FnOnce(&mut crate::controls::DateConfig)) -> Self {
         let mut c = crate::controls::DateConfig::decode(&self.0.config);
@@ -1068,7 +1092,15 @@ impl DatePicker {
         self.date_config(|c| c.max = Some(unix_seconds(t).round()))
     }
 
-    /// Called with the new instant (`e.date()`).
+    /// Text shown while an optional picker ([`date_picker_opt`],
+    /// [`time_picker_opt`]) is empty; also its default accessibility label.
+    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.0.placeholder = placeholder.into();
+        self
+    }
+
+    /// Called with the new instant (`e.date()`; `e.date_opt()` for an
+    /// optional picker).
     pub fn on_change(mut self, handler: Handler<ChangeEvent>) -> Self {
         self.0.on_change = Some(handler);
         self
@@ -1719,21 +1751,42 @@ impl RadioGroup {
 /// (`7 * 60 + 30` is 07:30). Read the new value with
 /// [`ChangeEvent::minutes`].
 pub fn time_picker(minutes: u32) -> DatePicker {
+    time_of_day(Some(minutes), false)
+}
+
+/// A [`time_picker`] that may be empty (#89): `None` shows its
+/// [`placeholder`](DatePicker::placeholder), and the user can clear the
+/// time. Read the new value with [`ChangeEvent::minutes_opt`].
+pub fn time_picker_opt(minutes: Option<u32>) -> DatePicker {
+    time_of_day(minutes, true)
+}
+
+fn time_of_day(minutes: Option<u32>, optional: bool) -> DatePicker {
     let mut n = VNode::new(NodeKind::DatePicker);
-    n.value = Some(f64::from(minutes.min(24 * 60 - 1)) * 60.);
+    n.value = Some(minutes.map_or(f64::NAN, |m| f64::from(m.min(24 * 60 - 1)) * 60.));
     n.config = crate::controls::DateConfig {
         mode: crate::controls::DateMode::TimeOfDay,
-        min: None,
-        max: None,
+        optional,
+        ..Default::default()
     }
     .encode();
     DatePicker(n)
 }
 
 impl ChangeEvent {
-    /// A [`time_picker`]'s new value, in minutes since midnight.
+    /// A [`time_picker`]'s new value, in minutes since midnight (0 when an
+    /// optional picker was cleared: read those with
+    /// [`minutes_opt`](Self::minutes_opt)).
     pub fn minutes(&self) -> u32 {
-        ((self.value / 60.).round().max(0.) as u32) % (24 * 60)
+        self.minutes_opt().unwrap_or(0)
+    }
+
+    /// A [`time_picker_opt`]'s new value, in minutes since midnight: `None`
+    /// when the user cleared it.
+    pub fn minutes_opt(&self) -> Option<u32> {
+        self.value
+            .is_finite()
+            .then(|| ((self.value / 60.).round().max(0.) as u32) % (24 * 60))
     }
 }
 

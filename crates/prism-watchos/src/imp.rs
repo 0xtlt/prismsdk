@@ -452,7 +452,8 @@ fn parse(v: &Value) -> Option<UiEvent> {
     Some(match v.get("t")?.as_str()? {
         "click" => UiEvent::Click(id),
         "input" => UiEvent::Input(id, v.get("v")?.as_str()?.to_string()),
-        "change" => UiEvent::Change(id, v.get("v")?.as_f64()?),
+        // `null`: an optional date picker was cleared (#89).
+        "change" => UiEvent::Change(id, prism_native::remote::change_value(v.get("v")?)?),
         // The return key of a text input (SwiftUI `onSubmit`).
         "submit" => UiEvent::Submit(id),
         "back" => UiEvent::Back(id, v.get("depth")?.as_u64()? as usize),

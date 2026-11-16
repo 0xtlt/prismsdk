@@ -2257,6 +2257,60 @@ fn ssr_of_choice_controls_inputs_and_overlays() {
     ));
 }
 
+/// An empty optional date picker is an empty, clearable input; a cleared
+/// one comes back as `null` (#89).
+#[test]
+fn optional_date_pickers_render_empty_and_report_clears() {
+    let config = |id, config: &str| Patch::SetConfig {
+        id,
+        config: config.into(),
+    };
+    let out = html(&[
+        create(1, NodeKind::View),
+        create(2, NodeKind::DatePicker),
+        config(2, "date - - optional"),
+        Patch::SetValue {
+            id: 2,
+            value: f64::NAN,
+        },
+        create(3, NodeKind::DatePicker),
+        config(3, "timeofday - - optional"),
+        Patch::SetValue {
+            id: 3,
+            value: f64::NAN,
+        },
+        create(4, NodeKind::DatePicker),
+        config(4, "date - -"),
+        Patch::SetValue { id: 4, value: 0. },
+        children(1, &[2, 3, 4]),
+        Patch::SetRoot { id: 1 },
+    ]);
+    assert!(
+        out.contains(r#"<input type="date" name="prism-2" class="prism-date" "#)
+            && out.contains(r#"data-value="">"#),
+        "{out}"
+    );
+    assert!(
+        !out.contains("NaN") && !out.contains(r#"value="00:00""#),
+        "{out}"
+    );
+    assert!(out.contains(r#"data-value="0" required>"#), "{out}");
+    assert_eq!(
+        crate::session::parse_event(&json!({"t": "change", "id": 2, "v": null})).map(|e| match e {
+            UiEvent::Change(id, v) => (id, v.is_nan()),
+            _ => (0, false),
+        }),
+        Some((2, true))
+    );
+    // The value patch says `null`, never `NaN`.
+    let value = Encoder::default().encode(&[Patch::SetValue {
+        id: 2,
+        value: f64::NAN,
+    }])[0]
+        .to_string();
+    assert!(value.contains(r#""value":null"#), "{value}");
+}
+
 #[test]
 fn an_open_inline_popover_waits_for_the_client() {
     // The first paint has no top layer: an overlay open on the first render

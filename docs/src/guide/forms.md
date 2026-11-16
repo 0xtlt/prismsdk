@@ -10,6 +10,8 @@ picker(["Small", "Medium", "Large"], self.size).placeholder("Choose…")
     .on_change(cx.listener(|this, e, _| this.size = Some(e.index())))
 date_picker(self.due).min(SystemTime::now())                  // .time(), .date_time()
     .on_change(cx.listener(|this, e, _| this.due = e.date()))
+date_picker_opt(self.published).placeholder("Not published")  // may be empty, clearable
+    .on_change(cx.listener(|this, e, _| this.published = e.date_opt()))
 text_input().secure(true).return_key(ReturnKey::Go)
     .on_submit(cx.listener(|this, _, cx| this.sign_in(cx)))
 text_input().keyboard(Keyboard::Email).capitalize(Capitalize::None).autocorrect(false)
@@ -20,6 +22,7 @@ spinner().large()
 ui::slider("Volume", v).range(0., 100.).step(1.).format(|v| format!("{v:.0} %"))
 ui::select("Size", sizes, self.size)
 ui::date_field("Due", self.due)
+ui::date_field_opt("Published", self.published).placeholder("Not yet")
 ui::text_field("Password", &self.password).secure().on_submit(…)
 ui::text_area("Notes", &self.notes).max_lines(5)
 ui::spinner().label("Syncing…")
@@ -35,6 +38,7 @@ radio_group(["Daily", "Weekly", "Monthly"], self.every).horizontal()
     .on_change(cx.listener(|this, e, _| this.every = Some(e.index())))
 time_picker(self.alarm)                                       // minutes since midnight, no time zone
     .on_change(cx.listener(|this, e, _| this.alarm = e.minutes()))
+time_picker_opt(self.opens).placeholder("Closed")             // Option<u32>: e.minutes_opt()
 text_input().leading_icon("magnifyingglass").max_length(24)
     .suggestions(["Paris", "Lyon", "Marseille"])
 // Your own field: padding replaces its inset, `.border(0.)` drops its
@@ -62,6 +66,17 @@ let files = cx.pick_files(PickFiles::new().types([".csv"]).multiple()).await?;  
 - **Accessibility**: sliders are adjustable (VoiceOver swipe up/down, TalkBack, arrow keys) and read their value (`accessibility_value("40 %")` overrides it); pickers read their label and choice; spinners are busy indicators. Toasts are announced politely (`Role::Status`: ARIA live region, VoiceOver and TalkBack announcements, `gtk_accessible_announce`).
 - **Checkbox and radio group**: the platform's own controls where it has them (`NSButton` checkbox and radio buttons, `GtkCheckButton` and a group, `CheckBox` and `RadioGroup`, `<input type=checkbox / radio>`, a SwiftUI `Toggle` and a list of buttons on the watch). UIKit has neither: iOS, iPadOS, tvOS and visionOS draw them (SF Symbols) with the toggle-button / selected traits, so VoiceOver reads « checkbox, checked » and « 2 of 3 ». A radio group is one element for the app (`e.index()`), moved through with the arrow keys where the platform does so.
 - **Time of day**: `time_picker(minutes)` edits a time that means the same in every time zone (an alarm, opening hours); backends show it in UTC, so « 07:30 » stays 07:30 when the device travels. `date_picker(…).time()` still edits an instant.
+- **Optional dates** (#89): `date_picker_opt(Option<SystemTime>)` and `time_picker_opt(Option<u32>)` may be empty (a post not published yet, a day without opening hours). While empty they show their `.placeholder(…)` (also their default accessibility label), and the user can clear a date; read the new value with `e.date_opt()` / `e.minutes_opt()` (`None`: cleared). Starting to fill an empty picker gives it the current moment, to the minute and within the bounds (`DateConfig::start`), which the user then adjusts. On the wire the empty value is `NaN` (`null` in JSON); only optional pickers accept it, so `date_picker` never reports an empty value. The clear action's label is the built-in `clear` text (`prism.clear` to override).
+
+  | | Empty | Filling it | Clearing it |
+  |---|---|---|---|
+  | Web | an empty `<input type=date…>` (the browser's own format hint) | the browser's picker | the browser's: Clear in Chrome's and Safari's pickers, Firefox's ✕, or erasing every part (non-optional inputs are `required`, which hides those) |
+  | iOS, iPadOS, visionOS | a gray pill with the placeholder over the compact picker | a tap on the pill (then the compact picker) | an `xmark.circle.fill` button after the picker |
+  | macOS | the placeholder inside the picker's bezel | a click on it, typing, or the stepper | an `xmark.circle.fill` button inside the bezel |
+  | Linux | the placeholder, dimmed, on the button | opening the popover | « Clear » under the calendar |
+  | Android | the placeholder, dimmed, in the pill | the dialog (OK) | « Clear » in the date or time dialog |
+  | watchOS | the placeholder, dimmed, on the button | opening the wheels | « Clear » under the wheels |
+  | tvOS | the placeholder, dimmed | the first left / right press | Play/Pause |
 - **Controlled values**: `.value(..)` is the field's text, focused or not. What the user types comes back as the same value and leaves the field alone (caret, selection, IME composition); a different value is the app's and replaces the field's text, the caret keeping its distance from the end. So an `on_input` handler can rewrite what was typed (strip a Markdown « # » prefix, uppercase, clear after a command) and the field follows. During an IME composition, the web applies it once the composition ends.
 - **Text input extras**: `max_length` (`maxlength`, a length filter natively), `leading_icon` (an SF Symbol inside the field: `leftView`, a GTK primary icon, a compound drawable, a glyph on the web), `suggestions` (web `<datalist>`, AppKit's completion list, `AutoCompleteTextView`, `GtkEntryCompletion` on Linux, a bar of matching suggestions above the keyboard on iOS, which has no API for app-supplied completions; none on tvOS, visionOS and watchOS), `autofocus` and `.id` with `cx.focus` (see [Pointer, keyboard, focus](input.md)).
 - **Files**: `ui::file_input` (or `cx.pick_files`) opens `<input type=file>`, `UIDocumentPickerViewController`, `NSOpenPanel`, `GtkFileChooserNative` (the desktop portal) or `ACTION_OPEN_DOCUMENT`; `PickedFile::read()` returns the bytes. On the web the browser uploads them over the app's connection and `read()` reads the server's copy. There is no file picker on tvOS and watchOS (`DeviceError::Unavailable`).

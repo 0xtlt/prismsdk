@@ -794,6 +794,8 @@ pub struct Gtk {
     /// Form controls, mirrored in right-to-left.
     controls: HashMap<NodeId, gtk::Widget>,
     date_pickers: HashMap<NodeId, Rc<controls::DatePicker>>,
+    /// "Clear" in the app's language (optional date pickers, #89).
+    clear_label: String,
     /// Status regions and what they last announced.
     statuses: HashMap<NodeId, String>,
     /// Text labels: their text, runs and style (rebuilt when one changes).
@@ -1201,6 +1203,9 @@ impl Widgets for Gtk {
             NodeKind::Picker => View::Picker(id, controls::picker(id)),
             NodeKind::DatePicker => {
                 let p = controls::date_picker(id, self.locale.clone());
+                if !self.clear_label.is_empty() {
+                    p.set_clear_label(&self.clear_label);
+                }
                 self.date_pickers.insert(id, p.clone());
                 View::DatePicker(id, p)
             }
@@ -1630,6 +1635,7 @@ impl Widgets for Gtk {
                 set_accessible_string(&t.view, a11y_property::PLACEHOLDER, text);
             }
             View::Picker(_, p) => p.set_placeholder(text),
+            View::DatePicker(_, p) => p.set_placeholder(text),
             _ => {}
         }
     }
@@ -2193,6 +2199,12 @@ impl Widgets for Gtk {
             self.locale = locale.clone();
             for p in self.date_pickers.values() {
                 p.set_locale(locale.clone());
+            }
+        }
+        if env.clear != self.clear_label {
+            self.clear_label = env.clear.clone();
+            for p in self.date_pickers.values() {
+                p.set_clear_label(&env.clear);
             }
         }
     }
@@ -2962,6 +2974,7 @@ fn activate(app: &gtk::Application) {
         locale: locale(),
         controls: HashMap::new(),
         date_pickers: HashMap::new(),
+        clear_label: String::new(),
         statuses: HashMap::new(),
         bare: HashSet::new(),
         stickies: Rc::new(RefCell::new(HashMap::new())),

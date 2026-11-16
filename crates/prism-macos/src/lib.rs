@@ -8,6 +8,8 @@ mod a11y_dump;
 #[cfg(target_os = "macos")]
 mod chrome;
 #[cfg(target_os = "macos")]
+mod dates;
+#[cfg(target_os = "macos")]
 mod decor;
 #[cfg(target_os = "macos")]
 mod device_info;

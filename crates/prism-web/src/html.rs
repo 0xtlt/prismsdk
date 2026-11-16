@@ -531,16 +531,22 @@ impl HtmlBackend {
                     prism_core::DateMode::DateTime => "datetime-local",
                 };
                 // A time of day is the same everywhere: written as is.
-                let value = if c.mode == prism_core::DateMode::TimeOfDay {
+                let value = if c.mode == prism_core::DateMode::TimeOfDay && n.value.is_finite() {
                     let m = (n.value / 60.).round().rem_euclid(1440.) as u32;
                     format!(r#" value="{:02}:{:02}""#, m / 60, m % 60)
                 } else {
                     String::new()
                 };
+                // Empty (#89): no value; only optional pickers may be emptied.
+                let data = if n.value.is_finite() {
+                    n.value.to_string()
+                } else {
+                    String::new()
+                };
+                let required = if c.optional { "" } else { " required" };
                 let _ = write!(
                     out,
-                    r#"<input type="{ty}" name="prism-{id}" class="prism-date" {attrs} data-value="{}"{value}>"#,
-                    n.value
+                    r#"<input type="{ty}" name="prism-{id}" class="prism-date" {attrs} data-value="{data}"{value}{required}>"#,
                 );
             }
             NodeKind::Spinner => {

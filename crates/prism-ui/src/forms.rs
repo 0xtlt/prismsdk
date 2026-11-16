@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime};
 use prism_core::{
     Accessible, App, ChangeEvent, ClickEvent, Element, Entity, FluentBuilder, Handler, InputEvent,
     IntoElement, ParentElement, Pose, Render, Role, Styled, Transition, controls::DateMode,
-    date_picker, div, picker, px, text,
+    date_picker, date_picker_opt, div, picker, px, text,
 };
 
 use crate::{Refine, Theme, Variant};
@@ -260,12 +260,17 @@ component!(Select);
 
 // --- DateField ------------------------------------------------------------------
 
-/// A labelled date (or time) picker: `ui::date_field("Due", self.due).on_change(…)`.
+/// A labelled date (or time) picker: `ui::date_field("Due", self.due).on_change(…)`;
+/// `ui::date_field_opt` for one that may be empty.
 pub struct DateField {
     /// Shown above the picker, also its accessibility label.
     pub label: String,
-    /// The selected instant.
-    pub value: SystemTime,
+    /// The selected instant (`None`: empty, see [`date_field_opt`]).
+    pub value: Option<SystemTime>,
+    /// The picker may be empty and offers to clear its date.
+    pub optional: bool,
+    /// Shown while an optional picker is empty.
+    pub placeholder: String,
     /// Whether it edits a day, a time of day or both.
     pub mode: DateMode,
     /// Earliest selectable moment, if bounded.
@@ -276,7 +281,8 @@ pub struct DateField {
     pub disabled: bool,
     /// Use the platform's native control (`Some(true)`) or the themed one (`Some(false)`); `None` follows the theme's `prefer_native`.
     pub native: Option<bool>,
-    /// Called with the new instant (`ChangeEvent::date`).
+    /// Called with the new instant (`ChangeEvent::date`, or
+    /// `ChangeEvent::date_opt` for an optional field).
     pub on_change: Option<Handler<ChangeEvent>>,
     refine: Refine,
 }
@@ -284,8 +290,20 @@ pub struct DateField {
 /// A date picker labelled `label` at `value`, editing the day.
 pub fn date_field(label: impl Into<String>, value: SystemTime) -> DateField {
     DateField {
+        optional: false,
+        ..date_field_opt(label, Some(value))
+    }
+}
+
+/// A date picker that may be empty (#89): `None` shows the
+/// [`placeholder`](DateField::placeholder), and the user can clear a date.
+/// Read the new value with `ChangeEvent::date_opt`.
+pub fn date_field_opt(label: impl Into<String>, value: Option<SystemTime>) -> DateField {
+    DateField {
         label: label.into(),
         value,
+        optional: true,
+        placeholder: String::new(),
         mode: DateMode::Date,
         min: None,
         max: None,
@@ -317,6 +335,11 @@ impl DateField {
         self.max = Some(t);
         self
     }
+    /// Text shown while an optional field is empty.
+    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder = placeholder.into();
+        self
+    }
     /// Greys the picker out and ignores input when `disabled`.
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
@@ -327,7 +350,8 @@ impl DateField {
         self.native = Some(true);
         self
     }
-    /// Called with the new instant (`ChangeEvent::date`).
+    /// Called with the new instant (`ChangeEvent::date`, or
+    /// `ChangeEvent::date_opt` for an optional field).
     pub fn on_change(mut self, handler: Handler<ChangeEvent>) -> Self {
         self.on_change = Some(handler);
         self
@@ -339,8 +363,14 @@ refinable!(DateField);
 impl crate::Component for DateField {
     fn render(self, cx: &mut App) -> Element {
         let t = Theme::of(cx);
-        let mut control = date_picker(self.value)
+        let picker = if self.optional {
+            date_picker_opt(self.value)
+        } else {
+            date_picker(self.value.unwrap_or(SystemTime::UNIX_EPOCH))
+        };
+        let mut control = picker
             .mode(self.mode)
+            .placeholder(self.placeholder)
             .when_some(self.min, |d, m| d.min(m))
             .when_some(self.max, |d, m| d.max(m))
             .accessibility_label(self.label.clone())

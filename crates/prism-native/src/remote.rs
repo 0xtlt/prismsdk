@@ -8,15 +8,15 @@
 //! |---|---|
 //! | `create` / `destroy` | `id`, `kind` |
 //! | `style` | `s`: `bg`, `radius`, `bw`, `bc`, `opacity`, `color`, `font`, `weight`, `talign` (colors `[r,g,b,a, dark r,g,b,a]`); `tint` on tab bars and stacks when set; `hit: false` (the subtree ignores pointer input) and `inert: true` (no input, no focus, hidden from assistive technologies) only when set |
-//! | `text`, `placeholder`, `icon`, `value`, `clickable`, `display` | the value |
+//! | `text`, `placeholder`, `icon`, `value`, `clickable`, `display` | the value (`value` is `null` for an empty optional date picker, #89) |
 //! | `text` of a `picture` | its source: for a remote one, the URL, then one `name: value` line per header to send (`Picture::header`) |
 //! | `a11y` | `label`, `hidden`, `role` (ARIA name: `slider`, `combobox`, `status`…), `value`, `selected` (a selected item or the current page: `Accessibility::is_selected`) |
-//! | `config` | `config`: a control's config string (`prism_core::controls`: slider `min max step`, picker options one per line, date `mode min max`, input tokens; a screen's bar options, `prism_core::navbar`, with `glyphs`: each bar button's icon glyph, `""` if none) |
+//! | `config` | `config`: a control's config string (`prism_core::controls`: slider `min max step`, picker options one per line, date `mode min max` then `optional`, input tokens; a screen's bar options, `prism_core::navbar`, with `glyphs`: each bar button's icon glyph, `""` if none) |
 //! | `children` | `children`: ids in order |
 //! | `frame` | `f`: `[x, y, w, h]` in the parent |
 //! | `content` | `size`: a scroll view's content size |
 //! | `menu`, `swipe`, `scrollev`, `root` | context menu JSON, swipe sides, scroll events, root id |
-//! | `env` | `lang`, `rtl`, `back`, `close` (no `id`) |
+//! | `env` | `lang`, `rtl`, `back`, `close`, `clear` (no `id`) |
 //! | `exit` | `parent`, `to`: `{o, tf}` the view animates to (a picture of it), before it is removed |
 //! | `repeat` | `from`, `to`: `{o, tf}` (`to` null stops), back and forth forever |
 //! | `draw` | `paths`: `[{d, fill, stroke, w, round, dash}]` in points, `d` flat (`0 x y` move, `1 x y` line, `2 x1 y1 x2 y2 x y` curve, `3` close) |
@@ -96,8 +96,9 @@ pub struct MeasureRequest<'a> {
     /// `text`, `button`, `text_input`, `toggle`, `progress`, `image`, `timer`…
     pub kind: &'a str,
     /// The text, the icon name of an `image`, a picker's widest option, a
-    /// date picker's config (`date`, `time`, `datetime` first), `large` for a
-    /// large spinner, a radio group's config (`row`/`column`, then options).
+    /// date picker's config (`date`, `time`, `datetime` first; an optional
+    /// one's placeholder on a second line), `large` for a large spinner, a
+    /// radio group's config (`row`/`column`, then options).
     pub text: &'a str,
     pub font_size: f32,
     /// CSS weight, 100 to 900.
@@ -144,6 +145,16 @@ impl RemoteWidgets {
             measure,
             root: None,
         }
+    }
+}
+
+/// A `change` event's value: a number, or `null` for an optional date
+/// picker the user cleared (`NaN`, #89).
+pub fn change_value(v: &Value) -> Option<f64> {
+    if v.is_null() {
+        Some(f64::NAN)
+    } else {
+        v.as_f64()
     }
 }
 
@@ -588,6 +599,10 @@ impl Widgets for RemoteWidgets {
     }
 
     fn set_placeholder(&mut self, id: &NodeId, text: &str) {
+        // What an optional date picker measures while empty (#89).
+        if self.kinds.get(id) == Some(&NodeKind::DatePicker) {
+            self.texts.insert(*id, text.to_string());
+        }
         self.ops
             .push(json!({ "op": "placeholder", "id": id, "text": text }));
     }
@@ -636,7 +651,19 @@ impl Widgets for RemoteWidgets {
                 .into_iter()
                 .max_by_key(|o| o.chars().count())
                 .unwrap_or_default(),
-            NodeKind::DatePicker => self.configs.get(id).cloned().unwrap_or_default(),
+            // An optional one is as wide as its placeholder too (#89).
+            NodeKind::DatePicker => {
+                let config = self.configs.get(id).cloned().unwrap_or_default();
+                match self.texts.get(id) {
+                    Some(placeholder)
+                        if !placeholder.is_empty()
+                            && prism_core::controls::DateConfig::decode(&config).optional =>
+                    {
+                        format!("{config}\n{placeholder}")
+                    }
+                    _ => config,
+                }
+            }
             // `row` or `column`, then the options: the host lays them out.
             NodeKind::RadioGroup => self.configs.get(id).cloned().unwrap_or_default(),
             _ => self.texts.get(id).cloned().unwrap_or_default(),
@@ -820,6 +847,7 @@ impl Widgets for RemoteWidgets {
             "rtl": env.direction == Direction::Rtl,
             "back": env.back,
             "close": env.close,
+            "clear": env.clear,
         }));
     }
 

@@ -33,6 +33,29 @@ fn linear() -> Transition {
 
 const ANIM: fn() -> Value = || json!({ "d": 0.25, "delay": 0.5, "ease": [0., 0., 1., 1.] });
 
+/// An empty optional date picker (#89): its value is `null`, and it
+/// measures its placeholder too (second line of the measured text).
+#[test]
+fn optional_date_picker_ops() {
+    let mut w = RemoteWidgets::new(measure);
+    w.create(3, NodeKind::DatePicker);
+    w.set_config(&3, NodeKind::DatePicker, "date - - optional");
+    w.set_placeholder(&3, "Not yet");
+    w.set_value(&3, f64::NAN);
+    assert_eq!(last(&w), json!({"op": "value", "id": 3, "value": null}));
+    // "date - - optional\nNot yet": 25 characters.
+    assert_eq!(w.measure(&3, None).0, 250.);
+    // A picker that is not optional measures its config only.
+    w.set_config(&3, NodeKind::DatePicker, "date - -");
+    assert_eq!(w.measure(&3, None).0, 80.);
+    assert_eq!(
+        prism_native::remote::change_value(&Value::Null).map(f64::is_nan),
+        Some(true)
+    );
+    assert_eq!(prism_native::remote::change_value(&json!(2)), Some(2.));
+    assert_eq!(prism_native::remote::change_value(&json!("x")), None);
+}
+
 #[test]
 fn tree_ops() {
     let mut w = RemoteWidgets::new(measure);
@@ -339,10 +362,11 @@ fn chrome_ops() {
         reduce_motion: false,
         back: "رجوع".into(),
         close: "إغلاق".into(),
+        clear: "مسح".into(),
     });
     assert_eq!(
         last(&w),
-        json!({"op": "env", "lang": "ar", "rtl": true, "back": "رجوع", "close": "إغلاق"})
+        json!({"op": "env", "lang": "ar", "rtl": true, "back": "رجوع", "close": "إغلاق", "clear": "مسح"})
     );
     for (a, mode) in [
         (Appearance::System, "system"),

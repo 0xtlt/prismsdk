@@ -778,6 +778,8 @@
       el.addEventListener("change", () => {
         const secs = dateSeconds(el);
         if (secs !== null) send({ t: "change", id, v: secs });
+        // Cleared (#89): the browser's clear button, or every part erased.
+        else if (el._optional && Number.isFinite(el._secs)) send({ t: "change", id, v: null });
       });
     } else if (kind === "spinner") {
       el.className = "prism-spinner";
@@ -1279,8 +1281,9 @@
     el.style.height = `${el.scrollHeight + el.offsetHeight - el.clientHeight}px`;
   }
   const pad = (n) => String(n).padStart(2, "0");
-  /** Unix seconds as an `<input type=date|time|datetime-local>` value (local time). */
+  /** Unix seconds as an `<input type=date|time|datetime-local>` value (local time); `""` when empty. */
   function dateString(secs, type, utc) {
+    if (!Number.isFinite(secs)) return "";
     if (utc) {
       // A time of day (#18): seconds since midnight, no time zone.
       const m = Math.floor((((Math.round(secs) % 86400) + 86400) % 86400) / 60);
@@ -1299,7 +1302,9 @@
       const [h, mi] = v.split(":").map(Number);
       return h * 3600 + mi * 60;
     }
-    const b = new Date((el._secs || 0) * 1000);
+    // An empty picker (#89) starts from now, to the minute (DateConfig::start).
+    const base = Number.isFinite(el._secs) ? el._secs : Math.floor(Date.now() / 60000) * 60;
+    const b = new Date(base * 1000);
     let [y, mo, d, h, mi, s] = [b.getFullYear(), b.getMonth(), b.getDate(), b.getHours(), b.getMinutes(), b.getSeconds()];
     if (el.type === "time") {
       [h, mi] = v.split(":").map(Number);
@@ -1311,6 +1316,15 @@
       if (time) { [h, mi] = time.split(":").map(Number); s = 0; }
     }
     return Math.round(new Date(y, mo, d, h, mi, s).getTime() / 1000);
+  }
+  /**
+   * Shows `el._secs` (NaN: empty). The same text is not written again: a
+   * date input being typed in shows "" until every part is filled, and
+   * writing "" would erase the parts already typed.
+   */
+  function showDate(el) {
+    const v = dateString(el._secs, el.type, el._utc);
+    if (el.value !== v) el.value = v;
   }
   /** Keyboard, return key, capitalization, autocorrection (mirrors html.rs input_attrs). */
   function applyInputConfig(el, config) {
@@ -1352,13 +1366,17 @@
       (config ? config.split("\n") : []).forEach((text, i) => el.appendChild(new Option(text, String(i))));
       el.selectedIndex = el._index + 1;
     } else if (kind === "date_picker") {
-      const [mode, min, max] = config.split(" ");
+      const [mode, min, max, ...rest] = config.split(" ");
       el._utc = mode === "timeofday";
+      // Only an optional picker may be emptied (#89): browsers hide their
+      // clear button on required inputs.
+      el._optional = rest.includes("optional");
+      el.required = !el._optional;
       el.type = { time: "time", timeofday: "time", datetime: "datetime-local" }[mode] || "date";
       const bounded = mode !== "time" && !el._utc;
       el.min = bounded && min !== "-" ? dateString(Number(min), el.type) : "";
       el.max = bounded && max !== "-" ? dateString(Number(max), el.type) : "";
-      if (el._secs !== undefined) el.value = dateString(el._secs, el.type, el._utc);
+      if (el._secs !== undefined) showDate(el);
     } else if (kind === "text_input" || kind === "text_area") {
       applyInputConfig(el, config);
     } else if (kind === "text") {
@@ -1515,7 +1533,8 @@
         if (el.dataset.kind === "progress") el.value = p.value;
         if (el.dataset.kind === "slider") { el._v = p.value; el.value = p.value; }
         if (el.dataset.kind === "picker") { el._index = p.value; el.selectedIndex = p.value + 1; }
-        if (el.dataset.kind === "date_picker") { el._secs = p.value; el.value = dateString(p.value, el.type, el._utc); }
+        // `null`: an empty optional picker (#89).
+        if (el.dataset.kind === "date_picker") { el._secs = p.value ?? NaN; showDate(el); }
         if (el.dataset.kind === "checkbox") el._input.checked = p.value !== 0;
         if (el.dataset.kind === "radio_group") { el._index = p.value; radios(el).forEach((r, i) => { r.checked = i === p.value; }); }
         if (el.dataset.kind === "overlay") {

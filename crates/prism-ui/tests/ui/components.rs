@@ -166,6 +166,39 @@ fn text_fields_are_labelled_and_errors_win_over_helpers() {
     );
 }
 
+/// An optional date field starts empty with its placeholder, and reports
+/// a cleared date as `None` (#89).
+#[test]
+fn optional_date_fields_can_be_empty() {
+    let mut h = show(Theme::light, |p, cx| {
+        let value =
+            p.on.then(|| std::time::UNIX_EPOCH + std::time::Duration::from_secs(86_400));
+        ui::date_field_opt("Published", value)
+            .placeholder("Not yet")
+            .on_change(cx.listener(|p, e: &ChangeEvent, _| {
+                p.on = e.date_opt().is_some();
+                p.log.push(format!("{:?}", e.date_opt().is_some()));
+            }))
+            .into_element()
+    });
+    let picker = h.host.find(|n| n.kind == NodeKind::DatePicker).unwrap();
+    assert!(node(&h, picker).value.unwrap().is_nan());
+    assert_eq!(node(&h, picker).placeholder, "Not yet");
+    assert_eq!(node(&h, picker).config, "date - - optional");
+    assert_eq!(node(&h, picker).a11y.label.as_deref(), Some("Published"));
+    h.dispatch(UiEvent::Change(picker, 86_400.));
+    assert_eq!(node(&h, picker).value, Some(86_400.));
+    h.dispatch(UiEvent::Change(picker, f64::NAN));
+    assert!(node(&h, picker).value.unwrap().is_nan());
+    assert_eq!(log(&h), ["true", "false"]);
+    // The plain field is not optional.
+    let h = show(Theme::light, |_, _| {
+        ui::date_field("Due", std::time::UNIX_EPOCH).into_element()
+    });
+    let picker = h.host.find(|n| n.kind == NodeKind::DatePicker).unwrap();
+    assert_eq!(node(&h, picker).config, "date - -");
+}
+
 #[test]
 fn headings_clamp_their_level() {
     let h = show(Theme::light, |_, _| {

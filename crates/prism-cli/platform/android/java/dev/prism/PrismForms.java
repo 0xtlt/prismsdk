@@ -82,7 +82,8 @@ final class PrismForms {
 
     static void change(PrismHost.Node n, double v) {
         JSONObject ev = PrismHost.event("change", n.id);
-        try { ev.put("v", v); } catch (JSONException ignored) {}
+        // NaN: an optional date picker was cleared (#89), `null` on the wire.
+        try { ev.put("v", Double.isNaN(v) ? JSONObject.NULL : v); } catch (JSONException ignored) {}
         PrismHost.send(ev);
     }
 
@@ -282,6 +283,27 @@ final class PrismForms {
         t.setBackground(d);
     }
 
+    /** An optional picker (#89): it may be empty (NaN) and offers "Clear". */
+    static boolean optional(String config) {
+        String first = config.split("\n", 2)[0];
+        for (String t : first.trim().split("\\s+")) if (t.equals("optional")) return true;
+        return false;
+    }
+
+    /** DateConfig::start: what an empty picker starts from (now, to the minute, within the bounds). */
+    static double start(String config) {
+        long now = System.currentTimeMillis();
+        double minute = Math.floor(now / 60000.0) * 60;
+        if (mode(config).equals("timeofday")) {
+            double local = Math.floor((now + java.util.TimeZone.getDefault().getOffset(now)) / 60000.0) * 60;
+            return ((local % 86400) + 86400) % 86400;
+        }
+        double min = bound(config, 1), max = bound(config, 2);
+        if (!Double.isNaN(min)) minute = Math.max(min, minute);
+        if (!Double.isNaN(max)) minute = Math.min(max, minute);
+        return minute;
+    }
+
     /** `date`, `time` or `datetime`, and the bounds in Unix seconds (NaN: none). */
     static String mode(String config) {
         String m = config.trim().split("\\s+")[0];
@@ -317,9 +339,27 @@ final class PrismForms {
     }
 
     static void showDate(PrismHost.Node n) {
+        TextView t = (TextView) n.view;
+        if (Double.isNaN(n.value)) {
+            // Empty (#89): the placeholder, dimmed like a field's hint.
+            t.setText(n.placeholder);
+            t.setTextColor(PrismHost.dark() ? 0xFF98989F : 0xFF6C6C72);
+            describe(n, n.placeholder);
+            return;
+        }
         String s = format(mode(n.config), Math.round(n.value * 1000));
-        ((TextView) n.view).setText(s);
+        t.setText(s);
+        Integer tint = PrismHost.color(n.style.optJSONArray("color"));
+        t.setTextColor(tint != null ? tint : PrismHost.dark() ? 0xFFF2F2F7 : 0xFF1C1C1E);
         describe(n, s);
+    }
+
+    /** "Clear" on the dialog of an optional picker that has a value (#89). */
+    static void offerClear(Dialog d, PrismHost.Node n) {
+        if (!optional(n.config) || Double.isNaN(n.value)) return;
+        android.content.DialogInterface.OnClickListener clear = (dialog, which) -> change(n, Double.NaN);
+        if (d instanceof DatePickerDialog) ((DatePickerDialog) d).setButton(Dialog.BUTTON_NEUTRAL, PrismHost.clearLabel, clear);
+        else if (d instanceof TimePickerDialog) ((TimePickerDialog) d).setButton(Dialog.BUTTON_NEUTRAL, PrismHost.clearLabel, clear);
     }
 
     /** Dialogs in the app's light or dark mode and language (month names, right to left). */
@@ -335,23 +375,27 @@ final class PrismForms {
     static void openDate(PrismHost.Node n) {
         String mode = mode(n.config);
         Calendar cal = Calendar.getInstance(zone(mode));
-        cal.setTimeInMillis(Math.round(n.value * 1000));
-        if (mode.equals("time") || mode.equals("timeofday")) openTime(n, cal);
+        // An empty picker (#89) opens at now; nothing changes until OK.
+        double v = Double.isNaN(n.value) ? start(n.config) : n.value;
+        cal.setTimeInMillis(Math.round(v * 1000));
+        if (mode.equals("time") || mode.equals("timeofday")) openTime(n, cal, true);
         else {
             Context c = dialogContext();
             DatePickerDialog d = new DatePickerDialog(c, 0, (picker, y, m, day) -> {
                 cal.set(y, m, day);
-                if (mode.equals("datetime")) openTime(n, cal);
+                if (mode.equals("datetime")) openTime(n, cal, false);
                 else pickDate(n, cal);
             }, cal.get(Calendar.YEAR), cal.get(Calendar.MONTH), cal.get(Calendar.DAY_OF_MONTH));
             double min = bound(n.config, 1), max = bound(n.config, 2);
             if (!Double.isNaN(min)) d.getDatePicker().setMinDate(Math.round(min * 1000));
             if (!Double.isNaN(max)) d.getDatePicker().setMaxDate(Math.round(max * 1000));
+            offerClear(d, n);
             show(d);
         }
     }
 
-    static void openTime(PrismHost.Node n, Calendar cal) {
+    /** `first`: the picker's first dialog, the one offering "Clear". */
+    static void openTime(PrismHost.Node n, Calendar cal, boolean first) {
         TimePickerDialog d = new TimePickerDialog(dialogContext(), 0, (picker, h, m) -> {
             cal.set(Calendar.HOUR_OF_DAY, h);
             cal.set(Calendar.MINUTE, m);
@@ -359,6 +403,7 @@ final class PrismForms {
             pickDate(n, cal);
         }, cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE),
                 android.text.format.DateFormat.is24HourFormat(PrismHost.activity));
+        if (first) offerClear(d, n);
         show(d);
     }
 
@@ -631,6 +676,11 @@ final class PrismForms {
     }
 
     static boolean placeholder(PrismHost.Node n, String text) {
+        if (n.kind.equals("date_picker")) {
+            n.placeholder = text;
+            showDate(n);
+            return true;
+        }
         if (!n.kind.equals("picker")) return false;
         adapter(n).placeholder = text;
         adapter(n).notifyDataSetChanged();
@@ -666,6 +716,8 @@ final class PrismForms {
                 t.setGravity(Gravity.CENTER);
                 if (tint == null) t.setTextColor(PrismHost.dark() ? 0xFFF2F2F7 : 0xFF1C1C1E);
                 if (!n.style.has("bg") || n.style.isNull("bg")) pill(t);
+                // An empty one keeps its placeholder's color (#89).
+                if (Double.isNaN(n.value)) showDate(n);
                 break;
             }
             case "spinner": {
@@ -793,6 +845,13 @@ final class PrismForms {
                     t.measure(unspecified, unspecified);
                     w = Math.max(w, t.getMeasuredWidth());
                     h = Math.max(h, t.getMeasuredHeight());
+                }
+                // An optional picker's placeholder, on the second line (#89).
+                String[] lines = text.split("\n", 2);
+                if (lines.length > 1 && !lines[1].isEmpty()) {
+                    t.setText(lines[1]);
+                    t.measure(unspecified, unspecified);
+                    w = Math.max(w, t.getMeasuredWidth());
                 }
                 return new float[]{maxWidth >= 0 ? Math.min(w, maxWidth) : w, h};
             }
