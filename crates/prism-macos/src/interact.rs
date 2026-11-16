@@ -15,7 +15,7 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_se
 use objc2_app_kit::NSAccessibility;
 use objc2_app_kit::{
     NSBackingStoreType, NSButton, NSCell, NSColor, NSControlStateValueOff, NSControlStateValueOn,
-    NSEvent, NSEventModifierFlags, NSFont, NSImage, NSImageView, NSPanel, NSPopover,
+    NSEvent, NSEventMask, NSEventModifierFlags, NSFont, NSImage, NSImageView, NSPanel, NSPopover,
     NSPopoverBehavior, NSTextFieldCell, NSUserInterfaceLayoutDirection, NSView, NSViewController,
     NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindow,
     NSWindowOrderingMode, NSWindowStyleMask,
@@ -512,6 +512,9 @@ pub struct MacOverlay {
     panel: RefCell<Option<(Retained<NSPanel>, Retained<NSVisualEffectView>)>>,
     /// Whether the panel is the window it shows in.
     in_panel: Cell<bool>,
+    /// A placed dialog's event monitor (#79): presses outside close it and
+    /// go no further, so the dialog stays modal.
+    outside: RefCell<Option<Retained<AnyObject>>>,
 }
 
 impl MacOverlay {
@@ -530,6 +533,40 @@ impl MacOverlay {
             popover: RefCell::new(None),
             panel: RefCell::new(None),
             in_panel: Cell::new(false),
+            outside: RefCell::new(None),
+        }
+    }
+
+    /// While a dialog shown as a popover is open, a press on the window
+    /// behind it (`page`) closes it and reaches nothing else: AppKit's
+    /// transient popovers close on an outside click but may hand it to what
+    /// was clicked. Presses in the dialog, and in menus or popovers opened
+    /// from it, go on as usual.
+    fn hold_outside_presses(&self, popover: &Retained<NSPopover>, page: Retained<NSWindow>) {
+        self.release_outside_presses();
+        let popover = popover.clone();
+        let block =
+            block2::RcBlock::new(move |event: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
+                let e = unsafe { event.as_ref() };
+                let mtm = MainThreadMarker::new().expect("main thread");
+                let behind = e.window(mtm).is_some_and(|w| *w == *page);
+                if !popover.isShown() || !behind {
+                    return event.as_ptr();
+                }
+                // SAFETY: the sender may be nil.
+                unsafe { popover.performClose(None) };
+                std::ptr::null_mut()
+            });
+        let mask =
+            NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown | NSEventMask::OtherMouseDown;
+        let monitor =
+            unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &block) };
+        *self.outside.borrow_mut() = monitor;
+    }
+
+    fn release_outside_presses(&self) {
+        if let Some(m) = self.outside.borrow_mut().take() {
+            unsafe { NSEvent::removeMonitor(&m) };
         }
     }
 
@@ -685,6 +722,13 @@ impl MacOverlay {
             &parent,
             popover_edge(c.side, rtl, flipped),
         );
+        // A dialog stays modal beside its anchor (#79).
+        if c.kind == OverlayKind::Dialog
+            && behavior(c) == NSPopoverBehavior::Transient
+            && let Some(page) = parent.window()
+        {
+            self.hold_outside_presses(&popover, page);
+        }
         *self.popover.borrow_mut() = Some(popover);
     }
 
@@ -789,6 +833,7 @@ impl MacOverlay {
             }
             w.orderOut(None);
         }
+        self.release_outside_presses();
         if let Some(p) = self.popover.borrow_mut().take() {
             p.close();
         }
@@ -796,6 +841,7 @@ impl MacOverlay {
 
     /// The user closed the popover (Escape, a click outside).
     pub(crate) fn popover_closed(&self) -> bool {
+        self.release_outside_presses();
         self.popover.borrow_mut().take();
         self.presented.replace(false)
     }
