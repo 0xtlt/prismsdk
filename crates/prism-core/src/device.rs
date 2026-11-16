@@ -439,6 +439,9 @@ pub enum DeviceCall {
     /// Opens `url` in the system's sign-in browser and answers the URL it
     /// was redirected to (`Text`).
     WebAuth(crate::security::WebAuthRequest),
+    /// A WebAuthn ceremony with the app's own relying party's options
+    /// (#94); answers the credential as JSON (`Text`).
+    WebAuthn(crate::security::WebAuthnRequest),
 
     // --- Opening a URL in a chosen place (web: this tab or a new one) ---
     /// Opens a URL: on the web in this tab or a new one; natively like

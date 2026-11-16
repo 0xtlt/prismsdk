@@ -145,7 +145,9 @@ pub fn model_id() -> Option<String> {
 }
 
 #[cfg(feature = "apple-bridge")]
-pub use bridge::{DeviceMessage, device_call, security_capabilities, set_device_sink};
+pub use bridge::{
+    DeviceMessage, device_call, passkeys_available, security_capabilities, set_device_sink,
+};
 
 /// The configurations of a configurable widget kind that the widget
 /// extension recorded in the App Group (the instances the system shows): the
@@ -404,6 +406,8 @@ mod bridge {
         fn prism_apple_sign_in_available() -> bool;
         fn prism_auth_redirect(id: u64, preferred: *const c_char);
         fn prism_web_auth(id: u64, url: *const c_char, redirect: *const c_char, ephemeral: bool);
+        fn prism_webauthn(id: u64, create: bool, options: *const c_char);
+        fn prism_passkeys_available() -> bool;
     }
 
     /// What the Keychain and LocalAuthentication offer here:
@@ -423,6 +427,12 @@ mod bridge {
                 prism_apple_sign_in_available(),
             )
         }
+    }
+
+    /// Passkeys of the app's own relying party (#94): Apple platforms but
+    /// the watch.
+    pub fn passkeys_available() -> bool {
+        unsafe { prism_passkeys_available() }
     }
 
     /// What the bridge reports back, for the backend to hand to its runtime.
@@ -533,6 +543,8 @@ mod bridge {
                 DeviceCall::WebAuth(r) => {
                     prism_web_auth(id, c(&r.url).as_ptr(), c(&r.redirect).as_ptr(), r.ephemeral)
                 }
+                // Passkeys of the app's own relying party (#94).
+                DeviceCall::WebAuthn(r) => prism_webauthn(id, r.create, c(&r.options).as_ptr()),
                 // No cookies natively (secure storage keeps secrets), no live
                 // session to renew.
                 DeviceCall::SetCookie(_) => {

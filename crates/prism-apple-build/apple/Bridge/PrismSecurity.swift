@@ -489,3 +489,137 @@ public func prismWebAuth(_ id: UInt64, _ url: UnsafePointer<CChar>, _ redirect: 
         failure(id, "could not start the sign-in session")
     }
 }
+
+// MARK: Passkeys of the app's own relying party (#94)
+//
+// The server's WebAuthn options (JSON, binary fields in base64url) become an
+// ASAuthorizationPlatformPublicKeyCredentialProvider request; the credential
+// comes back in the WebAuthn JSON form (`toJSON()`), for the server to
+// verify. The relying party's domain must list the app (`webcredentials:`
+// associated domain, apple-app-site-association).
+
+#if os(watchOS)
+@_cdecl("prism_webauthn")
+public func prismWebAuthn(_ id: UInt64, _ create: Bool, _ options: UnsafePointer<CChar>) {
+    failure(id, "unavailable") // no platform passkeys on the watch
+}
+
+@_cdecl("prism_passkeys_available")
+public func prismPasskeysAvailable() -> Bool { false }
+#else
+private func base64url(_ s: String?) -> Data? {
+    guard var s = s?.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/") else { return nil }
+    while s.count % 4 != 0 { s += "=" }
+    return Data(base64Encoded: s)
+}
+
+private func base64url(_ d: Data) -> String {
+    d.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: "=", with: "")
+}
+
+private var passkeyRequests: [UInt64: PrismPasskeys] = [:]
+
+final class PrismPasskeys: NSObject, ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
+    let id: UInt64
+    var controller: ASAuthorizationController?
+    init(id: UInt64) { self.id = id }
+
+    func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor { anchor() }
+
+    func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
+        defer { passkeyRequests[id] = nil }
+        var json: [String: Any] = ["type": "public-key", "authenticatorAttachment": "platform", "clientExtensionResults": [String: Any]()]
+        if let r = authorization.credential as? ASAuthorizationPlatformPublicKeyCredentialRegistration {
+            json["id"] = base64url(r.credentialID)
+            json["rawId"] = base64url(r.credentialID)
+            json["response"] = [
+                "clientDataJSON": base64url(r.rawClientDataJSON),
+                "attestationObject": base64url(r.rawAttestationObject ?? Data()),
+                "transports": ["internal", "hybrid"],
+            ]
+        } else if let a = authorization.credential as? ASAuthorizationPlatformPublicKeyCredentialAssertion {
+            json["id"] = base64url(a.credentialID)
+            json["rawId"] = base64url(a.credentialID)
+            json["response"] = [
+                "clientDataJSON": base64url(a.rawClientDataJSON),
+                "authenticatorData": base64url(a.rawAuthenticatorData),
+                "signature": base64url(a.signature),
+                "userHandle": base64url(a.userID),
+            ]
+        } else {
+            return failure(id, "unexpected credential")
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: json) else { return failure(id, "unreadable credential") }
+        text(id, String(decoding: data, as: UTF8.self))
+    }
+
+    func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
+        defer { passkeyRequests[id] = nil }
+        switch (error as? ASAuthorizationError)?.code {
+        case .canceled: failure(id, "cancelled")
+        case .notHandled, .unknown:
+            failure(id, "passkeys failed: the relying party's domain must list this app (a webcredentials: associated domain) (\(error.localizedDescription))")
+        default: failure(id, error.localizedDescription)
+        }
+    }
+}
+
+private func userVerification(_ o: [String: Any]?) -> ASAuthorizationPublicKeyCredentialUserVerificationPreference {
+    switch o?["userVerification"] as? String {
+    case "required": return .required
+    case "discouraged": return .discouraged
+    default: return .preferred
+    }
+}
+
+@_cdecl("prism_webauthn")
+public func prismWebAuthn(_ id: UInt64, _ create: Bool, _ options: UnsafePointer<CChar>) {
+    guard let o = (try? JSONSerialization.jsonObject(with: Data(String(cString: options).utf8))) as? [String: Any],
+          let challenge = base64url(o["challenge"] as? String)
+    else { return failure(id, "the WebAuthn options have no challenge") }
+    let rp = create ? (o["rp"] as? [String: Any])?["id"] as? String : o["rpId"] as? String
+    guard let rp, !rp.isEmpty else { return failure(id, "the WebAuthn options name no relying party id") }
+    let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier: rp)
+    let request: ASAuthorizationRequest
+    if create {
+        guard let user = o["user"] as? [String: Any], let userID = base64url(user["id"] as? String),
+              let name = user["name"] as? String
+        else { return failure(id, "the WebAuthn options have no user") }
+        let r = provider.createCredentialRegistrationRequest(challenge: challenge, name: name, userID: userID)
+        if let shown = user["displayName"] as? String, !shown.isEmpty { r.displayName = shown }
+        r.userVerificationPreference = userVerification(o["authenticatorSelection"] as? [String: Any])
+        #if !os(tvOS) // tvOS has no attestation preference
+        switch o["attestation"] as? String {
+        case "direct": r.attestationPreference = .direct
+        case "indirect": r.attestationPreference = .indirect
+        case "enterprise": r.attestationPreference = .enterprise
+        default: r.attestationPreference = .none
+        }
+        #endif
+        if #available(iOS 17.4, macOS 14.4, tvOS 17.4, visionOS 1.1, *) {
+            r.excludedCredentials = ((o["excludeCredentials"] as? [[String: Any]]) ?? []).compactMap {
+                base64url($0["id"] as? String).map { ASAuthorizationPlatformPublicKeyCredentialDescriptor(credentialID: $0) }
+            }
+        }
+        request = r
+    } else {
+        let r = provider.createCredentialAssertionRequest(challenge: challenge)
+        r.userVerificationPreference = userVerification(o)
+        r.allowedCredentials = ((o["allowCredentials"] as? [[String: Any]]) ?? []).compactMap {
+            base64url($0["id"] as? String).map { ASAuthorizationPlatformPublicKeyCredentialDescriptor(credentialID: $0) }
+        }
+        request = r
+    }
+    let delegate = PrismPasskeys(id: id)
+    let controller = ASAuthorizationController(authorizationRequests: [request])
+    controller.delegate = delegate
+    controller.presentationContextProvider = delegate
+    delegate.controller = controller
+    passkeyRequests[id] = delegate
+    controller.performRequests()
+}
+
+@_cdecl("prism_passkeys_available")
+public func prismPasskeysAvailable() -> Bool { true }
+#endif

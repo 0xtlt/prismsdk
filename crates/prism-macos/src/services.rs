@@ -111,6 +111,8 @@ impl MacServices {
                 // WKWebView (#62).
                 web_view: true,
                 // NSDraggingDestination (#111).
+                // ASAuthorizationPlatformPublicKeyCredentialProvider (#94).
+                passkeys: prism_native::apple::passkeys_available(),
                 drop_files: true,
             },
             activities: HashMap::new(),

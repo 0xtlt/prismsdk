@@ -554,6 +554,14 @@ fn device_calls_golden() {
             DeviceCall::OpenUrl("https://x.y".into()),
             json!({"call": "open_url", "url": "https://x.y"}),
         ),
+        // Passkeys of the app's relying party (#94): the options as text.
+        (
+            DeviceCall::WebAuthn(prism_core::WebAuthnRequest {
+                create: false,
+                options: r#"{"challenge":"AQID"}"#.into(),
+            }),
+            json!({"call": "webauthn", "create": false, "options": r#"{"challenge":"AQID"}"#}),
+        ),
     ];
     for (call, mut golden) in cases {
         golden["op"] = json!("device");

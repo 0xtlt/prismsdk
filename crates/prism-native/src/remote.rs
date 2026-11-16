@@ -1154,6 +1154,11 @@ pub mod device {
                 "call": "web_auth", "url": r.url, "redirect": r.redirect,
                 "ephemeral": r.ephemeral, "provider": r.provider,
             }),
+            // The app's own relying party (#94): `options` as the server's
+            // JSON text; the host answers the credential's JSON (`text`).
+            DeviceCall::WebAuthn(r) => json!({
+                "call": "webauthn", "create": r.create, "options": r.options,
+            }),
             // No cookies natively: the host answers « unavailable ».
             DeviceCall::SetCookie(_) => json!({ "call": "set_cookie" }),
             // No live session to renew: the host ignores it.

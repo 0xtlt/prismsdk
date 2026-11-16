@@ -103,6 +103,8 @@ impl IosServices {
                 // WKWebView (#62); tvOS has no WebKit.
                 web_view: cfg!(not(target_os = "tvos")),
                 // UIDropInteraction (#111); none on tvOS.
+                // ASAuthorizationPlatformPublicKeyCredentialProvider (#94).
+                passkeys: prism_native::apple::passkeys_available(),
                 drop_files: cfg!(not(target_os = "tvos")),
             },
             controller,

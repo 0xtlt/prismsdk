@@ -55,5 +55,26 @@ cx.spawn(async move |this, cx| {
 - **Signing out** (RFC 7009): `revoke(&cx, token, hint)` (or `revoke_blocking(token, hint)` on any thread) posts the token, its `token_type_hint` (`TokenTypeHint::RefreshToken` or `AccessToken`, optional) and the client's credentials to the server's `revocation_endpoint`, read from its metadata (kept in `revocation_url`; `OAuth::google` knows Google's). Revoking the refresh token usually ends its access tokens too. A token the server does not know is not an error (RFC 7009 answers 200 either way); a server without a revocation endpoint is. `revocation_request` and `parse_revocation_response` are public, like the token request.
 - **Web secrets** are a server-side store, because the app runs there: the browser never sees them. Set `PRISM_SECRET_KEY` (64 hex digits) in production; otherwise a key is generated in the data directory. WebAuthn needs a secure context (`https://` or `localhost`); the first `authenticate` registers this browser's platform credential. When a popup or WebAuthn needs a fresh tap (Safari), the page shows a "Continue" button.
 - **Web session cookies**: a handler signing a user in sets the host's session cookie with `cx.set_cookie(Cookie::new("session", token))` (`HttpOnly; Secure; SameSite=Lax` by default), through a one-time ticket the page redeems at `<base>/_prism/cookie`, then calls `cx.reconnect()` so the host's middleware sees it ([Web](../platforms/web.md), "Cookies from a handler"). Natively, keep the token in secure storage instead: `set_cookie` answers `Unavailable` there.
+- **Passkeys of your own server** (#94): `authenticate` uses Prism's own credential to unlock secrets on this device. To sign users in with passkeys of your app's relying party (or add a passkey to an account), run the ceremony with the options your server produced and send the result back to it:
+
+  ```rust
+  // `server` is your app's own API client.
+  let options = server.start_passkey_registration().await?;   // PublicKeyCredentialCreationOptionsJSON
+  let credential = cx.webauthn_create(options).await?;        // RegistrationResponseJSON
+  server.finish_passkey_registration(credential).await?;
+
+  let options = server.start_passkey_sign_in().await?;        // PublicKeyCredentialRequestOptionsJSON
+  let assertion = cx.webauthn_get(options).await?;            // AuthenticationResponseJSON
+  server.finish_passkey_sign_in(assertion).await?;
+  ```
+
+  Options and answers are the WebAuthn JSON forms (binary fields in base64url, what server libraries produce and `PublicKeyCredential.toJSON()` gives); a `{"publicKey": …}` wrapper is accepted. Prism only runs the ceremony: your server checks the challenge, origin and signature. `Err(Cancelled)` when the user declines, `Err(Unavailable)` where there are no passkeys (`capabilities().passkeys`).
+
+  | | Ceremony | Needs |
+  |---|---|---|
+  | Web | `navigator.credentials.create` / `get` in the page (a « Continue » tap when the browser wants a fresh gesture) | the page's origin under the relying party id |
+  | macOS, iOS, iPadOS, visionOS, tvOS | `ASAuthorizationPlatformPublicKeyCredentialProvider` | the relying party's domain as a `webcredentials:` associated domain of the app (apple-app-site-association) |
+  | Android 14+ | the Credential Manager (`android.credentials`) | the app in the domain's Digital Asset Links |
+  | Linux, watchOS, older Android | — (`Unavailable`) | |
 - **Linux** has no desktop standard for checking a password on behalf of an app (polkit authorizes system actions, not apps): `authenticate` uses fprintd, otherwise `Unavailable`. Biometric secrets are checked by the app with fprintd before the keyring hands them out.
 - Test sign-in without real accounts: `python3 scripts/mock-oidc.py` (a local OpenID provider checking PKCE, with RFC 8414 metadata, a registration endpoint and a `/picture` behind the bearer token; `--no-oidc` for a plain OAuth 2 server, `--path /realm` for an issuer with a path, `--secret` to hand out client secrets); `scripts/mock-fprintd.py` stands in for a fingerprint reader (`PRISM_FPRINTD_BUS=session`).

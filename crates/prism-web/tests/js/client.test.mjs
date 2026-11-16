@@ -911,6 +911,52 @@ test("files dropped on a drop target go up, only those it accepts (#111)", async
   assert.equal(drag("drop", zone, [png]).defaultPrevented, false);
 });
 
+test("passkeys of the app's relying party run with the server's options (#94)", async () => {
+  const page = live([create(1, "view"), root(1)]);
+  const seen = [];
+  const buf = (...b) => new Uint8Array(b).buffer;
+  page.window.PublicKeyCredential = function () {};
+  page.window.navigator.credentials = {
+    // A browser without toJSON / parse*FromJSON: Prism converts.
+    create: async (o) => {
+      seen.push(o.publicKey);
+      return { id: "AQI", rawId: buf(1, 2), type: "public-key", authenticatorAttachment: "platform",
+        getClientExtensionResults: () => ({}),
+        response: { clientDataJSON: buf(123, 125), attestationObject: buf(9), getTransports: () => ["internal"] } };
+    },
+    // One with toJSON.
+    get: async (o) => { seen.push(o.publicKey); return { toJSON: () => ({ id: "AQI", type: "public-key" }) }; },
+  };
+  page.ws.deliver({ t: "device", id: 4, call: "webauthn_rp", create: true, options: {
+    challenge: "AQID", rp: { id: "example.com", name: "Example" },
+    user: { id: "BAU", name: "ada", displayName: "Ada" },
+    pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+    excludeCredentials: [{ type: "public-key", id: "Bg" }],
+  } });
+  page.ws.deliver({ t: "device", id: 5, call: "webauthn_rp", create: false, options: {
+    challenge: "AQID", rpId: "example.com", allowCredentials: [{ type: "public-key", id: "Bg" }],
+  } });
+  await new Promise((r) => setImmediate(r));
+  const [made, asked] = seen;
+  assert.deepEqual([...new Uint8Array(made.challenge)], [1, 2, 3]);
+  assert.deepEqual([...new Uint8Array(made.user.id)], [4, 5]);
+  assert.equal(made.user.name, "ada");
+  assert.deepEqual([...new Uint8Array(made.excludeCredentials[0].id)], [6]);
+  assert.equal(made.rp.id, "example.com");
+  assert.deepEqual([...new Uint8Array(asked.allowCredentials[0].id)], [6]);
+  const replies = page.ws.sent.filter((m) => m.t === "device_reply").sort((a, b) => a.id - b.id);
+  assert.deepEqual(JSON.parse(replies[0].text), {
+    id: "AQI", rawId: "AQI", type: "public-key", authenticatorAttachment: "platform", clientExtensionResults: {},
+    response: { clientDataJSON: "e30", attestationObject: "CQ", transports: ["internal"] },
+  });
+  assert.deepEqual(JSON.parse(replies[1].text), { id: "AQI", type: "public-key" });
+  // Without WebAuthn: unavailable.
+  delete page.window.PublicKeyCredential;
+  page.ws.deliver({ t: "device", id: 6, call: "webauthn_rp", create: false, options: { challenge: "AQID" } });
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(page.ws.sent.filter((m) => m.id === 6), [{ t: "device_reply", id: 6, err: "unavailable" }]);
+});
+
 test("window resizes are reported once settled", () => {
   const page = live([create(1, "view"), root(1)]);
   page.window.innerWidth = 390;

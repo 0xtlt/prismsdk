@@ -1920,6 +1920,18 @@ fn device_calls_are_encoded_for_the_client() {
         "success"
     );
     assert_eq!(device_json(8, DeviceCall::StopWatch)["call"], "stop");
+    // Passkeys of the app's relying party (#94): the options as JSON.
+    assert_eq!(
+        device_json(
+            9,
+            DeviceCall::WebAuthn(prism_core::WebAuthnRequest {
+                create: true,
+                options: r#"{"challenge":"AQID","rp":{"id":"example.com"}}"#.into(),
+            })
+        ),
+        json!({ "t": "device", "id": 9, "call": "webauthn_rp", "create": true,
+            "options": { "challenge": "AQID", "rp": { "id": "example.com" } } })
+    );
     assert_eq!(
         device_json(9, DeviceCall::CopyText("x".into())),
         json!({ "t": "device", "id": 9, "call": "copy", "text": "x" })

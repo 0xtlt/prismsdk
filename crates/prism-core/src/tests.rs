@@ -2453,6 +2453,53 @@ fn drop_targets_get_the_files_they_accept() {
     assert!(patches.contains(&Patch::SetDropTarget { id, types: None }));
 }
 
+/// #94: ceremonies of the app's own relying party: the server's options
+/// (wrapper removed), the credential's JSON back.
+#[test]
+fn webauthn_ceremonies_pass_the_servers_options_through() {
+    use crate::PlatformRequest;
+    use crate::device::*;
+    struct Keys {
+        out: String,
+    }
+    impl Render for Keys {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            text(self.out.clone())
+        }
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|cx: &mut Context<Keys>| {
+            cx.spawn(async move |this, cx| {
+                let bad = cx.webauthn_get("[1]").await;
+                let r = cx
+                    .webauthn_create(r#"{"publicKey":{"challenge":"AQID"}}"#)
+                    .await;
+                let out = format!("{} | {}", bad.is_err(), r.unwrap_or_else(|e| e.to_string()));
+                cx.update_entity(&this, |k, _| k.out = out);
+            });
+            Keys { out: "…".into() }
+        });
+        cx.set_root(root);
+    });
+    let mut rt = Runtime::new(&init);
+    rt.render();
+    let (id, options) = rt
+        .take_requests()
+        .into_iter()
+        .find_map(|r| match r {
+            PlatformRequest::Device {
+                id,
+                call: DeviceCall::WebAuthn(w),
+            } => Some((id, w)),
+            _ => None,
+        })
+        .expect("one ceremony: the bad options never leave the app");
+    assert!(options.create);
+    assert_eq!(options.options, r#"{"challenge":"AQID"}"#);
+    let patches = rt.device_reply(id, Ok(DeviceValue::Text(Some(r#"{"id":"x"}"#.into()))));
+    find_text(&patches, r#"true | {"id":"x"}"#);
+}
+
 /// #136: the buttons that may drag become pointer bits.
 #[test]
 fn drag_buttons_become_pointer_bits() {

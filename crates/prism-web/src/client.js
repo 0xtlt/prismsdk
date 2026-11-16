@@ -5863,6 +5863,56 @@ void main() {
       } else reply(error(e));
     }
   }
+  /**
+   * A ceremony of the app's own relying party (#94): the server's options
+   * (WebAuthn JSON: binary fields in base64url), the credential back as JSON
+   * (`toJSON()`), for the server to verify. Browsers that cannot parse or
+   * serialize the JSON forms themselves get the same conversion here. As
+   * with `authenticate`, a refusal at once (no recent tap) asks for a tap.
+   */
+  async function webauthnRp(msg, reply) {
+    if (!window.PublicKeyCredential || !navigator.credentials || !msg.options) return reply({ err: "unavailable" });
+    const PKC = window.PublicKeyCredential;
+    const ids = (list) => (list || []).map((c) => ({ ...c, id: unb64u(c.id) }));
+    const publicKey = msg.create
+      ? (PKC.parseCreationOptionsFromJSON ? PKC.parseCreationOptionsFromJSON(msg.options) : {
+        ...msg.options, challenge: unb64u(msg.options.challenge),
+        user: { ...msg.options.user, id: unb64u(msg.options.user.id) },
+        excludeCredentials: ids(msg.options.excludeCredentials),
+      })
+      : (PKC.parseRequestOptionsFromJSON ? PKC.parseRequestOptionsFromJSON(msg.options) : {
+        ...msg.options, challenge: unb64u(msg.options.challenge),
+        allowCredentials: ids(msg.options.allowCredentials),
+      });
+    const json = (c) => {
+      if (typeof c.toJSON === "function") return c.toJSON();
+      const r = c.response, out = { id: c.id, rawId: b64u(c.rawId), type: c.type,
+        authenticatorAttachment: c.authenticatorAttachment || undefined,
+        clientExtensionResults: c.getClientExtensionResults ? c.getClientExtensionResults() : {} };
+      out.response = r.attestationObject
+        ? { clientDataJSON: b64u(r.clientDataJSON), attestationObject: b64u(r.attestationObject),
+          transports: r.getTransports ? r.getTransports() : undefined }
+        : { clientDataJSON: b64u(r.clientDataJSON), authenticatorData: b64u(r.authenticatorData),
+          signature: b64u(r.signature), userHandle: r.userHandle ? b64u(r.userHandle) : undefined };
+      return out;
+    };
+    const ceremony = async () => {
+      const c = msg.create ? await navigator.credentials.create({ publicKey }) : await navigator.credentials.get({ publicKey });
+      if (!c) throw Object.assign(new Error("no credential"), { name: "NotAllowedError" });
+      return JSON.stringify(json(c));
+    };
+    const error = (e) => ({ err: e && e.name === "NotAllowedError" ? "cancelled"
+      : e && (e.name === "SecurityError" || e.name === "NotSupportedError") ? "unavailable"
+      : String((e && e.message) || e) });
+    const started = Date.now();
+    try {
+      reply({ text: await ceremony() });
+    } catch (e) {
+      if (e && e.name === "NotAllowedError" && Date.now() - started < 400) {
+        withGesture(gestureText()[2], () => ceremony().then((t) => reply({ text: t }), (e2) => reply(error(e2))), () => reply({ err: "cancelled" }));
+      } else reply(error(e));
+    }
+  }
   // Whether `authenticate` can work here (reported with the device).
   let uvpa = false;
   if (window.PublicKeyCredential && PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable) {
@@ -5934,6 +5984,7 @@ void main() {
         case "set_cookie": return setCookie(msg, reply);
         case "web_auth": return webAuth(msg, reply);
         case "webauthn": return webauthn(msg, reply);
+        case "webauthn_rp": return webauthnRp(msg, reply);
         default: return reply({ err: "unavailable" });
       }
     } catch (e) {

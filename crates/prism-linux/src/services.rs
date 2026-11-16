@@ -198,9 +198,11 @@ impl LinuxServices {
                 id,
                 DeviceEvent::Error(DeviceError::from_message("unavailable")),
             ),
-            DeviceCall::Haptic(_) | DeviceCall::Share(_) | DeviceCall::SignInWithApple(_) => {
-                reply(id, Err(DeviceError::from_message("unavailable")))
-            }
+            // No platform passkeys on the Linux desktop (#94).
+            DeviceCall::Haptic(_)
+            | DeviceCall::Share(_)
+            | DeviceCall::SignInWithApple(_)
+            | DeviceCall::WebAuthn(_) => reply(id, Err(DeviceError::from_message("unavailable"))),
             DeviceCall::SecureGet { key, prompt, .. } => {
                 self.secret(id, key, SecretOp::Get, prompt)
             }

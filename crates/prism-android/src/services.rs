@@ -46,6 +46,8 @@ impl AndroidServices {
                 biometry,
                 device_auth: has("biometricReady") || has("deviceSecure"),
                 web_auth: has("browser"),
+                // The Credential Manager, Android 14+ (#94).
+                passkeys: has("passkeys"),
                 // FCM (built with google-services, Play services present) or a
                 // UnifiedPush distributor (PrismPush.java).
                 push: match info.get("push").and_then(Value::as_str) {
