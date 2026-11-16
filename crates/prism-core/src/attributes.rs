@@ -44,6 +44,7 @@ pub const RESERVED_DATA_ATTRIBUTES: &[&str] = &[
     "row",
     "side",
     "size",
+    "src",
     "value",
 ];
 

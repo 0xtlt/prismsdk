@@ -70,6 +70,9 @@ pub struct Fake {
     pub focused: Vec<NodeId>,
     pub revealed: Vec<NodeId>,
     pub layers: Vec<NodeId>,
+    /// Web views (#62): messages posted, reloads.
+    pub web_messages: Vec<(NodeId, String)>,
+    pub web_reloads: Vec<NodeId>,
 }
 
 impl Fake {
@@ -285,6 +288,12 @@ impl Widgets for Fake {
     }
     fn set_layers(&mut self, layers: &[NodeId]) {
         self.layers = layers.to_vec();
+    }
+    fn post_web_message(&mut self, v: &NodeId, data: &str) {
+        self.web_messages.push((*v, data.to_string()));
+    }
+    fn reload_web_view(&mut self, v: &NodeId) {
+        self.web_reloads.push(*v);
     }
     /// Overlays get a 300 x 400 area at (10, 20).
     fn overlay_viewport(&mut self, _: &NodeId, _: &NodeId) -> Viewport {

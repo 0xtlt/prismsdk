@@ -45,6 +45,7 @@ mod style;
 pub mod surfaces;
 pub mod svg;
 mod task;
+pub mod web_view;
 mod window;
 pub use window::{WindowChrome, WindowControls};
 
@@ -123,6 +124,7 @@ pub use surfaces::{
 };
 pub use task::{AsyncApp, Background, Sleep, TaskHandle, WakeUi};
 pub use task::{DEFAULT_BACKGROUND_THREADS, background_threads, set_background_threads};
+pub use web_view::{WebLoadEvent, WebMessageEvent, WebSandbox, WebView, web_view};
 
 use std::sync::Arc;
 
@@ -377,6 +379,16 @@ impl Runtime {
             UiEvent::Island(id, name, detail) => {
                 if let Some(h) = self.reconciler.island_handler(id, &name) {
                     h(&island::IslandEvent { name, detail }, &mut self.app);
+                }
+            }
+            UiEvent::WebMessage(id, data, origin) => {
+                if let Some(h) = self.reconciler.web_message_handler(id) {
+                    h(&web_view::WebMessageEvent { data, origin }, &mut self.app);
+                }
+            }
+            UiEvent::WebLoad(id, url) => {
+                if let Some(h) = self.reconciler.web_load_handler(id) {
+                    h(&web_view::WebLoadEvent { url }, &mut self.app);
                 }
             }
             UiEvent::Key(focused, e) => {
@@ -706,6 +718,8 @@ pub mod prelude {
     };
     // Islands: client-side Web Components.
     pub use crate::{IslandEvent, island, web_component};
+    // Web views (#62).
+    pub use crate::{WebLoadEvent, WebMessageEvent, WebSandbox, web_view};
 }
 
 #[cfg(test)]

@@ -53,6 +53,8 @@ impl AndroidServices {
                     Some("unifiedpush") => Some(prism_core::PushService::UnifiedPush),
                     _ => None,
                 },
+                // android.webkit.WebView (#62, PrismWeb.java).
+                web_view: true,
                 ..Default::default()
             },
             ops: Vec::new(),

@@ -21,4 +21,5 @@ mod spawn;
 mod storage;
 mod typography;
 mod virtual_list;
+mod web_view;
 mod widget_actions;

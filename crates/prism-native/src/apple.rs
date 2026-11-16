@@ -174,6 +174,91 @@ pub fn widget_configurations(kind: &str) -> Vec<prism_core::WidgetConfig> {
 #[path = "apple_push.rs"]
 pub mod push;
 
+/// Web views (#62): the `WKWebView` host of the Swift bridge
+/// (`apple/Bridge/PrismWebView.swift`), shared by the macOS and UIKit
+/// backends. tvOS has no WebKit: `WebHost::new` returns `None` there.
+#[cfg(all(feature = "apple-bridge", not(target_os = "watchos")))]
+pub mod web {
+    use std::ffi::{CStr, CString, c_char, c_void};
+    use std::ptr::NonNull;
+
+    use prism_core::{NodeId, UiEvent};
+
+    unsafe extern "C" {
+        fn prism_web_view_new(id: u64) -> *mut c_void;
+        fn prism_web_view_load(host: *mut c_void, url: *const c_char);
+        fn prism_web_view_config(host: *mut c_void, config: *const c_char);
+        fn prism_web_view_post(host: *mut c_void, json: *const c_char);
+        fn prism_web_view_reload(host: *mut c_void);
+        fn prism_web_view_release(host: *mut c_void);
+    }
+
+    /// A web view's host view (an `NSView` or `UIView` filling its
+    /// superview, holding the `WKWebView`). Dropping it stops the page.
+    pub struct WebHost(NonNull<c_void>);
+
+    fn c(s: &str) -> CString {
+        CString::new(s.replace('\0', "")).unwrap_or_default()
+    }
+
+    impl WebHost {
+        /// The host view of node `id`, or `None` without WebKit (tvOS).
+        pub fn new(id: NodeId) -> Option<WebHost> {
+            NonNull::new(unsafe { prism_web_view_new(id) }).map(WebHost)
+        }
+
+        /// The host view, an `NSView` / `UIView` (borrowed).
+        pub fn view_ptr(&self) -> *mut c_void {
+            self.0.as_ptr()
+        }
+
+        /// Loads `url` (on the next turn of the main loop, with the config
+        /// set in the same update).
+        pub fn load(&self, url: &str) {
+            unsafe { prism_web_view_load(self.0.as_ptr(), c(url).as_ptr()) }
+        }
+
+        /// The options (`prism_core::web_view::WebViewConfig`, encoded).
+        pub fn configure(&self, config: &str) {
+            unsafe { prism_web_view_config(self.0.as_ptr(), c(config).as_ptr()) }
+        }
+
+        /// A message (JSON) for the page, once loaded, if it shows an
+        /// allowed origin.
+        pub fn post(&self, json: &str) {
+            unsafe { prism_web_view_post(self.0.as_ptr(), c(json).as_ptr()) }
+        }
+
+        /// Reloads the page.
+        pub fn reload(&self) {
+            unsafe { prism_web_view_reload(self.0.as_ptr()) }
+        }
+    }
+
+    impl Drop for WebHost {
+        fn drop(&mut self) {
+            unsafe { prism_web_view_release(self.0.as_ptr()) }
+        }
+    }
+
+    /// What the bridge reports through `prism_web_view_event` (which each
+    /// backend exports): kind 0 a message (`a`: JSON, `b`: origin), kind 1
+    /// a finished load (`a`: URL).
+    ///
+    /// # Safety
+    /// `a` and `b` are valid C strings.
+    pub unsafe fn event(id: u64, kind: i32, a: *const c_char, b: *const c_char) -> Option<UiEvent> {
+        let s = |p: *const c_char| {
+            (!p.is_null()).then(|| unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned())
+        };
+        match kind {
+            0 => Some(UiEvent::WebMessage(id, s(a)?, s(b).unwrap_or_default())),
+            1 => Some(UiEvent::WebLoad(id, s(a)?)),
+            _ => None,
+        }
+    }
+}
+
 /// Device APIs through the Swift bridge (`apple/Bridge/PrismDevice.swift` in `prism-apple-build`).
 #[cfg(feature = "apple-bridge")]
 mod bridge {

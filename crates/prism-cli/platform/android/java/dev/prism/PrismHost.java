@@ -388,7 +388,10 @@ public final class PrismHost {
             }
             case "exit": PrismMotion.exit(n.view, p.getJSONObject("to"), p.getJSONObject("anim")); break;
             case "repeat": PrismMotion.repeat(id, n.view, p.optJSONObject("from"), p.optJSONObject("to"), p.optJSONObject("anim"), p.optBoolean("restart")); break;
-            case "text": setText(n, p.optString("text")); break;
+            case "text":
+                if (n.kind.equals("web_view")) PrismWeb.load(n, p.optString("text"));
+                else setText(n, p.optString("text"));
+                break;
             case "draw": if (n.view instanceof PrismShape) ((PrismShape) n.view).setPaths(p.optJSONArray("paths")); break;
             case "placeholder":
                 if (!PrismForms.placeholder(n, p.optString("text")) && n.view instanceof EditText) ((EditText) n.view).setHint(p.optString("text"));
@@ -396,6 +399,7 @@ public final class PrismHost {
             case "config":
                 // A screen's bar buttons (#30).
                 if (n.kind.equals("screen")) PrismNavbar.config(n, p.optString("config"), p.optJSONArray("glyphs"));
+                else if (n.kind.equals("web_view")) PrismWeb.config(n, p.optString("config"));
                 else PrismForms.config(n, p.optString("config"));
                 break;
             case "runs": {
@@ -480,6 +484,9 @@ public final class PrismHost {
             case "selev": PrismInput.selectEvents(n, p.optBoolean("on")); break;
             case "focus": PrismInput.focus(n); break;
             case "reveal": PrismInput.reveal(n); break;
+            // Web views (#62).
+            case "webpost": if (n.kind.equals("web_view")) PrismWeb.post(n, p.optString("data")); break;
+            case "webreload": if (n.kind.equals("web_view")) PrismWeb.reload(n); break;
         }
     }
 
@@ -638,6 +645,7 @@ public final class PrismHost {
                 break;
             }
             case "shape": n.view = new PrismShape(activity); break;
+            case "web_view": n.view = PrismWeb.create(n); break;
             case "overlay": {
                 // Takes no room; its parent is the popover's anchor. The
                 // content is shown in a dialog or popup (PrismInput.open).
@@ -672,6 +680,7 @@ public final class PrismHost {
         if (n.dialog != null || n.popup != null) PrismInput.close(n);
         ViewGroup parent = (ViewGroup) n.view.getParent();
         if (parent != null) parent.removeView(n.view);
+        if (n.kind.equals("web_view")) PrismWeb.destroy(n);
         timers.remove(n.id);
     }
 

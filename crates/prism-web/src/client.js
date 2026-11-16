@@ -117,6 +117,7 @@
     image: "span", progress: "progress", timer: "span", modal: "dialog", picture: "img",
     shape: "div", slider: "input", picker: "select", date_picker: "input", text_area: "textarea",
     spinner: "span", overlay: "div", checkbox: "label", radio_group: "div",
+    web_view: "iframe",
   };
   // SF Symbol names → glyphs (table generated from Rust: glyphs.rs).
   const glyphs = __GLYPHS__;
@@ -815,6 +816,8 @@
       });
     } else if (kind === "spinner") {
       el.className = "prism-spinner";
+    } else if (kind === "web_view") {
+      webViewInit(el, id);
     } else if (kind === "toggle") {
       el.type = "checkbox";
       el.className = "prism-switch";
@@ -1428,6 +1431,8 @@
       overlayBox(el, config);
     } else if (kind === "radio_group") {
       radioOptions(el, Number(el.dataset.pid), config);
+    } else if (kind === "web_view") {
+      webViewConfig(el, config);
     }
   }
 
@@ -1533,6 +1538,7 @@
           drawShape(el);
           return;
         }
+        if (kind === "web_view") return webViewSrc(el, p.text);
         if (kind === "picture") {
           // The server resolves asset URLs (hashed, maybe on a CDN).
           const src = p.text;
@@ -1606,6 +1612,8 @@
       }
       case "a11y":
         if (el.dataset.kind === "picture") { el.alt = p.a11y.hidden ? "" : p.a11y.label || ""; return; }
+        // A frame is named by its title.
+        if (el.dataset.kind === "web_view") { if (p.a11y.label) el.setAttribute("title", p.a11y.label); else el.removeAttribute("title"); }
         return applyA11y(el, p.a11y);
       case "menu": return setMenu(el, p.id, p.menu);
       case "appearance": document.documentElement.style.colorScheme = p.value; return;
@@ -1670,6 +1678,9 @@
       case "props": return setIslandProps(el, p.props);
       case "link": return setLink(el, p.id, p.href);
       case "attrs": return setAttrs(el, p.attrs);
+      // Web views (#62).
+      case "webpost": return el && webPost(el, p.data);
+      case "webreload": return el && webReload(el);
       case "destroy":
         if (el) {
           el.remove();
@@ -1684,6 +1695,90 @@
         return;
     }
   }
+
+  // --- Web views (#62) ------------------------------------------------------------
+  // An `<iframe>`. Its page posts to the app with `parent.postMessage(value,
+  // "*")` and gets the app's messages as `message` events. Only the allowed
+  // origins (the config's, else the URL's own) are heard and posted to;
+  // messages the app posts before the page loaded wait for it.
+  const absUrl = (u) => { try { return new URL(u, location.href).href; } catch { return u; } };
+  const urlOrigin = (u) => { try { return new URL(u, location.href).origin; } catch { return null; } };
+  const sandboxTokens = {
+    scripts: "allow-scripts", forms: "allow-forms",
+    popups: "allow-popups allow-popups-to-escape-sandbox", "same-origin": "allow-same-origin",
+  };
+  function webViewInit(el, id) {
+    el.className = "prism-web-view";
+    el._wq = [];
+    el._wcfg = { messages: false, loads: false, origins: [] };
+    el.addEventListener("load", () => {
+      if (!el._src) return; // the blank page before a URL
+      el._wloaded = true;
+      el._wq.splice(0).forEach((data) => webDeliver(el, data));
+      if (el._wcfg.loads) send({ t: "webload", id, url: webUrl(el) });
+    });
+  }
+  function webViewSrc(el, src) {
+    if (el._src === src) return;
+    el._src = src;
+    el._wloaded = false;
+    if (src) el.src = src;
+    else el.removeAttribute("src");
+  }
+  function webViewConfig(el, config) {
+    const [first, ...origins] = config.split("\n");
+    const tokens = first.split(" ").filter(Boolean);
+    el._wcfg = {
+      messages: tokens.includes("messages"),
+      loads: tokens.includes("loads"),
+      origins: origins.map((o) => o.trim()).filter(Boolean),
+    };
+    // Applies from the next page the frame loads (the browser's rule).
+    const sandbox = tokens.find((t) => t.startsWith("sandbox="));
+    if (sandbox === undefined) el.removeAttribute("sandbox");
+    else el.setAttribute("sandbox", sandbox.slice(8).split(",").map((n) => sandboxTokens[n]).filter(Boolean).join(" "));
+  }
+  const webOrigins = (el) => (el._wcfg.origins.length ? el._wcfg.origins : [urlOrigin(el._src)].filter(Boolean));
+  /** The frame's page: readable on the app's own origin, else the URL given. */
+  function webUrl(el) {
+    try {
+      const href = el.contentWindow.location.href;
+      if (href && href !== "about:blank") return href;
+    } catch { /* another origin */ }
+    return absUrl(el._src);
+  }
+  function webDeliver(el, data) {
+    const w = el.contentWindow;
+    if (!w) return;
+    const origins = webOrigins(el);
+    if (origins.includes("*")) return w.postMessage(data, "*");
+    // The browser delivers it only if the frame shows that origin.
+    for (const o of origins) {
+      try { w.postMessage(data, o); } catch { /* not an origin */ }
+    }
+  }
+  function webPost(el, data) {
+    if (el._wloaded) webDeliver(el, data);
+    else el._wq.push(data);
+  }
+  function webReload(el) {
+    el._wloaded = false;
+    // Another origin's page cannot be reloaded from here: load the URL again.
+    try { el.contentWindow.location.reload(); } catch { if (el._src) el.src = el._src; }
+  }
+  addEventListener("message", (e) => {
+    if (!e.source) return;
+    for (const el of document.querySelectorAll('iframe[data-kind="web_view"]')) {
+      if (el.contentWindow !== e.source) continue;
+      if (!el._wcfg || !el._wcfg.messages) return;
+      const origins = webOrigins(el);
+      if (!origins.includes("*") && !origins.includes(e.origin)) return;
+      try {
+        send({ t: "webmsg", id: Number(el.dataset.pid), data: e.data === undefined ? null : e.data, origin: e.origin });
+      } catch { /* not JSON (a cycle, a BigInt) */ }
+      return;
+    }
+  });
 
   // --- Islands: client-side Web Components (WASM or JS) -------------------------
   // An island node is its custom element (`<prism-island-chart>`). Its light

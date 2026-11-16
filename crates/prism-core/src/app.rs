@@ -195,6 +195,10 @@ pub(crate) enum UiCommand {
     ScrollIntoView(String),
     /// `dismiss_keyboard` (#29).
     DismissKeyboard,
+    /// `post_web_message` (#62): the web view's name, the message as JSON.
+    PostWebMessage(String, String),
+    /// `reload_web_view` (#62).
+    ReloadWebView(String),
 }
 
 impl Default for App {
@@ -632,6 +636,42 @@ impl App {
     /// just added).
     pub fn scroll_into_view(&mut self, id: impl Into<String>) {
         self.ui_commands.push(UiCommand::ScrollIntoView(id.into()));
+    }
+
+    // --- Web views (#62) ---
+
+    /// Posts `message` (serialized as JSON) to the page of the web view
+    /// named `id` (`.id(id)`, see [`web_view`](crate::web_view())), after
+    /// the next render: a `message` event on the page's `window`. Delivered
+    /// once the page has loaded, and only while it shows an allowed origin.
+    /// Does nothing if no such web view is mounted or the value cannot be
+    /// serialized.
+    pub fn post_web_message<T: serde::Serialize + ?Sized>(
+        &mut self,
+        id: impl Into<String>,
+        message: &T,
+    ) {
+        if let Ok(json) = serde_json::to_string(message) {
+            self.ui_commands
+                .push(UiCommand::PostWebMessage(id.into(), json));
+        }
+    }
+
+    /// Like [`post_web_message`](App::post_web_message), with a message
+    /// already encoded as JSON. Ignored if `json` is not valid JSON.
+    pub fn post_web_message_json(&mut self, id: impl Into<String>, json: &str) {
+        // Re-encoded: backends embed it in a script as it is.
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(json) {
+            self.ui_commands
+                .push(UiCommand::PostWebMessage(id.into(), value.to_string()));
+        }
+    }
+
+    /// Reloads the page of the web view named `id` after the next render
+    /// (on the web, a frame showing another origin than the app's goes back
+    /// to the URL the app gave: it cannot be reloaded in place).
+    pub fn reload_web_view(&mut self, id: impl Into<String>) {
+        self.ui_commands.push(UiCommand::ReloadWebView(id.into()));
     }
 
     /// Mounts `entity` above the whole UI (router, tabs, sheets and

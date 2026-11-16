@@ -185,3 +185,59 @@ fn remote_ops_and_input_events() {
         json!({"op": "device", "id": 1, "call": "pick_files", "types": ["image/*"], "multiple": true})
     );
 }
+
+// --- Web views (#62) ----------------------------------------------------------------------
+
+struct Preview;
+
+impl Render for Preview {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        div().flex_row().child(text("form").w(100.)).child(
+            prism_core::web_view("https://example.com")
+                .id("preview")
+                .flex_1(),
+        )
+    }
+}
+
+#[test]
+fn web_views_are_sized_by_their_style_and_take_messages() {
+    let mut h = Harness::root(|| Preview);
+    let f = h.layout(400., 300.);
+    let web = f.of_kind(NodeKind::WebView)[0];
+    assert!(!f.measured.contains_key(&web), "no natural size");
+    assert_eq!(f.frame(web), (100., 0., 300., 300.));
+    assert_eq!(f.texts[&web], "https://example.com");
+    h.rt.app.post_web_message("preview", &"hi");
+    h.rt.app.reload_web_view("preview");
+    h.rt.app.refresh();
+    h.rerender();
+    assert_eq!(h.w().web_messages, [(web, "\"hi\"".to_string())]);
+    assert_eq!(h.w().web_reloads, [web]);
+
+    // Hosts in another language get them as ops, and report back as events.
+    let mut w = RemoteWidgets::new(|_| (0., 0.));
+    w.post_web_message(&7, "[1]");
+    w.reload_web_view(&7);
+    assert_eq!(
+        w.ops,
+        [
+            json!({"op": "webpost", "id": 7, "data": "[1]"}),
+            json!({"op": "webreload", "id": 7})
+        ]
+    );
+    assert_eq!(
+        parse_input_event(
+            &json!({"t": "webmsg", "id": 7, "data": "{\"a\":1}", "origin": "https://example.com"})
+        ),
+        Some(UiEvent::WebMessage(
+            7,
+            "{\"a\":1}".into(),
+            "https://example.com".into()
+        ))
+    );
+    assert_eq!(
+        parse_input_event(&json!({"t": "webload", "id": 7, "url": "https://example.com/"})),
+        Some(UiEvent::WebLoad(7, "https://example.com/".into()))
+    );
+}
