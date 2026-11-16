@@ -506,6 +506,12 @@ pub struct VNode {
     /// A web view finished loading a page.
     pub on_web_load: Option<Handler<crate::web_view::WebLoadEvent>>,
 
+    // --- Wheel and pinch (#133) ---
+    /// Wheel and trackpad scrolling over the node.
+    pub on_wheel: Option<Handler<crate::events::WheelEvent>>,
+    /// Pinches over the node.
+    pub on_magnify: Option<Handler<crate::events::MagnifyEvent>>,
+
     // --- Drop targets (#111) ---
     /// Files dropped on the node: the types it accepts, and the handler.
     pub on_drop_files: Option<(
@@ -556,6 +562,8 @@ impl VNode {
             attributes: Vec::new(),
             on_web_message: None,
             on_web_load: None,
+            on_wheel: None,
+            on_magnify: None,
             on_drop_files: None,
         }
     }
@@ -1835,6 +1843,24 @@ impl Div {
     /// every user can drag.
     pub fn on_drag(mut self, handler: Handler<crate::events::DragEvent>) -> Self {
         self.0.on_drag = Some(handler);
+        self
+    }
+
+    /// Called as the mouse wheel turns or two fingers scroll on a trackpad
+    /// over the container (#133): pan an infinite canvas, a map, an image.
+    /// The container takes the events: what is behind it does not scroll.
+    /// Touch screens have no wheel (their panning is
+    /// [`on_drag`](Div::on_drag)).
+    pub fn on_wheel(mut self, handler: Handler<crate::events::WheelEvent>) -> Self {
+        self.0.on_wheel = Some(handler);
+        self
+    }
+
+    /// Called as two fingers pinch over the container (#133): zoom a canvas
+    /// around [`MagnifyEvent::position`](crate::MagnifyEvent::position). The
+    /// container takes the pinch (the page does not zoom).
+    pub fn on_magnify(mut self, handler: Handler<crate::events::MagnifyEvent>) -> Self {
+        self.0.on_magnify = Some(handler);
         self
     }
 

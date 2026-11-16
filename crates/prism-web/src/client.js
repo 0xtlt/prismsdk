@@ -164,6 +164,7 @@
   /** Hover (1), move (2) and drag (4) reports of a node. */
   function setPointer(el, id, mask) {
     el._pmask = mask;
+    setGestures(el, id);
     toggleClass(el, "prism-draggable", (mask & 4) !== 0);
     // A draggable link: the app's drag, not the browser's link drag.
     if (el.localName === "a") (mask & 4) ? el.setAttribute("draggable", "false") : el.removeAttribute("draggable");
@@ -210,6 +211,58 @@
     };
     el.addEventListener("pointerup", (e) => finish(e, "end"));
     el.addEventListener("pointercancel", (e) => finish(e, "cancel"));
+  }
+  /**
+   * Wheel (8) and pinch (16) reports (#133): the element takes them, so
+   * nothing behind it scrolls and the page does not zoom. Browsers report a
+   * trackpad pinch as Ctrl + wheel (Safari: gesture events). Deltas add up
+   * to one report per animation frame; the innermost listener wins.
+   */
+  function setGestures(el, id) {
+    if (!(el._pmask & 24) || el._gestureBound) return;
+    el._gestureBound = true;
+    let wheel = null, pinch = null, gesture = 1;
+    const flushWheel = () => { if (wheel) { send(wheel); wheel = null; } };
+    const flushPinch = () => { if (pinch) { send(pinch); pinch = null; } };
+    const magnify = (scale, at, phase) => {
+      if (pinch && pinch.phase === phase) { pinch.scale *= scale; Object.assign(pinch, at); return; }
+      flushPinch();
+      pinch = { t: "magnify", id, scale, ...at, phase };
+      requestAnimationFrame(flushPinch);
+    };
+    el.addEventListener("wheel", (e) => {
+      const m = el._pmask;
+      const zoom = e.ctrlKey && (m & 16);
+      if (e.prismWheel || !(zoom || (m & 8))) return;
+      e.prismWheel = true;
+      e.preventDefault();
+      const at = local(el, e);
+      const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? (el.clientHeight || 800) : 1;
+      if (zoom) return magnify(Math.exp(-e.deltaY * unit / 100), at, "none");
+      const mods = (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
+      if (wheel && wheel.mods === mods) {
+        wheel.dx += e.deltaX * unit;
+        wheel.dy += e.deltaY * unit;
+        Object.assign(wheel, at);
+        return;
+      }
+      flushWheel();
+      wheel = { t: "wheel", id, dx: e.deltaX * unit, dy: e.deltaY * unit, ...at, mods, phase: "none", precise: e.deltaMode === 0 };
+      requestAnimationFrame(flushWheel);
+    }, { passive: false });
+    const pinchEvent = (phase) => (e) => {
+      if (!(el._pmask & 16) || e.prismWheel) return;
+      e.prismWheel = true;
+      e.preventDefault();
+      // `e.scale` is since the start: report the change since the last event.
+      const scale = phase === "start" ? 1 : e.scale / gesture;
+      gesture = phase === "start" ? 1 : e.scale;
+      magnify(scale, local(el, e), phase);
+      if (phase !== "move") flushPinch();
+    };
+    el.addEventListener("gesturestart", pinchEvent("start"));
+    el.addEventListener("gesturechange", pinchEvent("move"));
+    el.addEventListener("gestureend", pinchEvent("end"));
   }
 
   // --- Keys (#17): focused elements and the whole window ----------------------

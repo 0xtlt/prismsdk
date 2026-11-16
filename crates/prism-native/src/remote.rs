@@ -199,6 +199,37 @@ pub fn parse_input_event(v: &Value) -> Option<prism_core::UiEvent> {
                 translation: Point::new(num("dx").unwrap_or(0.), num("dy").unwrap_or(0.)),
             },
         )),
+        // Wheel and pinch (#133): `{"t":"wheel","id","dx","dy","x","y","mods",
+        // "phase","precise"}`, `{"t":"magnify","id","scale","x","y","phase"}`.
+        "wheel" => Some(UiEvent::Wheel(
+            id?,
+            prism_core::WheelEvent {
+                delta: Point::new(num("dx").unwrap_or(0.), num("dy").unwrap_or(0.)),
+                position: Point::new(num("x").unwrap_or(0.), num("y").unwrap_or(0.)),
+                modifiers: Modifiers::from_bits(
+                    v.get("mods").and_then(Value::as_u64).unwrap_or(0) as u8
+                ),
+                phase: v
+                    .get("phase")
+                    .and_then(Value::as_str)
+                    .and_then(prism_core::GesturePhase::from_name)
+                    .unwrap_or_default(),
+                precise: v.get("precise").and_then(Value::as_bool).unwrap_or(false),
+            },
+        )),
+        "magnify" => Some(UiEvent::Magnify(
+            id?,
+            prism_core::MagnifyEvent {
+                scale: num("scale").filter(|s| s.is_finite() && *s > 0.)?,
+                position: Point::new(num("x").unwrap_or(0.), num("y").unwrap_or(0.)),
+                phase: v
+                    .get("phase")
+                    .and_then(Value::as_str)
+                    .and_then(prism_core::GesturePhase::from_name)
+                    .unwrap_or_default(),
+            },
+        )),
+
         "key" => Some(UiEvent::Key(
             id.filter(|i| *i != 0),
             KeyEvent {

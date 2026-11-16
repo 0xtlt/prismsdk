@@ -180,6 +180,15 @@ fn remote_ops_and_input_events() {
 
     let ev = |v| parse_input_event(&v).unwrap();
     assert_eq!(ev(json!({"t": "click", "id": 4})), UiEvent::Click(4));
+    // Wheel and pinch from hosts (#133).
+    assert!(matches!(
+        ev(json!({"t": "wheel", "id": 4, "dx": 1, "dy": 2, "phase": "start", "precise": true})),
+        UiEvent::Wheel(4, w) if w.delta == Point::new(1., 2.) && w.precise
+    ));
+    assert!(matches!(
+        ev(json!({"t": "magnify", "id": 4, "scale": 0.5})),
+        UiEvent::Magnify(4, m) if m.scale == 0.5
+    ));
     // Drop targets (#111): the op, then the host's copies of dropped files.
     let mut d = RemoteWidgets::new(|_| (0., 0.));
     d.set_drop_target(&3, Some(&["image/*".to_string()]));

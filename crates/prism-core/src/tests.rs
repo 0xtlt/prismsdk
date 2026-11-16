@@ -2453,6 +2453,59 @@ fn drop_targets_get_the_files_they_accept() {
     assert!(patches.contains(&Patch::SetDropTarget { id, types: None }));
 }
 
+/// #133: wheel and pinch handlers set their pointer bits and get their events.
+#[test]
+fn wheel_and_magnify_reach_their_element() {
+    use crate::events::pointer_mask::{MAGNIFY, WHEEL};
+    struct Canvas {
+        pan: Point,
+        zoom: f32,
+    }
+    impl Render for Canvas {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .on_wheel(cx.listener(|this, e: &WheelEvent, _| {
+                    this.pan = Point::new(this.pan.x - e.delta.x, this.pan.y - e.delta.y)
+                }))
+                .on_magnify(cx.listener(|this, e: &MagnifyEvent, _| this.zoom *= e.scale))
+                .child(text(format!("{} {} {}", self.pan.x, self.pan.y, self.zoom)))
+        }
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Canvas {
+            pan: Point::new(0., 0.),
+            zoom: 1.,
+        });
+        cx.set_root(root);
+    });
+    let mut rt = Runtime::new(&init);
+    let patches = rt.render();
+    let id = patches
+        .iter()
+        .find_map(|p| match p {
+            Patch::SetPointerEvents { id, mask } if *mask == WHEEL | MAGNIFY => Some(*id),
+            _ => None,
+        })
+        .expect("wheel and pinch bits");
+    let wheel = WheelEvent {
+        delta: Point::new(10., -4.),
+        phase: GesturePhase::Move,
+        precise: true,
+        ..WheelEvent::default()
+    };
+    find_text(&rt.dispatch(UiEvent::Wheel(id, wheel)), "-10 4 1");
+    let pinch = MagnifyEvent {
+        scale: 2.,
+        position: Point::new(0., 0.),
+        phase: GesturePhase::None,
+    };
+    find_text(&rt.dispatch(UiEvent::Magnify(id, pinch)), "-10 4 2");
+    assert_eq!(
+        GesturePhase::from_name("momentum"),
+        Some(GesturePhase::Momentum)
+    );
+}
+
 #[test]
 fn cloud_storage_and_external_changes() {
     use std::sync::Mutex;

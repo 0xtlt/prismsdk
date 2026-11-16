@@ -50,3 +50,31 @@ cx.scroll_into_view("form");                                    // « jump to th
 tvOS has no pointer over views, the watch neither hover nor keys: those handlers simply never run there. On tvOS, a focused view with `on_key_down` keeps left / right for the app while up / down still move the focus.
 
 Web events travel over the app's WebSocket: moves and drags are throttled to one per animation frame, so a fast pointer does not flood the connection; clicks, drag starts and ends are never dropped.
+
+## Wheel and pinch
+
+```rust
+// An infinite canvas: two-finger scroll or the wheel pans, a pinch zooms.
+div()
+    .on_wheel(cx.listener(|this, e: &WheelEvent, cx| {
+        if e.modifiers.command() {
+            this.zoom_around(e.position, (-e.delta.y / 200.).exp());   // ⌘ / Ctrl + wheel
+        } else {
+            this.pan -= e.delta;                                       // points, like the web's deltas
+        }
+        cx.notify();
+    }))
+    .on_magnify(cx.listener(|this, e: &MagnifyEvent, cx| {
+        this.zoom_around(e.position, e.scale);                         // relative to the last event
+        cx.notify();
+    }))
+```
+
+`on_wheel` and `on_magnify` work on any element, not only `scroll()` (#133). The element takes the events: nothing behind it scrolls and the page does not zoom. `delta` is in points, positive `y` scrolling toward the end (after the user's « natural scrolling »), like the web's `deltaY`; a coarse wheel counts 16 points per line and has `precise: false`. `phase` follows a trackpad gesture (`Start`, `Move`, `End`, then `Momentum` while it coasts, and `End` again when it stops); a mouse wheel and the web report `None`. A pinch's `scale` is the change since the previous event (multiply the zoom by it).
+
+| | Wheel | Pinch |
+|---|---|---|
+| Web | `wheel` (non-passive, one report per animation frame, lines and pages in points) | Ctrl + `wheel` (how browsers report a trackpad pinch), Safari's `gesturechange`; with `on_wheel` alone, Ctrl + wheel is a wheel event with Ctrl held |
+| macOS | `scrollWheel:` with `hasPreciseScrollingDeltas`, phases and momentum | `magnifyWithEvent:` |
+
+Other backends do not report them yet: the handlers simply never run there.

@@ -368,6 +368,10 @@ pub enum UiEvent {
     Pointer(NodeId, crate::events::PointerEvent),
     /// A drag on a view that listens to drags.
     Drag(NodeId, crate::events::DragEvent),
+    /// Wheel or trackpad scrolling over a view that listens to it (#133).
+    Wheel(NodeId, crate::events::WheelEvent),
+    /// A pinch over a view that listens to it (#133).
+    Magnify(NodeId, crate::events::MagnifyEvent),
     /// A key press: the node with the focus (or `None` if nothing Prism
     /// knows has it). Handlers of that node and its ancestors run, then
     /// global ones.
@@ -513,6 +517,8 @@ pub struct Reconciler {
     hover: HashMap<NodeId, Handler<crate::events::HoverEvent>>,
     pointer_move: HashMap<NodeId, Handler<crate::events::PointerEvent>>,
     drag: HashMap<NodeId, Handler<crate::events::DragEvent>>,
+    wheel: HashMap<NodeId, Handler<crate::events::WheelEvent>>,
+    magnify: HashMap<NodeId, Handler<crate::events::MagnifyEvent>>,
     key_down: HashMap<NodeId, Handler<crate::events::KeyEvent>>,
     global_key: HashMap<NodeId, Handler<crate::events::KeyEvent>>,
     /// `.id(…)` names of mounted nodes.
@@ -670,6 +676,16 @@ impl Reconciler {
     /// The drag handler of node `id`, if any.
     pub fn drag_handler(&self, id: NodeId) -> Option<Handler<crate::events::DragEvent>> {
         self.drag.get(&id).cloned()
+    }
+
+    /// The wheel handler of node `id`, if any (#133).
+    pub fn wheel_handler(&self, id: NodeId) -> Option<Handler<crate::events::WheelEvent>> {
+        self.wheel.get(&id).cloned()
+    }
+
+    /// The pinch handler of node `id`, if any (#133).
+    pub fn magnify_handler(&self, id: NodeId) -> Option<Handler<crate::events::MagnifyEvent>> {
+        self.magnify.get(&id).cloned()
     }
 
     /// The accepted types and the handler of drop target `id` (#111).
@@ -1082,6 +1098,8 @@ impl Reconciler {
             on_web_message,
             on_web_load,
             on_drop_files,
+            on_wheel,
+            on_magnify,
             ..
         } = *vnode;
         app.window.watch_widths(&style);
@@ -1102,6 +1120,7 @@ impl Reconciler {
             id,
             name,
             (on_hover, on_pointer_move, on_drag),
+            (on_wheel, on_magnify),
             (on_key_down, on_global_key_down),
         );
         let mut style = resolved;
@@ -1500,12 +1519,16 @@ impl Reconciler {
             Option<Handler<crate::events::PointerEvent>>,
             Option<Handler<crate::events::DragEvent>>,
         ),
+        gestures: (
+            Option<Handler<crate::events::WheelEvent>>,
+            Option<Handler<crate::events::MagnifyEvent>>,
+        ),
         keys: (
             Option<Handler<crate::events::KeyEvent>>,
             Option<Handler<crate::events::KeyEvent>>,
         ),
     ) {
-        use crate::events::pointer_mask::{DRAG, HOVER, MOVE};
+        use crate::events::pointer_mask::{DRAG, HOVER, MAGNIFY, MOVE, WHEEL};
         let m = self.nodes.get_mut(&id).expect("node exists");
         if m.name != name {
             if let Some(old) = m.name.take()
@@ -1520,7 +1543,9 @@ impl Reconciler {
         }
         let mask = if pointer.0.is_some() { HOVER } else { 0 }
             | if pointer.1.is_some() { MOVE } else { 0 }
-            | if pointer.2.is_some() { DRAG } else { 0 };
+            | if pointer.2.is_some() { DRAG } else { 0 }
+            | if gestures.0.is_some() { WHEEL } else { 0 }
+            | if gestures.1.is_some() { MAGNIFY } else { 0 };
         if m.pointer_mask != mask {
             m.pointer_mask = mask;
             self.patches.push(Patch::SetPointerEvents { id, mask });
@@ -1543,6 +1568,8 @@ impl Reconciler {
         set(&mut self.hover, id, pointer.0);
         set(&mut self.pointer_move, id, pointer.1);
         set(&mut self.drag, id, pointer.2);
+        set(&mut self.wheel, id, gestures.0);
+        set(&mut self.magnify, id, gestures.1);
         set(&mut self.key_down, id, keys.0);
         set(&mut self.global_key, id, keys.1);
     }
@@ -1820,6 +1847,8 @@ impl Reconciler {
         self.hover.remove(&id);
         self.pointer_move.remove(&id);
         self.drag.remove(&id);
+        self.wheel.remove(&id);
+        self.magnify.remove(&id);
         self.key_down.remove(&id);
         self.global_key.remove(&id);
         if node.island.is_some() {

@@ -601,6 +601,52 @@ test("a picker with a value has no empty option (#96)", () => {
   assert.deepEqual(texts(empty), ["Size", "Small", "Large"]);
 });
 
+test("wheel and pinch go to the element, one report per frame (#133)", () => {
+  const page = live([
+    { op: "create", id: 2, kind: "view" }, { op: "pointer", id: 2, mask: 8 | 16 },
+    { op: "create", id: 3, kind: "view" }, { op: "pointer", id: 3, mask: 8 },
+    ...root([2, 3]),
+  ]);
+  const canvas = placed(page.node(2));
+  const wheel = (el, init) => {
+    const e = { type: "wheel", deltaX: 0, deltaY: 0, deltaMode: 0, clientX: 80, clientY: 45, ...init };
+    el.dispatchEvent(e);
+    return e;
+  };
+  // Two trackpad steps in one frame: one report, deltas added, scrolling taken.
+  assert.ok(wheel(canvas, { deltaX: 3, deltaY: 10 }).defaultPrevented);
+  wheel(canvas, { deltaY: 5, clientX: 90 });
+  assert.equal(sent(page).filter((m) => m.t === "wheel").length, 0, "waits for the frame");
+  flushFrames(page);
+  assert.deepEqual(lastSent(page), { t: "wheel", id: 2, dx: 3, dy: 15, x: 40, y: 25, mods: 0, phase: "none", precise: true });
+  // A mouse wheel in lines, with Shift: points, not precise.
+  wheel(canvas, { deltaY: 3, deltaMode: 1, shiftKey: true });
+  flushFrames(page);
+  assert.deepEqual(lastSent(page), { t: "wheel", id: 2, dx: 0, dy: 48, x: 30, y: 25, mods: 1, phase: "none", precise: false });
+  // A trackpad pinch (Ctrl + wheel): a scale, not a scroll.
+  wheel(canvas, { deltaY: -10, ctrlKey: true });
+  wheel(canvas, { deltaY: -10, ctrlKey: true });
+  flushFrames(page);
+  const pinch = lastSent(page);
+  assert.equal(pinch.t, "magnify");
+  assert.ok(Math.abs(pinch.scale - Math.exp(0.2)) < 1e-9, String(pinch.scale));
+  // Safari's gesture events: the change since the last one.
+  canvas.dispatchEvent({ type: "gesturestart", scale: 1, clientX: 80, clientY: 45 });
+  assert.deepEqual(lastSent(page), { t: "magnify", id: 2, scale: 1, x: 30, y: 25, phase: "start" });
+  canvas.dispatchEvent({ type: "gesturechange", scale: 2, clientX: 80, clientY: 45 });
+  canvas.dispatchEvent({ type: "gestureend", scale: 3, clientX: 80, clientY: 45 });
+  const [move, end] = sent(page).slice(-2);
+  assert.deepEqual([move.phase, move.scale, end.phase, end.scale], ["move", 2, "end", 1.5]);
+  // Wheel only: Ctrl + wheel is a wheel event with Ctrl held (the app zooms).
+  const list = placed(page.node(3));
+  assert.ok(wheel(list, { deltaY: -10, ctrlKey: true }).defaultPrevented);
+  flushFrames(page);
+  assert.deepEqual([lastSent(page).t, lastSent(page).id, lastSent(page).mods], ["wheel", 3, 2]);
+  // Neither: the page scrolls.
+  page.ws.deliver({ t: "patch", p: [{ op: "pointer", id: 3, mask: 0 }] });
+  assert.equal(wheel(list, { deltaY: 10 }).defaultPrevented, false);
+});
+
 test("inert styles and hit testing", () => {
   const page = live([
     { op: "create", id: 2, kind: "view" }, { op: "style", id: 2, css: "pointer-events:none;", inert: true },
