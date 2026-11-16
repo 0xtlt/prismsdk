@@ -71,6 +71,8 @@ pub enum View {
     Sheet(NodeId, Rc<Sheet>),
     /// Vector drawing (cairo), with its paths in points.
     Shape(NodeId, gtk::DrawingArea, Rc<RefCell<Vec<prism_core::Path>>>),
+    /// 3D scene (OpenGL).
+    Scene(NodeId, Rc<crate::scene3d::SceneView>),
     Slider(
         NodeId,
         gtk::Scale,
@@ -87,8 +89,13 @@ pub enum View {
 }
 
 thread_local! {
-    /// Whether shapes draw the dark variants of their colors.
+    /// Whether shapes and 3D scenes draw the dark variants of their colors.
     static SHAPE_DARK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the dark appearance is on (for drawings: shapes, 3D scenes).
+pub(crate) fn dark() -> bool {
+    SHAPE_DARK.with(Cell::get)
 }
 
 /// Fills, then strokes, each path with cairo.
@@ -162,6 +169,7 @@ impl View {
             | View::Tabs(id, _)
             | View::Sheet(id, _)
             | View::Shape(id, ..)
+            | View::Scene(id, _)
             | View::Slider(id, ..)
             | View::Picker(id, _)
             | View::DatePicker(id, _)
@@ -188,6 +196,7 @@ impl View {
             View::Tabs(_, t) => t.root.clone().upcast(),
             View::Sheet(_, s) => s.content.clone().upcast(),
             View::Shape(_, w, _) => w.clone().upcast(),
+            View::Scene(_, s) => s.area.clone().upcast(),
             View::Slider(_, w, _) => w.clone().upcast(),
             View::Picker(_, p) => p.dropdown.clone().upcast(),
             View::DatePicker(_, p) => p.button.clone().upcast(),
@@ -863,6 +872,8 @@ pub struct Gtk {
     tab_bars: Vec<Rc<TabBar>>,
     /// Shapes, redrawn when the appearance changes.
     shapes: HashMap<NodeId, gtk::DrawingArea>,
+    /// 3D scenes, redrawn when the appearance changes.
+    scenes: HashMap<NodeId, gtk::GLArea>,
     /// Window content size.
     size: (f32, f32),
     /// Right-to-left layout and the app's locale (form controls follow them).
@@ -1316,6 +1327,12 @@ impl Widgets for Gtk {
                 area.set_draw_func(move |_, cr, _, _| draw_paths(cr, &drawn.borrow()));
                 self.shapes.insert(id, area.clone());
                 View::Shape(id, area, paths)
+            }
+            NodeKind::Scene3d => {
+                let scene =
+                    crate::scene3d::SceneView::new(id, self.assets.clone(), self.embedded.clone());
+                self.scenes.insert(id, scene.area.clone());
+                View::Scene(id, scene)
             }
             NodeKind::Scroll => {
                 let content = layout::container();
@@ -1854,12 +1871,19 @@ impl Widgets for Gtk {
         }
     }
 
+    fn set_scene(&mut self, view: &View, update: &prism_core::scene3d::SceneUpdate, _json: &str) {
+        if let View::Scene(_, s) = view {
+            s.set_scene(update);
+        }
+    }
+
     fn destroy(&mut self, view: &View) {
         let id = view.id();
         TYPED.with(|t| t.borrow_mut().remove(&id));
         forget_selection(id);
         crate::navbar::forget(id);
         self.shapes.remove(&id);
+        self.scenes.remove(&id);
         self.controls.remove(&id);
         self.date_pickers.remove(&id);
         self.statuses.remove(&id);
@@ -2693,6 +2717,9 @@ impl Widgets for Gtk {
         for area in self.shapes.values() {
             area.queue_draw();
         }
+        for area in self.scenes.values() {
+            area.queue_render();
+        }
     }
 }
 
@@ -3049,6 +3076,7 @@ fn activate(app: &gtk::Application) {
         stacks: Vec::new(),
         tab_bars: Vec::new(),
         shapes: HashMap::new(),
+        scenes: HashMap::new(),
         size: (width as f32, height as f32),
         rtl: false,
         locale: locale(),

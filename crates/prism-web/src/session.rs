@@ -503,6 +503,11 @@ pub(crate) fn parse_event(v: &Value) -> Option<UiEvent> {
         )),
         "alert" => Some(UiEvent::AlertAction(id, v.get("index")?.as_u64()? as usize)),
         "navigate" => Some(UiEvent::Navigate(id, v.get("path")?.as_str()?.to_string())),
+        // A tap on a 3D scene: `{"t":"scene_tap","id","node","point"}`.
+        "scene_tap" => Some(UiEvent::SceneTap(
+            id,
+            prism_core::SceneTapEvent::decode(&v.to_string()),
+        )),
         // An island's CustomEvent: `{"t":"island","id","name","detail"}`.
         "island" => Some(UiEvent::Island(
             id,
@@ -1006,6 +1011,15 @@ impl Encoder {
             }
             Patch::SetPlaceholder { id, text } => {
                 json!({ "op": "placeholder", "id": id, "text": text })
+            }
+            // A scene's update; its textures are pictures too (`p3d:` ones
+            // are blobs the client fetches from `/_prism/3d/<id>`).
+            Patch::SetScene { id, update } => {
+                let update = crate::html::scene_urls(update, &|src: &str| match &self.asset_urls {
+                    Some(urls) => urls(src),
+                    None => crate::html::picture_url(src),
+                });
+                json!({ "op": "scene", "id": id, "u": update.to_value() })
             }
             Patch::SetClickable { id, clickable } => {
                 json!({ "op": "clickable", "id": id, "on": clickable })

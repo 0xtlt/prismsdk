@@ -2583,6 +2583,7 @@ impl Widgets for AppKit {
             }
             NodeKind::Picture => View::Picture(PrismView::new(mtm, id)),
             NodeKind::Shape => View::Container(PrismView::new(mtm, id)),
+            NodeKind::Scene3d => View::Container(crate::scene::create(mtm, id)),
             NodeKind::WebView => {
                 let container = PrismView::new(mtm, id);
                 let host = prism_native::apple::web::WebHost::new(id);
@@ -3111,7 +3112,12 @@ impl Widgets for AppKit {
         }
     }
 
+    fn set_scene(&mut self, view: &View, update: &prism_core::scene3d::SceneUpdate, json: &str) {
+        crate::scene::set(view.id(), update, json, &self.image_sources);
+    }
+
     fn destroy(&mut self, view: &View) {
+        crate::scene::forget(view.id());
         self.ix.select_events.remove(&view.id());
         self.ix.pending_selection.remove(&view.id());
         crate::interact::forget_selection(view.id());

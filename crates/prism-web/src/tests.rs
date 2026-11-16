@@ -1258,6 +1258,178 @@ fn custom_asset_urls_resolve_pictures() {
     assert_eq!(out[1]["text"], json!("https://cdn/a.png"));
 }
 
+#[test]
+fn ssr_scene3d_carries_its_scene_for_the_client() {
+    use prism_core::scene3d::{SceneData, SceneUpdate, cube, sphere};
+    let mut scene = SceneData::default();
+    scene.nodes.push(
+        cube(1.)
+            .name("a \"box\" <b>")
+            .texture("wood.png")
+            .child(sphere(1.).texture("p3d:0123456789abcdef0123456789abcdef")),
+    );
+    let page = |label: Option<&str>| {
+        html(&[
+            create(1, NodeKind::Scene3d),
+            Patch::SetScene {
+                id: 1,
+                update: SceneUpdate::full(&scene),
+            },
+            a11y(
+                1,
+                Accessibility {
+                    role: label.map(|_| Role::Image),
+                    label: label.map(str::to_string),
+                    hidden: label.is_none(),
+                    ..Default::default()
+                },
+            ),
+            Patch::SetRoot { id: 1 },
+        ])
+    };
+    let labelled = page(Some("A cube"));
+    let (head, rest) = labelled.split_once(r#" data-scene=""#).unwrap();
+    assert_eq!(
+        head,
+        r#"<div data-pid="1" data-kind="scene3d" style="" role="img" aria-label="A cube" class="prism-scene3d""#
+    );
+    let (attr, tail) = rest.split_once('"').unwrap();
+    // The client draws in the canvas; the JSON is escaped into the attribute.
+    assert_eq!(tail, r#"><canvas aria-hidden="true"></canvas></div>"#);
+    assert!(!attr.contains('<') && !attr.contains('"'), "{attr}");
+    let json = attr
+        .replace("&quot;", "\"")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&");
+    // A full update, as the socket's first one.
+    let Some(SceneUpdate::Full(back)) = SceneUpdate::from_json(&json) else {
+        panic!("a full update: {json}")
+    };
+    assert_eq!(back.nodes[0].name.as_deref(), Some("a \"box\" <b>"));
+    // Textures are resolved like pictures: the browser cannot find app
+    // assets by name. Embedded images stay blob ids.
+    assert_eq!(
+        back.nodes[0].material.texture.as_deref(),
+        Some("/assets/wood.png")
+    );
+    assert_eq!(
+        back.nodes[1].material.texture.as_deref(),
+        Some("p3d:0123456789abcdef0123456789abcdef")
+    );
+    // Without a label, the scene is decoration.
+    assert!(
+        page(None)
+            .contains(r#"data-kind="scene3d" style="" aria-hidden="true" class="prism-scene3d""#),
+        "{}",
+        page(None)
+    );
+}
+
+#[test]
+fn scene_updates_go_out_with_textures_resolved_like_pictures() {
+    use prism_core::scene3d::{SceneData, SceneUpdate, cube, sphere};
+    let mut e = Encoder::default();
+    e.asset_urls = Some(Arc::new(|s: &str| format!("https://cdn/{s}")));
+    let mut textured = SceneData::default();
+    textured.nodes.push(
+        cube(1.)
+            .texture("https://example.com/a.jpg")
+            .normal_map("n.png", 1.)
+            .child(sphere(1.).texture("p3d:0123456789abcdef0123456789abcdef")),
+    );
+    let mut plain = SceneData::default();
+    plain.nodes.push(cube(1.));
+    let plain = SceneUpdate::full(&plain);
+    let out = e.encode(&[
+        create(1, NodeKind::Scene3d),
+        Patch::SetScene {
+            id: 1,
+            update: SceneUpdate::full(&textured),
+        },
+        Patch::SetScene {
+            id: 1,
+            update: plain.clone(),
+        },
+    ]);
+    assert_eq!(out[1]["op"], json!("scene"));
+    assert_eq!(out[1]["id"], json!(1));
+    let sent = SceneUpdate::from_json(&out[1]["u"].to_string()).unwrap();
+    let m = (&sent.nodes()[0].material, &sent.nodes()[1].material);
+    assert_eq!(
+        (
+            m.0.texture.as_deref(),
+            m.0.normal_map.as_deref(),
+            m.1.texture.as_deref()
+        ),
+        (
+            Some("https://cdn/https://example.com/a.jpg"),
+            Some("https://cdn/n.png"),
+            Some("p3d:0123456789abcdef0123456789abcdef")
+        )
+    );
+    // A scene without textures goes as the app encoded it.
+    assert_eq!(
+        SceneUpdate::from_json(&out[2]["u"].to_string()),
+        Some(plain)
+    );
+    assert!(
+        out[2]["u"].to_string().contains(r#""near":0.1,"#),
+        "f32s stay short"
+    );
+    // Taps come back as scene taps.
+    assert_eq!(
+        crate::session::parse_event(
+            &json!({"t": "scene_tap", "id": 1, "node": "cube", "part": "lid", "instance": 4, "point": [0, 0.5, 1]})
+        ),
+        Some(UiEvent::SceneTap(
+            1,
+            prism_core::SceneTapEvent {
+                node: Some("cube".into()),
+                part: Some("lid".into()),
+                instance: Some(4),
+                point: Some([0., 0.5, 1.]),
+            }
+        ))
+    );
+}
+
+#[test]
+fn scene_blobs_are_served_by_id() {
+    use prism_core::scene3d::blobs::{self, BlobKind};
+    let (app, dir) = web_app(counter_init(), "scene-blobs");
+    let get = |path: &str| app.handle(&Request::get(path).body(()).unwrap());
+    let blob = blobs::put(BlobKind::Image, "image/png", vec![0x89, b'P', b'N', b'G']);
+    let r = get(&format!("/_prism/3d/{}", blob.id()));
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(r.body().as_slice(), &[0x89, b'P', b'N', b'G']);
+    assert_eq!(r.headers()["content-type"], "image/png");
+    assert_eq!(
+        r.headers()["cache-control"],
+        "public, max-age=31536000, immutable"
+    );
+    let mesh = blobs::put(BlobKind::Mesh, blobs::BINARY_MIME, vec![1, 2, 3, 4]);
+    let r = get(&format!("/_prism/3d/{}", mesh.id()));
+    assert_eq!(r.headers()["content-type"], "application/octet-stream");
+    // Unknown, gone, or not an id at all.
+    assert_eq!(
+        get("/_prism/3d/0123456789abcdef0123456789abcdef").status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        get("/_prism/3d/../../secret").status(),
+        StatusCode::NOT_FOUND
+    );
+    let id = mesh.id().to_string();
+    drop(mesh);
+    assert_eq!(
+        get(&format!("/_prism/3d/{id}")).status(),
+        StatusCode::NOT_FOUND
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 // --- The socket protocol: messages in, patches out ----------------------------------------
 
 #[test]

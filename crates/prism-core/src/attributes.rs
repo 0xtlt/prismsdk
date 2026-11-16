@@ -44,6 +44,7 @@ pub const RESERVED_DATA_ATTRIBUTES: &[&str] = &[
     "ps",
     "role",
     "row",
+    "scene",
     "selected",
     "side",
     "size",

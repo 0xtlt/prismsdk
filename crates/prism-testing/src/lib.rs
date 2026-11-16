@@ -278,6 +278,9 @@ impl Backend for Host {
                 Patch::SetIsland { id, tag, .. } => {
                     self.node(*id, "SetIsland").island = Some(tag.clone())
                 }
+                Patch::SetScene { id, .. } => {
+                    self.node(*id, "SetScene");
+                }
                 Patch::SetLink { id, href } => self.node(*id, "SetLink").link = href.clone(),
                 Patch::PostWebMessage { id, data } => {
                     self.node(*id, "PostWebMessage");

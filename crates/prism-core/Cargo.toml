@@ -13,11 +13,20 @@ readme = "README.md"
 keywords = ["ui", "gui", "declarative", "reconciler", "cross-platform"]
 categories = ["gui"]
 
+[features]
+default = ["gltf"]
+# glTF 2.0 model import (`scene3d::gltf`, `Model::from_glb`/`from_gltf`).
+# Without it the importer returns `ModelError::Unsupported`.
+gltf = ["dep:gltf-json"]
+
 [dependencies]
 # Island props and event details (JSON); serde_json is already in every
 # app's tree (prism-http, prism-web).
-serde = "1"
+serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
+# The glTF crate's JSON layer only (typed document; no image decoding, no
+# filesystem): GLB chunks, buffers and accessors are read in `scene3d/gltf.rs`.
+gltf-json = { version = "1.4", default-features = false, features = ["names", "extensions", "KHR_materials_emissive_strength", "KHR_materials_unlit"], optional = true }
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]

@@ -807,3 +807,26 @@ pub fn corner_mask(corners: prism_core::Corners, y_down: bool) -> objc2_quartz_c
     }
     mask
 }
+
+/// The bytes of 3D scene blob `id` for the Swift scene player
+/// (`prism_core::scene3d::blobs`): calls `cb(ctx, bytes, len)` before
+/// returning, or `cb(ctx, NULL, 0)` when the blob is unknown or gone. The
+/// bytes are valid during the call only.
+///
+/// # Safety
+///
+/// `id` is null or a NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn prism_scene_blob(
+    id: *const std::ffi::c_char,
+    ctx: *mut std::ffi::c_void,
+    cb: extern "C" fn(*mut std::ffi::c_void, *const u8, usize),
+) {
+    let id = (!id.is_null())
+        .then(|| unsafe { std::ffi::CStr::from_ptr(id) }.to_str().ok())
+        .flatten();
+    match id.and_then(prism_core::scene3d::blobs::get) {
+        Some((bytes, _)) => cb(ctx, bytes.as_ptr(), bytes.len()),
+        None => cb(ctx, std::ptr::null(), 0),
+    }
+}

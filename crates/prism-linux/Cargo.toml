@@ -21,6 +21,11 @@ gtk = { package = "gtk4", version = "0.11", features = ["v4_8"] }
 # UnifiedPush messages are Web Push messages: decrypted here (pure Rust).
 prism-push = { workspace = true, default-features = false }
 ksni = { version = "0.3.7", default-features = false, features = ["blocking", "async-io"] }
+# 3D scenes: typed OpenGL / OpenGL ES 3 bindings (the gfx-rs team's, used by
+# wgpu, egui and iced), without dependencies of their own on Linux. Function
+# pointers come from libepoxy, which GTK already links (scene3d.rs), so no
+# loader crate (epoxy, libloading) is needed.
+glow = "0.17"
 
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-linux-gnu"]

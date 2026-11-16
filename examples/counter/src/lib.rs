@@ -25,6 +25,7 @@ mod layout;
 mod menus;
 mod push;
 mod report;
+mod scene;
 mod security;
 mod strings;
 mod typography;
@@ -592,6 +593,7 @@ struct Gallery {
     decor: Entity<decor::Decor>,
     forms: Entity<forms::Forms>,
     typography: Entity<typography::Typography>,
+    scene: Entity<scene::Scene>,
     interact: Entity<interact::Interact>,
     quote: Option<Result<String, String>>,
     loading: bool,
@@ -613,6 +615,7 @@ impl Gallery {
             decor: cx.new(|_| decor::Decor::default()),
             forms: cx.new(|_| forms::Forms::default()),
             typography: cx.new(|_| typography::Typography::default()),
+            scene: cx.new(|_| scene::Scene::default()),
             interact: cx.new(|_| interact::Interact::default()),
             quote: None,
             loading: false,
@@ -817,6 +820,7 @@ impl Render for Gallery {
             .child(self.forms)
             .child(report::card())
             .child(self.typography)
+            .child(self.scene)
             .child(self.interact)
             .child(charts)
             .child(layout::card(

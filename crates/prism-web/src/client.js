@@ -116,7 +116,8 @@
     stack: "div", screen: "section", toggle: "input", scroll: "div", tabs: "div", tab: "div",
     image: "span", progress: "progress", timer: "span", modal: "dialog", picture: "img",
     shape: "div", slider: "input", picker: "select", date_picker: "input", text_area: "textarea",
-    spinner: "span", overlay: "div", checkbox: "label", radio_group: "div", rich_input: "div",
+    spinner: "span", overlay: "div", checkbox: "label", radio_group: "div", scene3d: "div",
+    rich_input: "div",
     web_view: "iframe",
   };
   // SF Symbol names → glyphs (table generated from Rust: glyphs.rs).
@@ -937,6 +938,9 @@
     } else if (kind === "shape") {
       el.className = "prism-shape";
       if (shapeObserver) shapeObserver.observe(el);
+    } else if (kind === "scene3d") {
+      // Its canvas and player come with its first update (`op: "scene"`).
+      el.className = "prism-scene3d";
     } else if (kind === "image") {
       el.className = "prism-symbol";
     } else if (kind === "progress") {
@@ -2061,6 +2065,7 @@
           drawShape(el);
           return;
         }
+        if (kind === "scene3d") return; // its scene comes as updates ("scene")
         if (kind === "web_view") return webViewSrc(el, p.text);
         if (kind === "picture") {
           // The server resolves asset URLs (hashed, maybe on a CDN).
@@ -2136,13 +2141,14 @@
         if (owner && owner._tabs) refreshTabs(owner);
         return;
       }
+      case "scene": return sceneUpdate(el, p.u);
       case "a11y":
         if (el.dataset.kind === "picture") { el.alt = p.a11y.hidden ? "" : p.a11y.label || ""; return; }
         // A frame is named by its title.
         if (el.dataset.kind === "web_view") { if (p.a11y.label) el.setAttribute("title", p.a11y.label); else el.removeAttribute("title"); }
         return applyA11y(el, p.a11y);
       case "menu": return setMenu(el, p.id, p.menu);
-      case "appearance": document.documentElement.style.colorScheme = p.value; return;
+      case "appearance": document.documentElement.style.colorScheme = p.value; sceneAppearance(); return;
       case "env":
         document.documentElement.lang = p.lang;
         document.documentElement.dir = p.dir;
@@ -2212,6 +2218,7 @@
       case "destroy":
         if (el) {
           el.remove();
+          if (el._scene) sceneStop(el._scene);
           if (el._kGlobal) globalKeys--;
           if (el._list) el._list.remove();
           placedOverlays.delete(el);
@@ -2222,6 +2229,2642 @@
         stacks = stacks.filter((s) => s !== el);
         return;
     }
+  }
+
+  // --- 3D scenes (prism-core scene3d): WebGL 2 ---------------------------------------
+  // A scene node is a `.prism-scene3d` box holding a canvas. Its scene comes
+  // as updates (`{"op":"scene","id","u"}`: the first one full, then per-node
+  // diffs; the server's first paint puts the first one in `data-scene`).
+  // Heavy data (meshes, instance sets, clips, skins, environments, embedded
+  // images) are content-addressed blobs, fetched once per page from
+  // `<base>/_prism/3d/<id>`. Each scene keeps one ScenePlayer across updates
+  // (the orbit, spins, transitions and clips carry on) and draws only when
+  // something changed, arrived or moves (`frame.animating`), never offscreen
+  // or in a hidden tab. Pages without scenes build none of this.
+
+  // <scene3d-core> (tests/js/scene3d.test.mjs runs this function on its own)
+  /**
+   * The device side of scenes, ported line by line from prism-core's
+   * `scene3d` (math.rs, geometry.rs, blobs.rs, env.rs's 'E' layout, wire.rs,
+   * clip.rs, player.rs; the GLSL of shaders.rs verbatim), so every backend
+   * moves, animates, draws and picks the same. Built the first time a page
+   * shows a scene.
+   */
+  function scene3dCore() {
+    // --- math.rs: column-major 4×4 matrices (OpenGL layout), OpenGL clip space.
+    const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+    const QUAT_IDENTITY = [0, 0, 0, 1];
+    const rad = (d) => (d * Math.PI) / 180;
+    const deg = (r) => (r * 180) / Math.PI;
+    const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+    const add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+    const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    const scale = (v, s) => [v[0] * s, v[1] * s, v[2] * s];
+    const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    const length = (v) => Math.sqrt(dot(v, v));
+    const normalize = (v) => { const l = length(v); return l === 0 ? v : scale(v, 1 / l); };
+    const isZero = (v) => v[0] === 0 && v[1] === 0 && v[2] === 0;
+    const lerp = (a, b, t) => a + (b - a) * t;
+    const lerp3 = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+    const srgbToLinear = (c) => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
+    /** Same numbers (arrays, typed or not; `null`s). */
+    const sameArray = (a, b) => {
+      if (a === b) return true;
+      if (!a || !b || a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+      return true;
+    };
+    /** `a · b` (`b` applies first). */
+    function mul(a, b) {
+      const out = new Array(16);
+      for (let c = 0; c < 4; c++) {
+        for (let r = 0; r < 4; r++) {
+          out[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+        }
+      }
+      return out;
+    }
+    const translation = (v) => { const m = IDENTITY.slice(); m[12] = v[0]; m[13] = v[1]; m[14] = v[2]; return m; };
+    const scaling = (v) => { const m = IDENTITY.slice(); m[0] = v[0]; m[5] = v[1]; m[10] = v[2]; return m; };
+    const rotationX = (d) => { const s = Math.sin(rad(d)), c = Math.cos(rad(d)), m = IDENTITY.slice(); m[5] = c; m[6] = s; m[9] = -s; m[10] = c; return m; };
+    const rotationY = (d) => { const s = Math.sin(rad(d)), c = Math.cos(rad(d)), m = IDENTITY.slice(); m[0] = c; m[2] = -s; m[8] = s; m[10] = c; return m; };
+    const rotationZ = (d) => { const s = Math.sin(rad(d)), c = Math.cos(rad(d)), m = IDENTITY.slice(); m[0] = c; m[1] = s; m[4] = -s; m[5] = c; return m; };
+    /** Euler angles in degrees: `Rx · Ry · Rz` (Z applies first). */
+    const rotation = (d) => mul(rotationX(d[0]), mul(rotationY(d[1]), rotationZ(d[2])));
+    /** A node's local matrix: `T · R · S`. */
+    const compose = (p, r, s) => mul(translation(p), mul(rotation(r), scaling(s)));
+    /** A node's local matrix from a quaternion: `T · R(q) · S`. */
+    function composeQuat(p, q, s) {
+      const m = quatToMat4(q);
+      for (let c = 0; c < 3; c++) for (let r = 0; r < 3; r++) m[c * 4 + r] *= s[c];
+      m[12] = p[0]; m[13] = p[1]; m[14] = p[2];
+      return m;
+    }
+    /** The rotation matrix of a unit quaternion `[x, y, z, w]`. */
+    function quatToMat4(q) {
+      const [x, y, z, w] = q;
+      const xx = x * x, yy = y * y, zz = z * z, xy = x * y, xz = x * z, yz = y * z, wx = w * x, wy = w * y, wz = w * z;
+      return [
+        1 - 2 * (yy + zz), 2 * (xy + wz), 2 * (xz - wy), 0,
+        2 * (xy - wz), 1 - 2 * (xx + zz), 2 * (yz + wx), 0,
+        2 * (xz + wy), 2 * (yz - wx), 1 - 2 * (xx + yy), 0,
+        0, 0, 0, 1,
+      ];
+    }
+    /** `a · b` (`b` applies first). */
+    function quatMul(a, b) {
+      const [ax, ay, az, aw] = a, [bx, by, bz, bw] = b;
+      return [
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+      ];
+    }
+    /** The quaternion of Euler angles in degrees, the same rotation as `rotation` (Z applies first). */
+    function quatFromEuler(d) {
+      const h = (x) => [Math.sin(rad(x) / 2), Math.cos(rad(x) / 2)];
+      const [sx, cx] = h(d[0]), [sy, cy] = h(d[1]), [sz, cz] = h(d[2]);
+      return quatMul([sx, 0, 0, cx], quatMul([0, sy, 0, cy], [0, 0, sz, cz]));
+    }
+    /** Unit length (the identity if `q` is zero or not finite). */
+    function quatNormalize(q) {
+      const l = Math.sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+      return l > 1e-12 && Number.isFinite(l) ? [q[0] / l, q[1] / l, q[2] / l, q[3] / l] : QUAT_IDENTITY.slice();
+    }
+    /** Spherical interpolation from `a` to `b` the shorter way around (nlerp when nearly equal). */
+    function slerp(a, b, t) {
+      let d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+      if (d < 0) { d = -d; b = b.map((c) => -c); }
+      if (d > 0.9995) return quatNormalize([0, 1, 2, 3].map((i) => lerp(a[i], b[i], t)));
+      const theta = Math.acos(clamp(d, -1, 1)), s = Math.sin(theta);
+      const wa = Math.sin((1 - t) * theta) / s, wb = Math.sin(t * theta) / s;
+      return quatNormalize([0, 1, 2, 3].map((i) => a[i] * wa + b[i] * wb));
+    }
+    /** The box holding `b` once transformed by `m` (its 8 corners'). */
+    function transformAabb(m, b) {
+      const center = [(b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2];
+      const half = [(b[3] - b[0]) / 2, (b[4] - b[1]) / 2, (b[5] - b[2]) / 2];
+      const c = transformPoint(m, center);
+      // Each axis' extent: |M| · half (the 3×3 part, absolute values).
+      const e = [0, 1, 2].map((r) => Math.abs(m[r]) * half[0] + Math.abs(m[4 + r]) * half[1] + Math.abs(m[8 + r]) * half[2]);
+      return [c[0] - e[0], c[1] - e[1], c[2] - e[2], c[0] + e[0], c[1] + e[1], c[2] + e[2]];
+    }
+    const aabbUnion = (a, b) => [
+      Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.min(a[2], b[2]),
+      Math.max(a[3], b[3]), Math.max(a[4], b[4]), Math.max(a[5], b[5]),
+    ];
+    /** The six planes (left, right, bottom, top, near, far) of `viewProj`'s clip volume (Gribb–Hartmann). */
+    function frustumPlanes(vp) {
+      const row = (r) => [vp[r], vp[4 + r], vp[8 + r], vp[12 + r]];
+      const r0 = row(0), r1 = row(1), r2 = row(2), r3 = row(3);
+      const plus = (a, b) => a.map((v, i) => v + b[i]), minus = (a, b) => a.map((v, i) => v - b[i]);
+      return [plus(r3, r0), minus(r3, r0), plus(r3, r1), minus(r3, r1), plus(r3, r2), minus(r3, r2)];
+    }
+    /** Whether `b` is at least partly inside the frustum (conservative). */
+    function aabbInFrustum(planes, b) {
+      for (const p of planes) {
+        // The corner farthest along the plane's normal.
+        const x = p[0] >= 0 ? b[3] : b[0], y = p[1] >= 0 ? b[4] : b[1], z = p[2] >= 0 ? b[5] : b[2];
+        if (!(p[0] * x + p[1] * y + p[2] * z + p[3] >= 0)) return false;
+      }
+      return true;
+    }
+    /** Where the ray `origin + t · dir` enters `b`: the smallest `t ≥ 0`, or null (the slab test). */
+    function rayAabb(origin, dir, b) {
+      let t0 = 0, t1 = Infinity;
+      for (let a = 0; a < 3; a++) {
+        const lo = b[a], hi = b[a + 3];
+        if (Math.abs(dir[a]) < 1e-12) {
+          if (origin[a] < lo || origin[a] > hi) return null;
+          continue;
+        }
+        const inv = 1 / dir[a];
+        let n = (lo - origin[a]) * inv, f = (hi - origin[a]) * inv;
+        if (n > f) [n, f] = [f, n];
+        t0 = Math.max(t0, n);
+        t1 = Math.min(t1, f);
+        if (t0 > t1) return null;
+      }
+      return t0;
+    }
+    function perspective(fov, aspect, near, far) {
+      const f = 1 / Math.tan(rad(fov) / 2), nf = 1 / (near - far);
+      const m = new Array(16).fill(0);
+      m[0] = f / aspect;
+      m[5] = f;
+      m[10] = (far + near) * nf;
+      m[11] = -1;
+      m[14] = 2 * far * near * nf;
+      return m;
+    }
+    function orthographic(height, aspect, near, far) {
+      const t = height / 2, r = (height / 2) * aspect, m = IDENTITY.slice();
+      m[0] = 1 / r;
+      m[5] = 1 / t;
+      m[10] = -2 / (far - near);
+      m[14] = -(far + near) / (far - near);
+      return m;
+    }
+    function lookAt(eye, target, up) {
+      let f = normalize(sub(target, eye));
+      if (length(f) === 0) f = [0, 0, -1];
+      let s = cross(f, up);
+      // Looking straight up or down: any horizontal side vector.
+      if (length(s) < 1e-6) s = cross(f, [0, 0, -1]);
+      s = normalize(s);
+      const u = cross(s, f);
+      return [s[0], u[0], -f[0], 0, s[1], u[1], -f[1], 0, s[2], u[2], -f[2], 0, -dot(s, eye), -dot(u, eye), dot(f, eye), 1];
+    }
+    /** The inverse (the identity if `m` is singular: zero determinant). */
+    function invert(m) {
+      const inv = new Array(16);
+      inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15]
+          + m[9] * m[7] * m[14]
+          + m[13] * m[6] * m[11]
+          - m[13] * m[7] * m[10];
+      inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15]
+          - m[8] * m[7] * m[14]
+          - m[12] * m[6] * m[11]
+          + m[12] * m[7] * m[10];
+      inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15]
+          + m[8] * m[7] * m[13]
+          + m[12] * m[5] * m[11]
+          - m[12] * m[7] * m[9];
+      inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14]
+          - m[8] * m[6] * m[13]
+          - m[12] * m[5] * m[10]
+          + m[12] * m[6] * m[9];
+      inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15]
+          - m[9] * m[3] * m[14]
+          - m[13] * m[2] * m[11]
+          + m[13] * m[3] * m[10];
+      inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15]
+          + m[8] * m[3] * m[14]
+          + m[12] * m[2] * m[11]
+          - m[12] * m[3] * m[10];
+      inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15]
+          - m[8] * m[3] * m[13]
+          - m[12] * m[1] * m[11]
+          + m[12] * m[3] * m[9];
+      inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14]
+          + m[8] * m[2] * m[13]
+          + m[12] * m[1] * m[10]
+          - m[12] * m[2] * m[9];
+      inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15]
+          + m[5] * m[3] * m[14]
+          + m[13] * m[2] * m[7]
+          - m[13] * m[3] * m[6];
+      inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15]
+          - m[4] * m[3] * m[14]
+          - m[12] * m[2] * m[7]
+          + m[12] * m[3] * m[6];
+      inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15]
+          + m[4] * m[3] * m[13]
+          + m[12] * m[1] * m[7]
+          - m[12] * m[3] * m[5];
+      inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14]
+          - m[4] * m[2] * m[13]
+          - m[12] * m[1] * m[6]
+          + m[12] * m[2] * m[5];
+      inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11]
+          - m[5] * m[3] * m[10]
+          - m[9] * m[2] * m[7]
+          + m[9] * m[3] * m[6];
+      inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11]
+          + m[4] * m[3] * m[10]
+          + m[8] * m[2] * m[7]
+          - m[8] * m[3] * m[6];
+      inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11]
+          - m[4] * m[3] * m[9]
+          - m[8] * m[1] * m[7]
+          + m[8] * m[3] * m[5];
+      inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10]
+          + m[4] * m[2] * m[9]
+          + m[8] * m[1] * m[6]
+          - m[8] * m[2] * m[5];
+      const det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
+      // Only a truly singular matrix: a centimeter rig (1/100 twice) has a fine inverse.
+      if (det === 0 || !Number.isFinite(det)) return IDENTITY.slice();
+      const out = inv.map((x) => x / det);
+      return out.every(Number.isFinite) ? out : IDENTITY.slice();
+    }
+    /** The inverse transpose of the upper 3×3, column-major. */
+    const normalMatrix = (m) => { const i = invert(m); return [i[0], i[4], i[8], i[1], i[5], i[9], i[2], i[6], i[10]]; };
+    function transformPoint(m, p) {
+      const x = m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12];
+      const y = m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13];
+      const z = m[2] * p[0] + m[6] * p[1] + m[10] * p[2] + m[14];
+      const w = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15];
+      return w !== 0 && w !== 1 ? [x / w, y / w, z / w] : [x, y, z];
+    }
+    const transformDir = (m, v) => [
+      m[0] * v[0] + m[4] * v[1] + m[8] * v[2],
+      m[1] * v[0] + m[5] * v[1] + m[9] * v[2],
+      m[2] * v[0] + m[6] * v[1] + m[10] * v[2],
+    ];
+
+    // --- blobs.rs (+ env.rs' 'E'): little-endian, 4-byte aligned sections;
+    // "P3D" + kind + u32 version 1. Decoders return null on anything malformed.
+    const LITTLE = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
+    const BAD = {};
+    function utf8(bytes) {
+      if (typeof TextDecoder === "function") return new TextDecoder().decode(bytes);
+      let s = "";
+      for (let i = 0; i < bytes.length;) {
+        const b = bytes[i++];
+        let c = b;
+        if (b >= 0xf0) { c = ((b & 7) << 18) | ((bytes[i++] & 63) << 12) | ((bytes[i++] & 63) << 6) | (bytes[i++] & 63); }
+        else if (b >= 0xe0) { c = ((b & 15) << 12) | ((bytes[i++] & 63) << 6) | (bytes[i++] & 63); }
+        else if (b >= 0xc0) { c = ((b & 31) << 6) | (bytes[i++] & 63); }
+        s += String.fromCodePoint(c);
+      }
+      return s;
+    }
+    /** A reader of a `kind` blob (its header checked); every read past the end throws. */
+    function reader(buf, kind) {
+      if (!(buf instanceof ArrayBuffer)) buf = new Uint8Array(buf).slice().buffer;
+      const view = new DataView(buf);
+      let at = 0;
+      const take = (n) => {
+        if (!(n >= 0) || at + n > buf.byteLength) throw BAD;
+        const s = at;
+        at += n;
+        return s;
+      };
+      /** `n` values as a typed array: a view when aligned (no copy), else read one by one. */
+      const typed = (Type, n, get) => {
+        const size = Type.BYTES_PER_ELEMENT, s = take(n * size);
+        if (LITTLE && s % size === 0) return new Type(buf, s, n);
+        const out = new Type(n);
+        for (let i = 0; i < n; i++) out[i] = get(s + i * size);
+        return out;
+      };
+      const r = {
+        get at() { return at; },
+        size: buf.byteLength,
+        take,
+        u8: () => view.getUint8(take(1)),
+        u32: () => view.getUint32(take(4), true),
+        f32: () => view.getFloat32(take(4), true),
+        f32s: (n) => typed(Float32Array, n, (o) => view.getFloat32(o, true)),
+        u32s: (n) => typed(Uint32Array, n, (o) => view.getUint32(o, true)),
+        u16s: (n) => { const v = typed(Uint16Array, n, (o) => view.getUint16(o, true)); r.align(); return v; },
+        str: () => { const len = r.u32(), s = take(len), v = utf8(new Uint8Array(buf, s, len)); r.align(); return v; },
+        align: () => { at = Math.min(Math.ceil(at / 4) * 4, buf.byteLength); },
+      };
+      const magic = new Uint8Array(buf, take(4), 4);
+      if (magic[0] !== 80 || magic[1] !== 51 || magic[2] !== 68 || magic[3] !== kind.charCodeAt(0) || r.u32() !== 1) throw BAD;
+      return r;
+    }
+    const guard = (f) => { try { return f(); } catch (e) { if (e === BAD || e instanceof RangeError) return null; throw e; } };
+    /** An 'M' blob: `{ count, positions, normals, uvs, joints, weights, colors, indices, bounds }` (absent attributes null). */
+    const decodeMesh = (buf) => guard(() => {
+      const r = reader(buf, "M");
+      const n = r.u32(), m = r.u32(), flags = r.u32(), bounds = Array.from(r.f32s(6));
+      const positions = r.f32s(n * 3), normals = r.f32s(n * 3);
+      const uvs = flags & 1 ? r.f32s(n * 2) : null;
+      let joints = null, weights = null;
+      if (flags & 4) { joints = r.u16s(n * 4); weights = r.f32s(n * 4); }
+      const colors = flags & 8 ? r.f32s(n * 4) : null;
+      const indices = r.u32s(m);
+      for (let i = 0; i < m; i++) if (indices[i] >= n) return null;
+      return { count: n, positions, normals, uvs, joints, weights, colors, indices, bounds };
+    });
+    /** An 'I' blob, with each instance's matrix (`T · R(q) · S`, 16 floats). */
+    const decodeInstances = (buf) => guard(() => {
+      const r = reader(buf, "I");
+      const count = r.u32(), flags = r.u32(), bounds = Array.from(r.f32s(6));
+      const raw = r.f32s(count * 10);
+      const colors = flags & 1 ? r.f32s(count * 4) : null;
+      const matrices = new Float32Array(count * 16), transforms = [];
+      for (let k = 0; k < count; k++) {
+        const v = raw.subarray(k * 10, k * 10 + 10);
+        const t = { position: [v[0], v[1], v[2]], rotation: [v[3], v[4], v[5], v[6]], scale: [v[7], v[8], v[9]] };
+        transforms.push(t);
+        matrices.set(composeQuat(t.position, t.rotation, t.scale), k * 16);
+      }
+      return { count, bounds, transforms, colors, matrices, matrix: (k) => matrices.subarray(k * 16, k * 16 + 16) };
+    });
+    /** An 'A' blob: `{ duration, channels: [{ target, property (0 T, 1 R, 2 S), interpolation (0 linear, 1 step, 2 cubic), times, values }] }`. */
+    const decodeClip = (buf) => guard(() => {
+      const r = reader(buf, "A");
+      const count = r.u32(), duration = r.f32(), channels = [];
+      for (let i = 0; i < count; i++) {
+        const target = r.str(), property = r.u8(), interpolation = r.u8();
+        if (property > 2 || interpolation > 2) return null;
+        r.take(2);
+        const k = r.u32(), times = r.f32s(k);
+        const values = r.f32s(k * (property === 1 ? 4 : 3) * (interpolation === 2 ? 3 : 1));
+        channels.push({ target, property, interpolation, times, values });
+      }
+      return { duration, channels };
+    });
+    /** A 'K' blob: `{ inverseBind: [mat4…], joints: ["0/1"…] }`. */
+    const decodeSkin = (buf) => guard(() => {
+      const r = reader(buf, "K");
+      const n = r.u32(), raw = r.f32s(n * 16), inverseBind = [], joints = [];
+      for (let i = 0; i < n; i++) inverseBind.push(Array.from(raw.subarray(i * 16, i * 16 + 16)));
+      for (let i = 0; i < n; i++) joints.push(r.str());
+      return { inverseBind, joints };
+    });
+    /** An 'E' blob: `{ width, height, sh (27), levels: [{ w, h, data (RGBA half floats) }] }`. */
+    const decodeEnv = (buf) => guard(() => {
+      const r = reader(buf, "E");
+      const width = r.u32(), height = r.u32(), n = r.u32();
+      if (!width || !height || !n || n > 32) return null;
+      const sh = Array.from(r.f32s(27)), levels = [];
+      for (let i = 0; i < n; i++) {
+        const w = Math.max(width >>> i, 1), h = Math.max(height >>> i, 1);
+        levels.push({ w, h, data: r.u16s(w * h * 4) });
+      }
+      return r.at === r.size ? { width, height, sh, levels } : null;
+    });
+    /** Decoders by blob kind ('P': an image's bytes, as they are). */
+    const decode = { M: decodeMesh, I: decodeInstances, A: decodeClip, K: decodeSkin, E: decodeEnv, P: (buf) => buf };
+
+    // --- clip.rs: the reference sampler.
+    /** A channel's value at `t` seconds (`[x, y, z, 0]`, or a unit quaternion): the first key's before it, the last's after. */
+    function sampleChannel(ch, t) {
+      const c = ch.property === 1 ? 4 : 3, cubic = ch.interpolation === 2, stride = cubic ? 3 * c : c;
+      const k = Math.min(ch.times.length, Math.floor(ch.values.length / stride));
+      if (k === 0) return ch.property === 1 ? QUAT_IDENTITY.slice() : ch.property === 2 ? [1, 1, 1, 0] : [0, 0, 0, 0];
+      // A key's value: the middle third of a cubic key.
+      const value = (i) => { const at = i * stride + (cubic ? c : 0); return [0, 1, 2, 3].map((j) => (j < c ? ch.values[at + j] : 0)); };
+      const finish = (v) => (ch.property === 1 ? quatNormalize(v) : v);
+      if (t <= ch.times[0] || k === 1) return finish(value(0));
+      if (t >= ch.times[k - 1]) return finish(value(k - 1));
+      // The key before t (times increase: binary search).
+      let lo = 0, hi = k;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (ch.times[mid] <= t) lo = mid + 1; else hi = mid; }
+      const i = Math.max(lo - 1, 0), t0 = ch.times[i], t1 = ch.times[i + 1], dt = t1 - t0;
+      const s = dt > 0 ? (t - t0) / dt : 0;
+      if (ch.interpolation === 1) return finish(value(i));
+      if (ch.interpolation === 0) {
+        if (ch.property === 1) return slerp(value(i), value(i + 1), s);
+        const a = value(i), b = value(i + 1);
+        return a.map((x, j) => lerp(x, b[j], s));
+      }
+      // glTF: p(s) = (2s³ − 3s² + 1)·v0 + (s³ − 2s² + s)·dt·b0 + (−2s³ + 3s²)·v1 + (s³ − s²)·dt·a1
+      // (b0: key i's out-tangent, a1: key i+1's in-tangent).
+      const s2 = s * s, s3 = s2 * s, v0 = i * stride + c, b0 = i * stride + 2 * c, a1 = (i + 1) * stride, v1 = (i + 1) * stride + c;
+      const vs = ch.values;
+      return finish([0, 1, 2, 3].map((j) => (j >= c ? 0
+        : (2 * s3 - 3 * s2 + 1) * vs[v0 + j] + (s3 - 2 * s2 + s) * dt * vs[b0 + j]
+          + (-2 * s3 + 3 * s2) * vs[v1 + j] + (s3 - s2) * dt * vs[a1 + j])));
+    }
+
+    // --- wire.rs: the update JSON, serde's defaults filled in.
+    const num = (v, d) => (typeof v === "number" && Number.isFinite(v) ? v : d);
+    const nums = (v, d) => d.map((x, i) => num(Array.isArray(v) ? v[i] : undefined, x));
+    const obj = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
+    const str = (v) => (typeof v === "string" ? v : null);
+    const flag = (v) => v === true;
+    const blobId = (v) => (typeof v === "string" && /^[0-9a-fA-F]{32}$/.test(v) ? v.toLowerCase() : null);
+    /** `[r, g, b, a]` or `[r, g, b, a, dr, dg, db, da]` (sRGB, dark variant). */
+    function rgba(v, d) {
+      if (!Array.isArray(v)) return d;
+      return { light: nums(v.slice(0, 4), [0, 0, 0, 1]), dark: v.length >= 8 ? nums(v.slice(4, 8), [0, 0, 0, 1]) : null };
+    }
+    const resolve = (c, dark) => (dark && c.dark ? c.dark : c.light);
+    const WHITE = { light: [1, 1, 1, 1], dark: null };
+    const BLACK = { light: [0, 0, 0, 1], dark: null };
+    /** A mesh ref, with its `key` (`Mesh::key`: GPU buffers are cached by it) and `bounds` (`Mesh::bounds`). */
+    function mesh(m) {
+      m = obj(m);
+      const box = (x, y, z) => [-x, -y, -z, x, y, z];
+      switch (m.type) {
+        case "box": { const size = nums(m.size, [1, 1, 1]); return { type: "box", size, key: `box:${size}`, bounds: box(size[0] / 2, size[1] / 2, size[2] / 2) }; }
+        case "sphere": { const r = num(m.radius, 1); return { type: "sphere", radius: r, key: `sphere:${r}`, bounds: box(r, r, r) }; }
+        case "plane": { const size = nums(m.size, [1, 1]); return { type: "plane", size, key: `plane:${size}`, bounds: box(size[0] / 2, 0, size[1] / 2) }; }
+        case "cylinder": case "cone": {
+          const r = num(m.radius, 1), h = num(m.height, 1);
+          return { type: m.type, radius: r, height: h, key: `${m.type}:${r},${h}`, bounds: box(r, h / 2, r) };
+        }
+        case "torus": {
+          const r = num(m.radius, 1), t = num(m.tube, 0.25);
+          return { type: "torus", radius: r, tube: t, key: `torus:${r},${t}`, bounds: box(r + t, t, r + t) };
+        }
+        case "blob": { const id = blobId(m.id); return id && { type: "blob", id, key: id, bounds: nums(m.bounds, [0, 0, 0, 0, 0, 0]) }; }
+        default: return null;
+      }
+    }
+    function material(m) {
+      m = obj(m);
+      return {
+        color: rgba(m.color, { light: [0.8, 0.8, 0.8, 1], dark: null }),
+        metal: num(m.metal, 0),
+        rough: num(m.rough, 0.5),
+        emissive: m.emissive ? rgba(m.emissive, null) : null,
+        unlit: flag(m.unlit),
+        double: flag(m.double),
+        map: str(m.map),
+        mr_map: str(m.mr_map),
+        normal_map: str(m.normal_map),
+        normal_scale: num(m.normal_scale, 1),
+        emissive_map: str(m.emissive_map),
+        ao_map: str(m.ao_map),
+        alpha: m.alpha === "mask" || m.alpha === "opaque" ? m.alpha : "blend",
+        cutoff: num(m.cutoff, 0),
+        vcolor: flag(m.vcolor),
+      };
+    }
+    /** A `FlatNode`: v1's props without children, plus key, parent, label, quat, inst, play, skin, cast, recv. */
+    function flatNode(n) {
+      n = obj(n);
+      const inst = obj(n.inst), play = obj(n.play), skin = obj(n.skin);
+      const instId = blobId(inst.id), clipId = blobId(play.clip), skinId = blobId(skin.id);
+      return {
+        key: typeof n.key === "string" ? n.key : String(n.key ?? ""),
+        parent: str(n.parent),
+        name: str(n.name),
+        label: str(n.label),
+        mesh: mesh(n.mesh),
+        mat: material(n.mat),
+        pos: nums(n.pos, [0, 0, 0]),
+        rot: nums(n.rot, [0, 0, 0]),
+        quat: Array.isArray(n.quat) ? nums(n.quat, [0, 0, 0, 1]) : null,
+        scale: nums(n.scale, [1, 1, 1]),
+        spin: nums(n.spin, [0, 0, 0]),
+        hidden: flag(n.hidden),
+        inst: instId && { id: instId, count: Math.max(0, Math.floor(num(inst.count, 0))), bounds: nums(inst.bounds, [0, 0, 0, 0, 0, 0]) },
+        play: clipId && { clip: clipId, speed: num(play.speed, 1), loop: flag(play.loop), fade: num(play.fade, 0), run: num(play.run, 0) },
+        skin: skinId && typeof skin.root === "string" ? { id: skinId, root: skin.root } : null,
+        cast: n.cast !== false,
+        recv: n.recv !== false,
+      };
+    }
+    function light(l) {
+      l = obj(l);
+      return {
+        type: l.type, color: rgba(l.color, WHITE), intensity: num(l.intensity, 1),
+        pos: nums(l.pos, [0, 0, 0]), dir: nums(l.dir, [0, 0, 0]), angle: num(l.angle, 0), range: num(l.range, 0),
+        shadows: flag(l.shadows),
+      };
+    }
+    /** `SceneSettings`: everything about a scene but its nodes. */
+    function settings(s) {
+      s = obj(s);
+      const c = obj(s.camera), o = s.orbit && typeof s.orbit === "object" ? s.orbit : null;
+      const t = s.t && typeof s.t === "object" ? s.t : null, env = obj(s.env), envId = blobId(env.id);
+      return {
+        bg: s.bg ? rgba(s.bg, null) : null,
+        camera: {
+          pos: nums(c.pos, [0, 2, 6]), target: nums(c.target, [0, 0, 0]),
+          fov: num(c.fov, 45), near: num(c.near, 0.1), far: num(c.far, 1000),
+          ortho: typeof c.ortho === "number" ? c.ortho : null,
+        },
+        orbit: o && {
+          rotate: flag(o.rotate), zoom: flag(o.zoom), pan: flag(o.pan),
+          auto: num(o.auto, 0), min: num(o.min, 0), max: num(o.max, 0),
+        },
+        lights: Array.isArray(s.lights) ? s.lights.map(light) : [],
+        t: t && { ms: num(t.ms, 0), delay: num(t.delay, 0), bezier: nums(t.bezier, [0, 0, 1, 1]) },
+        tap: flag(s.tap),
+        env: envId && { id: envId, intensity: num(env.intensity, 1), background: flag(env.background) },
+        exposure: num(s.exposure, 1),
+      };
+    }
+    /**
+     * A `SceneUpdate` (JSON text or its value): `{ full, settings (null: unchanged), nodes (full: every
+     * node in pre-order; diff: the upserts), remove, order (null: unchanged) }`; null unless version 2.
+     */
+    function decodeUpdate(u) {
+      if (typeof u === "string") { try { u = JSON.parse(u); } catch (e) { return null; } }
+      if (!u || typeof u !== "object" || u.v !== 2) return null;
+      const list = (v) => (Array.isArray(v) ? v : []);
+      const keys = (v) => list(v).filter((k) => typeof k === "string");
+      if (u.full === true) return { full: true, settings: settings(u.settings), nodes: list(u.nodes).map(flatNode), remove: [], order: null };
+      return {
+        full: false,
+        settings: u.settings && typeof u.settings === "object" ? settings(u.settings) : null,
+        nodes: list(u.upsert).map(flatNode),
+        remove: keys(u.remove),
+        order: Array.isArray(u.order) ? keys(u.order) : null,
+      };
+    }
+    /** `FlatScene::apply`: the scene `{ settings, nodes }` after `u` (drop removed keys, replace or insert upserts, reorder). */
+    function applyFlat(flat, u) {
+      if (u.full) return { settings: u.settings, nodes: u.nodes.slice() };
+      let nodes = flat.nodes;
+      if (u.remove.length) { const gone = new Set(u.remove); nodes = nodes.filter((n) => !gone.has(n.key)); }
+      if (u.nodes.length) {
+        nodes = nodes.slice();
+        const at = new Map(nodes.map((n, i) => [n.key, i]));
+        for (const n of u.nodes) {
+          const i = at.get(n.key);
+          if (i !== undefined) nodes[i] = n;
+          else { at.set(n.key, nodes.length); nodes.push(n); }
+        }
+      }
+      if (u.order) {
+        const by = new Map(nodes.map((n) => [n.key, n]));
+        nodes = [];
+        for (const k of u.order) { const n = by.get(k); if (n) { by.delete(k); nodes.push(n); } }
+      }
+      return { settings: u.settings || flat.settings, nodes };
+    }
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    /** The app's lights, or (no lights, no environment) the default rig (`SceneSettings::effective_lights`). */
+    const effectiveLights = (s) => (s.lights.length || s.env ? s.lights : [
+      { type: "ambient", color: WHITE, intensity: 0.35, pos: [0, 0, 0], dir: [0, 0, 0], angle: 0, range: 0, shadows: false },
+      { type: "directional", color: WHITE, intensity: 0.9, pos: [0, 0, 0], dir: [-0.5, -1, -0.6], angle: 0, range: 0, shadows: false },
+    ]);
+
+    // --- geometry.rs: CCW front faces, outward normals, uv (0, 0) top-left.
+    const SEGMENTS = 48, RINGS = 24, TAU = Math.PI * 2;
+    /** Vertex data: flat arrays (typed for blobs); colors, joints, weights null when absent. */
+    function meshData() {
+      return {
+        positions: [], normals: [], uvs: [], colors: null, joints: null, weights: null, indices: [],
+        vertex(p, n, uv) {
+          const i = this.positions.length / 3;
+          this.positions.push(p[0], p[1], p[2]);
+          this.normals.push(n[0], n[1], n[2]);
+          this.uvs.push(uv[0], uv[1]);
+          return i;
+        },
+        triangle(a, b, c) { this.indices.push(a, b, c); },
+        position(i) { return [this.positions[i * 3], this.positions[i * 3 + 1], this.positions[i * 3 + 2]]; },
+        vertexCount() { return Math.floor(this.positions.length / 3); },
+      };
+    }
+    /** A box centered on the origin: faces +X, −X, +Y, −Y, +Z, −Z, four vertices each. */
+    function cuboid(size) {
+      const half = size.map((s) => s / 2), m = meshData();
+      // (normal, right, up) per face, seen from outside: right × up = normal.
+      const faces = [
+        [[1, 0, 0], [0, 0, -1], [0, 1, 0]],
+        [[-1, 0, 0], [0, 0, 1], [0, 1, 0]],
+        [[0, 1, 0], [1, 0, 0], [0, 0, -1]],
+        [[0, -1, 0], [1, 0, 0], [0, 0, 1]],
+        [[0, 0, 1], [1, 0, 0], [0, 1, 0]],
+        [[0, 0, -1], [-1, 0, 0], [0, 1, 0]],
+      ];
+      const extent = (v) => Math.abs(v[0]) * half[0] + Math.abs(v[1]) * half[1] + Math.abs(v[2]) * half[2];
+      for (const [n, r, u] of faces) {
+        const dn = extent(n), dr = extent(r), du = extent(u);
+        const at = (sr, su) => [0, 1, 2].map((k) => n[k] * dn + r[k] * dr * sr + u[k] * du * su);
+        // Top-left, top-right, bottom-right, bottom-left.
+        const a = m.vertex(at(-1, 1), n, [0, 0]);
+        const b = m.vertex(at(1, 1), n, [1, 0]);
+        const c = m.vertex(at(1, -1), n, [1, 1]);
+        const d = m.vertex(at(-1, -1), n, [0, 1]);
+        m.triangle(a, d, c);
+        m.triangle(a, c, b);
+      }
+      return m;
+    }
+    /** A UV sphere: RINGS rings from the top pole (v = 0), SEGMENTS + 1 vertices around each. */
+    function sphere(radius) {
+      const m = meshData();
+      for (let i = 0; i <= RINGS; i++) {
+        const v = i / RINGS, theta = v * Math.PI;
+        for (let j = 0; j <= SEGMENTS; j++) {
+          const u = j / SEGMENTS, phi = u * TAU;
+          const n = [-Math.sin(theta) * Math.sin(phi), Math.cos(theta), Math.sin(theta) * Math.cos(phi)];
+          m.vertex(scale(n, radius), n, [u, v]);
+        }
+      }
+      const row = SEGMENTS + 1;
+      for (let i = 0; i < RINGS; i++) {
+        for (let j = 0; j < SEGMENTS; j++) {
+          const a = i * row + j, b = i * row + j + 1, c = (i + 1) * row + j, d = (i + 1) * row + j + 1;
+          if (i !== 0) m.triangle(a, b, c);
+          if (i !== RINGS - 1) m.triangle(b, d, c);
+        }
+      }
+      return m;
+    }
+    /** A rectangle in the XZ plane facing +Y; u along +X, v along +Z. */
+    function plane(size) {
+      const hx = size[0] / 2, hz = size[1] / 2, m = meshData(), n = [0, 1, 0];
+      const a = m.vertex([-hx, 0, -hz], n, [0, 0]);
+      const b = m.vertex([hx, 0, -hz], n, [1, 0]);
+      const c = m.vertex([hx, 0, hz], n, [1, 1]);
+      const d = m.vertex([-hx, 0, hz], n, [0, 1]);
+      m.triangle(a, d, c);
+      m.triangle(a, c, b);
+      return m;
+    }
+    /** A capped cylinder along Y (a cone when `top` is 0): side, top cap, bottom cap. */
+    function cylinder(bottom, top, height) {
+      const m = meshData(), h = height / 2;
+      // The side's normal leans up by the slope (r_bottom - r_top) / height.
+      const slope = height > 0 ? (bottom - top) / height : 0;
+      const around = (j) => { const u = j / SEGMENTS, phi = u * TAU; return [u, Math.sin(phi), Math.cos(phi)]; };
+      for (let j = 0; j <= SEGMENTS; j++) {
+        const [u, s, c] = around(j), n = normalize([s, slope, c]);
+        m.vertex([top * s, h, top * c], n, [u, 0]);
+        m.vertex([bottom * s, -h, bottom * c], n, [u, 1]);
+      }
+      for (let j = 0; j < SEGMENTS; j++) {
+        const t0 = j * 2, b0 = j * 2 + 1, t1 = j * 2 + 2, b1 = j * 2 + 3;
+        if (top > 0) m.triangle(t0, b0, t1);
+        m.triangle(t1, b0, b1);
+      }
+      for (const [radius, y, ny] of [[top, h, 1], [bottom, -h, -1]]) {
+        if (radius <= 0) continue;
+        const center = m.vertex([0, y, 0], [0, ny, 0], [0.5, 0.5]), first = center + 1;
+        for (let j = 0; j <= SEGMENTS; j++) {
+          const [, s, c] = around(j);
+          m.vertex([radius * s, y, radius * c], [0, ny, 0], [0.5 + 0.5 * s, 0.5 + 0.5 * c * -ny]);
+        }
+        for (let j = 0; j < SEGMENTS; j++) {
+          if (ny > 0) m.triangle(center, first + j, first + j + 1);
+          else m.triangle(center, first + j + 1, first + j);
+        }
+      }
+      return m;
+    }
+    /** A torus in the XZ plane: SEGMENTS around the ring, RINGS around the tube. */
+    function torus(radius, tube) {
+      const m = meshData();
+      for (let i = 0; i <= SEGMENTS; i++) {
+        const u = i / SEGMENTS, phi = u * TAU, s = Math.sin(phi), c = Math.cos(phi);
+        for (let j = 0; j <= RINGS; j++) {
+          const v = j / RINGS, theta = v * TAU, ts = Math.sin(theta), tc = Math.cos(theta);
+          // Outward from the tube's center circle.
+          m.vertex([s * (radius + tube * tc), tube * ts, c * (radius + tube * tc)], [s * tc, ts, c * tc], [u, v]);
+        }
+      }
+      const row = RINGS + 1;
+      for (let i = 0; i < SEGMENTS; i++) {
+        for (let j = 0; j < RINGS; j++) {
+          const a = i * row + j, b = i * row + j + 1, c = (i + 1) * row + j, d = (i + 1) * row + j + 1;
+          m.triangle(a, c, b);
+          m.triangle(b, c, d);
+        }
+      }
+      return m;
+    }
+    /** The triangles of a mesh ref; a blob's from its 'M' blob (`blob(id, kind)`: decoded, or null while it has not arrived). */
+    function generate(mesh, blob) {
+      switch (mesh.type) {
+        case "box": return cuboid(mesh.size);
+        case "sphere": return sphere(mesh.radius);
+        case "plane": return plane(mesh.size);
+        case "cylinder": return cylinder(mesh.radius, mesh.radius, mesh.height);
+        case "cone": return cylinder(mesh.radius, 0, mesh.height);
+        case "torus": return torus(mesh.radius, mesh.tube);
+        default: {
+          const m = meshData(), b = blob ? blob(mesh.id, "M") : null;
+          if (!b) return m;
+          m.positions = b.positions;
+          m.normals = b.normals;
+          m.uvs = b.uvs || new Float32Array(b.count * 2);
+          m.colors = b.colors;
+          m.joints = b.joints;
+          m.weights = b.weights;
+          // `decodeMesh` checked the indices; whole triangles only.
+          m.indices = b.indices.length % 3 ? b.indices.subarray(0, b.indices.length - (b.indices.length % 3)) : b.indices;
+          return m;
+        }
+      }
+    }
+    /** Where the ray `origin + t · dir` crosses triangle `a b c` (either face): `t`, or null (Möller–Trumbore). */
+    function rayTriangle(origin, dir, a, b, c) {
+      const EDGE = 1e-5;
+      const e1 = sub(b, a), e2 = sub(c, a), p = cross(dir, e2), det = dot(e1, p);
+      if (Math.abs(det) < 1e-9) return null;
+      const inv = 1 / det, s = sub(origin, a), u = dot(s, p) * inv;
+      if (!(u >= -EDGE && u <= 1 + EDGE)) return null;
+      const q = cross(s, e1), v = dot(dir, q) * inv;
+      if (v < -EDGE || u + v > 1 + EDGE) return null;
+      const t = dot(e2, q) * inv;
+      return t > 1e-6 ? t : null;
+    }
+
+    /**
+     * `rayTriangle` over every triangle of `ix` (flat positions `P`), inlined: the nearest `t` below
+     * `limit`, or null. (A model has 100k triangles; taps test them all.)
+     */
+    function rayTriangles(o, d, P, ix, limit) {
+      const EDGE = 1e-5;
+      let best = null;
+      for (let k = 0; k + 2 < ix.length; k += 3) {
+        const a = ix[k] * 3, b = ix[k + 1] * 3, c = ix[k + 2] * 3, ax = P[a], ay = P[a + 1], az = P[a + 2];
+        const e1x = P[b] - ax, e1y = P[b + 1] - ay, e1z = P[b + 2] - az, e2x = P[c] - ax, e2y = P[c + 1] - ay, e2z = P[c + 2] - az;
+        const px = d[1] * e2z - d[2] * e2y, py = d[2] * e2x - d[0] * e2z, pz = d[0] * e2y - d[1] * e2x;
+        const det = e1x * px + e1y * py + e1z * pz;
+        if (Math.abs(det) < 1e-9) continue;
+        const inv = 1 / det, sx = o[0] - ax, sy = o[1] - ay, sz = o[2] - az;
+        const u = (sx * px + sy * py + sz * pz) * inv;
+        if (!(u >= -EDGE && u <= 1 + EDGE)) continue;
+        const qx = sy * e1z - sz * e1y, qy = sz * e1x - sx * e1z, qz = sx * e1y - sy * e1x;
+        const v = (d[0] * qx + d[1] * qy + d[2] * qz) * inv;
+        if (v < -EDGE || u + v > 1 + EDGE) continue;
+        const t = (e2x * qx + e2y * qy + e2z * qz) * inv;
+        if (t > 1e-6 && t < (best === null ? limit : best)) best = t;
+      }
+      return best;
+    }
+
+    // --- player.rs: the retained graph, orbit, spins, transitions, clips, skins, culling, shadows, hits.
+    const DEGREES_PER_POINT = 0.5, MAX_PITCH = 89, TAP_SLOP = 6, MAX_LIGHTS = 8, SHADOW_MAP_SIZE = 2048;
+    /** The eased progress at `p` of a CSS `cubic-bezier` `[x1, y1, x2, y2]`: x solved by bisection. */
+    function ease(bezier, p) {
+      p = clamp(p, 0, 1);
+      if (p === 0 || p === 1) return p;
+      const [x1, y1, x2, y2] = bezier;
+      const at = (a, b, t) => { const u = 1 - t; return 3 * u * u * t * a + 3 * u * t * t * b + t * t * t; };
+      let lo = 0, hi = 1;
+      for (let i = 0; i < 24; i++) {
+        const mid = (lo + hi) / 2;
+        if (at(x1, x2, mid) < p) lo = mid; else hi = mid;
+      }
+      return at(y1, y2, (lo + hi) / 2);
+    }
+    const lerpRgba = (a, b, t) => {
+      const mix = (x, y) => x.map((v, i) => lerp(v, y[i], t));
+      return { light: mix(a.light, b.light), dark: a.dark || b.dark ? mix(resolve(a, true), resolve(b, true)) : null };
+    };
+    /** The animatable part of a node. */
+    const poseOf = (n) => ({
+      position: n.pos, rotation: n.rot, quat: n.quat, scale: n.scale, color: n.mat.color,
+      emissive: n.mat.emissive || BLACK, metalness: n.mat.metal, roughness: n.mat.rough,
+    });
+    function poseLerp(a, b, t) {
+      let rotation, quat;
+      if (a.quat === null && b.quat === null) {
+        // Degrees, like v1 and 2D `rotate`: every degree in between.
+        rotation = lerp3(a.rotation, b.rotation, t);
+        quat = null;
+      } else {
+        rotation = b.rotation;
+        quat = slerp(a.quat || quatFromEuler(a.rotation), b.quat || quatFromEuler(b.rotation), t);
+      }
+      return {
+        position: lerp3(a.position, b.position, t), rotation, quat, scale: lerp3(a.scale, b.scale, t),
+        color: lerpRgba(a.color, b.color, t), emissive: lerpRgba(a.emissive, b.emissive, t),
+        metalness: lerp(a.metalness, b.metalness, t), roughness: lerp(a.roughness, b.roughness, t),
+      };
+    }
+    /** What clips set on a node (each part replaces the node's own; null: not set). */
+    const clipPose = () => ({ translation: null, rotation: null, scale: null });
+    const sameClipPose = (a, b) => !!a && !!b && sameArray(a.translation, b.translation) && sameArray(a.rotation, b.rotation) && sameArray(a.scale, b.scale);
+    /** A clip playing on a node. */
+    class Track {
+      constructor(clip, now, speed, looping) {
+        this.clip = clip;
+        this.base = speed < 0 ? clip.duration : 0; // clip time at `anchor`
+        this.anchor = now;
+        this.speed = speed;
+        this.looping = looping;
+        this.targets = []; // the node each channel animates (resolved after every update)
+      }
+      /** Unbounded clip time at `now`. */
+      rawTime(now) { return this.base + (now - this.anchor) * this.speed; }
+      /** The time to sample at `now`. */
+      time(now) {
+        const d = this.clip.duration, t = this.rawTime(now);
+        if (d <= 0) return 0;
+        return this.looping ? ((t % d) + d) % d : clamp(t, 0, d);
+      }
+      /** Still moving at `now` (looping, or not past its end). */
+      running(now) {
+        const t = this.rawTime(now), d = this.clip.duration;
+        return d > 0 && this.speed !== 0 && (this.looping || (this.speed > 0 && t < d) || (this.speed < 0 && t > 0));
+      }
+      /** Changes the rate without a jump in clip time. */
+      setSpeed(speed, now) {
+        if (speed !== this.speed) { this.base = this.rawTime(now); this.anchor = now; this.speed = speed; }
+      }
+      /** Adds this clip's values at `now` to `out` (by target node). */
+      sample(now, out) {
+        const t = this.time(now);
+        this.clip.channels.forEach((c, k) => {
+          const target = this.targets[k];
+          if (target === null || target === undefined) return;
+          const v = sampleChannel(c, t);
+          let pose = out.get(target);
+          if (!pose) out.set(target, (pose = clipPose()));
+          if (c.property === 0) pose.translation = [v[0], v[1], v[2]];
+          else if (c.property === 1) pose.rotation = v;
+          else pose.scale = [v[0], v[1], v[2]];
+        });
+      }
+    }
+    /** The camera as an orbit around its target (yaw 0: on +Z of it). */
+    function orbitOf(c) {
+      const o = sub(c.pos, c.target), d = Math.max(length(o), 1e-4);
+      return { yaw: deg(Math.atan2(o[0], o[2])), pitch: deg(Math.asin(clamp(o[1] / d, -1, 1))), distance: d, target: c.target, fov: c.fov, ortho: c.ortho };
+    }
+    function orbitEye(o) {
+      const y = rad(o.yaw), p = rad(o.pitch);
+      return add(o.target, [o.distance * Math.cos(p) * Math.sin(y), o.distance * Math.sin(p), o.distance * Math.cos(p) * Math.cos(y)]);
+    }
+    function orbitLerp(a, b, t) {
+      // The shorter way around.
+      const dyaw = ((((b.yaw - a.yaw + 540) % 360) + 360) % 360) - 180;
+      return {
+        yaw: a.yaw + dyaw * t, pitch: lerp(a.pitch, b.pitch, t), distance: lerp(a.distance, b.distance, t),
+        target: lerp3(a.target, b.target, t), fov: lerp(a.fov, b.fov, t),
+        ortho: a.ortho !== null && b.ortho !== null ? lerp(a.ortho, b.ortho, t) : b.ortho,
+      };
+    }
+    /** Variant (instanced, skinned, depth only) as a number ordered like `Variant`'s `Ord`. */
+    const variantOf = (d) => (d.instances ? 4 : 0) | (d.joints ? 2 : 0);
+    const compareText = (a, b) => (a === b ? 0 : a === null ? -1 : b === null ? 1 : a < b ? -1 : 1);
+    /** A row of the node table. */
+    const newRow = (flat, now) => ({
+      flat, parent: null, end: 0, children: [], named: null, part: null, visible: true,
+      meshKey: flat.mesh ? flat.mesh.key : "", appeared: now, target: poseOf(flat), from: null,
+      clipPose: null, playing: null, jointNodes: [], joints: [], local: IDENTITY, world: IDENTITY,
+      normal: [1, 0, 0, 0, 1, 0, 0, 0, 1], bounds: [0, 0, 0, 0, 0, 0], moved: 0, dirty: true,
+    });
+
+    /**
+     * The device side of one scene element (player.rs' `ScenePlayer`; times in seconds, sizes in
+     * points). `blob(id, kind)` gives a decoded blob, or null while it has not arrived; when one
+     * arrives, `blobsArrived(now)` resolves what waited for it (a clip that had not arrived starts
+     * then) and the next frame shows it.
+     */
+    class ScenePlayer {
+      constructor(now, blob) {
+        this.blob = blob || (() => null);
+        this.settings = settings({});
+        this.fresh = true; // no update applied yet: the first one does not animate
+        this.nodes = [];
+        this.index = new Map();
+        this.drawNodes = []; // visible nodes with a mesh
+        this.transitioning = []; // nodes with a running transition
+        this.spinning = []; // visible nodes that spin
+        this.players = []; // nodes playing clips
+        this.skinned = []; // visible nodes with a resolved skin
+        this.orbit = orbitOf(this.settings.camera);
+        this.cameraFrom = null; // { orbit, start }
+        this.minDistance = 0;
+        this.maxDistance = 0;
+        this.now = now;
+        this.last = null;
+        this.dragging = false;
+        this.moving = false; // something but the camera moves (spin, transition, clip)
+        this.tick = 0;
+        this.clips = new Map();
+        this.skins = new Map();
+        this.instances = new Map();
+        this.geometryCache = new Map();
+      }
+      /** Row `i`'s FlatNode (a draw's `node`). */
+      node(i) { return this.nodes[i] ? this.nodes[i].flat : null; }
+      /**
+       * Shows an update at `now`: changed nodes and camera animate from where they are to their
+       * new values if the scene has a transition; a changed camera replaces where the user moved
+       * it. Clips whose `play` changed start (or crossfade) here.
+       */
+      apply(update, now) {
+        this.now = now;
+        if (update.settings) this.setSettings(update.settings, now);
+        const t = this.fresh ? null : this.settings.t;
+        this.fresh = false;
+        const oldOrder = this.nodes.map((n) => n.flat.key);
+        const rows = new Map(this.nodes.map((n) => [n.flat.key, n]));
+        // Keys in their new order (removed ones simply find no row).
+        let order;
+        if (update.full) order = update.nodes.map((n) => n.key);
+        else {
+          for (const k of update.remove) rows.delete(k);
+          order = update.order || oldOrder.concat(update.nodes.map((n) => n.key));
+        }
+        for (const flat of update.nodes) {
+          const row = rows.get(flat.key);
+          if (row) this.updateRow(row, flat, now, t);
+          else {
+            const fresh = newRow(flat, now);
+            this.startPlay(fresh, null, now);
+            rows.set(flat.key, fresh);
+          }
+        }
+        const seen = new Set();
+        this.nodes = [];
+        for (const k of order) {
+          if (seen.has(k)) continue;
+          seen.add(k);
+          const row = rows.get(k);
+          if (row) { rows.delete(k); this.nodes.push(row); }
+        }
+        this.relink();
+        this.refresh(now, true);
+      }
+      setSettings(s, now) {
+        if (this.fresh) {
+          this.orbit = orbitOf(s.camera);
+          this.setLimits(s);
+        } else if (!same(s.camera, this.settings.camera)) {
+          const to = orbitOf(s.camera), from = this.currentOrbit(now);
+          this.orbit = to;
+          this.cameraFrom = s.t && s.t.ms > 0 ? { orbit: from, start: now + s.t.delay / 1000 } : null;
+          this.setLimits(s);
+        } else if (!same(s.orbit, this.settings.orbit)) {
+          this.setLimits(s);
+        }
+        this.settings = s;
+      }
+      setLimits(s) {
+        const d = orbitOf(s.camera).distance, o = s.orbit || { min: 0, max: 0 };
+        this.minDistance = o.min > 0 ? o.min : d * 0.25;
+        this.maxDistance = o.max > 0 ? o.max : d * 4;
+      }
+      /** A node of the update replaces its row's props. */
+      updateRow(row, flat, now, t) {
+        const pose = poseOf(flat);
+        if (!same(pose, row.target)) {
+          const current = this.poseAt(row, now);
+          row.from = t && t.ms > 0 && !same(current, pose) ? { pose: current, start: now + t.delay / 1000 } : null;
+          row.target = pose;
+        }
+        if (!same(flat.mesh, row.flat.mesh)) row.meshKey = flat.mesh ? flat.mesh.key : "";
+        const old = row.flat;
+        row.flat = flat;
+        this.startPlay(row, old.play, now);
+      }
+      /** Starts, restarts, crossfades, retimes or stops a row's clip after its `play` changed from `old`. */
+      startPlay(row, old, now) {
+        const p = row.flat.play;
+        if (!p) { row.playing = null; return; }
+        const clip = this.clip(p.clip);
+        const unchanged = !!old && old.clip === p.clip && old.run === p.run;
+        if (row.playing && unchanged) {
+          const track = row.playing.current;
+          if (track) { track.setSpeed(p.speed, now); track.looping = p.loop; }
+        } else {
+          const was = row.playing;
+          const previous = was && p.fade > 0 && was.current ? { track: was.current, start: now, fade: p.fade } : null;
+          // `current` is null while its blob has not arrived; `live`: sample once more after it stops.
+          row.playing = { current: clip ? new Track(clip, now, p.speed, p.loop) : null, previous, live: true };
+        }
+      }
+      /** The decoded clip `id` (from the cache, or its blob). */
+      clip(id) { return this.clips.get(id) || this.blob(id, "A") || null; }
+      /** Blobs arrived: clips that waited for theirs start now, skins and instance sets resolve. */
+      blobsArrived(now) {
+        for (const row of this.nodes) {
+          const p = row.flat.play;
+          if (!p || !row.playing || row.playing.current) continue;
+          const clip = this.clip(p.clip);
+          if (clip) { row.playing.current = new Track(clip, now, p.speed, p.loop); row.playing.live = true; }
+        }
+        this.relink();
+        this.refresh(now, true);
+      }
+      /**
+       * Rebuilds the table's links after an update: parents, subtrees, named and labeled
+       * ancestors, visibility, the lists of moving nodes, clip targets and skin joints. O(nodes).
+       */
+      relink() {
+        // Pre-order from the parent keys, whatever order the rows came in (rows whose parent is
+        // missing go to the top level).
+        let n = this.nodes.length;
+        const keys = new Map();
+        this.nodes.forEach((r, i) => keys.set(r.flat.key, i));
+        const kids = this.nodes.map(() => []), roots = [];
+        this.nodes.forEach((r, i) => {
+          const p = r.flat.parent !== null ? keys.get(r.flat.parent) : undefined;
+          if (p !== undefined && p !== i) kids[p].push(i); else roots.push(i);
+        });
+        const order = [], stack = roots.slice().reverse(), placed = new Array(n).fill(false);
+        while (stack.length) {
+          const i = stack.pop();
+          if (placed[i]) continue;
+          placed[i] = true;
+          order.push(i);
+          for (let k = kids[i].length - 1; k >= 0; k--) stack.push(kids[i][k]);
+        }
+        if (order.length !== n || order.some((a, b) => a !== b)) {
+          const rows = this.nodes;
+          this.nodes = order.map((i) => rows[i]);
+          n = this.nodes.length;
+        }
+        this.index = new Map(this.nodes.map((r, i) => [r.flat.key, i]));
+        for (let i = 0; i < n; i++) {
+          const row = this.nodes[i];
+          let parent = row.flat.parent !== null ? this.index.get(row.flat.parent) : undefined;
+          if (parent === undefined || !(parent < i)) parent = null;
+          const pn = parent !== null ? this.nodes[parent] : null;
+          row.parent = parent;
+          row.end = i + 1;
+          row.children = [];
+          row.named = row.flat.name !== null ? i : pn ? pn.named : null;
+          row.part = row.flat.label !== null ? i : row.flat.name !== null ? null : pn ? pn.part : null;
+          row.visible = (pn ? pn.visible : true) && !row.flat.hidden;
+          row.clipPose = null;
+          row.dirty = true;
+        }
+        for (let i = n - 1; i >= 0; i--) {
+          const p = this.nodes[i].parent;
+          if (p !== null) this.nodes[p].end = Math.max(this.nodes[p].end, this.nodes[i].end);
+        }
+        for (let i = 0; i < n; i++) {
+          const p = this.nodes[i].parent;
+          if (p !== null) this.nodes[p].children.push(i);
+        }
+
+        // Blobs in use (decoded once per page by the blob store).
+        const clips = new Map(), skins = new Map(), instances = new Map();
+        for (const row of this.nodes) {
+          const p = row.flat.play, s = row.flat.skin, inst = row.flat.inst;
+          if (p) { const c = this.clip(p.clip); if (c) clips.set(p.clip, c); }
+          if (s) { const k = this.skins.get(s.id) || this.blob(s.id, "K"); if (k) skins.set(s.id, k); }
+          if (inst) { const set = this.instances.get(inst.id) || this.blob(inst.id, "I"); if (set) instances.set(inst.id, set); }
+        }
+        this.clips = clips;
+        this.skins = skins;
+        this.instances = instances;
+        const meshKeys = new Set(this.nodes.map((r) => r.meshKey));
+        for (const k of [...this.geometryCache.keys()]) if (!meshKeys.has(k)) this.geometryCache.delete(k);
+
+        // Clip targets and skin joints.
+        for (let i = 0; i < n; i++) {
+          const row = this.nodes[i];
+          if (row.playing) {
+            for (const track of [row.playing.current, row.playing.previous && row.playing.previous.track]) {
+              if (track) track.targets = track.clip.channels.map((c) => this.resolve(i, c.target));
+            }
+          }
+          const s = row.flat.skin;
+          let joints = [];
+          if (s) {
+            const skin = this.skins.get(s.id), root = this.index.get(s.root);
+            if (skin && root !== undefined) joints = skin.joints.map((path) => this.resolve(root, path));
+          }
+          row.jointNodes = joints;
+        }
+        const rows = this.nodes, all = rows.map((_, i) => i);
+        this.drawNodes = all.filter((i) => rows[i].visible && rows[i].flat.mesh);
+        this.spinning = all.filter((i) => rows[i].visible && !isZero(rows[i].flat.spin));
+        this.transitioning = all.filter((i) => rows[i].from);
+        this.players = all.filter((i) => rows[i].playing);
+        this.skinned = all.filter((i) => rows[i].visible && rows[i].jointNodes.length > 0);
+      }
+      /** The node a clip target or joint path names, from node `from`: "" itself, "0/2" a child-index path, "#name" a named node. */
+      resolve(from, target) {
+        if (target.startsWith("#")) { const i = this.index.get(target); return i === undefined ? null : i; }
+        let at = from;
+        for (const step of target.split("/")) {
+          if (!step) continue;
+          if (!/^\d+$/.test(step)) return null;
+          const child = this.nodes[at].children[Number(step)];
+          if (child === undefined) return null;
+          at = child;
+        }
+        return at;
+      }
+      transitionProgress(start, now) {
+        const t = this.settings.t;
+        if (!t || t.ms <= 0) return null;
+        const p = ((now - start) * 1000) / t.ms;
+        return p < 1 ? ease(t.bezier, Math.max(p, 0)) : null;
+      }
+      poseAt(n, now) {
+        const p = n.from ? this.transitionProgress(n.from.start, now) : null;
+        return p === null ? n.target : poseLerp(n.from.pose, n.target, p);
+      }
+      currentOrbit(now) {
+        const p = this.cameraFrom ? this.transitionProgress(this.cameraFrom.start, now) : null;
+        return p === null ? this.orbit : orbitLerp(this.cameraFrom.orbit, this.orbit, p);
+      }
+      /** The finger or mouse button went down (auto-rotation pauses). */
+      pointerDown() { this.dragging = true; }
+      /** Moved by `dx`, `dy` points while down: right turns the scene right, down shows more of its top. */
+      drag(dx, dy) {
+        if (!(this.settings.orbit && this.settings.orbit.rotate)) return;
+        this.settleCamera();
+        this.orbit.yaw -= dx * DEGREES_PER_POINT;
+        this.orbit.pitch = clamp(this.orbit.pitch + dy * DEGREES_PER_POINT, -MAX_PITCH, MAX_PITCH);
+      }
+      pointerUp() { this.dragging = false; }
+      /** Pinch or scroll: `factor` above 1 moves closer. */
+      zoom(factor) {
+        if (!(this.settings.orbit && this.settings.orbit.zoom) || !(factor > 0)) return;
+        this.settleCamera();
+        if (this.orbit.ortho !== null) this.orbit.ortho /= factor;
+        else this.orbit.distance = clamp(this.orbit.distance / factor, this.minDistance, this.maxDistance);
+      }
+      /** Two-finger drag: moves the target with the content (`height`: the element's, points). */
+      pan(dx, dy, height) {
+        if (!(this.settings.orbit && this.settings.orbit.pan) || !(height > 0)) return;
+        this.settleCamera();
+        const o = this.orbit, eye = orbitEye(o);
+        const f = normalize(sub(o.target, eye)), right = normalize(cross(f, [0, 1, 0])), up = cross(right, f);
+        const visible = o.ortho !== null ? o.ortho : 2 * o.distance * Math.tan(rad(o.fov) / 2);
+        const k = visible / height;
+        o.target = add(o.target, add(scale(right, -dx * k), scale(up, dy * k)));
+      }
+      /** A gesture takes over from a running camera transition. */
+      settleCamera() {
+        if (this.cameraFrom) {
+          this.orbit = { ...this.currentOrbit(this.now) };
+          this.cameraFrom = null;
+        }
+      }
+      /** Moves time to `now`: auto-rotation turns by the time since the last frame; spins, transitions and clips move the nodes. */
+      advance(now) {
+        const dt = this.last === null ? 0 : clamp(now - this.last, 0, 0.25);
+        this.last = now;
+        this.now = now;
+        const o = this.settings.orbit;
+        if (o && o.auto !== 0 && !this.dragging) {
+          this.orbit.yaw += o.auto * dt;
+          if (this.cameraFrom) this.cameraFrom.orbit = { ...this.cameraFrom.orbit, yaw: this.cameraFrom.orbit.yaw + o.auto * dt };
+        }
+        const cf = this.cameraFrom;
+        if (cf && now >= cf.start && this.transitionProgress(cf.start, now) === null) this.cameraFrom = null;
+        this.refresh(now, false);
+      }
+      /**
+       * Recomputes what moved at `now`: clip poses, then the local matrices of moving nodes and
+       * the worlds of their subtrees, then skins. `all`: every node (after an update).
+       */
+      refresh(now, all) {
+        const tick = ++this.tick, nodes = this.nodes;
+        let moving = false;
+        // Rows whose local pose changes now (each frame: the moving ones only).
+        let touched = [];
+        // Fades that are over: the nodes only the old clip moved go back to their own pose.
+        for (const p of this.players) {
+          const playing = nodes[p].playing, prev = playing && playing.previous;
+          if (!prev || !(now - prev.start >= prev.fade)) continue;
+          playing.previous = null;
+          playing.live = true;
+          for (const t of prev.track.targets) {
+            if (t === null) continue;
+            nodes[t].clipPose = null;
+            nodes[t].dirty = true;
+            touched.push(t);
+          }
+        }
+        // Clips: sample every running track (and, after an update, the finished ones too: their last pose holds).
+        const poses = new Map(), live = [];
+        for (const p of this.players) {
+          const playing = nodes[p].playing;
+          if (!playing) continue;
+          const running = !!playing.previous || (!!playing.current && playing.current.running(now));
+          live.push([p, running]);
+          if (!running && !playing.live && !all) continue;
+          moving = moving || running;
+          const fresh = new Map();
+          if (playing.current) playing.current.sample(now, fresh);
+          const prev = playing.previous;
+          if (prev) {
+            const w = clamp((now - prev.start) / prev.fade, 0, 1), old = new Map();
+            prev.track.sample(now, old);
+            for (const [target, a] of old) {
+              const b = fresh.get(target) || clipPose();
+              fresh.delete(target);
+              poses.set(target, this.blend(target, a, b, w, now));
+            }
+            for (const [target, b] of fresh) poses.set(target, this.blend(target, clipPose(), b, w, now));
+          } else {
+            for (const [target, pose] of fresh) poses.set(target, pose);
+          }
+        }
+        for (const [p, running] of live) if (nodes[p].playing) nodes[p].playing.live = running;
+        for (const [target, pose] of poses) {
+          const row = nodes[target];
+          if (!sameClipPose(row.clipPose, pose)) {
+            row.clipPose = pose;
+            row.dirty = true;
+            touched.push(target);
+          }
+        }
+
+        // Spins and transitions.
+        for (const i of this.spinning) { nodes[i].dirty = true; touched.push(i); moving = true; }
+        const done = [];
+        for (const i of this.transitioning) {
+          const row = nodes[i];
+          row.dirty = true;
+          touched.push(i);
+          if (row.from && (now < row.from.start || this.transitionProgress(row.from.start, now) !== null)) moving = true;
+          else done.push(i);
+        }
+        if (done.length) {
+          for (const i of done) nodes[i].from = null;
+          this.transitioning = this.transitioning.filter((i) => !done.includes(i));
+        }
+
+        // Locals, then the worlds of the subtrees of the touched rows (in pre-order, a subtree is
+        // a range: one pass covers nested ones).
+        if (all) touched = nodes.map((_, i) => i);
+        else touched = [...new Set(touched)].sort((a, b) => a - b);
+        let covered = 0;
+        for (const i of touched) {
+          if (i < covered) continue;
+          covered = nodes[i].end;
+          for (let j = i; j < covered; j++) {
+            if (all || nodes[j].dirty) { nodes[j].local = this.local(j, now); nodes[j].dirty = false; }
+            this.updateWorld(j, tick);
+          }
+        }
+
+        // Skins whose joints or node moved.
+        for (const s of this.skinned) {
+          const row = nodes[s];
+          const moved = all || row.moved === tick || row.jointNodes.some((j) => j !== null && nodes[j].moved === tick);
+          if (!moved) continue;
+          const skin = row.flat.skin && this.skins.get(row.flat.skin.id);
+          if (!skin) continue;
+          // Where each joint puts the mesh: world · J_i = world(joint i) · inverse_bind[i] (the node's own transform places nothing).
+          const placed = row.jointNodes.map((j, k) => (j !== null ? mul(nodes[j].world, skin.inverseBind[k] || IDENTITY) : row.world));
+          const inverse = invert(row.world);
+          row.joints = placed.map((p) => mul(inverse, p));
+          // Every skinned vertex is a weighted mean of `world · J_i · v`, so the union of the mesh box under each `world · J_i` holds them.
+          if (row.flat.mesh && !row.flat.inst && placed.length) {
+            const b = row.flat.mesh.bounds;
+            let box = transformAabb(placed[0], b);
+            for (let k = 1; k < placed.length; k++) box = aabbUnion(box, transformAabb(placed[k], b));
+            row.bounds = box;
+          }
+        }
+        this.moving = moving;
+      }
+      /** Blends two clips' poses of node `target` (`w`: the new one's weight); a part only one sets blends with the node's own pose. */
+      blend(target, a, b, w, now) {
+        const own = this.poseAt(this.nodes[target], now);
+        const ownQ = own.quat || quatFromEuler(own.rotation);
+        const mix3 = (x, y, base) => (x || y ? lerp3(x || base, y || base, w) : null);
+        return {
+          translation: mix3(a.translation, b.translation, own.position),
+          rotation: a.rotation || b.rotation ? slerp(a.rotation || ownQ, b.rotation || ownQ, w) : null,
+          scale: mix3(a.scale, b.scale, own.scale),
+        };
+      }
+      /** Row `i`'s local matrix at `now`. */
+      local(i, now) {
+        const row = this.nodes[i], pose = this.poseAt(row, now), clip = row.clipPose || clipPose();
+        const position = clip.translation || pose.position, size = clip.scale || pose.scale, spin = row.flat.spin;
+        const turned = !isZero(spin) && row.visible ? scale(spin, now - row.appeared) : [0, 0, 0];
+        const q = clip.rotation || pose.quat;
+        if (q) return composeQuat(position, isZero(turned) ? q : quatMul(q, quatFromEuler(turned)), size);
+        return compose(position, add(pose.rotation, turned), size);
+      }
+      /** Row `i`'s world matrix from its parent's, and what follows from it. */
+      updateWorld(i, tick) {
+        const row = this.nodes[i];
+        const world = row.parent !== null ? mul(this.nodes[row.parent].world, row.local) : row.local;
+        if (!sameArray(row.world, world) || row.moved === 0) {
+          row.world = world;
+          row.moved = tick;
+          row.normal = normalMatrix(world);
+        }
+        // A skinned mesh's box follows its joints (set with them, after the worlds); until they resolve, its node places it.
+        const skinned = row.jointNodes.length > 0 && !row.flat.inst;
+        if (row.flat.mesh && !skinned) row.bounds = transformAabb(world, row.flat.inst ? row.flat.inst.bounds : row.flat.mesh.bounds);
+      }
+      /** The frame at the time of the last `advance`, for `width` × `height` points, dark or not. */
+      frame(width, height, dark) {
+        const now = this.now, cam = this.currentOrbit(now), eye = orbitEye(cam), c = this.settings.camera;
+        const aspect = height > 0 ? width / height : 1;
+        const projection = cam.ortho !== null ? orthographic(cam.ortho, aspect, c.near, c.far) : perspective(cam.fov, aspect, c.near, c.far);
+        const view = lookAt(eye, cam.target, [0, 1, 0]);
+        const viewProj = mul(projection, view);
+        let clear = [0, 0, 0, 0];
+        if (this.settings.bg) {
+          const [r, g, b, a] = resolve(this.settings.bg, dark);
+          clear = [r * a, g * a, b * a, a];
+        }
+        let ambient = [0, 0, 0], shadowLight = null;
+        const lights = [];
+        for (const l of effectiveLights(this.settings)) {
+          const [r, g, b] = resolve(l.color, dark);
+          const color = [r, g, b].map((v) => srgbToLinear(v) * l.intensity);
+          const half = rad(Math.max(l.angle, 1) / 2);
+          let kind, params;
+          if (l.type === "ambient") { ambient = add(ambient, color); continue; }
+          else if (l.type === "directional") { kind = 1; params = [0, 0, 0, 0]; }
+          else if (l.type === "point") { kind = 2; params = [l.range, -1, -1, 0]; }
+          else if (l.type === "spot") { kind = 3; params = [l.range, Math.cos(half), Math.cos(half * 0.75), 0]; }
+          else continue;
+          if (lights.length < MAX_LIGHTS) {
+            if (kind === 1 && l.shadows && shadowLight === null) shadowLight = lights.length;
+            const d = normalize(l.dir);
+            lights.push({ kind, color, position: l.pos, direction: isZero(d) ? [0, -1, 0] : d, params });
+          }
+        }
+        const planes = frustumPlanes(viewProj), opaque = [], transparent = [];
+        for (const i of this.drawNodes) {
+          const d = this.draw(i, dark);
+          if (!d || !aabbInFrustum(planes, d.bounds)) continue;
+          (d.transparent ? transparent : opaque).push(d);
+        }
+        // Fewer program, texture and buffer switches.
+        opaque.sort((a, b) => variantOf(a) - variantOf(b) || compareText(a.material.texture, b.material.texture) || compareText(a.meshKey, b.meshKey));
+        // Back to front: farthest from the camera first.
+        const depth = (d) => { const b = d.bounds; return length(sub([(b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2], eye)); };
+        transparent.sort((a, b) => depth(b) - depth(a));
+        const draws = opaque.concat(transparent);
+        const shadow = shadowLight !== null ? shadowPass(shadowLight, lights[shadowLight], draws) : null;
+        const e = this.settings.env, o = this.settings.orbit;
+        return {
+          width, height, view, projection, viewProj, inverseViewProj: invert(viewProj), cameraPosition: eye, clear, ambient, lights,
+          draws, shadow, env: e ? { id: e.id, intensity: e.intensity, background: e.background } : null,
+          exposure: this.settings.exposure,
+          animating: this.moving || !!this.cameraFrom || !!(o && o.auto !== 0 && !this.dragging),
+        };
+      }
+      /** Row `i`'s draw (null: invisible, alpha 0). */
+      draw(i, dark) {
+        const row = this.nodes[i], mesh = row.flat.mesh;
+        if (!mesh) return null;
+        const m = row.flat.mat, pose = this.poseAt(row, this.now);
+        const [r, g, b, ca] = resolve(pose.color, dark), [er, eg, eb] = resolve(pose.emissive, dark);
+        const a = m.alpha === "opaque" ? 1 : ca;
+        // Invisible: neither drawn nor hit.
+        if (a <= 0) return null;
+        const lin = srgbToLinear;
+        return {
+          node: i, key: row.flat.key, name: row.named !== null ? this.nodes[row.named].flat.name : null,
+          mesh, meshKey: row.meshKey, world: row.world, normal: row.normal,
+          material: {
+            color: [lin(r), lin(g), lin(b), a], emissive: [er, eg, eb].map(lin), metalness: pose.metalness, roughness: pose.roughness,
+            unlit: m.unlit, doubleSided: m.double, texture: m.map, mrMap: m.mr_map, normalMap: m.normal_map, normalScale: m.normal_scale,
+            emissiveMap: m.emissive_map, aoMap: m.ao_map, alpha: m.alpha, alphaCutoff: m.cutoff,
+          },
+          transparent: m.alpha === "blend" && a < 1,
+          instances: row.flat.inst ? { id: row.flat.inst.id, count: row.flat.inst.count } : null,
+          joints: row.jointNodes.length > 0 && row.joints.length === row.jointNodes.length ? row.joints : null,
+          castShadows: row.flat.cast, receiveShadows: row.flat.recv, bounds: row.bounds,
+        };
+      }
+      /** The triangles of a draw as stored (unskinned; cached by mesh key; empty while a blob mesh has not arrived). */
+      geometry(d) {
+        const cached = this.geometryCache.get(d.meshKey);
+        if (cached) return cached;
+        const data = generate(d.mesh, this.blob);
+        // A blob that has not arrived is not cached: it is retried.
+        if (data.vertexCount() > 0 || d.mesh.type !== "blob") this.geometryCache.set(d.meshKey, data);
+        return data;
+      }
+      /** What a tap at `(x, y)` (points from the element's top-left) hits: `{ node, part, instance, point }`. */
+      hit(x, y, width, height, dark) {
+        const none = { node: null, part: null, instance: null, point: null };
+        if (!(width > 0) || !(height > 0)) return none;
+        const frame = this.frame(width, height, dark);
+        const nx = (2 * x) / width - 1, ny = 1 - (2 * y) / height;
+        const near = transformPoint(frame.inverseViewProj, [nx, ny, -1]), far = transformPoint(frame.inverseViewProj, [nx, ny, 1]);
+        const dir = sub(far, near);
+        // Nearest so far: { t (ray parameter), node, instance }.
+        let best = null;
+        const closer = (t) => !best || t < best.t;
+        for (const d of frame.draws) {
+          const entry = rayAabb(near, dir, d.bounds);
+          if (entry === null || !closer(entry)) continue;
+          const g = this.geometry(d), localBox = d.mesh.bounds, ix = g.indices;
+          const skin = d.joints && g.joints && g.joints.length === g.vertexCount() * 4 ? d.joints : null;
+          // `m`: where the mesh is (its world, times an instance's matrix).
+          const test = (m, instance) => {
+            if (skin) {
+              // Skinned: its triangles in the current pose, in the world.
+              const t = rayTriangles(near, dir, skinnedPositions(g, skin.map((j) => mul(m, j)), m), ix, best ? best.t : Infinity);
+              if (t !== null) best = { t, node: d.node, instance };
+              return;
+            }
+            const inv = invert(m), o = transformPoint(inv, near), v = transformDir(inv, dir);
+            const inside = rayAabb(o, v, localBox);
+            if (inside === null || !closer(inside)) return;
+            const t = rayTriangles(o, v, g.positions, ix, best ? best.t : Infinity);
+            if (t !== null) best = { t, node: d.node, instance };
+          };
+          const set = d.instances ? this.instances.get(d.instances.id) : null;
+          if (set) for (let k = 0; k < set.count; k++) test(mul(d.world, set.matrix(k)), k);
+          else test(d.world, null);
+        }
+        if (!best) return none;
+        const row = this.nodes[best.node];
+        return {
+          node: row.named !== null ? this.nodes[row.named].flat.name : null,
+          part: row.part !== null ? this.nodes[row.part].flat.label : null,
+          instance: best.instance,
+          point: add(near, scale(dir, best.t)),
+        };
+      }
+    }
+    /**
+     * The vertices of a skinned mesh in the current pose, flat: vertex `i` is `Σ w_k · placed[j_k] · v`
+     * (by `world` alone if its weights are all zero). The joint matrices are affine (no divide by w).
+     */
+    function skinnedPositions(g, placed, world) {
+      const n = g.vertexCount(), out = new Float64Array(n * 3), P = g.positions, J = g.joints, W = g.weights;
+      for (let i = 0; i < n; i++) {
+        const x = P[i * 3], y = P[i * 3 + 1], z = P[i * 3 + 2];
+        let ox = 0, oy = 0, oz = 0, total = 0;
+        for (let k = 0; k < 4; k++) {
+          const w = W[i * 4 + k] || 0, m = placed[J[i * 4 + k]];
+          if (!m || w === 0) continue;
+          ox += w * (m[0] * x + m[4] * y + m[8] * z + m[12]);
+          oy += w * (m[1] * x + m[5] * y + m[9] * z + m[13]);
+          oz += w * (m[2] * x + m[6] * y + m[10] * z + m[14]);
+          total += w;
+        }
+        if (total === 0) [ox, oy, oz] = transformPoint(world, [x, y, z]);
+        out[i * 3] = ox;
+        out[i * 3 + 1] = oy;
+        out[i * 3 + 2] = oz;
+      }
+      return out;
+    }
+    /** The shadow map fitted to the visible draws, seen along `light`. */
+    function shadowPass(index, light, draws) {
+      if (!draws.length) return null;
+      let union = draws[0].bounds;
+      for (let i = 1; i < draws.length; i++) union = aabbUnion(union, draws[i].bounds);
+      const casters = [];
+      draws.forEach((d, i) => { if (d.castShadows) casters.push(i); });
+      if (!casters.length) return null;
+      const center = [(union[0] + union[3]) / 2, (union[1] + union[4]) / 2, (union[2] + union[5]) / 2];
+      const extent = length([union[3] - union[0], union[4] - union[1], union[5] - union[2]]) / 2;
+      // The radius in steps of 1/16 of its power of two, and the center on whole texels: the map
+      // does not shimmer while the scene stays put.
+      const step = Math.pow(2, Math.ceil(Math.log2(Math.max(extent, 1e-3))) - 4);
+      const radius = Math.ceil(Math.max(extent, 1e-3) / step) * step;
+      const size = SHADOW_MAP_SIZE, texel = (2 * radius) / size, dir = light.direction;
+      const up = Math.abs(dir[1]) > 0.99 ? [0, 0, 1] : [0, 1, 0];
+      const rotate = lookAt([0, 0, 0], dir, up);
+      const c = transformPoint(rotate, center);
+      const snap = (v) => Math.floor(v / texel) * texel;
+      const view = mul(translation([-snap(c[0]), -snap(c[1]), 0]), rotate);
+      // One texel of margin for the snap; depth around the center (view −Z).
+      const half = radius + texel;
+      const projection = orthographic(2 * half, 1, -c[2] - radius, -c[2] + radius);
+      return { light: index, viewProj: mul(projection, view), mapSize: size, bias: 1.5 / size, normalBias: 1.5 * texel, casters };
+    }
+
+    // --- shaders.rs, verbatim (scene3d.test.mjs checks they are byte-identical); keep them in step.
+    const ES_HEADER = "#version 300 es\n";
+    /** `Variant::defines`: one line per flag, in this order. */
+    const variantDefines = (v) => (v.instanced ? "#define INSTANCED\n" : "") + (v.skinned ? "#define SKINNED\n" : "") + (v.depthOnly ? "#define DEPTH_ONLY\n" : "");
+    /** `program_source`: the header, the variant's defines, then the stage's body ("vertex" or "fragment"). */
+    const programSource = (header, stage, variant) => header + variantDefines(variant) + (stage === "vertex" ? VERTEX : FRAGMENT);
+    const VERTEX = `precision highp float;
+precision highp int;
+layout(location = 0) in vec3 a_position;
+layout(location = 1) in vec3 a_normal;
+layout(location = 2) in vec2 a_uv;
+layout(location = 3) in vec4 a_color;
+#ifdef SKINNED
+layout(location = 4) in uvec4 a_joints;
+layout(location = 5) in vec4 a_weights;
+uniform highp sampler2D u_bones;
+#endif
+#ifdef INSTANCED
+layout(location = 6) in mat4 a_instance;
+layout(location = 10) in vec4 a_instance_color;
+#endif
+uniform mat4 u_model;
+uniform mat3 u_normal_matrix;
+uniform mat4 u_view_proj;
+out vec3 v_world;
+out vec3 v_normal;
+out vec2 v_uv;
+out vec4 v_color;
+#ifdef SKINNED
+mat4 bone(uint j) {
+  int y = int(j);
+  return mat4(texelFetch(u_bones, ivec2(0, y), 0), texelFetch(u_bones, ivec2(1, y), 0),
+              texelFetch(u_bones, ivec2(2, y), 0), texelFetch(u_bones, ivec2(3, y), 0));
+}
+#endif
+void main() {
+  vec4 position = vec4(a_position, 1.0);
+  vec3 normal = a_normal;
+  v_color = a_color;
+#ifdef SKINNED
+  mat4 skin = a_weights.x * bone(a_joints.x) + a_weights.y * bone(a_joints.y)
+            + a_weights.z * bone(a_joints.z) + a_weights.w * bone(a_joints.w);
+  position = skin * position;
+  normal = mat3(skin) * normal;
+#endif
+#ifdef INSTANCED
+  position = a_instance * position;
+  normal = transpose(inverse(mat3(a_instance))) * normal;
+  v_color *= a_instance_color;
+#endif
+  vec4 world = u_model * position;
+  v_world = world.xyz;
+  v_normal = u_normal_matrix * normal;
+  v_uv = a_uv;
+  gl_Position = u_view_proj * world;
+}
+`;
+    const FRAGMENT = `precision highp float;
+precision highp int;
+#ifdef DEPTH_ONLY
+void main() {}
+#else
+precision highp sampler2DShadow;
+#define MAX_LIGHTS 8
+in vec3 v_world;
+in vec3 v_normal;
+in vec2 v_uv;
+in vec4 v_color;
+uniform vec3 u_camera;
+uniform vec3 u_ambient;
+uniform int u_light_count;
+uniform int u_light_kind[MAX_LIGHTS];
+uniform vec3 u_light_color[MAX_LIGHTS];
+uniform vec3 u_light_position[MAX_LIGHTS];
+uniform vec3 u_light_direction[MAX_LIGHTS];
+uniform vec4 u_light_params[MAX_LIGHTS];
+uniform float u_exposure;
+uniform vec4 u_color;
+uniform vec3 u_emissive;
+uniform float u_metalness;
+uniform float u_roughness;
+uniform int u_unlit;
+uniform int u_alpha_mode;
+uniform float u_alpha_cutoff;
+uniform int u_has_texture;
+uniform sampler2D u_texture;
+uniform int u_has_mr_map;
+uniform sampler2D u_mr_map;
+uniform int u_has_normal_map;
+uniform sampler2D u_normal_map;
+uniform float u_normal_scale;
+uniform int u_has_emissive_map;
+uniform sampler2D u_emissive_map;
+uniform int u_has_ao_map;
+uniform sampler2D u_ao_map;
+uniform int u_has_env;
+uniform sampler2D u_env;
+uniform float u_env_levels;
+uniform vec3 u_env_sh[9];
+uniform float u_env_intensity;
+uniform int u_has_shadow;
+uniform int u_receive_shadows;
+uniform sampler2DShadow u_shadow_map;
+uniform mat4 u_shadow_view_proj;
+uniform int u_shadow_light;
+uniform float u_shadow_bias;
+uniform float u_shadow_normal_bias;
+uniform float u_shadow_texel;
+out vec4 o_color;
+const float PI = 3.14159265;
+
+// Equirectangular coordinates of a direction (v = 0: straight up).
+vec2 equirect(vec3 d) {
+  return vec2(0.5 + atan(d.x, -d.z) / (2.0 * PI), acos(clamp(d.y, -1.0, 1.0)) / PI);
+}
+
+// The environment's irradiance around n, from its spherical harmonics.
+vec3 sh_irradiance(vec3 n) {
+  return u_env_sh[0] * 0.282095
+    + u_env_sh[1] * 0.488603 * n.y
+    + u_env_sh[2] * 0.488603 * n.z
+    + u_env_sh[3] * 0.488603 * n.x
+    + u_env_sh[4] * 1.092548 * n.x * n.y
+    + u_env_sh[5] * 1.092548 * n.y * n.z
+    + u_env_sh[6] * 0.315392 * (3.0 * n.z * n.z - 1.0)
+    + u_env_sh[7] * 1.092548 * n.x * n.z
+    + u_env_sh[8] * 0.546274 * (n.x * n.x - n.y * n.y);
+}
+
+// Karis' analytic approximation of the split-sum environment BRDF.
+vec3 env_brdf(vec3 f0, float rough, float nv) {
+  const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+  const vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
+  vec4 r = rough * c0 + c1;
+  float a004 = min(r.x * r.x, exp2(-9.28 * nv)) * r.x + r.y;
+  vec2 ab = vec2(-1.04, 1.04) * a004 + r.zw;
+  return f0 * ab.x + ab.y;
+}
+
+// The normal bent by the normal map, in a cotangent frame built from screen
+// derivatives (no tangents needed). Texture v grows downward while the map's
+// green points up the image: the bitangent is -dp/dv.
+vec3 perturb(vec3 n, vec3 p, vec2 uv) {
+  vec3 m = texture(u_normal_map, uv).xyz * 2.0 - 1.0;
+  m.xy *= u_normal_scale;
+  vec3 dp1 = dFdx(p);
+  vec3 dp2 = dFdy(p);
+  vec2 duv1 = dFdx(uv);
+  vec2 duv2 = dFdy(uv);
+  vec3 dp2perp = cross(dp2, n);
+  vec3 dp1perp = cross(n, dp1);
+  vec3 t = dp2perp * duv1.x + dp1perp * duv2.x;
+  vec3 b = -(dp2perp * duv1.y + dp1perp * duv2.y);
+  float scale = inversesqrt(max(max(dot(t, t), dot(b, b)), 1e-20));
+  return normalize(mat3(t * scale, b * scale, n) * m);
+}
+
+// 1: lit, 0: in the shadow light's shadow (3x3 PCF).
+float shadow(vec3 n) {
+  vec4 p = u_shadow_view_proj * vec4(v_world + n * u_shadow_normal_bias, 1.0);
+  vec3 c = p.xyz / p.w * 0.5 + 0.5;
+  if (c.x < 0.0 || c.x > 1.0 || c.y < 0.0 || c.y > 1.0 || c.z > 1.0) return 1.0;
+  float sum = 0.0;
+  for (int x = -1; x <= 1; x++) {
+    for (int y = -1; y <= 1; y++) {
+      vec2 o = vec2(float(x), float(y)) * u_shadow_texel;
+      sum += texture(u_shadow_map, vec3(c.xy + o, c.z - u_shadow_bias));
+    }
+  }
+  return sum / 9.0;
+}
+
+// ACES filmic curve (Narkowicz' fit).
+vec3 aces(vec3 x) {
+  return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+}
+
+void main() {
+  vec4 base = u_color * v_color;
+  if (u_has_texture == 1) {
+    vec4 t = texture(u_texture, v_uv);
+    base *= vec4(pow(t.rgb, vec3(2.2)), t.a);
+  }
+  if (u_alpha_mode == 1) {
+    if (base.a < u_alpha_cutoff) discard;
+    base.a = 1.0;
+  } else if (u_alpha_mode == 2) {
+    base.a = 1.0;
+  }
+  vec3 emissive = u_emissive;
+  if (u_has_emissive_map == 1) {
+    emissive *= pow(texture(u_emissive_map, v_uv).rgb, vec3(2.2));
+  }
+  vec3 color;
+  if (u_unlit == 1) {
+    color = base.rgb;
+  } else {
+    vec3 n = normalize(v_normal);
+    if (!gl_FrontFacing) n = -n;
+    vec3 geometric = n;
+    if (u_has_normal_map == 1) n = perturb(n, v_world, v_uv);
+    float metal = u_metalness;
+    float rough = u_roughness;
+    if (u_has_mr_map == 1) {
+      vec4 mr = texture(u_mr_map, v_uv);
+      rough *= mr.g;
+      metal *= mr.b;
+    }
+    float ao = u_has_ao_map == 1 ? texture(u_ao_map, v_uv).r : 1.0;
+    vec3 v = normalize(u_camera - v_world);
+    float nv = max(dot(n, v), 1e-4);
+    rough = clamp(rough, 0.04, 1.0);
+    float a = rough * rough;
+    float a2 = a * a;
+    float k = (rough + 1.0) * (rough + 1.0) / 8.0;
+    vec3 f0 = mix(vec3(0.04), base.rgb, metal);
+    vec3 diffuse = base.rgb * (1.0 - metal);
+    // Ambient light: diffuse, plus a little specular so metals are not black.
+    color = u_ambient * (diffuse + f0 * 0.5) * ao;
+    if (u_has_env == 1) {
+      vec3 irradiance = max(sh_irradiance(n), vec3(0.0)) / PI;
+      vec3 r = reflect(-v, n);
+      vec3 prefiltered = textureLod(u_env, equirect(r), rough * (u_env_levels - 1.0)).rgb;
+      color += (irradiance * diffuse + prefiltered * env_brdf(f0, rough, nv)) * u_env_intensity * ao;
+    }
+    float lit = 1.0;
+    if (u_has_shadow == 1 && u_receive_shadows == 1) lit = shadow(geometric);
+    for (int i = 0; i < MAX_LIGHTS; i++) {
+      if (i >= u_light_count) break;
+      vec3 l;
+      float att = 1.0;
+      if (u_light_kind[i] == 1) {
+        l = -normalize(u_light_direction[i]);
+      } else {
+        vec3 d = u_light_position[i] - v_world;
+        float dist = length(d);
+        l = d / max(dist, 1e-4);
+        float range = u_light_params[i].x;
+        if (range > 0.0) {
+          float f = clamp(1.0 - dist / range, 0.0, 1.0);
+          att = f * f;
+        }
+        if (u_light_kind[i] == 3) {
+          float c = dot(-l, normalize(u_light_direction[i]));
+          att *= smoothstep(u_light_params[i].y, u_light_params[i].z, c);
+        }
+      }
+      if (i == u_shadow_light) att *= lit;
+      float nl = max(dot(n, l), 0.0);
+      if (nl <= 0.0 || att <= 0.0) continue;
+      vec3 h = normalize(v + l);
+      float nh = max(dot(n, h), 0.0);
+      float vh = max(dot(v, h), 0.0);
+      float dd = nh * nh * (a2 - 1.0) + 1.0;
+      float D = a2 / (PI * dd * dd);
+      float G = (nv / (nv * (1.0 - k) + k)) * (nl / (nl * (1.0 - k) + k));
+      vec3 F = f0 + (1.0 - f0) * pow(1.0 - vh, 5.0);
+      vec3 spec = D * G * F / (4.0 * nv * nl + 1e-4);
+      vec3 kd = (1.0 - F) * (1.0 - metal);
+      // Punctual lights in "intensity 1 = full white" units: × PI.
+      color += (kd * base.rgb / PI + spec) * u_light_color[i] * att * nl * PI;
+    }
+  }
+  color += emissive;
+  color = pow(aces(color * u_exposure), vec3(1.0 / 2.2));
+  // Premultiplied alpha (canvases, TextureViews and GL areas composite so).
+  o_color = vec4(color * base.a, base.a);
+}
+#endif
+`;
+    const SKY_VERTEX = `precision highp float;
+precision highp int;
+out vec2 v_ndc;
+void main() {
+  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));
+  v_ndc = p;
+  gl_Position = vec4(p, 0.0, 1.0);
+}
+`;
+    const SKY_FRAGMENT = `precision highp float;
+in vec2 v_ndc;
+uniform mat4 u_inverse_view_proj;
+uniform vec3 u_camera;
+uniform sampler2D u_env;
+uniform float u_env_intensity;
+uniform float u_exposure;
+out vec4 o_color;
+const float PI = 3.14159265;
+vec3 aces(vec3 x) {
+  return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+}
+void main() {
+  vec4 far = u_inverse_view_proj * vec4(v_ndc, 1.0, 1.0);
+  vec3 d = normalize(far.xyz / far.w - u_camera);
+  vec2 uv = vec2(0.5 + atan(d.x, -d.z) / (2.0 * PI), acos(clamp(d.y, -1.0, 1.0)) / PI);
+  vec3 c = textureLod(u_env, uv, 0.0).rgb * u_env_intensity;
+  o_color = vec4(pow(aces(c * u_exposure), vec3(1.0 / 2.2)), 1.0);
+}
+`;
+
+    return {
+      decodeUpdate, applyFlat, ScenePlayer, ease, generate, sampleChannel, decode, TAP_SLOP, SHADOW_MAP_SIZE, MAX_LIGHTS,
+      ES_HEADER, VERTEX, FRAGMENT, SKY_VERTEX, SKY_FRAGMENT, programSource, variantDefines,
+      math: {
+        IDENTITY, mul, compose, composeQuat, rotation, rotationY, translation, invert, transformPoint, transformDir, lookAt, perspective,
+        length, quatToMat4, quatFromEuler, quatNormalize, slerp, transformAabb, rayAabb, frustumPlanes, aabbInFrustum,
+      },
+      geometry: { cuboid, sphere, plane, cylinder, torus, rayTriangle },
+    };
+  }
+  // </scene3d-core>
+
+  let scene3d = null;
+  const s3 = () => scene3d || (scene3d = scene3dCore());
+  const scenes = new Set();
+  /** While a reset rebuilds the page: the scenes it had, by node id (the new nodes take them over). */
+  let sceneOrphans = null;
+  /** The observers and listeners every scene shares (made with the first one). */
+  let sceneShared = null;
+  const sceneNow = () => performance.now() / 1000;
+
+  // --- Blobs and images: fetched once per page, shared by every scene ------------
+  // (GPU objects cannot be shared between canvases: each scene's context
+  // uploads a blob once, and draws every node using it from that one buffer.)
+  /** Blob id → `{ buf, decoded (kind → value), type, failed }`; `buf` null while it is on its way (or failed). */
+  const sceneBlobs = new Map();
+  /** Blob `id` decoded as `kind` (`M`, `I`, `A`, `K`, `E`, `P`), or null until it arrives (fetched on first ask). */
+  function sceneBlob(id, kind) {
+    let e = sceneBlobs.get(id);
+    if (!e) {
+      e = { buf: null, decoded: new Map(), type: "", failed: false };
+      sceneBlobs.set(id, e);
+      sceneFetch(id, e);
+    }
+    if (e.retry) { e.retry = false; if (e.failed) sceneFetch(id, e); }
+    if (!e.buf) return null;
+    if (!e.decoded.has(kind)) e.decoded.set(kind, s3().decode[kind](e.buf));
+    return e.decoded.get(kind);
+  }
+  function sceneFetch(id, e) {
+    if (typeof fetch !== "function") return;
+    e.failed = false;
+    fetch(`${BASE}/_prism/3d/${id}`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        e.type = (r.headers && r.headers.get && r.headers.get("content-type")) || "";
+        return r.arrayBuffer();
+      })
+      .then((buf) => { e.buf = buf; sceneArrived(); }, (err) => {
+        // Not asked again on every frame; the next update that refers to it does.
+        e.failed = true;
+        console.error("prism: 3D blob", id, err);
+      });
+  }
+  /** Something a scene waits for arrived: each re-resolves it at its next frame. */
+  function sceneArrived() {
+    scenes.forEach((st) => { st.stale = true; sceneRequest(st); });
+  }
+  /**
+   * Asks for every blob an update refers to now (in parallel), rather than when first drawn, and
+   * again for those that failed: a blob of the first paint may only exist on the server once the
+   * live session renders the scene again.
+   */
+  function scenePrefetch(update) {
+    for (const e of sceneBlobs.values()) if (e.failed) e.retry = true;
+    const s = update.settings;
+    if (s && s.env) sceneBlob(s.env.id, "E");
+    for (const n of update.nodes) {
+      if (n.mesh && n.mesh.type === "blob") sceneBlob(n.mesh.id, "M");
+      if (n.inst) sceneBlob(n.inst.id, "I");
+      if (n.play) sceneBlob(n.play.clip, "A");
+      if (n.skin) sceneBlob(n.skin.id, "K");
+      for (const src of sceneSources(n)) sceneImage(src);
+    }
+  }
+  /** A node's texture sources. */
+  const sceneSources = (n) => [n.mat.map, n.mat.mr_map, n.mat.normal_map, n.mat.emissive_map, n.mat.ao_map].filter(Boolean);
+  /** Texture images by source: `{ image, started }`, decoded once per page. */
+  const sceneImages = new Map();
+  /**
+   * A texture's image, or null until it loads (the scenes draw again then). `p3d:<id>`: an image
+   * blob, decoded unflipped with straight alpha and no color conversion (uv (0, 0) is its first
+   * row); other sources are URLs the server resolved, like pictures'.
+   */
+  function sceneImage(src) {
+    let e = sceneImages.get(src);
+    if (!e) sceneImages.set(src, (e = { image: null, started: false }));
+    if (e.image || e.started) return e.image;
+    const done = (image) => { e.image = image; sceneArrived(); };
+    const fail = (err) => console.error("prism: 3D texture", src, err);
+    if (src.startsWith("p3d:")) {
+      const id = src.slice(4).toLowerCase();
+      if (!/^[0-9a-f]{32}$/.test(id)) { e.started = true; return null; }
+      const buf = sceneBlob(id, "P");
+      if (!buf) return null; // asked again once the blob is here
+      e.started = true;
+      const blob = new Blob([buf], { type: sceneBlobs.get(id).type || "" });
+      const element = () => new Promise((ok, no) => {
+        const img = new Image(), url = URL.createObjectURL(blob);
+        img.onload = () => { URL.revokeObjectURL(url); ok(img); };
+        img.onerror = () => { URL.revokeObjectURL(url); no(new Error("undecodable image")); };
+        img.src = url;
+      });
+      (typeof createImageBitmap === "function"
+        ? createImageBitmap(blob, { imageOrientation: "none", premultiplyAlpha: "none", colorSpaceConversion: "none" }).catch(element)
+        : element()).then(done, fail);
+      return null;
+    }
+    e.started = true;
+    if (typeof Image !== "function") return null;
+    const img = new Image();
+    // CORS: a remote image that allows it can be a texture; one that does not fails to load (untextured).
+    img.crossOrigin = "anonymous";
+    img.onload = () => done(img);
+    img.onerror = () => fail(new Error("not loaded"));
+    img.src = src;
+    return null;
+  }
+
+  function sceneWatch() {
+    if (sceneShared) return sceneShared;
+    const dark = window.matchMedia ? matchMedia("(prefers-color-scheme: dark)") : null;
+    if (dark && dark.addEventListener) dark.addEventListener("change", sceneAppearance);
+    document.addEventListener("visibilitychange", () => scenes.forEach(sceneRequest));
+    sceneShared = {
+      dark,
+      // The canvas' size in points (its backing store is that × devicePixelRatio).
+      resize: typeof ResizeObserver === "function" ? new ResizeObserver((entries) => entries.forEach((e) => {
+        const st = e.target._scene3d;
+        if (!st) return;
+        st.w = e.contentRect.width;
+        st.h = e.contentRect.height;
+        sceneRequest(st);
+      })) : null,
+      // Offscreen scenes do not draw.
+      view: typeof IntersectionObserver === "function" ? new IntersectionObserver((entries) => entries.forEach((e) => {
+        const st = e.target._scene3d;
+        if (!st) return;
+        st.visible = e.isIntersecting;
+        if (st.visible) sceneRequest(st); else sceneCancel(st);
+      })) : null,
+    };
+    return sceneShared;
+  }
+
+  /**
+   * Whether `el` is in the dark appearance: its `color-scheme` (the app's
+   * forced appearance, or `light dark`: the system's).
+   */
+  function sceneDark(el) {
+    const scheme = String((getComputedStyle(el) || {}).colorScheme || "");
+    const light = /\blight\b/.test(scheme), dark = /\bdark\b/.test(scheme);
+    return dark && (!light || !!(sceneWatch().dark && sceneWatch().dark.matches));
+  }
+  /** The appearance changed: scenes resolve their adaptive colors again. */
+  function sceneAppearance() {
+    scenes.forEach((st) => { st.dark = null; sceneRequest(st); });
+  }
+
+  /** A scene node's update (`{"op":"scene"}`): the first one starts the scene, later ones go to its player. */
+  function sceneUpdate(el, u) {
+    const update = s3().decodeUpdate(u);
+    if (!update) return;
+    const st = el._scene || sceneAdopt(el);
+    if (!st) return sceneStart(el, update);
+    sceneApply(st, update);
+  }
+  /** Shows an update. With reduced motion, the camera does not turn by itself. */
+  function sceneApply(st, update) {
+    const S = s3(), s = update.settings;
+    if (s && s.orbit && reducedMotion && reducedMotion.matches) s.orbit.auto = 0;
+    scenePrefetch(update);
+    // The same scene again (the live tree taking over the first paint, a reconnect): nothing changes.
+    if (update.full && st.flat && JSON.stringify([s, update.nodes]) === JSON.stringify([st.flat.settings, st.flat.nodes])) return;
+    st.flat = S.applyFlat(st.flat || { settings: s || st.player.settings, nodes: [] }, update);
+    st.player.apply(update, sceneNow());
+    sceneConfigure(st);
+    sceneRequest(st);
+  }
+
+  /** The scene `el` (a `.prism-scene3d`, new or server-rendered) shows, from now on: its first (full) update. */
+  function sceneStart(el, update) {
+    const shared = sceneWatch();
+    const canvas = el.querySelector("canvas") || el.appendChild(document.createElement("canvas"));
+    canvas.setAttribute("aria-hidden", "true");
+    const st = {
+      el, canvas, flat: null, player: new (s3().ScenePlayer)(sceneNow(), sceneBlob),
+      gl: null, r: null, lost: false, raf: 0, visible: true, w: 0, h: 0, dark: null, stale: false,
+      pointers: new Map(), press: null, swallowClick: false,
+    };
+    canvas._scene3d = st;
+    el._scene = st;
+    scenes.add(st);
+    sceneInput(st);
+    // A lost context (GPU reset, too many contexts) leaves the box empty until it is back.
+    canvas.addEventListener("webglcontextlost", (e) => {
+      e.preventDefault();
+      sceneCancel(st);
+      st.lost = true;
+      st.gl = null;
+      st.r = null;
+    });
+    canvas.addEventListener("webglcontextrestored", () => {
+      st.lost = false;
+      sceneGl(st);
+      sceneRequest(st);
+    });
+    if (shared.resize) shared.resize.observe(canvas);
+    if (shared.view) shared.view.observe(canvas);
+    sceneGl(st);
+    sceneApply(st, update);
+  }
+
+  /** After a reset: the new node `el` takes over the scene its id had (its canvas, camera, spins and clips). */
+  function sceneAdopt(el) {
+    const st = sceneOrphans && sceneOrphans.get(el.dataset.pid);
+    if (!st) return null;
+    sceneOrphans.delete(el.dataset.pid);
+    el.appendChild(st.canvas);
+    st.el = el;
+    st.dark = null;
+    el._scene = st;
+    return st;
+  }
+  function sceneResetStart() {
+    if (!scenes.size) return;
+    sceneOrphans = new Map();
+    for (const st of scenes) {
+      sceneOrphans.set(st.el.dataset.pid, st);
+      st.el._scene = null;
+    }
+  }
+  function sceneResetEnd() {
+    if (!sceneOrphans) return;
+    sceneOrphans.forEach(sceneStop);
+    sceneOrphans = null;
+  }
+
+  /** Releases a scene: its frame, observers and GPU resources. */
+  function sceneStop(st) {
+    sceneCancel(st);
+    scenes.delete(st);
+    if (sceneShared) {
+      if (sceneShared.resize) sceneShared.resize.unobserve(st.canvas);
+      if (sceneShared.view) sceneShared.view.unobserve(st.canvas);
+    }
+    const gl = st.gl;
+    if (gl && st.r) {
+      sceneFree(st, () => true);
+      st.r.programs.forEach((p) => p && gl.deleteProgram(p.prog));
+      if (st.r.shadow) { gl.deleteFramebuffer(st.r.shadow.fbo); gl.deleteTexture(st.r.shadow.tex); }
+      if (st.r.empty) gl.deleteVertexArray(st.r.empty);
+      // Browsers keep few live contexts: give this one back now.
+      const lose = gl.getExtension("WEBGL_lose_context");
+      if (lose) lose.loseContext();
+    }
+    st.gl = null;
+    st.r = null;
+    st.canvas._scene3d = null;
+    if (st.el._scene === st) st.el._scene = null;
+    // No scene left: the page's blobs and images can go (the HTTP cache keeps them).
+    if (!scenes.size && !sceneOrphans) {
+      for (const [id, e] of sceneBlobs) if (e.buf) sceneBlobs.delete(id);
+      for (const [src, e] of sceneImages) if (e.image) sceneImages.delete(src);
+    }
+  }
+
+  /** The WebGL 2 context (none when WebGL 2 is unavailable: the box stays empty) and its GPU caches. */
+  function sceneGl(st) {
+    st.gl = null;
+    st.r = null;
+    let gl = null;
+    try {
+      gl = st.canvas.getContext ? st.canvas.getContext("webgl2", { alpha: true, premultipliedAlpha: true, antialias: true }) : null;
+    } catch (e) {
+      gl = null;
+    }
+    if (!gl || gl.isContextLost()) return;
+    const aniso = gl.getExtension("EXT_texture_filter_anisotropic");
+    st.gl = gl;
+    st.r = {
+      programs: new Map(), // variant (or "sky") → { prog, u, frame } | null (failed)
+      meshes: new Map(), // mesh key → vertex buffers
+      instances: new Map(), // I blob id → instance buffers
+      vaos: new Map(), // mesh key | I blob id → { vao, mesh, inst }
+      textures: new Map(), // source → texture
+      envs: new Map(), // E blob id → { tex, levels, sh }
+      bones: new Map(), // node key → { tex, joints, rows }
+      shadow: null, // { fbo, tex, size }
+      empty: null, // the sky's (attribute-less) vertex array
+      aniso: aniso ? Math.min(8, gl.getParameter(aniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT) || 1) : 0,
+      anisoName: aniso ? aniso.TEXTURE_MAX_ANISOTROPY_EXT : 0,
+      frame: 0,
+      program: null,
+    };
+  }
+
+  /** Frees the GPU data `gone(kind, key)` says nothing uses any more. */
+  function sceneFree(st, gone) {
+    const gl = st.gl, r = st.r;
+    if (!gl || !r) return;
+    for (const [k, v] of r.vaos) if (gone("vao", v)) { gl.deleteVertexArray(v.vao); r.vaos.delete(k); }
+    for (const [k, m] of r.meshes) if (gone("mesh", k)) { m.buffers.forEach((b) => gl.deleteBuffer(b)); r.meshes.delete(k); }
+    for (const [k, b] of r.instances) if (gone("inst", k)) { b.buffers.forEach((x) => gl.deleteBuffer(x)); r.instances.delete(k); }
+    for (const [k, t] of r.textures) if (gone("texture", k)) { gl.deleteTexture(t); r.textures.delete(k); }
+    for (const [k, e] of r.envs) if (gone("env", k)) { gl.deleteTexture(e.tex); r.envs.delete(k); }
+    for (const [k, b] of r.bones) if (gone("bones", k)) { gl.deleteTexture(b.tex); r.bones.delete(k); }
+  }
+
+  /** After an update: touch scrolling, and the GPU data nothing uses any more. */
+  function sceneConfigure(st) {
+    const o = st.player.settings.orbit;
+    // Orbiting owns the touches (the page does not scroll); a still scene lets them scroll.
+    st.canvas.style.touchAction = o && (o.rotate || o.zoom || o.pan) ? "none" : "";
+    const used = { mesh: new Set(), inst: new Set(), texture: new Set(), env: new Set(), bones: new Set() };
+    for (const n of st.flat.nodes) {
+      if (n.mesh) used.mesh.add(n.mesh.key);
+      if (n.inst) used.inst.add(n.inst.id);
+      if (n.skin) used.bones.add(n.key);
+      sceneSources(n).forEach((src) => used.texture.add(src));
+    }
+    if (st.flat.settings.env) used.env.add(st.flat.settings.env.id);
+    sceneFree(st, (kind, k) => (kind === "vao" ? !used.mesh.has(k.mesh) || (k.inst !== null && !used.inst.has(k.inst)) : !used[kind].has(k)));
+  }
+
+  function sceneRequest(st) {
+    if (st.raf || !st.gl || !st.visible || document.hidden) return;
+    st.raf = requestAnimationFrame(() => {
+      st.raf = 0;
+      if (scenes.has(st) && sceneDraw(st)) sceneRequest(st);
+    });
+  }
+  function sceneCancel(st) {
+    if (st.raf && typeof cancelAnimationFrame === "function") cancelAnimationFrame(st.raf);
+    st.raf = 0;
+  }
+  /** Blobs that arrived since the last frame: the player resolves them. */
+  function sceneFresh(st) {
+    if (!st.stale) return;
+    st.stale = false;
+    st.player.blobsArrived(sceneNow());
+  }
+
+  /** Gestures: drag turns, right or Shift drag and two fingers pan, pinch and wheel zoom, a tap picks. */
+  function sceneInput(st) {
+    const c = st.canvas, down = st.pointers;
+    const orbit = () => st.player.settings.orbit;
+    c.addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "mouse" && e.button !== 0 && e.button !== 2) return;
+      down.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      try { c.setPointerCapture(e.pointerId); } catch (err) { /* not capturable: moves still arrive over the canvas */ }
+      if (down.size === 1) {
+        st.press = { x: e.clientX, y: e.clientY, moved: false, pan: e.button === 2 || e.shiftKey };
+        st.player.pointerDown();
+      } else if (st.press) {
+        st.press.moved = true; // two fingers: not a tap
+      }
+      const o = orbit();
+      // No text selection or focus change while orbiting.
+      if (o && (o.rotate || o.zoom || o.pan)) e.preventDefault();
+      sceneRequest(st);
+    });
+    c.addEventListener("pointermove", (e) => {
+      const p = down.get(e.pointerId), press = st.press;
+      if (!p || !press) return;
+      const dx = e.clientX - p.x, dy = e.clientY - p.y, player = st.player;
+      if (down.size === 2) {
+        // Pinch: the fingers' distance; both moving together: pan by their midpoint.
+        let other = null;
+        for (const [id, q] of down) if (id !== e.pointerId) other = q;
+        const before = Math.hypot(p.x - other.x, p.y - other.y), after = Math.hypot(e.clientX - other.x, e.clientY - other.y);
+        if (before > 0 && after > 0) player.zoom(after / before);
+        player.pan(dx / 2, dy / 2, st.h);
+      } else if (down.size === 1) {
+        if (Math.hypot(e.clientX - press.x, e.clientY - press.y) >= s3().TAP_SLOP) press.moved = true;
+        const o = orbit();
+        if (press.pan && o && o.pan) player.pan(dx, dy, st.h);
+        else player.drag(dx, dy);
+      }
+      p.x = e.clientX;
+      p.y = e.clientY;
+      sceneRequest(st);
+    });
+    const up = (e) => {
+      if (!down.delete(e.pointerId) || down.size) return;
+      const press = st.press, tapping = st.player.settings.tap;
+      st.press = null;
+      st.player.pointerUp();
+      const tap = e.type === "pointerup" && press && !press.moved;
+      // The click after an orbit, or a tap the scene reports, is not the parent's.
+      st.swallowClick = !!press && (press.moved || tapping);
+      if (tap && tapping) {
+        const r = c.getBoundingClientRect();
+        const w = st.w || r.width, h = st.h || r.height;
+        if (st.dark === null) st.dark = sceneDark(st.el);
+        sceneFresh(st);
+        const hit = st.player.hit(e.clientX - r.left, e.clientY - r.top, w, h, st.dark);
+        const point = hit.point && hit.point.map((v) => Math.round(v * 1e4) / 1e4);
+        send({ t: "scene_tap", id: Number(st.el.dataset.pid), node: hit.node, part: hit.part, instance: hit.instance, point });
+      }
+      sceneRequest(st);
+    };
+    c.addEventListener("pointerup", up);
+    c.addEventListener("pointercancel", up);
+    c.addEventListener("click", (e) => {
+      if (st.swallowClick) e.stopPropagation();
+      st.swallowClick = false;
+    });
+    c.addEventListener("wheel", (e) => {
+      const o = orbit();
+      if (!o || !o.zoom) return; // the page scrolls
+      e.preventDefault();
+      // Lines and pages in points (Firefox reports lines for mouse wheels).
+      const dy = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? st.h || 800 : 1);
+      st.player.zoom(Math.exp(-dy * 0.002));
+      sceneRequest(st);
+    }, { passive: false });
+    c.addEventListener("contextmenu", (e) => {
+      const o = orbit();
+      if (o && o.pan) e.preventDefault(); // right drag pans
+    });
+  }
+
+  // --- Drawing (the programs, attributes, uniforms and texture units of shaders.rs) ---
+  const SCENE_UNIFORMS = ["u_model", "u_normal_matrix", "u_view_proj", "u_camera", "u_ambient", "u_light_count", "u_light_kind",
+    "u_light_color", "u_light_position", "u_light_direction", "u_light_params", "u_exposure", "u_color", "u_emissive", "u_metalness",
+    "u_roughness", "u_unlit", "u_alpha_mode", "u_alpha_cutoff", "u_has_texture", "u_has_mr_map", "u_has_normal_map", "u_normal_scale",
+    "u_has_emissive_map", "u_has_ao_map", "u_has_env", "u_env_levels", "u_env_sh", "u_env_intensity", "u_has_shadow", "u_receive_shadows",
+    "u_shadow_view_proj", "u_shadow_light", "u_shadow_bias", "u_shadow_normal_bias", "u_shadow_texel", "u_inverse_view_proj"];
+  /** Texture units: every sampler gets its own once (samplers of different types may not share one). */
+  const SCENE_UNITS = { u_texture: 0, u_mr_map: 1, u_normal_map: 2, u_emissive_map: 3, u_ao_map: 4, u_env: 5, u_shadow_map: 6, u_bones: 7 };
+  const SCENE_MAPS = [["texture", "u_texture", "u_has_texture"], ["mrMap", "u_mr_map", "u_has_mr_map"], ["normalMap", "u_normal_map", "u_has_normal_map"],
+    ["emissiveMap", "u_emissive_map", "u_has_emissive_map"], ["aoMap", "u_ao_map", "u_has_ao_map"]];
+  const SCENE_ALPHA = { blend: 0, mask: 1, opaque: 2 };
+
+  /** The program of variant `key` (bits: 4 instanced, 2 skinned, 1 depth only; "sky": the sky), built once per context. */
+  function sceneProgram(st, key) {
+    const gl = st.gl, r = st.r;
+    if (r.programs.has(key)) return r.programs.get(key);
+    const S = s3();
+    const variant = { instanced: !!(key & 4), skinned: !!(key & 2), depthOnly: !!(key & 1) };
+    const vs = key === "sky" ? S.ES_HEADER + S.SKY_VERTEX : S.programSource(S.ES_HEADER, "vertex", variant);
+    const fs = key === "sky" ? S.ES_HEADER + S.SKY_FRAGMENT : S.programSource(S.ES_HEADER, "fragment", variant);
+    const shader = (type, source) => {
+      const s = gl.createShader(type);
+      gl.shaderSource(s, source);
+      gl.compileShader(s);
+      if (gl.getShaderParameter(s, gl.COMPILE_STATUS)) return s;
+      console.error("prism: 3D shader", gl.getShaderInfoLog(s));
+      gl.deleteShader(s);
+      return null;
+    };
+    let p = null;
+    const v = shader(gl.VERTEX_SHADER, vs), f = v && shader(gl.FRAGMENT_SHADER, fs);
+    if (v && f) {
+      const prog = gl.createProgram();
+      gl.attachShader(prog, v);
+      gl.attachShader(prog, f);
+      gl.linkProgram(prog);
+      if (gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        const u = {};
+        for (const name of SCENE_UNIFORMS) u[name] = gl.getUniformLocation(prog, name);
+        gl.useProgram(prog);
+        for (const name in SCENE_UNITS) {
+          const at = gl.getUniformLocation(prog, name);
+          if (at) gl.uniform1i(at, SCENE_UNITS[name]);
+        }
+        r.program = null;
+        p = { prog, u, frame: -1 };
+      } else {
+        console.error("prism: 3D program", gl.getProgramInfoLog(prog));
+        gl.deleteProgram(prog);
+      }
+    }
+    if (v) gl.deleteShader(v);
+    if (f) gl.deleteShader(f);
+    r.programs.set(key, p); // a failed one is not retried every frame
+    return p;
+  }
+  function sceneUse(st, p) {
+    if (st.r.program !== p) { st.gl.useProgram(p.prog); st.r.program = p; }
+  }
+  /** A mesh's vertex buffers, uploaded once per context by mesh key (null while its blob has not arrived). */
+  function sceneMesh(st, d) {
+    const gl = st.gl, r = st.r;
+    let m = r.meshes.get(d.meshKey);
+    if (m) return m;
+    const g = st.player.geometry(d);
+    if (!g.vertexCount()) return null;
+    // (The element buffer binding belongs to the bound vertex array: none while uploading.)
+    gl.bindVertexArray(null);
+    const buffers = [];
+    const upload = (target, data) => { const b = gl.createBuffer(); gl.bindBuffer(target, b); gl.bufferData(target, data, gl.STATIC_DRAW); buffers.push(b); return b; };
+    const f32 = (a) => (a instanceof Float32Array ? a : new Float32Array(a));
+    const skin = g.joints && g.weights && g.joints.length === g.vertexCount() * 4;
+    m = {
+      position: upload(gl.ARRAY_BUFFER, f32(g.positions)),
+      normal: upload(gl.ARRAY_BUFFER, f32(g.normals)),
+      uv: upload(gl.ARRAY_BUFFER, f32(g.uvs)),
+      color: g.colors ? upload(gl.ARRAY_BUFFER, f32(g.colors)) : null,
+      joints: skin ? upload(gl.ARRAY_BUFFER, g.joints instanceof Uint16Array ? g.joints : new Uint16Array(g.joints)) : null,
+      weights: skin ? upload(gl.ARRAY_BUFFER, f32(g.weights)) : null,
+      index: upload(gl.ELEMENT_ARRAY_BUFFER, g.indices instanceof Uint32Array ? g.indices : new Uint32Array(g.indices)),
+      count: g.indices.length,
+      buffers,
+    };
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+    r.meshes.set(d.meshKey, m);
+    return m;
+  }
+  /** An instance set's matrices (and colors) as attribute buffers, uploaded once per context by blob id. */
+  function sceneInstanceBuffers(st, id) {
+    const gl = st.gl, r = st.r;
+    let b = r.instances.get(id);
+    if (b) return b;
+    const set = sceneBlob(id, "I");
+    if (!set) return null;
+    const upload = (data) => { const x = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, x); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW); return x; };
+    const matrices = upload(set.matrices), colors = set.colors ? upload(set.colors) : null;
+    b = { matrices, colors, count: set.count, buffers: colors ? [matrices, colors] : [matrices] };
+    r.instances.set(id, b);
+    return b;
+  }
+  /** The vertex array of a mesh (with an instance set's attributes), made once per pair. */
+  function sceneVao(st, d, mesh, inst) {
+    const gl = st.gl, r = st.r, key = inst ? `${d.meshKey}|${d.instances.id}` : d.meshKey;
+    let v = r.vaos.get(key);
+    if (v) return v.vao;
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    const attribute = (location, buffer, size, divisor) => {
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.enableVertexAttribArray(location);
+      gl.vertexAttribPointer(location, size, gl.FLOAT, false, 0, 0);
+      if (divisor) gl.vertexAttribDivisor(location, 1);
+    };
+    attribute(0, mesh.position, 3);
+    attribute(1, mesh.normal, 3);
+    attribute(2, mesh.uv, 2);
+    if (mesh.color) attribute(3, mesh.color, 4);
+    if (mesh.joints) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, mesh.joints);
+      gl.enableVertexAttribArray(4);
+      gl.vertexAttribIPointer(4, 4, gl.UNSIGNED_SHORT, 0, 0);
+      attribute(5, mesh.weights, 4);
+    }
+    if (inst) {
+      // a_instance: a mat4, one column per location (6–9), one per instance.
+      gl.bindBuffer(gl.ARRAY_BUFFER, inst.matrices);
+      for (let c = 0; c < 4; c++) {
+        gl.enableVertexAttribArray(6 + c);
+        gl.vertexAttribPointer(6 + c, 4, gl.FLOAT, false, 64, c * 16);
+        gl.vertexAttribDivisor(6 + c, 1);
+      }
+      if (inst.colors) attribute(10, inst.colors, 4, true);
+    }
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.index);
+    gl.bindVertexArray(null);
+    r.vaos.set(key, { vao, mesh: d.meshKey, inst: inst ? d.instances.id : null });
+    return vao;
+  }
+  /** Binds `tex` to texture unit `unit`. */
+  function sceneBind(gl, unit, tex) {
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+  }
+  /** A material image as a mipmapped, repeating texture (uploaded once per context; null until it loads). */
+  function sceneTexture(st, src, unit) {
+    const gl = st.gl, r = st.r;
+    let t = r.textures.get(src);
+    if (t) return t;
+    const img = sceneImage(src);
+    if (!img) return null;
+    t = gl.createTexture();
+    sceneBind(gl, unit, t);
+    // uv (0, 0) is the image's top-left: its first row, unflipped; straight alpha (the shader
+    // premultiplies); the bytes as stored (normal and metal-rough maps are data, not colors).
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    if (r.aniso > 1) gl.texParameterf(gl.TEXTURE_2D, r.anisoName, r.aniso);
+    r.textures.set(src, t);
+    return t;
+  }
+  /** An environment: its levels as the mipmaps of one RGBA16F texture, and its SH (null until its blob arrives). */
+  function sceneEnv(st, id) {
+    const gl = st.gl, r = st.r;
+    let e = r.envs.get(id);
+    if (e) return e;
+    const env = sceneBlob(id, "E");
+    if (!env) return null;
+    const tex = gl.createTexture();
+    sceneBind(gl, 5, tex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    // Row 0 (top, +Y) first: as stored.
+    env.levels.forEach((l, i) => gl.texImage2D(gl.TEXTURE_2D, i, gl.RGBA16F, l.w, l.h, 0, gl.RGBA, gl.HALF_FLOAT, l.data));
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_BASE_LEVEL, 0);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, env.levels.length - 1);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    e = { tex, levels: env.levels.length, sh: new Float32Array(env.sh) };
+    r.envs.set(id, e);
+    return e;
+  }
+  /** A skinned draw's joints as an RGBA32F texture (4 texels per joint: its columns), uploaded when they change. */
+  function sceneBones(st, d) {
+    const gl = st.gl, r = st.r;
+    let b = r.bones.get(d.key);
+    if (!b) { b = { tex: gl.createTexture(), joints: null, rows: 0 }; r.bones.set(d.key, b); }
+    sceneBind(gl, 7, b.tex);
+    if (b.joints === d.joints) return b;
+    const n = d.joints.length, data = new Float32Array(n * 16);
+    d.joints.forEach((m, i) => data.set(m, i * 16));
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    if (b.rows === n) gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 4, n, gl.RGBA, gl.FLOAT, data);
+    else {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 4, n, 0, gl.RGBA, gl.FLOAT, data);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      b.rows = n;
+    }
+    b.joints = d.joints;
+    return b;
+  }
+  /** The shadow map: a depth texture compared on lookup (`sampler2DShadow`) and its framebuffer. */
+  function sceneShadowMap(st, size) {
+    const gl = st.gl, r = st.r;
+    if (r.shadow && r.shadow.size === size) return r.shadow;
+    if (r.shadow) { gl.deleteFramebuffer(r.shadow.fbo); gl.deleteTexture(r.shadow.tex); }
+    const tex = gl.createTexture();
+    sceneBind(gl, 6, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, size, size, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_MODE, gl.COMPARE_REF_TO_TEXTURE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_FUNC, gl.LEQUAL);
+    sceneBind(gl, 6, null);
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, tex, 0);
+    gl.drawBuffers([gl.NONE]);
+    gl.readBuffer(gl.NONE);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    r.shadow = { fbo, tex, size };
+    return r.shadow;
+  }
+
+  /** Draws one frame; true while something moves (draw another). */
+  function sceneDraw(st) {
+    const { gl, canvas, player } = st;
+    if (!sceneShared.resize) { st.w = canvas.clientWidth; st.h = canvas.clientHeight; }
+    if (!gl || !st.r || !(st.w > 0) || !(st.h > 0)) return false;
+    const dpr = window.devicePixelRatio || 1;
+    const pw = Math.max(1, Math.min(4096, Math.round(st.w * dpr))), ph = Math.max(1, Math.min(4096, Math.round(st.h * dpr)));
+    if (canvas.width !== pw) canvas.width = pw;
+    if (canvas.height !== ph) canvas.height = ph;
+    if (st.dark === null) st.dark = sceneDark(st.el);
+    sceneFresh(st);
+    player.advance(sceneNow());
+    const f = player.frame(st.w, st.h, st.dark), r = st.r;
+    r.frame++;
+    r.program = null;
+    // Constant attributes (context state, not vertex-array state): white without vertex or instance colors.
+    gl.vertexAttrib4f(3, 1, 1, 1, 1);
+    gl.vertexAttrib4f(10, 1, 1, 1, 1);
+    gl.frontFace(gl.CCW);
+    gl.cullFace(gl.BACK);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+    gl.disable(gl.BLEND);
+    gl.depthMask(true);
+    const env = f.env ? sceneEnv(st, f.env.id) : null;
+
+    // The shadow map: its casters, depth only, from the light.
+    const shadow = f.shadow && f.shadow.casters.length ? sceneShadowMap(st, f.shadow.mapSize) : null;
+    if (shadow) {
+      sceneBind(gl, 6, null); // not sampled while drawn into
+      gl.bindFramebuffer(gl.FRAMEBUFFER, shadow.fbo);
+      gl.viewport(0, 0, shadow.size, shadow.size);
+      gl.clearDepth(1);
+      gl.clear(gl.DEPTH_BUFFER_BIT);
+      const pass = { f, depth: true, viewProj: f.shadow.viewProj, env: null, shadow: null };
+      for (const i of f.shadow.casters) sceneDrawMesh(st, f.draws[i], pass);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+
+    gl.viewport(0, 0, pw, ph);
+    gl.clearColor(f.clear[0], f.clear[1], f.clear[2], f.clear[3]);
+    gl.clearDepth(1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    sceneBind(gl, 5, env ? env.tex : null);
+    sceneBind(gl, 6, shadow ? shadow.tex : null);
+    // The environment behind everything.
+    if (env && f.env.background) {
+      const sky = sceneProgram(st, "sky");
+      if (sky) {
+        if (!r.empty) r.empty = gl.createVertexArray();
+        sceneUse(st, sky);
+        const u = sky.u;
+        gl.uniformMatrix4fv(u.u_inverse_view_proj, false, f.inverseViewProj);
+        gl.uniform3fv(u.u_camera, f.cameraPosition);
+        gl.uniform1f(u.u_env_intensity, f.env.intensity);
+        gl.uniform1f(u.u_exposure, f.exposure);
+        gl.disable(gl.DEPTH_TEST);
+        gl.depthMask(false);
+        gl.disable(gl.CULL_FACE);
+        gl.bindVertexArray(r.empty);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        gl.enable(gl.DEPTH_TEST);
+        gl.depthMask(true);
+      }
+    }
+    // Premultiplied output, over what is behind.
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    const pass = { f, depth: false, viewProj: f.viewProj, env, shadow, lights: null };
+    for (const d of f.draws) sceneDrawMesh(st, d, pass);
+    gl.bindVertexArray(null);
+    gl.disable(gl.BLEND);
+    gl.depthMask(true);
+    return f.animating;
+  }
+
+  /** The uniforms a pass sets once per program: camera, lights, environment, shadow. */
+  function sceneFrameUniforms(gl, u, pass) {
+    gl.uniformMatrix4fv(u.u_view_proj, false, pass.viewProj);
+    if (pass.depth) return;
+    const f = pass.f;
+    if (!pass.lights) {
+      const kinds = new Int32Array(8), colors = new Float32Array(24), positions = new Float32Array(24);
+      const directions = new Float32Array(24), params = new Float32Array(32);
+      f.lights.forEach((l, i) => {
+        kinds[i] = l.kind;
+        colors.set(l.color, i * 3);
+        positions.set(l.position, i * 3);
+        directions.set(l.direction, i * 3);
+        params.set(l.params, i * 4);
+      });
+      pass.lights = { kinds, colors, positions, directions, params };
+    }
+    const L = pass.lights;
+    gl.uniform3fv(u.u_camera, f.cameraPosition);
+    gl.uniform3fv(u.u_ambient, f.ambient);
+    gl.uniform1i(u.u_light_count, f.lights.length);
+    gl.uniform1iv(u.u_light_kind, L.kinds);
+    gl.uniform3fv(u.u_light_color, L.colors);
+    gl.uniform3fv(u.u_light_position, L.positions);
+    gl.uniform3fv(u.u_light_direction, L.directions);
+    gl.uniform4fv(u.u_light_params, L.params);
+    gl.uniform1f(u.u_exposure, f.exposure);
+    gl.uniform1i(u.u_has_env, pass.env ? 1 : 0);
+    if (pass.env) {
+      gl.uniform1f(u.u_env_levels, pass.env.levels);
+      gl.uniform3fv(u.u_env_sh, pass.env.sh);
+      gl.uniform1f(u.u_env_intensity, f.env.intensity);
+    }
+    gl.uniform1i(u.u_has_shadow, pass.shadow ? 1 : 0);
+    if (pass.shadow) {
+      const s = f.shadow;
+      gl.uniformMatrix4fv(u.u_shadow_view_proj, false, s.viewProj);
+      gl.uniform1i(u.u_shadow_light, s.light);
+      gl.uniform1f(u.u_shadow_bias, s.bias);
+      gl.uniform1f(u.u_shadow_normal_bias, s.normalBias);
+      gl.uniform1f(u.u_shadow_texel, 1 / s.mapSize);
+    } else {
+      gl.uniform1i(u.u_shadow_light, -1);
+    }
+  }
+
+  /** One draw of a pass (the shadow map's, depth only, or the frame's). */
+  function sceneDrawMesh(st, d, pass) {
+    const gl = st.gl, r = st.r;
+    const mesh = sceneMesh(st, d);
+    if (!mesh || !mesh.count) return;
+    const inst = d.instances ? sceneInstanceBuffers(st, d.instances.id) : null;
+    if (d.instances && !inst) return; // its instances have not arrived
+    // Skinned only when the mesh has joints (a_joints has no constant value).
+    const skinned = !!d.joints && !!mesh.joints;
+    const p = sceneProgram(st, (inst ? 4 : 0) | (skinned ? 2 : 0) | (pass.depth ? 1 : 0));
+    if (!p) return;
+    sceneUse(st, p);
+    const u = p.u;
+    if (p.frame !== r.frame) { p.frame = r.frame; sceneFrameUniforms(gl, u, pass); }
+    gl.uniformMatrix4fv(u.u_model, false, d.world);
+    if (skinned) sceneBones(st, d);
+    const m = d.material;
+    if (m.doubleSided) gl.disable(gl.CULL_FACE); else gl.enable(gl.CULL_FACE);
+    if (!pass.depth) {
+      gl.uniformMatrix3fv(u.u_normal_matrix, false, d.normal);
+      gl.uniform4fv(u.u_color, m.color);
+      gl.uniform3fv(u.u_emissive, m.emissive);
+      gl.uniform1f(u.u_metalness, m.metalness);
+      gl.uniform1f(u.u_roughness, m.roughness);
+      gl.uniform1i(u.u_unlit, m.unlit ? 1 : 0);
+      gl.uniform1i(u.u_alpha_mode, SCENE_ALPHA[m.alpha]);
+      gl.uniform1f(u.u_alpha_cutoff, m.alphaCutoff);
+      gl.uniform1i(u.u_receive_shadows, d.receiveShadows ? 1 : 0);
+      gl.uniform1f(u.u_normal_scale, m.normalScale);
+      SCENE_MAPS.forEach(([field, sampler, has]) => {
+        const unit = SCENE_UNITS[sampler], tex = m[field] ? sceneTexture(st, m[field], unit) : null;
+        gl.uniform1i(u[has], tex ? 1 : 0);
+        if (tex) sceneBind(gl, unit, tex);
+      });
+      // Transparent meshes (last, back to front) blend and keep the depth of the opaque ones.
+      if (d.transparent) gl.enable(gl.BLEND); else gl.disable(gl.BLEND);
+      gl.depthMask(!d.transparent);
+    }
+    gl.bindVertexArray(sceneVao(st, d, mesh, inst));
+    if (inst) gl.drawElementsInstanced(gl.TRIANGLES, mesh.count, gl.UNSIGNED_INT, 0, Math.min(d.instances.count, inst.count));
+    else gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_INT, 0);
+  }
+
+  /** Scenes in the server's first paint start before the socket connects (the live tree takes them over). */
+  function sceneBoot() {
+    mount.querySelectorAll("[data-scene]").forEach((el) => {
+      if (el.dataset.kind !== "scene3d") return;
+      const update = s3().decodeUpdate(el.dataset.scene);
+      if (update) sceneStart(el, update);
+    });
   }
 
   // --- Web views (#62) ------------------------------------------------------------
@@ -3376,6 +6019,7 @@
     const msg = JSON.parse(text);
     if (!msg.p) return service(msg);
     if (msg.t === "reset") {
+      sceneResetStart();
       nodes.clear(); clearStates(); stacks = []; hist = null; userNavigated = false;
       globalKeys = 0; placedOverlays.clear(); pendingOverlays.clear(); layerHost.replaceChildren();
       document.querySelectorAll("datalist[id^=prism-list-]").forEach((d) => d.remove());
@@ -3385,6 +6029,7 @@
     if (radiosDirty) roveRadios();
     flushOverlays();
     flushStates();
+    if (msg.t === "reset") sceneResetEnd();
     quiet = false;
     // The live tree replaced the first paint: its style rules can go, and
     // the app's stylesheets are the session's.
@@ -3412,6 +6057,7 @@
     ws.addEventListener("open", () => { if (safeArea().some((v) => v > 0)) reportViewport(); });
     ws.addEventListener("open", () => { pushReady().catch(() => {}); });
   }
+  sceneBoot();
   setConnection("connecting");
   connect();
 })();

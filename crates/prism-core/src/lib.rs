@@ -37,6 +37,7 @@ pub mod push;
 mod reconcile;
 pub mod request;
 mod router;
+pub mod scene3d;
 pub mod security;
 pub mod shape;
 pub mod spans;
@@ -109,6 +110,7 @@ pub use reconcile::{NodeId, Patch, Reconciler, RenderEnvironment, RichEdit, UiEv
 pub use request::{Cookie, RequestKind, SameSite, UrlTarget, WebRequest};
 pub use router::{Params, Router, RouterBuilder, go_back, navigate_to, normalize_path};
 pub use router::{encode_query, parse_query};
+pub use scene3d::{Scene3d, SceneTapEvent, scene3d};
 pub use security::{
     AppleCredential, AppleSignIn, AuthRequest, Biometry, BiometryKind, SecureOptions,
     SecureStorage, WebAuthRequest,
@@ -402,6 +404,11 @@ impl Runtime {
             UiEvent::Island(id, name, detail) => {
                 if let Some(h) = self.reconciler.island_handler(id, &name) {
                     h(&island::IslandEvent { name, detail }, &mut self.app);
+                }
+            }
+            UiEvent::SceneTap(id, e) => {
+                if let Some(h) = self.reconciler.scene_tap_handler(id) {
+                    h(&e, &mut self.app);
                 }
             }
             UiEvent::WebMessage(id, data, origin) => {
@@ -743,6 +750,8 @@ pub mod prelude {
     pub use crate::Backdrop;
     // Islands: client-side Web Components.
     pub use crate::{IslandEvent, island, web_component};
+    // 3D scenes (the nodes, lights and camera: `use prism::scene3d::*`).
+    pub use crate::{SceneTapEvent, scene3d};
     // Web views (#62).
     pub use crate::{WebLoadEvent, WebMessageEvent, WebSandbox, web_view};
 }

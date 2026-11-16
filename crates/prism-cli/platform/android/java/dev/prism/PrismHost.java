@@ -68,6 +68,8 @@ public final class PrismHost {
     static native void nativePush(String json, String info);
     /** A widget button (PrismWidget.Action); `task` is reported back through jobFinished. */
     static native void nativeWidgetAction(String task, String kind, String action, String payload, String info);
+    /** A 3D scene's blob by id (prism-core `scene3d::blobs`), null once gone; any thread (PrismScene's loader). */
+    static native byte[] sceneBlob(String id);
 
     /** The application (also set when a background job starts without the Activity). */
     static android.content.Context context;
@@ -397,6 +399,12 @@ public final class PrismHost {
                 else setText(n, p.optString("text"));
                 break;
             case "draw": if (n.view instanceof PrismShape) ((PrismShape) n.view).setPaths(p.optJSONArray("paths")); break;
+            case "scene": {
+                // A scene update (`SceneUpdate`): PrismScenePlayer reads the JSON itself.
+                Object u = p.opt("u");
+                if (n.view instanceof PrismScene && u != null) ((PrismScene) n.view).setScene(u.toString());
+                break;
+            }
             case "placeholder":
                 if (!PrismForms.placeholder(n, p.optString("text")) && n.view instanceof EditText) ((EditText) n.view).setHint(p.optString("text"));
                 break;
@@ -649,6 +657,7 @@ public final class PrismHost {
                 break;
             }
             case "shape": n.view = new PrismShape(activity); break;
+            case "scene3d": n.view = new PrismScene(activity, id); break;
             case "web_view": n.view = PrismWeb.create(n); break;
             case "overlay": {
                 // Takes no room; its parent is the popover's anchor. The
@@ -954,6 +963,7 @@ public final class PrismHost {
             if (n.kind.equals("stack") || n.kind.equals("tabs")) styleChrome(n);
             if (n.kind.equals("tabs")) refreshTabs(n);
             if (n.view instanceof PrismShape) n.view.invalidate();
+            if (n.view instanceof PrismScene) ((PrismScene) n.view).restyle();
         }
     }
 
@@ -1395,6 +1405,16 @@ public final class PrismHost {
 
     static void loadPicture(ImageView view, String src) {
         view.setTag(src); // the source shown now (a late download checks it)
+        bitmap(src, b -> { if (src.equals(view.getTag())) view.setImageBitmap(b); });
+    }
+
+    /**
+     * Reads a picture source (main thread): an app asset, a file path, an
+     * http(s) URL (then one `name: value` header per line) or a `data:` URL.
+     * `done` gets the image (null if undecodable) at once, or later on the
+     * main thread for downloads; not at all if the source can't be read.
+     */
+    static void bitmap(String src, java.util.function.Consumer<Bitmap> done) {
         if (src.startsWith("data:")) {
             // Bytes in memory (`picture_data`): base64 or percent-encoded.
             int comma = src.indexOf(',');
@@ -1404,7 +1424,7 @@ public final class PrismHost {
                 byte[] bytes = meta.endsWith(";base64")
                         ? android.util.Base64.decode(payload, android.util.Base64.DEFAULT)
                         : java.net.URLDecoder.decode(payload, "UTF-8").getBytes("ISO-8859-1");
-                view.setImageBitmap(BitmapFactory.decodeByteArray(bytes, 0, bytes.length));
+                done.accept(BitmapFactory.decodeByteArray(bytes, 0, bytes.length));
             } catch (Exception e) {
                 android.util.Log.w("prism", "picture data: URL", e);
             }
@@ -1426,8 +1446,7 @@ public final class PrismHost {
                     if (lines.length > 1) c.setUseCaches(false); // private: not in the HTTP cache
                     try (InputStream in = c.getInputStream()) {
                         Bitmap b = BitmapFactory.decodeStream(in);
-                        // Only if the view still shows this source.
-                        main.post(() -> { if (src.equals(view.getTag())) view.setImageBitmap(b); });
+                        main.post(() -> done.accept(b));
                     } finally {
                         c.disconnect();
                     }
@@ -1447,7 +1466,7 @@ public final class PrismHost {
                     b = BitmapFactory.decodeStream(in);
                 }
             }
-            view.setImageBitmap(b);
+            done.accept(b);
         } catch (Exception e) {
             android.util.Log.w("prism", "picture " + src, e);
         }

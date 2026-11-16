@@ -14,7 +14,7 @@
 //!
 //! | direction | call |
 //! |---|---|
-//! | Java → Rust | `PrismHost.nativeMain()`, `nativeReady(w, h, density)`, `nativeEvent(json)`, `nativeWake()` |
+//! | Java → Rust | `PrismHost.nativeMain()`, `nativeReady(w, h, density)`, `nativeEvent(json)`, `nativeWake()`, `sceneBlob(id)` (3D scenes' blobs, any thread) |
 //! | Rust → Java | `PrismHost.apply(json)`, `measure(kind, text, size, weight, maxWidth)`, `post(delayMs)` |
 
 #[cfg(target_os = "android")]
