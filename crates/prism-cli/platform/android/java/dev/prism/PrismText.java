@@ -138,6 +138,10 @@ final class PrismText {
         t.setHorizontallyScrolling(noWrap);
         t.setMaxLines(maxLines > 0 ? maxLines : Integer.MAX_VALUE);
         t.setEllipsize(maxLines > 0 ? TextUtils.TruncateAt.END : null);
+        // `tw` (#95): balanced lines, else the high-quality breaker (TextView's default).
+        t.setBreakStrategy("balance".equals(s.optString("tw", ""))
+                ? android.text.Layout.BREAK_STRATEGY_BALANCED
+                : android.text.Layout.BREAK_STRATEGY_HIGH_QUALITY);
     }
 
     /** The text with its runs as spans (case transform applied, icons as their glyph). */

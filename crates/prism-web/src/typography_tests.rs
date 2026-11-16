@@ -9,6 +9,24 @@ use prism_core::{
 use crate::css::{css, run_css};
 use crate::html::{HtmlBackend, runs_html};
 
+/// #95: balanced and pretty wrapping, on texts only.
+#[test]
+fn text_wrap_is_css_text_wrap() {
+    assert!(!css(NodeKind::Text, &Style::default()).contains("text-wrap"));
+    let pretty = css(NodeKind::Text, &Style::default().text_pretty());
+    assert!(pretty.contains("text-wrap:pretty;"), "{pretty}");
+    let balance = css(NodeKind::Text, &Style::default().text_balance());
+    assert!(balance.contains("text-wrap:balance;"), "{balance}");
+    // A text that never wraps stays on one line: `white-space` comes after.
+    let one = css(NodeKind::Text, &Style::default().text_balance().nowrap());
+    let (wrap, pre) = (
+        one.find("text-wrap").unwrap(),
+        one.rfind("white-space:pre;").unwrap(),
+    );
+    assert!(wrap < pre, "{one}");
+    assert!(!css(NodeKind::Button, &Style::default().text_pretty()).contains("text-wrap"));
+}
+
 #[test]
 fn typography_becomes_css_only_when_set() {
     let plain = css(NodeKind::Text, &Style::default());

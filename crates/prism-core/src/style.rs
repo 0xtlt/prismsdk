@@ -600,6 +600,29 @@ impl TextTransform {
     }
 }
 
+/// How the lines of a wrapping text are broken (CSS `text-wrap`, #95).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum TextWrap {
+    /// The platform's usual breaking (the default).
+    #[default]
+    Auto,
+    /// Avoids a lone word on the last line: subtitles, short paragraphs.
+    Pretty,
+    /// Lines of about the same length: headings, titles of a few lines.
+    Balance,
+}
+
+impl TextWrap {
+    /// The CSS keyword.
+    pub fn css(self) -> &'static str {
+        match self {
+            TextWrap::Auto => "wrap",
+            TextWrap::Pretty => "pretty",
+            TextWrap::Balance => "balance",
+        }
+    }
+}
+
 /// Whether a word starts after `c`: anything but a letter, a digit or an
 /// apostrophe (« it's », « l'été » keep one capital, like CSS).
 fn starts_word_after(c: char) -> bool {
@@ -753,6 +776,9 @@ pub struct Style {
     /// Never wraps: one line per paragraph, cut at the node's edge
     /// (`white-space: pre`, clipped).
     pub no_wrap: bool,
+    /// How wrapping lines are broken: [`TextWrap::Pretty`] or
+    /// [`TextWrap::Balance`] (CSS `text-wrap`).
+    pub text_wrap: TextWrap,
 
     // Box decorations (shadows, per-side and dashed borders, clipping,
     // gradients, backdrop blur).
@@ -1334,6 +1360,7 @@ impl Default for Style {
             tabular_numbers: false,
             max_lines: None,
             no_wrap: false,
+            text_wrap: TextWrap::Auto,
             shadows: Vec::new(),
             border_sides: crate::decoration::BorderSides::default(),
             border_style: crate::decoration::BorderStyle::Solid,
@@ -2088,6 +2115,19 @@ pub trait Styled: Sized {
     /// Never wraps (each paragraph on one line, cut at the edge).
     fn nowrap(self) -> Self {
         self.with_style(|s| s.no_wrap = true)
+    }
+    /// How the lines are broken when the text wraps (CSS `text-wrap`):
+    /// [`TextWrap::Pretty`] or [`TextWrap::Balance`].
+    fn text_wrap(self, wrap: TextWrap) -> Self {
+        self.with_style(|s| s.text_wrap = wrap)
+    }
+    /// No lone word on the last line (`text-wrap: pretty`).
+    fn text_pretty(self) -> Self {
+        self.text_wrap(TextWrap::Pretty)
+    }
+    /// Lines of about the same length (`text-wrap: balance`).
+    fn text_balance(self) -> Self {
+        self.text_wrap(TextWrap::Balance)
     }
 
     // Box decorations (see the `decoration` module)

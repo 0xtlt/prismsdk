@@ -23,12 +23,12 @@ use objc2_foundation::{
     NSObjectProtocol, NSRange, NSString,
 };
 use objc2_ui_kit::{
-    NSLayoutManager, NSLineBreakMode, NSMutableParagraphStyle, NSTextAlignment, NSTextAttachment,
-    NSTextContainer, NSTextStorage, UIAccessibilityCustomAction, UIColor, UIFont, UIFontDescriptor,
-    UIFontDescriptorSymbolicTraits, UIImage, UIImageSymbolConfiguration, UILabel, UIResponder,
-    UITapGestureRecognizer, UIView,
+    NSLayoutManager, NSLineBreakMode, NSLineBreakStrategy, NSMutableParagraphStyle,
+    NSTextAlignment, NSTextAttachment, NSTextContainer, NSTextStorage, UIAccessibilityCustomAction,
+    UIColor, UIFont, UIFontDescriptor, UIFontDescriptorSymbolicTraits, UIImage,
+    UIImageSymbolConfiguration, UILabel, UIResponder, UITapGestureRecognizer, UIView,
 };
-use prism_core::{FontFamily, NodeId, Style, TextAlign, UiEvent};
+use prism_core::{FontFamily, NodeId, Style, TextAlign, TextWrap, UiEvent};
 use prism_native::text::{FontSpec, StyledText, interpolate_weight};
 
 use crate::imp::{dispatch, ui_color};
@@ -418,6 +418,12 @@ fn with_tabular_digits(d: &UIFontDescriptor) -> Retained<UIFontDescriptor> {
     }
 }
 
+/// Line breaking for pretty and balanced wrapping (#95): UIKit avoids a lone
+/// word on the last line (`pushOut`) but has no balanced breaking.
+fn line_strategy(t: &StyledText) -> Option<NSLineBreakStrategy> {
+    (t.wrap != TextWrap::Auto).then_some(NSLineBreakStrategy::PushOut)
+}
+
 fn line_break(t: &StyledText) -> NSLineBreakMode {
     match (t.max_lines, t.no_wrap) {
         (Some(_), _) => NSLineBreakMode::ByTruncatingTail,
@@ -436,6 +442,9 @@ pub fn attributed(t: &StyledText) -> Retained<NSAttributedString> {
     let paragraph = NSMutableParagraphStyle::new();
     paragraph.setAlignment(alignment(t.align));
     paragraph.setLineBreakMode(line_break(t));
+    if let Some(strategy) = line_strategy(t) {
+        paragraph.setLineBreakStrategy(strategy);
+    }
     if let Some(lh) = t.line_height {
         paragraph.setMinimumLineHeight(lh as f64);
         paragraph.setMaximumLineHeight(lh as f64);
@@ -523,6 +532,8 @@ fn apply(l: &UILabel, t: &StyledText) {
         (None, false) => 0,
     });
     l.setLineBreakMode(line_break(t));
+    // A label's own default is `standard`.
+    l.setLineBreakStrategy(line_strategy(t).unwrap_or(NSLineBreakStrategy::Standard));
     l.setTextAlignment(alignment(t.align));
     if t.is_simple() && t.max_lines.is_none() && !t.no_wrap {
         let run = &t.runs[0];

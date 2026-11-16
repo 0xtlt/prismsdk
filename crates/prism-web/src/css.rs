@@ -383,6 +383,10 @@ pub fn typography(kind: NodeKind, s: &Style, w: &mut String) {
     if kind != NodeKind::Text {
         return;
     }
+    // Before `white-space`, which keeps one line when the text never wraps.
+    if s.text_wrap != prism_core::TextWrap::Auto {
+        let _ = write!(w, "text-wrap:{};", s.text_wrap.css());
+    }
     match s.max_lines {
         // One line: cut mid-word with an ellipsis, like native labels.
         Some(1) => w.push_str("white-space:pre;overflow:hidden;text-overflow:ellipsis;"),
