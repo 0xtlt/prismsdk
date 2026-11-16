@@ -53,31 +53,61 @@ pub struct HtmlBackend {
 }
 
 /// The first paint's styles as rules: one per distinct declaration set,
-/// matched by a `data-ps` attribute (no `style` attribute, so a strict
-/// `style-src` without `'unsafe-inline'` allows the page).
+/// matched by a `data-ps` attribute holding the style's short hash (no
+/// `style` attribute, so a strict `style-src` without `'unsafe-inline'`
+/// allows the page).
 #[derive(Default)]
 struct Sheet {
-    ids: HashMap<String, usize>,
+    ids: HashMap<String, String>,
+    taken: std::collections::HashSet<String>,
     css: String,
 }
 
+/// A style's short name: `p` + the FNV-1a hash of its code points in base
+/// 36, the class `client.js` gives nodes with this style (`styleHash`).
+pub(crate) fn style_class(css: &str) -> String {
+    let mut h: u32 = 0x811c9dc5;
+    for c in css.chars() {
+        h = (h ^ c as u32).wrapping_mul(0x01000193);
+    }
+    let mut digits = Vec::new();
+    loop {
+        digits.push(char::from_digit(h % 36, 36).unwrap_or('0'));
+        h /= 36;
+        if h == 0 {
+            break;
+        }
+    }
+    std::iter::once('p')
+        .chain(digits.into_iter().rev())
+        .collect()
+}
+
 impl Sheet {
-    /// ` data-ps="N"` for `css` (nothing when empty), adding its rule once.
+    /// ` data-ps="pHASH"` for `css` (nothing when empty), adding its rule once.
     fn attr(&mut self, css: &str) -> String {
         if css.is_empty() {
             return String::new();
         }
-        let next = self.ids.len();
-        let rules = &mut self.css;
-        let id = *self.ids.entry(css.to_string()).or_insert_with(|| {
-            // `#prism-root` outranks Prism's own sheet like an inline style.
-            let _ = writeln!(
-                rules,
-                "#prism-root [data-ps=\"{next}\"]{{{}}}",
-                crate::host::css_text(css)
-            );
-            next
-        });
+        if let Some(id) = self.ids.get(css) {
+            return format!(r#" data-ps="{id}""#);
+        }
+        // Two styles with one hash (rare): the second gets a suffix.
+        let base = style_class(css);
+        let mut id = base.clone();
+        let mut n = 2;
+        while self.taken.contains(&id) {
+            id = format!("{base}-{n}");
+            n += 1;
+        }
+        // `#prism-root` outranks Prism's own sheet like an inline style.
+        let _ = writeln!(
+            self.css,
+            "#prism-root [data-ps=\"{id}\"]{{{}}}",
+            crate::host::css_text(css)
+        );
+        self.taken.insert(id.clone());
+        self.ids.insert(css.to_string(), id.clone());
         format!(r#" data-ps="{id}""#)
     }
 }
@@ -310,14 +340,7 @@ impl HtmlBackend {
         let Some(n) = self.nodes.get(&id) else { return };
         let kind = n.kind.unwrap_or(NodeKind::View);
         let hidden = if hidden { " hidden" } else { "" };
-        // One `style` attribute (browsers ignore a second one).
-        let css = match kind {
-            NodeKind::Picture => {
-                let fit = if n.value == 1. { "contain" } else { "cover" };
-                format!("{}object-fit:{fit};", n.css)
-            }
-            _ => n.css.clone(),
-        };
+        let css = n.css.clone();
         // A picture's description is its `alt` (like the client sets it).
         let aria = if kind == NodeKind::Picture {
             String::new()
@@ -368,7 +391,7 @@ impl HtmlBackend {
                 };
                 let _ = write!(
                     out,
-                    r#"<input type="{}" {attrs}{icon} value="{}" placeholder="{}"{}{list}>"#,
+                    r#"<input type="{}" name="prism-{id}" {attrs}{icon} value="{}" placeholder="{}"{}{list}>"#,
                     input_type(&n.config),
                     escape(&n.text),
                     escape(&n.placeholder),
@@ -387,7 +410,7 @@ impl HtmlBackend {
                 let disabled = if n.a11y.disabled { " disabled" } else { "" };
                 let _ = write!(
                     out,
-                    r#"<label class="prism-check" {attrs}><input type="checkbox"{checked}{disabled}><span>{}</span></label>"#,
+                    r#"<label class="prism-check" {attrs}><input type="checkbox" name="prism-{id}"{checked}{disabled}><span>{}</span></label>"#,
                     escape(&n.text)
                 );
             }
@@ -413,7 +436,7 @@ impl HtmlBackend {
             NodeKind::TextArea => {
                 let _ = write!(
                     out,
-                    r#"<textarea {attrs} class="prism-textarea" rows="3" placeholder="{}"{}>{}</textarea>"#,
+                    r#"<textarea name="prism-{id}" {attrs} class="prism-textarea" rows="3" placeholder="{}"{}>{}</textarea>"#,
                     escape(&n.placeholder),
                     input_attrs(&n.config),
                     escape(&n.text)
@@ -428,14 +451,17 @@ impl HtmlBackend {
                 };
                 let _ = write!(
                     out,
-                    r#"<input type="range" class="prism-slider" {attrs} min="{}" max="{}" step="{step}" value="{}">"#,
+                    r#"<input type="range" name="prism-{id}" class="prism-slider" {attrs} min="{}" max="{}" step="{step}" value="{}">"#,
                     c.min, c.max, n.value
                 );
             }
             NodeKind::Picker => {
                 let c = prism_core::controls::PickerConfig::decode(&n.config);
                 let selected = n.value as i64;
-                let _ = write!(out, r#"<select class="prism-select" {attrs}>"#);
+                let _ = write!(
+                    out,
+                    r#"<select name="prism-{id}" class="prism-select" {attrs}>"#
+                );
                 if selected < 0 {
                     let _ = write!(
                         out,
@@ -470,7 +496,7 @@ impl HtmlBackend {
                 };
                 let _ = write!(
                     out,
-                    r#"<input type="{ty}" class="prism-date" {attrs} data-value="{}"{value}>"#,
+                    r#"<input type="{ty}" name="prism-{id}" class="prism-date" {attrs} data-value="{}"{value}>"#,
                     n.value
                 );
             }
@@ -496,7 +522,9 @@ impl HtmlBackend {
                 };
                 let _ = write!(
                     out,
-                    r#"<img {attrs} class="prism-picture" src="{}" alt="{}" loading="lazy" decoding="async">"#,
+                    r#"<img {attrs} class="prism-picture{}" src="{}" alt="{}" loading="lazy" decoding="async">"#,
+                    // Fill (cover) or fit (contain), as in `prism.css`.
+                    if n.value == 1. { " prism-fit" } else { "" },
                     escape(&match &self.asset_urls {
                         Some(urls) => urls(&n.text),
                         None => picture_url(&n.text),
@@ -519,7 +547,7 @@ impl HtmlBackend {
                 let checked = if n.value != 0. { " checked" } else { "" };
                 let _ = write!(
                     out,
-                    r#"<input type="checkbox" role="switch" class="prism-switch" {attrs}{checked}>"#
+                    r#"<input type="checkbox" role="switch" name="prism-{id}" class="prism-switch" {attrs}{checked}>"#
                 );
             }
             NodeKind::Stack => {
@@ -652,7 +680,7 @@ impl HtmlBackend {
 
     /// The markup without any `style` attribute, and the CSS rules that
     /// style it (for a `<style>` element, with the page's CSP nonce). Nodes
-    /// carry `data-ps="N"`; the rules match them inside `#prism-root`.
+    /// carry `data-ps="pHASH"`; the rules match them inside `#prism-root`.
     pub fn to_html_and_css(&self) -> (String, String) {
         *self.sheet.borrow_mut() = Some(Sheet::default());
         let html = self.to_html();

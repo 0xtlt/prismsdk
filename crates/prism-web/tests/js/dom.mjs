@@ -117,6 +117,37 @@ export class Element extends Node {
   set id(v) { this.setAttribute("id", v); }
   get className() { return this.getAttribute("class") || ""; }
   set className(v) { this.setAttribute("class", v); }
+  get classList() {
+    const el = this;
+    const list = () => el.className.split(/\s+/).filter(Boolean);
+    return {
+      contains: (c) => list().includes(c),
+      add: (...cs) => { el.className = [...new Set([...list(), ...cs])].join(" "); },
+      remove: (...cs) => { el.className = list().filter((c) => !cs.includes(c)).join(" "); },
+      toggle: (c, on = !list().includes(c)) => {
+        if (on) el.classList.add(c); else el.classList.remove(c);
+        return on;
+      },
+    };
+  }
+  /** A `<style>`'s CSSOM sheet: rules added with `insertRule`. */
+  get sheet() {
+    if (this.localName !== "style") return null;
+    if (!this._sheet) {
+      const cssRules = [];
+      this._sheet = {
+        cssRules,
+        insertRule(text, i = 0) {
+          const at = text.indexOf("{");
+          const rule = { selectorText: text.slice(0, at).trim(), style: makeStyle() };
+          rule.style.cssText = text.slice(at + 1, text.lastIndexOf("}"));
+          cssRules.splice(i, 0, rule);
+          return i;
+        },
+      };
+    }
+    return this._sheet;
+  }
   get hidden() { return this.hasAttribute("hidden"); }
   set hidden(v) { if (v) this.setAttribute("hidden", ""); else this.removeAttribute("hidden"); }
   get type() { return this.getAttribute("type") || ""; }
@@ -489,4 +520,32 @@ export function boot({ ssr = "", path = "/", base = "", glyphs = { plus: "+", ge
     /** The element for Prism node `id`, found in the page. */
     node: (id) => document.querySelector(`[data-pid=${id}]`),
   };
+}
+
+/**
+ * An element's own CSS: the rules of the client's shared sheet that its
+ * classes select (`.psN`), then its inline style.
+ */
+export function cssOf(el) {
+  const doc = el.ownerDocument;
+  const classes = el.className.split(/\s+/).filter(Boolean);
+  let css = "";
+  const walk = (n) => n.children.forEach((c) => {
+    if (c.localName === "style" && c._sheet) {
+      for (const r of c._sheet.cssRules) {
+        const m = /\.([\w-]+)$/.exec(r.selectorText);
+        if (m && classes.includes(m[1])) css += r.style.cssText;
+      }
+    }
+    walk(c);
+  });
+  walk(doc);
+  return css + el.style.cssText;
+}
+
+/** `cssOf(el)` readable as properties (`styleOf(el).gap`). */
+export function styleOf(el) {
+  const st = makeStyle();
+  st.cssText = cssOf(el);
+  return st;
 }

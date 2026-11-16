@@ -4,7 +4,7 @@
 // Run: node --test crates/prism-web/tests/js/
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { boot } from "./dom.mjs";
+import { boot, cssOf, styleOf } from "./dom.mjs";
 
 function live(patches) {
   const page = boot();
@@ -254,7 +254,7 @@ test("text fields: max length, suggestions and a leading icon", () => {
   assert.match(el.style.cssText, /--prism-icon:url\("data:image\/svg\+xml,/);
   // A new style keeps the icon.
   page.ws.deliver({ t: "patch", p: [{ op: "style", id: 2, css: "color:blue;" }] });
-  assert.match(el.style.cssText, /color:blue;.*--prism-icon/);
+  assert.match(cssOf(el), /color:blue;.*--prism-icon/);
   // Suggestions removed: no list.
   page.ws.deliver({ t: "patch", p: [{ op: "config", id: 2, config: "" }] });
   assert.equal(el.getAttribute("list"), null);
@@ -282,7 +282,7 @@ test("inert styles and hit testing", () => {
   ]);
   const el = page.node(2);
   assert.equal(el.hasAttribute("inert"), true);
-  assert.equal(el.style.pointerEvents, "none");
+  assert.equal(styleOf(el).pointerEvents, "none");
   page.ws.deliver({ t: "patch", p: [{ op: "style", id: 2, css: "" }] });
   assert.equal(el.hasAttribute("inert"), false);
 });

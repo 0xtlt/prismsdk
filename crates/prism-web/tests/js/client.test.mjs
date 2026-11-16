@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { boot, parseHTML, Document } from "./dom.mjs";
+import { boot, parseHTML, Document, cssOf, styleOf } from "./dom.mjs";
 
 const fixture = JSON.parse(fs.readFileSync(new URL("./fixtures/app.json", import.meta.url), "utf8"));
 
@@ -29,7 +29,8 @@ function signature(el) {
     pid: attr("data-pid"),
     tag: el.localName,
     kind: attr("data-kind"),
-    class: attr("class"),
+    // Without the shared sheet's classes: `css` compares the style itself.
+    class: attr("class") && attr("class").split(" ").filter((c) => !/^p[0-9a-z]+(-\d+)?$/.test(c)).join(" ") || null,
     role: attr("role"),
     label: attr("aria-label"),
     level: attr("aria-level"),
@@ -40,7 +41,7 @@ function signature(el) {
     placeholder: attr("placeholder"),
     value: el.localName === "input" ? el.value : null,
     checked: el.localName === "input" ? el.checked : null,
-    css: el.style.cssText,
+    css: cssOf(el),
   };
 }
 
@@ -228,7 +229,7 @@ test("values, icons, pictures, appearance and environment", () => {
   assert.equal(page.node(3).value, 0.25);
   assert.equal(page.node(4).src, "/assets/logo.abc.png");
   assert.equal(page.node(4).alt, "Logo");
-  assert.equal(page.node(4).style.objectFit, "contain");
+  assert.ok(page.node(4).classList.contains("prism-fit"), "contain");
   assert.equal(page.node(5).textContent, "+");
   const html = page.document.documentElement;
   assert.equal(html.style.colorScheme, "dark");
@@ -243,16 +244,42 @@ test("styles replace the inline CSS and play enter animations once", () => {
   const page = live([create(1, "view"), root(1)]);
   const motion = { rest: { o: 1, tf: [0, 0, 1, 0] }, enter: { o: 0, tf: [0, 20, 1, 0] }, exit: null, repeat: null, t: { d: 0.3, delay: 0, ease: "ease" }, xt: { d: 0.2, delay: 0, ease: "ease" } };
   page.ws.deliver({ t: "patch", p: [{ op: "style", id: 1, css: "display:flex;gap:4px;", motion }] });
-  assert.equal(page.node(1).style.gap, "4px");
+  assert.equal(styleOf(page.node(1)).gap, "4px");
   const anims = () => (page.document.animations || []).filter((a) => a.el === page.node(1));
   assert.equal(anims().length, 1, "entered");
   assert.deepEqual(JSON.parse(JSON.stringify(anims()[0].keyframes[0])), { opacity: 0, transform: "translate(0px,20px) rotate(0deg) scale(1)" });
   page.ws.deliver({ t: "patch", p: [{ op: "style", id: 1, css: "display:flex;", motion }] });
   assert.equal(anims().length, 1, "a restyle does not enter again");
-  assert.equal(page.node(1).style.gap, "");
+  assert.equal(styleOf(page.node(1)).gap, "");
   // A reset (reconnect) shows what is there without animating it.
   const again = live([create(1, "view"), root(1), { op: "style", id: 1, css: "", motion }]);
   assert.equal((again.document.animations || []).length, 0);
+});
+
+test("node styles: one shared rule per distinct style, no style attribute, unused rules recycled", () => {
+  const ids = Array.from({ length: 600 }, (_, i) => i + 2);
+  const page = live([
+    create(1, "view"), ...ids.map((id) => create(id, "view")),
+    children(1, ids),
+    { op: "style", id: 2, css: "gap:4px;" }, { op: "style", id: 3, css: "gap:4px;" },
+    root(1),
+  ]);
+  const sheet = page.document.getElementById("prism-styles").sheet;
+  const a = page.node(2), b = page.node(3);
+  assert.equal(a.className, b.className, "same style, same class");
+  assert.equal(a.hasAttribute("style"), false);
+  assert.equal(sheet.cssRules.length, 1);
+  // Named after a short hash of the style, the server's `style_class`.
+  assert.equal(a.className, "pihnx3i");
+  assert.equal(sheet.cssRules[0].selectorText, ":is(#prism-root, body) .pihnx3i");
+  // Many distinct styles over time (a value that keeps changing): rules no
+  // node uses any more are reused, so the sheet stays small.
+  for (let round = 0; round < 3; round++) {
+    page.ws.deliver({ t: "patch", p: ids.map((id) => ({ op: "style", id, css: `width:${round * 1000 + id}px;` })) });
+  }
+  assert.ok(sheet.cssRules.length < 1300, `${sheet.cssRules.length} rules`);
+  assert.equal(cssOf(page.node(2)), "width:2002px;");
+  assert.equal(cssOf(page.node(601)), "width:2601px;");
 });
 
 test("loops swing back and forth, or start over (spinners), with non-uniform scale", () => {
@@ -276,37 +303,36 @@ test("loops swing back and forth, or start over (spinners), with non-uniform sca
   assert.equal(anims()[0].keyframes[1].transform, "translate(calc(0px + -50%),calc(0px + 0%)) rotate(0deg) scale(1,0.1)");
 });
 
-test("interaction states: one style sheet per node, groups flagged, all gone on destroy and reset", () => {
+test("interaction states: one style sheet for all nodes, groups flagged, rules gone on destroy and reset", () => {
   const page = live([create(1, "view"), create(2, "view"), root(1)]);
-  const sheets = () => page.document.head.children.filter((c) => c.localName === "style");
+  const sheet = () => page.document.getElementById("prism-states");
   const hover = '@media (hover:hover){[data-pid="1"]:hover{opacity:0.5 !important;}}';
+  const active = '[data-pid="2"]:active{opacity:0.2 !important;}';
   page.ws.deliver({ t: "patch", p: [
     { op: "style", id: 1, css: "display:flex;", states: hover, group: true },
-    { op: "style", id: 2, css: "", states: '[data-pid="2"]:active{opacity:0.2 !important;}' },
+    { op: "style", id: 2, css: "", states: active },
   ] });
-  assert.equal(sheets().length, 2);
-  assert.equal(sheets()[0].textContent, hover);
-  assert.equal(sheets()[0].dataset.prismStates, "1");
+  assert.equal(page.document.head.children.filter((c) => c.localName === "style" && c.id === "prism-states").length, 1);
+  assert.equal(sheet().textContent, `${hover}\n${active}`);
   assert.equal(page.node(1).dataset.group, "");
-  // A restyle replaces the rules in place; no rules: no sheet, no group.
+  // A restyle replaces the node's rules; no rules: none left, no group.
   page.ws.deliver({ t: "patch", p: [{ op: "style", id: 1, css: "", states: "[data-pid=\"1\"]:hover{}" }] });
-  assert.equal(sheets().length, 2);
-  assert.equal(sheets()[0].textContent, "[data-pid=\"1\"]:hover{}");
+  assert.equal(sheet().textContent, `[data-pid="1"]:hover{}\n${active}`);
   assert.equal(page.node(1).dataset.group, undefined);
   page.ws.deliver({ t: "patch", p: [{ op: "style", id: 1, css: "" }] });
-  assert.equal(sheets().length, 1);
+  assert.equal(sheet().textContent, active);
   page.ws.deliver({ t: "patch", p: [{ op: "destroy", id: 2 }] });
-  assert.equal(sheets().length, 0);
+  assert.equal(sheet().textContent, "");
   page.ws.deliver({ t: "patch", p: [{ op: "style", id: 1, css: "", states: hover }] });
   page.ws.deliver({ t: "reset", p: [create(1, "view"), root(1)] });
-  assert.equal(sheets().length, 0, "a reset starts over");
+  assert.equal(sheet().textContent, "", "a reset starts over");
 });
 
-test("state sheets carry the host's CSP nonce", () => {
+test("the client's style sheets carry the host's CSP nonce", () => {
   const page = live([create(1, "view"), root(1)], { nonce: "n0nce" });
-  page.ws.deliver({ t: "patch", p: [{ op: "style", id: 1, css: "", states: '[data-pid="1"]:active{opacity:0.2 !important;}' }] });
-  const sheet = page.document.head.children.find((c) => c.localName === "style");
-  assert.equal(sheet.nonce, "n0nce");
+  page.ws.deliver({ t: "patch", p: [{ op: "style", id: 1, css: "gap:2px;", states: '[data-pid="1"]:active{opacity:0.2 !important;}' }] });
+  assert.equal(page.document.getElementById("prism-states").nonce, "n0nce");
+  assert.equal(page.document.getElementById("prism-styles").nonce, "n0nce");
 });
 
 test("stacks show the top screen, its title and a Back button", () => {
@@ -526,7 +552,7 @@ test("window resizes are reported once settled", () => {
 test("resizes report the safe-area insets (#28)", () => {
   const page = live([create(1, "view"), root(1)]);
   const css = page.window.getComputedStyle;
-  page.window.getComputedStyle = (el) => el.style.cssText?.includes("safe-area-inset")
+  page.window.getComputedStyle = (el) => cssOf(el).includes("safe-area-inset")
     ? { paddingTop: "47px", paddingRight: "0px", paddingBottom: "34px", paddingLeft: "59px" }
     : css(el);
   page.fire("resize");
@@ -794,17 +820,17 @@ test("own-width rules: the element takes the CSS of the widest threshold it reac
   el.clientWidth = 400;
   page.ws.deliver({ t: "patch", p: [{ op: "style", id: 1, css: "display:flex;flex-direction:column;", cq }] });
   // Measured at once: 400 wide is past 300.
-  assert.equal(el.style.cssText, "display:flex;flex-direction:row;");
+  assert.equal(cssOf(el), "display:flex;flex-direction:row;");
   const ro = page.window.resizeObservers.find((o) => o.targets.includes(el));
   assert.ok(ro, "observed");
   ro.cb([{ target: el, contentRect: { width: 200 } }]);
-  assert.equal(el.style.cssText, "display:flex;flex-direction:column;");
+  assert.equal(cssOf(el), "display:flex;flex-direction:column;");
   ro.cb([{ target: el, borderBoxSize: [{ inlineSize: 800 }] }]);
-  assert.equal(el.style.cssText, "display:grid;");
+  assert.equal(cssOf(el), "display:grid;");
   // No rules anymore: the plain CSS stays, resizes change nothing.
   page.ws.deliver({ t: "patch", p: [{ op: "style", id: 1, css: "display:flex;" }] });
   ro.cb([{ target: el, contentRect: { width: 900 } }]);
-  assert.equal(el.style.cssText, "display:flex;");
+  assert.equal(cssOf(el), "display:flex;");
 });
 
 test("horizontal scroll views get their class from the style op", () => {
@@ -837,13 +863,13 @@ test("rich text: runs become spans, links and symbols; links report their id", (
   const [plain, bold, link, symbol, run, external] = el.childNodes;
   assert.equal(plain.nodeType, 3);
   assert.equal(bold.localName, "span");
-  assert.match(bold.style.cssText, /font-weight:\s*700/);
-  assert.match(bold.style.cssText, /light-dark\(#FF0000FF, #00FF00FF\)/);
-  assert.match(bold.style.cssText, /font-size:\s*1.5em/);
+  assert.match(cssOf(bold), /font-weight:\s*700/);
+  assert.match(cssOf(bold), /light-dark\(#FF0000FF, #00FF00FF\)/);
+  assert.match(cssOf(bold), /font-size:\s*1.5em/);
   assert.equal(link.localName, "a");
   assert.equal(link.getAttribute("href"), "/app/settings", "app paths under the mount point");
   assert.equal(external.getAttribute("href"), "https://example.com/docs");
-  assert.match(link.style.cssText, /text-decoration-line:\s*underline/);
+  assert.match(cssOf(link), /text-decoration-line:\s*underline/);
   assert.equal(symbol.getAttribute("aria-hidden"), "true");
   assert.equal(run.getAttribute("role"), "link");
   assert.equal(run.getAttribute("tabindex"), "0");

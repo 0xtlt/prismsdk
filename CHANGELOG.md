@@ -206,6 +206,7 @@ The first version, not yet on crates.io.
 
 ### Changed
 
+- Web: the client no longer writes a `style="…"` attribute on every node. Each distinct style is one rule of a shared sheet, applied by a class named after a short hash of the style (`p1x5rl6u`, the same name as the first paint's `data-ps`), and unused rules are recycled. Interaction states share one `<style>` instead of one per node. Picture fit is a `prism-fit` class.
 - Releasing an entity also releases the entities it created with `cx.new`
   and drops the observers it registered with `cx.observe`; releasing a
   router releases its screens and, for the app's router, clears the
@@ -278,6 +279,7 @@ The first version, not yet on crates.io.
   by an earlier run) at launch and as they start, so `update_activity` and
   `end_activity` reach them (`App::adopt_activity` for backends). A widget's
   root `.bg(..)` fills the whole widget (its container background).
+- Web: form fields (inputs, selects, text areas, checkboxes, switches) carry a `name` (`prism-<node>`), so Chrome no longer reports a form field without an id or name.
 - An iOS app built outside the Prism checkout no longer stops at launch on
   `@rpath/libswift_Concurrency.dylib` (#27): `prism` sets
   `IPHONEOS_DEPLOYMENT_TARGET`, `TVOS_…`, `WATCHOS_…`, `XROS_…` and

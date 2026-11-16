@@ -1,7 +1,7 @@
 // Bar buttons in the stack header and the tint of bars (#30).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { boot } from "./dom.mjs";
+import { boot, cssOf } from "./dom.mjs";
 
 const create = (id, kind) => ({ op: "create", id, kind });
 const textOp = (id, text) => ({ op: "text", id, text });
@@ -47,5 +47,5 @@ test("the top screen's bar buttons sit in the header and report their index", ()
 
 test("bar tints are CSS variables the stylesheet reads", () => {
   const page = live([create(1, "tabs"), { op: "style", id: 1, css: "display:flex;--prism-tint:rgba(255,0,0,1);" }, root(1)]);
-  assert.match(page.node(1).style.cssText, /--prism-tint:rgba\(255,0,0,1\)/);
+  assert.match(cssOf(page.node(1)), /--prism-tint:rgba\(255,0,0,1\)/);
 });

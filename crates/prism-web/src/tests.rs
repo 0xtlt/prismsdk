@@ -91,7 +91,7 @@ fn ssr_text_input_and_toggle() {
             },
             Patch::SetRoot { id: 1 },
         ]),
-        r#"<input type="text" data-pid="1" data-kind="text_input" style="" value="milk" placeholder="New todo">"#
+        r#"<input type="text" name="prism-1" data-pid="1" data-kind="text_input" style="" value="milk" placeholder="New todo">"#
     );
     let toggle = |value: f64| {
         html(&[
@@ -112,7 +112,7 @@ fn ssr_text_input_and_toggle() {
     // The native checkbox carries the state: no aria-checked on top of it.
     assert_eq!(
         toggle(1.),
-        r#"<input type="checkbox" role="switch" class="prism-switch" data-pid="1" data-kind="toggle" style="" aria-label="Dark mode" checked>"#
+        r#"<input type="checkbox" role="switch" name="prism-1" class="prism-switch" data-pid="1" data-kind="toggle" style="" aria-label="Dark mode" checked>"#
     );
     assert!(!toggle(0.).contains("checked"));
 }
@@ -179,9 +179,13 @@ fn ssr_pictures_resolve_assets_and_keep_one_style_attribute() {
     assert!(page.starts_with("<img "), "{page}");
     assert!(page.contains(r#"src="/assets/logo.png""#), "{page}");
     assert!(page.contains(r#"alt="Logo""#), "{page}");
-    // Browsers ignore a second `style` attribute: the fit must be in the first.
+    // The fit is a class of `prism.css`, the size the node's own style.
     assert_eq!(page.matches("style=").count(), 1, "{page}");
-    assert!(page.contains("width:40px;") && page.contains("object-fit:contain"));
+    assert!(page.contains("width:40px;"), "{page}");
+    assert!(
+        page.contains(r#"class="prism-picture prism-fit""#),
+        "{page}"
+    );
 
     let cover = html(&[
         create(1, NodeKind::Picture),
@@ -189,7 +193,7 @@ fn ssr_pictures_resolve_assets_and_keep_one_style_attribute() {
         Patch::SetRoot { id: 1 },
     ]);
     assert!(cover.contains(r#"src="https://example.com/a.jpg""#));
-    assert!(cover.contains("object-fit:cover"), "{cover}");
+    assert!(cover.contains(r#"class="prism-picture""#), "{cover}");
     // The description is the alt text only (no ARIA on top), empty when hidden.
     assert!(
         !page.contains("role=") && !page.contains("aria-label"),
@@ -1807,7 +1811,7 @@ fn ssr_of_choice_controls_inputs_and_overlays() {
         Patch::SetRoot { id: 1 },
     ]);
     assert!(
-        out.contains(r#"<label class="prism-check" data-pid="2" data-kind="checkbox" style=""><input type="checkbox" checked><span>Remember me</span></label>"#),
+        out.contains(r#"<label class="prism-check" data-pid="2" data-kind="checkbox" style=""><input type="checkbox" name="prism-2" checked><span>Remember me</span></label>"#),
         "{out}"
     );
     assert!(out.contains(r#"class="prism-radios""#) && out.contains(r#"data-row="1""#));
@@ -2366,4 +2370,15 @@ fn a_session_signs_out_and_in_again_without_leftover_screens() {
     op_with_text(&back_in["p"], "in: 3");
     page.session.close();
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn style_names_are_short_hashes_shared_with_the_client() {
+    // The same values as `styleHash` in client.js (see client.test.mjs).
+    assert_eq!(crate::html::style_class("gap:4px;"), "pihnx3i");
+    assert_eq!(
+        crate::html::style_class("font-family:\"Café 😀\";"),
+        "p1qpf33h"
+    );
+    assert_eq!(crate::html::style_class(""), "pztntfp");
 }

@@ -49,6 +49,8 @@ impl WebHead for Application {
                 .apple_touch_icon("prism.png")
                 .theme_color("#5856d6")
                 .meta("apple-mobile-web-app-title", "Prism")
+                // The standard name; older iOS Safari reads Apple's.
+                .meta("mobile-web-app-capable", "yes")
                 .meta("apple-mobile-web-app-capable", "yes")
                 .meta(
                     "description",

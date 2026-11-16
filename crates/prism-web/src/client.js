@@ -26,6 +26,79 @@
   };
   const baseTitle = document.title.split(" · ").pop();
   const nodes = new Map();
+
+  // Node styles: one rule per distinct style in a shared sheet, applied by a
+  // class named after a short hash of the style (no `style` attribute: lean
+  // markup, as in the server's first render, which uses the same names).
+  // Rules no node uses any more are recycled for new styles.
+  const styleSlots = new Map(); // css → { cls, rule }
+  const slotClasses = new Set();
+  const freeSlots = [];
+  let styleSheet = null;
+  let collectAt = 512;
+  /** `p` + FNV-1a of the code points, base 36 (`prism_web::html::style_class`). */
+  const styleHash = (css) => {
+    let h = 0x811c9dc5;
+    for (const ch of css) h = Math.imul(h ^ ch.codePointAt(0), 0x01000193);
+    return "p" + (h >>> 0).toString(36);
+  };
+  function styleSlot(css) {
+    let slot = styleSlots.get(css);
+    if (slot) return slot;
+    if (!styleSheet) {
+      const el = newStyle();
+      el.id = "prism-styles";
+      document.head.appendChild(el);
+      styleSheet = el.sheet;
+    }
+    if (styleSlots.size >= collectAt) collectStyles();
+    // Two styles with one hash (rare): the second gets a suffix.
+    let cls = styleHash(css);
+    for (let n = 2; slotClasses.has(cls); n++) cls = `${styleHash(css)}-${n}`;
+    // An id outranks Prism's own sheet, like an inline style did (`:is`
+    // counts its most specific argument; `body` matches every node).
+    const selector = `:is(#prism-root, body) .${cls}`;
+    slot = freeSlots.pop();
+    if (slot) {
+      slot.rule.selectorText = selector;
+    } else {
+      const i = styleSheet.insertRule(`${selector}{}`, styleSheet.cssRules.length);
+      slot = { rule: styleSheet.cssRules[i] };
+    }
+    slot.cls = cls;
+    // Set through the CSSOM: a strict CSP allows it, and nothing in `css`
+    // can end the rule.
+    slot.rule.style.cssText = css;
+    styleSlots.set(css, slot);
+    slotClasses.add(cls);
+    return slot;
+  }
+  /** Frees the rules of styles no element (attached or not) uses. */
+  function collectStyles() {
+    const used = new Set();
+    for (const el of nodes.values()) {
+      if (el._ps) used.add(el._ps);
+      if (el._runPs) el._runPs.forEach((c) => used.add(c));
+    }
+    for (const [css, slot] of styleSlots) {
+      if (used.has(slot.cls)) continue;
+      styleSlots.delete(css);
+      slotClasses.delete(slot.cls);
+      slot.rule.style.cssText = "";
+      freeSlots.push(slot);
+    }
+    collectAt = Math.max(512, styleSlots.size * 2);
+  }
+  /** Gives `el` the style `css` (a class of the shared sheet). */
+  function setCss(el, css) {
+    const cls = css ? styleSlot(css).cls : null;
+    if (el._ps === cls) return;
+    if (el._ps) el.classList.remove(el._ps);
+    if (cls) el.classList.add(cls);
+    else if (!el.className) el.removeAttribute("class");
+    el._ps = cls;
+  }
+  const hiddenBy = (css) => /(^|;)display:none\b/.test(css || "");
   const tags = {
     view: "div", text: "div", button: "button", text_input: "input",
     stack: "div", screen: "section", toggle: "input", scroll: "div", tabs: "div", tab: "div",
@@ -305,10 +378,8 @@
   /** A glyph drawn inside a text field, before the text. */
   function setFieldIcon(el, glyph) {
     toggleClass(el, "prism-icon-field", !!glyph);
-    el._extraCss = glyph
-      ? `--prism-icon:url("data:image/svg+xml,${encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><text x='8' y='14' font-size='16' text-anchor='middle' fill='gray' font-family='system-ui,sans-serif'>${glyph.replace(/[<&'"]/g, "")}</text></svg>`)}");`
-      : "";
-    el.style.cssText = (el._css || el.style.cssText) + el._extraCss;
+    if (glyph) el.style.setProperty("--prism-icon", `url("data:image/svg+xml,${encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><text x='8' y='14' font-size='16' text-anchor='middle' fill='gray' font-family='system-ui,sans-serif'>${glyph.replace(/[<&'"]/g, "")}</text></svg>`)}")`);
+    else el.style.removeProperty("--prism-icon");
   }
   /** `<datalist>` of a text field's suggestions. */
   function setSuggestions(el, list) {
@@ -349,7 +420,7 @@
     if (!v) return;
     let css = v.base;
     for (const [min, variant] of v.cq) if (width >= min) css = variant;
-    if (v.applied !== css) { v.applied = css; el.style.cssText = css + (el._extraCss || ""); }
+    if (v.applied !== css) { v.applied = css; setCss(el, css); }
   }
   function ownWidth(el, css, cq) {
     if (!cq) {
@@ -475,6 +546,7 @@
   };
   function renderRuns(el) {
     const runs = decodeRuns(el._runs);
+    el._runPs = null;
     if (!runs.length) { el.replaceChildren(document.createTextNode(el._text || "")); return; }
     el.replaceChildren(...runs.map((r) => {
       const css = runCss(r);
@@ -496,7 +568,10 @@
         return document.createTextNode(r.text);
       }
       node.textContent = r.text;
-      if (css) node.style.cssText = css;
+      if (css) {
+        setCss(node, css);
+        (el._runPs ||= []).push(node._ps);
+      }
       return node;
     }));
   }
@@ -515,6 +590,9 @@
     const el = document.createElement(tags[kind]);
     el.dataset.pid = id;
     el.dataset.kind = kind;
+    // Form fields are named (browsers flag fields without an id or name, and
+    // autofill reads it); a radio group names its inputs, a checkbox its box.
+    if (["INPUT", "SELECT", "TEXTAREA"].includes(el.tagName)) el.name = `prism-${id}`;
     if (kind === "text_input") {
       el.type = "text";
       el.addEventListener("input", () => send({ t: "input", id, v: el.value }));
@@ -648,6 +726,7 @@
       el.className = "prism-check";
       el.innerHTML = '<input type="checkbox"><span></span>';
       el._input = el.firstChild;
+      el._input.name = `prism-${id}`;
       el._label = el.lastChild;
       el._input.addEventListener("change", () => send({ t: "change", id, v: el._input.checked ? 1 : 0 }));
     } else if (kind === "radio_group") {
@@ -660,25 +739,29 @@
 
   // --- Interaction states (prism-core `interaction`) ------------------------------
   // `.hover(|s| …)`, `.active(…)`, `.focus(…)`, `.focus_within(…)`: the
-  // server sends each node's pseudo-class rules; one <style> per node.
-  const stateSheets = new Map();
+  // server sends each node's pseudo-class rules, gathered in one <style>
+  // (written once per batch of patches, by `flushStates`).
+  const stateRules = new Map();
+  let statesSheet = null;
+  let statesDirty = false;
   function setStates(id, rules) {
-    let sheet = stateSheets.get(id);
-    if (!rules) {
-      if (sheet) { sheet.remove(); stateSheets.delete(id); }
-      return;
-    }
-    if (!sheet) {
-      sheet = newStyle();
-      sheet.dataset.prismStates = String(id);
-      document.head.appendChild(sheet);
-      stateSheets.set(id, sheet);
-    }
-    if (sheet.textContent !== rules) sheet.textContent = rules;
+    if ((stateRules.get(id) || "") === (rules || "")) return;
+    if (rules) stateRules.set(id, rules); else stateRules.delete(id);
+    statesDirty = true;
   }
   function clearStates() {
-    stateSheets.forEach((sheet) => sheet.remove());
-    stateSheets.clear();
+    stateRules.clear();
+    statesDirty = true;
+  }
+  function flushStates() {
+    if (!statesDirty) return;
+    statesDirty = false;
+    if (!statesSheet) {
+      statesSheet = newStyle();
+      statesSheet.id = "prism-states";
+      document.head.appendChild(statesSheet);
+    }
+    statesSheet.textContent = [...stateRules.values()].join("\n");
   }
   // iOS Safari only applies `:active` once a touch listener exists.
   document.addEventListener("touchstart", () => {}, { passive: true });
@@ -719,7 +802,7 @@
       }
     }
     if (!m || !m.enter || quiet || reducedMotion?.matches) return;
-    if (!first && !(wasHidden && el.style.display !== "none")) return;
+    if (!first && !(wasHidden && !hiddenBy(el._css))) return;
     el.animate([poseCss(m.enter), poseCss(m.rest)], timing(m.t, { fill: "backwards" }));
   }
 
@@ -1013,10 +1096,10 @@
     switch (p.op) {
       case "create": return create(p.id, p.kind);
       case "style": {
-        const hidden = el.style.display === "none";
+        const hidden = hiddenBy(el._css);
         el._css = p.css;
-        el.style.cssText = p.css + (el._extraCss || "");
-        if (el.dataset.kind === "scroll") el.className = p.hx ? "prism-scroll prism-scroll-x" : "prism-scroll";
+        setCss(el, p.css);
+        if (el.dataset.kind === "scroll") toggleClass(el, "prism-scroll-x", !!p.hx);
         ownWidth(el, p.css, p.cq);
         setStates(p.id, p.states);
         if (p.group) el.dataset.group = ""; else delete el.dataset.group;
@@ -1089,7 +1172,7 @@
           if (el._open) showOverlay(el); else hideOverlay(el);
         }
         if (el.dataset.kind === "spinner") el.dataset.size = p.value === 1 ? "large" : "";
-        if (el.dataset.kind === "picture") el.style.objectFit = p.value === 1 ? "contain" : "cover";
+        if (el.dataset.kind === "picture") toggleClass(el, "prism-fit", p.value === 1);
         if (el.dataset.kind === "scroll") setRefreshing(el, p.value === 1);
         if (el.dataset.kind === "stack") { el._closable = (p.value & 1) === 1; el._noHeader = (p.value & 2) === 2; refreshStack(el); }
         if (el.dataset.kind === "screen") {
@@ -1658,6 +1741,7 @@
           // Quick reply: swap the buttons for a text field.
           clearTimeout(timer);
           const input = document.createElement("input");
+          input.name = "prism-reply";
           input.placeholder = a.reply;
           input.setAttribute("aria-label", a.title);
           const sendBtn = document.createElement("button");
@@ -2159,6 +2243,7 @@
       }
       quiet = msg.t === "reset";
       msg.p.forEach(apply);
+      flushStates();
       quiet = false;
       // The live tree replaced the first paint: its style rules can go.
       if (msg.t === "reset") document.getElementById("prism-ssr")?.remove();
