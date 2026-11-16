@@ -167,6 +167,8 @@ impl PlatformServices for AndroidServices {
             | PlatformRequest::RemoveStylesheet(_) => return,
             // `cx.set_title` (#154): the activity's title (null: the app's label).
             PlatformRequest::SetTitle(title) => json!({ "op": "title", "title": title }),
+            // The system closes apps on phones: nothing to ask.
+            PlatformRequest::SetUnsavedChanges(_) => return,
         };
         self.ops.push(op);
     }

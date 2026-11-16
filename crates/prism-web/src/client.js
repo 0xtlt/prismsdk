@@ -28,6 +28,14 @@
     return el;
   };
   const baseTitle = document.title.split(" · ").pop();
+  /** Unsaved changes (`cx.set_unsaved_changes`, #158): the browser asks
+   *  before the page is closed, reloaded or left. */
+  let unsaved = false;
+  addEventListener("beforeunload", (e) => {
+    if (!unsaved) return;
+    e.preventDefault();
+    e.returnValue = "";
+  });
   /** The app's title (`cx.set_title`, #154) wins over the top screen's. */
   let appTitle = "", screenTitle = "";
   function showTitle() {
@@ -6113,6 +6121,8 @@ void main() {
       case "sheets": return syncSheets(msg.urls || []);
       // `cx.set_title` (#154): the tab's title, over the screens'.
       case "title": appTitle = msg.title || ""; return showTitle();
+      // `cx.set_unsaved_changes` (#158): leaving the page asks first.
+      case "unsaved": unsaved = !!msg.on; return;
     }
   }
 
@@ -6299,6 +6309,7 @@ void main() {
       document.querySelectorAll("datalist[id^=prism-list-]").forEach((d) => d.remove());
       appTitle = msg.title || "";
       showTitle();
+      unsaved = !!msg.unsaved;
     }
     quiet = msg.t === "reset";
     msg.p.forEach(apply);

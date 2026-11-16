@@ -613,8 +613,10 @@ impl PlatformServices for LinuxServices {
             PlatformRequest::LoadFont(_)
             | PlatformRequest::AddStylesheet(_)
             | PlatformRequest::RemoveStylesheet(_)
-            // The window's title is set by the backend (imp.rs), which has it.
-            | PlatformRequest::SetTitle(_) => {}
+            // The window's title and its close question are the backend's
+            // (imp.rs), which has the window.
+            | PlatformRequest::SetTitle(_)
+            | PlatformRequest::SetUnsavedChanges(_) => {}
             // No widgets or Live Activities on Linux desktops.
             PlatformRequest::ReloadWidgets(_)
             | PlatformRequest::StartActivity { .. }

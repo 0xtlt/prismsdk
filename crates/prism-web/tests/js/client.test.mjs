@@ -977,6 +977,26 @@ test("the app's title wins over the screens', and a reset clears it (#154)", () 
   assert.equal(page.document.title, "Prism", "a session without a title drops the old one");
 });
 
+test("with unsaved changes, leaving the page asks first (#158)", () => {
+  const page = live([create(1, "view"), root(1)]);
+  const leave = () => {
+    const e = { type: "beforeunload", returnValue: undefined, preventDefault() { this.defaultPrevented = true; } };
+    page.window.dispatchEvent(e);
+    return e;
+  };
+  assert.equal(leave().defaultPrevented, undefined, "nothing to lose: no question");
+  page.ws.deliver({ t: "unsaved", on: true });
+  const e = leave();
+  assert.equal(e.defaultPrevented, true);
+  assert.equal(e.returnValue, "");
+  page.ws.deliver({ t: "unsaved", on: false });
+  assert.equal(leave().defaultPrevented, undefined);
+  // A new session says it again (a reconnect drops a stale state).
+  page.ws.deliver({ t: "unsaved", on: true });
+  page.ws.deliver({ t: "reset", p: [create(1, "view"), root(1)], unsaved: false });
+  assert.equal(leave().defaultPrevented, undefined);
+});
+
 test("window resizes are reported once settled", () => {
   const page = live([create(1, "view"), root(1)]);
   page.window.innerWidth = 390;

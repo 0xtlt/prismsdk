@@ -122,12 +122,10 @@ pub fn install_main_menu(
     let app_menu = NSMenu::new(mtm);
     app_menu.addItem(&item(mtm, &format!("Hide {title}"), Some(sel!(hide:)), "h"));
     app_menu.addItem(&NSMenuItem::separatorItem(mtm));
-    app_menu.addItem(&item(
-        mtm,
-        &format!("Quit {title}"),
-        Some(sel!(terminate:)),
-        "q",
-    ));
+    // Quitting asks first while the app has unsaved changes (#158).
+    let quit = item(mtm, &format!("Quit {title}"), Some(sel!(prismQuit:)), "q");
+    unsafe { quit.setTarget(Some(target)) };
+    app_menu.addItem(&quit);
     add(app_menu);
     for spec in app_menus {
         add(build_menu(mtm, spec, target));
