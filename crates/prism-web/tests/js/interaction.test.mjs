@@ -213,6 +213,24 @@ test("the first paint's layers stay until the live tree replaces them (#93)", ()
   assert.equal(empty.document.getElementById("prism-layers").childNodes.length, 0);
 });
 
+test("a dialog keeps the focus the app asked for, not its first control (#148)", () => {
+  // `dialog(…).open(true)` with a button, then an autofocused field, all
+  // created in one render: the dialog opens at the end of the batch.
+  const page = live([...root([])]);
+  page.ws.deliver({ t: "patch", p: [
+    { op: "create", id: 2, kind: "overlay" }, { op: "config", id: 2, config: "dialog" },
+    { op: "value", id: 2, value: 1 },
+    { op: "create", id: 3, kind: "button" }, { op: "text", id: 3, text: "x" },
+    { op: "create", id: 4, kind: "text_input" },
+    { op: "children", id: 2, children: [3, 4] },
+    { op: "focus", id: 4 },
+    { op: "children", id: 1, children: [2] },
+  ] });
+  assert.equal(page.node(2).firstChild.hasAttribute("open"), true);
+  const field = page.node(4);
+  assert.equal(page.document.activeElement, field._input || field);
+});
+
 test("dialogs open, close on Escape (back) and stay open when fixed", () => {
   const page = live([
     { op: "create", id: 2, kind: "overlay" }, { op: "config", id: 2, config: "dialog" },

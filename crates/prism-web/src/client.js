@@ -363,6 +363,10 @@
   });
 
   // --- Focus and scrolling from the app (#17) ----------------------------------
+  /** The node the app focused in this batch (`cx.focus`, `.autofocus()`):
+   *  a dialog opened in the same batch gives it the focus back, instead of
+   *  its first control (`showModal`'s choice, #148). */
+  let focusAsked = null;
   function focusNode(el) {
     const target = el._input || (el.dataset.kind === "radio_group"
       ? el.querySelector("input:checked") || el.querySelector("input") : el);
@@ -505,6 +509,7 @@
         if (typeof box.showModal === "function" && box.isConnected) box.showModal();
         else box.setAttribute("open", "");
         userNavigated = true;
+        if (focusAsked && focusAsked.isConnected && box.contains(focusAsked)) focusNode(focusAsked);
       }
       // Still modal, beside its anchor instead of centered.
       if (el._boxKind === "dialog" && el._placed) {
@@ -2275,7 +2280,7 @@
       // A rich input's runs (#115).
       case "rich": return el && el._rich && setRichValue(el, p.runs);
       case "selev": return el && setSelectEvents(el, p.on);
-      case "focus": return el && focusNode(el);
+      case "focus": if (el) { focusAsked = el; focusNode(el); } return;
       case "reveal": return el && reveal(el);
       // `cx.dismiss_keyboard()` (#29): the focused field lets go (phones
       // hide their keyboard).
@@ -6257,6 +6262,7 @@ void main() {
     msg.p.forEach(apply);
     if (radiosDirty) roveRadios();
     flushOverlays();
+    focusAsked = null;
     flushStates();
     if (msg.t === "reset") sceneResetEnd();
     quiet = false;

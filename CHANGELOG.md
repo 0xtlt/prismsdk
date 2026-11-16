@@ -312,6 +312,7 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- Web: a dialog opened in the same update as `.autofocus()` or `cx.focus` keeps that focus (#148); `showModal()` moved it to the dialog's first control.
 - Docs: `WebSandbox::popups()` also lets the windows a sandboxed page opens escape the sandbox (`allow-popups-to-escape-sandbox` on the web, the system browser natively), now documented (#146).
 - Web: the current entry of a navigation made of `.link()` elements is `aria-current="page"` (#144): `accessibility_current(true)` on an `<a href>` said `"true"` because the link role was dropped before the value was chosen, in the first paint and in the client.
 - Web: an element dragged only with the middle or secondary button (`drag_buttons`, #136) is no longer text-selectable (#142): every element with a drag handler gets `prism-draggable` (`user-select: none`, `touch-action: none`), so a left drag over a middle-button canvas no longer selects the whole area.
