@@ -426,6 +426,10 @@ impl RemoteWidgets {
         if s.scroll_axis == prism_core::ScrollAxis::Horizontal {
             op["s"]["hscroll"] = json!(true);
         }
+        // `overlay` or `hidden` scroll bars (#132).
+        if s.scrollbar != prism_core::Scrollbar::Auto {
+            op["s"]["scrollbar"] = json!(s.scrollbar.name());
+        }
         decorations(&mut op["s"], s);
         // A leaf's padding (#14), only when set: inset the content (text,
         // title, an input's text) by it, in place of the control's own. An

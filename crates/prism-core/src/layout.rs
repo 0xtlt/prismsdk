@@ -143,6 +143,31 @@ pub fn auto_fit(track: impl Into<GridTrack>) -> GridTrack {
     GridTrack::Repeat(Repetition::AutoFit, vec![track.into()])
 }
 
+/// How a [`scroll`](crate::scroll) view shows its scroll bars (#132).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Scrollbar {
+    /// The platform's usual bars (the default). On macOS with a mouse, or
+    /// with « Show scroll bars: Always », they stay and take room.
+    #[default]
+    Auto,
+    /// Thin bars over the content, shown while scrolling (and while the
+    /// pointer is over the view on the web): they never take room.
+    Overlay,
+    /// No bar; the view still scrolls (wheel, trackpad, keyboard, touch).
+    Hidden,
+}
+
+impl Scrollbar {
+    /// `auto`, `overlay` or `hidden`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Scrollbar::Auto => "auto",
+            Scrollbar::Overlay => "overlay",
+            Scrollbar::Hidden => "hidden",
+        }
+    }
+}
+
 /// Which way a [`scroll`](crate::scroll) view scrolls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ScrollAxis {

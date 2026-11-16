@@ -20,6 +20,16 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sa
 /* Horizontal scroll views: a row whose items keep their size. */
 .prism-scroll-x { overflow-x: auto; overflow-y: hidden; }
 .prism-scroll-x > * { flex-shrink: 0 !important; }
+/* Scroll bars (#132). Hidden: none, the view still scrolls. Overlay: thin,
+   shown while the pointer is over the view or it has the focus (browsers
+   with overlay bars, on macOS and phones, show them while scrolling). */
+[data-prism-scrollbar="hidden"] { scrollbar-width: none; }
+[data-prism-scrollbar="hidden"]::-webkit-scrollbar { display: none; }
+[data-prism-scrollbar="overlay"] { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+[data-prism-scrollbar="overlay"]:hover, [data-prism-scrollbar="overlay"]:focus-within { scrollbar-color: rgba(128, 128, 128, 0.55) transparent; }
+[data-prism-scrollbar="overlay"]::-webkit-scrollbar { width: 6px; height: 6px; background: transparent; }
+[data-prism-scrollbar="overlay"]::-webkit-scrollbar-thumb { background: transparent; border-radius: 3px; }
+[data-prism-scrollbar="overlay"]:hover::-webkit-scrollbar-thumb, [data-prism-scrollbar="overlay"]:focus-within::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.55); }
 /* `.fixed()` nodes are placed against the screen (or tab) they are on, like
    natively: below its header, above the tab bar, never scrolling. The
    containing block is the area holding the screen (a stack's body, the tab

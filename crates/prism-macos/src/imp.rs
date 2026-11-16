@@ -1711,8 +1711,61 @@ pub struct MacTabs {
 
 /// A scroll view; Prism children live in its flipped document view.
 pub struct MacScroll {
-    scroll: Retained<NSScrollView>,
+    scroll: Retained<PrismScrollView>,
     document: Retained<PrismView>,
+}
+
+#[derive(Default)]
+pub struct ScrollIvars {
+    /// `Scrollbar::Overlay` (#132): overlay scrollers whatever the « Show
+    /// scroll bars » setting says.
+    overlay: Cell<bool>,
+}
+
+define_class!(
+    #[unsafe(super(NSScrollView, NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PrismScrollView"]
+    #[ivars = ScrollIvars]
+    pub struct PrismScrollView;
+
+    impl PrismScrollView {
+        /// AppKit sets every scroll view's style again when the user
+        /// changes the setting or plugs a mouse in: an overlay one stays.
+        #[unsafe(method(setScrollerStyle:))]
+        fn set_scroller_style(&self, style: objc2_app_kit::NSScrollerStyle) {
+            let style = if self.ivars().overlay.get() {
+                objc2_app_kit::NSScrollerStyle::Overlay
+            } else {
+                style
+            };
+            let _: () = unsafe { msg_send![super(self), setScrollerStyle: style] };
+        }
+    }
+);
+
+impl PrismScrollView {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(ScrollIvars::default());
+        unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
+    }
+
+    /// How the scrollers show (#132), for a view scrolling `sideways` or
+    /// not. Legacy (always shown) scrollers take room after layout, so a
+    /// row never gets one; overlay ones take none, so it may.
+    fn set_scrollbar(&self, bar: prism_core::Scrollbar, sideways: bool) {
+        use prism_core::Scrollbar;
+        let overlay = bar == Scrollbar::Overlay;
+        self.ivars().overlay.set(overlay);
+        self.setScrollerStyle(if overlay {
+            objc2_app_kit::NSScrollerStyle::Overlay
+        } else {
+            objc2_app_kit::NSScroller::preferredScrollerStyle(MainThreadMarker::from(self))
+        });
+        let shown = bar != Scrollbar::Hidden;
+        self.setHasVerticalScroller(shown && !sideways);
+        self.setHasHorizontalScroller(overlay && sideways);
+    }
 }
 
 /// A text input. Secure entry is a different class (`NSSecureTextField`,
@@ -2562,7 +2615,7 @@ impl Widgets for AppKit {
                 }))
             }
             NodeKind::Scroll => {
-                let scroll = NSScrollView::new(mtm);
+                let scroll = PrismScrollView::new(mtm);
                 scroll.setHasVerticalScroller(true);
                 scroll.setDrawsBackground(false);
                 let document = PrismView::new(mtm, id);
@@ -2788,11 +2841,10 @@ impl Widgets for AppKit {
                     objc2_app_kit::NSScrollElasticity::Automatic,
                     objc2_app_kit::NSScrollElasticity::None,
                 );
-                // No horizontal scroller: with legacy (always shown)
-                // scrollers, AppKit would take 15 pt of the row's height for
-                // it, after layout. Trackpad swipes and shift + wheel scroll.
-                sc.scroll.setHasHorizontalScroller(false);
-                sc.scroll.setHasVerticalScroller(!sideways);
+                // No legacy horizontal scroller: AppKit would take 15 pt
+                // of the row's height for it, after layout. Trackpad swipes
+                // and shift + wheel scroll.
+                sc.scroll.set_scrollbar(style.scrollbar, sideways);
                 sc.scroll
                     .setVerticalScrollElasticity(if sideways { off } else { on });
             }

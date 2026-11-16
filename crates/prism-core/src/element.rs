@@ -1412,6 +1412,19 @@ impl Scroll {
         self
     }
 
+    /// How the scroll bars show (#132): [`Scrollbar::Overlay`] keeps
+    /// them thin and over the content, [`Scrollbar::Hidden`] removes them
+    /// (the view still scrolls), for areas whose design has none: a
+    /// sidebar, a canvas, a row of tabs. Keep them where users need to
+    /// see how long the content is.
+    ///
+    /// [`Scrollbar::Overlay`]: crate::Scrollbar::Overlay
+    /// [`Scrollbar::Hidden`]: crate::Scrollbar::Hidden
+    pub fn scrollbar(mut self, bar: crate::layout::Scrollbar) -> Self {
+        self.0.style.scrollbar = bar;
+        self
+    }
+
     /// Called as the content scrolls (virtualized lists, parallax…).
     pub fn on_scroll(mut self, handler: Handler<ScrollEvent>) -> Self {
         self.0.on_scroll = Some(handler);

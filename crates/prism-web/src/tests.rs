@@ -3070,6 +3070,44 @@ fn horizontal_scrolls_and_own_width_rules_in_ops_and_markup() {
     );
 }
 
+/// #132: overlay or hidden scroll bars, in the first paint and live.
+#[test]
+fn scroll_bars_can_be_overlay_or_hidden() {
+    use prism_core::Scrollbar;
+    let style = |bar| Style {
+        scrollbar: bar,
+        ..Style::default()
+    };
+    let mut op = json!({});
+    crate::css::layout_op_fields(NodeKind::Scroll, &style(Scrollbar::Auto), &mut op);
+    assert!(op.get("sb").is_none());
+    crate::css::layout_op_fields(NodeKind::Scroll, &style(Scrollbar::Hidden), &mut op);
+    assert_eq!(op["sb"], "hidden");
+    let mut view = json!({});
+    crate::css::layout_op_fields(NodeKind::View, &style(Scrollbar::Hidden), &mut view);
+    assert!(view.get("sb").is_none(), "scroll views only");
+    let mut b = HtmlBackend::default();
+    b.apply(&[
+        create(1, NodeKind::Scroll),
+        Patch::SetStyle {
+            id: 1,
+            style: style(Scrollbar::Overlay),
+        },
+        Patch::SetRoot { id: 1 },
+    ]);
+    assert!(
+        b.to_html()
+            .contains(r#"class="prism-scroll" data-prism-scrollbar="overlay""#),
+        "{}",
+        b.to_html()
+    );
+    let sheet = include_str!("prism.css");
+    assert!(sheet.contains(r#"[data-prism-scrollbar="hidden"] { scrollbar-width: none; }"#));
+    assert!(
+        sheet.contains(r#"[data-prism-scrollbar="hidden"]::-webkit-scrollbar { display: none; }"#)
+    );
+}
+
 #[test]
 fn tabs_leave_their_direction_to_the_stylesheet() {
     // `prism.css` turns the tab bar into a sidebar on wide windows; an

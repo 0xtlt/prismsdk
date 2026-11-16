@@ -1916,7 +1916,7 @@ impl Widgets for UiKit {
         crate::decor::set_layer_border(v, style.border_color);
 
         if let View::Scroll(s) = view {
-            crate::layout::set_axis(s, style.scroll_axis);
+            crate::layout::set_axis(s, style.scroll_axis, style.scrollbar);
         }
         crate::layout::remember_font(view, || font(style));
         let text_color = style.text_color.map(ui_color);

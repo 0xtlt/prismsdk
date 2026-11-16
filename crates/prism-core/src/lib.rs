@@ -98,7 +98,9 @@ pub use fonts::{FontFace, FontSource, Stylesheet};
 pub use i18n::{BasicFormatter, DateStyle, Direction, Formatter, Locale, Translations};
 pub use interaction::{Interaction, Interactions, States};
 pub use island::{Island, IslandEvent, IslandSource, island, web_component};
-pub use layout::{GridTrack, Repetition, ScrollAxis, auto_fill, auto_fit, fr, minmax, repeat};
+pub use layout::{
+    GridTrack, Repetition, ScrollAxis, Scrollbar, auto_fill, auto_fit, fr, minmax, repeat,
+};
 pub use list::VirtualList;
 pub use menu::{ActionRole, Alert, AlertStyle, Menu, MenuItem, Tray};
 pub use navbar::{BarButton, BarPlacement, bar_button};
@@ -726,7 +728,9 @@ pub mod prelude {
         relative, rgb, rgba, screen, scroll, shape, slider, spinner, text, text_area, text_input,
         timer, toggle,
     };
-    pub use crate::{GridTrack, ScrollAxis, auto_fill, auto_fit, fr, minmax, repeat, scroll_x};
+    pub use crate::{
+        GridTrack, ScrollAxis, Scrollbar, auto_fill, auto_fit, fr, minmax, repeat, scroll_x,
+    };
     // App assets compiled into the binary (#61).
     pub use crate::EmbeddedAssets;
     // Typography and rich text.
