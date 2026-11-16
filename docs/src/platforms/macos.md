@@ -13,7 +13,9 @@ borders, corners and pictures are layer properties ([Performance](../performance
   bar ([Custom window chrome](#custom-window-chrome)).
 - **Navigation:** a header bar with a Back button and Go ▸ Back ⌘[; tabs are a
   segmented control ([Navigation](../guide/navigation.md)).
-- **Menus:** `cx.set_app_menu` (the menu bar, with shortcuts), context menus on
+- **Menus:** `cx.set_app_menu` (the app's menus in Prism's bar) or
+  `cx.set_menu_bar` (the whole bar, with system items such as Copy or
+  Minimize, #161), context menus on
   right click or ⌃-click, and a menu bar item with `cx.set_tray`
   ([Dialogs, menus, tray](../guide/dialogs-menus.md)).
 - **System surfaces:** WidgetKit widgets, notifications (UserNotifications) and

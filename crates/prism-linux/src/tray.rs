@@ -29,6 +29,8 @@ enum Item {
 fn items(spec: &MenuSpec) -> Vec<Item> {
     spec.items
         .iter()
+        // System actions (#161) are AppKit's: not in a tray.
+        .filter(|i| !matches!(i, MenuItemSpec::System { .. }))
         .map(|i| match i {
             MenuItemSpec::Action {
                 id,
@@ -42,7 +44,7 @@ fn items(spec: &MenuSpec) -> Vec<Item> {
                 enabled: *enabled,
                 checked: *checked,
             },
-            MenuItemSpec::Separator => Item::Separator,
+            MenuItemSpec::Separator | MenuItemSpec::System { .. } => Item::Separator,
             MenuItemSpec::Submenu { title, menu, .. } => Item::Sub {
                 title: title.clone(),
                 items: items(menu),

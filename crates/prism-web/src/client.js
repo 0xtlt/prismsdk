@@ -324,7 +324,7 @@
     || (t.tagName === "INPUT" && !["checkbox", "radio", "range", "button", "submit", "color", "file"].includes(t.type)));
   const SCROLL_KEYS = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " ", "PageUp", "PageDown", "Home", "End"];
   document.addEventListener("keydown", (e) => {
-    if (e.isComposing || !e.key) return;
+    if (e.isComposing || !e.key || e.prismShortcut) return;
     const t = e.target && e.target.closest ? e.target : null;
     const owner = t && t.closest("[data-keys]");
     const typing = editable(t);
@@ -345,6 +345,29 @@
     const control = typing || (t && ["SELECT", "INPUT"].includes(t.tagName));
     if (owner && !control && SCROLL_KEYS.includes(e.key)) e.preventDefault();
   });
+  // The app menus' shortcuts (#161), `cmd` being ⌘ on Apple platforms and
+  // Ctrl elsewhere: taken before the browser (⌘Z in a field, ⌘S, ⌘K) and
+  // sent as the item's choice; the key is then not reported as a key.
+  let shortcuts = new Map();
+  const applePlatform = /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent || "");
+  function shortcutOf(e) {
+    const cmd = applePlatform ? e.metaKey : e.ctrlKey;
+    const ctrl = applePlatform && e.ctrlKey;
+    const key = e.key === " " ? "space" : e.key.toLowerCase();
+    return [cmd && "cmd", ctrl && "ctrl", e.altKey && "alt", e.shiftKey && "shift", key].filter(Boolean);
+  }
+  addEventListener("keydown", (e) => {
+    if (!shortcuts.size || e.isComposing || !e.key) return;
+    const parts = shortcutOf(e);
+    for (const [keys, id] of shortcuts) {
+      const want = keys.split("+").map((k) => k.trim()).map((k) => ({ command: "cmd", meta: "cmd", control: "ctrl", option: "alt", opt: "alt" })[k] || k);
+      if (want.length !== parts.length || !want.every((k) => parts.includes(k))) continue;
+      e.preventDefault();
+      e.prismShortcut = true;
+      send({ t: "menu", id });
+      return;
+    }
+  }, true);
   // Releases (#159) of the keys whose press was reported, to the same
   // listeners: hold Space to pan, release it to stop. The window losing the
   // focus releases them all (no key-up arrives then).
@@ -6121,6 +6144,8 @@ void main() {
       case "sheets": return syncSheets(msg.urls || []);
       // `cx.set_title` (#154): the tab's title, over the screens'.
       case "title": appTitle = msg.title || ""; return showTitle();
+      // The app menus' shortcuts (#161): taken before the browser.
+      case "shortcuts": shortcuts = new Map((msg.list || []).map(([keys, id]) => [keys, id])); return;
       // `cx.set_unsaved_changes` (#158): leaving the page asks first.
       case "unsaved": unsaved = !!msg.on; return;
     }

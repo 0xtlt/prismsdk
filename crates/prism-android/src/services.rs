@@ -159,7 +159,8 @@ impl PlatformServices for AndroidServices {
             // Trays and menu bars are desktop surfaces.
             PlatformRequest::SetTray(_)
             | PlatformRequest::RemoveTray(_)
-            | PlatformRequest::SetAppMenu(_) => return,
+            | PlatformRequest::SetAppMenu(_)
+            | PlatformRequest::SetMenuBar(_) => return,
             // Fonts are registered by the backend, which draws texts again
             // (imp.rs, `load_font`); stylesheets are a web thing.
             PlatformRequest::LoadFont(_)

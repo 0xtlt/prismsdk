@@ -2500,6 +2500,68 @@ fn webauthn_ceremonies_pass_the_servers_options_through() {
     find_text(&patches, r#"true | {"id":"x"}"#);
 }
 
+/// #161: the app's whole menu bar, with system items next to its own.
+#[test]
+fn the_menu_bar_mixes_system_and_app_items() {
+    use crate::PlatformRequest;
+    use crate::menu::{Menu, MenuItem, MenuItemSpec, SystemAction};
+    struct Plain;
+    impl Render for Plain {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let undo: Handler<ClickEvent> = std::rc::Rc::new(|_, _| {});
+        cx.set_menu_bar(vec![
+            Menu::titled("App").item(MenuItem::system(SystemAction::Quit).title("Quitter")),
+            Menu::titled("Édition")
+                .item(MenuItem::new("Annuler").shortcut("cmd+z").on_select(undo))
+                .item(MenuItem::system(SystemAction::Copy).title("Copier"))
+                .item(MenuItem::system(SystemAction::Zoom)),
+        ]);
+        let root = cx.new_entity(|_| Plain);
+        cx.set_root(root);
+    });
+    let mut rt = Runtime::new(&init);
+    rt.render();
+    let bar = rt
+        .take_requests()
+        .into_iter()
+        .find_map(|r| match r {
+            PlatformRequest::SetMenuBar(m) => Some(m),
+            _ => None,
+        })
+        .expect("the bar");
+    assert_eq!(bar.len(), 2);
+    assert_eq!(
+        bar[0].items[0],
+        MenuItemSpec::System {
+            action: SystemAction::Quit,
+            title: "Quitter".into(),
+            shortcut: Some("cmd+q".into()),
+        }
+    );
+    let edit = &bar[1].items;
+    assert!(
+        matches!(&edit[0], MenuItemSpec::Action { shortcut: Some(k), enabled: true, .. } if k == "cmd+z")
+    );
+    assert_eq!(
+        edit[2],
+        MenuItemSpec::System {
+            action: SystemAction::Zoom,
+            title: "Zoom".into(),
+            shortcut: None,
+        },
+        "English title and no shortcut by default"
+    );
+    assert!(
+        bar[1]
+            .to_json()
+            .contains(r#""t":"system","action":"Copy","title":"Copier""#)
+    );
+}
+
 /// #159: clicks carry their keys and count; key releases reach on_key_up
 /// and on_global_key_up.
 #[test]

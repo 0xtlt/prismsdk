@@ -25,6 +25,8 @@ pub fn build_menu(mtm: MainThreadMarker, spec: &MenuSpec, report: fn(UiEvent)) -
     for item in &spec.items {
         match item {
             MenuItemSpec::Separator => groups.push(Vec::new()),
+            // System actions (#161) are the Mac menu bar's.
+            MenuItemSpec::System { .. } => {}
             MenuItemSpec::Submenu { title, icon, menu } => {
                 let mut sub = build_menu(mtm, menu, report);
                 if icon.is_some() {

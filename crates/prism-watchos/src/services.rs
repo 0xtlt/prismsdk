@@ -98,6 +98,7 @@ impl PlatformServices for WatchServices {
             | PlatformRequest::SetTray(_)
             | PlatformRequest::RemoveTray(_)
             | PlatformRequest::SetAppMenu(_)
+            | PlatformRequest::SetMenuBar(_)
             | PlatformRequest::SetCar(_)
             | PlatformRequest::WatchActivityPushToStart => {}
             // Fonts are registered by the backend, which draws texts again

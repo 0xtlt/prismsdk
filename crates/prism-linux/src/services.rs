@@ -480,6 +480,8 @@ pub(crate) fn menu_model(app: &gtk::Application, spec: &MenuSpec) -> gio::Menu {
                 menu.append_section(None, &section);
                 section = gio::Menu::new();
             }
+            // System actions (#161) are AppKit's: GTK fields have their own.
+            MenuItemSpec::System { .. } => {}
             MenuItemSpec::Submenu {
                 title, menu: sub, ..
             } => {
@@ -589,7 +591,8 @@ impl PlatformServices for LinuxServices {
             // No Live Activities on Linux desktops.
             PlatformRequest::WatchActivityPushToStart => {}
             PlatformRequest::ShowAlert(spec) => self.alert(spec),
-            PlatformRequest::SetAppMenu(menus) => {
+            // The app's whole bar (#161): GTK has no menus of its own.
+            PlatformRequest::SetAppMenu(menus) | PlatformRequest::SetMenuBar(menus) => {
                 let bar = gio::Menu::new();
                 for m in &menus {
                     let model = menu_model(&self.app, m);

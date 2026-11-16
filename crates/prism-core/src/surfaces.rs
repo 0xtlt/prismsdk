@@ -163,6 +163,8 @@ pub enum PlatformRequest {
     /// The page's or window's title ([`App::set_title`], #154); `None`:
     /// back to the default.
     SetTitle(Option<String>),
+    /// The whole menu bar, defined by the app ([`App::set_menu_bar`], #161).
+    SetMenuBar(Vec<crate::menu::MenuSpec>),
     /// The app has unsaved changes: leaving asks first
     /// ([`App::set_unsaved_changes`], #158).
     SetUnsavedChanges(bool),

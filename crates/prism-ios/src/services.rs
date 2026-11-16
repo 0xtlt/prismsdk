@@ -224,7 +224,8 @@ impl PlatformServices for IosServices {
             // No menu bar or tray on iOS (capabilities say so).
             PlatformRequest::SetTray(_)
             | PlatformRequest::RemoveTray(_)
-            | PlatformRequest::SetAppMenu(_) => {}
+            | PlatformRequest::SetAppMenu(_)
+            | PlatformRequest::SetMenuBar(_) => {}
             PlatformRequest::SetCar(json) => unsafe { prism_car_set(c(&json).as_ptr()) },
             // Fonts are registered by the backend, which draws texts again
             // (imp.rs, `load_font`); stylesheets are a web thing.

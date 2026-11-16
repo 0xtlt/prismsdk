@@ -27,6 +27,96 @@ pub enum ActionRole {
     Cancel,
 }
 
+/// An action the platform performs itself (#161), for menu bar menus the
+/// app builds: [`MenuItem::system`]. On macOS it goes to the focused view
+/// (Cut, Copy, Paste in a text field) or the window (Minimize, Zoom) like
+/// the system's own items; elsewhere these items are left out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SystemAction {
+    /// Undo in the focused text field (`undo:`, ⌘Z).
+    Undo,
+    /// Redo in the focused text field (`redo:`, ⇧⌘Z).
+    Redo,
+    /// `cut:` (⌘X).
+    Cut,
+    /// `copy:` (⌘C).
+    Copy,
+    /// `paste:` (⌘V).
+    Paste,
+    /// Paste without the text's formatting (⌥⇧⌘V).
+    PasteAndMatchStyle,
+    /// `delete:`.
+    Delete,
+    /// `selectAll:` (⌘A).
+    SelectAll,
+    /// Minimize the window (⌘M).
+    Minimize,
+    /// Zoom the window.
+    Zoom,
+    /// Enter or leave full screen (⌃⌘F).
+    ToggleFullScreen,
+    /// Close the window (⌘W).
+    CloseWindow,
+    /// Hide the app (⌘H).
+    Hide,
+    /// Hide the other apps (⌥⌘H).
+    HideOthers,
+    /// Show all apps.
+    ShowAll,
+    /// The standard About panel.
+    About,
+    /// The Services submenu.
+    Services,
+    /// Quit (⌘Q), asking first with unsaved changes.
+    Quit,
+}
+
+impl SystemAction {
+    /// The English title, used when the item has none of its own.
+    pub fn default_title(self) -> &'static str {
+        match self {
+            SystemAction::Undo => "Undo",
+            SystemAction::Redo => "Redo",
+            SystemAction::Cut => "Cut",
+            SystemAction::Copy => "Copy",
+            SystemAction::Paste => "Paste",
+            SystemAction::PasteAndMatchStyle => "Paste and Match Style",
+            SystemAction::Delete => "Delete",
+            SystemAction::SelectAll => "Select All",
+            SystemAction::Minimize => "Minimize",
+            SystemAction::Zoom => "Zoom",
+            SystemAction::ToggleFullScreen => "Enter Full Screen",
+            SystemAction::CloseWindow => "Close",
+            SystemAction::Hide => "Hide",
+            SystemAction::HideOthers => "Hide Others",
+            SystemAction::ShowAll => "Show All",
+            SystemAction::About => "About",
+            SystemAction::Services => "Services",
+            SystemAction::Quit => "Quit",
+        }
+    }
+
+    /// The usual shortcut (`"cmd+shift+z"`), if any.
+    pub fn default_shortcut(self) -> Option<&'static str> {
+        Some(match self {
+            SystemAction::Undo => "cmd+z",
+            SystemAction::Redo => "cmd+shift+z",
+            SystemAction::Cut => "cmd+x",
+            SystemAction::Copy => "cmd+c",
+            SystemAction::Paste => "cmd+v",
+            SystemAction::PasteAndMatchStyle => "cmd+alt+shift+v",
+            SystemAction::SelectAll => "cmd+a",
+            SystemAction::Minimize => "cmd+m",
+            SystemAction::ToggleFullScreen => "cmd+ctrl+f",
+            SystemAction::CloseWindow => "cmd+w",
+            SystemAction::Hide => "cmd+h",
+            SystemAction::HideOthers => "cmd+alt+h",
+            SystemAction::Quit => "cmd+q",
+            _ => return None,
+        })
+    }
+}
+
 /// One entry of a [`Menu`].
 #[derive(Clone)]
 pub enum MenuItem {
@@ -58,9 +148,39 @@ pub enum MenuItem {
         /// The nested menu.
         menu: Menu,
     },
+    /// An action the platform performs itself (#161): see [`SystemAction`].
+    System {
+        /// Which one.
+        action: SystemAction,
+        /// Its label (`None`: the English default).
+        title: Option<String>,
+        /// Its shortcut (`None`: the usual one).
+        shortcut: Option<String>,
+    },
 }
 
 impl MenuItem {
+    /// An item the platform performs (#161), titled in English unless given
+    /// [`title`](Self::title): `MenuItem::system(SystemAction::Copy).title("Copier")`.
+    pub fn system(action: SystemAction) -> Self {
+        MenuItem::System {
+            action,
+            title: None,
+            shortcut: None,
+        }
+    }
+
+    /// Sets the label of a [`system`](Self::system) item (its translation).
+    pub fn title(mut self, label: impl Into<String>) -> Self {
+        match &mut self {
+            MenuItem::System { title, .. } => *title = Some(label.into()),
+            MenuItem::Action { title, .. } | MenuItem::Submenu { title, .. } => {
+                *title = label.into()
+            }
+            MenuItem::Separator => {}
+        }
+        self
+    }
     /// An enabled action item titled `title`, without a handler yet.
     pub fn new(title: impl Into<String>) -> Self {
         MenuItem::Action {
@@ -80,13 +200,13 @@ impl MenuItem {
             MenuItem::Action { icon, .. } | MenuItem::Submenu { icon, .. } => {
                 *icon = Some(symbol.into())
             }
-            MenuItem::Separator => {}
+            MenuItem::Separator | MenuItem::System { .. } => {}
         }
         self
     }
     /// Sets a keyboard shortcut such as `"cmd+shift+n"` (menu bar menus).
     pub fn shortcut(mut self, keys: impl Into<String>) -> Self {
-        if let MenuItem::Action { shortcut, .. } = &mut self {
+        if let MenuItem::Action { shortcut, .. } | MenuItem::System { shortcut, .. } = &mut self {
             *shortcut = Some(keys.into());
         }
         self
@@ -191,6 +311,19 @@ fn compile_items(
         .iter()
         .map(|item| match item {
             MenuItem::Separator => MenuItemSpec::Separator,
+            MenuItem::System {
+                action,
+                title,
+                shortcut,
+            } => MenuItemSpec::System {
+                action: *action,
+                title: title
+                    .clone()
+                    .unwrap_or_else(|| action.default_title().to_string()),
+                shortcut: shortcut
+                    .clone()
+                    .or_else(|| action.default_shortcut().map(str::to_string)),
+            },
             MenuItem::Submenu { title, icon, menu } => MenuItemSpec::Submenu {
                 title: title.clone(),
                 icon: icon.clone(),
@@ -257,6 +390,16 @@ pub enum MenuItemSpec {
         /// `false` when disabled or without a handler.
         enabled: bool,
     },
+    /// An action the platform performs itself (#161). Backends without
+    /// such actions leave it out.
+    System {
+        /// Which one.
+        action: SystemAction,
+        /// Its label.
+        title: String,
+        /// Its shortcut.
+        shortcut: Option<String>,
+    },
     /// A line between groups of items.
     Separator,
     /// An item opening a nested menu.
@@ -288,6 +431,16 @@ impl MenuItemSpec {
         let opt = |s: &Option<String>| s.as_deref().map_or("null".into(), json_str);
         match self {
             MenuItemSpec::Separator => r#"{"t":"sep"}"#.into(),
+            MenuItemSpec::System {
+                action,
+                title,
+                shortcut,
+            } => format!(
+                r#"{{"t":"system","action":{},"title":{},"shortcut":{}}}"#,
+                json_str(&format!("{action:?}")),
+                json_str(title),
+                opt(shortcut)
+            ),
             MenuItemSpec::Submenu { title, icon, menu } => format!(
                 r#"{{"t":"sub","title":{},"icon":{},"menu":{}}}"#,
                 json_str(title),
@@ -535,7 +688,7 @@ fn count_actions(spec: &MenuSpec) -> u64 {
         .map(|i| match i {
             MenuItemSpec::Action { .. } => 1,
             MenuItemSpec::Submenu { menu, .. } => count_actions(menu),
-            MenuItemSpec::Separator => 0,
+            MenuItemSpec::Separator | MenuItemSpec::System { .. } => 0,
         })
         .sum()
 }
@@ -585,8 +738,29 @@ impl App {
             .push(crate::PlatformRequest::RemoveTray(id.into()));
     }
 
+    /// The whole menu bar, defined by the app (#161): no menu of Prism's own
+    /// (its English application, Edit and Go menus). The first menu is the
+    /// application menu (macOS titles it with the app's name). Build Edit
+    /// and Window menus with [`MenuItem::system`] items next to the app's
+    /// own: an app item with the shortcut `cmd+z` takes ⌘Z, even from a
+    /// focused text field, so an app with its own history hears it. On the
+    /// web, the shortcuts of its items are the app's too (see
+    /// [`set_app_menu`](Self::set_app_menu)). macOS only shows a menu bar.
+    pub fn set_menu_bar(&mut self, menus: Vec<Menu>) {
+        let specs = menus
+            .iter()
+            .enumerate()
+            .map(|(i, m)| self.menus.compile(&format!("app-menu:{i}"), m))
+            .collect();
+        self.surfaces
+            .requests
+            .push(crate::PlatformRequest::SetMenuBar(specs));
+    }
+
     /// Sets the app's menu bar menus (`File`, `View`…), shown between the
-    /// app menu and the standard Edit/Window menus.
+    /// app menu and the standard Edit/Window menus. On the web the
+    /// shortcuts of their items are the app's (#161): the page takes them
+    /// before the browser (⌘Z in a field, ⌘S, ⌘K) and runs the item.
     pub fn set_app_menu(&mut self, menus: Vec<Menu>) {
         let specs = menus
             .iter()
