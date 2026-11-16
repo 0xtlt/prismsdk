@@ -3059,3 +3059,65 @@ fn an_explicit_zero_padding_is_set_and_survives_scaling() {
     };
     assert!(direct.has_padding());
 }
+
+#[test]
+fn reversed_directions_and_order_work_in_refinements() {
+    use crate::style::{FlexDirection, StyleContext};
+    let mut d = div()
+        .flex_row()
+        .order(2)
+        .md(|s| s.flex_row_reverse().order(-1))
+        .lg(|s| s.flex_col_reverse().order(0));
+    let s = d.style_mut().clone();
+    let at = |breakpoint| {
+        s.resolve(StyleContext {
+            breakpoint,
+            ..Default::default()
+        })
+    };
+    let compact = at(crate::Breakpoint::Compact);
+    assert_eq!((compact.direction, compact.order), (FlexDirection::Row, 2));
+    let medium = at(crate::Breakpoint::Medium);
+    assert_eq!(
+        (medium.direction, medium.order),
+        (FlexDirection::RowReverse, -1)
+    );
+    let large = at(crate::Breakpoint::Large);
+    assert_eq!(
+        (large.direction, large.order),
+        (FlexDirection::ColumnReverse, 0)
+    );
+    assert!(FlexDirection::RowReverse.is_row() && FlexDirection::RowReverse.is_reverse());
+    assert!(!FlexDirection::ColumnReverse.is_row() && FlexDirection::ColumnReverse.is_reverse());
+    assert!(!FlexDirection::Row.is_reverse());
+}
+
+#[test]
+fn snapshots_resolve_order_and_reversed_directions() {
+    let mut app = App::new();
+    let node = snapshot_one(
+        &mut app,
+        div()
+            .flex_row_reverse()
+            .child(text("a"))
+            .child(text("b").order(-1))
+            .child(text("c")),
+    );
+    // Sorted by order (b, a, c), then reversed: renderers draw in order.
+    assert_eq!(
+        node.to_json(),
+        r#"{"k":"v","d":1,"jc":"e","c":[{"k":"t","s":"c"},{"k":"t","s":"a"},{"k":"t","s":"b"}]}"#
+    );
+    let col = snapshot_one(
+        &mut app,
+        div()
+            .flex_col_reverse()
+            .justify_end()
+            .child(text("a"))
+            .child(text("b")),
+    );
+    assert_eq!(
+        col.to_json(),
+        r#"{"k":"v","c":[{"k":"t","s":"b"},{"k":"t","s":"a"}]}"#
+    );
+}

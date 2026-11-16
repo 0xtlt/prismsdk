@@ -72,6 +72,8 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
             let dir = match s.direction {
                 FlexDirection::Row => "row",
                 FlexDirection::Column => "column",
+                FlexDirection::RowReverse => "row-reverse",
+                FlexDirection::ColumnReverse => "column-reverse",
             };
             let _ = write!(w, "display:flex;flex-direction:{dir};");
         }
@@ -157,6 +159,9 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
     }
     let basis = len(s.flex_basis).unwrap_or_else(|| "auto".into());
     let _ = write!(w, "flex:{} {} {basis};", s.flex_grow, s.flex_shrink);
+    if s.order != 0 {
+        let _ = write!(w, "order:{};", s.order);
+    }
     layout_extras(kind, s, w);
 
     if let Some(bg) = s.background {
