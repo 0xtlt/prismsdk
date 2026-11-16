@@ -16,6 +16,7 @@
 #   PRISM_VERSION      version name (default 0.1.0)
 #   PRISM_ICON         1024×1024 PNG app icon
 #   PRISM_PERMISSIONS  Prism.toml [permissions] (name<TAB>text per line)
+#   PRISM_HTTP_HOSTS   plain-HTTP hosts, comma-separated (cleartext traffic)
 #   PRISM_PATH         first screen (deep link)
 #   PRISM_RELEASE=1    release build
 #   PRISM_NO_INSTALL=1 build only
@@ -99,6 +100,19 @@ print(int(v) if isinstance(v, bool) else v if isinstance(v, str) else json.dumps
 ASSETS="$(describe assets)"
 [[ -n "$ASSETS" && -d "$ASSETS" ]] && cp -R "$ASSETS"/. "$STAGE/assets/"
 rm -rf "$OUT/res" "$OUT/gen" && mkdir -p "$OUT/res/layout" "$OUT/gen"
+# `[network] allow_http` (PRISM_HTTP_HOSTS): cleartext traffic to these hosts
+# and their subdomains only (Android blocks it since API 28).
+NET_ATTR=""
+if [[ -n "${PRISM_HTTP_HOSTS:-}" ]]; then
+  mkdir -p "$OUT/res/xml"
+  {
+    echo '<network-security-config><domain-config cleartextTrafficPermitted="true">'
+    IFS=, read -ra HTTP_HOSTS <<< "$PRISM_HTTP_HOSTS"
+    for h in "${HTTP_HOSTS[@]}"; do echo "  <domain includeSubdomains=\"true\">$h</domain>"; done
+    echo '</domain-config></network-security-config>'
+  } > "$OUT/res/xml/prism_network_security.xml"
+  NET_ATTR='android:networkSecurityConfig="@xml/prism_network_security"'
+fi
 # Each widget kind: a provider subclass, its size (appwidget-provider XML) and
 # a manifest receiver.
 RECEIVERS="$(describe widgets | OUT="$OUT" python3 -c '
@@ -380,7 +394,7 @@ $PUSH_QUERIES
     </intent>
   </queries>
   <!-- cloud_storage: key/value backup (PrismBackup); secrets are not backed up. -->
-  <application android:label="$APP_NAME" $ICON_ATTR android:extractNativeLibs="false" android:supportsRtl="true"
+  <application android:label="$APP_NAME" $ICON_ATTR $NET_ATTR android:extractNativeLibs="false" android:supportsRtl="true"
       android:theme="@android:style/Theme.DeviceDefault.DayNight"
       android:allowBackup="true" android:backupAgent="dev.prism.PrismBackup" android:restoreAnyVersion="true">
     <activity android:name="dev.prism.PrismActivity" android:exported="true" android:launchMode="singleTop"

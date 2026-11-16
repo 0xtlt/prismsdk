@@ -8,7 +8,8 @@
 # Environment: PRISM_BUNDLE_ID, PRISM_APP_NAME, PRISM_ICON (1024×1024 PNG),
 # PRISM_IDENTITY (default: ad hoc), PRISM_RELEASE=1, PRISM_PROJECT, PRISM_PLATFORM,
 # PRISM_BUILD (CFBundleVersion), PRISM_CATEGORY (LSApplicationCategoryType),
-# PRISM_ENCRYPTION=0 (ITSAppUsesNonExemptEncryption = NO).
+# PRISM_ENCRYPTION=0 (ITSAppUsesNonExemptEncryption = NO), PRISM_HTTP_HOSTS
+# (plain-HTTP hosts, comma-separated: App Transport Security exceptions).
 #
 # Distribution (PRISM_DIST):
 #   appstore      sandboxed, signed with "Apple Distribution" (or "3rd Party Mac
@@ -241,11 +242,29 @@ if [[ -n "${PRISM_PUSH:-}" ]]; then
     echo "note: push on macOS needs PRISM_MAC_PROFILE (a Mac provisioning profile with Push Notifications); capabilities().push stays None" >&2
   fi
 fi
+# `[network] allow_http` (PRISM_HTTP_HOSTS, comma-separated): App Transport
+# Security exceptions for these hosts and their subdomains; IP addresses
+# (which ATS exceptions cannot name) allow the local network.
+ats_plist() {
+  [[ -z "${PRISM_HTTP_HOSTS:-}" ]] && return 0
+  local hosts=() domains="" local_net=""
+  IFS=, read -ra hosts <<< "$PRISM_HTTP_HOSTS"
+  for h in "${hosts[@]}"; do
+    if [[ "$h" =~ ^[0-9.]+$ ]]; then
+      local_net="<key>NSAllowsLocalNetworking</key><true/>"
+    else
+      domains+="<key>$h</key><dict><key>NSExceptionAllowsInsecureHTTPLoads</key><true/><key>NSIncludesSubdomains</key><true/></dict>"
+    fi
+  done
+  echo "  <key>NSAppTransportSecurity</key><dict>$local_net<key>NSExceptionDomains</key><dict>$domains</dict></dict>"
+}
+
 plist "$PKG" "$BUNDLE_ID" APPL "$ICON_PLIST
 $STORE_PLIST
 $LOC_PLIST
 $PUSH_PLIST
 $USAGE_PLIST
+$(ats_plist)
   <key>NSHighResolutionCapable</key><true/>
   <key>CFBundleURLTypes</key>
   <array><dict>
