@@ -70,8 +70,10 @@ web_view(url).sandbox(WebSandbox::new().scripts().same_origin())
 |---|---|---|---|
 | `scripts()` | `allow-scripts` | `allowsContentJavaScript` | `setJavaScriptEnabled` |
 | `forms()` | `allow-forms` | form navigations cancelled otherwise | not enforced |
-| `popups()` | `allow-popups` | `target="_blank"`, `window.open`: the system browser; ignored otherwise | the same |
+| `popups()` | `allow-popups allow-popups-to-escape-sandbox` | `target="_blank"`, `window.open`: the system browser; ignored otherwise | the same |
 | `same_origin()` | `allow-same-origin` | otherwise a private, non-persistent data store | otherwise DOM storage off |
+
+A window the page opens with `popups()` is not sandboxed: on the web it is a normal tab (`allow-popups-to-escape-sandbox`), as natively, where it opens in the system browser.
 
 Without `scripts()` there are no messages from the page. A page sandboxed without `same_origin()` has an opaque origin on the web: its messages come from `"null"`, so talk to it with `.allow_origin("*")`.
 

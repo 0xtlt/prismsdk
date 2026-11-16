@@ -312,6 +312,7 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- Docs: `WebSandbox::popups()` also lets the windows a sandboxed page opens escape the sandbox (`allow-popups-to-escape-sandbox` on the web, the system browser natively), now documented (#146).
 - Web: the current entry of a navigation made of `.link()` elements is `aria-current="page"` (#144): `accessibility_current(true)` on an `<a href>` said `"true"` because the link role was dropped before the value was chosen, in the first paint and in the client.
 - Web: an element dragged only with the middle or secondary button (`drag_buttons`, #136) is no longer text-selectable (#142): every element with a drag handler gets `prism-draggable` (`user-select: none`, `touch-action: none`), so a left drag over a middle-button canvas no longer selects the whole area.
 - Web views load only web pages (#62 follow-up): `web_view(url)` refuses URLs whose scheme is not `http`, `https` or `file` (read as browsers read it: surrounding spaces and control characters, tabs and newlines ignored), and the web client loads only `http:` / `https:` frames. `web_view("javascript:…")` built from a user's link ran in the app's own page on the web, with its cookies and session. `prism_core::web_view::is_web_view_url`.
