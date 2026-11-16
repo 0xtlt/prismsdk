@@ -250,7 +250,7 @@ pub fn a11y_attrs(kind: NodeKind, a: &Accessibility) -> String {
         let _ = write!(out, r#" aria-description="{}""#, escape(hint));
     }
     if !matches!(kind, NodeKind::Toggle | NodeKind::Checkbox)
-        && matches!(a.role, Some(Role::Switch | Role::Checkbox))
+        && matches!(a.role, Some(Role::Switch | Role::Checkbox | Role::Radio))
     {
         let _ = write!(out, r#" aria-checked="{}""#, a.checked.unwrap_or(false));
     }

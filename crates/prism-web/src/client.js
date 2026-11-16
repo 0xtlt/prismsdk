@@ -242,6 +242,41 @@
     if (owner && !control && SCROLL_KEYS.includes(e.key)) e.preventDefault();
   });
 
+  // --- Drawn radios (#84): one tab stop per group, arrows move the choice -------
+  let radiosDirty = false;
+  /** The operable radios of a `role=radiogroup` (not those of a nested group). */
+  function groupRadios(group) {
+    return [...group.querySelectorAll("[role=radio]")].filter((r) => r.closest("[role=radiogroup]") === group
+      && r.getAttribute("aria-disabled") !== "true" && r.getAttribute("aria-hidden") !== "true" && !r.closest("[inert]"));
+  }
+  /** Roving tab index (ARIA radio group pattern): only the checked radio, else the first, is a tab stop. */
+  function roveRadios() {
+    radiosDirty = false;
+    for (const group of document.querySelectorAll("[role=radiogroup]")) {
+      const items = groupRadios(group);
+      const current = items.find((r) => r.getAttribute("aria-checked") === "true")
+        || items.find((r) => r === document.activeElement) || items[0];
+      items.forEach((r) => r.setAttribute("tabindex", r === current ? "0" : "-1"));
+    }
+  }
+  document.addEventListener("keydown", (e) => {
+    const t = e.target;
+    if (e.altKey || e.ctrlKey || e.metaKey || !t?.getAttribute || t.getAttribute("role") !== "radio") return;
+    // Down and the reading direction's arrow go to the next choice.
+    const rtl = document.documentElement.dir === "rtl";
+    const step = { ArrowDown: 1, ArrowUp: -1, ArrowRight: rtl ? -1 : 1, ArrowLeft: rtl ? 1 : -1 }[e.key];
+    const group = step && t.closest("[role=radiogroup]");
+    const items = group ? groupRadios(group) : [];
+    const i = items.indexOf(t);
+    if (i < 0 || items.length < 2) return;
+    e.preventDefault();
+    // Moving the focus checks the radio it lands on, as native radios do.
+    const next = items[(i + step + items.length) % items.length];
+    items.forEach((r) => r.setAttribute("tabindex", r === next ? "0" : "-1"));
+    next.focus();
+    activate(next, Number(next.dataset.pid));
+  });
+
   // --- Focus and scrolling from the app (#17) ----------------------------------
   function focusNode(el) {
     const target = el._input || (el.dataset.kind === "radio_group"
@@ -1268,6 +1303,8 @@
     const link = el.localName === "a" && el.hasAttribute("href");
     const native = link ? "link" : { button: "button", toggle: "switch", slider: "slider", picker: "combobox" }[kind];
     const role = a.role;
+    // A radio changed (or stopped being one): its group's tab stop is recomputed.
+    if (role === "radio" || role === "radiogroup" || ["radio", "radiogroup"].includes(el.getAttribute("role"))) radiosDirty = true;
     if (role && role !== "text" && role !== native) {
       set("role", role);
       set("aria-level", role === "heading" ? String(a.level || 2) : null);
@@ -1277,7 +1314,7 @@
     }
     set("aria-label", a.label || null);
     set("aria-description", a.hint || null);
-    if (role === "switch" || role === "checkbox") set("aria-checked", kind === "toggle" ? null : String(!!a.checked));
+    if (role === "switch" || role === "checkbox" || role === "radio") set("aria-checked", kind === "toggle" ? null : String(!!a.checked));
     else set("aria-checked", null);
     set("aria-selected", role === "tab" ? String(!!a.checked) : null);
     // A button with a state is a toggle button.
@@ -1288,7 +1325,7 @@
     set("aria-disabled", a.disabled || null);
     if (["INPUT", "BUTTON", "SELECT", "TEXTAREA"].includes(el.tagName)) el.disabled = !!a.disabled;
     // Custom interactive elements must be reachable from the keyboard.
-    const interactive = ["button", "link", "switch", "checkbox", "tab", "slider", "combobox"].includes(role);
+    const interactive = ["button", "link", "switch", "checkbox", "radio", "tab", "slider", "combobox"].includes(role);
     if (link) set("tabindex", a.hidden || a.disabled ? "-1" : null);
     else if (kind === "view" || kind === "text") set("tabindex", (interactive || el._kLocal) && !a.hidden && !a.disabled ? "0" : null);
   }
@@ -2477,6 +2514,7 @@
     }
     quiet = msg.t === "reset";
     msg.p.forEach(apply);
+    if (radiosDirty) roveRadios();
     flushOverlays();
     flushStates();
     quiet = false;

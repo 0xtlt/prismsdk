@@ -429,6 +429,56 @@ fn choice_controls_carry_their_state_and_semantics() {
     );
 }
 
+/// Option cards drawn by the app, reported as radios (#84).
+struct Plans {
+    chosen: usize,
+}
+
+impl Render for Plans {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let card = |i: usize, title: &'static str, note: &'static str| {
+            div()
+                .child(title)
+                .child(note)
+                .accessibility_role(Role::Radio)
+                .accessibility_checked(self.chosen == i)
+                .on_click(cx.listener(move |this: &mut Plans, _, _| this.chosen = i))
+        };
+        div()
+            .accessibility_role(Role::RadioGroup)
+            .accessibility_label("Plan")
+            .child(card(0, "Monthly", "Billed every month"))
+            .child(card(1, "Yearly", "Two months free"))
+    }
+}
+
+#[test]
+fn drawn_choices_are_radios_with_their_state() {
+    let mut h = Harness::new(|cx| {
+        let root = cx.new_entity(|_| Plans { chosen: 0 });
+        mount(cx, root);
+    });
+    let group = h
+        .host
+        .find(|n| n.a11y.role == Some(Role::RadioGroup))
+        .unwrap();
+    assert_eq!(h.host.get(group).a11y.label.as_deref(), Some("Plan"));
+    // The app's role wins over the clickable view's button, its text is the label.
+    let card = |h: &Harness, label: &str| {
+        h.host
+            .find(|n| n.a11y.role == Some(Role::Radio) && n.a11y.label.as_deref() == Some(label))
+            .unwrap()
+    };
+    let monthly = card(&h, "Monthly, Billed every month");
+    let yearly = card(&h, "Yearly, Two months free");
+    assert_eq!(h.host.get(monthly).a11y.checked, Some(true));
+    assert_eq!(h.host.get(yearly).a11y.checked, Some(false));
+    assert!(Role::Radio.is_interactive() && !Role::RadioGroup.is_interactive());
+    h.dispatch(UiEvent::Click(yearly));
+    assert_eq!(h.host.get(yearly).a11y.checked, Some(true));
+    assert_eq!(h.host.get(monthly).a11y.checked, Some(false));
+}
+
 #[test]
 fn hit_test_and_inert_are_styles() {
     let s = div().hit_test(false).inert(true);

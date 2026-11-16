@@ -461,6 +461,8 @@ struct Node {
     /// ARIA role name (`slider`, `status`…) and the read-out value.
     var role: String?
     var a11yValue: String?
+    /// On, or chosen (a drawn radio, #84); nil when the node has no state.
+    var checked: Bool?
     /// A control's config (`prism_core::controls`): slider `min max step`,
     /// picker options one per line, date `mode min max`, input tokens.
     var config = ""
@@ -588,6 +590,7 @@ final class PrismStore: ObservableObject {
                 nodes[id]?.a11yHidden = p["hidden"] as? Bool ?? false
                 nodes[id]?.role = role
                 nodes[id]?.a11yValue = value
+                nodes[id]?.checked = p["checked"] as? Bool
             case "config": nodes[id]?.config = p["config"] as? String ?? ""
             case "runs": nodes[id]?.runs = p["runs"] as? [[String: Any]] ?? []
             case "env":
@@ -851,6 +854,8 @@ struct NodeView: View {
                     if dx > 0 && n.swipeRight { send(["t": "swipe", "id": id, "dir": "right"]) }
                 }, including: n.swipeLeft || n.swipeRight ? .all : .subviews)
                 .accessibilityLabel(n.label ?? "")
+                // A drawn radio (#84): a button, selected when it is the choice.
+                .accessibilityAddTraits(n.role == "radio" ? (n.checked == true ? [.isButton, .isSelected] : .isButton) : [])
                 .accessibilityHidden(n.a11yHidden || n.inert)
                 .allowsHitTesting(!n.noHit && !n.inert)
                 .disabled(n.inert)

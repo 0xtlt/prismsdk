@@ -1976,6 +1976,25 @@ impl Widgets for Gtk {
                     self.statuses.insert(*id, value);
                 }
             }
+            // Drawn choices (#84): option cards that are radios, custom
+            // checkboxes and switches, with their checked state.
+            View::Container(..) => {
+                let role = match a11y.role {
+                    Some(prism_core::Role::Radio) => gtk::AccessibleRole::Radio,
+                    Some(prism_core::Role::RadioGroup) => gtk::AccessibleRole::RadioGroup,
+                    Some(prism_core::Role::Checkbox) => gtk::AccessibleRole::Checkbox,
+                    Some(prism_core::Role::Switch) => gtk::AccessibleRole::Switch,
+                    _ => return,
+                };
+                // As above: the role can only change before it is realized.
+                if !w.is_realized() && w.property::<gtk::AccessibleRole>("accessible-role") != role
+                {
+                    w.set_property("accessible-role", role);
+                }
+                if role != gtk::AccessibleRole::RadioGroup {
+                    set_accessible_checked(&w, a11y.checked.unwrap_or(false));
+                }
+            }
             _ => {}
         }
     }
@@ -2508,6 +2527,24 @@ pub(crate) fn set_accessible_hidden(w: &impl IsA<gtk::Widget>, hidden: bool) {
     // SAFETY: every GtkWidget implements GtkAccessible; one boolean state.
     unsafe {
         gtk_accessible_update_state_value(widget.cast(), 1, &HIDDEN, value.to_glib_none_mut().0);
+    }
+}
+
+/// `GTK_ACCESSIBLE_STATE_CHECKED` (gtkenums.h): a radio, checkbox or switch
+/// drawn by the app is on (a `GtkAccessibleTristate`).
+fn set_accessible_checked(w: &impl IsA<gtk::Widget>, checked: bool) {
+    use gtk::glib::translate::{ToGlibPtr, ToGlibPtrMut};
+    const CHECKED: i32 = 1;
+    let state = if checked {
+        gtk::AccessibleTristate::True
+    } else {
+        gtk::AccessibleTristate::False
+    };
+    let mut value = state.to_value();
+    let widget: *mut gtk::ffi::GtkWidget = w.as_ref().to_glib_none().0;
+    // SAFETY: every GtkWidget implements GtkAccessible; one tristate state.
+    unsafe {
+        gtk_accessible_update_state_value(widget.cast(), 1, &CHECKED, value.to_glib_none_mut().0);
     }
 }
 

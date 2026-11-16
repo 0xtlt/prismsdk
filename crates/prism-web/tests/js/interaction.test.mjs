@@ -312,6 +312,51 @@ test("checkboxes and radio groups are native inputs", () => {
   assert.deepEqual(inputs.map((i) => i.checked), [false, true]);
 });
 
+test("drawn radios: checked state, one tab stop per group, arrows move the choice (#84)", () => {
+  const radio = (id, checked, extra = {}) =>
+    ({ op: "a11y", id, a11y: { role: "radio", label: `Plan ${id}`, checked, disabled: false, hidden: false, ...extra } });
+  const page = live([
+    { op: "create", id: 2, kind: "view" },
+    { op: "a11y", id: 2, a11y: { role: "radiogroup", label: "Plan", checked: null, disabled: false, hidden: false } },
+    ...[3, 4, 5].flatMap((id) => [{ op: "create", id, kind: "view" }, { op: "clickable", id, on: true }]),
+    radio(3, false), radio(4, false), radio(5, false, { disabled: true }),
+    { op: "children", id: 2, children: [3, 4, 5] },
+    ...root([2]),
+  ]);
+  const [a, b, c] = [3, 4, 5].map((id) => page.node(id));
+  assert.equal(page.node(2).getAttribute("role"), "radiogroup");
+  assert.equal(a.getAttribute("role"), "radio");
+  assert.equal(a.getAttribute("aria-checked"), "false");
+  // Nothing checked: the first operable radio is the group's tab stop.
+  assert.deepEqual([a, b, c].map((r) => r.getAttribute("tabindex")), ["0", "-1", null]);
+  page.ws.deliver({ t: "patch", p: [radio(4, true)] });
+  assert.equal(b.getAttribute("aria-checked"), "true");
+  assert.deepEqual([a, b].map((r) => r.getAttribute("tabindex")), ["-1", "0"]);
+  // Arrows move the focus and check the radio they land on, skipping the
+  // disabled one and wrapping around.
+  b.focus();
+  b.dispatchEvent({ type: "keydown", key: "ArrowDown" });
+  assert.equal(page.document.activeElement, a);
+  assert.deepEqual(lastSent(page), { t: "click", id: 3 });
+  assert.deepEqual([a, b].map((r) => r.getAttribute("tabindex")), ["0", "-1"]);
+  const left = { type: "keydown", key: "ArrowLeft" };
+  a.dispatchEvent(left);
+  assert.equal(left.defaultPrevented, true);
+  assert.deepEqual(lastSent(page), { t: "click", id: 4 });
+  // Right to left: the left arrow goes forward.
+  page.document.documentElement.dir = "rtl";
+  b.dispatchEvent({ type: "keydown", key: "ArrowLeft" });
+  assert.deepEqual(lastSent(page), { t: "click", id: 3 });
+  page.document.documentElement.dir = "";
+  // Other keys and radios outside a group are left alone.
+  const n = sent(page).length;
+  a.dispatchEvent({ type: "keydown", key: "Tab" });
+  page.ws.deliver({ t: "patch", p: [{ op: "create", id: 6, kind: "view" }, radio(6, false), ...root([2, 6]).slice(1, 2)] });
+  page.node(6).dispatchEvent({ type: "keydown", key: "ArrowDown" });
+  assert.equal(sent(page).length, n);
+  assert.equal(page.node(6).getAttribute("tabindex"), "0");
+});
+
 test("text fields: max length, suggestions and a leading icon", () => {
   const page = live([
     { op: "create", id: 2, kind: "text_input" },
