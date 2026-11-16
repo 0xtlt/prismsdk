@@ -162,6 +162,14 @@ export class Element extends Node {
   get tabIndex() { const t = this.getAttribute("tabindex"); return t === null ? -1 : Number(t); }
   set tabIndex(v) { this.setAttribute("tabindex", String(v)); }
   get children() { return this.childNodes.filter((n) => n.nodeType === 1); }
+  // A `<select>`: its options and the selected one (the first when none is).
+  get options() { return this.children.filter((c) => c.tagName === "OPTION"); }
+  get selectedIndex() {
+    const o = this.options;
+    const i = o.findIndex((c) => c._selected);
+    return i >= 0 ? i : o.length ? 0 : -1;
+  }
+  set selectedIndex(v) { this.options.forEach((c, i) => { c._selected = i === v; }); }
   get firstElementChild() { return this.children[0] || null; }
   get lastElementChild() { const c = this.children; return c[c.length - 1] || null; }
   get nextElementSibling() {
@@ -524,6 +532,12 @@ export function boot({ ssr = "", path = "/", base = "", glyphs = { plus: "+", ge
     encodeURIComponent,
     atob,
     // Run-time fonts (`cx.load_font`): faces are recorded in `document.fonts.added`.
+    Option: function (text, value) {
+      const o = document.createElement("option");
+      o.textContent = text;
+      if (value !== undefined) o.setAttribute("value", value);
+      return o;
+    },
     FontFace: class {
       constructor(family, source, descriptors) { Object.assign(this, { family, source, descriptors }); }
       load() { return Promise.resolve(this); }

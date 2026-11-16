@@ -502,6 +502,39 @@ test("an optional date picker can be empty and cleared (#89)", () => {
   assert.equal(sent(page).length, count);
 });
 
+test("a picker with a value has no empty option (#96)", () => {
+  const page = live([
+    { op: "create", id: 2, kind: "picker" }, { op: "config", id: 2, config: "English\nFrançais" },
+    { op: "value", id: 2, value: 0 },
+    { op: "create", id: 3, kind: "picker" }, { op: "config", id: 3, config: "Small\nLarge" },
+    { op: "value", id: 3, value: -1 }, { op: "placeholder", id: 3, text: "Size" },
+    ...root([2, 3]),
+  ]);
+  const texts = (el) => el.options.map((o) => o.textContent);
+  const picked = page.node(2);
+  assert.deepEqual(texts(picked), ["English", "Français"]);
+  assert.equal(picked.selectedIndex, 0);
+  picked.selectedIndex = 1;
+  picked.dispatchEvent({ type: "change" });
+  assert.deepEqual(lastSent(page), { t: "change", id: 2, v: 1 });
+  // New options keep the choice, without an empty row.
+  page.ws.deliver({ t: "patch", p: [{ op: "config", id: 2, config: "English\nFrançais\nDeutsch" }] });
+  assert.deepEqual(texts(picked), ["English", "Français", "Deutsch"]);
+  assert.equal(picked.selectedIndex, 1);
+  // Nothing picked: the placeholder shows, until a choice is made.
+  const empty = page.node(3);
+  assert.deepEqual(texts(empty), ["Size", "Small", "Large"]);
+  assert.equal(empty.selectedIndex, 0);
+  empty.selectedIndex = 2;
+  empty.dispatchEvent({ type: "change" });
+  assert.deepEqual(lastSent(page), { t: "change", id: 3, v: 1 });
+  assert.deepEqual(texts(empty), ["Small", "Large"]);
+  assert.equal(empty.selectedIndex, 1);
+  // Back to empty from the app.
+  page.ws.deliver({ t: "patch", p: [{ op: "value", id: 3, value: -1 }] });
+  assert.deepEqual(texts(empty), ["Size", "Small", "Large"]);
+});
+
 test("inert styles and hit testing", () => {
   const page = live([
     { op: "create", id: 2, kind: "view" }, { op: "style", id: 2, css: "pointer-events:none;", inert: true },
