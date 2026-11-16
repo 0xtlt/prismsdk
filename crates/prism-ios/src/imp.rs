@@ -3328,7 +3328,7 @@ fn make_runtime(
     path: String,
     services: &crate::services::IosServices,
 ) -> Runtime {
-    Runtime::with_options(
+    let mut runtime = Runtime::with_options(
         init,
         prism_core::RuntimeOptions {
             path,
@@ -3346,7 +3346,12 @@ fn make_runtime(
             // Reported from the window at the first layout too.
             device_info: None,
         },
-    )
+    );
+    // Configurable widgets: the instances the extension saw on screen.
+    runtime
+        .app
+        .set_widget_configurations_source(prism_native::apple::widget_configurations);
+    runtime
 }
 
 /// `PRISM_BACKGROUND_INTERVAL=<seconds>` shortens every background task's

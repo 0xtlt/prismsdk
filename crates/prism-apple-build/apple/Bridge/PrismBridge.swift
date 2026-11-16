@@ -194,6 +194,18 @@ public func prismWidgetsWrite(_ kind: UnsafePointer<CChar>, _ json: UnsafePointe
     #endif
 }
 
+/// The configurations of a configurable widget kind the extension recorded
+/// (`<kind>.configurations.json`, a JSON array), or nil. Freed by the caller.
+@_cdecl("prism_widgets_configurations")
+public func prismWidgetsConfigurations(_ kind: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>? {
+    let kind = String(cString: kind)
+    guard let group = info("PrismAppGroup"),
+          let base = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group),
+          let json = try? String(contentsOf: base.appendingPathComponent("prism-widgets/\(kind).configurations.json"), encoding: .utf8)
+    else { return nil }
+    return strdup(json)
+}
+
 // MARK: Live Activities
 
 #if os(iOS)

@@ -11,6 +11,7 @@ The first version, not yet on crates.io.
 
 ### Added
 
+- Configurable widgets (#46): `Widget::parameter(WidgetParameter::new(..).options(..).default(..))` and `Widget::render_configured(|cx, family, config| ..)`. Each instance shows what the user picked in the system's « Edit widget » sheet (iOS 17+, macOS 14+, visionOS 26: `AppIntentConfiguration` with an entity query over the options the app writes to the App Group); the app renders the default configuration, the ones on screen and, when they fit, every combination. Android shows the default configuration.
 - `cx.safe_area()` and `cx.window_size()`: what the system's bars, cutouts, side bars and a root tab bar cover of the window, and the whole window (#28). Reported by iOS / iPadOS / tvOS / visionOS, macOS, Android, watchOS and the web (`env(safe-area-inset-*)`); `Runtime::set_window` for hosts.
 - `cx.dismiss_keyboard()`: the focused field lets go and the on-screen keyboard hides, on every backend (#29).
 - Elements, styles, entities and the reconciler (`prism-core`); flexbox layout

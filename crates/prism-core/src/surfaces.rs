@@ -647,7 +647,8 @@ impl WidgetFamily {
     }
 }
 
-type WidgetRender = Rc<dyn Fn(&mut App, WidgetFamily) -> Element>;
+type WidgetRender = Rc<dyn Fn(&mut App, WidgetFamily, &WidgetConfig) -> Element>;
+type WidgetOptions = Rc<dyn Fn(&mut App) -> Vec<WidgetOption>>;
 
 /// A home-screen / desktop widget, rendered from app state.
 #[derive(Clone)]
@@ -662,10 +663,18 @@ pub struct Widget {
     pub families: Vec<WidgetFamily>,
     /// Deep link opened when the widget background is tapped.
     pub link: Option<String>,
+    /// What the user picks for each instance in the system's « Edit widget »
+    /// sheet ([`Widget::parameter`]); none for a static widget.
+    pub parameters: Vec<WidgetParameter>,
     render: WidgetRender,
 }
 
 impl Widget {
+    /// The most configurations of one kind rendered on each reload (the
+    /// default one included). WidgetKit reads every snapshot of a kind from
+    /// one file: this keeps it small and the reload quick.
+    pub const MAX_CONFIGURATIONS: usize = 16;
+
     /// `kind` is a stable identifier (`"todos"`), `name` is shown in the gallery.
     pub fn new(kind: impl Into<String>, name: impl Into<String>) -> Self {
         Widget {
@@ -674,7 +683,8 @@ impl Widget {
             description: String::new(),
             families: vec![WidgetFamily::Small, WidgetFamily::Medium],
             link: None,
-            render: Rc::new(|_, _| Element::Empty),
+            parameters: Vec::new(),
+            render: Rc::new(|_, _, _| Element::Empty),
         }
     }
 
@@ -696,41 +706,326 @@ impl Widget {
         self
     }
 
+    /// Adds a parameter the user sets per instance in the system's « Edit
+    /// widget » sheet (iOS 17+, macOS 14+), like a city for a weather widget.
+    /// Several instances of the kind can then show different things: render
+    /// with [`Widget::render_configured`] to read the chosen values.
+    pub fn parameter(mut self, parameter: WidgetParameter) -> Self {
+        self.parameters.retain(|p| p.id != parameter.id);
+        self.parameters.push(parameter);
+        self
+    }
+
     /// The widget's content for a family. Read any entity through `cx`.
     pub fn render<E: IntoElement>(
         mut self,
         f: impl Fn(&mut App, WidgetFamily) -> E + 'static,
     ) -> Self {
-        self.render = Rc::new(move |app, family| f(app, family).into_element());
+        self.render = Rc::new(move |app, family, _| f(app, family).into_element());
         self
     }
 
-    pub(crate) fn snapshot(&self, app: &mut App) -> WidgetSnapshot {
-        let families = self
-            .families
+    /// Like [`Widget::render`], with the configuration of the instance being
+    /// drawn: one value per [`parameter`](Widget::parameter), the default
+    /// where the user picked nothing.
+    pub fn render_configured<E: IntoElement>(
+        mut self,
+        f: impl Fn(&mut App, WidgetFamily, &WidgetConfig) -> E + 'static,
+    ) -> Self {
+        self.render = Rc::new(move |app, family, config| f(app, family, config).into_element());
+        self
+    }
+
+    /// Whether the widget has parameters (the edit sheet offers them).
+    pub fn is_configurable(&self) -> bool {
+        !self.parameters.is_empty()
+    }
+
+    /// Renders the default configuration, then `requested` (the instances
+    /// the system shows), then, when every combination of options fits in
+    /// [`Widget::MAX_CONFIGURATIONS`], all of them, so any choice in the edit
+    /// sheet shows at once.
+    pub(crate) fn snapshot(&self, app: &mut App, requested: &[WidgetConfig]) -> WidgetSnapshot {
+        let options: Vec<ParameterSnapshot> = self
+            .parameters
             .iter()
-            .map(|f| {
-                let element = (self.render)(app, *f);
-                (*f, snapshot_one(app, element).to_json())
+            .map(|p| {
+                let options = (p.options)(app);
+                let default = p
+                    .default
+                    .as_ref()
+                    .filter(|d| options.iter().any(|o| &o.id == *d))
+                    .or(options.first().map(|o| &o.id))
+                    .cloned();
+                ParameterSnapshot {
+                    id: p.id.clone(),
+                    default,
+                    options,
+                }
             })
             .collect();
+        let default = WidgetConfig {
+            values: options
+                .iter()
+                .filter_map(|p| Some((p.id.clone(), p.default.clone()?)))
+                .collect(),
+        }
+        .sorted();
+        let mut configs = vec![default.clone()];
+        let mut add = |config: WidgetConfig| {
+            if configs.len() < Self::MAX_CONFIGURATIONS && !configs.contains(&config) {
+                configs.push(config);
+            }
+        };
+        for r in requested {
+            add(normalize(&options, r));
+        }
+        let choices: Vec<&ParameterSnapshot> =
+            options.iter().filter(|p| !p.options.is_empty()).collect();
+        let combinations = choices
+            .iter()
+            .try_fold(1usize, |n, p| n.checked_mul(p.options.len()));
+        if !choices.is_empty() && combinations.is_some_and(|n| n <= Self::MAX_CONFIGURATIONS) {
+            // Every combination, like an odometer over the options.
+            let mut at = vec![0; choices.len()];
+            'all: loop {
+                add(WidgetConfig {
+                    values: choices
+                        .iter()
+                        .zip(&at)
+                        .map(|(p, &i)| (p.id.clone(), p.options[i].id.clone()))
+                        .collect(),
+                }
+                .sorted());
+                for (i, p) in choices.iter().enumerate() {
+                    at[i] += 1;
+                    if at[i] < p.options.len() {
+                        continue 'all;
+                    }
+                    at[i] = 0;
+                }
+                break;
+            }
+        }
+        let mut rendered = configs
+            .into_iter()
+            .map(|config| {
+                let families = self
+                    .families
+                    .iter()
+                    .map(|f| {
+                        let element = (self.render)(app, *f, &config);
+                        (*f, snapshot_one(app, element).to_json())
+                    })
+                    .collect();
+                (config, families)
+            })
+            .collect::<Vec<_>>();
+        let (_, families) = rendered.remove(0);
         WidgetSnapshot {
             kind: self.kind.clone(),
             link: self.link.clone(),
             families,
+            parameters: options
+                .into_iter()
+                .map(|p| (p.id, p.default, p.options))
+                .collect(),
+            default,
+            configs: rendered,
         }
     }
 
     /// Static metadata (used to generate the platform widget extension).
     pub fn describe_json(&self) -> String {
         let families: Vec<String> = self.families.iter().map(|f| json_str(f.name())).collect();
+        let parameters: Vec<String> = self
+            .parameters
+            .iter()
+            .map(|p| {
+                format!(
+                    r#"{{"id":{},"title":{}}}"#,
+                    json_str(&p.id),
+                    json_str(&p.title)
+                )
+            })
+            .collect();
         format!(
-            r#"{{"kind":{},"name":{},"description":{},"families":[{}]}}"#,
+            r#"{{"kind":{},"name":{},"description":{},"families":[{}],"parameters":[{}]}}"#,
             json_str(&self.kind),
             json_str(&self.name),
             json_str(&self.description),
-            families.join(",")
+            families.join(","),
+            parameters.join(",")
         )
+    }
+}
+
+/// A parameter's options and default, read once per reload.
+struct ParameterSnapshot {
+    id: String,
+    default: Option<String>,
+    options: Vec<WidgetOption>,
+}
+
+/// `config` with only the parameters the widget has, each set to one of its
+/// options (the default for a missing or removed choice).
+fn normalize(parameters: &[ParameterSnapshot], config: &WidgetConfig) -> WidgetConfig {
+    WidgetConfig {
+        values: parameters
+            .iter()
+            .filter_map(|p| {
+                let chosen = config
+                    .get(&p.id)
+                    .filter(|v| p.options.iter().any(|o| o.id == *v))
+                    .map(str::to_owned);
+                Some((p.id.clone(), chosen.or_else(|| p.default.clone())?))
+            })
+            .collect(),
+    }
+    .sorted()
+}
+
+/// A setting of a configurable widget, shown in the system's « Edit widget »
+/// sheet: a title and a list of options the app provides.
+///
+/// ```
+/// # use prism_core::{WidgetOption, WidgetParameter};
+/// let place = WidgetParameter::new("place", "Place")
+///     .options(|_cx| vec![WidgetOption::new("all", "Everywhere"), WidgetOption::new("1", "Kitchen")])
+///     .default("all");
+/// ```
+#[derive(Clone)]
+pub struct WidgetParameter {
+    /// Stable identifier, the key in [`WidgetConfig`] (`"place"`).
+    pub id: String,
+    /// Shown in the edit sheet.
+    pub title: String,
+    /// The option picked until the user changes it (default: the first).
+    pub default: Option<String>,
+    options: WidgetOptions,
+}
+
+impl WidgetParameter {
+    /// `id` keys the chosen value in [`WidgetConfig`]; `title` is shown in
+    /// the edit sheet.
+    pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
+        WidgetParameter {
+            id: id.into(),
+            title: title.into(),
+            default: None,
+            options: Rc::new(|_| Vec::new()),
+        }
+    }
+
+    /// The choices, read from app state on every widget reload: when they
+    /// change (a room added, a list renamed), call [`App::reload_widgets`]
+    /// and the edit sheet offers the new ones.
+    pub fn options(mut self, f: impl Fn(&mut App) -> Vec<WidgetOption> + 'static) -> Self {
+        self.options = Rc::new(f);
+        self
+    }
+
+    /// The option's id picked until the user changes it. Without one, or
+    /// when it is not among the options, the first option is.
+    pub fn default(mut self, id: impl Into<String>) -> Self {
+        self.default = Some(id.into());
+        self
+    }
+}
+
+/// One choice of a [`WidgetParameter`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct WidgetOption {
+    /// Stable identifier, the value in [`WidgetConfig`] (`"1"`).
+    pub id: String,
+    /// Shown in the edit sheet (`"Kitchen"`).
+    pub title: String,
+}
+
+impl WidgetOption {
+    /// An option: `id` is what the app reads back, `title` what the user sees.
+    pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
+        WidgetOption {
+            id: id.into(),
+            title: title.into(),
+        }
+    }
+}
+
+/// The values chosen for one instance of a configurable widget: an option id
+/// per parameter id.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct WidgetConfig {
+    /// Sorted by parameter id.
+    values: Vec<(String, String)>,
+}
+
+impl WidgetConfig {
+    /// No value set.
+    pub fn new() -> Self {
+        WidgetConfig::default()
+    }
+
+    /// Sets `parameter` to the option `value`.
+    pub fn with(mut self, parameter: impl Into<String>, value: impl Into<String>) -> Self {
+        let parameter = parameter.into();
+        self.values.retain(|(k, _)| *k != parameter);
+        self.values.push((parameter, value.into()));
+        self.sorted()
+    }
+
+    /// The option chosen for `parameter`.
+    pub fn get(&self, parameter: &str) -> Option<&str> {
+        self.values
+            .iter()
+            .find(|(k, _)| k == parameter)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// Every `(parameter, option)` pair, by parameter id.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.values.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+
+    /// No value set.
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    /// `{"parameter":"option",…}`.
+    pub fn to_json(&self) -> String {
+        let items: Vec<String> = self
+            .values
+            .iter()
+            .map(|(k, v)| format!("{}:{}", json_str(k), json_str(v)))
+            .collect();
+        format!("{{{}}}", items.join(","))
+    }
+
+    /// For backends: the configurations a widget extension recorded, a JSON
+    /// array of `{"parameter":"option"}` objects. Anything else is skipped.
+    pub fn list_from_json(json: &str) -> Vec<WidgetConfig> {
+        let Some(crate::push::Json::Array(items)) = crate::push::Json::parse(json) else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .filter_map(|item| match item {
+                crate::push::Json::Object(fields) => Some(fields),
+                _ => None,
+            })
+            .map(|fields| {
+                fields
+                    .iter()
+                    .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned())))
+                    .fold(WidgetConfig::new(), |c, (k, v)| c.with(k, v))
+            })
+            .collect()
+    }
+
+    fn sorted(mut self) -> Self {
+        self.values.sort();
+        self
     }
 }
 
@@ -741,25 +1036,90 @@ pub struct WidgetSnapshot {
     pub kind: String,
     /// Deep link opened when the widget background is tapped.
     pub link: Option<String>,
-    /// Each family with its [`SNode`] JSON.
+    /// Each family with its [`SNode`] JSON (the default configuration's, for
+    /// a configurable widget).
     pub families: Vec<(WidgetFamily, String)>,
+    /// Each parameter's id, default option and options, as read for this
+    /// reload (the edit sheet lists them).
+    pub parameters: Vec<(String, Option<String>, Vec<WidgetOption>)>,
+    /// The default configuration, drawn in [`families`](Self::families).
+    pub default: WidgetConfig,
+    /// The other configurations rendered, each with its families.
+    pub configs: Vec<(WidgetConfig, Vec<(WidgetFamily, String)>)>,
 }
 
 impl WidgetSnapshot {
-    /// JSON for the widget extension: kind, link, update time and families.
+    /// JSON for the widget extension: kind, link, update time and families;
+    /// for a configurable widget, its parameters (with their options) and
+    /// the other configurations rendered.
     pub fn to_json(&self) -> String {
-        let fams: Vec<String> = self
-            .families
-            .iter()
-            .map(|(f, json)| format!("{}:{json}", json_str(f.name())))
-            .collect();
-        format!(
-            r#"{{"kind":{},"link":{},"updated":{},"families":{{{}}}}}"#,
+        fn families(families: &[(WidgetFamily, String)]) -> String {
+            let fams: Vec<String> = families
+                .iter()
+                .map(|(f, json)| format!("{}:{json}", json_str(f.name())))
+                .collect();
+            format!("{{{}}}", fams.join(","))
+        }
+        let mut out = format!(
+            r#"{{"kind":{},"link":{},"updated":{},"families":{}"#,
             json_str(&self.kind),
             self.link.as_deref().map_or("null".into(), json_str),
             unix_now(),
-            fams.join(",")
-        )
+            families(&self.families)
+        );
+        if !self.parameters.is_empty() {
+            let params: Vec<String> = self
+                .parameters
+                .iter()
+                .map(|(id, default, options)| {
+                    let options: Vec<String> = options
+                        .iter()
+                        .map(|o| {
+                            format!(
+                                r#"{{"id":{},"title":{}}}"#,
+                                json_str(&o.id),
+                                json_str(&o.title)
+                            )
+                        })
+                        .collect();
+                    format!(
+                        r#"{{"id":{},"default":{},"options":[{}]}}"#,
+                        json_str(id),
+                        default.as_deref().map_or("null".into(), json_str),
+                        options.join(",")
+                    )
+                })
+                .collect();
+            let configs: Vec<String> = self
+                .configs
+                .iter()
+                .map(|(config, fams)| {
+                    format!(
+                        r#"{{"values":{},"families":{}}}"#,
+                        config.to_json(),
+                        families(fams)
+                    )
+                })
+                .collect();
+            let _ = write!(
+                out,
+                r#","parameters":[{}],"default":{},"configs":[{}]"#,
+                params.join(","),
+                self.default.to_json(),
+                configs.join(",")
+            );
+        }
+        out.push('}');
+        out
+    }
+
+    /// The families drawn for `config` (the default configuration's for an
+    /// empty or unknown one).
+    pub fn families_for(&self, config: &WidgetConfig) -> &[(WidgetFamily, String)] {
+        self.configs
+            .iter()
+            .find(|(c, _)| c == config)
+            .map_or(&self.families, |(_, f)| f)
     }
 }
 
@@ -1228,6 +1588,11 @@ pub(crate) struct Surfaces {
     pub capabilities: Capabilities,
     pub widgets: Vec<Widget>,
     pub widgets_dirty: bool,
+    /// Reads the configurations the system shows for a kind (backends:
+    /// [`App::set_widget_configurations_source`]).
+    pub widget_configurations: Option<WidgetConfigurations>,
+    /// What that source said at the last reload, by kind.
+    pub widget_configurations_seen: Vec<(String, Vec<WidgetConfig>)>,
     pub requests: Vec<PlatformRequest>,
     pub next_activity: u64,
     pub notification_handler: Option<NotificationHandler>,
@@ -1239,6 +1604,7 @@ pub(crate) struct Surfaces {
 }
 
 type NotificationHandler = std::rc::Rc<dyn Fn(&NotificationResponse, &mut App)>;
+type WidgetConfigurations = Rc<dyn Fn(&str) -> Vec<WidgetConfig>>;
 
 impl App {
     /// What the current platform supports (set by the backend).
@@ -1271,9 +1637,48 @@ impl App {
         &self.surfaces.widgets
     }
 
-    /// Re-renders every widget from current state (coalesced per event).
+    /// Re-renders every widget from current state (coalesced per event),
+    /// in every configuration known for a configurable one.
     pub fn reload_widgets(&mut self) {
         self.surfaces.widgets_dirty = true;
+    }
+
+    /// For backends: reads the configurations the system shows (or asked
+    /// for) of a configurable widget kind, which the widget extension
+    /// records. They are rendered on each reload, after the default one.
+    pub fn set_widget_configurations_source(
+        &mut self,
+        source: impl Fn(&str) -> Vec<WidgetConfig> + 'static,
+    ) {
+        self.surfaces.widget_configurations = Some(Rc::new(source));
+    }
+
+    /// The recorded configurations of `kind` (none without a source).
+    fn widget_configurations(&self, kind: &str) -> Vec<WidgetConfig> {
+        self.surfaces
+            .widget_configurations
+            .as_ref()
+            .map_or_else(Vec::new, |source| source(kind))
+    }
+
+    /// Reloads the widgets when the system shows configurations they were
+    /// not rendered for (a widget added or edited while the app was away).
+    pub(crate) fn check_widget_configurations(&mut self) {
+        let stale = self.surfaces.widgets.iter().any(|w| {
+            w.is_configurable() && {
+                let now = self.widget_configurations(&w.kind);
+                let seen = self
+                    .surfaces
+                    .widget_configurations_seen
+                    .iter()
+                    .find(|(k, _)| *k == w.kind)
+                    .map(|(_, c)| c);
+                seen != Some(&now)
+            }
+        });
+        if stale {
+            self.surfaces.widgets_dirty = true;
+        }
     }
 
     /// Starts a Live Activity. Falls back to a menu bar item (macOS) or an
@@ -1370,7 +1775,21 @@ impl App {
     pub(crate) fn take_requests(&mut self) -> Vec<PlatformRequest> {
         if std::mem::take(&mut self.surfaces.widgets_dirty) && !self.surfaces.widgets.is_empty() {
             let widgets = self.surfaces.widgets.clone();
-            let snaps = widgets.iter().map(|w| w.snapshot(self)).collect();
+            let mut seen = Vec::new();
+            let snaps = widgets
+                .iter()
+                .map(|w| {
+                    let requested = if w.is_configurable() {
+                        self.widget_configurations(&w.kind)
+                    } else {
+                        Vec::new()
+                    };
+                    let snap = w.snapshot(self, &requested);
+                    seen.push((w.kind.clone(), requested));
+                    snap
+                })
+                .collect();
+            self.surfaces.widget_configurations_seen = seen;
             self.surfaces
                 .requests
                 .push(PlatformRequest::ReloadWidgets(snaps));

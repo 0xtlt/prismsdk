@@ -137,9 +137,16 @@ impl PlatformServices for AndroidServices {
                 "content": content.map(|c| surface(&c.to_json())),
             }),
             // Home-screen widgets (PrismWidget.java) keep the latest snapshots.
+            // Android has no edit sheet for them yet: configurable widgets
+            // show their default configuration.
             PlatformRequest::ReloadWidgets(snaps) => json!({
                 "op": "widgets",
-                "snaps": snaps.iter().map(|s| surface(&s.to_json())).collect::<Vec<_>>(),
+                "snaps": snaps.iter().map(|s| {
+                    let mut s = s.clone();
+                    s.parameters.clear();
+                    s.configs.clear();
+                    surface(&s.to_json())
+                }).collect::<Vec<_>>(),
             }),
             // Android Auto / Automotive templates (PrismCarService.java).
             PlatformRequest::SetCar(json) => json!({ "op": "car", "json": json }),

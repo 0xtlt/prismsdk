@@ -245,11 +245,39 @@ $USAGE_PLIST
   </dict></array>" > "$APP/Contents/Info.plist"
 
 if [[ $WIDGETS == 1 ]]; then
+# Configurable widgets (Widget::parameter): the App Intents metadata WidgetKit
+# reads to build the « Edit widget » sheet, as in ios-run.sh.
+CONFIGURABLE="$(python3 -c 'import json, sys; print(int(any(w.get("parameters") for w in json.load(open(sys.argv[1])))))' "$GEN/widgets.json")"
+INTENTS=()
+EXT_SOURCES=("$PLATFORM"/apple/Shared/*.swift "$PLATFORM"/apple/Extension/*.swift "$GEN/Generated.swift")
+rm -rf "$APPEX/Contents/Resources/Metadata.appintents"
+if [[ "$CONFIGURABLE" == 1 ]]; then
+  python3 -c 'import json, sys; json.dump(sys.argv[1:], sys.stdout)' AppIntent EntityQuery AppEntity \
+    TransientEntity AppEnum AppShortcutProviding AppShortcutsProvider AnyResolverProviding \
+    AppIntentsPackage DynamicOptionsProvider _IntentValueRepresentable _AssistantIntentsProvider \
+    _GenerativeFunctionExtractable IntentValueQuery Resolver > "$GEN/intents-protocols.json"
+  INTENTS=(-wmo -emit-const-values-path "$GEN/PrismWidgets.swiftconstvalues"
+    -Xfrontend -const-gather-protocols-file -Xfrontend "$GEN/intents-protocols.json")
+fi
 xcrun --sdk macosx swiftc -target arm64-apple-macos14.0 -swift-version 5 -O \
   -parse-as-library -application-extension -module-name PrismWidgets \
   -Xlinker -e -Xlinker _NSExtensionMain \
-  -o "$APPEX/Contents/MacOS/PrismWidgets" \
-  "$PLATFORM"/apple/Shared/*.swift "$PLATFORM"/apple/Extension/*.swift "$GEN/Generated.swift"
+  -o "$APPEX/Contents/MacOS/PrismWidgets" ${INTENTS[@]+"${INTENTS[@]}"} \
+  "${EXT_SOURCES[@]}"
+if [[ "$CONFIGURABLE" == 1 ]]; then
+  printf '%s\n' "${EXT_SOURCES[@]}" > "$GEN/intents-sources.txt"
+  echo "$GEN/PrismWidgets.swiftconstvalues" > "$GEN/intents-constvalues.txt"
+  mkdir -p "$APPEX/Contents/Resources"
+  xcrun appintentsmetadataprocessor --output "$APPEX/Contents/Resources" \
+    --toolchain-dir "$(dirname "$(dirname "$(dirname "$(xcrun --find swiftc)")")")" \
+    --module-name PrismWidgets --sdk-root "$(xcrun --sdk macosx --show-sdk-path)" \
+    --xcode-version "$(xcodebuild -version | awk '/Build version/ { print $3 }')" \
+    --platform-family macOS --deployment-target 14.0 --target-triple arm64-apple-macos14.0 \
+    --binary-file "$APPEX/Contents/MacOS/PrismWidgets" --source-file-list "$GEN/intents-sources.txt" \
+    --swift-const-vals-list "$GEN/intents-constvalues.txt" \
+    --compile-time-extraction --deployment-aware-processing --no-app-shortcuts-localization 2>"$GEN/intents.log" \
+    || { cat "$GEN/intents.log" >&2; exit 1; }
+fi
 plist PrismWidgets "$BUNDLE_ID.widgets" XPC! "  <key>NSExtension</key>
   <dict><key>NSExtensionPointIdentifier</key><string>com.apple.widgetkit-extension</string></dict>" \
   > "$APPEX/Contents/Info.plist"

@@ -128,6 +128,9 @@ if [[ $WIDGETS == 1 ]]; then
     python3 "$PLATFORM/apple/generate_widgets.py" "$GEN/widgets.json" "$OS" > "$GEN/Generated.swift"
   fi
 fi
+# Configurable widgets (Widget::parameter) are App Intents: see step 6.
+CONFIGURABLE=0
+[[ $WIDGETS == 1 ]] && CONFIGURABLE="$(python3 -c 'import json, sys; print(int(any(w.get("parameters") for w in json.load(open(sys.argv[1])))))' "$GEN/widgets.json")"
 
 # 2. Pick the destination: a real device, or a booted (slimmed) simulator.
 #    Build-only runs (PRISM_NO_INSTALL=1) need neither.
@@ -160,10 +163,18 @@ print((booted or pick)[0]["udid"] if pick else "")
     # Widgets and Live Activities (when the app has the extension): keep
     # their daemons running.
     # Push (PRISM_PUSH) needs the "store" daemons (apsd: remote notifications).
-    KEEP=()
+    # Configurable widgets need the App Intents daemons too: linkd indexes
+    # the extension's intents, siriactionsd hands them to WidgetKit (without
+    # them, the widget stays a placeholder and has no « Edit widget »).
+    KEEP=() DAEMONS=()
     [[ $WIDGETS == 1 ]] && KEEP+=(widgets)
     [[ -n "${PRISM_PUSH:-}" ]] && KEEP+=(store)
-    if [[ ${#KEEP[@]} -gt 0 ]]; then simslim on "$UDID" --except "$(IFS=,; echo "${KEEP[*]}")"; else simslim on "$UDID"; fi
+    [[ "$CONFIGURABLE" == 1 ]] && DAEMONS+=(--keep com.apple.linkd,com.apple.siriactionsd)
+    if [[ ${#KEEP[@]} -gt 0 ]]; then
+      simslim on "$UDID" --except "$(IFS=,; echo "${KEEP[*]}")" ${DAEMONS[@]+"${DAEMONS[@]}"}
+    else
+      simslim on "$UDID" ${DAEMONS[@]+"${DAEMONS[@]}"}
+    fi
   fi
   xcrun simctl bootstatus "$UDID" -b >/dev/null
 fi
@@ -475,12 +486,43 @@ if [[ -z "$DEVICE_BUILD" ]]; then
   [[ -f "$GEN/entitlements.plist.der" ]] && SIM_SECTIONS+=(-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __ents_der -Xlinker "$GEN/entitlements.plist.der")
 fi
 if [[ $WIDGETS == 1 ]]; then
+# Configurable widgets: WidgetKit builds the « Edit widget » sheet from the
+# extension's App Intents metadata (Metadata.appintents), which Xcode's
+# « Extract App Intents Metadata » step makes from constant values the
+# compiler emits. Same here, without Xcode.
+INTENTS=()
+EXT_SOURCES=("$PLATFORM"/apple/Shared/*.swift "$PLATFORM"/apple/Extension/*.swift "$GEN/Generated.swift")
+rm -rf "$APPEX/Metadata.appintents"
+if [[ "$CONFIGURABLE" == 1 ]]; then
+  python3 -c 'import json, sys; json.dump(sys.argv[1:], sys.stdout)' AppIntent EntityQuery AppEntity \
+    TransientEntity AppEnum AppShortcutProviding AppShortcutsProvider AnyResolverProviding \
+    AppIntentsPackage DynamicOptionsProvider _IntentValueRepresentable _AssistantIntentsProvider \
+    _GenerativeFunctionExtractable IntentValueQuery Resolver > "$GEN/intents-protocols.json"
+  INTENTS=(-wmo -emit-const-values-path "$GEN/PrismWidgets.swiftconstvalues"
+    -Xfrontend -const-gather-protocols-file -Xfrontend "$GEN/intents-protocols.json")
+fi
 xcrun --sdk "$SDK" swiftc -target "arm64-apple-$SWIFT_OS$MIN_IOS$SWIFT_TRIPLE_SUFFIX" -swift-version 5 -O \
   -parse-as-library -application-extension -module-name PrismWidgets \
   -o "$APPEX/PrismWidgets" \
   -Xlinker -e -Xlinker _NSExtensionMain \
-  ${SIM_SECTIONS[@]+"${SIM_SECTIONS[@]}"} \
-  "$PLATFORM"/apple/Shared/*.swift "$PLATFORM"/apple/Extension/*.swift "$GEN/Generated.swift"
+  ${SIM_SECTIONS[@]+"${SIM_SECTIONS[@]}"} ${INTENTS[@]+"${INTENTS[@]}"} \
+  "${EXT_SOURCES[@]}"
+if [[ "$CONFIGURABLE" == 1 ]]; then
+  printf '%s\n' "${EXT_SOURCES[@]}" > "$GEN/intents-sources.txt"
+  echo "$GEN/PrismWidgets.swiftconstvalues" > "$GEN/intents-constvalues.txt"
+  FAMILY=iOS
+  [[ "$OS" == visionos ]] && FAMILY=xrOS
+  TRIPLE="arm64-apple-$SWIFT_OS$MIN_IOS$SWIFT_TRIPLE_SUFFIX"
+  xcrun appintentsmetadataprocessor --output "$APPEX" \
+    --toolchain-dir "$(dirname "$(dirname "$(dirname "$(xcrun --find swiftc)")")")" \
+    --module-name PrismWidgets --sdk-root "$(xcrun --sdk "$SDK" --show-sdk-path)" \
+    --xcode-version "$(xcodebuild -version | awk '/Build version/ { print $3 }')" \
+    --platform-family "$FAMILY" --deployment-target "$MIN_IOS" --target-triple "$TRIPLE" \
+    --binary-file "$APPEX/PrismWidgets" --source-file-list "$GEN/intents-sources.txt" \
+    --swift-const-vals-list "$GEN/intents-constvalues.txt" \
+    --compile-time-extraction --deployment-aware-processing --no-app-shortcuts-localization 2>"$GEN/intents.log" \
+    || { cat "$GEN/intents.log" >&2; exit 1; }
+fi
 cat > "$APPEX/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

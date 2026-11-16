@@ -2,6 +2,10 @@
 //! and by RemoteViews on Android. Re-rendered whenever the store changes.
 //! Its ring is a `prism::ui` chart: drawn with SwiftUI paths in WidgetKit,
 //! and as a bitmap on Android.
+//!
+//! The "Todo" widget is configurable: each instance shows the todo picked in
+//! the system's « Edit widget » sheet (iOS 17+, macOS 14+), from the todos
+//! of the moment.
 
 use prism::prelude::*;
 
@@ -126,5 +130,65 @@ pub fn register(cx: &mut App, store: Entity<Store>) {
                     .into_element()
             }),
     );
+    cx.register_widget(todo_widget(store));
     cx.reload_widgets_on(&store);
+}
+
+/// One todo, picked per instance. The options are the todos themselves: the
+/// edit sheet lists the current ones (written again whenever the store
+/// changes, through `reload_widgets_on`).
+fn todo_widget(store: Entity<Store>) -> Widget {
+    let options = store;
+    Widget::new("todo", "Todo")
+        .description("One todo of your choice.")
+        .families(&[WidgetFamily::Small, WidgetFamily::AccessoryRectangular])
+        .link("/")
+        .parameter(WidgetParameter::new("todo", "Todo").options(move |cx| {
+            options
+                .read(cx)
+                .todos
+                .iter()
+                .map(|t| WidgetOption::new(t.id.to_string(), t.title.clone()))
+                .collect()
+        }))
+        .render_configured(move |cx, family, config| {
+            let t = Theme::of(cx);
+            let s = store.read(cx);
+            let todo = config
+                .get("todo")
+                .and_then(|id| s.todos.iter().find(|t| t.id.to_string() == id));
+            let Some(todo) = todo else {
+                return text(strings::tabs_todos(cx))
+                    .text_color(t.muted)
+                    .into_element();
+            };
+            let mark = if todo.done {
+                "checkmark.circle.fill"
+            } else {
+                "circle"
+            };
+            let link = format!("/todos/{}", todo.id);
+            if family == WidgetFamily::AccessoryRectangular {
+                return div()
+                    .flex_row()
+                    .items_center()
+                    .gap(6.)
+                    .link(link)
+                    .child(image(mark))
+                    .child(text(todo.title.clone()).bold())
+                    .into_element();
+            }
+            div()
+                .gap(8.)
+                .flex_1()
+                .link(link)
+                .child(image(mark).text_color(t.accent).text_size(24.))
+                .child(
+                    text(todo.title.clone())
+                        .semibold()
+                        .text_size(17.)
+                        .text_color(t.text),
+                )
+                .into_element()
+        })
 }
