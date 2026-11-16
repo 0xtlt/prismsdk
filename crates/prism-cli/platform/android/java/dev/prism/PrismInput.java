@@ -330,16 +330,20 @@ final class PrismInput {
         return host;
     }
 
-    /** `sheet`/`popover`/`dialog`, `fixed`, `medium`. */
+    /** `sheet`/`popover`/`dialog`, `fixed`, `medium`, `manual`, `keepfocus`. */
     static void overlayConfig(PrismHost.Node n, String config) {
         n.overlay = "sheet";
         n.fixed = false;
         n.medium = false;
+        n.manual = false;
+        n.keepFocus = false;
         for (String t : config.trim().split("\\s+")) {
             switch (t) {
                 case "popover": case "dialog": n.overlay = t; break;
                 case "fixed": n.fixed = true; break;
                 case "medium": n.medium = true; break;
+                case "manual": n.manual = true; break;
+                case "keepfocus": n.keepFocus = true; break;
             }
         }
         reportArea(n);
@@ -380,6 +384,8 @@ final class PrismInput {
         n.host.requestLayout();
         if (n.popup != null && n.popup.isShowing()) n.popup.update(w, h);
         if (n.dialog != null && n.dialog.getWindow() != null) size(n, n.dialog.getWindow());
+        // Opened in the update that inserted it: its anchor is placed now.
+        if (n.pendingOpen) open(n, true);
     }
 
     static void size(PrismHost.Node n, Window w) {
@@ -395,14 +401,23 @@ final class PrismInput {
         if ((n.dialog != null && n.dialog.isShowing()) || (n.popup != null && n.popup.isShowing())) return;
         reportArea(n);
         float d = PrismHost.density;
+        n.pendingOpen = false;
         if (n.overlay.equals("popover")) {
-            View anchor = n.view.getParent() instanceof View ? (View) n.view.getParent() : PrismHost.root;
+            // Inserted open with its parent (#70): shown once laid out.
+            if (!(n.view.getParent() instanceof View) || n.view.getWindowToken() == null) {
+                n.pendingOpen = true;
+                return;
+            }
+            View anchor = (View) n.view.getParent();
             detach(n.host);
-            PopupWindow p = new PopupWindow(n.host, Math.max(1, n.contentSize[0]), Math.max(1, n.contentSize[1]), true);
+            // `keepfocus`: not focusable, so the anchor's field keeps the
+            // keys and the keyboard; the popup sits above the keyboard.
+            PopupWindow p = new PopupWindow(n.host, Math.max(1, n.contentSize[0]), Math.max(1, n.contentSize[1]), !n.keepFocus);
+            if (n.keepFocus) p.setInputMethodMode(PopupWindow.INPUT_METHOD_NEEDED);
             float r = 14 * d;
             p.setBackgroundDrawable(surface(new float[]{r, r, r, r, r, r, r, r}));
             p.setElevation(12 * d);
-            p.setOutsideTouchable(!n.fixed);
+            p.setOutsideTouchable(!(n.fixed || n.manual || n.keepFocus));
             p.setOnDismissListener(() -> {
                 if (n.popup == p) n.popup = null;
                 if (!n.closing) dismissed(n);
@@ -448,6 +463,7 @@ final class PrismInput {
     }
 
     static void close(PrismHost.Node n) {
+        n.pendingOpen = false;
         n.closing = true;
         if (n.popup != null) { n.popup.dismiss(); n.popup = null; }
         if (n.dialog != null) { n.dialog.dismiss(); n.dialog = null; }

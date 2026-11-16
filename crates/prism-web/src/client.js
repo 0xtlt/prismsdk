@@ -269,6 +269,16 @@
 
   // --- Overlays (#19): sheets, dialogs, popovers without a route ---------------
   const openPopovers = new Set();
+  /** Open overlays not shown yet: inserted already open, their box is not
+   *  in the document until the patch that places their parent (#70). */
+  const pendingOverlays = new Set();
+  /** Shows the overlays a batch of patches inserted already open. */
+  function flushOverlays() {
+    for (const el of [...pendingOverlays]) {
+      if (!el._open || !nodes.has(Number(el.dataset.pid))) { pendingOverlays.delete(el); continue; }
+      if (el._box && el._box.isConnected) { pendingOverlays.delete(el); showOverlay(el); }
+    }
+  }
   /** The user closed it (Escape, a click outside): the app hears `back`. */
   function overlayDismissed(el) {
     if (!el._open || el._closing) return;
@@ -281,6 +291,10 @@
     const t = config.split(" ");
     const kind = ["popover", "dialog"].includes(t[0]) ? t[0] : "sheet";
     el._fixed = t.includes("fixed");
+    // A popover a click outside does not close; one that leaves the focus
+    // to its anchor (inline suggestion menus, #70).
+    el._manual = t.includes("manual");
+    el._keepFocus = kind === "popover" && t.includes("keepfocus");
     let box = el._box;
     if (!box || el._boxKind !== kind) {
       const old = box;
@@ -288,6 +302,20 @@
       box.className = `prism-overlay-box prism-ov-${kind}`;
       if (kind === "popover") {
         box.addEventListener("toggle", (e) => { if (e.newState === "closed") overlayDismissed(el); });
+        // A manual popover hears Escape itself while the focus is inside.
+        box.addEventListener("keydown", (e) => {
+          if (e.key !== "Escape" || el._fixed || box.getAttribute("popover") !== "manual") return;
+          e.stopPropagation();
+          overlayDismissed(el);
+        });
+        // Clicks inside keep the focus where it is (the anchor's field),
+        // unless they land in a field of the popover.
+        box.addEventListener("mousedown", (e) => {
+          if (!el._keepFocus) return;
+          const t = e.target;
+          if (t && t.closest && t.closest("input, textarea, select, [contenteditable]")) return;
+          e.preventDefault();
+        });
       } else {
         box.setAttribute("aria-modal", "true");
         box.addEventListener("cancel", (e) => {
@@ -308,17 +336,26 @@
       el._box = box;
       el._boxKind = kind;
     }
-    if (kind === "popover") box.setAttribute("popover", el._fixed ? "manual" : "auto");
+    // Leaving the focus to the anchor implies no light dismiss (a click in
+    // the anchor's field would close it).
+    if (kind === "popover") box.setAttribute("popover", el._fixed || el._manual || el._keepFocus ? "manual" : "auto");
     box.dataset.medium = t.includes("medium") ? "1" : "";
     if (el._open) showOverlay(el);
   }
   function showOverlay(el) {
     const box = el._box;
     if (!box) return;
+    // Not in the document yet (inserted open with its parent): shown once
+    // the batch has placed it (`flushOverlays`).
+    if (!box.isConnected) { pendingOverlays.add(el); return; }
+    pendingOverlays.delete(el);
     if (el._boxKind === "popover") {
+      const focused = document.activeElement;
       if (typeof box.showPopover === "function") {
         try { if (!box.matches(":popover-open")) box.showPopover(); } catch {}
       } else box.dataset.open = "1";
+      // The anchor's field keeps the focus.
+      if (el._keepFocus && focused && focused !== document.activeElement && box.contains(document.activeElement)) focused.focus?.();
       openPopovers.add(el);
       placePopover(el);
       requestAnimationFrame(() => placePopover(el));
@@ -330,6 +367,7 @@
     raiseLayers();
   }
   function hideOverlay(el) {
+    pendingOverlays.delete(el);
     const box = el._box;
     if (!box) return;
     el._closing = true;
@@ -1329,6 +1367,7 @@
           if (el._kGlobal) globalKeys--;
           if (el._list) el._list.remove();
           openPopovers.delete(el);
+          pendingOverlays.delete(el);
         }
         nodes.delete(p.id);
         setStates(p.id, null);
@@ -2336,11 +2375,12 @@
     if (!msg.p) return service(msg);
     if (msg.t === "reset") {
       nodes.clear(); clearStates(); stacks = []; hist = null; userNavigated = false;
-      globalKeys = 0; openPopovers.clear(); layerHost.replaceChildren();
+      globalKeys = 0; openPopovers.clear(); pendingOverlays.clear(); layerHost.replaceChildren();
       document.querySelectorAll("datalist[id^=prism-list-]").forEach((d) => d.remove());
     }
     quiet = msg.t === "reset";
     msg.p.forEach(apply);
+    flushOverlays();
     flushStates();
     quiet = false;
     // The live tree replaced the first paint: its style rules can go.

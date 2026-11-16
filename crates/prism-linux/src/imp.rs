@@ -205,6 +205,14 @@ impl View {
 // window for sheets and dialogs
 // ---------------------------------------------------------------------------
 
+/// Autohide (close on a click outside, which also grabs the keyboard focus)
+/// unless the popover is fixed, manual, or leaves the focus to its anchor;
+/// one that leaves the focus never takes it.
+fn set_popover_mode(p: &gtk::Popover, config: prism_core::controls::OverlayConfig) {
+    p.set_autohide(!(config.fixed || config.manual || config.keep_focus));
+    p.set_can_focus(!config.keep_focus);
+}
+
 pub struct OverlayView {
     id: NodeId,
     /// Zero-size placeholder in the parent (the popover's anchor is the
@@ -234,7 +242,7 @@ impl OverlayView {
         let popover_kind = config.kind == OverlayKind::Popover;
         if built && (old.kind == OverlayKind::Popover) == popover_kind {
             if let Some(p) = self.popover.borrow().as_ref() {
-                p.set_autohide(!config.fixed);
+                set_popover_mode(p, config);
             }
             if let Some(w) = self.window.borrow().as_ref() {
                 w.set_deletable(!config.fixed);
@@ -245,7 +253,7 @@ impl OverlayView {
         let id = self.id;
         if popover_kind {
             let p = gtk::Popover::new();
-            p.set_autohide(!config.fixed);
+            set_popover_mode(&p, config);
             p.set_child(Some(&self.content));
             let weak = Rc::downgrade(self);
             p.connect_closed(move |p| {
@@ -365,6 +373,19 @@ impl OverlayView {
                 w.set_default_size(cw, ch);
             }
             w.present();
+        }
+    }
+
+    /// Shows a popover the app opened before its anchor had a parent
+    /// (inserted open with it, #70): called after each layout.
+    fn show_if_pending(&self) {
+        let pending = self
+            .popover
+            .borrow()
+            .as_ref()
+            .is_some_and(|p| !p.is_visible());
+        if self.open.get() && pending {
+            self.show();
         }
     }
 
@@ -2117,7 +2138,10 @@ impl Widgets for Gtk {
             View::Scroll(_, _, content) => {
                 content.set_size_request(width.ceil() as i32, height.ceil() as i32)
             }
-            View::Overlay(_, o) => o.set_size(width.ceil() as i32, height.ceil() as i32),
+            View::Overlay(_, o) => {
+                o.set_size(width.ceil() as i32, height.ceil() as i32);
+                o.show_if_pending();
+            }
             _ => {}
         }
     }

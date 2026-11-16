@@ -201,7 +201,7 @@ public final class PrismHost {
         float[] down = {0, 0, 0, 0};
         android.widget.PopupWindow popup;
         String overlay = "sheet";
-        boolean fixed, medium, closing;
+        boolean fixed, medium, closing, manual, keepFocus, pendingOpen;
         // Padding (#14): the view's own padding while the app's replaces it,
         // and its own background while `.border(0.)` removes it.
         int[] basePad;

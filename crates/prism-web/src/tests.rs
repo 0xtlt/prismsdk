@@ -1970,6 +1970,38 @@ fn ssr_of_choice_controls_inputs_and_overlays() {
 }
 
 #[test]
+fn an_open_inline_popover_waits_for_the_client() {
+    // The first paint has no top layer: an overlay open on the first render
+    // (#70) is an empty placeholder there, its content and its `popover`
+    // box come with the live tree, which shows it once it is placed.
+    let out = html(&[
+        create(1, NodeKind::View),
+        create(2, NodeKind::TextInput),
+        create(3, NodeKind::Overlay),
+        Patch::SetConfig {
+            id: 3,
+            config: prism_core::controls::OverlayConfig {
+                kind: prism_core::OverlayKind::Popover,
+                manual: true,
+                keep_focus: true,
+                ..Default::default()
+            }
+            .encode(),
+        },
+        Patch::SetValue { id: 3, value: 1. },
+        create(4, NodeKind::Text),
+        set_text(4, "/heading"),
+        children(3, &[4]),
+        children(1, &[2, 3]),
+        Patch::SetRoot { id: 1 },
+    ]);
+    assert!(out.contains(
+        r#"<div class="prism-overlay" data-pid="3" data-kind="overlay" style=""></div>"#
+    ));
+    assert!(!out.contains("/heading"), "{out}");
+}
+
+#[test]
 fn overlays_take_no_room_and_pickers_keep_their_arrow() {
     assert_eq!(
         css(NodeKind::Overlay, &Style::default()),
