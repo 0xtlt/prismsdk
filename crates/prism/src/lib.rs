@@ -289,46 +289,23 @@ impl Application {
         });
         let config = self.config;
 
-        // Build tooling: `PRISM_DESCRIBE=widgets` prints the registered widgets
-        // (used to generate the WidgetKit extension) and exits.
-        match std::env::var("PRISM_DESCRIBE").as_deref() {
-            Ok("widgets") => {
-                let runtime = Runtime::new(&init);
-                println!("{}", runtime.app.describe_widgets());
+        // Build tooling: `PRISM_DESCRIBE=<question>` prints what the bundlers
+        // need (see `describe`) and exits without starting a backend.
+        if let Some(question) = std::env::var("PRISM_DESCRIBE")
+            .ok()
+            .filter(|q| !q.is_empty())
+        {
+            if let Some(answer) = describe(&question, &config, &init) {
+                println!("{answer}");
                 return;
             }
-            // Bundlers declare these in Info.plist (BGTaskScheduler).
-            Ok("background") => {
-                let runtime = Runtime::new(&init);
-                println!("{}", runtime.app.describe_background());
-                return;
-            }
-            // Bundlers embed the iOS widget extension for Live Activities
-            // even without widgets.
-            Ok("live_activities") => {
-                let runtime = Runtime::new(&init);
-                println!("{}", u8::from(runtime.app.uses_live_activities()));
-                return;
-            }
-            // Bundlers declare the widget button intent in the iOS app
-            // (App Intents metadata) and the Android action receiver.
-            Ok("widget_actions") => {
-                let runtime = Runtime::new(&init);
-                println!("{}", u8::from(runtime.app.handles_widget_actions()));
-                return;
-            }
-            // Bundlers declare a CarPlay scene / Android Auto service.
-            Ok("car") => {
-                let runtime = Runtime::new(&init);
-                println!("{}", u8::from(runtime.app.has_car()));
-                return;
-            }
-            // Bundlers copy this directory into the app's resources.
-            Ok("assets") => {
-                println!("{}", config.assets.as_deref().unwrap_or(""));
-                return;
-            }
-            _ => {}
+            // An unknown question must not start the app: the bundler would
+            // wait on its window.
+            eprintln!(
+                "prism: unknown PRISM_DESCRIBE={question} (expected one of {})",
+                DESCRIBE_QUESTIONS.join(", ")
+            );
+            std::process::exit(2);
         }
 
         #[cfg(feature = "web")]
@@ -383,6 +360,57 @@ impl Application {
     }
 }
 
+/// The questions `PRISM_DESCRIBE` answers.
+const DESCRIBE_QUESTIONS: [&str; 7] = [
+    "all",
+    "assets",
+    "widgets",
+    "background",
+    "live_activities",
+    "widget_actions",
+    "car",
+];
+
+/// The answer to `PRISM_DESCRIBE=<question>`, `None` for an unknown one.
+///
+/// The bundlers (`prism build|run`) ask a host build of the app what it
+/// declares at startup before they bundle it for a device: its assets
+/// directory, widgets (the WidgetKit extension, Android receivers),
+/// background tasks (`BGTaskScheduler` identifiers), Live Activities, widget
+/// buttons (App Intents) and car screen (CarPlay, Android Auto). `all`
+/// answers everything in one JSON object, so the app's `init` runs once.
+fn describe(question: &str, config: &AppConfig, init: &AppInit) -> Option<String> {
+    let assets = || config.assets.clone().unwrap_or_default();
+    if question == "assets" {
+        return Some(assets());
+    }
+    if !DESCRIBE_QUESTIONS.contains(&question) {
+        return None;
+    }
+    let app = Runtime::new(init).app;
+    let flag = |on: bool| u8::from(on).to_string();
+    Some(match question {
+        "widgets" => app.describe_widgets(),
+        "background" => app.describe_background(),
+        "live_activities" => flag(app.uses_live_activities()),
+        "widget_actions" => flag(app.handles_widget_actions()),
+        "car" => flag(app.has_car()),
+        _ => {
+            let parse =
+                |json: String| serde_json::from_str::<serde_json::Value>(&json).unwrap_or_default();
+            serde_json::json!({
+                "assets": assets(),
+                "widgets": parse(app.describe_widgets()),
+                "background": parse(app.describe_background()),
+                "live_activities": app.uses_live_activities(),
+                "widget_actions": app.handles_widget_actions(),
+                "car": app.has_car(),
+            })
+            .to_string()
+        }
+    })
+}
+
 /// `use prism::prelude::*;`: the core prelude plus [`Application`].
 pub mod prelude {
     pub use crate::Application;
@@ -392,6 +420,55 @@ pub mod prelude {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Plain;
+    impl Render for Plain {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    fn app_with_surfaces() -> (AppConfig, AppInit) {
+        let config = Application::new().assets("assets").config;
+        let init: AppInit = Arc::new(|cx: &mut App| {
+            cx.register_widget(Widget::new("plain", "Plain"));
+            cx.register_background_task(BackgroundTask::refresh("sync"), |_| async {});
+            cx.enable_live_activities();
+            let root = cx.new_entity(|_| Plain);
+            cx.set_root(root);
+        });
+        (config, init)
+    }
+
+    #[test]
+    fn describe_answers_every_bundler_question_at_once() {
+        let (config, init) = app_with_surfaces();
+        let all: serde_json::Value =
+            serde_json::from_str(&describe("all", &config, &init).unwrap()).unwrap();
+        assert_eq!(all["assets"], "assets");
+        assert_eq!(all["widgets"][0]["kind"], "plain");
+        assert_eq!(
+            all["background"],
+            serde_json::json!([{"id": "sync", "kind": "refresh"}])
+        );
+        assert_eq!(all["live_activities"], true);
+        assert_eq!(all["widget_actions"], false);
+        assert_eq!(all["car"], false);
+        // The single questions keep their answers.
+        assert_eq!(describe("assets", &config, &init).unwrap(), "assets");
+        assert_eq!(describe("live_activities", &config, &init).unwrap(), "1");
+        assert_eq!(describe("car", &config, &init).unwrap(), "0");
+        assert_eq!(
+            describe("background", &config, &init).unwrap(),
+            r#"[{"id":"sync","kind":"refresh"}]"#
+        );
+    }
+
+    #[test]
+    fn describe_refuses_unknown_questions() {
+        let (config, init) = app_with_surfaces();
+        assert_eq!(describe("everything", &config, &init), None);
+    }
 
     #[test]
     fn window_chrome_is_passed_to_the_backend() {

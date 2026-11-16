@@ -101,7 +101,16 @@ mkdir -p "$GEN"
 
 cargo build -p "$PKG" ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"}
 BIN="$TARGET_DIR/$PROFILE_DIR/$PKG"
-PRISM_DESCRIBE=widgets "$BIN" > "$GEN/widgets.json"
+# What the app declares (PRISM_DESCRIBE=all), asked once.
+PRISM_DESCRIBE=all "$BIN" > "$GEN/describe.json"
+describe() { # $1: a key of describe.json (lists as JSON, flags as 1/0)
+  python3 -c '
+import json, sys
+v = json.load(open(sys.argv[1]))[sys.argv[2]]
+print(int(v) if isinstance(v, bool) else v if isinstance(v, str) else json.dumps(v))
+' "$GEN/describe.json" "$1"
+}
+describe widgets > "$GEN/widgets.json"
 WIDGET_COUNT="$(python3 -c 'import json, sys; print(len(json.load(open(sys.argv[1]))))' "$GEN/widgets.json")"
 # No widget: no extension, App Group or widget profile (Live Activities are
 # a menu bar item, drawn by the app).
@@ -118,7 +127,7 @@ fi
 rm -rf "$APP" && mkdir -p "$APP/Contents/MacOS"
 [[ $WIDGETS == 1 ]] && mkdir -p "$APPEX/Contents/MacOS"
 cp "$BIN" "$APP/Contents/MacOS/$PKG"
-ASSETS="$(PRISM_DESCRIBE=assets "$BIN")"
+ASSETS="$(describe assets)"
 [[ -n "$ASSETS" && -d "$ASSETS" ]] && mkdir -p "$APP/Contents/Resources" && cp -R "$ASSETS" "$APP/Contents/Resources/assets"
 
 plist() { # $1 executable, $2 bundle id, $3 package type, $4 extra
