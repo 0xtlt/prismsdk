@@ -203,3 +203,42 @@ fn message_data() {
     assert_eq!(e.data::<u32>(), None);
     assert_eq!(e.data_value()["x"], 1);
 }
+
+/// Only web pages (and local files natively) load: never `javascript:`,
+/// which would run in the app's own page on the web, nor `data:` / `blob:`.
+#[test]
+fn web_views_load_only_web_pages() {
+    use prism_core::web_view::is_web_view_url;
+    for ok in [
+        "https://example.com/a",
+        "HTTP://example.com",
+        "file:///app/index.html",
+        "/preview/1",
+        "preview?x=a:b",
+        "//cdn.example.com/page",
+        "",
+    ] {
+        assert!(is_web_view_url(ok), "{ok}");
+    }
+    for bad in [
+        "javascript:alert(1)",
+        " JavaScript:alert(1)",
+        "java\tscript:alert(1)",
+        "\u{1}javascript:alert(1)",
+        "data:text/html,<script>alert(1)</script>",
+        "blob:https://example.com/1",
+        "vbscript:x",
+        "myapp://open",
+    ] {
+        assert!(!is_web_view_url(bad), "{bad:?}");
+    }
+    // A refused URL leaves the view blank, and a later good one loads.
+    let mut h = editor();
+    h.update::<Editor>(|e| e.url = "javascript:alert(document.cookie)".into());
+    assert_eq!(h.host.get(web(&h)).text, "");
+    h.update::<Editor>(|e| e.url = "https://preview.example.com/page/2".into());
+    assert_eq!(
+        h.host.get(web(&h)).text,
+        "https://preview.example.com/page/2"
+    );
+}

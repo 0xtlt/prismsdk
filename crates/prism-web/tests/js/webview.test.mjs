@@ -98,3 +98,14 @@ test("a page of the app's own origin reloads in place", () => {
   page.ws.deliver({ t: "patch", p: [{ op: "webreload", id: 2 }] });
   assert.equal(reloaded, 1);
 });
+
+test("a frame never loads javascript:, data: or blob: URLs", () => {
+  const { page, frame } = withWebView("", "javascript:alert(1)");
+  assert.equal(frame.getAttribute("src"), null);
+  for (const bad of [" JavaScript:alert(1)", "data:text/html,x", "blob:https://example.com/1"]) {
+    page.ws.deliver({ t: "patch", p: [{ op: "text", id: 2, text: bad }] });
+    assert.equal(frame.getAttribute("src"), null, bad);
+  }
+  page.ws.deliver({ t: "patch", p: [{ op: "text", id: 2, text: "/preview/1" }] });
+  assert.equal(frame.getAttribute("src"), "/preview/1");
+});
