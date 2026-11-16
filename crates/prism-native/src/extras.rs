@@ -569,6 +569,9 @@ impl<W: crate::Widgets> crate::NativeRenderer<W> {
             }
             cur = p;
         };
+        // In the scroll view's content, which the bars it runs under move.
+        let shift = self.content_shift(scroll).0;
+        top -= shift;
         let bottom = top + own.size.height;
         let limit = if parent == scroll {
             // Its parent is the content: it sticks until the end.
@@ -579,7 +582,7 @@ impl<W: crate::Widgets> crate::NativeRenderer<W> {
                     end = end.max(l.location.y + l.size.height);
                 }
             }
-            end + s.style.padding.bottom * self.zoom
+            end - shift + s.style.padding.bottom * self.zoom
         } else {
             let p = self.nodes.get(&parent)?;
             let pl = self.taffy.layout(p.layout).ok()?;
