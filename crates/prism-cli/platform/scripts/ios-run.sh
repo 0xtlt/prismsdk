@@ -4,8 +4,7 @@
 # install and launch it on a simulator or a real device. Used by
 # `prism run ios|tvos` / `prism build ios|tvos` and `mise run ios`.
 # The extension, its provisioning profile and the App Group are left out of
-# apps that register no widget and declare no Live Activity
-# (PRISM_DESCRIBE=widgets / live_activities).
+# apps that register no widget and declare no Live Activity (PRISM_DESCRIBE).
 #
 #   scripts/ios-run.sh <package> [--no-launch]
 #
@@ -104,22 +103,37 @@ APPEX="$APP/PlugIns/PrismWidgets.appex"
 GEN="$OUT/generated"
 mkdir -p "$GEN"
 
-# 1. Describe the app (host build): its widgets, Live Activities and car
-#    screen. The widget extension is generated only when something needs it.
-cargo build -q -p "$PKG"
+# 1. Describe the app: a build for this Mac answers, in one run, what the app
+#    declares at startup (PRISM_DESCRIBE=all: assets, widgets, background
+#    tasks, Live Activities, widget buttons, car screen). It only has to
+#    compile and reach Application::run here: Prism's native backend can stay
+#    off on the Mac (docs: « What the bundlers ask the app »). The widget
+#    extension is generated only when something needs it.
+cargo build -q -p "$PKG" || {
+  echo "prism: building $PKG for this Mac failed. The bundler runs that build to ask the app what it declares (PRISM_DESCRIBE): it must compile here, with Prism's native backend off if the app enables it only for $RUNTIME_NAME (see « What the bundlers ask the app » in the docs)." >&2
+  exit 1
+}
 HOST_BIN="$TARGET_DIR/debug/$PKG"
+PRISM_DESCRIBE=all "$HOST_BIN" > "$GEN/describe.json"
+describe() { # $1: a key of describe.json (lists as JSON, flags as 1/0)
+  python3 -c '
+import json, sys
+v = json.load(open(sys.argv[1]))[sys.argv[2]]
+print(int(v) if isinstance(v, bool) else v if isinstance(v, str) else json.dumps(v))
+' "$GEN/describe.json" "$1"
+}
 # CarPlay (cx.register_car): a template scene. CarPlay only shows apps with an
 # entitlement Apple grants on request (com.apple.developer.carplay-driving-task):
 # devices get it from the provisioning profile; the simulator refuses to launch
 # an app claiming it without one.
 CAR=0
-[[ "$OS" == ios ]] && CAR="$(PRISM_DESCRIBE=car "$HOST_BIN" 2>/dev/null || echo 0)"
+[[ "$OS" == ios ]] && CAR="$(describe car)"
 if [[ $WIDGETS == 1 ]]; then
-  PRISM_DESCRIBE=widgets "$HOST_BIN" > "$GEN/widgets.json"
+  describe widgets > "$GEN/widgets.json"
   # Live Activities (iOS) are drawn by the extension too
   # (cx.enable_live_activities, or a push-to-start token handler).
   LIVE=0
-  [[ "$OS" == ios ]] && LIVE="$(PRISM_DESCRIBE=live_activities "$HOST_BIN" 2>/dev/null || echo 0)"
+  [[ "$OS" == ios ]] && LIVE="$(describe live_activities)"
   WIDGET_COUNT="$(python3 -c 'import json, sys; print(len(json.load(open(sys.argv[1]))))' "$GEN/widgets.json")"
   if [[ "$WIDGET_COUNT" == 0 && "$LIVE" != 1 ]]; then
     # Nothing to draw outside the app: no extension, profile or App Group.
@@ -135,7 +149,7 @@ CONFIGURABLE=0
 # declares their intent like a configurable widget's (same metadata step and
 # daemons), and the app declares it as well (step 6b), so iOS runs it there.
 ACTIONS=0
-[[ $WIDGETS == 1 ]] && ACTIONS="$(PRISM_DESCRIBE=widget_actions "$HOST_BIN" 2>/dev/null || echo 0)"
+[[ $WIDGETS == 1 ]] && ACTIONS="$(describe widget_actions)"
 [[ "$ACTIONS" == 1 ]] && CONFIGURABLE=1
 
 # 2. Pick the destination: a real device, or a booted (slimmed) simulator.
@@ -308,12 +322,12 @@ cargo build -p "$PKG" --target "$TARGET" ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"}
 rm -rf "$APP" && mkdir -p "$APP"
 [[ $WIDGETS == 1 ]] && mkdir -p "$APPEX"
 cp "$TARGET_DIR/$TARGET/$PROFILE_DIR/$PKG" "$APP/$PKG"
-ASSETS="$(PRISM_DESCRIBE=assets "$HOST_BIN")"
+ASSETS="$(describe assets)"
 [[ -n "$ASSETS" && -d "$ASSETS" ]] && cp -R "$ASSETS" "$APP/assets"
 RESOURCES="$APP"
 # Background tasks (cx.register_background_task) are declared to iOS.
 # Remote push (PRISM_PUSH): silent pushes wake the app (remote-notification).
-BG_PLIST="$(PRISM_DESCRIBE=background "$HOST_BIN" | BUNDLE_ID="$BUNDLE_ID" PUSH="${PRISM_PUSH:-}" python3 -c '
+BG_PLIST="$(describe background | BUNDLE_ID="$BUNDLE_ID" PUSH="${PRISM_PUSH:-}" python3 -c '
 import json, os, sys
 tasks = json.loads(sys.stdin.read() or "[]")
 modes = set()

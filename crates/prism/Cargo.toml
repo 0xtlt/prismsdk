@@ -26,6 +26,8 @@ db = ["dep:prism-db"]
 prism-core.workspace = true
 prism-ui.workspace = true
 prism-http.workspace = true
+# `PRISM_DESCRIBE=all` (bundlers): already in every build through prism-core.
+serde_json.workspace = true
 prism-web = { workspace = true, optional = true }
 prism-db = { workspace = true, optional = true }
 

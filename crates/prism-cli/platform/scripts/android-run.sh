@@ -77,15 +77,31 @@ rm -rf "$STAGE" && mkdir -p "$STAGE/lib/$ABI" "$OUT/classes" "$STAGE/assets"
 cargo ndk -t "$ABI" -P "$MIN_SDK" rustc -p "$PKG" --lib --crate-type cdylib ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"}
 cp "$TARGET_DIR/$TRIPLE/$PROFILE_DIR/lib$LIB.so" "$STAGE/lib/$ABI/"
 
-# 2. What the app declares (a host build): assets (picture("logo.png")) and widgets.
-cargo build -q -p "$PKG"
+# 2. What the app declares, asked once of a build for this computer
+#    (PRISM_DESCRIBE=all): assets (picture("logo.png")), widgets, car screen.
+#    Prism's native backend can stay off there (docs: « What the bundlers ask
+#    the app »).
+cargo build -q -p "$PKG" || {
+  echo "prism: building $PKG for this computer failed. The bundler runs that build to ask the app what it declares (PRISM_DESCRIBE): it must compile here, with Prism's native backend off if the app enables it only for Android (see « What the bundlers ask the app » in the docs)." >&2
+  exit 1
+}
 HOST_BIN="$TARGET_DIR/debug/$PKG"
-ASSETS="$(PRISM_DESCRIBE=assets "$HOST_BIN" 2>/dev/null || true)"
+GEN="$OUT/gen-describe"
+mkdir -p "$GEN"
+PRISM_DESCRIBE=all "$HOST_BIN" > "$GEN/describe.json"
+describe() { # $1: a key of describe.json (lists as JSON, flags as 1/0)
+  python3 -c '
+import json, sys
+v = json.load(open(sys.argv[1]))[sys.argv[2]]
+print(int(v) if isinstance(v, bool) else v if isinstance(v, str) else json.dumps(v))
+' "$GEN/describe.json" "$1"
+}
+ASSETS="$(describe assets)"
 [[ -n "$ASSETS" && -d "$ASSETS" ]] && cp -R "$ASSETS"/. "$STAGE/assets/"
 rm -rf "$OUT/res" "$OUT/gen" && mkdir -p "$OUT/res/layout" "$OUT/gen"
 # Each widget kind: a provider subclass, its size (appwidget-provider XML) and
 # a manifest receiver.
-RECEIVERS="$(PRISM_DESCRIBE=widgets "$HOST_BIN" 2>/dev/null | OUT="$OUT" python3 -c '
+RECEIVERS="$(describe widgets | OUT="$OUT" python3 -c '
 import json, os, re, sys
 from xml.sax.saxutils import escape
 out = os.environ["OUT"]
@@ -133,7 +149,7 @@ if strings:
 # 3. The car (cx.register_car): Google's Car App Library, fetched from Maven
 #    (android-deps.py) for Android Auto; for cars running Android, its
 #    Automotive part too (PRISM_ANDROID_AUTOMOTIVE=1, or such a device).
-CAR="$(PRISM_DESCRIBE=car "$HOST_BIN" 2>/dev/null || echo 0)"
+CAR="$(describe car)"
 SERIAL="${PRISM_SERIAL:-$("$ADB" devices 2>/dev/null | awk 'NR>1 && $2=="device" {print $1; exit}')}"
 AUTOMOTIVE="${PRISM_ANDROID_AUTOMOTIVE:-}"
 if [[ -z "$AUTOMOTIVE" && -n "$SERIAL" && "${PRISM_NO_INSTALL:-}" != 1 ]]; then
