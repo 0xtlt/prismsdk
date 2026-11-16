@@ -444,7 +444,10 @@
     "cancel": "Annuler",
     "confirm": "Supprimer",
     "confirmed": "Supprimé {count} fois",
-    "jump_button": "Aller au champ de recherche"
+    "jump_button": "Aller au champ de recherche",
+    "tile": "Tuile animée",
+    "tile_beside": "Change de ligne sans réapparaître en fondu.",
+    "tile_move": "Déplacer la tuile"
   },
   "islands": {
     "title": "Îlots",

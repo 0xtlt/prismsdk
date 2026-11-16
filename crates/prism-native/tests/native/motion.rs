@@ -344,3 +344,70 @@ fn shapes_redraw_on_resize_and_new_data_only() {
         "zoomed height, same width"
     );
 }
+
+/// A card with `.animate` that leaves a row for its own line, and a tint
+/// changed later (#50).
+struct Moving {
+    wide: bool,
+    tint: bool,
+}
+
+impl Render for Moving {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let card = div()
+            .p(24.)
+            .bg(if self.tint {
+                rgb(0xff0000)
+            } else {
+                rgb(0xf28b6b)
+            })
+            .animate(420)
+            .child(button("tint").on_click(cx.listener(|this, _, _| this.tint ^= true)));
+        let place = if self.wide {
+            div().child(card)
+        } else {
+            div().child(div().flex_row().child(card).child(div().w(50.).h(10.)))
+        };
+        div()
+            .child(button("move").on_click(cx.listener(|this, _, _| this.wide ^= true)))
+            .child(place)
+    }
+}
+
+fn click(h: &mut Harness, label: &str) {
+    let b = h.w().by_text(label);
+    let patches = h.rt.dispatch(UiEvent::Click(b));
+    h.r.apply(&patches);
+    h.layout(400., 300.);
+}
+
+#[test]
+fn an_element_that_starts_animating_where_another_was_appears_at_once() {
+    let mut h = Harness::root(|| Moving {
+        wide: false,
+        tint: false,
+    });
+    h.layout(400., 300.);
+    h.r.widgets.take_calls();
+
+    // Its first frame and style are set, not animated from the row's.
+    click(&mut h, "move");
+    let calls = h.r.widgets.take_calls();
+    assert!(
+        !calls
+            .iter()
+            .any(|c| matches!(c, Call::FrameAnimated(..) | Call::StyleAnimated(..))),
+        "{calls:?}"
+    );
+
+    // A change made to it afterwards animates.
+    click(&mut h, "tint");
+    let calls = h.r.widgets.take_calls();
+    assert!(
+        calls
+            .iter()
+            .any(|c| matches!(c, Call::StyleAnimated(_, s, t)
+            if s.background == Some(rgb(0xff0000)) && *t == Transition::ease(420))),
+        "{calls:?}"
+    );
+}

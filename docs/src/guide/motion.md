@@ -23,6 +23,7 @@ text("Avg").absolute().left(relative(0.3)).top(px(y)).translate_percent(-50., -1
 cx.with_animation(Transition::spring(400), |cx| store.update(cx, |s, cx| s.delete(id, cx)));
 ```
 
+- **What animates**: changes made to an element after it appeared. Its first style and frame apply at once, on every backend, including the rules on its own width (`.when_width_at_least`) that its first layout picks. An element that starts animating (`.animate`, `.spring`, `.transition`) where the previous render had one that did not, at the same place among its siblings, is a new element: it does not animate from the other one's style (no background, no padding). A key (or being an entity's root) keeps it the same element, so its change animates.
 - **Curves**: `ease`, `ease_in`, `ease_out`, `linear`, `spring` (a slight overshoot), each with `.delay(ms)`.
 - **Poses**: `Pose::fade()`, `Pose::slide(x, y)`, `Pose::pop()`, or `Pose::new().opacity(…).offset(…).scale(…).rotate(…)`; unset fields keep the element's values.
 - **Exits** animate a picture of the removed view (snapshot, overlay, clone), so its subtree can be freed at once.

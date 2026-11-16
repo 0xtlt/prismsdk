@@ -30,6 +30,10 @@ pub struct Interact {
     popover: bool,
     dialog: bool,
     confirmed: u32,
+    /// The animated tile sits alone, not in a row beside its caption.
+    moved: bool,
+    /// The tile was tapped: a stronger color.
+    lit: bool,
 }
 
 impl Default for Interact {
@@ -49,6 +53,8 @@ impl Default for Interact {
             popover: false,
             dialog: false,
             confirmed: 0,
+            moved: false,
+            lit: false,
         }
     }
 }
@@ -184,6 +190,38 @@ impl Interact {
             )
     }
 
+    /// A tile with `.animate(…)` that changes place in the tree: where it
+    /// lands it is a new node, which appears with its style at once, its
+    /// own-width padding included (#50). Tapping it animates its color.
+    fn moving_tile(&self, cx: &mut Context<Self>) -> Div {
+        let t = Theme::of(cx);
+        let tile = div()
+            .p(16.)
+            .rounded(t.radius)
+            .bg(t.accent.with_alpha(if self.lit { 0.32 } else { 0.16 }))
+            .when_width_at_least(200., |s| s.p(28.))
+            .animate(420)
+            .on_click(cx.listener(|this, _, _| this.lit ^= true))
+            .child(text(strings::interact_tile(cx)).text_color(t.accent));
+        let place = if self.moved {
+            div().child(tile)
+        } else {
+            div().child(
+                div()
+                    .flex_row()
+                    .items_center()
+                    .gap(12.)
+                    .child(tile)
+                    .child(text(strings::interact_tile_beside(cx)).text_color(t.muted)),
+            )
+        };
+        div().gap(8.).child(place).child(
+            ui::button(strings::interact_tile_move(cx))
+                .secondary()
+                .on_click(cx.listener(|this, _, _| this.moved ^= true)),
+        )
+    }
+
     fn overlays(&self, cx: &mut Context<Self>) -> Div {
         let t = Theme::of(cx);
         let close_sheet = cx.listener(|this: &mut Self, _: &ClickEvent, _| this.sheet = false);
@@ -295,6 +333,7 @@ impl Render for Interact {
         let pointer_area = self.pointer_area(cx);
         let key_pad = self.key_pad(cx);
         let overlays = self.overlays(cx);
+        let moving_tile = self.moving_tile(cx);
         let this = cx.entity();
         // The bytes reach the app: `read()` them (here, just counted).
         let on_pick = move |files: Vec<PickedFile>, app: &mut App| {
@@ -375,6 +414,7 @@ impl Render for Interact {
                     ),
             )
             .child(overlays)
+            .child(moving_tile)
             .when(self.confirmed > 0, |d| {
                 d.child(
                     text(strings::interact_confirmed(cx, self.confirmed as i64))

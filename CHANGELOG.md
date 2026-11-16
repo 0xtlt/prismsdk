@@ -276,6 +276,15 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- An element with `.animate(ms)` (or `.spring`, `.transition`) that appears
+  at an update no longer animates from no style at all (#50). Where an
+  element without a transition was at the same place, the reconciler reused
+  that node and restyled it, so the card faded in from transparent with its
+  padding growing from 0, on the web and on the native backends. Such an
+  element is now a new node, which every backend shows with its style at
+  once; keyed nodes and entity roots stay the same node. On the web, the
+  rule an element's own width picks (`.when_width_at_least`) at its first
+  layout also applies without a transition. Later changes still animate.
 - iOS: a Live Activity started by a push reports its update token through
   `on_activity_push_token`, with `activity: Some(id)`, and again whenever
   the token changes (#43). `Push::start_live_activity(kind, id, ..)` gives the

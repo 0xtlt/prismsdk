@@ -957,3 +957,60 @@ test("clickable texts: click, Enter and Space, focusable as buttons", () => {
   el.click();
   assert.deepEqual(sent(page), []);
 });
+
+// #50: a node's first style is not a change, so `transition` does not
+// animate it; later changes do.
+test("a new node is styled before it joins the page: its first style is not animated", () => {
+  const page = live([create(1, "view"), root(1)]);
+  const css = "padding:24px;background:#f28b6b;transition:all 0.42s ease-in-out 0s;";
+  const order = [];
+  const mount = page.node(1);
+  const insert = mount.insertBefore.bind(mount);
+  mount.insertBefore = (kid, ref) => { order.push(`insert ${kid.dataset.pid} ${cssOf(kid)}`); return insert(kid, ref); };
+  page.window.getComputedStyle = (el) => { order.push(`computed ${el.dataset.pid}`); return { position: "static" }; };
+  page.ws.deliver({ t: "patch", p: [create(2, "view"), { op: "style", id: 2, css }, children(1, [2])] });
+  // Its class was there when it was inserted, and nothing computed its
+  // style before: the browser's first style for it has the class.
+  assert.deepEqual(order, [`insert 2 ${css}`]);
+});
+
+test("own-width rules: the rule for a new node's first width applies without a transition", () => {
+  const cq = [[200, "padding:28px;transition:all 0.42s ease-in-out 0s;"]];
+  const base = "padding:16px;transition:all 0.42s ease-in-out 0s;";
+  const page = live([create(1, "view"), root(1)]);
+  page.ws.deliver({ t: "patch", p: [create(2, "view"), { op: "style", id: 2, css: base, cq }, children(1, [2])] });
+  const el = page.node(2);
+  // Not laid out yet when styled: the base style.
+  assert.equal(cssOf(el), base);
+  const flushes = [];
+  page.window.getComputedStyle = (n) => { flushes.push(cssOf(n)); return { position: "static" }; };
+  const ro = page.window.resizeObservers.find((o) => o.targets.includes(el));
+
+  // First width: the variant's style is computed with `transition: none`…
+  ro.cb([{ target: el, borderBoxSize: [{ inlineSize: 386 }] }]);
+  assert.deepEqual(flushes, [cq[0][1] + "transition:none;"]);
+  // …then its own transition is back, and no `style` attribute is left.
+  assert.equal(cssOf(el), cq[0][1]);
+  assert.equal(el.hasAttribute("style"), false);
+
+  // Later widths are changes: they animate (no flush, no inline style).
+  ro.cb([{ target: el, borderBoxSize: [{ inlineSize: 120 }] }]);
+  assert.equal(cssOf(el), base);
+  ro.cb([{ target: el, borderBoxSize: [{ inlineSize: 300 }] }]);
+  assert.equal(flushes.length, 1);
+  assert.equal(cssOf(el), cq[0][1]);
+});
+
+test("own-width rules: an inline style the client set is kept", () => {
+  const cq = [[200, "padding:28px;"]];
+  const page = live([create(1, "view"), root(1)]);
+  page.ws.deliver({ t: "patch", p: [create(2, "view"), { op: "style", id: 2, css: "padding:16px;", cq }, children(1, [2])] });
+  const el = page.node(2);
+  el.style.position = "relative";
+  el.style.transition = "opacity 1s";
+  const ro = page.window.resizeObservers.find((o) => o.targets.includes(el));
+  ro.cb([{ target: el, contentRect: { width: 300 } }]);
+  assert.equal(el.style.transition, "opacity 1s");
+  assert.equal(el.style.position, "relative");
+  assert.equal(cssOf(el), "padding:28px;position:relative;transition:opacity 1s;");
+});

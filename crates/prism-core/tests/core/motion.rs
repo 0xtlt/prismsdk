@@ -239,3 +239,120 @@ fn with_animation_is_skipped_with_reduce_motion() {
         assert_eq!(h.host.env.as_ref().unwrap().reduce_motion, reduce);
     }
 }
+
+// --- An element that starts animating where another was (#50) ---------------
+
+/// The issue's page: a card that leaves a row for its own line once `wide`.
+#[derive(Default)]
+struct Moving {
+    wide: bool,
+    keyed: bool,
+}
+
+impl Render for Moving {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        let card = div()
+            .when(self.keyed, |d| d.key("card"))
+            .p(24.)
+            .bg(rgb(0xf28b6b))
+            .rounded(24.)
+            .animate(420)
+            .child(text("Card"));
+        if self.wide {
+            div().child(card)
+        } else {
+            div().child(
+                div()
+                    .when(self.keyed, |d| d.key("card"))
+                    .flex_row()
+                    .child(card)
+                    .child(text("beside")),
+            )
+        }
+    }
+}
+
+fn moving(keyed: bool) -> Harness {
+    Harness::new(move |cx| {
+        let root = cx.new_entity(|_| Moving { wide: false, keyed });
+        mount(cx, root);
+    })
+}
+
+/// The node holding the text "Card".
+fn card_of(h: &Harness) -> prism_core::NodeId {
+    let text = h.host.by_text("Card");
+    h.host.find(|n| n.children.contains(&text)).unwrap()
+}
+
+/// Ids created in `patches`.
+fn created(patches: &[Patch]) -> Vec<prism_core::NodeId> {
+    patches
+        .iter()
+        .filter_map(|p| match p {
+            Patch::Create { id, .. } => Some(*id),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn an_element_that_starts_animating_where_another_was_is_a_new_node() {
+    let mut h = moving(false);
+    let row = h.host.find(|n| {
+        n.style
+            .as_ref()
+            .is_some_and(|s| s.direction == prism_core::FlexDirection::Row)
+    });
+    let patches = h.update::<Moving>(|m| m.wide = true).to_vec();
+    let card = card_of(&h);
+    // Not the row restyled into the card: a node of its own, whose first
+    // style backends apply at once.
+    assert!(created(&patches).contains(&card), "{patches:?}");
+    assert!(prism_testing::destroys(&patches).contains(&row.unwrap()));
+    assert_eq!(
+        h.host.get(card).style.as_ref().unwrap().transition,
+        Some(Transition::ease(420))
+    );
+
+    // Later changes to it keep the node, and animate.
+    let patches = h.update::<Moving>(|_| {}).to_vec();
+    assert!(created(&patches).is_empty(), "{patches:?}");
+}
+
+#[test]
+fn a_keyed_node_that_starts_animating_stays_the_same_node() {
+    let mut h = moving(true);
+    let row = h
+        .host
+        .find(|n| {
+            n.style
+                .as_ref()
+                .is_some_and(|s| s.direction == prism_core::FlexDirection::Row)
+        })
+        .unwrap();
+    let patches = h.update::<Moving>(|m| m.wide = true).to_vec();
+    // The key says it is the same element: restyled, its change animated.
+    assert!(!created(&patches).contains(&row));
+    assert!(!prism_testing::destroys(&patches).contains(&row));
+    assert_eq!(
+        h.host.get(row).style.as_ref().unwrap().transition,
+        Some(Transition::ease(420))
+    );
+}
+
+#[test]
+fn an_element_that_stops_animating_keeps_its_node() {
+    let mut h = moving(false);
+    h.update::<Moving>(|m| m.wide = true);
+    let card = card_of(&h);
+    // Back in the row: the row reuses the card's node (it stops animating,
+    // so its change is not animated), and a new card is made inside.
+    let patches = h.update::<Moving>(|m| m.wide = false).to_vec();
+    assert!(!prism_testing::destroys(&patches).contains(&card));
+    assert_eq!(
+        h.host.get(card).style.as_ref().unwrap().direction,
+        prism_core::FlexDirection::Row
+    );
+    assert_eq!(h.host.get(card).style.as_ref().unwrap().transition, None);
+}

@@ -301,6 +301,9 @@ struct MNode {
     name: Option<String>,
     /// An island's tag, source, props and events.
     island: Option<MIsland>,
+    /// Its own style animates changes (`.animate(…)`, `.transition(…)`;
+    /// not an animated update's).
+    animates: bool,
 }
 
 /// What backends last got about a mounted island.
@@ -724,6 +727,8 @@ impl Reconciler {
     ) -> NodeId {
         let mut vnode = vnode;
         let island = vnode.island.take();
+        let resolved = vnode.style.resolve(app.style_context());
+        let animates = resolved.transition.is_some();
         let reusable = old.filter(|o| {
             let m = &self.nodes[o];
             // An island keeps its element only while its tag is the same.
@@ -732,6 +737,7 @@ impl Reconciler {
                 && m.key == vnode.key
                 && tag(m.island.as_ref().map(|i| i.tag.as_str()))
                     == tag(island.as_ref().map(|i| i.tag.as_str()))
+                && self.keeps_identity(m, animates, entity.as_ref())
         });
         if let (Some(old), None) = (old, reusable) {
             self.destroy(old);
@@ -796,7 +802,7 @@ impl Reconciler {
             (on_hover, on_pointer_move, on_drag),
             (on_key_down, on_global_key_down),
         );
-        let mut style = style.resolve(app.style_context());
+        let mut style = resolved;
         if let Some(t) = self.animation
             && style.transition.is_none()
         {
@@ -885,6 +891,7 @@ impl Reconciler {
             let m = self.nodes.get_mut(&id).expect("node exists");
             m.entity = entity;
             m.parent = parent;
+            m.animates = animates;
             if m.style != style {
                 self.patches.push(Patch::SetStyle {
                     id,
@@ -1325,9 +1332,22 @@ impl Reconciler {
                 keys: (false, false),
                 name: None,
                 island: None,
+                animates: false,
             },
         );
         id
+    }
+
+    /// Whether `m`, matched by its place among its siblings, stays the node
+    /// a vnode whose own style `animates` describes. An element that starts
+    /// animating at an update, where an element that did not animate was,
+    /// is a new element there (#50): it appears with its style at once, and
+    /// only changes made to it later animate. Without this, it would
+    /// animate from the other element's style (no background, no padding).
+    /// A key or an entity says the node is the same one: it is kept.
+    fn keeps_identity(&self, m: &MNode, animates: bool, entity: Option<&AnyEntity>) -> bool {
+        let same_entity = matches!((&m.entity, entity), (Some(a), Some(b)) if a.id() == b.id());
+        !animates || m.animates || m.key.is_some() || same_entity
     }
 
     fn destroy(&mut self, id: NodeId) {

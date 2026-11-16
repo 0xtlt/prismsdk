@@ -408,19 +408,40 @@
     : null;
   // Rules on an element's own width (`.when_width_at_least`): the server
   // sends the CSS for each width they switch at; the element takes the
-  // widest one it reaches, as it is resized.
+  // widest one it reaches, as it is resized. Its first width is known once
+  // it is laid out: the rule for it is part of its first style, which
+  // `transition` does not animate (#50); later widths animate.
   const widthObserver = typeof ResizeObserver === "function"
     ? new ResizeObserver((entries) => entries.forEach((e) => {
       const box = e.borderBoxSize && e.borderBoxSize[0];
-      applyOwnWidth(e.target, box ? box.inlineSize : e.contentRect.width);
+      const first = !e.target._widthSeen;
+      e.target._widthSeen = true;
+      applyOwnWidth(e.target, box ? box.inlineSize : e.contentRect.width, first);
     }))
     : null;
-  function applyOwnWidth(el, width) {
+  function applyOwnWidth(el, width, first) {
     const v = el._ownWidth;
     if (!v) return;
     let css = v.base;
     for (const [min, variant] of v.cq) if (width >= min) css = variant;
-    if (v.applied !== css) { v.applied = css; setCss(el, css); }
+    if (v.applied === css) return;
+    v.applied = css;
+    if (first) setCssAtOnce(el, css); else setCss(el, css);
+  }
+  /**
+   * Gives `el` the style `css` without animating to it: CSS transitions
+   * start when a computed style changes, so the change is computed with
+   * `transition: none`, then the element's own transition is back for the
+   * next ones.
+   */
+  function setCssAtOnce(el, css) {
+    if (!el.isConnected || !el.style) return setCss(el, css);
+    const inline = el.style.transition;
+    el.style.transition = "none";
+    setCss(el, css);
+    void getComputedStyle(el).transitionProperty; // the style is computed now
+    el.style.transition = inline;
+    if (!el.getAttribute("style")) el.removeAttribute("style");
   }
   function ownWidth(el, css, cq) {
     if (!cq) {

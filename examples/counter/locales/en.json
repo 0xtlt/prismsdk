@@ -444,7 +444,10 @@
     "cancel": "Cancel",
     "confirm": "Delete",
     "confirmed": "Deleted {count} times",
-    "jump_button": "Jump to the search field"
+    "jump_button": "Jump to the search field",
+    "tile": "Animated tile",
+    "tile_beside": "Moves to its own line without fading in.",
+    "tile_move": "Move the tile"
   },
   "islands": {
     "title": "Islands",
