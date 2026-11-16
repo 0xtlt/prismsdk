@@ -481,6 +481,10 @@ fn apple_command(
     if !p.languages.is_empty() {
         cmd.env("PRISM_LOCALES", p.languages.join(","));
     }
+    // `[network] allow_http` (#152): ATS exceptions, Android cleartext.
+    if !p.http_hosts.is_empty() {
+        cmd.env("PRISM_HTTP_HOSTS", p.http_hosts.join(","));
+    }
     if o.release {
         cmd.env("PRISM_RELEASE", "1");
     }

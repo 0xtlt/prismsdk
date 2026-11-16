@@ -57,10 +57,25 @@ deployment_target = "17.0"    # oldest iOS/iPadOS (the default)
 [macos]                       # likewise [tvos] (17.0), [watchos] (10.0), [visionos] (26.0)
 deployment_target = "13.0"
 
+[network]
+allow_http = ["preview.localhost"]  # plain-HTTP hosts and their subdomains, on one line
+
 [web]
 islands = ["islands/chart"]   # WASM island crates, on one line (see Islands)
 island_budget_kb = 40         # gzip per island: `prism build web` fails above it
 ```
+
+`[network] allow_http` lists the hosts the app may reach over plain HTTP
+(#152), such as a development server shown in a `web_view`: Apple platforms
+refuse `http://` by default (App Transport Security) and so does Android
+(cleartext traffic, since API 28). Each host and its subdomains get an
+exception: `NSAppTransportSecurity` › `NSExceptionDomains` with
+`NSExceptionAllowsInsecureHTTPLoads` in the iOS, iPadOS, tvOS, visionOS,
+watchOS and macOS `Info.plist`, and a `network_security_config` with
+`cleartextTrafficPermitted` on Android. An IP address (which ATS exceptions
+cannot name) turns on `NSAllowsLocalNetworking` instead. Give hosts only,
+without a scheme, port or path. App Review asks why a shipped app loads plain
+HTTP: keep it to development hosts.
 
 `prism run|dev|build web` builds the [islands](guide/islands.md) for
 `wasm32-unknown-unknown` with a size profile, runs wasm-bindgen as a library

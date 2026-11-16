@@ -66,6 +66,38 @@ fn project(dir: &TempDir, prism_toml: Option<&str>, cargo_toml: &str) -> Result<
 const CARGO: &str =
     "[package]\nname = \"my_app\"\nversion = \"2.3.4\"\nedition = \"2024\"\n\n[workspace]\n";
 
+/// #152: plain-HTTP hosts, checked.
+#[test]
+fn network_allow_http_lists_hosts() {
+    let dir = TempDir::new("http");
+    let p = project(
+        &dir,
+        Some("[network]\nallow_http = [\"Preview.Localhost\", \"192.168.1.20\"]\n"),
+        CARGO,
+    )
+    .unwrap();
+    assert_eq!(p.http_hosts, ["preview.localhost", "192.168.1.20"]);
+    let none = project(&dir, Some("[app]\nname = \"x\"\n"), CARGO).unwrap();
+    assert!(none.http_hosts.is_empty());
+    for bad in [
+        "http://preview.localhost",
+        "preview.localhost:8080",
+        "a/b",
+        ".x",
+        "",
+    ] {
+        let toml = format!("[network]\nallow_http = [\"{bad}\", \"ok.dev\"]\n");
+        let r = project(&dir, Some(&toml), CARGO);
+        if bad.is_empty() {
+            // Empty entries are dropped by the list parser.
+            assert_eq!(r.unwrap().http_hosts, ["ok.dev"]);
+        } else {
+            let err = r.err().unwrap_or_else(|| panic!("{bad} accepted"));
+            assert!(err.contains("allow_http"), "{err}");
+        }
+    }
+}
+
 #[test]
 fn every_section_of_prism_toml() {
     let dir = TempDir::new("all");

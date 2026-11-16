@@ -228,6 +228,7 @@ mod tests {
             deployment_targets: vec![],
             islands: vec![],
             island_budget_kb: 40.,
+            http_hosts: Vec::new(),
         }
     }
 

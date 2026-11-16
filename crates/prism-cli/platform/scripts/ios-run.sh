@@ -28,6 +28,7 @@
 #   PRISM_ICON       1024×1024 PNG app icon
 #   PRISM_RELEASE=1  release build
 #   PRISM_APPLE_SIGNIN=1  Sign in with Apple (com.apple.developer.applesignin)
+#   PRISM_HTTP_HOSTS   plain-HTTP hosts, comma-separated (ATS exceptions)
 #   PRISM_PUSH       remote push: the APNs environment (development / production);
 #                    adds aps-environment and the remote-notification background mode
 #   PRISM_PROJECT    project root (default: this repository)
@@ -410,6 +411,23 @@ if [[ "$OS" == ios ]]; then
   <key>UISupportedInterfaceOrientations~ipad</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationPortraitUpsideDown</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>"
 fi
 
+# `[network] allow_http` (PRISM_HTTP_HOSTS, comma-separated): App Transport
+# Security exceptions for these hosts and their subdomains; IP addresses
+# (which ATS exceptions cannot name) allow the local network.
+ats_plist() {
+  [[ -z "${PRISM_HTTP_HOSTS:-}" ]] && return 0
+  local hosts=() domains="" local_net=""
+  IFS=, read -ra hosts <<< "$PRISM_HTTP_HOSTS"
+  for h in "${hosts[@]}"; do
+    if [[ "$h" =~ ^[0-9.]+$ ]]; then
+      local_net="<key>NSAllowsLocalNetworking</key><true/>"
+    else
+      domains+="<key>$h</key><dict><key>NSExceptionAllowsInsecureHTTPLoads</key><true/><key>NSIncludesSubdomains</key><true/></dict>"
+    fi
+  done
+  echo "  <key>NSAppTransportSecurity</key><dict>$local_net<key>NSExceptionDomains</key><dict>$domains</dict></dict>"
+}
+
 plist_common() { # $1 executable, $2 bundle id, $3 package type
   cat <<PLIST
   <key>CFBundleExecutable</key><string>$1</string>
@@ -442,6 +460,7 @@ $ICON_PLIST
 $LOC_PLIST
 $BG_PLIST
 $USAGE_PLIST
+$(ats_plist)
 $( [[ "${PRISM_ICLOUD:-}" == 1 ]] && echo "  <key>PrismICloud</key><true/>" )
 $( [[ "${PRISM_APPLE_SIGNIN:-}" == 1 ]] && echo "  <key>PrismAppleSignIn</key><true/>" )
 $( [[ "$OS" == ios ]] && printf '%s\n' "  <key>LSRequiresIPhoneOS</key><true/>" "  <key>UILaunchScreen</key><dict/>" )

@@ -39,6 +39,9 @@
 //! [macos]                       # also [tvos], [watchos], [visionos]
 //! deployment_target = "13.0"    # MACOSX_ (TVOS_, WATCHOS_, XROS_) DEPLOYMENT_TARGET
 //!
+//! [network]
+//! allow_http = ["preview.localhost"]  # plain-HTTP hosts (and their subdomains), on one line
+//!
 //! [web]
 //! islands = ["islands/chart"]   # WASM island crates (on one line)
 //! island_budget_kb = 40         # gzip, per island: `prism build web` fails above
@@ -105,6 +108,11 @@ pub struct Project {
     pub islands: Vec<PathBuf>,
     /// `[web] island_budget_kb`: the gzip budget of each island.
     pub island_budget_kb: f64,
+
+    /// `[network] allow_http`: hosts (and their subdomains) the app may
+    /// reach over plain HTTP: App Transport Security exceptions on Apple
+    /// platforms, cleartext traffic on Android (#152).
+    pub http_hosts: Vec<String>,
 }
 
 /// The `Prism.toml` section of each deployment-target variable.
@@ -274,7 +282,32 @@ impl Project {
                 })?,
                 None => crate::islands::DEFAULT_BUDGET_KB,
             },
+            http_hosts: get("network.allow_http")
+                .map(|v| parse_list(&v))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|h| http_host(&h))
+                .collect::<Result<_, _>>()?,
         })
+    }
+}
+
+/// A host of `[network] allow_http`: a domain (`preview.localhost`,
+/// `dev.example.com`) or an IP address, lower case, without a scheme, port
+/// or path (they would not match).
+fn http_host(raw: &str) -> Result<String, String> {
+    let host = raw.trim().to_ascii_lowercase();
+    let ok = !host.is_empty()
+        && !host.starts_with(['.', '-'])
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
+    if ok {
+        Ok(host)
+    } else {
+        Err(format!(
+            "Prism.toml [network] allow_http: {raw:?} is not a host name (no scheme, port or path: \"preview.localhost\")"
+        ))
     }
 }
 
