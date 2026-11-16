@@ -1693,7 +1693,7 @@ impl Overlay {
     ///
     /// ```ignore
     /// div()
-    ///     .child(text_input().value(text).on_input(…))
+    ///     .child(text_input().value(text).on_input(..))
     ///     .children(text.starts_with('/').then(|| {
     ///         popover(menu).open(true).light_dismiss(false).take_focus(false)
     ///     }))

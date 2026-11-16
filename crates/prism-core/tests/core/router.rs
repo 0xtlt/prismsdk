@@ -19,12 +19,12 @@ fn page(cx: &mut App, title: String) -> Entity<Page> {
 
 fn routes(b: prism_core::RouterBuilder) -> prism_core::RouterBuilder {
     b.route("/", |cx, _| page(cx, "home".into()))
-        // Declared first: wins over `/todos/:id`.
-        .route("/todos/new", |cx, _| page(cx, "new".into()))
+        // Declared after `/todos/new`, which still wins: more specific.
         .route("/todos/:id", |cx, p| {
             let id: Option<u32> = p.parse("id");
             page(cx, format!("todo {id:?}"))
         })
+        .route("/todos/new", |cx, _| page(cx, "new".into()))
         .route("/users/:user/posts/:post", |cx, p| {
             page(
                 cx,
@@ -105,6 +105,48 @@ fn params_static_segments_and_rest() {
     // Too many segments: no match.
     let h = stack_app("/todos/1/extra");
     h.host.by_text("Nothing at /todos/1/extra");
+}
+
+/// The most specific route wins, whatever the order the routes were added in.
+fn ranked_app(path: &str) -> Harness {
+    Harness::at(path, |cx| {
+        let router = Router::new()
+            .route("/", |cx, _| page(cx, "home".into()))
+            .route("/*rest", |cx, _| page(cx, "catch-all".into()))
+            .route("/files/*rest", |cx, p| {
+                page(cx, format!("file {:?}", p.get("rest").unwrap()))
+            })
+            .route("/files", |cx, _| page(cx, "files".into()))
+            .route("/:a/new", |cx, p| {
+                page(cx, format!("new in {}", p.get("a").unwrap()))
+            })
+            .route("/sites/:site", |cx, p| {
+                page(cx, format!("site {}", p.get("site").unwrap()))
+            })
+            .route("/sites/new", |cx, _| page(cx, "new site".into()))
+            // Same shape as `/sites/:site`, added after it: never reached.
+            .route("/sites/:other", |cx, _| page(cx, "shadowed".into()))
+            .build(cx);
+        cx.set_root(router);
+    })
+}
+
+#[test]
+fn the_most_specific_route_wins() {
+    let cases = [
+        ("/sites/new", "new site"),
+        ("/sites/ada", "site ada"),
+        // A static first segment beats a parameter there.
+        ("/pages/new", "new in pages"),
+        ("/files", "files"),
+        ("/files/a/b", r#"file "a/b""#),
+        ("/other/path", "catch-all"),
+        ("/", "home"),
+    ];
+    for (p, title) in cases {
+        let h = ranked_app(p);
+        assert_eq!(screens(&h, stack(&h)).last().unwrap(), title, "{p}");
+    }
 }
 
 #[test]

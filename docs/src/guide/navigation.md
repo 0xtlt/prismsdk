@@ -45,7 +45,7 @@ Make a tab eager when its views must exist while hidden, or when switching to it
 
 **Window-sized screens (web)**: the root stack and its visible screen fill the browser window, like a native app: a frame (your own header, a sidebar) stays put and `scroll().flex_1()` scrolls inside it. A screen taller than the window without a scroll view scrolls by itself (its header stays). A tab bar root already worked this way. A root that is not a stack or tabs (a plain view) still scrolls the page.
 
-Patterns: `/`, `/todos`, `/todos/:id`, `/files/*rest`. Unknown paths show a "Not found" screen (or `.not_found(...)`); on the web that page is answered with `404` (`cx.shows_not_found()` tells the app). Opening a deep link puts `/` underneath so Back works.
+Patterns: `/`, `/todos`, `/todos/:id`, `/files/*rest`. The most specific route that matches a path wins, whatever the order the routes were added in (feature modules can declare theirs in any order): segment by segment from the left, a static segment beats a `:param`, which beats a `*rest`, so `/todos/new` wins over `/todos/:id` and `/files` over `/files/*rest`. Two routes of the same shape (`/a/:x`, `/a/:y`) keep their order, the first added wins, and debug builds print a warning about the other. Unknown paths show a "Not found" screen (or `.not_found(...)`); on the web that page is answered with `404` (`cx.shows_not_found()` tells the app). Opening a deep link puts `/` underneath so Back works.
 
 ## Query strings
 
