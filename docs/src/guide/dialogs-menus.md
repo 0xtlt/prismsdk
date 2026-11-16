@@ -66,6 +66,38 @@ div()
 
 Sheets and dialogs ignore both options. On macOS the panel follows the anchor at each layout, not while a scroll view scrolls under it.
 
+### Placing a popover: side and alignment
+
+A popover opens below its anchor, its leading edge lined up with the anchor's. `.side(…)` and `.align(…)` place it elsewhere:
+
+```rust
+// A submenu: beside the item that opens it, tops lined up.
+div()
+    .child(button("Turn into ›").on_click(…))
+    .child(popover(block_kinds).open(self.turn_into).side(PopoverSide::Trailing))
+
+// A panel opened from a button at the end of a toolbar: lined up with the
+// button's trailing edge, it grows towards the middle of the window.
+div()
+    .child(button("More").on_click(…))
+    .child(popover(settings).open(self.more).align(PopoverAlign::End))
+```
+
+- `PopoverSide`: `Bottom` (the default), `Top`, `Trailing` (after the anchor: its right in left-to-right layouts, its left in right-to-left ones) or `Leading`. Without room on that side of the window, the popover opens on the opposite one: a submenu near the window's right edge opens to the left of its item.
+- `PopoverAlign`: `Start` (the default: leading edges below or above the anchor, top edges beside it), `Center` or `End` (trailing edges, or bottom edges beside). The popover is then moved, if needed, to stay inside the window.
+
+A popover can open from an item of another open popover (a submenu of a menu): each is placed against its own anchor and both stay open. Both options combine with `light_dismiss(false)` and `take_focus(false)`.
+
+| | Side | Alignment |
+|---|---|---|
+| Web | placed by the client, flipped without room | exact |
+| macOS | `NSPopover` preferred edge (AppKit flips it); a `take_focus(false)` panel is placed by Prism, flipped without room | panel: exact; `NSPopover`: its arrow points at the part of the anchor it lines up with, exact when the popover is no longer than the anchor along that edge, centered on the anchor otherwise |
+| iPadOS, visionOS | `permittedArrowDirections`: the side's, the opposite one without room | like the `NSPopover` |
+| Linux | `GtkPopover::set_position` (GTK flips it) | `set_pointing_to`, like the `NSPopover` |
+| Android | the `PopupWindow` placed by Prism, flipped without room | exact |
+
+Phones that show popovers as sheets, tvOS and watchOS ignore both options, as do sheets and dialogs.
+
 Toasts (and any `cx.add_layer` entity) stay above overlays on the web, macOS (a transparent child window), iOS, iPadOS, tvOS and visionOS (a pass-through window). On Linux and Android, sheets and dialogs are separate windows, and on watchOS sheets cover the app: layers stay under them there.
 
 `hit_test(false)` and `inert(true)` (see [Pointer, keyboard, focus](input.md)) let a screen draw its own scrim or decoration and keep the content under it out of reach.

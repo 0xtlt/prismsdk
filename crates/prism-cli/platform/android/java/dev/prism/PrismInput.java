@@ -392,13 +392,16 @@ final class PrismInput {
         return host;
     }
 
-    /** `sheet`/`popover`/`dialog`, `fixed`, `medium`, `manual`, `keepfocus`. */
+    /** `sheet`/`popover`/`dialog`, `fixed`, `medium`, `manual`, `keepfocus`,
+     *  `side=top`/`trailing`/`leading`, `align=center`/`end`. */
     static void overlayConfig(PrismHost.Node n, String config) {
         n.overlay = "sheet";
         n.fixed = false;
         n.medium = false;
         n.manual = false;
         n.keepFocus = false;
+        n.side = "bottom";
+        n.align = "start";
         for (String t : config.trim().split("\\s+")) {
             switch (t) {
                 case "popover": case "dialog": n.overlay = t; break;
@@ -406,9 +409,72 @@ final class PrismInput {
                 case "medium": n.medium = true; break;
                 case "manual": n.manual = true; break;
                 case "keepfocus": n.keepFocus = true; break;
+                default:
+                    if (t.startsWith("side=")) n.side = t.substring(5);
+                    else if (t.startsWith("align=")) n.align = t.substring(6);
             }
         }
         reportArea(n);
+        // Moved while shown.
+        if (n.popup != null && n.popup.isShowing() && !dropDown(n) && n.view.getParent() instanceof View) {
+            int[] at = popoverOrigin(n, (View) n.view.getParent());
+            n.popup.update(at[0], at[1], -1, -1);
+        }
+    }
+
+    /** Where a popover goes in its anchor's window (pixels, from the top
+     *  left): on its side of the anchor (trailing is the right in
+     *  left-to-right layouts), on the opposite side without room there,
+     *  lined up with the anchor's start, center or end, kept inside the
+     *  window (#113). */
+    static int[] popoverOrigin(PrismHost.Node n, View anchor) {
+        float d = PrismHost.density;
+        int w = Math.max(1, n.contentSize[0]), h = Math.max(1, n.contentSize[1]);
+        View win = anchor.getRootView();
+        int vw = win.getWidth(), vh = win.getHeight();
+        int[] loc = new int[2];
+        anchor.getLocationInWindow(loc);
+        int x0 = loc[0], y0 = loc[1], x1 = x0 + anchor.getWidth(), y1 = y0 + anchor.getHeight();
+        int m = Math.round(8 * d), gap = Math.round(4 * d);
+        boolean rtl = anchor.getLayoutDirection() == View.LAYOUT_DIRECTION_RTL;
+        String side;
+        switch (n.side) {
+            case "top": side = "top"; break;
+            case "trailing": side = rtl ? "left" : "right"; break;
+            case "leading": side = rtl ? "right" : "left"; break;
+            default: side = "bottom";
+        }
+        if (!fits(side, x0, y0, x1, y1, w, h, vw, vh, m, gap)) {
+            String other = side.equals("bottom") ? "top" : side.equals("top") ? "bottom" : side.equals("left") ? "right" : "left";
+            if (fits(other, x0, y0, x1, y1, w, h, vw, vh, m, gap)) side = other;
+        }
+        int x, y;
+        if (side.equals("bottom") || side.equals("top")) {
+            y = side.equals("bottom") ? y1 + gap : y0 - gap - h;
+            int start = rtl ? x1 - w : x0, end = rtl ? x0 : x1 - w;
+            x = n.align.equals("center") ? x0 + (x1 - x0 - w) / 2 : n.align.equals("end") ? end : start;
+        } else {
+            x = side.equals("right") ? x1 + gap : x0 - gap - w;
+            y = n.align.equals("center") ? y0 + (y1 - y0 - h) / 2 : n.align.equals("end") ? y1 - h : y0;
+        }
+        x = Math.max(m, Math.min(x, vw - w - m));
+        y = Math.max(m, Math.min(y, vh - h - m));
+        return new int[]{x, y};
+    }
+
+    static boolean fits(String side, int x0, int y0, int x1, int y1, int w, int h, int vw, int vh, int m, int gap) {
+        switch (side) {
+            case "top": return y0 - gap - h >= m;
+            case "left": return x0 - gap - w >= m;
+            case "right": return x1 + gap + w <= vw - m;
+            default: return y1 + gap + h <= vh - m;
+        }
+    }
+
+    /** The default placement: under the anchor, leading-aligned (above it
+     *  without room below), as `showAsDropDown` places it. */
+    static boolean dropDown(PrismHost.Node n) {
+        return n.side.equals("bottom") && n.align.equals("start");
     }
 
     /** The area the content may take (Rust lays it out in it), in pixels. */
@@ -444,7 +510,12 @@ final class PrismInput {
         n.host.fixedWidth = w;
         n.host.fixedHeight = h;
         n.host.requestLayout();
-        if (n.popup != null && n.popup.isShowing()) n.popup.update(w, h);
+        if (n.popup != null && n.popup.isShowing()) {
+            if (!dropDown(n) && n.view.getParent() instanceof View) {
+                int[] at = popoverOrigin(n, (View) n.view.getParent());
+                n.popup.update(at[0], at[1], w, h);
+            } else n.popup.update(w, h);
+        }
         if (n.dialog != null && n.dialog.getWindow() != null) size(n, n.dialog.getWindow());
         // Opened in the update that inserted it: its anchor is placed now.
         if (n.pendingOpen) open(n, true);
@@ -486,7 +557,11 @@ final class PrismInput {
             });
             n.popup = p;
             n.closing = false;
-            p.showAsDropDown(anchor, 0, Math.round(4 * d), Gravity.START);
+            if (dropDown(n)) p.showAsDropDown(anchor, 0, Math.round(4 * d), Gravity.START);
+            else {
+                int[] at = popoverOrigin(n, anchor);
+                p.showAtLocation(anchor, Gravity.LEFT | Gravity.TOP, at[0], at[1]);
+            }
             return;
         }
         boolean sheet = n.overlay.equals("sheet");
