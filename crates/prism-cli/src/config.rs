@@ -38,6 +38,10 @@
 //!
 //! [macos]                       # also [tvos], [watchos], [visionos]
 //! deployment_target = "13.0"    # MACOSX_ (TVOS_, WATCHOS_, XROS_) DEPLOYMENT_TARGET
+//!
+//! [web]
+//! islands = ["islands/chart"]   # WASM island crates (on one line)
+//! island_budget_kb = 40         # gzip, per island: `prism build web` fails above
 //! ```
 //!
 //! Deployment targets default to iOS 17, tvOS 17, watchOS 10, visionOS 26 and
@@ -95,6 +99,12 @@ pub struct Project {
     /// `(environment variable, version)`: `deployment_target` of `[ios]`,
     /// `[tvos]`, `[watchos]`, `[visionos]` and `[macos]`, else Prism's defaults.
     pub deployment_targets: Vec<(&'static str, String)>,
+
+    // --- Islands: WASM Web Components for the web ---
+    /// `[web] islands`: the island crates' directories.
+    pub islands: Vec<PathBuf>,
+    /// `[web] island_budget_kb`: the gzip budget of each island.
+    pub island_budget_kb: f64,
 }
 
 /// The `Prism.toml` section of each deployment-target variable.
@@ -252,8 +262,30 @@ impl Project {
             target_dir,
             workspace_root,
             deployment_targets,
+            islands: get("web.islands")
+                .map(|v| parse_list(&v))
+                .unwrap_or_default()
+                .iter()
+                .map(|d| crate::resolve(root, d))
+                .collect(),
+            island_budget_kb: match get("web.island_budget_kb") {
+                Some(v) => v.parse::<f64>().ok().filter(|b| *b > 0.).ok_or_else(|| {
+                    format!("Prism.toml [web] island_budget_kb: a number of KB, not {v:?}")
+                })?,
+                None => crate::islands::DEFAULT_BUDGET_KB,
+            },
         })
     }
+}
+
+/// A one-line TOML array of strings: `["a", 'b']` → `a`, `b`.
+pub(crate) fn parse_list(raw: &str) -> Vec<String> {
+    let inner = raw.trim().trim_start_matches('[').trim_end_matches(']');
+    inner
+        .split(',')
+        .map(|s| s.trim().trim_matches(|c| c == '"' || c == '\'').to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 impl Project {

@@ -206,6 +206,29 @@ pub enum Patch {
         /// The layer roots, bottom first.
         ids: Vec<NodeId>,
     },
+
+    // --- Islands: client-side Web Components ---
+    /// The node is an island (see [`island`](crate::island)): sent right
+    /// after its `Create`, and again when its source or events change.
+    /// Native backends ignore it (they show the node's children, the
+    /// fallback); the web turns the node into the custom element.
+    SetIsland {
+        /// The island's node (a `View`).
+        id: NodeId,
+        /// Its custom element's tag (`prism-island-chart`).
+        tag: String,
+        /// Where the element is defined.
+        source: crate::island::IslandSource,
+        /// The events it reports (`UiEvent::Island`).
+        events: Vec<String>,
+    },
+    /// Props of an island that changed (name, JSON), `null` for a removed one.
+    SetIslandProps {
+        /// The island.
+        id: NodeId,
+        /// The changed props.
+        props: Vec<(String, String)>,
+    },
 }
 
 /// An event reported by a backend.
@@ -243,6 +266,10 @@ pub enum UiEvent {
     /// knows has it). Handlers of that node and its ancestors run, then
     /// global ones.
     Key(Option<NodeId>, crate::events::KeyEvent),
+
+    // --- Islands ---
+    /// An island emitted an event: (id, event name, detail as JSON).
+    Island(NodeId, String, String),
 }
 
 /// A mounted host node.
@@ -272,6 +299,16 @@ struct MNode {
     keys: (bool, bool),
     /// Its `.id(…)`.
     name: Option<String>,
+    /// An island's tag, source, props and events.
+    island: Option<MIsland>,
+}
+
+/// What backends last got about a mounted island.
+struct MIsland {
+    tag: String,
+    source: crate::island::IslandSource,
+    props: HashMap<String, String>,
+    events: Vec<String>,
 }
 
 /// A flattened child, ready to diff.
@@ -323,6 +360,8 @@ pub struct Reconciler {
     layers: Vec<(EntityId, NodeId)>,
     /// The layer roots backends last got.
     sent_layers: Vec<NodeId>,
+    /// Islands' event handlers: (node, event name) → handler.
+    island_events: HashMap<(NodeId, String), Handler<crate::island::IslandEvent>>,
 }
 
 impl Reconciler {
@@ -408,6 +447,15 @@ impl Reconciler {
         global.sort_by(|a, b| b.0.cmp(a.0));
         out.extend(global.into_iter().map(|(_, h)| h.clone()));
         out
+    }
+
+    /// The handler of island `id` for its event `name`, if any.
+    pub fn island_handler(
+        &self,
+        id: NodeId,
+        name: &str,
+    ) -> Option<Handler<crate::island::IslandEvent>> {
+        self.island_events.get(&(id, name.to_string())).cloned()
     }
 
     /// The mounted node named `name` (`.id(name)`), if any.
@@ -674,9 +722,16 @@ impl Reconciler {
         vnode: Box<VNode>,
         entity: Option<AnyEntity>,
     ) -> NodeId {
+        let mut vnode = vnode;
+        let island = vnode.island.take();
         let reusable = old.filter(|o| {
             let m = &self.nodes[o];
-            m.kind == vnode.kind && m.key == vnode.key
+            // An island keeps its element only while its tag is the same.
+            let tag = |i: Option<&str>| i.map(str::to_string);
+            m.kind == vnode.kind
+                && m.key == vnode.key
+                && tag(m.island.as_ref().map(|i| i.tag.as_str()))
+                    == tag(island.as_ref().map(|i| i.tag.as_str()))
         });
         if let (Some(old), None) = (old, reusable) {
             self.destroy(old);
@@ -685,6 +740,8 @@ impl Reconciler {
             Some(id) => id,
             None => self.create(vnode.kind, vnode.key.clone()),
         };
+        // Right after its `Create`: the web swaps in the custom element.
+        self.diff_island(id, island);
 
         // Ownership: which entity's root this node is.
         let previous_owner = self.owner(id);
@@ -977,6 +1034,65 @@ impl Reconciler {
         id
     }
 
+    /// Island `id`'s element, changed props and event handlers.
+    fn diff_island(&mut self, id: NodeId, spec: Option<Box<crate::island::IslandSpec>>) {
+        let Some(spec) = spec else {
+            return;
+        };
+        let crate::island::IslandSpec {
+            tag,
+            source,
+            props,
+            events,
+        } = *spec;
+        let names: Vec<String> = events.iter().map(|(n, _)| n.clone()).collect();
+        self.island_events.retain(|(n, _), _| *n != id);
+        for (name, h) in events {
+            self.island_events.insert((id, name), h);
+        }
+        let m = self.nodes.get_mut(&id).expect("node exists");
+        let mounted = m.island.get_or_insert_with(|| MIsland {
+            tag: String::new(),
+            source: crate::island::IslandSource::Page,
+            props: HashMap::new(),
+            events: Vec::new(),
+        });
+        if mounted.tag != tag || mounted.source != source || mounted.events != names {
+            self.patches.push(Patch::SetIsland {
+                id,
+                tag: tag.clone(),
+                source: source.clone(),
+                events: names.clone(),
+            });
+            mounted.tag = tag;
+            mounted.source = source;
+            mounted.events = names;
+        }
+        let mut changed: Vec<(String, String)> = props
+            .iter()
+            .filter(|(k, v)| mounted.props.get(k) != Some(v))
+            .cloned()
+            .collect();
+        let mut removed: Vec<String> = mounted
+            .props
+            .keys()
+            .filter(|k| !props.iter().any(|(n, _)| n == *k))
+            .cloned()
+            .collect();
+        removed.sort();
+        for k in removed {
+            mounted.props.remove(&k);
+            changed.push((k, "null".into()));
+        }
+        for (k, v) in &props {
+            mounted.props.insert(k.clone(), v.clone());
+        }
+        if !changed.is_empty() {
+            self.patches
+                .push(Patch::SetIslandProps { id, props: changed });
+        }
+    }
+
     /// Names, pointer and key handlers of node `id` (#17).
     #[allow(clippy::type_complexity)]
     fn diff_events(
@@ -1208,6 +1324,7 @@ impl Reconciler {
                 pointer_mask: 0,
                 keys: (false, false),
                 name: None,
+                island: None,
             },
         );
         id
@@ -1239,6 +1356,9 @@ impl Reconciler {
         self.drag.remove(&id);
         self.key_down.remove(&id);
         self.global_key.remove(&id);
+        if node.island.is_some() {
+            self.island_events.retain(|(n, _), _| *n != id);
+        }
         if let Some(name) = node.name
             && self.names.get(&name) == Some(&id)
         {

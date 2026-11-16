@@ -309,7 +309,12 @@ export class Document extends Element {
   get cookie() { return this.cookies.map((c) => c.split(";")[0]).join("; "); }
   set cookie(v) { this.cookies.push(v); }
   hasFocus() { return true; }
-  createElement(tag) { return new Element(this, tag); }
+  createElement(tag) {
+    const el = new Element(this, tag);
+    // A defined custom element is created upgraded.
+    if (this.registry) this.registry.upgrade(el);
+    return el;
+  }
   createElementNS(ns, tag) { return new Element(this, tag, ns); }
   createTextNode(data) { return new Text(this, data); }
   getElementById(id) {
@@ -322,6 +327,31 @@ export class Document extends Element {
       return null;
     };
     return find(this);
+  }
+}
+
+/**
+ * `customElements`: definitions, `whenDefined`, `upgrade` (an element of a
+ * defined tag takes the class's prototype; classes extend `Element`).
+ */
+export class CustomElementRegistry {
+  constructor() { this.defs = new Map(); this.waiting = new Map(); }
+  get(tag) { return this.defs.get(tag); }
+  define(tag, cls) {
+    this.defs.set(tag, cls);
+    (this.waiting.get(tag) || []).forEach((resolve) => resolve(cls));
+    this.waiting.delete(tag);
+  }
+  whenDefined(tag) {
+    if (this.defs.has(tag)) return Promise.resolve(this.defs.get(tag));
+    return new Promise((resolve) => {
+      if (!this.waiting.has(tag)) this.waiting.set(tag, []);
+      this.waiting.get(tag).push(resolve);
+    });
+  }
+  upgrade(el) {
+    const cls = this.defs.get(el.localName);
+    if (cls && !(el instanceof cls)) Object.setPrototypeOf(el, cls.prototype);
   }
 }
 
@@ -347,8 +377,11 @@ const CLIENT = new URL("../../src/client.js", import.meta.url);
  * Runs client.js on a page whose `<main id="prism-root">` holds `ssr`, and
  * returns the page, its window and the socket it opened.
  */
-export function boot({ ssr = "", path = "/", base = "", glyphs = { plus: "+", gear: "⚙", house: "⌂" }, fetch = null, search = "", nonce = "" } = {}) {
+export function boot({ ssr = "", path = "/", base = "", glyphs = { plus: "+", gear: "⚙", house: "⌂" }, fetch = null, search = "", nonce = "", importModule = null } = {}) {
   const document = new Document();
+  const customElements = new CustomElementRegistry();
+  document.registry = customElements;
+  const imports = [];
   document.body.innerHTML =
     `<main id="prism-root">${ssr}</main><div id="prism-island"></div><div id="prism-toasts"></div>` +
     `<div id="prism-connection" role="status" hidden>Reconnecting…</div>`;
@@ -411,6 +444,7 @@ export function boot({ ssr = "", path = "/", base = "", glyphs = { plus: "+", ge
     addEventListener: (t, fn) => (winListeners[t] ||= []).push(fn),
     removeEventListener: () => {},
     console,
+    customElements,
     Promise,
     JSON,
     Math,
@@ -428,7 +462,15 @@ export function boot({ ssr = "", path = "/", base = "", glyphs = { plus: "+", ge
   win.self = win;
   const context = vm.createContext(win);
   const source = fs.readFileSync(CLIENT, "utf8").replace("__GLYPHS__", JSON.stringify(glyphs));
-  vm.runInContext(source, context, { filename: "client.js" });
+  // `import()` of island modules (a vm script cannot import without a Node
+  // flag): recorded, then `importModule(url, customElements)`.
+  win.__testImport = async (url) => {
+    imports.push(url);
+    if (!importModule) throw new Error(`no module ${url}`);
+    await importModule(url, customElements);
+    return {};
+  };
+  vm.runInContext(source.replace(/\bimport\(/g, "__testImport("), context, { filename: "client.js" });
   const ws = sockets[0];
   return {
     window: win,
@@ -439,6 +481,9 @@ export function boot({ ssr = "", path = "/", base = "", glyphs = { plus: "+", ge
     frames,
     history,
     mount: document.getElementById("prism-root"),
+    /** Modules the client imported (`import()`), in order. */
+    imports,
+    customElements,
     /** Window events (popstate…). */
     fire: (type, event = {}) => (winListeners[type] || []).forEach((fn) => fn({ type, ...event })),
     /** The element for Prism node `id`, found in the page. */

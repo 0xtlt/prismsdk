@@ -23,6 +23,7 @@ pub mod events;
 pub mod glyphs;
 pub mod i18n;
 pub mod interaction;
+pub mod island;
 pub mod layout;
 pub mod list;
 pub mod menu;
@@ -81,6 +82,7 @@ pub use events::{
 };
 pub use i18n::{BasicFormatter, DateStyle, Direction, Formatter, Locale, Translations};
 pub use interaction::{Interaction, Interactions, States};
+pub use island::{Island, IslandEvent, IslandSource, island, web_component};
 pub use layout::{GridTrack, Repetition, ScrollAxis, auto_fill, auto_fit, fr, minmax, repeat};
 pub use list::VirtualList;
 pub use menu::{ActionRole, Alert, AlertStyle, Menu, MenuItem, Tray};
@@ -320,6 +322,11 @@ impl Runtime {
             UiEvent::Drag(id, e) => {
                 if let Some(h) = self.reconciler.drag_handler(id) {
                     h(&e, &mut self.app);
+                }
+            }
+            UiEvent::Island(id, name, detail) => {
+                if let Some(h) = self.reconciler.island_handler(id, &name) {
+                    h(&island::IslandEvent { name, detail }, &mut self.app);
                 }
             }
             UiEvent::Key(focused, e) => {
@@ -610,6 +617,8 @@ pub mod prelude {
         DragEvent, DragPhase, HoverEvent, KeyEvent, Modifiers, PickFiles, Point, PointerEvent,
         PointerPhase, checkbox, dialog, popover, radio_group, sheet, time_picker,
     };
+    // Islands: client-side Web Components.
+    pub use crate::{IslandEvent, island, web_component};
 }
 
 #[cfg(test)]

@@ -76,6 +76,8 @@ img-src 'self' data:;                   # + remote picture hosts
 connect-src 'self';                     # the socket (same origin)
 ```
 
+With [islands](../guide/islands.md), WASM islands also need `'wasm-unsafe-eval'` in `script-src` (it allows compiling WebAssembly, not `eval`). Their modules load from the same origin (or the CDN) through `client.js`, so they need no nonce, and the `.wasm` is fetched under `connect-src`. `WebApp::content_security_policy(&nonce)` returns this policy for the app, and `WebApp::strict_csp()` (or `PRISM_STRICT_CSP=1`) makes the built-in server send it with a fresh nonce on every page.
+
 Without a nonce, the page's `<style>` blocks need `'unsafe-inline'` (or their hashes). Under a strict policy that lacks both, the page still works: the first paint is unstyled until the client connects. The sign-in callback page (`/_prism/auth/callback`) takes the nonce too. `client.js` uses no `eval`, inline handlers or `style` attributes.
 
 **Status codes.** An unknown path renders the router's not-found screen (Prism's or `.not_found(...)`) with `404 Not Found`, so crawlers, monitoring and the host see it. An app without a router answers `200` on every path.

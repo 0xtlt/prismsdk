@@ -58,6 +58,7 @@ the table is the same order for publishing crate by crate.
 | 14 | `prism-android` | core, native, push |
 | 15 | `prism` | core, ui, http, web, db and the five backends |
 | 16 | `prism-cli` | apple-build |
+| 17 | `prism-island` | – (islands' WASM side; built for `wasm32-unknown-unknown`) |
 
 Publishing must happen from macOS with Xcode: verifying `prism-macos`,
 `prism-ios` and `prism-watchos` compiles the Swift bridge.
@@ -82,7 +83,7 @@ crate by crate instead, in the order above, and wait when crates.io asks to
 ```sh
 for c in prism-core prism-push prism-apple-build prism-build prism-http prism-ui \
          prism-native prism-web prism-db prism-macos prism-ios prism-watchos \
-         prism-linux prism-android prism prism-cli; do
+         prism-linux prism-android prism prism-cli prism-island; do
   cargo publish -p "$c" || break
 done
 ```

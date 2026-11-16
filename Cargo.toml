@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "examples/*"]
+# Island crates (WASM, built by `prism` for the web) are members too: they
+# share the lock file, so their wasm-bindgen matches the CLI's.
+members = ["crates/*", "examples/*", "examples/counter/islands/*"]
 
 # Shared by every crate (`<field>.workspace = true`). The version is bumped
 # here and in the `[workspace.dependencies]` entries below (RELEASING.md).

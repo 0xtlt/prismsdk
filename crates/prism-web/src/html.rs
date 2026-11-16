@@ -30,6 +30,10 @@ struct HtmlNode {
     group: bool,
     /// `Style::inert`: the `inert` attribute.
     inert: bool,
+    /// An island: its tag and whether it is a WASM island.
+    island: Option<(String, bool)>,
+    /// An island's props (JSON).
+    island_props: std::collections::BTreeMap<String, String>,
 }
 
 /// Turns a picture source (`logo.png`, `https://…`) into its URL.
@@ -130,9 +134,51 @@ impl Backend for HtmlBackend {
                 | Patch::DismissKeyboard
                 | Patch::ScrollIntoView { .. }
                 | Patch::SetLayers { .. } => {}
+                Patch::SetIsland {
+                    id, tag, source, ..
+                } => {
+                    let wasm = matches!(source, prism_core::IslandSource::Wasm(_));
+                    self.with(*id, |n| n.island = Some((tag.clone(), wasm)))
+                }
+                Patch::SetIslandProps { id, props } => self.with(*id, |n| {
+                    for (k, v) in props {
+                        n.island_props.insert(k.clone(), v.clone());
+                    }
+                }),
             }
         }
     }
+}
+
+/// An island's attributes in the first paint: a web component's string,
+/// number and boolean props (like `client.js` reflects them).
+fn island_attrs(n: &HtmlNode, wasm: bool) -> String {
+    let mut out = String::from(" data-island");
+    if wasm {
+        return out;
+    }
+    for (name, json) in &n.island_props {
+        let valid = !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        if !valid {
+            continue;
+        }
+        match serde_json::from_str::<serde_json::Value>(json) {
+            Ok(serde_json::Value::String(s)) => {
+                let _ = write!(out, r#" {name}="{}""#, escape(&s));
+            }
+            Ok(serde_json::Value::Number(v)) => {
+                let _ = write!(out, r#" {name}="{v}""#);
+            }
+            Ok(serde_json::Value::Bool(true)) => {
+                let _ = write!(out, " {name}");
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// ARIA attributes for a node (mirrors `applyA11y` in client.js).
@@ -590,7 +636,12 @@ impl HtmlBackend {
                 } else {
                     escape(content)
                 };
-                let _ = write!(out, "<{tag} {attrs}{class}{label}>{content}");
+                // An island: its custom element, around the fallback.
+                let (tag, island) = match &n.island {
+                    Some((island_tag, wasm)) => (island_tag.as_str(), island_attrs(n, *wasm)),
+                    None => (tag, String::new()),
+                };
+                let _ = write!(out, "<{tag} {attrs}{class}{label}{island}>{content}");
                 for c in &n.children {
                     self.write(*c, false, out);
                 }

@@ -154,3 +154,22 @@ fn a_project_needs_a_package_name() {
     let err = Project::load(&dir.0).err().unwrap();
     assert!(err.contains("package"), "{err}");
 }
+
+#[test]
+fn web_islands_and_their_budget() {
+    let c =
+        parse("[web]\nislands = [\"islands/chart\", 'islands/map'] # two\nisland_budget_kb = 25\n");
+    assert_eq!(
+        super::parse_list(&c["web.islands"]),
+        ["islands/chart", "islands/map"]
+    );
+    assert_eq!(c["web.island_budget_kb"], "25");
+    assert!(super::parse_list("[]").is_empty());
+    let dir = TempDir::new("islands");
+    let toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[workspace]\n";
+    let p = project(&dir, Some("[web]\nislands = [\"islands/chart\"]\n"), toml).unwrap();
+    assert_eq!(p.islands, [dir.0.join("islands/chart")]);
+    assert_eq!(p.island_budget_kb, 40.);
+    let bad = project(&dir, Some("[web]\nisland_budget_kb = \"lots\"\n"), toml);
+    assert!(bad.err().unwrap().contains("island_budget_kb"));
+}

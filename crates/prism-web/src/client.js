@@ -1167,6 +1167,9 @@
       case "layers":
         layerHost.replaceChildren(...p.ids.map((i) => nodes.get(i)).filter(Boolean));
         return raiseLayers();
+      // Islands: client-side Web Components.
+      case "island": return setIsland(p);
+      case "props": return setIslandProps(el, p.props);
       case "destroy":
         if (el) {
           el.remove();
@@ -1178,6 +1181,82 @@
         setStates(p.id, null);
         stacks = stacks.filter((s) => s !== el);
         return;
+    }
+  }
+
+  // --- Islands: client-side Web Components (WASM or JS) -------------------------
+  // An island node is its custom element (`<prism-island-chart>`). Its light
+  // DOM is the server's fallback, which this client keeps patching like any
+  // view; the island renders into its shadow root, which this client never
+  // touches. Its module is imported the first time a page shows it (pages
+  // without islands load nothing more). Props: `el.prismProps` (all of them)
+  // plus `el.prismUpdate(changed)` for WASM islands; properties (and
+  // attributes for strings, numbers, booleans) for web components.
+  const islandModules = new Map();
+  const registry = () => (typeof customElements === "undefined" ? null : customElements);
+  function importIsland(url, tag) {
+    if (islandModules.has(url) || registry()?.get(tag)) return;
+    islandModules.set(url, import(url).catch((e) => {
+      islandModules.delete(url);
+      console.error(`Prism: cannot load the island <${tag}> (${url})`, e);
+    }));
+  }
+  function setIsland(p) {
+    let el = nodes.get(p.id);
+    if (!el) return;
+    if (el.localName !== p.tag) {
+      // Sent right after "create": the element becomes the custom element.
+      const fresh = document.createElement(p.tag);
+      fresh.dataset.pid = p.id;
+      fresh.dataset.kind = el.dataset.kind;
+      while (el.firstChild) fresh.appendChild(el.firstChild);
+      if (el.parentNode) { el.parentNode.insertBefore(fresh, el); el.remove(); }
+      nodes.set(p.id, fresh);
+      el = fresh;
+    }
+    el._island = p;
+    el.prismProps ||= {};
+    // The island's CustomEvents go to the server (its own, not bubbled ones).
+    el._ibound ||= new Set();
+    for (const name of p.events) {
+      if (el._ibound.has(name)) continue;
+      el._ibound.add(name);
+      el.addEventListener(name, (e) => {
+        if (e.target !== el || !el._island.events.includes(name)) return;
+        send({ t: "island", id: p.id, name, detail: e.detail === undefined ? null : e.detail });
+      });
+    }
+    if (p.module) importIsland(p.module, p.tag);
+    else if (p.wasm) console.warn(`Prism: the island <${p.tag}> is not built; its fallback shows`);
+    if (!p.wasm && !el._iwait && registry()) {
+      // A web component gets its properties once defined (set before, they
+      // would hide the class's own accessors).
+      el._iwait = true;
+      registry().whenDefined(p.tag).then(() => {
+        registry().upgrade(el);
+        el._idefined = true;
+        for (const [k, v] of Object.entries(el.prismProps)) el[k] = v;
+      });
+    }
+  }
+  const ATTR_NAME = /^[a-zA-Z_][\w-]*$/;
+  function setIslandProps(el, props) {
+    if (!el) return;
+    const all = (el.prismProps ||= {});
+    for (const [k, v] of Object.entries(props)) {
+      if (v === null) delete all[k]; else all[k] = v;
+    }
+    if (el._island && el._island.wasm) {
+      if (typeof el.prismUpdate === "function") el.prismUpdate(props);
+      return;
+    }
+    for (const [k, v] of Object.entries(props)) {
+      if (ATTR_NAME.test(k)) {
+        if (typeof v === "string" || typeof v === "number") el.setAttribute(k, String(v));
+        else if (v === true) el.setAttribute(k, "");
+        else if (v === false || v === null) el.removeAttribute(k);
+      }
+      if (el._idefined) el[k] = v === null ? undefined : v;
     }
   }
 

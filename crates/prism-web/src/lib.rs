@@ -39,6 +39,7 @@ mod host;
 mod host_tests;
 use prism_core::glyphs;
 mod html;
+mod islands;
 mod navbar;
 mod pictures;
 mod security;
@@ -55,6 +56,7 @@ pub use assets::{IMMUTABLE, REVALIDATE, StaticFile, content_hash};
 pub use css::css;
 pub use host::{CspNonce, RequestContext};
 pub use html::{AssetUrls, HtmlBackend};
+pub use islands::ModuleUrls;
 #[cfg(feature = "server")]
 pub use server::serve;
 pub use session::{Encoder, Session};

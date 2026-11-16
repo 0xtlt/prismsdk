@@ -179,7 +179,9 @@
     "deprecated": "مهمل",
     "storage": "التخزين",
     "storage_used": "{used} مستخدمة",
-    "open_settings": "فتح الإعدادات"
+    "open_settings": "فتح الإعدادات",
+    "islands": "الجزر: شيفرة تعمل في المتصفح",
+    "islands_subtitle": "رسم بياني WASM وساعة JavaScript (الويب)"
   },
   "menu": {
     "file": "ملف",
@@ -475,5 +477,21 @@
     "confirm": "حذف",
     "confirmed": "حُذفت {count} مرة",
     "jump_button": "انتقل إلى حقل البحث"
+  },
+  "islands": {
+    "title": "الجزر",
+    "chart_heading": "جزيرة WASM",
+    "chart_intro": "هذا الرسم البياني مكتوب بـ Rust ومترجم إلى WebAssembly ويعمل في المتصفح: يتبع المؤشرُ الفأرةَ دون الرجوع إلى الخادم. انقر على نقطة لتحديدها.",
+    "chart_label": "رسم بياني من {n} قيم",
+    "selected": "المحدد: النقطة {index}، القيمة {value}",
+    "none": "لم يُحدَّد شيء بعد",
+    "add": "إضافة نقطة",
+    "clear": "مسح التحديد",
+    "component_heading": "مكوّن ويب بـ JavaScript",
+    "component_intro": "<time-ago> مكوّن ويب بسيط: يتقدّم في المتصفح انطلاقًا من وقت يعطيه الخادم.",
+    "added": "آخر نقطة أضيفت:",
+    "just_now": "الآن",
+    "native": "تعرض التطبيقات الأصلية والصفحات دون JavaScript الرسم الذي يرسمه Prism.",
+    "summary": "{n} قيم، آخرها {last}"
   }
 }

@@ -5,19 +5,26 @@
 #
 # Behind a CDN: upload /app/public (or let the CDN cache /_prism/* and
 # /assets/* from the server) and set PRISM_ASSET_URL.
+#
+# WASM islands are built on the host by `prism build web --docker` and
+# passed as a build context (`--build-context islands=<dir>`, the CLI does
+# it); without one, the image has none.
 ARG RUST_VERSION=1.99
+
+FROM scratch AS islands
 
 FROM rust:${RUST_VERSION}-bookworm AS build
 ARG PACKAGE
 WORKDIR /src
 COPY . .
+COPY --from=islands / /app-islands/
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target-docker \
     cargo build --release -p "${PACKAGE}" --no-default-features --features web --target-dir /src/target-docker \
  && cp /src/target-docker/release/"${PACKAGE}" /app-server \
  && mkdir -p /app-public \
  && cd "$(cargo metadata --format-version 1 --no-deps | python3 -c "import json,sys,os; m=json.load(sys.stdin); print(os.path.dirname(next(p['manifest_path'] for p in m['packages'] if p['name']=='${PACKAGE}')))")" \
- && PRISM_EXPORT_STATIC=/app-public /app-server \
+ && PRISM_ISLANDS_DIR=/app-islands PRISM_EXPORT_STATIC=/app-public /app-server \
  && ASSETS="$(PRISM_DESCRIBE=assets /app-server)" \
  && if [ -n "$ASSETS" ] && [ -d "$ASSETS" ]; then cp -R "$ASSETS" /app-assets; else mkdir /app-assets; fi
 
@@ -26,8 +33,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=build /app-server /app/server
 COPY --from=build /app-public /app/public
 COPY --from=build /app-assets /app/assets
+COPY --from=build /app-islands /app/islands
 WORKDIR /app
-ENV PRISM_HOST=0.0.0.0 PRISM_PORT=3000 PRISM_DATA_DIR=/data PRISM_ASSETS_DIR=/app/assets
+ENV PRISM_HOST=0.0.0.0 PRISM_PORT=3000 PRISM_DATA_DIR=/data PRISM_ASSETS_DIR=/app/assets PRISM_ISLANDS_DIR=/app/islands
 VOLUME /data
 EXPOSE 3000
 CMD ["/app/server"]

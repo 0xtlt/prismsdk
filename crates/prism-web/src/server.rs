@@ -42,10 +42,27 @@ impl WebApp {
 /// Pages render the app synchronously (and may touch the database), so
 /// they run on the blocking pool.
 async fn page(State(app): State<WebApp>, req: Request) -> Response {
-    let (parts, _) = req.into_parts();
+    let (mut parts, _) = req.into_parts();
+    // `strict_csp`: a fresh nonce and the policy, unless the host's own
+    // middleware already put a nonce on the request.
+    let csp =
+        (app.has_strict_csp() && parts.extensions.get::<crate::CspNonce>().is_none()).then(|| {
+            let nonce = crate::CspNonce::random();
+            let policy = app.content_security_policy(&nonce);
+            parts.extensions.insert(nonce);
+            policy
+        });
     let req = http::Request::from_parts(parts, ());
     match tokio::task::spawn_blocking(move || app.handle(&req)).await {
-        Ok(response) => response.map(Body::from),
+        Ok(response) => {
+            let mut response = response.map(Body::from);
+            if let Some(policy) = csp.and_then(|p| http::HeaderValue::from_str(&p).ok()) {
+                response
+                    .headers_mut()
+                    .insert(http::header::CONTENT_SECURITY_POLICY, policy);
+            }
+            response
+        }
         Err(_) => http::StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }

@@ -17,6 +17,7 @@
 mod appstore;
 mod config;
 mod embedded;
+mod islands;
 mod jwt;
 mod linux;
 mod new;
@@ -98,6 +99,8 @@ struct Options {
     direct: bool,
     /// Web: the Docker image.
     docker: bool,
+    /// `prism build`: islands above their size budget fail the build.
+    strict_budget: bool,
 }
 
 /// The target's name in commands and output directories.
@@ -200,6 +203,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 store: has("--store"),
                 direct: has("--direct"),
                 docker: has("--docker"),
+                strict_budget: cmd == "build",
             };
             check_flags(target, &opts)?;
             if cmd != "build" && (opts.store || opts.direct || opts.docker) {
@@ -311,6 +315,10 @@ fn build_target(p: &Project, target: Target, o: &Options) -> Result<(), String> 
 
 /// `cargo build` for the web server or the macOS binary.
 fn build(p: &Project, target: Target, o: &Options) -> Result<(), String> {
+    if target == Target::Web {
+        // The islands first: their sizes print with every build.
+        islands::build(p, o.release, o.strict_budget)?;
+    }
     let mut cmd = Command::new("cargo");
     cmd.current_dir(&p.root).args(["build", "-p", &p.package]);
     p.deployment_env(&mut cmd);
@@ -356,6 +364,9 @@ fn spawn(
     }
     if let Some(key) = &p.vapid_public_key {
         cmd.env("PRISM_VAPID_PUBLIC_KEY", key);
+    }
+    if target == Target::Web && !p.islands.is_empty() {
+        cmd.env("PRISM_ISLANDS_DIR", islands::out_dir(p, o.release));
     }
     for (k, v) in env {
         cmd.env(k, v);

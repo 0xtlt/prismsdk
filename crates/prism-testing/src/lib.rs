@@ -34,6 +34,10 @@ pub struct HNode {
     pub pointer_mask: u8,
     /// Key events reported: (local, global).
     pub keys: (bool, bool),
+    /// An island's tag (`Patch::SetIsland`).
+    pub island: Option<String>,
+    /// An island's props, as JSON (`Patch::SetIslandProps`).
+    pub island_props: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Default)]
@@ -177,6 +181,8 @@ impl Backend for Host {
                             config: String::new(),
                             pointer_mask: 0,
                             keys: (false, false),
+                            island: None,
+                            island_props: Default::default(),
                         },
                     );
                 }
@@ -243,6 +249,19 @@ impl Backend for Host {
                         self.node(*id, "SetLayers");
                     }
                     self.layers = ids.clone();
+                }
+                Patch::SetIsland { id, tag, .. } => {
+                    self.node(*id, "SetIsland").island = Some(tag.clone())
+                }
+                Patch::SetIslandProps { id, props } => {
+                    let n = self.node(*id, "SetIslandProps");
+                    for (k, v) in props {
+                        if v == "null" {
+                            n.island_props.remove(k);
+                        } else {
+                            n.island_props.insert(k.clone(), v.clone());
+                        }
+                    }
                 }
             }
         }

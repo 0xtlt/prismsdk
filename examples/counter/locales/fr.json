@@ -163,7 +163,9 @@
     "deprecated": "Obsolète",
     "storage": "Stockage",
     "storage_used": "{used} utilisés",
-    "open_settings": "Ouvrir les réglages"
+    "open_settings": "Ouvrir les réglages",
+    "islands": "Îlots : du code qui tourne dans le navigateur",
+    "islands_subtitle": "Un graphique WASM et une horloge JavaScript (web)"
   },
   "menu": {
     "file": "Fichier",
@@ -443,5 +445,21 @@
     "confirm": "Supprimer",
     "confirmed": "Supprimé {count} fois",
     "jump_button": "Aller au champ de recherche"
+  },
+  "islands": {
+    "title": "Îlots",
+    "chart_heading": "Un îlot WASM",
+    "chart_intro": "Ce graphique est du Rust compilé en WebAssembly, exécuté dans le navigateur : le réticule suit le pointeur sans aller-retour avec le serveur. Cliquez sur un point pour le sélectionner.",
+    "chart_label": "Graphique de {n} valeurs",
+    "selected": "Sélection : point {index}, valeur {value}",
+    "none": "Rien de sélectionné",
+    "add": "Ajouter un point",
+    "clear": "Effacer la sélection",
+    "component_heading": "Un composant web JavaScript",
+    "component_intro": "<time-ago> est un simple Web Component : il avance dans le navigateur, à partir d’une heure donnée par le serveur.",
+    "added": "Dernier point ajouté :",
+    "just_now": "à l’instant",
+    "native": "Les apps natives et les pages sans JavaScript affichent le graphique dessiné par Prism.",
+    "summary": "{n} valeurs, la dernière : {last}"
   }
 }

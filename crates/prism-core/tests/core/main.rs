@@ -6,6 +6,7 @@ mod close;
 mod decoration;
 mod i18n;
 mod interaction;
+mod islands;
 mod motion;
 mod navbar;
 mod pictures;

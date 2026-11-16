@@ -56,7 +56,17 @@ deployment_target = "17.0"    # oldest iOS/iPadOS (the default)
 
 [macos]                       # likewise [tvos] (17.0), [watchos] (10.0), [visionos] (26.0)
 deployment_target = "13.0"
+
+[web]
+islands = ["islands/chart"]   # WASM island crates, on one line (see Islands)
+island_budget_kb = 40         # gzip per island: `prism build web` fails above it
 ```
+
+`prism run|dev|build web` builds the [islands](guide/islands.md) for
+`wasm32-unknown-unknown` with a size profile, runs wasm-bindgen as a library
+(no CLI to install), runs `wasm-opt -Oz` when it is on `PATH`, prints each
+island's raw / gzip / brotli size, and passes them to the server
+(`PRISM_ISLANDS_DIR`). `prism dev` rebuilds them on save.
 
 `prism` sets the deployment targets (`IPHONEOS_DEPLOYMENT_TARGET`,
 `TVOS_DEPLOYMENT_TARGET`, `WATCHOS_DEPLOYMENT_TARGET`, `XROS_DEPLOYMENT_TARGET`,
@@ -84,6 +94,7 @@ registered widget, so none without widgets.
 | `PRISM_ANDROID_AUTOMOTIVE=1` | build for a car running Android |
 | `PRISM_ANDROID_KEYSTORE`, `PRISM_ANDROID_KEYSTORE_PASS`, `PRISM_ANDROID_KEY_ALIAS` | Android release signing |
 
-Web servers also read `PRISM_BASE_PATH`, `PRISM_ASSET_URL` and
-`PRISM_DATA_DIR` ([Web](platforms/web.md)). The development hooks
+Web servers also read `PRISM_BASE_PATH`, `PRISM_ASSET_URL`,
+`PRISM_DATA_DIR` ([Web](platforms/web.md)), `PRISM_ISLANDS_DIR` and
+`PRISM_STRICT_CSP=1` ([Islands](guide/islands.md)). The development hooks
 (`PRISM_CLICK`, `PRISM_SNAPSHOT`…) are in [Development](development.md).

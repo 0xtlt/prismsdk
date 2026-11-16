@@ -142,6 +142,7 @@ impl WebApp {
                     runtime,
                     encoder: Encoder {
                         asset_urls: Some(app.session_asset_urls(&sid)),
+                        module_urls: Some(app.module_urls()),
                         ..Default::default()
                     },
                     services: WebServices {
@@ -442,6 +443,13 @@ pub(crate) fn parse_event(v: &Value) -> Option<UiEvent> {
         )),
         "alert" => Some(UiEvent::AlertAction(id, v.get("index")?.as_u64()? as usize)),
         "navigate" => Some(UiEvent::Navigate(id, v.get("path")?.as_str()?.to_string())),
+        // An island's CustomEvent: `{"t":"island","id","name","detail"}`.
+        "island" => Some(UiEvent::Island(
+            id,
+            v.get("name")?.as_str()?.to_string(),
+            v.get("detail")
+                .map_or_else(|| "null".into(), Value::to_string),
+        )),
         _ => None,
     }
 }
@@ -780,6 +788,8 @@ pub struct Encoder {
     kinds: HashMap<NodeId, NodeKind>,
     /// Hashed asset URLs for pictures (`/assets/<name>` if unset).
     pub asset_urls: Option<AssetUrls>,
+    /// URLs of island modules (none if unset: islands show their fallback).
+    pub module_urls: Option<crate::ModuleUrls>,
 }
 
 impl Encoder {
@@ -896,6 +906,25 @@ impl Encoder {
             Patch::ScrollIntoView { id } => json!({ "op": "reveal", "id": id }),
             Patch::DismissKeyboard => json!({ "op": "blur" }),
             Patch::SetLayers { ids } => json!({ "op": "layers", "ids": ids }),
+            // Islands: `client.js` swaps in the custom element, imports its
+            // module once, forwards its events and updates its props.
+            Patch::SetIsland {
+                id,
+                tag,
+                source,
+                events,
+            } => {
+                let module = self.module_urls.as_ref().and_then(|urls| urls(source));
+                let wasm = matches!(source, prism_core::IslandSource::Wasm(_));
+                json!({ "op": "island", "id": id, "tag": tag, "module": module, "wasm": wasm, "events": events })
+            }
+            Patch::SetIslandProps { id, props } => {
+                let props: serde_json::Map<String, Value> = props
+                    .iter()
+                    .map(|(k, v)| (k.clone(), serde_json::from_str(v).unwrap_or(Value::Null)))
+                    .collect();
+                json!({ "op": "props", "id": id, "props": props })
+            }
         }
     }
 }

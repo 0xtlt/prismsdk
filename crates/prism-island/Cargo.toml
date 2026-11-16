@@ -1,0 +1,41 @@
+[package]
+name = "prism-island"
+description = "Write client-side islands for Prism web apps in Rust: small WASM Web Components with props from the server and events back."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/prism-island"
+keywords = ["wasm", "web-components", "islands", "ui"]
+categories = ["wasm", "web-programming", "gui"]
+
+[features]
+# Typed props and event details through serde (about +25 KB gzip per island).
+serde = ["dep:serde", "dep:serde_json"]
+
+[dependencies]
+# Pinned: `prism` runs wasm-bindgen as a library of this exact version, so
+# the glue it generates matches the island (no CLI to install).
+wasm-bindgen = { version = "=0.2.130", default-features = false, features = ["std"] }
+js-sys = "0.3.107"
+web-sys = { version = "0.3.107", features = [
+  "CustomEvent",
+  "CustomEventInit",
+  "Document",
+  "Element",
+  "Event",
+  "EventTarget",
+  "HtmlElement",
+  "Node",
+  "ShadowRoot",
+  "Window",
+] }
+serde = { version = "1", optional = true }
+serde_json = { workspace = true, optional = true }
+
+[package.metadata.docs.rs]
+targets = ["wasm32-unknown-unknown"]
+all-features = true

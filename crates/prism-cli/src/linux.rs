@@ -176,14 +176,21 @@ pub fn web_docker(p: &Project) -> Result<String, String> {
     )
     .map_err(|e| e.to_string())?;
     let tag = format!("{}:{}", p.package.replace('_', "-"), p.version);
-    run(
-        Command::new("docker")
-            .args(["build", "-f"])
-            .arg(&dockerfile)
-            .args(["--build-arg", &format!("PACKAGE={}", p.package), "-t", &tag])
-            .arg(&p.workspace_root),
-        "docker build",
-    )?;
+    // WASM islands: built here (target/ stays out of the context), passed
+    // as the `islands` build context.
+    let islands = crate::islands::build(p, true, true)?;
+    let mut cmd = Command::new("docker");
+    cmd.args(["build", "-f"]).arg(&dockerfile).args([
+        "--build-arg",
+        &format!("PACKAGE={}", p.package),
+        "-t",
+        &tag,
+    ]);
+    if let Some(dir) = islands {
+        cmd.arg("--build-context")
+            .arg(format!("islands={}", dir.display()));
+    }
+    run(cmd.arg(&p.workspace_root), "docker build")?;
     Ok(tag)
 }
 
@@ -219,6 +226,8 @@ mod tests {
             target_dir: "/w/target".into(),
             workspace_root: "/w".into(),
             deployment_targets: vec![],
+            islands: vec![],
+            island_budget_kb: 40.,
         }
     }
 

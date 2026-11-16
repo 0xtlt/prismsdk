@@ -43,3 +43,10 @@ photos = "Picks photos in the Components gallery."
 motion = "Shows the gyroscope in the Components gallery."
 # iOS asks before the first Face ID use (Settings › Security).
 face_id = "Unlocks your secret note in Settings."
+
+[web]
+# WASM islands (client-side Web Components), built by `prism run/dev/build
+# web` for wasm32-unknown-unknown: islands/chart is <prism-island-chart>.
+islands = ["islands/chart"]
+# Gzip, per island (JS glue + WASM): `prism build web` fails above it.
+island_budget_kb = 40

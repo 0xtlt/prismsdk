@@ -163,7 +163,9 @@
     "deprecated": "Deprecated",
     "storage": "Storage",
     "storage_used": "{used} used",
-    "open_settings": "Open settings"
+    "open_settings": "Open settings",
+    "islands": "Islands: code that runs in the browser",
+    "islands_subtitle": "A WASM chart and a JavaScript clock (web)"
   },
   "menu": {
     "file": "File",
@@ -443,5 +445,21 @@
     "confirm": "Delete",
     "confirmed": "Deleted {count} times",
     "jump_button": "Jump to the search field"
+  },
+  "islands": {
+    "title": "Islands",
+    "chart_heading": "A WASM island",
+    "chart_intro": "This chart is Rust compiled to WebAssembly, running in the browser: the crosshair follows the pointer with no round trip to the server. Click a point to select it.",
+    "chart_label": "Chart of {n} values",
+    "selected": "Selected: point {index}, value {value}",
+    "none": "Nothing selected yet",
+    "add": "Add a point",
+    "clear": "Clear the selection",
+    "component_heading": "A JavaScript web component",
+    "component_intro": "<time-ago> is a plain Web Component: it ticks in the browser, from a time the server gives it.",
+    "added": "Last point added:",
+    "just_now": "just now",
+    "native": "Native apps and pages without JavaScript show the chart drawn by Prism.",
+    "summary": "{n} values, the last one {last}"
   }
 }

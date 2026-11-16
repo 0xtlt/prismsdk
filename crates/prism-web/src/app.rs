@@ -51,6 +51,12 @@ pub(crate) struct Inner {
     pub idle_timeout: Option<std::time::Duration>,
     /// Live sessions now.
     pub sessions: Arc<std::sync::atomic::AtomicUsize>,
+
+    // --- Islands: client-side Web Components ---
+    /// The WASM islands `prism` built (`PRISM_ISLANDS_DIR`).
+    pub islands: crate::islands::Islands,
+    /// Send a strict CSP from the built-in router (`strict_csp`).
+    pub strict_csp: bool,
 }
 
 impl WebApp {
@@ -63,11 +69,15 @@ impl WebApp {
             .or_else(|| config.assets.clone())
             .unwrap_or_else(|| "assets".into());
         let client = crate::CLIENT_JS.replace("__GLYPHS__", &prism_core::glyphs::js_table());
-        let assets = Assets::new(
+        let mut assets = Assets::new(
             client,
             crate::PRISM_CSS.into(),
             Some(PathBuf::from(assets_dir)),
         );
+        let islands = env("PRISM_ISLANDS_DIR")
+            .map(|dir| crate::islands::Islands::load(Path::new(&dir)))
+            .unwrap_or_default();
+        assets.add_islands(&islands);
         let app = WebApp {
             inner: Arc::new(Inner {
                 config,
@@ -84,6 +94,8 @@ impl WebApp {
                 max_sessions: None,
                 idle_timeout: None,
                 sessions: Default::default(),
+                islands,
+                strict_csp: env("PRISM_STRICT_CSP").is_some_and(|v| v != "0"),
             }),
         };
         let app = match env("PRISM_BASE_PATH") {
@@ -96,7 +108,7 @@ impl WebApp {
         }
     }
 
-    fn configure(mut self, f: impl FnOnce(&mut Inner)) -> Self {
+    pub(crate) fn configure(mut self, f: impl FnOnce(&mut Inner)) -> Self {
         let inner = Arc::get_mut(&mut self.inner).expect("configure a WebApp before cloning it");
         f(inner);
         self
@@ -144,7 +156,7 @@ impl WebApp {
     }
 
     /// URL prefix of static files.
-    fn static_prefix(&self) -> &str {
+    pub(crate) fn static_prefix(&self) -> &str {
         self.inner.asset_url.as_deref().unwrap_or(&self.inner.base)
     }
 

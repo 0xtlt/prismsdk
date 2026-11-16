@@ -32,6 +32,7 @@
 - [Widgets, Live Activities, notifications](guide/system-surfaces.md)
 - [Remote push notifications](guide/push.md)
 - [In the car](guide/car.md)
+- [Islands: code in the browser](guide/islands.md)
 
 # Platforms
 

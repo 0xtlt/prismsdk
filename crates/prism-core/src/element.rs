@@ -327,6 +327,11 @@ pub struct VNode {
     pub on_key_down: Option<Handler<crate::events::KeyEvent>>,
     /// A key pressed anywhere in the window while the element is mounted.
     pub on_global_key_down: Option<Handler<crate::events::KeyEvent>>,
+
+    // --- Islands: client-side Web Components (WASM or JS) ---
+    /// Makes this view an island (see [`island`](crate::island)): its
+    /// custom element, props and events. Its children are the fallback.
+    pub island: Option<Box<crate::island::IslandSpec>>,
 }
 
 impl VNode {
@@ -361,6 +366,7 @@ impl VNode {
             on_drag: None,
             on_key_down: None,
             on_global_key_down: None,
+            island: None,
         }
     }
 }

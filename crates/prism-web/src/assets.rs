@@ -73,6 +73,8 @@ pub fn content_type(path: &str) -> &'static str {
         "mp4" => "video/mp4",
         "webm" => "video/webm",
         "pdf" => "application/pdf",
+        // Streaming compilation needs it.
+        "wasm" => "application/wasm",
         _ => "application/octet-stream",
     }
 }
@@ -97,6 +99,8 @@ pub(crate) struct Assets {
     /// `logo.<hash>.png` → `logo.png`.
     by_hash: HashMap<String, String>,
     dir: Option<PathBuf>,
+    /// WASM islands: name → served module path (for `manifest.json`).
+    islands: Vec<(String, String)>,
 }
 
 impl Assets {
@@ -224,6 +228,9 @@ impl Assets {
         let mut manifest = serde_json::Map::new();
         manifest.insert("client.js".into(), self.client.clone().into());
         manifest.insert("prism.css".into(), self.css.clone().into());
+        for (name, module) in &self.islands {
+            manifest.insert(format!("islands/{name}"), module.clone().into());
+        }
         for (logical, asset) in &self.app {
             write(
                 &format!("assets/{}", asset.hashed),
@@ -237,6 +244,23 @@ impl Assets {
         let json = serde_json::to_string_pretty(&serde_json::Value::Object(manifest))?;
         write("manifest.json", json.as_bytes())?;
         Ok(count)
+    }
+}
+
+impl Assets {
+    /// Serves the files of the app's WASM islands (already content-hashed
+    /// by `prism`) as `_prism/islands/…`, immutable.
+    pub(crate) fn add_islands(&mut self, islands: &crate::islands::Islands) {
+        for (served, body) in &islands.files {
+            let hash = content_hash(body);
+            self.builtin.insert(served.clone(), (body.clone(), hash));
+        }
+        self.islands = islands
+            .modules
+            .iter()
+            .map(|(n, m)| (n.clone(), m.clone()))
+            .collect();
+        self.islands.sort();
     }
 }
 

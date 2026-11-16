@@ -1,0 +1,20 @@
+[package]
+# The island's name is its directory's: `island("chart")`, <prism-island-chart>.
+name = "counter-chart-island"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+prism-island = { path = "../../../../crates/prism-island" }
+# Only what the chart touches: every feature adds glue to the bundle.
+web-sys = { version = "0.3.107", features = [
+  "CanvasRenderingContext2d",
+  "CssStyleDeclaration",
+  "HtmlCanvasElement",
+  "MouseEvent",
+  "Window",
+] }
