@@ -2659,8 +2659,9 @@ impl Widgets for AppKit {
                 if bare {
                     t.text.setBackgroundColor(&NSColor::textBackgroundColor());
                 }
-                // Its padding replaces the text's own inset (#14).
-                t.text.setTextContainerInset(if style.padding.is_zero() {
+                // Its padding replaces the text's own inset (#14), an
+                // explicit zero included (#69).
+                t.text.setTextContainerInset(if !style.has_padding() {
                     NSSize::new(7., 8.)
                 } else {
                     NSSize::ZERO
@@ -2974,7 +2975,7 @@ impl Widgets for AppKit {
                 }
             }
             // Padded: its title alone (the layout adds the padding).
-            View::Button(b) if !crate::padding::of(view.id()).is_zero() => {
+            View::Button(b) if crate::padding::style_of(view.id()).has_padding() => {
                 crate::padding::button_content(b)
             }
             View::Button(b) => b.fittingSize(),

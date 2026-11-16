@@ -760,6 +760,11 @@ pub struct Style {
     /// `.border(0.)` was called: no border at all, not even the platform's
     /// default one around text inputs, text areas, pickers and date pickers.
     pub border_none: bool,
+    /// A padding setter (`.p()`, `.px()`, `.pt()`…) was called, even with
+    /// zero: an explicit `.p(0.)` replaces a button's, text input's, text
+    /// area's or picker's own inset with none (#69). See
+    /// [`Style::has_padding`].
+    pub padding_set: bool,
 
     // --- Bar tint (#30) ---
     /// The tint of a tab bar (its selected tab) or a stack's header bar
@@ -788,6 +793,13 @@ impl Style {
     /// wrapping): the box can then be narrower than the text's words.
     pub fn truncates(&self) -> bool {
         self.max_lines.is_some() || self.no_wrap
+    }
+
+    /// Whether the app gave this node a padding, an explicit zero included
+    /// (`.p(0.)`): a button, text input, text area or picker then uses it
+    /// in place of its own inset, and sizes to its content plus it (#69).
+    pub fn has_padding(&self) -> bool {
+        self.padding_set || !self.padding.is_zero()
     }
 }
 
@@ -1293,6 +1305,7 @@ impl Default for Style {
             inert: false,
 
             border_none: false,
+            padding_set: false,
 
             tint: None,
 
@@ -1413,37 +1426,54 @@ pub trait Styled: Sized {
     /// button, text input, text area or picker it replaces the control's
     /// own inset.
     fn p(self, v: f32) -> Self {
-        self.with_style(|s| s.padding = Edges::all(v))
+        self.with_style(|s| {
+            s.padding = Edges::all(v);
+            s.padding_set = true
+        })
     }
     /// Leading and trailing padding, points.
     fn px(self, v: f32) -> Self {
         self.with_style(|s| {
             s.padding.left = v;
-            s.padding.right = v
+            s.padding.right = v;
+            s.padding_set = true
         })
     }
     /// Top and bottom padding, points.
     fn py(self, v: f32) -> Self {
         self.with_style(|s| {
             s.padding.top = v;
-            s.padding.bottom = v
+            s.padding.bottom = v;
+            s.padding_set = true
         })
     }
     /// Top padding, points.
     fn pt(self, v: f32) -> Self {
-        self.with_style(|s| s.padding.top = v)
+        self.with_style(|s| {
+            s.padding.top = v;
+            s.padding_set = true
+        })
     }
     /// Trailing padding (right in left-to-right languages), points.
     fn pr(self, v: f32) -> Self {
-        self.with_style(|s| s.padding.right = v)
+        self.with_style(|s| {
+            s.padding.right = v;
+            s.padding_set = true
+        })
     }
     /// Bottom padding, points.
     fn pb(self, v: f32) -> Self {
-        self.with_style(|s| s.padding.bottom = v)
+        self.with_style(|s| {
+            s.padding.bottom = v;
+            s.padding_set = true
+        })
     }
     /// Leading padding (left in left-to-right languages), points.
     fn pl(self, v: f32) -> Self {
-        self.with_style(|s| s.padding.left = v)
+        self.with_style(|s| {
+            s.padding.left = v;
+            s.padding_set = true
+        })
     }
     /// Margin on every edge, points.
     fn m(self, v: f32) -> Self {

@@ -103,8 +103,9 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
     // Every kind of node: a text, input or button grows by it and its
     // content is inset by it (on a button, input or select it replaces the
     // control's own inset). Logical sides: left/right are leading/trailing,
-    // so `dir=rtl` mirrors them like native backends do.
-    if !p.is_zero() {
+    // so `dir=rtl` mirrors them like native backends do. An explicit zero
+    // (`.p(0.)`) counts: no inset at all (#69).
+    if s.has_padding() {
         // A select keeps room for its arrow after the text.
         let end = if kind == NodeKind::Picker {
             p.right + 22.
@@ -269,16 +270,25 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
                 w.push_str("border:none;");
             }
             // A filled button's own inset, unless the app sets one.
-            if s.background.is_some() && p.is_zero() {
+            if s.background.is_some() && !s.has_padding() {
                 w.push_str("padding:6px 14px;");
             }
         }
-        NodeKind::TextArea if s.border_width > 0. => w.push_str("font-family:inherit;"),
+        NodeKind::TextArea => {
+            if s.border_width > 0. {
+                w.push_str("font-family:inherit;");
+            }
+            // Its padding replaces the default one, which `prism.css`'s
+            // three-line minimum counts (#69).
+            if s.has_padding() && s.min_height == Length::Auto {
+                w.push_str("min-height:3lh;");
+            }
+        }
         NodeKind::TextInput => {
             w.push_str("font-family:inherit;");
             // The field's own inset and border, unless the app sets them
             // (`.border(0.)`: none at all).
-            if p.is_zero() {
+            if !s.has_padding() {
                 w.push_str("padding:6px 8px;");
             } else {
                 // An icon field keeps room for its icon (`prism.css`).
@@ -416,7 +426,7 @@ pub fn run_css(r: &prism_core::TextRun) -> String {
 /// Layout chapter) or refines its focused look.
 fn own_field_look(s: &Style) -> bool {
     use prism_core::Interaction;
-    !s.padding.is_zero()
+    s.has_padding()
         || s.background.is_some()
         || has_border(s)
         || s.border_none
