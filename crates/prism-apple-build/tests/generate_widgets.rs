@@ -3,11 +3,16 @@
 
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// Runs the script on `widgets`, in a directory of its own: the tests run in
+/// parallel, and two calls for the same platform must not share a file (#123).
 fn generate(widgets: &str, platform: &str) -> Option<String> {
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "prism-generate-widgets-{}-{platform}",
-        std::process::id()
+        "prism-generate-widgets-{}-{}",
+        std::process::id(),
+        CALLS.fetch_add(1, Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let json = dir.join("widgets.json");
@@ -17,8 +22,9 @@ fn generate(widgets: &str, platform: &str) -> Option<String> {
         .arg(script)
         .arg(&json)
         .arg(platform)
-        .output()
-        .ok()?;
+        .output();
+    std::fs::remove_dir_all(&dir).ok();
+    let out = out.ok()?;
     assert!(
         out.status.success(),
         "{}",
