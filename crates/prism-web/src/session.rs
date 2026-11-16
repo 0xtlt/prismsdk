@@ -202,7 +202,9 @@ impl Drop for SessionCount {
 impl Live {
     /// Serves the page until it closes.
     fn run(mut self, rx: mpsc::Receiver<Inbound>) {
-        let first = self.runtime.render();
+        // The tree that replaces the first paint waits for its data as the
+        // first paint did, or the page would flash its loading state.
+        let first = self.runtime.render_settled(self.app.inner.first_paint_wait);
         if !self.patches("reset", &first) {
             return;
         }

@@ -36,6 +36,18 @@ Other servers (actix, hyper, …): `prism-web` without default features has no s
 
 `prism build web` also writes `public/` (hashed files plus `manifest.json`). Upload it to a CDN and set `PRISM_ASSET_URL=https://cdn.example.com`, or let the CDN cache `/_prism/*` and `/assets/*` from the server. Settings: `PRISM_HOST`, `PRISM_PORT`, `PRISM_BASE_PATH`, `PRISM_ASSET_URL`, `PRISM_DATA_DIR` (or `WebApp::base_path` / `asset_url` / `data_dir`).
 
+### Data in the first paint
+
+A screen that loads its data in a task (`cx.spawn` + `cx.background`) renders its loading state on the server, and the data arrives over the socket once it connects: the first paint, which a slow phone shows for a while and which crawlers and tests read, has a spinner and no content. `WebApp::first_paint_wait(timeout)` lets the page wait for that work:
+
+```rust
+Application::new()
+    .web(|w| w.first_paint_wait(Duration::from_millis(500)))   // or .web_app(routes).first_paint_wait(..)
+    .run(routes);
+```
+
+The page is rendered, then while `background` work started by `init`, a screen's constructor or a `render` is in flight, the server waits for it, runs the tasks it resumes and renders again; work those tasks start next is waited for too. It sends the page when no work is left, or at the deadline with what is still loading in its loading state, as without a wait (the data then comes over the socket). Timers and channels are not waited for, so a clock, a refresh every 30 seconds or a live feed does not hold the page. The live session's first tree waits the same way before it replaces the page, so the page does not flash back to its loading state when the socket connects. The data is loaded twice, once for the page and once for the session, as any task is today. The default, zero, sends the page at once. Hosts with a `Runtime` of their own get the same with `Runtime::render_settled(timeout)`.
+
 ### Transport and compression
 
 A page loads in two steps. First the server sends HTML that works without JavaScript. Then the client opens `/ws?path=…&tz=…&w=…&h=…` and receives JSON over the socket: a `reset` with the whole live tree, then small `patch` messages. Events go back as JSON text.
