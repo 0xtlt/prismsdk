@@ -5584,12 +5584,40 @@ void main() {
       default: return "unavailable";
     }
   }
-  const readFile = (f) => new Promise((resolve) => {
-    const r = new FileReader();
-    r.onload = () => resolve({ name: f.name, mime: f.type, data: String(r.result).split(",")[1] || "" });
-    r.onerror = () => resolve(null);
-    r.readAsDataURL(f);
-  });
+  /**
+   * Sends the chosen files to the server in chunks (#112): `upload_start`
+   * (names, types, sizes), the bytes as `upload_chunk`s, then the reply. The
+   * server writes them as they come and tells the app how far they are; a
+   * `stop` for the call (`cx.cancel_upload`) ends it with « cancelled ».
+   * Chunks wait while the socket still has a few of them to send, so the
+   * progress follows the network and a cancel takes effect at once.
+   */
+  const CHUNK = 256 * 1024;
+  async function upload(msg, files, reply) {
+    let stopped = false;
+    streams.set(msg.id, () => { stopped = true; });
+    send({ t: "upload_start", id: msg.id, files: files.map((f) => ({ name: f.name, mime: f.type, size: f.size })) });
+    try {
+      for (let i = 0; i < files.length && !stopped; i++) {
+        for (let at = 0; at < files[i].size && !stopped; at += CHUNK) {
+          while (ws && ws.bufferedAmount > 4 * CHUNK && !stopped) await new Promise((r) => setTimeout(r, 20));
+          const bytes = new Uint8Array(await files[i].slice(at, at + CHUNK).arrayBuffer());
+          if (!stopped) send({ t: "upload_chunk", id: msg.id, file: i, data: base64(bytes) });
+        }
+      }
+      reply(stopped ? { err: "cancelled" } : { uploaded: true });
+    } catch (e) {
+      reply({ err: String((e && e.message) || e) });
+    } finally {
+      streams.delete(msg.id);
+    }
+  }
+  /** Standard base64 of `bytes`, in pieces (an argument list has a limit). */
+  function base64(bytes) {
+    let bin = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return btoa(bin);
+  }
   function watchMotion(msg, event) {
     let last = 0, attitude = [0, 0, 0], seen = false;
     const rad = Math.PI / 180;
@@ -5730,23 +5758,22 @@ void main() {
           input.multiple = msg.limit !== 1;
           if (msg.camera) input.capture = "environment";
           input.addEventListener("cancel", () => reply({ err: "cancelled" }));
-          input.addEventListener("change", async () => {
+          input.addEventListener("change", () => {
             let files = [...input.files];
             if (msg.limit) files = files.slice(0, msg.limit);
-            reply({ files: (await Promise.all(files.map(readFile))).filter(Boolean) });
+            upload(msg, files, reply);
           });
           return input.click();
         }
         case "pick_files": {
-          // Bytes go up over the socket, like photos (the server keeps them).
+          // Bytes go up over the socket in chunks, like photos (the server keeps them).
           const input = document.createElement("input");
           input.type = "file";
           input.accept = (msg.types || []).join(",");
           input.multiple = !!msg.multiple;
           input.addEventListener("cancel", () => reply({ err: "cancelled" }));
-          input.addEventListener("change", async () => {
-            const files = [...input.files].slice(0, msg.multiple ? Infinity : 1);
-            reply({ files: (await Promise.all(files.map(readFile))).filter(Boolean) });
+          input.addEventListener("change", () => {
+            upload(msg, [...input.files].slice(0, msg.multiple ? Infinity : 1), reply);
           });
           return input.click();
         }

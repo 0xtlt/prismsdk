@@ -66,7 +66,7 @@ pub use decoration::{
 pub use device::PickFiles;
 pub use device::{
     Accuracy, DeviceCall, DeviceError, DeviceEvent, DeviceValue, Haptic, Location, Motion,
-    Permission, PermissionState, PickImages, PickedFile, Share, Watch,
+    Permission, PermissionState, PickImages, PickedFile, Share, Upload, UploadProgress, Watch,
 };
 pub use device_info::{
     Browser, DeviceInfo, DeviceKind, Engine, Fold, Orientation, Os, OsName, Posture, Rotation,
@@ -720,7 +720,7 @@ pub mod prelude {
         Permission, PermissionState, PickImages, PickedFile, Platform, Pose, Posture, PushEvent,
         PushMessage, PushService, PushSubscription, Render, ReturnKey, Role, Router, ScrollEvent,
         SecureOptions, SelectionEvent, Share, Styled, SwipeDirection, Transition, Translations,
-        Tray, VirtualList, Watch, Widget, WidgetConfig, WidgetFamily, WidgetOption,
+        Tray, UploadProgress, VirtualList, Watch, Widget, WidgetConfig, WidgetFamily, WidgetOption,
         WidgetParameter, WindowChrome, WindowControls, adaptive, button, date_picker,
         date_picker_opt, div, go_back, image, lazy, navigate_to, picker, picture, progress, px,
         relative, rgb, rgba, screen, scroll, shape, slider, spinner, text, text_area, text_input,

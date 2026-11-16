@@ -350,16 +350,56 @@ impl Live {
                     let result = self.services.finish_ceremony(id, &v);
                     rt.device_reply(id, result)
                 }
+                // Picked files, sent in chunks (#112).
+                Some(id) if self.services.uploads.has(id) => {
+                    let failed = v.get("err").is_some();
+                    let result = match self.services.uploads.finish(&self.app, id, failed) {
+                        Some(Ok(files)) => Ok(prism_core::DeviceValue::Files(files)),
+                        Some(Err(e)) => Err(prism_core::DeviceError::Failed(e)),
+                        None => device_result(&v),
+                    };
+                    rt.device_reply(id, result)
+                }
                 Some(id) => {
                     if v.get("err").is_some() {
                         crate::security::forget_redirect(id);
                         crate::cookies::forget(id, &self.sid);
                     }
-                    let result = device_result(&self.app, &self.sid, &v);
+                    let result = device_result(&v);
                     rt.device_reply(id, result)
                 }
                 None => Vec::new(),
             },
+            // The chosen files' sizes, then their bytes (#112).
+            Some("upload_start") => {
+                let (Some(id), Some(files)) = (
+                    v.get("id").and_then(Value::as_u64),
+                    v.get("files").and_then(Value::as_array),
+                ) else {
+                    return Vec::new();
+                };
+                match self.services.uploads.start(&self.app, &self.sid, id, files) {
+                    Some((sent, total)) => {
+                        rt.device_event(id, prism_core::DeviceEvent::Upload { sent, total })
+                    }
+                    None => Vec::new(),
+                }
+            }
+            Some("upload_chunk") => {
+                let (Some(id), Some(file), Some(data)) = (
+                    v.get("id").and_then(Value::as_u64),
+                    v.get("file").and_then(Value::as_u64),
+                    v.get("data").and_then(Value::as_str),
+                ) else {
+                    return Vec::new();
+                };
+                match self.services.uploads.chunk(id, file as usize, data) {
+                    Some((sent, total)) => {
+                        rt.device_event(id, prism_core::DeviceEvent::Upload { sent, total })
+                    }
+                    None => Vec::new(),
+                }
+            }
             Some("device_event") => {
                 let Some(id) = v.get("id").and_then(Value::as_u64) else {
                     return Vec::new();
@@ -607,39 +647,6 @@ pub(crate) fn base64_decode(input: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Saves files uploaded by the client; returns what the app sees.
-fn save_files(app: &WebApp, sid: &str, files: &[Value]) -> Vec<prism_core::PickedFile> {
-    let dir = app.files_dir(sid);
-    let _ = std::fs::create_dir_all(&dir);
-    files
-        .iter()
-        .filter_map(|f| {
-            let data = base64_decode(f.get("data")?.as_str()?)?;
-            let name = f.get("name").and_then(Value::as_str).unwrap_or("file");
-            let mime = f
-                .get("mime")
-                .and_then(Value::as_str)
-                .unwrap_or("application/octet-stream");
-            let ext = std::path::Path::new(name)
-                .extension()
-                .and_then(|e| e.to_str())
-                .filter(|e| e.chars().all(|c| c.is_ascii_alphanumeric()))
-                .unwrap_or("bin")
-                .to_ascii_lowercase();
-            let stored = format!("{}.{ext}", crate::app::new_session_id());
-            std::fs::write(dir.join(&stored), &data).ok()?;
-            // `PickedFile::read` finds the bytes behind the URL.
-            prism_core::device::register_local_file(&app.file_url(&stored), dir.join(&stored));
-            Some(prism_core::PickedFile {
-                path: app.file_url(&stored),
-                name: name.to_string(),
-                mime: mime.to_string(),
-                size: data.len() as u64,
-            })
-        })
-        .collect()
-}
-
 fn location_from(v: &Value) -> Option<prism_core::Location> {
     let n = |k: &str| v.get(k).and_then(Value::as_f64);
     Some(prism_core::Location {
@@ -672,11 +679,7 @@ fn motion_from(v: &Value) -> prism_core::Motion {
 }
 
 /// A `device_reply` from the client.
-pub(crate) fn device_result(
-    app: &WebApp,
-    sid: &str,
-    v: &Value,
-) -> Result<prism_core::DeviceValue, prism_core::DeviceError> {
+pub(crate) fn device_result(v: &Value) -> Result<prism_core::DeviceValue, prism_core::DeviceError> {
     use prism_core::DeviceValue;
     if let Some(err) = v.get("err").and_then(Value::as_str) {
         return Err(prism_core::DeviceError::from_message(err));
@@ -688,9 +691,6 @@ pub(crate) fn device_result(
     }
     if let Some(l) = v.get("location").and_then(location_from) {
         return Ok(DeviceValue::Location(l));
-    }
-    if let Some(files) = v.get("files").and_then(Value::as_array) {
-        return Ok(DeviceValue::Files(save_files(app, sid, files)));
     }
     if let Some(t) = v.get("text") {
         return Ok(DeviceValue::Text(t.as_str().map(str::to_string)));
@@ -734,6 +734,8 @@ pub(crate) struct WebServices {
     /// page has not been told the current set yet.
     pub sheets: std::collections::BTreeSet<String>,
     sheets_dirty: bool,
+    /// Picked files on their way from the page (#112).
+    pub uploads: crate::uploads::Uploads,
 }
 
 /// `PRISM_BACKGROUND_INTERVAL=<seconds>` shortens every background task's
@@ -919,6 +921,11 @@ impl PlatformServices for WebServices {
             // Live Activities are an in-page banner here: no push tokens.
             PlatformRequest::WatchActivityPushToStart => return,
             PlatformRequest::Device { id, call } => match self.security(id, call) {
+                // The page sends the chosen files in chunks (#112).
+                Some(msg) if matches!(msg["call"].as_str(), Some("pick_files" | "pick_images")) => {
+                    self.uploads.expect(id);
+                    msg
+                }
                 Some(msg) => msg,
                 None => return,
             },

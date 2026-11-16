@@ -55,6 +55,7 @@ mod session;
 mod tests;
 #[cfg(test)]
 mod typography_tests;
+mod uploads;
 
 pub use app::WebApp;
 pub use assets::{IMMUTABLE, REVALIDATE, StaticFile, content_hash};

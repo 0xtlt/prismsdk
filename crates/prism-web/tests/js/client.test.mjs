@@ -796,6 +796,75 @@ test("device calls answer with the request id", async () => {
   assert.equal(page.window.copied, "hello");
 });
 
+/** A picked file of `bytes`; `hold` makes reading its chunks wait for `release()`. */
+function fakeFile(name, type, bytes, hold) {
+  const waiting = [];
+  return {
+    name, type, size: bytes.length,
+    slice: (a, b) => ({
+      arrayBuffer: () => new Promise((r) => {
+        const done = () => r(bytes.slice(a, b).buffer);
+        if (hold) waiting.push(done); else done();
+      }),
+    }),
+    release: () => waiting.splice(0).forEach((f) => f()),
+  };
+}
+/** The file inputs the client creates from now on. */
+function fileInputs(page) {
+  const inputs = [];
+  const make = page.document.createElement.bind(page.document);
+  page.document.createElement = (tag) => {
+    const el = make(tag);
+    if (tag === "input") inputs.push(el);
+    return el;
+  };
+  return inputs;
+}
+const settle = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
+
+test("picked files go up in chunks, then the reply (#112)", async () => {
+  const page = live([create(1, "view"), root(1)]);
+  const inputs = fileInputs(page);
+  page.ws.deliver({ t: "device", id: 5, call: "pick_files", types: [], multiple: true });
+  const big = new Uint8Array(300 * 1024).map((_, i) => i % 251);
+  inputs[0].files = [fakeFile("big.bin", "application/octet-stream", big), fakeFile("a.txt", "text/plain", new TextEncoder().encode("hi"))];
+  inputs[0].dispatchEvent({ type: "change" });
+  await settle();
+  const msgs = page.ws.sent.filter((m) => m.id === 5);
+  assert.deepEqual(msgs.map((m) => m.t), ["upload_start", "upload_chunk", "upload_chunk", "upload_chunk", "device_reply"]);
+  assert.deepEqual(msgs[0].files, [
+    { name: "big.bin", mime: "application/octet-stream", size: 300 * 1024 },
+    { name: "a.txt", mime: "text/plain", size: 2 },
+  ]);
+  const chunks = msgs.slice(1, 4);
+  assert.deepEqual(chunks.map((c) => c.file), [0, 0, 1]);
+  assert.equal(Buffer.from(chunks[0].data, "base64").length, 256 * 1024, "one chunk at most");
+  const first = Buffer.concat(chunks.slice(0, 2).map((c) => Buffer.from(c.data, "base64")));
+  assert.deepEqual([...first], [...big]);
+  assert.equal(Buffer.from(chunks[2].data, "base64").toString(), "hi");
+  assert.deepEqual(msgs[4], { t: "device_reply", id: 5, uploaded: true });
+});
+
+test("a cancelled upload stops sending and says so (#112)", async () => {
+  const page = live([create(1, "view"), root(1)]);
+  const inputs = fileInputs(page);
+  page.ws.deliver({ t: "device", id: 6, call: "pick_images", limit: 1, camera: false });
+  const photo = fakeFile("cat.jpg", "image/jpeg", new Uint8Array(600 * 1024), true);
+  inputs[0].files = [photo];
+  inputs[0].dispatchEvent({ type: "change" });
+  await settle();
+  photo.release();
+  await settle();
+  // `cx.cancel_upload`: a stop for the call, while the second chunk is read.
+  page.ws.deliver({ t: "device", id: 6, call: "stop" });
+  photo.release();
+  await settle();
+  const msgs = page.ws.sent.filter((m) => m.id === 6);
+  assert.deepEqual(msgs.map((m) => m.t), ["upload_start", "upload_chunk", "device_reply"]);
+  assert.deepEqual(msgs.at(-1), { t: "device_reply", id: 6, err: "cancelled" });
+});
+
 test("window resizes are reported once settled", () => {
   const page = live([create(1, "view"), root(1)]);
   page.window.innerWidth = 390;

@@ -556,6 +556,7 @@ export function boot({ ssr = "", layers = null, path = "/", base = "", glyphs = 
     URL,
     encodeURIComponent,
     atob,
+    btoa,
     // Run-time fonts (`cx.load_font`): faces are recorded in `document.fonts.added`.
     Option: function (text, value) {
       const o = document.createElement("option");

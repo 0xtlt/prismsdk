@@ -2266,6 +2266,121 @@ fn device_calls_resolve_and_streams_deliver() {
     find_text(&patches, "48.86,2.35 0.5");
 }
 
+/// #112: progress while picked files reach the app, and a cancel.
+#[test]
+fn picked_files_report_their_progress_and_can_be_cancelled() {
+    use crate::PlatformRequest;
+    use crate::device::*;
+    struct Files {
+        text: String,
+    }
+    impl Render for Files {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            text(self.text.clone())
+        }
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|cx: &mut Context<Files>| {
+            let me = cx.entity();
+            cx.spawn(async move |this, cx| {
+                let files = cx
+                    .pick_files_with_progress(PickFiles::new(), move |p, app| {
+                        let pct = (p.fraction() * 100.).round();
+                        me.update(app, |f, cx| {
+                            f.text = format!("{pct}%");
+                            cx.notify();
+                        });
+                    })
+                    .await;
+                let text = match files {
+                    Ok(f) if f.is_empty() => "none".to_string(),
+                    Ok(f) => f[0].name.clone(),
+                    Err(e) => e.to_string(),
+                };
+                cx.update_entity(&this, |f, _| f.text = text);
+            });
+            Files { text: "…".into() }
+        });
+        cx.set_root(root);
+    });
+    let mut rt = Runtime::new(&init);
+    rt.render();
+    let pick = |rt: &mut Runtime| {
+        rt.take_requests()
+            .into_iter()
+            .find_map(|r| match r {
+                PlatformRequest::Device {
+                    id,
+                    call: DeviceCall::PickFiles(_),
+                } => Some(id),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let id = pick(&mut rt);
+    find_text(
+        &rt.device_event(id, DeviceEvent::Upload { sent: 0, total: 4 }),
+        "0%",
+    );
+    find_text(
+        &rt.device_event(id, DeviceEvent::Upload { sent: 3, total: 4 }),
+        "75%",
+    );
+    let file = PickedFile {
+        path: "/files/a.txt".into(),
+        name: "a.txt".into(),
+        mime: "text/plain".into(),
+        size: 4,
+    };
+    find_text(
+        &rt.device_reply(id, Ok(DeviceValue::Files(vec![file]))),
+        "a.txt",
+    );
+    // Late events are ignored once the files are the app's.
+    assert!(
+        rt.device_event(id, DeviceEvent::Upload { sent: 4, total: 4 })
+            .is_empty()
+    );
+    assert_eq!(
+        UploadProgress {
+            upload: Upload(1),
+            sent: 0,
+            total: 0
+        }
+        .fraction(),
+        1.
+    );
+
+    // A second pick, cancelled half way: the page is told to stop.
+    let init2: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|cx: &mut Context<Files>| {
+            cx.spawn(async move |this, cx| {
+                let n = cx
+                    .pick_files_with_progress(PickFiles::new(), |p, app| {
+                        if p.sent == 5 {
+                            app.cancel_upload(p.upload);
+                        }
+                    })
+                    .await
+                    .map(|f| f.len());
+                cx.update_entity(&this, |f, _| f.text = format!("{n:?}"));
+            });
+            Files { text: "…".into() }
+        });
+        cx.set_root(root);
+    });
+    let mut rt = Runtime::new(&init2);
+    rt.render();
+    let id = pick(&mut rt);
+    rt.device_event(id, DeviceEvent::Upload { sent: 5, total: 10 });
+    assert!(rt.take_requests().into_iter().any(|r| matches!(
+        r,
+        PlatformRequest::Device { id: stop, call: DeviceCall::StopWatch } if stop == id
+    )));
+    // The page answers « cancelled »: no files.
+    find_text(&rt.device_reply(id, Err(DeviceError::Cancelled)), "Ok(0)");
+}
+
 #[test]
 fn cloud_storage_and_external_changes() {
     use std::sync::Mutex;
