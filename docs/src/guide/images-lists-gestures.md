@@ -7,6 +7,7 @@ picture(avatar_url).header("Authorization", format!("Bearer {token}"))  // behin
 svg(server_made_svg).alt("Pairing code").w(px(160.))    // SVG markup, drawn as vectors
 ui::qr_code("https://example.com/pair/42").size(180.)    // a QR code, no image involved
 VirtualList::new(10_000, 56., |i| row(i))               // only the visible rows exist
+ReorderList::new(cx, keys, 52., row, on_move)           // rows the user puts in another order
 scroll().on_refresh(handler).refreshing(self.loading)   // pull to refresh (UIRefreshControl)
 div().on_swipe(SwipeDirection::Left, handler)           // swipe gestures
 ```
@@ -16,6 +17,32 @@ div().on_swipe(SwipeDirection::Left, handler)           // swipe gestures
 binary with `Application::embedded_assets`, found first (web, macOS, iOS and
 Linux; Android and watchOS read the bundle's folder only). See
 [Assets compiled into the binary](../platforms/web.md#assets-compiled-into-the-binary).
+
+## Lists the user reorders
+
+`ReorderList` is a column of rows of a fixed height that the user puts in another order (#168): a task list, a playlist, the widgets of a dashboard. Each row gets a handle (three bars) at its trailing edge. Dragging the handle lifts the row and the others make room. With the focus on the handle (Tab, a click), ↑ and ↓ move the row by one, and Home and End move it to the top or the bottom. The rest of the row is the app's own: its clicks, its scrolling.
+
+```rust
+let list = ReorderList::new(
+    cx,
+    tasks.iter().map(|t| t.id.to_string()), // one unique key per row
+    52.,                                    // each row's height, in points
+    move |i, app| task_row(&store.read(app).tasks[i]),
+    move |from, to, app| store.update(app, |s, cx| {
+        let task = s.tasks.remove(from);    // the list already shows the new order:
+        s.tasks.insert(to, task);           // reorder the data the same way
+        cx.notify();
+    }),
+);
+div().child(list)                                  // in render
+list.update(cx, |l, cx| l.set_keys(new_keys, cx)); // rows added or removed
+```
+
+- `on_move(from, to, app)` runs once the row is dropped, or after each arrow key. A drag the platform takes over (a scroll, a system gesture) moves nothing.
+- While a row is dragged, `dragging()` gives `(from, to)`, where it would go if dropped now, and `handle_id(i)` names row `i`'s handle for `cx.focus`.
+- The dragged row is drawn as a lifted copy with a shadow, so give rows a background.
+- Screen readers hear each handle as a "Reorder" button with the row's position ("2 of 5") and a hint about the arrow keys, in the app's language (`prism.reorder`, `prism.reorder_hint` and `prism.reorder_position` in the app's translations override them).
+- It is built on Prism's drag and key events, so it works wherever they do: the web, macOS, iOS, iPadOS, visionOS, Android and Linux. tvOS has no drag, but the keys still move rows there.
 
 ## Pictures behind a token
 

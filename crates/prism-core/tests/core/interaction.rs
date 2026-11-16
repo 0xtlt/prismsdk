@@ -744,3 +744,120 @@ fn a_bare_dialog_drops_prisms_box_and_stays_a_dialog() {
     assert!(!config("sheet").bare);
     assert!(!config("popover").bare);
 }
+
+struct Tasks {
+    names: Vec<&'static str>,
+    list: Option<Entity<ReorderList>>,
+}
+
+impl Render for Tasks {
+    fn render(&mut self, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().child(self.list.unwrap())
+    }
+}
+
+/// A list of three tasks, the app's data reordered by `on_move`.
+fn tasks() -> Harness {
+    Harness::new(|cx| {
+        let root = cx.new_entity(|_| Tasks {
+            names: vec!["Write", "Test", "Ship"],
+            list: None,
+        });
+        let list = ReorderList::new(
+            cx,
+            ["w", "t", "s"],
+            40.,
+            move |i, app| text(app.read(&root).names[i]),
+            move |from, to, app| {
+                root.update(app, |t, _| {
+                    let name = t.names.remove(from);
+                    t.names.insert(to, name);
+                })
+            },
+        );
+        root.update(cx, |t, _| t.list = Some(list));
+        mount(cx, root);
+    })
+}
+
+fn names(h: &Harness) -> Vec<&'static str> {
+    h.rt.app.read(&h.root::<Tasks>()).names.clone()
+}
+
+fn row_texts(h: &Harness) -> Vec<String> {
+    h.host
+        .mounted()
+        .into_iter()
+        .filter(|id| h.host.get(*id).kind == NodeKind::Text && !h.host.get(*id).a11y.hidden)
+        .map(|id| h.host.get(id).text.clone())
+        .collect()
+}
+
+fn handle(h: &Harness, n: usize) -> prism_core::NodeId {
+    h.host
+        .find(|x| x.a11y.value.as_deref() == Some(&format!("{n} of 3")))
+        .expect("a handle")
+}
+
+fn drag(phase: DragPhase, dy: f32) -> DragEvent {
+    DragEvent {
+        phase,
+        start: Point::new(20., 20.),
+        translation: Point::new(0., dy),
+        button: prism_core::PointerButton::Primary,
+        modifiers: Default::default(),
+    }
+}
+
+#[test]
+fn a_row_dragged_by_its_handle_moves_and_the_others_make_room() {
+    let mut h = tasks();
+    assert_eq!(row_texts(&h), ["Write", "Test", "Ship"]);
+    let first = handle(&h, 1);
+    let grip = h.host.get(first);
+    assert_eq!(grip.a11y.label.as_deref(), Some("Reorder"));
+    assert!(grip.a11y.hint.as_deref().unwrap().contains("arrow keys"));
+    assert_ne!(grip.pointer_mask, 0, "the handle reports drags");
+    assert!(grip.keys.0, "the handle takes the focus and keys");
+    // Dragged down past the next two rows' middles: it would go last.
+    h.dispatch(UiEvent::Drag(first, drag(DragPhase::Start, 4.)));
+    h.dispatch(UiEvent::Drag(first, drag(DragPhase::Move, 70.)));
+    let list = h.rt.app.read(&h.root::<Tasks>()).list.unwrap();
+    assert_eq!(h.rt.app.read(&list).dragging(), Some((0, 2)));
+    // The lifted copy is drawn too, hidden from screen readers; the app's
+    // data has not moved yet.
+    assert_eq!(names(&h), ["Write", "Test", "Ship"]);
+    h.dispatch(UiEvent::Drag(first, drag(DragPhase::End, 70.)));
+    assert_eq!(names(&h), ["Test", "Ship", "Write"]);
+    assert_eq!(h.rt.app.read(&list).keys(), ["t", "s", "w"]);
+    assert_eq!(row_texts(&h), ["Test", "Ship", "Write"]);
+    assert_eq!(h.rt.app.read(&list).dragging(), None);
+    // A cancelled drag (the platform took the gesture) moves nothing; a
+    // short one puts the row back.
+    let last = handle(&h, 3);
+    h.dispatch(UiEvent::Drag(last, drag(DragPhase::Move, -90.)));
+    h.dispatch(UiEvent::Drag(last, drag(DragPhase::Cancel, -90.)));
+    h.dispatch(UiEvent::Drag(last, drag(DragPhase::Move, -12.)));
+    h.dispatch(UiEvent::Drag(last, drag(DragPhase::End, -12.)));
+    assert_eq!(names(&h), ["Test", "Ship", "Write"]);
+}
+
+#[test]
+fn arrow_keys_on_a_handle_move_its_row_by_one() {
+    let mut h = tasks();
+    let second = handle(&h, 2);
+    h.dispatch(UiEvent::Key(Some(second), KeyEvent::new("ArrowUp")));
+    assert_eq!(names(&h), ["Test", "Write", "Ship"]);
+    // Now first: up does nothing; End sends it last.
+    let first = handle(&h, 1);
+    h.dispatch(UiEvent::Key(Some(first), KeyEvent::new("ArrowUp")));
+    assert_eq!(names(&h), ["Test", "Write", "Ship"]);
+    h.dispatch(UiEvent::Key(Some(first), KeyEvent::new("End")));
+    assert_eq!(names(&h), ["Write", "Ship", "Test"]);
+    h.dispatch(UiEvent::Key(
+        Some(handle(&h, 2)),
+        KeyEvent::new("ArrowDown"),
+    ));
+    assert_eq!(names(&h), ["Write", "Test", "Ship"]);
+    assert_eq!(row_texts(&h), ["Write", "Test", "Ship"]);
+}

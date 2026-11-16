@@ -35,6 +35,7 @@ pub mod navbar;
 pub mod platform;
 pub mod push;
 mod reconcile;
+pub mod reorder;
 pub mod request;
 mod router;
 pub mod scene3d;
@@ -110,6 +111,7 @@ pub use push::{
     ActivityPushToken, PushEvent, PushFuture, PushMessage, PushService, PushSubscription,
 };
 pub use reconcile::{NodeId, Patch, Reconciler, RenderEnvironment, RichEdit, UiEvent};
+pub use reorder::ReorderList;
 pub use request::{Cookie, RequestKind, SameSite, UrlTarget, WebRequest};
 pub use router::{Params, Router, RouterBuilder, go_back, navigate_to, normalize_path};
 pub use router::{encode_query, parse_query};
@@ -769,13 +771,13 @@ pub mod prelude {
         Haptic, InputEvent, IntoElement, Keyboard, Lifecycle, Locale, Location, Menu, MenuItem,
         Motion, Notification, NotificationAction, NotificationResponse, Orientation, Params,
         ParentElement, Path, Permission, PermissionState, PickImages, PickedFile, Platform, Pose,
-        Posture, PushEvent, PushMessage, PushService, PushSubscription, Render, ReturnKey, Role,
-        Router, ScrollEvent, SecureOptions, SelectionEvent, Share, Styled, SwipeDirection,
-        SystemAction, Transition, Translations, Tray, UploadProgress, VirtualList, Watch, Widget,
-        WidgetConfig, WidgetFamily, WidgetOption, WidgetParameter, WindowChrome, WindowControls,
-        adaptive, button, date_picker, date_picker_opt, div, go_back, image, lazy, navigate_to,
-        picker, picture, progress, px, relative, rgb, rgba, screen, scroll, shape, slider, spinner,
-        text, text_area, text_input, timer, toggle,
+        Posture, PushEvent, PushMessage, PushService, PushSubscription, Render, ReorderList,
+        ReturnKey, Role, Router, ScrollEvent, SecureOptions, SelectionEvent, Share, Styled,
+        SwipeDirection, SystemAction, Transition, Translations, Tray, UploadProgress, VirtualList,
+        Watch, Widget, WidgetConfig, WidgetFamily, WidgetOption, WidgetParameter, WindowChrome,
+        WindowControls, adaptive, button, date_picker, date_picker_opt, div, go_back, image, lazy,
+        navigate_to, picker, picture, progress, px, relative, rgb, rgba, screen, scroll, shape,
+        slider, spinner, text, text_area, text_input, timer, toggle,
     };
     pub use crate::{
         GridTrack, ScrollAxis, Scrollbar, auto_fill, auto_fit, fr, minmax, repeat, scroll_x,
