@@ -87,6 +87,9 @@ test("the middle and secondary buttons drag where allowed, with their keys (#136
     ...root([2, 3]),
   ]);
   const canvas = placed(page.node(2));
+  // Not selectable, whatever button drags it (#142).
+  assert.match(canvas.className, /prism-draggable/);
+  assert.match(page.node(3).className, /prism-draggable/);
   const p = (el, type, button, x, y, more = {}) => {
     const e = { type, pointerId: 1, button, clientX: x, clientY: y, ...more };
     el.dispatchEvent(e);

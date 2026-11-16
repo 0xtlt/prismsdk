@@ -165,7 +165,9 @@
   function setPointer(el, id, mask) {
     el._pmask = mask;
     setGestures(el, id);
-    toggleClass(el, "prism-draggable", (mask & 4) !== 0);
+    // Whatever button drags it (#136, #142): no text selection, no browser
+    // panning, so a left drag over a middle-button canvas selects nothing.
+    toggleClass(el, "prism-draggable", (mask & (4 | 32 | 64)) !== 0);
     // A middle-button drag (#136): no autoscroll, no paste, no new tab.
     if ((mask & 32) && !el._middleBound) {
       el._middleBound = true;
