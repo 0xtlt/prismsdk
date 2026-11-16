@@ -39,6 +39,8 @@
 //! let tokens = server.sign_in(&cx).await?;
 //! // Later, on any thread (a blocking API client after a 401):
 //! let fresh = server.refresh_blocking(tokens.refresh_token.as_deref().unwrap())?;
+//! // Signing out: the server forgets the refresh token (RFC 7009).
+//! server.revoke(&cx, &refresh_token, Some(TokenTypeHint::RefreshToken)).await?;
 //! ```
 
 use std::collections::HashMap;
@@ -87,6 +89,11 @@ pub struct OAuth {
     /// `client_secret_basic` (HTTP Basic) or `client_secret_post` (in the
     /// form, the default). Set from a registration's answer.
     pub token_endpoint_auth_method: Option<String>,
+
+    // --- Token revocation (RFC 7009) ---
+    /// The revocation endpoint (discovered: `revocation_endpoint`), for
+    /// [`revoke`](OAuth::revoke).
+    pub revocation_url: String,
 }
 
 /// What the provider granted.
@@ -227,6 +234,7 @@ impl OAuth {
             issuer: Some("https://accounts.google.com".into()),
             authorize_url: "https://accounts.google.com/o/oauth2/v2/auth".into(),
             token_url: "https://oauth2.googleapis.com/token".into(),
+            revocation_url: "https://oauth2.googleapis.com/revoke".into(),
             client_id,
             scopes: vec!["openid".into(), "email".into(), "profile".into()],
             redirect_uri: redirect,
@@ -352,6 +360,12 @@ impl OAuth {
         if !self.needs_discovery() {
             return Ok(());
         }
+        self.fetch_metadata_blocking()
+    }
+
+    /// [`discover_blocking`](Self::discover_blocking) whatever is known
+    /// already: only the endpoints still empty are filled.
+    fn fetch_metadata_blocking(&mut self) -> Result<(), OAuthError> {
         let Some(issuer) = self.issuer.clone() else {
             return Ok(());
         };
@@ -410,6 +424,9 @@ impl OAuth {
         }
         if self.registration_url.is_empty() {
             self.registration_url = field("registration_endpoint").unwrap_or_default();
+        }
+        if self.revocation_url.is_empty() {
+            self.revocation_url = field("revocation_endpoint").unwrap_or_default();
         }
         Ok(())
     }
@@ -606,13 +623,72 @@ impl OAuth {
         Ok(t)
     }
 
-    /// A registered client the server no longer knows (`invalid_client`):
-    /// forget it, so the next sign-in registers again.
-    async fn forget_rejected_client(
+    /// Revokes a token (RFC 7009), when signing out: the server forgets
+    /// it, and a refresh token's access tokens usually with it. `hint` says
+    /// which kind it is (the server looks for it there first). A token the
+    /// server does not know (already revoked, expired) is not an error.
+    pub async fn revoke(
         &self,
         cx: &AsyncApp,
-        r: Result<Tokens, OAuthError>,
-    ) -> Result<Tokens, OAuthError> {
+        token: &str,
+        hint: Option<TokenTypeHint>,
+    ) -> Result<(), OAuthError> {
+        let config = self.resolve(cx).await?;
+        let token = token.to_string();
+        let r = cx
+            .background(move || config.revoke_blocking(&token, hint))
+            .await;
+        self.forget_rejected_client(cx, r).await
+    }
+
+    /// [`revoke`](Self::revoke) on this thread (like
+    /// [`refresh_blocking`](Self::refresh_blocking)). The revocation
+    /// endpoint comes from the issuer's metadata (`revocation_endpoint`)
+    /// when [`revocation_url`](Self::revocation_url) is empty; a server
+    /// that publishes none is an error: nothing to call.
+    pub fn revoke_blocking(
+        &self,
+        token: &str,
+        hint: Option<TokenTypeHint>,
+    ) -> Result<(), OAuthError> {
+        let mut config = self.clone();
+        config.discover_blocking()?;
+        if config.revocation_url.is_empty() && config.issuer.is_some() {
+            // The other endpoints are known, not this one: read the metadata.
+            config.fetch_metadata_blocking()?;
+        }
+        if config.revocation_url.is_empty() {
+            return Err(OAuthError::Failed("no revocation endpoint".into()));
+        }
+        if config.client_id.is_empty() {
+            return Err(OAuthError::Failed(
+                "no client id: revoke with the provider resolve() returned".into(),
+            ));
+        }
+        let res = config
+            .revocation_request(token, hint)
+            .send_blocking()
+            .map_err(|e| OAuthError::Network(e.0))?;
+        parse_revocation_response(res.status, &res.body)
+    }
+
+    /// The revocation request (RFC 7009 §2.1) for `token`, with the
+    /// client's credentials as for [`token_request`](Self::token_request).
+    pub fn revocation_request(&self, token: &str, hint: Option<TokenTypeHint>) -> Request {
+        let mut fields = vec![("token", token)];
+        if let Some(hint) = hint {
+            fields.push(("token_type_hint", hint.as_str()));
+        }
+        self.client_request(&self.revocation_url, &fields)
+    }
+
+    /// A registered client the server no longer knows (`invalid_client`):
+    /// forget it, so the next sign-in registers again.
+    async fn forget_rejected_client<T>(
+        &self,
+        cx: &AsyncApp,
+        r: Result<T, OAuthError>,
+    ) -> Result<T, OAuthError> {
         // `client_name`: also a provider `resolve` already filled in.
         if self.client_name.is_some()
             && matches!(&r, Err(OAuthError::Provider { error, .. }) if error == "invalid_client")
@@ -626,9 +702,14 @@ impl OAuth {
     /// client's credentials: `client_id` in the form, and the secret in it
     /// too or as HTTP Basic (`client_secret_basic`).
     pub fn token_request(&self, fields: &[(&str, &str)]) -> Request {
+        self.client_request(&self.token_url, fields)
+    }
+
+    /// A form post to `url` with the client's credentials (RFC 6749 §2.3.1).
+    fn client_request(&self, url: &str, fields: &[(&str, &str)]) -> Request {
         let mut body: Vec<(&str, &str)> = fields.to_vec();
         let basic = self.token_endpoint_auth_method.as_deref() == Some("client_secret_basic");
-        let mut request = Request::post(&self.token_url)
+        let mut request = Request::post(url)
             .header("content-type", "application/x-www-form-urlencoded")
             .header("accept", "application/json");
         match &self.client_secret {
@@ -647,6 +728,52 @@ impl OAuth {
             None => body.push(("client_id", &self.client_id)),
         }
         request.body(form(&body))
+    }
+}
+
+/// Which kind of token is revoked (RFC 7009 §2.1, `token_type_hint`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TokenTypeHint {
+    /// A refresh token (`refresh_token`): what an app revokes when the user
+    /// signs out.
+    RefreshToken,
+    /// An access token (`access_token`).
+    AccessToken,
+}
+
+impl TokenTypeHint {
+    /// As sent in the form.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TokenTypeHint::RefreshToken => "refresh_token",
+            TokenTypeHint::AccessToken => "access_token",
+        }
+    }
+}
+
+/// A revocation endpoint's answer (RFC 7009 §2.2): any 2xx is done (an
+/// unknown token included); otherwise the server's error
+/// (`unsupported_token_type`, `invalid_client`…), or the HTTP status
+/// (503: try again later).
+pub fn parse_revocation_response(status: u16, body: &[u8]) -> Result<(), OAuthError> {
+    if (200..300).contains(&status) {
+        return Ok(());
+    }
+    let v: Option<serde_json::Value> = serde_json::from_slice(body).ok();
+    let s = |k: &str| {
+        v.as_ref()
+            .and_then(|v| v.get(k))
+            .and_then(|x| x.as_str())
+            .map(str::to_string)
+    };
+    match s("error") {
+        Some(error) => Err(OAuthError::Provider {
+            error,
+            description: s("error_description"),
+        }),
+        None => Err(OAuthError::Failed(format!(
+            "revocation endpoint: HTTP {status}"
+        ))),
     }
 }
 
@@ -1234,8 +1361,10 @@ mod tests {
             "authorization_endpoint": "https://as.example/a",
             "token_endpoint": "https://as.example/t",
             "registration_endpoint": "https://as.example/r",
+            "revocation_endpoint": "https://as.example/revoke",
         });
         o.apply_metadata("https://as.example", &doc).unwrap();
+        assert_eq!(o.revocation_url, "https://as.example/revoke");
         assert_eq!(
             (
                 o.authorize_url.as_str(),
@@ -1431,5 +1560,95 @@ mod tests {
                 .refresh_blocking("rt")
                 .is_err()
         );
+    }
+
+    // --- RFC 7009 revocation (#77) ---
+
+    #[test]
+    fn revocation_requests_and_answers() {
+        let mut o = OAuth::new("A", "T", "c 1");
+        o.revocation_url = "https://as.example/revoke".into();
+        let req = o.revocation_request("rt/1", Some(TokenTypeHint::RefreshToken));
+        assert_eq!(req.url, "https://as.example/revoke");
+        let body = String::from_utf8(req.body.unwrap()).unwrap();
+        assert_eq!(
+            body,
+            "token=rt%2F1&token_type_hint=refresh_token&client_id=c%201"
+        );
+        let body = String::from_utf8(o.revocation_request("at", None).body.unwrap()).unwrap();
+        assert_eq!(body, "token=at&client_id=c%201");
+        assert_eq!(
+            OAuth::google("1-a.apps.googleusercontent.com").revocation_url,
+            "https://oauth2.googleapis.com/revoke"
+        );
+        // 200 with any body (or none) is done; errors come back as the provider's.
+        assert_eq!(parse_revocation_response(200, b""), Ok(()));
+        assert!(matches!(
+            parse_revocation_response(400, br#"{"error":"unsupported_token_type"}"#),
+            Err(OAuthError::Provider { error, .. }) if error == "unsupported_token_type"
+        ));
+        assert!(matches!(
+            parse_revocation_response(503, b"busy"),
+            Err(OAuthError::Failed(m)) if m.contains("503")
+        ));
+    }
+
+    #[test]
+    fn revokes_on_this_thread() {
+        let origin = serve(|method, path, headers, body| {
+            match (method, path) {
+            ("GET", "/.well-known/oauth-authorization-server") => (
+                200,
+                r#"{"authorization_endpoint":"A","token_endpoint":"T","revocation_endpoint":"REV"}"#
+                    .replace("REV", &format!("http://{}/revoke", host(headers))),
+            ),
+            ("POST", "/revoke") => {
+                let f = parse_query(body);
+                if f.get("client_id").map(String::as_str) != Some("c") {
+                    (401, r#"{"error":"invalid_client"}"#.into())
+                } else if f.get("token_type_hint").map(String::as_str) == Some("refresh_token") {
+                    // Known or not, the answer is the same (RFC 7009 §2.2).
+                    (200, String::new())
+                } else {
+                    (400, r#"{"error":"unsupported_token_type"}"#.into())
+                }
+            }
+            _ => (404, "{}".into()),
+        }
+        });
+        // Endpoints already known (as `resolve` leaves them): the revocation
+        // endpoint is still read from the metadata.
+        let mut o = OAuth::server(&origin, "c");
+        o.authorize_url = "A".into();
+        o.token_url = "T".into();
+        let o2 = o.clone();
+        std::thread::spawn(move || o2.revoke_blocking("rt", Some(TokenTypeHint::RefreshToken)))
+            .join()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            o.revoke_blocking("at", Some(TokenTypeHint::AccessToken)),
+            Err(OAuthError::Provider { error, .. }) if error == "unsupported_token_type"
+        ));
+        // Discovered along with the others.
+        let mut d = OAuth::server(&origin, "c");
+        d.discover_blocking().unwrap();
+        assert_eq!(d.revocation_url, format!("{origin}/revoke"));
+        // No client id, or a server without a revocation endpoint.
+        assert!(
+            OAuth::server(&origin, "")
+                .revoke_blocking("rt", None)
+                .is_err()
+        );
+        let none = serve(|_, _, _, _| {
+            (
+                200,
+                r#"{"authorization_endpoint":"A","token_endpoint":"T"}"#.into(),
+            )
+        });
+        assert!(matches!(
+            OAuth::server(&none, "c").revoke_blocking("rt", None),
+            Err(OAuthError::Failed(m)) if m == "no revocation endpoint"
+        ));
     }
 }

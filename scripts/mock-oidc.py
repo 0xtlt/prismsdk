@@ -15,7 +15,7 @@ Endpoints (under the issuer, `http://<host>:<port><path>`):
   here must use a registered redirect URI (a loopback one on any port) and, if
   they got a secret (`--secret` hands one out even to public clients), send it;
 - `/authorize` (a consent page), `/token` (authorization_code with PKCE,
-  refresh_token);
+  refresh_token), `/revoke` (RFC 7009: a refresh or access token);
 - `/picture`: a per-user PNG that needs `Authorization: Bearer <access token>`
   (for `picture(url).header(…)`); `--token T` makes `T` a valid one too.
 
@@ -103,6 +103,7 @@ class Handler(BaseHTTPRequestHandler):
             "authorization_endpoint": f"{i}/authorize",
             "token_endpoint": f"{i}/token",
             "registration_endpoint": f"{i}/register",
+            "revocation_endpoint": f"{i}/revoke",
             "response_types_supported": ["code"],
             "grant_types_supported": ["authorization_code", "refresh_token"],
             "token_endpoint_auth_methods_supported": ["none", "client_secret_post", "client_secret_basic"],
@@ -184,7 +185,7 @@ button{{font:inherit;width:100%;padding:12px;border-radius:10px;border:0;margin-
         body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
         if path == "/register":
             return self.register(body)
-        if path != "/token":
+        if path not in ("/token", "/revoke"):
             return self.send(404, "not found", "text/plain")
         f = dict(urllib.parse.parse_qsl(body))
         err = lambda e, d, status=400: self.send(status, json.dumps({"error": e, "error_description": d}))
@@ -196,6 +197,18 @@ button{{font:inherit;width:100%;padding:12px;border-radius:10px;border:0;margin-
         client = CLIENTS.get(f.get("client_id", ""))
         if client and client["secret"] and f.get("client_secret") != client["secret"]:
             return err("invalid_client", "wrong or missing client secret", 401)
+        if path == "/revoke":
+            # RFC 7009 §2.2: 200 whether the token was known or not.
+            token = f.get("token", "")
+            if REFRESH.get(token) == f.get("client_id"):
+                del REFRESH[token]
+                print(f"[mock-oidc] revoke: refresh token of {f.get('client_id')} revoked", flush=True)
+            elif token in ACCESS:
+                ACCESS.discard(token)
+                print("[mock-oidc] revoke: access token revoked", flush=True)
+            else:
+                print("[mock-oidc] revoke: unknown token (200 anyway)", flush=True)
+            return self.send(200, "")
         if f.get("grant_type") == "refresh_token":
             owner = REFRESH.get(f.get("refresh_token"))
             if not owner:
