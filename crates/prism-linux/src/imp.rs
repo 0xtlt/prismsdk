@@ -2674,8 +2674,10 @@ fn activate(app: &gtk::Application) {
         prism_core::RuntimeOptions {
             path: std::env::var("PRISM_PATH").unwrap_or_else(|_| "/".into()),
             storage: Some(Box::new(prism_core::FileStorage::new(data.clone()))),
+            // Queued, not `invoke`d: on the UI thread `invoke` would run
+            // `poll` right away, nested in the update that woke it (#57).
             wake_ui: Some(std::sync::Arc::new(|| {
-                glib::MainContext::default().invoke(poll);
+                glib::idle_add_once(poll);
             })),
             capabilities: prism_core::PlatformServices::capabilities(&services),
             environment: environment(),

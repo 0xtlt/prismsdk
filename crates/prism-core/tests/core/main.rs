@@ -14,6 +14,7 @@ mod pictures;
 mod reconcile;
 mod request;
 mod router;
+mod spawn;
 mod storage;
 mod typography;
 mod virtual_list;
