@@ -63,6 +63,36 @@ fn link(id: u64, href: &str) -> Patch {
     }
 }
 
+/// #144: the current entry of a navigation made of `.link()` elements is
+/// `aria-current="page"`, with or without `Role::Link`.
+#[test]
+fn ssr_current_links_are_the_current_page() {
+    let current = Accessibility {
+        current: true,
+        ..Default::default()
+    };
+    let mut b = HtmlBackend::default();
+    b.apply(&[
+        create(1, NodeKind::View),
+        create(2, NodeKind::View),
+        link(2, "/orders"),
+        a11y(2, current.clone()),
+        create(3, NodeKind::View),
+        a11y(3, current),
+        children(1, &[2, 3]),
+        Patch::SetRoot { id: 1 },
+    ]);
+    let html = b.to_html();
+    assert!(
+        html.contains(r#"<a data-pid="2""#) && html.contains(r#"aria-current="page""#),
+        "{html}"
+    );
+    assert!(
+        html.contains(r#"aria-current="true""#),
+        "not a link: {html}"
+    );
+}
+
 #[test]
 fn ssr_links_are_anchors() {
     let mut b = HtmlBackend::default();

@@ -2090,7 +2090,8 @@
     else set("aria-checked", null);
     const selected = a.selected ?? null;
     set("aria-selected", role === "tab" ? String(!!(selected ?? a.checked)) : selected === null ? null : String(selected));
-    set("aria-current", a.current ? (role === "link" ? "page" : "true") : null);
+    // A link (its own `<a href>` or the role) is the current page (#144).
+    set("aria-current", a.current ? (role === "link" || link ? "page" : "true") : null);
     // A button with a state is a toggle button.
     set("aria-pressed", role === "button" && a.checked !== null && a.checked !== undefined ? String(a.checked) : null);
     set("aria-valuetext", role === "slider" ? a.value || null : null);
