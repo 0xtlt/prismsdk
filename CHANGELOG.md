@@ -312,6 +312,7 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- Apple platforms: a variable font given as bytes (`EmbeddedAssets`, `FontFace::bytes`) has all its weights (#150); it drew every weight as regular. Registering a `CGFont` keeps only the default instance, so the bytes now go through a cache file registered by URL, like the bundle's fonts (the `CGFont` remains the fallback without a writable cache).
 - Web: a dialog opened in the same update as `.autofocus()` or `cx.focus` keeps that focus (#148); `showModal()` moved it to the dialog's first control.
 - Docs: `WebSandbox::popups()` also lets the windows a sandboxed page opens escape the sandbox (`allow-popups-to-escape-sandbox` on the web, the system browser natively), now documented (#146).
 - Web: the current entry of a navigation made of `.link()` elements is `aria-current="page"` (#144): `accessibility_current(true)` on an `<a href>` said `"true"` because the link role was dropped before the value was chosen, in the first paint and in the client.

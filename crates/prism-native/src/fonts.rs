@@ -65,30 +65,10 @@ pub fn is_font(path: &Path) -> bool {
 /// collection). Returns how many were registered.
 #[cfg(target_vendor = "apple")]
 pub fn register_apple_fonts(asset_dirs: &[PathBuf], embedded: &EmbeddedAssets) -> usize {
-    use objc2_foundation::{NSString, NSURL};
-    #[link(name = "CoreText", kind = "framework")]
-    unsafe extern "C" {
-        fn CTFontManagerRegisterFontsForURL(
-            url: *const std::ffi::c_void,
-            scope: u32,
-            error: *mut *mut std::ffi::c_void,
-        ) -> bool;
-    }
-    // kCTFontManagerScopeProcess (CTFontManager.h).
-    const SCOPE_PROCESS: u32 = 1;
     let mut n = 0;
     for file in font_files(asset_dirs) {
-        let url = NSURL::fileURLWithPath(&NSString::from_str(&file.to_string_lossy()));
-        // SAFETY: NSURL is toll-free bridged with CFURL; a null error pointer
-        // is allowed. Already registered (same file twice) just fails.
-        let ok = unsafe {
-            CTFontManagerRegisterFontsForURL(
-                objc2::rc::Retained::as_ptr(&url).cast(),
-                SCOPE_PROCESS,
-                std::ptr::null_mut(),
-            )
-        };
-        n += ok as usize;
+        // Already registered (same file twice) just fails.
+        n += register_apple_font_file(&file) as usize;
     }
     for (name, bytes) in embedded_fonts(embedded) {
         if register_apple_font_data(bytes) {
@@ -100,12 +80,79 @@ pub fn register_apple_fonts(asset_dirs: &[PathBuf], embedded: &EmbeddedAssets) -
     n
 }
 
-/// Registers one font from memory with Core Text, for this process
-/// (`CTFontManagerRegisterGraphicsFont`): embedded fonts, and those loaded
-/// while the app runs. False if Core Text refused it (already registered
-/// included).
+/// Registers a font file with Core Text for this process
+/// (`CTFontManagerRegisterFontsForURL`): every face and named instance it
+/// has, a variable font's weights included.
+#[cfg(target_vendor = "apple")]
+fn register_apple_font_file(file: &Path) -> bool {
+    use objc2_foundation::{NSString, NSURL};
+    #[link(name = "CoreText", kind = "framework")]
+    unsafe extern "C" {
+        fn CTFontManagerRegisterFontsForURL(
+            url: *const std::ffi::c_void,
+            scope: u32,
+            error: *mut *mut std::ffi::c_void,
+        ) -> bool;
+    }
+    // kCTFontManagerScopeProcess (CTFontManager.h).
+    const SCOPE_PROCESS: u32 = 1;
+    let url = NSURL::fileURLWithPath(&NSString::from_str(&file.to_string_lossy()));
+    // SAFETY: NSURL is toll-free bridged with CFURL; a null error pointer
+    // is allowed.
+    unsafe {
+        CTFontManagerRegisterFontsForURL(
+            objc2::rc::Retained::as_ptr(&url).cast(),
+            SCOPE_PROCESS,
+            std::ptr::null_mut(),
+        )
+    }
+}
+
+/// Where font bytes are kept as a file to register them (#150): the cache
+/// directory, named after their content, written once.
+#[cfg(target_vendor = "apple")]
+fn font_cache_file(bytes: &[u8]) -> Option<PathBuf> {
+    use std::hash::{Hash, Hasher};
+    // A fixed-key hash: the same bytes give the same name in every run.
+    let mut h = std::hash::DefaultHasher::new();
+    bytes.hash(&mut h);
+    let ext = match bytes.get(..4) {
+        Some(b"OTTO") => "otf",
+        Some(b"ttcf") => "ttc",
+        _ => "ttf",
+    };
+    let dir = std::env::temp_dir().join("prism-fonts");
+    let path = dir.join(format!("{:016x}-{}.{ext}", h.finish(), bytes.len()));
+    let fresh = std::fs::metadata(&path).is_ok_and(|m| m.len() == bytes.len() as u64);
+    if !fresh {
+        std::fs::create_dir_all(&dir).ok()?;
+        // Written aside, then moved: another process never reads half a file.
+        let part = path.with_extension(format!("{}.{}", ext, std::process::id()));
+        std::fs::write(&part, bytes).ok()?;
+        std::fs::rename(&part, &path).ok()?;
+    }
+    Some(path)
+}
+
+/// Registers one font from memory with Core Text, for this process:
+/// embedded fonts, and those loaded while the app runs. False if Core Text
+/// refused it (already registered included).
+///
+/// The bytes go through a cache file registered by URL, like bundled fonts:
+/// registering a `CGFont` keeps only a variable font's default instance, so
+/// every weight drew as regular (#150). Without a writable cache, the
+/// `CGFont` is registered.
 #[cfg(target_vendor = "apple")]
 pub fn register_apple_font_data(bytes: &[u8]) -> bool {
+    if let Some(file) = font_cache_file(bytes) {
+        return register_apple_font_file(&file);
+    }
+    register_apple_graphics_font(bytes)
+}
+
+/// `CTFontManagerRegisterGraphicsFont` of the bytes (one instance only).
+#[cfg(target_vendor = "apple")]
+fn register_apple_graphics_font(bytes: &[u8]) -> bool {
     use std::ffi::c_void;
     #[link(name = "CoreFoundation", kind = "framework")]
     unsafe extern "C" {
@@ -248,6 +295,24 @@ pub fn save(font: &ReadyFont, dir: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #150: font bytes are kept in one file per content, written once.
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn font_bytes_get_one_cache_file_per_content() {
+        let a = font_cache_file(b"\0\x01\0\0 fake font a").unwrap();
+        assert_eq!(font_cache_file(b"\0\x01\0\0 fake font a").unwrap(), a);
+        assert_eq!(std::fs::read(&a).unwrap(), b"\0\x01\0\0 fake font a");
+        assert_eq!(a.extension().unwrap(), "ttf");
+        let b = font_cache_file(b"OTTO fake font b").unwrap();
+        assert_ne!(a, b);
+        assert_eq!(b.extension().unwrap(), "otf");
+        // Not a font: Core Text refuses it, nothing breaks.
+        assert!(!register_apple_font_data(b"not a font at all"));
+        for f in [a, b] {
+            let _ = std::fs::remove_file(f);
+        }
+    }
 
     #[test]
     fn fonts_are_found_under_assets_fonts() {

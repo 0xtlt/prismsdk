@@ -70,8 +70,9 @@ Every backend registers them at startup:
   (`Inter-SemiBoldItalic.woff2`) and preferred when both exist.
 - **macOS, iOS, iPadOS, tvOS, visionOS, watchOS**: `CTFontManagerRegisterFontsForURL`
   (process scope) from the bundle's `assets/fonts` (and the dev assets folder);
-  embedded fonts with `CTFontManagerRegisterGraphicsFont`, from memory (macOS,
-  iOS, iPadOS, tvOS, visionOS; the first face of a `.ttc`).
+  embedded fonts the same way, through a file written once in the temporary
+  directory, so a variable font keeps its weights (macOS, iOS, iPadOS, tvOS,
+  visionOS; the first face of a `.ttc`).
 - **Android**: `Typeface.createFromAsset`, found by the family name read from
   the font file (also by its file name). Only the APK's assets: keep the fonts
   in the assets folder too.
@@ -100,7 +101,7 @@ Asking for the same face again does nothing, so it can be called from
 | | Registers with | Formats | URLs |
 |---|---|---|---|
 | Web | `new FontFace(…)` + `document.fonts` | WOFF2, WOFF, TTF, OTF | loaded by the browser (the page's `font-src` applies); an asset's name becomes its hashed URL, like a picture's; bytes are sent with the message |
-| macOS, iOS, iPadOS, tvOS, visionOS, watchOS | `CTFontManagerRegisterGraphicsFont` (process scope) | TTF, OTF | loaded in the background, like pictures (`https://`, `file://`, assets: embedded ones on macOS, iOS and Linux) |
+| macOS, iOS, iPadOS, tvOS, visionOS, watchOS | `CTFontManagerRegisterFontsForURL` of a cached copy (process scope; a variable font keeps its weights) | TTF, OTF | loaded in the background, like pictures (`https://`, `file://`, assets: embedded ones on macOS, iOS and Linux) |
 | Android | `Typeface.Builder(File)` / `createFromFile` | TTF, OTF, TTC | same |
 | Linux | fontconfig (`FcConfigAppFontAddFile`), then Pango's font map reloads | TTF, OTF, TTC | same |
 
