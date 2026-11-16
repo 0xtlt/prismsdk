@@ -298,6 +298,51 @@ test("a popover inside an open popover is placed against its own anchor (#113)",
   assert.deepEqual([inner.style.left, inner.style.top], ["272px", "130px"], "beside its item, tops lined up");
 });
 
+test("a dialog opens beside its anchor, undimmed, at its size (#79)", () => {
+  const page = live([
+    { op: "create", id: 2, kind: "view" },
+    { op: "create", id: 3, kind: "overlay" },
+    { op: "config", id: 3, config: "dialog side=trailing placed backdrop=clear size=320x0" },
+    { op: "children", id: 2, children: [3] },
+    ...root([2]),
+  ]);
+  placed(page.node(2));
+  const box = page.node(3).firstChild;
+  box.getBoundingClientRect = () => ({ left: 0, top: 0, width: 320, height: 400, right: 320, bottom: 400 });
+  assert.equal(box.dataset.prismBackdrop, "clear", "no dim, no blur");
+  assert.equal(box.dataset.prismW, "1");
+  assert.equal(box.style.getPropertyValue("--prism-ov-w"), "320px");
+  assert.equal(box.dataset.prismH, undefined, "the height fits the content");
+  page.ws.deliver({ t: "patch", p: [{ op: "value", id: 3, value: 1 }] });
+  assert.equal(box.hasAttribute("open"), true, "still a modal dialog");
+  assert.equal(box.dataset.prismPlaced, "1");
+  assert.equal(box.style.left, "258px", "8 px after the anchor");
+  assert.equal(box.style.top, "20px", "aligned with its top");
+  // Right to left: trailing is on the left, where there is no room (the
+  // anchor starts at 50): the other side.
+  page.document.documentElement.dir = "rtl";
+  page.window.dispatchEvent({ type: "resize" });
+  assert.equal(box.style.left, "258px");
+  page.document.documentElement.dir = "";
+  // A click outside it (on the clear backdrop) still closes it.
+  box.dispatchEvent({ type: "click", target: box, clientX: 900, clientY: 700 });
+  assert.deepEqual(lastSent(page), { t: "back", id: 3, depth: 0 });
+  // No room on either side (a phone): centered as usual.
+  page.ws.deliver({ t: "patch", p: [{ op: "value", id: 3, value: 1 }] });
+  page.window.innerWidth = 390;
+  page.window.dispatchEvent({ type: "resize" });
+  assert.equal(box.dataset.prismPlaced, undefined);
+  assert.equal(box.style.left, "");
+  // Without a placement it is a centered dialog again (a side alone does
+  // not place a dialog: `placed` does).
+  page.window.innerWidth = 1280;
+  page.ws.deliver({ t: "patch", p: [{ op: "config", id: 3, config: "dialog side=trailing backdrop=dim" }] });
+  page.window.dispatchEvent({ type: "resize" });
+  assert.equal(box.dataset.prismPlaced, undefined);
+  assert.equal(box.dataset.prismBackdrop, "dim");
+  assert.equal(box.dataset.prismW, undefined);
+});
+
 test("an overlay inserted already open is shown (#70)", () => {
   const page = live([...root([])]);
   // A menu that appears with its parent, open, in one patch.

@@ -147,6 +147,14 @@ dialog.prism-overlay-box::backdrop { background: rgba(0,0,0,.35); backdrop-filte
   dialog.prism-ov-sheet[data-medium="1"] { max-height: 50dvh; }
   dialog.prism-ov-sheet[open] { animation: prism-sheet-up .28s cubic-bezier(.2,.8,.2,1); }
 }
+/* Beside its anchor, the backdrop, the size (#79). */
+dialog.prism-overlay-box[data-prism-placed="1"] { inset: auto; margin: 0; }
+dialog.prism-overlay-box[data-prism-backdrop="clear"] { border: 1px solid rgba(128,128,128,.3); box-shadow: 0 10px 30px rgba(0,0,0,.2); }
+dialog.prism-overlay-box[data-prism-backdrop="clear"]::backdrop { background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; }
+dialog.prism-overlay-box[data-prism-backdrop="dim"]::backdrop { backdrop-filter: none; -webkit-backdrop-filter: none; }
+.prism-overlay-box[data-prism-w="1"] { width: var(--prism-ov-w); }
+.prism-overlay-box[data-prism-h="1"] { height: var(--prism-ov-h); }
+@media (max-width: 599px) { dialog.prism-ov-sheet[data-prism-w="1"] { width: 100vw; } }
 .prism-ov-popover { position: fixed; inset: auto; margin: 0; padding: 0; border: 1px solid rgba(128,128,128,.3); border-radius: 12px; background: Canvas; color: CanvasText; box-shadow: 0 10px 30px rgba(0,0,0,.2); max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); overflow: auto; }
 .prism-ov-popover:not([popover]):not([data-open]) { display: none; }
 @keyframes prism-pop { from { opacity: 0; transform: scale(.97); } }

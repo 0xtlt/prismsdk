@@ -656,3 +656,47 @@ fn picked_files_read_their_bytes() {
     assert!(!images.accepts("a.txt", "text/plain"));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+struct Editor {
+    picking: bool,
+    closed: u32,
+}
+
+impl Render for Editor {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        div().child(text("Colour")).child(
+            dialog(text("picker"))
+                .open(self.picking)
+                .side(PopoverSide::Trailing)
+                .backdrop(Backdrop::Clear)
+                .size(320., 0.)
+                .on_dismiss(cx.listener(|this: &mut Self, _, _| {
+                    this.picking = false;
+                    this.closed += 1;
+                })),
+        )
+    }
+}
+
+#[test]
+fn a_dialog_can_open_beside_its_anchor_without_a_dim() {
+    let mut h = Harness::new(|cx| {
+        let root = cx.new_entity(|_| Editor {
+            picking: false,
+            closed: 0,
+        });
+        mount(cx, root);
+    });
+    let ov = h.host.find(|n| n.kind == NodeKind::Overlay).unwrap();
+    assert_eq!(
+        h.host.get(ov).config,
+        "dialog side=trailing placed backdrop=clear size=320x0"
+    );
+    h.update::<Editor>(|e| e.picking = true);
+    assert_eq!(h.host.get(ov).value, Some(1.));
+    assert_eq!(h.host.child_texts(ov), ["picker"]);
+    // A click outside or Escape: the app hears it, as for any dialog (#79).
+    h.dispatch(UiEvent::Back(ov, 0));
+    assert_eq!(h.rt.app.read(&h.root::<Editor>()).closed, 1);
+    assert!(!h.rt.app.read(&h.root::<Editor>()).picking);
+}

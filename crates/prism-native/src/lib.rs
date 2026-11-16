@@ -695,6 +695,8 @@ impl<W: Widgets> NativeRenderer<W> {
     /// root's background still fills the screen edge to edge.
     pub fn layout(&mut self, width: f32, height: f32, insets: Insets) {
         self.settling = (width, height) != self.window || insets != self.insets;
+        // Before the layout: overlays keep an app-chosen size inside it.
+        self.window = (width, height);
         if insets != self.insets {
             self.insets = insets;
             if let Some(root) = self.root {
@@ -717,7 +719,6 @@ impl<W: Widgets> NativeRenderer<W> {
             self.place(root, width, 0.);
         }
         self.update_sticky();
-        self.window = (width, height);
         self.layout_layers();
         self.settling = false;
     }
@@ -755,11 +756,27 @@ impl<W: Widgets> NativeRenderer<W> {
         let (Some(ov), Some(c)) = (self.nodes.get(&overlay), self.nodes.get(&content)) else {
             return;
         };
-        let vp = self.widgets.overlay_viewport(&ov.view, &c.view);
-        let fill = self
-            .overlays
-            .get(&overlay)
-            .is_none_or(|o| o.kind == prism_core::OverlayKind::Sheet);
+        let mut vp = self.widgets.overlay_viewport(&ov.view, &c.view);
+        let config = self.overlays.get(&overlay).copied().unwrap_or_default();
+        let sheet = config.kind == prism_core::OverlayKind::Sheet;
+        // The app's size for a popover or dialog (#79), kept inside the
+        // window; sheets keep the platform's.
+        let (ww, wh) = self.window;
+        let fit = |v: u32, max: f32| {
+            let v = v as f32 * self.zoom;
+            if max > 0. {
+                v.min(max - 16.).max(1.)
+            } else {
+                v
+            }
+        };
+        if !sheet && config.width > 0 {
+            vp.width = fit(config.width, ww);
+        }
+        if !sheet && config.height > 0 {
+            vp.height = fit(config.height, wh);
+        }
+        let fill = sheet || config.height > 0;
         let zoomed = c.style.scaled(self.zoom);
         let mut style = to_taffy(&zoomed, NodeKind::View);
         let (p, i) = (zoomed.padding, vp.insets);

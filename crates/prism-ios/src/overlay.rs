@@ -13,6 +13,12 @@
 //!   (`API_UNAVAILABLE(tvos)`): every overlay is such a card there, over a
 //!   blurred screen, and Menu closes it.
 //!
+//! A dialog with a side (#79) puts its card beside the anchor (on the
+//! other side without room, centered without room on either), still
+//! modal. The card's backdrop
+//! is clear, a dim, or a blur (a material view under the card); a clear
+//! sheet leaves the window undimmed.
+//!
 //! Escape (hardware keyboard) closes non-fixed overlays; `fixed` sets
 //! `modalInPresentation`. A user dismissal reports `UiEvent::Back(id, 0)`.
 //!
@@ -42,7 +48,7 @@ use objc2_ui_kit::{
     UITraitCollection, UIView, UIViewController,
 };
 use prism_core::NodeId;
-use prism_core::controls::{OverlayConfig, OverlayKind};
+use prism_core::controls::{Backdrop, OverlayConfig, OverlayKind, place_beside};
 use prism_native::Viewport;
 
 pub struct ControllerIvars {
@@ -190,6 +196,8 @@ pub struct Overlay {
     pub size: Cell<(f64, f64)>,
     /// The content view.
     content: std::cell::RefCell<Option<Retained<UIView>>>,
+    /// A blurred backdrop under the card (#79).
+    blur: std::cell::RefCell<Option<Retained<objc2_ui_kit::UIVisualEffectView>>>,
 }
 
 impl Overlay {
@@ -209,6 +217,7 @@ impl Overlay {
             open: Cell::new(false),
             size: Cell::new((0., 0.)),
             content: Default::default(),
+            blur: Default::default(),
         }
     }
 
@@ -332,16 +341,33 @@ impl Overlay {
         let view = self.vc.view().expect("view controller has a view");
         let card = &self.vc.ivars().card;
         if custom {
-            #[cfg(target_os = "tvos")]
+            let tv = cfg!(target_os = "tvos");
+            let backdrop = c
+                .backdrop
+                .unwrap_or(if tv { Backdrop::Blur } else { Backdrop::Dim });
             self.vc
-                .setModalPresentationStyle(UIModalPresentationStyle::BlurOverFullScreen);
-            #[cfg(not(target_os = "tvos"))]
-            self.vc
-                .setModalPresentationStyle(UIModalPresentationStyle::OverFullScreen);
+                .setModalPresentationStyle(if tv && backdrop == Backdrop::Blur {
+                    UIModalPresentationStyle::BlurOverFullScreen
+                } else {
+                    UIModalPresentationStyle::OverFullScreen
+                });
             self.vc
                 .setModalTransitionStyle(objc2_ui_kit::UIModalTransitionStyle::CrossDissolve);
-            let dim = if cfg!(target_os = "tvos") { 0. } else { 0.35 };
+            // A clear backdrop still takes the taps that close the card.
+            let dim = match backdrop {
+                Backdrop::Clear => 0.,
+                Backdrop::Dim => 0.35,
+                Backdrop::Blur if tv => 0.,
+                Backdrop::Blur => 0.15,
+            };
             view.setBackgroundColor(Some(&UIColor::colorWithWhite_alpha(0., dim)));
+            self.set_blur(&view, backdrop == Backdrop::Blur && !tv);
+            // Over an undimmed page, a hairline marks the card's edge.
+            let edge = UIColor::colorWithWhite_alpha(0.5, 0.3);
+            card.layer()
+                .setBorderWidth(if backdrop == Backdrop::Clear { 0.5 } else { 0. });
+            let edge = unsafe { edge.CGColor() };
+            card.layer().setBorderColor(Some(&edge));
             if card.superview().is_none() {
                 // White in light mode, the raised grey of alerts in dark mode.
                 card.setBackgroundColor(Some(&UIColor::tertiarySystemBackgroundColor()));
@@ -410,6 +436,11 @@ impl Overlay {
                         };
                         sheet.setDetents(&objc2_foundation::NSArray::from_retained_slice(&detents));
                         sheet.setPrefersGrabberVisible(true);
+                        // A clear sheet leaves the window undimmed (#79).
+                        let undimmed = (c.backdrop == Some(Backdrop::Clear)).then(|| unsafe {
+                            objc2_ui_kit::UISheetPresentationControllerDetentIdentifierLarge
+                        });
+                        sheet.setLargestUndimmedDetentIdentifier(undimmed);
                     }
                 }
             }
@@ -420,7 +451,41 @@ impl Overlay {
         }
     }
 
-    /// The card's frame: the content's size, centered.
+    /// A material view under the card (a blurred backdrop), or none.
+    fn set_blur(&self, view: &UIView, on: bool) {
+        use objc2_ui_kit::{
+            UIBlurEffect, UIBlurEffectStyle, UIViewAutoresizing, UIVisualEffectView,
+        };
+        let mut blur = self.blur.borrow_mut();
+        if !on {
+            if let Some(b) = blur.take() {
+                b.removeFromSuperview();
+            }
+            return;
+        }
+        let mtm = view.mtm();
+        let b = blur.get_or_insert_with(|| {
+            #[cfg(not(target_os = "tvos"))]
+            let style = UIBlurEffectStyle::SystemUltraThinMaterial;
+            #[cfg(target_os = "tvos")]
+            let style = UIBlurEffectStyle::Regular;
+            let effect = UIBlurEffect::effectWithStyle(style, mtm);
+            let b =
+                UIVisualEffectView::initWithEffect(UIVisualEffectView::alloc(mtm), Some(&effect));
+            b.setUserInteractionEnabled(false);
+            b.setAutoresizingMask(
+                UIViewAutoresizing::FlexibleWidth | UIViewAutoresizing::FlexibleHeight,
+            );
+            b
+        });
+        if b.superview().as_deref() != Some(view) {
+            view.insertSubview_atIndex(b, 0);
+        }
+        b.setFrame(view.bounds());
+    }
+
+    /// The card's frame: the content's size, beside its anchor for a
+    /// dialog with a side (#79), else centered.
     fn place_card(&self) {
         let Some(view) = self.vc.viewIfLoaded() else {
             return;
@@ -428,18 +493,61 @@ impl Overlay {
         let (w, h) = self.size.get();
         let b = view.bounds().size;
         let card = &self.vc.ivars().card;
-        let frame = CGRect::new(
-            CGPoint::new(((b.width - w) / 2.).max(0.), ((b.height - h) / 2.).max(0.)),
-            CGSize::new(w, h),
-        );
+        let origin = self.beside_anchor(w, h).unwrap_or_else(|| {
+            CGPoint::new(((b.width - w) / 2.).max(0.), ((b.height - h) / 2.).max(0.))
+        });
+        let frame = CGRect::new(origin, CGSize::new(w, h));
         if card.frame() != frame {
             card.setFrame(frame);
         }
     }
 
+    /// Where a placed dialog's card goes, in window coordinates (the
+    /// card's full-screen view covers the window): `None` without a
+    /// side, an anchor in a window, or room on either side.
+    #[allow(clippy::cast_possible_truncation)]
+    fn beside_anchor(&self, w: f64, h: f64) -> Option<CGPoint> {
+        let c = self.config.get();
+        if c.kind != OverlayKind::Dialog || cfg!(target_os = "tvos") {
+            return None;
+        }
+        let side = c.anchored_side()?;
+        let anchor = self.anchor.superview()?;
+        let window = anchor.window()?;
+        let a = anchor.convertRect_toView(anchor.bounds(), None);
+        let (b, i) = (window.bounds(), window.safeAreaInsets());
+        let rtl = anchor.effectiveUserInterfaceLayoutDirection()
+            == objc2_ui_kit::UIUserInterfaceLayoutDirection::RightToLeft;
+        let (m, f) = (8., |v: f64| v as f32);
+        let (x, y) = place_beside(
+            (
+                f(a.origin.x),
+                f(a.origin.y),
+                f(a.size.width),
+                f(a.size.height),
+            ),
+            (f(w), f(h)),
+            (
+                f(b.origin.x + i.left + m),
+                f(b.origin.y + i.top + m),
+                f(b.size.width - i.left - i.right - 2. * m),
+                f(b.size.height - i.top - i.bottom - 2. * m),
+            ),
+            side,
+            c.align,
+            rtl,
+            8.,
+        )?;
+        Some(CGPoint::new(f64::from(x), f64::from(y)))
+    }
+
     /// The content's laid-out size: the popover's or card's size.
     pub fn set_size(&self, w: f64, h: f64) {
         if self.size.get() == (w, h) {
+            // The anchor may have moved (a rotation, a resize).
+            if self.custom() {
+                self.place_card();
+            }
             return;
         }
         self.size.set((w, h));

@@ -214,6 +214,10 @@ public final class PrismHost {
         boolean fixed, medium, closing, manual, keepFocus, pendingOpen;
         /** A popover's side of its anchor and alignment (#113). */
         String side = "bottom", align = "start";
+        /** `placed` (a dialog beside its anchor) and `backdrop=` ("" when
+         *  unset) of the overlay config (#79). */
+        boolean placed;
+        String backdrop = "";
         // Padding (#14): the view's own padding while the app's replaces it,
         // and its own background while `.border(0.)` removes it.
         int[] basePad;
