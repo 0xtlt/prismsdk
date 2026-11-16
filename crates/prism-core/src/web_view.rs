@@ -99,7 +99,8 @@ pub struct WebSandbox {
     /// Submit forms. Not enforced on Android.
     pub forms: bool,
     /// Open new windows (`target="_blank"`, `window.open`): natively, in
-    /// the system browser.
+    /// the system browser. The window is not sandboxed itself (on the web
+    /// `allow-popups-to-escape-sandbox`, as the system browser natively).
     pub popups: bool,
     /// Keep its origin: cookies and storage. Without it the web treats the
     /// page as an opaque origin (its messages come from `"null"`), Apple
