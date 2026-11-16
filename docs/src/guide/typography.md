@@ -114,7 +114,9 @@ text("Terms of use").underline().link("/terms")
 ```
 
 It is a button (or a link) for assistive technologies and reachable from the
-keyboard where the platform focuses buttons.
+keyboard where the platform focuses buttons. On the web a text made a link is an `<a href>`
+(see [Links](navigation.md#links)); links inside it are then plain runs that
+still report their clicks, since links don't nest.
 
 ## Where platforms differ
 

@@ -918,6 +918,9 @@ impl Encoder {
                 let wasm = matches!(source, prism_core::IslandSource::Wasm(_));
                 json!({ "op": "island", "id": id, "tag": tag, "module": module, "wasm": wasm, "events": events })
             }
+            // The node becomes an `<a href>` (`client.js` resolves the path
+            // under the mount point, like rich text links).
+            Patch::SetLink { id, href } => json!({ "op": "link", "id": id, "href": href }),
             Patch::SetIslandProps { id, props } => {
                 let props: serde_json::Map<String, Value> = props
                     .iter()

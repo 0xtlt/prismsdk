@@ -459,6 +459,7 @@ impl WebApp {
             Runtime::with_options(&self.init_with(request), self.options(visitor, path.into()));
         let mut html = HtmlBackend::default();
         html.asset_urls = Some(asset_urls);
+        html.base.clone_from(&self.inner.base);
         html.apply(&runtime.render());
         let not_found = runtime.app.shows_not_found();
         let title = match html.screen_title() {

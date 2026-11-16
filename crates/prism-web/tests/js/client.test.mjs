@@ -36,6 +36,8 @@ function signature(el) {
     level: attr("aria-level"),
     selected: attr("aria-selected"),
     tabindex: attr("tabindex"),
+    href: attr("href"),
+    rel: attr("rel"),
     hidden: el.hidden,
     text: own,
     placeholder: attr("placeholder"),
@@ -1010,6 +1012,71 @@ test("rich text: runs become spans, links and symbols; links report their id", (
   page.ws.deliver({ t: "patch", p: [{ op: "config", id: 2, config: "" }] });
   assert.equal(el.textContent, "Signed in as Adasettings★tapdocs!");
   assert.equal(el.childNodes.length, 1);
+});
+
+test("links are anchors: a plain click stays in the app, a modified one is the browser's (#59)", () => {
+  const page = live([
+    create(1, "view"),
+    create(2, "view"), { op: "link", id: 2, href: "/orders/42" },
+    { op: "clickable", id: 2, on: true }, { op: "a11y", id: 2, a11y: { role: "link" } },
+    create(3, "text"), { op: "link", id: 3, href: "mailto:ada@example.com" }, textOp(3, "Mail"),
+    { op: "clickable", id: 3, on: true }, { op: "a11y", id: 3, a11y: { role: "link" } },
+    create(4, "text"), { op: "link", id: 4, href: "/profile" },
+    { op: "config", id: 4, config: runsConfig },
+    children(1, [2, 3, 4]), root(1),
+  ], { base: "/app" });
+  const row = page.node(2);
+  assert.equal(row.localName, "a");
+  assert.equal(row.getAttribute("href"), "/app/orders/42", "app paths under the mount point");
+  assert.equal(row.getAttribute("rel"), null);
+  // A link by itself: no role, focusable without a tabindex.
+  assert.equal(row.getAttribute("role"), null);
+  assert.equal(row.getAttribute("tabindex"), null);
+  assert.equal(page.mount.firstChild.firstChild, row, "in its place");
+  const mail = page.node(3);
+  assert.equal(mail.localName, "a");
+  assert.equal(mail.getAttribute("href"), "mailto:ada@example.com");
+  assert.equal(mail.getAttribute("rel"), "noopener");
+  assert.equal(mail.textContent, "Mail");
+
+  // A plain click: the app navigates (no page load).
+  const plain = { type: "click", detail: 0 };
+  row.dispatchEvent(plain);
+  assert.ok(plain.defaultPrevented);
+  assert.deepEqual(lastSent(page), { t: "click", id: 2 });
+  // Cmd/Ctrl/Shift-click, a middle click: the browser opens it (new tab,
+  // window); the app hears nothing.
+  page.ws.sent.length = 0;
+  for (const mod of [{ metaKey: true }, { ctrlKey: true }, { shiftKey: true }, { button: 1 }]) {
+    const e = { type: "click", detail: 1, ...mod };
+    row.dispatchEvent(e);
+    assert.ok(!e.defaultPrevented, JSON.stringify(mod));
+  }
+  assert.deepEqual(sent(page), []);
+  // Disabled: neither follows it.
+  page.ws.deliver({ t: "patch", p: [{ op: "a11y", id: 2, a11y: { role: "link", disabled: true } }] });
+  assert.equal(row.getAttribute("tabindex"), "-1");
+  const disabled = { type: "click", detail: 1, metaKey: true };
+  row.dispatchEvent(disabled);
+  assert.ok(disabled.defaultPrevented);
+  assert.deepEqual(sent(page), []);
+
+  // A text that is a link: its runs' links are spans (links don't nest),
+  // still reported by their click.
+  const linked = page.node(4);
+  assert.equal(linked.localName, "a");
+  assert.equal(linked.querySelectorAll("a").length, 0);
+  const run = linked.querySelectorAll(".prism-link")[0];
+  assert.equal(run.localName, "span");
+  assert.equal(run.getAttribute("role"), null);
+  const click = { type: "click" };
+  run.dispatchEvent(click);
+  assert.ok(click.defaultPrevented);
+  assert.deepEqual(lastSent(page), { t: "menu", id: 42 });
+
+  // A draggable link: the app's drag, not the browser's link drag.
+  page.ws.deliver({ t: "patch", p: [{ op: "pointer", id: 2, mask: 4 }] });
+  assert.equal(row.getAttribute("draggable"), "false");
 });
 
 test("clickable texts: click, Enter and Space, focusable as buttons", () => {

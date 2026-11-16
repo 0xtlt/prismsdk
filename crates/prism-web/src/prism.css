@@ -46,6 +46,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sa
 .prism-symbol { display: inline-flex; align-items: center; justify-content: center; line-height: 1; }
 /* Rich text: links take the text's color; runs set their own decoration. */
 .prism-link { color: inherit; text-decoration-line: none; cursor: pointer; }
+/* Views and texts made links (`.link(path)`) are `<a href>`s: no link look. */
+:where(a[data-kind]) { color: inherit; text-decoration: none; }
 [data-kind="text"] .prism-symbol { display: inline; line-height: inherit; }
 [data-kind="text"][data-clickable="1"] { cursor: pointer; }
 progress { width: 100%; accent-color: currentColor; }

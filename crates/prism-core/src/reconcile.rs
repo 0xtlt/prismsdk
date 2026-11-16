@@ -229,6 +229,21 @@ pub enum Patch {
         /// The changed props.
         props: Vec<(String, String)>,
     },
+
+    // --- Links ---
+    /// Where a node made a link (`Div::link`, `Text::link`) leads: an app
+    /// path or a URL. Sent right after its `Create`, and again when the
+    /// destination changes (`None`: no longer a link; on the web, a node
+    /// that gains or loses its link is a new node instead). Activating the
+    /// node is still a [`UiEvent::Click`]; native backends ignore this
+    /// patch, the web renders the node as an `<a href>` (open in a new tab,
+    /// copy the link, a working link before the script runs).
+    SetLink {
+        /// The node (a `View` or a `Text`).
+        id: NodeId,
+        /// Its destination, as given to `.link(…)`.
+        href: Option<String>,
+    },
 }
 
 /// An event reported by a backend.
@@ -301,6 +316,8 @@ struct MNode {
     name: Option<String>,
     /// An island's tag, source, props and events.
     island: Option<MIsland>,
+    /// Its `.link(…)` destination, as last sent (`Patch::SetLink`).
+    link: Option<String>,
     /// Its own style animates changes (`.animate(…)`, `.transition(…)`;
     /// not an animated update's).
     animates: bool,
@@ -729,6 +746,9 @@ impl Reconciler {
         let island = vnode.island.take();
         let resolved = vnode.style.resolve(app.style_context());
         let animates = resolved.transition.is_some();
+        // On the web a link is an `<a>` element, anything else a `<div>`:
+        // a node that gains or loses its link is a new element there.
+        let web = app.platform() == crate::Platform::Web;
         let reusable = old.filter(|o| {
             let m = &self.nodes[o];
             // An island keeps its element only while its tag is the same.
@@ -737,6 +757,7 @@ impl Reconciler {
                 && m.key == vnode.key
                 && tag(m.island.as_ref().map(|i| i.tag.as_str()))
                     == tag(island.as_ref().map(|i| i.tag.as_str()))
+                && (!web || m.link.is_some() == vnode.link.is_some())
                 && self.keeps_identity(m, animates, entity.as_ref())
         });
         if let (Some(old), None) = (old, reusable) {
@@ -746,8 +767,19 @@ impl Reconciler {
             Some(id) => id,
             None => self.create(vnode.kind, vnode.key.clone()),
         };
-        // Right after its `Create`: the web swaps in the custom element.
+        // Right after its `Create`: the web swaps in the custom element, or
+        // the `<a>` of a link.
         self.diff_island(id, island);
+        {
+            let m = self.nodes.get_mut(&id).expect("node exists");
+            if m.link != vnode.link {
+                self.patches.push(Patch::SetLink {
+                    id,
+                    href: vnode.link.clone(),
+                });
+                m.link.clone_from(&vnode.link);
+            }
+        }
 
         // Ownership: which entity's root this node is.
         let previous_owner = self.owner(id);
@@ -1332,6 +1364,7 @@ impl Reconciler {
                 keys: (false, false),
                 name: None,
                 island: None,
+                link: None,
                 animates: false,
             },
         );

@@ -56,6 +56,53 @@ fn role(role: Role) -> Accessibility {
     }
 }
 
+fn link(id: u64, href: &str) -> Patch {
+    Patch::SetLink {
+        id,
+        href: Some(href.into()),
+    }
+}
+
+#[test]
+fn ssr_links_are_anchors() {
+    let mut b = HtmlBackend::default();
+    b.base = "/app".into();
+    b.apply(&[
+        create(1, NodeKind::View),
+        create(2, NodeKind::View),
+        link(2, "/orders/42?tab=items"),
+        a11y(2, role(Role::Link)),
+        create(3, NodeKind::Text),
+        link(3, "https://example.com/a?b=1&c=2"),
+        set_text(3, "Docs"),
+        a11y(3, role(Role::Link)),
+        create(4, NodeKind::View),
+        link(4, "/"),
+        a11y(
+            4,
+            Accessibility {
+                role: Some(Role::Link),
+                disabled: true,
+                ..Default::default()
+            },
+        ),
+        children(1, &[2, 3, 4]),
+        Patch::SetRoot { id: 1 },
+    ]);
+    assert_eq!(
+        b.to_html(),
+        concat!(
+            r#"<div data-pid="1" data-kind="view" style="">"#,
+            // An app path under the mount point; a link by itself (no role,
+            // no tabindex): it opens in a new tab and works before the script.
+            r#"<a data-pid="2" data-kind="view" style="" href="/app/orders/42?tab=items"></a>"#,
+            r#"<a data-pid="3" data-kind="text" style="" href="https://example.com/a?b=1&amp;c=2" rel="noopener">Docs</a>"#,
+            r#"<a data-pid="4" data-kind="view" style="" aria-disabled="true" tabindex="-1" href="/app"></a>"#,
+            "</div>"
+        )
+    );
+}
+
 #[test]
 fn ssr_view_text_and_button() {
     assert_eq!(
@@ -1685,6 +1732,8 @@ impl Render for Showcase {
                         .accessibility_label("Dark mode")
                         .on_change(cx.listener(|this, e: &ChangeEvent, _| this.dark = e.checked())),
                 )
+                .child(div().link("/more").child(text("More")))
+                .child(text("Docs").link("https://example.com/docs"))
                 .child(progress(0.5))
                 .child(image("plus"))
                 .child(picture("logo.png").alt("Logo").fit())
