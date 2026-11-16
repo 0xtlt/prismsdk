@@ -40,6 +40,19 @@ protocol PrismConfigurationIntent: WidgetConfigurationIntent {
     var prismValues: [String: String] { get }
 }
 
+/// A parameter's value, nil while it is unset. The generated parameters are
+/// required (so the edit sheet starts on the default option, #49), and an
+/// instance added before that has none: `valueState` says so where it
+/// exists; before iOS 18.2 / macOS 15.2 the query's `defaultResult()` never
+/// leaves one unset.
+func prismValue<E>(_ parameter: IntentParameter<E>) -> E? {
+    if #available(iOS 18.2, macOS 15.2, visionOS 2.2, *) {
+        if case .set(let value) = parameter.valueState { return value }
+        return nil
+    }
+    return parameter.wrappedValue
+}
+
 /// A parameter's options as the app wrote them at its last reload: what the
 /// edit sheet lists.
 func prismOptions(_ kind: String, _ parameter: String) -> [(id: String, title: String)] {

@@ -123,6 +123,8 @@ for w in widgets:
       <meta-data android:name="android.appwidget.provider" android:resource="@xml/prism_widget_{name.lower()}"/>
     </receiver>""")
 if strings:
+    # Widget buttons (widget_action): their broadcasts run the app in place.
+    print("""    <receiver android:name="dev.prism.PrismWidget$Action" android:exported="false"/>""")
     os.makedirs(os.path.join(out, "res/values"), exist_ok=True)
     with open(os.path.join(out, "res/values/prism_widgets.xml"), "w") as f:
         f.write("<resources>\n" + "\n".join(strings) + "\n</resources>\n")

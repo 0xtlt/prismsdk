@@ -569,7 +569,13 @@ final class PrismSurface {
         if (n.has("o")) v.setFloat(node, "setAlpha", (float) n.optDouble("o", 1));
         if (n.has("al")) v.setContentDescription(node, n.optString("al"));
         String link = n.optString("l", "");
-        if (!link.isEmpty()) v.setOnClickPendingIntent(node, open(c, link));
+        JSONObject action = n.optJSONObject("wa");
+        if (action != null) {
+            // A widget button: runs the app's action without opening it (#47).
+            v.setOnClickPendingIntent(node, PrismWidget.Action.intent(c, action));
+        } else if (!link.isEmpty()) {
+            v.setOnClickPendingIntent(node, open(c, link));
+        }
     }
 
     // --- Live Activities: ongoing notifications ------------------------------------------

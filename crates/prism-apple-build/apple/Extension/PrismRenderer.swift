@@ -1,6 +1,7 @@
 // Renders Prism static snapshots (compact JSON from prism-core `SNode`) with
 // SwiftUI. Used by widgets and Live Activities on iOS and macOS. Mirrors the
 // web renderer (`snode()` in client.js) and prism-native's flexbox mapping.
+import AppIntents
 import SwiftUI
 import WidgetKit
 #if canImport(UIKit)
@@ -128,7 +129,8 @@ func prismView(_ node: Any?) -> AnyView {
     return prismBuild(n)
 }
 
-func prismBuild(_ n: PNode) -> AnyView {
+func prismBuild(_ node: PNode) -> AnyView {
+    let n = prismLinkAroundActions(node)
     let kind = n["k"] as? String ?? "v"
     let fg = prismColor(n["fg"])
     var view: AnyView
@@ -232,8 +234,58 @@ private func prismModifiers(_ base: AnyView, _ n: PNode) -> AnyView {
         if let label = n["al"] as? String { v = AnyView(v.accessibilityLabel(Text(label))) }
         if num(n["hd"]) == 1 { v = AnyView(v.accessibilityAddTraits(.isHeader)) }
     }
-    if let url = prismURL(n["l"]) { v = AnyView(Link(destination: url) { v }) }
+    if let action = n["wa"] as? [String: Any] {
+        v = prismActionButton(v, action)
+    } else if let url = prismURL(n["l"]) {
+        v = AnyView(Link(destination: url) { v })
+    }
     return v
+}
+
+private func prismHasAction(_ n: PNode) -> Bool {
+    n["wa"] != nil || ((n["c"] as? [PNode]) ?? []).contains(where: prismHasAction)
+}
+
+/// A link (`l`) around widget buttons would take their taps (WidgetKit
+/// gives a tap to the outer `Link`): the link moves down to the children
+/// that are not buttons, so the buttons keep theirs and the rest still
+/// opens the link.
+private func prismLinkAroundActions(_ n: PNode) -> PNode {
+    guard let link = n["l"], n["wa"] == nil, prismHasAction(n) else { return n }
+    var out = n
+    out["l"] = nil
+    out["c"] = ((n["c"] as? [PNode]) ?? []).map { child -> PNode in
+        guard child["wa"] == nil, child["l"] == nil else { return child }
+        var child = child
+        child["l"] = link
+        return child
+    }
+    return out
+}
+
+/// A widget button (`wa`: `k` kind, `a` action, `p` payload, #47). On iOS
+/// and visionOS a `Button(intent:)`: the tap runs the action in the app
+/// without opening it (PrismWidgetAction.swift); the widget is redrawn when
+/// the app's job returns. No `invalidatableContent()` on the label: with it
+/// the iOS 27 simulator stopped treating the button as one (taps fell
+/// through to the widget's URL). Elsewhere (macOS widgets run intents in the
+/// extension, which cannot run the app's code) the tap opens the app on the
+/// action's link, and the app runs it there.
+private func prismActionButton(_ content: AnyView, _ action: [String: Any]) -> AnyView {
+    let kind = action["k"] as? String ?? ""
+    let name = action["a"] as? String ?? ""
+    let payload = action["p"] as? String ?? ""
+    #if os(iOS) || os(visionOS)
+    let intent = PrismWidgetActionIntent(kind: kind, action: name, payload: payload)
+    return AnyView(Button(intent: intent) { content }.buttonStyle(.plain))
+    #else
+    // prism-core `WidgetAction::to_link`.
+    let safe = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+    let q = { (s: String) in s.addingPercentEncoding(withAllowedCharacters: safe) ?? "" }
+    let path = "/__prism/widget-action?kind=\(q(kind))&action=\(q(name))&payload=\(q(payload))"
+    guard let url = prismURL(path) else { return content }
+    return AnyView(Link(destination: url) { content })
+    #endif
 }
 
 // --- Shapes and charts ----------------------------------------------------------------

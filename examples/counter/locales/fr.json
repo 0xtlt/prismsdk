@@ -181,6 +181,8 @@
   },
   "widget": {
     "done": "faites",
+    "mark_done": "Marquer comme faite",
+    "mark_open": "Marquer comme à faire",
     "today": "aujourd’hui",
     "open": {
       "one": "{count} ouverte",

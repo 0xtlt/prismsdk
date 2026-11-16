@@ -366,3 +366,50 @@ public func prismBgComplete(_ id: UnsafePointer<CChar>, _ success: Bool) {
     prismBackgroundTasks.removeValue(forKey: String(cString: id))?.setTaskCompleted(success: success)
 }
 #endif
+
+// MARK: Widget actions (iOS, visionOS: Button(intent:) in widgets, #47)
+
+/// The actions the widget extension queued in the App Group (a JSON array of
+/// `{"k","a","p"}`), removed from the queue; nil when there are none. Freed
+/// by the caller.
+@_cdecl("prism_widget_actions_take")
+public func prismWidgetActionsTake() -> UnsafeMutablePointer<CChar>? {
+    guard let url = prismWidgetActionsURL(), let data = try? Data(contentsOf: url) else { return nil }
+    try? FileManager.default.removeItem(at: url)
+    guard let json = String(data: data, encoding: .utf8) else { return nil }
+    return strdup(json)
+}
+
+#if os(iOS) || os(visionOS)
+/// Implemented in Rust: runs a widget action (`App::on_widget_action`) and
+/// calls `prism_widget_action_done(token)` when its job finished.
+@_silgen_name("prism_widget_action")
+func prismRustWidgetAction(_ kind: UnsafePointer<CChar>, _ action: UnsafePointer<CChar>,
+                           _ payload: UnsafePointer<CChar>, _ token: UInt64)
+
+/// Actions running in the app, by token: what resumes their intent. Main thread.
+private var prismWidgetActionsRunning: [UInt64: () -> Void] = [:]
+private var prismWidgetActionsNext: UInt64 = 0
+
+/// From launch: the widget button intents iOS performs in the app's
+/// process (PrismWidgetAction.swift) go to the app's Rust code.
+@_cdecl("prism_widget_actions_install")
+public func prismWidgetActionsInstall() {
+    prismWidgetActionRunner = { action, done in
+        prismWidgetActionsNext += 1
+        let token = prismWidgetActionsNext
+        prismWidgetActionsRunning[token] = done
+        (action["k"] ?? "").withCString { k in
+            (action["a"] ?? "").withCString { a in
+                (action["p"] ?? "").withCString { p in prismRustWidgetAction(k, a, p, token) }
+            }
+        }
+    }
+}
+
+/// The action's job finished: its intent's `perform()` returns.
+@_cdecl("prism_widget_action_done")
+public func prismWidgetActionDone(_ token: UInt64) {
+    prismWidgetActionsRunning.removeValue(forKey: token)?()
+}
+#endif

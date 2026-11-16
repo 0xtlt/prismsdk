@@ -290,6 +290,13 @@ impl Application {
                 println!("{}", u8::from(runtime.app.uses_live_activities()));
                 return;
             }
+            // Bundlers declare the widget button intent in the iOS app
+            // (App Intents metadata) and the Android action receiver.
+            Ok("widget_actions") => {
+                let runtime = Runtime::new(&init);
+                println!("{}", u8::from(runtime.app.handles_widget_actions()));
+                return;
+            }
             // Bundlers declare a CarPlay scene / Android Auto service.
             Ok("car") => {
                 let runtime = Runtime::new(&init);

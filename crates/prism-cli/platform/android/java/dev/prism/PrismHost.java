@@ -66,6 +66,8 @@ public final class PrismHost {
     static native void nativeCarEvent(String kind, long value, String info);
     /** Remote push (PrismPush, PrismFcm): a token, an endpoint, a message, an error. */
     static native void nativePush(String json, String info);
+    /** A widget button (PrismWidget.Action); `task` is reported back through jobFinished. */
+    static native void nativeWidgetAction(String task, String kind, String action, String payload, String info);
 
     /** The application (also set when a background job starts without the Activity). */
     static android.content.Context context;

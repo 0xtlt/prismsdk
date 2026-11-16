@@ -168,6 +168,48 @@ public class PrismWidget extends AppWidgetProvider {
         return v;
     }
 
+    /**
+     * Widget buttons (`widget_action`, #47): a tap broadcasts here, in the
+     * app's process, without opening the app. The app's `on_widget_action`
+     * job runs (without a screen when the app is closed) and the broadcast
+     * stays alive (goAsync) until it is done; the job's reload redraws the
+     * widgets. Declared in the manifest when the app has widgets.
+     */
+    public static final class Action extends android.content.BroadcastReceiver {
+        static final String PREFIX = "prism.widget-action:";
+        static final Map<String, PendingResult> running = new HashMap<>();
+        static long next;
+
+        /** The broadcast a button sends: `{k: kind, a: action, p: payload}`. */
+        static android.app.PendingIntent intent(Context c, JSONObject action) {
+            String kind = action.optString("k"), name = action.optString("a"), payload = action.optString("p");
+            android.content.Intent i = new android.content.Intent(c, Action.class)
+                    .putExtra("kind", kind).putExtra("action", name).putExtra("payload", payload);
+            // One pending intent per action and payload (extras do not tell them apart).
+            i.setData(android.net.Uri.parse("prism-action:" + android.net.Uri.encode(kind) + "/"
+                    + android.net.Uri.encode(name) + "/" + android.net.Uri.encode(payload)));
+            return android.app.PendingIntent.getBroadcast(c, (kind + "\n" + name + "\n" + payload).hashCode(), i,
+                    android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE);
+        }
+
+        @Override
+        public void onReceive(Context c, android.content.Intent i) {
+            String task = PREFIX + (++next);
+            running.put(task, goAsync());
+            PrismHost.load(c);
+            PrismHost.nativeWidgetAction(task, i.getStringExtra("kind"), i.getStringExtra("action"),
+                    i.getStringExtra("payload"), PrismHost.baseInfo(c).toString());
+        }
+
+        /** From Rust (through PrismHost.jobFinished): the action's job is done. */
+        static boolean finished(String task) {
+            PendingResult r = running.remove(task);
+            if (r == null) return false;
+            r.finish();
+            return true;
+        }
+    }
+
     /** Before the app first ran: its name; a tap opens it. */
     private static RemoteViews placeholder(Context c) {
         JSONObject n = new JSONObject();

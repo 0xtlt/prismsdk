@@ -416,6 +416,9 @@ define_class!(
                 let patches = s.runtime.set_lifecycle(phase);
                 s.commit(patches);
             });
+            if phase == prism_core::Lifecycle::Active {
+                run_queued_widget_actions();
+            }
             update_background_time(self.mtm());
         }
 
@@ -912,6 +915,8 @@ define_class!(
             crate::services::init_bridge();
             // Background tasks must be registered before launch completes.
             crate::services::register_background_tasks();
+            // Widget buttons: iOS may have launched the app just to run one.
+            crate::services::install_widget_actions();
             observe_lifecycle(self.mtm());
             true
         }
@@ -3319,6 +3324,8 @@ pub(crate) enum Completion {
     System(String),
     /// A silent push: its fetch completion handler.
     Push(block2::RcBlock<dyn Fn(objc2_ui_kit::UIBackgroundFetchResult)>),
+    /// A widget button's intent, waiting in the bridge under this token.
+    WidgetAction(u64),
     /// Development hook.
     None,
 }
@@ -3516,7 +3523,48 @@ fn finish(completion: &Completion, success: bool) {
         } else {
             objc2_ui_kit::UIBackgroundFetchResult::Failed
         },)),
+        Completion::WidgetAction(token) => crate::services::widget_action_done(*token),
         Completion::None => {}
+    }
+}
+
+/// A widget button was tapped: runs the app's `on_widget_action` job in the
+/// window's runtime, or in a headless one when iOS launched the app for it,
+/// and tells `completion` when it is done (the widgets are reloaded then).
+pub(crate) fn run_widget_action(action: prism_core::WidgetAction, completion: Completion) {
+    eprintln!(
+        "prism-ios: widget action {:?} ({:?})",
+        action.action, action.kind
+    );
+    let mut action = Some(action);
+    let mut started = None;
+    with_state(|s| {
+        if let Some(a) = action.take() {
+            started = Some(s.runtime.run_widget_action(a));
+            let patches = s.runtime.poll();
+            s.commit(patches);
+        }
+    });
+    if let Some(a) = action {
+        HEADLESS.with(|h| {
+            let mut h = h.borrow_mut();
+            let headless = h.get_or_insert_with(new_headless);
+            started = Some(headless.runtime.run_widget_action(a));
+        });
+        poll_headless();
+    }
+    match started {
+        Some(task) => BG_WAITING.with(|w| w.borrow_mut().push((task, completion))),
+        None => finish(&completion, false),
+    }
+    check_background();
+}
+
+/// Runs the actions the widget extension queued (it ran their intents
+/// itself, without the app's code).
+fn run_queued_widget_actions() {
+    for action in crate::services::take_queued_widget_actions() {
+        run_widget_action(action, Completion::None);
     }
 }
 

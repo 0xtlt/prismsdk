@@ -370,6 +370,68 @@ pub extern "system" fn Java_dev_prism_PrismHost_nativeBackground(
     check_jobs();
 }
 
+/// A widget button was tapped (PrismWidget.Action, a broadcast that keeps
+/// the process alive until `task` finishes): runs the app's
+/// `on_widget_action` job in the open app's runtime, or in one without a
+/// screen when the app is closed. `task` is reported done through
+/// `PrismHost.jobFinished`, like a background job.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_prism_PrismHost_nativeWidgetAction(
+    env: *mut JNIEnv,
+    _class: jclass,
+    task: jstring,
+    kind: jstring,
+    action: jstring,
+    payload: jstring,
+    info: jstring,
+) {
+    jni::init_host(env);
+    let task = unsafe { jni::rust_string(env, task) };
+    let action = prism_core::WidgetAction {
+        kind: unsafe { jni::rust_string(env, kind) },
+        action: unsafe { jni::rust_string(env, action) },
+        payload: unsafe { jni::rust_string(env, payload) },
+    };
+    let mut action = Some(action);
+    let mut started = None;
+    with_state(|s| {
+        if let Some(a) = action.take() {
+            started = Some(s.runtime.run_widget_action(a));
+            let patches = s.runtime.poll();
+            commit(s, &patches);
+        }
+    });
+    let open = action.is_none();
+    if let Some(a) = action {
+        let Some((_, init)) = APP.get() else {
+            jni::job_finished(&task, false);
+            return;
+        };
+        let info: Value =
+            serde_json::from_str(&unsafe { jni::rust_string(env, info) }).unwrap_or_default();
+        HEADLESS.with(|h| {
+            let mut h = h.borrow_mut();
+            let headless = h.get_or_insert_with(|| {
+                let services = crate::services::AndroidServices::new(&info);
+                let runtime = make_runtime(init, &info, &services, None, None);
+                Headless { runtime, services }
+            });
+            started = Some(headless.runtime.run_widget_action(a));
+        });
+        poll_headless();
+    }
+    if let Some(handle) = started {
+        JOBS.with(|j| {
+            j.borrow_mut().push(Job {
+                handle,
+                task,
+                headless: !open,
+            })
+        });
+    }
+    check_jobs();
+}
+
 /// The car (Car App Library): connected, an item selected, Back. In the
 /// open app's runtime, or one without a screen (the car can start the app).
 #[unsafe(no_mangle)]
