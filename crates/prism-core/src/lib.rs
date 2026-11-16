@@ -100,7 +100,7 @@ pub use push::{
     ActivityPushToken, PushEvent, PushFuture, PushMessage, PushService, PushSubscription,
 };
 pub use reconcile::{NodeId, Patch, Reconciler, RenderEnvironment, UiEvent};
-pub use request::{RequestKind, UrlTarget, WebRequest};
+pub use request::{Cookie, RequestKind, SameSite, UrlTarget, WebRequest};
 pub use router::{Params, Router, RouterBuilder, go_back, navigate_to, normalize_path};
 pub use router::{encode_query, parse_query};
 pub use security::{

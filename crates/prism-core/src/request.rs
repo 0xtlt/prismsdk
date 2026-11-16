@@ -5,11 +5,17 @@
 //! session renders with the socket handshake (re-read at every reconnect).
 //! Native apps have no request: [`App::request`] and [`App::page_origin`]
 //! are `None` there.
+//!
+//! A handler that signs a user in sets the session cookie with
+//! [`App::set_cookie`] (or [`AsyncApp::set_cookie`](crate::AsyncApp::set_cookie)
+//! to learn the outcome), then [`App::reconnect`]s so the host's middleware
+//! sees it on the next handshake.
 
 use std::any::Any;
 use std::sync::Arc;
 
 use crate::app::App;
+use crate::device::{DeviceCall, DeviceError, DeviceValue};
 
 /// Which request a [`WebRequest`] describes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -173,5 +179,311 @@ impl App {
     /// Sets the request (web backends call it before the app's init).
     pub fn set_request(&mut self, request: WebRequest) {
         self.set_global(RequestSlot(request));
+    }
+
+    /// Sets (or, with [`Cookie::remove`], deletes) a cookie in the browser,
+    /// from a handler running over the live socket: signing in or out, a
+    /// remembered choice the host's middleware reads.
+    ///
+    /// The web client fetches a one-time URL of the app (same origin) whose
+    /// answer carries the `Set-Cookie`, one cookie after the other; the
+    /// session's [`request`](App::request) then shows the new value. The
+    /// host's middleware sees it on the next handshake: call
+    /// [`reconnect`](App::reconnect) after it. Natively there are no cookies
+    /// (keep secrets in [`crate::security`]): the call is ignored.
+    ///
+    /// An invalid cookie (see [`Cookie::check`]) is ignored and fails a debug
+    /// assertion; [`AsyncApp::set_cookie`](crate::AsyncApp::set_cookie)
+    /// answers the outcome instead.
+    pub fn set_cookie(&mut self, cookie: Cookie) {
+        if let Err(e) = cookie.check() {
+            debug_assert!(false, "prism: cookie {:?} refused: {e}", cookie.name());
+            return;
+        }
+        self.device_call(DeviceCall::SetCookie(cookie));
+    }
+
+    /// Ends the live session and opens a new one at once, on the same page,
+    /// without the « Reconnecting… » banner: the host's middleware sees the
+    /// cookies set before it ([`set_cookie`](App::set_cookie), which the web
+    /// client waits for) and the app starts again with the new handshake's
+    /// [`request`](App::request) and context. The app's state is not kept:
+    /// save what must survive. Native apps ignore it.
+    pub fn reconnect(&mut self) {
+        self.device_call(DeviceCall::Reconnect);
+    }
+}
+
+impl crate::AsyncApp {
+    /// [`App::set_cookie`], answered once the browser has the cookie: `Ok`
+    /// then (the session's [`request`](App::request) shows it), else why
+    /// not: [`DeviceError::Failed`] for an invalid cookie or a `Secure` one
+    /// on a plain `http://` page (other than `localhost`, which the browser
+    /// would drop), [`DeviceError::Unavailable`] natively.
+    pub async fn set_cookie(&self, cookie: Cookie) -> Result<(), DeviceError> {
+        cookie.check().map_err(DeviceError::Failed)?;
+        match self.device(DeviceCall::SetCookie(cookie)).await? {
+            DeviceValue::Done => Ok(()),
+            other => Err(DeviceError::Failed(format!("unexpected answer {other:?}"))),
+        }
+    }
+}
+
+/// A cookie's `SameSite` attribute: when the browser sends it with requests
+/// started by another site.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SameSite {
+    /// Only with requests from the site itself.
+    Strict,
+    /// Also when following a link from another site (the default).
+    #[default]
+    Lax,
+    /// With every request, cross-site ones included (needs `Secure`).
+    None,
+}
+
+impl SameSite {
+    /// `Strict`, `Lax` or `None`, as written in `Set-Cookie`.
+    pub fn name(self) -> &'static str {
+        match self {
+            SameSite::Strict => "Strict",
+            SameSite::Lax => "Lax",
+            SameSite::None => "None",
+        }
+    }
+}
+
+/// A cookie for [`App::set_cookie`]. Safe by default: `HttpOnly`, `Secure`,
+/// `SameSite=Lax`, `Path=/`, and kept until the browser closes unless
+/// [`max_age`](Cookie::max_age) says otherwise.
+///
+/// ```
+/// # use prism_core::{Cookie, SameSite};
+/// # use std::time::Duration;
+/// let session = Cookie::new("session", "f3a9c2")
+///     .max_age(Duration::from_secs(30 * 24 * 3600))
+///     .same_site(SameSite::Strict);
+/// assert_eq!(
+///     session.to_header(),
+///     "session=f3a9c2; Path=/; Max-Age=2592000; HttpOnly; Secure; SameSite=Strict"
+/// );
+/// let signed_out = Cookie::remove("session");
+/// assert_eq!(
+///     signed_out.to_header(),
+///     "session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax"
+/// );
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Cookie {
+    name: String,
+    value: String,
+    path: String,
+    domain: Option<String>,
+    max_age: Option<u64>,
+    http_only: bool,
+    secure: bool,
+    same_site: SameSite,
+}
+
+/// The size browsers keep at least, name, value and attributes together.
+const MAX_COOKIE: usize = 4096;
+
+impl Cookie {
+    /// Cookie `name` with `value`, and the safe defaults.
+    pub fn new(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Cookie {
+            name: name.into(),
+            value: value.into(),
+            path: "/".into(),
+            domain: None,
+            max_age: None,
+            http_only: true,
+            secure: true,
+            same_site: SameSite::Lax,
+        }
+    }
+
+    /// Deletes cookie `name`: an empty value that expires at once. Give it
+    /// the [`path`](Cookie::path) and [`domain`](Cookie::domain) the cookie
+    /// was set with.
+    pub fn remove(name: impl Into<String>) -> Self {
+        Cookie {
+            max_age: Some(0),
+            ..Cookie::new(name, "")
+        }
+    }
+
+    /// The paths it is sent with (`/` by default: the whole site).
+    #[must_use]
+    pub fn path(mut self, path: impl Into<String>) -> Self {
+        self.path = path.into();
+        self
+    }
+
+    /// Also sent to the subdomains of `domain` (by default, only to the
+    /// page's own host).
+    #[must_use]
+    pub fn domain(mut self, domain: impl Into<String>) -> Self {
+        self.domain = Some(domain.into());
+        self
+    }
+
+    /// Kept for `age` (whole seconds), across browser restarts.
+    #[must_use]
+    pub fn max_age(mut self, age: std::time::Duration) -> Self {
+        self.max_age = Some(age.as_secs());
+        self
+    }
+
+    /// Hidden from the page's scripts (`true` by default).
+    #[must_use]
+    pub fn http_only(mut self, on: bool) -> Self {
+        self.http_only = on;
+        self
+    }
+
+    /// Sent over `https` only (`true` by default; browsers also accept it on
+    /// `http://localhost`).
+    #[must_use]
+    pub fn secure(mut self, on: bool) -> Self {
+        self.secure = on;
+        self
+    }
+
+    /// When cross-site requests carry it ([`SameSite::Lax`] by default).
+    #[must_use]
+    pub fn same_site(mut self, same_site: SameSite) -> Self {
+        self.same_site = same_site;
+        self
+    }
+
+    /// Its name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Its value (empty for [`remove`](Cookie::remove)).
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+
+    /// The domain it was given with [`domain`](Cookie::domain), if any.
+    pub fn domain_value(&self) -> Option<&str> {
+        self.domain.as_deref()
+    }
+
+    /// Whether it deletes the cookie (expires at once).
+    pub fn is_removal(&self) -> bool {
+        self.max_age == Some(0)
+    }
+
+    /// Whether it is `Secure`.
+    pub fn is_secure(&self) -> bool {
+        self.secure
+    }
+
+    /// Why a browser would refuse it, or a header could not carry it: a
+    /// name that is not a token (RFC 6265), a value with spaces, quotes,
+    /// commas, semicolons or backslashes (encode it: base64url, hex), a path
+    /// or domain with `;` or control characters, `SameSite=None` without
+    /// `Secure`, a `__Secure-` name without `Secure`, a `__Host-` name
+    /// without `Secure`, with a domain or another path than `/`, or more
+    /// than 4096 bytes.
+    pub fn check(&self) -> Result<(), String> {
+        let token = |c: char| c.is_ascii_graphic() && !"()<>@,;:\\\"/[]?={}".contains(c);
+        if self.name.is_empty() || !self.name.chars().all(token) {
+            return Err(format!("{:?} is not a cookie name", self.name));
+        }
+        let octet = |c: char| c.is_ascii_graphic() && !matches!(c, '"' | ',' | ';' | '\\');
+        if !self.value.chars().all(octet) {
+            return Err(format!(
+                "the value of {:?} has a character a cookie cannot hold (encode it)",
+                self.name
+            ));
+        }
+        let attribute = |s: &str| !s.chars().any(|c| c == ';' || c.is_ascii_control());
+        if !self.path.starts_with('/') || !attribute(&self.path) {
+            return Err(format!("{:?} is not a cookie path", self.path));
+        }
+        if let Some(domain) = &self.domain {
+            let ok = !domain.is_empty()
+                && domain
+                    .trim_start_matches('.')
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
+            if !ok {
+                return Err(format!("{domain:?} is not a cookie domain"));
+            }
+        }
+        if self.same_site == SameSite::None && !self.secure {
+            return Err("SameSite=None needs Secure".into());
+        }
+        let lower = self.name.to_ascii_lowercase();
+        if lower.starts_with("__secure-") && !self.secure {
+            return Err(format!("{:?} needs Secure", self.name));
+        }
+        if lower.starts_with("__host-")
+            && (!self.secure || self.domain.is_some() || self.path != "/")
+        {
+            return Err(format!(
+                "{:?} needs Secure, Path=/ and no Domain",
+                self.name
+            ));
+        }
+        if self.to_header().len() > MAX_COOKIE {
+            return Err(format!("{:?} is larger than {MAX_COOKIE} bytes", self.name));
+        }
+        Ok(())
+    }
+
+    /// The `Set-Cookie` header's value (check it first with
+    /// [`check`](Cookie::check)).
+    pub fn to_header(&self) -> String {
+        use std::fmt::Write;
+        let mut h = format!("{}={}; Path={}", self.name, self.value, self.path);
+        if let Some(domain) = &self.domain {
+            let _ = write!(h, "; Domain={domain}");
+        }
+        if let Some(age) = self.max_age {
+            let _ = write!(h, "; Max-Age={age}");
+        }
+        if self.http_only {
+            h.push_str("; HttpOnly");
+        }
+        if self.secure {
+            h.push_str("; Secure");
+        }
+        let _ = write!(h, "; SameSite={}", self.same_site.name());
+        h
+    }
+}
+
+impl WebRequest {
+    /// Applies a cookie the browser now has to this request's `Cookie`
+    /// header (web backends, once [`App::set_cookie`] succeeded): replaced,
+    /// added at the end, or removed.
+    pub fn apply_cookie(&mut self, cookie: &Cookie) {
+        let mut pairs: Vec<String> = self
+            .headers
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("cookie"))
+            .flat_map(|(_, v)| v.split(';'))
+            .map(str::trim)
+            .filter(|kv| !kv.is_empty() && kv.split('=').next() != Some(cookie.name()))
+            .map(str::to_string)
+            .collect();
+        if !cookie.is_removal() {
+            pairs.push(format!("{}={}", cookie.name(), cookie.value()));
+        }
+        let at = self
+            .headers
+            .iter()
+            .position(|(k, _)| k.eq_ignore_ascii_case("cookie"));
+        self.headers
+            .retain(|(k, _)| !k.eq_ignore_ascii_case("cookie"));
+        if !pairs.is_empty() {
+            let at = at.unwrap_or(self.headers.len()).min(self.headers.len());
+            self.headers.insert(at, ("cookie".into(), pairs.join("; ")));
+        }
     }
 }

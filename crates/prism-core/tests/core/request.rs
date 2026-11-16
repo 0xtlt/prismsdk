@@ -4,7 +4,9 @@
 use std::sync::Arc;
 
 use prism_core::prelude::*;
-use prism_core::{RequestKind, Runtime, UrlTarget, WebRequest};
+use prism_core::{
+    Cookie, DeviceCall, PlatformRequest, RequestKind, Runtime, SameSite, UrlTarget, WebRequest,
+};
 
 struct Blank;
 
@@ -189,4 +191,120 @@ fn only_success_and_error_statuses_are_kept() {
     // The last call wins.
     app.set_page_status(204);
     assert_eq!(app.page_status(), 204);
+}
+
+#[test]
+fn cookies_are_safe_by_default_and_written_as_set_cookie() {
+    use std::time::Duration;
+    let c = Cookie::new("session", "abc");
+    assert_eq!(
+        c.to_header(),
+        "session=abc; Path=/; HttpOnly; Secure; SameSite=Lax"
+    );
+    assert!(c.is_secure() && !c.is_removal());
+    let c = Cookie::new("theme", "dark")
+        .path("/app")
+        .domain("example.com")
+        .max_age(Duration::from_secs(3600))
+        .http_only(false)
+        .same_site(SameSite::Strict);
+    assert_eq!(
+        c.to_header(),
+        "theme=dark; Path=/app; Domain=example.com; Max-Age=3600; Secure; SameSite=Strict"
+    );
+    assert_eq!(c.domain_value(), Some("example.com"));
+    let gone = Cookie::remove("session");
+    assert!(gone.is_removal());
+    assert_eq!(gone.value(), "");
+    assert_eq!(gone.check(), Ok(()));
+}
+
+#[test]
+fn cookies_a_browser_would_refuse_are_refused() {
+    let refused = |c: Cookie| c.check().unwrap_err();
+    assert!(refused(Cookie::new("", "1")).contains("not a cookie name"));
+    assert!(refused(Cookie::new("a b", "1")).contains("not a cookie name"));
+    assert!(refused(Cookie::new("a=b", "1")).contains("not a cookie name"));
+    for bad in ["a b", "a;b", "a,b", "a\"b", "a\\b", "é"] {
+        assert!(
+            refused(Cookie::new("v", bad)).contains("encode it"),
+            "{bad}"
+        );
+    }
+    assert!(refused(Cookie::new("p", "1").path("app")).contains("path"));
+    assert!(refused(Cookie::new("p", "1").path("/a;Domain=x")).contains("path"));
+    assert!(refused(Cookie::new("d", "1").domain("a;b")).contains("domain"));
+    assert!(
+        refused(
+            Cookie::new("n", "1")
+                .secure(false)
+                .same_site(SameSite::None)
+        )
+        .contains("SameSite=None needs Secure")
+    );
+    assert_eq!(
+        Cookie::new("n", "1").same_site(SameSite::None).check(),
+        Ok(())
+    );
+    assert!(refused(Cookie::new("__Secure-id", "1").secure(false)).contains("needs Secure"));
+    assert_eq!(
+        Cookie::new("__Secure-id", "1")
+            .domain("example.com")
+            .check(),
+        Ok(())
+    );
+    assert!(refused(Cookie::new("__Host-id", "1").path("/app")).contains("Path=/"));
+    assert!(refused(Cookie::new("__Host-id", "1").domain("example.com")).contains("no Domain"));
+    assert_eq!(Cookie::new("__Host-id", "1").check(), Ok(()));
+    assert!(refused(Cookie::new("big", "x".repeat(5000))).contains("4096"));
+}
+
+#[test]
+fn a_request_takes_the_cookies_the_browser_now_has() {
+    let mut r = request();
+    r.apply_cookie(&Cookie::new("theme", "light"));
+    assert_eq!(r.cookie("theme"), Some("light"));
+    assert_eq!(r.cookie("a"), Some("1"));
+    assert_eq!(r.cookie("session"), Some("abc=def"));
+    r.apply_cookie(&Cookie::new("new", "x"));
+    assert_eq!(r.cookie("new"), Some("x"));
+    r.apply_cookie(&Cookie::remove("session"));
+    assert_eq!(r.cookie("session"), None);
+    assert_eq!(r.header("cookie"), Some("a=1; theme=light; new=x"));
+    // The header keeps its place; the others are untouched.
+    assert_eq!(r.headers[0].0, "cookie");
+    assert_eq!(r.header("user-agent"), Some("test"));
+    // No Cookie header yet: one is added.
+    let mut bare = WebRequest::default();
+    bare.apply_cookie(&Cookie::new("s", "1"));
+    assert_eq!(bare.header("cookie"), Some("s=1"));
+    bare.apply_cookie(&Cookie::remove("s"));
+    assert_eq!(bare.header("cookie"), None);
+}
+
+#[test]
+fn set_cookie_and_reconnect_are_device_calls() {
+    let init: prism_core::AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Blank);
+        cx.set_root(root);
+    });
+    let mut rt = Runtime::new(&init);
+    rt.take_requests();
+    rt.app.set_cookie(Cookie::new("session", "abc"));
+    rt.app.reconnect();
+    let calls: Vec<DeviceCall> = rt
+        .take_requests()
+        .into_iter()
+        .filter_map(|r| match r {
+            PlatformRequest::Device { call, .. } => Some(call),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            DeviceCall::SetCookie(Cookie::new("session", "abc")),
+            DeviceCall::Reconnect
+        ]
+    );
 }

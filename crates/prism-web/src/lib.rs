@@ -34,6 +34,7 @@
 mod app;
 mod assets;
 mod compress;
+mod cookies;
 mod css;
 mod device_info;
 mod fonts;

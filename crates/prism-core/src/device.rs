@@ -444,6 +444,14 @@ pub enum DeviceCall {
     /// Opens a URL: on the web in this tab or a new one; natively like
     /// [`DeviceCall::OpenUrl`] (the system decides).
     OpenUrlIn(String, crate::request::UrlTarget),
+
+    // --- Cookies and the live session (web) ---
+    /// Sets a cookie in the browser ([`App::set_cookie`]); natively
+    /// [`DeviceError::Unavailable`].
+    SetCookie(crate::request::Cookie),
+    /// Ends the live session and opens a new one ([`App::reconnect`]); nothing
+    /// natively. No answer.
+    Reconnect,
 }
 
 /// A backend's answer to a [`DeviceCall`].
@@ -529,7 +537,7 @@ pub(crate) struct Device {
 pub struct Watch(pub u64);
 
 impl App {
-    fn device_call(&mut self, call: DeviceCall) -> u64 {
+    pub(crate) fn device_call(&mut self, call: DeviceCall) -> u64 {
         self.device.next_id += 1;
         let id = self.device.next_id;
         self.surfaces
