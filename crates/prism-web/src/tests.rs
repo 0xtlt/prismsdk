@@ -2544,6 +2544,22 @@ fn pointer_drag_and_key_messages_become_ui_events() {
         ev(json!({"t": "key", "id": 0, "key": "Escape"})),
         Some(UiEvent::Key(None, _))
     ));
+    // Clicks with keys and a count, key releases (#159).
+    let Some(UiEvent::ClickWith(4, c)) =
+        ev(json!({"t": "click", "id": 4, "x": 1, "y": 2, "mods": 8, "n": 2}))
+    else {
+        panic!("click with")
+    };
+    assert!(c.modifiers.meta && c.count == 2 && c.position == Some(Point::new(1., 2.)));
+    assert!(matches!(
+        ev(json!({"t": "click", "id": 4, "x": 1, "y": 2})),
+        Some(UiEvent::ClickAt(4, _))
+    ));
+    let Some(UiEvent::KeyUp(None, k)) = ev(json!({"t": "keyup", "id": 0, "key": " ", "mods": 1}))
+    else {
+        panic!("keyup")
+    };
+    assert!(k.key == " " && k.modifiers.shift);
     // How an overlay was closed (#156); a stack's back has none.
     assert_eq!(
         ev(json!({"t": "back", "id": 3, "depth": 0, "reason": "outside"})),

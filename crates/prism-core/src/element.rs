@@ -174,16 +174,41 @@ impl NodeKind {
 /// [`Point`](crate::Point)); `None` when it was activated from the keyboard
 /// or an assistive technology. `ClickEvent` alone is the event without a
 /// position.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ClickEvent {
     /// Where the pointer was, in the element's coordinates.
     pub position: Option<crate::events::Point>,
+    /// Keys held (#159): ⌘ / Ctrl-click opens in a new tab, ⇧-click extends
+    /// a selection, ⌥-click picks another action. See
+    /// [`Modifiers::command`](crate::Modifiers::command).
+    pub modifiers: crate::events::Modifiers,
+    /// The click's number in a quick series, as the system counts them
+    /// with the user's double-click speed (#159): 2 on a double click, 3 on
+    /// a triple click. 1 for a single click and from the keyboard.
+    pub count: u32,
+}
+
+impl Default for ClickEvent {
+    fn default() -> Self {
+        ClickEvent
+    }
+}
+
+impl ClickEvent {
+    /// A double click (or more): the second click of a quick series.
+    pub fn is_double(&self) -> bool {
+        self.count >= 2
+    }
 }
 
 /// A click without a position (keyboard, assistive technologies), so
 /// `ClickEvent` reads as a value too: `handler(&ClickEvent, cx)`.
 #[allow(non_upper_case_globals)]
-pub const ClickEvent: ClickEvent = ClickEvent { position: None };
+pub const ClickEvent: ClickEvent = ClickEvent {
+    position: None,
+    modifiers: crate::events::Modifiers::NONE,
+    count: 1,
+};
 
 /// Fired on every edit of a text input, with its new content.
 #[derive(Clone, Debug)]
@@ -522,6 +547,12 @@ pub struct VNode {
     pub on_key_down: Option<Handler<crate::events::KeyEvent>>,
     /// A key pressed anywhere in the window while the element is mounted.
     pub on_global_key_down: Option<Handler<crate::events::KeyEvent>>,
+    /// A key released while the element, or something in it, has the
+    /// focus (#159).
+    pub on_key_up: Option<Handler<crate::events::KeyEvent>>,
+    /// A key released anywhere in the window while the element is mounted
+    /// (#159).
+    pub on_global_key_up: Option<Handler<crate::events::KeyEvent>>,
 
     // --- Islands: client-side Web Components (WASM or JS) ---
     /// Makes this view an island (see [`island`](crate::island())): its
@@ -604,6 +635,8 @@ impl VNode {
             on_drag: None,
             on_key_down: None,
             on_global_key_down: None,
+            on_key_up: None,
+            on_global_key_up: None,
             island: None,
             widget_action: None,
             on_scene_tap: None,
@@ -795,6 +828,24 @@ macro_rules! builder {
             /// keys) or come with Control / Command are reported.
             pub fn on_global_key_down(mut self, handler: Handler<crate::events::KeyEvent>) -> Self {
                 self.0.on_global_key_down = Some(handler);
+                self
+            }
+
+            /// Called when a key is released while this element, or
+            /// something in it, has the focus (#159): the end of « hold a
+            /// key » interactions. Like [`on_key_down`](Self::on_key_down),
+            /// it makes the element focusable.
+            pub fn on_key_up(mut self, handler: Handler<crate::events::KeyEvent>) -> Self {
+                self.0.on_key_up = Some(handler);
+                self
+            }
+
+            /// Called for every key released in the window while this
+            /// element is mounted (#159), with the same rules as
+            /// [`on_global_key_down`](Self::on_global_key_down): hold Space
+            /// to pan a canvas, release it to stop.
+            pub fn on_global_key_up(mut self, handler: Handler<crate::events::KeyEvent>) -> Self {
+                self.0.on_global_key_up = Some(handler);
                 self
             }
         }

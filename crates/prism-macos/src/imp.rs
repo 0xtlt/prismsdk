@@ -85,6 +85,41 @@ fn report_state(id: NodeId, state: prism_core::Interaction, on: bool) {
 }
 
 thread_local! {
+    /// Keys whose press was reported, and to which node (#159): their
+    /// release goes there too, and losing the key window releases them.
+    static HELD_KEYS: RefCell<Vec<(String, Option<NodeId>)>> = const { RefCell::new(Vec::new()) };
+}
+
+fn hold_key(key: &prism_core::KeyEvent, focused: Option<NodeId>) {
+    if !key.repeat {
+        HELD_KEYS.with(|h| {
+            let mut h = h.borrow_mut();
+            h.retain(|(k, _)| *k != key.key);
+            h.push((key.key.clone(), focused));
+        });
+    }
+}
+
+/// The node a held key was reported to (`None` inside: nothing focused),
+/// or `None` if its press was not reported.
+fn release_key(key: &str) -> Option<Option<NodeId>> {
+    HELD_KEYS.with(|h| {
+        let mut h = h.borrow_mut();
+        let i = h.iter().position(|(k, _)| k == key)?;
+        Some(h.remove(i).1)
+    })
+}
+
+/// The window stopped being key: AppKit sends no key-up for the keys still
+/// held, so they are released now (#159).
+fn release_all_keys() {
+    let held = HELD_KEYS.with(|h| std::mem::take(&mut *h.borrow_mut()));
+    for (key, focused) in held {
+        dispatch(UiEvent::KeyUp(focused, prism_core::KeyEvent::new(key)));
+    }
+}
+
+thread_local! {
     /// Why the closing popover closes (`popoverWillClose:`, #156).
     static POPOVER_CLOSE_REASON: Cell<prism_core::DismissReason> =
         const { Cell::new(prism_core::DismissReason::Unknown) };
@@ -813,6 +848,7 @@ define_class!(
             if self.ivars().key_local.get() {
                 // Its `on_key_down` (and its ancestors', then global ones).
                 if let Some(key) = crate::interact::key_event(event) {
+                    hold_key(&key, Some(self.ivars().id.get()));
                     dispatch(UiEvent::Key(Some(self.ivars().id.get()), key));
                 }
                 if self.ivars().clickable.get() && (code == 49 || code == 36 || code == 76) {
@@ -822,6 +858,18 @@ define_class!(
                 dispatch(UiEvent::Click(self.ivars().id.get()));
             } else {
                 unsafe { msg_send![super(self), keyDown: event] }
+            }
+        }
+
+        /// A key released while it has the focus (#159).
+        #[unsafe(method(keyUp:))]
+        fn key_up(&self, event: &NSEvent) {
+            match crate::interact::key_event(event) {
+                Some(key) if self.ivars().key_local.get() => {
+                    release_key(&key.key);
+                    dispatch(UiEvent::KeyUp(Some(self.ivars().id.get()), key));
+                }
+                _ => unsafe { msg_send![super(self), keyUp: event] },
             }
         }
 
@@ -905,7 +953,15 @@ define_class!(
             if p.x >= 0. && p.y >= 0. && p.x <= b.size.width && p.y <= b.size.height {
                 // Where it was clicked, from the top-left corner (flipped).
                 let at = Point::new(p.x as f32, p.y as f32);
-                dispatch(UiEvent::ClickAt(self.ivars().id.get(), at));
+                // With the keys held and AppKit's click count (#159).
+                dispatch(UiEvent::ClickWith(
+                    self.ivars().id.get(),
+                    prism_core::ClickEvent {
+                        position: Some(at),
+                        modifiers: crate::interact::modifiers(event.modifierFlags()),
+                        count: event.clickCount().max(1) as u32,
+                    },
+                ));
             }
         }
     }
@@ -1880,6 +1936,12 @@ define_class!(
     }
 
     unsafe impl NSWindowDelegate for Target {
+        /// Keys held when the window stops being key get no key-up (#159).
+        #[unsafe(method(windowDidResignKey:))]
+        fn window_did_resign_key(&self, _n: &NSNotification) {
+            release_all_keys();
+        }
+
         #[unsafe(method(windowDidResize:))]
         fn window_did_resize(&self, n: &NSNotification) {
             place_traffic_lights(n);
@@ -4582,6 +4644,20 @@ fn install_key_monitor() {
         let Some(key) = crate::interact::key_event(e) else {
             return event.as_ptr();
         };
+        // A release (#159) goes where its press went, if it was reported.
+        if e.r#type() == objc2_app_kit::NSEventType::KeyUp {
+            let mtm = MainThreadMarker::new().expect("main thread");
+            let own = e
+                .window(mtm)
+                .and_then(|w| w.firstResponder())
+                .and_then(|r| r.downcast::<PrismView>().ok())
+                .is_some_and(|p| p.ivars().key_local.get());
+            // A focused Prism view with a handler reports in `keyUp:`.
+            if !own && let Some(focused) = release_key(&key.key) {
+                dispatch(UiEvent::KeyUp(focused, key));
+            }
+            return event.as_ptr();
+        }
         let mtm = MainThreadMarker::new().expect("main thread");
         let responder = e.window(mtm).and_then(|w| w.firstResponder());
         let view = responder
@@ -4622,6 +4698,7 @@ fn install_key_monitor() {
                 .and_then(|v| v.downcast_ref::<NSTextView>())
                 .filter(|tv| crate::interact::text_node(tv).is_some())
                 .map(crate::interact::text_selection);
+            hold_key(&key, focused);
             dispatch(UiEvent::Key(
                 focused,
                 prism_core::KeyEvent { selection, ..key },
@@ -4631,7 +4708,7 @@ fn install_key_monitor() {
     });
     let monitor = unsafe {
         NSEvent::addLocalMonitorForEventsMatchingMask_handler(
-            objc2_app_kit::NSEventMask::KeyDown,
+            objc2_app_kit::NSEventMask::KeyDown | objc2_app_kit::NSEventMask::KeyUp,
             &block,
         )
     };

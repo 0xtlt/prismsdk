@@ -117,6 +117,31 @@ test("the middle and secondary buttons drag where allowed, with their keys (#136
   assert.equal(p(pad, "contextmenu", 2, 60, 50).defaultPrevented, false);
 });
 
+test("clicks say their keys and count; released keys are reported (#159)", () => {
+  const page = live([
+    { op: "create", id: 2, kind: "view" }, { op: "clickable", id: 2, on: true },
+    { op: "create", id: 3, kind: "view" }, { op: "keys", id: 3, local: false, global: true },
+    ...root([2, 3]),
+  ]);
+  const el = placed(page.node(2));
+  el.dispatchEvent({ type: "click", detail: 2, clientX: 80, clientY: 45, metaKey: true });
+  assert.deepEqual(lastSent(page), { t: "click", id: 2, x: 30, y: 25, mods: 8, n: 2 });
+  el.dispatchEvent({ type: "click", detail: 1, clientX: 80, clientY: 45 });
+  assert.deepEqual(lastSent(page), { t: "click", id: 2, x: 30, y: 25 }, "a plain click stays plain");
+  // Hold Space: down, then up to the same listeners.
+  page.document.body.dispatchEvent({ type: "keydown", key: " " });
+  page.document.body.dispatchEvent({ type: "keyup", key: " " });
+  assert.deepEqual(lastSent(page), { t: "keyup", id: 0, key: " ", mods: 0 });
+  // A release whose press was not reported says nothing.
+  const count = sent(page).length;
+  page.document.body.dispatchEvent({ type: "keyup", key: "x" });
+  assert.equal(sent(page).length, count);
+  // Losing the window releases the keys still held.
+  page.document.body.dispatchEvent({ type: "keydown", key: "Shift", shiftKey: true });
+  page.window.dispatchEvent({ type: "blur" });
+  assert.deepEqual(lastSent(page), { t: "keyup", id: 0, key: "Shift", mods: 0 });
+});
+
 test("keys reach the focused element, and global listeners skip typing", () => {
   const page = live([
     { op: "create", id: 2, kind: "view" }, { op: "keys", id: 2, local: true, global: false },

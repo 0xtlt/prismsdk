@@ -139,8 +139,12 @@
     // The click that ends a drag is not a click.
     if (dragJustEnded) return;
     // Pointer clicks say where (keyboard activations have no position: detail 0).
-    if (e && e.detail > 0 && typeof e.clientX === "number") send({ t: "click", id, ...local(el, e) });
-    else send({ t: "click", id });
+    // With the keys held and the click's number in a quick series (#159),
+    // only when they say something.
+    if (e && e.detail > 0 && typeof e.clientX === "number") {
+      const mods = (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
+      send({ t: "click", id, ...local(el, e), ...(mods ? { mods } : {}), ...(e.detail > 1 ? { n: e.detail } : {}) });
+    } else send({ t: "click", id });
   }
 
   // --- Pointer and drag (#17) -------------------------------------------------
@@ -328,9 +332,25 @@
       if (sel) msg.sel = sel;
     }
     send(msg);
+    keysDown.set(e.key, msg.id);
     // The app handles arrows and space on its element: the page does not scroll.
     const control = typing || (t && ["SELECT", "INPUT"].includes(t.tagName));
     if (owner && !control && SCROLL_KEYS.includes(e.key)) e.preventDefault();
+  });
+  // Releases (#159) of the keys whose press was reported, to the same
+  // listeners: hold Space to pan, release it to stop. The window losing the
+  // focus releases them all (no key-up arrives then).
+  const keysDown = new Map();
+  document.addEventListener("keyup", (e) => {
+    if (!e.key || !keysDown.has(e.key)) return;
+    const id = keysDown.get(e.key);
+    keysDown.delete(e.key);
+    const mods = (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
+    send({ t: "keyup", id, key: e.key, mods });
+  });
+  addEventListener("blur", () => {
+    keysDown.forEach((id, key) => send({ t: "keyup", id, key, mods: 0 }));
+    keysDown.clear();
   });
 
   // --- Drawn radios (#84): one tab stop per group, arrows move the choice -------
