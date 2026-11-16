@@ -1833,6 +1833,9 @@ impl Widgets for UiKit {
             // A text field: the remote opens the full-screen keyboard.
             #[cfg(target_os = "tvos")]
             NodeKind::TextArea => return self.create(id, NodeKind::TextInput),
+            // Not rich here (`Widgets::rich_input`): the renderer asks for a
+            // text area instead (#115).
+            NodeKind::RichInput => return self.create(id, NodeKind::TextArea),
             NodeKind::Spinner => {
                 let s = objc2_ui_kit::UIActivityIndicatorView::initWithActivityIndicatorStyle(
                     objc2_ui_kit::UIActivityIndicatorView::alloc(mtm),

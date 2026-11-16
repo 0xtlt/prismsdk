@@ -87,6 +87,7 @@ pub use element::{
     Checkbox, Overlay, RadioGroup, checkbox, dialog, popover, radio_group, sheet, time_picker,
     time_picker_opt,
 };
+pub use element::{RichInput, RichInputEvent, rich_input};
 pub use element::{STACK_CLOSABLE, STACK_NO_HEADER};
 pub use element::{SelectionEvent, byte_to_char, char_to_byte};
 pub use element::{picture_data, svg};
@@ -105,7 +106,7 @@ pub use platform::{Platform, Platforms};
 pub use push::{
     ActivityPushToken, PushEvent, PushFuture, PushMessage, PushService, PushSubscription,
 };
-pub use reconcile::{NodeId, Patch, Reconciler, RenderEnvironment, UiEvent};
+pub use reconcile::{NodeId, Patch, Reconciler, RenderEnvironment, RichEdit, UiEvent};
 pub use request::{Cookie, RequestKind, SameSite, UrlTarget, WebRequest};
 pub use router::{Params, Router, RouterBuilder, go_back, navigate_to, normalize_path};
 pub use router::{encode_query, parse_query};
@@ -115,7 +116,10 @@ pub use security::{
     SecureStorage, WebAuthRequest,
 };
 pub use shape::{Drawing, Path, Segment};
-pub use spans::{Span, TextRun, decode_runs, encode_runs, icon, link, span};
+pub use spans::{
+    OBJECT_CHAR, Span, TextRun, chip, decode_runs, encode_runs, icon, link, normalize_spans,
+    restyle_spans, span, spans_text, splice_spans, split_spans,
+};
 pub use storage::{FileStorage, MemoryStorage, Storage};
 pub use style::*;
 pub use surfaces::WidgetAction;
@@ -311,8 +315,27 @@ impl Runtime {
                 }
             }
             UiEvent::Input(id, value) => {
-                if let Some(h) = self.reconciler.input_handler(id) {
+                if let Some(edit) = self.reconciler.rich_text_edit(id, &value) {
+                    // A rich input on a backend that edits plain text (#115).
+                    match edit {
+                        reconcile::RichEdit::Submit => {
+                            if let Some(h) = self.reconciler.submit_handler(id) {
+                                h(&ClickEvent, &mut self.app);
+                            }
+                        }
+                        reconcile::RichEdit::Spans(e) => {
+                            if let Some(h) = self.reconciler.rich_input_handler(id) {
+                                h(&e, &mut self.app);
+                            }
+                        }
+                    }
+                } else if let Some(h) = self.reconciler.input_handler(id) {
                     h(&InputEvent { value }, &mut self.app);
+                }
+            }
+            UiEvent::RichInput(id, runs) => {
+                if let Some((h, e)) = self.reconciler.rich_runs_edit(id, &runs) {
+                    h(&e, &mut self.app);
                 }
             }
             UiEvent::Select(id, start, end) => {
@@ -708,8 +731,8 @@ pub mod prelude {
     pub use crate::EmbeddedAssets;
     // Typography and rich text.
     pub use crate::{
-        FontFace, FontFamily, FontWeight, Span, Stylesheet, TextTransform, TextWrap, icon, link,
-        rich_text, span,
+        FontFace, FontFamily, FontWeight, RichInputEvent, Span, Stylesheet, TextTransform,
+        TextWrap, chip, icon, link, rich_input, rich_text, span,
     };
     // Box decorations and interaction states.
     pub use crate::decoration::{shadow_lg, shadow_md, shadow_sm};

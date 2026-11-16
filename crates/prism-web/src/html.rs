@@ -40,6 +40,8 @@ struct HtmlNode {
     link: Option<String>,
     /// App-defined attributes (`.attr(…)`).
     attributes: Vec<(String, String)>,
+    /// A rich input's runs (`Patch::SetRichValue`, #115).
+    runs: String,
 }
 
 /// A server-rendered page's parts ([`HtmlBackend::to_page`]).
@@ -211,6 +213,7 @@ impl Backend for HtmlBackend {
                 Patch::SetAttributes { id, attributes } => {
                     self.with(*id, |n| n.attributes = attributes.clone())
                 }
+                Patch::SetRichValue { id, runs } => self.with(*id, |n| n.runs = runs.clone()),
             }
         }
     }
@@ -515,6 +518,21 @@ impl HtmlBackend {
                     escape(&n.placeholder),
                     input_attrs(&n.config),
                     escape(&n.text)
+                );
+            }
+            // Editable once the client runs (#115): its runs, as a text's.
+            NodeKind::RichInput => {
+                let content = match self.sheet.borrow_mut().as_mut() {
+                    Some(sheet) => runs_html_with(&n.runs, None, &mut |css| sheet.attr(css)),
+                    None => runs_html_with(&n.runs, None, &mut |css| {
+                        format!(r#" style="{}""#, escape(css))
+                    }),
+                };
+                let empty = if n.text.is_empty() { " data-empty" } else { "" };
+                let _ = write!(
+                    out,
+                    r#"<div {attrs} class="prism-rich" role="textbox" aria-multiline="true" data-placeholder="{}"{empty}>{content}</div>"#,
+                    escape(&n.placeholder),
                 );
             }
             NodeKind::Slider => {
@@ -980,7 +998,23 @@ fn runs_html_with(
             style(&css)
         };
         let text = escape(&r.text);
-        if r.icon.is_some() {
+        if r.chip.is_some() {
+            // An inline object (#115): one unit, its icon then its label.
+            let icon = r.chip_icon.as_deref().map_or(String::new(), |g| {
+                format!(
+                    r#"<span class="prism-symbol" aria-hidden="true">{}</span>"#,
+                    escape(prism_core::glyphs::glyph(g))
+                )
+            });
+            let link = r
+                .link
+                .map_or(String::new(), |l| format!(r#" data-link="{l}""#));
+            let label = escape(r.chip_label.as_deref().unwrap_or(""));
+            let _ = write!(
+                out,
+                r#"<span class="prism-chip" contenteditable="false"{link}{style}>{icon}{label}</span>"#
+            );
+        } else if r.icon.is_some() {
             let _ = write!(
                 out,
                 r#"<span class="prism-symbol" aria-hidden="true"{style}>{text}</span>"#

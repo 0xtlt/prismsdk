@@ -1080,6 +1080,12 @@ impl PrismSlider {
 pub struct TextViewIvars {
     pub(crate) id: Cell<NodeId>,
     placeholder: RefCell<String>,
+    /// A rich input (#115): runs drawn as attributes (`crate::rich`).
+    pub(crate) rich: Cell<bool>,
+    /// Its encoded runs.
+    pub(crate) runs: RefCell<String>,
+    /// Its style (font, color), once set.
+    pub(crate) style: RefCell<Option<Style>>,
 }
 
 define_class!(
@@ -1094,6 +1100,16 @@ define_class!(
         fn draw_rect(&self, dirty: NSRect) {
             let _: () = unsafe { msg_send![super(self), drawRect: dirty] };
             self.draw_placeholder();
+        }
+
+        /// A rich input pastes plain text, in the style where it lands (#115).
+        #[unsafe(method(paste:))]
+        fn paste(&self, sender: Option<&AnyObject>) {
+            if self.ivars().rich.get() {
+                unsafe { self.pasteAsPlainText(sender) };
+            } else {
+                let _: () = unsafe { msg_send![super(self), paste: sender] };
+            }
         }
     }
 );
@@ -1507,7 +1523,53 @@ define_class!(
         }
     }
 
-    unsafe impl NSTextViewDelegate for Target {}
+    unsafe impl NSTextViewDelegate for Target {
+        /// Return in a rich input: `on_submit` (nothing inserted);
+        /// Shift+Return, a line break (#115).
+        #[unsafe(method(textView:doCommandBySelector:))]
+        fn text_view_do_command(
+            &self,
+            text_view: &NSTextView,
+            command: objc2::runtime::Sel,
+        ) -> objc2::runtime::Bool {
+            if !crate::rich::is_rich(text_view) {
+                return objc2::runtime::Bool::NO;
+            }
+            let shift = NSApplication::sharedApplication(self.mtm())
+                .currentEvent()
+                .is_some_and(|e| e.modifierFlags().contains(objc2_app_kit::NSEventModifierFlags::Shift));
+            if command == sel!(insertNewline:) && !shift {
+                if let Some(id) = crate::interact::text_node(text_view) {
+                    dispatch(UiEvent::Submit(id));
+                }
+                return objc2::runtime::Bool::YES;
+            }
+            if command == sel!(insertNewline:) || command == sel!(insertLineBreak:) {
+                // "\n", not the line separator `insertLineBreak:` types.
+                unsafe {
+                    objc2_app_kit::NSStandardKeyBindingResponding::insertNewlineIgnoringFieldEditor(
+                        text_view, None,
+                    )
+                };
+                return objc2::runtime::Bool::YES;
+            }
+            objc2::runtime::Bool::NO
+        }
+
+        /// A click on a chip with `on_click` (#115).
+        #[unsafe(method(textView:clickedOnCell:inRect:atIndex:))]
+        fn text_view_clicked_on_cell(
+            &self,
+            text_view: &NSTextView,
+            _cell: &AnyObject,
+            _rect: NSRect,
+            index: usize,
+        ) {
+            if let Some(link) = crate::rich::link_at(text_view, index) {
+                dispatch(UiEvent::MenuSelect(link));
+            }
+        }
+    }
 
     unsafe impl NSPopoverDelegate for Target {
         /// A popover closed: by the user (Escape, a click outside) unless
@@ -2452,7 +2514,9 @@ fn text_area_size(t: &MacTextArea, max_width: Option<f32>) -> NSSize {
                 .text
                 .font()
                 .unwrap_or_else(|| NSFont::systemFontOfSize(NSFont::systemFontSize()));
-            used.max(3. * lm.defaultLineHeightForFont(&font))
+            // A rich input is a paragraph: one line at least (#115).
+            let lines = if t.text.ivars().rich.get() { 1. } else { 3. };
+            used.max(lines * lm.defaultLineHeightForFont(&font))
         }
         _ => 54.,
     };
@@ -2574,6 +2638,12 @@ impl Widgets for AppKit {
                 View::DatePicker(d)
             }
             NodeKind::TextArea => View::TextArea(Rc::new(self.new_text_area(id))),
+            // A text area drawing runs and chips (#115).
+            NodeKind::RichInput => {
+                let t = self.new_text_area(id);
+                crate::rich::setup(&t.text);
+                View::TextArea(Rc::new(t))
+            }
             NodeKind::Spinner => {
                 let p = NSProgressIndicator::new(mtm);
                 p.setStyle(NSProgressIndicatorStyle::Spinning);
@@ -2776,6 +2846,10 @@ impl Widgets for AppKit {
                     &style.text_color.map_or_else(NSColor::labelColor, ns_color),
                 ));
                 t.text.setAlignment(alignment(style.text_align));
+                // A rich input draws its runs again over the new font.
+                if t.text.ivars().rich.get() {
+                    crate::rich::set_style(&t.text, style);
+                }
             }
             View::Image(v) => {
                 let config = NSImageSymbolConfiguration::configurationWithPointSize_weight(
@@ -2877,6 +2951,8 @@ impl Widgets for AppKit {
                 }
             }
             View::Button(b) | View::Check(b) => b.setTitle(&s),
+            // A rich input's text comes with its runs (`set_rich_value`).
+            View::TextArea(t) if t.text.ivars().rich.get() => {}
             View::TextArea(t) => {
                 let current = t.text.string();
                 if current.to_string() != text {
@@ -3739,6 +3815,18 @@ impl Widgets for AppKit {
     /// Text field selections (#86): through the field editor while an
     /// input is edited (else when it takes the focus), on the text view of
     /// a text area.
+    fn rich_input(&self) -> bool {
+        true
+    }
+
+    fn set_rich_value(&mut self, view: &View, runs: &str) {
+        if let View::TextArea(t) = view
+            && t.text.ivars().rich.get()
+        {
+            crate::rich::set_runs(&t.text, runs);
+        }
+    }
+
     fn set_selection(&mut self, view: &View, start: usize, end: usize) {
         match view {
             View::Input(i) => {

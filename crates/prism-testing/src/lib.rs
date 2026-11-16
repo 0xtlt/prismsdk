@@ -46,6 +46,8 @@ pub struct HNode {
     pub link: Option<String>,
     /// App-defined attributes (`Patch::SetAttributes`).
     pub attributes: Vec<(String, String)>,
+    /// A rich input's encoded runs (`Patch::SetRichValue`, #115).
+    pub runs: String,
 }
 
 #[derive(Default)]
@@ -199,6 +201,7 @@ impl Backend for Host {
                             island_props: Default::default(),
                             link: None,
                             attributes: Vec::new(),
+                            runs: String::new(),
                         },
                     );
                 }
@@ -299,6 +302,9 @@ impl Backend for Host {
                 }
                 Patch::SetAttributes { id, attributes } => {
                     self.node(*id, "SetAttributes").attributes = attributes.clone()
+                }
+                Patch::SetRichValue { id, runs } => {
+                    self.node(*id, "SetRichValue").runs = runs.clone()
                 }
             }
         }

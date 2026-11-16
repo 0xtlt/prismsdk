@@ -117,6 +117,7 @@
     image: "span", progress: "progress", timer: "span", modal: "dialog", picture: "img",
     shape: "div", slider: "input", picker: "select", date_picker: "input", text_area: "textarea",
     spinner: "span", overlay: "div", checkbox: "label", radio_group: "div", scene3d: "div",
+    rich_input: "div",
     web_view: "iframe",
   };
   // SF Symbol names → glyphs (table generated from Rust: glyphs.rs).
@@ -242,7 +243,7 @@
     const mods = (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
     const msg = { t: "key", id: owner ? Number(owner.dataset.pid) : 0, key: e.key, mods, repeat: !!e.repeat };
     // In a text field: its selection before the key acts (#86).
-    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA") && typing) {
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t._rich) && typing) {
       if (t._selFlush) t._selFlush();
       const sel = fieldSelection(t);
       if (sel) msg.sel = sel;
@@ -293,6 +294,9 @@
     const target = el._input || (el.dataset.kind === "radio_group"
       ? el.querySelector("input:checked") || el.querySelector("input") : el);
     target?.focus?.();
+    // A rich input takes the selection the app set while it was not focused (#115).
+    const sel = el._pendingSel;
+    if (el._rich && sel) { delete el._pendingSel; applyFieldSelection(el, sel[0], sel[1]); }
   }
   function reveal(el) {
     el.scrollIntoView?.({ block: "nearest", inline: "nearest", behavior: reducedMotion?.matches ? "auto" : "smooth" });
@@ -743,7 +747,22 @@
     el.replaceChildren(...runs.map((r) => {
       const css = runCss(r);
       let node;
-      if (r.g) {
+      if (r.k) {
+        // An inline object (#115): its icon, then its label.
+        node = document.createElement("span");
+        node.className = "prism-chip";
+        if (r.l) node.dataset.link = r.l;
+        if (r.m) {
+          const g = document.createElement("span");
+          g.className = "prism-symbol";
+          g.setAttribute("aria-hidden", "true");
+          g.textContent = glyphs[r.m] || "";
+          node.appendChild(g);
+        }
+        node.appendChild(document.createTextNode(r.n || ""));
+        if (css) { setCss(node, css); (el._runPs ||= []).push(node._ps); }
+        return node;
+      } else if (r.g) {
         node = document.createElement("span");
         node.className = "prism-symbol";
         node.setAttribute("aria-hidden", "true");
@@ -833,6 +852,8 @@
       el.addEventListener("input", () => { grow(el); sendTyped(el, id); });
       trackComposition(el);
       trackSelection(el, id);
+    } else if (kind === "rich_input") {
+      richSetup(el, id);
     } else if (kind === "slider") {
       el.type = "range";
       el.className = "prism-slider";
@@ -1275,6 +1296,7 @@
   }
   /** Field `el`'s selection in characters, `null` without a caret. */
   function fieldSelection(el) {
+    if (el._rich) return richSelection(el);
     let s, e;
     try { s = el.selectionStart; e = el.selectionEnd; } catch { return null; /* email, number */ }
     if (s == null || e == null) return null;
@@ -1309,6 +1331,9 @@
   document.addEventListener("selectionchange", () => {
     const a = document.activeElement;
     if (a && a._selCheck) a._selCheck();
+    // A rich input's chips show they are selected (#115).
+    const sel = a && a._rich ? richSelection(a) : null;
+    if (sel) richMarkChips(a, sel[0], sel[1]);
   });
   /** The `selev` op: whether field `el` reports its selection. */
   function setSelectEvents(el, on) {
@@ -1325,10 +1350,465 @@
     applyFieldSelection(el, start, end);
   }
   function applyFieldSelection(el, start, end) {
+    if (el._rich) {
+      setRichSelection(el, start, end);
+      if (el._selCheck) el._selCheck();
+      return;
+    }
     const v = el.value || "";
     try { el.setSelectionRange(toUnits(v, start), toUnits(v, Math.max(start, end))); } catch { /* no caret (email, number) */ }
     // Reported back (an echo the server recognises) if it moved.
     if (el._selCheck) el._selCheck();
+  }
+
+  // --- Rich inputs (#115): an editable paragraph of runs and chips --------------
+  //
+  // A `contenteditable` drawn from a model the client owns: runs
+  // `{ text, f, a, l }` (`f` the run's encoded fields without its link id,
+  // `a` them decoded, `l` its link id). Every run is a `<span>` holding one
+  // text node; a chip (`k=`, one U+FFFC of the value) is a non-editable
+  // `<span class="prism-chip">`, so the caret, the selection and Backspace
+  // treat it as one character. `beforeinput` edits the model (typing takes
+  // the style of the run before the caret, except after a chip or a link,
+  // like `prism_core::spans::typing_style`; pastes and drops are plain
+  // text), then the DOM is redrawn and the runs sent (`input` with `runs`).
+  // An IME composition is left to the browser; the DOM is read back into
+  // runs when it ends. The app's runs (`rich` op) follow #73's rule: runs
+  // equal to ones the user typed are echoes, others are applied (after a
+  // composition), the caret keeping its distance from the end.
+
+  const OBJ = "￼";
+  const clen = (s) => { let n = 0; for (const _ of s) n++; return n; };
+  /** The runs of `config`, each with its own fields and link id apart. */
+  function richRuns(config) {
+    if (!config) return [];
+    return config.split("\u001e").map((r) => {
+      const [text, ...fields] = r.split("\u001f");
+      const own = fields.filter((f) => !f.startsWith("l="));
+      const link = fields.find((f) => f.startsWith("l="));
+      const a = {};
+      for (const f of own) {
+        const i = f.indexOf("=");
+        a[i < 0 ? f : f.slice(0, i)] = i < 0 ? true : f.slice(i + 1);
+      }
+      const run = { text, f: own.join("\u001f"), a, l: link ? link.slice(2) : undefined };
+      if (run.a.k) run.text = OBJ;
+      return run;
+    });
+  }
+  const isChip = (r) => !!r.a.k;
+  /** Runs without empty ones, equal neighbours merged (`normalize_spans`). */
+  function richNormalize(runs) {
+    const out = [];
+    for (const r of runs) {
+      if (!r.text) continue;
+      const last = out[out.length - 1];
+      if (last && !isChip(last) && !isChip(r) && last.f === r.f && last.l === r.l) {
+        out[out.length - 1] = { ...last, text: last.text + r.text };
+      } else out.push({ ...r });
+    }
+    return out;
+  }
+  /** The runs as sent and compared: text then own fields, no link ids. */
+  const richEncode = (runs) => richNormalize(runs).map((r) => (r.f ? `${r.text}\u001f${r.f}` : r.text)).join("\u001e");
+  const richText = (runs) => runs.map((r) => r.text).join("");
+  /** `runs` split at character `at`. */
+  function richSplit(runs, at) {
+    const before = [], after = [];
+    let pos = 0;
+    for (const r of runs) {
+      const len = clen(r.text);
+      if (pos + len <= at) before.push(r);
+      else if (pos >= at) after.push(r);
+      else {
+        const cut = toUnits(r.text, at - pos);
+        before.push({ ...r, text: r.text.slice(0, cut) });
+        after.push({ ...r, text: r.text.slice(cut) });
+      }
+      pos += len;
+    }
+    return [before, after];
+  }
+  const continues = (r) => !!r && !isChip(r) && r.l === undefined && !r.a.h;
+  /** The run whose style text typed at `at` (over `replaced` characters) takes. */
+  function typingStyle(runs, at, replaced) {
+    let left = null, right = null, pos = 0;
+    for (const r of runs) {
+      const len = clen(r.text);
+      if (pos < at && at <= pos + len) left = r;
+      if (!right && pos <= at && at < pos + len) right = r;
+      pos += len;
+    }
+    let pick = null;
+    if (left && left === right && !isChip(left)) pick = left;
+    else if (replaced > 0 && continues(right)) pick = right;
+    else if (continues(left)) pick = left;
+    else if (continues(right)) pick = right;
+    return pick ? { f: pick.f, a: pick.a, l: pick.l } : { f: "", a: {}, l: undefined };
+  }
+
+  function richSetup(el, id) {
+    el.className = "prism-rich";
+    el.setAttribute("contenteditable", "true");
+    el.setAttribute("role", "textbox");
+    el.setAttribute("aria-multiline", "true");
+    el._rich = true;
+    el._model = [];
+    el._undo = [];
+    el._redo = [];
+    richDraw(el);
+    el.addEventListener("beforeinput", (e) => richBeforeInput(el, id, e));
+    el.addEventListener("input", (e) => {
+      // The browser changed the DOM itself (a composition, an input type
+      // not handled above): read it back once nothing is being composed.
+      if (!el._composing && !e.isComposing) richReadBack(el, id);
+    });
+    el.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" || e.isComposing || el._composing) return;
+      e.preventDefault();
+      // Shift+Enter: a line break; Enter: the app's (submit, split…).
+      if (e.shiftKey) richEdit(el, id, ...richSelected(el), "\n");
+      else send({ t: "submit", id });
+    });
+    el.addEventListener("compositionstart", () => { el._composing = true; });
+    el.addEventListener("compositionend", () => {
+      el._composing = false;
+      richReadBack(el, id);
+      const runs = el._deferred, sel = el._deferredSel;
+      delete el._deferred;
+      delete el._deferredSel;
+      if (runs !== undefined) richApply(el, runs);
+      if (sel) applyFieldSelection(el, sel[0], sel[1]);
+    });
+    // Copy and cut as plain text (a chip as its label).
+    const copy = (e, cut) => {
+      const sel = richSelection(el);
+      if (!sel || sel[0] === sel[1] || !e.clipboardData) return;
+      e.preventDefault();
+      const [, rest] = richSplit(el._model, sel[0]);
+      const [mid] = richSplit(rest, sel[1] - sel[0]);
+      e.clipboardData.setData("text/plain", mid.map((r) => (isChip(r) ? r.a.n || "" : r.text)).join(""));
+      if (cut) richEdit(el, id, sel[0], sel[1], "");
+    };
+    el.addEventListener("copy", (e) => copy(e, false));
+    el.addEventListener("cut", (e) => copy(e, true));
+    el.addEventListener("paste", (e) => {
+      e.preventDefault();
+      const text = e.clipboardData ? e.clipboardData.getData("text/plain") : "";
+      richEdit(el, id, ...richSelected(el), text);
+    });
+    // A clickable chip reports its click; a link, a click with ⌘ or Ctrl.
+    el.addEventListener("click", (e) => {
+      const hit = e.target && e.target.closest && e.target.closest("[data-link]");
+      if (!hit || !el.contains(hit)) return;
+      if (!hit.classList.contains("prism-chip") && !(e.metaKey || e.ctrlKey)) return;
+      activateRun(e);
+    });
+    // A selection the app set while the field was not focused lands when
+    // the app focuses it; a click puts the caret where the user clicked.
+    el.addEventListener("pointerdown", () => { delete el._pendingSel; });
+    trackSelection(el, id);
+  }
+
+  /** The selection to edit: the current one, `[0, 0]` without one. */
+  function richSelected(el) {
+    return richSelection(el) || [0, 0];
+  }
+
+  /** `beforeinput`: the edits the client makes itself. */
+  function richBeforeInput(el, id, e) {
+    const type = e.inputType || "";
+    if (e.isComposing || el._composing || type.includes("Composition")) return;
+    // Formatting is the app's (⌘B is a key it handles); no browser styles.
+    if (type.startsWith("format")) { e.preventDefault(); return; }
+    if (type === "historyUndo" || type === "historyRedo") {
+      e.preventDefault();
+      richHistory(el, id, type === "historyUndo");
+      return;
+    }
+    if (type === "insertParagraph") { e.preventDefault(); send({ t: "submit", id }); return; }
+    let text = null;
+    if (type === "insertText" || type === "insertReplacementText" || type === "insertFromPaste"
+      || type === "insertFromDrop" || type === "insertFromYank") {
+      text = e.data != null ? e.data : (e.dataTransfer ? e.dataTransfer.getData("text/plain") : "");
+    } else if (type === "insertLineBreak") {
+      text = "\n";
+    } else if (type.startsWith("delete")) {
+      text = "";
+    } else {
+      return; // Read back on `input`.
+    }
+    e.preventDefault();
+    let [start, end] = richSelected(el);
+    const target = e.getTargetRanges ? e.getTargetRanges()[0] : null;
+    if (target) {
+      const s = richOffset(el, target.startContainer, target.startOffset);
+      const t = richOffset(el, target.endContainer, target.endOffset);
+      if (s !== null && t !== null) [start, end] = [Math.min(s, t), Math.max(s, t)];
+    }
+    if (text === "" && start === end) {
+      // A caret: one character (a chip is one).
+      if (type.includes("Backward")) start = Math.max(0, start - 1);
+      else end = Math.min(clen(richText(el._model)), end + 1);
+    }
+    richEdit(el, id, start, end, text, type);
+  }
+
+  /** Replaces characters `start..end` with `text` (plain), caret after it. */
+  function richEdit(el, id, start, end, text, type) {
+    text = (text || "").replace(/\r\n?/g, "\n").split(OBJ).join("");
+    const model = el._model;
+    const style = typingStyle(model, start, end - start);
+    const [before, rest] = richSplit(model, start);
+    const [, after] = richSplit(rest, end - start);
+    const next = richNormalize([...before, ...(text ? [{ ...style, text }] : []), ...after]);
+    if (richEncode(next) === richEncode(model)) { setRichSelection(el, start + clen(text), start + clen(text)); return; }
+    // Undo: typing coalesces into one step until a space or another kind of edit.
+    const coalesce = type === "insertText" && el._lastEdit === "insertText" && text !== " ";
+    if (!coalesce) { el._undo.push({ model, sel: [start, end] }); if (el._undo.length > 100) el._undo.shift(); }
+    el._redo.length = 0;
+    el._lastEdit = type;
+    el._model = next;
+    richDraw(el);
+    const caret = start + clen(text);
+    setRichSelection(el, caret, caret);
+    richSend(el, id);
+    if (el._selCheck) el._selCheck();
+  }
+
+  function richHistory(el, id, undo) {
+    const from = undo ? el._undo : el._redo, to = undo ? el._redo : el._undo;
+    const step = from.pop();
+    if (!step) return;
+    const sel = richSelected(el);
+    to.push({ model: el._model, sel });
+    el._lastEdit = null;
+    el._model = step.model;
+    richDraw(el);
+    setRichSelection(el, step.sel[0], step.sel[1]);
+    richSend(el, id);
+    if (el._selCheck) el._selCheck();
+  }
+
+  /** Sends the runs and remembers them (an echo of them is no change). */
+  function richSend(el, id) {
+    const runs = richEncode(el._model);
+    const sent = el._sent || (el._sent = []);
+    sent.push(runs);
+    if (sent.length > 64) sent.shift();
+    send({ t: "input", id, v: richText(el._model), runs });
+  }
+
+  /** The DOM's runs (after the browser edited it), sent if they changed. */
+  function richReadBack(el, id) {
+    const sel = richSelection(el);
+    const out = [];
+    const textOf = (n) => (n.nodeType === 3 ? n.data : n.localName === "br" ? "\n"
+      : (["div", "p"].includes(n.localName) && n.previousSibling ? "\n" : "") + [...n.childNodes].map(textOf).join(""));
+    for (const c of [...el.childNodes]) {
+      if (c._tail) continue;
+      if (c._chip) { out.push(c._run); continue; }
+      const text = textOf(c).split(OBJ).join("");
+      if (c._run) out.push({ ...c._run, text });
+      else if (text) out.push({ f: "", a: {}, l: undefined, text });
+    }
+    const next = richNormalize(out);
+    const changed = richEncode(next) !== richEncode(el._model);
+    if (changed) {
+      el._undo.push({ model: el._model, sel: sel || [0, 0] });
+      el._redo.length = 0;
+      el._lastEdit = null;
+    }
+    el._model = next;
+    richDraw(el);
+    if (sel) setRichSelection(el, sel[0], sel[1]);
+    if (changed) richSend(el, id);
+  }
+
+  /** The `rich` op: the app's runs. */
+  function setRichValue(el, runs) {
+    const sent = el._sent;
+    const canon = richEncode(richRuns(runs));
+    const echo = sent ? sent.indexOf(canon) : -1;
+    if (echo >= 0) {
+      sent.splice(0, echo + 1);
+      // The latest: what the field shows; take the new link ids.
+      if (!sent.length && canon === richEncode(el._model)) {
+        el._model = richNormalize(richRuns(runs));
+        richDraw(el);
+      }
+      return;
+    }
+    if (el._composing && document.activeElement === el) { el._deferred = runs; return; }
+    delete el._deferred;
+    richApply(el, runs);
+  }
+
+  /** Shows the app's `runs`, keeping the caret's distance from the end. */
+  function richApply(el, runs) {
+    if (el._sent) el._sent.length = 0;
+    const next = richNormalize(richRuns(runs));
+    const focused = document.activeElement === el;
+    const sel = focused ? richSelection(el) : null;
+    const oldLen = clen(richText(el._model));
+    el._model = next;
+    el._undo.length = 0;
+    el._redo.length = 0;
+    richDraw(el);
+    if (sel) {
+      const caret = Math.max(0, clen(richText(next)) - (oldLen - sel[1]));
+      setRichSelection(el, caret, caret);
+    }
+  }
+
+  /** Draws the model, reusing the run elements that did not change. */
+  function richDraw(el) {
+    const old = el._runEls || [];
+    const els = el._model.map((r, i) => {
+      const prev = old[i];
+      // The same style (a new link id at most): the node stays, so the
+      // caret and an IME composition in it do too.
+      if (!prev || prev._run.f !== r.f || !!prev._chip !== isChip(r)) return richNode(r);
+      if (!isChip(r)) {
+        const t = prev.firstChild && prev.firstChild.nodeType === 3 ? prev.firstChild : null;
+        if (!t || prev.childNodes.length !== 1) prev.replaceChildren(document.createTextNode(r.text));
+        else if (t.data !== r.text) t.data = r.text;
+      }
+      if (r.l !== undefined) prev.dataset.link = r.l; else delete prev.dataset.link;
+      const link = !isChip(r) && (r.l !== undefined || !!r.a.h);
+      if (!isChip(r) && prev.classList.contains("prism-link") !== link) toggleClass(prev, "prism-link", link);
+      prev._run = r;
+      return prev;
+    });
+    // A last line break needs a <br> to show its empty line; so does an
+    // empty field (one line high, with its placeholder).
+    const text = richText(el._model);
+    if (!el._tail) { el._tail = document.createElement("br"); el._tail._tail = true; }
+    const want = [...els, ...(!text || text.endsWith("\n") ? [el._tail] : [])];
+    const same = want.length === el.childNodes.length && want.every((n, i) => el.childNodes[i] === n);
+    if (!same) el.replaceChildren(...want);
+    el._runEls = els;
+    el._runPs = els.map((n) => n._ps).filter(Boolean);
+    if (text) delete el.dataset.empty; else el.dataset.empty = "";
+  }
+
+  function richNode(r) {
+    const node = document.createElement("span");
+    node._run = r;
+    if (r.l !== undefined) node.dataset.link = r.l;
+    if (isChip(r)) {
+      node._chip = true;
+      node.className = "prism-chip";
+      node.setAttribute("contenteditable", "false");
+      if (r.a.m) {
+        const g = document.createElement("span");
+        g.className = "prism-symbol";
+        g.setAttribute("aria-hidden", "true");
+        g.textContent = glyphs[r.a.m] || "";
+        node.appendChild(g);
+      }
+      node.appendChild(document.createTextNode(r.a.n || ""));
+    } else {
+      if (r.l !== undefined || r.a.h) node.className = "prism-link";
+      node.appendChild(document.createTextNode(r.text));
+    }
+    setCss(node, runCss(r.a));
+    return node;
+  }
+
+  /** How many characters of the value DOM node `c` (a child of the field) holds. */
+  const richLen = (c) => (c._tail ? 0 : c._chip ? 1 : clen(c.nodeType === 3 ? c.data : c.textContent));
+
+  /** The character offset of DOM point (`node`, `offset`) in field `el`, `null` outside it. */
+  function richOffset(el, node, offset) {
+    if (!node) return null;
+    const kids = el.childNodes;
+    if (node === el) {
+      let n = 0;
+      for (let i = 0; i < offset && i < kids.length; i++) n += richLen(kids[i]);
+      return n;
+    }
+    let child = node;
+    while (child && child.parentNode !== el) child = child.parentNode;
+    if (!child) return null;
+    let n = 0;
+    for (const c of kids) { if (c === child) break; n += richLen(c); }
+    if (child._tail) return n;
+    if (child._chip) return n + (node === child && offset === 0 ? 0 : 1);
+    if (node.nodeType === 3) {
+      // In a run's text, or a text node the browser added.
+      let before = 0;
+      if (node !== child) for (const t of child.childNodes) { if (t === node) break; before += clen(t.textContent); }
+      return n + before + toChars(node.data, offset);
+    }
+    // An element point: `offset` children in.
+    let m = 0;
+    for (let i = 0; i < offset && i < node.childNodes.length; i++) m += clen(node.childNodes[i].textContent);
+    return n + m;
+  }
+
+  /** The text node of run element (or text node) `c`. */
+  function textIn(c) {
+    if (c.nodeType === 3) return c;
+    if (!c.firstChild || c.firstChild.nodeType !== 3) c.prepend(document.createTextNode(""));
+    return c.firstChild;
+  }
+  /**
+   * The DOM point of character `at` in field `el`: inside a run's text, or
+   * at the edge of two, in the one typing there continues (the run before,
+   * unless a chip or a link, then the one after), else between them.
+   */
+  function richPoint(el, at) {
+    const kids = [...el.childNodes].filter((c) => !c._tail);
+    const cont = (c) => !!c && !c._chip && (c.nodeType === 3 || !c._run || continues(c._run));
+    const edge = (left, right, i) => {
+      if (cont(left)) { const t = textIn(left); return [t, t.data.length]; }
+      if (cont(right)) return [textIn(right), 0];
+      return [el, i];
+    };
+    let n = 0;
+    for (let i = 0; i < kids.length; i++) {
+      const c = kids[i], len = richLen(c);
+      if (at === n) return edge(kids[i - 1] || null, c, i);
+      if (at < n + len && !c._chip) { const t = textIn(c); return [t, toUnits(t.data, at - n)]; }
+      n += len;
+    }
+    return edge(kids[kids.length - 1] || null, null, kids.length);
+  }
+
+  /** Field `el`'s selection in characters, `null` when it is elsewhere. */
+  function richSelection(el) {
+    const s = document.getSelection && document.getSelection();
+    if (!s || !s.anchorNode || !el.contains(s.anchorNode) || !el.contains(s.focusNode)) return null;
+    const a = richOffset(el, s.anchorNode, s.anchorOffset);
+    const f = richOffset(el, s.focusNode, s.focusOffset);
+    if (a === null || f === null) return null;
+    return [Math.min(a, f), Math.max(a, f)];
+  }
+
+  /** Selects characters `start..end` of field `el` (clamped); later if it is not focused. */
+  function setRichSelection(el, start, end) {
+    const len = clen(richText(el._model));
+    start = Math.min(start, len);
+    end = Math.min(Math.max(start, end), len);
+    if (document.activeElement !== el) { el._pendingSel = [start, end]; return; }
+    const s = document.getSelection && document.getSelection();
+    if (!s) return;
+    const [an, ao] = richPoint(el, start);
+    const [fn, fo] = start === end ? [an, ao] : richPoint(el, end);
+    s.setBaseAndExtent(an, ao, fn, fo);
+    richMarkChips(el, start, end);
+  }
+
+  /** Chips inside the selection look selected (`data-selected`). */
+  function richMarkChips(el, start, end) {
+    let n = 0;
+    for (const c of el.childNodes) {
+      if (c._chip) {
+        if (start < end && n >= start && n < end) c.dataset.selected = ""; else delete c.dataset.selected;
+      }
+      n += richLen(c);
+    }
   }
 
   /** A text patch for an input or a text area. */
@@ -1468,7 +1948,7 @@
       el.min = bounded && min !== "-" ? dateString(Number(min), el.type) : "";
       el.max = bounded && max !== "-" ? dateString(Number(max), el.type) : "";
       if (el._secs !== undefined) showDate(el);
-    } else if (kind === "text_input" || kind === "text_area") {
+    } else if (kind === "text_input" || kind === "text_area" || kind === "rich_input") {
       applyInputConfig(el, config);
     } else if (kind === "text") {
       el._runs = config;
@@ -1545,6 +2025,7 @@
     set("aria-live", role === "status" ? "polite" : null);
     set("aria-disabled", a.disabled || null);
     if (["INPUT", "BUTTON", "SELECT", "TEXTAREA"].includes(el.tagName)) el.disabled = !!a.disabled;
+    if (el._rich) el.setAttribute("contenteditable", a.disabled ? "false" : "true");
     // Custom interactive elements must be reachable from the keyboard.
     const interactive = ["button", "link", "switch", "checkbox", "radio", "tab", "slider", "combobox"].includes(role);
     if (link) set("tabindex", a.hidden || a.disabled ? "-1" : null);
@@ -1596,6 +2077,8 @@
           return;
         }
         if (kind === "checkbox") { el._label.textContent = p.text; return; }
+        // A rich input's text comes with its runs (`rich`).
+        if (kind === "rich_input") return;
         if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
           setFieldText(el, p.text);
           if (el.tagName === "TEXTAREA") grow(el);
@@ -1613,7 +2096,8 @@
         return;
       }
       case "placeholder":
-        if (el._ph) el._ph.textContent = p.text;
+        if (el._rich) el.dataset.placeholder = p.text;
+        else if (el._ph) el._ph.textContent = p.text;
         else el.placeholder = p.text;
         return;
       case "config": return applyConfig(el, p.config);
@@ -1709,6 +2193,8 @@
       case "keys": return setKeys(el, p.local, p.global);
       // Text field selections (#86).
       case "sel": return el && setFieldSelection(el, p.start, p.end);
+      // A rich input's runs (#115).
+      case "rich": return el && el._rich && setRichValue(el, p.runs);
       case "selev": return el && setSelectEvents(el, p.on);
       case "focus": return el && focusNode(el);
       case "reveal": return el && reveal(el);

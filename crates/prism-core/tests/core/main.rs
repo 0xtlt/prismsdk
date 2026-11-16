@@ -15,6 +15,7 @@ mod navbar;
 mod pictures;
 mod reconcile;
 mod request;
+mod rich_input;
 mod router;
 mod selection;
 mod spawn;
