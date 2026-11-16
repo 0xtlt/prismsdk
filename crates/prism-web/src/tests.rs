@@ -1692,9 +1692,10 @@ fn ssr_pages_are_titled_by_the_visible_screen() {
     };
     let w = page("/welcome", "en");
     assert!(w.contains("<title>Welcome · Test</title>"), "{w}");
-    // A deep link renders the screens underneath (hidden) and the target.
-    let deep = page("/welcome", "en");
-    assert!(deep.contains(r#"hidden aria-label="Home""#), "{deep}");
+    // A deep link ships only its screen: the one underneath is an empty,
+    // hidden placeholder (Back builds it), not Home's HTML.
+    assert!(!w.contains("Home"), "{w}");
+    assert_eq!(w.matches("<section").count(), 2, "{w}");
     // Right-to-left languages set the page direction before any script.
     assert!(page("/", "ar-EG,ar;q=0.9").contains(r#"lang="ar-EG" dir="rtl""#));
     let _ = std::fs::remove_dir_all(dir);

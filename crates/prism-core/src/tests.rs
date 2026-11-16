@@ -392,6 +392,86 @@ fn native_back_truncates_the_stack() {
     assert!(rt.dispatch(UiEvent::Back(stack, 0)).is_empty());
 }
 
+/// A router on `platform`, counting how many times `/` is built.
+fn routed_on(
+    platform: crate::Platform,
+    path: &str,
+) -> (Runtime, Vec<Patch>, Arc<std::sync::atomic::AtomicUsize>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let homes = Arc::new(AtomicUsize::new(0));
+    let count = homes.clone();
+    let init: AppInit = Arc::new(move |cx: &mut App| {
+        let count = count.clone();
+        let router = Router::new()
+            .route("/", move |cx, _| {
+                count.fetch_add(1, Ordering::SeqCst);
+                cx.new_entity(|_| Home)
+            })
+            .route("/items/:id", |cx, p| {
+                let id = p.parse("id").unwrap_or(0);
+                cx.new_entity(move |_| Item(id))
+            })
+            .build(cx);
+        cx.set_root(router);
+    });
+    let mut rt = Runtime::with_options(
+        &init,
+        crate::RuntimeOptions {
+            path: path.into(),
+            platform: Some(platform),
+            ..Default::default()
+        },
+    );
+    let first = rt.render();
+    (rt, first, homes)
+}
+
+#[test]
+fn web_deep_links_build_the_screen_underneath_when_back_reaches_it() {
+    use std::sync::atomic::Ordering;
+    let (mut rt, first, homes) = routed_on(crate::Platform::Web, "/items/3");
+    // Two screens (Back and the browser's history see the depth), but `/`
+    // is neither built nor rendered.
+    let (stack, depth, _) = stack_of(&first);
+    assert_eq!(depth, 2);
+    assert_eq!(homes.load(Ordering::SeqCst), 0);
+    assert!(
+        !first
+            .iter()
+            .any(|p| matches!(p, Patch::SetText { text, .. } if text == "Home"))
+    );
+    find_text(&first, "Item 3");
+    // Back builds it, once.
+    let back = rt.dispatch(UiEvent::Back(stack, 1));
+    assert_eq!(homes.load(Ordering::SeqCst), 1);
+    assert_eq!(rt.app.current_path(), Some("/"));
+    find_text(&back, "Home");
+    find_text(&back, "open 7");
+    // Navigating away and back reuses it.
+    let again = rt.dispatch(UiEvent::Click(find_text(&back, "open 7")));
+    rt.dispatch(UiEvent::Click(find_text(&again, "back")));
+    assert_eq!(homes.load(Ordering::SeqCst), 1);
+    assert_eq!(rt.app.current_path(), Some("/"));
+}
+
+#[test]
+fn web_deep_links_build_the_screen_underneath_on_app_back() {
+    use std::sync::atomic::Ordering;
+    let (mut rt, first, homes) = routed_on(crate::Platform::Web, "/items/3");
+    let back = rt.dispatch(UiEvent::Click(find_text(&first, "back")));
+    assert_eq!(homes.load(Ordering::SeqCst), 1);
+    find_text(&back, "Home");
+}
+
+#[test]
+fn native_deep_links_build_the_screen_underneath_up_front() {
+    use std::sync::atomic::Ordering;
+    // Native Back shows it (iOS names it in Back, the swipe reveals it).
+    let (_, first, homes) = routed_on(crate::Platform::Ios, "/items/3");
+    assert_eq!(homes.load(Ordering::SeqCst), 1);
+    find_text(&first, "Home");
+}
+
 #[test]
 fn browser_forward_navigates() {
     let (mut rt, first) = routed("/");
