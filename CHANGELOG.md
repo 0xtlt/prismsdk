@@ -312,6 +312,7 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- Web: an element dragged only with the middle or secondary button (`drag_buttons`, #136) is no longer text-selectable (#142): every element with a drag handler gets `prism-draggable` (`user-select: none`, `touch-action: none`), so a left drag over a middle-button canvas no longer selects the whole area.
 - Web views load only web pages (#62 follow-up): `web_view(url)` refuses URLs whose scheme is not `http`, `https` or `file` (read as browsers read it: surrounding spaces and control characters, tabs and newlines ignored), and the web client loads only `http:` / `https:` frames. `web_view("javascript:…")` built from a user's link ran in the app's own page on the web, with its cookies and session. `prism_core::web_view::is_web_view_url`.
 - macOS: a dialog placed beside its anchor (`dialog(…).side(…)`, #79) is modal again: a press on the window behind it closes it and reaches nothing else. It is shown as a transient `NSPopover`, which closes on an outside click but may also hand that click to what was clicked; presses in the dialog, and in menus or popovers opened from it, go on as usual.
 - Web: a `picker()` with a value no longer shows an empty first row (#96). The placeholder `<option>` is only in the `<select>` while nothing is picked; Safari showed the hidden option as a blank row. The server's first paint already left it out.
