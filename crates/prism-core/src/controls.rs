@@ -11,7 +11,7 @@
 //! | `TextInput`, `TextArea` | [`InputConfig`]: `secure keyboard=email return=done capitalize=none autocorrect=off max=40`, then one suggestion per line ([`input_suggestions`]) | – |
 //! | `Checkbox` | – | 0 or 1 |
 //! | `RadioGroup` | [`RadioConfig`]: `row` or `column`, then options one per line | the selected index (-1: none) |
-//! | `Overlay` | [`OverlayConfig`]: `sheet`/`popover`/`dialog`, `fixed`, `medium`, `manual`, `keepfocus` | 1 open, 0 closed |
+//! | `Overlay` | [`OverlayConfig`]: `sheet`/`popover`/`dialog`, `fixed`, `medium`, `manual`, `keepfocus`, `side=top`/`trailing`/`leading`, `align=center`/`end` | 1 open, 0 closed |
 
 /// A slider's range. `step == 0` is continuous.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -429,6 +429,79 @@ pub enum OverlayKind {
     Dialog,
 }
 
+/// The side of its anchor a popover opens on (#113). It flips to the
+/// opposite side when the window has no room there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PopoverSide {
+    /// Below the anchor (the default).
+    #[default]
+    Bottom,
+    /// Above the anchor.
+    Top,
+    /// After the anchor: to its right in left-to-right layouts, to its left
+    /// in right-to-left ones. Submenus open there.
+    Trailing,
+    /// Before the anchor: to its left in left-to-right layouts.
+    Leading,
+}
+
+impl PopoverSide {
+    /// Beside the anchor (lined up along its height) rather than below or
+    /// above it.
+    pub fn beside(self) -> bool {
+        matches!(self, PopoverSide::Trailing | PopoverSide::Leading)
+    }
+
+    /// The opposite side, where a popover goes when there is no room.
+    pub fn opposite(self) -> Self {
+        match self {
+            PopoverSide::Bottom => PopoverSide::Top,
+            PopoverSide::Top => PopoverSide::Bottom,
+            PopoverSide::Trailing => PopoverSide::Leading,
+            PopoverSide::Leading => PopoverSide::Trailing,
+        }
+    }
+}
+
+/// How a popover lines up with its anchor along the side it opens on
+/// (#113).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PopoverAlign {
+    /// Leading edges lined up for a popover below or above its anchor, top
+    /// edges for one beside it (the default).
+    #[default]
+    Start,
+    /// Centered on the anchor.
+    Center,
+    /// Trailing edges lined up below or above, bottom edges beside.
+    End,
+}
+
+impl PopoverAlign {
+    /// For popovers the platform centers on a rectangle it points its arrow
+    /// at (`NSPopover`, `UIPopoverPresentationController`, `GtkPopover`):
+    /// the span `(offset, length)` of an anchor `anchor` long to point at,
+    /// so that a popover `popover` long lines up with the anchor's start,
+    /// center or end. `start_at_min`: the start is the anchor's low
+    /// coordinate (its left in left-to-right layouts, its top in y-down
+    /// coordinates). A popover longer than the anchor is centered on it,
+    /// its arrow still on the anchor; one not measured yet (`0`) points at
+    /// the whole anchor.
+    pub fn arrow_span(self, anchor: f64, popover: f64, start_at_min: bool) -> (f64, f64) {
+        if popover <= 0. {
+            return (0., anchor);
+        }
+        let part = popover.clamp(0., anchor.max(0.));
+        let offset = match self {
+            PopoverAlign::Center => (anchor - part) / 2.,
+            PopoverAlign::Start if start_at_min => 0.,
+            PopoverAlign::End if !start_at_min => 0.,
+            PopoverAlign::Start | PopoverAlign::End => anchor - part,
+        };
+        (offset, part)
+    }
+}
+
 /// An overlay's presentation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct OverlayConfig {
@@ -448,11 +521,18 @@ pub struct OverlayConfig {
     /// inside: inline suggestion menus. Implies `manual`. See
     /// [`Overlay::take_focus`](crate::Overlay::take_focus).
     pub keep_focus: bool,
+    /// The side of its anchor a popover opens on. See
+    /// [`Overlay::side`](crate::Overlay::side).
+    pub side: PopoverSide,
+    /// How a popover lines up with its anchor. See
+    /// [`Overlay::align`](crate::Overlay::align).
+    pub align: PopoverAlign,
 }
 
 impl OverlayConfig {
     /// `sheet` / `popover` / `dialog`, then `fixed`, `medium`, `manual`,
-    /// `keepfocus`.
+    /// `keepfocus`, `side=…` and `align=…` (left out when they are the
+    /// defaults).
     pub fn encode(&self) -> String {
         let mut out = String::from(match self.kind {
             OverlayKind::Sheet => "sheet",
@@ -471,6 +551,17 @@ impl OverlayConfig {
         if self.keep_focus {
             out.push_str(" keepfocus");
         }
+        match self.side {
+            PopoverSide::Bottom => {}
+            PopoverSide::Top => out.push_str(" side=top"),
+            PopoverSide::Trailing => out.push_str(" side=trailing"),
+            PopoverSide::Leading => out.push_str(" side=leading"),
+        }
+        match self.align {
+            PopoverAlign::Start => {}
+            PopoverAlign::Center => out.push_str(" align=center"),
+            PopoverAlign::End => out.push_str(" align=end"),
+        }
         out
     }
 
@@ -485,6 +576,11 @@ impl OverlayConfig {
                 "medium" => c.medium = true,
                 "manual" => c.manual = true,
                 "keepfocus" => c.keep_focus = true,
+                "side=top" => c.side = PopoverSide::Top,
+                "side=trailing" => c.side = PopoverSide::Trailing,
+                "side=leading" => c.side = PopoverSide::Leading,
+                "align=center" => c.align = PopoverAlign::Center,
+                "align=end" => c.align = PopoverAlign::End,
                 _ => {}
             }
         }
@@ -578,9 +674,54 @@ mod tests {
             medium: true,
             manual: true,
             keep_focus: true,
+            ..Default::default()
         };
         assert_eq!(all.encode(), "sheet fixed medium manual keepfocus");
         assert_eq!(OverlayConfig::decode(&all.encode()), all);
+        // Placed popovers (#113): the defaults are left out.
+        for side in [
+            PopoverSide::Bottom,
+            PopoverSide::Top,
+            PopoverSide::Trailing,
+            PopoverSide::Leading,
+        ] {
+            for align in [PopoverAlign::Start, PopoverAlign::Center, PopoverAlign::End] {
+                let placed = OverlayConfig {
+                    kind: OverlayKind::Popover,
+                    side,
+                    align,
+                    ..Default::default()
+                };
+                assert_eq!(OverlayConfig::decode(&placed.encode()), placed);
+            }
+        }
+        let submenu = OverlayConfig {
+            kind: OverlayKind::Popover,
+            manual: true,
+            keep_focus: true,
+            side: PopoverSide::Trailing,
+            align: PopoverAlign::End,
+            ..Default::default()
+        };
+        assert_eq!(
+            submenu.encode(),
+            "popover manual keepfocus side=trailing align=end"
+        );
+        assert_eq!(PopoverSide::Leading.opposite(), PopoverSide::Trailing);
+        // Arrowed popovers point at the part of the anchor they line up with.
+        assert_eq!(PopoverAlign::Start.arrow_span(300., 200., true), (0., 200.));
+        assert_eq!(
+            PopoverAlign::Start.arrow_span(300., 200., false),
+            (100., 200.)
+        );
+        assert_eq!(PopoverAlign::End.arrow_span(300., 200., true), (100., 200.));
+        assert_eq!(
+            PopoverAlign::Center.arrow_span(300., 200., true),
+            (50., 200.)
+        );
+        assert_eq!(PopoverAlign::End.arrow_span(24., 100., true), (0., 24.));
+        assert_eq!(PopoverAlign::End.arrow_span(24., 0., true), (0., 24.));
+        assert!(PopoverSide::Trailing.beside() && !PopoverSide::Top.beside());
         let d = DateConfig {
             mode: DateMode::TimeOfDay,
             ..Default::default()

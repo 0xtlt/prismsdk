@@ -339,6 +339,9 @@
     // to its anchor (inline suggestion menus, #70).
     el._manual = t.includes("manual");
     el._keepFocus = kind === "popover" && t.includes("keepfocus");
+    // The side of the anchor it opens on and how it lines up (#113).
+    el._side = (t.find((x) => x.startsWith("side=")) || "side=bottom").slice(5);
+    el._align = (t.find((x) => x.startsWith("align=")) || "align=start").slice(6);
     let box = el._box;
     if (!box || el._boxKind !== kind) {
       const old = box;
@@ -425,20 +428,42 @@
     } catch {}
     el._closing = false;
   }
-  /** Below its anchor (the overlay's parent), above it if there is no room. */
+  /** On its side of its anchor (the overlay's parent): below by default,
+   *  above, or beside it (trailing is the right in left-to-right pages),
+   *  on the opposite side when there is no room, lined up with the
+   *  anchor's start, center or end, kept inside the window (#113). */
   function placePopover(el) {
     const box = el._box, anchor = el.parentElement;
     if (!box || !anchor || !el._open || el._boxKind !== "popover") return;
     const a = anchor.getBoundingClientRect(), b = box.getBoundingClientRect();
     const m = 8, gap = 6;
-    let top = a.bottom + gap;
-    if (top + b.height > innerHeight - m && a.top - gap - b.height >= m) top = a.top - gap - b.height;
     const rtl = document.documentElement.dir === "rtl";
-    let left = rtl ? a.right - b.width : a.left;
+    const physical = { trailing: rtl ? "left" : "right", leading: rtl ? "right" : "left", top: "top" };
+    let side = physical[el._side] || "bottom";
+    const fits = {
+      bottom: a.bottom + gap + b.height <= innerHeight - m,
+      top: a.top - gap - b.height >= m,
+      right: a.right + gap + b.width <= innerWidth - m,
+      left: a.left - gap - b.width >= m,
+    };
+    const opposite = { bottom: "top", top: "bottom", right: "left", left: "right" };
+    if (!fits[side] && fits[opposite[side]]) side = opposite[side];
+    const align = el._align;
+    let left, top;
+    if (side === "bottom" || side === "top") {
+      top = side === "bottom" ? a.bottom + gap : a.top - gap - b.height;
+      // Start is the leading edge: the right one in right-to-left pages.
+      const start = rtl ? a.right - b.width : a.left, end = rtl ? a.left : a.right - b.width;
+      left = align === "center" ? a.left + (a.width - b.width) / 2 : align === "end" ? end : start;
+    } else {
+      left = side === "right" ? a.right + gap : a.left - gap - b.width;
+      top = align === "center" ? a.top + (a.height - b.height) / 2 : align === "end" ? a.bottom - b.height : a.top;
+    }
     left = Math.max(m, Math.min(left, innerWidth - b.width - m));
     top = Math.max(m, Math.min(top, innerHeight - b.height - m));
     box.style.left = `${round(left)}px`;
     box.style.top = `${round(top)}px`;
+    box.dataset.side = side;
   }
   const replace = () => openPopovers.forEach(placePopover);
   addEventListener("resize", replace);

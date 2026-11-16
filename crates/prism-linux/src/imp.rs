@@ -213,6 +213,38 @@ fn set_popover_mode(p: &gtk::Popover, config: prism_core::controls::OverlayConfi
     p.set_can_focus(!config.keep_focus);
 }
 
+/// On its side of `parent` (GTK takes the opposite side without room
+/// there), pointing at the part of `parent` it lines up with: GTK centers
+/// the popover on that part (#113).
+fn place_popover(
+    p: &gtk::Popover,
+    parent: &gtk::Widget,
+    config: prism_core::controls::OverlayConfig,
+    size: (i32, i32),
+) {
+    use prism_core::PopoverSide as S;
+    let rtl = parent.direction() == gtk::TextDirection::Rtl;
+    // GTK's left and right are the screen's.
+    p.set_position(match config.side {
+        S::Bottom => gtk::PositionType::Bottom,
+        S::Top => gtk::PositionType::Top,
+        S::Trailing if rtl => gtk::PositionType::Left,
+        S::Trailing => gtk::PositionType::Right,
+        S::Leading if rtl => gtk::PositionType::Right,
+        S::Leading => gtk::PositionType::Left,
+    });
+    let (w, h) = (parent.width(), parent.height());
+    let rect = if config.side.beside() {
+        // Start is the top (GTK's y goes down).
+        let (o, l) = config.align.arrow_span(h as f64, size.1 as f64, true);
+        gdk::Rectangle::new(0, o.round() as i32, w, (l.round() as i32).max(1))
+    } else {
+        let (o, l) = config.align.arrow_span(w as f64, size.0 as f64, !rtl);
+        gdk::Rectangle::new(o.round() as i32, 0, (l.round() as i32).max(1), h)
+    };
+    p.set_pointing_to(Some(&rect));
+}
+
 pub struct OverlayView {
     id: NodeId,
     /// Zero-size placeholder in the parent (the popover's anchor is the
@@ -243,6 +275,9 @@ impl OverlayView {
         if built && (old.kind == OverlayKind::Popover) == popover_kind {
             if let Some(p) = self.popover.borrow().as_ref() {
                 set_popover_mode(p, config);
+                if let Some(parent) = p.parent() {
+                    place_popover(p, &parent, config, self.size.get());
+                }
             }
             if let Some(w) = self.window.borrow().as_ref() {
                 w.set_deletable(!config.fixed);
@@ -363,7 +398,8 @@ impl OverlayView {
                 }
                 p.set_parent(&parent);
             }
-            if p.parent().is_some() {
+            if let Some(parent) = p.parent() {
+                place_popover(p, &parent, self.config.get(), self.size.get());
                 p.popup();
             }
         }
@@ -394,6 +430,12 @@ impl OverlayView {
             return;
         }
         self.content.set_size_request(w, h);
+        // Its edges line up with the anchor's at its new size.
+        if let Some(p) = self.popover.borrow().as_ref()
+            && let Some(parent) = p.parent()
+        {
+            place_popover(p, &parent, self.config.get(), (w, h));
+        }
         if let Some(win) = self.window.borrow().as_ref() {
             win.set_default_size(w, h);
         }

@@ -22,6 +22,11 @@
 //! through to the window around it (passthrough views, so they do not
 //! close it); a `keep_focus` one leaves the first responder where it is
 //! (the keyboard stays up), taking it back if UIKit moved it.
+//!
+//! A popover opens on its `side` of the anchor (#113): the matching
+//! `permittedArrowDirections`, the opposite one when the window has no room
+//! there, and a `sourceRect` on the part of the anchor it lines up with
+//! (`PopoverAlign::arrow_span`).
 
 use std::cell::Cell;
 
@@ -366,12 +371,20 @@ impl Overlay {
                     if let Some(pc) = self.vc.popoverPresentationController() {
                         let source = self.anchor.superview();
                         pc.setSourceView(source.as_deref());
+                        let window = source.as_ref().and_then(|s| s.window());
                         if let Some(s) = &source {
-                            pc.setSourceRect(s.bounds());
+                            let rtl = s.effectiveUserInterfaceLayoutDirection()
+                                == objc2_ui_kit::UIUserInterfaceLayoutDirection::RightToLeft;
+                            let room = window
+                                .as_ref()
+                                .map(|w| (s.convertRect_toView(s.bounds(), Some(w)), w.bounds()));
+                            let (rect, arrows) =
+                                popover_placement(s.bounds(), self.size.get(), c, rtl, room);
+                            pc.setSourceRect(rect);
+                            pc.setPermittedArrowDirections(arrows);
                         }
                         // Taps around a manual or inline popover reach the
                         // window (the anchor's field) and do not close it.
-                        let window = source.as_ref().and_then(|s| s.window());
                         let through: Vec<Retained<UIView>> = match window {
                             Some(w) if c.manual || c.keep_focus => vec![Retained::into_super(w)],
                             _ => Vec::new(),
@@ -501,4 +514,67 @@ fn first_responder(v: &UIView) -> Option<Retained<UIView>> {
         return Some(v.retain());
     }
     v.subviews().iter().find_map(|c| first_responder(&c))
+}
+
+/// Where a popover points (#113): the part of the anchor's `bounds` it
+/// lines up with, and the arrow directions UIKit may use. Its `side` when
+/// the window (`room`: the anchor's frame in the window, the window's
+/// bounds) has space for a `size` popover there, else the opposite side
+/// when that one has; both when neither has (UIKit picks).
+#[cfg(not(target_os = "tvos"))]
+fn popover_placement(
+    bounds: CGRect,
+    size: (f64, f64),
+    c: OverlayConfig,
+    rtl: bool,
+    room: Option<(CGRect, CGRect)>,
+) -> (CGRect, objc2_ui_kit::UIPopoverArrowDirection) {
+    use objc2_ui_kit::UIPopoverArrowDirection as Arrow;
+    use prism_core::PopoverSide;
+    // The arrow points back at the anchor: up for a popover below it, left
+    // for one on its right.
+    let arrow = |side: PopoverSide| match side {
+        PopoverSide::Bottom => Arrow::Up,
+        PopoverSide::Top => Arrow::Down,
+        PopoverSide::Trailing if rtl => Arrow::Right,
+        PopoverSide::Trailing => Arrow::Left,
+        PopoverSide::Leading if rtl => Arrow::Left,
+        PopoverSide::Leading => Arrow::Right,
+    };
+    // The arrow and a margin.
+    let gap = 20.;
+    let (w, h) = size;
+    let fits = |side: PopoverSide| {
+        let Some((a, win)) = room else { return false };
+        if w <= 0. || h <= 0. {
+            return false;
+        }
+        let (x0, y0) = (a.origin.x, a.origin.y);
+        let (x1, y1) = (x0 + a.size.width, y0 + a.size.height);
+        let (wx, wy) = (win.origin.x, win.origin.y);
+        match arrow(side) {
+            a if a == Arrow::Up => y1 + gap + h <= wy + win.size.height,
+            a if a == Arrow::Down => y0 - gap - h >= wy,
+            a if a == Arrow::Left => x1 + gap + w <= wx + win.size.width,
+            _ => x0 - gap - w >= wx,
+        }
+    };
+    let arrows = if fits(c.side) {
+        arrow(c.side)
+    } else if fits(c.side.opposite()) {
+        arrow(c.side.opposite())
+    } else {
+        arrow(c.side) | arrow(c.side.opposite())
+    };
+    let o = bounds.origin;
+    let (bw, bh) = (bounds.size.width, bounds.size.height);
+    let rect = if c.side.beside() {
+        // Start is the top (UIKit's y goes down).
+        let (offset, part) = c.align.arrow_span(bh, h, true);
+        CGRect::new(CGPoint::new(o.x, o.y + offset), CGSize::new(bw, part))
+    } else {
+        let (offset, part) = c.align.arrow_span(bw, w, !rtl);
+        CGRect::new(CGPoint::new(o.x + offset, o.y), CGSize::new(part, bh))
+    };
+    (rect, arrows)
 }
