@@ -26,6 +26,8 @@ mod navbar;
 #[cfg(target_os = "macos")]
 mod padding;
 #[cfg(target_os = "macos")]
+mod rich;
+#[cfg(target_os = "macos")]
 mod services;
 #[cfg(target_os = "macos")]
 mod sticky;

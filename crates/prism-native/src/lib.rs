@@ -156,6 +156,22 @@ pub trait Widgets {
     /// view or a descendant has the focus (the view becomes focusable),
     /// `global` wherever the focus is.
     fn set_key_events(&mut self, _view: &Self::View, _local: bool, _global: bool) {}
+    /// Whether the backend edits rich text (#115): it creates
+    /// [`NodeKind::RichInput`] views and gets their runs in
+    /// [`set_rich_value`](Self::set_rich_value). Otherwise (the default) a
+    /// rich input is created as a [`NodeKind::TextArea`] of its plain text,
+    /// whose edits (`UiEvent::Input`) keep the styles of the text around
+    /// them.
+    fn rich_input(&self) -> bool {
+        false
+    }
+    /// The runs of a rich input (#115, [`prism_core::decode_runs`]; a chip
+    /// is [`prism_core::OBJECT_CHAR`]), after its plain text (`set_text`).
+    /// Runs whose text the field already shows are an echo of the user's
+    /// typing, or the app restyling it: apply the attributes in place,
+    /// keeping the caret. Report edits as `UiEvent::RichInput` (the runs
+    /// shown) or `UiEvent::Input` (the plain text).
+    fn set_rich_value(&mut self, _view: &Self::View, _runs: &str) {}
     /// Selects `start..end` (characters, clamped to the text) in a text
     /// input or area (#86), focused or not. Sent after its text.
     fn set_selection(&mut self, _view: &Self::View, _start: usize, _end: usize) {}
@@ -320,6 +336,7 @@ pub fn draws_padding(kind: NodeKind) -> bool {
             | NodeKind::Button
             | NodeKind::TextInput
             | NodeKind::TextArea
+            | NodeKind::RichInput
     )
 }
 
@@ -1397,6 +1414,12 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
         for patch in patches {
             match patch {
                 Patch::Create { id, kind } => {
+                    // A rich input is a text area of its plain text where
+                    // the backend cannot edit rich text (#115).
+                    let kind = &match kind {
+                        NodeKind::RichInput if !self.widgets.rich_input() => NodeKind::TextArea,
+                        k => *k,
+                    };
                     let view = self.widgets.create(*id, *kind);
                     // Shapes and web views have no content size: only their
                     // style sizes them.
@@ -1504,6 +1527,14 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                 Patch::SetText { id, text } => {
                     if let Some(e) = self.nodes.get(id) {
                         self.widgets.set_text(&e.view, text);
+                        let _ = self.taffy.mark_dirty(e.layout);
+                    }
+                }
+                Patch::SetRichValue { id, runs } => {
+                    if let Some(e) = self.nodes.get(id)
+                        && e.kind == NodeKind::RichInput
+                    {
+                        self.widgets.set_rich_value(&e.view, runs);
                         let _ = self.taffy.mark_dirty(e.layout);
                     }
                 }

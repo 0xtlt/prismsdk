@@ -572,6 +572,23 @@ fn line_break(t: &StyledText) -> NSLineBreakMode {
     }
 }
 
+/// An SF Symbol at the size of `font`, in `color` (a chip's icon, #115).
+pub(crate) fn symbol_image(
+    name: &str,
+    font: &NSFont,
+    color: &NSColor,
+) -> Option<Retained<NSImage>> {
+    let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+        &NSString::from_str(name),
+        None,
+    )?;
+    let size =
+        NSImageSymbolConfiguration::configurationWithPointSize_weight(font.pointSize() * 0.85, 0.);
+    let palette =
+        NSImageSymbolConfiguration::configurationWithPaletteColors(&NSArray::from_slice(&[color]));
+    image.imageWithSymbolConfiguration(&size.configurationByApplyingConfiguration(&palette))
+}
+
 /// An SF Symbol at the run's size and weight, in its color.
 fn symbol(name: &str, font: &FontSpec, color: &NSColor) -> Option<Retained<NSImage>> {
     let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(

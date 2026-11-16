@@ -3331,3 +3331,139 @@ fn frame_origins_join_the_strict_csp() {
         "{csp}"
     );
 }
+
+// --- Rich inputs (#115) ----------------------------------------------------------
+
+/// A note's one paragraph: styled runs and a mention, edited in place.
+#[derive(Default)]
+struct RichNote {
+    spans: Vec<Span>,
+    submits: usize,
+}
+
+impl Render for RichNote {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .child(
+                rich_input(self.spans.clone())
+                    .placeholder("Write…")
+                    .on_input(cx.listener(|this: &mut RichNote, e: &RichInputEvent, _| {
+                        this.spans = e.spans.clone()
+                    }))
+                    .on_submit(cx.listener(|this: &mut RichNote, _, _| this.submits += 1)),
+            )
+            .child(text(format!(
+                "{} runs, bold: {}, submits: {}",
+                self.spans.len(),
+                self.spans
+                    .iter()
+                    .filter(|s| s.is_bold())
+                    .map(|s| s.text())
+                    .collect::<Vec<_>>()
+                    .join("|"),
+                self.submits
+            )))
+    }
+}
+
+#[test]
+fn a_rich_input_sends_its_runs_and_takes_the_pages_edits_as_spans() {
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| RichNote {
+            spans: vec![span("Hi "), span("there").bold(), chip("page:1", "Roadmap")],
+            ..Default::default()
+        });
+        cx.set_root(root);
+    });
+    let (app, dir) = web_app(init, "rich-input");
+    let page = Page::open(&app, "/ws?path=%2F&w=1280&h=800");
+    let reset = page.next();
+    let ops = reset["p"].as_array().unwrap();
+    let input = ops
+        .iter()
+        .find(|p| p["op"] == "create" && p["kind"] == "rich_input")
+        .and_then(|p| p["id"].as_u64())
+        .unwrap();
+    let rich = ops
+        .iter()
+        .find(|p| p["op"] == "rich" && p["id"] == input)
+        .expect("a `rich` op");
+    assert_eq!(
+        rich["runs"],
+        "Hi \u{1e}there\u{1f}w=700\u{1e}\u{fffc}\u{1f}k=page:1\u{1f}n=Roadmap"
+    );
+    op_with_text(&reset["p"], "3 runs, bold: there, submits: 0");
+
+    // The page typed "!" at the end of the bold run.
+    page.send(json!({
+        "t": "input", "id": input, "v": "Hi there!\u{fffc}",
+        "runs": "Hi \u{1e}there!\u{1f}w=700\u{1e}\u{fffc}\u{1f}k=page:1\u{1f}n=Roadmap",
+    }));
+    let edited = page.next();
+    op_with_text(&edited["p"], "3 runs, bold: there!, submits: 0");
+    let p = edited["p"].as_array().unwrap();
+    let text = p
+        .iter()
+        .position(|o| o["op"] == "text" && o["id"] == input)
+        .unwrap();
+    assert_eq!(p[text]["text"], "Hi there!\u{fffc}");
+    let runs = p
+        .iter()
+        .position(|o| o["op"] == "rich" && o["id"] == input)
+        .unwrap();
+    assert!(text < runs, "the text, then its runs");
+
+    // A Backspace deleted the chip; Enter submits.
+    page.send(json!({ "t": "input", "id": input, "runs": "Hi \u{1e}there!\u{1f}w=700" }));
+    op_with_text(&page.next()["p"], "2 runs, bold: there!, submits: 0");
+    page.send(json!({ "t": "submit", "id": input }));
+    op_with_text(&page.next()["p"], "2 runs, bold: there!, submits: 1");
+    page.session.close();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn rich_inputs_have_a_wire_format_and_a_first_paint() {
+    use crate::session::parse_event;
+    assert_eq!(
+        parse_event(&json!({"t": "input", "id": 4, "v": "ab", "runs": "a\u{1e}b\u{1f}i"})),
+        Some(UiEvent::RichInput(4, "a\u{1e}b\u{1f}i".into()))
+    );
+    assert_eq!(
+        parse_event(&json!({"t": "input", "id": 4, "v": "ab"})),
+        Some(UiEvent::Input(4, "ab".into()))
+    );
+    let out = Encoder::default().encode(&[Patch::SetRichValue {
+        id: 4,
+        runs: "a\u{1f}i".into(),
+    }]);
+    assert_eq!(out, [json!({ "op": "rich", "id": 4, "runs": "a\u{1f}i" })]);
+    // Before the script runs: the runs, a chip as its icon and label.
+    let page = html(&[
+        create(1, NodeKind::RichInput),
+        Patch::SetText {
+            id: 1,
+            text: "Hi \u{fffc}".into(),
+        },
+        Patch::SetPlaceholder {
+            id: 1,
+            text: "Write".into(),
+        },
+        Patch::SetRichValue {
+            id: 1,
+            runs: "Hi \u{1e}\u{fffc}\u{1f}k=page:1\u{1f}n=Road & map\u{1f}m=gear".into(),
+        },
+        Patch::SetRoot { id: 1 },
+    ]);
+    assert!(
+        page.contains(
+            r#"class="prism-rich" role="textbox" aria-multiline="true" data-placeholder="Write""#
+        ),
+        "{page}"
+    );
+    assert!(
+        page.contains(r#"<span class="prism-chip" contenteditable="false"><span class="prism-symbol" aria-hidden="true">"#),
+        "{page}"
+    );
+    assert!(page.contains("Road &amp; map</span>"), "{page}");
+}

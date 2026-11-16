@@ -113,6 +113,9 @@ fn runs_round_trip_through_their_encoding() {
             size: Some(1.25),
             link: Some(7 << 16 | 0x8000),
             href: Some("https://example.com/a b".into()),
+            chip: Some("page:1".into()),
+            chip_label: Some("Road map".into()),
+            chip_icon: Some("doc.text".into()),
             icon: None,
         },
         TextRun {

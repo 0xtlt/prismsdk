@@ -437,7 +437,7 @@ impl Overlay {
                         sheet.setDetents(&objc2_foundation::NSArray::from_retained_slice(&detents));
                         sheet.setPrefersGrabberVisible(true);
                         // A clear sheet leaves the window undimmed (#79).
-                        let undimmed = (c.backdrop == Some(Backdrop::Clear)).then(|| unsafe {
+                        let undimmed = (c.backdrop == Some(Backdrop::Clear)).then_some(unsafe {
                             objc2_ui_kit::UISheetPresentationControllerDetentIdentifierLarge
                         });
                         sheet.setLargestUndimmedDetentIdentifier(undimmed);

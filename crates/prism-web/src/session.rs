@@ -479,7 +479,11 @@ pub(crate) fn parse_event(v: &Value) -> Option<UiEvent> {
     match v.get("t")?.as_str()? {
         "click" => Some(UiEvent::Click(id)),
         "submit" => Some(UiEvent::Submit(id)),
-        "input" => Some(UiEvent::Input(id, v.get("v")?.as_str()?.to_string())),
+        // A rich input reports its runs (#115).
+        "input" => match v.get("runs").and_then(Value::as_str) {
+            Some(runs) => Some(UiEvent::RichInput(id, runs.to_string())),
+            None => Some(UiEvent::Input(id, v.get("v")?.as_str()?.to_string())),
+        },
         "back" => Some(UiEvent::Back(id, v.get("depth")?.as_u64()? as usize)),
         // `null`: an optional date picker was cleared (#89).
         "change" => Some(UiEvent::Change(id, change_value(v.get("v")?)?)),
@@ -1115,6 +1119,8 @@ impl Encoder {
                 json!({ "op": "webpost", "id": id, "data": data })
             }
             Patch::ReloadWebView { id } => json!({ "op": "webreload", "id": id }),
+            // A rich input's runs (#115).
+            Patch::SetRichValue { id, runs } => json!({ "op": "rich", "id": id, "runs": runs }),
         }
     }
 }
