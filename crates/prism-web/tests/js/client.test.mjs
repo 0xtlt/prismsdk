@@ -402,8 +402,17 @@ test("accessibility patches set and clear ARIA", () => {
   a11y({ role: "tab", checked: true, hidden: true });
   assert.equal(el.getAttribute("aria-selected"), "true");
   assert.equal(el.getAttribute("aria-hidden"), "true");
+  a11y({ role: "tab", checked: true, selected: false });
+  assert.equal(el.getAttribute("aria-selected"), "false", "selected wins over checked");
+  // The current destination of a navigation (#64).
+  a11y({ role: "link", current: true });
+  assert.equal(el.getAttribute("aria-current"), "page");
+  assert.equal(el.getAttribute("aria-selected"), null);
+  a11y({ role: "button", current: true, selected: true });
+  assert.equal(el.getAttribute("aria-current"), "true");
+  assert.equal(el.getAttribute("aria-selected"), "true");
   a11y({});
-  for (const name of ["role", "aria-level", "aria-checked", "aria-selected", "aria-hidden", "aria-disabled"]) {
+  for (const name of ["role", "aria-level", "aria-checked", "aria-selected", "aria-current", "aria-hidden", "aria-disabled"]) {
     assert.equal(el.getAttribute(name), null, name);
   }
 

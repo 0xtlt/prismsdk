@@ -2814,13 +2814,32 @@ impl Widgets for UiKit {
                 if a.disabled {
                     traits |= UIAccessibilityTraitNotEnabled;
                 }
-                if a.checked == Some(true)
-                    && matches!(a.role, Some(Role::Tab | Role::Button | Role::Radio))
-                {
+                // Selected tabs and items, the current page of a navigation.
+                if a.is_selected() {
                     traits |= UIAccessibilityTraitSelected;
                 }
             }
             v.setAccessibilityTraits(traits, mtm);
+        } else {
+            // A native control keeps the traits UIKit gives it; the selected
+            // one is added or taken away. Once set, the traits no longer
+            // follow `enabled` by themselves: the not-enabled one is kept in
+            // step too.
+            let (selected, not_enabled) =
+                unsafe { (UIAccessibilityTraitSelected, UIAccessibilityTraitNotEnabled) };
+            let traits = v.accessibilityTraits(mtm);
+            if a.is_selected() || traits & selected != 0 {
+                let mut wanted = traits & !(selected | not_enabled);
+                if a.is_selected() {
+                    wanted |= selected;
+                }
+                if a.disabled {
+                    wanted |= not_enabled;
+                }
+                if wanted != traits {
+                    v.setAccessibilityTraits(wanted, mtm);
+                }
+            }
         }
         // Labels override the visible text only when given.
         if a.label.is_some() || !native_control {

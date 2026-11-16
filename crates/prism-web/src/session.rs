@@ -893,7 +893,7 @@ impl Encoder {
                     Some(prism_core::Role::Heading(l)) => Some(l),
                     _ => None,
                 };
-                json!({ "op": "a11y", "id": id, "a11y": {
+                let mut a = json!({
                     "role": a11y.role.map(|r| r.aria()),
                     "level": level,
                     "label": a11y.label,
@@ -902,7 +902,15 @@ impl Encoder {
                     "checked": a11y.checked,
                     "disabled": a11y.disabled,
                     "hidden": a11y.hidden,
-                }})
+                });
+                // Rare states only when set: most patches stay as they were.
+                if let Some(selected) = a11y.selected {
+                    a["selected"] = json!(selected);
+                }
+                if a11y.current {
+                    a["current"] = json!(true);
+                }
+                json!({ "op": "a11y", "id": id, "a11y": a })
             }
             Patch::SetRoot { id } => json!({ "op": "root", "id": id }),
             Patch::Destroy { id } => {
