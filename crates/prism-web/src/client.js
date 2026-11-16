@@ -25,6 +25,15 @@
     return el;
   };
   const baseTitle = document.title.split(" · ").pop();
+  // Pictures lose their loading background once loaded (`prism.css`), so a
+  // transparent image shows its parent. `load` does not bubble: capture it.
+  const markLoaded = (img) => { if (img.naturalWidth) img.dataset.loaded = "1"; };
+  document.addEventListener("load", (e) => {
+    const img = e.target;
+    if (img.tagName === "IMG" && img.classList.contains("prism-picture")) markLoaded(img);
+  }, true);
+  // The first render's images may have loaded before this script ran.
+  for (const img of document.querySelectorAll("img.prism-picture")) if (img.complete) markLoaded(img);
   const nodes = new Map();
 
   // Node styles: one rule per distinct style in a shared sheet, applied by a
@@ -151,6 +160,8 @@
   function setPointer(el, id, mask) {
     el._pmask = mask;
     toggleClass(el, "prism-draggable", (mask & 4) !== 0);
+    // A draggable link: the app's drag, not the browser's link drag.
+    if (el.localName === "a") (mask & 4) ? el.setAttribute("draggable", "false") : el.removeAttribute("draggable");
     if (el._pointerBound) return;
     el._pointerBound = true;
     const moves = throttled(), drags = throttled();
@@ -225,10 +236,52 @@
     const typed = e.key.length === 1 && !e.ctrlKey && !e.metaKey;
     if (!owner && !(globalKeys > 0 && !(typing && typed))) return;
     const mods = (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
-    send({ t: "key", id: owner ? Number(owner.dataset.pid) : 0, key: e.key, mods, repeat: !!e.repeat });
+    const msg = { t: "key", id: owner ? Number(owner.dataset.pid) : 0, key: e.key, mods, repeat: !!e.repeat };
+    // In a text field: its selection before the key acts (#86).
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA") && typing) {
+      if (t._selFlush) t._selFlush();
+      const sel = fieldSelection(t);
+      if (sel) msg.sel = sel;
+    }
+    send(msg);
     // The app handles arrows and space on its element: the page does not scroll.
     const control = typing || (t && ["SELECT", "INPUT"].includes(t.tagName));
     if (owner && !control && SCROLL_KEYS.includes(e.key)) e.preventDefault();
+  });
+
+  // --- Drawn radios (#84): one tab stop per group, arrows move the choice -------
+  let radiosDirty = false;
+  /** The operable radios of a `role=radiogroup` (not those of a nested group). */
+  function groupRadios(group) {
+    return [...group.querySelectorAll("[role=radio]")].filter((r) => r.closest("[role=radiogroup]") === group
+      && r.getAttribute("aria-disabled") !== "true" && r.getAttribute("aria-hidden") !== "true" && !r.closest("[inert]"));
+  }
+  /** Roving tab index (ARIA radio group pattern): only the checked radio, else the first, is a tab stop. */
+  function roveRadios() {
+    radiosDirty = false;
+    for (const group of document.querySelectorAll("[role=radiogroup]")) {
+      const items = groupRadios(group);
+      const current = items.find((r) => r.getAttribute("aria-checked") === "true")
+        || items.find((r) => r === document.activeElement) || items[0];
+      items.forEach((r) => r.setAttribute("tabindex", r === current ? "0" : "-1"));
+    }
+  }
+  document.addEventListener("keydown", (e) => {
+    const t = e.target;
+    if (e.altKey || e.ctrlKey || e.metaKey || !t?.getAttribute || t.getAttribute("role") !== "radio") return;
+    // Down and the reading direction's arrow go to the next choice.
+    const rtl = document.documentElement.dir === "rtl";
+    const step = { ArrowDown: 1, ArrowUp: -1, ArrowRight: rtl ? -1 : 1, ArrowLeft: rtl ? 1 : -1 }[e.key];
+    const group = step && t.closest("[role=radiogroup]");
+    const items = group ? groupRadios(group) : [];
+    const i = items.indexOf(t);
+    if (i < 0 || items.length < 2) return;
+    e.preventDefault();
+    // Moving the focus checks the radio it lands on, as native radios do.
+    const next = items[(i + step + items.length) % items.length];
+    items.forEach((r) => r.setAttribute("tabindex", r === next ? "0" : "-1"));
+    next.focus();
+    activate(next, Number(next.dataset.pid));
   });
 
   // --- Focus and scrolling from the app (#17) ----------------------------------
@@ -260,6 +313,16 @@
 
   // --- Overlays (#19): sheets, dialogs, popovers without a route ---------------
   const openPopovers = new Set();
+  /** Open overlays not shown yet: inserted already open, their box is not
+   *  in the document until the patch that places their parent (#70). */
+  const pendingOverlays = new Set();
+  /** Shows the overlays a batch of patches inserted already open. */
+  function flushOverlays() {
+    for (const el of [...pendingOverlays]) {
+      if (!el._open || !nodes.has(Number(el.dataset.pid))) { pendingOverlays.delete(el); continue; }
+      if (el._box && el._box.isConnected) { pendingOverlays.delete(el); showOverlay(el); }
+    }
+  }
   /** The user closed it (Escape, a click outside): the app hears `back`. */
   function overlayDismissed(el) {
     if (!el._open || el._closing) return;
@@ -272,6 +335,10 @@
     const t = config.split(" ");
     const kind = ["popover", "dialog"].includes(t[0]) ? t[0] : "sheet";
     el._fixed = t.includes("fixed");
+    // A popover a click outside does not close; one that leaves the focus
+    // to its anchor (inline suggestion menus, #70).
+    el._manual = t.includes("manual");
+    el._keepFocus = kind === "popover" && t.includes("keepfocus");
     let box = el._box;
     if (!box || el._boxKind !== kind) {
       const old = box;
@@ -279,6 +346,20 @@
       box.className = `prism-overlay-box prism-ov-${kind}`;
       if (kind === "popover") {
         box.addEventListener("toggle", (e) => { if (e.newState === "closed") overlayDismissed(el); });
+        // A manual popover hears Escape itself while the focus is inside.
+        box.addEventListener("keydown", (e) => {
+          if (e.key !== "Escape" || el._fixed || box.getAttribute("popover") !== "manual") return;
+          e.stopPropagation();
+          overlayDismissed(el);
+        });
+        // Clicks inside keep the focus where it is (the anchor's field),
+        // unless they land in a field of the popover.
+        box.addEventListener("mousedown", (e) => {
+          if (!el._keepFocus) return;
+          const t = e.target;
+          if (t && t.closest && t.closest("input, textarea, select, [contenteditable]")) return;
+          e.preventDefault();
+        });
       } else {
         box.setAttribute("aria-modal", "true");
         box.addEventListener("cancel", (e) => {
@@ -299,17 +380,26 @@
       el._box = box;
       el._boxKind = kind;
     }
-    if (kind === "popover") box.setAttribute("popover", el._fixed ? "manual" : "auto");
+    // Leaving the focus to the anchor implies no light dismiss (a click in
+    // the anchor's field would close it).
+    if (kind === "popover") box.setAttribute("popover", el._fixed || el._manual || el._keepFocus ? "manual" : "auto");
     box.dataset.medium = t.includes("medium") ? "1" : "";
     if (el._open) showOverlay(el);
   }
   function showOverlay(el) {
     const box = el._box;
     if (!box) return;
+    // Not in the document yet (inserted open with its parent): shown once
+    // the batch has placed it (`flushOverlays`).
+    if (!box.isConnected) { pendingOverlays.add(el); return; }
+    pendingOverlays.delete(el);
     if (el._boxKind === "popover") {
+      const focused = document.activeElement;
       if (typeof box.showPopover === "function") {
         try { if (!box.matches(":popover-open")) box.showPopover(); } catch {}
       } else box.dataset.open = "1";
+      // The anchor's field keeps the focus.
+      if (el._keepFocus && focused && focused !== document.activeElement && box.contains(document.activeElement)) focused.focus?.();
       openPopovers.add(el);
       placePopover(el);
       requestAnimationFrame(() => placePopover(el));
@@ -321,6 +411,7 @@
     raiseLayers();
   }
   function hideOverlay(el) {
+    pendingOverlays.delete(el);
     const box = el._box;
     if (!box) return;
     el._closing = true;
@@ -456,6 +547,12 @@
 
   const shapeColor = (s) => {
     if (!s) return "none";
+    // `Color::current()` (an SVG's `currentColor`): `~` and its alpha.
+    if (s[0] === "~") {
+      const a = parseInt(s.slice(1), 16);
+      if (isNaN(a) || a >= 255) return "currentColor";
+      return `color-mix(in srgb, currentColor ${Math.round(a / 2.55 * 10) / 10}%, transparent)`;
+    }
     const [light, dark] = s.split("/");
     return dark ? `light-dark(${light}, ${dark})` : light;
   };
@@ -566,6 +663,8 @@
     ].filter(Boolean).join(";");
   };
   function renderRuns(el) {
+    // Inside a text that is a link itself, links are spans (they don't nest).
+    const nested = el.localName === "a";
     const runs = decodeRuns(el._runs);
     el._runPs = null;
     if (!runs.length) { el.replaceChildren(document.createTextNode(el._text || "")); return; }
@@ -577,12 +676,12 @@
         node.className = "prism-symbol";
         node.setAttribute("aria-hidden", "true");
       } else if (r.l) {
-        const external = r.h && /^[a-z][a-z0-9+.-]*:/i.test(r.h);
-        node = document.createElement(r.h ? "a" : "span");
+        const href = r.h && !nested;
+        node = document.createElement(href ? "a" : "span");
         node.className = "prism-link";
         node.dataset.link = r.l;
-        if (r.h) node.setAttribute("href", external ? r.h : urlFor(r.h));
-        else { node.setAttribute("role", "link"); node.tabIndex = 0; }
+        if (href) node.setAttribute("href", hrefFor(r.h));
+        else if (!nested) { node.setAttribute("role", "link"); node.tabIndex = 0; }
       } else if (css) {
         node = document.createElement("span");
       } else {
@@ -607,8 +706,42 @@
     return true;
   }
 
-  function create(id, kind) {
-    const el = document.createElement(tags[kind]);
+  // --- Links: a view or a text made a link (`.link(path)`) -------------------
+  // An `<a href>`, so the browser opens it in a new tab or window, copies it
+  // and shows it on hover; a plain click still navigates in the app.
+  const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
+  const hrefFor = (path) => (SCHEME.test(path) ? path : urlFor(path));
+  // Sent right after "create" (on the web, a node that gains or loses its
+  // link is a new node): the element becomes an `<a>`.
+  function setLink(el, id, href) {
+    const kind = el && el.dataset.kind;
+    if ((kind !== "view" && kind !== "text") || el._island) return;
+    if ((href != null) !== (el.localName === "a")) {
+      create(id, kind, href != null ? "a" : null);
+      const fresh = nodes.get(id);
+      while (el.firstChild) fresh.appendChild(el.firstChild);
+      if (el.parentNode) { el.parentNode.insertBefore(fresh, el); el.remove(); }
+      el = fresh;
+    }
+    if (href == null) return;
+    el.setAttribute("href", hrefFor(href));
+    if (SCHEME.test(href)) el.setAttribute("rel", "noopener"); else el.removeAttribute("rel");
+  }
+  // A click on a link node. With a modifier or another button (new tab, new
+  // window, download) the browser follows it: true. A plain click stays in
+  // the app (no page load): false, for the click handler to report it.
+  function browserFollows(el, e) {
+    if (el.localName !== "a") return false;
+    if (el.getAttribute("aria-disabled") !== "true" && (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || (e.button || 0) !== 0)) {
+      e.stopPropagation();
+      return true;
+    }
+    e.preventDefault();
+    return false;
+  }
+
+  function create(id, kind, tag) {
+    const el = document.createElement(tag || tags[kind]);
     el.dataset.pid = id;
     el.dataset.kind = kind;
     // Form fields are named (browsers flag fields without an id or name, and
@@ -616,14 +749,18 @@
     if (["INPUT", "SELECT", "TEXTAREA"].includes(el.tagName)) el.name = `prism-${id}`;
     if (kind === "text_input") {
       el.type = "text";
-      el.addEventListener("input", () => send({ t: "input", id, v: el.value }));
+      el.addEventListener("input", () => sendTyped(el, id));
       el.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && !e.isComposing) send({ t: "submit", id });
       });
+      trackComposition(el);
+      trackSelection(el, id);
     } else if (kind === "text_area") {
       el.className = "prism-textarea";
       el.rows = 3;
-      el.addEventListener("input", () => { grow(el); send({ t: "input", id, v: el.value }); });
+      el.addEventListener("input", () => { grow(el); sendTyped(el, id); });
+      trackComposition(el);
+      trackSelection(el, id);
     } else if (kind === "slider") {
       el.type = "range";
       el.className = "prism-slider";
@@ -641,6 +778,8 @@
       el.addEventListener("change", () => {
         const secs = dateSeconds(el);
         if (secs !== null) send({ t: "change", id, v: secs });
+        // Cleared (#89): the browser's clear button, or every part erased.
+        else if (el._optional && Number.isFinite(el._secs)) send({ t: "change", id, v: null });
       });
     } else if (kind === "spinner") {
       el.className = "prism-spinner";
@@ -711,7 +850,7 @@
       el.className = "prism-timer";
     } else if (kind === "view") {
       el.addEventListener("click", (e) => {
-        if (el.dataset.clickable !== "1") return;
+        if (browserFollows(el, e) || el.dataset.clickable !== "1") return;
         e.stopPropagation();
         activate(el, id, e);
       });
@@ -725,7 +864,7 @@
       });
     } else if (kind === "text") {
       el.addEventListener("click", (e) => {
-        if (activateRun(e) || el.dataset.clickable !== "1") return;
+        if (activateRun(e) || browserFollows(el, e) || el.dataset.clickable !== "1") return;
         e.stopPropagation();
         activate(el, id);
       });
@@ -1002,6 +1141,142 @@
 
   // --- Form controls (prism-core `controls`) -------------------------------------
   /** A text area as tall as its text (its max-height then scrolls it). */
+  // --- Text fields: echoes of the user's typing vs. values set by the app (#73) ---
+  //
+  // Every value typed is sent and remembered (`el._sent`) until the server
+  // renders it back. A text patch equal to one of them is an echo: the field
+  // already shows it (or has moved on since), so it is left alone, caret and
+  // IME composition included. Any other value comes from the app (a Markdown
+  // shortcut stripping "# ", clearing after a command, normalising): it is
+  // applied, focused or not, keeping the caret at the same distance from the
+  // end. During an IME composition it waits for `compositionend`.
+
+  /** Sends what the user typed in field `el` (node `id`) and remembers it. */
+  function sendTyped(el, id) {
+    const sent = el._sent || (el._sent = []);
+    sent.push(el.value);
+    if (sent.length > 64) sent.shift();
+    send({ t: "input", id, v: el.value });
+  }
+
+  function trackComposition(el) {
+    el.addEventListener("compositionstart", () => { el._composing = true; });
+    el.addEventListener("compositionend", () => {
+      el._composing = false;
+      const text = el._deferred, sel = el._deferredSel;
+      delete el._deferred;
+      delete el._deferredSel;
+      if (text !== undefined) {
+        applyFieldText(el, text);
+        if (el.tagName === "TEXTAREA") grow(el);
+      }
+      if (sel) applyFieldSelection(el, sel[0], sel[1]);
+    });
+  }
+
+  // --- Text fields: selection and caret (#86) -----------------------------------
+  //
+  // Prism counts characters (code points); the DOM counts UTF-16 units.
+  // A field with `on_select` (`selev`) reports where its selection is after
+  // anything that may move it (selecting, clicking, arrows, typing), at most
+  // once per animation frame and only when it moved, after the `input` that
+  // moved it. Key presses in a field carry its selection before the key
+  // (`sel`). The app's `.selection(..)` (`sel` op) is applied unless the
+  // user typed past the text it was computed for (#73's rule).
+
+  /** The character offset of UTF-16 offset `units` in `text`. */
+  const toChars = (text, units) => Array.from(text.slice(0, units)).length;
+  /** The UTF-16 offset of character `chars` in `text` (clamped). */
+  function toUnits(text, chars) {
+    let units = 0, n = 0;
+    for (const c of text) {
+      if (n++ >= chars) break;
+      units += c.length;
+    }
+    return units;
+  }
+  /** Field `el`'s selection in characters, `null` without a caret. */
+  function fieldSelection(el) {
+    let s, e;
+    try { s = el.selectionStart; e = el.selectionEnd; } catch { return null; /* email, number */ }
+    if (s == null || e == null) return null;
+    const v = el.value || "";
+    return [toChars(v, Math.min(s, e)), toChars(v, Math.max(s, e))];
+  }
+  function trackSelection(el, id) {
+    let queued = false;
+    const report = () => {
+      queued = false;
+      if (!el._selev || document.activeElement !== el) return;
+      const sel = fieldSelection(el);
+      if (!sel) return;
+      const last = el._selSent;
+      if (last && last[0] === sel[0] && last[1] === sel[1]) return;
+      el._selSent = sel;
+      send({ t: "select", id, start: sel[0], end: sel[1] });
+    };
+    el._selCheck = () => {
+      if (!el._selev || queued) return;
+      queued = true;
+      requestAnimationFrame(report);
+    };
+    // A key reports the selection it acts on first (its `sel`), so the app
+    // sees the selection moves before the key.
+    el._selFlush = () => { if (queued) report(); };
+    for (const t of ["select", "selectionchange", "input", "keyup", "mouseup", "pointerup", "focus"]) {
+      el.addEventListener(t, el._selCheck);
+    }
+  }
+  // Browsers that fire `selectionchange` on the document only.
+  document.addEventListener("selectionchange", () => {
+    const a = document.activeElement;
+    if (a && a._selCheck) a._selCheck();
+  });
+  /** The `selev` op: whether field `el` reports its selection. */
+  function setSelectEvents(el, on) {
+    el._selev = !!on;
+    if (!on) delete el._selSent;
+    else if (document.activeElement === el && el._selCheck) el._selCheck();
+  }
+  /** The `sel` op: the app's selection for field `el`, in characters. */
+  function setFieldSelection(el, start, end) {
+    // Typing in flight: the selection was computed for a text the field
+    // has moved past since. Its echo (or the app's answer) comes next.
+    if (el._sent && el._sent.length) return;
+    if (el._composing && document.activeElement === el) { el._deferredSel = [start, end]; return; }
+    applyFieldSelection(el, start, end);
+  }
+  function applyFieldSelection(el, start, end) {
+    const v = el.value || "";
+    try { el.setSelectionRange(toUnits(v, start), toUnits(v, Math.max(start, end))); } catch { /* no caret (email, number) */ }
+    // Reported back (an echo the server recognises) if it moved.
+    if (el._selCheck) el._selCheck();
+  }
+
+  /** A text patch for an input or a text area. */
+  function setFieldText(el, text) {
+    const sent = el._sent;
+    const echo = sent ? sent.indexOf(text) : -1;
+    // An echo: forget it and what was typed before it.
+    if (echo >= 0) { sent.splice(0, echo + 1); return; }
+    if (el._composing && document.activeElement === el) { el._deferred = text; return; }
+    delete el._deferred;
+    applyFieldText(el, text);
+  }
+
+  /** Writes the app's `text` into field `el`, keeping its caret. */
+  function applyFieldText(el, text) {
+    // The typing in flight was answered by the app's own value.
+    if (el._sent) el._sent.length = 0;
+    if (el.value === text) return;
+    if (document.activeElement !== el) { el.value = text; return; }
+    let fromEnd = 0;
+    try { fromEnd = el.selectionEnd == null ? 0 : el.value.length - el.selectionEnd; } catch { /* no caret (email, number) */ }
+    el.value = text;
+    const caret = Math.max(0, text.length - fromEnd);
+    try { el.setSelectionRange(caret, caret); } catch { /* no caret (email, number) */ }
+  }
+
   function grow(el) {
     // Not in the page yet (just created): measure once it is.
     if (!el.isConnected) return requestAnimationFrame(() => el.isConnected && grow(el));
@@ -1009,8 +1284,9 @@
     el.style.height = `${el.scrollHeight + el.offsetHeight - el.clientHeight}px`;
   }
   const pad = (n) => String(n).padStart(2, "0");
-  /** Unix seconds as an `<input type=date|time|datetime-local>` value (local time). */
+  /** Unix seconds as an `<input type=date|time|datetime-local>` value (local time); `""` when empty. */
   function dateString(secs, type, utc) {
+    if (!Number.isFinite(secs)) return "";
     if (utc) {
       // A time of day (#18): seconds since midnight, no time zone.
       const m = Math.floor((((Math.round(secs) % 86400) + 86400) % 86400) / 60);
@@ -1029,7 +1305,9 @@
       const [h, mi] = v.split(":").map(Number);
       return h * 3600 + mi * 60;
     }
-    const b = new Date((el._secs || 0) * 1000);
+    // An empty picker (#89) starts from now, to the minute (DateConfig::start).
+    const base = Number.isFinite(el._secs) ? el._secs : Math.floor(Date.now() / 60000) * 60;
+    const b = new Date(base * 1000);
     let [y, mo, d, h, mi, s] = [b.getFullYear(), b.getMonth(), b.getDate(), b.getHours(), b.getMinutes(), b.getSeconds()];
     if (el.type === "time") {
       [h, mi] = v.split(":").map(Number);
@@ -1042,6 +1320,15 @@
     }
     return Math.round(new Date(y, mo, d, h, mi, s).getTime() / 1000);
   }
+  /**
+   * Shows `el._secs` (NaN: empty). The same text is not written again: a
+   * date input being typed in shows "" until every part is filled, and
+   * writing "" would erase the parts already typed.
+   */
+  function showDate(el) {
+    const v = dateString(el._secs, el.type, el._utc);
+    if (el.value !== v) el.value = v;
+  }
   /** Keyboard, return key, capitalization, autocorrection (mirrors html.rs input_attrs). */
   function applyInputConfig(el, config) {
     const lines = config.split("\n");
@@ -1051,7 +1338,8 @@
     const kb = get("keyboard");
     if (el.tagName === "INPUT") {
       el.type = secure ? "password" : { email: "email", url: "url", phone: "tel" }[kb] || "text";
-      if (secure) el.autocomplete = "current-password";
+      // The app's own `autocomplete` (`.attr`) wins over the default.
+      if (secure && !(el._attrs && el._attrs.includes("autocomplete"))) el.setAttribute("autocomplete", "current-password");
     }
     const set = (name, v) => (v ? el.setAttribute(name, v) : el.removeAttribute(name));
     set("inputmode", { number: "numeric", decimal: "decimal" }[kb]);
@@ -1081,13 +1369,17 @@
       (config ? config.split("\n") : []).forEach((text, i) => el.appendChild(new Option(text, String(i))));
       el.selectedIndex = el._index + 1;
     } else if (kind === "date_picker") {
-      const [mode, min, max] = config.split(" ");
+      const [mode, min, max, ...rest] = config.split(" ");
       el._utc = mode === "timeofday";
+      // Only an optional picker may be emptied (#89): browsers hide their
+      // clear button on required inputs.
+      el._optional = rest.includes("optional");
+      el.required = !el._optional;
       el.type = { time: "time", timeofday: "time", datetime: "datetime-local" }[mode] || "date";
       const bounded = mode !== "time" && !el._utc;
       el.min = bounded && min !== "-" ? dateString(Number(min), el.type) : "";
       el.max = bounded && max !== "-" ? dateString(Number(max), el.type) : "";
-      if (el._secs !== undefined) el.value = dateString(el._secs, el.type, el._utc);
+      if (el._secs !== undefined) showDate(el);
     } else if (kind === "text_input" || kind === "text_area") {
       applyInputConfig(el, config);
     } else if (kind === "text") {
@@ -1098,6 +1390,22 @@
     } else if (kind === "radio_group") {
       radioOptions(el, Number(el.dataset.pid), config);
     }
+  }
+
+  /** App-defined attributes (`.attr`, #85): `pairs` is the full list, so
+   * names set before and absent now are removed. The server only sends
+   * `data-*` names Prism does not use and a safe list; this checks again. */
+  const APP_ATTR = /^(data-[a-z0-9_.-]+|autocomplete|translate)$/;
+  function setAttrs(el, pairs) {
+    if (!el) return;
+    const names = pairs.map(([n]) => n).filter((n) => APP_ATTR.test(n) && !n.startsWith("data-prism"));
+    for (const n of el._attrs || []) {
+      if (names.includes(n)) continue;
+      el.removeAttribute(n);
+      if (n === "autocomplete" && el.type === "password") el.setAttribute("autocomplete", "current-password");
+    }
+    for (const [n, v] of pairs) if (names.includes(n)) el.setAttribute(n, v);
+    el._attrs = names;
   }
 
   function applyA11y(el, a) {
@@ -1120,8 +1428,12 @@
       el._disabled = !!a.disabled;
       radios(el).forEach((r) => { r.disabled = !!a.disabled; });
     }
-    const native = { button: "button", toggle: "switch", slider: "slider", picker: "combobox" }[kind];
+    // An `<a href>` is a link by itself, and focusable.
+    const link = el.localName === "a" && el.hasAttribute("href");
+    const native = link ? "link" : { button: "button", toggle: "switch", slider: "slider", picker: "combobox" }[kind];
     const role = a.role;
+    // A radio changed (or stopped being one): its group's tab stop is recomputed.
+    if (role === "radio" || role === "radiogroup" || ["radio", "radiogroup"].includes(el.getAttribute("role"))) radiosDirty = true;
     if (role && role !== "text" && role !== native) {
       set("role", role);
       set("aria-level", role === "heading" ? String(a.level || 2) : null);
@@ -1131,9 +1443,11 @@
     }
     set("aria-label", a.label || null);
     set("aria-description", a.hint || null);
-    if (role === "switch" || role === "checkbox") set("aria-checked", kind === "toggle" ? null : String(!!a.checked));
+    if (role === "switch" || role === "checkbox" || role === "radio") set("aria-checked", kind === "toggle" ? null : String(!!a.checked));
     else set("aria-checked", null);
-    set("aria-selected", role === "tab" ? String(!!a.checked) : null);
+    const selected = a.selected ?? null;
+    set("aria-selected", role === "tab" ? String(!!(selected ?? a.checked)) : selected === null ? null : String(selected));
+    set("aria-current", a.current ? (role === "link" ? "page" : "true") : null);
     // A button with a state is a toggle button.
     set("aria-pressed", role === "button" && a.checked !== null && a.checked !== undefined ? String(a.checked) : null);
     set("aria-valuetext", role === "slider" ? a.value || null : null);
@@ -1142,8 +1456,9 @@
     set("aria-disabled", a.disabled || null);
     if (["INPUT", "BUTTON", "SELECT", "TEXTAREA"].includes(el.tagName)) el.disabled = !!a.disabled;
     // Custom interactive elements must be reachable from the keyboard.
-    const interactive = ["button", "link", "switch", "checkbox", "tab", "slider", "combobox"].includes(role);
-    if (kind === "view" || kind === "text") set("tabindex", (interactive || el._kLocal) && !a.hidden && !a.disabled ? "0" : null);
+    const interactive = ["button", "link", "switch", "checkbox", "radio", "tab", "slider", "combobox"].includes(role);
+    if (link) set("tabindex", a.hidden || a.disabled ? "-1" : null);
+    else if (kind === "view" || kind === "text") set("tabindex", (interactive || el._kLocal) && !a.hidden && !a.disabled ? "0" : null);
   }
 
   function apply(p) {
@@ -1183,13 +1498,15 @@
         if (kind === "picture") {
           // The server resolves asset URLs (hashed, maybe on a CDN).
           const src = p.text;
-          if (el.getAttribute("src") !== src) el.src = src;
+          if (el.getAttribute("src") !== src) {
+            delete el.dataset.loaded;
+            el.src = src;
+          }
           return;
         }
         if (kind === "checkbox") { el._label.textContent = p.text; return; }
         if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
-          // Never fight the user's typing: a focused field owns its value.
-          if (el.value !== p.text && document.activeElement !== el) el.value = p.text;
+          setFieldText(el, p.text);
           if (el.tagName === "TEXTAREA") grow(el);
         } else if (kind === "text") {
           el._text = p.text;
@@ -1220,7 +1537,8 @@
         if (el.dataset.kind === "progress") el.value = p.value;
         if (el.dataset.kind === "slider") { el._v = p.value; el.value = p.value; }
         if (el.dataset.kind === "picker") { el._index = p.value; el.selectedIndex = p.value + 1; }
-        if (el.dataset.kind === "date_picker") { el._secs = p.value; el.value = dateString(p.value, el.type, el._utc); }
+        // `null`: an empty optional picker (#89).
+        if (el.dataset.kind === "date_picker") { el._secs = p.value ?? NaN; showDate(el); }
         if (el.dataset.kind === "checkbox") el._input.checked = p.value !== 0;
         if (el.dataset.kind === "radio_group") { el._index = p.value; radios(el).forEach((r, i) => { r.checked = i === p.value; }); }
         if (el.dataset.kind === "overlay") {
@@ -1296,6 +1614,9 @@
       // Pointer, keys, focus, layers (#17, #25).
       case "pointer": return setPointer(el, p.id, p.mask);
       case "keys": return setKeys(el, p.local, p.global);
+      // Text field selections (#86).
+      case "sel": return el && setFieldSelection(el, p.start, p.end);
+      case "selev": return el && setSelectEvents(el, p.on);
       case "focus": return el && focusNode(el);
       case "reveal": return el && reveal(el);
       // `cx.dismiss_keyboard()` (#29): the focused field lets go (phones
@@ -1310,6 +1631,8 @@
       // Islands: client-side Web Components.
       case "island": return setIsland(p);
       case "props": return setIslandProps(el, p.props);
+      case "link": return setLink(el, p.id, p.href);
+      case "attrs": return setAttrs(el, p.attrs);
       case "destroy":
         if (el) {
           el.remove();
@@ -1317,6 +1640,7 @@
           if (el._kGlobal) globalKeys--;
           if (el._list) el._list.remove();
           openPopovers.delete(el);
+          pendingOverlays.delete(el);
         }
         nodes.delete(p.id);
         setStates(p.id, null);
@@ -4961,11 +5285,13 @@ void main() {
     if (msg.t === "reset") {
       sceneResetStart();
       nodes.clear(); clearStates(); stacks = []; hist = null; userNavigated = false;
-      globalKeys = 0; openPopovers.clear(); layerHost.replaceChildren();
+      globalKeys = 0; openPopovers.clear(); pendingOverlays.clear(); layerHost.replaceChildren();
       document.querySelectorAll("datalist[id^=prism-list-]").forEach((d) => d.remove());
     }
     quiet = msg.t === "reset";
     msg.p.forEach(apply);
+    if (radiosDirty) roveRadios();
+    flushOverlays();
     flushStates();
     if (msg.t === "reset") sceneResetEnd();
     quiet = false;

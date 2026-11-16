@@ -8,15 +8,15 @@
 //! |---|---|
 //! | `create` / `destroy` | `id`, `kind` |
 //! | `style` | `s`: `bg`, `radius`, `bw`, `bc`, `opacity`, `color`, `font`, `weight`, `talign` (colors `[r,g,b,a, dark r,g,b,a]`); `tint` on tab bars and stacks when set; `hit: false` (the subtree ignores pointer input) and `inert: true` (no input, no focus, hidden from assistive technologies) only when set |
-//! | `text`, `placeholder`, `icon`, `value`, `clickable`, `display` | the value |
+//! | `text`, `placeholder`, `icon`, `value`, `clickable`, `display` | the value (`value` is `null` for an empty optional date picker, #89) |
 //! | `text` of a `picture` | its source: for a remote one, the URL, then one `name: value` line per header to send (`Picture::header`) |
-//! | `a11y` | `label`, `hidden`, `role` (ARIA name: `slider`, `combobox`, `status`…), `value` |
-//! | `config` | `config`: a control's config string (`prism_core::controls`: slider `min max step`, picker options one per line, date `mode min max`, input tokens; a screen's bar options, `prism_core::navbar`, with `glyphs`: each bar button's icon glyph, `""` if none) |
+//! | `a11y` | `label`, `hidden`, `role` (ARIA name: `slider`, `combobox`, `status`…), `value`, `selected` (a selected item or the current page: `Accessibility::is_selected`) |
+//! | `config` | `config`: a control's config string (`prism_core::controls`: slider `min max step`, picker options one per line, date `mode min max` then `optional`, input tokens; a screen's bar options, `prism_core::navbar`, with `glyphs`: each bar button's icon glyph, `""` if none) |
 //! | `children` | `children`: ids in order |
 //! | `frame` | `f`: `[x, y, w, h]` in the parent |
 //! | `content` | `size`: a scroll view's content size |
 //! | `menu`, `swipe`, `scrollev`, `root` | context menu JSON, swipe sides, scroll events, root id |
-//! | `env` | `lang`, `rtl`, `back`, `close` (no `id`) |
+//! | `env` | `lang`, `rtl`, `back`, `close`, `clear` (no `id`) |
 //! | `exit` | `parent`, `to`: `{o, tf}` the view animates to (a picture of it), before it is removed |
 //! | `repeat` | `from`, `to`: `{o, tf}` (`to` null stops), back and forth forever |
 //! | `draw` | `paths`: `[{d, fill, stroke, w, round, dash}]` in points, `d` flat (`0 x y` move, `1 x y` line, `2 x1 y1 x2 y2 x y` curve, `3` close) |
@@ -24,12 +24,17 @@
 //! | `pointer` | `mask`: pointer events to report (1 hover, 2 move, 4 drag) |
 //! | `keys` | `local`, `global`: report key presses (focus in the node / anywhere) |
 //! | `focus`, `reveal` | give the node the focus / scroll it into view |
+//! | `sel` | `start`, `end`: select these characters of a text field (#86) |
+//! | `selev` | `on`: a text field reports its selection (`select` events) |
 //! | `layers` | `ids`: runtime layers above everything, bottom first (no `id`) |
 //!
 //! Hosts report the new input events as `{"t":"click","id","x","y"}`
 //! (position optional), `{"t":"pointer","id","phase","x","y"}`,
 //! `{"t":"drag","id","phase","x","y","dx","dy"}` and
-//! `{"t":"key","id","key","mods","repeat"}` (see [`parse_input_event`]).
+//! `{"t":"key","id","key","mods","repeat","sel"}` (`sel`: `[start, end]`,
+//! the focused text field's selection in characters, #86) and
+//! `{"t":"select","id","start","end"}` (a text field's selection moved, in
+//! characters) (see [`parse_input_event`]).
 //! An overlay's host reports its content area like a modal's
 //! (`{"t":"viewport","id":overlay,"w","h"}`).
 //!
@@ -64,7 +69,8 @@
 //! ([`prism_core::Color::current`] included).
 //!
 //! A leaf's `style` carries `pad`: `[top, right, bottom, left]` (already
-//! mirrored right to left) when it has padding: a text, timer, button, text
+//! mirrored right to left) when it has padding (`[0, 0, 0, 0]` for an
+//! explicit `.p(0.)`: no inset at all, #69): a text, timer, button, text
 //! input or text area draws its content inset by it inside its frame, in
 //! place of the control's own inset (the frame already includes it; other
 //! leaves get a frame inside their padding and no `pad`). `bnone: true`
@@ -90,8 +96,9 @@ pub struct MeasureRequest<'a> {
     /// `text`, `button`, `text_input`, `toggle`, `progress`, `image`, `timer`…
     pub kind: &'a str,
     /// The text, the icon name of an `image`, a picker's widest option, a
-    /// date picker's config (`date`, `time`, `datetime` first), `large` for a
-    /// large spinner, a radio group's config (`row`/`column`, then options).
+    /// date picker's config (`date`, `time`, `datetime` first; an optional
+    /// one's placeholder on a second line), `large` for a large spinner, a
+    /// radio group's config (`row`/`column`, then options).
     pub text: &'a str,
     pub font_size: f32,
     /// CSS weight, 100 to 900.
@@ -141,6 +148,16 @@ impl RemoteWidgets {
     }
 }
 
+/// A `change` event's value: a number, or `null` for an optional date
+/// picker the user cleared (`NaN`, #89).
+pub fn change_value(v: &Value) -> Option<f64> {
+    if v.is_null() {
+        Some(f64::NAN)
+    } else {
+        v.as_f64()
+    }
+}
+
 /// The input events of #17 a host reports (`click` with a position,
 /// `pointer`, `drag`, `key`), shared by the Android and watchOS backends.
 pub fn parse_input_event(v: &Value) -> Option<prism_core::UiEvent> {
@@ -182,10 +199,24 @@ pub fn parse_input_event(v: &Value) -> Option<prism_core::UiEvent> {
                     v.get("mods").and_then(Value::as_u64).unwrap_or(0) as u8
                 ),
                 repeat: v.get("repeat").and_then(Value::as_bool).unwrap_or(false),
+                selection: selection(v.get("sel")),
             },
+        )),
+        "select" => Some(UiEvent::Select(
+            id?,
+            v.get("start")?.as_u64()? as usize,
+            v.get("end")?.as_u64()? as usize,
         )),
         _ => None,
     }
+}
+
+/// A key event's `sel`: `[start, end]` in characters, the focused text
+/// field's selection (#86).
+pub fn selection(v: Option<&Value>) -> Option<prism_core::SelectionEvent> {
+    let a = v?.as_array()?;
+    let at = |i: usize| a.get(i).and_then(Value::as_u64).map(|n| n as usize);
+    Some(prism_core::SelectionEvent::new(at(0)?, at(1)?))
 }
 
 fn color(c: Option<Color>) -> Value {
@@ -373,9 +404,10 @@ impl RemoteWidgets {
         }
         decorations(&mut op["s"], s);
         // A leaf's padding (#14), only when set: inset the content (text,
-        // title, an input's text) by it, in place of the control's own.
+        // title, an input's text) by it, in place of the control's own. An
+        // explicit zero (`.p(0.)`) is sent too: no inset at all (#69).
         let p = s.padding;
-        if !p.is_zero() {
+        if s.has_padding() {
             op["s"]["pad"] = json!([p.top, p.right, p.bottom, p.left]);
         }
         // `.border(0.)`: not even a field's own frame.
@@ -572,6 +604,10 @@ impl Widgets for RemoteWidgets {
     }
 
     fn set_placeholder(&mut self, id: &NodeId, text: &str) {
+        // What an optional date picker measures while empty (#89).
+        if self.kinds.get(id) == Some(&NodeKind::DatePicker) {
+            self.texts.insert(*id, text.to_string());
+        }
         self.ops
             .push(json!({ "op": "placeholder", "id": id, "text": text }));
     }
@@ -605,7 +641,7 @@ impl Widgets for RemoteWidgets {
     fn measure(&mut self, id: &NodeId, max_width: Option<f32>) -> (f32, f32) {
         let kind = self.kinds.get(id).copied().unwrap_or(NodeKind::View);
         let style = self.styles.get(id).cloned().unwrap_or_default();
-        if !style.padding.is_zero() && kind != NodeKind::Text && kind != NodeKind::Timer {
+        if style.has_padding() && kind != NodeKind::Text && kind != NodeKind::Timer {
             return self.measure_padded(id, kind, &style, max_width);
         }
         let text = match kind {
@@ -620,7 +656,19 @@ impl Widgets for RemoteWidgets {
                 .into_iter()
                 .max_by_key(|o| o.chars().count())
                 .unwrap_or_default(),
-            NodeKind::DatePicker => self.configs.get(id).cloned().unwrap_or_default(),
+            // An optional one is as wide as its placeholder too (#89).
+            NodeKind::DatePicker => {
+                let config = self.configs.get(id).cloned().unwrap_or_default();
+                match self.texts.get(id) {
+                    Some(placeholder)
+                        if !placeholder.is_empty()
+                            && prism_core::controls::DateConfig::decode(&config).optional =>
+                    {
+                        format!("{config}\n{placeholder}")
+                    }
+                    _ => config,
+                }
+            }
             // `row` or `column`, then the options: the host lays them out.
             NodeKind::RadioGroup => self.configs.get(id).cloned().unwrap_or_default(),
             _ => self.texts.get(id).cloned().unwrap_or_default(),
@@ -706,6 +754,9 @@ impl Widgets for RemoteWidgets {
         self.ops.push(json!({
             "op": "a11y", "id": id, "label": a11y.label, "hidden": a11y.hidden,
             "role": a11y.role.map(|r| r.aria()), "value": a11y.value,
+            // Switches, checkboxes and drawn radios (#84): on or chosen.
+            "checked": a11y.checked,
+            "selected": a11y.is_selected(),
         }));
     }
 
@@ -808,6 +859,7 @@ impl Widgets for RemoteWidgets {
             "rtl": env.direction == Direction::Rtl,
             "back": env.back,
             "close": env.close,
+            "clear": env.clear,
         }));
     }
 
@@ -876,6 +928,15 @@ impl Widgets for RemoteWidgets {
 
     fn focus(&mut self, id: &NodeId) {
         self.ops.push(json!({ "op": "focus", "id": id }));
+    }
+
+    fn set_selection(&mut self, id: &NodeId, start: usize, end: usize) {
+        self.ops
+            .push(json!({ "op": "sel", "id": id, "start": start, "end": end }));
+    }
+
+    fn set_select_events(&mut self, id: &NodeId, on: bool) {
+        self.ops.push(json!({ "op": "selev", "id": id, "on": on }));
     }
 
     fn scroll_into_view(&mut self, id: &NodeId) {

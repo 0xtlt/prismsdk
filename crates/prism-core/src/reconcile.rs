@@ -18,7 +18,7 @@ use crate::a11y::{Accessibility, Role};
 use crate::app::{AnyEntity, App, Appearance, EntityId};
 use crate::element::{
     BackEvent, ChangeEvent, ClickEvent, Element, Handler, InputEvent, NavigateEvent, NodeKind,
-    ScrollEvent, SwipeDirection, VNode,
+    ScrollEvent, SelectionEvent, SwipeDirection, VNode,
 };
 use crate::style::Style;
 
@@ -40,6 +40,8 @@ pub struct RenderEnvironment {
     pub back: String,
     /// Label of the button closing a modal.
     pub close: String,
+    /// Label of the action emptying an optional date picker (#89).
+    pub clear: String,
 }
 
 /// A mutation of the host tree.
@@ -131,6 +133,24 @@ pub enum Patch {
         /// The new text.
         text: String,
     },
+    /// Select `start..end` (characters) in a text input or area (#86):
+    /// the app's `.selection(..)` changed. Sent after the node's text.
+    SetSelection {
+        /// The text input or area.
+        id: NodeId,
+        /// First selected character.
+        start: usize,
+        /// End of the selection (excluded), `start` for a caret.
+        end: usize,
+    },
+    /// Whether a text input or area reports its selection
+    /// (`UiEvent::Select`): it has an `on_select` handler (#86).
+    SetSelectEvents {
+        /// The text input or area.
+        id: NodeId,
+        /// Report selection changes.
+        on: bool,
+    },
     /// Placeholder of a text input.
     SetPlaceholder {
         /// The text input.
@@ -216,7 +236,7 @@ pub enum Patch {
     },
 
     // --- Islands: client-side Web Components ---
-    /// The node is an island (see [`island`](crate::island)): sent right
+    /// The node is an island (see [`island`](crate::island())): sent right
     /// after its `Create`, and again when its source or events change.
     /// Native backends ignore it (they show the node's children, the
     /// fallback); the web turns the node into the custom element.
@@ -237,6 +257,33 @@ pub enum Patch {
         /// The changed props.
         props: Vec<(String, String)>,
     },
+
+    // --- Links ---
+    /// Where a node made a link (`Div::link`, `Text::link`) leads: an app
+    /// path or a URL. Sent right after its `Create`, and again when the
+    /// destination changes (`None`: no longer a link; on the web, a node
+    /// that gains or loses its link is a new node instead). Activating the
+    /// node is still a [`UiEvent::Click`]; native backends ignore this
+    /// patch, the web renders the node as an `<a href>` (open in a new tab,
+    /// copy the link, a working link before the script runs).
+    SetLink {
+        /// The node (a `View` or a `Text`).
+        id: NodeId,
+        /// Its destination, as given to `.link(…)`.
+        href: Option<String>,
+    },
+
+    // --- App-defined attributes (#85) ---
+    /// The node's app-defined attributes (`.attr(…)`), all of them: a name
+    /// sent before and absent now is removed. Only names
+    /// [`is_app_attribute`](crate::attributes::is_app_attribute) accepts.
+    /// The web sets them on the element; native backends ignore them.
+    SetAttributes {
+        /// The node.
+        id: NodeId,
+        /// (name, value) pairs, in the order the app first set them.
+        attributes: Vec<(String, String)>,
+    },
 }
 
 /// An event reported by a backend.
@@ -246,6 +293,9 @@ pub enum UiEvent {
     Click(NodeId),
     /// A text input was edited: (id, new text).
     Input(NodeId, String),
+    /// The selection of a text input or area moved: (id, start, end) in
+    /// characters (#86).
+    Select(NodeId, usize, usize),
     /// A stack was popped natively down to `depth` screens.
     Back(NodeId, usize),
     /// A stack was asked to show `path` (e.g. browser forward).
@@ -309,16 +359,27 @@ struct MNode {
     pointer_mask: u8,
     /// Key events reported: (local, global).
     keys: (bool, bool),
+    /// The selection the app last rendered (`.selection`, #86).
+    selection: Option<SelectionEvent>,
+    /// The selection the field shows, as far as Prism knows: the last one
+    /// sent to it or reported by it.
+    shown_selection: Option<SelectionEvent>,
+    /// It reports its selection (`on_select`).
+    select_events: bool,
     /// Its `.id(…)`.
     name: Option<String>,
     /// An island's tag, source, props and events.
     island: Option<MIsland>,
+    /// Its `.link(…)` destination, as last sent (`Patch::SetLink`).
+    link: Option<String>,
     /// Its own style animates changes (`.animate(…)`, `.transition(…)`;
     /// not an animated update's).
     animates: bool,
     /// A 3D scene as backends last got it (diffs are made against it; its
     /// blobs stay alive with it).
     scene: Option<crate::scene3d::FlatScene>,
+    /// Its app-defined attributes (`.attr(…)`).
+    attributes: Vec<(String, String)>,
 }
 
 /// What backends last got about a mounted island.
@@ -345,6 +406,7 @@ pub struct Reconciler {
     next_id: NodeId,
     click: HashMap<NodeId, Handler<ClickEvent>>,
     input: HashMap<NodeId, Handler<InputEvent>>,
+    select: HashMap<NodeId, Handler<SelectionEvent>>,
     back: HashMap<NodeId, Handler<BackEvent>>,
     navigate: HashMap<NodeId, Handler<NavigateEvent>>,
     change: HashMap<NodeId, Handler<ChangeEvent>>,
@@ -399,6 +461,19 @@ impl Reconciler {
         self.input.get(&id).cloned()
     }
 
+    /// The selection handler of text field `id`, if any (#86).
+    pub fn select_handler(&self, id: NodeId) -> Option<Handler<SelectionEvent>> {
+        self.select.get(&id).cloned()
+    }
+
+    /// Text field `id` reported `selection` (#86): the field shows it, so
+    /// the app rendering it back is an echo, not a change to apply.
+    pub fn selection_reported(&mut self, id: NodeId, selection: SelectionEvent) {
+        if let Some(m) = self.nodes.get_mut(&id) {
+            m.shown_selection = Some(selection);
+        }
+    }
+
     /// The back handler of stack `id`, if any.
     pub fn back_handler(&self, id: NodeId) -> Option<Handler<BackEvent>> {
         self.back.get(&id).cloned()
@@ -437,6 +512,16 @@ impl Reconciler {
     /// The tap handler of 3D scene `id`, if any.
     pub fn scene_tap_handler(&self, id: NodeId) -> Option<Handler<crate::scene3d::SceneTapEvent>> {
         self.scene_tap.get(&id).cloned()
+    }
+
+    /// Whether node `id` takes an empty value (`NaN`): an optional date
+    /// picker (#89). Hosts report a cleared picker as `NaN`; no other
+    /// control has an empty value.
+    pub fn accepts_empty(&self, id: NodeId) -> bool {
+        self.nodes.get(&id).is_some_and(|m| {
+            m.kind == NodeKind::DatePicker
+                && crate::controls::DateConfig::decode(&m.config).optional
+        })
     }
 
     /// The hover handler of node `id`, if any.
@@ -570,6 +655,7 @@ impl Reconciler {
             reduce_motion: app.reduce_motion(),
             back: app.chrome_text("back"),
             close: app.chrome_text("close"),
+            clear: app.chrome_text("clear"),
         };
         if self.environment.as_ref() != Some(&env) {
             // Before any node patch: text is created at the right scale/direction.
@@ -750,6 +836,9 @@ impl Reconciler {
         let island = vnode.island.take();
         let resolved = vnode.style.resolve(app.style_context());
         let animates = resolved.transition.is_some();
+        // On the web a link is an `<a>` element, anything else a `<div>`:
+        // a node that gains or loses its link is a new element there.
+        let web = app.platform() == crate::Platform::Web;
         let reusable = old.filter(|o| {
             let m = &self.nodes[o];
             // An island keeps its element only while its tag is the same.
@@ -758,6 +847,7 @@ impl Reconciler {
                 && m.key == vnode.key
                 && tag(m.island.as_ref().map(|i| i.tag.as_str()))
                     == tag(island.as_ref().map(|i| i.tag.as_str()))
+                && (!web || m.link.is_some() == vnode.link.is_some())
                 && self.keeps_identity(m, animates, entity.as_ref())
         });
         if let (Some(old), None) = (old, reusable) {
@@ -767,8 +857,19 @@ impl Reconciler {
             Some(id) => id,
             None => self.create(vnode.kind, vnode.key.clone()),
         };
-        // Right after its `Create`: the web swaps in the custom element.
+        // Right after its `Create`: the web swaps in the custom element, or
+        // the `<a>` of a link.
         self.diff_island(id, island);
+        {
+            let m = self.nodes.get_mut(&id).expect("node exists");
+            if m.link != vnode.link {
+                self.patches.push(Patch::SetLink {
+                    id,
+                    href: vnode.link.clone(),
+                });
+                m.link.clone_from(&vnode.link);
+            }
+        }
 
         // Ownership: which entity's root this node is.
         let previous_owner = self.owner(id);
@@ -794,6 +895,8 @@ impl Reconciler {
             children,
             on_click,
             on_input,
+            on_select,
+            selection,
             on_back,
             on_navigate,
             on_change,
@@ -813,9 +916,20 @@ impl Reconciler {
             on_global_key_down,
             on_scene_tap,
             scene,
+            attributes,
             ..
         } = *vnode;
         app.window.watch_widths(&style);
+        {
+            let m = self.nodes.get_mut(&id).expect("node exists");
+            if m.attributes != attributes {
+                self.patches.push(Patch::SetAttributes {
+                    id,
+                    attributes: attributes.clone(),
+                });
+                m.attributes = attributes;
+            }
+        }
         if autofocus && reusable.is_none() {
             self.autofocus.push(id);
         }
@@ -928,6 +1042,9 @@ impl Reconciler {
                     text: text.clone(),
                 });
                 m.text = text;
+                // The field's caret may have moved with its text: what it
+                // last reported no longer tells an echo (#86).
+                m.shown_selection = None;
             }
             if let Some(scene) = scene {
                 let flat = scene.flatten();
@@ -966,11 +1083,35 @@ impl Reconciler {
                 });
                 m.config = config;
             }
+            // `NaN` (an empty optional date picker) equals itself here.
             if let Some(v) = value
-                && m.value != Some(v)
+                && !m
+                    .value
+                    .is_some_and(|old| old == v || (old.is_nan() && v.is_nan()))
             {
                 self.patches.push(Patch::SetValue { id, value: v });
                 m.value = Some(v);
+            }
+            // After the text (#86): applied when the app's value changes,
+            // unless the field already shows it (the user made it).
+            if m.selection != selection {
+                if let Some(sel) = selection
+                    && m.shown_selection != Some(sel)
+                {
+                    self.patches.push(Patch::SetSelection {
+                        id,
+                        start: sel.start,
+                        end: sel.end,
+                    });
+                    m.shown_selection = Some(sel);
+                }
+                m.selection = selection;
+            }
+            let reports = on_select.is_some();
+            if m.select_events != reports {
+                self.patches
+                    .push(Patch::SetSelectEvents { id, on: reports });
+                m.select_events = reports;
             }
         }
         match on_click {
@@ -980,6 +1121,10 @@ impl Reconciler {
         match on_input {
             Some(h) => self.input.insert(id, h),
             None => self.input.remove(&id),
+        };
+        match on_select {
+            Some(h) => self.select.insert(id, h),
+            None => self.select.remove(&id),
         };
         match on_back {
             Some(h) => self.back.insert(id, h),
@@ -1260,7 +1405,10 @@ impl Reconciler {
                 NodeKind::View if clickable => {
                     Some(self.collect_text(id)).filter(|t| !t.is_empty())
                 }
-                NodeKind::TextInput | NodeKind::TextArea | NodeKind::Picker
+                NodeKind::TextInput
+                | NodeKind::TextArea
+                | NodeKind::Picker
+                | NodeKind::DatePicker
                     if !m.placeholder.is_empty() =>
                 {
                     Some(m.placeholder.clone())
@@ -1368,10 +1516,15 @@ impl Reconciler {
                 children: Vec::new(),
                 pointer_mask: 0,
                 keys: (false, false),
+                selection: None,
+                shown_selection: None,
+                select_events: false,
                 name: None,
                 island: None,
+                link: None,
                 animates: false,
                 scene: None,
+                attributes: Vec::new(),
             },
         );
         id
@@ -1403,6 +1556,7 @@ impl Reconciler {
         }
         self.click.remove(&id);
         self.input.remove(&id);
+        self.select.remove(&id);
         self.back.remove(&id);
         self.navigate.remove(&id);
         self.change.remove(&id);

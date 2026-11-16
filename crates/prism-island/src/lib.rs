@@ -46,7 +46,7 @@
 //! - **Props in**: [`Island::mount`] gets all of them, [`Island::update`] the
 //!   ones a server render changed (a removed prop is `null`). Read them
 //!   with [`Props`]: numbers, strings, booleans, number arrays, any
-//!   [`JsValue`]; or typed with serde (`serde` feature: [`Props::parse`]).
+//!   [`JsValue`]; or typed with serde (`serde` feature: `Props::parse`).
 //! - **Events out**: [`Host::emit`] dispatches a `CustomEvent` on the element;
 //!   the server's `.on(name, …)` handler gets its detail as JSON.
 //!

@@ -81,6 +81,42 @@ registers a widget or (iOS) declares Live Activities with
 `cx.enable_live_activities()`. Android generates one widget receiver per
 registered widget, so none without widgets.
 
+## What the bundlers ask the app
+
+What goes into a bundle depends on what the app declares when it starts: its
+assets directory, widgets, background tasks, Live Activities, widget buttons
+and car screen. Before building for iOS, tvOS, watchOS, visionOS or Android,
+`prism` builds the app for the computer it runs on and starts it once with
+`PRISM_DESCRIBE=all`. `Application::run` then runs the app's `init`, prints
+one JSON object and exits, without opening a window or starting a backend:
+
+```json
+{"assets": "/…/assets", "widgets": [{"kind": "todos", …}], "background": [{"id": "sync", "kind": "refresh"}],
+ "live_activities": true, "widget_actions": true, "car": false}
+```
+
+The questions can also be asked one at a time (`PRISM_DESCRIBE=assets`,
+`widgets`, `background`, `live_activities`, `widget_actions`, `car`). An
+unknown question exits with status 2 instead of starting the app.
+
+So the app must compile and reach `Application::run` on the computer that
+bundles it, but it does not need Prism's native backend there. An app that
+enables the backend only for its device targets keeps `prism` on every
+target and turns `native` on per target:
+
+```toml
+[dependencies]
+prism = { version = "0.1", default-features = false }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+prism = { version = "0.1", features = ["native"] }
+```
+
+Its Mac build then compiles without AppKit and answers the bundler from the
+core; started without `PRISM_DESCRIBE`, it stops with « no backend for this
+target ». Dependencies the app takes only on the device go under the same
+`[target.…]` table, and the code that uses them under the same `cfg`.
+
 ## Environment
 
 | Variable | |

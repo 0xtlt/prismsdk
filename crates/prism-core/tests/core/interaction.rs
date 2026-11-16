@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use prism_core::prelude::*;
-use prism_core::{NodeKind, Patch, UiEvent};
+use prism_core::{NodeKind, Patch, UiEvent, unix_time};
 use prism_testing::{Harness, mount};
 
 type Log = Rc<RefCell<Vec<String>>>;
@@ -308,6 +308,60 @@ fn overlays_build_their_content_only_while_open() {
     assert!(h.host.get(ov).children.is_empty());
 }
 
+struct Slash {
+    text: String,
+}
+
+impl Render for Slash {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        div().child(text_input().value(self.text.clone())).children(
+            self.text.starts_with('/').then(|| {
+                div().child(
+                    popover(text("/heading"))
+                        .open(true)
+                        .light_dismiss(false)
+                        .take_focus(false),
+                )
+            }),
+        )
+    }
+}
+
+#[test]
+fn a_popover_can_be_inserted_open_and_leave_the_focus_to_its_anchor() {
+    let mut h = Harness::new(|cx| {
+        let root = cx.new_entity(|_| Slash {
+            text: String::new(),
+        });
+        mount(cx, root);
+    });
+    assert!(h.host.find(|n| n.kind == NodeKind::Overlay).is_none());
+    // The menu appears with its parent, already open, in one patch (#70).
+    h.update::<Slash>(|s| s.text = "/".into());
+    let ov = h.host.find(|n| n.kind == NodeKind::Overlay).unwrap();
+    assert_eq!(h.host.get(ov).config, "popover manual keepfocus");
+    assert_eq!(h.host.get(ov).value, Some(1.));
+    assert_eq!(h.host.child_texts(ov), ["/heading"]);
+    assert!(
+        h.last
+            .iter()
+            .any(|p| matches!(p, Patch::Create { id, .. } if *id == ov))
+    );
+    assert!(
+        h.last
+            .iter()
+            .any(|p| matches!(p, Patch::SetValue { id, value } if *id == ov && *value == 1.))
+    );
+    // The defaults: light dismiss, focus taken.
+    assert_eq!(
+        prism_core::controls::OverlayConfig::decode("popover"),
+        prism_core::controls::OverlayConfig {
+            kind: prism_core::OverlayKind::Popover,
+            ..Default::default()
+        }
+    );
+}
+
 struct Choices {
     every: Option<usize>,
     remember: bool,
@@ -365,6 +419,7 @@ fn choice_controls_carry_their_state_and_semantics() {
     let tp = h.host.find(|n| n.kind == NodeKind::DatePicker).unwrap();
     assert_eq!(h.host.get(tp).value, Some(27000.));
     assert_eq!(h.host.get(tp).config, "timeofday - -");
+    assert_eq!(h.host.env.as_ref().unwrap().clear, "Clear");
     let e = ChangeEvent { value: 27000. };
     assert_eq!(e.minutes(), 450);
     let input = h.host.find(|n| n.kind == NodeKind::TextInput).unwrap();
@@ -373,6 +428,145 @@ fn choice_controls_carry_their_state_and_semantics() {
         prism_core::controls::input_suggestions(&h.host.get(input).config),
         ["Paris", "Lyon"]
     );
+}
+
+/// Option cards drawn by the app, reported as radios (#84).
+struct Plans {
+    chosen: usize,
+}
+
+impl Render for Plans {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let card = |i: usize, title: &'static str, note: &'static str| {
+            div()
+                .child(title)
+                .child(note)
+                .accessibility_role(Role::Radio)
+                .accessibility_checked(self.chosen == i)
+                .on_click(cx.listener(move |this: &mut Plans, _, _| this.chosen = i))
+        };
+        div()
+            .accessibility_role(Role::RadioGroup)
+            .accessibility_label("Plan")
+            .child(card(0, "Monthly", "Billed every month"))
+            .child(card(1, "Yearly", "Two months free"))
+    }
+}
+
+#[test]
+fn drawn_choices_are_radios_with_their_state() {
+    let mut h = Harness::new(|cx| {
+        let root = cx.new_entity(|_| Plans { chosen: 0 });
+        mount(cx, root);
+    });
+    let group = h
+        .host
+        .find(|n| n.a11y.role == Some(Role::RadioGroup))
+        .unwrap();
+    assert_eq!(h.host.get(group).a11y.label.as_deref(), Some("Plan"));
+    // The app's role wins over the clickable view's button, its text is the label.
+    let card = |h: &Harness, label: &str| {
+        h.host
+            .find(|n| n.a11y.role == Some(Role::Radio) && n.a11y.label.as_deref() == Some(label))
+            .unwrap()
+    };
+    let monthly = card(&h, "Monthly, Billed every month");
+    let yearly = card(&h, "Yearly, Two months free");
+    assert_eq!(h.host.get(monthly).a11y.checked, Some(true));
+    assert_eq!(h.host.get(yearly).a11y.checked, Some(false));
+    assert!(Role::Radio.is_interactive() && !Role::RadioGroup.is_interactive());
+    h.dispatch(UiEvent::Click(yearly));
+    assert_eq!(h.host.get(yearly).a11y.checked, Some(true));
+    assert_eq!(h.host.get(monthly).a11y.checked, Some(false));
+}
+
+struct Optional {
+    published: Option<std::time::SystemTime>,
+    opens: Option<u32>,
+    due: std::time::SystemTime,
+}
+
+impl Render for Optional {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .child(
+                date_picker_opt(self.published)
+                    .placeholder("Not published")
+                    .on_change(cx.listener(|this, e: &ChangeEvent, _| {
+                        this.published = e.date_opt();
+                    })),
+            )
+            .child(
+                time_picker_opt(self.opens)
+                    .placeholder("Opens at")
+                    .on_change(cx.listener(|this, e: &ChangeEvent, _| {
+                        this.opens = e.minutes_opt();
+                    })),
+            )
+            .child(
+                date_picker(self.due)
+                    .on_change(cx.listener(|this, e: &ChangeEvent, _| this.due = e.date())),
+            )
+    }
+}
+
+/// Optional date and time pickers: empty is `NaN`, cleared is `None` (#89).
+#[test]
+fn optional_date_pickers_can_be_empty_and_cleared() {
+    let mut h = Harness::new(|cx| {
+        let root = cx.new_entity(|_| Optional {
+            published: None,
+            opens: Some(9 * 60),
+            due: unix_time(1000.),
+        });
+        mount(cx, root);
+    });
+    let pickers: Vec<_> = {
+        let mut ids: Vec<_> = h
+            .host
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.kind == NodeKind::DatePicker)
+            .map(|(id, _)| *id)
+            .collect();
+        ids.sort();
+        ids
+    };
+    let [published, opens, due] = pickers[..] else {
+        panic!("three pickers")
+    };
+    let p = h.host.get(published);
+    assert!(p.value.unwrap().is_nan());
+    assert_eq!(p.config, "date - - optional");
+    assert_eq!(p.placeholder, "Not published");
+    // The placeholder names the picker.
+    assert_eq!(p.a11y.label.as_deref(), Some("Not published"));
+    assert_eq!(h.host.get(opens).config, "timeofday - - optional");
+    assert_eq!(h.host.get(opens).value, Some(9. * 3600.));
+    assert_eq!(h.host.get(due).config, "date - -");
+    // An unchanged empty value is not sent again.
+    let patches = h.render().to_vec();
+    assert!(!patches.iter().any(|p| matches!(p, Patch::SetValue { .. })));
+    // The user picks a day, then clears it; then clears the time.
+    h.dispatch(UiEvent::Change(published, 86_400.));
+    assert_eq!(h.host.get(published).value, Some(86_400.));
+    let cleared = h.dispatch(UiEvent::Change(published, f64::NAN)).to_vec();
+    assert!(
+        cleared.iter().any(
+            |p| matches!(p, Patch::SetValue { id, value } if *id == published && value.is_nan())
+        )
+    );
+    h.dispatch(UiEvent::Change(opens, f64::NAN));
+    assert!(h.host.get(opens).value.unwrap().is_nan());
+    // A picker that is not optional is never emptied (its handler would
+    // have read the epoch).
+    h.dispatch(UiEvent::Change(due, f64::NAN));
+    assert_eq!(h.host.get(due).value, Some(1000.));
+    // Reading a cleared value with the plain accessors never panics.
+    let empty = ChangeEvent { value: f64::NAN };
+    assert_eq!((empty.date(), empty.minutes()), (std::time::UNIX_EPOCH, 0));
+    assert_eq!((empty.date_opt(), empty.minutes_opt()), (None, None));
+    assert_eq!(ChangeEvent { value: 60. }.date_opt(), Some(unix_time(60.)));
 }
 
 #[test]

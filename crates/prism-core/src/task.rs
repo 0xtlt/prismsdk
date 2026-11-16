@@ -33,6 +33,9 @@ pub type WakeUi = Arc<dyn Fn() + Send + Sync>;
 #[derive(Default)]
 struct Shared {
     ready: Mutex<Vec<u64>>,
+    /// Signalled when a task becomes ready or `background` work ends, for
+    /// [`Executor::wait_for_work`].
+    changed: std::sync::Condvar,
     wake_ui: Mutex<Option<WakeUi>>,
     /// `background` work running on other threads.
     in_flight: std::sync::atomic::AtomicUsize,
@@ -50,7 +53,15 @@ impl Wake for TaskWaker {
 
     fn wake_by_ref(self: &Arc<Self>) {
         self.shared.ready.lock().unwrap().push(self.id);
-        let wake = self.shared.wake_ui.lock().unwrap().clone();
+        self.shared.changed.notify_all();
+        self.shared.wake_ui();
+    }
+}
+
+impl Shared {
+    /// Asks the backend to call `Runtime::poll` on the UI thread.
+    fn wake_ui(&self) {
+        let wake = self.wake_ui.lock().unwrap().clone();
         if let Some(wake) = wake {
             wake();
         }
@@ -99,6 +110,12 @@ impl Executor {
         self.next_id.set(id);
         self.tasks.borrow_mut().insert(id, Box::pin(fut));
         self.shared.ready.lock().unwrap().push(id);
+        // A task spawned outside `poll_tasks` (from `render`, say, which runs
+        // after the tasks were polled) would otherwise wait for the next
+        // event (#57). Inside it, its loop picks the new task up.
+        if self.polling.get().is_none() {
+            self.shared.wake_ui();
+        }
         id
     }
 
@@ -141,6 +158,31 @@ impl Executor {
             .in_flight
             .load(std::sync::atomic::Ordering::SeqCst)
             > 0
+    }
+
+    /// Blocks until a task is ready (`true`), or until `deadline` passes or
+    /// no `background` work is in flight (`false`). Timers are not waited
+    /// for: a task sleeping or awaiting a channel does not hold it up.
+    pub(crate) fn wait_for_work(&self, deadline: Instant) -> bool {
+        let shared = &self.shared;
+        let mut ready = shared.ready.lock().unwrap();
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            if !ready.is_empty() {
+                return true;
+            }
+            if shared.in_flight.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                return false;
+            }
+            ready = shared
+                .changed
+                .wait_timeout(ready, deadline - now)
+                .unwrap()
+                .0;
+        }
     }
 
     pub(crate) fn next_timer(&self) -> Option<Instant> {
@@ -317,6 +359,11 @@ impl Drop for InFlight {
         self.0
             .in_flight
             .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        // Work whose task is gone wakes nobody: tell `wait_for_work` it
+        // may stop waiting. Taking the lock first means a waiter is either
+        // asleep (and notified) or has not read the count yet.
+        drop(self.0.ready.lock().unwrap_or_else(|e| e.into_inner()));
+        self.0.changed.notify_all();
     }
 }
 

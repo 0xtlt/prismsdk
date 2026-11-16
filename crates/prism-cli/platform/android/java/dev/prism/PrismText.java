@@ -68,13 +68,32 @@ final class PrismText {
         t.setLinksClickable(links);
     }
 
-    /** A clickable text is a button for TalkBack. */
+    /**
+     * What TalkBack calls a text or a container: the control its role names (a
+     * drawn radio, checkbox or switch, #84, read with its state: "Monthly, radio
+     * button, checked"), else a button when a text is clickable.
+     */
     static void clickable(PrismHost.Node n) {
-        if (!n.kind.equals("text")) return;
-        n.view.setAccessibilityDelegate(!n.clickable ? null : new View.AccessibilityDelegate() {
+        if (!n.kind.equals("text") && !n.kind.equals("view")) return;
+        String role = n.a11yRole == null ? "" : n.a11yRole;
+        String cls;
+        switch (role) {
+            case "radio": cls = "android.widget.RadioButton"; break;
+            case "radiogroup": cls = "android.widget.RadioGroup"; break;
+            case "checkbox": cls = "android.widget.CheckBox"; break;
+            case "switch": cls = "android.widget.Switch"; break;
+            default: cls = n.clickable && n.kind.equals("text") ? "android.widget.Button" : null;
+        }
+        boolean checkable = role.equals("radio") || role.equals("checkbox") || role.equals("switch");
+        n.view.setAccessibilityDelegate(cls == null ? null : new View.AccessibilityDelegate() {
+            @SuppressWarnings("deprecation") // setChecked(int) is API 36
             @Override public void onInitializeAccessibilityNodeInfo(View host, AccessibilityNodeInfo info) {
                 super.onInitializeAccessibilityNodeInfo(host, info);
-                info.setClassName("android.widget.Button");
+                info.setClassName(cls);
+                if (checkable) {
+                    info.setCheckable(true);
+                    info.setChecked(Boolean.TRUE.equals(n.a11yChecked));
+                }
             }
         });
     }
@@ -131,11 +150,19 @@ final class PrismText {
             String family = s.optString("ff", "system");
             int weight = s.optInt("weight", 400);
             boolean italic = s.optBoolean("it");
+            // The text before each run, so a word split across runs is
+            // capitalized once (an icon ends a word).
+            String before = "";
             for (int i = 0; i < runs.length(); i++) {
                 JSONObject r = runs.optJSONObject(i);
                 if (r == null) continue;
                 String t = r.optString("t", "");
-                if (!r.has("icon")) t = transform(t, tt);
+                if (r.has("icon")) before = "";
+                else {
+                    String raw = t;
+                    t = transform(before, t, tt);
+                    before = raw;
+                }
                 int start = b.length();
                 b.append(t);
                 int end = b.length();
@@ -192,17 +219,31 @@ final class PrismText {
 
     /** `upper`, `lower`, `capitalize` (each word's first letter), like CSS. */
     static String transform(String s, String tt) {
+        return transform("", s, tt);
+    }
+
+    /** Whether a word starts after `c`: anything but a letter, a digit or an apostrophe. */
+    private static boolean startsWordAfter(int c) {
+        return !Character.isLetterOrDigit(c) && c != '\'' && c != '’';
+    }
+
+    /**
+     * `s` transformed as it reads after `before`, the previous run of the same text: a word cut
+     * by a run boundary is capitalized once, like CSS across inline elements.
+     */
+    static String transform(String before, String s, String tt) {
         switch (tt) {
             case "upper": return s.toUpperCase(locale());
             case "lower": return s.toLowerCase(locale());
             case "capitalize": {
                 StringBuilder out = new StringBuilder(s.length());
-                boolean start = true;
+                boolean start = before.isEmpty()
+                    || startsWordAfter(before.codePointBefore(before.length()));
                 for (int i = 0; i < s.length(); ) {
                     int c = s.codePointAt(i);
                     if (start && Character.isLetterOrDigit(c)) out.append(new String(Character.toChars(c)).toUpperCase(locale()));
                     else out.appendCodePoint(c);
-                    start = !Character.isLetterOrDigit(c) && c != '\'' && c != '’';
+                    start = startsWordAfter(c);
                     i += Character.charCount(c);
                 }
                 return out.toString();

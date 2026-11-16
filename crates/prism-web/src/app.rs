@@ -51,12 +51,27 @@ pub(crate) struct Inner {
     pub idle_timeout: Option<std::time::Duration>,
     /// Live sessions now.
     pub sessions: Arc<std::sync::atomic::AtomicUsize>,
+    /// How long a first render waits for the background work it started
+    /// (`first_paint_wait`).
+    pub first_paint_wait: std::time::Duration,
 
     // --- Islands: client-side Web Components ---
     /// The WASM islands `prism` built (`PRISM_ISLANDS_DIR`).
     pub islands: crate::islands::Islands,
     /// Send a strict CSP from the built-in router (`strict_csp`).
     pub strict_csp: bool,
+}
+
+/// Prism's client, its base stylesheet, the app's assets and its islands.
+fn build_assets(
+    dir: Option<PathBuf>,
+    embedded: prism_core::EmbeddedAssets,
+    islands: &crate::islands::Islands,
+) -> Assets {
+    let client = crate::CLIENT_JS.replace("__GLYPHS__", &prism_core::glyphs::js_table());
+    let mut assets = Assets::new(client, crate::PRISM_CSS.into(), dir, embedded);
+    assets.add_islands(islands);
+    assets
 }
 
 impl WebApp {
@@ -68,16 +83,14 @@ impl WebApp {
         let assets_dir = env("PRISM_ASSETS_DIR")
             .or_else(|| config.assets.clone())
             .unwrap_or_else(|| "assets".into());
-        let client = crate::CLIENT_JS.replace("__GLYPHS__", &prism_core::glyphs::js_table());
-        let mut assets = Assets::new(
-            client,
-            crate::PRISM_CSS.into(),
-            Some(PathBuf::from(assets_dir)),
-        );
         let islands = env("PRISM_ISLANDS_DIR")
             .map(|dir| crate::islands::Islands::load(Path::new(&dir)))
             .unwrap_or_default();
-        assets.add_islands(&islands);
+        let assets = build_assets(
+            Some(PathBuf::from(assets_dir)),
+            config.embedded_assets.clone(),
+            &islands,
+        );
         let app = WebApp {
             inner: Arc::new(Inner {
                 config,
@@ -94,6 +107,7 @@ impl WebApp {
                 max_sessions: None,
                 idle_timeout: None,
                 sessions: Default::default(),
+                first_paint_wait: std::time::Duration::ZERO,
                 islands,
                 strict_csp: env("PRISM_STRICT_CSP").is_some_and(|v| v != "0"),
             }),
@@ -132,6 +146,27 @@ impl WebApp {
     pub fn vapid_public_key(self, key: &str) -> Self {
         let key = key.trim().to_string();
         self.configure(|i| i.vapid_public_key = Some(key))
+    }
+
+    /// Adds app assets compiled into the binary, for a server shipped as one
+    /// file: hashed and served like the assets directory's files (which they
+    /// win over), exported by [`export_static`](Self::export_static), and
+    /// those under `fonts/` declared as `@font-face` rules. Also
+    /// `Application::embedded_assets`.
+    ///
+    /// ```ignore
+    /// let assets = EmbeddedAssets::new()
+    ///     .file("logo.png", include_bytes!("../assets/logo.png"))
+    ///     .file("fonts/Inter.woff2", include_bytes!("../assets/fonts/Inter.woff2"));
+    /// let app = WebApp::new(config, init).embedded_assets(assets);
+    /// ```
+    pub fn embedded_assets(self, assets: prism_core::EmbeddedAssets) -> Self {
+        self.configure(|i| {
+            let (dir, mut embedded) = i.assets.sources();
+            embedded.merge(&assets);
+            i.config.embedded_assets = embedded.clone();
+            i.assets = build_assets(dir, embedded, &i.islands);
+        })
     }
 
     /// Where each browser's data lives (`cx.storage()`, uploads).
@@ -217,7 +252,8 @@ impl WebApp {
     /// The request's extensions may carry a [`RequestContext`] (the app reads
     /// it with `cx.request_context::<T>()`) and a [`CspNonce`] (put on the
     /// page's `<style>`, `<link>` and `<script>` tags). An unknown path
-    /// renders the router's not-found screen with status `404`.
+    /// renders the router's not-found screen with status `404`; a screen sets
+    /// another with `cx.set_page_status(code)`.
     ///
     /// [`RequestContext`]: crate::RequestContext
     /// [`CspNonce`]: crate::CspNonce
@@ -359,11 +395,9 @@ impl WebApp {
             viewport,
             device: Some(crate::device_info::from_request(user_agent, cookies)),
         };
-        let (page, not_found) = self.page(path, visitor, request, nonce);
+        let (page, code) = self.page(path, visitor, request, nonce);
         let mut r = Response::new(page.into_bytes());
-        if not_found {
-            *r.status_mut() = StatusCode::NOT_FOUND;
-        }
+        *r.status_mut() = StatusCode::from_u16(code).unwrap_or(StatusCode::OK);
         set(&mut r, header::CONTENT_TYPE, "text/html; charset=utf-8");
         // Rendered for this browser: never stored by a CDN or the browser.
         set(&mut r, header::CACHE_CONTROL, "private, no-store");
@@ -447,22 +481,24 @@ impl WebApp {
 
     /// Server-side render of a fresh session on `path`, as a full HTML
     /// document without `style` attributes (a strict CSP allows it), and
-    /// whether it shows the not-found screen.
+    /// its HTTP status (`cx.page_status()`: the app's, or `404` on the
+    /// not-found screen).
     fn page(
         &self,
         path: &str,
         visitor: Visitor,
         request: prism_core::WebRequest,
         nonce: Option<&crate::CspNonce>,
-    ) -> (String, bool) {
+    ) -> (String, u16) {
         let config = &self.inner.config;
         let asset_urls = self.session_asset_urls(visitor.sid);
         let mut runtime =
             Runtime::with_options(&self.init_with(request), self.options(visitor, path.into()));
         let mut html = HtmlBackend::default();
         html.asset_urls = Some(asset_urls);
-        html.apply(&runtime.render());
-        let not_found = runtime.app.shows_not_found();
+        html.base.clone_from(&self.inner.base);
+        html.apply(&runtime.render_settled(self.inner.first_paint_wait));
+        let code = runtime.app.page_status();
         let title = match html.screen_title() {
             Some(screen) if screen != config.title => format!("{screen} · {}", config.title),
             _ => config.title.clone(),
@@ -509,7 +545,7 @@ impl WebApp {
             js = self.inner.assets.client(),
             base = html::escape(&self.inner.base),
         );
-        (page, not_found)
+        (page, code)
     }
 
     /// What a socket request tells about the browser: session cookie,
@@ -664,6 +700,21 @@ impl WebApp {
     /// reconnects (to a fresh session) at the next interaction.
     pub fn idle_timeout(self, timeout: std::time::Duration) -> Self {
         self.configure(|i| i.idle_timeout = Some(timeout))
+    }
+
+    /// Lets the first paint wait up to `timeout` for the data it loads.
+    ///
+    /// A screen that loads with `cx.spawn` + `cx.background` (HTTP, a
+    /// database, files), from `init`, its constructor or `render`, otherwise
+    /// ships its loading state in the server-rendered page and gets its data
+    /// once the socket connects. With a wait, the page is rendered after
+    /// that work ends (each step it starts is waited for too), or at
+    /// `timeout` with what is still loading as today. The live session's
+    /// first tree waits the same way, so the page does not go back to its
+    /// loading state when the socket connects. Timers and channels are not
+    /// waited for. Zero (the default) renders at once.
+    pub fn first_paint_wait(self, timeout: std::time::Duration) -> Self {
+        self.configure(|i| i.first_paint_wait = timeout)
     }
 
     /// Live sessions right now.
@@ -1006,6 +1057,44 @@ mod tests {
             get(&app, "/files/x.png", &[]).status(),
             StatusCode::NOT_FOUND
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn embedded_assets_need_no_directory() {
+        // No assets directory at all: the pictures come from the binary.
+        let dir = std::env::temp_dir().join(format!("prism-webapp-embed-{}", std::process::id()));
+        let config = AppConfig {
+            title: "Test".into(),
+            assets: Some(dir.join("missing").to_string_lossy().into()),
+            embedded_assets: prism_core::EmbeddedAssets::new().file("logo.png", &b"old"[..]),
+            ..Default::default()
+        };
+        let init: AppInit = Arc::new(|cx: &mut App| {
+            let root = cx.new_entity(|_| Page);
+            cx.set_root(root);
+        });
+        let app = WebApp::new(config, init)
+            .data_dir(dir.join("data"))
+            .embedded_assets(prism_core::EmbeddedAssets::new().file("logo.png", &b"png!"[..]));
+        let html = String::from_utf8(get(&app, "/", &[]).body().clone()).unwrap();
+        let logo = format!("/assets/logo.{}.png", crate::content_hash(b"png!"));
+        assert!(html.contains(&logo), "{html}");
+        let image = get(&app, &logo, &[]);
+        assert_eq!(
+            (image.body().as_slice(), header(&image, "cache-control")),
+            (&b"png!"[..], crate::IMMUTABLE)
+        );
+        assert_eq!(header(&image, "content-type"), "image/png");
+        let plain = get(&app, "/assets/logo.png", &[]);
+        assert_eq!(
+            (plain.body().as_slice(), header(&plain, "cache-control")),
+            (&b"png!"[..], crate::REVALIDATE)
+        );
+        assert_eq!(app.config().embedded_assets.len(), 1);
+        let out = dir.join("public");
+        app.export_static(&out).unwrap();
+        assert_eq!(std::fs::read(out.join(&logo[1..])).unwrap(), b"png!");
         let _ = std::fs::remove_dir_all(dir);
     }
 

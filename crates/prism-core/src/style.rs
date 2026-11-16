@@ -186,6 +186,29 @@ pub enum FlexDirection {
     /// Children stacked top to bottom (the default).
     #[default]
     Column,
+    /// Children side by side from trailing to leading (`row-reverse`): the
+    /// last child at the leading edge, and `justify_start` packs them
+    /// against the trailing edge.
+    RowReverse,
+    /// Children stacked bottom to top (`column-reverse`): the last child on
+    /// top, and `justify_start` packs them against the bottom.
+    ColumnReverse,
+}
+
+impl FlexDirection {
+    /// `Row` or `RowReverse`: the main axis is horizontal.
+    pub fn is_row(self) -> bool {
+        matches!(self, FlexDirection::Row | FlexDirection::RowReverse)
+    }
+
+    /// `RowReverse` or `ColumnReverse`: children run from the end of the
+    /// main axis.
+    pub fn is_reverse(self) -> bool {
+        matches!(
+            self,
+            FlexDirection::RowReverse | FlexDirection::ColumnReverse
+        )
+    }
 }
 
 /// Cross-axis alignment (`align-items` / `align-self`).
@@ -538,20 +561,28 @@ pub enum TextTransform {
 impl TextTransform {
     /// `text` transformed (Unicode case mapping, like CSS).
     pub fn apply(self, text: &str) -> String {
+        self.apply_after("", text)
+    }
+
+    /// `text` transformed as it reads after `before`, the text drawn just
+    /// before it in the same paragraph. Rich-text runs pass the previous
+    /// run, so a word cut by a run boundary (`span("Hel")`, `span("lo")`)
+    /// is capitalized once, like CSS across inline elements.
+    pub fn apply_after(self, before: &str, text: &str) -> String {
         match self {
             TextTransform::None => text.to_string(),
             TextTransform::Uppercase => text.to_uppercase(),
             TextTransform::Lowercase => text.to_lowercase(),
             TextTransform::Capitalize => {
                 let mut out = String::with_capacity(text.len());
-                let mut start = true;
+                let mut start = before.chars().last().is_none_or(starts_word_after);
                 for c in text.chars() {
                     if start && c.is_alphanumeric() {
                         out.extend(c.to_uppercase());
                     } else {
                         out.push(c);
                     }
-                    start = !c.is_alphanumeric() && c != '\'' && c != '\u{2019}';
+                    start = starts_word_after(c);
                 }
                 out
             }
@@ -567,6 +598,12 @@ impl TextTransform {
             TextTransform::Capitalize => "capitalize",
         }
     }
+}
+
+/// Whether a word starts after `c`: anything but a letter, a digit or an
+/// apostrophe (« it's », « l'été » keep one capital, like CSS).
+fn starts_word_after(c: char) -> bool {
+    !c.is_alphanumeric() && c != '\'' && c != '\u{2019}'
 }
 
 /// Default text size, in points.
@@ -616,6 +653,11 @@ pub struct Style {
     pub flex_shrink: f32,
     /// Main-axis size before growing or shrinking.
     pub flex_basis: Length,
+    /// Place among its siblings (`order`, `0` by default): the layout sorts
+    /// a parent's children by it, keeping their order among equals. Only the
+    /// visual position changes: focus and assistive technologies keep the
+    /// children's order in the tree.
+    pub order: i32,
 
     /// Background color.
     pub background: Option<Color>,
@@ -760,6 +802,11 @@ pub struct Style {
     /// `.border(0.)` was called: no border at all, not even the platform's
     /// default one around text inputs, text areas, pickers and date pickers.
     pub border_none: bool,
+    /// A padding setter (`.p()`, `.px()`, `.pt()`…) was called, even with
+    /// zero: an explicit `.p(0.)` replaces a button's, text input's, text
+    /// area's or picker's own inset with none (#69). See
+    /// [`Style::has_padding`].
+    pub padding_set: bool,
 
     // --- Bar tint (#30) ---
     /// The tint of a tab bar (its selected tab) or a stack's header bar
@@ -767,6 +814,11 @@ pub struct Style {
     /// the router from `RouterBuilder::tint` or the app's accent color.
     /// `None`: the platform's.
     pub tint: Option<Color>,
+
+    // --- Custom window chrome (#67) ---
+    /// Dragging the element moves the window and double-clicking it zooms
+    /// (or minimizes) it, like a title bar: see [`Styled::window_drag`].
+    pub window_drag: bool,
 }
 
 impl Style {
@@ -783,6 +835,13 @@ impl Style {
     /// wrapping): the box can then be narrower than the text's words.
     pub fn truncates(&self) -> bool {
         self.max_lines.is_some() || self.no_wrap
+    }
+
+    /// Whether the app gave this node a padding, an explicit zero included
+    /// (`.p(0.)`): a button, text input, text area or picker then uses it
+    /// in place of its own inset, and sizes to its content plus it (#69).
+    pub fn has_padding(&self) -> bool {
+        self.padding_set || !self.padding.is_zero()
     }
 }
 
@@ -1236,6 +1295,7 @@ impl Default for Style {
             flex_grow: 0.,
             flex_shrink: 1.,
             flex_basis: Length::Auto,
+            order: 0,
             background: None,
             corner_radius: 0.,
             rounded_corners: Corners::ALL,
@@ -1288,8 +1348,11 @@ impl Default for Style {
             inert: false,
 
             border_none: false,
+            padding_set: false,
 
             tint: None,
+
+            window_drag: false,
         }
     }
 }
@@ -1313,6 +1376,17 @@ pub trait Styled: Sized {
     /// Lays children out in a column (the default).
     fn flex_col(self) -> Self {
         self.with_style(|s| s.direction = FlexDirection::Column)
+    }
+    /// Lays children out in a row from trailing to leading
+    /// (`flex-direction: row-reverse`): the first child ends up at the
+    /// trailing edge. Usable in refinements (`.md(|s| s.flex_row_reverse())`).
+    fn flex_row_reverse(self) -> Self {
+        self.with_style(|s| s.direction = FlexDirection::RowReverse)
+    }
+    /// Lays children out in a column from bottom to top
+    /// (`flex-direction: column-reverse`).
+    fn flex_col_reverse(self) -> Self {
+        self.with_style(|s| s.direction = FlexDirection::ColumnReverse)
     }
     /// Wraps children onto new lines when they don't fit.
     fn flex_wrap(self) -> Self {
@@ -1398,6 +1472,13 @@ pub trait Styled: Sized {
     fn flex_shrink_0(self) -> Self {
         self.with_style(|s| s.flex_shrink = 0.)
     }
+    /// Place among its siblings (CSS `order`, `0` by default): lower first,
+    /// the children's order among equals. Moves the node visually only;
+    /// focus order and assistive technologies follow the tree. Usable in
+    /// refinements: `.order(1).md(|s| s.order(0))`.
+    fn order(self, order: i32) -> Self {
+        self.with_style(|s| s.order = order)
+    }
 
     // Spacing
     /// Padding on every edge, points. Works on every kind of node: the box
@@ -1406,37 +1487,54 @@ pub trait Styled: Sized {
     /// button, text input, text area or picker it replaces the control's
     /// own inset.
     fn p(self, v: f32) -> Self {
-        self.with_style(|s| s.padding = Edges::all(v))
+        self.with_style(|s| {
+            s.padding = Edges::all(v);
+            s.padding_set = true
+        })
     }
     /// Leading and trailing padding, points.
     fn px(self, v: f32) -> Self {
         self.with_style(|s| {
             s.padding.left = v;
-            s.padding.right = v
+            s.padding.right = v;
+            s.padding_set = true
         })
     }
     /// Top and bottom padding, points.
     fn py(self, v: f32) -> Self {
         self.with_style(|s| {
             s.padding.top = v;
-            s.padding.bottom = v
+            s.padding.bottom = v;
+            s.padding_set = true
         })
     }
     /// Top padding, points.
     fn pt(self, v: f32) -> Self {
-        self.with_style(|s| s.padding.top = v)
+        self.with_style(|s| {
+            s.padding.top = v;
+            s.padding_set = true
+        })
     }
     /// Trailing padding (right in left-to-right languages), points.
     fn pr(self, v: f32) -> Self {
-        self.with_style(|s| s.padding.right = v)
+        self.with_style(|s| {
+            s.padding.right = v;
+            s.padding_set = true
+        })
     }
     /// Bottom padding, points.
     fn pb(self, v: f32) -> Self {
-        self.with_style(|s| s.padding.bottom = v)
+        self.with_style(|s| {
+            s.padding.bottom = v;
+            s.padding_set = true
+        })
     }
     /// Leading padding (left in left-to-right languages), points.
     fn pl(self, v: f32) -> Self {
-        self.with_style(|s| s.padding.left = v)
+        self.with_style(|s| {
+            s.padding.left = v;
+            s.padding_set = true
+        })
     }
     /// Margin on every edge, points.
     fn m(self, v: f32) -> Self {
@@ -1956,6 +2054,13 @@ pub trait Styled: Sized {
     fn lowercase(self) -> Self {
         self.text_transform(TextTransform::Lowercase)
     }
+    /// Renders the first letter of each word in capitals (CSS
+    /// `text-transform: capitalize`; screen readers read it as written).
+    /// Text fields have their own `capitalize(Capitalize)`, the keyboard's
+    /// automatic capitalization.
+    fn capitalize(self) -> Self {
+        self.text_transform(TextTransform::Capitalize)
+    }
     /// Underlined text.
     fn underline(self) -> Self {
         self.with_style(|s| s.underline = true)
@@ -2174,5 +2279,18 @@ pub trait Styled: Sized {
     /// screen behind a custom overlay). It stays visible.
     fn inert(self, on: bool) -> Self {
         self.with_style(|s| s.inert = on)
+    }
+
+    // --- Custom window chrome (#67) ---
+
+    /// Makes the element a title bar for the window: dragging it moves the
+    /// window, and a double click does what the user chose in System
+    /// Settings (« Double-click a window's title bar »: zoom by default,
+    /// minimize, or nothing). Clickable descendants (buttons, tabs,
+    /// `on_click` views) keep their clicks; put it on a container (on a
+    /// clickable element the click wins). Pairs with a custom window chrome
+    /// (`Application::window_chrome`). macOS only: ignored elsewhere.
+    fn window_drag(self) -> Self {
+        self.with_style(|s| s.window_drag = true)
     }
 }

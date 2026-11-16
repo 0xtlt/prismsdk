@@ -9,6 +9,8 @@
 mod automation;
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "visionos"))]
 mod choice;
+#[cfg(any(target_os = "ios", target_os = "visionos"))]
+mod dates;
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "visionos"))]
 mod decor;
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "visionos"))]

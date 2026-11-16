@@ -3,7 +3,7 @@
 
 use prism_core::{
     Accessibility, Backend, Color, FontFamily, FontWeight, Length, NodeKind, Patch, Role, Style,
-    TextRun, TextTransform, encode_runs, rgb,
+    Styled, TextRun, TextTransform, encode_runs, rgb,
 };
 
 use crate::css::{css, run_css};
@@ -58,6 +58,8 @@ fn typography_becomes_css_only_when_set() {
         },
     );
     assert!(px.contains("line-height:1.5rem;"), "{px}");
+    let cap = css(NodeKind::Text, &Style::default().capitalize());
+    assert!(cap.contains("text-transform:capitalize;"), "{cap}");
     // Families also apply to buttons and inputs (after their `inherit`).
     let b = css(
         NodeKind::Button,
@@ -157,6 +159,53 @@ fn runs_become_inline_spans_and_links() {
 }
 
 #[test]
+fn ssr_rich_text_links_follow_the_mount_point_and_never_nest() {
+    let page = |link: Option<&str>| {
+        let mut b = HtmlBackend::default();
+        b.base = "/app".into();
+        let mut patches = vec![
+            Patch::Create {
+                id: 1,
+                kind: NodeKind::Text,
+            },
+            Patch::SetConfig {
+                id: 1,
+                config: runs(),
+            },
+            Patch::SetRoot { id: 1 },
+        ];
+        if let Some(href) = link {
+            patches.insert(
+                1,
+                Patch::SetLink {
+                    id: 1,
+                    href: Some(href.into()),
+                },
+            );
+        }
+        b.apply(&patches);
+        b.to_html()
+    };
+    let plain = page(None);
+    assert!(
+        plain.contains(r#"<a class="prism-link" href="/app/settings?a=1&amp;b=2""#),
+        "{plain}"
+    );
+    // A text that is a link: its own links are spans (an `<a>` can't hold one).
+    let linked = page(Some("/profile"));
+    assert!(
+        linked.starts_with(r#"<a data-pid="1" data-kind="text" style="" href="/app/profile">"#),
+        "{linked}"
+    );
+    assert_eq!(linked.matches("<a ").count(), 1, "{linked}");
+    assert!(
+        linked.contains(r#"<span class="prism-link" data-link="42""#),
+        "{linked}"
+    );
+    assert!(!linked.contains(r#"role="link""#), "{linked}");
+}
+
+#[test]
 fn ssr_rich_text_and_clickable_text() {
     let mut b = HtmlBackend::default();
     b.apply(&[
@@ -228,7 +277,12 @@ fn bundled_fonts_are_font_faces_of_the_base_stylesheet() {
     std::fs::create_dir_all(dir.join("fonts")).unwrap();
     std::fs::write(dir.join("fonts/Brand-BoldItalic.woff2"), b"wOF2").unwrap();
     std::fs::write(dir.join("logo.png"), b"png").unwrap();
-    let assets = crate::assets::Assets::new("js".into(), "body{}".into(), Some(dir.clone()));
+    let assets = crate::assets::Assets::new(
+        "js".into(),
+        "body{}".into(),
+        Some(dir.clone()),
+        Default::default(),
+    );
     let css_path = assets.css().to_string();
     let css = String::from_utf8(assets.get(&css_path).expect("the stylesheet").body).unwrap();
     assert!(css.starts_with("body{}"));
@@ -240,4 +294,29 @@ fn bundled_fonts_are_font_faces_of_the_base_stylesheet() {
         "{css}"
     );
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn embedded_fonts_are_font_faces_too() {
+    let embedded = prism_core::EmbeddedAssets::new()
+        .file("fonts/Brand-Bold.woff2", &b"wOF2"[..])
+        .file("logo.png", &b"png"[..]);
+    let assets = crate::assets::Assets::new("js".into(), "body{}".into(), None, embedded);
+    let css_path = assets.css().to_string();
+    let css = String::from_utf8(assets.get(&css_path).expect("the stylesheet").body).unwrap();
+    let hashed = assets.app_path("fonts/Brand-Bold.woff2");
+    assert_eq!(
+        hashed,
+        format!(
+            "assets/fonts/Brand-Bold.{}.woff2",
+            crate::content_hash(b"wOF2")
+        )
+    );
+    assert!(
+        css.contains(&format!(
+            "@font-face{{font-family:\"Brand\";src:url(\"../{hashed}\") format(\"woff2\");font-weight:700;font-style:normal;font-display:swap}}"
+        )),
+        "{css}"
+    );
+    assert_eq!(assets.get(&hashed).unwrap().body, b"wOF2");
 }

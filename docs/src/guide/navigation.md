@@ -41,11 +41,13 @@ Router::new()
 
 Make a tab eager when its views must exist while hidden, or when switching to it must not wait for a render. On the web the first switch to a lazy tab takes one round trip to the server: the tab is selected at once and the panel shown stays up until the new one arrives, so no empty panel flashes (a timeout shows it after a second if no answer comes). Native backends render in the app's process, with no round trip. watchOS pages through tabs with the Digital Crown, which shows the next page while it scrolls, so the tabs next to the selected one render too. `router.tab_rendered(i)` tells whether a tab is rendered.
 
-**Scrolling**: `scroll()` (`UIScrollView` / `NSScrollView` / `overflow:auto`) fills the space left in its parent (`flex: 1 1 0`) and scrolls the rest. A screen starting with a scroll view lets it run under the bars, so iOS large titles collapse natively. For a list as tall as its content up to a maximum (in a sheet, a card, a popover), use `scroll().fit().max_h(px(320.))`: it sizes to its rows (`flex: 0 1 auto`), stops at `max_h`, then scrolls. Same layout on every backend (taffy natively, CSS on the web).
+**Scrolling**: `scroll()` (`UIScrollView` / `NSScrollView` / `overflow:auto`) fills the space left in its parent (`flex: 1 1 0`) and scrolls the rest. A screen starting with a scroll view lets it run under the bars, so iOS large titles collapse natively; its content is still laid out in what the bars leave visible, so `relative(1.)` (e.g. `div().min_h(relative(1.)).justify_center()`) is the visible height and centred content is centred between the bars, as on the web. For a list as tall as its content up to a maximum (in a sheet, a card, a popover), use `scroll().fit().max_h(px(320.))`: it sizes to its rows (`flex: 0 1 auto`), stops at `max_h`, then scrolls. Same layout on every backend (taffy natively, CSS on the web).
 
 **Window-sized screens (web)**: the root stack and its visible screen fill the browser window, like a native app: a frame (your own header, a sidebar) stays put and `scroll().flex_1()` scrolls inside it. A screen taller than the window without a scroll view scrolls by itself (its header stays). A tab bar root already worked this way. A root that is not a stack or tabs (a plain view) still scrolls the page.
 
-Patterns: `/`, `/todos`, `/todos/:id`, `/files/*rest`. Unknown paths show a "Not found" screen (or `.not_found(...)`); on the web that page is answered with `404` (`cx.shows_not_found()` tells the app). Opening a deep link puts `/` underneath so Back works.
+Patterns: `/`, `/todos`, `/todos/:id`, `/files/*rest`. The most specific route that matches a path wins, whatever the order the routes were added in (feature modules can declare theirs in any order): segment by segment from the left, a static segment beats a `:param`, which beats a `*rest`, so `/todos/new` wins over `/todos/:id` and `/files` over `/files/*rest`. Two routes of the same shape (`/a/:x`, `/a/:y`) keep their order, the first added wins, and debug builds print a warning about the other. Unknown paths show a "Not found" screen (or `.not_found(...)`); on the web that page is answered with `404` (`cx.shows_not_found()` tells the app). A route that matches but finds no data answers `404` too with `cx.set_page_status(404)` during the first paint ([web](../platforms/web.md)). Opening a deep link puts `/` underneath so Back works.
+
+**Deep links on the web**: the screen under a deep link is not built until Back reaches it (the header's Back, browser Back, `cx.back()`). Opening `/orders/42` then loads and ships only that screen: on a dashboard whose `/` is a list, a deep link no longer pays for the list. The page holds an empty hidden placeholder in its place, so the stack's depth, the header's Back and the browser's history stay the same; Back builds `/` on the server and sends it, in the round trip it already takes. Native backends build it up front, since their Back shows it: iOS names it in the Back button and the swipe back reveals it.
 
 ## Query strings
 
@@ -67,6 +69,18 @@ format!("/search?{}", encode_query([("q", "a & b")]))     // /search?q=a%20%26%2
 ```
 
 Values are decoded (`%20`, `+`); `p.parse_query::<u32>("room")` parses the first one, `p.query_pairs()` lists them all. Tabs match their root without the query: `navigate("/settings?section=privacy")` switches to the Settings tab, then opens that path on it. `cx.current_query()` reads the visible screen's.
+
+## Links
+
+`.link(path)` makes a row, a card or a text a link: activating it navigates in the app (`navigate(path)`), or opens a URL (`https:`, `mailto:`, `tel:`) in the browser. It is announced as a link and reachable from the keyboard.
+
+```rust
+div().link(format!("/orders/{}", order.id)).child(text(&order.title))  // a row of a list
+text("Terms of use").underline().link("/terms")
+text("Docs").link("https://example.com/docs")
+```
+
+On the web the node is an `<a href>` (app paths under the mount point, `rel="noopener"` for a URL), in the first paint too, so what a real link gives works: Cmd/Ctrl-click, a middle click and the context menu open it in a new tab or copy it, hovering shows its URL, and it works before the socket connects or without JavaScript (a page load). A plain click still navigates in the app, with no page load. A node that gains or loses its link is a new element there. Natively it is a clickable view with the link role; in widgets and Live Activities it opens the app on `path`.
 
 ## Handing a value to the next screen
 

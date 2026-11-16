@@ -3,6 +3,7 @@
 ```rust
 // Styles, from a width up (like Tailwind): phones get a column, tablets a row.
 div().flex_col().gap(12.).md(|s| s.flex_row().gap(24.))
+field.order(1).md(|s| s.order(-1))                        // visual order per breakpoint
 text("Swipe to delete").hidden_from(Breakpoint::Medium)   // phones only
 sidebar().visible_from(Breakpoint::Expanded)              // laptops and up
 

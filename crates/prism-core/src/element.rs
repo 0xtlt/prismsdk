@@ -170,6 +170,82 @@ pub struct InputEvent {
     pub value: String,
 }
 
+/// The selection of a text input or area moved (#86): the user selected
+/// text, moved the caret, or typed. `start..end` in **characters** (Rust
+/// `char`s, Unicode scalar values) of the field's text, not UTF-8 bytes
+/// nor UTF-16 units; `start == end` is a caret, and `start <= end` always
+/// (a selection made backwards is reported in order).
+///
+/// Use [`byte_range`](SelectionEvent::byte_range) to slice the text:
+///
+/// ```
+/// # use prism_core::SelectionEvent;
+/// let text = "héllo wörld";
+/// let e = SelectionEvent { start: 6, end: 11 };
+/// assert_eq!(&text[e.byte_range(text)], "wörld");
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SelectionEvent {
+    /// Where the selection starts, in characters.
+    pub start: usize,
+    /// Where it ends (excluded), in characters: equal to `start` for a caret.
+    pub end: usize,
+}
+
+impl SelectionEvent {
+    /// A selection from `start` to `end` characters (swapped if reversed).
+    pub fn new(start: usize, end: usize) -> Self {
+        SelectionEvent {
+            start: start.min(end),
+            end: start.max(end),
+        }
+    }
+
+    /// A caret (empty selection) at character `at`.
+    pub fn caret(at: usize) -> Self {
+        SelectionEvent { start: at, end: at }
+    }
+
+    /// Whether nothing is selected (`start == end`): a caret.
+    pub fn is_caret(&self) -> bool {
+        self.start == self.end
+    }
+
+    /// `start..end` in characters.
+    pub fn range(&self) -> std::ops::Range<usize> {
+        self.start..self.end
+    }
+
+    /// The same range in UTF-8 bytes of `text` (the field's value), to
+    /// slice or edit it: `&text[e.byte_range(text)]`. Offsets past the end
+    /// of `text` are clamped to its length.
+    pub fn byte_range(&self, text: &str) -> std::ops::Range<usize> {
+        char_to_byte(text, self.start)..char_to_byte(text, self.end)
+    }
+}
+
+impl From<std::ops::Range<usize>> for SelectionEvent {
+    fn from(r: std::ops::Range<usize>) -> Self {
+        SelectionEvent::new(r.start, r.end)
+    }
+}
+
+/// The UTF-8 byte offset of character `chars` in `text` (clamped to its
+/// length): turns a [`SelectionEvent`] offset into one `str` methods take.
+pub fn char_to_byte(text: &str, chars: usize) -> usize {
+    text.char_indices()
+        .nth(chars)
+        .map_or(text.len(), |(b, _)| b)
+}
+
+/// The character offset of UTF-8 byte `byte` in `text` (clamped; a byte
+/// inside a character counts as after it): the reverse of
+/// [`char_to_byte`], to give [`TextInput::selection`] a position found
+/// with `str::find`.
+pub fn byte_to_char(text: &str, byte: usize) -> usize {
+    text.char_indices().take_while(|(b, _)| *b < byte).count()
+}
+
 /// Reported by a stack when the user went back natively (iOS swipe, browser
 /// back button, macOS back button): only the first `depth` screens remain.
 #[derive(Clone, Debug)]
@@ -203,9 +279,16 @@ impl ChangeEvent {
         self.value.max(0.) as usize
     }
 
-    /// A date picker's new value.
+    /// A date picker's new value (the Unix epoch when an optional picker
+    /// was cleared: read those with [`date_opt`](Self::date_opt)).
     pub fn date(&self) -> std::time::SystemTime {
-        unix_time(self.value)
+        self.date_opt().unwrap_or(std::time::UNIX_EPOCH)
+    }
+
+    /// An optional date picker's new value ([`date_picker_opt`]): `None`
+    /// when the user cleared it.
+    pub fn date_opt(&self) -> Option<std::time::SystemTime> {
+        self.value.is_finite().then(|| unix_time(self.value))
     }
 }
 
@@ -301,6 +384,11 @@ pub struct VNode {
     pub on_click: Option<Handler<ClickEvent>>,
     /// Every edit of a text input.
     pub on_input: Option<Handler<InputEvent>>,
+    /// The selection or caret of a text input or area moved (#86).
+    pub on_select: Option<Handler<SelectionEvent>>,
+    /// The selection the app sets on a text input or area, in characters
+    /// (applied when it changes, #86).
+    pub selection: Option<SelectionEvent>,
     /// The user went back natively on a stack.
     pub on_back: Option<Handler<BackEvent>>,
     /// The host asked a stack for a path.
@@ -337,7 +425,7 @@ pub struct VNode {
     pub on_global_key_down: Option<Handler<crate::events::KeyEvent>>,
 
     // --- Islands: client-side Web Components (WASM or JS) ---
-    /// Makes this view an island (see [`island`](crate::island)): its
+    /// Makes this view an island (see [`island`](crate::island())): its
     /// custom element, props and events. Its children are the fallback.
     pub island: Option<Box<crate::island::IslandSpec>>,
 
@@ -352,6 +440,11 @@ pub struct VNode {
     pub on_scene_tap: Option<Handler<crate::scene3d::SceneTapEvent>>,
     /// A 3D scene's contents (the reconciler sends what changed).
     pub scene: Option<Box<crate::scene3d::SceneData>>,
+    // --- App-defined attributes (#85) ---
+    /// Attributes of the element on the web (`data-*` and a few safe ones,
+    /// see [`crate::attributes`]), in the order first set. Native backends
+    /// ignore them.
+    pub attributes: Vec<(String, String)>,
 }
 
 impl VNode {
@@ -371,6 +464,8 @@ impl VNode {
             children: Vec::new(),
             on_click: None,
             on_input: None,
+            on_select: None,
+            selection: None,
             on_back: None,
             on_navigate: None,
             on_change: None,
@@ -390,6 +485,7 @@ impl VNode {
             widget_action: None,
             on_scene_tap: None,
             scene: None,
+            attributes: Vec::new(),
         }
     }
 }
@@ -513,6 +609,37 @@ macro_rules! builder {
             /// element given a name wins).
             pub fn id(mut self, id: impl Into<String>) -> Self {
                 self.0.id = Some(id.into());
+                self
+            }
+
+            /// Sets an attribute of the element on the web, for browser
+            /// integrations and end-to-end tests: `data-*`
+            /// (`.attr("data-1p-ignore", "")`, `.attr("data-testid", "save")`)
+            /// and the few names of [`SAFE_ATTRIBUTES`]
+            /// (`.attr("autocomplete", "one-time-code")`). Set in the first
+            /// paint and kept in sync live; setting a name again replaces its
+            /// value. Native backends ignore it.
+            ///
+            /// The name is lower-cased. Any other name (event handlers,
+            /// `style`, the `data-*` names Prism uses itself: see
+            /// [`is_app_attribute`]) is ignored, and fails a debug assertion.
+            ///
+            /// [`SAFE_ATTRIBUTES`]: crate::attributes::SAFE_ATTRIBUTES
+            /// [`is_app_attribute`]: crate::attributes::is_app_attribute
+            pub fn attr(mut self, name: impl AsRef<str>, value: impl Into<String>) -> Self {
+                let name = name.as_ref().to_ascii_lowercase();
+                let allowed = crate::attributes::is_app_attribute(&name);
+                debug_assert!(
+                    allowed,
+                    "`{name}` is not an attribute an app may set (see prism_core::attributes)"
+                );
+                if allowed {
+                    let value = value.into();
+                    match self.0.attributes.iter_mut().find(|(n, _)| *n == name) {
+                        Some(slot) => slot.1 = value,
+                        None => self.0.attributes.push((name, value)),
+                    }
+                }
                 self
             }
 
@@ -794,6 +921,31 @@ macro_rules! text_entry {
             pub fn autocorrect(self, on: bool) -> Self {
                 self.input_config(|c| c.autocorrect = on)
             }
+
+            /// Called when the selection or the caret moves (#86): the user
+            /// selects text, clicks or taps in it, moves with the arrow
+            /// keys, and after each edit (after its `on_input`). Offsets are
+            /// in characters ([`SelectionEvent`]). The web sends at most one
+            /// per animation frame. A key handler that needs the caret
+            /// before the key acts reads [`KeyEvent::selection`](crate::KeyEvent::selection).
+            pub fn on_select(mut self, handler: Handler<SelectionEvent>) -> Self {
+                self.0.on_select = Some(handler);
+                self
+            }
+
+            /// Selects `start..end` (characters; `n..n` places the caret)
+            /// in the field (#86): after a command, to restore or move the
+            /// caret. Like `value`, it is applied when it changes, focused
+            /// or not, after the value. A selection the user made and the
+            /// app renders back (stored from [`on_select`](Self::on_select))
+            /// leaves the field alone, so keeping
+            /// `.selection(self.sel.clone())` in sync never fights the user;
+            /// a value that did not change is not applied again either.
+            /// Offsets past the end are clamped to the text.
+            pub fn selection(mut self, range: impl Into<SelectionEvent>) -> Self {
+                self.0.selection = Some(range.into());
+                self
+            }
         }
     };
 }
@@ -905,6 +1057,23 @@ pub fn date_picker(value: std::time::SystemTime) -> DatePicker {
     DatePicker(n)
 }
 
+/// A date picker that may be empty (#89): `None` shows its
+/// [`placeholder`](DatePicker::placeholder), and the user can clear a date
+/// (the browser's own clear, a clear button, "Clear" in the dialog).
+/// Starting to edit an empty picker fills it with the current moment
+/// (within the bounds):
+/// `date_picker_opt(self.published).placeholder("Not published").on_change(cx.listener(|this, e, _| this.published = e.date_opt()))`.
+pub fn date_picker_opt(value: Option<std::time::SystemTime>) -> DatePicker {
+    let mut n = VNode::new(NodeKind::DatePicker);
+    n.value = Some(value.map_or(f64::NAN, |v| unix_seconds(v).round()));
+    n.config = crate::controls::DateConfig {
+        optional: true,
+        ..Default::default()
+    }
+    .encode();
+    DatePicker(n)
+}
+
 impl DatePicker {
     fn date_config(mut self, f: impl FnOnce(&mut crate::controls::DateConfig)) -> Self {
         let mut c = crate::controls::DateConfig::decode(&self.0.config);
@@ -938,7 +1107,15 @@ impl DatePicker {
         self.date_config(|c| c.max = Some(unix_seconds(t).round()))
     }
 
-    /// Called with the new instant (`e.date()`).
+    /// Text shown while an optional picker ([`date_picker_opt`],
+    /// [`time_picker_opt`]) is empty; also its default accessibility label.
+    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.0.placeholder = placeholder.into();
+        self
+    }
+
+    /// Called with the new instant (`e.date()`; `e.date_opt()` for an
+    /// optional picker).
     pub fn on_change(mut self, handler: Handler<ChangeEvent>) -> Self {
         self.0.on_change = Some(handler);
         self
@@ -1339,6 +1516,20 @@ impl Picture {
         }
         self
     }
+    /// Paints every path of an [`svg`] picture in `color`, each keeping its
+    /// own opacity: a monochrome icon that hard-codes its color, tinted.
+    /// [`Color::current()`](crate::Color::current) follows the node's
+    /// [`text_color`](crate::Styled::text_color); an adaptive color follows
+    /// dark mode. (An SVG painted in `currentColor` needs no tint:
+    /// `.text_color(…)` is enough.) No effect on bitmap pictures.
+    pub fn tint(mut self, color: crate::style::Color) -> Self {
+        if self.0.kind == NodeKind::Shape {
+            self.0.text = crate::shape::Drawing::decode(&self.0.text)
+                .tinted(color)
+                .encode();
+        }
+        self
+    }
     /// Scales to fit inside the frame (letterboxed).
     pub fn fit(mut self) -> Self {
         self.0.value = Some(1.);
@@ -1575,21 +1766,42 @@ impl RadioGroup {
 /// (`7 * 60 + 30` is 07:30). Read the new value with
 /// [`ChangeEvent::minutes`].
 pub fn time_picker(minutes: u32) -> DatePicker {
+    time_of_day(Some(minutes), false)
+}
+
+/// A [`time_picker`] that may be empty (#89): `None` shows its
+/// [`placeholder`](DatePicker::placeholder), and the user can clear the
+/// time. Read the new value with [`ChangeEvent::minutes_opt`].
+pub fn time_picker_opt(minutes: Option<u32>) -> DatePicker {
+    time_of_day(minutes, true)
+}
+
+fn time_of_day(minutes: Option<u32>, optional: bool) -> DatePicker {
     let mut n = VNode::new(NodeKind::DatePicker);
-    n.value = Some(f64::from(minutes.min(24 * 60 - 1)) * 60.);
+    n.value = Some(minutes.map_or(f64::NAN, |m| f64::from(m.min(24 * 60 - 1)) * 60.));
     n.config = crate::controls::DateConfig {
         mode: crate::controls::DateMode::TimeOfDay,
-        min: None,
-        max: None,
+        optional,
+        ..Default::default()
     }
     .encode();
     DatePicker(n)
 }
 
 impl ChangeEvent {
-    /// A [`time_picker`]'s new value, in minutes since midnight.
+    /// A [`time_picker`]'s new value, in minutes since midnight (0 when an
+    /// optional picker was cleared: read those with
+    /// [`minutes_opt`](Self::minutes_opt)).
     pub fn minutes(&self) -> u32 {
-        ((self.value / 60.).round().max(0.) as u32) % (24 * 60)
+        self.minutes_opt().unwrap_or(0)
+    }
+
+    /// A [`time_picker_opt`]'s new value, in minutes since midnight: `None`
+    /// when the user cleared it.
+    pub fn minutes_opt(&self) -> Option<u32> {
+        self.value
+            .is_finite()
+            .then(|| ((self.value / 60.).round().max(0.) as u32) % (24 * 60))
     }
 }
 
@@ -1672,6 +1884,45 @@ impl Overlay {
     /// pulled up where the platform allows.
     pub fn half(self) -> Self {
         self.overlay_config(|c| c.medium = true)
+    }
+
+    /// `false`: a popover that a click or tap outside does not close (yes
+    /// by default): only the app closes it (`open(false)`), or Escape
+    /// while the focus is inside it, which calls
+    /// [`on_dismiss`](Overlay::on_dismiss). Web: `popover="manual"`;
+    /// macOS: an `NSPopover` with the application-defined behavior; iOS:
+    /// the window stays interactive around it (passthrough); Linux: a
+    /// `GtkPopover` without autohide; Android: a `PopupWindow` that ignores
+    /// outside touches. Sheets and dialogs ignore it (see
+    /// [`dismissible`](Overlay::dismissible)).
+    pub fn light_dismiss(self, light_dismiss: bool) -> Self {
+        self.overlay_config(|c| c.manual = !light_dismiss)
+    }
+
+    /// `false`: a popover that leaves the keyboard focus where it is, so
+    /// the text field it is anchored to keeps receiving keys, and that does
+    /// not take the focus when its items are clicked (they still run their
+    /// handlers). For inline suggestion menus (slash commands, mentions,
+    /// autocomplete):
+    ///
+    /// ```ignore
+    /// div()
+    ///     .child(text_input().value(text).on_input(..))
+    ///     .children(text.starts_with('/').then(|| {
+    ///         popover(menu).open(true).light_dismiss(false).take_focus(false)
+    ///     }))
+    /// ```
+    ///
+    /// It implies [`light_dismiss(false)`](Overlay::light_dismiss): a click
+    /// in the field would otherwise close it. Keys stay with the field:
+    /// handle Escape and the arrows there. Web: no focus move, presses
+    /// inside keep the field focused; macOS: a non-activating child panel
+    /// instead of an `NSPopover`; iOS: the field stays first responder (the
+    /// keyboard stays up); Linux: a `GtkPopover` without autohide that
+    /// cannot take the focus; Android: a non-focusable `PopupWindow`.
+    /// Sheets and dialogs ignore it.
+    pub fn take_focus(self, take_focus: bool) -> Self {
+        self.overlay_config(|c| c.keep_focus = !take_focus)
     }
 }
 

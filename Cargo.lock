@@ -2314,6 +2314,7 @@ dependencies = [
  "prism-ui",
  "prism-watchos",
  "prism-web",
+ "serde_json",
 ]
 
 [[package]]

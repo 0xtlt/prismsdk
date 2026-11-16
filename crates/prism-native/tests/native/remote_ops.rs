@@ -6,7 +6,7 @@ use std::time::Duration;
 use prism_core::{
     Accessibility, Accuracy, Appearance, Backend, Color, DeviceCall, DeviceError, DeviceEvent,
     DeviceValue, Direction, FontWeight, Haptic, Locale, NodeKind, Path, Permission,
-    PermissionState, PickImages, Pose, RenderEnvironment, Share, Style, TextAlign, Transform,
+    PermissionState, PickImages, Pose, RenderEnvironment, Role, Share, Style, TextAlign, Transform,
     Transition, menu::MenuSpec, rgb,
 };
 use prism_native::remote::{MeasureRequest, RemoteWidgets, device};
@@ -32,6 +32,29 @@ fn linear() -> Transition {
 }
 
 const ANIM: fn() -> Value = || json!({ "d": 0.25, "delay": 0.5, "ease": [0., 0., 1., 1.] });
+
+/// An empty optional date picker (#89): its value is `null`, and it
+/// measures its placeholder too (second line of the measured text).
+#[test]
+fn optional_date_picker_ops() {
+    let mut w = RemoteWidgets::new(measure);
+    w.create(3, NodeKind::DatePicker);
+    w.set_config(&3, NodeKind::DatePicker, "date - - optional");
+    w.set_placeholder(&3, "Not yet");
+    w.set_value(&3, f64::NAN);
+    assert_eq!(last(&w), json!({"op": "value", "id": 3, "value": null}));
+    // "date - - optional\nNot yet": 25 characters.
+    assert_eq!(w.measure(&3, None).0, 250.);
+    // A picker that is not optional measures its config only.
+    w.set_config(&3, NodeKind::DatePicker, "date - -");
+    assert_eq!(w.measure(&3, None).0, 80.);
+    assert_eq!(
+        prism_native::remote::change_value(&Value::Null).map(f64::is_nan),
+        Some(true)
+    );
+    assert_eq!(prism_native::remote::change_value(&json!(2)), Some(2.));
+    assert_eq!(prism_native::remote::change_value(&json!("x")), None);
+}
 
 #[test]
 fn tree_ops() {
@@ -291,8 +314,31 @@ fn chrome_ops() {
     );
     assert_eq!(
         last(&w),
-        json!({"op": "a11y", "id": 2, "label": "Close", "hidden": false, "role": null, "value": null})
+        json!({"op": "a11y", "id": 2, "label": "Close", "hidden": false, "role": null, "value": null, "checked": null, "selected": false})
     );
+    // A drawn radio (#84) says whether it is the one chosen.
+    w.set_accessibility(
+        &3,
+        &Accessibility {
+            role: Some(Role::Radio),
+            checked: Some(true),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        last(&w),
+        json!({"op": "a11y", "id": 3, "label": null, "hidden": false, "role": "radio", "value": null, "checked": true, "selected": true})
+    );
+    // The current page of a navigation is sent as selected (#64).
+    w.set_accessibility(
+        &3,
+        &Accessibility {
+            role: Some(prism_core::Role::Link),
+            current: true,
+            ..Default::default()
+        },
+    );
+    assert_eq!(last(&w)["selected"], json!(true));
     w.set_icon(&2, "heart.fill");
     assert_eq!(
         last(&w),
@@ -316,10 +362,11 @@ fn chrome_ops() {
         reduce_motion: false,
         back: "رجوع".into(),
         close: "إغلاق".into(),
+        clear: "مسح".into(),
     });
     assert_eq!(
         last(&w),
-        json!({"op": "env", "lang": "ar", "rtl": true, "back": "رجوع", "close": "إغلاق"})
+        json!({"op": "env", "lang": "ar", "rtl": true, "back": "رجوع", "close": "إغلاق", "clear": "مسح"})
     );
     for (a, mode) in [
         (Appearance::System, "system"),
@@ -949,6 +996,63 @@ fn padded_leaves_carry_pad_and_measure_their_content_alone() {
     let seen = SEEN.with(|s| s.borrow().clone());
     assert_eq!((seen[0].0.as_str(), seen[0].1.as_str()), ("text", "Save"));
     assert_eq!((seen[1].0.as_str(), seen[1].1.as_str()), ("text", "Ag"));
+}
+
+#[test]
+fn a_zero_padded_field_carries_pad_and_measures_its_line_alone() {
+    use prism_core::{Patch, Styled, text_input};
+    let mut el = text_input().border(0.).p(0.);
+    let zero = el.style_mut().clone();
+    // `.p(0.)` is sent (a real zero inset, #69); no padding is not.
+    let mut w = RemoteWidgets::new(measure);
+    w.create(1, NodeKind::TextInput);
+    w.set_style(&1, &Style::default());
+    assert!(last(&w)["s"].get("pad").is_none());
+    w.set_style(&1, &zero);
+    assert_eq!(last(&w)["s"]["pad"], json!([0., 0., 0., 0.]));
+    // Measured as its line of text, without the control's own insets.
+    SEEN.with(|s| s.borrow_mut().clear());
+    let mut w = RemoteWidgets::new(recording);
+    w.create(1, NodeKind::TextInput);
+    w.set_style(&1, &zero);
+    assert_eq!(w.measure(&1, None), (160., 16.));
+    let seen = SEEN.with(|s| s.borrow().clone());
+    assert_eq!((seen[0].0.as_str(), seen[0].1.as_str()), ("text", "Ag"));
+    let mut r = NativeRenderer::new(RemoteWidgets::new(measure));
+    r.apply(&[
+        Patch::Create {
+            id: 1,
+            kind: NodeKind::View,
+        },
+        Patch::Create {
+            id: 2,
+            kind: NodeKind::TextInput,
+        },
+        Patch::SetStyle {
+            id: 1,
+            style: Style {
+                align_items: prism_core::Align::Start,
+                ..Style::default()
+            },
+        },
+        Patch::SetStyle { id: 2, style: zero },
+        Patch::SetChildren {
+            id: 1,
+            children: vec![2],
+        },
+        Patch::SetRoot { id: 1 },
+    ]);
+    r.layout(400., 800., prism_native::Insets::default());
+    let frame = r
+        .widgets
+        .ops
+        .iter()
+        .rev()
+        .find(|o| o["op"] == "frame" && o["id"] == 2)
+        .cloned()
+        .expect("a frame");
+    // As wide as offered (an input fills), as tall as its line: no inset.
+    assert_eq!(frame["f"], json!([0., 0., 400., 16.]));
 }
 
 #[test]

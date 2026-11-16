@@ -11,6 +11,12 @@ scroll().on_refresh(handler).refreshing(self.loading)   // pull to refresh (UIRe
 div().on_swipe(SwipeDirection::Left, handler)           // swipe gestures
 ```
 
+`picture("logo.png")` names an app asset: a file of the assets folder
+(`Application::assets`, copied into native bundles), or one compiled into the
+binary with `Application::embedded_assets`, found first (web, macOS, iOS and
+Linux; Android and watchOS read the bundle's folder only). See
+[Assets compiled into the binary](../platforms/web.md#assets-compiled-into-the-binary).
+
 ## Pictures behind a token
 
 `picture(url).header(name, value)` (any number of headers) loads a remote image that needs credentials, such as a per-user rendering behind the API's bearer token:
@@ -27,8 +33,10 @@ On the web the app runs on the server, so the server fetches the image with the 
 
 ## Pictures from memory, SVG and QR codes
 
+- **Loading background**: on the web a picture shows a light gray box while it loads, and drops it once loaded, so a transparent PNG or logo is drawn over its parent, as natively.
 - **`picture_data(bytes, mime)`** shows image bytes the app already has (from a database, an HTTP response, a camera). They travel as a `data:` URL and are decoded by the platform: `<img>` on the web, `UIImage(data:)` (iOS, tvOS, visionOS, watchOS), `NSImage(data:)` (macOS), `BitmapFactory.decodeByteArray` (Android), `GdkTexture` (Linux). Formats are what each platform decodes: PNG, JPEG and GIF everywhere; WebP and HEIC where the OS reads them. Keep them small (they are resent when they change, and kept in memory).
 - **`svg(markup)`** draws an SVG document with Prism's vector shapes (the same machinery as `shape()` and the charts), so it is native on every backend and in widgets, and needs no SVG renderer on the device. Neither `UIImage(data:)` nor `NSImage(data:)` documents SVG support (the SDK headers never mention it; Android and GTK need extra libraries), so this is what works on iOS 17, macOS 13 and everywhere else. `picture_data(bytes, "image/svg+xml")` takes this path too. The picture is as wide as the SVG's `width` (or `viewBox`) and keeps its proportions (`aspect_ratio`): set `.w(…)` and the height follows.
   - Supported: `path` (every command, arcs included), `rect` (rounded), `circle`, `ellipse`, `line`, `polyline`, `polygon`, `g`, `transform`, fills and strokes with opacity, round caps and joins, one dash pattern, `fill-rule="evenodd"`, `display`/`visibility`, presentation attributes and `style="…"`, hex / `rgb()` / named colors, `currentColor`.
+  - **Tinting.** `currentColor` (with no `color` attribute on the SVG) is [`Color::current()`](decorations.md): the text color of the node the SVG is drawn in, so `svg(icon).text_color(t.muted)` tints a monochrome icon and an adaptive text color (`adaptive(light, dark)`) follows dark mode, on every backend and in widgets. Without a `text_color` it is the platform's label color natively (black, white in dark mode) and the inherited text color on the web. `svg(icon).tint(color)` recolors every painted path of an SVG that hard-codes its color, each path keeping its own opacity (`Color::current()` works there too).
   - Not supported (skipped): `<text>`, gradients and patterns (their fallback color is used, if any), filters, masks, clip paths, `<use>`, `<style>` sheets. Stroke widths are converted at the SVG's own size.
 - **`ui::qr_code(text)`** encodes `text` (byte mode, UTF-8; versions 1 to 40, the smallest that fits) and draws the modules as one shape, merged into rectangles. `.ecc(QrEcc::Low | Medium | Quartile | High)` (default `Medium`), `.size(pt)` (default 160, quiet zone included), `.quiet_zone(modules)` (default 4), `.colors(dark, light)` (default black on white, in dark mode too: scanners read dark on light), `.alt("Pairing code")`. Text over a version 40 code's capacity (2 953 bytes at `Low`) draws an empty square. The encoder alone is `prism_ui::qr::QrCode` (`dark(x, y)`, `dark_runs()`), checked by decoding its output with a QR reader in the tests, across every version and level.

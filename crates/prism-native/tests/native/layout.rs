@@ -257,6 +257,84 @@ fn stack_screens_get_the_platform_safe_area_unless_they_scroll() {
     assert_eq!(f.frame(s), (5., 0., 395., 800. - HEADER));
 }
 
+/// A card centred in a full-height column of a scroll view (#76), with a
+/// sticky title and, optionally, a footer below the scroll view.
+struct CenteredScreen {
+    footer: bool,
+}
+impl Render for CenteredScreen {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        screen("Centered")
+            .child(
+                scroll().child(
+                    div()
+                        .min_h(relative(1.))
+                        .justify_center()
+                        .child(text("title").sticky())
+                        .child(div().h(100.).child(text("card"))),
+                ),
+            )
+            .when(self.footer, |s| s.child(text("footer")))
+    }
+}
+
+fn centered(footer: bool) -> Harness {
+    let mut h = Harness::new(move |cx| {
+        let r = Router::new()
+            .header(false)
+            .route("/", move |cx, _| {
+                cx.new_entity(|_| CenteredScreen { footer })
+            })
+            .build(cx);
+        cx.set_root(r);
+    });
+    h.r.widgets.screen_insets = Insets {
+        top: 46.,
+        right: 0.,
+        bottom: 34.,
+        left: 0.,
+    };
+    h
+}
+
+#[test]
+fn a_scroll_view_under_the_bars_lays_its_content_out_between_them() {
+    let mut h = centered(false);
+    let f = h.layout(400., 800.);
+    let s = f.of_kind(NodeKind::Scroll)[0];
+    let visible = 800. - HEADER - 46. - 34.;
+    // The scroll view still runs under the bars; the platform insets its
+    // content by them, so `relative(1.)` is what is visible between them.
+    assert_eq!(f.frame(s), (0., 0., 400., 800. - HEADER));
+    let column = f.children[&s][0];
+    assert_eq!(f.frame(column), (0., 0., 400., visible));
+    // Centred there: the title and the 100 pt card, 120 pt together.
+    let card = f.children[&column][1];
+    assert_eq!(f.frame(f.by_text("title")).1, (visible - 120.) / 2.);
+    assert_eq!(f.frame(card).1, (visible - 120.) / 2. + 20.);
+    // Nothing to scroll: the content fits what is visible.
+    assert_eq!(f.content[&s], (400., visible));
+    // A sticky title counts from the top of the content, as the platform
+    // reports its scrolling; it sticks to the end of the column.
+    let (_, st) = f.sticky[&f.by_text("title")].expect("sticky");
+    let top = (visible - 120.) / 2.;
+    assert_eq!(st.top, top);
+    assert_eq!(st.max_offset, visible - top - 20.);
+}
+
+#[test]
+fn a_scroll_view_above_a_footer_only_takes_the_bar_it_runs_under() {
+    let mut h = centered(true);
+    let f = h.layout(400., 800.);
+    let s = f.of_kind(NodeKind::Scroll)[0];
+    // The 20 pt footer covers 20 of the 34 pt bottom bar.
+    let height = 800. - HEADER - 20.;
+    assert_eq!(f.frame(s), (0., 0., 400., height));
+    let column = f.children[&s][0];
+    assert_eq!(f.frame(column).3, height - 46. - 14.);
+    assert_eq!(f.content[&s], (400., height - 46. - 14.));
+}
+
 struct Rows {
     n: usize,
 }
@@ -897,4 +975,119 @@ fn truncated_and_unwrapped_texts_shrink_below_their_words_on_one_line() {
     // A clamp wraps at the width; the platform caps the lines it draws.
     let t = f.frame(f.by_text("eeee ffff gggg"));
     assert_eq!(t.2, 40.);
+}
+
+#[test]
+fn reversed_rows_and_columns_start_from_the_end() {
+    let mut h = tree(|| {
+        div()
+            .child(
+                div()
+                    .flex_row_reverse()
+                    .gap(10.)
+                    .child(text("aa"))
+                    .child(text("b")),
+            )
+            .child(
+                div()
+                    .h(100.)
+                    .flex_col_reverse()
+                    .child(text("top"))
+                    .child(text("up")),
+            )
+    });
+    let f = h.layout(200., 300.);
+    // Trailing to leading, packed against the trailing edge.
+    assert_eq!(f.frame(f.by_text("aa")), (184., 0., 16., 20.));
+    assert_eq!(f.frame(f.by_text("b")), (166., 0., 8., 20.));
+    // Bottom to top, packed against the bottom.
+    assert_eq!(f.frame(f.by_text("top")).1, 80.);
+    assert_eq!(f.frame(f.by_text("up")).1, 60.);
+
+    h.rt.app.set_locale(Some(Locale::new("ar")));
+    h.rerender();
+    let f = h.layout(200., 300.);
+    assert_eq!(
+        f.frame(f.by_text("aa")).0,
+        0.,
+        "RTL: the trailing edge is the left"
+    );
+    assert_eq!(f.frame(f.by_text("b")).0, 26.);
+}
+
+#[test]
+fn order_moves_children_in_the_layout_but_not_in_the_view_tree() {
+    let mut h = tree(|| {
+        div().child(
+            div()
+                .flex_row()
+                .child(text("a"))
+                .child(text("b").order(-1))
+                .child(text("c")),
+        )
+    });
+    let f = h.layout(200., 100.);
+    let (a, b, c) = (f.by_text("a"), f.by_text("b"), f.by_text("c"));
+    assert_eq!(
+        (f.frame(b).0, f.frame(a).0, f.frame(c).0),
+        (0., 8., 16.),
+        "b first, then a and c in the app's order"
+    );
+    let row = f.of_kind(NodeKind::View)[1];
+    assert_eq!(f.children[&row], [a, b, c], "views keep the app's order");
+}
+
+struct Checkbox;
+impl Render for Checkbox {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        // The box after its label on narrow windows, before it from `md`.
+        div().child(
+            div()
+                .flex_row()
+                .child(text("label"))
+                .child(div().w(20.).h(20.).order(1).md(|s| s.order(-1))),
+        )
+    }
+}
+
+#[test]
+fn order_and_reversed_directions_follow_responsive_refinements() {
+    let mut h = crate::common::Harness::root(|| Checkbox);
+    h.r.apply(&h.rt.set_viewport(400., 300.));
+    let f = h.layout(400., 300.);
+    let label = f.by_text("label");
+    let check = f.of_kind(NodeKind::View)[2];
+    assert_eq!((f.frame(label).0, f.frame(check).0), (0., 40.));
+
+    h.r.apply(&h.rt.set_viewport(800., 300.));
+    let f = h.layout(800., 300.);
+    assert_eq!(
+        (f.frame(check).0, f.frame(label).0),
+        (0., 20.),
+        "md: box first"
+    );
+
+    h.r.apply(&h.rt.set_viewport(400., 300.));
+    let f = h.layout(400., 300.);
+    assert_eq!((f.frame(label).0, f.frame(check).0), (0., 40.), "back");
+}
+
+#[test]
+fn reversed_directions_follow_responsive_refinements() {
+    let mut h = tree(|| {
+        div().child(
+            div()
+                .flex_row()
+                .md(|s| s.flex_row_reverse())
+                .child(text("a"))
+                .child(text("b")),
+        )
+    });
+    h.r.apply(&h.rt.set_viewport(400., 300.));
+    let f = h.layout(400., 300.);
+    assert_eq!(f.frame(f.by_text("a")).0, 0.);
+    h.r.apply(&h.rt.set_viewport(800., 300.));
+    let f = h.layout(800., 300.);
+    assert_eq!(f.frame(f.by_text("a")).0, 792.);
+    assert_eq!(f.frame(f.by_text("b")).0, 784.);
 }

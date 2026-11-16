@@ -153,6 +153,10 @@ impl Picker {
 /// with a `GtkCalendar` (date) and hour / minute spin buttons (time).
 /// `GtkCalendar` has no minimum or maximum date: choices outside the
 /// bounds are clamped (and the calendar moves back to the clamped day).
+///
+/// An optional picker (#89) shows its placeholder, dimmed, while empty
+/// (`NaN`); opening it fills it with the current moment, and a "Clear"
+/// button under the calendar empties it.
 pub struct DatePicker {
     pub button: gtk::MenuButton,
     label: gtk::Label,
@@ -160,6 +164,9 @@ pub struct DatePicker {
     time_row: gtk::Box,
     hour: gtk::SpinButton,
     minute: gtk::SpinButton,
+    clear: gtk::Button,
+    popover: gtk::Popover,
+    placeholder: RefCell<String>,
     value: Cell<f64>,
     config: Cell<DateConfig>,
     /// Set while the popover follows the value (its signals are ignored).
@@ -204,9 +211,13 @@ pub fn date_picker(id: NodeId, locale: Locale) -> Rc<DatePicker> {
     time_row.append(&hour);
     time_row.append(&gtk::Label::new(Some(":")));
     time_row.append(&minute);
+    let clear = gtk::Button::with_label("Clear");
+    clear.set_halign(gtk::Align::End);
+    clear.set_visible(false);
     let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
     content.append(&calendar);
     content.append(&time_row);
+    content.append(&clear);
     let popover = gtk::Popover::new();
     popover.set_child(Some(&content));
     button.set_popover(Some(&popover));
@@ -217,6 +228,9 @@ pub fn date_picker(id: NodeId, locale: Locale) -> Rc<DatePicker> {
         time_row,
         hour,
         minute,
+        clear,
+        popover: popover.clone(),
+        placeholder: RefCell::new(String::new()),
         value: Cell::new(0.),
         config: Cell::new(DateConfig::default()),
         syncing: Cell::new(false),
@@ -236,11 +250,23 @@ pub fn date_picker(id: NodeId, locale: Locale) -> Rc<DatePicker> {
             }
         });
     }
-    // Opening shows the current value.
+    // Opening shows the current value; an empty one starts from now.
     let weak = Rc::downgrade(&p);
     popover.connect_show(move |_| {
         if let Some(p) = weak.upgrade() {
+            if p.value.get().is_nan() {
+                p.fill(id);
+            }
             p.sync();
+        }
+    });
+    let weak = Rc::downgrade(&p);
+    p.clear.connect_clicked(move |_| {
+        if let Some(p) = weak.upgrade() {
+            p.popover.popdown();
+            p.value.set(f64::NAN);
+            p.sync();
+            dispatch(UiEvent::Change(id, f64::NAN));
         }
     });
     p.set_config("");
@@ -265,6 +291,28 @@ impl DatePicker {
     pub fn set_locale(&self, locale: Locale) {
         *self.locale.borrow_mut() = locale;
         self.sync();
+    }
+
+    /// Shown, dimmed, while an optional picker is empty.
+    pub fn set_placeholder(&self, text: &str) {
+        *self.placeholder.borrow_mut() = text.to_string();
+        self.sync();
+    }
+
+    /// The label of the button that empties an optional picker.
+    pub fn set_clear_label(&self, text: &str) {
+        self.clear.set_label(text);
+    }
+
+    /// An empty picker being opened: the current moment, within the bounds.
+    fn fill(&self, id: NodeId) {
+        let Ok(now) = glib::DateTime::now_local() else {
+            return;
+        };
+        let offset = now.utc_offset().as_seconds() as f64;
+        let v = self.config.get().start(now.to_unix() as f64, offset);
+        self.value.set(v);
+        dispatch(UiEvent::Change(id, v));
     }
 
     /// The value in the time zone it is shown in.
@@ -295,6 +343,14 @@ impl DatePicker {
     }
 
     fn sync(&self) {
+        let empty = self.value.get().is_nan();
+        self.clear.set_visible(self.config.get().optional && !empty);
+        if empty {
+            self.label.set_text(&self.placeholder.borrow());
+            self.label.add_css_class("dim-label");
+            return;
+        }
+        self.label.remove_css_class("dim-label");
         self.label.set_text(&self.text());
         let Some(d) = self.at(self.value.get()) else {
             return;
@@ -391,7 +447,14 @@ pub fn text_area(id: NodeId) -> Rc<TextArea> {
     view.buffer().connect_changed(move |b| {
         let text = b.text(&b.start_iter(), &b.end_iter(), false).to_string();
         label.set_visible(text.is_empty());
-        dispatch(UiEvent::Input(id, text));
+        crate::imp::dispatch_typed(id, text);
+        crate::imp::report_selection(id, crate::imp::buffer_selection(b));
+    });
+    // The caret and the selection's other end moved (#86).
+    view.buffer().connect_mark_set(move |b, _, mark| {
+        if matches!(mark.name().as_deref(), Some("insert" | "selection_bound")) {
+            crate::imp::report_selection(id, crate::imp::buffer_selection(b));
+        }
     });
     Rc::new(TextArea {
         root,
@@ -408,11 +471,26 @@ impl TextArea {
         b.text(&b.start_iter(), &b.end_iter(), false).to_string()
     }
 
-    /// Prism's value. Ignored while the user types (like `GtkEntry`), and
-    /// when equal, so the cursor stays.
-    pub fn set_text(&self, text: &str) {
-        if self.text() != text && !self.view.has_focus() {
-            self.view.buffer().set_text(text);
+    /// Selects `start..end` (characters, clamped), the caret at `end` (#86).
+    pub fn select(&self, start: usize, end: usize) {
+        let b = self.view.buffer();
+        let len = b.char_count().max(0) as usize;
+        let at = |c: usize| b.iter_at_offset(c.min(len) as i32);
+        b.select_range(&at(end.max(start)), &at(start));
+    }
+
+    /// Prism's value, written when `takes` (the app's, not an echo of the
+    /// typing, #73), the cursor keeping its distance from the end.
+    pub fn set_text(&self, text: &str, takes: bool) {
+        if takes {
+            let b = self.view.buffer();
+            let caret = prism_native::fields::caret_from_end(
+                b.char_count().max(0) as usize,
+                b.cursor_position().max(0) as usize,
+                text.chars().count(),
+            );
+            b.set_text(text);
+            b.place_cursor(&b.iter_at_offset(caret as i32));
         }
         self.placeholder.set_visible(self.text().is_empty());
     }
@@ -422,13 +500,15 @@ impl TextArea {
     }
 
     /// Its padding replaces the text's own insets (10 × 8), left and right
-    /// as drawn (already mirrored right to left).
-    pub fn set_padding(&self, p: prism_core::Edges) {
-        let pad = if p.is_zero() {
-            (AREA_PAD_X, AREA_PAD_X, AREA_PAD_Y, AREA_PAD_Y)
-        } else {
-            let r = |v: f32| v.round() as i32;
-            (r(p.left), r(p.right), r(p.top), r(p.bottom))
+    /// as drawn (already mirrored right to left); `None`: none set (an
+    /// explicit zero is a real one, #69).
+    pub fn set_padding(&self, p: Option<prism_core::Edges>) {
+        let pad = match p {
+            None => (AREA_PAD_X, AREA_PAD_X, AREA_PAD_Y, AREA_PAD_Y),
+            Some(p) => {
+                let r = |v: f32| v.round() as i32;
+                (r(p.left), r(p.right), r(p.top), r(p.bottom))
+            }
         };
         if self.pad.replace(pad) == pad {
             return;

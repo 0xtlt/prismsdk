@@ -101,7 +101,8 @@ test("keys reach the focused element, and global listeners skip typing", () => {
   key(field, "a");
   assert.equal(sent(page).length, n);
   key(field, "Escape");
-  assert.deepEqual(lastSent(page), { t: "key", id: 0, key: "Escape", mods: 0, repeat: false });
+  // In a field, with its selection (#86).
+  assert.deepEqual(lastSent(page), { t: "key", id: 0, key: "Escape", mods: 0, repeat: false, sel: [0, 0] });
   key(field, "s", { metaKey: true });
   assert.equal(lastSent(page).mods, 8);
   key(page.document.body, "x");
@@ -208,6 +209,81 @@ test("popovers sit under their anchor and report light dismissal", () => {
   assert.deepEqual(lastSent(page), { t: "back", id: 3, depth: 0 });
 });
 
+test("an overlay inserted already open is shown (#70)", () => {
+  const page = live([...root([])]);
+  // A menu that appears with its parent, open, in one patch.
+  page.ws.deliver({ t: "patch", p: [
+    { op: "create", id: 2, kind: "view" },
+    { op: "create", id: 3, kind: "overlay" }, { op: "config", id: 3, config: "popover" }, { op: "value", id: 3, value: 1 },
+    { op: "create", id: 4, kind: "text" }, { op: "text", id: 4, text: "/heading" },
+    { op: "children", id: 3, children: [4] },
+    { op: "children", id: 2, children: [3] },
+    { op: "create", id: 5, kind: "overlay" }, { op: "config", id: 5, config: "dialog" }, { op: "value", id: 5, value: 1 },
+    { op: "children", id: 1, children: [2, 5] },
+  ] });
+  const box = page.node(3).firstChild;
+  assert.equal(box.isConnected, true);
+  assert.equal(box.matches(":popover-open"), true, "the popover is shown");
+  assert.equal(box.textContent, "/heading");
+  const dialog = page.node(5).firstChild;
+  assert.equal(dialog.hasAttribute("open"), true, "the dialog is shown (modal)");
+  // Closing and reopening still works.
+  page.ws.deliver({ t: "patch", p: [{ op: "value", id: 3, value: 0 }] });
+  assert.equal(box.matches(":popover-open"), false);
+  page.ws.deliver({ t: "patch", p: [{ op: "value", id: 3, value: 1 }] });
+  assert.equal(box.matches(":popover-open"), true);
+});
+
+test("an overlay open on the first render is shown", () => {
+  const page = live([
+    { op: "create", id: 2, kind: "view" },
+    { op: "create", id: 3, kind: "overlay" }, { op: "config", id: 3, config: "popover" }, { op: "value", id: 3, value: 1 },
+    { op: "children", id: 2, children: [3] },
+    ...root([2]),
+  ]);
+  assert.equal(page.node(3).firstChild.matches(":popover-open"), true);
+});
+
+test("a popover can leave the focus to its anchor's field (#70)", () => {
+  const page = live([
+    { op: "create", id: 2, kind: "view" },
+    { op: "create", id: 3, kind: "text_input" },
+    { op: "create", id: 4, kind: "overlay" }, { op: "config", id: 4, config: "popover manual keepfocus" },
+    { op: "children", id: 2, children: [3, 4] },
+    ...root([2]),
+  ]);
+  const field = page.node(3);
+  field.focus();
+  const box = page.node(4).firstChild;
+  assert.equal(box.getAttribute("popover"), "manual", "no light dismiss");
+  page.ws.deliver({ t: "patch", p: [
+    { op: "value", id: 4, value: 1 },
+    { op: "create", id: 5, kind: "view" }, { op: "clickable", id: 5, on: true }, { op: "text", id: 5, text: "Heading" },
+    { op: "children", id: 4, children: [5] },
+  ] });
+  assert.equal(box.matches(":popover-open"), true);
+  assert.equal(page.document.activeElement, field, "the field keeps the focus");
+  // A press on an item does not take the focus; its click still runs.
+  const item = page.node(5);
+  const down = { type: "mousedown" };
+  item.dispatchEvent(down);
+  assert.equal(down.defaultPrevented, true);
+  item.dispatchEvent({ type: "click", detail: 0 });
+  assert.deepEqual(lastSent(page), { t: "click", id: 5 });
+  // Escape inside a manual popover closes it (the app hears back).
+  box.dispatchEvent({ type: "keydown", key: "Escape" });
+  assert.deepEqual(lastSent(page), { t: "back", id: 4, depth: 0 });
+  // Leaving the focus implies no light dismiss.
+  page.ws.deliver({ t: "patch", p: [{ op: "config", id: 4, config: "popover keepfocus" }] });
+  assert.equal(box.getAttribute("popover"), "manual");
+  // Without `keepfocus` presses inside behave as usual.
+  page.ws.deliver({ t: "patch", p: [{ op: "config", id: 4, config: "popover" }, { op: "value", id: 4, value: 1 }] });
+  assert.equal(box.getAttribute("popover"), "auto");
+  const plain = { type: "mousedown" };
+  item.dispatchEvent(plain);
+  assert.equal(plain.defaultPrevented, false);
+});
+
 test("checkboxes and radio groups are native inputs", () => {
   const page = live([
     { op: "create", id: 2, kind: "checkbox" }, { op: "text", id: 2, text: "Remember me" }, { op: "value", id: 2, value: 1 },
@@ -235,6 +311,51 @@ test("checkboxes and radio groups are native inputs", () => {
   assert.deepEqual(lastSent(page), { t: "change", id: 3, v: 1 });
   page.ws.deliver({ t: "patch", p: [{ op: "value", id: 3, value: 1 }] });
   assert.deepEqual(inputs.map((i) => i.checked), [false, true]);
+});
+
+test("drawn radios: checked state, one tab stop per group, arrows move the choice (#84)", () => {
+  const radio = (id, checked, extra = {}) =>
+    ({ op: "a11y", id, a11y: { role: "radio", label: `Plan ${id}`, checked, disabled: false, hidden: false, ...extra } });
+  const page = live([
+    { op: "create", id: 2, kind: "view" },
+    { op: "a11y", id: 2, a11y: { role: "radiogroup", label: "Plan", checked: null, disabled: false, hidden: false } },
+    ...[3, 4, 5].flatMap((id) => [{ op: "create", id, kind: "view" }, { op: "clickable", id, on: true }]),
+    radio(3, false), radio(4, false), radio(5, false, { disabled: true }),
+    { op: "children", id: 2, children: [3, 4, 5] },
+    ...root([2]),
+  ]);
+  const [a, b, c] = [3, 4, 5].map((id) => page.node(id));
+  assert.equal(page.node(2).getAttribute("role"), "radiogroup");
+  assert.equal(a.getAttribute("role"), "radio");
+  assert.equal(a.getAttribute("aria-checked"), "false");
+  // Nothing checked: the first operable radio is the group's tab stop.
+  assert.deepEqual([a, b, c].map((r) => r.getAttribute("tabindex")), ["0", "-1", null]);
+  page.ws.deliver({ t: "patch", p: [radio(4, true)] });
+  assert.equal(b.getAttribute("aria-checked"), "true");
+  assert.deepEqual([a, b].map((r) => r.getAttribute("tabindex")), ["-1", "0"]);
+  // Arrows move the focus and check the radio they land on, skipping the
+  // disabled one and wrapping around.
+  b.focus();
+  b.dispatchEvent({ type: "keydown", key: "ArrowDown" });
+  assert.equal(page.document.activeElement, a);
+  assert.deepEqual(lastSent(page), { t: "click", id: 3 });
+  assert.deepEqual([a, b].map((r) => r.getAttribute("tabindex")), ["0", "-1"]);
+  const left = { type: "keydown", key: "ArrowLeft" };
+  a.dispatchEvent(left);
+  assert.equal(left.defaultPrevented, true);
+  assert.deepEqual(lastSent(page), { t: "click", id: 4 });
+  // Right to left: the left arrow goes forward.
+  page.document.documentElement.dir = "rtl";
+  b.dispatchEvent({ type: "keydown", key: "ArrowLeft" });
+  assert.deepEqual(lastSent(page), { t: "click", id: 3 });
+  page.document.documentElement.dir = "";
+  // Other keys and radios outside a group are left alone.
+  const n = sent(page).length;
+  a.dispatchEvent({ type: "keydown", key: "Tab" });
+  page.ws.deliver({ t: "patch", p: [{ op: "create", id: 6, kind: "view" }, radio(6, false), ...root([2, 6]).slice(1, 2)] });
+  page.node(6).dispatchEvent({ type: "keydown", key: "ArrowDown" });
+  assert.equal(sent(page).length, n);
+  assert.equal(page.node(6).getAttribute("tabindex"), "0");
 });
 
 test("text fields: max length, suggestions and a leading icon", () => {
@@ -273,6 +394,44 @@ test("a time of day ignores the time zone", () => {
   el.value = "22:05";
   el.dispatchEvent({ type: "change" });
   assert.deepEqual(lastSent(page), { t: "change", id: 2, v: 22 * 3600 + 5 * 60 });
+});
+
+test("an optional date picker can be empty and cleared (#89)", () => {
+  const page = live([
+    { op: "create", id: 2, kind: "date_picker" }, { op: "config", id: 2, config: "date - - optional" },
+    { op: "value", id: 2, value: null },
+    { op: "create", id: 3, kind: "date_picker" }, { op: "config", id: 3, config: "date - -" },
+    { op: "value", id: 3, value: 0 },
+    ...root([2, 3]),
+  ]);
+  const el = page.node(2);
+  assert.equal(el.type, "date");
+  assert.equal(el.value, "");
+  // Browsers offer to clear optional inputs only.
+  assert.equal(el.required, false);
+  assert.equal(page.node(3).required, true);
+  // Picking a day fills it.
+  el.value = "2026-11-18";
+  el.dispatchEvent({ type: "change" });
+  const picked = lastSent(page).v;
+  assert.equal(new Date(picked * 1000).getDate(), 18);
+  page.ws.deliver({ t: "patch", p: [{ op: "value", id: 2, value: picked }] });
+  assert.equal(el.value, "2026-11-18");
+  // The browser's clear (or every part erased) reports null.
+  el.value = "";
+  el.dispatchEvent({ type: "change" });
+  assert.deepEqual(lastSent(page), { t: "change", id: 2, v: null });
+  // The app's empty value does not write over parts being typed.
+  let writes = 0;
+  let typed = "";
+  Object.defineProperty(el, "value", { get: () => typed, set: (v) => { writes += 1; typed = v; }, configurable: true });
+  page.ws.deliver({ t: "patch", p: [{ op: "value", id: 2, value: null }] });
+  assert.equal(writes, 0);
+  // A picker that is not optional never reports an empty value.
+  const count = sent(page).length;
+  page.node(3).value = "";
+  page.node(3).dispatchEvent({ type: "change" });
+  assert.equal(sent(page).length, count);
 });
 
 test("inert styles and hit testing", () => {

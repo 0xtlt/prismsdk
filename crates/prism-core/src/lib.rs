@@ -12,8 +12,11 @@ mod a11y;
 pub mod animation;
 mod app;
 mod apple_models;
+mod assets;
+pub mod attributes;
 pub mod background;
 pub mod car;
+pub mod channel;
 pub mod controls;
 pub mod decoration;
 pub mod device;
@@ -43,12 +46,15 @@ pub mod surfaces;
 pub mod svg;
 mod task;
 mod window;
+pub use window::{WindowChrome, WindowControls};
 
 pub use a11y::{Accessibility, Accessible, Role};
 pub use animation::{Animations, Pose, Transform};
 pub use app::{AnyEntity, App, Appearance, Context, Entity, EntityId, Environment, Render};
+pub use assets::EmbeddedAssets;
 pub use background::{BackgroundKind, BackgroundTask, Lifecycle};
 pub use car::{CarButton, CarButtonStyle, CarItem, CarSection, CarTab, CarTemplate};
+pub use channel::{Receiver, Sender, channel};
 pub use controls::{Capitalize, DateMode, Keyboard, OverlayKind, ReturnKey};
 pub use decoration::{
     BorderSide, BorderSides, BorderStyle, Cursor, Gradient, GradientKind, GradientStop, Shadow,
@@ -68,15 +74,17 @@ pub use element::{
     BackEvent, Button, ChangeEvent, ClickEvent, DatePicker, Div, Element, FluentBuilder, Handler,
     Image, InputEvent, IntoElement, Modal, NavigateEvent, NodeKind, ParentElement, Picker, Picture,
     Progress, Screen, Scroll, ScrollEvent, Shape, Slider, Spinner, Stack, SwipeDirection, Tab,
-    Tabs, Text, TextArea, TextInput, Timer, Toggle, VNode, button, date_picker, div,
-    format_remaining, image, lazy, modal, picker, picture, progress, rich_text, screen, scroll,
-    shape, slider, spinner, stack, tab, tabs, text, text_area, text_input, timer, toggle,
+    Tabs, Text, TextArea, TextInput, Timer, Toggle, VNode, button, date_picker, date_picker_opt,
+    div, format_remaining, image, lazy, modal, picker, picture, progress, rich_text, screen,
+    scroll, shape, slider, spinner, stack, tab, tabs, text, text_area, text_input, timer, toggle,
     unix_seconds, unix_time,
 };
 pub use element::{
     Checkbox, Overlay, RadioGroup, checkbox, dialog, popover, radio_group, sheet, time_picker,
+    time_picker_opt,
 };
 pub use element::{STACK_CLOSABLE, STACK_NO_HEADER};
+pub use element::{SelectionEvent, byte_to_char, char_to_byte};
 pub use element::{picture_data, svg};
 pub use events::{
     DragEvent, DragPhase, HoverEvent, KeyEvent, Modifiers, Point, PointerEvent, PointerPhase,
@@ -165,6 +173,12 @@ pub struct AppConfig {
     /// Directory of app assets (`picture("logo.png")`), used in development;
     /// bundles copy it into their resources.
     pub assets: Option<String>,
+    /// App assets compiled into the binary (`Application::embedded_assets`):
+    /// found before the files of [`assets`](Self::assets).
+    pub embedded_assets: EmbeddedAssets,
+    /// The desktop window's frame: the system's title bar, or none
+    /// (`WindowChrome::Custom`, macOS). Ignored on the web and mobile.
+    pub window_chrome: WindowChrome,
 }
 
 impl Default for AppConfig {
@@ -175,6 +189,8 @@ impl Default for AppConfig {
             height: 640.,
             port: 3000,
             assets: None,
+            embedded_assets: EmbeddedAssets::new(),
+            window_chrome: WindowChrome::Standard,
         }
     }
 }
@@ -261,6 +277,25 @@ impl Runtime {
         self.render_dirty()
     }
 
+    /// The first render, then the work it started, for a first paint with
+    /// its data (the web backend's server-rendered page): while
+    /// [`background`](AsyncApp::background) work (HTTP, database, files)
+    /// started by `init`, a constructor or a `render` is in flight, waits
+    /// for it, runs the tasks it resumes and renders what they changed,
+    /// until none is left or `timeout` passes. Returns every patch, in
+    /// order. Timers and channels are not waited for, so a clock or a live
+    /// feed does not hold the paint; past `timeout`, what is still loading
+    /// shows its loading state and updates later through [`poll`](Self::poll).
+    /// A zero `timeout` is [`render`](Self::render).
+    pub fn render_settled(&mut self, timeout: std::time::Duration) -> Vec<Patch> {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut patches = self.render();
+        while self.app.executor.wait_for_work(deadline) {
+            patches.extend(self.poll());
+        }
+        patches
+    }
+
     /// Runs the handler for `event`, then re-renders the entities it touched.
     pub fn dispatch(&mut self, event: UiEvent) -> Vec<Patch> {
         match event {
@@ -274,6 +309,14 @@ impl Runtime {
                     h(&InputEvent { value }, &mut self.app);
                 }
             }
+            UiEvent::Select(id, start, end) => {
+                let e = SelectionEvent::new(start, end);
+                // What the field shows: rendered back, it is an echo.
+                self.reconciler.selection_reported(id, e);
+                if let Some(h) = self.reconciler.select_handler(id) {
+                    h(&e, &mut self.app);
+                }
+            }
             UiEvent::Back(id, depth) => {
                 self.reconciler.overlay_dismissed(id);
                 if let Some(h) = self.reconciler.back_handler(id) {
@@ -281,7 +324,9 @@ impl Runtime {
                 }
             }
             UiEvent::Change(id, value) => {
-                if let Some(h) = self.reconciler.change_handler(id) {
+                // Only an optional date picker can be emptied (#89).
+                let accepted = !value.is_nan() || self.reconciler.accepts_empty(id);
+                if accepted && let Some(h) = self.reconciler.change_handler(id) {
                     h(&ChangeEvent { value }, &mut self.app);
                 }
             }
@@ -552,6 +597,18 @@ impl Runtime {
         self.poll()
     }
 
+    /// The window entered or left full screen, or its buttons moved
+    /// (`cx.is_fullscreen()`, `cx.window_controls()`). Re-renders
+    /// everything if anything differs. Returns the resulting patches.
+    pub fn set_window_chrome(
+        &mut self,
+        fullscreen: bool,
+        controls: Option<WindowControls>,
+    ) -> Vec<Patch> {
+        self.app.set_window_chrome_state(fullscreen, controls);
+        self.poll()
+    }
+
     /// The device changed (rotation, fold, split view, browser report).
     /// Re-renders everything if anything differs. Returns the resulting patches.
     pub fn set_device_info(&mut self, info: DeviceInfo) -> Vec<Patch> {
@@ -623,13 +680,16 @@ pub mod prelude {
         NotificationAction, NotificationResponse, Orientation, Params, ParentElement, Path,
         Permission, PermissionState, PickImages, PickedFile, Platform, Pose, Posture, PushEvent,
         PushMessage, PushService, PushSubscription, Render, ReturnKey, Role, Router, ScrollEvent,
-        SecureOptions, Share, Styled, SwipeDirection, Transition, Translations, Tray, VirtualList,
-        Watch, Widget, WidgetConfig, WidgetFamily, WidgetOption, WidgetParameter, adaptive, button,
-        date_picker, div, go_back, image, lazy, navigate_to, picker, picture, progress, px,
+        SecureOptions, SelectionEvent, Share, Styled, SwipeDirection, Transition, Translations,
+        Tray, VirtualList, Watch, Widget, WidgetConfig, WidgetFamily, WidgetOption,
+        WidgetParameter, WindowChrome, WindowControls, adaptive, button, date_picker,
+        date_picker_opt, div, go_back, image, lazy, navigate_to, picker, picture, progress, px,
         relative, rgb, rgba, screen, scroll, shape, slider, spinner, text, text_area, text_input,
         timer, toggle,
     };
     pub use crate::{GridTrack, ScrollAxis, auto_fill, auto_fit, fr, minmax, repeat, scroll_x};
+    // App assets compiled into the binary (#61).
+    pub use crate::EmbeddedAssets;
     // Typography and rich text.
     pub use crate::{FontFamily, FontWeight, Span, TextTransform, icon, link, rich_text, span};
     // Box decorations and interaction states.
@@ -641,7 +701,7 @@ pub mod prelude {
     // Pointer, keys, choice controls, overlays (#17, #18, #19).
     pub use crate::{
         DragEvent, DragPhase, HoverEvent, KeyEvent, Modifiers, PickFiles, Point, PointerEvent,
-        PointerPhase, checkbox, dialog, popover, radio_group, sheet, time_picker,
+        PointerPhase, checkbox, dialog, popover, radio_group, sheet, time_picker, time_picker_opt,
     };
     // Islands: client-side Web Components.
     pub use crate::{IslandEvent, island, web_component};

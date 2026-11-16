@@ -141,6 +141,35 @@ impl App {
         self.request().map(|r| r.url.as_str())
     }
 
+    /// Answers the page request with HTTP status `code`, for a route that
+    /// matches but whose data is missing (`/orders/:id` with an unknown or
+    /// someone else's id: `cx.set_page_status(404)`), gone (`410`) or
+    /// forbidden (`403`). Call it while the first paint renders: in the
+    /// screen's build or `render`. The last call wins.
+    ///
+    /// Only a success (`200`–`299`) or an error (`400`–`599`) is kept; other
+    /// codes are ignored (a redirect needs a `Location`: use
+    /// [`navigate`](App::navigate)). The web's server-side render honours it;
+    /// the live session (the response is already sent) and native apps
+    /// accept it and ignore it.
+    pub fn set_page_status(&mut self, code: u16) {
+        if matches!(code, 200..=299 | 400..=599) {
+            // Not a global: nothing re-renders, so `render` may call it.
+            self.page_status = Some(code);
+        }
+    }
+
+    /// The HTTP status the page request answers with: the app's
+    /// [`set_page_status`](App::set_page_status), else `404` when the router
+    /// shows its not-found screen, else `200`.
+    pub fn page_status(&self) -> u16 {
+        match self.page_status {
+            Some(code) => code,
+            None if self.shows_not_found() => 404,
+            None => 200,
+        }
+    }
+
     /// Sets the request (web backends call it before the app's init).
     pub fn set_request(&mut self, request: WebRequest) {
         self.set_global(RequestSlot(request));

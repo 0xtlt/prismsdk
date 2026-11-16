@@ -34,10 +34,18 @@ pub struct HNode {
     pub pointer_mask: u8,
     /// Key events reported: (local, global).
     pub keys: (bool, bool),
+    /// The selection last set by the app (`Patch::SetSelection`, #86).
+    pub selection: Option<(usize, usize)>,
+    /// Selection changes reported (`Patch::SetSelectEvents`).
+    pub select_events: bool,
     /// An island's tag (`Patch::SetIsland`).
     pub island: Option<String>,
     /// An island's props, as JSON (`Patch::SetIslandProps`).
     pub island_props: std::collections::BTreeMap<String, String>,
+    /// Where a link leads (`Patch::SetLink`).
+    pub link: Option<String>,
+    /// App-defined attributes (`Patch::SetAttributes`).
+    pub attributes: Vec<(String, String)>,
 }
 
 #[derive(Default)]
@@ -181,8 +189,12 @@ impl Backend for Host {
                             config: String::new(),
                             pointer_mask: 0,
                             keys: (false, false),
+                            selection: None,
+                            select_events: false,
                             island: None,
                             island_props: Default::default(),
+                            link: None,
+                            attributes: Vec::new(),
                         },
                     );
                 }
@@ -235,6 +247,12 @@ impl Backend for Host {
                 Patch::SetKeyEvents { id, local, global } => {
                     self.node(*id, "SetKeyEvents").keys = (*local, *global)
                 }
+                Patch::SetSelection { id, start, end } => {
+                    self.node(*id, "SetSelection").selection = Some((*start, *end))
+                }
+                Patch::SetSelectEvents { id, on } => {
+                    self.node(*id, "SetSelectEvents").select_events = *on
+                }
                 Patch::Focus { id } => {
                     self.node(*id, "Focus");
                     self.focused.push(*id);
@@ -256,6 +274,7 @@ impl Backend for Host {
                 Patch::SetScene { id, .. } => {
                     self.node(*id, "SetScene");
                 }
+                Patch::SetLink { id, href } => self.node(*id, "SetLink").link = href.clone(),
                 Patch::SetIslandProps { id, props } => {
                     let n = self.node(*id, "SetIslandProps");
                     for (k, v) in props {
@@ -265,6 +284,9 @@ impl Backend for Host {
                             n.island_props.insert(k.clone(), v.clone());
                         }
                     }
+                }
+                Patch::SetAttributes { id, attributes } => {
+                    self.node(*id, "SetAttributes").attributes = attributes.clone()
                 }
             }
         }

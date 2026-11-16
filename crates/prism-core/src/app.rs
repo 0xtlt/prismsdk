@@ -155,6 +155,8 @@ pub struct App {
     navigator: Option<Entity<Router>>,
     nav_queue: Vec<NavOp>,
     globals: HashMap<TypeId, Box<dyn Any>>,
+    /// The page request's status, set by the app (`cx.set_page_status`).
+    pub(crate) page_status: Option<u16>,
     appearance: Appearance,
     environment: Environment,
     pub(crate) locale_override: Option<crate::i18n::Locale>,
@@ -207,6 +209,7 @@ impl Default for App {
             navigator: None,
             nav_queue: Vec::new(),
             globals: HashMap::new(),
+            page_status: None,
             appearance: Appearance::System,
             environment: Environment::default(),
             locale_override: None,

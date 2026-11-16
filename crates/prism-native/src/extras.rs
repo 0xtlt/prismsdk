@@ -451,6 +451,35 @@ impl<W: crate::Widgets> crate::NativeRenderer<W> {
         if crate::is_managed(parent.kind) {
             return;
         }
+        let ids = self.effective_children(id);
+        let views: Vec<W::View> = ids
+            .iter()
+            .filter_map(|c| self.nodes.get(c).map(|e| e.view.clone()))
+            .collect();
+        let layouts = self.sorted_layouts(&ids);
+        let (view, layout) = (self.nodes[&id].view.clone(), self.nodes[&id].layout);
+        self.widgets.set_children(&view, &views);
+        let _ = self.taffy.set_children(layout, &layouts);
+    }
+
+    /// Sorts the layout children of `id` again (a child's `order` changed);
+    /// the views stay as they are.
+    pub(crate) fn set_layout_children(&mut self, id: NodeId) {
+        let Some(parent) = self.nodes.get(&id) else {
+            return;
+        };
+        if crate::is_managed(parent.kind) {
+            return;
+        }
+        let layout = parent.layout;
+        let ids = self.effective_children(id);
+        let layouts = self.sorted_layouts(&ids);
+        let _ = self.taffy.set_children(layout, &layouts);
+    }
+
+    /// Children of `id` minus its fixed ones, plus the fixed nodes hoisted
+    /// into it.
+    fn effective_children(&self, id: NodeId) -> Vec<NodeId> {
         let mut ids: Vec<NodeId> = self
             .extras
             .children
@@ -463,12 +492,7 @@ impl<W: crate::Widgets> crate::NativeRenderer<W> {
             })
             .unwrap_or_default();
         ids.extend(self.extras.hoisted.get(&id).into_iter().flatten().copied());
-        let kids: Vec<_> = ids.iter().filter_map(|c| self.nodes.get(c)).collect();
-        let views: Vec<W::View> = kids.iter().map(|e| e.view.clone()).collect();
-        let layouts: Vec<taffy::NodeId> = kids.iter().map(|e| e.layout).collect();
-        let (view, layout) = (parent.view.clone(), parent.layout);
-        self.widgets.set_children(&view, &views);
-        let _ = self.taffy.set_children(layout, &layouts);
+        ids
     }
 
     /// Fixed nodes in the root (no screen around them) stay inside the
@@ -545,6 +569,9 @@ impl<W: crate::Widgets> crate::NativeRenderer<W> {
             }
             cur = p;
         };
+        // In the scroll view's content, which the bars it runs under move.
+        let shift = self.content_shift(scroll).0;
+        top -= shift;
         let bottom = top + own.size.height;
         let limit = if parent == scroll {
             // Its parent is the content: it sticks until the end.
@@ -555,7 +582,7 @@ impl<W: crate::Widgets> crate::NativeRenderer<W> {
                     end = end.max(l.location.y + l.size.height);
                 }
             }
-            end + s.style.padding.bottom * self.zoom
+            end - shift + s.style.padding.bottom * self.zoom
         } else {
             let p = self.nodes.get(&parent)?;
             let pl = self.taffy.layout(p.layout).ok()?;

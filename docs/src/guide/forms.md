@@ -10,6 +10,8 @@ picker(["Small", "Medium", "Large"], self.size).placeholder("Choose…")
     .on_change(cx.listener(|this, e, _| this.size = Some(e.index())))
 date_picker(self.due).min(SystemTime::now())                  // .time(), .date_time()
     .on_change(cx.listener(|this, e, _| this.due = e.date()))
+date_picker_opt(self.published).placeholder("Not published")  // may be empty, clearable
+    .on_change(cx.listener(|this, e, _| this.published = e.date_opt()))
 text_input().secure(true).return_key(ReturnKey::Go)
     .on_submit(cx.listener(|this, _, cx| this.sign_in(cx)))
 text_input().keyboard(Keyboard::Email).capitalize(Capitalize::None).autocorrect(false)
@@ -20,6 +22,7 @@ spinner().large()
 ui::slider("Volume", v).range(0., 100.).step(1.).format(|v| format!("{v:.0} %"))
 ui::select("Size", sizes, self.size)
 ui::date_field("Due", self.due)
+ui::date_field_opt("Published", self.published).placeholder("Not yet")
 ui::text_field("Password", &self.password).secure().on_submit(…)
 ui::text_area("Notes", &self.notes).max_lines(5)
 ui::spinner().label("Syncing…")
@@ -35,6 +38,7 @@ radio_group(["Daily", "Weekly", "Monthly"], self.every).horizontal()
     .on_change(cx.listener(|this, e, _| this.every = Some(e.index())))
 time_picker(self.alarm)                                       // minutes since midnight, no time zone
     .on_change(cx.listener(|this, e, _| this.alarm = e.minutes()))
+time_picker_opt(self.opens).placeholder("Closed")             // Option<u32>: e.minutes_opt()
 text_input().leading_icon("magnifyingglass").max_length(24)
     .suggestions(["Paris", "Lyon", "Marseille"])
 // Your own field: padding replaces its inset, `.border(0.)` drops its
@@ -62,6 +66,18 @@ let files = cx.pick_files(PickFiles::new().types([".csv"]).multiple()).await?;  
 - **Accessibility**: sliders are adjustable (VoiceOver swipe up/down, TalkBack, arrow keys) and read their value (`accessibility_value("40 %")` overrides it); pickers read their label and choice; spinners are busy indicators. Toasts are announced politely (`Role::Status`: ARIA live region, VoiceOver and TalkBack announcements, `gtk_accessible_announce`).
 - **Checkbox and radio group**: the platform's own controls where it has them (`NSButton` checkbox and radio buttons, `GtkCheckButton` and a group, `CheckBox` and `RadioGroup`, `<input type=checkbox / radio>`, a SwiftUI `Toggle` and a list of buttons on the watch). UIKit has neither: iOS, iPadOS, tvOS and visionOS draw them (SF Symbols) with the toggle-button / selected traits, so VoiceOver reads « checkbox, checked » and « 2 of 3 ». A radio group is one element for the app (`e.index()`), moved through with the arrow keys where the platform does so.
 - **Time of day**: `time_picker(minutes)` edits a time that means the same in every time zone (an alarm, opening hours); backends show it in UTC, so « 07:30 » stays 07:30 when the device travels. `date_picker(…).time()` still edits an instant.
+- **Optional dates** (#89): `date_picker_opt(Option<SystemTime>)` and `time_picker_opt(Option<u32>)` may be empty (a post not published yet, a day without opening hours). While empty they show their `.placeholder(…)` (also their default accessibility label), and the user can clear a date; read the new value with `e.date_opt()` / `e.minutes_opt()` (`None`: cleared). Starting to fill an empty picker gives it the current moment, to the minute and within the bounds (`DateConfig::start`), which the user then adjusts. On the wire the empty value is `NaN` (`null` in JSON); only optional pickers accept it, so `date_picker` never reports an empty value. The clear action's label is the built-in `clear` text (`prism.clear` to override).
+
+  | | Empty | Filling it | Clearing it |
+  |---|---|---|---|
+  | Web | an empty `<input type=date…>` (the browser's own format hint) | the browser's picker | the browser's: Clear in Chrome's and Safari's pickers, Firefox's ✕, or erasing every part (non-optional inputs are `required`, which hides those) |
+  | iOS, iPadOS, visionOS | a gray pill with the placeholder over the compact picker | a tap on the pill (then the compact picker) | an `xmark.circle.fill` button after the picker |
+  | macOS | the placeholder inside the picker's bezel | a click on it, typing, or the stepper | an `xmark.circle.fill` button inside the bezel |
+  | Linux | the placeholder, dimmed, on the button | opening the popover | « Clear » under the calendar |
+  | Android | the placeholder, dimmed, in the pill | the dialog (OK) | « Clear » in the date or time dialog |
+  | watchOS | the placeholder, dimmed, on the button | opening the wheels | « Clear » under the wheels |
+  | tvOS | the placeholder, dimmed | the first left / right press | Play/Pause |
+- **Controlled values**: `.value(..)` is the field's text, focused or not. What the user types comes back as the same value and leaves the field alone (caret, selection, IME composition); a different value is the app's and replaces the field's text, the caret keeping its distance from the end. So an `on_input` handler can rewrite what was typed (strip a Markdown « # » prefix, uppercase, clear after a command) and the field follows. During an IME composition, the web applies it once the composition ends.
 - **Text input extras**: `max_length` (`maxlength`, a length filter natively), `leading_icon` (an SF Symbol inside the field: `leftView`, a GTK primary icon, a compound drawable, a glyph on the web), `suggestions` (web `<datalist>`, AppKit's completion list, `AutoCompleteTextView`, `GtkEntryCompletion` on Linux, a bar of matching suggestions above the keyboard on iOS, which has no API for app-supplied completions; none on tvOS, visionOS and watchOS), `autofocus` and `.id` with `cx.focus` (see [Pointer, keyboard, focus](input.md)).
 - **Files**: `ui::file_input` (or `cx.pick_files`) opens `<input type=file>`, `UIDocumentPickerViewController`, `NSOpenPanel`, `GtkFileChooserNative` (the desktop portal) or `ACTION_OPEN_DOCUMENT`; `PickedFile::read()` returns the bytes. On the web the browser uploads them over the app's connection and `read()` reads the server's copy. There is no file picker on tvOS and watchOS (`DeviceError::Unavailable`).
 - **Toasts**: `ui::show_toast` works from any handler or task: the runtime mounts the toaster as a layer above the router, tabs, sheets and dialogs, so a toast shown right before `cx.back()` stays. `ui::toaster()` is deprecated and does nothing (remove it).
@@ -70,6 +86,44 @@ let files = cx.pick_files(PickFiles::new().types([".csv"]).multiple()).await?;  
 
 - **Platform notes**: tvOS has no `UISlider`, `UIDatePicker` or editable `UITextView` (`API_UNAVAILABLE(tvos)`), hence the focus-driven stand-ins. watchOS sliders always step (a continuous one moves by a tenth of its range), and dates open the system wheels in a sheet. `GtkCalendar` has no min/max, so out-of-range days snap back. Before GTK 4.14, Linux has no `gtk_accessible_announce`: the status text changes but may not be spoken. Android announces through a polite live region (`announceForAccessibility` is deprecated in API 36), and the date dialog's header follows the device language, not the app's.
 - **Dev hooks for forms**: macOS `PRISM_TAP=<label>`, `PRISM_TYPE=<text>` (`\n` is Return), `PRISM_INCREMENT=<label>` (VoiceOver increment), `PRISM_A11Y_LOG=1`; Linux `PRISM_CLICK` opens pickers and date pickers, `fill:<placeholder>=<text>`, `fill:@slider=40`, `submit:<placeholder>`, open popovers saved as `out-N.png`; watchOS `PRISM_SCROLL=<pt>`, `PRISM_PRESENT=<label>` (opens a date picker), `PRISM_DEBUG_A11Y=1`. The watch's `ImageRenderer` snapshot can't draw native controls: use `xcrun simctl io <udid> screenshot`.
+
+## Selection and caret
+
+A text input or area reports where its selection is with `on_select`, and takes one from the app with `.selection(range)`. Offsets are **characters** (Rust `char`s), not UTF-8 bytes nor UTF-16 units, on every backend; `start == end` is a caret. `e.byte_range(&text)` (and `prism::char_to_byte` / `byte_to_char`) converts them to slice a `&str`. Key presses in a focused field carry its selection in `KeyEvent::selection`, read before the key acts, so `on_key_down` can split or merge blocks:
+
+```rust
+struct Block { text: String, sel: SelectionEvent }
+
+text_input()
+    .value(self.text.clone())
+    .on_input(cx.listener(|this, e: &InputEvent, _| this.text = e.value.clone()))
+    // The selection or caret moved: selecting, clicking, arrows, typing.
+    .on_select(cx.listener(|this, e: &SelectionEvent, _| this.sel = *e))
+    // Rendered back as is: an echo, the field is left alone.
+    .selection(self.sel)
+    .on_key_down(cx.listener(|this, e: &KeyEvent, cx| {
+        let Some(sel) = e.selection else { return };
+        if e.is("b") && e.modifiers.command() && !sel.is_caret() {
+            // ⌘B / Ctrl+B: bold the selection, keep it selected.
+            let r = sel.byte_range(&this.text);
+            this.text.replace_range(r.clone(), &format!("**{}**", &this.text[r]));
+            this.sel = (sel.start + 2..sel.end + 2).into();
+            cx.stop_propagation();
+        } else if e.is("Enter") {
+            // Split the block at the caret: the new block starts with the rest.
+            let r = sel.byte_range(&this.text);
+            let rest = this.text.split_off(r.end);
+            this.text.truncate(r.start);
+            this.split_off(rest, cx);
+        } else if e.is("Backspace") && sel.start == 0 && sel.end == 0 {
+            this.merge_with_previous(cx);
+        }
+    }))
+```
+
+- **When `on_select` runs**: after every move of the caret or selection, typing included (after that edit's `on_input`), and only when it moved. The web sends at most one per animation frame; native backends one per run-loop turn. A key press first delivers a pending selection, then the key with `selection` as it was before the key.
+- **`.selection(range)`** is applied when the app's value changes, after the field's text, focused or not. A selection the user made and the app renders back is an echo and leaves the field alone, and a value that did not change is not applied again, so keeping it in sync with `on_select` never fights the user. On the web, a selection computed while the user has typed further (values not yet echoed) is dropped, like a stale text echo; during an IME composition it waits for the composition to end. Offsets past the end are clamped.
+- **Backends**: web (`selectionchange`, `select`, keys, pointer), AppKit (the field editor's and text view's `NSTextViewDidChangeSelectionNotification`), UIKit (`textFieldDidChangeSelection:`, `textViewDidChangeSelection:`), GTK (`notify::cursor-position` / `selection-bound`, the text buffer's marks), Android (`onSelectionChanged`). On macOS and iOS, a single-line input that is not being edited takes the app's selection when the app focuses it (`cx.focus`); a click or tap places the caret where the user put it. watchOS has no selection API (`on_select` never runs, `KeyEvent::selection` is `None`, `.selection` is ignored).
 
 **Sheets, popovers, dialogs** that a screen opens without a route: see [Dialogs, menus, tray](dialogs-menus.md#sheets-popovers-and-dialogs-without-a-route).
 

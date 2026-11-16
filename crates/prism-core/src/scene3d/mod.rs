@@ -1402,6 +1402,25 @@ impl Scene3d {
         self.node.key = Some(key.into());
         self
     }
+    /// An attribute of the element on the web (`data-*` and the safe names
+    /// of [`SAFE_ATTRIBUTES`](crate::attributes::SAFE_ATTRIBUTES)), like
+    /// `Div::attr`: `.attr("data-testid", "viewer")`. Native backends ignore it.
+    pub fn attr(mut self, name: impl AsRef<str>, value: impl Into<String>) -> Self {
+        let name = name.as_ref().to_ascii_lowercase();
+        let allowed = crate::attributes::is_app_attribute(&name);
+        debug_assert!(
+            allowed,
+            "`{name}` is not an attribute an app may set (see prism_core::attributes)"
+        );
+        if allowed {
+            let value = value.into();
+            match self.node.attributes.iter_mut().find(|(n, _)| *n == name) {
+                Some(slot) => slot.1 = value,
+                None => self.node.attributes.push((name, value)),
+            }
+        }
+        self
+    }
     /// The scene as it will be sent (for tests).
     pub fn data(&self) -> &SceneData {
         &self.data

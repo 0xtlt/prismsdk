@@ -392,6 +392,86 @@ fn native_back_truncates_the_stack() {
     assert!(rt.dispatch(UiEvent::Back(stack, 0)).is_empty());
 }
 
+/// A router on `platform`, counting how many times `/` is built.
+fn routed_on(
+    platform: crate::Platform,
+    path: &str,
+) -> (Runtime, Vec<Patch>, Arc<std::sync::atomic::AtomicUsize>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let homes = Arc::new(AtomicUsize::new(0));
+    let count = homes.clone();
+    let init: AppInit = Arc::new(move |cx: &mut App| {
+        let count = count.clone();
+        let router = Router::new()
+            .route("/", move |cx, _| {
+                count.fetch_add(1, Ordering::SeqCst);
+                cx.new_entity(|_| Home)
+            })
+            .route("/items/:id", |cx, p| {
+                let id = p.parse("id").unwrap_or(0);
+                cx.new_entity(move |_| Item(id))
+            })
+            .build(cx);
+        cx.set_root(router);
+    });
+    let mut rt = Runtime::with_options(
+        &init,
+        crate::RuntimeOptions {
+            path: path.into(),
+            platform: Some(platform),
+            ..Default::default()
+        },
+    );
+    let first = rt.render();
+    (rt, first, homes)
+}
+
+#[test]
+fn web_deep_links_build_the_screen_underneath_when_back_reaches_it() {
+    use std::sync::atomic::Ordering;
+    let (mut rt, first, homes) = routed_on(crate::Platform::Web, "/items/3");
+    // Two screens (Back and the browser's history see the depth), but `/`
+    // is neither built nor rendered.
+    let (stack, depth, _) = stack_of(&first);
+    assert_eq!(depth, 2);
+    assert_eq!(homes.load(Ordering::SeqCst), 0);
+    assert!(
+        !first
+            .iter()
+            .any(|p| matches!(p, Patch::SetText { text, .. } if text == "Home"))
+    );
+    find_text(&first, "Item 3");
+    // Back builds it, once.
+    let back = rt.dispatch(UiEvent::Back(stack, 1));
+    assert_eq!(homes.load(Ordering::SeqCst), 1);
+    assert_eq!(rt.app.current_path(), Some("/"));
+    find_text(&back, "Home");
+    find_text(&back, "open 7");
+    // Navigating away and back reuses it.
+    let again = rt.dispatch(UiEvent::Click(find_text(&back, "open 7")));
+    rt.dispatch(UiEvent::Click(find_text(&again, "back")));
+    assert_eq!(homes.load(Ordering::SeqCst), 1);
+    assert_eq!(rt.app.current_path(), Some("/"));
+}
+
+#[test]
+fn web_deep_links_build_the_screen_underneath_on_app_back() {
+    use std::sync::atomic::Ordering;
+    let (mut rt, first, homes) = routed_on(crate::Platform::Web, "/items/3");
+    let back = rt.dispatch(UiEvent::Click(find_text(&first, "back")));
+    assert_eq!(homes.load(Ordering::SeqCst), 1);
+    find_text(&back, "Home");
+}
+
+#[test]
+fn native_deep_links_build_the_screen_underneath_up_front() {
+    use std::sync::atomic::Ordering;
+    // Native Back shows it (iOS names it in Back, the swipe reveals it).
+    let (_, first, homes) = routed_on(crate::Platform::Ios, "/items/3");
+    assert_eq!(homes.load(Ordering::SeqCst), 1);
+    find_text(&first, "Home");
+}
+
 #[test]
 fn browser_forward_navigates() {
     let (mut rt, first) = routed("/");
@@ -499,6 +579,77 @@ fn accessibility_defaults_are_resolved_in_core() {
         a11y_of(&first, input).unwrap().label.as_deref(),
         Some("Search")
     );
+}
+
+struct Sidebar {
+    page: usize,
+}
+
+impl Render for Sidebar {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let item = |i: usize, name: &str, cx: &mut Context<Self>| {
+            div()
+                .on_click(cx.listener(move |this, _, _| this.page = i))
+                .accessibility_role(Role::Link)
+                .accessibility_current(self.page == i)
+                .accessibility_selected(self.page == i)
+                .child(text(name))
+        };
+        div()
+            .accessibility_role(Role::Navigation)
+            .child(item(0, "Home", cx))
+            .child(item(1, "Settings", cx))
+    }
+}
+
+#[test]
+fn the_current_item_of_a_navigation_is_described_and_moves() {
+    let (mut rt, first) = boot(|cx| {
+        let root = cx.new_entity(|_| Sidebar { page: 0 });
+        cx.set_root(root);
+    });
+    let item = |patches: &[Patch], name: &str| {
+        patches
+            .iter()
+            .find_map(|p| match p {
+                Patch::SetAccessibility { id, a11y } if a11y.label.as_deref() == Some(name) => {
+                    Some((*id, a11y.clone()))
+                }
+                _ => None,
+            })
+            .unwrap()
+    };
+    let (home, a) = item(&first, "Home");
+    assert!(a.current && a.selected == Some(true) && a.is_selected());
+    let (settings, a) = item(&first, "Settings");
+    assert!(!a.current && a.selected == Some(false) && !a.is_selected());
+
+    // Going to Settings moves the state: both items get a new description.
+    let patches = rt.dispatch(UiEvent::Click(settings));
+    assert!(!a11y_of(&patches, home).unwrap().current);
+    assert!(a11y_of(&patches, settings).unwrap().current);
+    // Same page again: nothing to send.
+    assert!(
+        rt.dispatch(UiEvent::Click(settings))
+            .iter()
+            .all(|p| !matches!(p, Patch::SetAccessibility { .. }))
+    );
+}
+
+#[test]
+fn checked_tabs_and_toggle_buttons_read_as_selected() {
+    let checked = |role| Accessibility {
+        role: Some(role),
+        checked: Some(true),
+        ..Default::default()
+    };
+    assert!(checked(Role::Tab).is_selected());
+    assert!(checked(Role::Radio).is_selected());
+    assert!(
+        !checked(Role::Switch).is_selected(),
+        "a switch is on, not selected"
+    );
+    assert!(!Accessibility::default().is_selected());
 }
 
 struct Themed;
@@ -819,6 +970,28 @@ fn snapshots_serialize_compact_json_with_adaptive_colors() {
         json,
         r##"{"k":"v","d":1,"g":8,"bg":["#FFFFFFFF","#000000FF"],"l":"/todos/1","c":[{"k":"i","fg":"#00FF00FF","s":"checkmark.circle.fill","ah":1},{"k":"t","fw":3,"s":"Hi \"you\""},{"k":"p","v":0.5}]}"##
     );
+}
+
+#[test]
+fn snapshots_resolve_svg_current_color_against_the_text_color() {
+    // #51: widget renderers read hex colors; `currentColor` becomes the
+    // node's text color, else the adaptive label color.
+    let icon =
+        r#"<svg width="4" height="4"><rect width="4" height="4" fill="currentColor"/></svg>"#;
+    let mut app = App::new();
+    let tinted = snapshot_one(
+        &mut app,
+        div().child(crate::svg(icon).text_color(rgb(0x00FF00))),
+    );
+    let json = tinted.to_json();
+    assert!(json.contains(r#""s":"i0,0\nf#00FF00|"#), "{json}");
+    let plain = snapshot_one(&mut app, div().child(crate::svg(icon)));
+    let json = plain.to_json();
+    assert!(json.contains("f#000000/#FFFFFF|"), "{json}");
+    // `tint` recolors an SVG that hard-codes its color.
+    let fixed = r##"<svg width="4" height="4"><rect width="4" height="4" fill="#123456"/></svg>"##;
+    let t = snapshot_one(&mut app, div().child(crate::svg(fixed).tint(rgb(0xFF0000))));
+    assert!(t.to_json().contains("f#FF0000|"), "{}", t.to_json());
 }
 
 #[test]
@@ -1303,6 +1476,88 @@ fn links_navigate_in_app_and_deep_links_open_screens() {
     assert_eq!(rt.app.current_path(), Some("/items/9"));
 }
 
+#[test]
+fn a_link_follows_its_node_and_is_its_own_element_on_the_web() {
+    struct Row(Option<&'static str>);
+    impl Render for Row {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            let row = div().child(text("Order"));
+            div()
+                .child(button("next").on_click(cx.listener(|this: &mut Row, _, _| {
+                    this.0 = match this.0 {
+                        None => Some("/orders/42"),
+                        Some("/orders/42") => Some("/orders/43"),
+                        Some(_) => None,
+                    }
+                })))
+                .child(match self.0 {
+                    Some(path) => row.link(path),
+                    None => row,
+                })
+        }
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Row(Some("/orders/42")));
+        cx.set_root(root);
+    });
+    for platform in [crate::Platform::Web, crate::Platform::Ios] {
+        let mut rt = Runtime::with_options(
+            &init,
+            crate::RuntimeOptions {
+                path: "/".into(),
+                platform: Some(platform),
+                ..Default::default()
+            },
+        );
+        let first = rt.render();
+        // Right after its `Create` (the web picks the element there).
+        let at = first
+            .iter()
+            .position(|p| matches!(p, Patch::SetLink { href: Some(h), .. } if h == "/orders/42"))
+            .expect("the link is sent");
+        let Patch::SetLink { id: row, .. } = first[at] else {
+            unreachable!()
+        };
+        assert_eq!(
+            first[at - 1],
+            Patch::Create {
+                id: row,
+                kind: NodeKind::View
+            }
+        );
+        let next = first
+            .iter()
+            .find_map(|p| match p {
+                Patch::SetText { id, text } if text == "next" => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        // Another destination: the same node, its new link.
+        let changed = rt.dispatch(UiEvent::Click(next));
+        assert!(
+            changed.contains(&Patch::SetLink {
+                id: row,
+                href: Some("/orders/43".into())
+            }),
+            "{changed:?}"
+        );
+        assert!(!changed.iter().any(|p| matches!(p, Patch::Create { .. })));
+        // No link any more: a new `<div>` on the web, the same view natively.
+        let removed = rt.dispatch(UiEvent::Click(next));
+        let destroyed = removed.contains(&Patch::Destroy { id: row });
+        let unlinked = removed.contains(&Patch::SetLink {
+            id: row,
+            href: None,
+        });
+        if platform == crate::Platform::Web {
+            assert!(destroyed && !unlinked, "{removed:?}");
+            assert!(!removed.iter().any(|p| matches!(p, Patch::SetLink { .. })));
+        } else {
+            assert!(unlinked && !destroyed, "{removed:?}");
+        }
+    }
+}
+
 // --- Async tasks, timers, background work, storage ---------------------------
 
 use crate::{FileStorage, Storage};
@@ -1367,6 +1622,105 @@ fn tasks_sleep_update_state_and_await_background_work() {
             .any(|p| matches!(p, Patch::SetText { text, .. } if text == "from a thread"))
     );
     assert!(!rt.has_tasks());
+}
+
+/// Loads in two steps of background work from its first render, next to a
+/// clock that ticks forever.
+struct Loader {
+    /// How long each step of background work takes.
+    step: Duration,
+    started: bool,
+    loaded: Option<u32>,
+}
+
+impl Render for Loader {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.started {
+            self.started = true;
+            let step = self.step;
+            cx.spawn(async move |this, cx| {
+                let first = cx
+                    .background(move || {
+                        std::thread::sleep(step);
+                        1
+                    })
+                    .await;
+                let second = cx
+                    .background(move || {
+                        std::thread::sleep(step);
+                        first + 1
+                    })
+                    .await;
+                cx.update_entity(&this, |l, _| l.loaded = Some(second));
+            });
+            cx.spawn(async move |_, cx| {
+                loop {
+                    cx.sleep(Duration::from_millis(5)).await;
+                }
+            });
+        }
+        text(match self.loaded {
+            Some(n) => format!("loaded {n}"),
+            None => "loading".into(),
+        })
+    }
+}
+
+fn loader(step: Duration) -> Runtime {
+    let init: AppInit = Arc::new(move |cx: &mut App| {
+        let root = cx.new_entity(|_| Loader {
+            step,
+            started: false,
+            loaded: None,
+        });
+        cx.set_root(root);
+    });
+    Runtime::new(&init)
+}
+
+fn shows(patches: &[Patch], text: &str) -> bool {
+    patches
+        .iter()
+        .any(|p| matches!(p, Patch::SetText { text: t, .. } if t == text))
+}
+
+#[test]
+fn a_settled_render_waits_for_the_background_work_it_started() {
+    let mut rt = loader(Duration::from_millis(30));
+    let start = Instant::now();
+    let patches = rt.render_settled(Duration::from_secs(5));
+    // Both steps ran; the clock, a timer, did not hold the render up.
+    assert!(shows(&patches, "loaded 2"), "{patches:?}");
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        start.elapsed()
+    );
+    assert!(rt.has_tasks(), "the clock still runs");
+}
+
+#[test]
+fn a_settled_render_stops_at_its_deadline() {
+    let mut rt = loader(Duration::from_millis(400));
+    let start = Instant::now();
+    let patches = rt.render_settled(Duration::from_millis(50));
+    assert!(start.elapsed() < Duration::from_millis(350));
+    assert!(shows(&patches, "loading") && !shows(&patches, "loaded 2"));
+    // What was still loading arrives later, as without a wait.
+    let start = Instant::now();
+    let mut later = Vec::new();
+    while !shows(&later, "loaded 2") {
+        assert!(start.elapsed() < Duration::from_secs(5), "timed out");
+        std::thread::sleep(Duration::from_millis(5));
+        later.extend(rt.poll());
+    }
+}
+
+#[test]
+fn a_settled_render_without_a_wait_is_a_render() {
+    let mut rt = loader(Duration::from_millis(30));
+    let patches = rt.render_settled(Duration::ZERO);
+    assert!(shows(&patches, "loading") && !shows(&patches, "loaded 2"));
 }
 
 #[test]
@@ -2914,5 +3268,188 @@ fn layout_builders_set_their_fields() {
     assert_eq!(
         auto_fit(minmax(172, fr(1.))).css(),
         "repeat(auto-fit,minmax(172px,1fr))"
+    );
+}
+
+// --- Custom window chrome (#67) ---------------------------------------------
+
+#[test]
+fn window_chrome_defaults_to_the_standard_title_bar() {
+    let config = crate::AppConfig::default();
+    assert_eq!(config.window_chrome, WindowChrome::Standard);
+    assert!(!config.window_chrome.is_custom());
+    let custom = WindowChrome::Custom {
+        traffic_lights: Some(Point::new(16., 13.)),
+    };
+    assert!(custom.is_custom());
+    assert!(
+        WindowChrome::Custom {
+            traffic_lights: None
+        }
+        .is_custom()
+    );
+}
+
+#[test]
+fn window_drag_reaches_the_backend_as_a_style() {
+    struct Bar {
+        drag: bool,
+    }
+    impl Render for Bar {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            let bar = div().h(40.).child(
+                button("Tab").on_click(cx.listener(|this: &mut Bar, _, _| this.drag = !this.drag)),
+            );
+            if self.drag { bar.window_drag() } else { bar }
+        }
+    }
+    let (mut rt, first) = boot(|cx| {
+        let root = cx.new_entity(|_| Bar { drag: true });
+        cx.set_root(root);
+    });
+    let dragged: Vec<u64> = first
+        .iter()
+        .filter_map(|p| match p {
+            Patch::SetStyle { id, style } if style.window_drag => Some(*id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(dragged.len(), 1, "only the bar drags the window");
+    let bar = dragged[0];
+    // The button inside keeps its own style and its clicks.
+    let tab = find_text(&first, "Tab");
+    assert_ne!(tab, bar);
+    let patches = rt.dispatch(UiEvent::Click(tab));
+    let restyled = patches.iter().find_map(|p| match p {
+        Patch::SetStyle { id, style } if *id == bar => Some(style.window_drag),
+        _ => None,
+    });
+    assert_eq!(restyled, Some(false), "turning it off restyles the bar");
+    assert!(!div().style_mut().window_drag);
+    assert!(div().window_drag().style_mut().window_drag);
+}
+
+#[test]
+fn fullscreen_and_window_controls_re_render() {
+    struct Title;
+    impl Render for Title {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            let lead = cx.window_controls().map_or(12., |c| c.right() + 12.);
+            text(format!("fs {} lead {lead}", cx.is_fullscreen()))
+        }
+    }
+    let (mut rt, first) = boot(|cx| {
+        let root = cx.new_entity(|_| Title);
+        cx.set_root(root);
+    });
+    find_text(&first, "fs false lead 12");
+    let lights = WindowControls {
+        x: 16.,
+        y: 13.,
+        width: 52.,
+        height: 14.,
+    };
+    assert_eq!((lights.right(), lights.bottom()), (68., 27.));
+    find_text(
+        &rt.set_window_chrome(false, Some(lights)),
+        "fs false lead 80",
+    );
+    // Nothing changed: nothing to do.
+    assert!(rt.set_window_chrome(false, Some(lights)).is_empty());
+    // Full screen hides the traffic lights: the title bar drops their room.
+    find_text(&rt.set_window_chrome(true, None), "fs true lead 12");
+    assert!(rt.app.is_fullscreen());
+    assert_eq!(rt.app.window_controls(), None);
+}
+
+#[test]
+fn an_explicit_zero_padding_is_set_and_survives_scaling() {
+    use crate::{Edges, Style, Styled, text_area, text_input};
+    fn style<S: Styled>(mut el: S) -> Style {
+        el.style_mut().clone()
+    }
+    // No padding given: the control keeps its own inset.
+    assert!(!style(text_input()).has_padding());
+    // `.p(0.)` and every side setter: a real zero inset (#69).
+    for s in [
+        style(text_input().p(0.)),
+        style(text_input().px(0.)),
+        style(text_input().py(0.)),
+        style(text_area().pt(0.)),
+        style(text_area().pr(0.)),
+        style(text_area().pb(0.)),
+        style(text_area().pl(0.)),
+    ] {
+        assert!(s.has_padding(), "{s:?}");
+        assert_eq!(s.padding, Edges::default());
+        assert!(s.scaled(2.).has_padding(), "kept when zoomed");
+    }
+    // A padding set directly counts when it isn't zero.
+    let direct = Style {
+        padding: Edges::all(4.),
+        ..Style::default()
+    };
+    assert!(direct.has_padding());
+}
+
+#[test]
+fn reversed_directions_and_order_work_in_refinements() {
+    use crate::style::{FlexDirection, StyleContext};
+    let mut d = div()
+        .flex_row()
+        .order(2)
+        .md(|s| s.flex_row_reverse().order(-1))
+        .lg(|s| s.flex_col_reverse().order(0));
+    let s = d.style_mut().clone();
+    let at = |breakpoint| {
+        s.resolve(StyleContext {
+            breakpoint,
+            ..Default::default()
+        })
+    };
+    let compact = at(crate::Breakpoint::Compact);
+    assert_eq!((compact.direction, compact.order), (FlexDirection::Row, 2));
+    let medium = at(crate::Breakpoint::Medium);
+    assert_eq!(
+        (medium.direction, medium.order),
+        (FlexDirection::RowReverse, -1)
+    );
+    let large = at(crate::Breakpoint::Large);
+    assert_eq!(
+        (large.direction, large.order),
+        (FlexDirection::ColumnReverse, 0)
+    );
+    assert!(FlexDirection::RowReverse.is_row() && FlexDirection::RowReverse.is_reverse());
+    assert!(!FlexDirection::ColumnReverse.is_row() && FlexDirection::ColumnReverse.is_reverse());
+    assert!(!FlexDirection::Row.is_reverse());
+}
+
+#[test]
+fn snapshots_resolve_order_and_reversed_directions() {
+    let mut app = App::new();
+    let node = snapshot_one(
+        &mut app,
+        div()
+            .flex_row_reverse()
+            .child(text("a"))
+            .child(text("b").order(-1))
+            .child(text("c")),
+    );
+    // Sorted by order (b, a, c), then reversed: renderers draw in order.
+    assert_eq!(
+        node.to_json(),
+        r#"{"k":"v","d":1,"jc":"e","c":[{"k":"t","s":"c"},{"k":"t","s":"a"},{"k":"t","s":"b"}]}"#
+    );
+    let col = snapshot_one(
+        &mut app,
+        div()
+            .flex_col_reverse()
+            .justify_end()
+            .child(text("a"))
+            .child(text("b")),
+    );
+    assert_eq!(
+        col.to_json(),
+        r#"{"k":"v","c":[{"k":"t","s":"b"},{"k":"t","s":"a"}]}"#
     );
 }

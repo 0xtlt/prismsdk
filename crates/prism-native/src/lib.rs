@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 #[cfg(target_vendor = "apple")]
 pub mod apple;
 mod extras;
+pub mod fields;
 pub mod fonts;
 pub mod images;
 pub mod remote;
@@ -166,6 +167,12 @@ pub trait Widgets {
     /// view or a descendant has the focus (the view becomes focusable),
     /// `global` wherever the focus is.
     fn set_key_events(&mut self, _view: &Self::View, _local: bool, _global: bool) {}
+    /// Selects `start..end` (characters, clamped to the text) in a text
+    /// input or area (#86), focused or not. Sent after its text.
+    fn set_selection(&mut self, _view: &Self::View, _start: usize, _end: usize) {}
+    /// Whether a text input or area reports its selection and caret
+    /// (`UiEvent::Select`, in characters) when they move, typing included.
+    fn set_select_events(&mut self, _view: &Self::View, _on: bool) {}
     /// Gives the view the keyboard focus (first responder, `grab_focus`).
     fn focus(&mut self, _view: &Self::View) {}
     /// Scrolls the scroll views around the view so it is visible.
@@ -366,6 +373,8 @@ struct Entry<V> {
     /// Interaction states: the style as rendered (`style` is it in the
     /// current states), the states the node is in, and those it refines.
     states: EntryStates,
+    /// The `order` its parent's layout children were last sorted by.
+    layout_order: i32,
 }
 
 #[derive(Default)]
@@ -408,6 +417,19 @@ pub struct NativeRenderer<W: Widgets> {
     /// area, a screen shown for the first time): frames are placed, not
     /// animated, as `transition` animates what the app changes (#41).
     settling: bool,
+    /// Scroll views that run under a screen's bars, by node id: the platform
+    /// insets their content by the bars, so it is laid out in what is
+    /// visible between them (#76).
+    under_bars: HashMap<NodeId, UnderBars>,
+}
+
+/// What the platform insets a scroll view's content by, at the top and the
+/// bottom, because it runs under the bars of `screen`.
+#[derive(Clone, Copy, PartialEq)]
+struct UnderBars {
+    screen: NodeId,
+    top: f32,
+    bottom: f32,
 }
 
 impl<W: Widgets> NativeRenderer<W> {
@@ -438,6 +460,7 @@ impl<W: Widgets> NativeRenderer<W> {
             layer_insets: Insets::default(),
             areas: HashMap::new(),
             settling: false,
+            under_bars: HashMap::new(),
         }
     }
 
@@ -575,7 +598,13 @@ impl<W: Widgets> NativeRenderer<W> {
         let (Some(d), Some((_, _, w, h))) = (&e.drawing, e.frame) else {
             return;
         };
-        let mut paths = d.resolve(w, h, self.zoom);
+        // `Color::current()` paths (an SVG's `currentColor`) take the
+        // node's text color, else the label color, like its box (#51).
+        let text = e
+            .style
+            .text_color
+            .map_or_else(label_color, |c| c.resolve_current(label_color()));
+        let mut paths = d.with_current_color(text).resolve(w, h, self.zoom);
         if self.env.direction == Direction::Rtl {
             // Like the layout around it: charts read right to left.
             for p in &mut paths {
@@ -668,7 +697,7 @@ impl<W: Widgets> NativeRenderer<W> {
         if self.compute_with_rules(self.viewport, width, height)
             && let Some(root) = self.root
         {
-            self.place(root, width);
+            self.place(root, width, 0.);
         }
         self.update_sticky();
         self.window = (width, height);
@@ -845,16 +874,19 @@ impl<W: Widgets> NativeRenderer<W> {
         // A screen that starts with a scroll view lets it run under the bars,
         // like native apps: the platform insets its content (and collapses
         // large titles) itself.
-        let first_child = self
+        let leading = self
             .taffy
             .children(sc.layout)
             .ok()
             .and_then(|c| c.first().copied())
-            .and_then(|c| self.by_layout.get(&c))
-            .and_then(|c| self.nodes.get(c));
-        if first_child.is_some_and(|c| {
-            c.kind == NodeKind::Scroll && c.style.scroll_axis == prism_core::ScrollAxis::Vertical
-        }) {
+            .and_then(|c| self.by_layout.get(&c).copied())
+            .filter(|c| {
+                self.nodes.get(c).is_some_and(|c| {
+                    c.kind == NodeKind::Scroll
+                        && c.style.scroll_axis == prism_core::ScrollAxis::Vertical
+                })
+            });
+        if leading.is_some() {
             i.top = 0.;
             i.bottom = 0.;
         }
@@ -903,14 +935,79 @@ impl<W: Widgets> NativeRenderer<W> {
         }
         let layout = sc.layout;
         let _ = self.taffy.set_style(layout, style);
-        if self.compute_with_rules(layout, vp.width, vp.height) {
-            // A screen not shown yet is laid out in the platform's default
-            // size, then again once shown: not an animation (#41).
-            self.in_area(screen, vp, |r| {
-                r.set_frame(screen, vp.x, vp.y, vp.width, vp.height);
-                r.place_children(screen);
+        // Its content is laid out in what the bars leave visible, as the
+        // platform insets it by them: first where the screen's padding
+        // puts it, then where it really is (a row below it, a margin).
+        let guess = leading.map(|s| {
+            let last = self.under_bars.get(&s).filter(|u| u.screen == screen);
+            let guess = last.copied().unwrap_or(UnderBars {
+                screen,
+                top: (vp.insets.top - p.top).max(0.),
+                bottom: (vp.insets.bottom - p.bottom).max(0.),
             });
+            (s, guess)
+        });
+        self.set_under_bars(screen, guess);
+        if !self.compute_with_rules(layout, vp.width, vp.height) {
+            return;
         }
+        if let Some((scroll, guess)) = guess {
+            let frame = self
+                .nodes
+                .get(&scroll)
+                .and_then(|e| self.taffy.layout(e.layout).ok())
+                .map(|l| (l.location.y, l.location.y + l.size.height));
+            if let Some((top, bottom)) = frame {
+                let real = UnderBars {
+                    screen,
+                    top: (vp.insets.top - top).max(0.),
+                    bottom: (vp.insets.bottom - (vp.height - bottom)).max(0.),
+                };
+                if real != guess {
+                    self.set_under_bars(screen, Some((scroll, real)));
+                    if !self.compute_with_rules(layout, vp.width, vp.height) {
+                        return;
+                    }
+                }
+            }
+        }
+        // A screen not shown yet is laid out in the platform's default
+        // size, then again once shown: not an animation (#41).
+        self.in_area(screen, vp, |r| {
+            r.set_frame(screen, vp.x, vp.y, vp.width, vp.height);
+            r.place_children(screen);
+        });
+    }
+
+    /// Records the scroll view that runs under `screen`'s bars (or none):
+    /// its layout padding takes them in (`sync_layout_style`).
+    fn set_under_bars(&mut self, screen: NodeId, scroll: Option<(NodeId, UnderBars)>) {
+        // No bar to run under (Android, macOS, a screen without a safe area).
+        let scroll = scroll.filter(|(_, u)| u.top > 0. || u.bottom > 0.);
+        let stale: Vec<NodeId> = self
+            .under_bars
+            .iter()
+            .filter(|(id, u)| u.screen == screen && scroll.is_none_or(|(s, _)| s != **id))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in stale {
+            self.under_bars.remove(&id);
+            self.sync_layout_style(id);
+        }
+        if let Some((id, u)) = scroll
+            && self.under_bars.insert(id, u) != Some(u)
+        {
+            self.sync_layout_style(id);
+        }
+    }
+
+    /// How far down the platform moves a scroll view's content (by the
+    /// bars it runs under): its children are placed that much higher, as
+    /// their layout includes it.
+    fn content_shift(&self, scroll: NodeId) -> (f32, f32) {
+        self.under_bars
+            .get(&scroll)
+            .map_or((0., 0.), |u| (u.top, u.bottom))
     }
 
     /// Forces leaves to be measured again (e.g. an image finished loading).
@@ -920,7 +1017,34 @@ impl<W: Widgets> NativeRenderer<W> {
         }
     }
 
+    /// The layout nodes of `ids`, sorted by their `order` (stable: the
+    /// app's order among equals). The views keep the app's order, so focus
+    /// and assistive technologies follow the tree, as on the web.
+    fn sorted_layouts(&mut self, ids: &[NodeId]) -> Vec<taffy::NodeId> {
+        let mut kids: Vec<(i32, taffy::NodeId)> = Vec::with_capacity(ids.len());
+        for c in ids {
+            if let Some(e) = self.nodes.get_mut(c) {
+                e.layout_order = e.style.order;
+                kids.push((e.style.order, e.layout));
+            }
+        }
+        kids.sort_by_key(|k| k.0);
+        kids.into_iter().map(|k| k.1).collect()
+    }
+
+    /// A node's `order` changed: its parent sorts its layout children again.
+    fn sync_order(&mut self, id: NodeId) {
+        let Some(e) = self.nodes.get(&id) else { return };
+        if e.style.order == e.layout_order {
+            return;
+        }
+        if let Some(parent) = self.extras.parents.get(&id).copied() {
+            self.set_layout_children(parent);
+        }
+    }
+
     fn sync_layout_style(&mut self, id: NodeId) {
+        self.sync_order(id);
         let Some(e) = self.nodes.get(&id) else { return };
         let zoomed = e.style.scaled(self.zoom);
         let mut style = to_taffy(&zoomed, e.kind);
@@ -960,6 +1084,11 @@ impl<W: Widgets> NativeRenderer<W> {
             // A row that scrolls: children keep their size.
             style.flex_shrink = 0.;
         }
+        // A scroll view under bars: its content is laid out between them.
+        if let Some(u) = self.under_bars.get(&id) {
+            style.padding.top = LengthPercentage::length(zoomed.padding.top + u.top);
+            style.padding.bottom = LengthPercentage::length(zoomed.padding.bottom + u.bottom);
+        }
         // A root stack handles the safe area itself (navigation bar, screens).
         if self.root == Some(id) && !is_managed(e.kind) {
             let (p, i) = (zoomed.padding, self.insets);
@@ -973,15 +1102,21 @@ impl<W: Widgets> NativeRenderer<W> {
         let _ = self.taffy.set_style(e.layout, style);
     }
 
-    /// Places `id` inside a parent `parent_width` wide (mirrored in RTL).
-    fn place(&mut self, id: NodeId, parent_width: f32) {
+    /// Places `id` inside a parent `parent_width` wide (mirrored in RTL),
+    /// `shift` higher than its layout (see `content_shift`).
+    fn place(&mut self, id: NodeId, parent_width: f32, shift: f32) {
         let Some(entry) = self.nodes.get(&id) else {
             return;
         };
         let Ok(l) = self.taffy.layout(entry.layout) else {
             return;
         };
-        let (mut x, mut y, w, h) = (l.location.x, l.location.y, l.size.width, l.size.height);
+        let (mut x, mut y, w, h) = (
+            l.location.x,
+            l.location.y - shift,
+            l.size.width,
+            l.size.height,
+        );
         if self.env.direction == Direction::Rtl {
             x = parent_width - x - w;
         }
@@ -1038,7 +1173,10 @@ impl<W: Widgets> NativeRenderer<W> {
                 bottom = bottom.max(l.location.y + l.size.height);
             }
         }
-        let height = (bottom + entry.style.padding.bottom).max(frame.height);
+        // Under bars, the platform adds them around the content.
+        let (top_bar, bottom_bar) = self.content_shift(id);
+        let height = (bottom - top_bar + entry.style.padding.bottom)
+            .max(frame.height - top_bar - bottom_bar);
         let width = self.content_width(id).unwrap_or(frame.width);
         self.widgets.set_content_size(&entry.view, width, height);
     }
@@ -1055,8 +1193,9 @@ impl<W: Widgets> NativeRenderer<W> {
             .iter()
             .filter_map(|c| self.by_layout.get(c).copied())
             .collect();
+        let shift = self.content_shift(id).0;
         for child in ids {
-            self.place(child, width);
+            self.place(child, width, shift);
         }
     }
 }
@@ -1177,6 +1316,9 @@ impl<W: Widgets> NativeRenderer<W> {
             return changed;
         }
         let was_hidden = e.style.display_none;
+        let repaint = e.kind == NodeKind::Shape
+            && e.style.text_color != style.text_color
+            && e.drawing.as_ref().is_some_and(|d| d.uses_current_color());
         e.style = style;
         let e = &self.nodes[&id];
         let s = self.effective_style(&e.style, e.kind);
@@ -1187,6 +1329,9 @@ impl<W: Widgets> NativeRenderer<W> {
         match s.transition {
             Some(t) if e.frame.is_some() => self.widgets.set_style_animated(&view, &s, t),
             _ => self.widgets.set_style(&view, &s),
+        }
+        if repaint {
+            self.redraw(id);
         }
         self.sync_layout_style(id);
         true
@@ -1252,6 +1397,7 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                             frame: None,
                             drawing: None,
                             states: EntryStates::default(),
+                            layout_order: 0,
                         },
                     );
                 }
@@ -1291,8 +1437,17 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                             self.widgets.set_repeat(&view, &s, s.animations.repeat);
                         }
                     }
+                    let mut repaint = false;
                     if let Some(e) = self.nodes.get_mut(id) {
+                        // A shape painted in `Color::current()` follows its
+                        // text color.
+                        repaint = e.kind == NodeKind::Shape
+                            && e.style.text_color != style.text_color
+                            && e.drawing.as_ref().is_some_and(|d| d.uses_current_color());
                         e.style = style.clone();
+                    }
+                    if repaint {
+                        self.redraw(*id);
                     }
                     self.sync_layout_style(*id);
                     self.style_changed(*id);
@@ -1334,6 +1489,16 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                         let _ = self.taffy.mark_dirty(e.layout);
                     }
                 }
+                Patch::SetSelection { id, start, end } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.set_selection(&e.view, *start, *end);
+                    }
+                }
+                Patch::SetSelectEvents { id, on } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.set_select_events(&e.view, *on);
+                    }
+                }
                 Patch::SetPlaceholder { id, text } => {
                     if let Some(e) = self.nodes.get(id) {
                         self.widgets.set_placeholder(&e.view, text);
@@ -1347,13 +1512,15 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                 }
                 Patch::SetChildren { id, children } => {
                     self.play_exits(*id, children, &destroyed);
-                    let Some(parent) = self.nodes.get(id) else {
+                    if !self.nodes.contains_key(id) {
                         continue;
-                    };
-                    let kids: Vec<&Entry<W::View>> =
-                        children.iter().filter_map(|c| self.nodes.get(c)).collect();
-                    let views: Vec<W::View> = kids.iter().map(|e| e.view.clone()).collect();
-                    let layouts: Vec<taffy::NodeId> = kids.iter().map(|e| e.layout).collect();
+                    }
+                    let views: Vec<W::View> = children
+                        .iter()
+                        .filter_map(|c| self.nodes.get(c).map(|e| e.view.clone()))
+                        .collect();
+                    let layouts = self.sorted_layouts(children);
+                    let parent = &self.nodes[id];
                     self.widgets.set_children(&parent.view, &views);
                     if is_managed(parent.kind) {
                         let _ = self.taffy.set_children(parent.layout, &[]);
@@ -1387,6 +1554,11 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                 Patch::SetValue { id, value } => {
                     if let Some(e) = self.nodes.get(id) {
                         self.widgets.set_value(&e.view, *value);
+                        // An optional date picker is as wide as its
+                        // placeholder while empty (#89).
+                        if e.kind == NodeKind::DatePicker {
+                            let _ = self.taffy.mark_dirty(e.layout);
+                        }
                     }
                 }
                 Patch::SetConfig { id, config } => {
@@ -1428,6 +1600,7 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                         self.stack_screens.remove(id);
                         self.overlays.remove(id);
                         self.areas.remove(id);
+                        self.under_bars.remove(id);
                         let _ = self.taffy.remove(e.layout);
                     }
                 }
@@ -1465,7 +1638,10 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                 }
                 // Islands run in browsers: native apps show the node's
                 // children (the island's fallback) as a plain view.
-                Patch::SetIsland { .. } | Patch::SetIslandProps { .. } => {}
+                // A link is activated like any clickable view (`SetClickable`).
+                Patch::SetIsland { .. } | Patch::SetIslandProps { .. } | Patch::SetLink { .. } => {}
+                // HTML attributes (`.attr(…)`): browser integrations only.
+                Patch::SetAttributes { .. } => {}
             }
         }
         if self.extras.rehoist {
@@ -1538,6 +1714,8 @@ pub fn to_taffy(s: &Style, kind: NodeKind) -> taffy::Style {
         flex_direction: match s.direction {
             FlexDirection::Row => taffy::FlexDirection::Row,
             FlexDirection::Column => taffy::FlexDirection::Column,
+            FlexDirection::RowReverse => taffy::FlexDirection::RowReverse,
+            FlexDirection::ColumnReverse => taffy::FlexDirection::ColumnReverse,
         },
         flex_wrap: if s.wrap {
             taffy::FlexWrap::Wrap
@@ -1870,6 +2048,48 @@ mod tests {
             first(&renderer),
             [Segment::Move(200., 100.), Segment::Line(0., 0.)]
         );
+    }
+
+    struct Icon {
+        tint: Option<prism_core::Color>,
+    }
+    impl Render for Icon {
+        fn render(&mut self, _: &mut prism_core::Context<Self>) -> impl IntoElement {
+            let icon = prism_core::svg(
+                r#"<svg width="10" height="10"><path d="M0 0H10V10Z" fill="currentColor"/></svg>"#,
+            );
+            div().child(match self.tint {
+                Some(c) => icon.text_color(c),
+                None => icon,
+            })
+        }
+    }
+
+    #[test]
+    fn svg_current_color_is_the_shape_text_color() {
+        // #51: `currentColor` follows `.text_color(…)`, else the label color.
+        let icon: Arc<std::sync::Mutex<Option<prism_core::Entity<Icon>>>> = Default::default();
+        let out = icon.clone();
+        let init: AppInit = Arc::new(move |cx: &mut prism_core::App| {
+            let r = cx.new_entity(|_| Icon { tint: None });
+            *out.lock().unwrap() = Some(r);
+            cx.set_root(r);
+        });
+        let mut rt = Runtime::new(&init);
+        let mut renderer = NativeRenderer::new(Fake::default());
+        renderer.apply(&rt.render());
+        renderer.layout(400., 300., Insets::default());
+        let fill = |r: &NativeRenderer<Fake>| r.widgets.drawings[&2][0].fill;
+        assert_eq!(fill(&renderer), Some(label_color()));
+        let red = prism_core::rgb(0xff0000);
+        let icon = icon.lock().unwrap().unwrap();
+        icon.update(&mut rt.app, |i, cx| {
+            i.tint = Some(red);
+            cx.notify();
+        });
+        renderer.apply(&rt.poll());
+        renderer.layout(400., 300., Insets::default());
+        assert_eq!(fill(&renderer), Some(red));
     }
 
     #[test]

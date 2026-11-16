@@ -72,6 +72,8 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
             let dir = match s.direction {
                 FlexDirection::Row => "row",
                 FlexDirection::Column => "column",
+                FlexDirection::RowReverse => "row-reverse",
+                FlexDirection::ColumnReverse => "column-reverse",
             };
             let _ = write!(w, "display:flex;flex-direction:{dir};");
         }
@@ -103,8 +105,9 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
     // Every kind of node: a text, input or button grows by it and its
     // content is inset by it (on a button, input or select it replaces the
     // control's own inset). Logical sides: left/right are leading/trailing,
-    // so `dir=rtl` mirrors them like native backends do.
-    if !p.is_zero() {
+    // so `dir=rtl` mirrors them like native backends do. An explicit zero
+    // (`.p(0.)`) counts: no inset at all (#69).
+    if s.has_padding() {
         // A select keeps room for its arrow after the text.
         let end = if kind == NodeKind::Picker {
             p.right + 22.
@@ -156,6 +159,9 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
     }
     let basis = len(s.flex_basis).unwrap_or_else(|| "auto".into());
     let _ = write!(w, "flex:{} {} {basis};", s.flex_grow, s.flex_shrink);
+    if s.order != 0 {
+        let _ = write!(w, "order:{};", s.order);
+    }
     layout_extras(kind, s, w);
 
     if let Some(bg) = s.background {
@@ -269,16 +275,25 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
                 w.push_str("border:none;");
             }
             // A filled button's own inset, unless the app sets one.
-            if s.background.is_some() && p.is_zero() {
+            if s.background.is_some() && !s.has_padding() {
                 w.push_str("padding:6px 14px;");
             }
         }
-        NodeKind::TextArea if s.border_width > 0. => w.push_str("font-family:inherit;"),
+        NodeKind::TextArea => {
+            if s.border_width > 0. {
+                w.push_str("font-family:inherit;");
+            }
+            // Its padding replaces the default one, which `prism.css`'s
+            // three-line minimum counts (#69).
+            if s.has_padding() && s.min_height == Length::Auto {
+                w.push_str("min-height:3lh;");
+            }
+        }
         NodeKind::TextInput => {
             w.push_str("font-family:inherit;");
             // The field's own inset and border, unless the app sets them
             // (`.border(0.)`: none at all).
-            if p.is_zero() {
+            if !s.has_padding() {
                 w.push_str("padding:6px 8px;");
             } else {
                 // An icon field keeps room for its icon (`prism.css`).
@@ -305,6 +320,12 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
         && !(kind == NodeKind::Button && s.background.is_some())
     {
         w.push_str("border:none;");
+    }
+    // A field that draws its own box (padding, a background, a border,
+    // `.border(0.)`) or its own focus look skips the page's `:focus-visible`
+    // outline (`prism.css`), as natively: the caret shows the focus (#52).
+    if matches!(kind, NodeKind::TextInput | NodeKind::TextArea) && own_field_look(s) {
+        w.push_str("outline:none;");
     }
     if kind != NodeKind::View {
         typography(kind, s, w);
@@ -406,6 +427,19 @@ pub fn run_css(r: &prism_core::TextRun) -> String {
     w
 }
 
+/// Whether a text field draws Prism's box instead of the browser's (the
+/// Layout chapter) or refines its focused look.
+fn own_field_look(s: &Style) -> bool {
+    use prism_core::Interaction;
+    s.has_padding()
+        || s.background.is_some()
+        || has_border(s)
+        || s.border_none
+        || s.states
+            .resolved()
+            .any(|(i, _)| matches!(i, Interaction::Focus | Interaction::FocusWithin))
+}
+
 fn has_border(s: &Style) -> bool {
     s.borders().iter().any(|b| b.width > 0.)
 }
@@ -504,7 +538,9 @@ pub fn states_css(kind: NodeKind, id: prism_core::NodeId, s: &Style) -> String {
         }
         // Gone in this state: back to the initial value.
         for (p, _) in &base {
-            if !now.iter().any(|(np, _)| np == p) {
+            // (A state's style has no states of its own: the base decides
+            // whether a field keeps the focus outline.)
+            if p != "outline" && !now.iter().any(|(np, _)| np == p) {
                 let _ = write!(body, "{p}:unset !important;");
             }
         }

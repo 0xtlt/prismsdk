@@ -714,7 +714,8 @@ fn parse(v: &Value) -> Option<UiEvent> {
         // The return key of a text field.
         "submit" => UiEvent::Submit(id),
         "input" => UiEvent::Input(id, v.get("v")?.as_str()?.to_string()),
-        "change" => UiEvent::Change(id, v.get("v")?.as_f64()?),
+        // `null`: an optional date picker was cleared (#89).
+        "change" => UiEvent::Change(id, prism_native::remote::change_value(v.get("v")?)?),
         "back" => UiEvent::Back(id, v.get("depth")?.as_u64()? as usize),
         "menu" => UiEvent::MenuSelect(id),
         "alert" => UiEvent::AlertAction(id, v.get("index")?.as_u64()? as usize),

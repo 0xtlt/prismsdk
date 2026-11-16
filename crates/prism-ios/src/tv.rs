@@ -189,7 +189,9 @@ pub fn set_toggle(b: &UIButton, on: bool) {
 // API_UNAVAILABLE(tvos) (UISlider.h, UIDatePicker.h). Their stand-in is a
 // focusable view adjusted with the remote's left / right presses (and
 // VoiceOver's increment / decrement): a track for sliders, the formatted
-// date for date pickers.
+// date for date pickers. An optional date picker (#89) shows its
+// placeholder, dimmed, while empty: the first press fills it with the
+// current moment, and Play/Pause empties it again.
 // ---------------------------------------------------------------------------
 
 use objc2_core_foundation::{CGPoint, CGRect};
@@ -201,6 +203,8 @@ use prism_core::{NodeId, UiEvent};
 /// `UIPressTypeLeftArrow`, `UIPressTypeRightArrow` (UIPress.h).
 const PRESS_LEFT: isize = 2;
 const PRESS_RIGHT: isize = 3;
+/// `UIPressTypePlayPause`: clears an optional date picker.
+const PRESS_PLAY_PAUSE: isize = 6;
 /// `UIFocusHeadingLeft | UIFocusHeadingRight` (UIFocus.h).
 const HEADING_SIDEWAYS: usize = (1 << 2) | (1 << 3);
 
@@ -212,6 +216,8 @@ pub struct AdjustIvars {
     track: Retained<UIProgressView>,
     label: Retained<UILabel>,
     lang: std::cell::RefCell<String>,
+    /// Shown while an optional date picker is empty.
+    placeholder: std::cell::RefCell<String>,
 }
 
 define_class!(
@@ -256,6 +262,11 @@ define_class!(
                 let step = match p.r#type().0 {
                     PRESS_LEFT => -1.,
                     PRESS_RIGHT => 1.,
+                    PRESS_PLAY_PAUSE if self.clearable() => {
+                        self.clear();
+                        handled = true;
+                        continue;
+                    }
                     _ => continue,
                 };
                 // A right-to-left slider fills from the right.
@@ -319,6 +330,7 @@ impl Adjustable {
             track: track.clone(),
             label: label.clone(),
             lang: Default::default(),
+            placeholder: Default::default(),
         });
         let v: Retained<Self> = unsafe { msg_send![super(this), init] };
         if date.is_some() {
@@ -358,6 +370,22 @@ impl Adjustable {
         self.show();
     }
 
+    pub fn set_placeholder(&self, text: &str) {
+        *self.ivars().placeholder.borrow_mut() = text.to_string();
+        self.show();
+    }
+
+    /// An optional date picker with a value: Play/Pause empties it.
+    fn clearable(&self) -> bool {
+        self.ivars().date.get().is_some_and(|c| c.optional) && !self.ivars().value.get().is_nan()
+    }
+
+    fn clear(&self) {
+        self.ivars().value.set(f64::NAN);
+        self.show();
+        crate::imp::dispatch(UiEvent::Change(self.tag() as NodeId, f64::NAN));
+    }
+
     /// Tint: the track's fill, or the date's text color.
     pub fn set_tint(&self, color: Option<&UIColor>) {
         self.ivars().track.setProgressTintColor(color);
@@ -391,6 +419,15 @@ impl Adjustable {
 
     fn adjust(&self, direction: f64) {
         let v = self.ivars().value.get();
+        // An empty date picker: the first press fills it with now.
+        if let (Some(c), true) = (self.ivars().date.get(), v.is_nan()) {
+            let offset = objc2_foundation::NSTimeZone::localTimeZone().secondsFromGMT() as f64;
+            let next = c.start(NSDate::now().timeIntervalSince1970(), offset);
+            self.ivars().value.set(next);
+            self.show();
+            crate::imp::dispatch(UiEvent::Change(self.tag() as NodeId, next));
+            return;
+        }
         let next = match self.ivars().date.get() {
             // A day, a quarter hour, an hour.
             Some(c) => c.clamp(
@@ -421,7 +458,13 @@ impl Adjustable {
     fn show(&self) {
         let v = self.ivars().value.get();
         match self.ivars().date.get() {
+            Some(_) if v.is_nan() => {
+                let text = NSString::from_str(&self.ivars().placeholder.borrow());
+                self.ivars().label.setText(Some(&text));
+                self.ivars().label.setAlpha(0.5);
+            }
             Some(c) => {
+                self.ivars().label.setAlpha(1.);
                 let f = NSDateFormatter::new();
                 let lang = self.ivars().lang.borrow();
                 if !lang.is_empty() {

@@ -228,11 +228,7 @@ pub(crate) fn update(
             decor.setFrame(b);
             round(decor, radius, corners, flipped);
             decor.setMasksToBounds(true);
-            if let Some(old) = unsafe { decor.sublayers() } {
-                for l in old.iter() {
-                    l.removeFromSuperlayer();
-                }
-            }
+            clear_sublayers(decor);
             if let Some(g) = &d.gradient {
                 decor.addSublayer(&gradient_layer(g, b.size, flipped));
             }
@@ -249,6 +245,13 @@ pub(crate) fn update(
         rebuild_shadow_host(layer, st, w, h, r, corners);
         sync_shadow_host(view, st);
     });
+}
+
+/// Removes every sublayer of `layer` in one call. `sublayers` can hand back
+/// the layer's live array, so removing its elements one by one while
+/// enumerating it raises « mutation detected during enumeration » (#66).
+fn clear_sublayers(layer: &CALayer) {
+    unsafe { layer.setSublayers(None) };
 }
 
 fn gradient_layer(g: &Gradient, size: NSSize, flipped: bool) -> Retained<CALayer> {
@@ -475,11 +478,7 @@ fn rebuild_shadow_host(
         return;
     }
     let host = st.shadow_host.get_or_insert_with(CALayer::new);
-    if let Some(old) = unsafe { host.sublayers() } {
-        for l in old.iter() {
-            l.removeFromSuperlayer();
-        }
-    }
+    clear_sublayers(host);
     // The host sits next to the view's layer: same orientation.
     let flipped = is_flipped(layer);
     // Outer shadows only show outside the box (CSS clips them to it).
@@ -641,5 +640,32 @@ pub(crate) fn ns_cursor(c: Cursor) -> Retained<NSCursor> {
         Cursor::NotAllowed => NSCursor::operationNotAllowedCursor(),
         Cursor::ResizeHorizontal => NSCursor::resizeLeftRightCursor(),
         Cursor::ResizeVertical => NSCursor::resizeUpDownCursor(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn count(layer: &CALayer) -> usize {
+        unsafe { layer.sublayers() }.map_or(0, |s| s.count())
+    }
+
+    #[test]
+    fn clearing_sublayers_twice_does_not_mutate_while_enumerating() {
+        let host = CALayer::new();
+        for _ in 0..2 {
+            let subs: Vec<_> = (0..4).map(|_| CALayer::new()).collect();
+            for l in &subs {
+                host.addSublayer(l);
+            }
+            assert_eq!(count(&host), 4);
+            clear_sublayers(&host);
+            assert_eq!(count(&host), 0);
+            assert!(subs.iter().all(|l| l.superlayer().is_none()));
+        }
+        // On a layer without sublayers, too.
+        clear_sublayers(&host);
+        assert_eq!(count(&host), 0);
     }
 }

@@ -112,7 +112,26 @@ fn focused_node(responder: Option<&NSResponder>) -> Option<NodeId> {
 fn focus_changed(window: &NSWindow) {
     let window: Retained<NSWindow> = objc2::Message::retain(window);
     on_main_after(std::time::Duration::ZERO, move || {
-        let id = focused_node(window.firstResponder().as_deref());
+        let responder = window.firstResponder();
+        let id = focused_node(responder.as_deref());
+        // A selection the app set while the input was not being edited
+        // (#86): applied if the app focused it, else the user's click wins.
+        if let Some(id) = id
+            && let Some(tv) = responder.and_then(|r| r.downcast::<NSTextView>().ok())
+        {
+            let mut pending = None;
+            with_state(|s| {
+                let ix = &mut s.renderer.widgets.ix;
+                let by_app = ix.app_focus == Some(id);
+                if by_app {
+                    ix.app_focus = None;
+                }
+                pending = ix.pending_selection.remove(&id).filter(|_| by_app);
+            });
+            if let Some((start, end)) = pending {
+                crate::interact::select_text(&tv, start, end);
+            }
+        }
         let old = FOCUSED.with(|f| f.replace(id));
         if old == id {
             return;
@@ -215,8 +234,11 @@ impl State {
         // re-renders when it crosses a breakpoint or the insets move.
         let (w, h) = (size.width as f32, size.height as f32);
         let i = self.renderer.widgets.root.safeAreaInsets();
+        // A custom chrome (#67) lays the content out from the window's top
+        // edge: the app draws its own title bar there.
+        let custom = crate::chrome::chrome().is_custom();
         let safe = prism_core::Edges {
-            top: i.top as f32,
+            top: if custom { 0. } else { i.top as f32 },
             right: i.right as f32,
             bottom: i.bottom as f32,
             left: i.left as f32,
@@ -227,6 +249,23 @@ impl State {
             let patches = self.runtime.set_window(w, h, safe);
             if !patches.is_empty() {
                 self.renderer.apply(&patches);
+            }
+        }
+        // Full screen and the traffic lights (#67): `cx.is_fullscreen()`,
+        // `cx.window_controls()`.
+        if let Some(window) = self.renderer.widgets.root.window() {
+            let fullscreen = crate::chrome::is_fullscreen();
+            let controls = crate::chrome::controls(&window);
+            if (fullscreen, controls)
+                != (
+                    self.runtime.app.is_fullscreen(),
+                    self.runtime.app.window_controls(),
+                )
+            {
+                let patches = self.runtime.set_window_chrome(fullscreen, controls);
+                if !patches.is_empty() {
+                    self.renderer.apply(&patches);
+                }
             }
         }
         // Fullscreen, another screen: `cx.device_info()`.
@@ -306,6 +345,9 @@ pub struct ViewIvars {
     dragging: Cell<bool>,
     /// Reports keys while focused (it can take the focus).
     pub(crate) key_local: Cell<bool>,
+    // --- Custom window chrome (#67) ---
+    /// `.window_drag()`: a press moves the window, a double click zooms it.
+    window_drag: Cell<bool>,
 }
 
 define_class!(
@@ -340,6 +382,15 @@ define_class!(
         fn view_did_change_effective_appearance(&self) {
             let _: () = unsafe { msg_send![super(self), viewDidChangeEffectiveAppearance] };
             self.setNeedsDisplay(true);
+            // The title bar is laid out again in the new appearance: the
+            // custom traffic lights (#67) take their place back after it.
+            if let Some(window) = self.window()
+                && window.contentView().is_some_and(|c| *c == *self.as_super())
+            {
+                on_main_after(std::time::Duration::ZERO, move || {
+                    crate::chrome::place_traffic_lights(&window);
+                });
+            }
         }
 
         #[unsafe(method(updateLayer))]
@@ -592,8 +643,30 @@ define_class!(
             NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(self.bounds(), r, r).fill();
         }
 
+        /// Only `.window_drag()` regions move the window (#67): a custom
+        /// chrome's title bar area is the app's content.
+        #[unsafe(method(mouseDownCanMoveWindow))]
+        fn mouse_down_can_move_window(&self) -> bool {
+            false
+        }
+
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
+            // `.window_drag()` (#67): presses that clickable descendants
+            // did not take move the window; a double click zooms it.
+            let iv = self.ivars();
+            if iv.window_drag.get()
+                && !iv.clickable.get()
+                && iv.pointer_mask.get() & prism_core::events::pointer_mask::DRAG == 0
+                && let Some(window) = self.window()
+            {
+                if event.clickCount() >= 2 {
+                    crate::chrome::double_click(&window);
+                } else {
+                    window.performWindowDragWithEvent(event);
+                }
+                return;
+            }
             if self.ivars().report_active.get() {
                 report_state(self.ivars().id.get(), prism_core::Interaction::Active, true);
             }
@@ -985,7 +1058,7 @@ impl PrismSlider {
 
 #[derive(Default)]
 pub struct TextViewIvars {
-    id: Cell<NodeId>,
+    pub(crate) id: Cell<NodeId>,
     placeholder: RefCell<String>,
 }
 
@@ -1132,7 +1205,20 @@ define_class!(
         #[unsafe(method(onDate:))]
         fn on_date(&self, sender: &NSDatePicker) {
             let secs = sender.dateValue().timeIntervalSince1970();
+            crate::dates::edited(sender.tag() as NodeId, secs);
             dispatch(UiEvent::Change(sender.tag() as NodeId, secs));
+        }
+
+        /// The placeholder of an empty optional date picker (#89).
+        #[unsafe(method(onDateFill:))]
+        fn on_date_fill(&self, sender: &NSButton) {
+            crate::dates::fill(sender.tag() as NodeId);
+        }
+
+        /// The clear button of an optional date picker (#89).
+        #[unsafe(method(onDateClear:))]
+        fn on_date_clear(&self, sender: &NSButton) {
+            crate::dates::clear(sender.tag() as NodeId);
         }
 
         /// Any Prism menu item (context menus, tray, app menus).
@@ -1162,6 +1248,24 @@ define_class!(
         }
 
         /// Reduce Motion or the language changed in System Settings.
+        /// A text view's selection moved: a text area, or the field editor
+        /// of a text input (#86).
+        #[unsafe(method(onTextSelection:))]
+        fn on_text_selection(&self, n: &NSNotification) {
+            let Some(tv) = n.object().and_then(|o| o.downcast::<NSTextView>().ok()) else {
+                return;
+            };
+            let Some(id) = crate::interact::text_node(&tv) else {
+                return;
+            };
+            // Not while Prism changes the field (`with_state` is busy).
+            let mut on = false;
+            with_state(|s| on = s.renderer.widgets.ix.select_events.contains(&id));
+            if on {
+                crate::interact::selection_changed(&tv, id);
+            }
+        }
+
         #[unsafe(method(onEnvironment:))]
         fn on_environment(&self, _n: &NSNotification) {
             with_state(|s| {
@@ -1410,7 +1514,42 @@ define_class!(
 
     unsafe impl NSWindowDelegate for Target {
         #[unsafe(method(windowDidResize:))]
-        fn window_did_resize(&self, _n: &NSNotification) {
+        fn window_did_resize(&self, n: &NSNotification) {
+            place_traffic_lights(n);
+            with_state(State::relayout);
+        }
+
+        // --- Custom window chrome (#67): AppKit puts the traffic lights
+        // back after these. ---
+
+        #[unsafe(method(windowDidEndLiveResize:))]
+        fn window_did_end_live_resize(&self, n: &NSNotification) {
+            place_traffic_lights(n);
+        }
+
+        #[unsafe(method(windowWillEnterFullScreen:))]
+        fn window_will_enter_full_screen(&self, _n: &NSNotification) {
+            crate::chrome::set_fullscreen(true);
+            with_state(State::relayout);
+        }
+
+        /// Takes the window, not a notification.
+        #[unsafe(method(windowDidFailToEnterFullScreen:))]
+        fn window_did_fail_to_enter_full_screen(&self, window: &NSWindow) {
+            crate::chrome::set_fullscreen(false);
+            crate::chrome::place_traffic_lights(window);
+            with_state(State::relayout);
+        }
+
+        #[unsafe(method(windowWillExitFullScreen:))]
+        fn window_will_exit_full_screen(&self, _n: &NSNotification) {
+            crate::chrome::set_fullscreen(false);
+            with_state(State::relayout);
+        }
+
+        #[unsafe(method(windowDidExitFullScreen:))]
+        fn window_did_exit_full_screen(&self, n: &NSNotification) {
+            place_traffic_lights(n);
             with_state(State::relayout);
         }
 
@@ -1428,6 +1567,14 @@ define_class!(
         }
     }
 );
+
+/// The window of a window notification takes its custom traffic lights'
+/// place again (#67).
+fn place_traffic_lights(n: &NSNotification) {
+    if let Some(window) = n.object().and_then(|o| o.downcast::<NSWindow>().ok()) {
+        crate::chrome::place_traffic_lights(&window);
+    }
+}
 
 impl Target {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
@@ -2476,6 +2623,10 @@ impl Widgets for AppKit {
         }
         // `hit_test(false)` / `inert`: clicks go through the subtree.
         crate::interact::set_no_hit(view.ns(), !style.hit_test || style.inert);
+        // `.window_drag()` (#67).
+        if let Some(v) = view.prism_view() {
+            v.ivars().window_drag.set(style.window_drag);
+        }
         if crate::interact::set_inert(view.ns(), style.inert) {
             crate::interact::refuse_focus(view.ns(), style.inert);
             view.ns().setAccessibilityHidden(style.inert);
@@ -2559,8 +2710,9 @@ impl Widgets for AppKit {
                 if bare {
                     t.text.setBackgroundColor(&NSColor::textBackgroundColor());
                 }
-                // Its padding replaces the text's own inset (#14).
-                t.text.setTextContainerInset(if style.padding.is_zero() {
+                // Its padding replaces the text's own inset (#14), an
+                // explicit zero included (#69).
+                t.text.setTextContainerInset(if !style.has_padding() {
                     NSSize::new(7., 8.)
                 } else {
                     NSSize::ZERO
@@ -2644,18 +2796,45 @@ impl Widgets for AppKit {
             View::Label(l) => crate::label::set_text(l, text),
             View::Timer(l) => l.setStringValue(&s),
             View::Picture(v) => self.load_picture(view.id(), v, text),
+            // Events reach the app synchronously, so an echo of the typing
+            // equals the field (left alone, caret and selection included);
+            // anything else is the app's value, written even while focused,
+            // the caret keeping its distance from the end (#73).
             View::Input(i) => {
                 let f = i.field();
-                // Don't reset the caret when the value already matches (controlled input echo).
-                if f.stringValue().to_string() != text {
+                let current = f.stringValue();
+                if current.to_string() != text {
+                    let editor = || {
+                        f.currentEditor()
+                            .and_then(|e| e.downcast::<NSTextView>().ok())
+                    };
+                    let caret = editor().map(|e| {
+                        let r = e.selectedRange();
+                        prism_native::fields::caret_from_end(
+                            current.length(),
+                            r.location + r.length,
+                            s.length(),
+                        )
+                    });
                     f.setStringValue(&s);
+                    if let (Some(e), Some(caret)) = (editor(), caret) {
+                        e.setSelectedRange(objc2_foundation::NSRange::new(caret, 0));
+                    }
                 }
             }
             View::Button(b) | View::Check(b) => b.setTitle(&s),
             View::TextArea(t) => {
-                // Same text (controlled echo): keep the caret and selection.
-                if t.text.string().to_string() != text {
+                let current = t.text.string();
+                if current.to_string() != text {
+                    let r = t.text.selectedRange();
+                    let caret = prism_native::fields::caret_from_end(
+                        current.length(),
+                        r.location + r.length,
+                        s.length(),
+                    );
                     t.text.setString(&s);
+                    t.text
+                        .setSelectedRange(objc2_foundation::NSRange::new(caret, 0));
                     t.text.setNeedsDisplay(true);
                 }
             }
@@ -2688,6 +2867,7 @@ impl Widgets for AppKit {
                 *p.placeholder.borrow_mut() = text.to_string();
                 p.rebuild();
             }
+            View::DatePicker(d) => crate::dates::set_placeholder(d, text),
             _ => {}
         }
     }
@@ -2808,7 +2988,11 @@ impl Widgets for AppKit {
 
     fn destroy(&mut self, view: &View) {
         crate::scene::forget(view.id());
+        self.ix.select_events.remove(&view.id());
+        self.ix.pending_selection.remove(&view.id());
+        crate::interact::forget_selection(view.id());
         crate::sticky::forget(view.id());
+        crate::dates::forget(view.id());
         crate::navbar::forget(view.id());
         crate::padding::forget(view.id());
         self.hover_areas.remove(&view.id());
@@ -2879,7 +3063,7 @@ impl Widgets for AppKit {
                 }
             }
             // Padded: its title alone (the layout adds the padding).
-            View::Button(b) if !crate::padding::of(view.id()).is_zero() => {
+            View::Button(b) if crate::padding::style_of(view.id()).has_padding() => {
                 crate::padding::button_content(b)
             }
             View::Button(b) => b.fittingSize(),
@@ -2910,7 +3094,11 @@ impl Widgets for AppKit {
             // The widest option plus the chevron (NSPopUpButtonCell sizes to
             // its widest item).
             View::Picker(p) => p.button.fittingSize(),
-            View::DatePicker(d) => d.fittingSize(),
+            // With its placeholder or clear button (#89).
+            View::DatePicker(d) => {
+                let size = d.fittingSize();
+                crate::dates::natural_size(d, size).unwrap_or(size)
+            }
             View::Spinner(p) => {
                 let s = p.fittingSize();
                 if s.width > 0. {
@@ -2962,6 +3150,9 @@ impl Widgets for AppKit {
             );
         }
         view.ns().setFrame(frame);
+        if let View::DatePicker(d) = view {
+            crate::dates::framed(d);
+        }
         if self.transforms.contains_key(&view.id()) {
             self.apply_transform(view);
         }
@@ -2982,12 +3173,18 @@ impl Widgets for AppKit {
                 *lead = (lead.max(32.) - 24.).max(0.);
             }
             let (l, t) = (e.left as f64, e.top as f64);
-            i.field().setFrame(rect(
-                l,
-                t,
-                (w as f64 - l - e.right as f64).max(0.),
-                (h as f64 - t - e.bottom as f64).max(0.),
-            ));
+            let room = (h as f64 - t - e.bottom as f64).max(0.);
+            // A bare field draws its text at the top of its frame: in a box
+            // taller than its line it gets its own height, centered, like
+            // the web and iOS (#55). (The bezeled field fills its frame.)
+            let field = i.field();
+            let line = field.intrinsicContentSize().height.ceil();
+            let (y, fh) = if crate::padding::custom_field(&style) && line > 0. && line < room {
+                (t + ((room - line) / 2.).round(), line)
+            } else {
+                (t, room)
+            };
+            field.setFrame(rect(l, y, (w as f64 - l - e.right as f64).max(0.), fh));
             if let Some(icon) = i.icon.borrow().1.as_deref() {
                 crate::interact::place_icon(&i.field(), icon);
             }
@@ -3120,7 +3317,9 @@ impl Widgets for AppKit {
                 }
             }
             View::DatePicker(d) => {
-                if d.dateValue().timeIntervalSince1970() != value {
+                // An optional picker shows NaN as its placeholder (#89).
+                crate::dates::set_value(d, value);
+                if !value.is_nan() && d.dateValue().timeIntervalSince1970() != value {
                     d.setDateValue(&objc2_foundation::NSDate::dateWithTimeIntervalSince1970(
                         value,
                     ));
@@ -3172,7 +3371,12 @@ impl Widgets for AppKit {
                 *p.options.borrow_mut() = PickerConfig::decode(config).options;
                 p.rebuild();
             }
-            View::DatePicker(d) => configure_date_picker(d, DateConfig::decode(config)),
+            View::DatePicker(d) => {
+                let c = DateConfig::decode(config);
+                configure_date_picker(d, c);
+                let target: &AnyObject = &self.target;
+                crate::dates::configure(d, c, target);
+            }
             View::Radios(r) => {
                 let target: &AnyObject = &self.target;
                 r.set_config(config, target);
@@ -3385,6 +3589,7 @@ impl Widgets for AppKit {
     fn set_environment(&mut self, env: &prism_core::RenderEnvironment) {
         self.rtl = env.direction == prism_core::Direction::Rtl;
         self.chrome = (env.back.clone(), env.close.clone());
+        crate::dates::set_clear_label(&env.clear);
         let dir = if self.rtl {
             objc2_app_kit::NSUserInterfaceLayoutDirection::RightToLeft
         } else {
@@ -3470,6 +3675,37 @@ impl Widgets for AppKit {
         }
     }
 
+    /// Text field selections (#86): through the field editor while an
+    /// input is edited (else when it takes the focus), on the text view of
+    /// a text area.
+    fn set_selection(&mut self, view: &View, start: usize, end: usize) {
+        match view {
+            View::Input(i) => {
+                let editor = i
+                    .field()
+                    .currentEditor()
+                    .and_then(|e| e.downcast::<NSTextView>().ok());
+                match editor {
+                    Some(e) => crate::interact::select_text(&e, start, end),
+                    None => {
+                        self.ix.pending_selection.insert(view.id(), (start, end));
+                    }
+                }
+            }
+            View::TextArea(t) => crate::interact::select_text(&t.text, start, end),
+            _ => {}
+        }
+    }
+
+    fn set_select_events(&mut self, view: &View, on: bool) {
+        if on {
+            self.ix.select_events.insert(view.id());
+        } else {
+            self.ix.select_events.remove(&view.id());
+            crate::interact::forget_selection(view.id());
+        }
+    }
+
     /// The key window's first responder lets go (the window keeps the
     /// focus itself), after the layout like `focus`.
     fn dismiss_keyboard(&mut self) {
@@ -3486,6 +3722,9 @@ impl Widgets for AppKit {
 
     /// First responder after the layout (sheets present then).
     fn focus(&mut self, view: &View) {
+        if let View::Input(_) = view {
+            self.ix.app_focus = Some(view.id());
+        }
         let v: Retained<NSView> = match view {
             View::Input(i) => Retained::into_super(Retained::into_super(i.field())),
             View::TextArea(t) => {
@@ -3617,6 +3856,9 @@ impl Widgets for AppKit {
             unsafe { v.setAccessibilityValue(Some(&NSString::from_str(value))) };
         }
         v.setAccessibilityEnabled(!a.disabled);
+        // Selected items and the current page of a navigation: AppKit has no
+        // « current » attribute, VoiceOver reads them as selected.
+        v.setAccessibilitySelected(a.is_selected());
     }
 
     fn screen_viewport(&mut self, stack: &View, screen: &View) -> Viewport {
@@ -3668,6 +3910,8 @@ pub fn run(config: AppConfig, init: AppInit) {
         | NSWindowStyleMask::Closable
         | NSWindowStyleMask::Miniaturizable
         | NSWindowStyleMask::Resizable;
+    // Custom window chrome (#67): the content covers the title bar.
+    let style = crate::chrome::style_mask(config.window_chrome, style);
     let window = unsafe {
         NSWindow::initWithContentRect_styleMask_backing_defer(
             NSWindow::alloc(mtm),
@@ -3680,6 +3924,7 @@ pub fn run(config: AppConfig, init: AppInit) {
     unsafe { window.setReleasedWhenClosed(false) };
     window.setTitle(&NSString::from_str(&config.title));
     window.setContentView(Some(&root));
+    crate::chrome::setup(&window, config.window_chrome);
     window.setDelegate(Some(ProtocolObject::from_ref(&*target)));
     observe_focus(&window, &target);
     window.center();
@@ -3726,7 +3971,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         sheets: Vec::new(),
         pictures: HashMap::new(),
         image_cache: HashMap::new(),
-        image_sources: image_sources(config.assets.as_deref()),
+        image_sources: image_sources(config.assets.as_deref(), &config.embedded_assets),
         rtl: false,
         chrome: ("Back".into(), "Close".into()),
         transforms: HashMap::new(),
@@ -3836,7 +4081,16 @@ fn install_key_monitor() {
             }
         });
         if let Some(focused) = send {
-            dispatch(UiEvent::Key(focused, key));
+            // In a text area or input: its selection before the key (#86).
+            let selection = view
+                .as_ref()
+                .and_then(|v| v.downcast_ref::<NSTextView>())
+                .filter(|tv| crate::interact::text_node(tv).is_some())
+                .map(crate::interact::text_selection);
+            dispatch(UiEvent::Key(
+                focused,
+                prism_core::KeyEvent { selection, ..key },
+            ));
         }
         event.as_ptr()
     });
@@ -4442,9 +4696,12 @@ fn write_png(view: &NSView, path: &str) {
     }
 }
 
-/// Assets: the bundle's Resources/assets, then the dev directory; downloads
-/// are cached in ~/Library/Caches.
-fn image_sources(dev_assets: Option<&str>) -> prism_native::images::ImageSources {
+/// Assets: those compiled into the binary, the bundle's Resources/assets,
+/// then the dev directory; downloads are cached in ~/Library/Caches.
+fn image_sources(
+    dev_assets: Option<&str>,
+    embedded: &prism_core::EmbeddedAssets,
+) -> prism_native::images::ImageSources {
     let mut asset_dirs = Vec::new();
     if let Some(res) = objc2_foundation::NSBundle::mainBundle().resourcePath() {
         asset_dirs.push(std::path::PathBuf::from(res.to_string()).join("assets"));
@@ -4453,9 +4710,10 @@ fn image_sources(dev_assets: Option<&str>) -> prism_native::images::ImageSources
         asset_dirs.push(dev.into());
     }
     // Fonts in assets/fonts: found by family name from now on.
-    prism_native::fonts::register_apple_fonts(&asset_dirs);
+    prism_native::fonts::register_apple_fonts(&asset_dirs, embedded);
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     prism_native::images::ImageSources {
+        embedded: embedded.clone(),
         asset_dirs,
         cache_dir: Some(std::path::PathBuf::from(home).join("Library/Caches/prism-images")),
     }
@@ -4492,6 +4750,12 @@ fn observe_system(target: &Target) {
             target,
             sel!(onEnvironment:),
             Some(objc2_foundation::NSCurrentLocaleDidChangeNotification),
+            None,
+        );
+        center.addObserver_selector_name_object(
+            target,
+            sel!(onTextSelection:),
+            Some(objc2_app_kit::NSTextViewDidChangeSelectionNotification),
             None,
         );
         center.addObserver_selector_name_object(

@@ -56,6 +56,53 @@ fn role(role: Role) -> Accessibility {
     }
 }
 
+fn link(id: u64, href: &str) -> Patch {
+    Patch::SetLink {
+        id,
+        href: Some(href.into()),
+    }
+}
+
+#[test]
+fn ssr_links_are_anchors() {
+    let mut b = HtmlBackend::default();
+    b.base = "/app".into();
+    b.apply(&[
+        create(1, NodeKind::View),
+        create(2, NodeKind::View),
+        link(2, "/orders/42?tab=items"),
+        a11y(2, role(Role::Link)),
+        create(3, NodeKind::Text),
+        link(3, "https://example.com/a?b=1&c=2"),
+        set_text(3, "Docs"),
+        a11y(3, role(Role::Link)),
+        create(4, NodeKind::View),
+        link(4, "/"),
+        a11y(
+            4,
+            Accessibility {
+                role: Some(Role::Link),
+                disabled: true,
+                ..Default::default()
+            },
+        ),
+        children(1, &[2, 3, 4]),
+        Patch::SetRoot { id: 1 },
+    ]);
+    assert_eq!(
+        b.to_html(),
+        concat!(
+            r#"<div data-pid="1" data-kind="view" style="">"#,
+            // An app path under the mount point; a link by itself (no role,
+            // no tabindex): it opens in a new tab and works before the script.
+            r#"<a data-pid="2" data-kind="view" style="" href="/app/orders/42?tab=items"></a>"#,
+            r#"<a data-pid="3" data-kind="text" style="" href="https://example.com/a?b=1&amp;c=2" rel="noopener">Docs</a>"#,
+            r#"<a data-pid="4" data-kind="view" style="" aria-disabled="true" tabindex="-1" href="/app"></a>"#,
+            "</div>"
+        )
+    );
+}
+
 #[test]
 fn ssr_view_text_and_button() {
     assert_eq!(
@@ -367,6 +414,26 @@ fn aria_attributes_mirror_the_client() {
         a11y_attrs(NodeKind::View, &a(Role::Checkbox)),
         r#" role="checkbox" aria-checked="false" tabindex="0""#
     );
+    // Drawn choices (#84): the radio says whether it is the one chosen.
+    assert_eq!(
+        a11y_attrs(
+            NodeKind::View,
+            &Accessibility {
+                role: Some(Role::Radio),
+                checked: Some(true),
+                ..Default::default()
+            }
+        ),
+        r#" role="radio" aria-checked="true" tabindex="0""#
+    );
+    assert_eq!(
+        a11y_attrs(NodeKind::View, &a(Role::Radio)),
+        r#" role="radio" aria-checked="false" tabindex="0""#
+    );
+    assert_eq!(
+        a11y_attrs(NodeKind::View, &a(Role::RadioGroup)),
+        r#" role="radiogroup""#
+    );
     assert_eq!(
         a11y_attrs(
             NodeKind::View,
@@ -377,6 +444,58 @@ fn aria_attributes_mirror_the_client() {
             }
         ),
         r#" role="tab" aria-selected="true" tabindex="0""#
+    );
+    // Selected and current items (#64): a tab's own `selected` wins over
+    // `checked`, other roles say it only when set; the current destination
+    // of a navigation is `aria-current="page"` on a link.
+    assert_eq!(
+        a11y_attrs(
+            NodeKind::View,
+            &Accessibility {
+                role: Some(Role::Tab),
+                checked: Some(true),
+                selected: Some(false),
+                ..Default::default()
+            }
+        ),
+        r#" role="tab" aria-selected="false" tabindex="0""#
+    );
+    assert_eq!(
+        a11y_attrs(
+            NodeKind::View,
+            &Accessibility {
+                role: Some(Role::ListItem),
+                selected: Some(true),
+                ..Default::default()
+            }
+        ),
+        r#" role="listitem" aria-selected="true""#
+    );
+    assert_eq!(
+        a11y_attrs(
+            NodeKind::View,
+            &Accessibility {
+                role: Some(Role::Link),
+                current: true,
+                ..Default::default()
+            }
+        ),
+        r#" role="link" aria-current="page" tabindex="0""#
+    );
+    assert_eq!(
+        a11y_attrs(
+            NodeKind::View,
+            &Accessibility {
+                role: Some(Role::Button),
+                current: true,
+                ..Default::default()
+            }
+        ),
+        r#" role="button" aria-current="true" tabindex="0""#
+    );
+    assert_eq!(
+        a11y_attrs(NodeKind::View, &a(Role::Link)),
+        r#" role="link" tabindex="0""#
     );
     // Hidden: out of the tree and of the tab order.
     assert_eq!(
@@ -774,6 +893,47 @@ fn buttons_and_inputs_get_their_defaults() {
 }
 
 #[test]
+fn an_explicit_zero_padding_replaces_a_fields_own_inset() {
+    use prism_core::{Styled, text_area, text_input};
+    fn style<S: Styled>(mut el: S) -> Style {
+        el.style_mut().clone()
+    }
+    // An inline editor that sits exactly where its text was (#69).
+    let inline = style(
+        text_input()
+            .border(0.)
+            .p(0.)
+            .text_size(16.)
+            .line_height(24.),
+    );
+    let c = css(NodeKind::TextInput, &inline);
+    assert!(
+        c.contains("padding-block:0px 0px;padding-inline:0px 0px;"),
+        "{c}"
+    );
+    assert!(!c.contains("padding:6px 8px"), "{c}");
+    assert!(!c.contains("height:36px"), "{c}");
+    // One side at zero is a padding too: the others are zero.
+    let c = css(NodeKind::TextInput, &style(text_input().pt(0.)));
+    assert!(!c.contains("padding:6px 8px"), "{c}");
+    // A filled button's own inset too.
+    let c = css(
+        NodeKind::Button,
+        &style(prism_core::button("Go").bg(rgb(0x0000FF)).p(0.)),
+    );
+    assert!(!c.contains("padding:6px 14px"), "{c}");
+    // A text area: no default inset, and its three-line minimum without it.
+    let c = css(NodeKind::TextArea, &style(text_area().p(0.)));
+    assert!(c.contains("padding-block:0px 0px;"), "{c}");
+    assert!(c.contains("min-height:3lh;"), "{c}");
+    let c = css(NodeKind::TextArea, &style(text_area()));
+    assert!(!c.contains("min-height"), "{c}");
+    // No padding given: the default inset stays.
+    let c = css(NodeKind::TextInput, &style(text_input()));
+    assert!(c.contains("padding:6px 8px;"), "{c}");
+}
+
+#[test]
 fn padding_works_on_every_leaf_and_replaces_a_fields_own() {
     use prism_core::{Styled, div, text, text_input};
     fn style<S: Styled>(mut el: S) -> Style {
@@ -1005,6 +1165,15 @@ fn every_patch_has_a_stable_json_encoding() {
                 ..Default::default()
             },
         ),
+        a11y(
+            7,
+            Accessibility {
+                role: Some(Role::Link),
+                selected: Some(false),
+                current: true,
+                ..Default::default()
+            },
+        ),
         Patch::SetAppearance {
             appearance: Appearance::Light,
         },
@@ -1034,6 +1203,11 @@ fn every_patch_has_a_stable_json_encoding() {
         { "op": "a11y", "id": 8, "a11y": {
             "role": "heading", "level": 3, "label": "L", "hint": null, "value": null,
             "checked": true, "disabled": false, "hidden": false,
+        }},
+        { "op": "a11y", "id": 7, "a11y": {
+            "role": "link", "level": null, "label": null, "hint": null, "value": null,
+            "checked": null, "disabled": false, "hidden": false,
+            "selected": false, "current": true,
         }},
         { "op": "appearance", "value": "light" },
         { "op": "root", "id": 7 },
@@ -1427,6 +1601,177 @@ fn a_session_resets_the_page_then_answers_events_with_patches() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A field with a formatting command (#86): its selection, Bold, and the
+/// caret the last Enter was pressed at.
+#[derive(Default)]
+struct Formatter {
+    text: String,
+    sel: prism_core::SelectionEvent,
+    enter_at: Option<prism_core::SelectionEvent>,
+}
+
+impl Render for Formatter {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .child(
+                text_input()
+                    .value(self.text.clone())
+                    .on_input(cx.listener(|this: &mut Formatter, e: &InputEvent, _| {
+                        this.text = e.value.clone()
+                    }))
+                    .on_select(cx.listener(
+                        |this: &mut Formatter, e: &prism_core::SelectionEvent, _| this.sel = *e,
+                    ))
+                    .selection(self.sel)
+                    .on_key_down(cx.listener(|this: &mut Formatter, e: &KeyEvent, _| {
+                        if e.is("Enter") {
+                            this.enter_at = e.selection;
+                        }
+                    })),
+            )
+            .child(text(format!("sel {}..{}", self.sel.start, self.sel.end)))
+            .child(text(format!(
+                "enter {:?}",
+                self.enter_at.map(|s| s.range())
+            )))
+            .child(
+                button("Bold").on_click(cx.listener(|this: &mut Formatter, _, _| {
+                    let r = this.sel.byte_range(&this.text);
+                    let t = &this.text;
+                    this.text = format!("{}**{}**{}", &t[..r.start], &t[r.clone()], &t[r.end..]);
+                    this.sel = (this.sel.start + 2..this.sel.end + 2).into();
+                })),
+            )
+    }
+}
+
+#[test]
+fn selections_from_the_page_reach_on_select_and_app_selections_reach_the_page() {
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Formatter {
+            text: "héllo world".into(),
+            ..Default::default()
+        });
+        cx.set_root(root);
+    });
+    let (app, dir) = web_app(init, "selection");
+    let page = Page::open(&app, "/ws?path=%2F&w=1280&h=800");
+    let reset = page.next();
+    let ops = reset["p"].as_array().unwrap();
+    let input = ops
+        .iter()
+        .find(|p| p["op"] == "create" && p["kind"] == "text_input")
+        .and_then(|p| p["id"].as_u64())
+        .unwrap();
+    assert!(ops.contains(&json!({ "op": "selev", "id": input, "on": true })));
+    let bold = op_with_text(&reset["p"], "Bold");
+
+    // The user selects "world" (characters): on_select runs, and the
+    // selection rendered back is not sent to the field again.
+    page.send(json!({ "t": "select", "id": input, "start": 6, "end": 11 }));
+    let moved = page.next();
+    assert_eq!(
+        moved["p"],
+        json!([{ "op": "text", "id": op_with_text(&moved["p"], "sel 6..11"), "text": "sel 6..11" }]),
+        "an echo: no `sel` op"
+    );
+
+    // A key in the field carries its caret.
+    page.send(json!({ "t": "key", "id": input, "key": "Enter", "mods": 0, "sel": [2, 2] }));
+    let keyed = page.next();
+    op_with_text(&keyed["p"], "enter Some(2..2)");
+
+    // Bold: the app's new text, then its selection, applied to the field.
+    page.send(json!({ "t": "click", "id": bold }));
+    let bolded = page.next();
+    let p = bolded["p"].as_array().unwrap();
+    let text = p
+        .iter()
+        .position(|o| o["op"] == "text" && o["id"] == input)
+        .unwrap();
+    assert_eq!(p[text]["text"], "héllo **world**");
+    let sel = p.iter().position(|o| o["op"] == "sel").expect("a `sel` op");
+    assert_eq!(
+        p[sel],
+        json!({ "op": "sel", "id": input, "start": 8, "end": 13 })
+    );
+    assert!(text < sel, "after the text it selects in");
+    page.session.close();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Starts loading on its first render, with no event after it.
+#[derive(Default)]
+struct LazyLoad {
+    started: bool,
+    value: Option<u32>,
+}
+
+impl Render for LazyLoad {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.started {
+            self.started = true;
+            cx.spawn(async move |this, cx| {
+                let value = cx.background(|| 7).await;
+                cx.update_entity(&this, |l, _| l.value = Some(value));
+            });
+        }
+        text(match self.value {
+            Some(v) => format!("loaded {v}"),
+            None => "loading".into(),
+        })
+    }
+}
+
+#[test]
+fn a_task_spawned_during_render_reaches_the_page_without_a_message() {
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| LazyLoad::default());
+        cx.set_root(root);
+    });
+    let (app, dir) = web_app(init, "render-spawn");
+    let page = Page::open(&app, "/ws?path=%2F&w=1280&h=800");
+    let reset = page.next();
+    let label = op_with_text(&reset["p"], "loading");
+    // The page sends nothing: the spawn wakes the session (#57).
+    assert_eq!(
+        page.next(),
+        json!({ "t": "patch", "p": [{ "op": "text", "id": label, "text": "loaded 7" }] })
+    );
+    page.session.close();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_first_paint_waits_for_the_data_it_loads() {
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| LazyLoad::default());
+        cx.set_root(root);
+    });
+    let page = |app: &WebApp| {
+        let r = app.handle(&Request::get("/").body(()).unwrap());
+        String::from_utf8(r.body().clone()).unwrap()
+    };
+    let (app, dir) = web_app(init.clone(), "first-paint-now");
+    assert!(
+        page(&app).contains(">loading<"),
+        "no wait: the loading state"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+
+    let (app, dir) = web_app(init, "first-paint-wait");
+    let app = app.first_paint_wait(Duration::from_secs(5));
+    let html = page(&app);
+    assert!(html.contains(">loaded 7<"), "{html}");
+    // The live tree that replaces it has the data too: no loading flash.
+    let live = Page::open(&app, "/ws?path=%2F&w=1280&h=800");
+    let reset = live.next();
+    assert_eq!(reset["t"], "reset");
+    op_with_text(&reset["p"], "loaded 7");
+    live.session.close();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 struct Wide;
 impl Render for Wide {
     fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1704,9 +2049,10 @@ fn ssr_pages_are_titled_by_the_visible_screen() {
     };
     let w = page("/welcome", "en");
     assert!(w.contains("<title>Welcome · Test</title>"), "{w}");
-    // A deep link renders the screens underneath (hidden) and the target.
-    let deep = page("/welcome", "en");
-    assert!(deep.contains(r#"hidden aria-label="Home""#), "{deep}");
+    // A deep link ships only its screen: the one underneath is an empty,
+    // hidden placeholder (Back builds it), not Home's HTML.
+    assert!(!w.contains("Home"), "{w}");
+    assert_eq!(w.matches("<section").count(), 2, "{w}");
     // Right-to-left languages set the page direction before any script.
     assert!(page("/", "ar-EG,ar;q=0.9").contains(r#"lang="ar-EG" dir="rtl""#));
     let _ = std::fs::remove_dir_all(dir);
@@ -1765,6 +2111,8 @@ impl Render for Showcase {
                     text_input()
                         .value(self.name.clone())
                         .placeholder("Your name")
+                        .attr("data-testid", "name")
+                        .attr("autocomplete", "given-name")
                         .on_input(
                             cx.listener(|this, e: &InputEvent, _| this.name = e.value.clone()),
                         ),
@@ -1774,6 +2122,8 @@ impl Render for Showcase {
                         .accessibility_label("Dark mode")
                         .on_change(cx.listener(|this, e: &ChangeEvent, _| this.dark = e.checked())),
                 )
+                .child(div().link("/more").child(text("More")))
+                .child(text("Docs").link("https://example.com/docs"))
                 .child(progress(0.5))
                 .child(image("plus"))
                 .child(picture("logo.png").alt("Logo").fit())
@@ -1908,6 +2258,12 @@ fn new_patches_have_a_stable_json_encoding() {
         Patch::ScrollIntoView { id: 1 },
         Patch::SetLayers { ids: vec![1, 2] },
         Patch::DismissKeyboard,
+        Patch::SetSelection {
+            id: 1,
+            start: 2,
+            end: 5,
+        },
+        Patch::SetSelectEvents { id: 1, on: true },
     ]);
     assert!(
         out[1]["css"]
@@ -1925,6 +2281,8 @@ fn new_patches_have_a_stable_json_encoding() {
             { "op": "reveal", "id": 1 },
             { "op": "layers", "ids": [1, 2] },
             { "op": "blur" },
+            { "op": "sel", "id": 1, "start": 2, "end": 5 },
+            { "op": "selev", "id": 1, "on": true },
         ])
     );
     // Hit-testable, not inert: nothing extra.
@@ -1967,6 +2325,18 @@ fn pointer_drag_and_key_messages_become_ui_events() {
         panic!("key")
     };
     assert!(k.is("ArrowUp") && k.modifiers.control && k.repeat);
+    assert_eq!(k.selection, None);
+    // In a text field: its selection, in characters (#86).
+    let Some(UiEvent::Key(Some(3), k)) =
+        ev(json!({"t": "key", "id": 3, "key": "Enter", "sel": [4, 1]}))
+    else {
+        panic!("key in a field")
+    };
+    assert_eq!(k.selection, Some(prism_core::SelectionEvent::new(1, 4)));
+    assert_eq!(
+        ev(json!({"t": "select", "id": 3, "start": 2, "end": 7})),
+        Some(UiEvent::Select(3, 2, 7))
+    );
     // No focused node: id 0.
     assert!(matches!(
         ev(json!({"t": "key", "id": 0, "key": "Escape"})),
@@ -1976,6 +2346,7 @@ fn pointer_drag_and_key_messages_become_ui_events() {
         json!({"t": "drag", "id": 3, "phase": "fly"}),
         json!({"t": "pointer", "id": 3}),
         json!({"t": "key", "id": 3}),
+        json!({"t": "select", "id": 3, "start": 2}),
     ] {
         assert_eq!(ev(bad.clone()), None, "{bad}");
     }
@@ -2056,6 +2427,92 @@ fn ssr_of_choice_controls_inputs_and_overlays() {
     assert!(out.contains(
         r#"<div class="prism-overlay" data-pid="6" data-kind="overlay" style=""></div>"#
     ));
+}
+
+/// An empty optional date picker is an empty, clearable input; a cleared
+/// one comes back as `null` (#89).
+#[test]
+fn optional_date_pickers_render_empty_and_report_clears() {
+    let config = |id, config: &str| Patch::SetConfig {
+        id,
+        config: config.into(),
+    };
+    let out = html(&[
+        create(1, NodeKind::View),
+        create(2, NodeKind::DatePicker),
+        config(2, "date - - optional"),
+        Patch::SetValue {
+            id: 2,
+            value: f64::NAN,
+        },
+        create(3, NodeKind::DatePicker),
+        config(3, "timeofday - - optional"),
+        Patch::SetValue {
+            id: 3,
+            value: f64::NAN,
+        },
+        create(4, NodeKind::DatePicker),
+        config(4, "date - -"),
+        Patch::SetValue { id: 4, value: 0. },
+        children(1, &[2, 3, 4]),
+        Patch::SetRoot { id: 1 },
+    ]);
+    assert!(
+        out.contains(r#"<input type="date" name="prism-2" class="prism-date" "#)
+            && out.contains(r#"data-value="">"#),
+        "{out}"
+    );
+    assert!(
+        !out.contains("NaN") && !out.contains(r#"value="00:00""#),
+        "{out}"
+    );
+    assert!(out.contains(r#"data-value="0" required>"#), "{out}");
+    assert_eq!(
+        crate::session::parse_event(&json!({"t": "change", "id": 2, "v": null})).map(|e| match e {
+            UiEvent::Change(id, v) => (id, v.is_nan()),
+            _ => (0, false),
+        }),
+        Some((2, true))
+    );
+    // The value patch says `null`, never `NaN`.
+    let value = Encoder::default().encode(&[Patch::SetValue {
+        id: 2,
+        value: f64::NAN,
+    }])[0]
+        .to_string();
+    assert!(value.contains(r#""value":null"#), "{value}");
+}
+
+#[test]
+fn an_open_inline_popover_waits_for_the_client() {
+    // The first paint has no top layer: an overlay open on the first render
+    // (#70) is an empty placeholder there, its content and its `popover`
+    // box come with the live tree, which shows it once it is placed.
+    let out = html(&[
+        create(1, NodeKind::View),
+        create(2, NodeKind::TextInput),
+        create(3, NodeKind::Overlay),
+        Patch::SetConfig {
+            id: 3,
+            config: prism_core::controls::OverlayConfig {
+                kind: prism_core::OverlayKind::Popover,
+                manual: true,
+                keep_focus: true,
+                ..Default::default()
+            }
+            .encode(),
+        },
+        Patch::SetValue { id: 3, value: 1. },
+        create(4, NodeKind::Text),
+        set_text(4, "/heading"),
+        children(3, &[4]),
+        children(1, &[2, 3]),
+        Patch::SetRoot { id: 1 },
+    ]);
+    assert!(out.contains(
+        r#"<div class="prism-overlay" data-pid="3" data-kind="overlay" style=""></div>"#
+    ));
+    assert!(!out.contains("/heading"), "{out}");
 }
 
 #[test]
@@ -2607,4 +3064,175 @@ fn style_names_are_short_hashes_shared_with_the_client() {
         "p1qpf33h"
     );
     assert_eq!(crate::html::style_class(""), "pztntfp");
+}
+
+#[test]
+fn fields_with_their_own_look_skip_the_focus_outline() {
+    // #52: a bare field keeps the page's `:focus-visible` outline…
+    let plain = css::css(NodeKind::TextInput, &Style::default());
+    assert!(!plain.contains("outline:none;"), "{plain}");
+    // …a field drawing its own box, or its own focus look, does not.
+    for s in [
+        Style::default().border(0.).p(0.),
+        Style::default().p(12.),
+        Style::default().bg(rgb(0xFFFFFF)),
+        Style::default().border(1.),
+    ] {
+        let s = s.resolve(Default::default());
+        for kind in [NodeKind::TextInput, NodeKind::TextArea] {
+            let c = css::css(kind, &s);
+            assert!(c.contains("outline:none;"), "{kind:?}: {c}");
+        }
+    }
+    let ring = Style::default()
+        .focus(|s| s.shadow(Shadow::ring(1., rgb(0x0000FF))))
+        .resolve(Default::default());
+    assert!(css::css(NodeKind::TextInput, &ring).contains("outline:none;"));
+    // The focused state does not bring the outline back.
+    let rules = css::states_css(NodeKind::TextInput, 3, &ring);
+    assert!(!rules.contains("outline"), "{rules}");
+    // Other kinds keep it.
+    assert!(!css::css(NodeKind::Button, &Style::default().p(12.)).contains("outline:none;"));
+}
+
+#[test]
+fn pictures_lose_their_loading_background_once_loaded() {
+    // #54: the grey box is for pictures still loading; the client marks
+    // loaded ones.
+    assert!(crate::PRISM_CSS.contains(".prism-picture:not([data-loaded]) { background:"));
+    assert!(crate::CLIENT_JS.contains("img.dataset.loaded = \"1\""));
+    assert!(crate::CLIENT_JS.contains("delete el.dataset.loaded;"));
+}
+
+#[test]
+fn reversed_directions_and_order_become_css() {
+    let c = |d: prism_core::Div| css(NodeKind::View, &style_of(d));
+    assert!(c(div().flex_row_reverse()).contains("flex-direction:row-reverse;"));
+    assert!(c(div().flex_col_reverse()).contains("flex-direction:column-reverse;"));
+    assert!(c(div().order(-2)).contains("order:-2;"));
+    assert!(
+        !c(div().order(0)).contains("order:"),
+        "the default is left out"
+    );
+    // Refinements are resolved before the CSS (here at `md`).
+    let mut d = div().order(1).md(|s| s.flex_row_reverse().order(0));
+    let s = d.style_mut().resolve(prism_core::StyleContext {
+        breakpoint: prism_core::Breakpoint::Medium,
+        ..Default::default()
+    });
+    let medium = css(NodeKind::View, &s);
+    assert!(medium.contains("flex-direction:row-reverse;"), "{medium}");
+    assert!(!medium.contains("order:"), "{medium}");
+}
+
+// --- App-defined attributes (#85) -------------------------------------------------------
+
+fn set_attrs(id: u64, list: &[(&str, &str)]) -> Patch {
+    Patch::SetAttributes {
+        id,
+        attributes: list
+            .iter()
+            .map(|(n, v)| (n.to_string(), v.to_string()))
+            .collect(),
+    }
+}
+
+#[test]
+fn ssr_writes_app_attributes_escaped() {
+    let page = html(&[
+        create(1, NodeKind::TextInput),
+        set_attrs(
+            1,
+            &[
+                ("data-1p-ignore", ""),
+                ("data-testid", r#"a"><script>"#),
+                ("autocomplete", "one-time-code"),
+            ],
+        ),
+        Patch::SetRoot { id: 1 },
+    ]);
+    assert_eq!(
+        page,
+        r#"<input type="text" name="prism-1" data-pid="1" data-kind="text_input" style="" data-1p-ignore="" data-testid="a&quot;&gt;&lt;script&gt;" autocomplete="one-time-code" value="" placeholder="">"#
+    );
+    // Names the core would refuse never reach the page.
+    let page = html(&[
+        create(1, NodeKind::View),
+        set_attrs(1, &[("onclick", "x"), ("data-pid", "9"), ("data-ok", "1")]),
+        Patch::SetRoot { id: 1 },
+    ]);
+    assert!(
+        !page.contains("onclick") && !page.contains(r#"data-pid="9""#),
+        "{page}"
+    );
+    assert!(page.contains(r#" data-ok="1""#), "{page}");
+}
+
+#[test]
+fn app_attributes_go_to_the_client_in_full() {
+    let mut e = Encoder::default();
+    let ops = e.encode(&[
+        create(1, NodeKind::Button),
+        set_attrs(1, &[("data-testid", "save"), ("translate", "no")]),
+        set_attrs(1, &[]),
+    ]);
+    assert_eq!(
+        ops[1],
+        json!({ "op": "attrs", "id": 1, "attrs": [["data-testid", "save"], ["translate", "no"]] })
+    );
+    assert_eq!(ops[2], json!({ "op": "attrs", "id": 1, "attrs": [] }));
+}
+
+/// Every `data-*` name the web backend reads or writes is refused to apps,
+/// so `.attr` cannot overwrite one.
+#[test]
+fn the_backends_own_data_attributes_are_reserved() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut seen = std::collections::BTreeSet::new();
+    for file in std::fs::read_dir(&dir).unwrap() {
+        let path = file.unwrap().path();
+        if path
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().contains("tests"))
+        {
+            continue;
+        }
+        let Ok(source) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let word = |rest: &str| -> String {
+            rest.chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .collect()
+        };
+        for (i, _) in source.match_indices("data-") {
+            let name = word(&source[i + 5..]);
+            if !name.is_empty() && !name.ends_with('-') {
+                seen.insert(name);
+            }
+        }
+        // `el.dataset.fooBar` is `data-foo-bar`.
+        for (i, _) in source.match_indices("dataset.") {
+            let camel = word(&source[i + 8..]);
+            let mut name = String::new();
+            for c in camel.chars() {
+                if c.is_ascii_uppercase() {
+                    name.push('-');
+                }
+                name.push(c.to_ascii_lowercase());
+            }
+            if !name.is_empty() {
+                seen.insert(name);
+            }
+        }
+    }
+    assert!(seen.contains("pid") && seen.contains("kind"), "{seen:?}");
+    let open: Vec<_> = seen
+        .iter()
+        .filter(|n| prism_core::attributes::is_app_attribute(&format!("data-{n}")))
+        .collect();
+    assert!(
+        open.is_empty(),
+        "add these to prism_core::attributes::RESERVED_DATA_ATTRIBUTES: {open:?}"
+    );
 }

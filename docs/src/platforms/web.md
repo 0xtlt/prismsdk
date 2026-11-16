@@ -36,6 +36,42 @@ Other servers (actix, hyper, …): `prism-web` without default features has no s
 
 `prism build web` also writes `public/` (hashed files plus `manifest.json`). Upload it to a CDN and set `PRISM_ASSET_URL=https://cdn.example.com`, or let the CDN cache `/_prism/*` and `/assets/*` from the server. Settings: `PRISM_HOST`, `PRISM_PORT`, `PRISM_BASE_PATH`, `PRISM_ASSET_URL`, `PRISM_DATA_DIR` (or `WebApp::base_path` / `asset_url` / `data_dir`).
 
+### Data in the first paint
+
+A screen that loads its data in a task (`cx.spawn` + `cx.background`) renders its loading state on the server, and the data arrives over the socket once it connects: the first paint, which a slow phone shows for a while and which crawlers and tests read, has a spinner and no content. `WebApp::first_paint_wait(timeout)` lets the page wait for that work:
+
+```rust
+Application::new()
+    .web(|w| w.first_paint_wait(Duration::from_millis(500)))   // or .web_app(routes).first_paint_wait(..)
+    .run(routes);
+```
+
+The page is rendered, then while `background` work started by `init`, a screen's constructor or a `render` is in flight, the server waits for it, runs the tasks it resumes and renders again; work those tasks start next is waited for too. It sends the page when no work is left, or at the deadline with what is still loading in its loading state, as without a wait (the data then comes over the socket). Timers and channels are not waited for, so a clock, a refresh every 30 seconds or a live feed does not hold the page. The live session's first tree waits the same way before it replaces the page, so the page does not flash back to its loading state when the socket connects. The data is loaded twice, once for the page and once for the session, as any task is today. The default, zero, sends the page at once. Hosts with a `Runtime` of their own get the same with `Runtime::render_settled(timeout)`.
+
+### Assets compiled into the binary
+
+`Application::assets(dir)` (or `PRISM_ASSETS_DIR`) names a folder read when the server starts. A server shipped as one file, or in a scratch container, can carry its assets inside the binary instead:
+
+```rust
+let assets = EmbeddedAssets::new()
+    .file("logo.png", include_bytes!("../assets/logo.png"))
+    .file("fonts/Inter.woff2", include_bytes!("../assets/fonts/Inter.woff2"));
+Application::new().embedded_assets(assets).run(|cx| cx.new_entity(Home::new));
+// or, mounted in your own server: WebApp::new(config, init).embedded_assets(assets)
+```
+
+Names are the paths a folder would give them (`img/logo.png`), so `picture("logo.png")` does not change. Embedded files are hashed and served like the folder's (`/assets/logo.<hash>.png`, immutable; unhashed names revalidated), written by `export_static`, and those under `fonts/` become `@font-face` rules. An embedded file wins over the folder's file of the same name; the folder, if there is one, adds the rest. With [rust-embed](https://crates.io/crates/rust-embed), collect its files:
+
+```rust
+#[derive(rust_embed::RustEmbed)]
+#[folder = "assets"]
+struct Files;
+
+let assets: EmbeddedAssets = Files::iter()
+    .filter_map(|name| Some((name.to_string(), Files::get(&name)?.data)))
+    .collect();
+```
+
 ### Transport and compression
 
 A page loads in two steps. First the server sends HTML that works without JavaScript. Then the client opens `/ws?path=…&tz=…&w=…&h=…` and receives JSON over the socket: a `reset` with the whole live tree, then small `patch` messages. Events go back as JSON text.
@@ -72,6 +108,37 @@ Plain `send(text)` still works: the client reads text frames whether or not it a
 - A response that already has `Content-Encoding` is left alone.
 
 On the counter, a cold load of `/` goes from 283 KB to 63 KB over HTTP, and from 390 KB to 37 KB over the socket. There is no brotli yet. A CDN in front can re-encode static files in brotli.
+
+## HTML attributes
+
+Browser integrations and end-to-end tests read attributes the app sets
+itself. `.attr(name, value)`, on every element, adds one to the element's
+HTML, in the first paint and live:
+
+```rust
+text_input()
+    .placeholder("Code")
+    .attr("autocomplete", "one-time-code") // the code from a text message
+    .attr("data-1p-ignore", "")            // no password manager prompt
+    .attr("data-testid", "otp")            // `page.getByTestId("otp")`
+```
+
+Setting a name again replaces its value; a name the next render leaves out is
+removed. Only names that cannot run code or change how Prism draws are taken
+(`prism_core::attributes`):
+
+- `data-*`, lower case (`a-z`, `0-9`, `-`, `_`, `.`), except the ones Prism
+  uses itself (`data-pid`, `data-kind`…, `data-prism…`:
+  `attributes::RESERVED_DATA_ATTRIBUTES`);
+- `autocomplete` (wins over the `current-password` a `secure` field gets by
+  default) and `translate` (`"no"` keeps browser translators off a name).
+
+Any other name is ignored, and fails a debug assertion. The rest has a typed
+API that also works natively: `inputmode`, `enterkeyhint`, `autocapitalize`,
+`autocorrect` and `spellcheck` come from a text input's `keyboard`,
+`return_key`, `capitalize` and `autocorrect` ([Forms](../guide/forms.md)),
+ARIA from the [accessibility](../guide/accessibility.md) modifiers. Native
+backends ignore `.attr`.
 
 ## Embedding in an existing server
 
@@ -117,7 +184,7 @@ With [islands](../guide/islands.md), WASM islands also need `'wasm-unsafe-eval'`
 
 Without a nonce, the page's `<style>` blocks need `'unsafe-inline'` (or their hashes). Under a strict policy that lacks both, the page still works: the first paint is unstyled until the client connects. The sign-in callback page (`/_prism/auth/callback`) takes the nonce too. `client.js` uses no `eval`, inline handlers or `style` attributes.
 
-**Status codes.** An unknown path renders the router's not-found screen (Prism's or `.not_found(...)`) with `404 Not Found`, so crawlers, monitoring and the host see it. An app without a router answers `200` on every path.
+**Status codes.** An unknown path renders the router's not-found screen (Prism's or `.not_found(...)`) with `404 Not Found`, so crawlers, monitoring and the host see it. A route that matches but whose data is missing (`/orders/:id` with an unknown id, or another user's) calls `cx.set_page_status(404)` while the first paint renders, in the screen's build or its `render`, and keeps drawing its own « not found » state; `403`, `410` or `500` work the same way. Only `2xx`, `4xx` and `5xx` codes are kept, the last call wins, and `cx.page_status()` reads the status the page will get. The live session and native apps ignore it: the response is already sent, or there is none. An app without a router answers `200` on every path unless it sets a status.
 
 **Leaving the app.** `cx.open_url(url)` loads a URL of the page's own origin in the same tab, such as the host's sign-out page or a download. Other origins open in a new tab. `cx.open_url_in(url, UrlTarget::SameTab | NewTab | Auto)` chooses explicitly. Natively, the system opens the URL whatever the target.
 

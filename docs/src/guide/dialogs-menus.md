@@ -36,6 +36,36 @@ The overlay takes no room where it is placed; its content is only built while it
 | Android | dialog pinned to the bottom, sliding up | `PopupWindow` | centered `Dialog` |
 | watchOS | `.sheet` | `.sheet` | `.sheet` |
 
+An overlay can be created already open, in the same update as its parent: it is shown as soon as it is placed.
+
+### Inline popovers: suggestion menus under a field
+
+A slash-command, mention or autocomplete menu shows under the field the user is typing in, and the field must keep the keys. Two options make a popover fit for it:
+
+```rust
+div()
+    .child(text_input().value(text).on_input(…).on_key(…))   // Escape, arrows: the field's keys
+    .children(text.starts_with('/').then(|| {
+        popover(menu(items))
+            .open(true)
+            .light_dismiss(false)   // a click outside (in the field) does not close it
+            .take_focus(false)      // the field keeps the keyboard focus
+    }))
+```
+
+- `.light_dismiss(false)`: only the app closes it (`open(false)`, or by no longer rendering it), or Escape while the focus is inside it (then `on_dismiss` runs). `dismissible(false)` also refuses Escape.
+- `.take_focus(false)`: showing it moves no focus, and clicking or tapping its items runs their handlers without taking the focus from the field. Keys go to the field: handle Escape, the arrows and Enter there (`on_key`). It implies `light_dismiss(false)` (a click in the field would otherwise close it). Fields inside such a popover cannot be typed in.
+
+| | `light_dismiss(false)` | `take_focus(false)` |
+|---|---|---|
+| Web | `popover="manual"` | no focus move; presses inside keep the field focused |
+| macOS | `NSPopover`, application-defined behavior | a borderless, non-activating child panel (it never becomes key) |
+| iOS, iPadOS, visionOS | taps around it reach the window (passthrough views) | the field stays first responder, the keyboard stays up (if UIKit moves the first responder while presenting, the field takes it back) |
+| Linux | `GtkPopover` without autohide | a `GtkPopover` without autohide that cannot take the focus |
+| Android | `PopupWindow` ignoring outside touches | a non-focusable `PopupWindow` above the keyboard |
+
+Sheets and dialogs ignore both options. On macOS the panel follows the anchor at each layout, not while a scroll view scrolls under it.
+
 Toasts (and any `cx.add_layer` entity) stay above overlays on the web, macOS (a transparent child window), iOS, iPadOS, tvOS and visionOS (a pass-through window). On Linux and Android, sheets and dialogs are separate windows, and on watchOS sheets cover the app: layers stay under them there.
 
 `hit_test(false)` and `inert(true)` (see [Pointer, keyboard, focus](input.md)) let a screen draw its own scrim or decoration and keep the content under it out of reach.

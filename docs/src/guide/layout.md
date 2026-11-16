@@ -62,6 +62,29 @@ children are at least as tall as their content). A text's narrowest natural
 width (its min-content, used by `items_start` columns and grid tracks) is its
 longest word.
 
+## Reversed directions and `order`
+
+```rust
+// A box after its label in a narrow inspector, before it from `md`.
+div().flex_row().gap(8.)
+    .child(text("Show in menu"))
+    .child(checkbox.order(1).md(|s| s.order(-1)))
+
+div().flex_row_reverse()      // trailing to leading (`row-reverse`)
+div().flex_col_reverse()      // bottom to top (`column-reverse`)
+div().flex_row().md(|s| s.flex_row_reverse())
+```
+
+`.order(i)` (CSS `order`, `0` by default) sorts a node among its siblings,
+lower first, keeping the app's order among equals; it applies to grid items
+too. Reversed directions start from the end of the main axis, and
+`justify_start` packs the children against that end, as in CSS. Both only
+move nodes on screen: the keyboard's focus order and assistive technologies
+follow the tree, as on the web. Both work in refinements (`md`, `at_width`,
+`when_width_at_least`, interaction states), so a row can change its visual
+order per breakpoint without rebuilding it in `render`. Right to left, a
+reversed row starts at the left edge.
+
 ## Padding on every node
 
 `.p()`, `.px()`, `.py()`, `.pt()`, `.pr()`, `.pb()` and `.pl()` work on
@@ -83,11 +106,18 @@ What padding means per kind:
 - **Texts and timers**: the text is inset by it.
 - **Buttons, text inputs, text areas**: it replaces the control's own
   inset around its title or text (the default look, with its built-in
-  inset, is kept when no padding is set). A field with padding, a
+  inset, is kept when no padding is set). An explicit zero counts:
+  `.p(0.)` (or `.px(0.)`, `.pt(0.)`…) leaves no inset at all, and the
+  field is as tall as its line unless `.h(…)` is set, e.g. an inline
+  editor that sits exactly where its text was. A field with padding, a
   background, a border or `.border(0.)` draws Prism's box instead of the
   platform's bezel: its own background and border, else a 1-point gray
   border rounded 6, and a default 6 × 8 inset when it sets no padding (as on
   the web). A leading icon keeps at least 32 points before the text.
+  A field taller than its line (`.h(36.)`) centers its text vertically,
+  on macOS too. Such a field, or one with a `.focus(…)` refinement, does
+  not get the web page's default `:focus-visible` outline: its own look
+  (and the caret) shows the focus, as natively.
 - **Other controls** (pickers, date pickers, switches, sliders, progress
   bars, spinners, checkboxes, radio groups, images, pictures, shapes):
   natively they are placed inside their padding, keeping their own inset;
@@ -147,6 +177,7 @@ its leading (right) edge, native scroll views at offset 0.
 | Sticky | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Fixed | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Horizontal scroll | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Reversed directions, `order` | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Padding on leaves | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `.border(0.)` on fields | CSS | ✓ | ✓ | ✓ | ✓ | ✓ |
 

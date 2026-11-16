@@ -36,11 +36,16 @@ function signature(el) {
     level: attr("aria-level"),
     selected: attr("aria-selected"),
     tabindex: attr("tabindex"),
+    href: attr("href"),
+    rel: attr("rel"),
     hidden: el.hidden,
     text: own,
     placeholder: attr("placeholder"),
     value: el.localName === "input" ? el.value : null,
     checked: el.localName === "input" ? el.checked : null,
+    // App-defined attributes (`.attr`, #85).
+    testid: attr("data-testid"),
+    autocomplete: attr("autocomplete"),
     css: cssOf(el),
   };
 }
@@ -97,6 +102,41 @@ test("the client builds the tree the server rendered", () => {
   const tab = (b) => ["id", "aria-controls", "aria-selected", "tabindex", "role"].map((a) => b.getAttribute(a)).concat(b.textContent);
   assert.deepEqual(page.mount.querySelectorAll(".prism-tab").map(tab), wrapper.querySelectorAll(".prism-tab").map(tab));
   assert.deepEqual(text(page.mount, ".prism-back"), text(wrapper, ".prism-back"));
+});
+
+test("app-defined attributes are set, replaced and removed live (#85)", () => {
+  const page = live(fixture.reset);
+  const field = page.mount.querySelector("[data-kind=text_input]");
+  assert.equal(field.getAttribute("data-testid"), "name", "from the server's reset");
+  assert.equal(field.getAttribute("autocomplete"), "given-name");
+  const id = Number(field.dataset.pid);
+  page.ws.deliver({ t: "patch", p: [{ op: "attrs", id, attrs: [["data-1p-ignore", ""], ["data-testid", "who"]] }] });
+  assert.equal(field.getAttribute("data-1p-ignore"), "");
+  assert.equal(field.getAttribute("data-testid"), "who");
+  assert.equal(field.hasAttribute("autocomplete"), false, "absent from the list: removed");
+  // Never a name outside data-* and the safe list, nor Prism's own.
+  page.ws.deliver({ t: "patch", p: [{ op: "attrs", id, attrs: [["onclick", "x"], ["data-prism-x", "1"], ["data-ok", "1"]] }] });
+  assert.equal(field.hasAttribute("onclick"), false);
+  assert.equal(field.hasAttribute("data-prism-x"), false);
+  assert.equal(field.getAttribute("data-ok"), "1");
+  assert.equal(field.hasAttribute("data-testid"), false);
+});
+
+test("a secure field keeps the app's autocomplete over the default (#85)", () => {
+  const field = { op: "create", id: 2, kind: "text_input" };
+  const secure = { op: "config", id: 2, config: "secure" };
+  const root = [{ op: "create", id: 1, kind: "view" }, { op: "children", id: 1, children: [2] }, { op: "root", id: 1 }];
+  // Attributes before the config, and after.
+  for (const order of [[field, { op: "attrs", id: 2, attrs: [["autocomplete", "new-password"]] }, secure],
+                       [field, secure, { op: "attrs", id: 2, attrs: [["autocomplete", "new-password"]] }]]) {
+    const page = live([...order, ...root]);
+    const el = page.node(2);
+    assert.equal(el.getAttribute("autocomplete"), "new-password");
+    page.ws.deliver({ t: "patch", p: [secure] });
+    assert.equal(el.getAttribute("autocomplete"), "new-password", "a new config keeps it");
+    page.ws.deliver({ t: "patch", p: [{ op: "attrs", id: 2, attrs: [] }] });
+    assert.equal(el.getAttribute("autocomplete"), "current-password", "the default comes back");
+  }
 });
 
 test("interactions send the events the server expects, and its answers apply", () => {
@@ -168,12 +208,176 @@ test("text updates keep child elements and never fight a focused field", () => {
   assert.equal(input.value, "a");
   assert.equal(input.placeholder, "Name");
   input.focus();
-  input.value = "ab";
-  form.ws.deliver({ t: "patch", p: [textOp(1, "a")] });
-  assert.equal(input.value, "ab", "the user's typing wins while focused");
+  const type = (v) => { input.value = v; input.dispatchEvent({ type: "input" }); };
+  type("ab");
+  type("abc");
+  form.ws.deliver({ t: "patch", p: [textOp(1, "ab")] });
+  assert.equal(input.value, "abc", "a late echo never undoes the user's typing");
   input.blur();
   form.ws.deliver({ t: "patch", p: [textOp(1, "server")] });
   assert.equal(input.value, "server");
+});
+
+// --- Focused fields: echoes vs. values set by the app (#73) ---------------------
+
+/** A focused field `kind` holding `text`, and a `type` helper sending input events. */
+function focusedField(kind, text = "") {
+  const page = live([create(1, kind), textOp(1, text), root(1)]);
+  const field = page.node(1);
+  field.focus();
+  const type = (v, caret = v.length) => {
+    field.value = v;
+    field.setSelectionRange(caret, caret);
+    field.dispatchEvent({ type: "input" });
+  };
+  const patch = (text) => page.ws.deliver({ t: "patch", p: [textOp(1, text)] });
+  return { page, field, type, patch };
+}
+
+test("echoes of the user's typing leave a focused field and its caret alone (#73)", () => {
+  for (const kind of ["text_input", "text_area"]) {
+    const { page, field, type, patch } = focusedField(kind);
+    type("Hello");
+    type("Hello world");
+    type("Hello, world", 6); // a comma typed in the middle: the caret after it
+    assert.deepEqual(page.ws.sent.filter((m) => m.t === "input").map((m) => m.v), ["Hello", "Hello world", "Hello, world"]);
+    const writes = field.valueWrites;
+    for (const echo of ["Hello", "Hello world", "Hello, world"]) patch(echo);
+    assert.equal(field.value, "Hello, world", kind);
+    assert.equal(field.valueWrites, writes, `${kind}: the value is never rewritten`);
+    assert.deepEqual([field.selectionStart, field.selectionEnd], [6, 6], `${kind}: the caret stays put`);
+  }
+});
+
+test("a value the app sets reaches the focused field, caret kept from the end (#73)", () => {
+  // A Markdown shortcut: "# " at the start is stripped.
+  const md = focusedField("text_input");
+  md.type("#");
+  md.patch("#");
+  md.type("# ");
+  md.patch("");
+  assert.equal(md.field.value, "", "the app's value replaces the field's");
+  md.type("T");
+  md.patch("T");
+  assert.equal(md.field.value, "T", "and typing goes on from there");
+  assert.deepEqual(md.page.ws.sent.filter((m) => m.t === "input").map((m) => m.v), ["#", "# ", "T"]);
+
+  // Normalising: the caret keeps its distance from the end.
+  const up = focusedField("text_area", "ab");
+  up.type("abcd", 3);
+  up.patch("ABCD");
+  assert.equal(up.field.value, "ABCD");
+  assert.deepEqual([up.field.selectionStart, up.field.selectionEnd], [3, 3]);
+  up.type("ABCDe");
+  up.patch("ABCDE");
+  assert.equal(up.field.value, "ABCDE", "a later echo is not mistaken for typing");
+
+  // Typing ahead of the server: a late echo is ignored, the app's answer applies.
+  const ahead = focusedField("text_input");
+  ahead.type("# ");
+  ahead.type("# T");
+  ahead.patch("");
+  assert.equal(ahead.field.value, "", "the app answered '# ' by clearing");
+  ahead.patch("T");
+  assert.equal(ahead.field.value, "T", "then answered '# T' with 'T'");
+});
+
+test("an app value waits for the end of an IME composition (#73)", () => {
+  const { field, type, patch } = focusedField("text_input");
+  field.dispatchEvent({ type: "compositionstart" });
+  type("k");
+  patch("k");
+  type("か");
+  patch("");
+  assert.equal(field.value, "か", "the composition is not disturbed");
+  field.dispatchEvent({ type: "compositionend" });
+  assert.equal(field.value, "", "the app's value lands once it ends");
+});
+
+// --- Text field selection and caret (#86) ---------------------------------------
+
+const flush = (page) => page.frames.splice(0).forEach((f) => f());
+const selects = (page) => page.ws.sent.filter((m) => m.t === "select").map((m) => [m.start, m.end]);
+
+test("a field with on_select reports its selection in characters, once per frame (#86)", () => {
+  const { page, field, type } = focusedField("text_input");
+  // Without `on_select`, nothing is sent.
+  type("a");
+  flush(page);
+  assert.deepEqual(selects(page), []);
+  page.ws.deliver({ t: "patch", p: [{ op: "selev", id: 1, on: true }] });
+  flush(page);
+  assert.deepEqual(selects(page), [[1, 1]], "where the caret is when reporting starts");
+  // "a😀b": the emoji is 2 UTF-16 units, 1 character.
+  type("a😀b", 3);
+  flush(page);
+  const order = page.ws.sent.filter((m) => m.t === "input" || m.t === "select").map((m) => m.t);
+  assert.deepEqual(order.slice(-2), ["input", "select"], "after the input that moved it");
+  assert.deepEqual(selects(page).at(-1), [2, 2]);
+  // Selecting backwards, then moving twice in one frame: one report, in order.
+  field.setSelectionRange(4, 0);
+  field.dispatchEvent({ type: "select" });
+  field.setSelectionRange(1, 4);
+  field.dispatchEvent({ type: "selectionchange" });
+  page.document.dispatchEvent({ type: "selectionchange" });
+  flush(page);
+  assert.deepEqual(selects(page).slice(-1), [[1, 3]]);
+  assert.equal(selects(page).length, 3);
+  // Unmoved: not sent again.
+  field.dispatchEvent({ type: "keyup" });
+  flush(page);
+  assert.equal(selects(page).length, 3);
+});
+
+test("key presses in a field carry its selection before the key (#86)", () => {
+  const page = live([
+    create(1, "view"), { op: "keys", id: 1, local: true, global: false },
+    create(2, "text_input"), textOp(2, "héllo"), { op: "selev", id: 2, on: true },
+    children(1, [2]), root(1),
+  ]);
+  const field = page.node(2);
+  field.focus();
+  field.setSelectionRange(2, 2);
+  field.dispatchEvent({ type: "mouseup" });
+  field.dispatchEvent({ type: "keydown", key: "Enter" });
+  const key = page.ws.sent.find((m) => m.t === "key");
+  assert.deepEqual(key.sel, [2, 2]);
+  const i = page.ws.sent.indexOf(key);
+  assert.deepEqual(page.ws.sent[i - 1], { t: "select", id: 2, start: 2, end: 2 }, "pending selection flushed first");
+});
+
+test("the app's selection is applied in characters, never against typing in flight (#86)", () => {
+  const { page, field, type } = focusedField("text_area", "a😀bc");
+  const patch = (p) => page.ws.deliver({ t: "patch", p });
+  patch([{ op: "sel", id: 1, start: 1, end: 3 }]);
+  assert.deepEqual([field.selectionStart, field.selectionEnd], [1, 4], "UTF-16 units");
+  patch([{ op: "sel", id: 1, start: 9, end: 9 }]);
+  assert.deepEqual([field.selectionStart, field.selectionEnd], [5, 5], "clamped to the end");
+
+  // Typing ahead: the echo of "x" and a selection computed for it.
+  type("x");
+  type("xy");
+  patch([textOp(1, "x"), { op: "sel", id: 1, start: 0, end: 1 }]);
+  assert.equal(field.value, "xy");
+  assert.deepEqual([field.selectionStart, field.selectionEnd], [2, 2], "the user's caret stays");
+  // All echoed: the app's selection lands (bold the word, select it).
+  patch([textOp(1, "xy"), { op: "sel", id: 1, start: 0, end: 2 }]);
+  assert.deepEqual([field.selectionStart, field.selectionEnd], [0, 2]);
+  // An app value with a caret: both apply, in order.
+  patch([textOp(1, "Title"), { op: "sel", id: 1, start: 0, end: 0 }]);
+  assert.equal(field.value, "Title");
+  assert.deepEqual([field.selectionStart, field.selectionEnd], [0, 0]);
+});
+
+test("the app's selection waits for the end of an IME composition (#86)", () => {
+  const { page, field, type } = focusedField("text_input", "ab");
+  field.dispatchEvent({ type: "compositionstart" });
+  type("abk");
+  page.ws.deliver({ t: "patch", p: [textOp(1, "abk")] });
+  page.ws.deliver({ t: "patch", p: [{ op: "sel", id: 1, start: 0, end: 0 }] });
+  assert.deepEqual([field.selectionStart, field.selectionEnd], [3, 3]);
+  field.dispatchEvent({ type: "compositionend" });
+  assert.deepEqual([field.selectionStart, field.selectionEnd], [0, 0]);
 });
 
 test("accessibility patches set and clear ARIA", () => {
@@ -198,8 +402,17 @@ test("accessibility patches set and clear ARIA", () => {
   a11y({ role: "tab", checked: true, hidden: true });
   assert.equal(el.getAttribute("aria-selected"), "true");
   assert.equal(el.getAttribute("aria-hidden"), "true");
+  a11y({ role: "tab", checked: true, selected: false });
+  assert.equal(el.getAttribute("aria-selected"), "false", "selected wins over checked");
+  // The current destination of a navigation (#64).
+  a11y({ role: "link", current: true });
+  assert.equal(el.getAttribute("aria-current"), "page");
+  assert.equal(el.getAttribute("aria-selected"), null);
+  a11y({ role: "button", current: true, selected: true });
+  assert.equal(el.getAttribute("aria-current"), "true");
+  assert.equal(el.getAttribute("aria-selected"), "true");
   a11y({});
-  for (const name of ["role", "aria-level", "aria-checked", "aria-selected", "aria-hidden", "aria-disabled"]) {
+  for (const name of ["role", "aria-level", "aria-checked", "aria-selected", "aria-current", "aria-hidden", "aria-disabled"]) {
     assert.equal(el.getAttribute(name), null, name);
   }
 
@@ -932,6 +1145,71 @@ test("rich text: runs become spans, links and symbols; links report their id", (
   page.ws.deliver({ t: "patch", p: [{ op: "config", id: 2, config: "" }] });
   assert.equal(el.textContent, "Signed in as Adasettings★tapdocs!");
   assert.equal(el.childNodes.length, 1);
+});
+
+test("links are anchors: a plain click stays in the app, a modified one is the browser's (#59)", () => {
+  const page = live([
+    create(1, "view"),
+    create(2, "view"), { op: "link", id: 2, href: "/orders/42" },
+    { op: "clickable", id: 2, on: true }, { op: "a11y", id: 2, a11y: { role: "link" } },
+    create(3, "text"), { op: "link", id: 3, href: "mailto:ada@example.com" }, textOp(3, "Mail"),
+    { op: "clickable", id: 3, on: true }, { op: "a11y", id: 3, a11y: { role: "link" } },
+    create(4, "text"), { op: "link", id: 4, href: "/profile" },
+    { op: "config", id: 4, config: runsConfig },
+    children(1, [2, 3, 4]), root(1),
+  ], { base: "/app" });
+  const row = page.node(2);
+  assert.equal(row.localName, "a");
+  assert.equal(row.getAttribute("href"), "/app/orders/42", "app paths under the mount point");
+  assert.equal(row.getAttribute("rel"), null);
+  // A link by itself: no role, focusable without a tabindex.
+  assert.equal(row.getAttribute("role"), null);
+  assert.equal(row.getAttribute("tabindex"), null);
+  assert.equal(page.mount.firstChild.firstChild, row, "in its place");
+  const mail = page.node(3);
+  assert.equal(mail.localName, "a");
+  assert.equal(mail.getAttribute("href"), "mailto:ada@example.com");
+  assert.equal(mail.getAttribute("rel"), "noopener");
+  assert.equal(mail.textContent, "Mail");
+
+  // A plain click: the app navigates (no page load).
+  const plain = { type: "click", detail: 0 };
+  row.dispatchEvent(plain);
+  assert.ok(plain.defaultPrevented);
+  assert.deepEqual(lastSent(page), { t: "click", id: 2 });
+  // Cmd/Ctrl/Shift-click, a middle click: the browser opens it (new tab,
+  // window); the app hears nothing.
+  page.ws.sent.length = 0;
+  for (const mod of [{ metaKey: true }, { ctrlKey: true }, { shiftKey: true }, { button: 1 }]) {
+    const e = { type: "click", detail: 1, ...mod };
+    row.dispatchEvent(e);
+    assert.ok(!e.defaultPrevented, JSON.stringify(mod));
+  }
+  assert.deepEqual(sent(page), []);
+  // Disabled: neither follows it.
+  page.ws.deliver({ t: "patch", p: [{ op: "a11y", id: 2, a11y: { role: "link", disabled: true } }] });
+  assert.equal(row.getAttribute("tabindex"), "-1");
+  const disabled = { type: "click", detail: 1, metaKey: true };
+  row.dispatchEvent(disabled);
+  assert.ok(disabled.defaultPrevented);
+  assert.deepEqual(sent(page), []);
+
+  // A text that is a link: its runs' links are spans (links don't nest),
+  // still reported by their click.
+  const linked = page.node(4);
+  assert.equal(linked.localName, "a");
+  assert.equal(linked.querySelectorAll("a").length, 0);
+  const run = linked.querySelectorAll(".prism-link")[0];
+  assert.equal(run.localName, "span");
+  assert.equal(run.getAttribute("role"), null);
+  const click = { type: "click" };
+  run.dispatchEvent(click);
+  assert.ok(click.defaultPrevented);
+  assert.deepEqual(lastSent(page), { t: "menu", id: 42 });
+
+  // A draggable link: the app's drag, not the browser's link drag.
+  page.ws.deliver({ t: "patch", p: [{ op: "pointer", id: 2, mask: 4 }] });
+  assert.equal(row.getAttribute("draggable"), "false");
 });
 
 test("clickable texts: click, Enter and Space, focusable as buttons", () => {

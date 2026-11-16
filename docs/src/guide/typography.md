@@ -20,14 +20,19 @@ text("Deprecated").strikethrough().italic()
 | `.italic()` | `italic` | `font-style` | italic trait | italic typeface | Pango style |
 | `.line_height(20.)`, `.line_height(relative(1.4))`, `.leading(1.4)` | `line_height` | `line-height` | paragraph line height | `setLineHeight` | absolute line height |
 | `.letter_spacing(0.8)`, `.tracking(0.8)` | `letter_spacing` (points) | `letter-spacing` | kern | `setLetterSpacing` | letter spacing |
-| `.uppercase()`, `.lowercase()`, `.text_transform(…)` | `text_transform` | `text-transform` | transformed text | transformed text | transformed text |
+| `.uppercase()`, `.lowercase()`, `.capitalize()`, `.text_transform(…)` | `text_transform` | `text-transform` | transformed text | transformed text | transformed text |
 | `.underline()`, `.strikethrough()` / `.line_through()` | `underline`, `strikethrough` | `text-decoration-line` | underline / strikethrough style | spans | Pango attributes |
 | `.tabular_nums()` | `tabular_numbers` | `font-variant-numeric` | `tnum` feature | `tnum` | `tnum` |
 | `.truncate()`, `.line_clamp(n)` | `max_lines` | `text-overflow`, `line-clamp` | number of lines, tail truncation | `maxLines` + ellipsis | lines + ellipsize |
 | `.nowrap()` | `no_wrap` | `white-space: pre` | clipping | horizontal scrolling off, clipped | ellipsized (see below) |
 
-Screen readers read the text as written (`uppercase()` only changes how it
-looks). Line heights and letter spacings in points grow with Dynamic Type
+Screen readers read the text as written (`uppercase()` and `capitalize()`
+only change how it looks), so put data in as it is (`text(name).capitalize()`
+rather than capitalizing it in Rust). `capitalize()` raises the first letter
+of each word, like CSS: « l'été à paris » reads « L'été À Paris », and a word
+split across rich-text spans is capitalized once. On text fields,
+`capitalize(Capitalize::Words)` is something else: the keyboard's automatic
+capitalization while typing. Line heights and letter spacings in points grow with Dynamic Type
 like the font size; `relative(…)` line heights follow the size.
 
 Measuring is native: the shared flexbox layout asks each platform for the
@@ -49,6 +54,10 @@ assets/fonts/Inter-Italic.ttf
 text("Hello").font_family("Inter").weight(650)
 ```
 
+Fonts compiled into the binary (`Application::embedded_assets`, names under
+`fonts/`: see [Assets compiled into the binary](../platforms/web.md#assets-compiled-into-the-binary))
+count too, on the web, macOS, iOS and Linux.
+
 Every backend registers them at startup:
 
 - **Web**: one `@font-face` per file in Prism's stylesheet, pointing at the
@@ -57,10 +66,14 @@ Every backend registers them at startup:
   `.otf`; `.woff2` / `.woff` files are named `Family-WeightStyle`
   (`Inter-SemiBoldItalic.woff2`) and preferred when both exist.
 - **macOS, iOS, iPadOS, tvOS, visionOS, watchOS**: `CTFontManagerRegisterFontsForURL`
-  (process scope) from the bundle's `assets/fonts` (and the dev assets folder).
+  (process scope) from the bundle's `assets/fonts` (and the dev assets folder);
+  embedded fonts with `CTFontManagerRegisterGraphicsFont`, from memory (macOS,
+  iOS, iPadOS, tvOS, visionOS; the first face of a `.ttc`).
 - **Android**: `Typeface.createFromAsset`, found by the family name read from
-  the font file (also by its file name).
-- **Linux**: fontconfig (`FcConfigAppFontAddFile`), seen by Pango.
+  the font file (also by its file name). Only the APK's assets: keep the fonts
+  in the assets folder too.
+- **Linux**: fontconfig (`FcConfigAppFontAddFile`), seen by Pango. Embedded
+  fonts are written once to `~/.cache/prism-fonts/` (fontconfig reads files).
 
 An unknown family falls back to the system font.
 
@@ -114,7 +127,9 @@ text("Terms of use").underline().link("/terms")
 ```
 
 It is a button (or a link) for assistive technologies and reachable from the
-keyboard where the platform focuses buttons.
+keyboard where the platform focuses buttons. On the web a text made a link is an `<a href>`
+(see [Links](navigation.md#links)); links inside it are then plain runs that
+still report their clicks, since links don't nest.
 
 ## Where platforms differ
 

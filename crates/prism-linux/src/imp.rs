@@ -214,6 +214,14 @@ impl View {
 // window for sheets and dialogs
 // ---------------------------------------------------------------------------
 
+/// Autohide (close on a click outside, which also grabs the keyboard focus)
+/// unless the popover is fixed, manual, or leaves the focus to its anchor;
+/// one that leaves the focus never takes it.
+fn set_popover_mode(p: &gtk::Popover, config: prism_core::controls::OverlayConfig) {
+    p.set_autohide(!(config.fixed || config.manual || config.keep_focus));
+    p.set_can_focus(!config.keep_focus);
+}
+
 pub struct OverlayView {
     id: NodeId,
     /// Zero-size placeholder in the parent (the popover's anchor is the
@@ -243,7 +251,7 @@ impl OverlayView {
         let popover_kind = config.kind == OverlayKind::Popover;
         if built && (old.kind == OverlayKind::Popover) == popover_kind {
             if let Some(p) = self.popover.borrow().as_ref() {
-                p.set_autohide(!config.fixed);
+                set_popover_mode(p, config);
             }
             if let Some(w) = self.window.borrow().as_ref() {
                 w.set_deletable(!config.fixed);
@@ -254,7 +262,7 @@ impl OverlayView {
         let id = self.id;
         if popover_kind {
             let p = gtk::Popover::new();
-            p.set_autohide(!config.fixed);
+            set_popover_mode(&p, config);
             p.set_child(Some(&self.content));
             let weak = Rc::downgrade(self);
             p.connect_closed(move |p| {
@@ -377,6 +385,19 @@ impl OverlayView {
         }
     }
 
+    /// Shows a popover the app opened before its anchor had a parent
+    /// (inserted open with it, #70): called after each layout.
+    fn show_if_pending(&self) {
+        let pending = self
+            .popover
+            .borrow()
+            .as_ref()
+            .is_some_and(|p| !p.is_visible());
+        if self.open.get() && pending {
+            self.show();
+        }
+    }
+
     fn set_size(&self, w: i32, h: i32) {
         if self.size.replace((w, h)) == (w, h) {
             return;
@@ -440,6 +461,15 @@ fn attach_keys(window: &gtk::Window, keys: Rc<KeyState>) {
         let editing = focus
             .as_ref()
             .is_some_and(|f| f.is::<gtk::Text>() || f.is::<gtk::TextView>());
+        // In a text field: its selection before the key (#86).
+        let selection = focus.as_ref().and_then(|f| {
+            if let Some(t) = f.downcast_ref::<gtk::Text>() {
+                Some(editable_selection(t))
+            } else {
+                f.downcast_ref::<gtk::TextView>()
+                    .map(|v| buffer_selection(&v.buffer()))
+            }
+        });
         // The nearest focused node with `on_key_down`.
         let mut target = None;
         let mut next = focus.clone();
@@ -466,6 +496,7 @@ fn attach_keys(window: &gtk::Window, keys: Rc<KeyState>) {
                 key: name,
                 modifiers,
                 repeat,
+                selection,
             },
         ));
         if claimed {
@@ -525,6 +556,99 @@ thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
     /// Set while Prism changes widgets, so their signals are not reported back.
     static UPDATING: Cell<bool> = const { Cell::new(false) };
+    /// What each text field sent and the app has not rendered back yet (#73).
+    static TYPED: RefCell<HashMap<NodeId, prism_native::fields::Typed>> = RefCell::new(HashMap::new());
+}
+
+// ---------------------------------------------------------------------------
+// Text field selections (#86): GTK counts characters, like Prism
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    /// Fields reporting their selection (`on_select`).
+    static SELECT_EVENTS: RefCell<HashSet<NodeId>> = RefCell::new(HashSet::new());
+    /// The selection last reported, and the one waiting to be, by field.
+    static REPORTED: RefCell<HashMap<NodeId, prism_core::SelectionEvent>> = RefCell::new(HashMap::new());
+    static PENDING_SELECTION: RefCell<HashMap<NodeId, prism_core::SelectionEvent>> = RefCell::new(HashMap::new());
+    /// Entries the app set a selection on: `cx.focus` keeps it (instead of
+    /// selecting everything).
+    static APP_SELECTED: RefCell<HashSet<NodeId>> = RefCell::new(HashSet::new());
+}
+
+/// The selection of an editable (an entry, its inner `GtkText`), in characters.
+pub(crate) fn editable_selection(e: &impl IsA<gtk::Editable>) -> prism_core::SelectionEvent {
+    match e.selection_bounds() {
+        Some((a, b)) => prism_core::SelectionEvent::new(a.max(0) as usize, b.max(0) as usize),
+        None => prism_core::SelectionEvent::caret(e.position().max(0) as usize),
+    }
+}
+
+/// The selection of a text buffer, in characters.
+pub(crate) fn buffer_selection(b: &gtk::TextBuffer) -> prism_core::SelectionEvent {
+    match b.selection_bounds() {
+        Some((s, e)) => {
+            prism_core::SelectionEvent::new(s.offset().max(0) as usize, e.offset().max(0) as usize)
+        }
+        None => prism_core::SelectionEvent::caret(
+            b.iter_at_mark(&b.get_insert()).offset().max(0) as usize
+        ),
+    }
+}
+
+/// Field `id`'s selection may have moved to `sel` (typing, the pointer,
+/// keys): reported once per main-loop turn, after the `Input` of the same
+/// edit (a lower priority than `dispatch`), only when it moved, and never
+/// for Prism's own changes.
+pub(crate) fn report_selection(id: NodeId, sel: prism_core::SelectionEvent) {
+    if UPDATING.get() || !SELECT_EVENTS.with(|s| s.borrow().contains(&id)) {
+        return;
+    }
+    let first = PENDING_SELECTION.with(|p| p.borrow_mut().insert(id, sel).is_none());
+    if !first {
+        return;
+    }
+    glib::idle_add_local_full(glib::Priority::LOW, move || {
+        let sel = PENDING_SELECTION.with(|p| p.borrow_mut().remove(&id));
+        if let Some(sel) = sel
+            && SELECT_EVENTS.with(|s| s.borrow().contains(&id))
+            && REPORTED.with(|r| r.borrow_mut().insert(id, sel)) != Some(sel)
+        {
+            with_state(|s| {
+                let patches = s.runtime.dispatch(UiEvent::Select(id, sel.start, sel.end));
+                commit(s, patches);
+            });
+        }
+        glib::ControlFlow::Break
+    });
+}
+
+fn forget_selection(id: NodeId) {
+    APP_SELECTED.with(|s| s.borrow_mut().remove(&id));
+    SELECT_EVENTS.with(|s| s.borrow_mut().remove(&id));
+    REPORTED.with(|r| r.borrow_mut().remove(&id));
+    PENDING_SELECTION.with(|p| p.borrow_mut().remove(&id));
+}
+
+/// The user typed `text` in field `id`: remembered until the app renders it
+/// back (events run on a later turn, the user may type further meanwhile),
+/// then dispatched.
+pub(crate) fn dispatch_typed(id: NodeId, text: String) {
+    if UPDATING.get() {
+        return;
+    }
+    TYPED.with(|t| t.borrow_mut().entry(id).or_default().sent(&text));
+    dispatch(UiEvent::Input(id, text));
+}
+
+/// Whether the app's `text` for field `id`, showing `current`, is written
+/// into it: not an echo of the user's typing, and different (#73).
+fn field_takes(id: NodeId, text: &str, current: &str) -> bool {
+    TYPED.with(|t| {
+        t.borrow_mut()
+            .entry(id)
+            .or_default()
+            .should_apply(text, current)
+    })
 }
 
 fn with_state(f: impl FnOnce(&mut State)) {
@@ -661,6 +785,8 @@ pub struct Gtk {
     clickable: Rc<RefCell<HashSet<NodeId>>>,
     timers: HashMap<NodeId, (gtk::Label, f64)>,
     assets: Option<std::path::PathBuf>,
+    /// Assets compiled into the binary, found before the directory's.
+    embedded: prism_core::EmbeddedAssets,
     dark: bool,
     /// Titles of screens and tabs, icons of tabs.
     titles: HashMap<NodeId, String>,
@@ -679,6 +805,8 @@ pub struct Gtk {
     /// Form controls, mirrored in right-to-left.
     controls: HashMap<NodeId, gtk::Widget>,
     date_pickers: HashMap<NodeId, Rc<controls::DatePicker>>,
+    /// "Clear" in the app's language (optional date pickers, #89).
+    clear_label: String,
     /// Status regions and what they last announced.
     statuses: HashMap<NodeId, String>,
     /// Text labels: their text, runs and style (rebuilt when one changes).
@@ -1068,7 +1196,13 @@ impl Widgets for Gtk {
             }
             NodeKind::TextInput => {
                 let e = gtk::Entry::new();
-                e.connect_changed(move |e| dispatch(UiEvent::Input(id, e.text().to_string())));
+                e.connect_changed(move |e| dispatch_typed(id, e.text().to_string()));
+                // The caret and the selection's other end (#86).
+                for prop in ["cursor-position", "selection-bound"] {
+                    e.connect_notify_local(Some(prop), move |e, _| {
+                        report_selection(id, editable_selection(e))
+                    });
+                }
                 // Enter.
                 e.connect_activate(move |_| dispatch(UiEvent::Submit(id)));
                 View::Input(id, e)
@@ -1080,6 +1214,9 @@ impl Widgets for Gtk {
             NodeKind::Picker => View::Picker(id, controls::picker(id)),
             NodeKind::DatePicker => {
                 let p = controls::date_picker(id, self.locale.clone());
+                if !self.clear_label.is_empty() {
+                    p.set_clear_label(&self.clear_label);
+                }
                 self.date_pickers.insert(id, p.clone());
                 View::DatePicker(id, p)
             }
@@ -1115,7 +1252,8 @@ impl Widgets for Gtk {
                 View::Shape(id, area, paths)
             }
             NodeKind::Scene3d => {
-                let scene = crate::scene3d::SceneView::new(id, self.assets.clone());
+                let scene =
+                    crate::scene3d::SceneView::new(id, self.assets.clone(), self.embedded.clone());
                 self.scenes.insert(id, scene.area.clone());
                 View::Scene(id, scene)
             }
@@ -1318,10 +1456,12 @@ impl Widgets for Gtk {
         // view's margins; `.border(0.)`: not even the theme's frame.
         crate::padding::remember(id, s);
         match view {
-            View::Text(..) | View::Timer(..) | View::Button(..) | View::Input(..) => {
-                css += &crate::padding::css(s)
+            View::Text(..) | View::Timer(..) | View::Button(..) => css += &crate::padding::css(s),
+            View::Input(..) => {
+                css += &crate::padding::css(s);
+                css += crate::padding::entry_css(s);
             }
-            View::TextArea(_, t) => t.set_padding(s.padding),
+            View::TextArea(_, t) => t.set_padding(s.has_padding().then_some(s.padding)),
             _ => {}
         }
         if s.border_none && !s.borders().iter().any(|b| b.width > 0.) {
@@ -1429,12 +1569,24 @@ impl Widgets for Gtk {
                 text::apply(l, state, self.dark);
             }
             View::Button(_, b) => b.set_label(text),
-            View::Input(_, e) => {
-                if e.text() != text && !e.has_focus() {
+            // A value from the app reaches a focused field too; echoes of
+            // the typing leave it (and its caret) alone (#73).
+            View::Input(id, e) => {
+                let current = e.text();
+                if field_takes(*id, text, &current) {
+                    let caret = prism_native::fields::caret_from_end(
+                        current.chars().count(),
+                        e.position().max(0) as usize,
+                        text.chars().count(),
+                    );
                     e.set_text(text);
+                    e.set_position(caret as i32);
                 }
             }
-            View::TextArea(_, t) => t.set_text(text),
+            View::TextArea(id, t) => {
+                let takes = field_takes(*id, text, &t.text());
+                t.set_text(text, takes);
+            }
             // Bytes in memory (`picture_data`): decoded by GdkTexture
             // (PNG, JPEG, TIFF; others through gdk-pixbuf's loaders).
             View::Picture(_, p) if text.starts_with("data:") => {
@@ -1453,13 +1605,21 @@ impl Widgets for Gtk {
                 load_remote_picture(p, text);
             }
             View::Picture(_, p) => {
-                let path = if text.starts_with('/') {
-                    Some(std::path::PathBuf::from(text))
+                // Compiled into the binary first, then the assets directory.
+                if let Some(bytes) = self.embedded.get(text) {
+                    match gtk::gdk::Texture::from_bytes(&gtk::glib::Bytes::from(bytes)) {
+                        Ok(t) => p.set_paintable(Some(&t)),
+                        Err(_) => eprintln!("prism-linux: could not decode the picture {text}"),
+                    }
                 } else {
-                    self.assets.as_ref().map(|a| a.join(text))
-                };
-                if let Some(path) = path.filter(|p| p.exists()) {
-                    p.set_filename(Some(&path));
+                    let path = if text.starts_with('/') {
+                        Some(std::path::PathBuf::from(text))
+                    } else {
+                        self.assets.as_ref().map(|a| a.join(text))
+                    };
+                    if let Some(path) = path.filter(|p| p.exists()) {
+                        p.set_filename(Some(&path));
+                    }
                 }
             }
             // Screens and tabs: titles (the stack header / tab bar shows them).
@@ -1492,6 +1652,7 @@ impl Widgets for Gtk {
                 set_accessible_string(&t.view, a11y_property::PLACEHOLDER, text);
             }
             View::Picker(_, p) => p.set_placeholder(text),
+            View::DatePicker(_, p) => p.set_placeholder(text),
             _ => {}
         }
     }
@@ -1638,6 +1799,8 @@ impl Widgets for Gtk {
 
     fn destroy(&mut self, view: &View) {
         let id = view.id();
+        TYPED.with(|t| t.borrow_mut().remove(&id));
+        forget_selection(id);
         crate::navbar::forget(id);
         self.shapes.remove(&id);
         self.scenes.remove(&id);
@@ -1903,6 +2066,9 @@ impl Widgets for Gtk {
         if let Some(hint) = &a11y.hint {
             set_accessible_string(&w, a11y_property::DESCRIPTION, hint);
         }
+        // A selected item or the current page of a navigation (GTK has no
+        // « current » state).
+        set_accessible_selected(&w, a11y.is_selected());
         match view {
             // GtkScale exposes its own range and value (VALUE_MIN/MAX/NOW,
             // gtkrange.c); a formatted value ("40 %") is read instead.
@@ -1937,6 +2103,25 @@ impl Widgets for Gtk {
                         controls::announce(&w, &value);
                     }
                     self.statuses.insert(*id, value);
+                }
+            }
+            // Drawn choices (#84): option cards that are radios, custom
+            // checkboxes and switches, with their checked state.
+            View::Container(..) => {
+                let role = match a11y.role {
+                    Some(prism_core::Role::Radio) => gtk::AccessibleRole::Radio,
+                    Some(prism_core::Role::RadioGroup) => gtk::AccessibleRole::RadioGroup,
+                    Some(prism_core::Role::Checkbox) => gtk::AccessibleRole::Checkbox,
+                    Some(prism_core::Role::Switch) => gtk::AccessibleRole::Switch,
+                    _ => return,
+                };
+                // As above: the role can only change before it is realized.
+                if !w.is_realized() && w.property::<gtk::AccessibleRole>("accessible-role") != role
+                {
+                    w.set_property("accessible-role", role);
+                }
+                if role != gtk::AccessibleRole::RadioGroup {
+                    set_accessible_checked(&w, a11y.checked.unwrap_or(false));
                 }
             }
             _ => {}
@@ -2040,6 +2225,12 @@ impl Widgets for Gtk {
                 p.set_locale(locale.clone());
             }
         }
+        if env.clear != self.clear_label {
+            self.clear_label = env.clear.clone();
+            for p in self.date_pickers.values() {
+                p.set_clear_label(&env.clear);
+            }
+        }
     }
 
     fn set_icon(&mut self, view: &View, icon: &str) {
@@ -2138,7 +2329,10 @@ impl Widgets for Gtk {
             View::Scroll(_, _, content) => {
                 content.set_size_request(width.ceil() as i32, height.ceil() as i32)
             }
-            View::Overlay(_, o) => o.set_size(width.ceil() as i32, height.ceil() as i32),
+            View::Overlay(_, o) => {
+                o.set_size(width.ceil() as i32, height.ceil() as i32);
+                o.show_if_pending();
+            }
             _ => {}
         }
     }
@@ -2237,6 +2431,28 @@ impl Widgets for Gtk {
         }
     }
 
+    /// Text field selections (#86), in characters like GTK.
+    fn set_selection(&mut self, view: &View, start: usize, end: usize) {
+        match view {
+            View::Input(id, e) => {
+                let len = e.text().chars().count();
+                e.select_region(start.min(len) as i32, end.min(len) as i32);
+                APP_SELECTED.with(|s| s.borrow_mut().insert(*id));
+            }
+            View::TextArea(_, t) => t.select(start, end),
+            _ => {}
+        }
+    }
+
+    fn set_select_events(&mut self, view: &View, on: bool) {
+        let id = view.id();
+        if on {
+            SELECT_EVENTS.with(|s| s.borrow_mut().insert(id));
+        } else {
+            forget_selection(id);
+        }
+    }
+
     fn set_key_events(&mut self, view: &View, local: bool, global: bool) {
         let id = view.id();
         let set = |s: &RefCell<HashSet<NodeId>>, on: bool| {
@@ -2286,9 +2502,19 @@ impl Widgets for Gtk {
         if target.is::<gtk::Box>() && !target.is_focusable() {
             target.set_focusable(true);
         }
+        // An entry keeps the selection the app gave it (#86).
+        let keep = match view {
+            View::Input(id, _) => APP_SELECTED.with(|s| s.borrow().contains(id)),
+            _ => false,
+        };
         // After the layout pass: a new widget is not mapped yet.
-        glib::idle_add_local_once(move || {
-            target.grab_focus();
+        glib::idle_add_local_once(move || match target.downcast_ref::<gtk::Entry>() {
+            Some(e) if keep => {
+                e.grab_focus_without_selecting();
+            }
+            _ => {
+                target.grab_focus();
+            }
         });
     }
 
@@ -2474,6 +2700,36 @@ pub(crate) fn set_accessible_hidden(w: &impl IsA<gtk::Widget>, hidden: bool) {
     }
 }
 
+/// `GTK_ACCESSIBLE_STATE_CHECKED` (gtkenums.h): a radio, checkbox or switch
+/// drawn by the app is on (a `GtkAccessibleTristate`).
+fn set_accessible_checked(w: &impl IsA<gtk::Widget>, checked: bool) {
+    use gtk::glib::translate::{ToGlibPtr, ToGlibPtrMut};
+    const CHECKED: i32 = 1;
+    let state = if checked {
+        gtk::AccessibleTristate::True
+    } else {
+        gtk::AccessibleTristate::False
+    };
+    let mut value = state.to_value();
+    let widget: *mut gtk::ffi::GtkWidget = w.as_ref().to_glib_none().0;
+    // SAFETY: every GtkWidget implements GtkAccessible; one tristate state.
+    unsafe {
+        gtk_accessible_update_state_value(widget.cast(), 1, &CHECKED, value.to_glib_none_mut().0);
+    }
+}
+
+/// `GTK_ACCESSIBLE_STATE_SELECTED` (gtkenums.h): a selected item.
+pub(crate) fn set_accessible_selected(w: &impl IsA<gtk::Widget>, selected: bool) {
+    use gtk::glib::translate::{ToGlibPtr, ToGlibPtrMut};
+    const SELECTED: i32 = 7;
+    let mut value = selected.to_value();
+    let widget: *mut gtk::ffi::GtkWidget = w.as_ref().to_glib_none().0;
+    // SAFETY: every GtkWidget implements GtkAccessible; one boolean state.
+    unsafe {
+        gtk_accessible_update_state_value(widget.cast(), 1, &SELECTED, value.to_glib_none_mut().0);
+    }
+}
+
 /// What screen readers say for `w`.
 fn set_accessible_label(w: &gtk::Widget, label: &str) {
     set_accessible_string(w, a11y_property::LABEL, label);
@@ -2612,7 +2868,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         .ok()
         .or_else(|| config.assets.clone())
         .map(Into::into);
-    text::register_fonts(assets.as_deref());
+    text::register_fonts(assets.as_deref(), &config.embedded_assets);
     let _ = APP.set((config, init));
     // Installed packages set PRISM_APP_ID (the .desktop file's name), so
     // desktops match the window to its launcher and icon.
@@ -2700,8 +2956,10 @@ fn activate(app: &gtk::Application) {
         prism_core::RuntimeOptions {
             path: std::env::var("PRISM_PATH").unwrap_or_else(|_| "/".into()),
             storage: Some(Box::new(prism_core::FileStorage::new(data.clone()))),
+            // Queued, not `invoke`d: on the UI thread `invoke` would run
+            // `poll` right away, nested in the update that woke it (#57).
             wake_ui: Some(std::sync::Arc::new(|| {
-                glib::MainContext::default().invoke(poll);
+                glib::idle_add_once(poll);
             })),
             capabilities: prism_core::PlatformServices::capabilities(&services),
             environment: environment(),
@@ -2731,6 +2989,7 @@ fn activate(app: &gtk::Application) {
             .ok()
             .or_else(|| config.assets.clone())
             .map(Into::into),
+        embedded: config.embedded_assets.clone(),
         dark,
         titles: HashMap::new(),
         icons: HashMap::new(),
@@ -2743,6 +3002,7 @@ fn activate(app: &gtk::Application) {
         locale: locale(),
         controls: HashMap::new(),
         date_pickers: HashMap::new(),
+        clear_label: String::new(),
         statuses: HashMap::new(),
         bare: HashSet::new(),
         stickies: Rc::new(RefCell::new(HashMap::new())),

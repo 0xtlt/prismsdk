@@ -183,6 +183,7 @@ pub fn key_event(press: &UIPress, mtm: MainThreadMarker) -> Option<KeyEvent> {
             key: name,
             modifiers,
             repeat: false,
+            selection: None,
         });
     }
     let name = match press.r#type() {
@@ -251,10 +252,16 @@ fn wanted(
     mtm: MainThreadMarker,
 ) -> Option<(Option<NodeId>, KeyEvent)> {
     let focused = focused_node(window);
+    // In a text field: its selection before the key (#86).
+    let selection = focused
+        .filter(|f| f.1)
+        .and_then(|_| window.and_then(|w| find_first_responder(w)))
+        .and_then(|r| crate::forms::current_selection(&r));
     for press in presses.iter() {
         let Some(key) = key_event(&press, mtm) else {
             continue;
         };
+        let key = KeyEvent { selection, ..key };
         let remote_menu = press.key(mtm).is_none() && press.r#type() == UIPressType::Menu;
         match local {
             // The remote's Menu stays the system's Back for local listeners.

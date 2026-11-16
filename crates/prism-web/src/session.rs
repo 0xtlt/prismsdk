@@ -202,7 +202,9 @@ impl Drop for SessionCount {
 impl Live {
     /// Serves the page until it closes.
     fn run(mut self, rx: mpsc::Receiver<Inbound>) {
-        let first = self.runtime.render();
+        // The tree that replaces the first paint waits for its data as the
+        // first paint did, or the page would flash its loading state.
+        let first = self.runtime.render_settled(self.app.inner.first_paint_wait);
         if !self.patches("reset", &first) {
             return;
         }
@@ -416,6 +418,16 @@ impl Live {
     }
 }
 
+/// A `change` event's value: a number, or `null` for an optional date
+/// picker the user cleared (`NaN`, #89).
+fn change_value(v: &Value) -> Option<f64> {
+    if v.is_null() {
+        Some(f64::NAN)
+    } else {
+        v.as_f64()
+    }
+}
+
 pub(crate) fn parse_event(v: &Value) -> Option<UiEvent> {
     if let Some(event) = parse_input_event(v) {
         return Some(event);
@@ -426,7 +438,8 @@ pub(crate) fn parse_event(v: &Value) -> Option<UiEvent> {
         "submit" => Some(UiEvent::Submit(id)),
         "input" => Some(UiEvent::Input(id, v.get("v")?.as_str()?.to_string())),
         "back" => Some(UiEvent::Back(id, v.get("depth")?.as_u64()? as usize)),
-        "change" => Some(UiEvent::Change(id, v.get("v")?.as_f64()?)),
+        // `null`: an optional date picker was cleared (#89).
+        "change" => Some(UiEvent::Change(id, change_value(v.get("v")?)?)),
         "menu" => Some(UiEvent::MenuSelect(id)),
         "scroll" => Some(UiEvent::Scroll(
             id,
@@ -462,8 +475,10 @@ pub(crate) fn parse_event(v: &Value) -> Option<UiEvent> {
 /// Pointer, drag and key events (#17): `{"t":"click","id","x","y"}` (a
 /// click with its position), `{"t":"pointer","id","phase","x","y"}`,
 /// `{"t":"drag","id","phase","x","y","dx","dy"}`,
-/// `{"t":"key","id","key","mods","repeat"}` (`id` 0 or absent: nothing
-/// Prism knows has the focus).
+/// `{"t":"key","id","key","mods","repeat","sel"}` (`id` 0 or absent:
+/// nothing Prism knows has the focus; `sel`: `[start, end]`, the focused
+/// text field's selection in characters, #86) and
+/// `{"t":"select","id","start","end"}` (a text field's selection, #86).
 fn parse_input_event(v: &Value) -> Option<UiEvent> {
     use prism_core::{
         DragEvent, DragPhase, KeyEvent, Modifiers, Point, PointerEvent, PointerPhase,
@@ -495,7 +510,17 @@ fn parse_input_event(v: &Value) -> Option<UiEvent> {
                     v.get("mods").and_then(Value::as_u64).unwrap_or(0) as u8
                 ),
                 repeat: v.get("repeat").and_then(Value::as_bool).unwrap_or(false),
+                selection: v.get("sel").and_then(Value::as_array).and_then(|a| {
+                    let at = |i: usize| a.get(i).and_then(Value::as_u64).map(|n| n as usize);
+                    Some(prism_core::SelectionEvent::new(at(0)?, at(1)?))
+                }),
             },
+        )),
+        // A text field's selection moved (#86), in characters.
+        "select" => Some(UiEvent::Select(
+            id?,
+            v.get("start")?.as_u64()? as usize,
+            v.get("end")?.as_u64()? as usize,
         )),
         _ => None,
     }
@@ -893,7 +918,7 @@ impl Encoder {
                     Some(prism_core::Role::Heading(l)) => Some(l),
                     _ => None,
                 };
-                json!({ "op": "a11y", "id": id, "a11y": {
+                let mut a = json!({
                     "role": a11y.role.map(|r| r.aria()),
                     "level": level,
                     "label": a11y.label,
@@ -902,7 +927,15 @@ impl Encoder {
                     "checked": a11y.checked,
                     "disabled": a11y.disabled,
                     "hidden": a11y.hidden,
-                }})
+                });
+                // Rare states only when set: most patches stay as they were.
+                if let Some(selected) = a11y.selected {
+                    a["selected"] = json!(selected);
+                }
+                if a11y.current {
+                    a["current"] = json!(true);
+                }
+                json!({ "op": "a11y", "id": id, "a11y": a })
             }
             Patch::SetRoot { id } => json!({ "op": "root", "id": id }),
             Patch::Destroy { id } => {
@@ -917,6 +950,11 @@ impl Encoder {
                 json!({ "op": "keys", "id": id, "local": local, "global": global })
             }
             Patch::Focus { id } => json!({ "op": "focus", "id": id }),
+            // Text field selections (#86), in characters.
+            Patch::SetSelection { id, start, end } => {
+                json!({ "op": "sel", "id": id, "start": start, "end": end })
+            }
+            Patch::SetSelectEvents { id, on } => json!({ "op": "selev", "id": id, "on": on }),
             Patch::ScrollIntoView { id } => json!({ "op": "reveal", "id": id }),
             Patch::DismissKeyboard => json!({ "op": "blur" }),
             Patch::SetLayers { ids } => json!({ "op": "layers", "ids": ids }),
@@ -932,12 +970,19 @@ impl Encoder {
                 let wasm = matches!(source, prism_core::IslandSource::Wasm(_));
                 json!({ "op": "island", "id": id, "tag": tag, "module": module, "wasm": wasm, "events": events })
             }
+            // The node becomes an `<a href>` (`client.js` resolves the path
+            // under the mount point, like rich text links).
+            Patch::SetLink { id, href } => json!({ "op": "link", "id": id, "href": href }),
             Patch::SetIslandProps { id, props } => {
                 let props: serde_json::Map<String, Value> = props
                     .iter()
                     .map(|(k, v)| (k.clone(), serde_json::from_str(v).unwrap_or(Value::Null)))
                     .collect();
                 json!({ "op": "props", "id": id, "props": props })
+            }
+            // App-defined attributes (#85): every one, in order.
+            Patch::SetAttributes { id, attributes } => {
+                json!({ "op": "attrs", "id": id, "attrs": attributes })
             }
         }
     }

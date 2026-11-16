@@ -15,6 +15,13 @@
 //!
 //! Escape (hardware keyboard) closes non-fixed overlays; `fixed` sets
 //! `modalInPresentation`. A user dismissal reports `UiEvent::Back(id, 0)`.
+//!
+//! An overlay inserted already open (with its parent, #70) is presented
+//! once its anchor is in a window: by the layout that follows
+//! (`present_if_pending`). A `manual` or `keep_focus` popover lets taps
+//! through to the window around it (passthrough views, so they do not
+//! close it); a `keep_focus` one leaves the first responder where it is
+//! (the keyboard stays up), taking it back if UIKit moved it.
 
 use std::cell::Cell;
 
@@ -250,22 +257,58 @@ impl Overlay {
         if self.presented() {
             return;
         }
+        // Inserted open: the anchor (a popover's source) or the app's view
+        // is not in a window yet; the next layout presents it.
+        let Some(window) = root.viewIfLoaded().and_then(|v| v.window()) else {
+            return;
+        };
+        if self.config.get().kind == OverlayKind::Popover
+            && !cfg!(target_os = "tvos")
+            && self.anchor.superview().and_then(|s| s.window()).is_none()
+        {
+            return;
+        }
         self.configure();
         let top = crate::menus::top_controller(root);
         if *top == **self.vc {
             return;
         }
         let vc = self.vc.clone();
+        let keep_focus = self.keeps_focus();
+        #[cfg(not(target_os = "tvos"))]
+        let focused = first_responder(&window);
+        #[cfg(target_os = "tvos")]
+        let _ = &window;
         let done = block2::RcBlock::new(move || {
-            // Escape reaches the overlay unless a field inside has the focus.
             #[cfg(not(target_os = "tvos"))]
-            if vc.view().and_then(|v| first_responder(&v)).is_none() {
+            if keep_focus {
+                // The anchor's field keeps the keys (and the keyboard).
+                if let Some(f) = &focused
+                    && !f.isFirstResponder()
+                {
+                    let _ = f.becomeFirstResponder();
+                }
+            } else if vc.view().and_then(|v| first_responder(&v)).is_none() {
+                // Escape reaches the overlay unless a field inside has the focus.
                 let _ = vc.becomeFirstResponder();
             }
             #[cfg(target_os = "tvos")]
-            let _ = &vc;
+            let _ = (&vc, keep_focus);
         });
         top.presentViewController_animated_completion(&self.vc, true, Some(&done));
+    }
+
+    /// Presents an overlay the app opened before it could be shown.
+    pub fn present_if_pending(&self, root: &UIViewController) {
+        if self.open.get() && !self.presented() {
+            self.set_open(true, root);
+        }
+    }
+
+    /// A popover that leaves the first responder to its anchor's field.
+    fn keeps_focus(&self) -> bool {
+        let c = self.config.get();
+        c.kind == OverlayKind::Popover && c.keep_focus && !cfg!(target_os = "tvos")
     }
 
     pub fn close(&self) {
@@ -326,6 +369,16 @@ impl Overlay {
                         if let Some(s) = &source {
                             pc.setSourceRect(s.bounds());
                         }
+                        // Taps around a manual or inline popover reach the
+                        // window (the anchor's field) and do not close it.
+                        let window = source.as_ref().and_then(|s| s.window());
+                        let through: Vec<Retained<UIView>> = match window {
+                            Some(w) if c.manual || c.keep_focus => vec![Retained::into_super(w)],
+                            _ => Vec::new(),
+                        };
+                        pc.setPassthroughViews(Some(
+                            &objc2_foundation::NSArray::from_retained_slice(&through),
+                        ));
                     }
                     let (w, h) = self.size.get();
                     if w > 0. && h > 0. {

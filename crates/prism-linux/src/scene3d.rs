@@ -91,6 +91,8 @@ struct State {
     ticking: bool,
     /// Where app-asset textures are read from.
     assets: Option<PathBuf>,
+    /// App assets compiled into the binary, searched first.
+    embedded: prism_core::EmbeddedAssets,
 }
 
 /// A texture image of a scene.
@@ -150,8 +152,12 @@ impl Wanted {
 
 impl SceneView {
     /// A scene element reporting taps as node `id`; textures that are app
-    /// assets are read from `assets`.
-    pub fn new(id: NodeId, assets: Option<PathBuf>) -> Rc<SceneView> {
+    /// assets are read from `embedded`, then `assets`.
+    pub fn new(
+        id: NodeId,
+        assets: Option<PathBuf>,
+        embedded: prism_core::EmbeddedAssets,
+    ) -> Rc<SceneView> {
         // Always with alpha in GTK 4: transparent where the scene has no
         // background.
         let area = gtk::GLArea::new();
@@ -162,6 +168,7 @@ impl SceneView {
         area.set_auto_render(false);
         let state = Rc::new(RefCell::new(State {
             assets,
+            embedded,
             ..State::default()
         }));
         let s = state.clone();
@@ -2074,6 +2081,7 @@ fn request_image(area: &gtk::GLArea, state: &Rc<RefCell<State>>, src: String) {
         return;
     }
     let sources = prism_native::images::ImageSources {
+        embedded: state.borrow().embedded.clone(),
         asset_dirs: state.borrow().assets.iter().cloned().collect(),
         cache_dir: None,
     };

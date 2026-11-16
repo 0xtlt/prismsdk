@@ -185,9 +185,14 @@ public final class PrismHost {
         int[] viewport = {0, 0};
         // Form controls (PrismForms): the config string, accessibility.
         String config = "";
+        /** An optional date picker's text while it is empty (#89). */
+        String placeholder = "";
         /** A rich text's runs (PrismText), null when plain. */
         JSONArray runs;
         String a11yLabel, a11yValue, announced;
+        /** The ARIA role name the app gave (`radio`, `checkbox`…), and its checked state. */
+        String a11yRole;
+        Boolean a11yChecked;
         // `.sticky()`: the scroll view it follows (-1: none) and its range.
         long stickyScroll = -1;
         float stickyTop, stickyInset, stickyMax;
@@ -199,11 +204,14 @@ public final class PrismHost {
         // Pointer, keys, hit testing, overlays (PrismInput).
         int pointerMask;
         boolean keysLocal, keysGlobal, noHit, inert, a11yHidden, dragging;
+        // Text field selections (#86): reported (`selev`), last sent, a report posted.
+        boolean selectEvents, selPosted;
+        int[] lastSel;
         /** Where the pointer went down: view x, y, then raw x, y (pixels). */
         float[] down = {0, 0, 0, 0};
         android.widget.PopupWindow popup;
         String overlay = "sheet";
-        boolean fixed, medium, closing;
+        boolean fixed, medium, closing, manual, keepFocus, pendingOpen;
         // Padding (#14): the view's own padding while the app's replaces it,
         // and its own background while `.border(0.)` removes it.
         int[] basePad;
@@ -420,7 +428,12 @@ public final class PrismHost {
                 n.a11yHidden = p.optBoolean("hidden");
                 n.view.setImportantForAccessibility(n.a11yHidden || n.inert
                         ? View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS : View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
-                PrismForms.a11y(n, p.isNull("role") ? null : p.optString("role", null), p.isNull("value") ? null : p.optString("value", null));
+                n.a11yRole = p.isNull("role") ? null : p.optString("role", null);
+                n.a11yChecked = p.isNull("checked") ? null : p.optBoolean("checked");
+                // A selected item or the current page: TalkBack says « selected ».
+                if (n.view.isSelected() != p.optBoolean("selected")) n.view.setSelected(p.optBoolean("selected"));
+                PrismText.clickable(n);
+                PrismForms.a11y(n, n.a11yRole, p.isNull("value") ? null : p.optString("value", null));
                 break;
             case "children": setChildren(n, p.getJSONArray("children")); break;
             case "frame": {
@@ -468,6 +481,8 @@ public final class PrismHost {
                 PrismInput.hover(n);
                 break;
             case "keys": PrismInput.keys(n, p.optBoolean("local"), p.optBoolean("global")); break;
+            case "sel": PrismInput.select(n, p.optInt("start"), p.optInt("end")); break;
+            case "selev": PrismInput.selectEvents(n, p.optBoolean("on")); break;
             case "focus": PrismInput.focus(n); break;
             case "reveal": PrismInput.reveal(n); break;
         }
@@ -502,7 +517,12 @@ public final class PrismHost {
             }
             case "text_input": {
                 // Completes from the config's suggestions (an EditText without them).
-                android.widget.AutoCompleteTextView e = new android.widget.AutoCompleteTextView(activity);
+                android.widget.AutoCompleteTextView e = new android.widget.AutoCompleteTextView(activity) {
+                    @Override protected void onSelectionChanged(int start, int end) {
+                        super.onSelectionChanged(start, end);
+                        PrismInput.selectionChanged(this);
+                    }
+                };
                 e.setThreshold(1);
                 e.setSingleLine(true);
                 e.addTextChangedListener(new TextWatcher() {
@@ -813,11 +833,14 @@ public final class PrismHost {
             case "button": case "checkbox": ((TextView) n.view).setText(text); break;
             case "text_input": case "text_area": {
                 EditText e = (EditText) n.view;
-                // Typing echoes back the same text; only a change from the app (clearing
-                // after "Add") differs. Runs inside apply(), so the watcher stays quiet.
+                // Typing echoes back the same text (events reach the app synchronously);
+                // only a value from the app (clearing after "Add", a Markdown shortcut)
+                // differs, written even while focused, the caret keeping its distance
+                // from the end (#73). Runs inside apply(), so the watcher stays quiet.
                 if (!e.getText().toString().equals(text)) {
+                    int fromEnd = Math.max(0, e.length() - Math.max(0, e.getSelectionEnd()));
                     e.setText(text);
-                    e.setSelection(text.length());
+                    e.setSelection(Math.max(0, text.length() - fromEnd));
                 }
                 break;
             }
@@ -879,6 +902,8 @@ public final class PrismHost {
     static String appearance = "system";
     static boolean rtl;
     static String backLabel = "Back";
+    /** The action emptying an optional date picker (#89), in the app's language. */
+    static String clearLabel = "Clear";
     /** The app's language (BCP 47), for formatted dates. */
     static String lang = "";
 
@@ -901,6 +926,7 @@ public final class PrismHost {
     static void setEnvironment(JSONObject p) {
         rtl = p.optBoolean("rtl");
         backLabel = p.optString("back", "Back");
+        clearLabel = p.optString("clear", "Clear");
         lang = p.isNull("lang") ? "" : p.optString("lang", "");
         View decor = activity.getWindow().getDecorView();
         decor.setLayoutDirection(rtl ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR);

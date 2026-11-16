@@ -142,11 +142,14 @@ public func prismWatchMeasure(_ kind: UnsafePointer<CChar>, _ text: UnsafePointe
                         height: max(label.height + PickerChrome.vertical, PickerChrome.minHeight))
         if maxWidth.isFinite { result.width = min(result.width, maxWidth) }
     case "date_picker":
-        // A button showing the value (a wide one: day 28, 23:58).
-        let mode = String(cString: text).split(separator: " ").first.map(String.init) ?? "date"
+        // A button showing the value (a wide one: day 28, 23:58), or an
+        // optional one's placeholder on the second line (#89).
+        let lines = String(cString: text).split(separator: "\n", maxSplits: 1).map(String.init)
+        let mode = lines.first?.split(separator: " ").first.map(String.init) ?? "date"
         let lang = MainActor.assumeIsolated { PrismStore.shared.lang }
         let sample = PrismDatePicker.format(Date(timeIntervalSince1970: 1_798_498_680), mode, ControlEnvironment.locale(lang))
-        let label = textSize(sample, width: .infinity)
+        var label = textSize(sample, width: .infinity)
+        if lines.count > 1 { label.width = max(label.width, textSize(lines[1], width: .infinity).width) }
         result = CGSize(width: label.width + PickerChrome.width,
                         height: max(label.height + PickerChrome.vertical, PickerChrome.minHeight))
         if maxWidth.isFinite { result.width = min(result.width, maxWidth) }
@@ -230,17 +233,24 @@ func prismUIFont(family: String?, size: Double, weight: Double, italic: Bool, ta
     return italic || tabular ? UIFont(descriptor: d, size: size) : font
 }
 
+/// Whether a word starts after `c`: anything but a letter, a digit or an
+/// apostrophe.
+private func prismStartsWord(after c: Character) -> Bool {
+    !(c.isLetter || c.isNumber) && c != "'" && c != "\u{2019}"
+}
+
 /// The text as drawn (`tt`): CSS `text-transform` (capitalize only raises
-/// the first letter of each word).
-func prismTransform(_ s: String, _ tt: String?) -> String {
+/// the first letter of each word). `before` is the previous run of the same
+/// text, so a word cut by a run boundary is capitalized once.
+func prismTransform(_ s: String, _ tt: String?, after before: String = "") -> String {
     switch tt {
     case "upper": return s.uppercased()
     case "lower": return s.lowercased()
     case "capitalize":
-        var out = "", start = true
+        var out = "", start = before.last.map { prismStartsWord(after: $0) } ?? true
         for c in s {
             out += start && (c.isLetter || c.isNumber) ? c.uppercased() : String(c)
-            start = !(c.isLetter || c.isNumber) && c != "'" && c != "\u{2019}"
+            start = prismStartsWord(after: c)
         }
         return out
     default: return s
@@ -300,18 +310,22 @@ struct PrismTypo {
     func measure(_ text: String, runs: [[String: Any]], maxWidth: Double) -> CGSize {
         let s = NSMutableAttributedString()
         var lineH = font.lineHeight
+        var before = ""
         for r in self.runs(text, runs) {
             let f = font(r)
             lineH = max(lineH, f.lineHeight)
             if let icon = r["icon"] as? String {
+                before = ""
                 let config = UIImage.SymbolConfiguration(pointSize: f.pointSize, weight: .regular)
                 let attachment = NSTextAttachment()
                 attachment.image = UIImage(systemName: icon, withConfiguration: config)
                 s.append(NSAttributedString(attachment: attachment))
                 continue
             }
-            s.append(NSAttributedString(string: prismTransform(r["t"] as? String ?? "", transform),
+            let raw = r["t"] as? String ?? ""
+            s.append(NSAttributedString(string: prismTransform(raw, transform, after: before),
                                         attributes: [.font: f, .kern: letterSpacing]))
+            before = raw
         }
         if s.length == 0 { return .zero }
         let para = NSMutableParagraphStyle()
@@ -340,17 +354,21 @@ struct PrismTypo {
             out = out.map { Text("\($0)\(t)") } ?? t
             pending = AttributedString()
         }
+        var before = ""
         for r in self.runs(text, runs) {
             let f = Font(font(r) as CTFont)
             let color = PrismColor(r["c"]).map { dark ? $0.dark : $0.light }
             if let icon = r["icon"] as? String {
+                before = ""
                 flush()
                 var t = Text(Image(systemName: icon)).font(f)
                 if let color { t = t.foregroundColor(color) }
                 out = out.map { Text("\($0)\(t)") } ?? t
                 continue
             }
-            var a = AttributedString(prismTransform(r["t"] as? String ?? "", transform))
+            let raw = r["t"] as? String ?? ""
+            var a = AttributedString(prismTransform(raw, transform, after: before))
+            before = raw
             a.font = f
             if let color { a.foregroundColor = color }
             if let bg = PrismColor(r["bg"]) { a.backgroundColor = dark ? bg.dark : bg.light }
@@ -462,10 +480,14 @@ struct Node {
     /// ARIA role name (`slider`, `status`…) and the read-out value.
     var role: String?
     var a11yValue: String?
+    /// On, or chosen (a drawn radio, #84); nil when the node has no state.
+    var checked: Bool?
     /// A control's config (`prism_core::controls`): slider `min max step`,
     /// picker options one per line, date `mode min max`, input tokens.
     var config = ""
     var a11yHidden = false
+    /// A selected item or the current page of a navigation (`.isSelected`).
+    var a11ySelected = false
     var hidden = false
     var style: [String: Any] = [:]
     /// x, y, width, height in the parent (from Rust's layout).
@@ -538,6 +560,8 @@ final class PrismStore: ObservableObject {
     /// mirror and format dates in it. Layout is already mirrored by Rust.
     @Published var rtl = false
     @Published var lang = ""
+    /// The action emptying an optional date picker (#89), in the app's language.
+    @Published var clear = "Clear"
     /// Runtime layers (the toaster), above everything.
     @Published var layers: [UInt64] = []
     /// `cx.focus` / `.autofocus()`: the node, and a count so asking again
@@ -584,7 +608,8 @@ final class PrismStore: ObservableObject {
                 nodes[id]?.sceneVersion += 1
             case "placeholder": nodes[id]?.placeholder = p["text"] as? String ?? ""
             case "icon": nodes[id]?.icon = p["icon"] as? String ?? ""
-            case "value": nodes[id]?.value = (p["value"] as? NSNumber)?.doubleValue ?? 0
+            // `null`: an empty optional date picker (#89).
+            case "value": nodes[id]?.value = p["value"] is NSNull ? .nan : (p["value"] as? NSNumber)?.doubleValue ?? 0
             case "clickable": nodes[id]?.clickable = p["on"] as? Bool ?? false
             case "display": nodes[id]?.hidden = p["hidden"] as? Bool ?? false
             case "a11y":
@@ -596,13 +621,16 @@ final class PrismStore: ObservableObject {
                 }
                 nodes[id]?.label = p["label"] as? String
                 nodes[id]?.a11yHidden = p["hidden"] as? Bool ?? false
+                nodes[id]?.a11ySelected = p["selected"] as? Bool ?? false
                 nodes[id]?.role = role
                 nodes[id]?.a11yValue = value
+                nodes[id]?.checked = p["checked"] as? Bool
             case "config": nodes[id]?.config = p["config"] as? String ?? ""
             case "runs": nodes[id]?.runs = p["runs"] as? [[String: Any]] ?? []
             case "env":
                 rtl = p["rtl"] as? Bool ?? false
                 lang = p["lang"] as? String ?? ""
+                clear = p["clear"] as? String ?? "Clear"
             case "style": nodes[id]?.style = p["s"] as? [String: Any] ?? [:]
             case "frame":
                 if let f = p["f"] as? [Double], f.count == 4 { nodes[id]?.frame = prismFrame(f) }
@@ -861,7 +889,10 @@ struct NodeView: View {
                     if dx > 0 && n.swipeRight { send(["t": "swipe", "id": id, "dir": "right"]) }
                 }, including: n.swipeLeft || n.swipeRight ? .all : .subviews)
                 .accessibilityLabel(n.label ?? "")
+                // A drawn radio (#84): a button, selected when it is the choice.
+                .accessibilityAddTraits(n.role == "radio" ? (n.checked == true ? [.isButton, .isSelected] : .isButton) : [])
                 .accessibilityHidden(n.a11yHidden || n.inert)
+                .accessibilityAddTraits(n.a11ySelected ? .isSelected : [])
                 .allowsHitTesting(!n.noHit && !n.inert)
                 .disabled(n.inert)
                 .id(id)
@@ -1201,19 +1232,35 @@ struct PrismPicker: View {
 /// GraphicalDatePickerStyle are `@available(watchOS, unavailable)`).
 /// `datetime` stacks the date and the time wheels. Values are Unix seconds,
 /// shown in the device's time zone.
+///
+/// An optional picker (#89) shows its placeholder while empty (NaN);
+/// opening it fills it with the current moment, and "Clear" under the
+/// wheels empties it.
 struct PrismDatePicker: View {
     let id: UInt64
     let node: Node
     let tint: Color?
     @State private var open = false
+    @ObservedObject private var store = PrismStore.shared
     @Environment(\.locale) private var locale
 
     var body: some View {
-        let mode = node.config.split(separator: " ").first.map(String.init) ?? "date"
-        let text = Self.format(Date(timeIntervalSince1970: node.value), mode, locale)
+        let tokens = node.config.split(separator: " ").map(String.init)
+        let mode = tokens.first ?? "date"
+        let optional = tokens.contains("optional")
+        let empty = node.value.isNaN
+        let text = empty ? node.placeholder : Self.format(Date(timeIntervalSince1970: node.value), mode, locale)
         let timeOnly = mode == "time" || mode == "timeofday"
-        Button { open = true } label: {
-            Text(text).lineLimit(1).minimumScaleFactor(0.6)
+        Button {
+            // The wheels need a date: an empty picker starts from now.
+            if PrismStore.shared.nodes[id]?.value.isNaN ?? empty { set(Self.start(tokens)) }
+            open = true
+        } label: {
+            if empty {
+                Text(text).lineLimit(1).minimumScaleFactor(0.6).foregroundStyle(.secondary)
+            } else {
+                Text(text).lineLimit(1).minimumScaleFactor(0.6)
+            }
         }
         .tint(tint)
         .accessibilityValue(text)
@@ -1222,6 +1269,12 @@ struct PrismDatePicker: View {
             VStack(spacing: 6) {
                 if !timeOnly { wheels(.date).frame(maxHeight: .infinity) }
                 if mode != "date" { wheels(.hourAndMinute).frame(maxHeight: .infinity) }
+                if optional {
+                    Button(store.clear, role: .destructive) {
+                        set(.nan)
+                        open = false
+                    }
+                }
             }
             // A time of day is seconds since midnight: the same in every zone.
             .environment(\.timeZone, mode == "timeofday" ? TimeZone(identifier: "UTC")! : .current)
@@ -1237,6 +1290,26 @@ struct PrismDatePicker: View {
         }
     }
 
+    /// The new value, kept and sent (NaN: cleared, `null` on the wire).
+    private func set(_ v: Double) {
+        PrismStore.shared.nodes[id]?.value = v
+        send(["t": "change", "id": id, "v": v.isNaN ? NSNull() : v])
+    }
+
+    /// `DateConfig::start`: now, to the minute, within the bounds; a time of
+    /// day in local time.
+    static func start(_ tokens: [String]) -> Double {
+        let now = Date().timeIntervalSince1970
+        if tokens.first == "timeofday" {
+            let local = ((now + Double(TimeZone.current.secondsFromGMT())) / 60).rounded(.down) * 60
+            return local.truncatingRemainder(dividingBy: 86_400) + (local < 0 ? 86_400 : 0)
+        }
+        var v = (now / 60).rounded(.down) * 60
+        if tokens.count > 1, let lo = Double(tokens[1]) { v = max(v, lo) }
+        if tokens.count > 2, let hi = Double(tokens[2]) { v = min(v, hi) }
+        return v
+    }
+
     @ViewBuilder
     private func wheels(_ components: DatePickerComponents) -> some View {
         let parts = node.config.split(separator: " ").map(String.init)
@@ -1244,7 +1317,10 @@ struct PrismDatePicker: View {
             parts.count > i ? Double(parts[i]).map { Date(timeIntervalSince1970: $0) } : nil
         }
         let selection = Binding<Date>(
-            get: { Date(timeIntervalSince1970: PrismStore.shared.nodes[id]?.value ?? node.value) },
+            get: {
+                let v = PrismStore.shared.nodes[id]?.value ?? node.value
+                return Date(timeIntervalSince1970: v.isNaN ? 0 : v)
+            },
             set: { d in
                 let v = d.timeIntervalSince1970
                 guard v != PrismStore.shared.nodes[id]?.value else { return }

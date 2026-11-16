@@ -37,6 +37,13 @@ public class PrismLayout extends ViewGroup {
     }
 
     /**
+     * A selected container (`accessibility_selected`, the current page) keeps
+     * it to itself: its children are Prism nodes with their own state.
+     */
+    @Override
+    public void dispatchSetSelected(boolean selected) {}
+
+    /**
      * Children clipped to a box rounding only some corners (`clip`), where
      * outlines can't clip it (before Android 13): -1 when unused.
      */

@@ -7,11 +7,11 @@
 //! |---|---|---|
 //! | `Slider` | [`SliderConfig`]: `min max step` | the current value |
 //! | `Picker` | [`PickerConfig`]: options, one per line | the selected index (-1: none) |
-//! | `DatePicker` | [`DateConfig`]: `mode min max` | Unix seconds (UTC instant) |
+//! | `DatePicker` | [`DateConfig`]: `mode min max`, then `optional` | Unix seconds (UTC instant); NaN: empty (optional pickers) |
 //! | `TextInput`, `TextArea` | [`InputConfig`]: `secure keyboard=email return=done capitalize=none autocorrect=off max=40`, then one suggestion per line ([`input_suggestions`]) | – |
 //! | `Checkbox` | – | 0 or 1 |
 //! | `RadioGroup` | [`RadioConfig`]: `row` or `column`, then options one per line | the selected index (-1: none) |
-//! | `Overlay` | [`OverlayConfig`]: `sheet`/`popover`/`dialog`, `fixed`, `medium` | 1 open, 0 closed |
+//! | `Overlay` | [`OverlayConfig`]: `sheet`/`popover`/`dialog`, `fixed`, `medium`, `manual`, `keepfocus` | 1 open, 0 closed |
 
 /// A slider's range. `step == 0` is continuous.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -137,7 +137,14 @@ impl DateMode {
     }
 }
 
-/// A date picker's mode and bounds (Unix seconds).
+/// A date picker's mode and bounds (Unix seconds), and whether it may be
+/// empty.
+///
+/// An optional picker's value is `NaN` while it is empty (#89): backends
+/// show its placeholder, and offer a way back to empty once it has a value
+/// (the browser's own clear, a clear button, a "Clear" button in the
+/// dialog). Starting to edit an empty picker fills it with
+/// [`start`](Self::start).
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct DateConfig {
     /// What the picker edits.
@@ -146,13 +153,21 @@ pub struct DateConfig {
     pub min: Option<f64>,
     /// Latest selectable moment (Unix seconds), if bounded.
     pub max: Option<f64>,
+    /// The picker may be empty (its value `NaN`) and offers to clear it.
+    pub optional: bool,
 }
 
 impl DateConfig {
-    /// `mode min max`, `-` for no bound.
+    /// `mode min max`, `-` for no bound, then `optional` if it may be empty.
     pub fn encode(&self) -> String {
         let b = |v: Option<f64>| v.map_or("-".to_string(), |v| v.to_string());
-        format!("{} {} {}", self.mode.name(), b(self.min), b(self.max))
+        let optional = if self.optional { " optional" } else { "" };
+        format!(
+            "{} {} {}{optional}",
+            self.mode.name(),
+            b(self.min),
+            b(self.max)
+        )
     }
 
     /// Parses [`encode`](Self::encode)'s output; unknown modes become `Date`, missing or `-` bounds are unbounded.
@@ -167,13 +182,33 @@ impl DateConfig {
         let mut bound = || it.next().and_then(|v| v.parse::<f64>().ok());
         let min = bound();
         let max = bound();
-        DateConfig { mode, min, max }
+        let optional = it.any(|t| t == "optional");
+        DateConfig {
+            mode,
+            min,
+            max,
+            optional,
+        }
     }
 
-    /// `value` within the bounds.
+    /// `value` within the bounds (an empty value, `NaN`, stays empty).
     pub fn clamp(&self, value: f64) -> f64 {
+        if value.is_nan() {
+            return value;
+        }
         let v = self.min.map_or(value, |m| value.max(m));
         self.max.map_or(v, |m| v.min(m))
+    }
+
+    /// The value an empty picker takes when the user starts to fill it:
+    /// `now` (Unix seconds) to the minute, within the bounds. A time of day
+    /// is the local time, `now` shifted by `utc_offset` seconds.
+    pub fn start(&self, now: f64, utc_offset: f64) -> f64 {
+        let minute = |t: f64| (t / 60.).floor() * 60.;
+        if self.mode == DateMode::TimeOfDay {
+            return minute(now + utc_offset).rem_euclid(86_400.);
+        }
+        self.clamp(minute(now))
     }
 }
 
@@ -404,10 +439,20 @@ pub struct OverlayConfig {
     /// A sheet starts at half height (it can be pulled up where the
     /// platform allows).
     pub medium: bool,
+    /// A popover that a click or tap outside does not close
+    /// (`popover="manual"` on the web): the app closes it, or Escape while
+    /// the focus is inside it. See [`Overlay::light_dismiss`](crate::Overlay::light_dismiss).
+    pub manual: bool,
+    /// A popover that leaves the keyboard focus where it is (the anchor's
+    /// text field keeps receiving keys) and does not take it on a click
+    /// inside: inline suggestion menus. Implies `manual`. See
+    /// [`Overlay::take_focus`](crate::Overlay::take_focus).
+    pub keep_focus: bool,
 }
 
 impl OverlayConfig {
-    /// `sheet` / `popover` / `dialog`, then `fixed`, `medium`.
+    /// `sheet` / `popover` / `dialog`, then `fixed`, `medium`, `manual`,
+    /// `keepfocus`.
     pub fn encode(&self) -> String {
         let mut out = String::from(match self.kind {
             OverlayKind::Sheet => "sheet",
@@ -419,6 +464,12 @@ impl OverlayConfig {
         }
         if self.medium {
             out.push_str(" medium");
+        }
+        if self.manual {
+            out.push_str(" manual");
+        }
+        if self.keep_focus {
+            out.push_str(" keepfocus");
         }
         out
     }
@@ -432,6 +483,8 @@ impl OverlayConfig {
                 "dialog" => c.kind = OverlayKind::Dialog,
                 "fixed" => c.fixed = true,
                 "medium" => c.medium = true,
+                "manual" => c.manual = true,
+                "keepfocus" => c.keep_focus = true,
                 _ => {}
             }
         }
@@ -464,10 +517,11 @@ mod tests {
         let d = DateConfig {
             mode: DateMode::DateTime,
             min: Some(0.),
-            max: None,
+            ..Default::default()
         };
         assert_eq!(DateConfig::decode(&d.encode()), d);
         assert_eq!(d.encode(), "datetime 0 -");
+        assert!(!d.optional);
         let i = InputConfig {
             secure: true,
             keyboard: Keyboard::Email,
@@ -504,16 +558,62 @@ mod tests {
         let o = OverlayConfig {
             kind: OverlayKind::Popover,
             fixed: true,
-            medium: false,
+            ..Default::default()
         };
         assert_eq!(o.encode(), "popover fixed");
         assert_eq!(OverlayConfig::decode(&o.encode()), o);
         assert_eq!(OverlayConfig::decode(""), OverlayConfig::default());
+        // An inline suggestion menu (#70).
+        let inline = OverlayConfig {
+            kind: OverlayKind::Popover,
+            manual: true,
+            keep_focus: true,
+            ..Default::default()
+        };
+        assert_eq!(inline.encode(), "popover manual keepfocus");
+        assert_eq!(OverlayConfig::decode(&inline.encode()), inline);
+        let all = OverlayConfig {
+            kind: OverlayKind::Sheet,
+            fixed: true,
+            medium: true,
+            manual: true,
+            keep_focus: true,
+        };
+        assert_eq!(all.encode(), "sheet fixed medium manual keepfocus");
+        assert_eq!(OverlayConfig::decode(&all.encode()), all);
         let d = DateConfig {
             mode: DateMode::TimeOfDay,
-            min: None,
-            max: None,
+            ..Default::default()
         };
         assert_eq!(DateConfig::decode(&d.encode()), d);
+    }
+
+    #[test]
+    fn optional_dates() {
+        let d = DateConfig {
+            mode: DateMode::Date,
+            min: Some(100.),
+            max: None,
+            optional: true,
+        };
+        assert_eq!(d.encode(), "date 100 - optional");
+        assert_eq!(DateConfig::decode(&d.encode()), d);
+        assert!(!DateConfig::decode("time - -").optional);
+        // An empty value stays empty.
+        assert!(d.clamp(f64::NAN).is_nan());
+        assert_eq!(d.clamp(5.), 100.);
+        // Filling an empty picker: now, to the minute, within the bounds.
+        assert_eq!(d.start(1_000_059., 3600.), 1_000_020.);
+        assert_eq!(d.start(50., 0.), 100.);
+        let of_day = DateConfig {
+            mode: DateMode::TimeOfDay,
+            optional: true,
+            ..Default::default()
+        };
+        // 23:30 UTC in UTC+2 is 01:30.
+        assert_eq!(
+            of_day.start(86_400. * 3. + 23.5 * 3600. + 12., 7200.),
+            5400.
+        );
     }
 }

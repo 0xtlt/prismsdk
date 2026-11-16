@@ -11,10 +11,10 @@ use objc2::{
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSString};
 use objc2_ui_kit::{
-    NSObjectUIAccessibility, NSTextAlignment, UIAccessibilityTraitButton,
-    UIAccessibilityTraitHeader, UIAccessibilityTraitImage, UIAccessibilityTraitLink,
-    UIAccessibilityTraitNotEnabled, UIAccessibilityTraitSelected, UIAccessibilityTraitStaticText,
-    UIAccessibilityTraitTabBar, UIAccessibilityTraitToggleButton,
+    NSObjectUIAccessibility, NSObjectUIAccessibilityContainer, NSTextAlignment,
+    UIAccessibilityTraitButton, UIAccessibilityTraitHeader, UIAccessibilityTraitImage,
+    UIAccessibilityTraitLink, UIAccessibilityTraitNotEnabled, UIAccessibilityTraitSelected,
+    UIAccessibilityTraitStaticText, UIAccessibilityTraitTabBar, UIAccessibilityTraitToggleButton,
     UIAdaptivePresentationControllerDelegate, UIApplication, UIApplicationDelegate, UIButton,
     UIButtonType, UIColor, UIContextMenuInteractionDelegate, UIControlEvents, UIControlState,
     UIFont, UIGestureRecognizerDelegate, UIImage, UIImageSymbolConfiguration, UIImageView, UILabel,
@@ -356,6 +356,7 @@ define_class!(
 
         #[unsafe(method(onBeginEditing:))]
         fn on_begin_editing(&self, sender: &UITextField) {
+            crate::forms::began_editing(sender);
             scroll_into_view(sender);
             crate::decor::focus(sender.tag() as NodeId, true);
             crate::interaction::refresh_suggestions(sender, self);
@@ -370,6 +371,24 @@ define_class!(
         #[unsafe(method(onSubmit:))]
         fn on_submit(&self, sender: &UITextField) {
             dispatch(UiEvent::Submit(sender.tag() as NodeId));
+        }
+
+        /// The placeholder pill of an empty optional date picker (#89).
+        #[unsafe(method(onDateFill:))]
+        fn on_date_fill(&self, sender: &UIView) {
+            #[cfg(not(target_os = "tvos"))]
+            crate::dates::fill(sender.tag() as NodeId);
+            #[cfg(target_os = "tvos")]
+            let _ = sender;
+        }
+
+        /// The clear button of an optional date picker (#89).
+        #[unsafe(method(onDateClear:))]
+        fn on_date_clear(&self, sender: &UIView) {
+            #[cfg(not(target_os = "tvos"))]
+            crate::dates::clear(sender.tag() as NodeId);
+            #[cfg(target_os = "tvos")]
+            let _ = sender;
         }
 
         #[unsafe(method(onDate:))]
@@ -542,6 +561,12 @@ define_class!(
             let new = old.saturating_sub(range.length) + replacement.length();
             crate::interaction::edit_fits(field.tag() as NodeId, old, new)
         }
+
+        /// The caret or selection moved, typing included (#86).
+        #[unsafe(method(textFieldDidChangeSelection:))]
+        fn did_change_selection(&self, field: &UITextField) {
+            crate::forms::selection_changed(field);
+        }
     }
 
     unsafe impl UIGestureRecognizerDelegate for Target {
@@ -590,6 +615,12 @@ define_class!(
             crate::forms::text_area_changed(view);
             #[cfg(target_os = "tvos")]
             let _ = view;
+        }
+
+        /// The caret or selection moved, typing included (#86).
+        #[unsafe(method(textViewDidChangeSelection:))]
+        fn text_view_did_change_selection(&self, view: &objc2_ui_kit::UITextView) {
+            crate::forms::selection_changed(view);
         }
 
         #[unsafe(method(textViewDidBeginEditing:))]
@@ -1053,7 +1084,7 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
         presented: Vec::new(),
         pictures: HashMap::new(),
         image_cache: HashMap::new(),
-        image_sources: image_sources(_config.assets.as_deref()),
+        image_sources: image_sources(_config.assets.as_deref(), &_config.embedded_assets),
         semantic: None,
         radii: HashMap::new(),
         pickers: HashMap::new(),
@@ -1325,7 +1356,8 @@ impl UiKit {
                 host.insertSubview_atIndex(v, i as isize);
             }
         }
-        for sub in host.subviews().iter() {
+        // A copy: removing from the array being enumerated aborts (#66).
+        for sub in host.subviews().to_vec() {
             if !self.layers.iter().any(|l| **l == *sub) {
                 sub.removeFromSuperview();
             }
@@ -1944,9 +1976,10 @@ impl Widgets for UiKit {
             View::Label(l) => crate::label::set_text(l, text),
             View::Timer(l) => l.setText(Some(&s)),
             View::Picture(v) => self.load_picture(view.id(), v, text),
+            // The app's value reaches a focused field too (#73).
             View::Input(f) => {
                 if f.text().map(|t| t.to_string()).unwrap_or_default() != text {
-                    f.setText(Some(&s));
+                    crate::forms::set_field_text(&**f, || f.setText(Some(&s)));
                 }
             }
             View::Button(b) => b.setTitle_forState(Some(&s), UIControlState::Normal),
@@ -1984,6 +2017,11 @@ impl Widgets for UiKit {
                     crate::forms::refresh_picker(b, p);
                 }
             }
+            // Shown while an optional date picker is empty (#89).
+            #[cfg(not(target_os = "tvos"))]
+            View::DatePicker(p) => crate::dates::set_placeholder(p, text),
+            #[cfg(target_os = "tvos")]
+            View::DatePicker(p) => p.set_placeholder(text),
             _ => {}
         }
     }
@@ -2041,6 +2079,8 @@ impl Widgets for UiKit {
                     |v: Option<f64>| v.map(objc2_foundation::NSDate::dateWithTimeIntervalSince1970);
                 p.setMinimumDate(date(c.min).as_deref());
                 p.setMaximumDate(date(c.max).as_deref());
+                let target: &AnyObject = &self.target;
+                crate::dates::configure(p, c, target);
             }
             #[cfg(target_os = "tvos")]
             View::DatePicker(p) => p.set_date_config(DateConfig::decode(config)),
@@ -2160,7 +2200,8 @@ impl Widgets for UiKit {
         // Remove former Prism children only (tag > 0); UIKit's own subviews,
         // like scroll indicators, have tag 0.
         let keep: Vec<isize> = children.iter().map(|c| c.ui().tag()).collect();
-        for sub in parent.subviews().iter() {
+        // A copy: removing from the array being enumerated aborts (#66).
+        for sub in parent.subviews().to_vec() {
             if sub.tag() > 0 && !keep.contains(&sub.tag()) {
                 sub.removeFromSuperview();
             }
@@ -2169,10 +2210,10 @@ impl Widgets for UiKit {
     }
 
     fn set_root(&mut self, view: &View) {
-        for sub in self.root.subviews().iter() {
+        for sub in self.root.subviews().to_vec() {
             sub.removeFromSuperview();
         }
-        for child in self.controller.childViewControllers().iter() {
+        for child in self.controller.childViewControllers().to_vec() {
             child.removeFromParentViewController();
         }
         // Proper containment, so container controllers get the safe area,
@@ -2214,6 +2255,7 @@ impl Widgets for UiKit {
 
     fn destroy(&mut self, view: &View) {
         let id = view.id();
+        crate::forms::forget_selection(id);
         crate::decor::destroy(id);
         crate::navbar::forget(id);
         crate::padding::forget(id);
@@ -2227,6 +2269,8 @@ impl Widgets for UiKit {
         self.timers.remove(&id);
         self.pickers.remove(&id);
         self.date_pickers.remove(&id);
+        #[cfg(not(target_os = "tvos"))]
+        crate::dates::forget(id);
         self.announced.remove(&id);
         if let Some(o) = self.overlays.remove(&id) {
             o.close();
@@ -2307,9 +2351,13 @@ impl Widgets for UiKit {
             #[cfg(not(target_os = "tvos"))]
             // Compact pickers have no intrinsic size (-1); Auto Layout's
             // fitting size is their button's.
-            View::DatePicker(p) => p.systemLayoutSizeFittingSize(unsafe {
-                objc2_ui_kit::UILayoutFittingCompressedSize
-            }),
+            View::DatePicker(p) => {
+                let size = p.systemLayoutSizeFittingSize(unsafe {
+                    objc2_ui_kit::UILayoutFittingCompressedSize
+                });
+                // With its placeholder or clear button (#89).
+                crate::dates::natural_size(p, size).unwrap_or(size)
+            }
             View::Spinner(s) => s.intrinsicContentSize(),
             View::Checkbox(c) => c.button.sizeThatFits(limit),
             View::Radio(r) => r.measure(max_width),
@@ -2354,6 +2402,10 @@ impl Widgets for UiKit {
         }
         place(view.ui(), x, y, w, h);
         crate::layout::framed(view.id());
+        #[cfg(not(target_os = "tvos"))]
+        if let View::DatePicker(p) = view {
+            crate::dates::framed(p);
+        }
         #[cfg(not(target_os = "tvos"))]
         if let View::TextArea(t) = view {
             t.layout_placeholder();
@@ -2492,6 +2544,8 @@ impl Widgets for UiKit {
         self.semantic = Some(attr);
         set_appearance_semantic(attr);
         // Date pickers speak the app's language (month names, digits).
+        #[cfg(not(target_os = "tvos"))]
+        crate::dates::set_clear_label(&env.clear);
         if self.lang != env.lang {
             self.lang = env.lang.clone();
             for p in self.date_pickers.values() {
@@ -2570,7 +2624,9 @@ impl Widgets for UiKit {
             }
             #[cfg(not(target_os = "tvos"))]
             View::DatePicker(p) => {
-                if (p.date().timeIntervalSince1970() - value).abs() >= 0.5 {
+                // An optional picker shows NaN as its placeholder (#89).
+                crate::dates::set_value(p, value);
+                if !value.is_nan() && (p.date().timeIntervalSince1970() - value).abs() >= 0.5 {
                     let d = objc2_foundation::NSDate::dateWithTimeIntervalSince1970(value);
                     p.setDate_animated(&d, false);
                 }
@@ -2705,6 +2761,9 @@ impl Widgets for UiKit {
     fn set_content_size(&mut self, view: &View, width: f32, height: f32) {
         if let View::Overlay(o) = view {
             o.set_size(width as f64, height as f64);
+            // Opened in the patch that inserted it: its anchor is placed now.
+            let root: Retained<UIViewController> = Retained::into_super(self.controller.clone());
+            o.present_if_pending(&root);
             return;
         }
         if let View::Scroll(s) = view {
@@ -2769,6 +2828,18 @@ impl Widgets for UiKit {
                 || matches!(view, View::Label(_));
             v.setIsAccessibilityElement(element && !a.hidden, mtm);
             v.setShouldGroupAccessibilityChildren(a.role == Some(Role::Group), mtm);
+            // Drawn choices (#84), like the native radio group: VoiceOver
+            // reads the group's label when the focus enters it.
+            if let View::Container(_) = view {
+                v.setAccessibilityContainerType(
+                    if a.role == Some(Role::RadioGroup) {
+                        objc2_ui_kit::UIAccessibilityContainerType::SemanticGroup
+                    } else {
+                        objc2_ui_kit::UIAccessibilityContainerType::None
+                    },
+                    mtm,
+                );
+            }
             let mut traits = 0;
             unsafe {
                 traits |= match a.role {
@@ -2787,13 +2858,32 @@ impl Widgets for UiKit {
                 if a.disabled {
                     traits |= UIAccessibilityTraitNotEnabled;
                 }
-                if a.checked == Some(true)
-                    && matches!(a.role, Some(Role::Tab | Role::Button | Role::Radio))
-                {
+                // Selected tabs and items, the current page of a navigation.
+                if a.is_selected() {
                     traits |= UIAccessibilityTraitSelected;
                 }
             }
             v.setAccessibilityTraits(traits, mtm);
+        } else {
+            // A native control keeps the traits UIKit gives it; the selected
+            // one is added or taken away. Once set, the traits no longer
+            // follow `enabled` by themselves: the not-enabled one is kept in
+            // step too.
+            let (selected, not_enabled) =
+                unsafe { (UIAccessibilityTraitSelected, UIAccessibilityTraitNotEnabled) };
+            let traits = v.accessibilityTraits(mtm);
+            if a.is_selected() || traits & selected != 0 {
+                let mut wanted = traits & !(selected | not_enabled);
+                if a.is_selected() {
+                    wanted |= selected;
+                }
+                if a.disabled {
+                    wanted |= not_enabled;
+                }
+                if wanted != traits {
+                    v.setAccessibilityTraits(wanted, mtm);
+                }
+            }
         }
         // Labels override the visible text only when given.
         if a.label.is_some() || !native_control {
@@ -2826,7 +2916,24 @@ impl Widgets for UiKit {
         }
     }
 
+    /// Text field selections (#86).
+    fn set_selection(&mut self, view: &View, start: usize, end: usize) {
+        match view {
+            View::Input(f) => crate::forms::set_selection(f, start, end),
+            #[cfg(not(target_os = "tvos"))]
+            View::TextArea(t) => crate::forms::set_selection(&t.view, start, end),
+            _ => {}
+        }
+    }
+
+    fn set_select_events(&mut self, view: &View, on: bool) {
+        crate::forms::set_select_events(view.id(), on);
+    }
+
     fn focus(&mut self, view: &View) {
+        if let View::Input(_) = view {
+            crate::forms::app_focuses(view.id());
+        }
         let target: Retained<UIView> = match view {
             #[cfg(not(target_os = "tvos"))]
             View::TextArea(t) => Retained::into_super(Retained::into_super(t.view.clone())),
@@ -3009,9 +3116,12 @@ fn menu_configuration(
     })
 }
 
-/// Assets: the bundle's `assets/` folder, then the dev directory; downloads
-/// are cached in Library/Caches.
-fn image_sources(dev_assets: Option<&str>) -> prism_native::images::ImageSources {
+/// Assets: those compiled into the binary, the bundle's `assets/` folder,
+/// then the dev directory; downloads are cached in Library/Caches.
+fn image_sources(
+    dev_assets: Option<&str>,
+    embedded: &prism_core::EmbeddedAssets,
+) -> prism_native::images::ImageSources {
     let mut asset_dirs = Vec::new();
     if let Some(res) = objc2_foundation::NSBundle::mainBundle().resourcePath() {
         asset_dirs.push(std::path::PathBuf::from(res.to_string()).join("assets"));
@@ -3020,9 +3130,10 @@ fn image_sources(dev_assets: Option<&str>) -> prism_native::images::ImageSources
         asset_dirs.push(dev.into());
     }
     // Fonts in assets/fonts: found by family name from now on.
-    prism_native::fonts::register_apple_fonts(&asset_dirs);
+    prism_native::fonts::register_apple_fonts(&asset_dirs, embedded);
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     prism_native::images::ImageSources {
+        embedded: embedded.clone(),
         asset_dirs,
         cache_dir: Some(std::path::PathBuf::from(home).join("Library/Caches/prism-images")),
     }
