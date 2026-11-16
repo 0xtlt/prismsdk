@@ -761,6 +761,9 @@ impl Render for Toaster {
 /// What [`file_input`] calls with the chosen files.
 pub type FilesHandler = Rc<dyn Fn(Vec<prism_core::PickedFile>, &mut App)>;
 
+/// What [`file_input`] calls while the chosen files reach the app.
+pub type ProgressHandler = Rc<dyn Fn(&prism_core::UploadProgress, &mut App)>;
+
 /// A labelled button that opens the platform's file picker and hands the
 /// chosen files (and their bytes, [`PickedFile::read`](prism_core::PickedFile::read))
 /// to the app: `ui::file_input("Photo").accept(["image/*"]).on_pick(|files, cx| …)`.
@@ -778,6 +781,8 @@ pub struct FileInput {
     pub disabled: bool,
     /// Called with the files once the user chose (not when they cancel).
     pub on_pick: Option<FilesHandler>,
+    /// Called while the files reach the app (web uploads, #112).
+    pub on_progress: Option<ProgressHandler>,
     refine: Refine,
 }
 
@@ -790,6 +795,7 @@ pub fn file_input(label: impl Into<String>) -> FileInput {
         options: prism_core::PickFiles::new(),
         disabled: false,
         on_pick: None,
+        on_progress: None,
         refine: Refine::default(),
     }
 }
@@ -825,6 +831,17 @@ impl FileInput {
         self.on_pick = Some(Rc::new(f));
         self
     }
+    /// Called while the chosen files reach the app (#112): on the web the
+    /// browser sends them over the app's connection, before `on_pick`.
+    /// `App::cancel_upload(p.upload)` stops it (then `on_pick` is not
+    /// called). Natively the files are already on the device: not called.
+    pub fn on_progress(
+        mut self,
+        f: impl Fn(&prism_core::UploadProgress, &mut App) + 'static,
+    ) -> Self {
+        self.on_progress = Some(Rc::new(f));
+        self
+    }
 }
 
 refinable!(FileInput);
@@ -834,14 +851,22 @@ impl crate::Component for FileInput {
         let t = Theme::of(cx);
         let options = self.options.clone();
         let handler = self.on_pick.clone();
+        let progress = self.on_progress.clone();
         let mut button = crate::button(self.button.clone())
             .variant(Variant::Secondary)
             .disabled(self.disabled || handler.is_none());
         if let (Some(h), false) = (handler, self.disabled) {
             button = button.on_click(Rc::new(move |_: &ClickEvent, app: &mut App| {
-                let (h, options) = (h.clone(), options.clone());
+                let (h, options, progress) = (h.clone(), options.clone(), progress.clone());
                 app.spawn(async move |cx| {
-                    if let Ok(files) = cx.pick_files(options).await
+                    let picked = match progress {
+                        Some(p) => {
+                            cx.pick_files_with_progress(options, move |e, app| p(e, app))
+                                .await
+                        }
+                        None => cx.pick_files(options).await,
+                    };
+                    if let Ok(files) = picked
                         && !files.is_empty()
                     {
                         cx.update(|app| h(files, app));

@@ -520,6 +520,43 @@ pub enum DeviceEvent {
     Motion(Motion),
     /// The stream failed (permission denied, sensor unavailable).
     Error(DeviceError),
+    /// Picked files on their way to the app (#112): `sent` of `total`
+    /// bytes have arrived (web uploads).
+    Upload {
+        /// Bytes received so far, every file included.
+        sent: u64,
+        /// Bytes of every picked file.
+        total: u64,
+    },
+}
+
+/// Picked files being sent to the app, for [`App::cancel_upload`]: the
+/// [`UploadProgress::upload`] of [`AsyncApp::pick_files_with_progress`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Upload(pub u64);
+
+/// How far picked files are on their way to the app (#112). On the web the
+/// browser sends them over the app's connection; natively they are already
+/// on the device, so no progress is reported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UploadProgress {
+    /// The upload, to cancel it ([`App::cancel_upload`]).
+    pub upload: Upload,
+    /// Bytes received so far, every file included.
+    pub sent: u64,
+    /// Bytes of every picked file.
+    pub total: u64,
+}
+
+impl UploadProgress {
+    /// `sent / total`, from 0 to 1 (1 for empty files).
+    pub fn fraction(&self) -> f32 {
+        if self.total == 0 {
+            1.
+        } else {
+            (self.sent.min(self.total) as f64 / self.total as f64) as f32
+        }
+    }
 }
 
 type StreamHandler = Rc<dyn Fn(&DeviceEvent, &mut App)>;
@@ -580,7 +617,7 @@ impl App {
             Rc::new(move |e, app| match e {
                 DeviceEvent::Location(l) => f(&Ok(*l), app),
                 DeviceEvent::Error(err) => f(&Err(err.clone()), app),
-                DeviceEvent::Motion(_) => {}
+                DeviceEvent::Motion(_) | DeviceEvent::Upload { .. } => {}
             }),
         );
         Watch(id)
@@ -599,7 +636,7 @@ impl App {
             Rc::new(move |e, app| match e {
                 DeviceEvent::Motion(m) => f(&Ok(*m), app),
                 DeviceEvent::Error(err) => f(&Err(err.clone()), app),
-                DeviceEvent::Location(_) => {}
+                DeviceEvent::Location(_) | DeviceEvent::Upload { .. } => {}
             }),
         );
         Watch(id)
@@ -614,6 +651,14 @@ impl App {
                 call: DeviceCall::StopWatch,
             });
         }
+    }
+
+    /// Stops sending the picked files of `upload` (#112):
+    /// [`pick_files_with_progress`](AsyncApp::pick_files_with_progress)
+    /// then gives no files, and what arrived is deleted. Nothing once the
+    /// files are the app's, or natively (they are already on the device).
+    pub fn cancel_upload(&mut self, upload: Upload) {
+        self.stop_watching(Watch(upload.0));
     }
 
     /// Plays a haptic pattern (no-op where unsupported).
@@ -721,6 +766,50 @@ impl AsyncApp {
     /// Empty if they cancel. Read them with [`PickedFile::read`].
     pub async fn pick_files(&self, options: PickFiles) -> Result<Vec<PickedFile>, DeviceError> {
         match self.device(DeviceCall::PickFiles(options)).await {
+            Ok(DeviceValue::Files(f)) => Ok(f),
+            Err(DeviceError::Cancelled) => Ok(Vec::new()),
+            Err(e) => Err(e),
+            Ok(other) => Err(DeviceError::Failed(format!("unexpected answer {other:?}"))),
+        }
+    }
+
+    /// Like [`pick_files`](Self::pick_files), calling `progress` while the
+    /// chosen files reach the app (#112): on the web the browser sends them
+    /// over the app's connection, which takes a while for a large photo on
+    /// a phone. The first call (`sent == 0`) comes once the user has chosen;
+    /// [`App::cancel_upload`] with its [`UploadProgress::upload`] stops it,
+    /// and this then answers no files. Natively the files are already on
+    /// the device: no progress is reported.
+    pub async fn pick_files_with_progress(
+        &self,
+        options: PickFiles,
+        progress: impl Fn(&UploadProgress, &mut App) + 'static,
+    ) -> Result<Vec<PickedFile>, DeviceError> {
+        let slot: Slot = Rc::new(RefCell::new((None, None)));
+        let id = self.update(|app| {
+            let id = app.device_call(DeviceCall::PickFiles(options));
+            app.device.pending.insert(id, slot.clone());
+            app.device.streams.insert(
+                id,
+                Rc::new(move |e, app| {
+                    if let DeviceEvent::Upload { sent, total } = *e {
+                        let upload = Upload(id);
+                        progress(
+                            &UploadProgress {
+                                upload,
+                                sent,
+                                total,
+                            },
+                            app,
+                        );
+                    }
+                }),
+            );
+            id
+        });
+        let result = DeviceFuture { slot }.await;
+        self.update(|app| app.device.streams.remove(&id));
+        match result {
             Ok(DeviceValue::Files(f)) => Ok(f),
             Err(DeviceError::Cancelled) => Ok(Vec::new()),
             Err(e) => Err(e),

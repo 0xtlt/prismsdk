@@ -119,7 +119,7 @@ pub use forms::{
     DateField, Select, Slider, Spinner, TextArea, Toast, Toaster, date_field, date_field_opt,
     dismiss_toasts, select, show_toast, slider, spinner, text_area, toast, toaster,
 };
-pub use forms::{FileInput, FilesHandler, file_input};
+pub use forms::{FileInput, FilesHandler, ProgressHandler, file_input};
 
 mod charts;
 pub mod qr;

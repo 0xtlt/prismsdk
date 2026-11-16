@@ -1868,8 +1868,7 @@ fn device_calls_are_encoded_for_the_client() {
 fn device_replies_become_values() {
     use crate::session::device_result;
     use prism_core::{DeviceError, DeviceValue, PermissionState};
-    let (app, dir) = web_app(counter_init(), "reply");
-    let r = |v: Value| device_result(&app, "0123456789abcdef0123456789abcdef", &v);
+    let r = |v: Value| device_result(&v);
     assert!(matches!(
         r(json!({ "permission": "granted" })),
         Ok(DeviceValue::Permission(PermissionState::Granted))
@@ -1893,26 +1892,79 @@ fn device_replies_become_values() {
         Err(DeviceError::Denied)
     ));
     assert!(matches!(r(json!({})), Ok(DeviceValue::Done)));
-    // Uploaded photos are stored for this browser and served under /files.
-    match r(json!({ "files": [
-        { "name": "cat.JPG", "mime": "image/jpeg", "data": "aGVsbG8=" },
-        { "name": "bad", "data": "!!" },
-    ] })) {
-        Ok(DeviceValue::Files(files)) => {
-            assert_eq!(files.len(), 1);
-            let f = &files[0];
-            assert_eq!(
-                (f.name.as_str(), f.mime.as_str(), f.size),
-                ("cat.JPG", "image/jpeg", 5)
-            );
-            assert!(
-                f.path.starts_with("/files/") && f.path.ends_with(".jpg"),
-                "{}",
-                f.path
-            );
-        }
-        other => panic!("{other:?}"),
-    }
+    // Files only come through an upload (#112), never in a reply.
+    assert!(matches!(
+        r(json!({ "files": [{ "name": "a", "data": "aGVsbG8=" }] })),
+        Ok(DeviceValue::Done)
+    ));
+}
+
+/// #112: picked files arrive in chunks, written as they come.
+#[test]
+fn uploads_arrive_in_chunks_for_pick_calls_only() {
+    use crate::uploads::Uploads;
+    let (app, dir) = web_app(counter_init(), "uploads");
+    let sid = "0123456789abcdef0123456789abcdef";
+    let files_dir = app.files_dir(sid);
+    let count = || std::fs::read_dir(&files_dir).map_or(0, |d| d.count());
+    let mut u = Uploads::default();
+    let two = [
+        json!({ "name": "cat.JPG", "mime": "image/jpeg", "size": 5 }),
+        json!({ "name": "notes", "mime": "", "size": 0 }),
+    ];
+    // Not a pick call: refused.
+    assert_eq!(u.start(&app, sid, 7, &two), None);
+    u.expect(7);
+    assert!(u.has(7));
+    assert_eq!(u.start(&app, sid, 7, &two), Some((0, 5)));
+    assert_eq!(u.start(&app, sid, 7, &two), None, "once");
+    assert_eq!(u.chunk(7, 0, "aGVs"), Some((3, 5))); // "hel"
+    assert_eq!(u.chunk(7, 0, "bG8="), Some((5, 5))); // "lo"
+    let files = u.finish(&app, 7, false).unwrap().unwrap();
+    assert!(!u.has(7));
+    assert_eq!(files.len(), 2);
+    let f = &files[0];
+    assert_eq!(
+        (f.name.as_str(), f.mime.as_str(), f.size),
+        ("cat.JPG", "image/jpeg", 5)
+    );
+    assert!(
+        f.path.starts_with("/files/") && f.path.ends_with(".jpg"),
+        "{}",
+        f.path
+    );
+    assert_eq!(f.read().unwrap(), b"hello");
+    assert_eq!(files[1].mime, "application/octet-stream");
+    assert!(files[1].path.ends_with(".bin"));
+    assert_eq!(count(), 2);
+
+    // More than declared: refused, and the upload fails.
+    u.expect(8);
+    u.start(&app, sid, 8, &[json!({ "name": "a.txt", "size": 2 })]);
+    assert_eq!(count(), 3);
+    assert_eq!(u.chunk(8, 0, "aGVsbG8="), None);
+    assert_eq!(u.chunk(8, 0, "aGk="), None, "stays refused");
+    assert!(matches!(u.finish(&app, 8, false), Some(Err(_))));
+    assert_eq!(count(), 2, "deleted");
+    // Missing bytes fail too.
+    u.expect(9);
+    u.start(&app, sid, 9, &[json!({ "name": "a.txt", "size": 2 })]);
+    assert!(matches!(u.finish(&app, 9, false), Some(Err(_))));
+    // Cancelled (an error reply): deleted, and the reply's error is the answer.
+    u.expect(10);
+    u.start(&app, sid, 10, &[json!({ "name": "a.txt", "size": 2 })]);
+    u.chunk(10, 0, "aA==");
+    assert!(u.finish(&app, 10, true).is_none());
+    assert_eq!(count(), 2);
+    // The user cancelled the picker: nothing staged, no files.
+    u.expect(11);
+    assert!(u.finish(&app, 11, true).is_none());
+    // An unfinished upload goes with the session.
+    u.expect(12);
+    u.start(&app, sid, 12, &[json!({ "name": "a.txt", "size": 2 })]);
+    assert_eq!(count(), 3);
+    drop(u);
+    assert_eq!(count(), 2);
     let _ = std::fs::remove_dir_all(dir);
 }
 
