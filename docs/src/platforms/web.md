@@ -129,7 +129,7 @@ With [islands](../guide/islands.md), WASM islands also need `'wasm-unsafe-eval'`
 
 Without a nonce, the page's `<style>` blocks need `'unsafe-inline'` (or their hashes). Under a strict policy that lacks both, the page still works: the first paint is unstyled until the client connects. The sign-in callback page (`/_prism/auth/callback`) takes the nonce too. `client.js` uses no `eval`, inline handlers or `style` attributes.
 
-**Status codes.** An unknown path renders the router's not-found screen (Prism's or `.not_found(...)`) with `404 Not Found`, so crawlers, monitoring and the host see it. An app without a router answers `200` on every path.
+**Status codes.** An unknown path renders the router's not-found screen (Prism's or `.not_found(...)`) with `404 Not Found`, so crawlers, monitoring and the host see it. A route that matches but whose data is missing (`/orders/:id` with an unknown id, or another user's) calls `cx.set_page_status(404)` while the first paint renders, in the screen's build or its `render`, and keeps drawing its own « not found » state; `403`, `410` or `500` work the same way. Only `2xx`, `4xx` and `5xx` codes are kept, the last call wins, and `cx.page_status()` reads the status the page will get. The live session and native apps ignore it: the response is already sent, or there is none. An app without a router answers `200` on every path unless it sets a status.
 
 **Leaving the app.** `cx.open_url(url)` loads a URL of the page's own origin in the same tab, such as the host's sign-out page or a download. Other origins open in a new tab. `cx.open_url_in(url, UrlTarget::SameTab | NewTab | Auto)` chooses explicitly. Natively, the system opens the URL whatever the target.
 

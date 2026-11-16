@@ -221,7 +221,8 @@ impl WebApp {
     /// The request's extensions may carry a [`RequestContext`] (the app reads
     /// it with `cx.request_context::<T>()`) and a [`CspNonce`] (put on the
     /// page's `<style>`, `<link>` and `<script>` tags). An unknown path
-    /// renders the router's not-found screen with status `404`.
+    /// renders the router's not-found screen with status `404`; a screen sets
+    /// another with `cx.set_page_status(code)`.
     ///
     /// [`RequestContext`]: crate::RequestContext
     /// [`CspNonce`]: crate::CspNonce
@@ -361,11 +362,9 @@ impl WebApp {
             viewport,
             device: Some(crate::device_info::from_request(user_agent, cookies)),
         };
-        let (page, not_found) = self.page(path, visitor, request, nonce);
+        let (page, code) = self.page(path, visitor, request, nonce);
         let mut r = Response::new(page.into_bytes());
-        if not_found {
-            *r.status_mut() = StatusCode::NOT_FOUND;
-        }
+        *r.status_mut() = StatusCode::from_u16(code).unwrap_or(StatusCode::OK);
         set(&mut r, header::CONTENT_TYPE, "text/html; charset=utf-8");
         // Rendered for this browser: never stored by a CDN or the browser.
         set(&mut r, header::CACHE_CONTROL, "private, no-store");
@@ -449,14 +448,15 @@ impl WebApp {
 
     /// Server-side render of a fresh session on `path`, as a full HTML
     /// document without `style` attributes (a strict CSP allows it), and
-    /// whether it shows the not-found screen.
+    /// its HTTP status (`cx.page_status()`: the app's, or `404` on the
+    /// not-found screen).
     fn page(
         &self,
         path: &str,
         visitor: Visitor,
         request: prism_core::WebRequest,
         nonce: Option<&crate::CspNonce>,
-    ) -> (String, bool) {
+    ) -> (String, u16) {
         let config = &self.inner.config;
         let asset_urls = self.session_asset_urls(visitor.sid);
         let mut runtime =
@@ -465,7 +465,7 @@ impl WebApp {
         html.asset_urls = Some(asset_urls);
         html.base.clone_from(&self.inner.base);
         html.apply(&runtime.render_settled(self.inner.first_paint_wait));
-        let not_found = runtime.app.shows_not_found();
+        let code = runtime.app.page_status();
         let title = match html.screen_title() {
             Some(screen) if screen != config.title => format!("{screen} · {}", config.title),
             _ => config.title.clone(),
@@ -511,7 +511,7 @@ impl WebApp {
             js = self.inner.assets.client(),
             base = html::escape(&self.inner.base),
         );
-        (page, not_found)
+        (page, code)
     }
 
     /// What a socket request tells about the browser: session cookie,
