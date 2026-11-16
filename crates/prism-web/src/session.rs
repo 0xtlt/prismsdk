@@ -656,6 +656,16 @@ fn parse_input_event(v: &Value) -> Option<UiEvent> {
                 phase: DragPhase::from_name(v.get("phase")?.as_str()?)?,
                 start: Point::new(num("x").unwrap_or(0.), num("y").unwrap_or(0.)),
                 translation: Point::new(num("dx").unwrap_or(0.), num("dy").unwrap_or(0.)),
+                // `button` and `mods` (#136): the primary button, no keys
+                // when absent.
+                button: v
+                    .get("button")
+                    .and_then(Value::as_str)
+                    .and_then(prism_core::PointerButton::from_name)
+                    .unwrap_or_default(),
+                modifiers: Modifiers::from_bits(
+                    v.get("mods").and_then(Value::as_u64).unwrap_or(0) as u8
+                ),
             },
         )),
         // Wheel and pinch (#133): `{"t":"wheel","id","dx","dy","x","y","mods",

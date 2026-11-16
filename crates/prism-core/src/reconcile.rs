@@ -1100,6 +1100,7 @@ impl Reconciler {
             on_drop_files,
             on_wheel,
             on_magnify,
+            drag_buttons,
             ..
         } = *vnode;
         app.window.watch_widths(&style);
@@ -1119,7 +1120,7 @@ impl Reconciler {
         self.diff_events(
             id,
             name,
-            (on_hover, on_pointer_move, on_drag),
+            (on_hover, on_pointer_move, on_drag, drag_buttons),
             (on_wheel, on_magnify),
             (on_key_down, on_global_key_down),
         );
@@ -1518,6 +1519,7 @@ impl Reconciler {
             Option<Handler<crate::events::HoverEvent>>,
             Option<Handler<crate::events::PointerEvent>>,
             Option<Handler<crate::events::DragEvent>>,
+            u8,
         ),
         gestures: (
             Option<Handler<crate::events::WheelEvent>>,
@@ -1528,7 +1530,7 @@ impl Reconciler {
             Option<Handler<crate::events::KeyEvent>>,
         ),
     ) {
-        use crate::events::pointer_mask::{DRAG, HOVER, MAGNIFY, MOVE, WHEEL};
+        use crate::events::pointer_mask::{DRAG_ANY, HOVER, MAGNIFY, MOVE, WHEEL};
         let m = self.nodes.get_mut(&id).expect("node exists");
         if m.name != name {
             if let Some(old) = m.name.take()
@@ -1543,7 +1545,11 @@ impl Reconciler {
         }
         let mask = if pointer.0.is_some() { HOVER } else { 0 }
             | if pointer.1.is_some() { MOVE } else { 0 }
-            | if pointer.2.is_some() { DRAG } else { 0 }
+            | if pointer.2.is_some() {
+                pointer.3 & DRAG_ANY
+            } else {
+                0
+            }
             | if gestures.0.is_some() { WHEEL } else { 0 }
             | if gestures.1.is_some() { MAGNIFY } else { 0 };
         if m.pointer_mask != mask {

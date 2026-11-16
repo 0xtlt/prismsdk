@@ -506,6 +506,10 @@ pub struct VNode {
     /// A web view finished loading a page.
     pub on_web_load: Option<Handler<crate::web_view::WebLoadEvent>>,
 
+    /// The `pointer_mask` drag bits of the buttons that start a drag
+    /// (#136), the primary one by default.
+    pub drag_buttons: u8,
+
     // --- Wheel and pinch (#133) ---
     /// Wheel and trackpad scrolling over the node.
     pub on_wheel: Option<Handler<crate::events::WheelEvent>>,
@@ -564,6 +568,7 @@ impl VNode {
             on_web_load: None,
             on_wheel: None,
             on_magnify: None,
+            drag_buttons: crate::events::pointer_mask::DRAG,
             on_drop_files: None,
         }
     }
@@ -1843,6 +1848,18 @@ impl Div {
     /// every user can drag.
     pub fn on_drag(mut self, handler: Handler<crate::events::DragEvent>) -> Self {
         self.0.on_drag = Some(handler);
+        self
+    }
+
+    /// Which mouse buttons start an [`on_drag`](Div::on_drag) (#136): by
+    /// default the primary one. `&[PointerButton::Middle]` pans a canvas
+    /// with the wheel pressed while the left button selects; the platform's
+    /// own use of that button (autoscroll, pasting, opening a link in a new
+    /// tab) is then left out over the element. Fingers and pens are the
+    /// primary button. [`DragEvent::button`](crate::DragEvent::button) says
+    /// which one drags.
+    pub fn drag_buttons(mut self, buttons: &[crate::events::PointerButton]) -> Self {
+        self.0.drag_buttons = buttons.iter().fold(0, |bits, b| bits | b.drag_bit());
         self
     }
 

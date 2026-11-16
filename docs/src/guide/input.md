@@ -51,6 +51,31 @@ tvOS has no pointer over views, the watch neither hover nor keys: those handlers
 
 Web events travel over the app's WebSocket: moves and drags are throttled to one per animation frame, so a fast pointer does not flood the connection; clicks, drag starts and ends are never dropped.
 
+## Dragging with other buttons
+
+```rust
+// Design tools: the middle button (wheel pressed) pans, the left one selects.
+canvas
+    .drag_buttons(&[PointerButton::Middle])
+    .on_drag(cx.listener(|this, e: &DragEvent, cx| { /* e.button, e.modifiers */ }))
+```
+
+`on_drag` starts with the primary button; `.drag_buttons(&[…])` chooses
+which of `Primary`, `Middle` and `Secondary` start it instead (#136), and
+`DragEvent::button` says which one drags, `DragEvent::modifiers` the keys
+held when it started (Shift to constrain, Option to duplicate). Over such an
+element the platform's own use of the button is left out: the web's
+middle-click autoscroll, paste and « open in a new tab », and the context
+menu after a secondary-button drag (a press that does not move still opens
+it). Fingers and pens are the primary button.
+
+| | Middle | Secondary |
+|---|---|---|
+| Web | `pointerdown` with `button === 1` (`mousedown` and `auxclick` prevented) | `button === 2`, no `contextmenu` after a drag |
+| macOS | `otherMouseDown` / `Dragged` / `Up` (`buttonNumber == 2`) | `rightMouseDown` / `Dragged` / `Up`; the menu opens on a press that did not move |
+
+Other backends drag with the primary button only for now.
+
 ## Wheel and pinch
 
 ```rust

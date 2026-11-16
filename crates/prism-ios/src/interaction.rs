@@ -606,6 +606,9 @@ pub fn on_pan(g: &objc2_ui_kit::UIPanGestureRecognizer) {
             phase,
             start,
             translation: Point::new(t.x as f32, t.y as f32),
+            // A finger, a pen or the pointer's main button.
+            button: prism_core::PointerButton::Primary,
+            modifiers: Default::default(),
         },
     ));
 }

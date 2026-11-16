@@ -79,6 +79,41 @@ test("drags start past the slop, move once per frame, and do not click", () => {
   assert.equal(lastSent(page).t, "click");
 });
 
+test("the middle and secondary buttons drag where allowed, with their keys (#136)", () => {
+  const page = live([
+    // Middle-button panning; the primary button does not drag here.
+    { op: "create", id: 2, kind: "view" }, { op: "pointer", id: 2, mask: 32 },
+    { op: "create", id: 3, kind: "view" }, { op: "pointer", id: 3, mask: 64 },
+    ...root([2, 3]),
+  ]);
+  const canvas = placed(page.node(2));
+  const p = (el, type, button, x, y, more = {}) => {
+    const e = { type, pointerId: 1, button, clientX: x, clientY: y, ...more };
+    el.dispatchEvent(e);
+    return e;
+  };
+  const drags = () => sent(page).filter((m) => m.t === "drag");
+  p(canvas, "pointerdown", 0, 60, 30);
+  p(canvas, "pointermove", 0, 80, 30);
+  p(canvas, "pointerup", 0, 80, 30);
+  assert.equal(drags().length, 0, "the primary button selects");
+  assert.ok(p(canvas, "pointerdown", 1, 60, 30, { shiftKey: true }).defaultPrevented, "no autoscroll");
+  assert.ok(p(canvas, "mousedown", 1, 60, 30).defaultPrevented);
+  p(canvas, "pointermove", 1, 70, 30);
+  assert.deepEqual(lastSent(page), { t: "drag", id: 2, x: 10, y: 10, dx: 10, dy: 0, button: "middle", mods: 1, phase: "start" });
+  p(canvas, "pointerup", 1, 75, 30);
+  assert.deepEqual(lastSent(page), { t: "drag", id: 2, phase: "end", x: 10, y: 10, dx: 15, dy: 0, button: "middle", mods: 1 });
+  assert.ok(p(canvas, "auxclick", 1, 75, 30).defaultPrevented, "no new tab, no paste");
+  // The secondary button: a drag, then no context menu; a plain press keeps it.
+  const pad = placed(page.node(3));
+  p(pad, "pointerdown", 2, 60, 30);
+  p(pad, "pointermove", 2, 60, 50);
+  p(pad, "pointerup", 2, 60, 50);
+  assert.equal(lastSent(page).button, "secondary");
+  assert.ok(p(pad, "contextmenu", 2, 60, 50).defaultPrevented);
+  assert.equal(p(pad, "contextmenu", 2, 60, 50).defaultPrevented, false);
+});
+
 test("keys reach the focused element, and global listeners skip typing", () => {
   const page = live([
     { op: "create", id: 2, kind: "view" }, { op: "keys", id: 2, local: true, global: false },
