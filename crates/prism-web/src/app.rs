@@ -283,6 +283,8 @@ impl WebApp {
             };
             self.page_response(&page, req, context)
         };
+        // Pages and other answers made now: gzipped when the browser accepts it.
+        crate::compress::encode_response(headers, &mut response);
         if req.method() == Method::HEAD {
             response.body_mut().clear();
         }
@@ -742,20 +744,37 @@ fn set(r: &mut Response<Vec<u8>>, name: header::HeaderName, value: &'static str)
 }
 
 /// A static file, or `304 Not Modified` when the browser (or CDN) has it.
+/// Gzipped (once, then cached) when the browser accepts it and the type is
+/// worth it; that form has its own ETag (`"<hash>-gzip"`).
 fn file_response(f: StaticFile, headers: &HeaderMap) -> Response<Vec<u8>> {
-    let fresh = headers
-        .get(header::IF_NONE_MATCH)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.split(',').any(|t| t.trim() == f.etag || t.trim() == "*"));
-    let mut r = if fresh {
+    use crate::compress;
+    let varies = compress::worth_it(f.content_type, f.body.len());
+    let gzip = varies && compress::accepts_gzip(headers);
+    let etag = if gzip {
+        compress::gzip_etag(&f.etag)
+    } else {
+        f.etag.clone()
+    };
+    let mut r = if compress::etag_matches(headers, &f.etag) {
         status(StatusCode::NOT_MODIFIED)
     } else {
-        let mut r = Response::new(f.body);
+        let body = if gzip {
+            compress::gzip_static(&f.etag, &f.body, f.cache_control == crate::IMMUTABLE)
+        } else {
+            f.body
+        };
+        let mut r = Response::new(body);
         set(&mut r, header::CONTENT_TYPE, f.content_type);
+        if gzip {
+            set(&mut r, header::CONTENT_ENCODING, "gzip");
+        }
         r
     };
     set(&mut r, header::CACHE_CONTROL, f.cache_control);
-    if let Ok(v) = HeaderValue::from_str(&f.etag) {
+    if varies {
+        compress::vary(&mut r);
+    }
+    if let Ok(v) = HeaderValue::from_str(&etag) {
         r.headers_mut().insert(header::ETAG, v);
     }
     r

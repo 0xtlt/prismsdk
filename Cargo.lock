@@ -2461,6 +2461,7 @@ name = "prism-web"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "flate2",
  "futures-util",
  "http",
  "prism-core",

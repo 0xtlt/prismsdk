@@ -32,6 +32,8 @@ impl Render for Home {
         screen("Home")
             .child(text(who).p(4.))
             .child(text(format!("at {}", cx.page_url().unwrap_or("-"))))
+            // A first tree large enough to be sent compressed.
+            .child(text("Lorem ipsum dolor sit amet. ".repeat(60)))
     }
 }
 
@@ -144,12 +146,22 @@ fn get_page(addr: &str, path: &str, cookie: Option<&str>) -> Answer {
 
 /// Opens the socket: the handshake's answer, and the stream when upgraded.
 fn handshake(addr: &str, origin: &str, cookie: Option<&str>) -> (Answer, TcpStream) {
+    handshake_with(addr, "", origin, cookie)
+}
+
+/// [`handshake`] with more query parameters (`&compress=deflate-raw`).
+fn handshake_with(
+    addr: &str,
+    query: &str,
+    origin: &str,
+    cookie: Option<&str>,
+) -> (Answer, TcpStream) {
     let mut s = TcpStream::connect(addr).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
     let cookie = cookie.map_or(String::new(), |c| format!("Cookie: {c}\r\n"));
     write!(
         s,
-        "GET /app/ws?path=%2F&search=%3Fq%3D1&w=800&h=600 HTTP/1.1\r\nHost: {addr}\r\nOrigin: {origin}\r\n{cookie}\
+        "GET /app/ws?path=%2F&search=%3Fq%3D1&w=800&h=600{query} HTTP/1.1\r\nHost: {addr}\r\nOrigin: {origin}\r\n{cookie}\
 Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
     )
     .unwrap();
@@ -166,9 +178,15 @@ Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-We
 
 /// One text frame from the server (unmasked).
 fn frame(s: &mut TcpStream) -> String {
+    let (opcode, payload) = raw_frame(s);
+    assert_eq!(opcode, 1, "a text frame");
+    String::from_utf8(payload).unwrap()
+}
+
+/// One frame from the server (unmasked): its opcode and payload.
+fn raw_frame(s: &mut TcpStream) -> (u8, Vec<u8>) {
     let mut h = [0u8; 2];
     s.read_exact(&mut h).unwrap();
-    assert_eq!(h[0] & 0x0f, 1, "a text frame");
     let len = match h[1] & 0x7f {
         126 => {
             let mut b = [0u8; 2];
@@ -184,7 +202,7 @@ fn frame(s: &mut TcpStream) -> String {
     };
     let mut payload = vec![0u8; len];
     s.read_exact(&mut payload).unwrap();
-    String::from_utf8(payload).unwrap()
+    (h[0] & 0x0f, payload)
 }
 
 #[test]
@@ -259,5 +277,96 @@ fn prism_nested_in_a_host_with_its_own_middleware() {
     assert!(texts.contains(&"user 42"), "{texts:?}");
     let url = format!("at http://{addr}/app?q=1");
     assert!(texts.contains(&url.as_str()), "{texts:?}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A GET with extra headers: the answer's head and its raw body.
+fn get_raw(addr: &str, path: &str, headers: &[(&str, &str)]) -> (Answer, Vec<u8>) {
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+    let extra: String = headers
+        .iter()
+        .map(|(k, v)| format!("{k}: {v}\r\n"))
+        .collect();
+    write!(
+        s,
+        "GET {path} HTTP/1.1\r\nHost: {addr}\r\nCookie: host_session=42\r\n{extra}Connection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut raw = Vec::new();
+    s.read_to_end(&mut raw).unwrap();
+    let at = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+    let body = raw.split_off(at);
+    (parse(&raw), body)
+}
+
+fn gunzip(z: &[u8]) -> String {
+    let mut s = String::new();
+    flate2::read::GzDecoder::new(z)
+        .read_to_string(&mut s)
+        .unwrap();
+    s
+}
+
+#[test]
+fn pages_files_and_socket_messages_are_compressed() {
+    let dir = std::env::temp_dir().join(format!("prism-axum-gzip-{}", std::process::id()));
+    let addr = start(&dir);
+    let gzip = ("Accept-Encoding", "gzip, deflate, br, zstd");
+
+    // A page: gzipped on the fly, and it varies with Accept-Encoding.
+    let (page, body) = get_raw(&addr, "/app", &[gzip]);
+    assert_eq!(page.status, 200, "{}", page.head);
+    assert_eq!(page.header("content-encoding"), Some("gzip"));
+    assert_eq!(page.header("vary"), Some("accept-encoding"));
+    let html = gunzip(&body);
+    assert!(html.contains("user 42"));
+    let (plain, plain_body) = get_raw(&addr, "/app", &[]);
+    assert_eq!(plain.header("content-encoding"), None);
+    assert_eq!(plain.header("vary"), Some("accept-encoding"));
+    assert!(String::from_utf8(plain_body).unwrap().contains("user 42"));
+
+    // The client script: gzipped once, with the ETag of its gzipped form.
+    let src = html.split(r#"<script src=""#).nth(1).unwrap();
+    let src = &src[..src.find('"').unwrap()];
+    let (js, js_body) = get_raw(&addr, src, &[gzip]);
+    assert_eq!(js.header("content-encoding"), Some("gzip"));
+    assert_eq!(js.header("vary"), Some("accept-encoding"));
+    let etag = js.header("etag").unwrap().to_string();
+    assert!(etag.ends_with("-gzip\""), "{etag}");
+    assert!(gunzip(&js_body).contains("DecompressionStream"));
+    // Revalidated with either form's ETag: 304, nothing sent.
+    let (again, again_body) = get_raw(&addr, src, &[gzip, ("If-None-Match", &etag)]);
+    assert_eq!(again.status, 304);
+    assert_eq!(again.header("etag"), Some(etag.as_str()));
+    assert!(again_body.is_empty());
+    let (identity, _) = get_raw(&addr, src, &[]);
+    assert_eq!(identity.header("content-encoding"), None);
+    let plain_etag = identity.header("etag").unwrap();
+    assert_eq!(
+        format!("{}-gzip\"", &plain_etag[..plain_etag.len() - 1]),
+        etag
+    );
+    let weak = format!("W/{etag}");
+    let (weak, _) = get_raw(&addr, src, &[("If-None-Match", &weak)]);
+    assert_eq!(weak.status, 304);
+
+    // The socket: a page that can inflate gets its first tree deflated.
+    let me = Some("host_session=42");
+    let origin = format!("http://{addr}");
+    let (ok, mut ws) = handshake_with(&addr, "&compress=deflate-raw", &origin, me);
+    assert_eq!(ok.status, 101, "{}", ok.head);
+    let (opcode, payload) = raw_frame(&mut ws);
+    assert_eq!(opcode, 2, "a binary frame");
+    let mut json = String::new();
+    flate2::read::DeflateDecoder::new(payload.as_slice())
+        .read_to_string(&mut json)
+        .unwrap();
+    assert!(payload.len() < json.len());
+    let reset: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(reset["t"], "reset");
+    // Without it: text, as before.
+    let (_, mut ws) = handshake(&addr, &origin, me);
+    assert!(serde_json::from_str::<serde_json::Value>(&frame(&mut ws)).is_ok());
     let _ = std::fs::remove_dir_all(dir);
 }

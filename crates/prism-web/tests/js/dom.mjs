@@ -5,6 +5,7 @@
 // `:scope > …`).
 import fs from "node:fs";
 import vm from "node:vm";
+import zlib from "node:zlib";
 
 const VOID = new Set(["input", "img", "br", "meta", "link", "hr"]);
 const kebab = (s) => s.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase());
@@ -399,6 +400,18 @@ class FakeSocket {
   addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
   open() { (this.listeners.open || []).forEach((fn) => fn({})); }
   deliver(msg) { this.onmessage({ data: JSON.stringify(msg) }); }
+  /** A binary frame of raw DEFLATE, as `prism_web::Frame::Binary` (an ArrayBuffer, `binaryType = "arraybuffer"`). */
+  deliverCompressed(msg) { this.deliverBinary(zlib.deflateRawSync(Buffer.from(JSON.stringify(msg)))); }
+  deliverBinary(bytes) {
+    const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    this.onmessage({ data: buf });
+  }
+  close() {
+    if (this.readyState >= 2) return;
+    this.readyState = 3;
+    this.closed = true;
+    if (this.onclose) this.onclose({});
+  }
 }
 FakeSocket.instances = [];
 
@@ -408,7 +421,7 @@ const CLIENT = new URL("../../src/client.js", import.meta.url);
  * Runs client.js on a page whose `<main id="prism-root">` holds `ssr`, and
  * returns the page, its window and the socket it opened.
  */
-export function boot({ ssr = "", path = "/", base = "", glyphs = { plus: "+", gear: "⚙", house: "⌂" }, fetch = null, search = "", nonce = "", importModule = null } = {}) {
+export function boot({ ssr = "", path = "/", base = "", glyphs = { plus: "+", gear: "⚙", house: "⌂" }, fetch = null, search = "", nonce = "", importModule = null, decompress = true } = {}) {
   const document = new Document();
   const customElements = new CustomElementRegistry();
   document.registry = customElements;
@@ -489,6 +502,9 @@ export function boot({ ssr = "", path = "/", base = "", glyphs = { plus: "+", ge
     URL,
     encodeURIComponent,
   };
+  // Node's own streams: compressed frames (`decompress: false` plays a
+  // browser without `DecompressionStream`).
+  if (decompress) Object.assign(win, { DecompressionStream, Response });
   win.window = win;
   win.self = win;
   const context = vm.createContext(win);

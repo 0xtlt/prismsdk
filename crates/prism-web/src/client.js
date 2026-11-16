@@ -2261,26 +2261,61 @@
   document.addEventListener("visibilitychange", () => { if (!document.hidden) retryNow(); });
   for (const t of ["pointerdown", "keydown", "focus"]) addEventListener(t, () => { if (conn.idle) retryNow(); }, true);
 
+  // Compressed messages: with `DecompressionStream`, the page asks for large
+  // messages as binary frames of raw DEFLATE (`prism_web::Frame`). Without
+  // it, the server sends text only.
+  const inflate = (() => {
+    try {
+      if (typeof DecompressionStream !== "function" || typeof Response !== "function") return null;
+      new DecompressionStream("deflate-raw");
+    } catch (e) {
+      return null;
+    }
+    return (data) => new Response(new Response(data).body.pipeThrough(new DecompressionStream("deflate-raw"))).text();
+  })();
+  // Messages still being inflated, applied in arrival order: a small text
+  // patch never overtakes a large compressed one sent before it.
+  let inbox = null;
+  function onFrame(socket, data) {
+    if (typeof data === "string" && !inbox) return receive(data);
+    // Inflating starts now, in parallel with the messages before it.
+    const text = typeof data === "string" ? Promise.resolve(data)
+      : inflate ? inflate(data) : Promise.reject(new Error("compressed message without DecompressionStream"));
+    text.catch(() => {}); // handled below, once its turn comes
+    const step = (inbox || Promise.resolve()).then(() => text).then(receive, (err) => {
+      // A message is lost: the page no longer matches the server. Reconnect
+      // for a fresh tree.
+      console.error("prism: cannot read a message", err);
+      if (socket.readyState < 2) socket.close();
+    }).catch((err) => console.error(err));
+    inbox = step;
+    step.then(() => { if (inbox === step) inbox = null; });
+  }
+  /** Applies one message from the server: patches, or a service message. */
+  function receive(text) {
+    const msg = JSON.parse(text);
+    if (!msg.p) return service(msg);
+    if (msg.t === "reset") {
+      nodes.clear(); clearStates(); stacks = []; hist = null; userNavigated = false;
+      globalKeys = 0; openPopovers.clear(); layerHost.replaceChildren();
+      document.querySelectorAll("datalist[id^=prism-list-]").forEach((d) => d.remove());
+    }
+    quiet = msg.t === "reset";
+    msg.p.forEach(apply);
+    flushStates();
+    quiet = false;
+    // The live tree replaced the first paint: its style rules can go.
+    if (msg.t === "reset") document.getElementById("prism-ssr")?.remove();
+    syncHistory();
+  }
+
   function connect() {
     const path = encodeURIComponent(appPath());
     const search = location.search ? `&search=${encodeURIComponent(location.search)}` : "";
-    ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${BASE}/ws?path=${path}&tz=${tz}&w=${innerWidth}&h=${innerHeight}${search}`);
-    ws.onmessage = (e) => {
-      const msg = JSON.parse(e.data);
-      if (!msg.p) return service(msg);
-      if (msg.t === "reset") {
-        nodes.clear(); clearStates(); stacks = []; hist = null; userNavigated = false;
-        globalKeys = 0; openPopovers.clear(); layerHost.replaceChildren();
-        document.querySelectorAll("datalist[id^=prism-list-]").forEach((d) => d.remove());
-      }
-      quiet = msg.t === "reset";
-      msg.p.forEach(apply);
-      flushStates();
-      quiet = false;
-      // The live tree replaced the first paint: its style rules can go.
-      if (msg.t === "reset") document.getElementById("prism-ssr")?.remove();
-      syncHistory();
-    };
+    const compress = inflate ? "&compress=deflate-raw" : "";
+    const socket = ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${BASE}/ws?path=${path}&tz=${tz}&w=${innerWidth}&h=${innerHeight}${search}${compress}`);
+    ws.binaryType = "arraybuffer";
+    ws.onmessage = (e) => onFrame(socket, e.data);
     ws.onclose = closed;
     ws.addEventListener("open", () => { conn.attempt = 0; conn.opened = true; setConnection("online"); });
     ws.addEventListener("open", reportLifecycle);

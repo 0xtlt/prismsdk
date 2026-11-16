@@ -6,7 +6,9 @@
 //!    (usable before any JS runs), linking the hashed client script and CSS.
 //! 2. The client opens `/ws`; the server starts a session (its own
 //!    [`Runtime`](prism_core::Runtime)) and streams patches as JSON; the
-//!    client applies them to the DOM.
+//!    client applies them to the DOM. Large messages are deflated for
+//!    browsers that can inflate them ([`Frame`]); pages and static files
+//!    are gzipped when `Accept-Encoding` allows it.
 //! 3. DOM events go back over the socket and are dispatched to Rust handlers.
 //!
 //! No WASM: the app logic stays in native Rust on the server.
@@ -31,6 +33,7 @@
 
 mod app;
 mod assets;
+mod compress;
 mod css;
 mod device_info;
 mod fonts;
@@ -53,6 +56,7 @@ mod typography_tests;
 
 pub use app::WebApp;
 pub use assets::{IMMUTABLE, REVALIDATE, StaticFile, content_hash};
+pub use compress::Frame;
 pub use css::css;
 pub use host::{CspNonce, RequestContext};
 pub use html::{AssetUrls, HtmlBackend};

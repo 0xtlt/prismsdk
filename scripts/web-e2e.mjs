@@ -17,6 +17,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const args = process.argv.slice(2);
@@ -191,7 +192,10 @@ async function main() {
     } else if (method === "Network.webSocketFrameSent") {
       frames.sent.push(JSON.parse(p.response.payloadData));
     } else if (method === "Network.webSocketFrameReceived") {
-      frames.received.push(JSON.parse(p.response.payloadData));
+      // Large messages come as binary frames of raw DEFLATE (base64 here).
+      const r = p.response;
+      const text = r.opcode === 2 ? zlib.inflateRawSync(Buffer.from(r.payloadData, "base64")).toString() : r.payloadData;
+      frames.received.push(JSON.parse(text));
     }
   });
   await cdp.send("Runtime.enable");

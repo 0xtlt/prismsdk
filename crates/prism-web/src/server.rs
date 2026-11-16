@@ -75,11 +75,20 @@ async fn socket(State(app): State<WebApp>, parts: Parts, ws: WebSocketUpgrade) -
     let req = http::Request::from_parts(parts, ());
     ws.on_upgrade(move |socket| async move {
         let (mut sink, mut stream) = socket.split();
-        let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let session = app.connect_request(&req, move |text| out_tx.send(text).is_ok());
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<crate::Frame>();
+        // Large messages deflated for pages that can inflate them, on the
+        // session's thread (not the async runtime's).
+        let compress = crate::Frame::negotiated(req.uri());
+        let session = app.connect_request(&req, move |text| {
+            out_tx.send(crate::Frame::encode(text, compress)).is_ok()
+        });
         let writer = tokio::spawn(async move {
-            while let Some(text) = out_rx.recv().await {
-                if sink.send(Message::Text(text.into())).await.is_err() {
+            while let Some(frame) = out_rx.recv().await {
+                let msg = match frame {
+                    crate::Frame::Text(text) => Message::Text(text.into()),
+                    crate::Frame::Binary(bytes) => Message::Binary(bytes.into()),
+                };
+                if sink.send(msg).await.is_err() {
                     break;
                 }
             }

@@ -36,6 +36,43 @@ Other servers (actix, hyper, …): `prism-web` without default features has no s
 
 `prism build web` also writes `public/` (hashed files plus `manifest.json`). Upload it to a CDN and set `PRISM_ASSET_URL=https://cdn.example.com`, or let the CDN cache `/_prism/*` and `/assets/*` from the server. Settings: `PRISM_HOST`, `PRISM_PORT`, `PRISM_BASE_PATH`, `PRISM_ASSET_URL`, `PRISM_DATA_DIR` (or `WebApp::base_path` / `asset_url` / `data_dir`).
 
+### Transport and compression
+
+A page loads in two steps. First the server sends HTML that works without JavaScript. Then the client opens `/ws?path=…&tz=…&w=…&h=…` and receives JSON over the socket: a `reset` with the whole live tree, then small `patch` messages. Events go back as JSON text.
+
+**Socket messages.** Axum's WebSocket stack (tungstenite 0.29) has no `permessage-deflate`, so the server never accepts the extension Chrome offers. Compression happens at the application level instead:
+
+- A browser with `DecompressionStream("deflate-raw")` adds `&compress=deflate-raw` to the socket URL.
+- For such a page, every message of at least 1 KB (`Frame::MIN_COMPRESSED`) goes out as a **binary frame** of raw DEFLATE, but only when compression makes it smaller.
+- Smaller messages, such as most patches, stay text frames.
+- Compression runs on the session's thread, at level 3. On the counter's 387 KB first tree, a release build takes about 0.9 ms and sends 35 KB.
+- The client inflates binary frames as they arrive and applies messages strictly in arrival order. A text patch that arrives while an earlier frame is still inflating waits in a queue behind it.
+- If a frame cannot be inflated, the client closes the socket and reconnects for a fresh tree.
+- Browsers without `DecompressionStream` do not ask for compressed frames, and get text only.
+
+With another WebSocket server, frame the messages yourself:
+
+```rust
+let compress = prism_web::Frame::negotiated(&uri);
+let session = app.connect(&uri, &headers, move |text| match prism_web::Frame::encode(text, compress) {
+    prism_web::Frame::Text(t) => out.send_text(t),
+    prism_web::Frame::Binary(b) => out.send_binary(b),
+});
+```
+
+Plain `send(text)` still works: the client reads text frames whether or not it asked for compression.
+
+**HTTP.** `WebApp::handle` gzips its answers when `Accept-Encoding` allows it (q-values are respected, so `gzip;q=0` gets no gzip):
+
+- Pages are gzipped per request (level 6, about 1 ms for 156 KB).
+- `client.js`, `prism.css`, island JS and WASM, and app assets are gzipped once and cached by content hash. Unhashed assets are gzipped on each request.
+- Only text, JSON, JavaScript, SVG, WASM and `ttf`/`otf` fonts of 1 KB or more are gzipped. PNG, JPEG, WebP, `woff2`, video and PDF are sent as they are.
+- Each answer that can be gzipped carries `Vary: Accept-Encoding`.
+- The gzipped form of a static file has its own ETag, `"<hash>-gzip"`. `If-None-Match` matches either form, and a weak `W/` match also counts, so revalidation still ends in `304`.
+- A response that already has `Content-Encoding` is left alone.
+
+On the counter, a cold load of `/` goes from 283 KB to 63 KB over HTTP, and from 390 KB to 37 KB over the socket. There is no brotli yet. A CDN in front can re-encode static files in brotli.
+
 ## Embedding in an existing server
 
 `crates/prism-web/examples/embed.rs` is a complete host: its own sign-in, a strict CSP, Prism nested at `/app` (`cargo run -p prism-web --example embed`). `crates/prism-web/tests/axum_host.rs` tests the same setup over real sockets.

@@ -207,6 +207,10 @@ The first version, not yet on crates.io.
 
 ### Changed
 
+- Web: the server compresses what it sends.
+  - **Socket.** Browsers with `DecompressionStream` ask for compressed frames (`&compress=deflate-raw`). Messages of 1 KB or more then arrive as binary frames of raw DEFLATE, and the client applies them in order. Small patches stay text. Axum's tungstenite has no `permessage-deflate`, so this is done at the application level. `prism_web::Frame` frames messages for other WebSocket servers.
+  - **HTTP.** `WebApp::handle` gzips pages per request. It gzips the client, CSS, islands and text assets once, cached by hash, with a `"<hash>-gzip"` ETag. It honors `Accept-Encoding` q-values and sends `Vary: Accept-Encoding`.
+  - **Result.** On the counter, a cold load of `/` goes from 283 KB to 63 KB over HTTP and from 390 KB to 37 KB over the socket.
 - Web: the client no longer writes a `style="…"` attribute on every node. Each distinct style is one rule of a shared sheet, applied by a class named after a short hash of the style (`p1x5rl6u`, the same name as the first paint's `data-ps`), and unused rules are recycled. Interaction states share one `<style>` instead of one per node. Picture fit is a `prism-fit` class.
 - Releasing an entity also releases the entities it created with `cx.new`
   and drops the observers it registered with `cx.observe`; releasing a
