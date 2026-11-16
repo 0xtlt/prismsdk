@@ -5,7 +5,9 @@
 //!
 //! The "Todo" widget is configurable: each instance shows the todo picked in
 //! the system's « Edit widget » sheet (iOS 17+, macOS 14+), from the todos
-//! of the moment.
+//! of the moment. Its check mark is a widget button: a tap marks the todo
+//! done (or open again) without opening the app (`widget_action`, handled by
+//! `on_widget_action` below).
 
 use prism::prelude::*;
 
@@ -141,6 +143,15 @@ pub fn register(cx: &mut App, store: Entity<Store>) {
     );
     cx.register_widget(todo_widget(store));
     cx.reload_widgets_on(&store);
+    // Widget buttons: runs in the app, launched in the background if needed;
+    // the widgets are redrawn when the job returns.
+    cx.on_widget_action(move |action, cx| async move {
+        if action.action == "toggle"
+            && let Ok(id) = action.payload.parse::<u64>()
+        {
+            cx.update_entity(&store, |s, cx| s.toggle(id, cx));
+        }
+    });
 }
 
 /// One todo, picked per instance. The options are the todos themselves: the
@@ -191,7 +202,17 @@ fn todo_widget(store: Entity<Store>) -> Widget {
                 .gap(8.)
                 .flex_1()
                 .link(link)
-                .child(image(mark).text_color(t.accent).text_size(24.))
+                .child(
+                    // Taps here toggle the todo in place (the rest opens it).
+                    div()
+                        .widget_action("toggle", todo.id.to_string())
+                        .accessibility_label(if todo.done {
+                            strings::widget_mark_open(cx)
+                        } else {
+                            strings::widget_mark_done(cx)
+                        })
+                        .child(image(mark).text_color(t.accent).text_size(24.)),
+                )
                 .child(
                     text(todo.title.clone())
                         .semibold()

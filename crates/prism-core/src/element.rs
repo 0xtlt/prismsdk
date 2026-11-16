@@ -332,6 +332,12 @@ pub struct VNode {
     /// Makes this view an island (see [`island`](crate::island)): its
     /// custom element, props and events. Its children are the fallback.
     pub island: Option<Box<crate::island::IslandSpec>>,
+
+    // --- Widget buttons (#47) ---
+    /// In a widget or Live Activity: a tap runs this action of the app
+    /// ([`App::on_widget_action`](crate::App::on_widget_action)) without
+    /// opening it: `(action, payload)`.
+    pub widget_action: Option<(String, String)>,
 }
 
 impl VNode {
@@ -367,6 +373,7 @@ impl VNode {
             on_key_down: None,
             on_global_key_down: None,
             island: None,
+            widget_action: None,
         }
     }
 }
@@ -1724,3 +1731,25 @@ impl Stack {
         self
     }
 }
+
+// --- Widget buttons (#47) ---
+
+macro_rules! widget_action {
+    ($($ty:ident),*) => {$(
+        impl $ty {
+            /// In a widget or a Live Activity, a tap runs `action` with
+            /// `payload` in the app ([`App::on_widget_action`](crate::App::on_widget_action))
+            /// without opening it, then redraws the widgets: WidgetKit's
+            /// `Button(intent:)` on iOS 17+, a broadcast on Android. Where a
+            /// widget cannot run app code, the tap opens the app, which runs
+            /// the action there (see the widgets chapter). In the app's own
+            /// UI it does nothing: use `on_click` there.
+            pub fn widget_action(mut self, action: impl Into<String>, payload: impl Into<String>) -> Self {
+                self.0.widget_action = Some((action.into(), payload.into()));
+                self
+            }
+        }
+    )*};
+}
+
+widget_action!(Div, Text, Button);

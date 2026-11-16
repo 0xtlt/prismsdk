@@ -176,7 +176,25 @@ final class PrismMacAppDelegate: NSObject, NSApplicationDelegate {
     func application(_ application: NSApplication, didReceiveRemoteNotification userInfo: [String: Any]) {
         prismDeliverPush(2, userInfo, id: nil)
     }
+
+    /// The app's URL scheme (`prism-counter:/todos/1`): a widget's link, or a
+    /// widget button's action link (`/__prism/widget-action?…`, which the
+    /// runtime runs instead of navigating).
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            let s = url.absoluteString
+            guard let colon = s.firstIndex(of: ":") else { continue }
+            var path = String(s[s.index(after: colon)...])
+            while path.hasPrefix("//") { path.removeFirst() }
+            if !path.hasPrefix("/") { path = "/" + path }
+            path.withCString { prismRustOpenLink($0) }
+        }
+    }
 }
+
+/// Implemented in Rust (prism-macos): opens an app path.
+@_silgen_name("prism_open_link")
+func prismRustOpenLink(_ path: UnsafePointer<CChar>)
 
 /// Installs the delegate before launch finishes (called by prism_bridge_init).
 func prismInstallMacDelegate() {

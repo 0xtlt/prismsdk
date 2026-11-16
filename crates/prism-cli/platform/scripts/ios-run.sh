@@ -131,6 +131,12 @@ fi
 # Configurable widgets (Widget::parameter) are App Intents: see step 6.
 CONFIGURABLE=0
 [[ $WIDGETS == 1 ]] && CONFIGURABLE="$(python3 -c 'import json, sys; print(int(any(w.get("parameters") for w in json.load(open(sys.argv[1])))))' "$GEN/widgets.json")"
+# Widget buttons (cx.on_widget_action) are App Intents too: the extension
+# declares their intent like a configurable widget's (same metadata step and
+# daemons), and the app declares it as well (step 6b), so iOS runs it there.
+ACTIONS=0
+[[ $WIDGETS == 1 ]] && ACTIONS="$(PRISM_DESCRIBE=widget_actions "$HOST_BIN" 2>/dev/null || echo 0)"
+[[ "$ACTIONS" == 1 ]] && CONFIGURABLE=1
 
 # 2. Pick the destination: a real device, or a booted (slimmed) simulator.
 #    Build-only runs (PRISM_NO_INSTALL=1) need neither.
@@ -521,6 +527,30 @@ $(plist_common PrismWidgets "$BUNDLE_ID.widgets" XPC!)
 </dict>
 </plist>
 PLIST
+fi
+
+# 6b. Widget buttons: the app declares their intent too (Metadata.appintents
+#     in the app bundle), so iOS runs it in the app's process, where the
+#     bridge hands it to the Rust code. The intent is compiled into the app
+#     by the bridge (module PrismBridge); its constant values come from the
+#     same source compiled again here.
+rm -rf "$APP/Metadata.appintents"
+if [[ "$ACTIONS" == 1 ]]; then
+  xcrun --sdk "$SDK" swiftc -target "$TRIPLE" -swift-version 5 -O -parse-as-library \
+    -module-name PrismBridge -wmo -emit-const-values-path "$GEN/PrismBridge.swiftconstvalues" \
+    -Xfrontend -const-gather-protocols-file -Xfrontend "$GEN/intents-protocols.json" \
+    -c -o "$GEN/PrismBridgeIntents.o" "$PLATFORM/apple/Shared/PrismWidgetAction.swift"
+  echo "$PLATFORM/apple/Shared/PrismWidgetAction.swift" > "$GEN/app-intents-sources.txt"
+  echo "$GEN/PrismBridge.swiftconstvalues" > "$GEN/app-intents-constvalues.txt"
+  xcrun appintentsmetadataprocessor --output "$APP" \
+    --toolchain-dir "$(dirname "$(dirname "$(dirname "$(xcrun --find swiftc)")")")" \
+    --module-name PrismBridge --sdk-root "$(xcrun --sdk "$SDK" --show-sdk-path)" \
+    --xcode-version "$(xcodebuild -version | awk '/Build version/ { print $3 }')" \
+    --platform-family "$FAMILY" --deployment-target "$MIN_IOS" --target-triple "$TRIPLE" \
+    --binary-file "$APP/$PKG" --source-file-list "$GEN/app-intents-sources.txt" \
+    --swift-const-vals-list "$GEN/app-intents-constvalues.txt" \
+    --compile-time-extraction --deployment-aware-processing --no-app-shortcuts-localization 2>"$GEN/app-intents.log" \
+    || { cat "$GEN/app-intents.log" >&2; exit 1; }
 fi
 
 # 7. Sign: ad hoc on the simulator, with the profile on a device.

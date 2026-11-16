@@ -393,3 +393,67 @@ pub extern "C" fn prism_background_expired(id: *const c_char) {
         crate::imp::expire_background(&full);
     }
 }
+
+// --- Widget actions (Button(intent:) in widgets, #47) ---
+
+#[cfg(not(target_os = "tvos"))]
+unsafe extern "C" {
+    fn prism_widget_actions_install();
+    fn prism_widget_actions_take() -> *mut c_char;
+    fn prism_widget_action_done(token: u64);
+    fn free(p: *mut std::ffi::c_void);
+}
+
+/// From launch: widget button intents iOS runs in the app's process reach
+/// [`prism_widget_action`]. tvOS has no widgets.
+pub(crate) fn install_widget_actions() {
+    #[cfg(not(target_os = "tvos"))]
+    unsafe {
+        prism_widget_actions_install()
+    }
+}
+
+/// Actions the widget extension queued because it ran an intent itself
+/// (the app runs them when it comes to the foreground).
+pub(crate) fn take_queued_widget_actions() -> Vec<prism_core::WidgetAction> {
+    #[cfg(not(target_os = "tvos"))]
+    {
+        let p = unsafe { prism_widget_actions_take() };
+        if p.is_null() {
+            return Vec::new();
+        }
+        let json = unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
+        unsafe { free(p.cast()) };
+        prism_core::WidgetAction::list_from_json(&json)
+    }
+    #[cfg(target_os = "tvos")]
+    Vec::new()
+}
+
+/// Tells the intent that ran widget action `token` that its job finished.
+pub(crate) fn widget_action_done(token: u64) {
+    #[cfg(not(target_os = "tvos"))]
+    unsafe {
+        prism_widget_action_done(token)
+    }
+    #[cfg(target_os = "tvos")]
+    let _ = token;
+}
+
+/// A widget button's intent runs in the app (iOS launched it in the
+/// background if needed): the app's `on_widget_action` job, then
+/// `prism_widget_action_done(token)`.
+#[unsafe(no_mangle)]
+pub extern "C" fn prism_widget_action(
+    kind: *const c_char,
+    action: *const c_char,
+    payload: *const c_char,
+    token: u64,
+) {
+    let action = prism_core::WidgetAction {
+        kind: cstr(kind).unwrap_or_default(),
+        action: cstr(action).unwrap_or_default(),
+        payload: cstr(payload).unwrap_or_default(),
+    };
+    crate::imp::run_widget_action(action, crate::imp::Completion::WidgetAction(token));
+}

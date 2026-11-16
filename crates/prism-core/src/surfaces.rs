@@ -184,6 +184,10 @@ pub struct SNode {
     pub link: Option<String>,
     /// Child nodes, in order.
     pub children: Vec<SNode>,
+    /// A tap runs this app action without opening the app
+    /// ([`Div::widget_action`](crate::Div::widget_action)); its `kind` is
+    /// the widget's or Live Activity's, set when the surface is rendered.
+    pub action: Option<WidgetAction>,
 }
 
 /// Resolves an element (entities, lazy components) into static nodes.
@@ -248,8 +252,22 @@ impl SNode {
             icon: v.icon,
             value: v.value,
             link: v.link,
+            action: v.widget_action.map(|(action, payload)| WidgetAction {
+                kind: String::new(),
+                action,
+                payload,
+            }),
             children,
         }
+    }
+
+    /// Sets the surface kind of every action in the tree (`kind` of
+    /// [`WidgetAction`]).
+    fn tag_actions(&mut self, kind: &str) {
+        if let Some(a) = &mut self.action {
+            a.kind = kind.to_string();
+        }
+        self.children.iter_mut().for_each(|c| c.tag_actions(kind));
     }
 
     /// Compact JSON (Live Activity payloads are limited to 4 KB).
@@ -262,6 +280,7 @@ impl SNode {
     /// medium/semibold/bold, else a CSS weight; typography keys
     /// `ff`/`it`/`ul`/`st`/`tn`/`tt`/`ls`/`lh`/`ml`/`nw`, see `write_typography`),
     /// `o` opacity, `s` text, symbol or drawing, `v` value, `l` link,
+    /// `wa` widget action (`{"k":kind,"a":action,"p":payload}`),
     /// `al` accessibility label, `ah` hidden, `hd` heading, `c` children.
     ///
     /// A shape's drawing is [`Drawing::encode`](crate::shape::Drawing) with
@@ -425,6 +444,15 @@ impl SNode {
         }
         if let Some(l) = &self.link {
             let _ = write!(o, r#","l":{}"#, json_str(l));
+        }
+        if let Some(a) = &self.action {
+            let _ = write!(
+                o,
+                r#","wa":{{"k":{},"a":{},"p":{}}}"#,
+                json_str(&a.kind),
+                json_str(&a.action),
+                json_str(&a.payload)
+            );
         }
         if let Some(l) = &self.label {
             let _ = write!(o, r#","al":{}"#, json_str(l));
@@ -815,7 +843,9 @@ impl Widget {
                     .iter()
                     .map(|f| {
                         let element = (self.render)(app, *f, &config);
-                        (*f, snapshot_one(app, element).to_json())
+                        let mut node = snapshot_one(app, element);
+                        node.tag_actions(&self.kind);
+                        (*f, node.to_json())
                     })
                     .collect();
                 (config, families)
@@ -1124,6 +1154,163 @@ impl WidgetSnapshot {
 }
 
 // ---------------------------------------------------------------------------
+// Widget actions: buttons that run app code without opening the app (#47)
+// ---------------------------------------------------------------------------
+
+/// A tap on a widget or Live Activity button
+/// ([`Div::widget_action`](crate::Div::widget_action)), handled by
+/// [`App::on_widget_action`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct WidgetAction {
+    /// The kind of the widget (or Live Activity) that was tapped.
+    pub kind: String,
+    /// The action, as given to `widget_action` (`"run-shortcut"`).
+    pub action: String,
+    /// Its payload, as given to `widget_action` (an id, JSON…).
+    pub payload: String,
+}
+
+impl WidgetAction {
+    /// The app path that runs an action where a widget cannot run app code
+    /// in place: the tap opens the app on it, and
+    /// [`Runtime::open_link`](crate::Runtime::open_link) runs the action
+    /// instead of navigating.
+    pub const LINK_PATH: &'static str = "/__prism/widget-action";
+
+    /// An action of the widget `kind`.
+    pub fn new(
+        kind: impl Into<String>,
+        action: impl Into<String>,
+        payload: impl Into<String>,
+    ) -> Self {
+        WidgetAction {
+            kind: kind.into(),
+            action: action.into(),
+            payload: payload.into(),
+        }
+    }
+
+    /// The deep link that runs this action when the app opens on it
+    /// (`/__prism/widget-action?kind=…&action=…&payload=…`).
+    pub fn to_link(&self) -> String {
+        format!(
+            "{}?{}",
+            Self::LINK_PATH,
+            crate::router::encode_query([
+                ("kind", self.kind.as_str()),
+                ("action", self.action.as_str()),
+                ("payload", self.payload.as_str()),
+            ])
+        )
+    }
+
+    /// The action a [`to_link`](Self::to_link) path runs, `None` for any
+    /// other path.
+    pub fn from_link(path: &str) -> Option<WidgetAction> {
+        let (path, query) = crate::router::split_query(path);
+        if path != Self::LINK_PATH {
+            return None;
+        }
+        let mut action = WidgetAction::default();
+        for (k, v) in crate::router::parse_query(query) {
+            match k.as_str() {
+                "kind" => action.kind = v,
+                "action" => action.action = v,
+                "payload" => action.payload = v,
+                _ => {}
+            }
+        }
+        (!action.action.is_empty()).then_some(action)
+    }
+
+    /// For backends: actions a widget extension queued for the app (a JSON
+    /// array of `{"k":kind,"a":action,"p":payload}`). Anything else is
+    /// skipped.
+    pub fn list_from_json(json: &str) -> Vec<WidgetAction> {
+        let Some(crate::push::Json::Array(items)) = crate::push::Json::parse(json) else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .filter_map(|item| {
+                let crate::push::Json::Object(fields) = item else {
+                    return None;
+                };
+                let get = |key: &str| {
+                    fields
+                        .iter()
+                        .find(|(k, _)| k == key)
+                        .and_then(|(_, v)| v.as_str())
+                        .map(str::to_owned)
+                };
+                Some(WidgetAction {
+                    kind: get("k").unwrap_or_default(),
+                    action: get("a").filter(|a| !a.is_empty())?,
+                    payload: get("p").unwrap_or_default(),
+                })
+            })
+            .collect()
+    }
+}
+
+type WidgetActionJob = Rc<
+    dyn Fn(
+        WidgetAction,
+        crate::AsyncApp,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>,
+>;
+
+impl App {
+    /// Runs `job` when a widget or Live Activity button made with
+    /// [`Div::widget_action`](crate::Div::widget_action) is tapped. The
+    /// platform keeps the app running until the future completes (it may
+    /// have been launched in the background just for it: register the
+    /// handler at startup), then the widgets are re-rendered, so a job only
+    /// changes state.
+    ///
+    /// ```ignore
+    /// cx.on_widget_action(move |action, cx| async move {
+    ///     if action.action == "toggle" {
+    ///         cx.update_entity(&store, |s, cx| s.toggle(&action.payload, cx));
+    ///     }
+    /// });
+    /// ```
+    ///
+    /// iOS gives an action a few seconds (keep network calls short);
+    /// Android about ten.
+    pub fn on_widget_action<F: std::future::Future<Output = ()> + 'static>(
+        &mut self,
+        job: impl Fn(WidgetAction, crate::AsyncApp) -> F + 'static,
+    ) {
+        self.surfaces.widget_action = Some(Rc::new(move |a, cx| Box::pin(job(a, cx))));
+    }
+
+    /// Whether a widget action handler is registered.
+    pub fn handles_widget_actions(&self) -> bool {
+        self.surfaces.widget_action.is_some()
+    }
+
+    /// Starts the app's [`on_widget_action`](App::on_widget_action) job for
+    /// `action`, then reloads the widgets.
+    pub(crate) fn start_widget_action(&mut self, action: WidgetAction) -> crate::TaskHandle {
+        let job = self.surfaces.widget_action.clone();
+        if job.is_none() {
+            eprintln!(
+                "prism: widget action {:?} tapped, but the app has no on_widget_action handler",
+                action.action
+            );
+        }
+        self.spawn(move |cx| async move {
+            if let Some(job) = job {
+                job(action, cx.clone()).await;
+            }
+            cx.update(|app| app.reload_widgets());
+        })
+        .finish_in_background()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Live Activities (lock screen + Dynamic Island)
 // ---------------------------------------------------------------------------
 
@@ -1355,7 +1542,14 @@ impl Activity {
     }
 
     fn render(self, app: &mut App) -> (String, ActivityContent) {
-        let mut snap = |e: Option<Element>| e.map(|e| snapshot_one(app, e));
+        let kind = self.kind.clone();
+        let mut snap = |e: Option<Element>| {
+            e.map(|e| {
+                let mut node = snapshot_one(app, e);
+                node.tag_actions(&kind);
+                node
+            })
+        };
         let mut content = ActivityContent {
             lock_screen: snap(self.lock_screen),
             compact_leading: snap(self.compact_leading),
@@ -1601,6 +1795,10 @@ pub(crate) struct Surfaces {
     // --- Bundling: what the app declares (`PRISM_DESCRIBE`) ---
     /// [`App::enable_live_activities`] was called.
     pub live_activities: bool,
+
+    // --- Widget actions (#47) ---
+    /// [`App::on_widget_action`]'s job.
+    pub widget_action: Option<WidgetActionJob>,
 }
 
 type NotificationHandler = std::rc::Rc<dyn Fn(&NotificationResponse, &mut App)>;

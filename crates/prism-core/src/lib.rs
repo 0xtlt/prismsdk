@@ -103,6 +103,7 @@ pub use shape::{Drawing, Path, Segment};
 pub use spans::{Span, TextRun, decode_runs, encode_runs, icon, link, span};
 pub use storage::{FileStorage, MemoryStorage, Storage};
 pub use style::*;
+pub use surfaces::WidgetAction;
 pub use surfaces::{
     Activity, ActivityId, Capabilities, Notification, NotificationAction, NotificationResponse,
     PlatformRequest, PlatformServices, SNode, Widget, WidgetConfig, WidgetFamily, WidgetOption,
@@ -401,8 +402,13 @@ impl Runtime {
     }
 
     /// Opens a deep link (from a widget, Live Activity or notification tap)
-    /// and returns the resulting patches.
+    /// and returns the resulting patches. A widget action's link
+    /// ([`WidgetAction::to_link`]) runs the action instead of navigating.
     pub fn open_link(&mut self, path: &str) -> Vec<Patch> {
+        if let Some(action) = WidgetAction::from_link(path) {
+            self.run_widget_action(action);
+            return self.poll();
+        }
         self.app.navigate(path);
         task::poll_tasks(&mut self.app);
         self.app.flush_effects();
@@ -473,6 +479,18 @@ impl Runtime {
         task::poll_tasks(&mut self.app);
         self.app.flush_effects();
         handle.map(|h| h.id())
+    }
+
+    /// A widget or Live Activity button was tapped: runs the app's
+    /// [`on_widget_action`](App::on_widget_action) job, then reloads the
+    /// widgets. Returns the task's id: watch it with
+    /// [`is_task_running`](Self::is_task_running) and tell the platform
+    /// when it is done.
+    pub fn run_widget_action(&mut self, action: WidgetAction) -> u64 {
+        let handle = self.app.start_widget_action(action);
+        task::poll_tasks(&mut self.app);
+        self.app.flush_effects();
+        handle.id()
     }
 
     /// A Live Activity push token arrived or changed.
@@ -588,6 +606,7 @@ impl Runtime {
 
 /// Everything an app usually needs.
 pub mod prelude {
+    pub use crate::WidgetAction;
     pub use crate::{
         Accessible, Accuracy, Activity, Alert, Animations, App, AppleSignIn, AsyncApp, AuthRequest,
         BackgroundTask, BiometryKind, Breakpoint, Capitalize, CarButton, CarButtonStyle, CarItem,

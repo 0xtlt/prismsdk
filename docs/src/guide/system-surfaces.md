@@ -77,7 +77,7 @@ cx.reload_widgets_on(&rooms); // new rooms show up in the sheet, every configura
 
 `render(|cx, family| …)` keeps working (every instance then looks the same); `render_configured` adds the configuration. Widgets without parameters are unchanged (a `StaticConfiguration` on Apple platforms).
 
-**Apple (iOS 17+, iPadOS, macOS 14+, visionOS 26)**: the generated extension declares an `AppIntentConfiguration` for a kind with parameters: a `WidgetConfigurationIntent` with one optional `@Parameter` per parameter, each an `AppEntity` whose `EntityQuery` lists the options the app last wrote to the App Group (`suggestedEntities`, `entities(for:)`, and `defaultResult` for the default). The bundler also runs the App Intents metadata extraction Xcode would (`appintentsmetadataprocessor`), which WidgetKit needs to show the sheet. On a simulator slimmed with `simslim`, `prism run ios` keeps `linkd` and `siriactionsd` running for such apps: without them the widget stays a grey placeholder with no « Edit widget » (re-slim a simulator slimmed before with `simslim on <udid> --except widgets --keep com.apple.linkd,com.apple.siriactionsd`).
+**Apple (iOS 17+, iPadOS, macOS 14+, visionOS 26)**: the generated extension declares an `AppIntentConfiguration` for a kind with parameters: a `WidgetConfigurationIntent` with one `@Parameter` per parameter, each an `AppEntity` whose `EntityQuery` lists the options the app last wrote to the App Group (`suggestedEntities`, `entities(for:)`, and `defaultResult` for the default). The parameters are required, not optional: WidgetKit fills a required parameter with the query's `defaultResult()` when the widget is added, so the « Edit widget » sheet shows the default option (« Everywhere »), like system widgets do. An optional one would start empty, the sheet showing the parameter's title as a grey placeholder while the widget draws the default (#49). Before the app has written its options, the default is an empty placeholder entity (titled like the parameter), which the extension reads as « the default ». The bundler also runs the App Intents metadata extraction Xcode would (`appintentsmetadataprocessor`), which WidgetKit needs to show the sheet. On a simulator slimmed with `simslim`, `prism run ios` keeps `linkd` and `siriactionsd` running for such apps: without them the widget stays a grey placeholder with no « Edit widget » (re-slim a simulator slimmed before with `simslim on <udid> --except widgets --keep com.apple.linkd,com.apple.siriactionsd`).
 
 **Which configurations are drawn**: the extension cannot run the app, so the app renders snapshots ahead of time, on every reload, at most `Widget::MAX_CONFIGURATIONS` (16) per kind, in this order:
 
@@ -88,5 +88,47 @@ cx.reload_widgets_on(&rooms); // new rooms show up in the sheet, every configura
 A choice that was not drawn yet (many options, freshly picked in the sheet) shows « Open the app to set up this widget. » rather than another configuration's content. The app redraws as soon as it becomes active again when the instances on screen changed while it was away, and on every `reload_widgets`. Options are a list in the edit sheet: keep them to what a person can scroll through.
 
 **Android** has no edit sheet for app widgets yet (a configuration activity is not generated): configurable widgets show their default configuration. Web and Linux have no home-screen widgets.
+
+## Widget buttons: actions without opening the app
+
+`div().link(..)` in a widget opens the app. `widget_action(action, payload)` (on `div`, `text` and `button`) makes a **button that runs app code in place**: the home screen stays, the app's handler runs (the app is launched in the background when it is not running), then the widgets are redrawn from the new state. Typical: « Lights off », « Mark as done », « Start the coffee machine ».
+
+```rust
+cx.register_widget(
+    Widget::new("shortcuts", "Shortcuts")
+        .families(&[WidgetFamily::Small, WidgetFamily::Medium])
+        .link("/shortcuts") // the rest of the widget still opens the app
+        .render(move |cx, _| {
+            div().gap(6.).children(shortcuts(cx).into_iter().map(|(id, name)| {
+                div().widget_action("run-shortcut", id).child(text(name))
+            }))
+        }),
+);
+
+// Register it at startup: the app may be launched in the background for it.
+cx.on_widget_action(move |action, cx| async move {
+    // action.kind: "shortcuts" (the widget, or Live Activity, tapped),
+    // action.action: "run-shortcut", action.payload: the id.
+    if action.action == "run-shortcut" {
+        let ok = run_shortcut(&cx, &action.payload).await; // may call the network
+        cx.update_entity(&store, |s, cx| s.last_run(ok, cx));
+    }
+    // When the job returns, Prism reloads the widgets (no `reload_widgets` needed).
+});
+```
+
+The payload is a string: an id, or JSON the handler parses. The same buttons work in **Live Activities** (lock screen, Dynamic Island), where `action.kind` is the activity's kind. In the app's own UI a `widget_action` does nothing: use `on_click` there.
+
+| | How a tap reaches the app | Where the handler runs |
+|---|---|---|
+| iOS / iPadOS 17+ | `Button(intent:)` with one shared `LiveActivityIntent` (`PrismWidgetActionIntent`: kind, action, payload) | the app's process: iOS launches it in the background if needed; the intent's `perform()` waits for the job, WidgetKit then redraws |
+| visionOS 26 | the same intent | the same (built, not verified on a device) |
+| Android | `setOnClickPendingIntent` → a broadcast to `PrismWidget$Action` (`goAsync`) | the app's process, without an Activity when it is closed (like background jobs) |
+| macOS | a link to `/__prism/widget-action?kind=…&action=…&payload=…` | **degraded**: the tap opens the app, which runs the action instead of navigating (`Runtime::open_link`). macOS widgets run intents in the widget extension, which cannot run the app's Rust code |
+| Web, Linux, watchOS, tvOS | — | no home-screen widgets |
+
+How it works on Apple platforms: `crates/prism-apple-build/apple/Shared/PrismWidgetAction.swift` declares the intent, compiled into the widget extension (the renderer turns each `wa` node of a snapshot into a `Button(intent:)`) and into the app with the Swift bridge. Because it is a `LiveActivityIntent` that the app declares as well, iOS runs `perform()` in the app: the bundler extracts the App Intents metadata of the app too (`Metadata.appintents` in the `.app`, step 6b of `ios-run.sh`) when the app calls `on_widget_action` (`PRISM_DESCRIBE=widget_actions`). In the app, `perform()` hands the action to the Rust runtime (the window's, or a headless one when iOS launched the app just for it) and returns when the job is done; the job's reload writes the new snapshots to the App Group and reloads the timelines. If `perform()` ever runs in the extension instead, it queues the action in the App Group (`prism-widgets/actions.json`) and the app runs it the next time it becomes active.
+
+Keep jobs short: iOS gives an intent a few seconds of background time, and Android a broadcast about ten. A link that wraps a button (`div().link(..)` around it) keeps working for the rest of its content: the renderer moves the link onto the button's siblings, because WidgetKit gives a tap to the outer `Link`.
 
 **Light & dark**: colors can be adaptive, `adaptive(rgb(0xFFFFFF), rgb(0x1C1C22))`, resolved natively everywhere: CSS `light-dark()`, dynamic `UIColor`/`NSColor`, SwiftUI color scheme in widgets and Live Activities. `Theme::system()` makes the whole component library follow the system appearance live.

@@ -10,11 +10,18 @@ visionOS has neither lock-screen families nor Live Activities (no ActivityKit).
 
 A widget with parameters (`Widget::parameter`) becomes an
 AppIntentConfiguration instead (iOS 17, macOS 14): a WidgetConfigurationIntent
-with one optional @Parameter per parameter, each an AppEntity whose
-EntityQuery lists the options the app wrote to the App Group
-(PrismWidgetKit.swift reads them). The types are spelled out per kind and
-parameter, with literal titles, so the App Intents metadata processor can
-extract them at build time.
+with one @Parameter per parameter, each an AppEntity whose EntityQuery lists
+the options the app wrote to the App Group (PrismWidgetKit.swift reads them).
+The types are spelled out per kind and parameter, with literal titles, so the
+App Intents metadata processor can extract them at build time.
+
+The parameters are not optional: WidgetKit fills a required entity parameter
+with its query's `defaultResult()` when the widget is added, so the « Edit
+widget » sheet shows the default option. An optional one starts empty, and
+the sheet shows the parameter's title as a placeholder (#49). The query never
+answers nil (an empty placeholder entity before the app wrote its options),
+and the intent reads each value through `valueState` where it exists, so an
+unset value never traps.
 """
 import json
 import re
@@ -58,7 +65,7 @@ def configurable(w, name, kind, fams):
             f"        prismOptions({kind}, {pid}).map {make}",
             "    }",
             f"    func defaultResult() async -> {entity}? {{",
-            f"        prismDefaultOption({kind}, {pid}).map {make}",
+            f"        prismDefaultOption({kind}, {pid}).map {make} ?? {entity}(id: \"\", title: {swift_str(p['title'])})",
             "    }",
             "}",
             "",
@@ -72,10 +79,10 @@ def configurable(w, name, kind, fams):
         lines.append(f"    static var description = IntentDescription({swift_str(w['description'])})")
     lines.append(f"    static var prismKind: String {{ {kind} }}")
     for prop, entity, p in props:
-        lines.append(f"    @Parameter(title: {swift_str(p['title'])}) var {prop}: {entity}?")
+        lines.append(f"    @Parameter(title: {swift_str(p['title'])}) var {prop}: {entity}")
     lines += ["    var prismValues: [String: String] {", "        var v: [String: String] = [:]"]
     for prop, _, p in props:
-        lines.append(f"        if let e = {prop} {{ v[{swift_str(p['id'])}] = e.id }}")
+        lines.append(f"        if let e = prismValue(${prop}), !e.id.isEmpty {{ v[{swift_str(p['id'])}] = e.id }}")
     lines += ["        return v", "    }", "}", ""]
     lines += [
         f"struct {name}: Widget {{",

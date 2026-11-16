@@ -181,6 +181,8 @@
   },
   "widget": {
     "done": "done",
+    "mark_done": "Mark as done",
+    "mark_open": "Mark as not done",
     "today": "today",
     "open": {
       "one": "{count} open",
