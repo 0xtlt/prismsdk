@@ -208,6 +208,81 @@ test("popovers sit under their anchor and report light dismissal", () => {
   assert.deepEqual(lastSent(page), { t: "back", id: 3, depth: 0 });
 });
 
+test("an overlay inserted already open is shown (#70)", () => {
+  const page = live([...root([])]);
+  // A menu that appears with its parent, open, in one patch.
+  page.ws.deliver({ t: "patch", p: [
+    { op: "create", id: 2, kind: "view" },
+    { op: "create", id: 3, kind: "overlay" }, { op: "config", id: 3, config: "popover" }, { op: "value", id: 3, value: 1 },
+    { op: "create", id: 4, kind: "text" }, { op: "text", id: 4, text: "/heading" },
+    { op: "children", id: 3, children: [4] },
+    { op: "children", id: 2, children: [3] },
+    { op: "create", id: 5, kind: "overlay" }, { op: "config", id: 5, config: "dialog" }, { op: "value", id: 5, value: 1 },
+    { op: "children", id: 1, children: [2, 5] },
+  ] });
+  const box = page.node(3).firstChild;
+  assert.equal(box.isConnected, true);
+  assert.equal(box.matches(":popover-open"), true, "the popover is shown");
+  assert.equal(box.textContent, "/heading");
+  const dialog = page.node(5).firstChild;
+  assert.equal(dialog.hasAttribute("open"), true, "the dialog is shown (modal)");
+  // Closing and reopening still works.
+  page.ws.deliver({ t: "patch", p: [{ op: "value", id: 3, value: 0 }] });
+  assert.equal(box.matches(":popover-open"), false);
+  page.ws.deliver({ t: "patch", p: [{ op: "value", id: 3, value: 1 }] });
+  assert.equal(box.matches(":popover-open"), true);
+});
+
+test("an overlay open on the first render is shown", () => {
+  const page = live([
+    { op: "create", id: 2, kind: "view" },
+    { op: "create", id: 3, kind: "overlay" }, { op: "config", id: 3, config: "popover" }, { op: "value", id: 3, value: 1 },
+    { op: "children", id: 2, children: [3] },
+    ...root([2]),
+  ]);
+  assert.equal(page.node(3).firstChild.matches(":popover-open"), true);
+});
+
+test("a popover can leave the focus to its anchor's field (#70)", () => {
+  const page = live([
+    { op: "create", id: 2, kind: "view" },
+    { op: "create", id: 3, kind: "text_input" },
+    { op: "create", id: 4, kind: "overlay" }, { op: "config", id: 4, config: "popover manual keepfocus" },
+    { op: "children", id: 2, children: [3, 4] },
+    ...root([2]),
+  ]);
+  const field = page.node(3);
+  field.focus();
+  const box = page.node(4).firstChild;
+  assert.equal(box.getAttribute("popover"), "manual", "no light dismiss");
+  page.ws.deliver({ t: "patch", p: [
+    { op: "value", id: 4, value: 1 },
+    { op: "create", id: 5, kind: "view" }, { op: "clickable", id: 5, on: true }, { op: "text", id: 5, text: "Heading" },
+    { op: "children", id: 4, children: [5] },
+  ] });
+  assert.equal(box.matches(":popover-open"), true);
+  assert.equal(page.document.activeElement, field, "the field keeps the focus");
+  // A press on an item does not take the focus; its click still runs.
+  const item = page.node(5);
+  const down = { type: "mousedown" };
+  item.dispatchEvent(down);
+  assert.equal(down.defaultPrevented, true);
+  item.dispatchEvent({ type: "click", detail: 0 });
+  assert.deepEqual(lastSent(page), { t: "click", id: 5 });
+  // Escape inside a manual popover closes it (the app hears back).
+  box.dispatchEvent({ type: "keydown", key: "Escape" });
+  assert.deepEqual(lastSent(page), { t: "back", id: 4, depth: 0 });
+  // Leaving the focus implies no light dismiss.
+  page.ws.deliver({ t: "patch", p: [{ op: "config", id: 4, config: "popover keepfocus" }] });
+  assert.equal(box.getAttribute("popover"), "manual");
+  // Without `keepfocus` presses inside behave as usual.
+  page.ws.deliver({ t: "patch", p: [{ op: "config", id: 4, config: "popover" }, { op: "value", id: 4, value: 1 }] });
+  assert.equal(box.getAttribute("popover"), "auto");
+  const plain = { type: "mousedown" };
+  item.dispatchEvent(plain);
+  assert.equal(plain.defaultPrevented, false);
+});
+
 test("checkboxes and radio groups are native inputs", () => {
   const page = live([
     { op: "create", id: 2, kind: "checkbox" }, { op: "text", id: 2, text: "Remember me" }, { op: "value", id: 2, value: 1 },

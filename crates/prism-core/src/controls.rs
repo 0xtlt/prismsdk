@@ -11,7 +11,7 @@
 //! | `TextInput`, `TextArea` | [`InputConfig`]: `secure keyboard=email return=done capitalize=none autocorrect=off max=40`, then one suggestion per line ([`input_suggestions`]) | – |
 //! | `Checkbox` | – | 0 or 1 |
 //! | `RadioGroup` | [`RadioConfig`]: `row` or `column`, then options one per line | the selected index (-1: none) |
-//! | `Overlay` | [`OverlayConfig`]: `sheet`/`popover`/`dialog`, `fixed`, `medium` | 1 open, 0 closed |
+//! | `Overlay` | [`OverlayConfig`]: `sheet`/`popover`/`dialog`, `fixed`, `medium`, `manual`, `keepfocus` | 1 open, 0 closed |
 
 /// A slider's range. `step == 0` is continuous.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -404,10 +404,20 @@ pub struct OverlayConfig {
     /// A sheet starts at half height (it can be pulled up where the
     /// platform allows).
     pub medium: bool,
+    /// A popover that a click or tap outside does not close
+    /// (`popover="manual"` on the web): the app closes it, or Escape while
+    /// the focus is inside it. See [`Overlay::light_dismiss`](crate::Overlay::light_dismiss).
+    pub manual: bool,
+    /// A popover that leaves the keyboard focus where it is (the anchor's
+    /// text field keeps receiving keys) and does not take it on a click
+    /// inside: inline suggestion menus. Implies `manual`. See
+    /// [`Overlay::take_focus`](crate::Overlay::take_focus).
+    pub keep_focus: bool,
 }
 
 impl OverlayConfig {
-    /// `sheet` / `popover` / `dialog`, then `fixed`, `medium`.
+    /// `sheet` / `popover` / `dialog`, then `fixed`, `medium`, `manual`,
+    /// `keepfocus`.
     pub fn encode(&self) -> String {
         let mut out = String::from(match self.kind {
             OverlayKind::Sheet => "sheet",
@@ -419,6 +429,12 @@ impl OverlayConfig {
         }
         if self.medium {
             out.push_str(" medium");
+        }
+        if self.manual {
+            out.push_str(" manual");
+        }
+        if self.keep_focus {
+            out.push_str(" keepfocus");
         }
         out
     }
@@ -432,6 +448,8 @@ impl OverlayConfig {
                 "dialog" => c.kind = OverlayKind::Dialog,
                 "fixed" => c.fixed = true,
                 "medium" => c.medium = true,
+                "manual" => c.manual = true,
+                "keepfocus" => c.keep_focus = true,
                 _ => {}
             }
         }
@@ -504,11 +522,29 @@ mod tests {
         let o = OverlayConfig {
             kind: OverlayKind::Popover,
             fixed: true,
-            medium: false,
+            ..Default::default()
         };
         assert_eq!(o.encode(), "popover fixed");
         assert_eq!(OverlayConfig::decode(&o.encode()), o);
         assert_eq!(OverlayConfig::decode(""), OverlayConfig::default());
+        // An inline suggestion menu (#70).
+        let inline = OverlayConfig {
+            kind: OverlayKind::Popover,
+            manual: true,
+            keep_focus: true,
+            ..Default::default()
+        };
+        assert_eq!(inline.encode(), "popover manual keepfocus");
+        assert_eq!(OverlayConfig::decode(&inline.encode()), inline);
+        let all = OverlayConfig {
+            kind: OverlayKind::Sheet,
+            fixed: true,
+            medium: true,
+            manual: true,
+            keep_focus: true,
+        };
+        assert_eq!(all.encode(), "sheet fixed medium manual keepfocus");
+        assert_eq!(OverlayConfig::decode(&all.encode()), all);
         let d = DateConfig {
             mode: DateMode::TimeOfDay,
             min: None,

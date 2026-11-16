@@ -235,8 +235,18 @@ export class Element extends Node {
     (this.ownerDocument.animations ||= []).push({ el: this, ...a, anim: a });
     return a;
   }
-  showModal() { this.setAttribute("open", ""); }
+  // Like browsers: a dialog or popover outside the document cannot be shown.
+  showModal() {
+    if (!this.isConnected) throw new Error("InvalidStateError: showModal on a disconnected dialog");
+    this.setAttribute("open", "");
+  }
   close() { this.removeAttribute("open"); }
+  showPopover() {
+    if (!this.hasAttribute("popover")) throw new Error("NotSupportedError: not a popover");
+    if (!this.isConnected) throw new Error("InvalidStateError: showPopover on a disconnected element");
+    this._popoverOpen = true;
+  }
+  hidePopover() { this._popoverOpen = false; }
 
   matches(selector) { return matches(this, selector); }
   closest(selector) {
@@ -262,7 +272,7 @@ function matches(el, selector) {
 }
 
 function matchCompound(el, sel) {
-  const re = /([a-zA-Z][\w-]*)|\.([\w-]+)|\[([\w-]+)(?:(\^?=)([^\]]*))?\]|:not\(:disabled\)/g;
+  const re = /([a-zA-Z][\w-]*)|\.([\w-]+)|\[([\w-]+)(?:(\^?=)([^\]]*))?\]|:not\(:disabled\)|:popover-open/g;
   let m, consumed = 0;
   while ((m = re.exec(sel))) {
     if (m.index !== consumed) throw new Error(`dom.mjs: unsupported selector ${sel}`);
@@ -277,6 +287,7 @@ function matchCompound(el, sel) {
       if (m[4] === "^=" && !v.startsWith(want)) return false;
     }
     if (m[0] === ":not(:disabled)" && el.disabled) return false;
+    if (m[0] === ":popover-open" && !el._popoverOpen) return false;
   }
   if (consumed !== sel.length) throw new Error(`dom.mjs: unsupported selector ${sel}`);
   return true;

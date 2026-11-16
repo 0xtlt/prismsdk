@@ -308,6 +308,60 @@ fn overlays_build_their_content_only_while_open() {
     assert!(h.host.get(ov).children.is_empty());
 }
 
+struct Slash {
+    text: String,
+}
+
+impl Render for Slash {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        div().child(text_input().value(self.text.clone())).children(
+            self.text.starts_with('/').then(|| {
+                div().child(
+                    popover(text("/heading"))
+                        .open(true)
+                        .light_dismiss(false)
+                        .take_focus(false),
+                )
+            }),
+        )
+    }
+}
+
+#[test]
+fn a_popover_can_be_inserted_open_and_leave_the_focus_to_its_anchor() {
+    let mut h = Harness::new(|cx| {
+        let root = cx.new_entity(|_| Slash {
+            text: String::new(),
+        });
+        mount(cx, root);
+    });
+    assert!(h.host.find(|n| n.kind == NodeKind::Overlay).is_none());
+    // The menu appears with its parent, already open, in one patch (#70).
+    h.update::<Slash>(|s| s.text = "/".into());
+    let ov = h.host.find(|n| n.kind == NodeKind::Overlay).unwrap();
+    assert_eq!(h.host.get(ov).config, "popover manual keepfocus");
+    assert_eq!(h.host.get(ov).value, Some(1.));
+    assert_eq!(h.host.child_texts(ov), ["/heading"]);
+    assert!(
+        h.last
+            .iter()
+            .any(|p| matches!(p, Patch::Create { id, .. } if *id == ov))
+    );
+    assert!(
+        h.last
+            .iter()
+            .any(|p| matches!(p, Patch::SetValue { id, value } if *id == ov && *value == 1.))
+    );
+    // The defaults: light dismiss, focus taken.
+    assert_eq!(
+        prism_core::controls::OverlayConfig::decode("popover"),
+        prism_core::controls::OverlayConfig {
+            kind: prism_core::OverlayKind::Popover,
+            ..Default::default()
+        }
+    );
+}
+
 struct Choices {
     every: Option<usize>,
     remember: bool,

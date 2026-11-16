@@ -2702,6 +2702,9 @@ impl Widgets for UiKit {
     fn set_content_size(&mut self, view: &View, width: f32, height: f32) {
         if let View::Overlay(o) = view {
             o.set_size(width as f64, height as f64);
+            // Opened in the patch that inserted it: its anchor is placed now.
+            let root: Retained<UIViewController> = Retained::into_super(self.controller.clone());
+            o.present_if_pending(&root);
             return;
         }
         if let View::Scroll(s) = view {

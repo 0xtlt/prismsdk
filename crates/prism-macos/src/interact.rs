@@ -15,8 +15,10 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_se
 use objc2_app_kit::NSAccessibility;
 use objc2_app_kit::{
     NSBackingStoreType, NSButton, NSCell, NSColor, NSControlStateValueOff, NSControlStateValueOn,
-    NSEvent, NSEventModifierFlags, NSFont, NSImage, NSImageView, NSPopover, NSPopoverBehavior,
-    NSTextFieldCell, NSView, NSViewController, NSWindow, NSWindowOrderingMode, NSWindowStyleMask,
+    NSEvent, NSEventModifierFlags, NSFont, NSImage, NSImageView, NSPanel, NSPopover,
+    NSPopoverBehavior, NSTextFieldCell, NSUserInterfaceLayoutDirection, NSView, NSViewController,
+    NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindow,
+    NSWindowOrderingMode, NSWindowStyleMask,
 };
 use objc2_foundation::{
     NSArray, NSObject, NSObjectProtocol, NSPoint, NSRect, NSRectEdge, NSSize, NSString,
@@ -486,7 +488,10 @@ pub(crate) type Delegate = objc2::runtime::ProtocolObject<dyn objc2_app_kit::NSP
 
 /// A sheet, dialog or popover: an empty anchor view in the parent (the
 /// popover points at the parent) and the content's host, presented in a
-/// sheet window or an `NSPopover` while open.
+/// sheet window or an `NSPopover` while open. A popover that leaves the
+/// focus to its anchor (`keep_focus`, #70) is a borderless child panel
+/// instead: it never becomes key, so the anchor's field keeps the keys,
+/// and its views still take clicks (`acceptsFirstMouse`).
 pub struct MacOverlay {
     pub(crate) id: NodeId,
     pub(crate) anchor: Retained<PrismView>,
@@ -501,6 +506,11 @@ pub struct MacOverlay {
     pub(crate) size: Cell<NSSize>,
     window: RefCell<Option<Retained<NSWindow>>>,
     pub(crate) popover: RefCell<Option<Retained<NSPopover>>>,
+    /// The non-activating panel of a `keep_focus` popover, and its
+    /// background (a menu material with rounded corners).
+    panel: RefCell<Option<(Retained<NSPanel>, Retained<NSVisualEffectView>)>>,
+    /// Whether the panel is the window it shows in.
+    in_panel: Cell<bool>,
 }
 
 impl MacOverlay {
@@ -517,12 +527,25 @@ impl MacOverlay {
             size: Cell::new(NSSize::ZERO),
             window: RefCell::new(None),
             popover: RefCell::new(None),
+            panel: RefCell::new(None),
+            in_panel: Cell::new(false),
         }
+    }
+
+    /// A popover shown in a non-activating panel (see [`MacOverlay`]).
+    fn panel_kind(c: OverlayConfig) -> bool {
+        c.kind == OverlayKind::Popover && c.keep_focus
     }
 
     pub(crate) fn set_config(&self, config: &str) {
         let c = OverlayConfig::decode(config);
         self.host.ivars().overlay_fixed.set(c.fixed);
+        // Shown the other way: presented again by the next layout.
+        if self.presented.get()
+            && (Self::panel_kind(c) != self.in_panel.get() || c.kind != self.config.get().kind)
+        {
+            self.dismiss(None);
+        }
         self.config.set(c);
         if let Some(p) = self.popover.borrow().as_deref() {
             p.setBehavior(behavior(c));
@@ -533,6 +556,13 @@ impl MacOverlay {
     pub(crate) fn window(&self) -> Option<Retained<NSWindow>> {
         if !self.presented.get() {
             return None;
+        }
+        if self.in_panel.get() {
+            return self
+                .panel
+                .borrow()
+                .as_ref()
+                .map(|(p, _)| Retained::into_super(p.clone()));
         }
         self.window.borrow().clone().or_else(|| {
             self.popover
@@ -553,6 +583,10 @@ impl MacOverlay {
             return;
         }
         if self.presented.get() {
+            if self.in_panel.get() {
+                self.place_panel(size);
+                return;
+            }
             if let Some(w) = self.window.borrow().as_deref()
                 && w.contentRectForFrameRect(w.frame()).size != size
             {
@@ -567,6 +601,7 @@ impl MacOverlay {
         }
         let Some(main) = main else { return };
         match self.config.get().kind {
+            OverlayKind::Popover if Self::panel_kind(self.config.get()) => self.show_panel(size),
             OverlayKind::Popover => self.show_popover(size, delegate),
             OverlayKind::Sheet | OverlayKind::Dialog => {
                 let mtm = main.mtm();
@@ -624,9 +659,95 @@ impl MacOverlay {
         *self.popover.borrow_mut() = Some(popover);
     }
 
+    /// Shows a `keep_focus` popover: a borderless panel, a child of the
+    /// anchor's window (it moves with it), that never becomes key.
+    fn show_panel(&self, size: NSSize) {
+        let Some(parent) = (unsafe { self.anchor.superview() }) else {
+            return;
+        };
+        let Some(window) = parent.window() else {
+            return;
+        };
+        let mtm = self.host.mtm();
+        let (panel, background) = self.panel.borrow_mut().take().unwrap_or_else(|| {
+            let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
+            let panel = NSPanel::initWithContentRect_styleMask_backing_defer(
+                NSPanel::alloc(mtm),
+                NSRect::new(NSPoint::ZERO, size),
+                style,
+                NSBackingStoreType::Buffered,
+                false,
+            );
+            unsafe { panel.setReleasedWhenClosed(false) };
+            // A borderless window cannot become key: clicks inside leave
+            // the focus where it is.
+            panel.setBecomesKeyOnlyIfNeeded(true);
+            panel.setHidesOnDeactivate(false);
+            panel.setOpaque(false);
+            panel.setBackgroundColor(Some(&NSColor::clearColor()));
+            panel.setHasShadow(true);
+            let background = NSVisualEffectView::new(mtm);
+            background.setMaterial(NSVisualEffectMaterial::Popover);
+            background.setState(NSVisualEffectState::Active);
+            background.setWantsLayer(true);
+            if let Some(l) = background.layer() {
+                l.setCornerRadius(10.);
+                l.setMasksToBounds(true);
+            }
+            panel.setContentView(Some(&background));
+            (panel, background)
+        });
+        if unsafe { self.host.superview() }.as_deref() != Some(&**background) {
+            self.host.removeFromSuperview();
+            background.addSubview(&self.host);
+        }
+        self.presented.set(true);
+        self.in_panel.set(true);
+        *self.panel.borrow_mut() = Some((panel.clone(), background));
+        self.place_panel(size);
+        // SAFETY: both windows are alive; `dismiss` detaches the panel.
+        unsafe { window.addChildWindow_ordered(&panel, NSWindowOrderingMode::Above) };
+        panel.orderFront(None);
+    }
+
+    /// Below the anchor (above it without room below), at the content's size.
+    fn place_panel(&self, size: NSSize) {
+        let Some((panel, background)) = self.panel.borrow().clone() else {
+            return;
+        };
+        let Some(parent) = (unsafe { self.anchor.superview() }) else {
+            return;
+        };
+        let Some(window) = parent.window() else {
+            return;
+        };
+        let anchor = window.convertRectToScreen(parent.convertRect_toView(parent.bounds(), None));
+        let frame = panel_frame(
+            anchor,
+            size,
+            window.screen().map(|s| s.visibleFrame()),
+            parent.userInterfaceLayoutDirection() == NSUserInterfaceLayoutDirection::RightToLeft,
+        );
+        if panel.frame() != frame {
+            panel.setFrame_display(frame, true);
+        }
+        let local = NSRect::new(NSPoint::ZERO, size);
+        background.setFrame(local);
+        self.host.setFrame(local);
+    }
+
     /// Closes it (the app asked, or it was destroyed).
     pub(crate) fn dismiss(&self, main: Option<&NSWindow>) {
         if !self.presented.replace(false) {
+            return;
+        }
+        if self.in_panel.replace(false) {
+            if let Some((p, _)) = self.panel.borrow().as_ref() {
+                if let Some(parent) = p.parentWindow() {
+                    parent.removeChildWindow(p);
+                }
+                p.orderOut(None);
+            }
             return;
         }
         if let Some(w) = self.window.borrow().as_deref() {
@@ -647,9 +768,39 @@ impl MacOverlay {
     }
 }
 
+/// Where a `keep_focus` popover's panel goes, in screen coordinates
+/// (y up): under `anchor` with a 6 point gap, above it when the screen has
+/// no room below, leading-aligned, kept inside `screen`.
+pub(crate) fn panel_frame(
+    anchor: NSRect,
+    size: NSSize,
+    screen: Option<NSRect>,
+    rtl: bool,
+) -> NSRect {
+    let gap = 6.;
+    let mut x = if rtl {
+        anchor.origin.x + anchor.size.width - size.width
+    } else {
+        anchor.origin.x
+    };
+    let mut y = anchor.origin.y - gap - size.height;
+    if let Some(s) = screen {
+        if y < s.origin.y
+            && anchor.origin.y + anchor.size.height + gap + size.height
+                <= s.origin.y + s.size.height
+        {
+            y = anchor.origin.y + anchor.size.height + gap;
+        }
+        x = x
+            .min(s.origin.x + s.size.width - size.width)
+            .max(s.origin.x);
+    }
+    NSRect::new(NSPoint::new(x, y), size)
+}
+
 fn behavior(c: OverlayConfig) -> NSPopoverBehavior {
     // Dev snapshots run in an inactive app, which closes transient popovers.
-    if c.fixed || std::env::var_os("PRISM_SNAPSHOT").is_some() {
+    if c.fixed || c.manual || std::env::var_os("PRISM_SNAPSHOT").is_some() {
         NSPopoverBehavior::ApplicationDefined
     } else {
         NSPopoverBehavior::Transient
@@ -792,6 +943,22 @@ mod tests {
         assert_eq!(completions("New Y", 4, &s), ["York"]);
         assert!(completions("", 0, &s).is_empty());
         assert!(completions("Lyon", 0, &s).is_empty());
+    }
+
+    #[test]
+    fn inline_popover_panels_sit_under_their_anchor() {
+        let screen = NSRect::new(NSPoint::ZERO, NSSize::new(1000., 800.));
+        let size = NSSize::new(200., 100.);
+        // Screen coordinates go up: under the anchor is a smaller y.
+        let anchor = NSRect::new(NSPoint::new(100., 500.), NSSize::new(300., 24.));
+        let f = panel_frame(anchor, size, Some(screen), false);
+        assert_eq!((f.origin.x, f.origin.y), (100., 394.));
+        let rtl = panel_frame(anchor, size, Some(screen), true);
+        assert_eq!(rtl.origin.x, 200.);
+        // No room below: above the anchor.
+        let low = NSRect::new(NSPoint::new(900., 40.), NSSize::new(300., 24.));
+        let f = panel_frame(low, size, Some(screen), false);
+        assert_eq!((f.origin.x, f.origin.y), (800., 70.));
     }
 
     #[test]

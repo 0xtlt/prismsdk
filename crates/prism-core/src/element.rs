@@ -1671,6 +1671,45 @@ impl Overlay {
     pub fn half(self) -> Self {
         self.overlay_config(|c| c.medium = true)
     }
+
+    /// `false`: a popover that a click or tap outside does not close (yes
+    /// by default): only the app closes it (`open(false)`), or Escape
+    /// while the focus is inside it, which calls
+    /// [`on_dismiss`](Overlay::on_dismiss). Web: `popover="manual"`;
+    /// macOS: an `NSPopover` with the application-defined behavior; iOS:
+    /// the window stays interactive around it (passthrough); Linux: a
+    /// `GtkPopover` without autohide; Android: a `PopupWindow` that ignores
+    /// outside touches. Sheets and dialogs ignore it (see
+    /// [`dismissible`](Overlay::dismissible)).
+    pub fn light_dismiss(self, light_dismiss: bool) -> Self {
+        self.overlay_config(|c| c.manual = !light_dismiss)
+    }
+
+    /// `false`: a popover that leaves the keyboard focus where it is, so
+    /// the text field it is anchored to keeps receiving keys, and that does
+    /// not take the focus when its items are clicked (they still run their
+    /// handlers). For inline suggestion menus (slash commands, mentions,
+    /// autocomplete):
+    ///
+    /// ```ignore
+    /// div()
+    ///     .child(text_input().value(text).on_input(…))
+    ///     .children(text.starts_with('/').then(|| {
+    ///         popover(menu).open(true).light_dismiss(false).take_focus(false)
+    ///     }))
+    /// ```
+    ///
+    /// It implies [`light_dismiss(false)`](Overlay::light_dismiss): a click
+    /// in the field would otherwise close it. Keys stay with the field:
+    /// handle Escape and the arrows there. Web: no focus move, presses
+    /// inside keep the field focused; macOS: a non-activating child panel
+    /// instead of an `NSPopover`; iOS: the field stays first responder (the
+    /// keyboard stays up); Linux: a `GtkPopover` without autohide that
+    /// cannot take the focus; Android: a non-focusable `PopupWindow`.
+    /// Sheets and dialogs ignore it.
+    pub fn take_focus(self, take_focus: bool) -> Self {
+        self.overlay_config(|c| c.keep_focus = !take_focus)
+    }
 }
 
 // --- Navigation bar options (#30) ---
