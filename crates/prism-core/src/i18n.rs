@@ -535,7 +535,7 @@ impl Formatter for BasicFormatter {
 /// `prism.back`, `prism.close`, `prism.not_found`, `prism.no_route`,
 /// `prism.clear`, `prism.unsaved_title`, `prism.unsaved_message`,
 /// `prism.discard` and `prism.cancel` keys.
-const CHROME: &[(&str, [&str; 9])] = &[
+const CHROME: &[(&str, [&str; 12])] = &[
     (
         "en",
         [
@@ -548,6 +548,9 @@ const CHROME: &[(&str, [&str; 9])] = &[
             "Your changes will be lost.",
             "Discard Changes",
             "Cancel",
+            "Reorder",
+            "Drag, or use the up and down arrow keys, to move the row.",
+            "{n} of {count}",
         ],
     ),
     (
@@ -562,6 +565,9 @@ const CHROME: &[(&str, [&str; 9])] = &[
             "Vos modifications seront perdues.",
             "Ignorer les modifications",
             "Annuler",
+            "Réordonner",
+            "Faites glisser, ou utilisez les flèches haut et bas, pour déplacer la ligne.",
+            "{n} sur {count}",
         ],
     ),
     (
@@ -576,6 +582,9 @@ const CHROME: &[(&str, [&str; 9])] = &[
             "Deine Änderungen gehen verloren.",
             "Änderungen verwerfen",
             "Abbrechen",
+            "Neu anordnen",
+            "Ziehen oder die Pfeiltasten nach oben und unten verwenden, um die Zeile zu verschieben.",
+            "{n} von {count}",
         ],
     ),
     (
@@ -590,6 +599,9 @@ const CHROME: &[(&str, [&str; 9])] = &[
             "Se perderán tus cambios.",
             "Descartar cambios",
             "Cancelar",
+            "Reordenar",
+            "Arrastra, o usa las flechas arriba y abajo, para mover la fila.",
+            "{n} de {count}",
         ],
     ),
     (
@@ -604,6 +616,9 @@ const CHROME: &[(&str, [&str; 9])] = &[
             "Le modifiche andranno perse.",
             "Scarta le modifiche",
             "Annulla",
+            "Riordina",
+            "Trascina, o usa le frecce su e giù, per spostare la riga.",
+            "{n} di {count}",
         ],
     ),
     (
@@ -618,6 +633,9 @@ const CHROME: &[(&str, [&str; 9])] = &[
             "Suas alterações serão perdidas.",
             "Descartar alterações",
             "Cancelar",
+            "Reordenar",
+            "Arraste, ou use as setas para cima e para baixo, para mover a linha.",
+            "{n} de {count}",
         ],
     ),
     (
@@ -632,6 +650,9 @@ const CHROME: &[(&str, [&str; 9])] = &[
             "Je wijzigingen gaan verloren.",
             "Wijzigingen negeren",
             "Annuleer",
+            "Herschikken",
+            "Sleep, of gebruik de pijltjestoetsen omhoog en omlaag, om de rij te verplaatsen.",
+            "{n} van {count}",
         ],
     ),
     (
@@ -646,6 +667,9 @@ const CHROME: &[(&str, [&str; 9])] = &[
             "ستُفقد تغييراتك.",
             "تجاهل التغييرات",
             "إلغاء",
+            "إعادة الترتيب",
+            "اسحب، أو استخدم مفتاحي السهم لأعلى ولأسفل، لنقل الصف.",
+            "{n} من {count}",
         ],
     ),
     (
@@ -660,6 +684,9 @@ const CHROME: &[(&str, [&str; 9])] = &[
             "השינויים שלך יאבדו.",
             "מחיקת השינויים",
             "ביטול",
+            "סידור מחדש",
+            "גררו, או השתמשו במקשי החצים למעלה ולמטה, כדי להזיז את השורה.",
+            "{n} מתוך {count}",
         ],
     ),
     (
@@ -674,6 +701,9 @@ const CHROME: &[(&str, [&str; 9])] = &[
             "変更内容は失われます。",
             "変更を破棄",
             "キャンセル",
+            "並べ替え",
+            "ドラッグするか、上下の矢印キーで行を移動します。",
+            "{count} 件中 {n} 件目",
         ],
     ),
     (
@@ -688,6 +718,9 @@ const CHROME: &[(&str, [&str; 9])] = &[
             "你的更改将会丢失。",
             "放弃更改",
             "取消",
+            "重新排序",
+            "拖动，或使用上下方向键，移动该行。",
+            "第 {n} 项，共 {count} 项",
         ],
     ),
     (
@@ -702,12 +735,16 @@ const CHROME: &[(&str, [&str; 9])] = &[
             "변경 사항이 사라집니다.",
             "변경 사항 버리기",
             "취소",
+            "순서 변경",
+            "드래그하거나 위쪽 및 아래쪽 화살표 키를 사용하여 행을 이동합니다.",
+            "{count}개 중 {n}번째",
         ],
     ),
 ];
 
 /// A built-in Prism text: `back`, `close`, `not_found`, `no_route`,
-/// `clear`, `unsaved_title`, `unsaved_message`, `discard` or `cancel`.
+/// `clear`, `unsaved_title`, `unsaved_message`, `discard`, `cancel`,
+/// `reorder`, `reorder_hint` or `reorder_position` (`{n}` of `{count}`).
 pub fn chrome_text(translations: Option<&Translations>, locale: &Locale, key: &str) -> String {
     if let Some(t) = translations.and_then(|t| t.lookup(locale, &format!("prism.{key}"))) {
         return t.to_string();
@@ -721,6 +758,9 @@ pub fn chrome_text(translations: Option<&Translations>, locale: &Locale, key: &s
         "unsaved_message" => 6,
         "discard" => 7,
         "cancel" => 8,
+        "reorder" => 9,
+        "reorder_hint" => 10,
+        "reorder_position" => 11,
         _ => 3,
     };
     CHROME
