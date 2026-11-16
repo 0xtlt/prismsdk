@@ -220,6 +220,18 @@ impl View {
 fn set_popover_mode(p: &gtk::Popover, config: prism_core::controls::OverlayConfig) {
     p.set_autohide(!(config.fixed || config.manual || config.keep_focus));
     p.set_can_focus(!config.keep_focus);
+    p.set_has_arrow(!config.bare);
+    set_bare(p, config.bare);
+}
+
+/// A bare dialog (#166): no box of its own (the `prism-bare` rules take
+/// GTK's background, border, padding and shadow away).
+fn set_bare(w: &impl IsA<gtk::Widget>, bare: bool) {
+    if bare {
+        w.add_css_class("prism-bare");
+    } else {
+        w.remove_css_class("prism-bare");
+    }
 }
 
 /// On its side of `parent` (GTK takes the opposite side without room
@@ -297,6 +309,8 @@ impl OverlayView {
             }
             if let Some(w) = self.window.borrow().as_ref() {
                 w.set_deletable(!config.fixed);
+                w.set_decorated(!config.bare);
+                set_bare(w, config.bare);
             }
             return;
         }
@@ -348,6 +362,7 @@ impl OverlayView {
                 .destroy_with_parent(true)
                 .resizable(config.kind == OverlayKind::Sheet)
                 .deletable(!config.fixed)
+                .decorated(!config.bare)
                 .accessible_role(gtk::AccessibleRole::Dialog)
                 .child(&self.content)
                 .build();
@@ -373,6 +388,7 @@ impl OverlayView {
             });
             w.add_controller(esc);
             attach_keys(&w, keys.clone());
+            set_bare(&w, config.bare);
             *self.window.borrow_mut() = Some(w);
         }
         if self.open.get() {
@@ -3160,7 +3176,8 @@ fn activate(app: &gtk::Application) {
     base.load_from_data(
         ".prism-header{padding:0 8px;border-bottom:1px solid alpha(currentColor,0.15);}\
          .prism-tabbar{padding:6px;border-top:1px solid alpha(currentColor,0.15);}\
-         .prism-keys:focus-visible{outline:2px solid alpha(currentColor,0.55);outline-offset:2px;}",
+         .prism-keys:focus-visible{outline:2px solid alpha(currentColor,0.55);outline-offset:2px;}\
+         popover.prism-bare,popover.prism-bare>contents,window.prism-bare{background:none;border:none;border-radius:0;box-shadow:none;padding:0;}",
     );
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(

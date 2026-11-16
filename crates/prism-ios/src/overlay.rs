@@ -316,7 +316,9 @@ impl Overlay {
             #[cfg(target_os = "tvos")]
             let _ = (&vc, keep_focus);
         });
-        top.presentViewController_animated_completion(&self.vc, true, Some(&done));
+        // A bare dialog appears at once: no cross-fade of its own (#166).
+        let animated = !self.config.get().bare;
+        top.presentViewController_animated_completion(&self.vc, animated, Some(&done));
     }
 
     /// Presents an overlay the app opened before it could be shown.
@@ -369,17 +371,28 @@ impl Overlay {
             };
             view.setBackgroundColor(Some(&UIColor::colorWithWhite_alpha(0., dim)));
             self.set_blur(&view, backdrop == Backdrop::Blur && !tv);
-            // Over an undimmed page, a hairline marks the card's edge.
+            // Over an undimmed page, a hairline marks the card's edge; a
+            // bare dialog has no card of its own (#166): the app draws it,
+            // its shadows included.
             let edge = UIColor::colorWithWhite_alpha(0.5, 0.3);
             card.layer()
-                .setBorderWidth(if backdrop == Backdrop::Clear { 0.5 } else { 0. });
+                .setBorderWidth(if backdrop == Backdrop::Clear && !c.bare {
+                    0.5
+                } else {
+                    0.
+                });
             let edge = unsafe { edge.CGColor() };
             card.layer().setBorderColor(Some(&edge));
+            // White in light mode, the raised grey of alerts in dark mode.
+            let fill = if c.bare {
+                UIColor::clearColor()
+            } else {
+                UIColor::tertiarySystemBackgroundColor()
+            };
+            card.setBackgroundColor(Some(&fill));
+            card.layer().setCornerRadius(if c.bare { 0. } else { 16. });
+            card.setClipsToBounds(!c.bare);
             if card.superview().is_none() {
-                // White in light mode, the raised grey of alerts in dark mode.
-                card.setBackgroundColor(Some(&UIColor::tertiarySystemBackgroundColor()));
-                card.layer().setCornerRadius(16.);
-                card.setClipsToBounds(true);
                 view.addSubview(card);
                 let target: &AnyObject = &self.vc;
                 let tap = unsafe {

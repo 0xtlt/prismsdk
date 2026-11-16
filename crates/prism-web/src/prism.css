@@ -170,6 +170,8 @@ dialog.prism-overlay-box[data-prism-placed="1"] { inset: auto; margin: 0; }
 dialog.prism-overlay-box[data-prism-backdrop="clear"] { border: 1px solid rgba(128,128,128,.3); box-shadow: 0 10px 30px rgba(0,0,0,.2); }
 dialog.prism-overlay-box[data-prism-backdrop="clear"]::backdrop { background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; }
 dialog.prism-overlay-box[data-prism-backdrop="dim"]::backdrop { backdrop-filter: none; -webkit-backdrop-filter: none; }
+/* A bare dialog (#166): no box of its own, the content is the panel. */
+dialog.prism-overlay-box[data-prism-bare="1"] { background: transparent; color: inherit; border: 0; border-radius: 0; box-shadow: none; overflow: visible; animation: none; }
 .prism-overlay-box[data-prism-w="1"] { width: var(--prism-ov-w); }
 .prism-overlay-box[data-prism-h="1"] { height: var(--prism-ov-h); }
 @media (max-width: 599px) { dialog.prism-ov-sheet[data-prism-w="1"] { width: 100vw; } }

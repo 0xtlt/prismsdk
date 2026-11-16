@@ -702,3 +702,45 @@ fn a_dialog_can_open_beside_its_anchor_without_a_dim() {
     assert_eq!(h.rt.app.read(&h.root::<Editor>()).closed, 1);
     assert!(!h.rt.app.read(&h.root::<Editor>()).picking);
 }
+
+struct Bare;
+
+impl Render for Bare {
+    fn render(&mut self, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .child(text("Colour"))
+            .child(
+                dialog(text("picker"))
+                    .side(PopoverSide::Trailing)
+                    .backdrop(Backdrop::Clear)
+                    .bare(),
+            )
+            .child(dialog(text("centered")).bare())
+            .child(sheet(text("sheet")).bare())
+            .child(popover(text("popover")).bare())
+    }
+}
+
+#[test]
+fn a_bare_dialog_drops_prisms_box_and_stays_a_dialog() {
+    use prism_core::controls::OverlayConfig;
+    let h = Harness::new(|cx| {
+        let root = cx.new_entity(|_| Bare);
+        mount(cx, root);
+    });
+    let config = |kind: &str| {
+        let id = h
+            .host
+            .find(|n| n.kind == NodeKind::Overlay && n.config.split(' ').next() == Some(kind))
+            .unwrap();
+        OverlayConfig::decode(&h.host.get(id).config)
+    };
+    let placed = config("dialog");
+    assert!(placed.bare && placed.placed);
+    assert_eq!(placed.anchored_side(), Some(PopoverSide::Trailing));
+    // Centered, without its box.
+    assert!(h.host.find(|n| n.config == "dialog bare").is_some());
+    // Sheets and popovers keep their platform's box (#166).
+    assert!(!config("sheet").bare);
+    assert!(!config("popover").bare);
+}
