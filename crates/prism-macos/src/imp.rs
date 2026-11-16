@@ -878,8 +878,12 @@ define_class!(
                     self.ivars().id.get(),
                     prism_core::DismissReason::Escape,
                 ));
-            } else {
-                unsafe { msg_send![super(self), cancelOperation: sender] }
+            } else if let Some(next) = unsafe { self.nextResponder() } {
+                // NSView has no `cancelOperation:` of its own (#163): sending
+                // it to `super` crashed. Up the chain instead (a sheet, the
+                // window), if anything there handles it; the app's key
+                // handlers already heard Escape from the key monitor.
+                let _ = unsafe { next.tryToPerform_with(sel!(cancelOperation:), sender) };
             }
         }
 
@@ -5675,4 +5679,27 @@ fn window_size(config: &AppConfig) -> (f32, f32) {
             Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
         })
         .unwrap_or((config.width, config.height))
+}
+
+#[cfg(test)]
+mod escape_tests {
+    use super::*;
+
+    /// #163: Escape outside a sheet reaches a Prism view as
+    /// `cancelOperation:` (AppKit's key bindings send it up the responder
+    /// chain from a focused field). It crashed: NSView has no such method.
+    #[test]
+    fn escape_outside_a_sheet_does_not_crash() {
+        // Views are only built here, never shown: no main thread needed.
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let none: Option<&AnyObject> = None;
+        let parent = PrismView::new(mtm, 1);
+        let view = PrismView::new(mtm, 2);
+        parent.addSubview(&view);
+        // Up the chain: the parent does not handle it either.
+        let _: () = unsafe { msg_send![&*view, cancelOperation: none] };
+        // Without a next responder.
+        let lone = PrismView::new(mtm, 3);
+        let _: () = unsafe { msg_send![&*lone, cancelOperation: none] };
+    }
 }
