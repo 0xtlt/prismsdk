@@ -38,6 +38,8 @@ pub struct HNode {
     pub island: Option<String>,
     /// An island's props, as JSON (`Patch::SetIslandProps`).
     pub island_props: std::collections::BTreeMap<String, String>,
+    /// Where a link leads (`Patch::SetLink`).
+    pub link: Option<String>,
 }
 
 #[derive(Default)]
@@ -183,6 +185,7 @@ impl Backend for Host {
                             keys: (false, false),
                             island: None,
                             island_props: Default::default(),
+                            link: None,
                         },
                     );
                 }
@@ -253,6 +256,7 @@ impl Backend for Host {
                 Patch::SetIsland { id, tag, .. } => {
                     self.node(*id, "SetIsland").island = Some(tag.clone())
                 }
+                Patch::SetLink { id, href } => self.node(*id, "SetLink").link = href.clone(),
                 Patch::SetIslandProps { id, props } => {
                     let n = self.node(*id, "SetIslandProps");
                     for (k, v) in props {

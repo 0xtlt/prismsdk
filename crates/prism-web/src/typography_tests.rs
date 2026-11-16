@@ -157,6 +157,53 @@ fn runs_become_inline_spans_and_links() {
 }
 
 #[test]
+fn ssr_rich_text_links_follow_the_mount_point_and_never_nest() {
+    let page = |link: Option<&str>| {
+        let mut b = HtmlBackend::default();
+        b.base = "/app".into();
+        let mut patches = vec![
+            Patch::Create {
+                id: 1,
+                kind: NodeKind::Text,
+            },
+            Patch::SetConfig {
+                id: 1,
+                config: runs(),
+            },
+            Patch::SetRoot { id: 1 },
+        ];
+        if let Some(href) = link {
+            patches.insert(
+                1,
+                Patch::SetLink {
+                    id: 1,
+                    href: Some(href.into()),
+                },
+            );
+        }
+        b.apply(&patches);
+        b.to_html()
+    };
+    let plain = page(None);
+    assert!(
+        plain.contains(r#"<a class="prism-link" href="/app/settings?a=1&amp;b=2""#),
+        "{plain}"
+    );
+    // A text that is a link: its own links are spans (an `<a>` can't hold one).
+    let linked = page(Some("/profile"));
+    assert!(
+        linked.starts_with(r#"<a data-pid="1" data-kind="text" style="" href="/app/profile">"#),
+        "{linked}"
+    );
+    assert_eq!(linked.matches("<a ").count(), 1, "{linked}");
+    assert!(
+        linked.contains(r#"<span class="prism-link" data-link="42""#),
+        "{linked}"
+    );
+    assert!(!linked.contains(r#"role="link""#), "{linked}");
+}
+
+#[test]
 fn ssr_rich_text_and_clickable_text() {
     let mut b = HtmlBackend::default();
     b.apply(&[

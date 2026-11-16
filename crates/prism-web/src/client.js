@@ -160,6 +160,8 @@
   function setPointer(el, id, mask) {
     el._pmask = mask;
     toggleClass(el, "prism-draggable", (mask & 4) !== 0);
+    // A draggable link: the app's drag, not the browser's link drag.
+    if (el.localName === "a") (mask & 4) ? el.setAttribute("draggable", "false") : el.removeAttribute("draggable");
     if (el._pointerBound) return;
     el._pointerBound = true;
     const moves = throttled(), drags = throttled();
@@ -619,6 +621,8 @@
     ].filter(Boolean).join(";");
   };
   function renderRuns(el) {
+    // Inside a text that is a link itself, links are spans (they don't nest).
+    const nested = el.localName === "a";
     const runs = decodeRuns(el._runs);
     el._runPs = null;
     if (!runs.length) { el.replaceChildren(document.createTextNode(el._text || "")); return; }
@@ -630,12 +634,12 @@
         node.className = "prism-symbol";
         node.setAttribute("aria-hidden", "true");
       } else if (r.l) {
-        const external = r.h && /^[a-z][a-z0-9+.-]*:/i.test(r.h);
-        node = document.createElement(r.h ? "a" : "span");
+        const href = r.h && !nested;
+        node = document.createElement(href ? "a" : "span");
         node.className = "prism-link";
         node.dataset.link = r.l;
-        if (r.h) node.setAttribute("href", external ? r.h : urlFor(r.h));
-        else { node.setAttribute("role", "link"); node.tabIndex = 0; }
+        if (href) node.setAttribute("href", hrefFor(r.h));
+        else if (!nested) { node.setAttribute("role", "link"); node.tabIndex = 0; }
       } else if (css) {
         node = document.createElement("span");
       } else {
@@ -660,8 +664,42 @@
     return true;
   }
 
-  function create(id, kind) {
-    const el = document.createElement(tags[kind]);
+  // --- Links: a view or a text made a link (`.link(path)`) -------------------
+  // An `<a href>`, so the browser opens it in a new tab or window, copies it
+  // and shows it on hover; a plain click still navigates in the app.
+  const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
+  const hrefFor = (path) => (SCHEME.test(path) ? path : urlFor(path));
+  // Sent right after "create" (on the web, a node that gains or loses its
+  // link is a new node): the element becomes an `<a>`.
+  function setLink(el, id, href) {
+    const kind = el && el.dataset.kind;
+    if ((kind !== "view" && kind !== "text") || el._island) return;
+    if ((href != null) !== (el.localName === "a")) {
+      create(id, kind, href != null ? "a" : null);
+      const fresh = nodes.get(id);
+      while (el.firstChild) fresh.appendChild(el.firstChild);
+      if (el.parentNode) { el.parentNode.insertBefore(fresh, el); el.remove(); }
+      el = fresh;
+    }
+    if (href == null) return;
+    el.setAttribute("href", hrefFor(href));
+    if (SCHEME.test(href)) el.setAttribute("rel", "noopener"); else el.removeAttribute("rel");
+  }
+  // A click on a link node. With a modifier or another button (new tab, new
+  // window, download) the browser follows it: true. A plain click stays in
+  // the app (no page load): false, for the click handler to report it.
+  function browserFollows(el, e) {
+    if (el.localName !== "a") return false;
+    if (el.getAttribute("aria-disabled") !== "true" && (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || (e.button || 0) !== 0)) {
+      e.stopPropagation();
+      return true;
+    }
+    e.preventDefault();
+    return false;
+  }
+
+  function create(id, kind, tag) {
+    const el = document.createElement(tag || tags[kind]);
     el.dataset.pid = id;
     el.dataset.kind = kind;
     // Form fields are named (browsers flag fields without an id or name, and
@@ -763,7 +801,7 @@
       el.className = "prism-timer";
     } else if (kind === "view") {
       el.addEventListener("click", (e) => {
-        if (el.dataset.clickable !== "1") return;
+        if (browserFollows(el, e) || el.dataset.clickable !== "1") return;
         e.stopPropagation();
         activate(el, id, e);
       });
@@ -777,7 +815,7 @@
       });
     } else if (kind === "text") {
       el.addEventListener("click", (e) => {
-        if (activateRun(e) || el.dataset.clickable !== "1") return;
+        if (activateRun(e) || browserFollows(el, e) || el.dataset.clickable !== "1") return;
         e.stopPropagation();
         activate(el, id);
       });
@@ -1226,7 +1264,9 @@
       el._disabled = !!a.disabled;
       radios(el).forEach((r) => { r.disabled = !!a.disabled; });
     }
-    const native = { button: "button", toggle: "switch", slider: "slider", picker: "combobox" }[kind];
+    // An `<a href>` is a link by itself, and focusable.
+    const link = el.localName === "a" && el.hasAttribute("href");
+    const native = link ? "link" : { button: "button", toggle: "switch", slider: "slider", picker: "combobox" }[kind];
     const role = a.role;
     if (role && role !== "text" && role !== native) {
       set("role", role);
@@ -1249,7 +1289,8 @@
     if (["INPUT", "BUTTON", "SELECT", "TEXTAREA"].includes(el.tagName)) el.disabled = !!a.disabled;
     // Custom interactive elements must be reachable from the keyboard.
     const interactive = ["button", "link", "switch", "checkbox", "tab", "slider", "combobox"].includes(role);
-    if (kind === "view" || kind === "text") set("tabindex", (interactive || el._kLocal) && !a.hidden && !a.disabled ? "0" : null);
+    if (link) set("tabindex", a.hidden || a.disabled ? "-1" : null);
+    else if (kind === "view" || kind === "text") set("tabindex", (interactive || el._kLocal) && !a.hidden && !a.disabled ? "0" : null);
   }
 
   function apply(p) {
@@ -1416,6 +1457,7 @@
       // Islands: client-side Web Components.
       case "island": return setIsland(p);
       case "props": return setIslandProps(el, p.props);
+      case "link": return setLink(el, p.id, p.href);
       case "destroy":
         if (el) {
           el.remove();

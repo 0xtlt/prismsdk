@@ -68,6 +68,18 @@ format!("/search?{}", encode_query([("q", "a & b")]))     // /search?q=a%20%26%2
 
 Values are decoded (`%20`, `+`); `p.parse_query::<u32>("room")` parses the first one, `p.query_pairs()` lists them all. Tabs match their root without the query: `navigate("/settings?section=privacy")` switches to the Settings tab, then opens that path on it. `cx.current_query()` reads the visible screen's.
 
+## Links
+
+`.link(path)` makes a row, a card or a text a link: activating it navigates in the app (`navigate(path)`), or opens a URL (`https:`, `mailto:`, `tel:`) in the browser. It is announced as a link and reachable from the keyboard.
+
+```rust
+div().link(format!("/orders/{}", order.id)).child(text(&order.title))  // a row of a list
+text("Terms of use").underline().link("/terms")
+text("Docs").link("https://example.com/docs")
+```
+
+On the web the node is an `<a href>` (app paths under the mount point, `rel="noopener"` for a URL), in the first paint too, so what a real link gives works: Cmd/Ctrl-click, a middle click and the context menu open it in a new tab or copy it, hovering shows its URL, and it works before the socket connects or without JavaScript (a page load). A plain click still navigates in the app, with no page load. A node that gains or loses its link is a new element there. Natively it is a clickable view with the link role; in widgets and Live Activities it opens the app on `path`.
+
 ## Handing a value to the next screen
 
 For what does not belong in the URL (a "Saved" notice after a form, an object already loaded), pass a typed value along:

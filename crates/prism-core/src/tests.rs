@@ -1325,6 +1325,88 @@ fn links_navigate_in_app_and_deep_links_open_screens() {
     assert_eq!(rt.app.current_path(), Some("/items/9"));
 }
 
+#[test]
+fn a_link_follows_its_node_and_is_its_own_element_on_the_web() {
+    struct Row(Option<&'static str>);
+    impl Render for Row {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            let row = div().child(text("Order"));
+            div()
+                .child(button("next").on_click(cx.listener(|this: &mut Row, _, _| {
+                    this.0 = match this.0 {
+                        None => Some("/orders/42"),
+                        Some("/orders/42") => Some("/orders/43"),
+                        Some(_) => None,
+                    }
+                })))
+                .child(match self.0 {
+                    Some(path) => row.link(path),
+                    None => row,
+                })
+        }
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Row(Some("/orders/42")));
+        cx.set_root(root);
+    });
+    for platform in [crate::Platform::Web, crate::Platform::Ios] {
+        let mut rt = Runtime::with_options(
+            &init,
+            crate::RuntimeOptions {
+                path: "/".into(),
+                platform: Some(platform),
+                ..Default::default()
+            },
+        );
+        let first = rt.render();
+        // Right after its `Create` (the web picks the element there).
+        let at = first
+            .iter()
+            .position(|p| matches!(p, Patch::SetLink { href: Some(h), .. } if h == "/orders/42"))
+            .expect("the link is sent");
+        let Patch::SetLink { id: row, .. } = first[at] else {
+            unreachable!()
+        };
+        assert_eq!(
+            first[at - 1],
+            Patch::Create {
+                id: row,
+                kind: NodeKind::View
+            }
+        );
+        let next = first
+            .iter()
+            .find_map(|p| match p {
+                Patch::SetText { id, text } if text == "next" => Some(*id),
+                _ => None,
+            })
+            .unwrap();
+        // Another destination: the same node, its new link.
+        let changed = rt.dispatch(UiEvent::Click(next));
+        assert!(
+            changed.contains(&Patch::SetLink {
+                id: row,
+                href: Some("/orders/43".into())
+            }),
+            "{changed:?}"
+        );
+        assert!(!changed.iter().any(|p| matches!(p, Patch::Create { .. })));
+        // No link any more: a new `<div>` on the web, the same view natively.
+        let removed = rt.dispatch(UiEvent::Click(next));
+        let destroyed = removed.contains(&Patch::Destroy { id: row });
+        let unlinked = removed.contains(&Patch::SetLink {
+            id: row,
+            href: None,
+        });
+        if platform == crate::Platform::Web {
+            assert!(destroyed && !unlinked, "{removed:?}");
+            assert!(!removed.iter().any(|p| matches!(p, Patch::SetLink { .. })));
+        } else {
+            assert!(unlinked && !destroyed, "{removed:?}");
+        }
+    }
+}
+
 // --- Async tasks, timers, background work, storage ---------------------------
 
 use crate::{FileStorage, Storage};

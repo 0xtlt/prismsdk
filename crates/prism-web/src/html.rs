@@ -34,6 +34,8 @@ struct HtmlNode {
     island: Option<(String, bool)>,
     /// An island's props (JSON).
     island_props: std::collections::BTreeMap<String, String>,
+    /// A link's destination (`Patch::SetLink`): an `<a href>`.
+    link: Option<String>,
 }
 
 /// Turns a picture source (`logo.png`, `https://…`) into its URL.
@@ -47,6 +49,9 @@ pub struct HtmlBackend {
     pub env: prism_core::RenderEnvironment,
     /// Hashed asset URLs (`/assets/logo.<hash>.png`); `/assets/<name>` if unset.
     pub asset_urls: Option<AssetUrls>,
+    /// Where the app is mounted (`/app`, empty at the root): links' `href`s
+    /// start with it.
+    pub base: String,
     /// While [`to_html_and_css`](HtmlBackend::to_html_and_css) runs: the
     /// rules collected instead of `style` attributes.
     sheet: std::cell::RefCell<Option<Sheet>>,
@@ -170,6 +175,7 @@ impl Backend for HtmlBackend {
                     let wasm = matches!(source, prism_core::IslandSource::Wasm(_));
                     self.with(*id, |n| n.island = Some((tag.clone(), wasm)))
                 }
+                Patch::SetLink { id, href } => self.with(*id, |n| n.link.clone_from(href)),
                 Patch::SetIslandProps { id, props } => self.with(*id, |n| {
                     for (k, v) in props {
                         n.island_props.insert(k.clone(), v.clone());
@@ -341,9 +347,27 @@ impl HtmlBackend {
         let kind = n.kind.unwrap_or(NodeKind::View);
         let hidden = if hidden { " hidden" } else { "" };
         let css = n.css.clone();
+        // A view or a text made a link is an `<a href>` (not an island,
+        // whose tag is its custom element's): a link by itself, focusable.
+        let link = match (&n.link, &n.island, kind) {
+            (Some(path), None, NodeKind::View | NodeKind::Text) => Some(path.as_str()),
+            _ => None,
+        };
         // A picture's description is its `alt` (like the client sets it).
         let aria = if kind == NodeKind::Picture {
             String::new()
+        } else if link.is_some() {
+            let mut a = n.a11y.clone();
+            if a.role == Some(Role::Link) {
+                a.role = None;
+            }
+            // Focusable by itself; out of the tab order while hidden or
+            // disabled (like client.js).
+            let mut attrs = a11y_attrs(kind, &a).replace(r#" tabindex="0""#, "");
+            if a.hidden || a.disabled {
+                attrs.push_str(r#" tabindex="-1""#);
+            }
+            attrs
         } else {
             a11y_attrs(kind, &n.a11y)
         };
@@ -654,20 +678,29 @@ impl HtmlBackend {
                 } else {
                     n.text.as_str()
                 };
-                // A rich text's runs become inline spans and links.
+                // A rich text's runs become inline spans and links (spans
+                // inside a text that is a link: links don't nest).
                 let content = if kind == NodeKind::Text && !n.config.is_empty() {
+                    let base = if link.is_some() {
+                        None
+                    } else {
+                        Some(self.base.as_str())
+                    };
                     // A page: the runs' styles join the `<style>` block too.
                     match self.sheet.borrow_mut().as_mut() {
-                        Some(sheet) => runs_html_with(&n.config, &mut |css| sheet.attr(css)),
-                        None => runs_html(&n.config),
+                        Some(sheet) => runs_html_with(&n.config, base, &mut |css| sheet.attr(css)),
+                        None => runs_html_with(&n.config, base, &mut |css| {
+                            format!(r#" style="{}""#, escape(css))
+                        }),
                     }
                 } else {
                     escape(content)
                 };
                 // An island: its custom element, around the fallback.
-                let (tag, island) = match &n.island {
-                    Some((island_tag, wasm)) => (island_tag.as_str(), island_attrs(n, *wasm)),
-                    None => (tag, String::new()),
+                let (tag, island) = match (&n.island, link) {
+                    (Some((island_tag, wasm)), _) => (island_tag.as_str(), island_attrs(n, *wasm)),
+                    (None, Some(path)) => ("a", link_attrs(&self.base, path)),
+                    (None, None) => (tag, String::new()),
                 };
                 let _ = write!(out, "<{tag} {attrs}{class}{label}{island}>{content}");
                 for c in &n.children {
@@ -795,13 +828,22 @@ pub fn escape(s: &str) -> String {
 /// markup `client.js` builds: `<span>` per styled run, `<a class="prism-link"
 /// href data-link>` per link (`<span role="link" tabindex="0">` for a
 /// clickable run without a path), `<span class="prism-symbol">` per icon.
+#[cfg(test)]
 pub fn runs_html(config: &str) -> String {
-    runs_html_with(config, &mut |css| format!(r#" style="{}""#, escape(css)))
+    runs_html_with(config, Some(""), &mut |css| {
+        format!(r#" style="{}""#, escape(css))
+    })
 }
 
 /// [`runs_html`], each run's CSS (never empty) turned into attributes by
-/// `style` (a `style` attribute, or a class of the page's sheet).
-fn runs_html_with(config: &str, style: &mut dyn FnMut(&str) -> String) -> String {
+/// `style` (a `style` attribute, or a class of the page's sheet). Links'
+/// app paths start with `base`; with `None` (the text is a link itself)
+/// they are `<span>`s, reported by their click only.
+fn runs_html_with(
+    config: &str,
+    base: Option<&str>,
+    style: &mut dyn FnMut(&str) -> String,
+) -> String {
     let mut out = String::new();
     for r in prism_core::decode_runs(config) {
         let css = crate::css::run_css(&r);
@@ -817,15 +859,21 @@ fn runs_html_with(config: &str, style: &mut dyn FnMut(&str) -> String) -> String
                 r#"<span class="prism-symbol" aria-hidden="true"{style}>{text}</span>"#
             );
         } else if let Some(link) = r.link {
-            match &r.href {
-                Some(href) => {
+            match (&r.href, base) {
+                (Some(href), Some(base)) => {
                     let _ = write!(
                         out,
                         r#"<a class="prism-link" href="{}" data-link="{link}"{style}>{text}</a>"#,
-                        escape(href)
+                        escape(&link_href(base, href))
                     );
                 }
-                None => {
+                (_, None) => {
+                    let _ = write!(
+                        out,
+                        r#"<span class="prism-link" data-link="{link}"{style}>{text}</span>"#
+                    );
+                }
+                (None, Some(_)) => {
                     let _ = write!(
                         out,
                         r#"<span class="prism-link" role="link" tabindex="0" data-link="{link}"{style}>{text}</span>"#
@@ -839,6 +887,40 @@ fn runs_html_with(config: &str, style: &mut dyn FnMut(&str) -> String) -> String
         }
     }
     out
+}
+
+/// A link's `href` (mirrors `urlFor` in client.js): a URL (`https:`,
+/// `mailto:`…) as is, an app path under the mount point `base`.
+pub fn link_href(base: &str, path: &str) -> String {
+    if has_scheme(path) {
+        return path.to_string();
+    }
+    let (p, query) = path.split_at(path.find('?').unwrap_or(path.len()));
+    if p == "/" && !base.is_empty() {
+        format!("{base}{query}")
+    } else {
+        format!("{base}{p}{query}")
+    }
+}
+
+/// `scheme:` at the start (`/^[a-z][a-z0-9+.-]*:/i` in client.js).
+fn has_scheme(path: &str) -> bool {
+    let Some((scheme, _)) = path.split_once(':') else {
+        return false;
+    };
+    let mut chars = scheme.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
+}
+
+/// ` href="…"` of a node made a link, with `rel="noopener"` for a URL.
+fn link_attrs(base: &str, path: &str) -> String {
+    let rel = if has_scheme(path) {
+        r#" rel="noopener""#
+    } else {
+        ""
+    };
+    format!(r#" href="{}"{rel}"#, escape(&link_href(base, path)))
 }
 
 /// Remote URLs as-is; anything else is an app asset under `/assets/`.

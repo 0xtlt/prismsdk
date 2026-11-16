@@ -1501,7 +1501,8 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                 }
                 // Islands run in browsers: native apps show the node's
                 // children (the island's fallback) as a plain view.
-                Patch::SetIsland { .. } | Patch::SetIslandProps { .. } => {}
+                // A link is activated like any clickable view (`SetClickable`).
+                Patch::SetIsland { .. } | Patch::SetIslandProps { .. } | Patch::SetLink { .. } => {}
             }
         }
         if self.extras.rehoist {
