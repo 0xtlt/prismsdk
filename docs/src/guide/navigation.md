@@ -65,6 +65,27 @@ wins over the top screen's title.
 | Android | the activity's title (TalkBack, recents) |
 | watchOS | — |
 
+## Leaving with unsaved changes
+
+```rust
+cx.set_unsaved_changes(self.draft != self.saved);   // after each edit and each save
+```
+
+While the app says it has unsaved changes (#158), closing the page or the
+window asks first; `cx.has_unsaved_changes()` reads it back.
+
+| | What happens |
+|---|---|
+| Web | the browser's own « Leave site? » question when the tab is closed, reloaded or left (`beforeunload`; browsers show their own text) |
+| macOS | the close button's dot (`documentEdited`); closing the window or ⌘Q asks « Leave without saving? » with Discard Changes / Cancel |
+| Linux | closing the window asks the same question |
+| iOS, iPadOS, Android, watchOS | nothing: the system closes apps itself, so save as you go |
+
+The question's texts are built in (`prism.unsaved_title`,
+`prism.unsaved_message`, `prism.discard`, `prism.cancel` to override them).
+Navigation inside the app (Back, a link to another screen) is the app's to
+guard: it knows what « leaving » means there.
+
 ## Query strings
 
 Paths keep their query string. A route reads it; the URL (web), deep links and `prism dev` restarts keep it:

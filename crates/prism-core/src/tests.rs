@@ -2572,6 +2572,49 @@ fn clicks_say_keys_and_count_and_key_ups_are_heard() {
     assert!(ClickEvent.count == 1 && !ClickEvent.is_double());
 }
 
+/// #158: unsaved changes reach the backend once per change; the question's
+/// texts are built in.
+#[test]
+fn unsaved_changes_reach_the_backend_on_change() {
+    use crate::PlatformRequest;
+    struct Plain;
+    impl Render for Plain {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Plain);
+        cx.set_root(root);
+    });
+    let mut rt = Runtime::new(&init);
+    rt.render();
+    rt.take_requests();
+    rt.app.set_unsaved_changes(true);
+    rt.app.set_unsaved_changes(true);
+    assert!(rt.app.has_unsaved_changes());
+    rt.app.set_unsaved_changes(false);
+    let seen: Vec<bool> = rt
+        .take_requests()
+        .into_iter()
+        .filter_map(|r| match r {
+            PlatformRequest::SetUnsavedChanges(on) => Some(on),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(seen, [true, false]);
+    let fr = crate::Locale::new("fr-FR");
+    assert_eq!(
+        crate::i18n::chrome_text(None, &fr, "unsaved_title"),
+        "Quitter sans enregistrer ?"
+    );
+    assert_eq!(
+        crate::i18n::chrome_text(None, &crate::Locale::new("ja"), "cancel"),
+        "キャンセル"
+    );
+    assert_eq!(rt.app.chrome_text("discard"), "Discard Changes");
+}
+
 /// #156: on_dismiss says how the user closed the overlay.
 #[test]
 fn dismissals_say_how() {

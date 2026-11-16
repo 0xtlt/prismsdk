@@ -530,13 +530,25 @@ impl Formatter for BasicFormatter {
 }
 
 /// Texts drawn by Prism itself (stack headers, default screens, the clear
-/// action of optional date pickers), built in for common languages. Apps
-/// override them with `prism.back`, `prism.close`, `prism.not_found`,
-/// `prism.no_route` and `prism.clear` keys.
-const CHROME: &[(&str, [&str; 5])] = &[
+/// action of optional date pickers, the question before leaving with
+/// unsaved changes), built in for common languages. Apps override them with
+/// `prism.back`, `prism.close`, `prism.not_found`, `prism.no_route`,
+/// `prism.clear`, `prism.unsaved_title`, `prism.unsaved_message`,
+/// `prism.discard` and `prism.cancel` keys.
+const CHROME: &[(&str, [&str; 9])] = &[
     (
         "en",
-        ["Back", "Close", "Not found", "Nothing at {path}", "Clear"],
+        [
+            "Back",
+            "Close",
+            "Not found",
+            "Nothing at {path}",
+            "Clear",
+            "Leave without saving?",
+            "Your changes will be lost.",
+            "Discard Changes",
+            "Cancel",
+        ],
     ),
     (
         "fr",
@@ -546,6 +558,10 @@ const CHROME: &[(&str, [&str; 5])] = &[
             "Introuvable",
             "Rien à l’adresse {path}",
             "Effacer",
+            "Quitter sans enregistrer ?",
+            "Vos modifications seront perdues.",
+            "Ignorer les modifications",
+            "Annuler",
         ],
     ),
     (
@@ -556,6 +572,10 @@ const CHROME: &[(&str, [&str; 5])] = &[
             "Nicht gefunden",
             "Nichts unter {path}",
             "Löschen",
+            "Ohne Sichern verlassen?",
+            "Deine Änderungen gehen verloren.",
+            "Änderungen verwerfen",
+            "Abbrechen",
         ],
     ),
     (
@@ -566,6 +586,10 @@ const CHROME: &[(&str, [&str; 5])] = &[
             "No encontrado",
             "Nada en {path}",
             "Borrar",
+            "¿Salir sin guardar?",
+            "Se perderán tus cambios.",
+            "Descartar cambios",
+            "Cancelar",
         ],
     ),
     (
@@ -576,6 +600,10 @@ const CHROME: &[(&str, [&str; 5])] = &[
             "Non trovato",
             "Niente in {path}",
             "Cancella",
+            "Uscire senza salvare?",
+            "Le modifiche andranno perse.",
+            "Scarta le modifiche",
+            "Annulla",
         ],
     ),
     (
@@ -586,6 +614,10 @@ const CHROME: &[(&str, [&str; 5])] = &[
             "Não encontrado",
             "Nada em {path}",
             "Limpar",
+            "Sair sem salvar?",
+            "Suas alterações serão perdidas.",
+            "Descartar alterações",
+            "Cancelar",
         ],
     ),
     (
@@ -596,15 +628,39 @@ const CHROME: &[(&str, [&str; 5])] = &[
             "Niet gevonden",
             "Niets op {path}",
             "Wissen",
+            "Verlaten zonder opslaan?",
+            "Je wijzigingen gaan verloren.",
+            "Wijzigingen negeren",
+            "Annuleer",
         ],
     ),
     (
         "ar",
-        ["رجوع", "إغلاق", "غير موجود", "لا شيء في {path}", "مسح"],
+        [
+            "رجوع",
+            "إغلاق",
+            "غير موجود",
+            "لا شيء في {path}",
+            "مسح",
+            "المغادرة دون حفظ؟",
+            "ستُفقد تغييراتك.",
+            "تجاهل التغييرات",
+            "إلغاء",
+        ],
     ),
     (
         "he",
-        ["חזרה", "סגירה", "לא נמצא", "אין כלום ב־{path}", "ניקוי"],
+        [
+            "חזרה",
+            "סגירה",
+            "לא נמצא",
+            "אין כלום ב־{path}",
+            "ניקוי",
+            "לצאת בלי לשמור?",
+            "השינויים שלך יאבדו.",
+            "מחיקת השינויים",
+            "ביטול",
+        ],
     ),
     (
         "ja",
@@ -614,9 +670,26 @@ const CHROME: &[(&str, [&str; 5])] = &[
             "見つかりません",
             "{path} には何もありません",
             "消去",
+            "保存せずに閉じますか？",
+            "変更内容は失われます。",
+            "変更を破棄",
+            "キャンセル",
         ],
     ),
-    ("zh", ["返回", "关闭", "未找到", "{path} 没有内容", "清除"]),
+    (
+        "zh",
+        [
+            "返回",
+            "关闭",
+            "未找到",
+            "{path} 没有内容",
+            "清除",
+            "不保存就离开吗？",
+            "你的更改将会丢失。",
+            "放弃更改",
+            "取消",
+        ],
+    ),
     (
         "ko",
         [
@@ -625,12 +698,16 @@ const CHROME: &[(&str, [&str; 5])] = &[
             "찾을 수 없음",
             "{path}에 아무것도 없습니다",
             "지우기",
+            "저장하지 않고 나가시겠습니까?",
+            "변경 사항이 사라집니다.",
+            "변경 사항 버리기",
+            "취소",
         ],
     ),
 ];
 
-/// A built-in Prism text: `back`, `close`, `not_found`, `no_route` or
-/// `clear`.
+/// A built-in Prism text: `back`, `close`, `not_found`, `no_route`,
+/// `clear`, `unsaved_title`, `unsaved_message`, `discard` or `cancel`.
 pub fn chrome_text(translations: Option<&Translations>, locale: &Locale, key: &str) -> String {
     if let Some(t) = translations.and_then(|t| t.lookup(locale, &format!("prism.{key}"))) {
         return t.to_string();
@@ -640,6 +717,10 @@ pub fn chrome_text(translations: Option<&Translations>, locale: &Locale, key: &s
         "close" => 1,
         "not_found" => 2,
         "clear" => 4,
+        "unsaved_title" => 5,
+        "unsaved_message" => 6,
+        "discard" => 7,
+        "cancel" => 8,
         _ => 3,
     };
     CHROME

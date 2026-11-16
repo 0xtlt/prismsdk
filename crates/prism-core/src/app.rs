@@ -181,6 +181,8 @@ pub struct App {
     pub(crate) stop_propagation: bool,
     /// The title the app set (`cx.set_title`, #154).
     title: Option<String>,
+    /// The app has unsaved changes (`cx.set_unsaved_changes`, #158).
+    unsaved: bool,
     // --- Releasing what an entity made (#31) ---
     /// Entities created with `cx.new` in an entity's context, by creator:
     /// released with it.
@@ -238,6 +240,7 @@ impl Default for App {
             layers: Vec::new(),
             stop_propagation: false,
             title: None,
+            unsaved: false,
             children: HashMap::new(),
             observing: HashMap::new(),
         }
@@ -899,5 +902,30 @@ impl App {
     /// The title set with [`set_title`](Self::set_title), if any.
     pub fn title(&self) -> Option<&str> {
         self.title.as_deref()
+    }
+}
+
+// --- Unsaved changes (#158) ---------------------------------------------------------
+
+impl App {
+    /// Whether the app has changes the user would lose by leaving (#158):
+    /// while `true`, closing the page or the window asks first. Web: the
+    /// browser's own « Leave site? » question (`beforeunload`); macOS: the
+    /// close button's dot, and closing the window or quitting asks « Leave
+    /// without saving? »; Linux: closing the window asks. Phones and
+    /// tablets close apps themselves: save as you go there. Navigation
+    /// inside the app is the app's to guard.
+    pub fn set_unsaved_changes(&mut self, unsaved: bool) {
+        if self.unsaved != unsaved {
+            self.unsaved = unsaved;
+            self.surfaces
+                .requests
+                .push(crate::PlatformRequest::SetUnsavedChanges(unsaved));
+        }
+    }
+
+    /// See [`set_unsaved_changes`](Self::set_unsaved_changes).
+    pub fn has_unsaved_changes(&self) -> bool {
+        self.unsaved
     }
 }

@@ -304,7 +304,8 @@ impl PlatformServices for MacServices {
             | PlatformRequest::AddStylesheet(_)
             | PlatformRequest::RemoveStylesheet(_)
             // Applied by the backend, which has the window (imp.rs).
-            | PlatformRequest::SetTitle(_) => {}
+            | PlatformRequest::SetTitle(_)
+            | PlatformRequest::SetUnsavedChanges(_) => {}
             PlatformRequest::RemoveTray(id) => {
                 if let Some(item) = self.trays.remove(&id) {
                     NSStatusBar::systemStatusBar().removeStatusItem(&item);

@@ -120,6 +120,51 @@ fn release_all_keys() {
 }
 
 thread_local! {
+    /// The app has unsaved changes (`cx.set_unsaved_changes`, #158).
+    static UNSAVED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// « Leave without saving? » as a sheet on `window` (#158); `leave` runs if
+/// the user discards the changes.
+fn confirm_leave(window: &NSWindow, leave: impl Fn() + 'static) {
+    let mtm = MainThreadMarker::new().expect("main thread");
+    let mut texts = None;
+    with_state(|s| {
+        texts = Some(
+            ["unsaved_title", "unsaved_message", "discard", "cancel"]
+                .map(|k| s.runtime.app.chrome_text(k)),
+        )
+    });
+    let [title, message, discard, cancel] = texts.unwrap_or_else(|| {
+        [
+            "Leave without saving?",
+            "Your changes will be lost.",
+            "Discard Changes",
+            "Cancel",
+        ]
+        .map(String::from)
+    });
+    let alert = objc2_app_kit::NSAlert::new(mtm);
+    alert.setAlertStyle(objc2_app_kit::NSAlertStyle::Warning);
+    alert.setMessageText(&NSString::from_str(&title));
+    alert.setInformativeText(&NSString::from_str(&message));
+    alert
+        .addButtonWithTitle(&NSString::from_str(&discard))
+        .setHasDestructiveAction(true);
+    alert
+        .addButtonWithTitle(&NSString::from_str(&cancel))
+        .setKeyEquivalent(&NSString::from_str("\u{1b}"));
+    let handler = block2::RcBlock::new(move |response: isize| {
+        // NSAlertFirstButtonReturn (1000): discard.
+        if response == 1000 {
+            UNSAVED.set(false);
+            leave();
+        }
+    });
+    alert.beginSheetModalForWindow_completionHandler(window, Some(&handler));
+}
+
+thread_local! {
     /// Why the closing popover closes (`popoverWillClose:`, #156).
     static POPOVER_CLOSE_REASON: Cell<prism_core::DismissReason> =
         const { Cell::new(prism_core::DismissReason::Unknown) };
@@ -274,6 +319,13 @@ impl State {
             }
             if let prism_core::PlatformRequest::SetTitle(title) = &request {
                 self.renderer.widgets.set_app_title(title.clone());
+            }
+            // Unsaved changes (#158): the close button's dot; leaving asks.
+            if let prism_core::PlatformRequest::SetUnsavedChanges(on) = &request {
+                UNSAVED.set(*on);
+                if let Some(window) = self.renderer.widgets.root.window() {
+                    window.setDocumentEdited(*on);
+                }
             }
             prism_core::PlatformServices::handle(&mut self.services, request);
         }
@@ -1574,6 +1626,21 @@ define_class!(
         }
 
         /// Any Prism menu item (context menus, tray, app menus).
+        /// The Quit item: with unsaved changes, asks first (#158).
+        #[unsafe(method(prismQuit:))]
+        fn prism_quit(&self, _sender: Option<&AnyObject>) {
+            let app = NSApplication::sharedApplication(self.mtm());
+            match app.mainWindow().or_else(|| app.keyWindow()) {
+                Some(window) if UNSAVED.get() => {
+                    let mtm = self.mtm();
+                    confirm_leave(&window, move || {
+                        NSApplication::sharedApplication(mtm).terminate(None)
+                    });
+                }
+                _ => app.terminate(None),
+            }
+        }
+
         #[unsafe(method(onMenuItem:))]
         fn on_menu_item(&self, sender: &NSMenuItem) {
             dispatch(UiEvent::MenuSelect(sender.tag() as u64));
@@ -1988,6 +2055,17 @@ define_class!(
                 s.device_size = None;
                 s.relayout();
             });
+        }
+
+        /// With unsaved changes, closing asks first (#158).
+        #[unsafe(method(windowShouldClose:))]
+        fn window_should_close(&self, window: &NSWindow) -> objc2::runtime::Bool {
+            if !UNSAVED.get() {
+                return objc2::runtime::Bool::YES;
+            }
+            let w = objc2::Message::retain(window);
+            confirm_leave(window, move || w.close());
+            objc2::runtime::Bool::NO
         }
 
         #[unsafe(method(windowWillClose:))]

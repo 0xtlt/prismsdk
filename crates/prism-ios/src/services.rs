@@ -233,6 +233,8 @@ impl PlatformServices for IosServices {
             | PlatformRequest::RemoveStylesheet(_) => {}
             // The scene's title: its name in the iPad's multitasking switcher.
             PlatformRequest::SetTitle(title) => crate::imp::set_scene_title(title.as_deref()),
+            // The system closes apps on phones and tablets: nothing to ask.
+            PlatformRequest::SetUnsavedChanges(_) => {}
         }
     }
 }

@@ -756,6 +756,10 @@ fn commit(s: &mut State, patches: Vec<prism_core::Patch>) {
             continue;
         }
         // `cx.set_title` (#154): the window's title, else the app's name.
+        // Unsaved changes (#158): closing the window asks first.
+        if let prism_core::PlatformRequest::SetUnsavedChanges(on) = &request {
+            UNSAVED.set(*on);
+        }
         if let prism_core::PlatformRequest::SetTitle(title) = &request {
             let w = &s.renderer.widgets;
             w.window
@@ -1203,6 +1207,69 @@ impl Gtk {
         });
         w.add_controller(focus);
     }
+}
+
+thread_local! {
+    /// The app has unsaved changes (`cx.set_unsaved_changes`, #158).
+    static UNSAVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// « Leave without saving? » over `window` (#158): discarding closes it.
+fn confirm_leave(window: &gtk::ApplicationWindow) {
+    let mut texts = None;
+    with_state(|s| {
+        texts = Some(
+            ["unsaved_title", "unsaved_message", "discard", "cancel"]
+                .map(|k| s.runtime.app.chrome_text(k)),
+        )
+    });
+    let [title, message, discard, cancel] = texts.unwrap_or_else(|| {
+        [
+            "Leave without saving?",
+            "Your changes will be lost.",
+            "Discard Changes",
+            "Cancel",
+        ]
+        .map(String::from)
+    });
+    let dialog = gtk::Window::builder()
+        .transient_for(window)
+        .modal(true)
+        .resizable(false)
+        .default_width(360)
+        .accessible_role(gtk::AccessibleRole::AlertDialog)
+        .build();
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    body.set_margin_top(20);
+    body.set_margin_bottom(20);
+    body.set_margin_start(20);
+    body.set_margin_end(20);
+    let heading = gtk::Label::new(Some(&title));
+    heading.add_css_class("title-3");
+    heading.set_wrap(true);
+    body.append(&heading);
+    let text = gtk::Label::new(Some(&message));
+    text.set_wrap(true);
+    body.append(&text);
+    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    buttons.set_halign(gtk::Align::End);
+    let keep = gtk::Button::with_label(&cancel);
+    let leave = gtk::Button::with_label(&discard);
+    leave.add_css_class("destructive-action");
+    let d = dialog.clone();
+    keep.connect_clicked(move |_| d.close());
+    let (d, w) = (dialog.clone(), window.clone());
+    leave.connect_clicked(move |_| {
+        UNSAVED.set(false);
+        d.close();
+        w.close();
+    });
+    buttons.append(&keep);
+    buttons.append(&leave);
+    body.append(&buttons);
+    dialog.set_child(Some(&body));
+    dialog.set_default_widget(Some(&keep));
+    dialog.present();
 }
 
 thread_local! {
@@ -3078,6 +3145,14 @@ fn activate(app: &gtk::Application) {
         .build();
     let root = layout::container();
     window.set_child(Some(&root));
+    // With unsaved changes, closing asks first (#158).
+    window.connect_close_request(|w| {
+        if !UNSAVED.get() {
+            return glib::Propagation::Proceed;
+        }
+        confirm_leave(w);
+        glib::Propagation::Stop
+    });
 
     let css = gtk::CssProvider::new();
     let base = gtk::CssProvider::new();

@@ -2217,6 +2217,7 @@ fn the_apps_title_is_the_pages() {
     let reset = page.next();
     assert_eq!(reset["t"], "reset");
     assert_eq!(reset["title"], "Orders");
+    assert_eq!(reset["unsaved"], false, "#158: leaving asks only when told");
     page.session.close();
     let _ = std::fs::remove_dir_all(dir);
 }

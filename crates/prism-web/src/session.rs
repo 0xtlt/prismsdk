@@ -230,6 +230,8 @@ impl Live {
         }
         // Its title too (#154): a reconnected page drops a stale one.
         reset["title"] = json!(self.runtime.app.title());
+        // And whether leaving should ask (#158).
+        reset["unsaved"] = json!(self.runtime.app.has_unsaved_changes());
         self.services.sheets = sheets.into_iter().collect();
         if !(self.send)(reset.to_string()) {
             return;
@@ -1096,6 +1098,8 @@ impl PlatformServices for WebServices {
             }
             // The app's title (#154): the tab's, over the screens'.
             PlatformRequest::SetTitle(title) => json!({ "t": "title", "title": title }),
+            // Unsaved changes (#158): the browser asks before leaving.
+            PlatformRequest::SetUnsavedChanges(on) => json!({ "t": "unsaved", "on": on }),
             PlatformRequest::RemoveStylesheet(url) => {
                 self.sheets_dirty |= self.sheets.remove(&url);
                 return;

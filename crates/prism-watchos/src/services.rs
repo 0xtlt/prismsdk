@@ -105,8 +105,9 @@ impl PlatformServices for WatchServices {
             PlatformRequest::LoadFont(_)
             | PlatformRequest::AddStylesheet(_)
             | PlatformRequest::RemoveStylesheet(_)
-            // A watch app has no title of its own to show.
-            | PlatformRequest::SetTitle(_) => {}
+            // A watch app has no title of its own to show, nor a way to close.
+            | PlatformRequest::SetTitle(_)
+            | PlatformRequest::SetUnsavedChanges(_) => {}
         }
     }
 }
