@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 #[cfg(target_vendor = "apple")]
 pub mod apple;
 mod extras;
+pub mod fields;
 pub mod fonts;
 pub mod images;
 pub mod remote;

@@ -1944,9 +1944,10 @@ impl Widgets for UiKit {
             View::Label(l) => crate::label::set_text(l, text),
             View::Timer(l) => l.setText(Some(&s)),
             View::Picture(v) => self.load_picture(view.id(), v, text),
+            // The app's value reaches a focused field too (#73).
             View::Input(f) => {
                 if f.text().map(|t| t.to_string()).unwrap_or_default() != text {
-                    f.setText(Some(&s));
+                    crate::forms::set_field_text(&**f, || f.setText(Some(&s)));
                 }
             }
             View::Button(b) => b.setTitle_forState(Some(&s), UIControlState::Normal),

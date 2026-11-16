@@ -168,12 +168,90 @@ test("text updates keep child elements and never fight a focused field", () => {
   assert.equal(input.value, "a");
   assert.equal(input.placeholder, "Name");
   input.focus();
-  input.value = "ab";
-  form.ws.deliver({ t: "patch", p: [textOp(1, "a")] });
-  assert.equal(input.value, "ab", "the user's typing wins while focused");
+  const type = (v) => { input.value = v; input.dispatchEvent({ type: "input" }); };
+  type("ab");
+  type("abc");
+  form.ws.deliver({ t: "patch", p: [textOp(1, "ab")] });
+  assert.equal(input.value, "abc", "a late echo never undoes the user's typing");
   input.blur();
   form.ws.deliver({ t: "patch", p: [textOp(1, "server")] });
   assert.equal(input.value, "server");
+});
+
+// --- Focused fields: echoes vs. values set by the app (#73) ---------------------
+
+/** A focused field `kind` holding `text`, and a `type` helper sending input events. */
+function focusedField(kind, text = "") {
+  const page = live([create(1, kind), textOp(1, text), root(1)]);
+  const field = page.node(1);
+  field.focus();
+  const type = (v, caret = v.length) => {
+    field.value = v;
+    field.setSelectionRange(caret, caret);
+    field.dispatchEvent({ type: "input" });
+  };
+  const patch = (text) => page.ws.deliver({ t: "patch", p: [textOp(1, text)] });
+  return { page, field, type, patch };
+}
+
+test("echoes of the user's typing leave a focused field and its caret alone (#73)", () => {
+  for (const kind of ["text_input", "text_area"]) {
+    const { page, field, type, patch } = focusedField(kind);
+    type("Hello");
+    type("Hello world");
+    type("Hello, world", 6); // a comma typed in the middle: the caret after it
+    assert.deepEqual(page.ws.sent.filter((m) => m.t === "input").map((m) => m.v), ["Hello", "Hello world", "Hello, world"]);
+    const writes = field.valueWrites;
+    for (const echo of ["Hello", "Hello world", "Hello, world"]) patch(echo);
+    assert.equal(field.value, "Hello, world", kind);
+    assert.equal(field.valueWrites, writes, `${kind}: the value is never rewritten`);
+    assert.deepEqual([field.selectionStart, field.selectionEnd], [6, 6], `${kind}: the caret stays put`);
+  }
+});
+
+test("a value the app sets reaches the focused field, caret kept from the end (#73)", () => {
+  // A Markdown shortcut: "# " at the start is stripped.
+  const md = focusedField("text_input");
+  md.type("#");
+  md.patch("#");
+  md.type("# ");
+  md.patch("");
+  assert.equal(md.field.value, "", "the app's value replaces the field's");
+  md.type("T");
+  md.patch("T");
+  assert.equal(md.field.value, "T", "and typing goes on from there");
+  assert.deepEqual(md.page.ws.sent.filter((m) => m.t === "input").map((m) => m.v), ["#", "# ", "T"]);
+
+  // Normalising: the caret keeps its distance from the end.
+  const up = focusedField("text_area", "ab");
+  up.type("abcd", 3);
+  up.patch("ABCD");
+  assert.equal(up.field.value, "ABCD");
+  assert.deepEqual([up.field.selectionStart, up.field.selectionEnd], [3, 3]);
+  up.type("ABCDe");
+  up.patch("ABCDE");
+  assert.equal(up.field.value, "ABCDE", "a later echo is not mistaken for typing");
+
+  // Typing ahead of the server: a late echo is ignored, the app's answer applies.
+  const ahead = focusedField("text_input");
+  ahead.type("# ");
+  ahead.type("# T");
+  ahead.patch("");
+  assert.equal(ahead.field.value, "", "the app answered '# ' by clearing");
+  ahead.patch("T");
+  assert.equal(ahead.field.value, "T", "then answered '# T' with 'T'");
+});
+
+test("an app value waits for the end of an IME composition (#73)", () => {
+  const { field, type, patch } = focusedField("text_input");
+  field.dispatchEvent({ type: "compositionstart" });
+  type("k");
+  patch("k");
+  type("か");
+  patch("");
+  assert.equal(field.value, "か", "the composition is not disturbed");
+  field.dispatchEvent({ type: "compositionend" });
+  assert.equal(field.value, "", "the app's value lands once it ends");
 });
 
 test("accessibility patches set and clear ARIA", () => {

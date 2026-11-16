@@ -226,6 +226,15 @@ export class Element extends Node {
     }
     return !event.defaultPrevented;
   }
+  // A field's value and caret: writing the value puts the caret at its end,
+  // like browsers do.
+  get value() { return this._value; }
+  set value(v) {
+    this._value = v;
+    if (typeof v === "string") this.selectionStart = this.selectionEnd = v.length;
+    this.valueWrites = (this.valueWrites || 0) + 1;
+  }
+  setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
   click() { this.dispatchEvent({ type: "click" }); }
   focus() { this.ownerDocument.activeElement = this; }
   blur() { if (this.ownerDocument.activeElement === this) this.ownerDocument.activeElement = this.ownerDocument.body; }

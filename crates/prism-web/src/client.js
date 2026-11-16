@@ -669,14 +669,16 @@
     if (["INPUT", "SELECT", "TEXTAREA"].includes(el.tagName)) el.name = `prism-${id}`;
     if (kind === "text_input") {
       el.type = "text";
-      el.addEventListener("input", () => send({ t: "input", id, v: el.value }));
+      el.addEventListener("input", () => sendTyped(el, id));
       el.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && !e.isComposing) send({ t: "submit", id });
       });
+      trackComposition(el);
     } else if (kind === "text_area") {
       el.className = "prism-textarea";
       el.rows = 3;
-      el.addEventListener("input", () => { grow(el); send({ t: "input", id, v: el.value }); });
+      el.addEventListener("input", () => { grow(el); sendTyped(el, id); });
+      trackComposition(el);
     } else if (kind === "slider") {
       el.type = "range";
       el.className = "prism-slider";
@@ -1052,6 +1054,60 @@
 
   // --- Form controls (prism-core `controls`) -------------------------------------
   /** A text area as tall as its text (its max-height then scrolls it). */
+  // --- Text fields: echoes of the user's typing vs. values set by the app (#73) ---
+  //
+  // Every value typed is sent and remembered (`el._sent`) until the server
+  // renders it back. A text patch equal to one of them is an echo: the field
+  // already shows it (or has moved on since), so it is left alone, caret and
+  // IME composition included. Any other value comes from the app (a Markdown
+  // shortcut stripping "# ", clearing after a command, normalising): it is
+  // applied, focused or not, keeping the caret at the same distance from the
+  // end. During an IME composition it waits for `compositionend`.
+
+  /** Sends what the user typed in field `el` (node `id`) and remembers it. */
+  function sendTyped(el, id) {
+    const sent = el._sent || (el._sent = []);
+    sent.push(el.value);
+    if (sent.length > 64) sent.shift();
+    send({ t: "input", id, v: el.value });
+  }
+
+  function trackComposition(el) {
+    el.addEventListener("compositionstart", () => { el._composing = true; });
+    el.addEventListener("compositionend", () => {
+      el._composing = false;
+      const text = el._deferred;
+      if (text === undefined) return;
+      delete el._deferred;
+      applyFieldText(el, text);
+      if (el.tagName === "TEXTAREA") grow(el);
+    });
+  }
+
+  /** A text patch for an input or a text area. */
+  function setFieldText(el, text) {
+    const sent = el._sent;
+    const echo = sent ? sent.indexOf(text) : -1;
+    // An echo: forget it and what was typed before it.
+    if (echo >= 0) { sent.splice(0, echo + 1); return; }
+    if (el._composing && document.activeElement === el) { el._deferred = text; return; }
+    delete el._deferred;
+    applyFieldText(el, text);
+  }
+
+  /** Writes the app's `text` into field `el`, keeping its caret. */
+  function applyFieldText(el, text) {
+    // The typing in flight was answered by the app's own value.
+    if (el._sent) el._sent.length = 0;
+    if (el.value === text) return;
+    if (document.activeElement !== el) { el.value = text; return; }
+    let fromEnd = 0;
+    try { fromEnd = el.selectionEnd == null ? 0 : el.value.length - el.selectionEnd; } catch { /* no caret (email, number) */ }
+    el.value = text;
+    const caret = Math.max(0, text.length - fromEnd);
+    try { el.setSelectionRange(caret, caret); } catch { /* no caret (email, number) */ }
+  }
+
   function grow(el) {
     // Not in the page yet (just created): measure once it is.
     if (!el.isConnected) return requestAnimationFrame(() => el.isConnected && grow(el));
@@ -1240,8 +1296,7 @@
         }
         if (kind === "checkbox") { el._label.textContent = p.text; return; }
         if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
-          // Never fight the user's typing: a focused field owns its value.
-          if (el.value !== p.text && document.activeElement !== el) el.value = p.text;
+          setFieldText(el, p.text);
           if (el.tagName === "TEXTAREA") grow(el);
         } else if (kind === "text") {
           el._text = p.text;

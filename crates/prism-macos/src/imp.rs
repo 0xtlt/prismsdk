@@ -2745,18 +2745,45 @@ impl Widgets for AppKit {
             View::Label(l) => crate::label::set_text(l, text),
             View::Timer(l) => l.setStringValue(&s),
             View::Picture(v) => self.load_picture(view.id(), v, text),
+            // Events reach the app synchronously, so an echo of the typing
+            // equals the field (left alone, caret and selection included);
+            // anything else is the app's value, written even while focused,
+            // the caret keeping its distance from the end (#73).
             View::Input(i) => {
                 let f = i.field();
-                // Don't reset the caret when the value already matches (controlled input echo).
-                if f.stringValue().to_string() != text {
+                let current = f.stringValue();
+                if current.to_string() != text {
+                    let editor = || {
+                        f.currentEditor()
+                            .and_then(|e| e.downcast::<NSTextView>().ok())
+                    };
+                    let caret = editor().map(|e| {
+                        let r = e.selectedRange();
+                        prism_native::fields::caret_from_end(
+                            current.length(),
+                            r.location + r.length,
+                            s.length(),
+                        )
+                    });
                     f.setStringValue(&s);
+                    if let (Some(e), Some(caret)) = (editor(), caret) {
+                        e.setSelectedRange(objc2_foundation::NSRange::new(caret, 0));
+                    }
                 }
             }
             View::Button(b) | View::Check(b) => b.setTitle(&s),
             View::TextArea(t) => {
-                // Same text (controlled echo): keep the caret and selection.
-                if t.text.string().to_string() != text {
+                let current = t.text.string();
+                if current.to_string() != text {
+                    let r = t.text.selectedRange();
+                    let caret = prism_native::fields::caret_from_end(
+                        current.length(),
+                        r.location + r.length,
+                        s.length(),
+                    );
                     t.text.setString(&s);
+                    t.text
+                        .setSelectedRange(objc2_foundation::NSRange::new(caret, 0));
                     t.text.setNeedsDisplay(true);
                 }
             }
