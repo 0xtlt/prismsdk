@@ -63,6 +63,10 @@ pub struct Host {
     pub scrolled_to: Vec<NodeId>,
     /// How many times the keyboard was dismissed (`Patch::DismissKeyboard`).
     pub keyboard_dismissals: usize,
+    /// Messages posted to web views, in order: (node, JSON) (`Patch::PostWebMessage`).
+    pub web_messages: Vec<(NodeId, String)>,
+    /// Web views reloaded, in order (`Patch::ReloadWebView`).
+    pub web_reloads: Vec<NodeId>,
 }
 
 impl Host {
@@ -272,6 +276,14 @@ impl Backend for Host {
                     self.node(*id, "SetIsland").island = Some(tag.clone())
                 }
                 Patch::SetLink { id, href } => self.node(*id, "SetLink").link = href.clone(),
+                Patch::PostWebMessage { id, data } => {
+                    self.node(*id, "PostWebMessage");
+                    self.web_messages.push((*id, data.clone()));
+                }
+                Patch::ReloadWebView { id } => {
+                    self.node(*id, "ReloadWebView");
+                    self.web_reloads.push(*id);
+                }
                 Patch::SetIslandProps { id, props } => {
                     let n = self.node(*id, "SetIslandProps");
                     for (k, v) in props {

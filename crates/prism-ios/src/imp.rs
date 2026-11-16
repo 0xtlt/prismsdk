@@ -1225,6 +1225,15 @@ pub enum View {
     Checkbox(Rc<crate::choice::Checkbox>),
     /// Drawn radio buttons.
     Radio(Rc<crate::choice::RadioGroup>),
+    /// A web view (#62): a box holding the bridge's WKWebView host.
+    Web(Rc<WebBox>),
+}
+
+/// A web view: its box, and the bridge's host view filling it (`None` on
+/// tvOS, which has no WebKit: an empty box).
+pub struct WebBox {
+    view: Retained<UIView>,
+    host: Option<prism_native::apple::web::WebHost>,
 }
 
 impl View {
@@ -1252,6 +1261,7 @@ impl View {
             View::Overlay(o) => &o.anchor,
             View::Checkbox(c) => &c.button,
             View::Radio(r) => &r.view,
+            View::Web(w) => &w.view,
         }
     }
 
@@ -1700,6 +1710,18 @@ impl Widgets for UiKit {
                 v.setContentMode(objc2_ui_kit::UIViewContentMode::Redraw);
                 View::Container(Retained::into_super(v))
             }
+            NodeKind::WebView => {
+                let view = UIView::new(mtm);
+                // Rounded corners clip the page.
+                view.setClipsToBounds(true);
+                let host = prism_native::apple::web::WebHost::new(id);
+                if let Some(h) = &host {
+                    // SAFETY: the bridge's host is a UIView, kept alive by `host`.
+                    let v = unsafe { &*(h.view_ptr() as *const UIView) };
+                    view.addSubview(v);
+                }
+                View::Web(Rc::new(WebBox { view, host }))
+            }
             NodeKind::Picture => {
                 let v = UIImageView::new(mtm);
                 v.setClipsToBounds(true);
@@ -1907,7 +1929,8 @@ impl Widgets for UiKit {
             | View::Scroll(_)
             | View::Picture(_)
             | View::Toggle(_)
-            | View::Overlay(_) => {}
+            | View::Overlay(_)
+            | View::Web(_) => {}
             View::Checkbox(c) => c.set_style(font(style), text_color.clone()),
             View::Radio(r) => r.set_style(font(style), text_color.clone()),
             #[cfg(not(target_os = "tvos"))]
@@ -1995,6 +2018,11 @@ impl Widgets for UiKit {
             View::Label(l) => crate::label::set_text(l, text),
             View::Timer(l) => l.setText(Some(&s)),
             View::Picture(v) => self.load_picture(view.id(), v, text),
+            View::Web(w) => {
+                if let Some(h) = &w.host {
+                    h.load(text);
+                }
+            }
             // The app's value reaches a focused field too (#73).
             View::Input(f) => {
                 if f.text().map(|t| t.to_string()).unwrap_or_default() != text {
@@ -2048,6 +2076,11 @@ impl Widgets for UiKit {
     fn set_config(&mut self, view: &View, _kind: NodeKind, config: &str) {
         use prism_core::controls::{DateConfig, PickerConfig, SliderConfig};
         match view {
+            View::Web(w) => {
+                if let Some(h) = &w.host {
+                    h.configure(config);
+                }
+            }
             // Bar buttons and title size (#30).
             View::Screen(_) => {
                 let id = view.id();
@@ -2963,6 +2996,22 @@ impl Widgets for UiKit {
 
     /// Every field of the window resigns (the keyboard hides; sheets and
     /// overlays are in the same window).
+    fn post_web_message(&mut self, view: &View, data: &str) {
+        if let View::Web(w) = view
+            && let Some(h) = &w.host
+        {
+            h.post(data);
+        }
+    }
+
+    fn reload_web_view(&mut self, view: &View) {
+        if let View::Web(w) = view
+            && let Some(h) = &w.host
+        {
+            h.reload();
+        }
+    }
+
     fn dismiss_keyboard(&mut self) {
         match self.root.window() {
             Some(w) => w.endEditing(true),

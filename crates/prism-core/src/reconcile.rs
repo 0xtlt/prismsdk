@@ -276,6 +276,24 @@ pub enum Patch {
         /// (name, value) pairs, in the order the app first set them.
         attributes: Vec<(String, String)>,
     },
+
+    // --- Web views (#62) ---
+    /// Deliver a message to a web view's page
+    /// ([`App::post_web_message`](crate::App::post_web_message)): a
+    /// `message` event on its `window`, if it shows an allowed origin.
+    /// Messages sent before the page finished loading wait for it.
+    PostWebMessage {
+        /// The web view.
+        id: NodeId,
+        /// The message, as JSON (checked: valid JSON).
+        data: String,
+    },
+    /// Reload a web view's page
+    /// ([`App::reload_web_view`](crate::App::reload_web_view)).
+    ReloadWebView {
+        /// The web view.
+        id: NodeId,
+    },
 }
 
 /// An event reported by a backend.
@@ -320,6 +338,13 @@ pub enum UiEvent {
     // --- Islands ---
     /// An island emitted an event: (id, event name, detail as JSON).
     Island(NodeId, String, String),
+
+    // --- Web views (#62) ---
+    /// A web view's page posted a message: (id, message as JSON, origin of
+    /// the page). Backends report only messages from allowed origins.
+    WebMessage(NodeId, String, String),
+    /// A web view finished loading a page: (id, its URL).
+    WebLoad(NodeId, String),
 }
 
 /// A mounted host node.
@@ -427,6 +452,9 @@ pub struct Reconciler {
     sent_layers: Vec<NodeId>,
     /// Islands' event handlers: (node, event name) → handler.
     island_events: HashMap<(NodeId, String), Handler<crate::island::IslandEvent>>,
+    /// Web views' handlers (#62).
+    web_message: HashMap<NodeId, Handler<crate::web_view::WebMessageEvent>>,
+    web_load: HashMap<NodeId, Handler<crate::web_view::WebLoadEvent>>,
 }
 
 impl Reconciler {
@@ -544,6 +572,19 @@ impl Reconciler {
         name: &str,
     ) -> Option<Handler<crate::island::IslandEvent>> {
         self.island_events.get(&(id, name.to_string())).cloned()
+    }
+
+    /// The message handler of web view `id`, if any.
+    pub fn web_message_handler(
+        &self,
+        id: NodeId,
+    ) -> Option<Handler<crate::web_view::WebMessageEvent>> {
+        self.web_message.get(&id).cloned()
+    }
+
+    /// The load handler of web view `id`, if any.
+    pub fn web_load_handler(&self, id: NodeId) -> Option<Handler<crate::web_view::WebLoadEvent>> {
+        self.web_load.get(&id).cloned()
     }
 
     /// The mounted node named `name` (`.id(name)`), if any.
@@ -697,10 +738,11 @@ impl Reconciler {
             }
         }
         for command in std::mem::take(&mut app.ui_commands) {
-            let (name, focus) = match &command {
-                crate::app::UiCommand::Focus(n) => (n, true),
-                crate::app::UiCommand::ScrollIntoView(n) => (n, false),
-                crate::app::UiCommand::DismissKeyboard => {
+            use crate::app::UiCommand as C;
+            let name = match &command {
+                C::Focus(n) | C::ScrollIntoView(n) | C::ReloadWebView(n) => n,
+                C::PostWebMessage(n, _) => n,
+                C::DismissKeyboard => {
                     patches.push(Patch::DismissKeyboard);
                     continue;
                 }
@@ -708,10 +750,13 @@ impl Reconciler {
             let Some(id) = self.node_named(name) else {
                 continue;
             };
-            patches.push(if focus {
-                Patch::Focus { id }
-            } else {
-                Patch::ScrollIntoView { id }
+            let web_view = self.nodes[&id].kind == NodeKind::WebView;
+            patches.push(match command {
+                C::Focus(_) => Patch::Focus { id },
+                C::ScrollIntoView(_) => Patch::ScrollIntoView { id },
+                C::PostWebMessage(_, data) if web_view => Patch::PostWebMessage { id, data },
+                C::ReloadWebView(_) if web_view => Patch::ReloadWebView { id },
+                _ => continue,
             });
         }
     }
@@ -894,6 +939,8 @@ impl Reconciler {
             on_key_down,
             on_global_key_down,
             attributes,
+            on_web_message,
+            on_web_load,
             ..
         } = *vnode;
         app.window.watch_widths(&style);
@@ -1107,6 +1154,14 @@ impl Reconciler {
         match on_submit {
             Some(h) => self.submit.insert(id, h),
             None => self.submit.remove(&id),
+        };
+        match on_web_message {
+            Some(h) => self.web_message.insert(id, h),
+            None => self.web_message.remove(&id),
+        };
+        match on_web_load {
+            Some(h) => self.web_load.insert(id, h),
+            None => self.web_load.remove(&id),
         };
 
         // Children.
@@ -1522,6 +1577,8 @@ impl Reconciler {
         self.navigate.remove(&id);
         self.change.remove(&id);
         self.submit.remove(&id);
+        self.web_message.remove(&id);
+        self.web_load.remove(&id);
         self.menu_items.retain(|k, _| k >> 16 != id);
         self.scroll.remove(&id);
         self.swipe.retain(|(n, _), _| *n != id);

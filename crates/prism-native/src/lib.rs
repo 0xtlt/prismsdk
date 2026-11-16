@@ -186,6 +186,16 @@ pub trait Widgets {
     /// Takes the focus away from whatever has it and hides the on-screen
     /// keyboard (`cx.dismiss_keyboard()`, #29).
     fn dismiss_keyboard(&mut self) {}
+
+    // --- Web views (#62) ---
+
+    /// Delivers `data` (JSON) to a web view's page as a `message` event on
+    /// its `window`: once the page has loaded, and only while it shows an
+    /// allowed origin (`prism_core::web_view::WebViewConfig`). A web view's
+    /// URL comes in `set_text`, its options in `set_config`.
+    fn post_web_message(&mut self, _view: &Self::View, _data: &str) {}
+    /// Reloads a web view's page.
+    fn reload_web_view(&mut self, _view: &Self::View) {}
 }
 
 /// `style` at `pose` (its opacity and transform replaced).
@@ -1371,8 +1381,10 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
             match patch {
                 Patch::Create { id, kind } => {
                     let view = self.widgets.create(*id, *kind);
-                    // Shapes have no content size: only their style sizes them.
-                    let container = is_container(*kind) || *kind == NodeKind::Shape;
+                    // Shapes and web views have no content size: only their
+                    // style sizes them.
+                    let container =
+                        is_container(*kind) || matches!(*kind, NodeKind::Shape | NodeKind::WebView);
                     let layout = if container {
                         self.taffy.new_leaf(taffy::Style::default())
                     } else {
@@ -1631,6 +1643,17 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                 Patch::SetIsland { .. } | Patch::SetIslandProps { .. } | Patch::SetLink { .. } => {}
                 // HTML attributes (`.attr(…)`): browser integrations only.
                 Patch::SetAttributes { .. } => {}
+                // Web views (#62).
+                Patch::PostWebMessage { id, data } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.post_web_message(&e.view, data);
+                    }
+                }
+                Patch::ReloadWebView { id } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.reload_web_view(&e.view);
+                    }
+                }
             }
         }
         if self.extras.rehoist {

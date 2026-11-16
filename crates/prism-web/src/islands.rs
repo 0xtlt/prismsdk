@@ -132,13 +132,33 @@ impl crate::WebApp {
         } else {
             ""
         };
+        // Web views (#62): the origins their pages come from.
+        let frames = if self.inner.frame_origins.is_empty() {
+            String::new()
+        } else {
+            format!(" frame-src 'self' {};", self.inner.frame_origins.join(" "))
+        };
         let n = &nonce.0;
         format!(
             "default-src 'self'; script-src 'self' 'nonce-{n}'{wasm}{cdn}; \
              style-src 'self' 'nonce-{n}'{cdn}; img-src 'self' data: blob: https:; \
-             font-src 'self' data:{cdn}; connect-src 'self'{cdn}; media-src 'self' blob: https:; \
+             font-src 'self' data:{cdn}; connect-src 'self'{cdn}; media-src 'self' blob: https:;{frames} \
              object-src 'none'; base-uri 'none'; frame-ancestors 'self'"
         )
+    }
+
+    /// An origin (`https://preview.example.com`) whose pages
+    /// [`web_view`](prism_core::web_view())s may show under the
+    /// [`strict_csp`](Self::strict_csp) (`frame-src`), which otherwise allows
+    /// the app's own origin only. Hosts with their own CSP add it to their
+    /// `frame-src`.
+    pub fn frame_origin(self, origin: &str) -> Self {
+        let origin = origin.trim().trim_end_matches('/').to_string();
+        self.configure(|i| {
+            if !i.frame_origins.contains(&origin) {
+                i.frame_origins.push(origin);
+            }
+        })
     }
 
     /// Sends [`content_security_policy`](Self::content_security_policy) with

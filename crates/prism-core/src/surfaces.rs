@@ -78,6 +78,8 @@ pub struct Capabilities {
     pub web_auth: bool,
     /// Remote pushes (`register_for_push`), and the service they use.
     pub push: Option<crate::push::PushService>,
+    /// Web views (`web_view`) show their page (an empty box otherwise).
+    pub web_view: bool,
 }
 
 /// Work the app asked the platform to do. Backends drain these with
