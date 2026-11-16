@@ -2466,7 +2466,31 @@ fn pointer_drag_and_key_messages_become_ui_events() {
         ev(json!({"t": "key", "id": 0, "key": "Escape"})),
         Some(UiEvent::Key(None, _))
     ));
+    // Wheel and pinch (#133).
+    let Some(UiEvent::Wheel(3, w)) = ev(json!({"t": "wheel", "id": 3, "dx": 2, "dy": -30,
+        "x": 5, "y": 6, "mods": 8, "phase": "momentum", "precise": true}))
+    else {
+        panic!("wheel")
+    };
+    assert_eq!(
+        (w.delta, w.position, w.phase, w.precise),
+        (
+            Point::new(2., -30.),
+            Point::new(5., 6.),
+            prism_core::GesturePhase::Momentum,
+            true
+        )
+    );
+    assert!(w.modifiers.meta);
+    let Some(UiEvent::Magnify(3, m)) =
+        ev(json!({"t": "magnify", "id": 3, "scale": 1.25, "x": 1, "y": 2}))
+    else {
+        panic!("magnify")
+    };
+    assert_eq!((m.scale, m.phase), (1.25, prism_core::GesturePhase::None));
     for bad in [
+        json!({"t": "magnify", "id": 3, "scale": 0}),
+        json!({"t": "magnify", "id": 3}),
         json!({"t": "drag", "id": 3, "phase": "fly"}),
         json!({"t": "pointer", "id": 3}),
         json!({"t": "key", "id": 3}),

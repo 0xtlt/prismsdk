@@ -259,6 +259,88 @@ pub mod pointer_mask {
     pub const MOVE: u8 = 2;
     /// Drags starting on the node.
     pub const DRAG: u8 = 4;
+    /// Mouse wheel and trackpad scrolling over the node (#133).
+    pub const WHEEL: u8 = 8;
+    /// Pinches over the node (#133).
+    pub const MAGNIFY: u8 = 16;
+}
+
+/// Where a trackpad gesture is: [`WheelEvent::phase`],
+/// [`MagnifyEvent::phase`] (#133).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum GesturePhase {
+    /// No gesture: a mouse wheel's notch, or a platform that does not say
+    /// (the web).
+    #[default]
+    None,
+    /// The fingers started the gesture.
+    Start,
+    /// The fingers moved.
+    Move,
+    /// The fingers left (scrolling may go on with [`Momentum`](Self::Momentum)),
+    /// or the momentum stopped.
+    End,
+    /// Scrolling goes on by inertia after the fingers left (trackpads).
+    Momentum,
+}
+
+impl GesturePhase {
+    /// `none`, `start`, `move`, `end` or `momentum` (as backends report it).
+    pub fn name(self) -> &'static str {
+        match self {
+            GesturePhase::None => "none",
+            GesturePhase::Start => "start",
+            GesturePhase::Move => "move",
+            GesturePhase::End => "end",
+            GesturePhase::Momentum => "momentum",
+        }
+    }
+
+    /// Parses [`name`](Self::name)'s output.
+    pub fn from_name(name: &str) -> Option<Self> {
+        [
+            Self::None,
+            Self::Start,
+            Self::Move,
+            Self::End,
+            Self::Momentum,
+        ]
+        .into_iter()
+        .find(|p| p.name() == name)
+    }
+}
+
+/// The mouse wheel turned or two fingers scrolled on a trackpad over an
+/// element: [`Div::on_wheel`](crate::Div::on_wheel) (#133).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WheelEvent {
+    /// How far to scroll, in points, like the web's `deltaX` / `deltaY`:
+    /// positive `y` scrolls down (toward the end), positive `x` toward the
+    /// trailing edge, after the user's « natural scrolling » setting. To
+    /// pan a canvas, move its content by `-delta`.
+    pub delta: Point,
+    /// Where the pointer is, in the element.
+    pub position: Point,
+    /// Keys held (⌘ / Ctrl + wheel commonly zooms, Shift scrolls sideways).
+    pub modifiers: Modifiers,
+    /// The trackpad gesture's phase; [`GesturePhase::None`] for a wheel.
+    pub phase: GesturePhase,
+    /// Point-precise deltas (a trackpad, a smooth wheel) rather than coarse
+    /// wheel steps.
+    pub precise: bool,
+}
+
+/// Two fingers pinched over an element: [`Div::on_magnify`](crate::Div::on_magnify)
+/// (#133). Browsers report a trackpad pinch as Ctrl + wheel: it arrives here.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MagnifyEvent {
+    /// How much to scale by since the previous event: above 1 zooms in.
+    /// Multiply the zoom by it, around [`position`](Self::position).
+    pub scale: f32,
+    /// Where the pointer (or the pinch's center) is, in the element.
+    pub position: Point,
+    /// The gesture's phase ([`GesturePhase::None`] where unknown).
+    pub phase: GesturePhase,
 }
 
 #[cfg(test)]

@@ -605,6 +605,60 @@ define_class!(
             self.pointer(PointerPhase::Leave, event);
         }
 
+        /// Wheel and trackpad scrolling (#133): the view takes them when it
+        /// listens; otherwise they go on to the scroll view around it.
+        #[unsafe(method(scrollWheel:))]
+        fn scroll_wheel(&self, event: &NSEvent) {
+            use prism_core::events::pointer_mask::WHEEL;
+            if self.ivars().pointer_mask.get() & WHEEL == 0 {
+                return unsafe { msg_send![super(self), scrollWheel: event] };
+            }
+            let Some(phase) = gesture_phase(event.phase(), event.momentumPhase()) else {
+                return;
+            };
+            // Coarse wheels count lines: 16 points each, like browsers.
+            let precise = event.hasPreciseScrollingDeltas();
+            let k = if precise { 1. } else { 16. };
+            let p = self.convertPoint_fromView(event.locationInWindow(), None);
+            dispatch(UiEvent::Wheel(
+                self.ivars().id.get(),
+                prism_core::WheelEvent {
+                    // AppKit's deltas move the content; Prism's scroll it
+                    // (positive y: toward the end), like the web.
+                    delta: Point::new(
+                        (-event.scrollingDeltaX() * k) as f32,
+                        (-event.scrollingDeltaY() * k) as f32,
+                    ),
+                    position: Point::new(p.x as f32, p.y as f32),
+                    modifiers: crate::interact::modifiers(event.modifierFlags()),
+                    phase,
+                    precise,
+                },
+            ));
+        }
+
+        /// Trackpad pinches (#133).
+        #[unsafe(method(magnifyWithEvent:))]
+        fn magnify_with_event(&self, event: &NSEvent) {
+            use prism_core::events::pointer_mask::MAGNIFY;
+            if self.ivars().pointer_mask.get() & MAGNIFY == 0 {
+                return unsafe { msg_send![super(self), magnifyWithEvent: event] };
+            }
+            let Some(phase) = gesture_phase(event.phase(), objc2_app_kit::NSEventPhase::None)
+            else {
+                return;
+            };
+            let p = self.convertPoint_fromView(event.locationInWindow(), None);
+            dispatch(UiEvent::Magnify(
+                self.ivars().id.get(),
+                prism_core::MagnifyEvent {
+                    scale: (1. + event.magnification()).max(0.01) as f32,
+                    position: Point::new(p.x as f32, p.y as f32),
+                    phase,
+                },
+            ));
+        }
+
         #[unsafe(method(mouseMoved:))]
         fn mouse_moved(&self, event: &NSEvent) {
             if self.ivars().pointer_mask.get() & prism_core::events::pointer_mask::MOVE != 0 {
@@ -784,6 +838,32 @@ define_class!(
         }
     }
 );
+
+/// A trackpad gesture's phase from AppKit's (`None` to skip the event:
+/// fingers resting without moving).
+fn gesture_phase(
+    phase: objc2_app_kit::NSEventPhase,
+    momentum: objc2_app_kit::NSEventPhase,
+) -> Option<prism_core::GesturePhase> {
+    use objc2_app_kit::NSEventPhase as P;
+    use prism_core::GesturePhase as G;
+    let ended = P::Ended | P::Cancelled;
+    Some(if momentum.intersects(ended) {
+        G::End
+    } else if !momentum.is_empty() {
+        G::Momentum
+    } else if phase.contains(P::MayBegin) {
+        return None;
+    } else if phase.contains(P::Began) {
+        G::Start
+    } else if phase.intersects(P::Changed | P::Stationary) {
+        G::Move
+    } else if phase.intersects(ended) {
+        G::End
+    } else {
+        G::None
+    })
+}
 
 impl PrismView {
     /// Reports the pointer entering, moving over or leaving the view.
