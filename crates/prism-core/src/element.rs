@@ -419,6 +419,12 @@ pub struct VNode {
     /// ([`App::on_widget_action`](crate::App::on_widget_action)) without
     /// opening it: `(action, payload)`.
     pub widget_action: Option<(String, String)>,
+
+    // --- App-defined attributes (#85) ---
+    /// Attributes of the element on the web (`data-*` and a few safe ones,
+    /// see [`crate::attributes`]), in the order first set. Native backends
+    /// ignore them.
+    pub attributes: Vec<(String, String)>,
 }
 
 impl VNode {
@@ -457,6 +463,7 @@ impl VNode {
             on_global_key_down: None,
             island: None,
             widget_action: None,
+            attributes: Vec::new(),
         }
     }
 }
@@ -580,6 +587,37 @@ macro_rules! builder {
             /// element given a name wins).
             pub fn id(mut self, id: impl Into<String>) -> Self {
                 self.0.id = Some(id.into());
+                self
+            }
+
+            /// Sets an attribute of the element on the web, for browser
+            /// integrations and end-to-end tests: `data-*`
+            /// (`.attr("data-1p-ignore", "")`, `.attr("data-testid", "save")`)
+            /// and the few names of [`SAFE_ATTRIBUTES`]
+            /// (`.attr("autocomplete", "one-time-code")`). Set in the first
+            /// paint and kept in sync live; setting a name again replaces its
+            /// value. Native backends ignore it.
+            ///
+            /// The name is lower-cased. Any other name (event handlers,
+            /// `style`, the `data-*` names Prism uses itself: see
+            /// [`is_app_attribute`]) is ignored, and fails a debug assertion.
+            ///
+            /// [`SAFE_ATTRIBUTES`]: crate::attributes::SAFE_ATTRIBUTES
+            /// [`is_app_attribute`]: crate::attributes::is_app_attribute
+            pub fn attr(mut self, name: impl AsRef<str>, value: impl Into<String>) -> Self {
+                let name = name.as_ref().to_ascii_lowercase();
+                let allowed = crate::attributes::is_app_attribute(&name);
+                debug_assert!(
+                    allowed,
+                    "`{name}` is not an attribute an app may set (see prism_core::attributes)"
+                );
+                if allowed {
+                    let value = value.into();
+                    match self.0.attributes.iter_mut().find(|(n, _)| *n == name) {
+                        Some(slot) => slot.1 = value,
+                        None => self.0.attributes.push((name, value)),
+                    }
+                }
                 self
             }
 

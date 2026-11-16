@@ -44,6 +44,8 @@ pub struct HNode {
     pub island_props: std::collections::BTreeMap<String, String>,
     /// Where a link leads (`Patch::SetLink`).
     pub link: Option<String>,
+    /// App-defined attributes (`Patch::SetAttributes`).
+    pub attributes: Vec<(String, String)>,
 }
 
 #[derive(Default)]
@@ -192,6 +194,7 @@ impl Backend for Host {
                             island: None,
                             island_props: Default::default(),
                             link: None,
+                            attributes: Vec::new(),
                         },
                     );
                 }
@@ -278,6 +281,9 @@ impl Backend for Host {
                             n.island_props.insert(k.clone(), v.clone());
                         }
                     }
+                }
+                Patch::SetAttributes { id, attributes } => {
+                    self.node(*id, "SetAttributes").attributes = attributes.clone()
                 }
             }
         }

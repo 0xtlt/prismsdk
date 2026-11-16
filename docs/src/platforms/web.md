@@ -109,6 +109,37 @@ Plain `send(text)` still works: the client reads text frames whether or not it a
 
 On the counter, a cold load of `/` goes from 283 KB to 63 KB over HTTP, and from 390 KB to 37 KB over the socket. There is no brotli yet. A CDN in front can re-encode static files in brotli.
 
+## HTML attributes
+
+Browser integrations and end-to-end tests read attributes the app sets
+itself. `.attr(name, value)`, on every element, adds one to the element's
+HTML, in the first paint and live:
+
+```rust
+text_input()
+    .placeholder("Code")
+    .attr("autocomplete", "one-time-code") // the code from a text message
+    .attr("data-1p-ignore", "")            // no password manager prompt
+    .attr("data-testid", "otp")            // `page.getByTestId("otp")`
+```
+
+Setting a name again replaces its value; a name the next render leaves out is
+removed. Only names that cannot run code or change how Prism draws are taken
+(`prism_core::attributes`):
+
+- `data-*`, lower case (`a-z`, `0-9`, `-`, `_`, `.`), except the ones Prism
+  uses itself (`data-pid`, `data-kind`…, `data-prism…`:
+  `attributes::RESERVED_DATA_ATTRIBUTES`);
+- `autocomplete` (wins over the `current-password` a `secure` field gets by
+  default) and `translate` (`"no"` keeps browser translators off a name).
+
+Any other name is ignored, and fails a debug assertion. The rest has a typed
+API that also works natively: `inputmode`, `enterkeyhint`, `autocapitalize`,
+`autocorrect` and `spellcheck` come from a text input's `keyboard`,
+`return_key`, `capitalize` and `autocorrect` ([Forms](../guide/forms.md)),
+ARIA from the [accessibility](../guide/accessibility.md) modifiers. Native
+backends ignore `.attr`.
+
 ## Embedding in an existing server
 
 `crates/prism-web/examples/embed.rs` is a complete host: its own sign-in, a strict CSP, Prism nested at `/app` (`cargo run -p prism-web --example embed`). `crates/prism-web/tests/axum_host.rs` tests the same setup over real sockets.

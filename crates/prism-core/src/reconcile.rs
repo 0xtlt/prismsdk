@@ -262,6 +262,18 @@ pub enum Patch {
         /// Its destination, as given to `.link(…)`.
         href: Option<String>,
     },
+
+    // --- App-defined attributes (#85) ---
+    /// The node's app-defined attributes (`.attr(…)`), all of them: a name
+    /// sent before and absent now is removed. Only names
+    /// [`is_app_attribute`](crate::attributes::is_app_attribute) accepts.
+    /// The web sets them on the element; native backends ignore them.
+    SetAttributes {
+        /// The node.
+        id: NodeId,
+        /// (name, value) pairs, in the order the app first set them.
+        attributes: Vec<(String, String)>,
+    },
 }
 
 /// An event reported by a backend.
@@ -349,6 +361,8 @@ struct MNode {
     /// Its own style animates changes (`.animate(…)`, `.transition(…)`;
     /// not an animated update's).
     animates: bool,
+    /// Its app-defined attributes (`.attr(…)`).
+    attributes: Vec<(String, String)>,
 }
 
 /// What backends last got about a mounted island.
@@ -866,9 +880,20 @@ impl Reconciler {
             on_drag,
             on_key_down,
             on_global_key_down,
+            attributes,
             ..
         } = *vnode;
         app.window.watch_widths(&style);
+        {
+            let m = self.nodes.get_mut(&id).expect("node exists");
+            if m.attributes != attributes {
+                self.patches.push(Patch::SetAttributes {
+                    id,
+                    attributes: attributes.clone(),
+                });
+                m.attributes = attributes;
+            }
+        }
         if autofocus && reusable.is_none() {
             self.autofocus.push(id);
         }
@@ -1441,6 +1466,7 @@ impl Reconciler {
                 island: None,
                 link: None,
                 animates: false,
+                attributes: Vec::new(),
             },
         );
         id
