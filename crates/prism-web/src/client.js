@@ -28,6 +28,12 @@
     return el;
   };
   const baseTitle = document.title.split(" · ").pop();
+  /** The app's title (`cx.set_title`, #154) wins over the top screen's. */
+  let appTitle = "", screenTitle = "";
+  function showTitle() {
+    const t = appTitle || screenTitle;
+    document.title = t && t !== baseTitle ? `${t} · ${baseTitle}` : baseTitle;
+  }
   // Pictures lose their loading background once loaded (`prism.css`), so a
   // transparent image shows its parent. `load` does not bubble: capture it.
   const markLoaded = (img) => { if (img.naturalWidth) img.dataset.loaded = "1"; };
@@ -1207,7 +1213,8 @@
     refreshBar(st, top);
     if (top) top.setAttribute("aria-label", title);
     if (isMainStack(st)) {
-      document.title = title && title !== baseTitle ? `${title} · ${baseTitle}` : baseTitle;
+      screenTitle = title;
+      showTitle();
     }
   }
 
@@ -6073,6 +6080,8 @@ void main() {
       case "push_unregister": return pushUnregister();
       case "font": return loadFont(msg);
       case "sheets": return syncSheets(msg.urls || []);
+      // `cx.set_title` (#154): the tab's title, over the screens'.
+      case "title": appTitle = msg.title || ""; return showTitle();
     }
   }
 
@@ -6257,6 +6266,8 @@ void main() {
       nodes.clear(); clearStates(); stacks = []; hist = null; userNavigated = false;
       globalKeys = 0; placedOverlays.clear(); pendingOverlays.clear(); layerHost.replaceChildren();
       document.querySelectorAll("datalist[id^=prism-list-]").forEach((d) => d.remove());
+      appTitle = msg.title || "";
+      showTitle();
     }
     quiet = msg.t === "reset";
     msg.p.forEach(apply);

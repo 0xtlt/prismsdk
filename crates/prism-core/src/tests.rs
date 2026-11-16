@@ -2500,6 +2500,41 @@ fn webauthn_ceremonies_pass_the_servers_options_through() {
     find_text(&patches, r#"true | {"id":"x"}"#);
 }
 
+/// #154: the app's title goes to the backend once per change.
+#[test]
+fn the_apps_title_reaches_the_backend_on_change() {
+    use crate::PlatformRequest;
+    struct Plain;
+    impl Render for Plain {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        cx.set_title("Orders");
+        cx.set_title("Orders");
+        let root = cx.new_entity(|_| Plain);
+        cx.set_root(root);
+    });
+    let mut rt = Runtime::new(&init);
+    rt.render();
+    let titles = |rt: &mut Runtime| -> Vec<Option<String>> {
+        rt.take_requests()
+            .into_iter()
+            .filter_map(|r| match r {
+                PlatformRequest::SetTitle(t) => Some(t),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(titles(&mut rt), [Some("Orders".to_string())]);
+    assert_eq!(rt.app.title(), Some("Orders"));
+    rt.app.set_title("  ");
+    rt.app.clear_title();
+    assert_eq!(titles(&mut rt), [None]);
+    assert_eq!(rt.app.title(), None);
+}
+
 /// #136: the buttons that may drag become pointer bits.
 #[test]
 fn drag_buttons_become_pointer_bits() {

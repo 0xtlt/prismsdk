@@ -231,6 +231,8 @@ impl PlatformServices for IosServices {
             PlatformRequest::LoadFont(_)
             | PlatformRequest::AddStylesheet(_)
             | PlatformRequest::RemoveStylesheet(_) => {}
+            // The scene's title: its name in the iPad's multitasking switcher.
+            PlatformRequest::SetTitle(title) => crate::imp::set_scene_title(title.as_deref()),
         }
     }
 }

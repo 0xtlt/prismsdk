@@ -3911,3 +3911,18 @@ fn is_text_area(view: &View) -> bool {
     let _ = view;
     false
 }
+
+/// `cx.set_title` (#154): the title of the app's scenes (shown by iPadOS in
+/// its multitasking switcher and window menus; `None`: the app's name).
+pub(crate) fn set_scene_title(title: Option<&str>) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let title = title.map(NSString::from_str);
+    for scene in UIApplication::sharedApplication(mtm)
+        .connectedScenes()
+        .iter()
+    {
+        scene.setTitle(title.as_deref());
+    }
+}

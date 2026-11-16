@@ -49,6 +49,22 @@ Patterns: `/`, `/todos`, `/todos/:id`, `/files/*rest`. The most specific route t
 
 **Deep links on the web**: the screen under a deep link is not built until Back reaches it (the header's Back, browser Back, `cx.back()`). Opening `/orders/42` then loads and ships only that screen: on a dashboard whose `/` is a list, a deep link no longer pays for the list. The page holds an empty hidden placeholder in its place, so the stack's depth, the header's Back and the browser's history stay the same; Back builds `/` on the server and sends it, in the round trip it already takes. Native backends build it up front, since their Back shows it: iOS names it in the Back button and the swipe back reveals it.
 
+## The page's or window's title
+
+A screen's title titles the page (« Orders · App » in the browser tab) and the
+window. An app that does its own navigation (a sidebar of sections, a
+document editor) sets it with `cx.set_title("Orders")` (#154), and goes back
+to the default with `cx.clear_title()`; `cx.title()` reads it. While set it
+wins over the top screen's title.
+
+| | Where it shows |
+|---|---|
+| Web | the tab: `<title>` « Orders · App », in the first paint too, and again after a reconnect |
+| macOS, Linux | the window's title (the app's name when cleared) |
+| iPadOS, iOS, visionOS, tvOS | the scene's title (iPadOS multitasking switcher, window menus) |
+| Android | the activity's title (TalkBack, recents) |
+| watchOS | — |
+
 ## Query strings
 
 Paths keep their query string. A route reads it; the URL (web), deep links and `prism dev` restarts keep it:

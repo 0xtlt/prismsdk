@@ -160,6 +160,9 @@ pub enum PlatformRequest {
     AddStylesheet(String),
     /// Remove the stylesheet at this URL (its last handle was dropped).
     RemoveStylesheet(String),
+    /// The page's or window's title ([`App::set_title`], #154); `None`:
+    /// back to the default.
+    SetTitle(Option<String>),
 }
 
 /// Implemented by each backend. Unsupported requests should fall back

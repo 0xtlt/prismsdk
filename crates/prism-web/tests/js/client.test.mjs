@@ -963,6 +963,20 @@ test("the current .link() of a navigation is the current page (#144)", () => {
   assert.equal(page.node(2).getAttribute("aria-current"), "page");
 });
 
+test("the app's title wins over the screens', and a reset clears it (#154)", () => {
+  const page = boot();
+  page.ws.open();
+  page.ws.deliver({ t: "reset", p: [create(1, "view"), root(1)], title: "Orders" });
+  assert.equal(page.document.title, "Orders · Prism");
+  page.ws.deliver({ t: "title", title: "Order 42" });
+  assert.equal(page.document.title, "Order 42 · Prism");
+  page.ws.deliver({ t: "title", title: null });
+  assert.equal(page.document.title, "Prism");
+  page.ws.deliver({ t: "title", title: "Orders" });
+  page.ws.deliver({ t: "reset", p: [create(1, "view"), root(1)] });
+  assert.equal(page.document.title, "Prism", "a session without a title drops the old one");
+});
+
 test("window resizes are reported once settled", () => {
   const page = live([create(1, "view"), root(1)]);
   page.window.innerWidth = 390;

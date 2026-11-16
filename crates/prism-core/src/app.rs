@@ -179,6 +179,8 @@ pub struct App {
     pub(crate) ui_commands: Vec<UiCommand>,
     pub(crate) layers: Vec<AnyEntity>,
     pub(crate) stop_propagation: bool,
+    /// The title the app set (`cx.set_title`, #154).
+    title: Option<String>,
     // --- Releasing what an entity made (#31) ---
     /// Entities created with `cx.new` in an entity's context, by creator:
     /// released with it.
@@ -235,6 +237,7 @@ impl Default for App {
             ui_commands: Vec::new(),
             layers: Vec::new(),
             stop_propagation: false,
+            title: None,
             children: HashMap::new(),
             observing: HashMap::new(),
         }
@@ -861,5 +864,40 @@ impl crate::i18n::Formatter for FormatterRef<'_> {
     }
     fn time(&self, l: &crate::i18n::Locale, u: f64) -> String {
         self.0.time(l, u)
+    }
+}
+
+// --- The app's title (#154) -------------------------------------------------------
+
+impl App {
+    /// Titles the page or the window `title` (#154), for an app that does
+    /// its own navigation (a sidebar, a document's name): the web shows
+    /// « title · App » in the tab, the first paint included; macOS and Linux
+    /// title the window; iPadOS the scene (its multitasking switcher);
+    /// Android the activity. While set it wins over the title of a
+    /// [`Stack`](crate::Stack)'s top screen. Setting the same title again
+    /// does nothing. Empty: like [`clear_title`](Self::clear_title).
+    pub fn set_title(&mut self, title: impl Into<String>) {
+        let title = Some(title.into()).filter(|t| !t.trim().is_empty());
+        if self.title != title {
+            self.title = title.clone();
+            self.surfaces
+                .requests
+                .push(crate::PlatformRequest::SetTitle(title));
+        }
+    }
+
+    /// Back to the default title: the top screen's, else the app's.
+    pub fn clear_title(&mut self) {
+        if self.title.take().is_some() {
+            self.surfaces
+                .requests
+                .push(crate::PlatformRequest::SetTitle(None));
+        }
+    }
+
+    /// The title set with [`set_title`](Self::set_title), if any.
+    pub fn title(&self) -> Option<&str> {
+        self.title.as_deref()
     }
 }
