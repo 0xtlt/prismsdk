@@ -804,11 +804,14 @@ public final class PrismHost {
             case "button": case "checkbox": ((TextView) n.view).setText(text); break;
             case "text_input": case "text_area": {
                 EditText e = (EditText) n.view;
-                // Typing echoes back the same text; only a change from the app (clearing
-                // after "Add") differs. Runs inside apply(), so the watcher stays quiet.
+                // Typing echoes back the same text (events reach the app synchronously);
+                // only a value from the app (clearing after "Add", a Markdown shortcut)
+                // differs, written even while focused, the caret keeping its distance
+                // from the end (#73). Runs inside apply(), so the watcher stays quiet.
                 if (!e.getText().toString().equals(text)) {
+                    int fromEnd = Math.max(0, e.length() - Math.max(0, e.getSelectionEnd()));
                     e.setText(text);
-                    e.setSelection(text.length());
+                    e.setSelection(Math.max(0, text.length() - fromEnd));
                 }
                 break;
             }

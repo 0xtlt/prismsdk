@@ -391,7 +391,7 @@ pub fn text_area(id: NodeId) -> Rc<TextArea> {
     view.buffer().connect_changed(move |b| {
         let text = b.text(&b.start_iter(), &b.end_iter(), false).to_string();
         label.set_visible(text.is_empty());
-        dispatch(UiEvent::Input(id, text));
+        crate::imp::dispatch_typed(id, text);
     });
     Rc::new(TextArea {
         root,
@@ -408,11 +408,18 @@ impl TextArea {
         b.text(&b.start_iter(), &b.end_iter(), false).to_string()
     }
 
-    /// Prism's value. Ignored while the user types (like `GtkEntry`), and
-    /// when equal, so the cursor stays.
-    pub fn set_text(&self, text: &str) {
-        if self.text() != text && !self.view.has_focus() {
-            self.view.buffer().set_text(text);
+    /// Prism's value, written when `takes` (the app's, not an echo of the
+    /// typing, #73), the cursor keeping its distance from the end.
+    pub fn set_text(&self, text: &str, takes: bool) {
+        if takes {
+            let b = self.view.buffer();
+            let caret = prism_native::fields::caret_from_end(
+                b.char_count().max(0) as usize,
+                b.cursor_position().max(0) as usize,
+                text.chars().count(),
+            );
+            b.set_text(text);
+            b.place_cursor(&b.iter_at_offset(caret as i32));
         }
         self.placeholder.set_visible(self.text().is_empty());
     }

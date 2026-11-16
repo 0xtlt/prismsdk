@@ -537,6 +537,30 @@ thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
     /// Set while Prism changes widgets, so their signals are not reported back.
     static UPDATING: Cell<bool> = const { Cell::new(false) };
+    /// What each text field sent and the app has not rendered back yet (#73).
+    static TYPED: RefCell<HashMap<NodeId, prism_native::fields::Typed>> = RefCell::new(HashMap::new());
+}
+
+/// The user typed `text` in field `id`: remembered until the app renders it
+/// back (events run on a later turn, the user may type further meanwhile),
+/// then dispatched.
+pub(crate) fn dispatch_typed(id: NodeId, text: String) {
+    if UPDATING.get() {
+        return;
+    }
+    TYPED.with(|t| t.borrow_mut().entry(id).or_default().sent(&text));
+    dispatch(UiEvent::Input(id, text));
+}
+
+/// Whether the app's `text` for field `id`, showing `current`, is written
+/// into it: not an echo of the user's typing, and different (#73).
+fn field_takes(id: NodeId, text: &str, current: &str) -> bool {
+    TYPED.with(|t| {
+        t.borrow_mut()
+            .entry(id)
+            .or_default()
+            .should_apply(text, current)
+    })
 }
 
 fn with_state(f: impl FnOnce(&mut State)) {
@@ -1078,7 +1102,7 @@ impl Widgets for Gtk {
             }
             NodeKind::TextInput => {
                 let e = gtk::Entry::new();
-                e.connect_changed(move |e| dispatch(UiEvent::Input(id, e.text().to_string())));
+                e.connect_changed(move |e| dispatch_typed(id, e.text().to_string()));
                 // Enter.
                 e.connect_activate(move |_| dispatch(UiEvent::Submit(id)));
                 View::Input(id, e)
@@ -1436,12 +1460,24 @@ impl Widgets for Gtk {
                 text::apply(l, state, self.dark);
             }
             View::Button(_, b) => b.set_label(text),
-            View::Input(_, e) => {
-                if e.text() != text && !e.has_focus() {
+            // A value from the app reaches a focused field too; echoes of
+            // the typing leave it (and its caret) alone (#73).
+            View::Input(id, e) => {
+                let current = e.text();
+                if field_takes(*id, text, &current) {
+                    let caret = prism_native::fields::caret_from_end(
+                        current.chars().count(),
+                        e.position().max(0) as usize,
+                        text.chars().count(),
+                    );
                     e.set_text(text);
+                    e.set_position(caret as i32);
                 }
             }
-            View::TextArea(_, t) => t.set_text(text),
+            View::TextArea(id, t) => {
+                let takes = field_takes(*id, text, &t.text());
+                t.set_text(text, takes);
+            }
             // Bytes in memory (`picture_data`): decoded by GdkTexture
             // (PNG, JPEG, TIFF; others through gdk-pixbuf's loaders).
             View::Picture(_, p) if text.starts_with("data:") => {
@@ -1639,6 +1675,7 @@ impl Widgets for Gtk {
 
     fn destroy(&mut self, view: &View) {
         let id = view.id();
+        TYPED.with(|t| t.borrow_mut().remove(&id));
         crate::navbar::forget(id);
         self.shapes.remove(&id);
         self.controls.remove(&id);

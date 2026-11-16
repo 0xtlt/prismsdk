@@ -17,6 +17,32 @@ use prism_core::controls::{Capitalize, InputConfig, Keyboard, ReturnKey};
 use prism_core::{NodeId, UiEvent};
 
 // ---------------------------------------------------------------------------
+// Text written by the app into a field (#73)
+// ---------------------------------------------------------------------------
+
+/// Writes the app's `text` into a text field or view showing something
+/// else (events reach the app synchronously, so an echo of the typing
+/// equals the field and never gets here), even while it is being edited:
+/// the caret keeps its distance from the end.
+pub fn set_field_text<T: objc2_ui_kit::UITextInput + objc2::Message>(
+    field: &T,
+    set: impl FnOnce(),
+) {
+    let from_end = field
+        .selectedTextRange()
+        .map(|r| field.offsetFromPosition_toPosition(&r.end(), &field.endOfDocument()));
+    set();
+    let Some(from_end) = from_end else { return };
+    let end = field.endOfDocument();
+    let at = field
+        .positionFromPosition_offset(&end, -from_end.max(0))
+        .unwrap_or_else(|| field.beginningOfDocument());
+    if let Some(r) = field.textRangeFromPosition_toPosition(&at, &at) {
+        field.setSelectedTextRange(Some(&r));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Slider (iOS, visionOS)
 // ---------------------------------------------------------------------------
 
@@ -270,7 +296,9 @@ mod text_area {
         pub fn set_text(&self, text: &str) {
             let current = self.view.text().to_string();
             if current != text {
-                self.view.setText(Some(&NSString::from_str(text)));
+                super::set_field_text(&*self.view, || {
+                    self.view.setText(Some(&NSString::from_str(text)))
+                });
             }
             self.placeholder.setHidden(!text.is_empty());
         }
