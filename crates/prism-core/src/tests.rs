@@ -822,6 +822,28 @@ fn snapshots_serialize_compact_json_with_adaptive_colors() {
 }
 
 #[test]
+fn snapshots_resolve_svg_current_color_against_the_text_color() {
+    // #51: widget renderers read hex colors; `currentColor` becomes the
+    // node's text color, else the adaptive label color.
+    let icon =
+        r#"<svg width="4" height="4"><rect width="4" height="4" fill="currentColor"/></svg>"#;
+    let mut app = App::new();
+    let tinted = snapshot_one(
+        &mut app,
+        div().child(crate::svg(icon).text_color(rgb(0x00FF00))),
+    );
+    let json = tinted.to_json();
+    assert!(json.contains(r#""s":"i0,0\nf#00FF00|"#), "{json}");
+    let plain = snapshot_one(&mut app, div().child(crate::svg(icon)));
+    let json = plain.to_json();
+    assert!(json.contains("f#000000/#FFFFFF|"), "{json}");
+    // `tint` recolors an SVG that hard-codes its color.
+    let fixed = r##"<svg width="4" height="4"><rect width="4" height="4" fill="#123456"/></svg>"##;
+    let t = snapshot_one(&mut app, div().child(crate::svg(fixed).tint(rgb(0xFF0000))));
+    assert!(t.to_json().contains("f#FF0000|"), "{}", t.to_json());
+}
+
+#[test]
 fn snapshots_carry_shapes_compactly_with_margins() {
     use crate::{Drawing, Path, shape};
     let mut app = App::new();

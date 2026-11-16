@@ -11,6 +11,8 @@ The first version, not yet on crates.io.
 
 ### Added
 
+- `prism::channel()` (#53): an unbounded channel whose `Sender` (`Send + Clone`) works from any thread and whose `Receiver::recv()` is awaited in a task. Sending wakes the UI thread on every backend, so a thread the app owns (a WebSocket client, a file watcher, an SDK callback) feeds the UI without a polling loop or a pool thread held per session. `try_recv`, `drain`, `Sender::is_closed`.
+- `Picture::tint(color)` (#51): paints every path of an `svg()` picture in one color (adaptive or `Color::current()` included), for icons that hard-code their color.
 - Widget buttons (#47): `div().widget_action(action, payload)` (also on `text` and `button`) in a widget or Live Activity runs the app's `cx.on_widget_action(|action, cx| async move { .. })` job without opening the app, then reloads the widgets. iOS/iPadOS 17+: `Button(intent:)` with a shared `LiveActivityIntent` that iOS runs in the app's process (launched in the background if needed; the bundler now writes the app's own App Intents metadata); actions the extension ran itself are queued in the App Group and run when the app becomes active. Android: a broadcast to `PrismWidget$Action`, run without an Activity. macOS degrades to opening the app on `/__prism/widget-action?…`, which runs the action (`WidgetAction::to_link`, handled by `Runtime::open_link`). `Runtime::run_widget_action` for backends, `PRISM_DESCRIBE=widget_actions` for bundlers. The counter's « Todo » widget toggles its todo in place.
 - Lazy tabs: a router tab renders on its first selection, then stays rendered (its screens, state and views are kept). An unvisited tab keeps its tab-bar entry over an empty panel; deep links render their tab on the server, in the first paint. `RouterBuilder::eager()` renders the tab declared before it up front; `Router::tab_rendered(i)`. On the example app, `/` ships 44 nodes instead of 715 (HTML 150 KB → 16 KB, first WebSocket update 384 KB → 24 KB). The web keeps the shown panel up until the server's render of a new tab arrives (no empty flash); watchOS also renders the pages next to the selected one, which the Digital Crown shows mid-scroll.
 - Configurable widgets (#46): `Widget::parameter(WidgetParameter::new(..).options(..).default(..))` and `Widget::render_configured(|cx, family, config| ..)`. Each instance shows what the user picked in the system's « Edit widget » sheet (iOS 17+, macOS 14+, visionOS 26: `AppIntentConfiguration` with an entity query over the options the app writes to the App Group); the app renders the default configuration, the ones on screen and, when they fit, every combination. Android shows the default configuration.
@@ -277,6 +279,10 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- `svg()`: `currentColor` is `Color::current()` instead of black when the SVG sets no `color` (#51), so `svg(icon).text_color(…)` tints it and an adaptive text color follows dark mode, natively, on the web and in widgets. Shapes painted in `Color::current()` follow their node's text color, interaction states included.
+- Web: text inputs and text areas that draw their own box (padding, a background, a border, `.border(0.)`) or refine `.focus(…)` no longer get the global `:focus-visible` outline (#52).
+- Web: pictures drop their gray loading background once loaded (#54), so transparent images show their parent.
+- macOS: a styled text field taller than its line (`.h(36.)`) centers its text vertically, like the web and iOS, instead of drawing it at the top (#55).
 - An element with `.animate(ms)` (or `.spring`, `.transition`) that appears
   at an update no longer animates from no style at all (#50). Where an
   element without a transition was at the same place, the reconciler reused

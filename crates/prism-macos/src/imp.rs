@@ -2976,12 +2976,18 @@ impl Widgets for AppKit {
                 *lead = (lead.max(32.) - 24.).max(0.);
             }
             let (l, t) = (e.left as f64, e.top as f64);
-            i.field().setFrame(rect(
-                l,
-                t,
-                (w as f64 - l - e.right as f64).max(0.),
-                (h as f64 - t - e.bottom as f64).max(0.),
-            ));
+            let room = (h as f64 - t - e.bottom as f64).max(0.);
+            // A bare field draws its text at the top of its frame: in a box
+            // taller than its line it gets its own height, centered, like
+            // the web and iOS (#55). (The bezeled field fills its frame.)
+            let field = i.field();
+            let line = field.intrinsicContentSize().height.ceil();
+            let (y, fh) = if crate::padding::custom_field(&style) && line > 0. && line < room {
+                (t + ((room - line) / 2.).round(), line)
+            } else {
+                (t, room)
+            };
+            field.setFrame(rect(l, y, (w as f64 - l - e.right as f64).max(0.), fh));
             if let Some(icon) = i.icon.borrow().1.as_deref() {
                 crate::interact::place_icon(&i.field(), icon);
             }

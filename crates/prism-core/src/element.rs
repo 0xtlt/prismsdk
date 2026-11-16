@@ -329,7 +329,7 @@ pub struct VNode {
     pub on_global_key_down: Option<Handler<crate::events::KeyEvent>>,
 
     // --- Islands: client-side Web Components (WASM or JS) ---
-    /// Makes this view an island (see [`island`](crate::island)): its
+    /// Makes this view an island (see [`island`](crate::island())): its
     /// custom element, props and events. Its children are the fallback.
     pub island: Option<Box<crate::island::IslandSpec>>,
 
@@ -1320,6 +1320,20 @@ impl Picture {
         if self.0.kind == NodeKind::Shape {
             // An SVG picture: announced as an image.
             self.0.a11y.role = Some(Role::Image);
+        }
+        self
+    }
+    /// Paints every path of an [`svg`] picture in `color`, each keeping its
+    /// own opacity: a monochrome icon that hard-codes its color, tinted.
+    /// [`Color::current()`](crate::Color::current) follows the node's
+    /// [`text_color`](crate::Styled::text_color); an adaptive color follows
+    /// dark mode. (An SVG painted in `currentColor` needs no tint:
+    /// `.text_color(…)` is enough.) No effect on bitmap pictures.
+    pub fn tint(mut self, color: crate::style::Color) -> Self {
+        if self.0.kind == NodeKind::Shape {
+            self.0.text = crate::shape::Drawing::decode(&self.0.text)
+                .tinted(color)
+                .encode();
         }
         self
     }

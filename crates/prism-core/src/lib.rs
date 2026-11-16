@@ -14,6 +14,7 @@ mod app;
 mod apple_models;
 pub mod background;
 pub mod car;
+pub mod channel;
 pub mod controls;
 pub mod decoration;
 pub mod device;
@@ -48,6 +49,7 @@ pub use animation::{Animations, Pose, Transform};
 pub use app::{AnyEntity, App, Appearance, Context, Entity, EntityId, Environment, Render};
 pub use background::{BackgroundKind, BackgroundTask, Lifecycle};
 pub use car::{CarButton, CarButtonStyle, CarItem, CarSection, CarTab, CarTemplate};
+pub use channel::{Receiver, Sender, channel};
 pub use controls::{Capitalize, DateMode, Keyboard, OverlayKind, ReturnKey};
 pub use decoration::{
     BorderSide, BorderSides, BorderStyle, Cursor, Gradient, GradientKind, GradientStop, Shadow,

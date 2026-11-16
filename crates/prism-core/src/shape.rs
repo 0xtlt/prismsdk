@@ -262,6 +262,12 @@ fn num(o: &mut String, v: f32) {
 }
 
 fn color(o: &mut String, tag: char, c: Color) {
+    // `Color::current()`: `~` and its alpha (`~FF`), resolved by the
+    // backend against the node's text color.
+    if c.is_current() {
+        let _ = write!(o, "{tag}~{:02X} ", (c.a.clamp(0., 1.) * 255.).round() as u8);
+        return;
+    }
     let _ = write!(o, "{tag}{}", c.light_variant().hex());
     if c.dark.is_some() {
         let _ = write!(o, "/{}", c.dark_variant().hex());
@@ -281,6 +287,10 @@ fn parse_hex(s: &str) -> Option<Color> {
 }
 
 fn parse_color(s: &str) -> Option<Color> {
+    if let Some(a) = s.strip_prefix('~') {
+        let a = u8::from_str_radix(a, 16).map_or(1., |a| a as f32 / 255.);
+        return Some(Color::current().with_alpha(a));
+    }
     match s.split_once('/') {
         Some((l, d)) => Some(Color::adaptive(parse_hex(l)?, parse_hex(d)?)),
         None => parse_hex(s),
@@ -358,6 +368,43 @@ impl Drawing {
                 });
             }
             d.paths.push(p);
+        }
+        d
+    }
+
+    /// The drawing with every [`Color::current`] fill and stroke resolved
+    /// against `text` (the node's text color): what backends paint.
+    pub fn with_current_color(&self, text: Color) -> Drawing {
+        let mut d = self.clone();
+        for p in &mut d.paths {
+            p.fill = p.fill.map(|c| c.resolve_current(text));
+            p.stroke = p.stroke.map(|c| c.resolve_current(text));
+        }
+        d
+    }
+
+    /// Whether a path is painted in [`Color::current`].
+    pub fn uses_current_color(&self) -> bool {
+        self.paths.iter().any(|p| {
+            p.fill.is_some_and(Color::is_current) || p.stroke.is_some_and(Color::is_current)
+        })
+    }
+
+    /// The drawing with every painted fill and stroke in `color` (each
+    /// keeping its own opacity): a monochrome icon tinted.
+    pub fn tinted(&self, color: Color) -> Drawing {
+        let mut d = self.clone();
+        let tint = |c: Color| {
+            let a = c.a;
+            Color {
+                a: color.a * a,
+                dark: color.dark.map(|[r, g, b, da]| [r, g, b, da * a]),
+                ..color
+            }
+        };
+        for p in &mut d.paths {
+            p.fill = p.fill.map(tint);
+            p.stroke = p.stroke.map(tint);
         }
         d
     }

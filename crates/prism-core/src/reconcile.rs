@@ -208,7 +208,7 @@ pub enum Patch {
     },
 
     // --- Islands: client-side Web Components ---
-    /// The node is an island (see [`island`](crate::island)): sent right
+    /// The node is an island (see [`island`](crate::island())): sent right
     /// after its `Create`, and again when its source or events change.
     /// Native backends ignore it (they show the node's children, the
     /// fallback); the web turns the node into the custom element.

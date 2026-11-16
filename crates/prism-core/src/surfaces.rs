@@ -434,6 +434,19 @@ impl SNode {
             &self.text
         };
         if self.kind == NodeKind::Shape {
+            // `Color::current()` paths (an SVG's `currentColor`): the node's
+            // text color, else the label color (renderers read hex colors).
+            let label = Color::adaptive(Color::BLACK, Color::WHITE);
+            let resolved;
+            let content = if content.contains('~') {
+                let text = s.text_color.map_or(label, |c| c.resolve_current(label));
+                resolved = crate::shape::Drawing::decode(content)
+                    .with_current_color(text)
+                    .encode();
+                &resolved
+            } else {
+                content
+            };
             let drawing = compact_drawing(content, decimals);
             let _ = write!(o, r#","s":{}"#, json_str(&drawing));
         } else if !content.is_empty() {
