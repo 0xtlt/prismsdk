@@ -43,6 +43,9 @@ function signature(el) {
     placeholder: attr("placeholder"),
     value: el.localName === "input" ? el.value : null,
     checked: el.localName === "input" ? el.checked : null,
+    // App-defined attributes (`.attr`, #85).
+    testid: attr("data-testid"),
+    autocomplete: attr("autocomplete"),
     css: cssOf(el),
   };
 }
@@ -99,6 +102,41 @@ test("the client builds the tree the server rendered", () => {
   const tab = (b) => ["id", "aria-controls", "aria-selected", "tabindex", "role"].map((a) => b.getAttribute(a)).concat(b.textContent);
   assert.deepEqual(page.mount.querySelectorAll(".prism-tab").map(tab), wrapper.querySelectorAll(".prism-tab").map(tab));
   assert.deepEqual(text(page.mount, ".prism-back"), text(wrapper, ".prism-back"));
+});
+
+test("app-defined attributes are set, replaced and removed live (#85)", () => {
+  const page = live(fixture.reset);
+  const field = page.mount.querySelector("[data-kind=text_input]");
+  assert.equal(field.getAttribute("data-testid"), "name", "from the server's reset");
+  assert.equal(field.getAttribute("autocomplete"), "given-name");
+  const id = Number(field.dataset.pid);
+  page.ws.deliver({ t: "patch", p: [{ op: "attrs", id, attrs: [["data-1p-ignore", ""], ["data-testid", "who"]] }] });
+  assert.equal(field.getAttribute("data-1p-ignore"), "");
+  assert.equal(field.getAttribute("data-testid"), "who");
+  assert.equal(field.hasAttribute("autocomplete"), false, "absent from the list: removed");
+  // Never a name outside data-* and the safe list, nor Prism's own.
+  page.ws.deliver({ t: "patch", p: [{ op: "attrs", id, attrs: [["onclick", "x"], ["data-prism-x", "1"], ["data-ok", "1"]] }] });
+  assert.equal(field.hasAttribute("onclick"), false);
+  assert.equal(field.hasAttribute("data-prism-x"), false);
+  assert.equal(field.getAttribute("data-ok"), "1");
+  assert.equal(field.hasAttribute("data-testid"), false);
+});
+
+test("a secure field keeps the app's autocomplete over the default (#85)", () => {
+  const field = { op: "create", id: 2, kind: "text_input" };
+  const secure = { op: "config", id: 2, config: "secure" };
+  const root = [{ op: "create", id: 1, kind: "view" }, { op: "children", id: 1, children: [2] }, { op: "root", id: 1 }];
+  // Attributes before the config, and after.
+  for (const order of [[field, { op: "attrs", id: 2, attrs: [["autocomplete", "new-password"]] }, secure],
+                       [field, secure, { op: "attrs", id: 2, attrs: [["autocomplete", "new-password"]] }]]) {
+    const page = live([...order, ...root]);
+    const el = page.node(2);
+    assert.equal(el.getAttribute("autocomplete"), "new-password");
+    page.ws.deliver({ t: "patch", p: [secure] });
+    assert.equal(el.getAttribute("autocomplete"), "new-password", "a new config keeps it");
+    page.ws.deliver({ t: "patch", p: [{ op: "attrs", id: 2, attrs: [] }] });
+    assert.equal(el.getAttribute("autocomplete"), "current-password", "the default comes back");
+  }
 });
 
 test("interactions send the events the server expects, and its answers apply", () => {

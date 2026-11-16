@@ -36,6 +36,8 @@ struct HtmlNode {
     island_props: std::collections::BTreeMap<String, String>,
     /// A link's destination (`Patch::SetLink`): an `<a href>`.
     link: Option<String>,
+    /// App-defined attributes (`.attr(…)`).
+    attributes: Vec<(String, String)>,
 }
 
 /// Turns a picture source (`logo.png`, `https://…`) into its URL.
@@ -183,6 +185,9 @@ impl Backend for HtmlBackend {
                         n.island_props.insert(k.clone(), v.clone());
                     }
                 }),
+                Patch::SetAttributes { id, attributes } => {
+                    self.with(*id, |n| n.attributes = attributes.clone())
+                }
             }
         }
     }
@@ -389,8 +394,9 @@ impl HtmlBackend {
             Some(sheet) => sheet.attr(&css),
             None => format!(r#" style="{}""#, escape(&css)),
         };
+        let app = app_attrs(&n.attributes);
         let attrs = format!(
-            r#"data-pid="{id}" data-kind="{}"{style}{hidden}{inert}{aria}{group}"#,
+            r#"data-pid="{id}" data-kind="{}"{style}{hidden}{inert}{aria}{group}{app}"#,
             kind.name(),
         );
         // Sheets attached to a stack or tab bar are not screens or tabs: they
@@ -765,6 +771,18 @@ pub fn input_type(config: &str) -> &'static str {
         Keyboard::Phone => "tel",
         _ => "text",
     }
+}
+
+/// App-defined attributes (`.attr(…)`), as `client.js` sets them: names
+/// checked again, values escaped.
+fn app_attrs(attributes: &[(String, String)]) -> String {
+    let mut out = String::new();
+    for (name, value) in attributes {
+        if prism_core::attributes::is_app_attribute(name) {
+            let _ = write!(out, r#" {name}="{}""#, escape(value));
+        }
+    }
+    out
 }
 
 /// `inputmode`, `enterkeyhint`, `autocapitalize`, `autocorrect`, `spellcheck`

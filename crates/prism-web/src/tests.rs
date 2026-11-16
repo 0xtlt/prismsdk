@@ -1873,6 +1873,8 @@ impl Render for Showcase {
                     text_input()
                         .value(self.name.clone())
                         .placeholder("Your name")
+                        .attr("data-testid", "name")
+                        .attr("autocomplete", "given-name")
                         .on_input(
                             cx.listener(|this, e: &InputEvent, _| this.name = e.value.clone()),
                         ),
@@ -2829,4 +2831,116 @@ fn reversed_directions_and_order_become_css() {
     let medium = css(NodeKind::View, &s);
     assert!(medium.contains("flex-direction:row-reverse;"), "{medium}");
     assert!(!medium.contains("order:"), "{medium}");
+}
+
+// --- App-defined attributes (#85) -------------------------------------------------------
+
+fn set_attrs(id: u64, list: &[(&str, &str)]) -> Patch {
+    Patch::SetAttributes {
+        id,
+        attributes: list
+            .iter()
+            .map(|(n, v)| (n.to_string(), v.to_string()))
+            .collect(),
+    }
+}
+
+#[test]
+fn ssr_writes_app_attributes_escaped() {
+    let page = html(&[
+        create(1, NodeKind::TextInput),
+        set_attrs(
+            1,
+            &[
+                ("data-1p-ignore", ""),
+                ("data-testid", r#"a"><script>"#),
+                ("autocomplete", "one-time-code"),
+            ],
+        ),
+        Patch::SetRoot { id: 1 },
+    ]);
+    assert_eq!(
+        page,
+        r#"<input type="text" name="prism-1" data-pid="1" data-kind="text_input" style="" data-1p-ignore="" data-testid="a&quot;&gt;&lt;script&gt;" autocomplete="one-time-code" value="" placeholder="">"#
+    );
+    // Names the core would refuse never reach the page.
+    let page = html(&[
+        create(1, NodeKind::View),
+        set_attrs(1, &[("onclick", "x"), ("data-pid", "9"), ("data-ok", "1")]),
+        Patch::SetRoot { id: 1 },
+    ]);
+    assert!(
+        !page.contains("onclick") && !page.contains(r#"data-pid="9""#),
+        "{page}"
+    );
+    assert!(page.contains(r#" data-ok="1""#), "{page}");
+}
+
+#[test]
+fn app_attributes_go_to_the_client_in_full() {
+    let mut e = Encoder::default();
+    let ops = e.encode(&[
+        create(1, NodeKind::Button),
+        set_attrs(1, &[("data-testid", "save"), ("translate", "no")]),
+        set_attrs(1, &[]),
+    ]);
+    assert_eq!(
+        ops[1],
+        json!({ "op": "attrs", "id": 1, "attrs": [["data-testid", "save"], ["translate", "no"]] })
+    );
+    assert_eq!(ops[2], json!({ "op": "attrs", "id": 1, "attrs": [] }));
+}
+
+/// Every `data-*` name the web backend reads or writes is refused to apps,
+/// so `.attr` cannot overwrite one.
+#[test]
+fn the_backends_own_data_attributes_are_reserved() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut seen = std::collections::BTreeSet::new();
+    for file in std::fs::read_dir(&dir).unwrap() {
+        let path = file.unwrap().path();
+        if path
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().contains("tests"))
+        {
+            continue;
+        }
+        let Ok(source) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let word = |rest: &str| -> String {
+            rest.chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .collect()
+        };
+        for (i, _) in source.match_indices("data-") {
+            let name = word(&source[i + 5..]);
+            if !name.is_empty() && !name.ends_with('-') {
+                seen.insert(name);
+            }
+        }
+        // `el.dataset.fooBar` is `data-foo-bar`.
+        for (i, _) in source.match_indices("dataset.") {
+            let camel = word(&source[i + 8..]);
+            let mut name = String::new();
+            for c in camel.chars() {
+                if c.is_ascii_uppercase() {
+                    name.push('-');
+                }
+                name.push(c.to_ascii_lowercase());
+            }
+            if !name.is_empty() {
+                seen.insert(name);
+            }
+        }
+    }
+    assert!(seen.contains("pid") && seen.contains("kind"), "{seen:?}");
+    let open: Vec<_> = seen
+        .iter()
+        .filter(|n| prism_core::attributes::is_app_attribute(&format!("data-{n}")))
+        .collect();
+    assert!(
+        open.is_empty(),
+        "add these to prism_core::attributes::RESERVED_DATA_ATTRIBUTES: {open:?}"
+    );
 }

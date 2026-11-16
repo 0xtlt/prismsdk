@@ -1519,6 +1519,8 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                 // children (the island's fallback) as a plain view.
                 // A link is activated like any clickable view (`SetClickable`).
                 Patch::SetIsland { .. } | Patch::SetIslandProps { .. } | Patch::SetLink { .. } => {}
+                // HTML attributes (`.attr(…)`): browser integrations only.
+                Patch::SetAttributes { .. } => {}
             }
         }
         if self.extras.rehoist {

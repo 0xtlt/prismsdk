@@ -947,6 +947,10 @@ impl Encoder {
                     .collect();
                 json!({ "op": "props", "id": id, "props": props })
             }
+            // App-defined attributes (#85): every one, in order.
+            Patch::SetAttributes { id, attributes } => {
+                json!({ "op": "attrs", "id": id, "attrs": attributes })
+            }
         }
     }
 }

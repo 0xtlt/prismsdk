@@ -1321,7 +1321,8 @@
     const kb = get("keyboard");
     if (el.tagName === "INPUT") {
       el.type = secure ? "password" : { email: "email", url: "url", phone: "tel" }[kb] || "text";
-      if (secure) el.autocomplete = "current-password";
+      // The app's own `autocomplete` (`.attr`) wins over the default.
+      if (secure && !(el._attrs && el._attrs.includes("autocomplete"))) el.setAttribute("autocomplete", "current-password");
     }
     const set = (name, v) => (v ? el.setAttribute(name, v) : el.removeAttribute(name));
     set("inputmode", { number: "numeric", decimal: "decimal" }[kb]);
@@ -1368,6 +1369,22 @@
     } else if (kind === "radio_group") {
       radioOptions(el, Number(el.dataset.pid), config);
     }
+  }
+
+  /** App-defined attributes (`.attr`, #85): `pairs` is the full list, so
+   * names set before and absent now are removed. The server only sends
+   * `data-*` names Prism does not use and a safe list; this checks again. */
+  const APP_ATTR = /^(data-[a-z0-9_.-]+|autocomplete|translate)$/;
+  function setAttrs(el, pairs) {
+    if (!el) return;
+    const names = pairs.map(([n]) => n).filter((n) => APP_ATTR.test(n) && !n.startsWith("data-prism"));
+    for (const n of el._attrs || []) {
+      if (names.includes(n)) continue;
+      el.removeAttribute(n);
+      if (n === "autocomplete" && el.type === "password") el.setAttribute("autocomplete", "current-password");
+    }
+    for (const [n, v] of pairs) if (names.includes(n)) el.setAttribute(n, v);
+    el._attrs = names;
   }
 
   function applyA11y(el, a) {
@@ -1589,6 +1606,7 @@
       case "island": return setIsland(p);
       case "props": return setIslandProps(el, p.props);
       case "link": return setLink(el, p.id, p.href);
+      case "attrs": return setAttrs(el, p.attrs);
       case "destroy":
         if (el) {
           el.remove();

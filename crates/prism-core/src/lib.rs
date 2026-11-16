@@ -13,6 +13,7 @@ pub mod animation;
 mod app;
 mod apple_models;
 mod assets;
+pub mod attributes;
 pub mod background;
 pub mod car;
 pub mod channel;
