@@ -703,6 +703,8 @@ impl Widgets for RemoteWidgets {
         self.ops.push(json!({
             "op": "a11y", "id": id, "label": a11y.label, "hidden": a11y.hidden,
             "role": a11y.role.map(|r| r.aria()), "value": a11y.value,
+            // Switches, checkboxes and drawn radios (#84): on or chosen.
+            "checked": a11y.checked,
         }));
     }
 

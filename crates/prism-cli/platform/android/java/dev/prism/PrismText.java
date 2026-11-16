@@ -68,13 +68,32 @@ final class PrismText {
         t.setLinksClickable(links);
     }
 
-    /** A clickable text is a button for TalkBack. */
+    /**
+     * What TalkBack calls a text or a container: the control its role names (a
+     * drawn radio, checkbox or switch, #84, read with its state: "Monthly, radio
+     * button, checked"), else a button when a text is clickable.
+     */
     static void clickable(PrismHost.Node n) {
-        if (!n.kind.equals("text")) return;
-        n.view.setAccessibilityDelegate(!n.clickable ? null : new View.AccessibilityDelegate() {
+        if (!n.kind.equals("text") && !n.kind.equals("view")) return;
+        String role = n.a11yRole == null ? "" : n.a11yRole;
+        String cls;
+        switch (role) {
+            case "radio": cls = "android.widget.RadioButton"; break;
+            case "radiogroup": cls = "android.widget.RadioGroup"; break;
+            case "checkbox": cls = "android.widget.CheckBox"; break;
+            case "switch": cls = "android.widget.Switch"; break;
+            default: cls = n.clickable && n.kind.equals("text") ? "android.widget.Button" : null;
+        }
+        boolean checkable = role.equals("radio") || role.equals("checkbox") || role.equals("switch");
+        n.view.setAccessibilityDelegate(cls == null ? null : new View.AccessibilityDelegate() {
+            @SuppressWarnings("deprecation") // setChecked(int) is API 36
             @Override public void onInitializeAccessibilityNodeInfo(View host, AccessibilityNodeInfo info) {
                 super.onInitializeAccessibilityNodeInfo(host, info);
-                info.setClassName("android.widget.Button");
+                info.setClassName(cls);
+                if (checkable) {
+                    info.setCheckable(true);
+                    info.setChecked(Boolean.TRUE.equals(n.a11yChecked));
+                }
             }
         });
     }

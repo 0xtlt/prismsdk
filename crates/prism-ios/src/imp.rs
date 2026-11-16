@@ -11,10 +11,10 @@ use objc2::{
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSString};
 use objc2_ui_kit::{
-    NSObjectUIAccessibility, NSTextAlignment, UIAccessibilityTraitButton,
-    UIAccessibilityTraitHeader, UIAccessibilityTraitImage, UIAccessibilityTraitLink,
-    UIAccessibilityTraitNotEnabled, UIAccessibilityTraitSelected, UIAccessibilityTraitStaticText,
-    UIAccessibilityTraitTabBar, UIAccessibilityTraitToggleButton,
+    NSObjectUIAccessibility, NSObjectUIAccessibilityContainer, NSTextAlignment,
+    UIAccessibilityTraitButton, UIAccessibilityTraitHeader, UIAccessibilityTraitImage,
+    UIAccessibilityTraitLink, UIAccessibilityTraitNotEnabled, UIAccessibilityTraitSelected,
+    UIAccessibilityTraitStaticText, UIAccessibilityTraitTabBar, UIAccessibilityTraitToggleButton,
     UIAdaptivePresentationControllerDelegate, UIApplication, UIApplicationDelegate, UIButton,
     UIButtonType, UIColor, UIContextMenuInteractionDelegate, UIControlEvents, UIControlState,
     UIFont, UIGestureRecognizerDelegate, UIImage, UIImageSymbolConfiguration, UIImageView, UILabel,
@@ -2770,6 +2770,18 @@ impl Widgets for UiKit {
                 || matches!(view, View::Label(_));
             v.setIsAccessibilityElement(element && !a.hidden, mtm);
             v.setShouldGroupAccessibilityChildren(a.role == Some(Role::Group), mtm);
+            // Drawn choices (#84), like the native radio group: VoiceOver
+            // reads the group's label when the focus enters it.
+            if let View::Container(_) = view {
+                v.setAccessibilityContainerType(
+                    if a.role == Some(Role::RadioGroup) {
+                        objc2_ui_kit::UIAccessibilityContainerType::SemanticGroup
+                    } else {
+                        objc2_ui_kit::UIAccessibilityContainerType::None
+                    },
+                    mtm,
+                );
+            }
             let mut traits = 0;
             unsafe {
                 traits |= match a.role {

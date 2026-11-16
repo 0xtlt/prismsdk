@@ -186,6 +186,9 @@ public final class PrismHost {
         /** A rich text's runs (PrismText), null when plain. */
         JSONArray runs;
         String a11yLabel, a11yValue, announced;
+        /** The ARIA role name the app gave (`radio`, `checkbox`…), and its checked state. */
+        String a11yRole;
+        Boolean a11yChecked;
         // `.sticky()`: the scroll view it follows (-1: none) and its range.
         long stickyScroll = -1;
         float stickyTop, stickyInset, stickyMax;
@@ -412,7 +415,10 @@ public final class PrismHost {
                 n.a11yHidden = p.optBoolean("hidden");
                 n.view.setImportantForAccessibility(n.a11yHidden || n.inert
                         ? View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS : View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
-                PrismForms.a11y(n, p.isNull("role") ? null : p.optString("role", null), p.isNull("value") ? null : p.optString("value", null));
+                n.a11yRole = p.isNull("role") ? null : p.optString("role", null);
+                n.a11yChecked = p.isNull("checked") ? null : p.optBoolean("checked");
+                PrismText.clickable(n);
+                PrismForms.a11y(n, n.a11yRole, p.isNull("value") ? null : p.optString("value", null));
                 break;
             case "children": setChildren(n, p.getJSONArray("children")); break;
             case "frame": {

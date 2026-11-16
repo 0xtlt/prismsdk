@@ -6,7 +6,7 @@ use std::time::Duration;
 use prism_core::{
     Accessibility, Accuracy, Appearance, Backend, Color, DeviceCall, DeviceError, DeviceEvent,
     DeviceValue, Direction, FontWeight, Haptic, Locale, NodeKind, Path, Permission,
-    PermissionState, PickImages, Pose, RenderEnvironment, Share, Style, TextAlign, Transform,
+    PermissionState, PickImages, Pose, RenderEnvironment, Role, Share, Style, TextAlign, Transform,
     Transition, menu::MenuSpec, rgb,
 };
 use prism_native::remote::{MeasureRequest, RemoteWidgets, device};
@@ -291,7 +291,20 @@ fn chrome_ops() {
     );
     assert_eq!(
         last(&w),
-        json!({"op": "a11y", "id": 2, "label": "Close", "hidden": false, "role": null, "value": null})
+        json!({"op": "a11y", "id": 2, "label": "Close", "hidden": false, "role": null, "value": null, "checked": null})
+    );
+    // A drawn radio (#84) says whether it is the one chosen.
+    w.set_accessibility(
+        &3,
+        &Accessibility {
+            role: Some(Role::Radio),
+            checked: Some(true),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        last(&w),
+        json!({"op": "a11y", "id": 3, "label": null, "hidden": false, "role": "radio", "value": null, "checked": true})
     );
     w.set_icon(&2, "heart.fill");
     assert_eq!(

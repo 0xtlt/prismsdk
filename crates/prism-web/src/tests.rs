@@ -414,6 +414,26 @@ fn aria_attributes_mirror_the_client() {
         a11y_attrs(NodeKind::View, &a(Role::Checkbox)),
         r#" role="checkbox" aria-checked="false" tabindex="0""#
     );
+    // Drawn choices (#84): the radio says whether it is the one chosen.
+    assert_eq!(
+        a11y_attrs(
+            NodeKind::View,
+            &Accessibility {
+                role: Some(Role::Radio),
+                checked: Some(true),
+                ..Default::default()
+            }
+        ),
+        r#" role="radio" aria-checked="true" tabindex="0""#
+    );
+    assert_eq!(
+        a11y_attrs(NodeKind::View, &a(Role::Radio)),
+        r#" role="radio" aria-checked="false" tabindex="0""#
+    );
+    assert_eq!(
+        a11y_attrs(NodeKind::View, &a(Role::RadioGroup)),
+        r#" role="radiogroup""#
+    );
     assert_eq!(
         a11y_attrs(
             NodeKind::View,
