@@ -61,7 +61,7 @@ pub use assets::{IMMUTABLE, REVALIDATE, StaticFile, content_hash};
 pub use compress::Frame;
 pub use css::css;
 pub use host::{CspNonce, RequestContext};
-pub use html::{AssetUrls, HtmlBackend};
+pub use html::{AssetUrls, HtmlBackend, PageHtml};
 pub use islands::ModuleUrls;
 #[cfg(feature = "server")]
 pub use server::serve;

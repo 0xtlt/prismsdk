@@ -797,9 +797,13 @@
       el.className = "prism-select";
       el._ph = document.createElement("option");
       Object.assign(el._ph, { disabled: true, hidden: true, value: "" });
-      el.appendChild(el._ph);
       el._index = -1;
-      el.addEventListener("change", () => send({ t: "change", id, v: el.selectedIndex - 1 }));
+      showPicked(el);
+      el.addEventListener("change", () => {
+        el._index = el.selectedIndex - (el._ph.parentNode === el ? 1 : 0);
+        showPicked(el);
+        send({ t: "change", id, v: el._index });
+      });
     } else if (kind === "date_picker") {
       el.type = "date";
       el.className = "prism-date";
@@ -1305,6 +1309,16 @@
     try { el.setSelectionRange(caret, caret); } catch { /* no caret (email, number) */ }
   }
 
+  /** Selects the picker's `_index`. The placeholder option is only there
+   * while nothing is picked (#96): some browsers show a hidden option as a
+   * blank row. */
+  function showPicked(el) {
+    const empty = el._index < 0 || el._index >= el.options.length - (el._ph.parentNode === el ? 1 : 0);
+    if (empty && el._ph.parentNode !== el) el.insertBefore(el._ph, el.firstChild);
+    if (!empty && el._ph.parentNode === el) el._ph.remove();
+    el.selectedIndex = empty ? 0 : el._index;
+  }
+
   function grow(el) {
     // Not in the page yet (just created): measure once it is.
     if (!el.isConnected) return requestAnimationFrame(() => el.isConnected && grow(el));
@@ -1393,9 +1407,9 @@
       Object.assign(el, { min, max, step: step > 0 ? step : "any" });
       if (el._v !== undefined) el.value = el._v;
     } else if (kind === "picker") {
-      while (el.options.length > 1) el.lastChild.remove();
+      for (const o of [...el.options]) if (o !== el._ph) o.remove();
       (config ? config.split("\n") : []).forEach((text, i) => el.appendChild(new Option(text, String(i))));
-      el.selectedIndex = el._index + 1;
+      showPicked(el);
     } else if (kind === "date_picker") {
       const [mode, min, max, ...rest] = config.split(" ");
       el._utc = mode === "timeofday";
@@ -1564,7 +1578,7 @@
         if (el.dataset.kind === "toggle") el.checked = p.value !== 0;
         if (el.dataset.kind === "progress") el.value = p.value;
         if (el.dataset.kind === "slider") { el._v = p.value; el.value = p.value; }
-        if (el.dataset.kind === "picker") { el._index = p.value; el.selectedIndex = p.value + 1; }
+        if (el.dataset.kind === "picker") { el._index = p.value; showPicked(el); }
         // `null`: an empty optional picker (#89).
         if (el.dataset.kind === "date_picker") { el._secs = p.value ?? NaN; showDate(el); }
         if (el.dataset.kind === "checkbox") el._input.checked = p.value !== 0;

@@ -161,12 +161,12 @@ fn the_first_paint_has_no_style_attribute() {
         .split("</style>")
         .next()
         .unwrap();
-    // One rule per distinct declaration set, scoped to the root.
+    // One rule per distinct declaration set, scoped to the root and layers.
     let rules: Vec<&str> = ssr.lines().collect();
     assert!(
         rules
             .iter()
-            .all(|r| r.starts_with("#prism-root [data-ps=\"")),
+            .all(|r| r.starts_with(":is(#prism-root,#prism-layers) [data-ps=\"")),
         "{ssr}"
     );
     let ids: Vec<&str> = page

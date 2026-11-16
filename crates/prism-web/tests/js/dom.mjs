@@ -162,6 +162,14 @@ export class Element extends Node {
   get tabIndex() { const t = this.getAttribute("tabindex"); return t === null ? -1 : Number(t); }
   set tabIndex(v) { this.setAttribute("tabindex", String(v)); }
   get children() { return this.childNodes.filter((n) => n.nodeType === 1); }
+  // A `<select>`: its options and the selected one (the first when none is).
+  get options() { return this.children.filter((c) => c.tagName === "OPTION"); }
+  get selectedIndex() {
+    const o = this.options;
+    const i = o.findIndex((c) => c._selected);
+    return i >= 0 ? i : o.length ? 0 : -1;
+  }
+  set selectedIndex(v) { this.options.forEach((c, i) => { c._selected = i === v; }); }
   get firstElementChild() { return this.children[0] || null; }
   get lastElementChild() { const c = this.children; return c[c.length - 1] || null; }
   get nextElementSibling() {
@@ -438,16 +446,18 @@ FakeSocket.instances = [];
 const CLIENT = new URL("../../src/client.js", import.meta.url);
 
 /**
- * Runs client.js on a page whose `<main id="prism-root">` holds `ssr`, and
+ * Runs client.js on a page whose `<main id="prism-root">` holds `ssr` (and,
+ * when `layers` is given, a `<div id="prism-layers">` holding it), and
  * returns the page, its window and the socket it opened.
  */
-export function boot({ ssr = "", path = "/", base = "", glyphs = { plus: "+", gear: "⚙", house: "⌂" }, fetch = null, search = "", nonce = "", importModule = null, decompress = true, pageId = "" } = {}) {
+export function boot({ ssr = "", layers = null, path = "/", base = "", glyphs = { plus: "+", gear: "⚙", house: "⌂" }, fetch = null, search = "", nonce = "", importModule = null, decompress = true, pageId = "" } = {}) {
   const document = new Document();
   const customElements = new CustomElementRegistry();
   document.registry = customElements;
   const imports = [];
   document.body.innerHTML =
     `<main id="prism-root">${ssr}</main><div id="prism-island"></div><div id="prism-toasts"></div>` +
+    (layers === null ? "" : `<div id="prism-layers" popover="manual">${layers}</div>`) +
     `<div id="prism-connection" role="status" hidden>Reconnecting…</div>`;
   const script = document.createElement("script");
   script.dataset.base = base;
@@ -524,6 +534,12 @@ export function boot({ ssr = "", path = "/", base = "", glyphs = { plus: "+", ge
     encodeURIComponent,
     atob,
     // Run-time fonts (`cx.load_font`): faces are recorded in `document.fonts.added`.
+    Option: function (text, value) {
+      const o = document.createElement("option");
+      o.textContent = text;
+      if (value !== undefined) o.setAttribute("value", value);
+      return o;
+    },
     FontFace: class {
       constructor(family, source, descriptors) { Object.assign(this, { family, source, descriptors }); }
       load() { return Promise.resolve(this); }
