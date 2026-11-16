@@ -983,6 +983,9 @@ impl PlatformServices for WebServices {
                 .map(|_| prism_core::PushService::WebPush),
             // An `<iframe>`.
             web_view: true,
+            // navigator.credentials (#94); a browser without it answers
+            // « unavailable ».
+            passkeys: true,
         }
     }
 
@@ -1288,6 +1291,13 @@ pub(crate) fn device_json(id: u64, call: prism_core::DeviceCall) -> Value {
         C::Share(s) => json!({ "call": "share", "text": s.text, "url": s.url }),
         C::OpenUrl(u) => json!({ "call": "open_url", "url": u }),
         C::OpenUrlIn(u, target) => json!({ "call": "open_url", "url": u, "target": target.name() }),
+        // The app's own relying party (#94): the page runs the ceremony with
+        // the server's options and answers the credential as JSON (`text`).
+        C::WebAuthn(r) => json!({
+            "call": "webauthn_rp",
+            "create": r.create,
+            "options": serde_json::from_str::<Value>(&r.options).unwrap_or(Value::Null),
+        }),
         // Handled by WebServices::security.
         _ => json!({ "call": "unavailable" }),
     };

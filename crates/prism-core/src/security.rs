@@ -256,6 +256,20 @@ impl AppleCredential {
     }
 }
 
+/// A WebAuthn ceremony with the options of the app's own relying party
+/// (#94): [`AsyncApp::webauthn_create`] / [`AsyncApp::webauthn_get`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WebAuthnRequest {
+    /// Registers a passkey (`navigator.credentials.create`) rather than
+    /// signing in with one (`get`).
+    pub create: bool,
+    /// The server's options as JSON, in the WebAuthn JSON format
+    /// (`PublicKeyCredentialCreationOptionsJSON` /
+    /// `PublicKeyCredentialRequestOptionsJSON`: binary fields in base64url),
+    /// with or without the `{"publicKey": …}` wrapper.
+    pub options: String,
+}
+
 /// A browser sign-in session (OAuth 2 / OpenID Connect): see `prism::oauth`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WebAuthRequest {
@@ -383,6 +397,55 @@ impl AsyncApp {
     ) -> Result<AppleCredential, DeviceError> {
         match self.device(DeviceCall::SignInWithApple(request)).await? {
             DeviceValue::Fields(f) => Ok(AppleCredential::from_fields(&f)),
+            other => Err(DeviceError::Failed(format!("unexpected answer {other:?}"))),
+        }
+    }
+
+    /// Registers a passkey with the app's own WebAuthn relying party (#94):
+    /// `options` are what the server produced for this ceremony
+    /// (`PublicKeyCredentialCreationOptionsJSON`; the `{"publicKey": …}`
+    /// wrapper is accepted), and the answer is the new credential as JSON
+    /// (`RegistrationResponseJSON`, what `PublicKeyCredential.toJSON()`
+    /// gives), to send back to the server for verification. The server
+    /// checks everything; Prism only runs the ceremony.
+    ///
+    /// Web: `navigator.credentials.create` in the page (if the browser
+    /// wants a fresh tap, the page asks for one); Apple platforms:
+    /// `ASAuthorizationPlatformPublicKeyCredentialProvider`, which needs the
+    /// `webcredentials:` associated domain of the relying party; Android
+    /// 14+: the Credential Manager. `Err(Unavailable)` where there are no
+    /// passkeys (`capabilities().passkeys`), `Err(Cancelled)` when the user
+    /// declines.
+    pub async fn webauthn_create(&self, options: impl Into<String>) -> Result<String, DeviceError> {
+        self.webauthn(true, options.into()).await
+    }
+
+    /// Signs in with a passkey of the app's own relying party (#94):
+    /// `options` are the server's `PublicKeyCredentialRequestOptionsJSON`,
+    /// and the answer is the assertion as JSON (`AuthenticationResponseJSON`)
+    /// for the server to verify. See [`webauthn_create`](Self::webauthn_create).
+    pub async fn webauthn_get(&self, options: impl Into<String>) -> Result<String, DeviceError> {
+        self.webauthn(false, options.into()).await
+    }
+
+    async fn webauthn(&self, create: bool, options: String) -> Result<String, DeviceError> {
+        // The bare options: backends hand them to the platform as they are.
+        let options = match serde_json::from_str::<serde_json::Value>(&options) {
+            Ok(serde_json::Value::Object(mut o)) => match o.remove("publicKey") {
+                Some(inner @ serde_json::Value::Object(_)) => inner.to_string(),
+                _ => serde_json::Value::Object(o).to_string(),
+            },
+            _ => {
+                return Err(DeviceError::Failed(
+                    "the WebAuthn options are not a JSON object".into(),
+                ));
+            }
+        };
+        match self
+            .device(DeviceCall::WebAuthn(WebAuthnRequest { create, options }))
+            .await?
+        {
+            DeviceValue::Text(Some(json)) => Ok(json),
             other => Err(DeviceError::Failed(format!("unexpected answer {other:?}"))),
         }
     }

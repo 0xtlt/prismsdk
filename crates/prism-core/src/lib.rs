@@ -116,7 +116,7 @@ pub use router::{encode_query, parse_query};
 pub use scene3d::{Scene3d, SceneTapEvent, scene3d};
 pub use security::{
     AppleCredential, AppleSignIn, AuthRequest, Biometry, BiometryKind, SecureOptions,
-    SecureStorage, WebAuthRequest,
+    SecureStorage, WebAuthRequest, WebAuthnRequest,
 };
 pub use shape::{Drawing, Path, Segment};
 pub use spans::{

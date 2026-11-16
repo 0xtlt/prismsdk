@@ -75,9 +75,89 @@ final class PrismSecurity {
             case "authenticate": authenticate(id, c.optString("reason"), c.optBoolean("passcode", true)); break;
             case "auth_redirect": PrismDevice.reply(id, "text", redirect(c.optString("preferred", ""))); break;
             case "web_auth": webAuth(id, c.optString("url"), c.optString("redirect")); break;
+            case "webauthn": passkey(id, c.optBoolean("create"), c.optString("options")); break;
             // Sign in with Apple is Apple's (use prism::oauth with Apple's web endpoints).
             default: PrismDevice.fail(id, "unavailable", false);
         }
+    }
+
+    // --- Passkeys of the app's own relying party (#94) ------------------------------------
+
+    // The Credential Manager's public-key types and keys (as Jetpack's
+    // androidx.credentials sends them to providers).
+    private static final String PUBLIC_KEY = "androidx.credentials.TYPE_PUBLIC_KEY_CREDENTIAL";
+    private static final String REQUEST_JSON = "androidx.credentials.BUNDLE_KEY_REQUEST_JSON";
+    private static final String SUBTYPE = "androidx.credentials.BUNDLE_KEY_SUBTYPE";
+
+    /**
+     * The server's WebAuthn options (JSON) through the Credential Manager
+     * (Android 14+): the credential's JSON back. The relying party's domain
+     * must list the app (Digital Asset Links).
+     */
+    static void passkey(long id, boolean create, String options) {
+        if (Build.VERSION.SDK_INT < 34 || PrismHost.activity == null) {
+            PrismDevice.fail(id, "unavailable", false);
+            return;
+        }
+        android.credentials.CredentialManager cm = ctx().getSystemService(android.credentials.CredentialManager.class);
+        if (cm == null) {
+            PrismDevice.fail(id, "unavailable", false);
+            return;
+        }
+        java.util.concurrent.Executor main = ctx().getMainExecutor();
+        Bundle data = new Bundle();
+        data.putString(REQUEST_JSON, options);
+        if (create) {
+            data.putString(SUBTYPE, "androidx.credentials.BUNDLE_VALUE_SUBTYPE_CREATE_PUBLIC_KEY_CREDENTIAL_REQUEST");
+            // Who the passkey is for, shown by the provider.
+            try {
+                JSONObject user = new JSONObject(options).optJSONObject("user");
+                if (user != null) {
+                    Bundle display = new Bundle();
+                    display.putCharSequence("androidx.credentials.BUNDLE_KEY_USER_ID", user.optString("name"));
+                    display.putCharSequence("androidx.credentials.BUNDLE_KEY_USER_DISPLAY_NAME", user.optString("displayName"));
+                    data.putBundle("androidx.credentials.BUNDLE_KEY_REQUEST_DISPLAY_INFO", display);
+                }
+            } catch (JSONException e) {
+                PrismDevice.fail(id, "the WebAuthn options are not JSON", false);
+                return;
+            }
+            android.credentials.CreateCredentialRequest request =
+                    new android.credentials.CreateCredentialRequest.Builder(PUBLIC_KEY, data, data)
+                            .setAlwaysSendAppInfoToProvider(true).build();
+            cm.createCredential(PrismHost.activity, request, new CancellationSignal(), main,
+                    new android.os.OutcomeReceiver<android.credentials.CreateCredentialResponse, android.credentials.CreateCredentialException>() {
+                        @Override public void onResult(android.credentials.CreateCredentialResponse r) {
+                            String json = r.getData().getString("androidx.credentials.BUNDLE_KEY_REGISTRATION_RESPONSE_JSON");
+                            if (json == null) PrismDevice.fail(id, "no credential", false);
+                            else PrismDevice.reply(id, "text", json);
+                        }
+                        @Override public void onError(android.credentials.CreateCredentialException e) {
+                            PrismDevice.fail(id, passkeyError(e.getType(), e.getMessage()), false);
+                        }
+                    });
+        } else {
+            data.putString(SUBTYPE, "androidx.credentials.BUNDLE_VALUE_SUBTYPE_GET_PUBLIC_KEY_CREDENTIAL_OPTION");
+            android.credentials.GetCredentialRequest request = new android.credentials.GetCredentialRequest.Builder(new Bundle())
+                    .addCredentialOption(new android.credentials.CredentialOption.Builder(PUBLIC_KEY, data, data).build())
+                    .build();
+            cm.getCredential(PrismHost.activity, request, new CancellationSignal(), main,
+                    new android.os.OutcomeReceiver<android.credentials.GetCredentialResponse, android.credentials.GetCredentialException>() {
+                        @Override public void onResult(android.credentials.GetCredentialResponse r) {
+                            String json = r.getCredential().getData().getString("androidx.credentials.BUNDLE_KEY_AUTHENTICATION_RESPONSE_JSON");
+                            if (json == null) PrismDevice.fail(id, "no credential", false);
+                            else PrismDevice.reply(id, "text", json);
+                        }
+                        @Override public void onError(android.credentials.GetCredentialException e) {
+                            PrismDevice.fail(id, passkeyError(e.getType(), e.getMessage()), false);
+                        }
+                    });
+        }
+    }
+
+    private static String passkeyError(String type, String message) {
+        if (type != null && type.contains("USER_CANCELED")) return "cancelled";
+        return message != null ? message : String.valueOf(type);
     }
 
     // --- Secrets ---------------------------------------------------------------------------

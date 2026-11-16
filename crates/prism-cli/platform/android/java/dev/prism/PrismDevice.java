@@ -116,7 +116,7 @@ final class PrismDevice {
                 break;
             }
             case "secure_get": case "secure_set": case "secure_delete": case "biometry":
-            case "authenticate": case "auth_redirect": case "web_auth": case "apple_sign_in":
+            case "authenticate": case "auth_redirect": case "web_auth": case "apple_sign_in": case "webauthn":
                 PrismSecurity.call(id, c.optString("call"), c);
                 break;
             default: fail(id, "unavailable", false);

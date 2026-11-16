@@ -113,6 +113,8 @@ public final class PrismHost {
             o.put("biometricReady", PrismSecurity.canAuthenticate() == android.hardware.biometrics.BiometricManager.BIOMETRIC_SUCCESS);
             o.put("browser", c.getPackageManager().resolveActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW,
                     android.net.Uri.parse("https://example.com")), 0) != null);
+            // Passkeys of the app's relying party: the Credential Manager (#94).
+            o.put("passkeys", android.os.Build.VERSION.SDK_INT >= 34);
             // Remote push: "fcm", "unifiedpush", or none (PrismPush).
             String push = PrismPush.service(c);
             if (push != null) o.put("push", push);
