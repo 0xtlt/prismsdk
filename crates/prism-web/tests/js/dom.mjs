@@ -268,6 +268,9 @@ export class Element extends Node {
   showModal() {
     if (!this.isConnected) throw new Error("InvalidStateError: showModal on a disconnected dialog");
     this.setAttribute("open", "");
+    // Like browsers: the first control inside takes the focus.
+    const first = this.querySelector("button") || this.querySelector("input") || this.querySelector("textarea");
+    if (first) first.focus();
   }
   close() { this.removeAttribute("open"); }
   showPopover() {
