@@ -284,7 +284,9 @@ pub(crate) enum NavOp {
 
 struct Entry {
     path: String,
-    entity: AnyEntity,
+    /// `None`: a screen under a deep link on the web, not built yet. It is
+    /// built when Back reaches it ([`Router::build_top`]).
+    entity: Option<AnyEntity>,
 }
 
 /// A tab's title: fixed, or computed at each render (translations).
@@ -428,7 +430,10 @@ impl Router {
                 let path = normalize_path(&path);
                 self.dismiss(cx);
                 let entity = self.open(&path, cx);
-                self.modal.push(Entry { path, entity });
+                self.modal.push(Entry {
+                    path,
+                    entity: Some(entity),
+                });
             }
             NavOp::Dismiss => self.dismiss(cx),
             // While a sheet is up, navigation happens inside it.
@@ -438,7 +443,10 @@ impl Router {
                     return;
                 }
                 let entity = self.open(&path, cx);
-                self.modal.push(Entry { path, entity });
+                self.modal.push(Entry {
+                    path,
+                    entity: Some(entity),
+                });
             }
             NavOp::Back if !self.modal.is_empty() => {
                 let depth = self.modal.len() - 1;
@@ -452,7 +460,10 @@ impl Router {
                     release_screen(&self.shared, old.entity, cx);
                 }
                 let entity = self.open(&path, cx);
-                self.tabs[tab].entries.push(Entry { path, entity });
+                self.tabs[tab].entries.push(Entry {
+                    path,
+                    entity: Some(entity),
+                });
             }
             NavOp::Reset(path) => self.reset(&path, cx),
             NavOp::Back => {
@@ -482,9 +493,10 @@ impl Router {
             return;
         }
         let entity = self.open(&path, cx);
-        self.tabs[self.selected]
-            .entries
-            .push(Entry { path, entity });
+        self.tabs[self.selected].entries.push(Entry {
+            path,
+            entity: Some(entity),
+        });
     }
 
     /// Keeps the first `depth` screens (at least one) of tab `tab`.
@@ -495,6 +507,24 @@ impl Router {
         while t.entries.len() > depth.max(1) {
             let old = t.entries.pop().expect("non-empty");
             release_screen(&self.shared, old.entity, cx);
+        }
+        self.build_top(tab, cx);
+    }
+
+    /// Builds the top screen of tab `tab` if it is still a pending one (a
+    /// screen under a deep link that Back just reached).
+    fn build_top(&mut self, tab: usize, cx: &mut Context<Self>) {
+        let Some(path) = self.tabs[tab]
+            .entries
+            .last()
+            .filter(|e| e.entity.is_none())
+            .map(|e| e.path.clone())
+        else {
+            return;
+        };
+        let entity = self.open(&path, cx);
+        if let Some(top) = self.tabs[tab].entries.last_mut() {
+            top.entity = Some(entity);
         }
     }
 
@@ -558,7 +588,9 @@ impl Router {
     }
 
     /// Opens `path` in the tab whose root best matches it. Each tab's root
-    /// screen sits underneath, so "back" has somewhere to go.
+    /// screen sits underneath, so "back" has somewhere to go. On the web the
+    /// one under `path` is not built until Back reaches it: it would be
+    /// hidden, yet load its data and ship its HTML with every deep link.
     fn reset(&mut self, path: &str, cx: &mut Context<Self>) {
         let full = normalize_path(path);
         // Tabs and their roots are matched on the path, without the query.
@@ -580,14 +612,25 @@ impl Router {
             }
             let root = self.tabs[i].root.clone();
             let has_root_route = self.routes.iter().any(|r| r.matches(&root).is_some());
-            if i != tab || (path != root && has_root_route) {
+            if i == tab && path != root && has_root_route && cx.platform().is_web() {
+                self.tabs[i].entries.push(Entry {
+                    path: root,
+                    entity: None,
+                });
+            } else if i != tab || (path != root && has_root_route) {
                 let entity = self.open(&root, cx);
-                self.tabs[i].entries.push(Entry { path: root, entity });
+                self.tabs[i].entries.push(Entry {
+                    path: root,
+                    entity: Some(entity),
+                });
             }
         }
         if path != self.tabs[tab].root || self.tabs[tab].entries.is_empty() {
             let entity = self.open(&full, cx);
-            self.tabs[tab].entries.push(Entry { path: full, entity });
+            self.tabs[tab].entries.push(Entry {
+                path: full,
+                entity: Some(entity),
+            });
         }
         self.selected = tab;
     }
@@ -623,7 +666,7 @@ impl Router {
             .iter_mut()
             .flat_map(|t| t.entries.drain(..))
             .chain(self.modal.drain(..))
-            .map(|e| e.entity)
+            .filter_map(|e| e.entity)
             .filter(|e| !shared.contains(&e.id()))
             .collect()
     }
@@ -822,10 +865,12 @@ impl RouterBuilder {
 /// Releases a screen the router built (not one shared with the app).
 fn release_screen(
     shared: &RefCell<std::collections::HashSet<crate::app::EntityId>>,
-    entity: AnyEntity,
+    entity: Option<AnyEntity>,
     app: &mut App,
 ) {
-    if !shared.borrow().contains(&entity.id()) {
+    if let Some(entity) = entity
+        && !shared.borrow().contains(&entity.id())
+    {
         app.release_any(entity);
     }
 }
@@ -846,7 +891,13 @@ fn tab_stack(
             t.entries
                 .iter()
                 .filter(|_| t.shown)
-                .map(|e| Element::Entity(e.entity)),
+                .map(|e| match e.entity {
+                    Some(entity) => Element::Entity(entity),
+                    // Not built yet (under a deep link, web): an empty,
+                    // hidden screen, so the stack's depth (Back, the
+                    // browser's history) stays right.
+                    None => screen(String::new()).key("pending").into_element(),
+                }),
         )
 }
 
@@ -873,7 +924,7 @@ fn modal_sheet(
                 .on_navigate(cx.listener(|this, e: &NavigateEvent, cx| {
                     this.apply(NavOp::Push(e.path.clone()), cx)
                 }))
-                .children(entries.iter().map(|e| Element::Entity(e.entity))),
+                .children(entries.iter().filter_map(|e| e.entity).map(Element::Entity)),
         )
         .into_element()
 }
