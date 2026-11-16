@@ -75,13 +75,13 @@ pub use device_info::{
 pub use element::picture_source;
 pub use element::scroll_x;
 pub use element::{
-    BackEvent, Button, ChangeEvent, ClickEvent, DatePicker, Div, Element, FluentBuilder, Handler,
-    Image, InputEvent, IntoElement, Modal, NavigateEvent, NodeKind, ParentElement, Picker, Picture,
-    Progress, Screen, Scroll, ScrollEvent, Shape, Slider, Spinner, Stack, SwipeDirection, Tab,
-    Tabs, Text, TextArea, TextInput, Timer, Toggle, VNode, button, date_picker, date_picker_opt,
-    div, format_remaining, image, lazy, modal, picker, picture, progress, rich_text, screen,
-    scroll, shape, slider, spinner, stack, tab, tabs, text, text_area, text_input, timer, toggle,
-    unix_seconds, unix_time,
+    BackEvent, Button, ChangeEvent, ClickEvent, DatePicker, DismissReason, Div, Element,
+    FluentBuilder, Handler, Image, InputEvent, IntoElement, Modal, NavigateEvent, NodeKind,
+    ParentElement, Picker, Picture, Progress, Screen, Scroll, ScrollEvent, Shape, Slider, Spinner,
+    Stack, SwipeDirection, Tab, Tabs, Text, TextArea, TextInput, Timer, Toggle, VNode, button,
+    date_picker, date_picker_opt, div, format_remaining, image, lazy, modal, picker, picture,
+    progress, rich_text, screen, scroll, shape, slider, spinner, stack, tab, tabs, text, text_area,
+    text_input, timer, toggle, unix_seconds, unix_time,
 };
 pub use element::{
     Checkbox, Overlay, RadioGroup, checkbox, dialog, popover, radio_group, sheet, time_picker,
@@ -352,7 +352,18 @@ impl Runtime {
             UiEvent::Back(id, depth) => {
                 self.reconciler.overlay_dismissed(id);
                 if let Some(h) = self.reconciler.back_handler(id) {
-                    h(&BackEvent { depth }, &mut self.app);
+                    let reason = if self.reconciler.is_overlay(id) {
+                        element::DismissReason::Unknown
+                    } else {
+                        element::DismissReason::Back
+                    };
+                    h(&BackEvent { depth, reason }, &mut self.app);
+                }
+            }
+            UiEvent::Dismiss(id, reason) => {
+                self.reconciler.overlay_dismissed(id);
+                if let Some(h) = self.reconciler.back_handler(id) {
+                    h(&BackEvent { depth: 0, reason }, &mut self.app);
                 }
             }
             UiEvent::Change(id, value) => {
@@ -736,19 +747,19 @@ pub mod prelude {
     pub use crate::WidgetAction;
     pub use crate::{
         Accessible, Accuracy, Activity, Alert, Animations, App, AppleSignIn, AsyncApp, AuthRequest,
-        BackgroundTask, BiometryKind, Breakpoint, Capitalize, CarButton, CarButtonStyle, CarItem,
-        CarSection, CarTab, CarTemplate, ChangeEvent, ClickEvent, Context, Corners, DateMode,
-        DateStyle, DeviceInfo, DeviceKind, Entity, FluentBuilder, Handler, Haptic, InputEvent,
-        IntoElement, Keyboard, Lifecycle, Locale, Location, Menu, MenuItem, Motion, Notification,
-        NotificationAction, NotificationResponse, Orientation, Params, ParentElement, Path,
-        Permission, PermissionState, PickImages, PickedFile, Platform, Pose, Posture, PushEvent,
-        PushMessage, PushService, PushSubscription, Render, ReturnKey, Role, Router, ScrollEvent,
-        SecureOptions, SelectionEvent, Share, Styled, SwipeDirection, Transition, Translations,
-        Tray, UploadProgress, VirtualList, Watch, Widget, WidgetConfig, WidgetFamily, WidgetOption,
-        WidgetParameter, WindowChrome, WindowControls, adaptive, button, date_picker,
-        date_picker_opt, div, go_back, image, lazy, navigate_to, picker, picture, progress, px,
-        relative, rgb, rgba, screen, scroll, shape, slider, spinner, text, text_area, text_input,
-        timer, toggle,
+        BackEvent, BackgroundTask, BiometryKind, Breakpoint, Capitalize, CarButton, CarButtonStyle,
+        CarItem, CarSection, CarTab, CarTemplate, ChangeEvent, ClickEvent, Context, Corners,
+        DateMode, DateStyle, DeviceInfo, DeviceKind, DismissReason, Entity, FluentBuilder, Handler,
+        Haptic, InputEvent, IntoElement, Keyboard, Lifecycle, Locale, Location, Menu, MenuItem,
+        Motion, Notification, NotificationAction, NotificationResponse, Orientation, Params,
+        ParentElement, Path, Permission, PermissionState, PickImages, PickedFile, Platform, Pose,
+        Posture, PushEvent, PushMessage, PushService, PushSubscription, Render, ReturnKey, Role,
+        Router, ScrollEvent, SecureOptions, SelectionEvent, Share, Styled, SwipeDirection,
+        Transition, Translations, Tray, UploadProgress, VirtualList, Watch, Widget, WidgetConfig,
+        WidgetFamily, WidgetOption, WidgetParameter, WindowChrome, WindowControls, adaptive,
+        button, date_picker, date_picker_opt, div, go_back, image, lazy, navigate_to, picker,
+        picture, progress, px, relative, rgb, rgba, screen, scroll, shape, slider, spinner, text,
+        text_area, text_input, timer, toggle,
     };
     pub use crate::{
         GridTrack, ScrollAxis, Scrollbar, auto_fill, auto_fit, fr, minmax, repeat, scroll_x,

@@ -26,6 +26,23 @@ dialog(confirm).open(self.confirming).dismissible(false)  // Escape / tap outsid
 
 The overlay takes no room where it is placed; its content is only built while it is open, laid out on its own and presented by the platform above the whole window (bars, tabs and the host page's frame included). Modal ones keep the keyboard focus inside and make the rest unreachable. Escape, Back, a tap outside or a swipe down close it and call `on_dismiss`: set your state to closed there (an overlay the app keeps open is shown again).
 
+`e.reason` says how (#156): `DismissReason::Escape`, `Outside` (a click or tap on the backdrop or around a popover), `Swipe` (a sheet swiped down), `Back` (the system's back, a sheet's Close button) or `Unknown`. A color picker cancels on Escape and keeps the color on a click outside:
+
+```rust
+dialog(picker).open(self.picking).on_dismiss(cx.listener(|this, e: &BackEvent, _| {
+    if e.reason == DismissReason::Escape { this.color = this.color_before; }
+    this.picking = false;
+}))
+```
+
+| | Escape | Outside | Swipe | Back |
+|---|---|---|---|---|
+| Web | `cancel`; a popover closed right after Escape | the backdrop, a popover's light dismiss | – | – |
+| macOS | Escape in a sheet or popover | a click outside a popover | – | – |
+| iOS, iPadOS, visionOS | a hardware keyboard's Escape (tvOS: Menu) | the backdrop, around an iPad popover | a sheet | a sheet's Close button |
+| Android | a hardware keyboard's Escape | a touch outside | – | the system's back |
+| Linux | Escape | a click outside a popover | – | the window's close button |
+
 | | Sheet | Popover | Dialog |
 |---|---|---|---|
 | Web | modal `<dialog>` (bottom sheet on phones), blurred backdrop | popover API, placed under its anchor | modal `<dialog>`, blurred backdrop |

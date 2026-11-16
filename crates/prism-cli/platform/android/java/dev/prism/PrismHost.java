@@ -214,6 +214,8 @@ public final class PrismHost {
         android.widget.PopupWindow popup;
         String overlay = "sheet";
         boolean fixed, medium, closing, manual, keepFocus, pendingOpen;
+        /** Why the user is closing it (#156): "outside", "escape"; null: Back. */
+        String dismissReason;
         /** A popover's side of its anchor and alignment (#113). */
         String side = "bottom", align = "start";
         /** `placed` (a dialog beside its anchor) and `backdrop=` ("" when
@@ -667,7 +669,7 @@ public final class PrismHost {
                     // Dismissed: the modal's stack goes back to nothing.
                     if (!n.children.isEmpty()) {
                         JSONObject ev = event("back", n.children.get(0));
-                        try { ev.put("depth", 0); } catch (JSONException ignored) {}
+                        try { ev.put("depth", 0); ev.put("reason", "back"); } catch (JSONException ignored) {}
                         send(ev);
                     }
                 });

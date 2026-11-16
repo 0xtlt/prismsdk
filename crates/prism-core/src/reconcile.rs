@@ -368,6 +368,9 @@ pub enum UiEvent {
     Pointer(NodeId, crate::events::PointerEvent),
     /// A drag on a view that listens to drags.
     Drag(NodeId, crate::events::DragEvent),
+    /// The user closed a sheet, popover or dialog, and how (#156). Like
+    /// `Back(id, 0)` with the reason.
+    Dismiss(NodeId, crate::element::DismissReason),
     /// Wheel or trackpad scrolling over a view that listens to it (#133).
     Wheel(NodeId, crate::events::WheelEvent),
     /// A pinch over a view that listens to it (#133).
@@ -743,6 +746,14 @@ impl Reconciler {
     /// The mounted node named `name` (`.id(name)`), if any.
     pub fn node_named(&self, name: &str) -> Option<NodeId> {
         self.names.get(name).copied()
+    }
+
+    /// Whether node `id` is a sheet, popover or dialog (an overlay or a
+    /// modal stack), whose dismissal has a reason.
+    pub fn is_overlay(&self, id: NodeId) -> bool {
+        self.nodes
+            .get(&id)
+            .is_some_and(|m| matches!(m.kind, NodeKind::Overlay | NodeKind::Modal))
     }
 
     /// The user closed overlay `id` natively: remember it is closed, so

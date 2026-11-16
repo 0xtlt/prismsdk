@@ -601,7 +601,7 @@ test("sheets open as modal dialogs and Escape asks the app", () => {
   const event = { type: "cancel" };
   dialog.dispatchEvent(event);
   assert.ok(event.defaultPrevented);
-  assert.deepEqual(lastSent(page), { t: "back", id: 3, depth: 0 });
+  assert.deepEqual(lastSent(page), { t: "back", id: 3, depth: 0, reason: "escape" });
   page.ws.deliver({ t: "patch", p: [children(1, [2]), { op: "destroy", id: 3 }] });
   assert.equal(dialog.isConnected, false);
 });

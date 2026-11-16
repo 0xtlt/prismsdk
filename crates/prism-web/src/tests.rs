@@ -2544,6 +2544,15 @@ fn pointer_drag_and_key_messages_become_ui_events() {
         ev(json!({"t": "key", "id": 0, "key": "Escape"})),
         Some(UiEvent::Key(None, _))
     ));
+    // How an overlay was closed (#156); a stack's back has none.
+    assert_eq!(
+        ev(json!({"t": "back", "id": 3, "depth": 0, "reason": "outside"})),
+        Some(UiEvent::Dismiss(3, prism_core::DismissReason::Outside))
+    );
+    assert_eq!(
+        ev(json!({"t": "back", "id": 3, "depth": 2})),
+        Some(UiEvent::Back(3, 2))
+    );
     // Wheel and pinch (#133).
     let Some(UiEvent::Wheel(3, w)) = ev(json!({"t": "wheel", "id": 3, "dx": 2, "dy": -30,
         "x": 5, "y": 6, "mods": 8, "phase": "momentum", "precise": true}))

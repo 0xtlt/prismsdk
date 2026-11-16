@@ -306,6 +306,17 @@ impl OverlayView {
             let p = gtk::Popover::new();
             set_popover_mode(&p, config);
             p.set_child(Some(&self.content));
+            // An Escape just before it closes is its reason (#156); GTK's
+            // autohide does not say.
+            let keys = gtk::EventControllerKey::new();
+            keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+            keys.connect_key_pressed(|_, key, _, _| {
+                if key == gdk::Key::Escape {
+                    ESCAPE_AT.set(Some(std::time::Instant::now()));
+                }
+                glib::Propagation::Proceed
+            });
+            p.add_controller(keys);
             let weak = Rc::downgrade(self);
             p.connect_closed(move |p| {
                 let Some(o) = weak.upgrade() else { return };
@@ -318,7 +329,15 @@ impl OverlayView {
                     glib::idle_add_local_once(move || p.popup());
                 } else {
                     o.open.set(false);
-                    dispatch(UiEvent::Back(id, 0));
+                    let escape = ESCAPE_AT
+                        .take()
+                        .is_some_and(|at| at.elapsed() < std::time::Duration::from_millis(500));
+                    let reason = if escape {
+                        prism_core::DismissReason::Escape
+                    } else {
+                        prism_core::DismissReason::Outside
+                    };
+                    dispatch(UiEvent::Dismiss(id, reason));
                 }
             });
             *self.popover.borrow_mut() = Some(p);
@@ -335,7 +354,7 @@ impl OverlayView {
             let weak = Rc::downgrade(self);
             w.connect_close_request(move |_| {
                 if let Some(o) = weak.upgrade() {
-                    o.user_closed();
+                    o.user_closed(prism_core::DismissReason::Back);
                 }
                 glib::Propagation::Stop
             });
@@ -347,7 +366,7 @@ impl OverlayView {
                     && let Some(o) = weak.upgrade()
                     && !o.config.get().fixed
                 {
-                    o.user_closed();
+                    o.user_closed(prism_core::DismissReason::Escape);
                     return glib::Propagation::Stop;
                 }
                 glib::Propagation::Proceed
@@ -363,7 +382,7 @@ impl OverlayView {
 
     /// Escape or the close button: closes at once (unless fixed) and tells
     /// the app, which keeps it closed or opens it again.
-    fn user_closed(&self) {
+    fn user_closed(&self, reason: prism_core::DismissReason) {
         if self.config.get().fixed || !self.open.get() {
             return;
         }
@@ -371,7 +390,7 @@ impl OverlayView {
         if let Some(w) = self.window.borrow().as_ref() {
             w.set_visible(false);
         }
-        dispatch(UiEvent::Back(self.id, 0));
+        dispatch(UiEvent::Dismiss(self.id, reason));
     }
 
     fn teardown(&self) {
@@ -1186,6 +1205,12 @@ impl Gtk {
     }
 }
 
+thread_local! {
+    /// When Escape was last pressed in a popover (#156).
+    static ESCAPE_AT: std::cell::Cell<Option<std::time::Instant>> =
+        const { std::cell::Cell::new(None) };
+}
+
 /// A widget entered or left an interaction state: prism-native restyles it
 /// (and its group's descendants, its ancestors for focus-within), then the
 /// window is laid out again. On the next turn: GTK may be mid-update.
@@ -1427,7 +1452,10 @@ impl Widgets for Gtk {
                     if let Some(s) = weak.upgrade()
                         && let Some(stack) = s.children.borrow().first()
                     {
-                        dispatch(UiEvent::Back(stack.id(), 0));
+                        dispatch(UiEvent::Dismiss(
+                            stack.id(),
+                            prism_core::DismissReason::Back,
+                        ));
                     }
                     glib::Propagation::Stop
                 });
