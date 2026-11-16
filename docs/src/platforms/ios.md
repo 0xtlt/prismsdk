@@ -63,5 +63,21 @@ widget or declare Live Activities (`cx.enable_live_activities()`, or a
 push-to-start handler `cx.on_activity_push_token`). The others are built
 without them and keep their data in the app's own container.
 
+**Simulator entitlements.** Simulator builds are signed ad hoc, without a
+provisioning profile. The simulator reads their entitlements from sections
+of each binary (`__TEXT,__entitlements` and `__ents_der`). `prism` writes the
+`application-identifier` a device profile would grant there
+(`SIMULATOR.<bundle id>`, or `[ios] team` instead of `SIMULATOR`). It is the
+keychain's default access group, which `secure_storage` needs, with or
+without widgets. The widget extension gets `<bundle id>.widgets`. The ad hoc
+signature leaves it out, like `aps-environment`, because the simulator does
+not launch an ad hoc signature that claims it.
+
+**Capability notes.** On a device or store build, `prism` checks the app's
+own provisioning profile for the capabilities the app asks for (iCloud, Sign
+in with Apple, Push Notifications) and prints a note naming the bundle id
+when one is missing. The widget extension's profile only needs the App Group,
+so it is not checked.
+
 Development hooks: `PRISM_CLICK="+1|Save"` presses by title or label,
 `PRISM_SNAPSHOT=/abs/out.png` saves the window and quits.

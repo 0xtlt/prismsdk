@@ -14,7 +14,16 @@ use prism::ui::{self, Theme};
 
 use crate::Store;
 
+/// `COUNTER_NO_WIDGETS=1 prism run ios`: the app without widgets or Live
+/// Activities, so its bundle has no extension and no App Group.
+pub fn no_widgets() -> bool {
+    option_env!("COUNTER_NO_WIDGETS") == Some("1")
+}
+
 pub fn register(cx: &mut App, store: Entity<Store>) {
+    if no_widgets() {
+        return;
+    }
     // The focus timer starts Live Activities (focus.rs): the iOS bundle needs
     // the extension for them even without this widget.
     cx.enable_live_activities();

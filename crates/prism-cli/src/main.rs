@@ -23,6 +23,8 @@ mod linux;
 mod new;
 mod play;
 mod publish;
+#[cfg(test)]
+mod signing_tests;
 mod watch;
 
 use std::path::{Path, PathBuf};

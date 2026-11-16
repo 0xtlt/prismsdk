@@ -209,32 +209,12 @@ for f in glob.glob(home + "/Library/Developer/Xcode/UserData/Provisioning Profil
 print(best[1] if best else "")
 '
 }
-# Entitlements granted by a profile (app id, team, debugging, groups) for a bundle.
-profile_entitlements() { # $1 profile plist, $2 output, $3 bundle id
-  ICLOUD="${PRISM_ICLOUD:-}" APPLE="${PRISM_APPLE_SIGNIN:-}" PUSH="${PRISM_PUSH:-}" python3 - "$1" "$2" "$3" <<'PY'
-import os, plistlib, sys
-p = plistlib.load(open(sys.argv[1], "rb"))
-e = dict(p["Entitlements"])
-team = p["TeamIdentifier"][0]
-e["application-identifier"] = f"{team}.{sys.argv[3]}"
-e.pop("keychain-access-groups", None)
-kv = "com.apple.developer.ubiquity-kvstore-identifier"
-if os.environ.get("ICLOUD") == "1":
-    if kv in e:
-        e[kv] = f"{team}.{sys.argv[3]}"
-    else:
-        print("note: the provisioning profile has no iCloud: cloud_storage stays local (enable iCloud for the App ID in Xcode)", file=sys.stderr)
-else:
-    e.pop(kv, None)
-siwa = "com.apple.developer.applesignin"
-if os.environ.get("APPLE") != "1":
-    e.pop(siwa, None)
-elif siwa not in e:
-    print("note: the provisioning profile has no Sign in with Apple: enable the capability for the App ID", file=sys.stderr)
-if os.environ.get("PUSH") and "aps-environment" not in e:
-    print("note: the provisioning profile has no Push Notifications capability: register_for_push will fail (enable it for the App ID)", file=sys.stderr)
-plistlib.dump(e, open(sys.argv[2], "wb"))
-PY
+# Entitlements granted by a profile (app id, team, debugging, groups) for a
+# bundle. Only the app's own profile is checked for the capabilities it asks
+# for (iCloud, Sign in with Apple, push): the extension's has no reason to
+# carry them.
+profile_entitlements() { # $1 profile plist, $2 output, $3 bundle id, $4 app|extension
+  python3 "$(dirname "$0")/profile-entitlements.py" "$1" "$2" "$3" "$4"
 }
 if [[ -n "$DEVICE_BUILD" ]]; then
   KIND=development
@@ -242,7 +222,7 @@ if [[ -n "$DEVICE_BUILD" ]]; then
   PROFILE="${PRISM_PROFILE:-$(find_profile "$BUNDLE_ID")}"
   [[ -n "$PROFILE" ]] || { echo "No $KIND provisioning profile for $BUNDLE_ID: create one in the developer portal (or open the project once in Xcode with your team), or set PRISM_PROFILE" >&2; exit 1; }
   security cms -D -i "$PROFILE" > "$GEN/profile.plist"
-  profile_entitlements "$GEN/profile.plist" "$GEN/entitlements.plist" "$BUNDLE_ID"
+  profile_entitlements "$GEN/profile.plist" "$GEN/entitlements.plist" "$BUNDLE_ID" app
   if [[ "${PRISM_APPLE_SIGNIN:-}" == 1 ]] && ! /usr/libexec/PlistBuddy -c "Print :com.apple.developer.applesignin" "$GEN/entitlements.plist" >/dev/null 2>&1; then
     PRISM_APPLE_SIGNIN=0
   fi
@@ -260,7 +240,7 @@ if [[ -n "$DEVICE_BUILD" ]]; then
     APPEX_PROFILE="${PRISM_WIDGETS_PROFILE:-$(find_profile "$BUNDLE_ID.widgets")}"
     APPEX_PROFILE="${APPEX_PROFILE:-$PROFILE}"
     security cms -D -i "$APPEX_PROFILE" > "$GEN/appex.profile.plist"
-    profile_entitlements "$GEN/appex.profile.plist" "$GEN/appex.entitlements.plist" "$BUNDLE_ID.widgets"
+    profile_entitlements "$GEN/appex.profile.plist" "$GEN/appex.entitlements.plist" "$BUNDLE_ID.widgets" extension
     APPEX_ID="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$GEN/appex.profile.plist")"
     if [[ -n "$DIST" && "$APPEX_ID" != *".$BUNDLE_ID.widgets" ]]; then
       echo "No App Store provisioning profile for $BUNDLE_ID.widgets (the widget extension): create one, or set PRISM_WIDGETS_PROFILE" >&2
@@ -289,21 +269,28 @@ else
     echo "note: Sign in with Apple needs a signed build (a device): capabilities().sign_in_with_apple is false on the simulator" >&2
     PRISM_APPLE_SIGNIN=0
   fi
+  # application-identifier, as a device's profile grants it: the keychain's
+  # default access group (secure_storage). Without it, or an App Group, the
+  # simulator's keychain answers errSecMissingEntitlement.
   cat > "$GEN/entitlements.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>application-identifier</key><string>${PRISM_TEAM:-SIMULATOR}.$BUNDLE_ID</string>
 $( [[ $WIDGETS == 1 ]] && echo "  <key>com.apple.security.application-groups</key><array><string>$GROUP</string></array>" )
 $( [[ "${PRISM_ICLOUD:-}" == 1 ]] && echo "  <key>com.apple.developer.ubiquity-kvstore-identifier</key><string>${PRISM_TEAM:-SIMULATOR}.$BUNDLE_ID</string>" )
 $( [[ -n "${PRISM_PUSH:-}" ]] && echo "  <key>aps-environment</key><string>$PRISM_PUSH</string>" )
 </dict>
 </plist>
 PLIST
-  cp "$GEN/entitlements.plist" "$GEN/appex.entitlements.plist"
+  # The widget extension: the same, under its own identifier.
+  sed '/<key>application-identifier</s|</string>|.widgets</string>|' "$GEN/entitlements.plist" > "$GEN/appex.entitlements.plist"
   # The simulator reads them from a section of each binary (XML and DER).
   if xcrun -f derq >/dev/null 2>&1; then
-    xcrun derq query -f xml -i "$GEN/entitlements.plist" -o "$GEN/entitlements.plist.der" --raw
+    for f in entitlements appex.entitlements; do
+      xcrun derq query -f xml -i "$GEN/$f.plist" -o "$GEN/$f.plist.der" --raw
+    done
   fi
   export PRISM_ENTITLEMENTS="$GEN/entitlements.plist"
 fi
@@ -482,8 +469,8 @@ PLIST
 # 6. Widget extension (iOS): Prism's generic SwiftUI renderer + the generated entry point.
 SIM_SECTIONS=()
 if [[ -z "$DEVICE_BUILD" ]]; then
-  SIM_SECTIONS=(-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __entitlements -Xlinker "$GEN/entitlements.plist")
-  [[ -f "$GEN/entitlements.plist.der" ]] && SIM_SECTIONS+=(-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __ents_der -Xlinker "$GEN/entitlements.plist.der")
+  SIM_SECTIONS=(-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __entitlements -Xlinker "$GEN/appex.entitlements.plist")
+  [[ -f "$GEN/appex.entitlements.plist.der" ]] && SIM_SECTIONS+=(-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __ents_der -Xlinker "$GEN/appex.entitlements.plist.der")
 fi
 if [[ $WIDGETS == 1 ]]; then
 # Configurable widgets: WidgetKit builds the « Edit widget » sheet from the
@@ -548,12 +535,15 @@ if [[ -n "$DEVICE_BUILD" ]]; then
     --entitlements "$GEN/entitlements.plist" "$APP" >/dev/null
   codesign --verify --deep --strict "$APP"
 else
-  # aps-environment stays in the binary's sections only: the simulator refuses
-  # to launch an ad hoc signature claiming it (RBS launch error 163), but
-  # reads it from the sections to hand out push tokens.
+  # aps-environment and application-identifier stay in the binary's sections
+  # only: the simulator refuses to launch an ad hoc signature claiming them
+  # (aps-environment: RBS launch error 163), but reads them from the
+  # sections (push tokens, the keychain).
   for f in entitlements appex.entitlements; do
     cp "$GEN/$f.plist" "$GEN/$f.sign.plist"
-    /usr/libexec/PlistBuddy -c "Delete :aps-environment" "$GEN/$f.sign.plist" >/dev/null 2>&1 || true
+    for k in aps-environment application-identifier; do
+      /usr/libexec/PlistBuddy -c "Delete :$k" "$GEN/$f.sign.plist" >/dev/null 2>&1 || true
+    done
   done
   [[ $WIDGETS == 1 ]] && codesign --force --sign - --entitlements "$GEN/appex.entitlements.sign.plist" "$APPEX" >/dev/null
   codesign --force --sign - --entitlements "$GEN/entitlements.sign.plist" "$APP" >/dev/null
