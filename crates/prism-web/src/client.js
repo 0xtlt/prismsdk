@@ -4,6 +4,9 @@
 (() => {
   // Where the app is mounted (`/app` when nested in another server's routes).
   const BASE = ((document.currentScript && document.currentScript.dataset.base) || "").replace(/\/$/, "");
+  // The id of this page's request: the first socket sends it back, so the
+  // live session takes that request over (`cx.page_request()`); reconnects don't.
+  let pageId = (document.currentScript && document.currentScript.dataset.page) || "";
   // App paths keep their query string (`/analytics?period=7d`).
   const urlFor = (path) => {
     const q = path.indexOf("?");
@@ -2734,7 +2737,9 @@
     const path = encodeURIComponent(appPath());
     const search = location.search ? `&search=${encodeURIComponent(location.search)}` : "";
     const compress = inflate ? "&compress=deflate-raw" : "";
-    const socket = ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${BASE}/ws?path=${path}&tz=${tz}&w=${innerWidth}&h=${innerHeight}${search}${compress}`);
+    const page = pageId ? `&page=${encodeURIComponent(pageId)}` : "";
+    pageId = "";
+    const socket = ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${BASE}/ws?path=${path}&tz=${tz}&w=${innerWidth}&h=${innerHeight}${search}${compress}${page}`);
     ws.binaryType = "arraybuffer";
     ws.onmessage = (e) => onFrame(socket, e.data);
     ws.onclose = closed;

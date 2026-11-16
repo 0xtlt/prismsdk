@@ -441,7 +441,7 @@ const CLIENT = new URL("../../src/client.js", import.meta.url);
  * Runs client.js on a page whose `<main id="prism-root">` holds `ssr`, and
  * returns the page, its window and the socket it opened.
  */
-export function boot({ ssr = "", path = "/", base = "", glyphs = { plus: "+", gear: "⚙", house: "⌂" }, fetch = null, search = "", nonce = "", importModule = null, decompress = true } = {}) {
+export function boot({ ssr = "", path = "/", base = "", glyphs = { plus: "+", gear: "⚙", house: "⌂" }, fetch = null, search = "", nonce = "", importModule = null, decompress = true, pageId = "" } = {}) {
   const document = new Document();
   const customElements = new CustomElementRegistry();
   document.registry = customElements;
@@ -451,6 +451,7 @@ export function boot({ ssr = "", path = "/", base = "", glyphs = { plus: "+", ge
     `<div id="prism-connection" role="status" hidden>Reconnecting…</div>`;
   const script = document.createElement("script");
   script.dataset.base = base;
+  if (pageId) script.dataset.page = pageId;
   if (nonce) script.nonce = nonce;
   document.currentScript = script;
   document.title = "Prism";

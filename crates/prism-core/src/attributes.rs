@@ -36,6 +36,7 @@ pub const RESERVED_DATA_ATTRIBUTES: &[&str] = &[
     "loaded",
     "medium",
     "open",
+    "page",
     "path",
     "pid",
     "ps",

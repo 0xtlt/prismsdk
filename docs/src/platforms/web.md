@@ -168,6 +168,16 @@ Without Axum, pass the context yourself with `WebApp::handle_with(&req, context)
 
 **What the app sees.** On the web, `cx.request()` is the page request during the first render, then the socket handshake in the live session. It gives `kind`, `url`, `origin`, `headers`, `header(name)`, `cookie(name)`, `path()` and `context::<T>()`. `cx.request_context::<T>()` returns the host's value, `cx.page_origin()` returns `https://example.com`, and `cx.page_url()` returns the full URL as the browser shows it, query included. The origin comes from the handshake's `Origin` header, or from `X-Forwarded-Proto` / `X-Forwarded-Host` / `Forwarded` / `Host`. All of these return `None` in native apps, which have no request and no address.
 
+**Values the host gives once.** The first paint and the live session are two runs of your app, one for the page request and one for the socket handshake. Something the host hands out once on the page request, such as a flash message it clears after a redirect or a one-time token, is not in the handshake. `cx.page_request()` keeps it: during the first render it is the page request, and in the live session it is that same page request, with the context the host attached to it then (`cx.page_request_context::<T>()`). The page carries a random id (`data-page` on Prism's script), and its first socket sends it back, so the session takes that page's request out of the server's memory. This works once, within a minute of the page, and only from the browser that loaded it. A reconnect gets `None`, so read the value in `init` or on the first render and keep it in your state.
+
+```rust
+// The host's middleware, on the page request only: read and clear the flash.
+req.extensions_mut().insert(prism_web::RequestContext::new(Flash(message)));
+
+// The app: the same message in the first paint and in the live session.
+let flash = cx.page_request_context::<Flash>();
+```
+
 **The page's `<head>`.** Use `WebApp::favicon`, `apple_touch_icon`, `theme_color`, `meta(name, content)`, `stylesheet(url)`, `preload_font(url)`, `script(url)`, `inline_script(js)`, `style(css)` (`@font-face`, your own rules), `body_background(color)`, `font_family(family)` and `head(raw_html)`. A URL without a leading `/` or a scheme names an app asset, so `"icon.png"` becomes `/assets/icon.<hash>.png` and is cached as immutable. Stylesheets come after Prism's own. With `Application`, configure the same calls in `.web(|w| w.favicon("icon.png").theme_color("#0a84ff"))`.
 
 **Content-Security-Policy.** The first paint has no `style="…"` attribute. Each distinct node style becomes one rule in `<style id="prism-ssr">`, and nodes carry `data-ps="pHASH"`. The client removes that block once the live tree replaces the page. Prism's own tags and the `<head>` additions get the nonce. After that, the client keeps the same scheme: each distinct style is one rule of a shared sheet (`<style id="prism-styles">`), written through the CSSOM, which CSP allows, and nodes carry its class, a short hash of the style (`p1x5rl6u`), the same name the first paint gives it in `data-ps`. Rules no node uses any more are reused, so the sheet stays the size of the styles on screen. Interaction states (`.hover(…)` and the like) share one `<style id="prism-states">`. A Prism page needs:
