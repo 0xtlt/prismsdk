@@ -985,6 +985,8 @@ struct NodeView: View {
                             .overlay(alignment: .topLeading) { DevScrollMark(id: id) }
                     }
                     .coordinateSpace(name: "s\(id)")
+                    // Hidden scroll bars (#132); the watch's are overlay already.
+                    .scrollIndicators((n.style["scrollbar"] as? String) == "hidden" ? .hidden : .automatic)
                     .modifier(Refresh(id: id, on: n.clickable))
                     .onAppear { DevScrollMark.scroll(id, proxy) }
                     // `cx.scroll_into_view`: a no-op unless the node is in here.

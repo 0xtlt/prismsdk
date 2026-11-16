@@ -80,12 +80,15 @@ pub fn baseline(view: &View, width: f32, height: f32) -> Option<f32> {
 }
 
 /// Vertical (the default) or horizontal scrolling.
-pub fn set_axis(s: &UIScrollView, axis: ScrollAxis) {
+pub fn set_axis(s: &UIScrollView, axis: ScrollAxis, bar: prism_core::Scrollbar) {
     let horizontal = axis == ScrollAxis::Horizontal;
+    // UIKit's indicators are already thin and over the content (overlay):
+    // only hidden ones change (#132).
+    let shown = bar != prism_core::Scrollbar::Hidden;
     s.setAlwaysBounceVertical(!horizontal);
     s.setAlwaysBounceHorizontal(horizontal);
-    s.setShowsVerticalScrollIndicator(!horizontal);
-    s.setShowsHorizontalScrollIndicator(true);
+    s.setShowsVerticalScrollIndicator(shown && !horizontal);
+    s.setShowsHorizontalScrollIndicator(shown);
     // A row of chips never runs under bars: no automatic insets.
     s.setContentInsetAdjustmentBehavior(if horizontal {
         UIScrollViewContentInsetAdjustmentBehavior::Never

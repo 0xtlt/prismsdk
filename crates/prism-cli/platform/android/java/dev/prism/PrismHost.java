@@ -371,7 +371,14 @@ public final class PrismHost {
         switch (op) {
             case "style": {
                 n.style = p.getJSONObject("s");
-                if (n.kind.equals("scroll")) setScrollAxis(n, n.style.optBoolean("hscroll"));
+                if (n.kind.equals("scroll")) {
+                    setScrollAxis(n, n.style.optBoolean("hscroll"));
+                    // Android's bars are thin, over the content and fade
+                    // already (overlay): only hidden ones change (#132).
+                    boolean bars = !"hidden".equals(n.style.optString("scrollbar"));
+                    n.view.setVerticalScrollBarEnabled(bars);
+                    n.view.setHorizontalScrollBarEnabled(bars);
+                }
                 JSONObject anim = p.optJSONObject("anim");
                 if (anim != null) PrismMotion.style(n.view, anim, () -> { applyStyle(n); applySticky(n); });
                 else applyStyle(n);

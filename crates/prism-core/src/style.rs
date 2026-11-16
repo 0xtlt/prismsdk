@@ -749,6 +749,8 @@ pub struct Style {
     pub aspect_ratio: Option<f32>,
     /// Which way a scroll view scrolls.
     pub scroll_axis: crate::layout::ScrollAxis,
+    /// How a scroll view shows its scroll bars (#132).
+    pub scrollbar: crate::layout::Scrollbar,
     // Typography (text, buttons, inputs; not inherited, like the other text
     // styles).
     /// Font family (the system font by default).
@@ -1350,6 +1352,7 @@ impl Default for Style {
             gap_y: None,
             aspect_ratio: None,
             scroll_axis: crate::layout::ScrollAxis::Vertical,
+            scrollbar: crate::layout::Scrollbar::Auto,
             font_family: FontFamily::System,
             italic: false,
             line_height: Length::Auto,

@@ -1469,12 +1469,20 @@ impl Widgets for Gtk {
         let id = view.id();
         if let View::Scroll(_, sw, _) = view {
             // `scroll_x()`: sideways only.
-            let (h, v) = if s.scroll_axis == prism_core::ScrollAxis::Horizontal {
-                (gtk::PolicyType::Automatic, gtk::PolicyType::Never)
+            // Hidden bars (#132): `External` still scrolls, without a bar.
+            let on = if s.scrollbar == prism_core::Scrollbar::Hidden {
+                gtk::PolicyType::External
             } else {
-                (gtk::PolicyType::Never, gtk::PolicyType::Automatic)
+                gtk::PolicyType::Automatic
+            };
+            let (h, v) = if s.scroll_axis == prism_core::ScrollAxis::Horizontal {
+                (on, gtk::PolicyType::Never)
+            } else {
+                (gtk::PolicyType::Never, on)
             };
             sw.set_policy(h, v);
+            // Overlay bars, whatever the desktop's setting for others.
+            sw.set_overlay_scrolling(true);
         }
         if crate::decor::adapts(s) {
             self.adaptive.insert(id, (view.clone(), s.clone()));

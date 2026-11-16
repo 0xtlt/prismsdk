@@ -24,6 +24,8 @@ struct HtmlNode {
     children: Vec<NodeId>,
     /// A horizontal scroll view (`prism-scroll-x`).
     hscroll: bool,
+    /// A scroll view's bars (#132): `data-prism-scrollbar`.
+    scrollbar: prism_core::Scrollbar,
     /// Interaction refinements as CSS rules (`css::states_css`).
     states: String,
     /// Descendants' `group_*` refinements follow it (`data-group`).
@@ -156,6 +158,7 @@ impl Backend for HtmlBackend {
                     if let Some(n) = self.nodes.get_mut(id) {
                         n.css = css(n.kind.unwrap_or(NodeKind::View), style);
                         n.hscroll = style.scroll_axis == prism_core::ScrollAxis::Horizontal;
+                        n.scrollbar = style.scrollbar;
                         n.group = style.group;
                         n.states =
                             crate::css::states_css(n.kind.unwrap_or(NodeKind::View), *id, style);
@@ -775,6 +778,12 @@ impl HtmlBackend {
                     }
                     NodeKind::Scroll => ("div", r#" class="prism-scroll""#),
                     _ => ("div", ""),
+                };
+                let class = match (kind, n.scrollbar) {
+                    (NodeKind::Scroll, b) if b != prism_core::Scrollbar::Auto => {
+                        format!(r#"{class} data-prism-scrollbar="{}""#, b.name())
+                    }
+                    _ => class.to_string(),
                 };
                 let label = if kind == NodeKind::Screen {
                     format!(r#" aria-label="{}""#, escape(&n.text))

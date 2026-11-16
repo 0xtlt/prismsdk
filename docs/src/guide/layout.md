@@ -168,6 +168,26 @@ their size (they never shrink to the view) and the view scrolls when they
 are wider. Right to left its content is mirrored; the browser opens it at
 its leading (right) edge, native scroll views at offset 0.
 
+## Scroll bars
+
+```rust
+scroll().scrollbar(Scrollbar::Overlay)  // thin, over the content, never takes room
+scroll().scrollbar(Scrollbar::Hidden)   // no bar; still scrolls (wheel, trackpad, keys, touch)
+```
+
+By default (`Scrollbar::Auto`) each platform shows its usual bars: on macOS
+with a mouse, or with « Show scroll bars: Always », they stay and take room
+(#132). Areas whose design has no bar (a sidebar, a canvas, a row of tabs)
+can keep a thin overlay bar or none. Keep the bars where users need to see
+how long the content is.
+
+| | Overlay | Hidden |
+|---|---|---|
+| Web | `scrollbar-width: thin`, shown while the pointer is over the view or it has the focus (browsers with overlay bars show them while scrolling) | `scrollbar-width: none` (and `::-webkit-scrollbar` for older Safari) |
+| macOS | `NSScrollerStyle.overlay`, kept when the setting changes; a row gets a horizontal overlay bar | no scroller |
+| iOS, iPadOS, visionOS, watchOS, Android | the usual indicators (already overlay) | indicators off |
+| Linux | GTK overlay scrolling | `PolicyType::External` |
+
 ## Backends
 
 | | Web | macOS | iOS · tvOS · visionOS | watchOS | Linux | Android |

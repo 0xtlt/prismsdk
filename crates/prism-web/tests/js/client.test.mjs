@@ -1225,6 +1225,16 @@ test("horizontal scroll views get their class from the style op", () => {
   assert.equal(el.getAttribute("class"), "prism-scroll");
 });
 
+test("scroll bars follow the style op (#132)", () => {
+  const page = live([create(1, "scroll"), root(1), { op: "style", id: 1, css: "", sb: "hidden" }]);
+  const el = page.node(1);
+  assert.equal(el.getAttribute("data-prism-scrollbar"), "hidden");
+  page.ws.deliver({ t: "patch", p: [{ op: "style", id: 1, css: "", sb: "overlay" }] });
+  assert.equal(el.getAttribute("data-prism-scrollbar"), "overlay");
+  page.ws.deliver({ t: "patch", p: [{ op: "style", id: 1, css: "" }] });
+  assert.equal(el.getAttribute("data-prism-scrollbar"), null);
+});
+
 // Rich text runs (prism-core spans.rs): U+001E between runs, U+001F between fields.
 const RS = "\u001e", FS = "\u001f";
 const runsConfig = [

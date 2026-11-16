@@ -678,11 +678,16 @@ pub fn own_width_variants(kind: NodeKind, s: &Style) -> serde_json::Value {
 }
 
 /// What a style op adds for the client beyond `css`: `hx` (a horizontal
-/// scroll view: class `prism-scroll-x`, its children keep their size) and
-/// `cq` (see [`own_width_variants`]).
+/// scroll view: class `prism-scroll-x`, its children keep their size), `sb`
+/// (its scroll bars, `overlay` or `hidden`) and `cq` (see
+/// [`own_width_variants`]).
 pub fn layout_op_fields(kind: NodeKind, s: &Style, op: &mut serde_json::Value) {
     if kind == NodeKind::Scroll && s.scroll_axis == prism_core::ScrollAxis::Horizontal {
         op["hx"] = serde_json::json!(true);
+    }
+    // Overlay or hidden scroll bars (#132): `data-prism-scrollbar`.
+    if kind == NodeKind::Scroll && s.scrollbar != prism_core::Scrollbar::Auto {
+        op["sb"] = serde_json::json!(s.scrollbar.name());
     }
     let cq = own_width_variants(kind, s);
     if !cq.is_null() {
