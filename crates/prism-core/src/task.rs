@@ -50,7 +50,14 @@ impl Wake for TaskWaker {
 
     fn wake_by_ref(self: &Arc<Self>) {
         self.shared.ready.lock().unwrap().push(self.id);
-        let wake = self.shared.wake_ui.lock().unwrap().clone();
+        self.shared.wake_ui();
+    }
+}
+
+impl Shared {
+    /// Asks the backend to call `Runtime::poll` on the UI thread.
+    fn wake_ui(&self) {
+        let wake = self.wake_ui.lock().unwrap().clone();
         if let Some(wake) = wake {
             wake();
         }
@@ -99,6 +106,12 @@ impl Executor {
         self.next_id.set(id);
         self.tasks.borrow_mut().insert(id, Box::pin(fut));
         self.shared.ready.lock().unwrap().push(id);
+        // A task spawned outside `poll_tasks` (from `render`, say, which runs
+        // after the tasks were polled) would otherwise wait for the next
+        // event (#57). Inside it, its loop picks the new task up.
+        if self.polling.get().is_none() {
+            self.shared.wake_ui();
+        }
         id
     }
 

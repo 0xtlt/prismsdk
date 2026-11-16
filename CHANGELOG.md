@@ -279,6 +279,7 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- A task spawned from `render` (a lazily started `cx.spawn`, `cx.background` included) starts right away instead of waiting for the next event (#57): spawning outside the task loop wakes the UI thread, as a waker does. On the web the session no longer sleeps until the pointer moves; Linux queues its wake instead of running it nested in the update that spawned the task. A task that finishes without changing anything renders nothing, so nothing loops.
 - `svg()`: `currentColor` is `Color::current()` instead of black when the SVG sets no `color` (#51), so `svg(icon).text_color(…)` tints it and an adaptive text color follows dark mode, natively, on the web and in widgets. Shapes painted in `Color::current()` follow their node's text color, interaction states included.
 - Web: text inputs and text areas that draw their own box (padding, a background, a border, `.border(0.)`) or refine `.focus(…)` no longer get the global `:focus-visible` outline (#52).
 - Web: pictures drop their gray loading background once loaded (#54), so transparent images show their parent.

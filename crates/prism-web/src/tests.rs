@@ -1255,6 +1255,48 @@ fn a_session_resets_the_page_then_answers_events_with_patches() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Starts loading on its first render, with no event after it.
+#[derive(Default)]
+struct LazyLoad {
+    started: bool,
+    value: Option<u32>,
+}
+
+impl Render for LazyLoad {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.started {
+            self.started = true;
+            cx.spawn(async move |this, cx| {
+                let value = cx.background(|| 7).await;
+                cx.update_entity(&this, |l, _| l.value = Some(value));
+            });
+        }
+        text(match self.value {
+            Some(v) => format!("loaded {v}"),
+            None => "loading".into(),
+        })
+    }
+}
+
+#[test]
+fn a_task_spawned_during_render_reaches_the_page_without_a_message() {
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| LazyLoad::default());
+        cx.set_root(root);
+    });
+    let (app, dir) = web_app(init, "render-spawn");
+    let page = Page::open(&app, "/ws?path=%2F&w=1280&h=800");
+    let reset = page.next();
+    let label = op_with_text(&reset["p"], "loading");
+    // The page sends nothing: the spawn wakes the session (#57).
+    assert_eq!(
+        page.next(),
+        json!({ "t": "patch", "p": [{ "op": "text", "id": label, "text": "loaded 7" }] })
+    );
+    page.session.close();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 struct Wide;
 impl Render for Wide {
     fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
