@@ -113,6 +113,14 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 .prism-select, .prism-date { font: inherit; padding: 6px 10px; border-radius: 8px; border: 1px solid rgba(128,128,128,.45); background: Field; max-width: 100%; }
 .prism-date { accent-color: currentColor; min-height: 34px; }
 .prism-textarea { font: inherit; padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(128,128,128,.45); resize: none; overflow-y: auto; min-height: calc(3lh + 16px); background: Field; color: FieldText; }
+/* Rich inputs (#115): an editable paragraph of runs and chips. Empty, it
+   keeps one line (a trailing <br>) and shows its placeholder. */
+.prism-rich { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(128,128,128,.45); background: Field; color: FieldText; white-space: pre-wrap; overflow-wrap: anywhere; overflow-y: auto; cursor: text; }
+.prism-rich[data-empty]::before { content: attr(data-placeholder); color: GrayText; float: left; height: 0; pointer-events: none; }
+.prism-chip { display: inline-flex; align-items: baseline; gap: .25em; padding: 0 .35em; border-radius: 4px; background: rgba(128,128,128,.18); white-space: nowrap; cursor: default; user-select: all; -webkit-user-select: all; }
+.prism-chip[data-link] { cursor: pointer; }
+.prism-chip .prism-symbol { display: inline; line-height: inherit; }
+.prism-chip[data-selected] { background: Highlight; color: HighlightText; }
 .prism-spinner { display: inline-block; width: 20px; min-width: 20px; height: 20px; flex-shrink: 0; border-radius: 50%; border: 2.5px solid currentColor; border-top-color: transparent; opacity: .85; animation: prism-spin .8s linear infinite; }
 .prism-spinner[data-size=large] { width: 36px; min-width: 36px; height: 36px; border-width: 3.5px; }
 @keyframes prism-spin { to { transform: rotate(360deg); } }

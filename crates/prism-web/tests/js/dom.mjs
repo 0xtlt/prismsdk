@@ -24,6 +24,10 @@ class Node {
     const s = this.parentNode && this.parentNode.childNodes;
     return s ? s[s.indexOf(this) + 1] || null : null;
   }
+  get previousSibling() {
+    const s = this.parentNode && this.parentNode.childNodes;
+    return s ? s[s.indexOf(this) - 1] || null : null;
+  }
   get isConnected() {
     let n = this;
     while (n.parentNode) n = n.parentNode;
@@ -148,6 +152,14 @@ export class Element extends Node {
       };
     }
     return this._sheet;
+  }
+  /** Editable: `contenteditable="true"` here or on the closest ancestor that sets it. */
+  get isContentEditable() {
+    for (let n = this; n && n.nodeType === 1; n = n.parentNode) {
+      const v = n.getAttribute("contenteditable");
+      if (v !== null) return v !== "false";
+    }
+    return false;
   }
   get hidden() { return this.hasAttribute("hidden"); }
   set hidden(v) { if (v) this.setAttribute("hidden", ""); else this.removeAttribute("hidden"); }
@@ -369,6 +381,17 @@ export class Document extends Element {
   get cookie() { return this.cookies.map((c) => c.split(";")[0]).join("; "); }
   set cookie(v) { this.cookies.push(v); }
   hasFocus() { return true; }
+  /** The page's one selection: anchor and focus points, like the real one's. */
+  getSelection() {
+    return this._selection ||= {
+      anchorNode: null, anchorOffset: 0, focusNode: null, focusOffset: 0,
+      get rangeCount() { return this.anchorNode ? 1 : 0; },
+      get isCollapsed() { return this.anchorNode === this.focusNode && this.anchorOffset === this.focusOffset; },
+      setBaseAndExtent(an, ao, fn, fo) { Object.assign(this, { anchorNode: an, anchorOffset: ao, focusNode: fn, focusOffset: fo }); },
+      collapse(n, o) { this.setBaseAndExtent(n, o, n, o); },
+      removeAllRanges() { this.setBaseAndExtent(null, 0, null, 0); },
+    };
+  }
   createElement(tag) {
     const el = new Element(this, tag);
     // A defined custom element is created upgraded.

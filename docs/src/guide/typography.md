@@ -154,6 +154,11 @@ rich_text([
 ])
 ```
 
+A `chip(key, label)` is an inline object (a mention of a page, a person, a
+date), drawn as a small rounded label with an optional `chip_icon`; here it
+reads as its label. To edit runs and chips, see
+[Rich text input](forms.md#rich-text-input).
+
 A span takes `bold()`, `semibold()`, `medium()`, `weight(…)`, `italic()`,
 `underline()` / `no_underline()`, `strikethrough()`, `text_color(…)`,
 `bg(…)` (highlights, inline code), `font_family(…)` / `font_mono()`,

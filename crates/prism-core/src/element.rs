@@ -95,6 +95,17 @@ pub enum NodeKind {
     /// natural size: give it one. Reports `UiEvent::WebMessage` and
     /// `UiEvent::WebLoad`.
     WebView,
+
+    // --- Editable rich text (#115) ---
+    /// An editable paragraph of styled runs and inline objects
+    /// ([`rich_input`]): a `contenteditable` on the web, an `NSTextView`
+    /// with attributes and attachments on macOS. Its text is the plain
+    /// value (a chip is [`OBJECT_CHAR`](crate::OBJECT_CHAR)), its runs come
+    /// in [`Patch::SetRichValue`](crate::Patch::SetRichValue), its config is
+    /// an [`InputConfig`](crate::controls::InputConfig). Backends without
+    /// rich editing show a text area of the plain value instead (see
+    /// `prism_native::Widgets::rich_input`).
+    RichInput,
 }
 
 impl NodeKind {
@@ -126,6 +137,7 @@ impl NodeKind {
             NodeKind::Checkbox => "checkbox",
             NodeKind::RadioGroup => "radio_group",
             NodeKind::WebView => "web_view",
+            NodeKind::RichInput => "rich_input",
         }
     }
 
@@ -246,6 +258,36 @@ pub fn char_to_byte(text: &str, chars: usize) -> usize {
 /// with `str::find`.
 pub fn byte_to_char(text: &str, byte: usize) -> usize {
     text.char_indices().take_while(|(b, _)| *b < byte).count()
+}
+
+/// A [`rich_input`] was edited (#115): its runs as the user left them.
+/// Each run keeps the style, link, handler and key of the run it came
+/// from (text typed next to a run takes its style, except after a chip or
+/// a link); a deleted [`chip`](crate::chip) is gone; pasted text arrives
+/// plain, in the style of where it lands. Store `spans` and render them
+/// back (`rich_input(self.spans.clone())`), or map them to your own model
+/// with the [`Span`](crate::Span) getters (`text()`, `is_bold()`,
+/// `chip_key()`…).
+#[derive(Clone, Debug)]
+pub struct RichInputEvent {
+    /// The plain text: the runs' texts, each chip being
+    /// [`OBJECT_CHAR`](crate::OBJECT_CHAR) (so selection offsets from
+    /// [`on_select`](RichInput::on_select) index it, chips as one character).
+    pub value: String,
+    /// The runs, [normalized](crate::normalize_spans) (no empty run, equal
+    /// neighbours merged).
+    pub spans: Vec<crate::spans::Span>,
+}
+
+impl RichInputEvent {
+    /// The event for `spans` (normalized).
+    pub fn new(spans: impl IntoIterator<Item = crate::spans::Span>) -> Self {
+        let spans = crate::spans::normalize_spans(spans);
+        RichInputEvent {
+            value: crate::spans::spans_text(&spans),
+            spans,
+        }
+    }
 }
 
 /// Reported by a stack when the user went back natively (iOS swipe, browser
@@ -386,6 +428,8 @@ pub struct VNode {
     pub on_click: Option<Handler<ClickEvent>>,
     /// Every edit of a text input.
     pub on_input: Option<Handler<InputEvent>>,
+    /// Every edit of a rich input (#115).
+    pub on_rich_input: Option<Handler<RichInputEvent>>,
     /// The selection or caret of a text input or area moved (#86).
     pub on_select: Option<Handler<SelectionEvent>>,
     /// The selection the app sets on a text input or area, in characters
@@ -467,6 +511,7 @@ impl VNode {
             children: Vec::new(),
             on_click: None,
             on_input: None,
+            on_rich_input: None,
             on_select: None,
             selection: None,
             on_back: None,
@@ -692,6 +737,11 @@ builder!(
     TextInput
 );
 builder!(
+    /// An editable paragraph of styled runs and inline objects. See
+    /// [`rich_input`].
+    RichInput
+);
+builder!(
     /// A screen of a navigation stack. See [`screen`].
     Screen
 );
@@ -783,7 +833,7 @@ impl Text {
     /// Replaces the text with runs (see [`rich_text`]).
     pub fn spans(mut self, spans: impl IntoIterator<Item = crate::spans::Span>) -> Self {
         self.0.spans = spans.into_iter().collect();
-        self.0.text = self.0.spans.iter().map(|s| s.run.text.as_str()).collect();
+        self.0.text = self.0.spans.iter().map(|s| s.display_text()).collect();
         self
     }
 
@@ -954,6 +1004,96 @@ macro_rules! text_entry {
 }
 text_entry!(TextInput);
 text_entry!(TextArea);
+text_entry!(RichInput);
+
+/// An editable paragraph of styled runs and inline objects (#115): the
+/// [`Span`](crate::Span)s of [`rich_text`], edited in place. Bold, italic,
+/// underline, strikethrough, inline code (`font_mono`, `bg`) and links stay
+/// styled while the user types; a [`chip`](crate::chip) (a mention of a
+/// page, a person, a date) is one character the caret jumps over and one
+/// Backspace deletes. Controlled like [`text_input`]: render the spans you
+/// store, store what [`on_input`](RichInput::on_input) gives back.
+///
+/// ```
+/// # use prism_core::prelude::*;
+/// # use prism_core::{restyle_spans, splice_spans};
+/// struct Note { spans: Vec<Span>, sel: SelectionEvent }
+///
+/// impl Render for Note {
+///     fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+///         rich_input(self.spans.clone())
+///             .placeholder("Write something…")
+///             .on_input(cx.listener(|this, e: &RichInputEvent, _| this.spans = e.spans.clone()))
+///             .on_select(cx.listener(|this, e: &SelectionEvent, _| this.sel = *e))
+///             .selection(self.sel)
+///             .on_key_down(cx.listener(|this, e: &KeyEvent, _| {
+///                 // ⌘B: bold the selection.
+///                 if e.is("b") && e.modifiers.command() {
+///                     this.spans = restyle_spans(&this.spans, this.sel.range(), Span::bold);
+///                 }
+///                 // "@": a mention picker would insert a chip at the caret.
+///                 if e.is("F2") {
+///                     let at = this.sel.start;
+///                     this.spans = splice_spans(&this.spans, at..at, [chip("page:42", "Roadmap")]);
+///                     this.sel = SelectionEvent::caret(at + 1);
+///                 }
+///             }))
+///     }
+/// }
+/// ```
+///
+/// It wraps like a paragraph and grows with its content (cap it with
+/// `max_h`). Enter calls [`on_submit`](RichInput::on_submit) and inserts
+/// nothing (a block editor splits the block there, with
+/// [`split_spans`](crate::split_spans) at [`KeyEvent::selection`](crate::KeyEvent::selection));
+/// Shift+Enter inserts a line break (`'\n'`). Selections
+/// ([`on_select`](RichInput::on_select), [`selection`](RichInput::selection))
+/// count characters of the value, a chip being one, and follow the rules
+/// of text fields: a value or selection the app sets while the field is
+/// focused is applied, echoes of the user's own typing are not (#73, #86).
+///
+/// Styles come from the app: the field has no formatting commands of its
+/// own (⌘B is yours, with [`restyle_spans`](crate::restyle_spans)), and
+/// pasted text arrives plain. Rich editing runs on the web and macOS;
+/// iOS, GTK, Android and watchOS show a plain multi-line field of the
+/// value instead (styles not drawn, a chip shown as `U+FFFC`), whose edits
+/// still come back as spans that keep the styles of the text around them.
+pub fn rich_input(spans: impl IntoIterator<Item = crate::spans::Span>) -> RichInput {
+    RichInput(VNode::new(NodeKind::RichInput)).spans(spans)
+}
+
+impl RichInput {
+    /// Replaces the runs (see [`rich_input`]).
+    pub fn spans(mut self, spans: impl IntoIterator<Item = crate::spans::Span>) -> Self {
+        self.0.spans = spans.into_iter().collect();
+        self.0.text = crate::spans::spans_text(&self.0.spans);
+        self
+    }
+
+    /// Text shown while the field is empty (also its default accessibility label).
+    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.0.placeholder = placeholder.into();
+        self
+    }
+
+    /// Called on every edit with the new runs and plain value
+    /// ([`RichInputEvent`]).
+    pub fn on_input(mut self, handler: Handler<RichInputEvent>) -> Self {
+        self.0.on_rich_input = Some(handler);
+        self
+    }
+
+    /// Called when the user presses Enter (Shift+Enter inserts a line break).
+    pub fn on_submit(mut self, handler: Handler<ClickEvent>) -> Self {
+        self.0.on_submit = Some(handler);
+        self
+    }
+
+    /// The return key's label on touch keyboards: Done, Go, Next, Search, Send.
+    pub fn return_key(self, key: crate::controls::ReturnKey) -> Self {
+        self.input_config(|c| c.return_key = key)
+    }
+}
 
 /// A multi-line text field. It grows with its text, then scrolls once it
 /// reaches its `max_h`: `text_area().value(&self.notes).max_h(px(160.))`.

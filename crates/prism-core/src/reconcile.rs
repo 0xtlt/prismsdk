@@ -18,7 +18,7 @@ use crate::a11y::{Accessibility, Role};
 use crate::app::{AnyEntity, App, Appearance, EntityId};
 use crate::element::{
     BackEvent, ChangeEvent, ClickEvent, Element, Handler, InputEvent, NavigateEvent, NodeKind,
-    ScrollEvent, SelectionEvent, SwipeDirection, VNode,
+    RichInputEvent, ScrollEvent, SelectionEvent, SwipeDirection, VNode,
 };
 use crate::style::Style;
 
@@ -294,6 +294,19 @@ pub enum Patch {
         /// The web view.
         id: NodeId,
     },
+    // --- Editable rich text (#115) ---
+    /// The runs of a [`RichInput`](NodeKind::RichInput)
+    /// ([`encode_runs`](crate::encode_runs)), sent after its plain text
+    /// ([`SetText`](Patch::SetText)) whenever they change. Like a text, a
+    /// value equal to what the user just typed is an echo the field leaves
+    /// alone (#73). Backends without rich editing ignore it and edit the
+    /// plain text.
+    SetRichValue {
+        /// The rich input.
+        id: NodeId,
+        /// Its runs, encoded.
+        runs: String,
+    },
 }
 
 /// An event reported by a backend.
@@ -301,8 +314,14 @@ pub enum Patch {
 pub enum UiEvent {
     /// A button or clickable view was activated.
     Click(NodeId),
-    /// A text input was edited: (id, new text).
+    /// A text input was edited: (id, new text). A rich input on a backend
+    /// that edits plain text reports this too: its runs follow the text
+    /// (#115).
     Input(NodeId, String),
+    /// A rich input was edited (#115): (id, its runs as shown,
+    /// [`encode_runs`](crate::encode_runs) without link ids), each with the
+    /// style of the run it came from.
+    RichInput(NodeId, String),
     /// The selection of a text input or area moved: (id, start, end) in
     /// characters (#86).
     Select(NodeId, usize, usize),
@@ -390,6 +409,8 @@ struct MNode {
     animates: bool,
     /// Its app-defined attributes (`.attr(…)`).
     attributes: Vec<(String, String)>,
+    /// A rich input's encoded runs, as last sent (#115).
+    runs: String,
 }
 
 /// What backends last got about a mounted island.
@@ -398,6 +419,23 @@ struct MIsland {
     source: crate::island::IslandSource,
     props: HashMap<String, String>,
     events: Vec<String>,
+}
+
+/// A rich input's spans as last rendered (#115), with the style each run
+/// was sent with: edits the backend reports are rebuilt from them.
+struct RichState {
+    spans: Vec<(crate::spans::TextRun, crate::spans::Span)>,
+    font_size: f32,
+}
+
+/// What an edit of a rich input's plain text is (#115).
+pub enum RichEdit {
+    /// The new runs.
+    Spans(RichInputEvent),
+    /// Enter, in a backend's plain multi-line field: a lone line break was
+    /// typed and the input has an `on_submit`. The field gets the app's
+    /// value back.
+    Submit,
 }
 
 /// A flattened child, ready to diff.
@@ -416,6 +454,8 @@ pub struct Reconciler {
     next_id: NodeId,
     click: HashMap<NodeId, Handler<ClickEvent>>,
     input: HashMap<NodeId, Handler<InputEvent>>,
+    rich_input: HashMap<NodeId, Handler<RichInputEvent>>,
+    rich: HashMap<NodeId, RichState>,
     select: HashMap<NodeId, Handler<SelectionEvent>>,
     back: HashMap<NodeId, Handler<BackEvent>>,
     navigate: HashMap<NodeId, Handler<NavigateEvent>>,
@@ -471,6 +511,46 @@ impl Reconciler {
     /// The input handler of node `id`, if any.
     pub fn input_handler(&self, id: NodeId) -> Option<Handler<InputEvent>> {
         self.input.get(&id).cloned()
+    }
+
+    /// The input handler of rich input `id`, if any (#115).
+    pub fn rich_input_handler(&self, id: NodeId) -> Option<Handler<RichInputEvent>> {
+        self.rich_input.get(&id).cloned()
+    }
+
+    /// Rich input `id`'s plain text became `value` (#115): a backend that
+    /// edits plain text. The runs around the change keep their style (see
+    /// [`RichInputEvent`]). `None`: `id` is no rich input.
+    pub fn rich_text_edit(&mut self, id: NodeId, value: &str) -> Option<RichEdit> {
+        let state = self.rich.get(&id)?;
+        let old: Vec<crate::spans::Span> = state.spans.iter().map(|(_, s)| s.clone()).collect();
+        let before = crate::spans::spans_text(&old);
+        if self.submit.contains_key(&id) && is_line_break_typed(&before, value) {
+            // The field shows a line break the app does not have: send it
+            // the app's value again at the next render.
+            if let Some(m) = self.nodes.get_mut(&id) {
+                m.text = value.to_string();
+                m.runs.clear();
+            }
+            return Some(RichEdit::Submit);
+        }
+        let spans = crate::spans::edit_text(&old, value);
+        Some(RichEdit::Spans(RichInputEvent::new(spans)))
+    }
+
+    /// Rich input `id` reported `runs` (#115): the web client and AppKit,
+    /// which keep each run's style. `None`: `id` is no rich input or has
+    /// no `on_input`.
+    pub fn rich_runs_edit(
+        &self,
+        id: NodeId,
+        runs: &str,
+    ) -> Option<(Handler<RichInputEvent>, RichInputEvent)> {
+        let h = self.rich_input.get(&id)?.clone();
+        let state = self.rich.get(&id)?;
+        let spans =
+            crate::spans::edit_runs(&state.spans, state.font_size, crate::decode_runs(runs));
+        Some((h, RichInputEvent::new(spans)))
     }
 
     /// The selection handler of text field `id`, if any (#86).
@@ -919,6 +999,7 @@ impl Reconciler {
             children,
             on_click,
             on_input,
+            on_rich_input,
             on_select,
             selection,
             on_back,
@@ -1026,10 +1107,14 @@ impl Reconciler {
         }
         // Rich text: the runs are the config; clickable runs get item ids
         // (after the menu above, which drops this node's old items).
-        let (config, rich_label) = if spans.is_empty() {
-            (config, None)
+        let (config, rich_label, rich_runs) = if kind == NodeKind::RichInput {
+            let runs = self.mount_rich(id, style.font_size, spans);
+            (config, None, Some(runs))
+        } else if spans.is_empty() {
+            (config, None, None)
         } else {
-            self.mount_spans(id, style.font_size, spans)
+            let (config, label) = self.mount_spans(id, style.font_size, spans);
+            (config, label, None)
         };
         // A link navigates when activated in the app.
         let on_click = on_click.or_else(|| link.clone().map(link_handler));
@@ -1068,6 +1153,17 @@ impl Reconciler {
                 m.text = text;
                 // The field's caret may have moved with its text: what it
                 // last reported no longer tells an echo (#86).
+                m.shown_selection = None;
+            }
+            // A rich input's runs, after its text (#115).
+            if let Some(runs) = rich_runs
+                && m.runs != runs
+            {
+                self.patches.push(Patch::SetRichValue {
+                    id,
+                    runs: runs.clone(),
+                });
+                m.runs = runs;
                 m.shown_selection = None;
             }
             if m.placeholder != placeholder {
@@ -1138,6 +1234,10 @@ impl Reconciler {
         match on_select {
             Some(h) => self.select.insert(id, h),
             None => self.select.remove(&id),
+        };
+        match on_rich_input {
+            Some(h) => self.rich_input.insert(id, h),
+            None => self.rich_input.remove(&id),
         };
         match on_back {
             Some(h) => self.back.insert(id, h),
@@ -1424,6 +1524,7 @@ impl Reconciler {
                 }
                 NodeKind::TextInput
                 | NodeKind::TextArea
+                | NodeKind::RichInput
                 | NodeKind::Picker
                 | NodeKind::DatePicker
                     if !m.placeholder.is_empty() =>
@@ -1478,6 +1579,10 @@ impl Reconciler {
         let mut relabelled = false;
         for (i, span) in spans.into_iter().enumerate() {
             let mut run = span.run;
+            // Read-only, a chip shows its label (#115).
+            if let (Some(_), Some(label)) = (&run.chip, &run.chip_label) {
+                run.text = label.clone();
+            }
             if let Some(size) = span.size.filter(|_| font_size > 0.) {
                 run.size = Some(size / font_size);
             }
@@ -1501,6 +1606,40 @@ impl Reconciler {
             .then(|| spoken.split_whitespace().collect::<Vec<_>>().join(" "))
             .filter(|l| !l.is_empty());
         (crate::spans::encode_runs(&runs), label)
+    }
+
+    /// Registers the handlers of a rich input's clickable runs (links,
+    /// chips with `on_click`), remembers its spans to rebuild edits from,
+    /// and returns its encoded runs (#115). Unlike a read-only text, a chip
+    /// is [`OBJECT_CHAR`](crate::OBJECT_CHAR) there.
+    fn mount_rich(&mut self, id: NodeId, font_size: f32, spans: Vec<crate::spans::Span>) -> String {
+        let mut runs = Vec::with_capacity(spans.len());
+        let mut keyed = Vec::with_capacity(spans.len());
+        for (i, span) in spans.into_iter().enumerate() {
+            let mut run = span.run.clone();
+            if let Some(size) = span.size.filter(|_| font_size > 0.) {
+                run.size = Some(size / font_size);
+            }
+            let handler = span
+                .on_click
+                .clone()
+                .or_else(|| run.href.clone().map(link_handler));
+            if let Some(h) = handler {
+                let item = crate::spans::link_id(id, i);
+                self.menu_items.insert(item, h);
+                run.link = Some(item);
+            }
+            keyed.push((crate::spans::run_key(&run), span));
+            runs.push(run);
+        }
+        self.rich.insert(
+            id,
+            RichState {
+                spans: keyed,
+                font_size,
+            },
+        );
+        crate::spans::encode_runs(&runs)
     }
 
     fn create(&mut self, kind: NodeKind, key: Option<String>) -> NodeId {
@@ -1541,6 +1680,7 @@ impl Reconciler {
                 link: None,
                 animates: false,
                 attributes: Vec::new(),
+                runs: String::new(),
             },
         );
         id
@@ -1572,6 +1712,8 @@ impl Reconciler {
         }
         self.click.remove(&id);
         self.input.remove(&id);
+        self.rich_input.remove(&id);
+        self.rich.remove(&id);
         self.select.remove(&id);
         self.back.remove(&id);
         self.navigate.remove(&id);
@@ -1618,4 +1760,15 @@ fn format_value(v: f64) -> String {
         let s = format!("{v:.2}");
         s.trim_end_matches('0').trim_end_matches('.').to_string()
     }
+}
+
+/// Whether `after` is `before` with one line break typed in it: Enter in a
+/// plain multi-line field standing in for a rich input (#115).
+fn is_line_break_typed(before: &str, after: &str) -> bool {
+    let (b, a): (Vec<char>, Vec<char>) = (before.chars().collect(), after.chars().collect());
+    if a.len() != b.len() + 1 {
+        return false;
+    }
+    let p = b.iter().zip(&a).take_while(|(x, y)| x == y).count();
+    a[p] == '\n' && a[p + 1..] == b[p..]
 }

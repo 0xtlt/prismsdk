@@ -58,7 +58,7 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
         NodeKind::Image => w.push_str("display:inline-flex;"),
         NodeKind::Progress | NodeKind::Slider => w.push_str("display:block;"),
         NodeKind::Spinner => w.push_str("display:inline-block;"),
-        NodeKind::Picker | NodeKind::DatePicker | NodeKind::TextArea => {
+        NodeKind::Picker | NodeKind::DatePicker | NodeKind::TextArea | NodeKind::RichInput => {
             w.push_str("display:block;")
         }
         // The tab bar is above the panels, or a sidebar beside them on wide
@@ -312,6 +312,7 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
             kind,
             NodeKind::TextInput
                 | NodeKind::TextArea
+                | NodeKind::RichInput
                 | NodeKind::Picker
                 | NodeKind::DatePicker
                 | NodeKind::Button
@@ -324,7 +325,11 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
     // A field that draws its own box (padding, a background, a border,
     // `.border(0.)`) or its own focus look skips the page's `:focus-visible`
     // outline (`prism.css`), as natively: the caret shows the focus (#52).
-    if matches!(kind, NodeKind::TextInput | NodeKind::TextArea) && own_field_look(s) {
+    if matches!(
+        kind,
+        NodeKind::TextInput | NodeKind::TextArea | NodeKind::RichInput
+    ) && own_field_look(s)
+    {
         w.push_str("outline:none;");
     }
     if kind != NodeKind::View {
