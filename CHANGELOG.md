@@ -317,6 +317,7 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- macOS: Escape outside a sheet no longer crashes the app (#163). AppKit sends `cancelOperation:` up the responder chain from a focused field; Prism views forwarded it to `NSView`, which has no such method (« invalid message send »). It now goes on up the chain, to whatever handles it; the app's key handlers hear `"Escape"` from the key monitor as before.
 - Apple platforms: a variable font given as bytes (`EmbeddedAssets`, `FontFace::bytes`) has all its weights (#150); it drew every weight as regular. Registering a `CGFont` keeps only the default instance, so the bytes now go through a cache file registered by URL, like the bundle's fonts (the `CGFont` remains the fallback without a writable cache).
 - Web: a dialog opened in the same update as `.autofocus()` or `cx.focus` keeps that focus (#148); `showModal()` moved it to the dialog's first control.
 - Docs: `WebSandbox::popups()` also lets the windows a sandboxed page opens escape the sandbox (`allow-popups-to-escape-sandbox` on the web, the system browser natively), now documented (#146).
