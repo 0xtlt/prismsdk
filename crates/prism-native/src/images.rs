@@ -1,13 +1,18 @@
 //! Image bytes for `picture(src)` on native backends: remote URLs (with an
-//! on-disk cache) or app assets (bundle resources, then the dev assets dir).
-//! Runs on a background thread; platforms decode and display the bytes.
+//! on-disk cache) or app assets (compiled into the binary, then bundle
+//! resources, then the dev assets dir). Runs on a background thread;
+//! platforms decode and display the bytes.
 
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
+use prism_core::EmbeddedAssets;
+
 /// Where to look for assets and cache downloads.
 #[derive(Clone, Debug, Default)]
 pub struct ImageSources {
+    /// Assets compiled into the binary, searched first.
+    pub embedded: EmbeddedAssets,
     /// Directories searched for assets, in order.
     pub asset_dirs: Vec<PathBuf>,
     /// Download cache directory.
@@ -126,6 +131,9 @@ pub fn load(src: &str, sources: &ImageSources) -> Option<Vec<u8>> {
     if src.split('/').any(|s| s == "..") {
         return None;
     }
+    if let Some(bytes) = sources.embedded.get(src) {
+        return Some(bytes.to_vec());
+    }
     sources
         .asset_dirs
         .iter()
@@ -157,6 +165,23 @@ mod tests {
             }
         });
         format!("http://{addr}/me.png")
+    }
+
+    #[test]
+    fn embedded_assets_come_before_the_asset_dirs() {
+        let dir = std::env::temp_dir().join(format!("prism-images-dirs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("logo.png"), b"disk").unwrap();
+        std::fs::write(dir.join("other.png"), b"other").unwrap();
+        let sources = ImageSources {
+            embedded: EmbeddedAssets::new().file("logo.png", &b"binary"[..]),
+            asset_dirs: vec![dir.clone()],
+            ..Default::default()
+        };
+        assert_eq!(load("logo.png", &sources).as_deref(), Some(&b"binary"[..]));
+        assert_eq!(load("other.png", &sources).as_deref(), Some(&b"other"[..]));
+        assert_eq!(load("../logo.png", &sources), None);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

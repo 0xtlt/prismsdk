@@ -216,6 +216,32 @@ impl Application {
         self
     }
 
+    /// App assets compiled into the binary, for an app shipped as one file
+    /// (a web server in a scratch container): `picture("logo.png")` and the
+    /// fonts of `fonts/` find them before the [`assets`](Self::assets)
+    /// directory's files. Served hashed and immutable on the web, read from
+    /// memory on macOS, iOS and Linux; Android and watchOS read the bundle's
+    /// assets folder only.
+    ///
+    /// ```ignore
+    /// Application::new()
+    ///     .embedded_assets(
+    ///         EmbeddedAssets::new()
+    ///             .file("logo.png", include_bytes!("../assets/logo.png"))
+    ///             .file("fonts/Inter.woff2", include_bytes!("../assets/fonts/Inter.woff2")),
+    ///     )
+    ///     .run(|cx| cx.new_entity(Home::new));
+    ///
+    /// // rust-embed: `#[derive(RustEmbed)] #[folder = "assets"] struct Files;`
+    /// let files: EmbeddedAssets = Files::iter()
+    ///     .filter_map(|name| Some((name.to_string(), Files::get(&name)?.data)))
+    ///     .collect();
+    /// ```
+    pub fn embedded_assets(mut self, assets: EmbeddedAssets) -> Self {
+        self.config.embedded_assets.merge(&assets);
+        self
+    }
+
     /// Moves the size classes: the smallest widths of `Medium`, `Expanded`
     /// and `Large`, in points (default `[600., 1024., 1440.]`). `.md()`,
     /// `.lg()`, `.xl()` and `cx.breakpoint()` follow them, and every

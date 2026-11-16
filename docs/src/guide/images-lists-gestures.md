@@ -11,6 +11,12 @@ scroll().on_refresh(handler).refreshing(self.loading)   // pull to refresh (UIRe
 div().on_swipe(SwipeDirection::Left, handler)           // swipe gestures
 ```
 
+`picture("logo.png")` names an app asset: a file of the assets folder
+(`Application::assets`, copied into native bundles), or one compiled into the
+binary with `Application::embedded_assets`, found first (web, macOS, iOS and
+Linux; Android and watchOS read the bundle's folder only). See
+[Assets compiled into the binary](../platforms/web.md#assets-compiled-into-the-binary).
+
 ## Pictures behind a token
 
 `picture(url).header(name, value)` (any number of headers) loads a remote image that needs credentials, such as a per-user rendering behind the API's bearer token:

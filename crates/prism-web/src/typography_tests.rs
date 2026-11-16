@@ -275,7 +275,12 @@ fn bundled_fonts_are_font_faces_of_the_base_stylesheet() {
     std::fs::create_dir_all(dir.join("fonts")).unwrap();
     std::fs::write(dir.join("fonts/Brand-BoldItalic.woff2"), b"wOF2").unwrap();
     std::fs::write(dir.join("logo.png"), b"png").unwrap();
-    let assets = crate::assets::Assets::new("js".into(), "body{}".into(), Some(dir.clone()));
+    let assets = crate::assets::Assets::new(
+        "js".into(),
+        "body{}".into(),
+        Some(dir.clone()),
+        Default::default(),
+    );
     let css_path = assets.css().to_string();
     let css = String::from_utf8(assets.get(&css_path).expect("the stylesheet").body).unwrap();
     assert!(css.starts_with("body{}"));
@@ -287,4 +292,29 @@ fn bundled_fonts_are_font_faces_of_the_base_stylesheet() {
         "{css}"
     );
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn embedded_fonts_are_font_faces_too() {
+    let embedded = prism_core::EmbeddedAssets::new()
+        .file("fonts/Brand-Bold.woff2", &b"wOF2"[..])
+        .file("logo.png", &b"png"[..]);
+    let assets = crate::assets::Assets::new("js".into(), "body{}".into(), None, embedded);
+    let css_path = assets.css().to_string();
+    let css = String::from_utf8(assets.get(&css_path).expect("the stylesheet").body).unwrap();
+    let hashed = assets.app_path("fonts/Brand-Bold.woff2");
+    assert_eq!(
+        hashed,
+        format!(
+            "assets/fonts/Brand-Bold.{}.woff2",
+            crate::content_hash(b"wOF2")
+        )
+    );
+    assert!(
+        css.contains(&format!(
+            "@font-face{{font-family:\"Brand\";src:url(\"../{hashed}\") format(\"woff2\");font-weight:700;font-style:normal;font-display:swap}}"
+        )),
+        "{css}"
+    );
+    assert_eq!(assets.get(&hashed).unwrap().body, b"wOF2");
 }

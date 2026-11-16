@@ -12,6 +12,7 @@ mod a11y;
 pub mod animation;
 mod app;
 mod apple_models;
+mod assets;
 pub mod background;
 pub mod car;
 pub mod channel;
@@ -48,6 +49,7 @@ pub use window::{WindowChrome, WindowControls};
 pub use a11y::{Accessibility, Accessible, Role};
 pub use animation::{Animations, Pose, Transform};
 pub use app::{AnyEntity, App, Appearance, Context, Entity, EntityId, Environment, Render};
+pub use assets::EmbeddedAssets;
 pub use background::{BackgroundKind, BackgroundTask, Lifecycle};
 pub use car::{CarButton, CarButtonStyle, CarItem, CarSection, CarTab, CarTemplate};
 pub use channel::{Receiver, Sender, channel};
@@ -167,6 +169,9 @@ pub struct AppConfig {
     /// Directory of app assets (`picture("logo.png")`), used in development;
     /// bundles copy it into their resources.
     pub assets: Option<String>,
+    /// App assets compiled into the binary (`Application::embedded_assets`):
+    /// found before the files of [`assets`](Self::assets).
+    pub embedded_assets: EmbeddedAssets,
     /// The desktop window's frame: the system's title bar, or none
     /// (`WindowChrome::Custom`, macOS). Ignored on the web and mobile.
     pub window_chrome: WindowChrome,
@@ -180,6 +185,7 @@ impl Default for AppConfig {
             height: 640.,
             port: 3000,
             assets: None,
+            embedded_assets: EmbeddedAssets::new(),
             window_chrome: WindowChrome::Standard,
         }
     }
@@ -670,6 +676,8 @@ pub mod prelude {
         scroll, shape, slider, spinner, text, text_area, text_input, timer, toggle,
     };
     pub use crate::{GridTrack, ScrollAxis, auto_fill, auto_fit, fr, minmax, repeat, scroll_x};
+    // App assets compiled into the binary (#61).
+    pub use crate::EmbeddedAssets;
     // Typography and rich text.
     pub use crate::{FontFamily, FontWeight, Span, TextTransform, icon, link, rich_text, span};
     // Box decorations and interaction states.

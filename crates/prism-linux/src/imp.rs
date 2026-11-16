@@ -776,6 +776,8 @@ pub struct Gtk {
     clickable: Rc<RefCell<HashSet<NodeId>>>,
     timers: HashMap<NodeId, (gtk::Label, f64)>,
     assets: Option<std::path::PathBuf>,
+    /// Assets compiled into the binary, found before the directory's.
+    embedded: prism_core::EmbeddedAssets,
     dark: bool,
     /// Titles of screens and tabs, icons of tabs.
     titles: HashMap<NodeId, String>,
@@ -1581,13 +1583,21 @@ impl Widgets for Gtk {
                 load_remote_picture(p, text);
             }
             View::Picture(_, p) => {
-                let path = if text.starts_with('/') {
-                    Some(std::path::PathBuf::from(text))
+                // Compiled into the binary first, then the assets directory.
+                if let Some(bytes) = self.embedded.get(text) {
+                    match gtk::gdk::Texture::from_bytes(&gtk::glib::Bytes::from(bytes)) {
+                        Ok(t) => p.set_paintable(Some(&t)),
+                        Err(_) => eprintln!("prism-linux: could not decode the picture {text}"),
+                    }
                 } else {
-                    self.assets.as_ref().map(|a| a.join(text))
-                };
-                if let Some(path) = path.filter(|p| p.exists()) {
-                    p.set_filename(Some(&path));
+                    let path = if text.starts_with('/') {
+                        Some(std::path::PathBuf::from(text))
+                    } else {
+                        self.assets.as_ref().map(|a| a.join(text))
+                    };
+                    if let Some(path) = path.filter(|p| p.exists()) {
+                        p.set_filename(Some(&path));
+                    }
                 }
             }
             // Screens and tabs: titles (the stack header / tab bar shows them).
@@ -2804,7 +2814,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         .ok()
         .or_else(|| config.assets.clone())
         .map(Into::into);
-    text::register_fonts(assets.as_deref());
+    text::register_fonts(assets.as_deref(), &config.embedded_assets);
     let _ = APP.set((config, init));
     // Installed packages set PRISM_APP_ID (the .desktop file's name), so
     // desktops match the window to its launcher and icon.
@@ -2925,6 +2935,7 @@ fn activate(app: &gtk::Application) {
             .ok()
             .or_else(|| config.assets.clone())
             .map(Into::into),
+        embedded: config.embedded_assets.clone(),
         dark,
         titles: HashMap::new(),
         icons: HashMap::new(),

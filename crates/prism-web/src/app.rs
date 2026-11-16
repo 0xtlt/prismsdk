@@ -62,6 +62,18 @@ pub(crate) struct Inner {
     pub strict_csp: bool,
 }
 
+/// Prism's client, its base stylesheet, the app's assets and its islands.
+fn build_assets(
+    dir: Option<PathBuf>,
+    embedded: prism_core::EmbeddedAssets,
+    islands: &crate::islands::Islands,
+) -> Assets {
+    let client = crate::CLIENT_JS.replace("__GLYPHS__", &prism_core::glyphs::js_table());
+    let mut assets = Assets::new(client, crate::PRISM_CSS.into(), dir, embedded);
+    assets.add_islands(islands);
+    assets
+}
+
 impl WebApp {
     /// The app with its settings from the environment: `PRISM_BASE_PATH`,
     /// `PRISM_ASSET_URL` (a CDN), `PRISM_DATA_DIR` (default `.prism-data`),
@@ -71,16 +83,14 @@ impl WebApp {
         let assets_dir = env("PRISM_ASSETS_DIR")
             .or_else(|| config.assets.clone())
             .unwrap_or_else(|| "assets".into());
-        let client = crate::CLIENT_JS.replace("__GLYPHS__", &prism_core::glyphs::js_table());
-        let mut assets = Assets::new(
-            client,
-            crate::PRISM_CSS.into(),
-            Some(PathBuf::from(assets_dir)),
-        );
         let islands = env("PRISM_ISLANDS_DIR")
             .map(|dir| crate::islands::Islands::load(Path::new(&dir)))
             .unwrap_or_default();
-        assets.add_islands(&islands);
+        let assets = build_assets(
+            Some(PathBuf::from(assets_dir)),
+            config.embedded_assets.clone(),
+            &islands,
+        );
         let app = WebApp {
             inner: Arc::new(Inner {
                 config,
@@ -136,6 +146,27 @@ impl WebApp {
     pub fn vapid_public_key(self, key: &str) -> Self {
         let key = key.trim().to_string();
         self.configure(|i| i.vapid_public_key = Some(key))
+    }
+
+    /// Adds app assets compiled into the binary, for a server shipped as one
+    /// file: hashed and served like the assets directory's files (which they
+    /// win over), exported by [`export_static`](Self::export_static), and
+    /// those under `fonts/` declared as `@font-face` rules. Also
+    /// `Application::embedded_assets`.
+    ///
+    /// ```ignore
+    /// let assets = EmbeddedAssets::new()
+    ///     .file("logo.png", include_bytes!("../assets/logo.png"))
+    ///     .file("fonts/Inter.woff2", include_bytes!("../assets/fonts/Inter.woff2"));
+    /// let app = WebApp::new(config, init).embedded_assets(assets);
+    /// ```
+    pub fn embedded_assets(self, assets: prism_core::EmbeddedAssets) -> Self {
+        self.configure(|i| {
+            let (dir, mut embedded) = i.assets.sources();
+            embedded.merge(&assets);
+            i.config.embedded_assets = embedded.clone();
+            i.assets = build_assets(dir, embedded, &i.islands);
+        })
     }
 
     /// Where each browser's data lives (`cx.storage()`, uploads).
@@ -979,6 +1010,44 @@ mod tests {
             get(&app, "/files/x.png", &[]).status(),
             StatusCode::NOT_FOUND
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn embedded_assets_need_no_directory() {
+        // No assets directory at all: the pictures come from the binary.
+        let dir = std::env::temp_dir().join(format!("prism-webapp-embed-{}", std::process::id()));
+        let config = AppConfig {
+            title: "Test".into(),
+            assets: Some(dir.join("missing").to_string_lossy().into()),
+            embedded_assets: prism_core::EmbeddedAssets::new().file("logo.png", &b"old"[..]),
+            ..Default::default()
+        };
+        let init: AppInit = Arc::new(|cx: &mut App| {
+            let root = cx.new_entity(|_| Page);
+            cx.set_root(root);
+        });
+        let app = WebApp::new(config, init)
+            .data_dir(dir.join("data"))
+            .embedded_assets(prism_core::EmbeddedAssets::new().file("logo.png", &b"png!"[..]));
+        let html = String::from_utf8(get(&app, "/", &[]).body().clone()).unwrap();
+        let logo = format!("/assets/logo.{}.png", crate::content_hash(b"png!"));
+        assert!(html.contains(&logo), "{html}");
+        let image = get(&app, &logo, &[]);
+        assert_eq!(
+            (image.body().as_slice(), header(&image, "cache-control")),
+            (&b"png!"[..], crate::IMMUTABLE)
+        );
+        assert_eq!(header(&image, "content-type"), "image/png");
+        let plain = get(&app, "/assets/logo.png", &[]);
+        assert_eq!(
+            (plain.body().as_slice(), header(&plain, "cache-control")),
+            (&b"png!"[..], crate::REVALIDATE)
+        );
+        assert_eq!(app.config().embedded_assets.len(), 1);
+        let out = dir.join("public");
+        app.export_static(&out).unwrap();
+        assert_eq!(std::fs::read(out.join(&logo[1..])).unwrap(), b"png!");
         let _ = std::fs::remove_dir_all(dir);
     }
 
