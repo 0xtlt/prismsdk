@@ -16,6 +16,15 @@ div().border(2.).border_color(Color::current().with_alpha(0.35)).border_dashed()
 div().bg_gradient(Gradient::linear(135., [t.accent, rgb(0xBF5AF2)]))
 div().absolute().bottom(0.).left(0.).right(0.).backdrop_blur(16.).bg(rgba(0xFFFFFF, 0.45))
 
+// A hue wheel (a custom color swatch), a pie-like progress disc at 30 %.
+let (red, yellow, green) = (rgb(0xFF0000), rgb(0xFFFF00), rgb(0x00FF00));
+let (cyan, blue, magenta) = (rgb(0x00FFFF), rgb(0x0000FF), rgb(0xFF00FF));
+div().size(24.).rounded(12.).bg_gradient(Gradient::conic(0., [red, yellow, green, cyan, blue, magenta, red]))
+div().size(40.).rounded(20.).bg_gradient(
+    Gradient::conic(0., [t.accent, t.border])
+        .with_stops([(t.accent, 0.), (t.accent, 0.3), (t.border, 0.3), (t.border, 1.)]),
+)
+
 // A search field whose box rings while it is edited, with a Clear button
 // shown only then.
 div()
@@ -40,7 +49,7 @@ The Components tab of `examples/counter` has all of them (the Decorations card).
 | `.border_top(w, color)`, `.border_bottom(…)`, `.border_left(…)`, `.border_right(…)` | one side's border (left and right are leading and trailing: they swap in right-to-left languages); the other sides keep `.border(w)` / `.border_color(c)` |
 | `.border_dashed()`, `.border_dotted()` | dashes (3 × width on, 2 × width off) or round dots |
 | `.clip()` | children are clipped to the box, rounded corners included (`overflow: hidden`) |
-| `.bg_gradient(Gradient::linear(angle, colors))` | a gradient over the background: `angle` in CSS degrees (`180` top to bottom, `90` left to right); `Gradient::radial(colors)` goes from the center to the corners; `.with_stops([(color, 0.2), …])` places the colors |
+| `.bg_gradient(Gradient::linear(angle, colors))` | a gradient over the background: `angle` in CSS degrees (`180` top to bottom, `90` left to right); `Gradient::radial(colors)` goes from the center to the corners; `Gradient::conic(from, colors)` turns around the center, clockwise from `from` degrees (`0` up, like CSS `conic-gradient(from …)`; repeat the first color last for a seamless wheel); `.with_stops([(color, 0.2), …])` places the colors |
 | `.backdrop_blur(radius)` | blurs what is behind the node; give it a translucent `.bg(…)` to tint it |
 
 `Color::current()` is the text color of the node it is used on (CSS `currentColor`): `Color::current().with_alpha(0.12)` is a 12 % tint that follows dark mode and themes without being recomputed at each call site. It works in backgrounds, borders, shadows and gradients. Natively it resolves against the node's `text_color`, or the platform's label color (black, white in dark mode) when the node has none; on the web, against the node's `text_color` too, else the inherited `currentColor`.
@@ -78,11 +87,11 @@ Each state is resolved natively: the platform says when the pointer enters, a pr
 
 | | Shadows | Borders | Clip | Gradients | Backdrop blur |
 |---|---|---|---|---|---|
-| Web | `box-shadow` | `border-*` (logical sides) | `overflow: hidden` | `linear-gradient()`, `radial-gradient()` | `backdrop-filter` |
-| macOS, iOS, tvOS, visionOS | Core Animation layers; drop shadows live behind the view so `clip` doesn't cut them | shape layers (per-side borders are straight between the corners) | `masksToBounds`, per-corner `maskedCorners` | `CAGradientLayer` | `NSVisualEffectView`, `UIVisualEffectView`: the radius picks a material (tvOS has Regular and Prominent only) |
-| watchOS | SwiftUI shadows of the box's shape (spread and inset drawn by hand) | stroked paths | `clipShape` | `LinearGradient`, `EllipticalGradient` | system materials |
+| Web | `box-shadow` | `border-*` (logical sides) | `overflow: hidden` | `linear-gradient()`, `radial-gradient()`, `conic-gradient()` | `backdrop-filter` |
+| macOS, iOS, tvOS, visionOS | Core Animation layers; drop shadows live behind the view so `clip` doesn't cut them | shape layers (per-side borders are straight between the corners) | `masksToBounds`, per-corner `maskedCorners` | `CAGradientLayer` (axial, radial, conic) | `NSVisualEffectView`, `UIVisualEffectView`: the radius picks a material (tvOS has Regular and Prominent only) |
+| watchOS | SwiftUI shadows of the box's shape (spread and inset drawn by hand) | stroked paths | `clipShape` | `LinearGradient`, `EllipticalGradient`, `AngularGradient` | system materials |
 | Linux | GTK CSS `box-shadow` | GTK CSS | `Overflow::Hidden` | GTK CSS gradients | none in GTK 4: the translucent background is drawn without blur |
-| Android | drawn with `BlurMaskFilter` on the box's path | `DashPathEffect` | outline, or a path clip | `LinearGradient`, `RadialGradient` | no per-view backdrop API: Prism draws what is behind into a bitmap and blurs it (`RenderEffect` on Android 12+, a downscale before) |
+| Android | drawn with `BlurMaskFilter` on the box's path | `DashPathEffect` | outline, or a path clip | `LinearGradient`, `RadialGradient`, `SweepGradient` | no per-view backdrop API: Prism draws what is behind into a bitmap and blurs it (`RenderEffect` on Android 12+, a downscale before) |
 
 Drop shadows don't follow animated frame changes yet on Apple platforms (they jump to the end). Widgets and Live Activities don't draw the new decorations.
 

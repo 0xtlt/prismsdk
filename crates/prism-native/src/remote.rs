@@ -63,8 +63,10 @@
 //! spread, color, inset}]` (the first on top); `sides`: per-side borders
 //! `[[w, color] × 4]` top, right, bottom, left (already mirrored right to
 //! left); `bstyle`: `dashed` or `dotted`; `clip`: children clipped to the
-//! rounded box; `grad`: `{kind: "linear" | "radial", angle, stops: [[color,
-//! at]]}` (angle in CSS degrees, 180 top to bottom); `blur`: backdrop blur
+//! rounded box; `grad`: `{kind: "linear" | "radial" | "conic", angle,
+//! stops: [[color, at]]}` (angle in CSS degrees: 180 top to bottom for a
+//! linear one, where the first color starts for a conic one, clockwise from
+//! up); `blur`: backdrop blur
 //! radius; `cursor`: a CSS cursor name. Colors are already resolved
 //! ([`prism_core::Color::current`] included).
 //!
@@ -473,6 +475,8 @@ fn decorations(o: &mut Value, s: &Style) {
         let (kind, angle) = match g.kind {
             GradientKind::Linear { angle } => ("linear", angle),
             GradientKind::Radial => ("radial", 0.),
+            // `angle`: where the first color starts, clockwise from up.
+            GradientKind::Conic { from } => ("conic", from),
         };
         o["grad"] = json!({
             "kind": kind,

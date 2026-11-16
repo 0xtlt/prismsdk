@@ -71,6 +71,7 @@ pub(crate) fn paint(s: &Style, dark: bool, text: bool) -> Vec<(String, String)> 
                 GradientKind::Radial => {
                     format!("radial-gradient(ellipse farthest-corner, {stops})")
                 }
+                GradientKind::Conic { from } => format!("conic-gradient(from {from}deg, {stops})"),
             },
         );
     }
@@ -275,6 +276,12 @@ mod tests {
         assert!(
             declarations(&paint(&radial, false, false))
                 .contains("radial-gradient(ellipse farthest-corner, rgba(255,255,255,1) 0%")
+        );
+        let conic = Style::default().bg_gradient(Gradient::conic(90., [rgb(0xFFFFFF), rgb(0)]));
+        assert!(
+            declarations(&paint(&conic, false, false)).contains(
+                "background-image:conic-gradient(from 90deg, rgba(255,255,255,1) 0%, rgba(0,0,0,1) 100%);"
+            )
         );
     }
 

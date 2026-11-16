@@ -10,7 +10,8 @@
 //! - inner shadows: a layer whose shadow falls inside the box, masked to it;
 //! - per-side, dashed and dotted borders: `CAShapeLayer`s (the uniform solid
 //!   border stays the layer's own border);
-//! - gradients: a `CAGradientLayer` (linear along the CSS line, or radial);
+//! - gradients: a `CAGradientLayer` (linear along the CSS line, radial or
+//!   conic);
 //! - backdrop blur: a `UIVisualEffectView` (system materials by radius; the
 //!   background tints its content view);
 //! - clip: `clipsToBounds` with the layer's per-corner radius.
@@ -382,6 +383,14 @@ fn layout_entry(e: &mut Decor) {
                     gl.setType(unsafe { objc2_quartz_core::kCAGradientLayerRadial });
                     gl.setStartPoint(CGPoint::new(0.5, 0.5));
                     gl.setEndPoint(CGPoint::new((0.5 + c / w) as _, (0.5 + d / h) as _));
+                }
+                GradientKind::Conic { .. } => {
+                    // Around the center, the first color towards the end
+                    // point; UIKit's layers have y down, so Core Animation
+                    // turns clockwise like CSS. Angles are in points.
+                    gl.setType(unsafe { objc2_quartz_core::kCAGradientLayerConic });
+                    gl.setStartPoint(CGPoint::new((a / w) as _, (b / h) as _));
+                    gl.setEndPoint(CGPoint::new((c / w) as _, (d / h) as _));
                 }
             }
         }

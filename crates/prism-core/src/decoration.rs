@@ -184,6 +184,13 @@ pub enum GradientKind {
     /// From the center out to the corners (an ellipse the box's shape, like
     /// CSS `radial-gradient()`).
     Radial,
+    /// Around the center, like CSS `conic-gradient()`: the first color at
+    /// `from` degrees, the others following clockwise, the last one meeting
+    /// the first after a full turn.
+    Conic {
+        /// Degrees, clockwise from "up" (`0`: up, `90`: right).
+        from: f32,
+    },
 }
 
 /// One color of a [`Gradient`].
@@ -198,7 +205,7 @@ pub struct GradientStop {
 /// A background gradient (see [`Styled::bg_gradient`](crate::Styled::bg_gradient)).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Gradient {
-    /// Linear or radial.
+    /// Linear, radial or conic.
     pub kind: GradientKind,
     /// The colors, in order of position.
     pub stops: Vec<GradientStop>,
@@ -232,6 +239,18 @@ impl Gradient {
     pub fn radial(colors: impl IntoIterator<Item = Color>) -> Gradient {
         Gradient {
             kind: GradientKind::Radial,
+            stops: even(colors),
+        }
+    }
+
+    /// A conic gradient around the center (a hue wheel, a pie): the first
+    /// color at `from` degrees (`0`: up, `90`: right), the colors evenly
+    /// spaced clockwise over a full turn. Repeat the first color last for a
+    /// seamless wheel; [`with_stops`](Self::with_stops) gives hard edges
+    /// (two stops at the same position).
+    pub fn conic(from: f32, colors: impl IntoIterator<Item = Color>) -> Gradient {
+        Gradient {
+            kind: GradientKind::Conic { from },
             stops: even(colors),
         }
     }
@@ -272,6 +291,9 @@ impl Gradient {
                 format!("linear-gradient({angle}deg, {})", stops.join(", "))
             }
             GradientKind::Radial => format!("radial-gradient({})", stops.join(", ")),
+            GradientKind::Conic { from } => {
+                format!("conic-gradient(from {from}deg, {})", stops.join(", "))
+            }
         }
     }
 
@@ -279,6 +301,8 @@ impl Gradient {
     /// points from the top-left corner: `[x0, y0, x1, y1]`, the same line CSS
     /// uses (its length makes the corners reach the first and last colors).
     /// For a radial gradient: the center and the radii `[cx, cy, rx, ry]`.
+    /// For a conic gradient: the center and the point where the first color
+    /// starts, on the largest circle inside the box: `[cx, cy, x1, y1]`.
     pub fn geometry(&self, w: f32, h: f32) -> [f32; 4] {
         match self.kind {
             GradientKind::Linear { angle } => {
@@ -296,6 +320,12 @@ impl Gradient {
             GradientKind::Radial => {
                 let k = std::f32::consts::SQRT_2 / 2.;
                 [w / 2., h / 2., w * k, h * k]
+            }
+            GradientKind::Conic { from } => {
+                let a = from.to_radians();
+                let r = w.min(h) / 2.;
+                let (cx, cy) = (w / 2., h / 2.);
+                [cx, cy, cx + a.sin() * r, cy - a.cos() * r]
             }
         }
     }
