@@ -856,7 +856,7 @@ fn sticky_horizontal_scroll_and_baseline_ops() {
 
 #[test]
 fn typography_and_runs_reach_the_host_and_its_measure() {
-    use prism_core::{FontFamily, Length, TextRun, TextTransform, encode_runs};
+    use prism_core::{FontFamily, Length, Styled, TextRun, TextTransform, encode_runs};
     let mut w = RemoteWidgets::new(measure);
     w.create(1, NodeKind::Text);
     let style = Style {
@@ -888,9 +888,16 @@ fn typography_and_runs_reach_the_host_and_its_measure() {
         assert_eq!(s[k], v, "{k}");
     }
     assert_eq!(s.get("st"), None, "only what is set");
+    assert_eq!(s.get("tw"), None, "the usual line breaking");
+    // Balanced and pretty wrapping (#95).
+    w.set_style(&1, &Style::default().text_balance());
+    assert_eq!(last(&w)["s"]["tw"], json!("balance"));
+    w.set_style(&1, &Style::default().text_pretty());
+    assert_eq!(last(&w)["s"]["tw"], json!("pretty"));
     // Plain styles carry no typography keys.
     w.set_style(&1, &Style::default());
     assert_eq!(last(&w)["s"].get("ff"), None);
+    assert_eq!(last(&w)["s"].get("tw"), None);
 
     let runs = encode_runs(&[
         TextRun {

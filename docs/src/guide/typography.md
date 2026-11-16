@@ -10,6 +10,8 @@ text("ORD-7F3A-29C1").font_mono()
 text(description).line_clamp(2)       // two lines, then "…"
 text(file_name).truncate()            // one line, cut with "…"
 text(code).nowrap()                   // never wraps, cut at the edge
+text(subtitle).text_pretty()          // no lone word on the last line
+text(heading).text_balance()          // lines of about the same length
 text("Deprecated").strikethrough().italic()
 ```
 
@@ -25,6 +27,7 @@ text("Deprecated").strikethrough().italic()
 | `.tabular_nums()` | `tabular_numbers` | `font-variant-numeric` | `tnum` feature | `tnum` | `tnum` |
 | `.truncate()`, `.line_clamp(n)` | `max_lines` | `text-overflow`, `line-clamp` | number of lines, tail truncation | `maxLines` + ellipsis | lines + ellipsize |
 | `.nowrap()` | `no_wrap` | `white-space: pre` | clipping | horizontal scrolling off, clipped | ellipsized (see below) |
+| `.text_pretty()`, `.text_balance()`, `.text_wrap(…)` | `text_wrap` | `text-wrap: pretty` / `balance` | `lineBreakStrategy = .pushOut` (both) | `BREAK_STRATEGY_HIGH_QUALITY` / `BALANCED` | ignored (see below) |
 
 Screen readers read the text as written (`uppercase()` and `capitalize()`
 only change how it looks), so put data in as it is (`text(name).capitalize()`
@@ -199,5 +202,13 @@ still report their clicks, since links don't nest.
   below each line.
 - **`nowrap`** on Linux ends cut lines with an ellipsis (GTK never makes a
   label narrower than an unwrapped line).
+- **`text_pretty` and `text_balance`** (#95) only change where lines break,
+  never the box: the text keeps its width and alignment. Apple platforms have
+  no balanced breaking, so both keep a lone word off the last line there
+  (`pushOut`, which UIKit labels already do for plain text). Android's
+  default breaker already avoids ragged lines, so `pretty` keeps it. GTK,
+  watchOS, widgets and Live Activities have no such setting and break as
+  usual. Browsers without `text-wrap` (before Safari 17.5, Chrome 114,
+  Firefox 121) ignore it; `pretty` needs Safari 26 or Chrome 117.
 - Widgets and Live Activities get the node styles (family, weight, italic,
   decoration, case, tracking, lines) but not runs or links.
