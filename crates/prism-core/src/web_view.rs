@@ -295,12 +295,56 @@ pub fn origin_of(url: &str) -> Option<String> {
     Some(format!("{scheme}://{host_port}"))
 }
 
+/// Whether a web view may load `url` ([`web_view`]): an `http:`, `https:`
+/// or (natively) `file:` URL, or a path relative to the app's page. Other
+/// schemes are refused: a `javascript:` URL would run in the app's own
+/// page on the web, and `data:`, `blob:` or an app's custom scheme are not
+/// pages the app talks to. The scheme is read as browsers read it:
+/// surrounding spaces and control characters are ignored, and so are tabs
+/// and newlines inside (`java\tscript:`).
+pub fn is_web_view_url(url: &str) -> bool {
+    let url: String = url
+        .trim_matches(|c: char| c <= ' ')
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect();
+    // A scheme: a letter, then letters, digits, `+`, `-` or `.`, before a
+    // `:` that comes before any `/`, `?` or `#`.
+    let end = url.find([':', '/', '?', '#']);
+    let scheme = match end {
+        Some(i) if url[i..].starts_with(':') => &url[..i],
+        _ => return true,
+    };
+    let is_scheme = scheme
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    if !is_scheme {
+        return true;
+    }
+    matches!(
+        scheme.to_ascii_lowercase().as_str(),
+        "http" | "https" | "file"
+    )
+}
+
 /// A web page shown inside the app (see the [module docs](self)). `url` is
 /// absolute; on the web a path (`/preview/1`) is relative to the app's page.
 /// Give it a size (`.flex_1()`, `.h(…)`): it has no natural one.
+///
+/// Only `http:`, `https:` and (natively) `file:` URLs and relative paths
+/// are loaded ([`is_web_view_url`]); with any other the view stays blank.
 pub fn web_view(url: impl Into<String>) -> WebView {
     let mut node = VNode::new(NodeKind::WebView);
-    node.text = url.into();
+    let url = url.into();
+    node.text = if is_web_view_url(&url) {
+        url
+    } else {
+        String::new()
+    };
     WebView {
         node,
         config: WebViewConfig::default(),

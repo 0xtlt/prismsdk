@@ -29,7 +29,7 @@ cx.post_web_message("preview", &serde_json::json!({ "select": "section-2" }));
 cx.reload_web_view("preview");
 ```
 
-- `web_view(url)` takes an absolute URL (`https://…`, `file://…` natively). On the web a path (`/preview/1`) is relative to the app's page. A new URL in a later render loads it in the same view.
+- `web_view(url)` takes an absolute URL (`https://…`, `file://…` natively). On the web a path (`/preview/1`) is relative to the app's page. A new URL in a later render loads it in the same view. Other schemes leave the view blank (`prism_core::web_view::is_web_view_url`): a `javascript:` URL would run in the app's own page on the web, and `data:` or `blob:` pages are not ones the app talks to. A URL that comes from users (a link to preview) is safe to pass as it is.
 - It has no natural size: give it one (`.flex_1()`, `.h(px(…))`). Its background, border and corners are styled like a `div`'s; the background shows while the page loads.
 - `cx.post_web_message(id, &value)` sends any `serde::Serialize` value (`post_web_message_json` takes JSON text). Messages posted before the page finished loading are delivered once it has, in order.
 - `cx.reload_web_view(id)` reloads the page. On the web, a frame showing another origin than the app's cannot be reloaded in place: it loads the URL the app gave again.

@@ -4966,11 +4966,14 @@ void main() {
       if (el._wcfg.loads) send({ t: "webload", id, url: webUrl(el) });
     });
   }
+  /** Only web pages load in a frame: never `javascript:` (it would run in
+   *  the app's page), `data:` or `blob:`. As `is_web_view_url` in prism-core. */
+  const webPageUrl = (u) => { try { return ["http:", "https:"].includes(new URL(u, location.href).protocol); } catch { return false; } };
   function webViewSrc(el, src) {
     if (el._src === src) return;
     el._src = src;
     el._wloaded = false;
-    if (src) el.src = src;
+    if (src && webPageUrl(src)) el.src = src;
     else el.removeAttribute("src");
   }
   function webViewConfig(el, config) {
