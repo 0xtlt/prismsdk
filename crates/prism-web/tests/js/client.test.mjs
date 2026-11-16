@@ -957,6 +957,12 @@ test("passkeys of the app's relying party run with the server's options (#94)", 
   assert.deepEqual(page.ws.sent.filter((m) => m.id === 6), [{ t: "device_reply", id: 6, err: "unavailable" }]);
 });
 
+test("the current .link() of a navigation is the current page (#144)", () => {
+  const page = live([create(2, "view"), { op: "link", id: 2, href: "/orders" }, { op: "a11y", id: 2, a11y: { current: true } }, root(2)]);
+  assert.equal(page.node(2).localName, "a");
+  assert.equal(page.node(2).getAttribute("aria-current"), "page");
+});
+
 test("window resizes are reported once settled", () => {
   const page = live([create(1, "view"), root(1)]);
   page.window.innerWidth = 390;

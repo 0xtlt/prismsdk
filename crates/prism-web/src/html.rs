@@ -420,7 +420,10 @@ impl HtmlBackend {
             }
             // Focusable by itself; out of the tab order while hidden or
             // disabled (like client.js).
-            let mut attrs = a11y_attrs(kind, &a).replace(r#" tabindex="0""#, "");
+            let mut attrs = a11y_attrs(kind, &a)
+                .replace(r#" tabindex="0""#, "")
+                // The current entry of a navigation is a page (#144).
+                .replace(r#" aria-current="true""#, r#" aria-current="page""#);
             if a.hidden || a.disabled {
                 attrs.push_str(r#" tabindex="-1""#);
             }
