@@ -604,6 +604,11 @@ impl PlatformServices for LinuxServices {
             PlatformRequest::RemoveTray(id) => crate::tray::remove(&id),
             // No car screens on Linux.
             PlatformRequest::SetCar(_) => {}
+            // Fonts are registered by the backend, which draws texts again
+            // (imp.rs, `load_font`); stylesheets are a web thing.
+            PlatformRequest::LoadFont(_)
+            | PlatformRequest::AddStylesheet(_)
+            | PlatformRequest::RemoveStylesheet(_) => {}
             // No widgets or Live Activities on Linux desktops.
             PlatformRequest::ReloadWidgets(_)
             | PlatformRequest::StartActivity { .. }

@@ -48,14 +48,15 @@ fn rgba16(c: Color, dark: bool) -> (u16, u16, u16, u16) {
 }
 
 /// Pango family of a Prism family (`None`: the label's own, the system font).
-fn family_name(f: &FontFamily) -> Option<&str> {
+fn family_name(f: &FontFamily) -> Option<String> {
     match f {
         FontFamily::System => None,
-        FontFamily::Monospace => Some("monospace"),
-        FontFamily::Serif => Some("serif"),
+        FontFamily::Monospace => Some("monospace".into()),
+        FontFamily::Serif => Some("serif".into()),
         // No rounded design in the usual Linux font sets: the system font.
         FontFamily::Rounded => None,
-        FontFamily::Named(name) => Some(name),
+        // A run-time font's alias (`cx.load_font`) → its file's family.
+        FontFamily::Named(name) => Some(prism_native::fonts::resolve_name(name)),
     }
 }
 
@@ -116,7 +117,7 @@ pub(crate) fn apply(label: &gtk::Label, state: &LabelState, dark: bool) -> Style
             attrs.insert(a);
         };
         if let Some(name) = family_name(&r.font.family) {
-            add(pango::AttrString::new_family(name).upcast());
+            add(pango::AttrString::new_family(&name).upcast());
         }
         if r.font.weight != s.font_weight {
             let w: pango::Weight =
@@ -217,18 +218,49 @@ pub(crate) fn register_fonts(
         .collect();
     files.sort();
     files.extend(embedded_font_files(embedded, &glib::user_cache_dir()));
-    let mut added = 0;
-    for f in files {
-        use std::os::unix::ffi::OsStrExt;
-        let mut path = f.as_os_str().as_bytes().to_vec();
-        path.push(0);
-        if unsafe { FcConfigAppFontAddFile(std::ptr::null_mut(), path.as_ptr()) } != 0 {
-            added += 1;
-        } else {
-            eprintln!("prism-linux: could not load font {}", f.display());
+    files.into_iter().filter(|f| add_font_file(f)).count()
+}
+
+/// Adds one font file to fontconfig's current configuration.
+fn add_font_file(file: &std::path::Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let mut path = file.as_os_str().as_bytes().to_vec();
+    path.push(0);
+    let ok = unsafe { FcConfigAppFontAddFile(std::ptr::null_mut(), path.as_ptr()) } != 0;
+    if !ok {
+        eprintln!("prism-linux: could not load font {}", file.display());
+    }
+    ok
+}
+
+#[link(name = "pangocairo-1.0")]
+unsafe extern "C" {
+    /// pangocairo.h: the font map GTK's widgets use (none set on them).
+    fn pango_cairo_font_map_get_default() -> *mut std::ffi::c_void;
+}
+
+#[link(name = "pangoft2-1.0")]
+unsafe extern "C" {
+    /// pangofc-fontmap.h: the font map reads fontconfig's configuration again.
+    fn pango_fc_font_map_config_changed(fontmap: *mut std::ffi::c_void);
+}
+
+/// Adds a font loaded while the app runs (`cx.load_font`, saved to a file):
+/// fontconfig gets it, then Pango's font map reads the configuration again,
+/// so labels laid out from now on find its family.
+pub(crate) fn add_runtime_font(file: &std::path::Path) -> bool {
+    if !add_font_file(file) {
+        return false;
+    }
+    // SAFETY: the default font map is a PangoFcFontMap on Linux (fontconfig
+    // backend); it is owned by Pango and outlives the call.
+    unsafe {
+        let map = pango_cairo_font_map_get_default();
+        if !map.is_null() {
+            pango_fc_font_map_config_changed(map);
         }
     }
-    added
+    true
 }
 
 /// The embedded fonts as files, since fontconfig only reads files:
@@ -305,8 +337,11 @@ mod tests {
 
     #[test]
     fn families_map_to_fontconfig_names() {
-        assert_eq!(family_name(&FontFamily::Monospace), Some("monospace"));
+        assert_eq!(
+            family_name(&FontFamily::Monospace).as_deref(),
+            Some("monospace")
+        );
         assert_eq!(family_name(&FontFamily::System), None);
-        assert_eq!(family_name(&"Inter".into()), Some("Inter"));
+        assert_eq!(family_name(&"Inter".into()).as_deref(), Some("Inter"));
     }
 }

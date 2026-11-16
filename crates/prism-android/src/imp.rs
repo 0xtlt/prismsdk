@@ -265,6 +265,10 @@ fn commit(s: &mut State, patches: &[prism_core::Patch]) {
         s.renderer.apply(patches);
     }
     for request in s.runtime.take_requests() {
+        if let prism_core::PlatformRequest::LoadFont(face) = request {
+            load_font(s, face);
+            continue;
+        }
         prism_core::PlatformServices::handle(&mut s.services, request);
     }
     s.renderer.widgets.ops.append(&mut s.services.ops);
@@ -275,6 +279,34 @@ fn commit(s: &mut State, patches: &[prism_core::Patch]) {
                 .as_millis() as i64,
         );
     }
+}
+
+/// Registers a run-time font (`cx.load_font`): saved under the app's data
+/// directory, handed to the host now (`PrismText.addFont`, so the next
+/// measures use it), then every node's style is sent again. A URL comes back
+/// here with its bytes once loaded.
+fn load_font(s: &mut State, face: prism_core::FontFace) {
+    let sources = prism_native::images::ImageSources::default();
+    let Some(font) = prism_native::fonts::prepare(&mut s.runtime.app, face, &sources) else {
+        return;
+    };
+    let dir = s
+        .runtime
+        .app
+        .data_dir()
+        .map_or_else(std::env::temp_dir, std::path::Path::to_path_buf)
+        .join(".prism-fonts");
+    let Some(path) = prism_native::fonts::save(&font, &dir) else {
+        eprintln!("prism-android: font {:?}: cannot save it", font.family);
+        return;
+    };
+    let op = serde_json::json!([{
+        "op": "font",
+        "path": path.to_string_lossy(),
+        "alias": font.face.family,
+    }]);
+    jni::apply(&op.to_string());
+    s.renderer.restyle_all();
 }
 
 fn relayout(s: &mut State) {

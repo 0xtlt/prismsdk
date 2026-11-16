@@ -209,7 +209,16 @@ impl Live {
         // The tree that replaces the first paint waits for its data as the
         // first paint did, or the page would flash its loading state.
         let first = self.runtime.render_settled(self.app.inner.first_paint_wait);
-        if !self.patches("reset", &first) {
+        // The page learns its stylesheets with the first tree (none: the
+        // field is left out), so a reconnected page drops those of its
+        // previous session and keeps the first paint's.
+        let sheets = self.runtime.app.stylesheets();
+        let mut reset = json!({ "t": "reset", "p": self.encoder.encode(&first) });
+        if !sheets.is_empty() {
+            reset["sheets"] = json!(sheets);
+        }
+        self.services.sheets = sheets.into_iter().collect();
+        if !(self.send)(reset.to_string()) {
             return;
         }
         loop {
@@ -299,8 +308,15 @@ impl Live {
     /// Hands platform requests to the page (notifications, device calls…).
     fn flush_requests(&mut self) -> bool {
         for request in self.runtime.take_requests() {
+            let request = match (request, &self.encoder.asset_urls) {
+                (PlatformRequest::LoadFont(font), Some(urls)) => {
+                    PlatformRequest::LoadFont(font_at(font, urls.as_ref()))
+                }
+                (other, _) => other,
+            };
             self.services.handle(request);
         }
+        self.services.sync_sheets();
         self.services
             .outbox
             .drain(..)
@@ -687,6 +703,10 @@ pub(crate) struct WebServices {
     background: Vec<(String, Instant, Duration)>,
     /// The VAPID public key: Web Push is available.
     vapid: Option<String>,
+    /// Stylesheets the app added (`App::add_stylesheet`), and whether the
+    /// page has not been told the current set yet.
+    pub sheets: std::collections::BTreeSet<String>,
+    sheets_dirty: bool,
 }
 
 /// `PRISM_BACKGROUND_INTERVAL=<seconds>` shortens every background task's
@@ -715,6 +735,14 @@ impl WebServices {
         due.into_iter().map(|(id, _, _)| id).collect()
     }
 
+    /// The page's stylesheets, once they changed.
+    pub(crate) fn sync_sheets(&mut self) {
+        if std::mem::take(&mut self.sheets_dirty) {
+            self.outbox
+                .push(json!({ "t": "sheets", "urls": self.sheets.iter().collect::<Vec<_>>() }));
+        }
+    }
+
     fn next_background(&self) -> Option<Instant> {
         self.background.iter().map(|(_, at, _)| *at).min()
     }
@@ -724,6 +752,63 @@ impl WebServices {
     pub(crate) fn take_outbox(&mut self) -> Vec<Value> {
         std::mem::take(&mut self.outbox)
     }
+}
+
+/// `font` with an asset's name (`fonts/lora.ttf`) turned into its served URL
+/// (hashed, from the assets folder or the embedded assets), like a picture's.
+pub(crate) fn font_at(
+    font: prism_core::FontFace,
+    urls: &dyn Fn(&str) -> String,
+) -> prism_core::FontFace {
+    match &font.source {
+        prism_core::FontSource::Url(url) => {
+            let served = urls(url);
+            prism_core::FontFace {
+                source: prism_core::FontSource::Url(served),
+                ..font
+            }
+        }
+        prism_core::FontSource::Bytes(_) => font,
+    }
+}
+
+/// The page message registering `font`: its family, its source (a URL, or
+/// the file in base64url) and descriptors.
+fn font_message(font: &prism_core::FontFace) -> Value {
+    let mut msg = json!({
+        "t": "font",
+        "family": font.family,
+        "style": if font.italic { "italic" } else { "normal" },
+    });
+    match &font.source {
+        prism_core::FontSource::Url(url) => msg["url"] = json!(url),
+        prism_core::FontSource::Bytes(b) => msg["data"] = json!(crate::security::base64url(b)),
+    }
+    if let Some(w) = font.css_weight() {
+        msg["weight"] = json!(w);
+    }
+    msg
+}
+
+/// `@font-face` rules for the faces a first paint asked for by URL (bytes
+/// wait for the live page: they would weigh on every page load).
+pub(crate) fn font_face_css(fonts: &[prism_core::FontFace]) -> String {
+    let clean = |s: &str| s.replace(['"', '\\', '<', '>', '\n'], "");
+    fonts
+        .iter()
+        .filter_map(|f| match &f.source {
+            prism_core::FontSource::Url(url) => Some(format!(
+                "@font-face{{font-family:\"{}\";src:url(\"{}\");{}font-style:{};font-display:swap}}\n",
+                clean(&f.family),
+                clean(url),
+                f.css_weight()
+                    .map(|w| format!("font-weight:{w};"))
+                    .unwrap_or_default(),
+                if f.italic { "italic" } else { "normal" },
+            )),
+            prism_core::FontSource::Bytes(_) => None,
+        })
+        .collect()
 }
 
 fn activity_json(content: &ActivityContent) -> Value {
@@ -824,6 +909,17 @@ impl PlatformServices for WebServices {
             | PlatformRequest::RemoveTray(_)
             | PlatformRequest::SetAppMenu(_)
             | PlatformRequest::SetCar(_) => return,
+            // A `FontFace` in `document.fonts`, for this page.
+            PlatformRequest::LoadFont(font) => font_message(&font),
+            // Sent as the whole set (`sync_sheets`).
+            PlatformRequest::AddStylesheet(url) => {
+                self.sheets_dirty |= self.sheets.insert(url);
+                return;
+            }
+            PlatformRequest::RemoveStylesheet(url) => {
+                self.sheets_dirty |= self.sheets.remove(&url);
+                return;
+            }
         };
         self.outbox.push(msg);
     }

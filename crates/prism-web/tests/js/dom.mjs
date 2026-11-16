@@ -521,7 +521,14 @@ export function boot({ ssr = "", path = "/", base = "", glyphs = { plus: "+", ge
     Object,
     URL,
     encodeURIComponent,
+    atob,
+    // Run-time fonts (`cx.load_font`): faces are recorded in `document.fonts.added`.
+    FontFace: class {
+      constructor(family, source, descriptors) { Object.assign(this, { family, source, descriptors }); }
+      load() { return Promise.resolve(this); }
+    },
   };
+  document.fonts = { added: [], add(face) { this.added.push(face); } };
   // Node's own streams: compressed frames (`decompress: false` plays a
   // browser without `DecompressionStream`).
   if (decompress) Object.assign(win, { DecompressionStream, Response });

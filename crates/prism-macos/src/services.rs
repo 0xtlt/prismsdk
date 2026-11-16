@@ -292,6 +292,11 @@ impl PlatformServices for MacServices {
             }
             // No car screens on the Mac.
             PlatformRequest::SetCar(_) => {}
+            // Fonts are registered by the backend, which draws texts again
+            // (imp.rs, `load_font`); stylesheets are a web thing.
+            PlatformRequest::LoadFont(_)
+            | PlatformRequest::AddStylesheet(_)
+            | PlatformRequest::RemoveStylesheet(_) => {}
             PlatformRequest::RemoveTray(id) => {
                 if let Some(item) = self.trays.remove(&id) {
                     NSStatusBar::systemStatusBar().removeStatusItem(&item);

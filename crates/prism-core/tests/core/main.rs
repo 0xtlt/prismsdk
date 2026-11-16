@@ -6,6 +6,7 @@ mod background;
 mod channel;
 mod close;
 mod decoration;
+mod fonts;
 mod i18n;
 mod interaction;
 mod islands;

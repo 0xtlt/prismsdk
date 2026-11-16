@@ -674,11 +674,39 @@ fn commit(s: &mut State, patches: Vec<prism_core::Patch>) {
     relayout(s);
     UPDATING.set(false);
     for request in s.runtime.take_requests() {
+        if let prism_core::PlatformRequest::LoadFont(face) = request {
+            load_font(s, face);
+            continue;
+        }
         prism_core::PlatformServices::handle(&mut s.services, request);
     }
     if let Some(at) = s.runtime.next_timer() {
         let delay = at.saturating_duration_since(std::time::Instant::now());
         glib::timeout_add_local_once(delay, poll);
+    }
+}
+
+/// Registers a run-time font (`cx.load_font`) with fontconfig (from a file in
+/// the user's cache) and draws the texts again. A URL comes back here
+/// with its bytes once loaded.
+fn load_font(s: &mut State, face: prism_core::FontFace) {
+    let w = &s.renderer.widgets;
+    let sources = prism_native::images::ImageSources {
+        embedded: w.embedded.clone(),
+        asset_dirs: w.assets.iter().cloned().collect(),
+        ..Default::default()
+    };
+    let Some(font) = prism_native::fonts::prepare(&mut s.runtime.app, face, &sources) else {
+        return;
+    };
+    // Next to the embedded fonts (fontconfig only reads files).
+    let dir = glib::user_cache_dir().join("prism-fonts").join("runtime");
+    if let Some(path) = prism_native::fonts::save(&font, &dir)
+        && text::add_runtime_font(&path)
+    {
+        s.renderer.restyle_all();
+        s.renderer.widgets.flush_css();
+        relayout(s);
     }
 }
 
