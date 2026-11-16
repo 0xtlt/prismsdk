@@ -182,11 +182,52 @@ enum Segment {
 }
 
 struct Route {
+    /// The pattern as declared, for messages.
+    pattern: String,
     segments: Vec<Segment>,
     build: Build,
 }
 
 impl Route {
+    /// How specific the route is at each position: a static segment (0)
+    /// beats a parameter (1), which beats the end of the pattern (2), which
+    /// beats a `*rest` (3). Comparing two routes' keys orders them most
+    /// specific first: `/sites/new` before `/sites/:site`, `/files` before
+    /// `/files/*rest`. Two patterns of different lengths without a `*rest`
+    /// never match the same path, so the end only matters against a rest.
+    fn specificity(&self) -> Vec<u8> {
+        let mut key: Vec<u8> = self
+            .segments
+            .iter()
+            .map(|seg| match seg {
+                Segment::Static(_) => 0,
+                Segment::Param(_) => 1,
+                Segment::Rest(_) => 3,
+            })
+            .collect();
+        if !matches!(self.segments.last(), Some(Segment::Rest(_))) {
+            key.push(2);
+        }
+        key
+    }
+
+    /// Whether every path this route matches is matched by `earlier` too
+    /// (same shape: the same static segments, parameters and rest at the
+    /// same places), so `earlier`, ranked first, always wins.
+    fn shadowed_by(&self, earlier: &Route) -> bool {
+        self.segments.len() == earlier.segments.len()
+            && self
+                .segments
+                .iter()
+                .zip(&earlier.segments)
+                .all(|(a, b)| match (a, b) {
+                    (Segment::Static(a), Segment::Static(b)) => a == b,
+                    (Segment::Param(_), Segment::Param(_))
+                    | (Segment::Rest(_), Segment::Rest(_)) => true,
+                    _ => false,
+                })
+    }
+
     fn matches(&self, path: &str) -> Option<Params> {
         let (path, query) = split_query(path);
         let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
@@ -612,6 +653,13 @@ impl Router {
 
 impl RouterBuilder {
     /// Adds a route. Patterns: `/`, `/todos`, `/todos/:id`, `/files/*rest`.
+    ///
+    /// The most specific route that matches a path wins, whatever the order
+    /// the routes were added in: segment by segment from the left, a static
+    /// segment beats a `:param`, which beats a `*rest` (`/todos/new` beats
+    /// `/todos/:id`, `/files` beats `/files/*rest`). Routes of the same shape
+    /// (`/a/:x` and `/a/:y`) keep their order: the first one added wins, and
+    /// debug builds warn about the other.
     pub fn route<V: Render>(
         mut self,
         pattern: &str,
@@ -631,6 +679,7 @@ impl RouterBuilder {
             })
             .collect();
         self.routes.push(Route {
+            pattern: pattern.into(),
             segments,
             build: Rc::new(move |app, params| build(app, params).into_any()),
         });
@@ -714,7 +763,19 @@ impl RouterBuilder {
 
     /// Creates the router entity, makes it the app's navigator, and opens the
     /// initial path (the request URL on the web, `PRISM_PATH` or `/` natively).
-    pub fn build(self, app: &mut App) -> Entity<Router> {
+    pub fn build(mut self, app: &mut App) -> Entity<Router> {
+        // Most specific first; a stable sort keeps the order added between
+        // routes of the same shape.
+        self.routes.sort_by_key(Route::specificity);
+        #[cfg(debug_assertions)]
+        for (i, route) in self.routes.iter().enumerate() {
+            if let Some(earlier) = self.routes[..i].iter().find(|e| route.shadowed_by(e)) {
+                eprintln!(
+                    "prism: route {:?} is never reached: {:?}, added before it, matches the same paths",
+                    route.pattern, earlier.pattern
+                );
+            }
+        }
         let initial = app.initial_path().to_string();
         let tab_bar = !self.tabs.is_empty();
         let tabs = if tab_bar {
