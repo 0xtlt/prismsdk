@@ -905,6 +905,8 @@ pub struct Gtk {
     pointer: Rc<RefCell<HashMap<NodeId, u8>>>,
     /// Nodes whose motion / drag controllers are attached.
     pointer_attached: HashSet<(NodeId, u8)>,
+    /// Drop targets' controllers (#111).
+    drop_targets: HashMap<NodeId, gtk::DropTarget>,
     keys: Rc<KeyState>,
     /// Runtime layers, above the root in the window.
     layers: Vec<gtk::Widget>,
@@ -1936,6 +1938,7 @@ impl Widgets for Gtk {
         }
         self.pointer.borrow_mut().remove(&id);
         self.pointer_attached.retain(|(n, _)| *n != id);
+        self.drop_targets.remove(&id);
         self.keys.local.borrow_mut().remove(&id);
         self.keys.global.borrow_mut().remove(&id);
         self.inert.remove(&id);
@@ -2426,6 +2429,54 @@ impl Widgets for Gtk {
     }
 
     // --- Pointer, keys, focus, layers, overlays (#17, #19, #25) ---------------
+
+    fn set_drop_target(&mut self, view: &View, types: Option<&[String]>) {
+        use prism_core::Interaction::DropHover;
+        let id = view.id();
+        let w = view.widget();
+        if let Some(old) = self.drop_targets.remove(&id) {
+            w.remove_controller(&old);
+        }
+        let Some(types) = types else { return };
+        let accept = prism_core::PickFiles::new().types(types.to_vec());
+        // Files from the file manager or another app (#111); GTK sets
+        // `:drop(active)` while they are over it.
+        let target = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
+        target.connect_enter(move |_, _, _| {
+            report_state(id, DropHover, true);
+            gdk::DragAction::COPY
+        });
+        target.connect_leave(move |_| report_state(id, DropHover, false));
+        target.connect_drop(move |_, value, _, _| {
+            report_state(id, DropHover, false);
+            let Ok(list) = value.get::<gdk::FileList>() else {
+                return false;
+            };
+            let paths: Vec<_> = list.files().iter().filter_map(|f| f.path()).collect();
+            let accept = accept.clone();
+            // Copying large files takes a while: off the main loop.
+            glib::MainContext::default().spawn_local(async move {
+                let copied = gio::spawn_blocking(move || {
+                    paths
+                        .into_iter()
+                        .filter_map(crate::services::copy_picked_path)
+                        .collect::<Vec<_>>()
+                })
+                .await
+                .unwrap_or_default();
+                let files: Vec<_> = copied
+                    .into_iter()
+                    .filter(|f| accept.accepts(&f.name, &f.mime))
+                    .collect();
+                if !files.is_empty() {
+                    dispatch(UiEvent::DropFiles(id, files));
+                }
+            });
+            true
+        });
+        w.add_controller(target.clone());
+        self.drop_targets.insert(id, target);
+    }
 
     fn set_pointer_events(&mut self, view: &View, mask: u8) {
         use prism_core::events::pointer_mask::{DRAG, HOVER, MOVE};
@@ -3100,6 +3151,7 @@ fn activate(app: &gtk::Application) {
         cursors: HashMap::new(),
         pointer: Rc::new(RefCell::new(HashMap::new())),
         pointer_attached: HashSet::new(),
+        drop_targets: HashMap::new(),
         keys: keys.clone(),
         layers: Vec::new(),
         inert: HashSet::new(),

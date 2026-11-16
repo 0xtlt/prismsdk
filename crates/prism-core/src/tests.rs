@@ -2381,6 +2381,78 @@ fn picked_files_report_their_progress_and_can_be_cancelled() {
     find_text(&rt.device_reply(id, Err(DeviceError::Cancelled)), "Ok(0)");
 }
 
+/// #111: a drop target's types reach the backend, and its handler gets
+/// only the dropped files it accepts.
+#[test]
+fn drop_targets_get_the_files_they_accept() {
+    use crate::PickedFile;
+    struct Zone {
+        on: bool,
+        got: Vec<String>,
+    }
+    impl Render for Zone {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            let zone = div().child(text(self.got.join(",")));
+            if self.on {
+                zone.on_drop_files(
+                    ["image/*", ".pdf"],
+                    cx.listener(|this, e: &FileDropEvent, _| {
+                        this.got = e.files.iter().map(|f| f.name.clone()).collect();
+                    }),
+                )
+            } else {
+                zone
+            }
+        }
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Zone {
+            on: true,
+            got: Vec::new(),
+        });
+        cx.set_global(root);
+        cx.set_root(root);
+    });
+    let mut rt = Runtime::new(&init);
+    let patches = rt.render();
+    let (id, types) = patches
+        .iter()
+        .find_map(|p| match p {
+            Patch::SetDropTarget { id, types } => Some((*id, types.clone())),
+            _ => None,
+        })
+        .expect("a drop target");
+    assert_eq!(types, Some(vec!["image/*".to_string(), ".pdf".to_string()]));
+    let file = |name: &str, mime: &str| PickedFile {
+        path: format!("/tmp/{name}"),
+        name: name.into(),
+        mime: mime.into(),
+        size: 1,
+    };
+    let patches = rt.dispatch(UiEvent::DropFiles(
+        id,
+        vec![
+            file("cat.png", "image/png"),
+            file("notes.txt", "text/plain"),
+            file("doc.PDF", "application/octet-stream"),
+        ],
+    ));
+    find_text(&patches, "cat.png,doc.PDF");
+    // Nothing it accepts: the handler is not called.
+    assert!(
+        rt.dispatch(UiEvent::DropFiles(id, vec![file("a.txt", "text/plain")]))
+            .is_empty()
+    );
+    // No longer a drop target.
+    let root = *rt.app.global::<Entity<Zone>>();
+    rt.app.update(&root, |z, cx| {
+        z.on = false;
+        cx.notify();
+    });
+    let patches = rt.render_dirty();
+    assert!(patches.contains(&Patch::SetDropTarget { id, types: None }));
+}
+
 #[test]
 fn cloud_storage_and_external_changes() {
     use std::sync::Mutex;

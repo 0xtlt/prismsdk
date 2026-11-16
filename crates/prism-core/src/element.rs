@@ -505,6 +505,13 @@ pub struct VNode {
     pub on_web_message: Option<Handler<crate::web_view::WebMessageEvent>>,
     /// A web view finished loading a page.
     pub on_web_load: Option<Handler<crate::web_view::WebLoadEvent>>,
+
+    // --- Drop targets (#111) ---
+    /// Files dropped on the node: the types it accepts, and the handler.
+    pub on_drop_files: Option<(
+        crate::device::PickFiles,
+        Handler<crate::events::FileDropEvent>,
+    )>,
 }
 
 impl VNode {
@@ -549,6 +556,7 @@ impl VNode {
             attributes: Vec::new(),
             on_web_message: None,
             on_web_load: None,
+            on_drop_files: None,
         }
     }
 }
@@ -1827,6 +1835,27 @@ impl Div {
     /// every user can drag.
     pub fn on_drag(mut self, handler: Handler<crate::events::DragEvent>) -> Self {
         self.0.on_drag = Some(handler);
+        self
+    }
+
+    /// Files dragged from the system (the desktop, the Files app, another
+    /// app) and dropped on the container (#111): `types` are MIME types
+    /// (`"image/*"`) or extensions (`".pdf"`), empty for any file, like
+    /// [`PickFiles::types`](crate::PickFiles::types). The handler gets the
+    /// dropped files it accepts (it is not called when none is); style
+    /// the highlight while files hover with
+    /// [`drop_hover`](crate::Styled::drop_hover). On the web the browser
+    /// uploads the files over the app's connection first, like
+    /// [`App::pick_files`](crate::AsyncApp::pick_files). Keep a way to
+    /// choose files too: phones rarely drag them, and
+    /// [`Capabilities::drop_files`](crate::Capabilities::drop_files) is
+    /// `false` where nothing can be dropped (tvOS, watchOS).
+    pub fn on_drop_files<S: Into<String>>(
+        mut self,
+        types: impl IntoIterator<Item = S>,
+        handler: Handler<crate::events::FileDropEvent>,
+    ) -> Self {
+        self.0.on_drop_files = Some((crate::device::PickFiles::new().types(types), handler));
         self
     }
 }

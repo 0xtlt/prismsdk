@@ -31,12 +31,15 @@ pub enum Interaction {
     GroupFocusWithin,
     /// An ancestor marked [`group`](crate::Styled::group) is pressed.
     GroupActive,
+    /// Files are dragged over the node, a drop target that accepts them
+    /// ([`Div::on_drop_files`](crate::Div::on_drop_files), #111).
+    DropHover,
 }
 
 impl Interaction {
     /// Every state, in the order refinements apply (later ones win): a
     /// group's states first, then the node's own.
-    pub const ALL: [Interaction; 8] = [
+    pub const ALL: [Interaction; 9] = [
         Interaction::GroupHover,
         Interaction::GroupFocusWithin,
         Interaction::GroupActive,
@@ -44,10 +47,11 @@ impl Interaction {
         Interaction::FocusWithin,
         Interaction::Focus,
         Interaction::Active,
+        Interaction::DropHover,
         Interaction::Disabled,
     ];
 
-    fn bit(self) -> u8 {
+    fn bit(self) -> u16 {
         match self {
             Interaction::Hover => 1,
             Interaction::FocusWithin => 2,
@@ -57,6 +61,7 @@ impl Interaction {
             Interaction::GroupHover => 32,
             Interaction::GroupFocusWithin => 64,
             Interaction::GroupActive => 128,
+            Interaction::DropHover => 256,
         }
     }
 
@@ -83,6 +88,7 @@ impl Interaction {
             Interaction::GroupHover => "group_hover",
             Interaction::GroupFocusWithin => "group_focus_within",
             Interaction::GroupActive => "group_active",
+            Interaction::DropHover => "drop_hover",
         }
     }
 
@@ -94,7 +100,7 @@ impl Interaction {
 
 /// A set of [`Interaction`]s.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
-pub struct Interactions(u8);
+pub struct Interactions(u16);
 
 impl Interactions {
     /// No state.

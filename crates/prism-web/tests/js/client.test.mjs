@@ -865,6 +865,52 @@ test("a cancelled upload stops sending and says so (#112)", async () => {
   assert.deepEqual(msgs.at(-1), { t: "device_reply", id: 6, err: "cancelled" });
 });
 
+test("files dropped on a drop target go up, only those it accepts (#111)", async () => {
+  const page = live([
+    create(1, "view"), create(2, "view"), create(3, "view"),
+    { op: "drop", id: 2, types: ["image/*"] },
+    { op: "children", id: 1, children: [2, 3] }, root(1),
+  ]);
+  const zone = page.node(2);
+  const png = fakeFile("cat.png", "image/png", new Uint8Array([1, 2, 3]));
+  const txt = fakeFile("notes.txt", "text/plain", new TextEncoder().encode("hi"));
+  const drag = (type, el, files = []) => {
+    const e = { type, dataTransfer: { types: ["Files"], files, dropEffect: "" } };
+    el.dispatchEvent(e);
+    return e;
+  };
+  // Hovering files: the `drop_hover` state, kept over its children.
+  assert.ok(drag("dragenter", zone).defaultPrevented);
+  assert.equal(zone.getAttribute("data-prism-drop"), "");
+  assert.equal(drag("dragover", zone).dataTransfer.dropEffect, "copy");
+  drag("dragenter", zone);
+  drag("dragleave", zone);
+  assert.equal(zone.getAttribute("data-prism-drop"), "", "still over it");
+  drag("dragleave", zone);
+  assert.equal(zone.getAttribute("data-prism-drop"), null);
+  // Text being dragged is not files: left to the browser.
+  const text = { type: "dragenter", dataTransfer: { types: ["text/plain"] } };
+  zone.dispatchEvent(text);
+  assert.equal(text.defaultPrevented, false);
+  // Elsewhere on the page: no drop target, nothing happens.
+  drag("drop", page.node(3), [png]);
+  assert.deepEqual(page.ws.sent.filter((m) => m.t === "drop_start"), []);
+  // The drop: only the image goes up, then the end.
+  drag("dragenter", zone);
+  assert.ok(drag("drop", zone, [png, txt]).defaultPrevented);
+  assert.equal(zone.getAttribute("data-prism-drop"), null);
+  await settle();
+  const msgs = page.ws.sent.filter((m) => m.t.startsWith("drop") || (m.t === "upload_chunk" && m.drop));
+  assert.deepEqual(msgs, [
+    { t: "drop_start", drop: 1, node: 2, files: [{ name: "cat.png", mime: "image/png", size: 3 }] },
+    { t: "upload_chunk", drop: 1, file: 0, data: "AQID" },
+    { t: "drop_end", drop: 1 },
+  ]);
+  // No longer a drop target: drops are left alone.
+  page.ws.deliver({ t: "patch", p: [{ op: "drop", id: 2, types: null }] });
+  assert.equal(drag("drop", zone, [png]).defaultPrevented, false);
+});
+
 test("window resizes are reported once settled", () => {
   const page = live([create(1, "view"), root(1)]);
   page.window.innerWidth = 390;

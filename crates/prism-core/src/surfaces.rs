@@ -80,6 +80,8 @@ pub struct Capabilities {
     pub push: Option<crate::push::PushService>,
     /// Web views (`web_view`) show their page (an empty box otherwise).
     pub web_view: bool,
+    /// Files can be dropped on a drop target (`on_drop_files`, #111).
+    pub drop_files: bool,
 }
 
 /// Work the app asked the platform to do. Backends drain these with

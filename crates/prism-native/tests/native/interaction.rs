@@ -180,6 +180,35 @@ fn remote_ops_and_input_events() {
 
     let ev = |v| parse_input_event(&v).unwrap();
     assert_eq!(ev(json!({"t": "click", "id": 4})), UiEvent::Click(4));
+    // Drop targets (#111): the op, then the host's copies of dropped files.
+    let mut d = RemoteWidgets::new(|_| (0., 0.));
+    d.set_drop_target(&3, Some(&["image/*".to_string()]));
+    d.set_drop_target(&3, None);
+    assert_eq!(
+        d.ops,
+        [
+            json!({"op": "drop", "id": 3, "types": ["image/*"]}),
+            json!({"op": "drop", "id": 3, "types": null}),
+        ]
+    );
+    assert_eq!(
+        ev(json!({"t": "drop", "id": 3, "files": [
+            {"path": "/cache/a.png", "name": "cat.png", "mime": "image/png", "size": 3}
+        ]})),
+        UiEvent::DropFiles(
+            3,
+            vec![prism_core::PickedFile {
+                path: "/cache/a.png".into(),
+                name: "cat.png".into(),
+                mime: "image/png".into(),
+                size: 3,
+            }]
+        )
+    );
+    assert_eq!(
+        prism_core::Interaction::from_name("drop_hover"),
+        Some(prism_core::Interaction::DropHover)
+    );
     assert_eq!(
         ev(json!({"t": "click", "id": 4, "x": 1.5, "y": 2})),
         UiEvent::ClickAt(4, Point::new(1.5, 2.))

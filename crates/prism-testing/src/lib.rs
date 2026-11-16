@@ -32,6 +32,8 @@ pub struct HNode {
     pub config: String,
     /// Pointer events reported (`Patch::SetPointerEvents`).
     pub pointer_mask: u8,
+    /// File types it accepts dropped (`Patch::SetDropTarget`, #111).
+    pub drop_types: Option<Vec<String>>,
     /// Key events reported: (local, global).
     pub keys: (bool, bool),
     /// The selection last set by the app (`Patch::SetSelection`, #86).
@@ -194,6 +196,7 @@ impl Backend for Host {
                             scroll_events: false,
                             config: String::new(),
                             pointer_mask: 0,
+                            drop_types: None,
                             keys: (false, false),
                             selection: None,
                             select_events: false,
@@ -250,6 +253,9 @@ impl Backend for Host {
                 Patch::SetAppearance { appearance } => self.appearance = Some(*appearance),
                 Patch::SetPointerEvents { id, mask } => {
                     self.node(*id, "SetPointerEvents").pointer_mask = *mask
+                }
+                Patch::SetDropTarget { id, types } => {
+                    self.node(*id, "SetDropTarget").drop_types = types.clone()
                 }
                 Patch::SetKeyEvents { id, local, global } => {
                     self.node(*id, "SetKeyEvents").keys = (*local, *global)
@@ -373,6 +379,15 @@ impl Harness {
     pub fn click(&mut self, text: &str) -> &[Patch] {
         let id = self.host.by_text(text);
         self.dispatch(UiEvent::Click(id))
+    }
+
+    /// Drops `files` on drop target `id`, like the platform would (#111).
+    pub fn drop_files(&mut self, id: NodeId, files: Vec<prism_core::PickedFile>) -> &[Patch] {
+        assert!(
+            self.host.nodes[&id].drop_types.is_some(),
+            "node {id} is not a drop target"
+        );
+        self.dispatch(UiEvent::DropFiles(id, files))
     }
 
     pub fn open_link(&mut self, path: &str) -> &[Patch] {

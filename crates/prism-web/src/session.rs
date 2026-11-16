@@ -174,6 +174,7 @@ impl WebApp {
                     sid,
                     idle,
                     last_seen: Instant::now(),
+                    drops: HashMap::new(),
                 }
                 .run(rx);
             })
@@ -193,6 +194,8 @@ struct Live {
     /// Ends the session after this long without a message from the page.
     idle: Option<Duration>,
     last_seen: Instant,
+    /// Drops uploading (#111): their number → the target node.
+    drops: HashMap<u64, NodeId>,
 }
 
 /// Counts a live session while it exists.
@@ -351,9 +354,10 @@ impl Live {
                     rt.device_reply(id, result)
                 }
                 // Picked files, sent in chunks (#112).
-                Some(id) if self.services.uploads.has(id) => {
+                Some(id) if self.services.uploads.has(crate::uploads::Key::Call(id)) => {
                     let failed = v.get("err").is_some();
-                    let result = match self.services.uploads.finish(&self.app, id, failed) {
+                    let key = crate::uploads::Key::Call(id);
+                    let result = match self.services.uploads.finish(&self.app, key, failed) {
                         Some(Ok(files)) => Ok(prism_core::DeviceValue::Files(files)),
                         Some(Err(e)) => Err(prism_core::DeviceError::Failed(e)),
                         None => device_result(&v),
@@ -378,7 +382,12 @@ impl Live {
                 ) else {
                     return Vec::new();
                 };
-                match self.services.uploads.start(&self.app, &self.sid, id, files) {
+                let key = crate::uploads::Key::Call(id);
+                match self
+                    .services
+                    .uploads
+                    .start(&self.app, &self.sid, key, files)
+                {
                     Some((sent, total)) => {
                         rt.device_event(id, prism_core::DeviceEvent::Upload { sent, total })
                     }
@@ -386,18 +395,68 @@ impl Live {
                 }
             }
             Some("upload_chunk") => {
-                let (Some(id), Some(file), Some(data)) = (
-                    v.get("id").and_then(Value::as_u64),
+                let (Some(file), Some(data)) = (
                     v.get("file").and_then(Value::as_u64),
                     v.get("data").and_then(Value::as_str),
                 ) else {
                     return Vec::new();
                 };
-                match self.services.uploads.chunk(id, file as usize, data) {
-                    Some((sent, total)) => {
+                let key = match (
+                    v.get("id").and_then(Value::as_u64),
+                    v.get("drop").and_then(Value::as_u64),
+                ) {
+                    (Some(id), None) => crate::uploads::Key::Call(id),
+                    (None, Some(drop)) => crate::uploads::Key::Drop(drop),
+                    _ => return Vec::new(),
+                };
+                match (self.services.uploads.chunk(key, file as usize, data), key) {
+                    (Some((sent, total)), crate::uploads::Key::Call(id)) => {
                         rt.device_event(id, prism_core::DeviceEvent::Upload { sent, total })
                     }
-                    None => Vec::new(),
+                    _ => Vec::new(),
+                }
+            }
+            // Files dropped on a drop target (#111): their sizes, the
+            // chunks, then the end.
+            Some("drop_start") => {
+                let (Some(drop), Some(node), Some(files)) = (
+                    v.get("drop").and_then(Value::as_u64),
+                    v.get("node").and_then(Value::as_u64),
+                    v.get("files").and_then(Value::as_array),
+                ) else {
+                    return Vec::new();
+                };
+                let accepted = self.encoder.drop_targets.get(&node).is_some_and(|accept| {
+                    files.iter().all(|f| {
+                        let s = |k: &str| f.get(k).and_then(Value::as_str).unwrap_or("");
+                        accept.accepts(s("name"), s("mime"))
+                    })
+                });
+                let uploads = &mut self.services.uploads;
+                if accepted && !files.is_empty() && uploads.expect_drop(drop) {
+                    let key = crate::uploads::Key::Drop(drop);
+                    if uploads.start(&self.app, &self.sid, key, files).is_some() {
+                        self.drops.insert(drop, node);
+                    } else {
+                        uploads.finish(&self.app, key, true);
+                    }
+                }
+                Vec::new()
+            }
+            Some("drop_end") => {
+                let Some(drop) = v.get("drop").and_then(Value::as_u64) else {
+                    return Vec::new();
+                };
+                let Some(node) = self.drops.remove(&drop) else {
+                    return Vec::new();
+                };
+                let failed = v.get("err").is_some();
+                let key = crate::uploads::Key::Drop(drop);
+                match self.services.uploads.finish(&self.app, key, failed) {
+                    Some(Ok(files)) if !files.is_empty() => {
+                        rt.dispatch(prism_core::UiEvent::DropFiles(node, files))
+                    }
+                    _ => Vec::new(),
                 }
             }
             Some("device_event") => {
@@ -850,6 +909,7 @@ impl PlatformServices for WebServices {
             car: false,
             widgets: false,
             live_activities: true,
+            drop_files: true,
             dynamic_island: false,
             notifications: true,
             tray: false,
@@ -966,6 +1026,9 @@ impl PlatformServices for WebServices {
 #[derive(Default)]
 pub struct Encoder {
     kinds: HashMap<NodeId, NodeKind>,
+    /// The page's drop targets and the types they accept (#111): files
+    /// dropped elsewhere are refused.
+    pub drop_targets: HashMap<NodeId, prism_core::PickFiles>,
     /// Hashed asset URLs for pictures (`/assets/<name>` if unset).
     pub asset_urls: Option<AssetUrls>,
     /// URLs of island modules (none if unset: islands show their fallback).
@@ -1090,7 +1153,18 @@ impl Encoder {
             Patch::SetRoot { id } => json!({ "op": "root", "id": id }),
             Patch::Destroy { id } => {
                 self.kinds.remove(id);
+                self.drop_targets.remove(id);
                 json!({ "op": "destroy", "id": id })
+            }
+            // Drop targets (#111): `types: null` is none.
+            Patch::SetDropTarget { id, types } => {
+                match types {
+                    Some(t) => self
+                        .drop_targets
+                        .insert(*id, prism_core::PickFiles::new().types(t.clone())),
+                    None => self.drop_targets.remove(id),
+                };
+                json!({ "op": "drop", "id": id, "types": types })
             }
             // Pointer, keys, focus, layers (#17, #25).
             Patch::SetPointerEvents { id, mask } => {

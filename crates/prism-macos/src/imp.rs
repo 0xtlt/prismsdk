@@ -69,6 +69,11 @@ pub(crate) fn dispatch(event: UiEvent) {
     with_state(|s| s.dispatch(event));
 }
 
+/// Files came over a drop target or left it (#111).
+pub(crate) fn report_drop_hover(id: NodeId, on: bool) {
+    report_state(id, prism_core::Interaction::DropHover, on);
+}
+
 /// A node entered or left an interaction state (hover, press, focus):
 /// restyled, and laid out again if a refinement changed its size.
 fn report_state(id: NodeId, state: prism_core::Interaction, on: bool) {
@@ -368,6 +373,9 @@ pub struct ViewIvars {
     // --- Custom window chrome (#67) ---
     /// `.window_drag()`: a press moves the window, a double click zooms it.
     window_drag: Cell<bool>,
+    // --- Drop targets (#111) ---
+    /// The file types it accepts dropped (`None`: not a drop target).
+    drop_types: RefCell<Option<Vec<String>>>,
 }
 
 define_class!(
@@ -499,6 +507,47 @@ define_class!(
         #[unsafe(method(viewDidMoveToSuperview))]
         fn view_did_move_to_superview(&self) {
             crate::decor::sync_shadow_host(self, &self.ivars().decor.borrow());
+        }
+
+        /// Files dragged over a drop target (#111): accepted ones highlight
+        /// it (`drop_hover`) and are copied.
+        #[unsafe(method(draggingEntered:))]
+        fn dragging_entered(&self, info: &AnyObject) -> objc2_app_kit::NSDragOperation {
+            let types = self.ivars().drop_types.borrow().clone();
+            match types {
+                // SAFETY: AppKit's dragging info, alive for the call.
+                Some(t) if unsafe { prism_native::apple::drops::accepts(info as *const _ as _, &t) } => {
+                    report_state(self.ivars().id.get(), prism_core::Interaction::DropHover, true);
+                    objc2_app_kit::NSDragOperation::Copy
+                }
+                _ => objc2_app_kit::NSDragOperation::None,
+            }
+        }
+
+        #[unsafe(method(draggingExited:))]
+        fn dragging_exited(&self, _info: Option<&AnyObject>) {
+            report_state(self.ivars().id.get(), prism_core::Interaction::DropHover, false);
+        }
+
+        #[unsafe(method(draggingEnded:))]
+        fn dragging_ended(&self, _info: Option<&AnyObject>) {
+            report_state(self.ivars().id.get(), prism_core::Interaction::DropHover, false);
+        }
+
+        #[unsafe(method(prepareForDragOperation:))]
+        fn prepare_for_drag_operation(&self, _info: &AnyObject) -> bool {
+            self.ivars().drop_types.borrow().is_some()
+        }
+
+        #[unsafe(method(performDragOperation:))]
+        fn perform_drag_operation(&self, info: &AnyObject) -> bool {
+            let id = self.ivars().id.get();
+            report_state(id, prism_core::Interaction::DropHover, false);
+            let types = self.ivars().drop_types.borrow().clone();
+            // SAFETY: AppKit's dragging info, alive for the call.
+            types.is_some_and(|t| unsafe {
+                prism_native::apple::drops::perform(id, info as *const _ as _, &t)
+            })
         }
 
         /// Three-finger (or two-finger, per System Settings) swipes.
@@ -3844,6 +3893,20 @@ impl Widgets for AppKit {
     fn set_pointer_events(&mut self, view: &View, mask: u8) {
         if let View::Container(v) | View::Screen(v) | View::Tab(v) | View::Picture(v) = view {
             v.set_pointer_mask(mask);
+        }
+    }
+
+    fn set_drop_target(&mut self, view: &View, types: Option<&[String]>) {
+        if let View::Container(v) | View::Screen(v) | View::Tab(v) | View::Picture(v) = view {
+            let was = v.ivars().drop_types.replace(types.map(<[String]>::to_vec));
+            match (was.is_some(), types.is_some()) {
+                (false, true) => {
+                    let file_url = unsafe { objc2_app_kit::NSPasteboardTypeFileURL };
+                    v.registerForDraggedTypes(&NSArray::from_slice(&[file_url]));
+                }
+                (true, false) => v.unregisterDraggedTypes(),
+                _ => {}
+            }
         }
     }
 

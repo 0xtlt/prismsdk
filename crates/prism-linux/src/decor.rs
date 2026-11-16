@@ -214,6 +214,8 @@ pub(crate) fn state_rules(
             Interaction::GroupHover => format!(".prism-group:hover {node}"),
             Interaction::GroupFocusWithin => format!(".prism-group:focus-within {node}"),
             Interaction::GroupActive => format!(".prism-group:active {node}"),
+            // Set by GtkDropTarget while accepted files are over it (#111).
+            Interaction::DropHover => format!("{node}:drop(active)"),
             // Applied by prism-core before the backend sees the style.
             Interaction::Disabled => continue,
         };

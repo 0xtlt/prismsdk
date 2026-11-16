@@ -72,6 +72,16 @@ pub struct HoverEvent {
     pub hovered: bool,
 }
 
+/// Files dropped on a drop target:
+/// [`Div::on_drop_files`](crate::Div::on_drop_files) (#111).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FileDropEvent {
+    /// The dropped files the target accepts, readable like picked ones
+    /// ([`PickedFile::read`](crate::PickedFile::read)): on the web the
+    /// browser uploaded them over the app's connection first.
+    pub files: Vec<crate::PickedFile>,
+}
+
 /// Where a drag is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DragPhase {

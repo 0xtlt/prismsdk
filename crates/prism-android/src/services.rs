@@ -55,6 +55,8 @@ impl AndroidServices {
                 },
                 // android.webkit.WebView (#62, PrismWeb.java).
                 web_view: true,
+                // View.OnDragListener (#111): files from another app.
+                drop_files: true,
                 ..Default::default()
             },
             ops: Vec::new(),

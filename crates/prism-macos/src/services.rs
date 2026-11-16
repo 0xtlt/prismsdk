@@ -110,6 +110,8 @@ impl MacServices {
                 },
                 // WKWebView (#62).
                 web_view: true,
+                // NSDraggingDestination (#111).
+                drop_files: true,
             },
             activities: HashMap::new(),
         }
@@ -363,6 +365,21 @@ pub extern "C" fn prism_activity_push_token(
 pub extern "C" fn prism_web_view_event(id: u64, kind: i32, a: *const c_char, b: *const c_char) {
     if let Some(event) = unsafe { prism_native::apple::web::event(id, kind, a, b) } {
         dispatch2::DispatchQueue::main().exec_async(move || crate::imp::dispatch(event));
+    }
+}
+
+/// Called by the Swift bridge for drop targets (#111): accepted files left
+/// or came over a node, or were dropped (their copies). On the next turn:
+/// AppKit calls during its drag session.
+#[unsafe(no_mangle)]
+pub extern "C" fn prism_drop_event(node: u64, kind: i32, files: *const c_char) {
+    use prism_native::apple::drops::DropReport;
+    match unsafe { prism_native::apple::drops::report(node, kind, files) } {
+        Some(DropReport::Files(id, files)) => dispatch2::DispatchQueue::main()
+            .exec_async(move || crate::imp::dispatch(prism_core::UiEvent::DropFiles(id, files))),
+        Some(DropReport::Hover(id, on)) => dispatch2::DispatchQueue::main()
+            .exec_async(move || crate::imp::report_drop_hover(id, on)),
+        None => {}
     }
 }
 

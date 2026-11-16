@@ -2194,6 +2194,7 @@
       case "root": return mount.replaceChildren(el);
       // Pointer, keys, focus, layers (#17, #25).
       case "pointer": return setPointer(el, p.id, p.mask);
+      case "drop": return el && setDropTarget(el, p.id, p.types);
       case "keys": return setKeys(el, p.local, p.global);
       // Text field selections (#86).
       case "sel": return el && setFieldSelection(el, p.start, p.end);
@@ -2224,6 +2225,7 @@
           el.remove();
           if (el._scene) sceneStop(el._scene);
           if (el._kGlobal) globalKeys--;
+          if (el._dropTypes) dropTargets--;
           if (el._list) el._list.remove();
           placedOverlays.delete(el);
           pendingOverlays.delete(el);
@@ -5600,21 +5602,89 @@ void main() {
   async function upload(msg, files, reply) {
     let stopped = false;
     streams.set(msg.id, () => { stopped = true; });
-    send({ t: "upload_start", id: msg.id, files: files.map((f) => ({ name: f.name, mime: f.type, size: f.size })) });
     try {
-      for (let i = 0; i < files.length && !stopped; i++) {
-        for (let at = 0; at < files[i].size && !stopped; at += CHUNK) {
-          while (ws && ws.bufferedAmount > 4 * CHUNK && !stopped) await new Promise((r) => setTimeout(r, 20));
-          const bytes = new Uint8Array(await files[i].slice(at, at + CHUNK).arrayBuffer());
-          if (!stopped) send({ t: "upload_chunk", id: msg.id, file: i, data: base64(bytes) });
-        }
-      }
+      await sendFiles({ t: "upload_start", id: msg.id }, { id: msg.id }, files, () => stopped);
       reply(stopped ? { err: "cancelled" } : { uploaded: true });
     } catch (e) {
       reply({ err: String((e && e.message) || e) });
     } finally {
       streams.delete(msg.id);
     }
+  }
+  /** `start` with the files' names, types and sizes, then their chunks (`key` names the upload). */
+  async function sendFiles(start, key, files, stopped) {
+    send({ ...start, files: files.map((f) => ({ name: f.name, mime: f.type, size: f.size })) });
+    for (let i = 0; i < files.length && !stopped(); i++) {
+      for (let at = 0; at < files[i].size && !stopped(); at += CHUNK) {
+        while (ws && ws.bufferedAmount > 4 * CHUNK && !stopped()) await new Promise((r) => setTimeout(r, 20));
+        const bytes = new Uint8Array(await files[i].slice(at, at + CHUNK).arrayBuffer());
+        if (!stopped()) send({ t: "upload_chunk", ...key, file: i, data: base64(bytes) });
+      }
+    }
+  }
+
+  // --- Drop targets (#111) -------------------------------------------------------
+  // Files dragged from the system onto a node: `data-prism-drop` while they
+  // are over it (the `drop_hover` state), then they go up like picked files
+  // (`drop_start`, chunks, `drop_end`) and the server hands them to the app.
+  // Only files the target accepts are sent; a drop elsewhere on a page with
+  // drop targets does not make the browser open the file.
+  let drops = 0, dropTargets = 0;
+  const draggingFiles = (e) => !!e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files");
+  /** `PickFiles::accepts`: MIME types (`image/*`) or extensions (`.pdf`); none: any file. */
+  function accepts(types, name, mime) {
+    return !types.length || types.some((t) => {
+      t = t.trim().toLowerCase();
+      if (t.startsWith(".")) return name.toLowerCase().endsWith(t);
+      if (t.endsWith("/*")) return (mime || "").toLowerCase().startsWith(t.slice(0, -1));
+      return (mime || "").toLowerCase() === t;
+    });
+  }
+  function setDropTarget(el, id, types) {
+    if (!!el._dropTypes !== !!types) dropTargets += types ? 1 : -1;
+    el._dropTypes = types || null;
+    if (!types) { el.removeAttribute("data-prism-drop"); return; }
+    if (el._dropBound) return;
+    el._dropBound = true;
+    let depth = 0;
+    const over = (on) => { if (on) el.setAttribute("data-prism-drop", ""); else el.removeAttribute("data-prism-drop"); };
+    // Innermost targets win: the event stops at the first one.
+    el.addEventListener("dragenter", (e) => {
+      if (!el._dropTypes || !draggingFiles(e)) return;
+      e.preventDefault(); e.stopPropagation();
+      if (depth++ === 0) over(true);
+    });
+    el.addEventListener("dragover", (e) => {
+      if (!el._dropTypes || !draggingFiles(e)) return;
+      e.preventDefault(); e.stopPropagation();
+      e.dataTransfer.dropEffect = "copy";
+    });
+    el.addEventListener("dragleave", (e) => {
+      if (!el._dropTypes || !draggingFiles(e)) return;
+      e.stopPropagation();
+      if (--depth <= 0) { depth = 0; over(false); }
+    });
+    el.addEventListener("drop", (e) => {
+      if (!el._dropTypes || !draggingFiles(e)) return;
+      e.preventDefault(); e.stopPropagation();
+      depth = 0; over(false);
+      const files = [...(e.dataTransfer.files || [])].filter((f) => accepts(el._dropTypes, f.name, f.type));
+      if (files.length) dropFiles(id, files);
+    });
+  }
+  async function dropFiles(node, files) {
+    const key = { drop: ++drops };
+    try {
+      await sendFiles({ t: "drop_start", ...key, node }, key, files, () => false);
+      send({ t: "drop_end", ...key });
+    } catch (e) {
+      send({ t: "drop_end", ...key, err: String((e && e.message) || e) });
+    }
+  }
+  for (const type of ["dragover", "drop"]) {
+    addEventListener(type, (e) => {
+      if (dropTargets > 0 && draggingFiles(e)) { e.preventDefault(); e.dataTransfer.dropEffect = "none"; }
+    });
   }
   /** Standard base64 of `bytes`, in pieces (an argument list has a limit). */
   function base64(bytes) {
