@@ -85,7 +85,7 @@ define_class!(
         fn presses_began(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
             if self.closing_press(presses) {
                 if !self.ivars().fixed.get() {
-                    self.close_by_user();
+                    self.close_by_user(prism_core::DismissReason::Escape);
                 }
                 return;
             }
@@ -107,7 +107,7 @@ define_class!(
             let b = card.bounds();
             let inside = p.x >= 0. && p.y >= 0. && p.x <= b.size.width && p.y <= b.size.height;
             if !inside && !self.ivars().fixed.get() {
-                self.close_by_user();
+                self.close_by_user(prism_core::DismissReason::Outside);
             }
         }
 
@@ -144,12 +144,12 @@ impl OverlayController {
         })
     }
 
-    fn close_by_user(&self) {
+    fn close_by_user(&self, reason: prism_core::DismissReason) {
         let id = self.ivars().id.get();
         if self.presentingViewController().is_some() {
             self.dismissViewControllerAnimated_completion(true, None);
         }
-        crate::imp::overlay_closed(id);
+        crate::imp::overlay_closed(id, reason);
     }
 }
 
@@ -165,9 +165,16 @@ define_class!(
     unsafe impl NSObjectProtocol for OverlayDelegate {}
 
     unsafe impl UIAdaptivePresentationControllerDelegate for OverlayDelegate {
+        /// A popover closes on a tap outside it, a sheet on a swipe down.
         #[unsafe(method(presentationControllerDidDismiss:))]
-        fn did_dismiss(&self, _pc: &objc2_ui_kit::UIPresentationController) {
-            crate::imp::overlay_closed(self.ivars().get());
+        fn did_dismiss(&self, pc: &objc2_ui_kit::UIPresentationController) {
+            let popover = pc.isKindOfClass(<objc2_ui_kit::UIPopoverPresentationController as objc2::ClassType>::class());
+            let reason = if popover {
+                prism_core::DismissReason::Outside
+            } else {
+                prism_core::DismissReason::Swipe
+            };
+            crate::imp::overlay_closed(self.ivars().get(), reason);
         }
 
         #[unsafe(method(adaptivePresentationStyleForPresentationController:traitCollection:))]

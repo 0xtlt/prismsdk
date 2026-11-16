@@ -2500,6 +2500,60 @@ fn webauthn_ceremonies_pass_the_servers_options_through() {
     find_text(&patches, r#"true | {"id":"x"}"#);
 }
 
+/// #156: on_dismiss says how the user closed the overlay.
+#[test]
+fn dismissals_say_how() {
+    struct Picker {
+        open: bool,
+        log: Vec<String>,
+    }
+    impl Render for Picker {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            div().child(text(self.log.join(","))).child(
+                dialog(text("Colors"))
+                    .open(self.open)
+                    .on_dismiss(cx.listener(|this, e: &BackEvent, _| {
+                        this.log.push(e.reason.name().to_string());
+                    })),
+            )
+        }
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Picker {
+            open: true,
+            log: Vec::new(),
+        });
+        cx.set_root(root);
+    });
+    let mut rt = Runtime::new(&init);
+    let patches = rt.render();
+    let overlay = patches
+        .iter()
+        .find_map(|p| match p {
+            Patch::Create {
+                id,
+                kind: NodeKind::Overlay,
+            } => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    find_text(
+        &rt.dispatch(UiEvent::Dismiss(overlay, DismissReason::Escape)),
+        "escape",
+    );
+    find_text(
+        &rt.dispatch(UiEvent::Dismiss(overlay, DismissReason::Outside)),
+        "escape,outside",
+    );
+    // A backend that does not say: unknown.
+    find_text(
+        &rt.dispatch(UiEvent::Back(overlay, 0)),
+        "escape,outside,unknown",
+    );
+    assert_eq!(DismissReason::from_name("swipe"), DismissReason::Swipe);
+    assert_eq!(DismissReason::from_name("??"), DismissReason::Unknown);
+}
+
 /// #154: the app's title goes to the backend once per change.
 #[test]
 fn the_apps_title_reaches_the_backend_on_change() {

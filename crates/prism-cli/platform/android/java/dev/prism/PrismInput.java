@@ -689,6 +689,11 @@ final class PrismInput {
             p.setBackgroundDrawable(surface(new float[]{r, r, r, r, r, r, r, r}));
             p.setElevation(12 * d);
             p.setOutsideTouchable(!(n.fixed || n.manual || n.keepFocus));
+            // A touch outside closes it: say so (#156); otherwise it is Back.
+            p.setTouchInterceptor((v, e) -> {
+                if (e.getAction() == MotionEvent.ACTION_OUTSIDE) n.dismissReason = "outside";
+                return false;
+            });
             p.setOnDismissListener(() -> {
                 if (n.popup == p) n.popup = null;
                 if (!n.closing) dismissed(n);
@@ -705,13 +710,29 @@ final class PrismInput {
         boolean sheet = n.overlay.equals("sheet");
         Dialog dialog = new Dialog(PrismHost.themed(), PrismHost.dark()
                 ? android.R.style.Theme_DeviceDefault_Dialog_NoActionBar
-                : android.R.style.Theme_DeviceDefault_Light_Dialog_NoActionBar);
+                : android.R.style.Theme_DeviceDefault_Light_Dialog_NoActionBar) {
+            /** A touch outside cancels it from here (#156): the reason, while it does. */
+            @Override public boolean onTouchEvent(MotionEvent e) {
+                n.dismissReason = "outside";
+                boolean handled = super.onTouchEvent(e);
+                if (isShowing()) n.dismissReason = null;
+                return handled;
+            }
+        };
         detach(n.host);
         dialog.setContentView(n.host);
         dialog.setCancelable(!n.fixed);
         dialog.setCanceledOnTouchOutside(!n.fixed);
         dialog.setOnCancelListener(x -> dismissed(n));
-        dialog.setOnKeyListener((x, code, e) -> key(e, dialog.getCurrentFocus()));
+        dialog.setOnKeyListener((x, code, e) -> {
+            // Escape on a hardware keyboard closes it, as Back does (#156).
+            if (code == KeyEvent.KEYCODE_ESCAPE && e.getAction() == KeyEvent.ACTION_UP && !n.fixed) {
+                n.dismissReason = "escape";
+                dialog.cancel();
+                return true;
+            }
+            return key(e, dialog.getCurrentFocus());
+        });
         Window w = dialog.getWindow();
         if (w != null) {
             float r = (sheet ? 16 : 28) * d;
@@ -729,10 +750,12 @@ final class PrismInput {
         if (w != null) size(n, w);
     }
 
-    /** The user closed it (Back, Escape, a tap outside): Prism's on_dismiss. */
+    /** The user closed it (Back, Escape, a tap outside): Prism's on_dismiss, with how (#156). */
     static void dismissed(PrismHost.Node n) {
         JSONObject ev = PrismHost.event("back", n.id);
         put(ev, "depth", 0);
+        put(ev, "reason", n.dismissReason != null ? n.dismissReason : "back");
+        n.dismissReason = null;
         PrismHost.send(ev);
     }
 

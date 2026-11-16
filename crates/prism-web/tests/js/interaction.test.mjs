@@ -253,7 +253,7 @@ test("dialogs open, close on Escape (back) and stay open when fixed", () => {
   box.dispatchEvent({ type: "cancel" });
   box.close();
   box.dispatchEvent({ type: "close" });
-  assert.deepEqual(lastSent(page), { t: "back", id: 2, depth: 0 });
+  assert.deepEqual(lastSent(page), { t: "back", id: 2, depth: 0, reason: "escape" });
   // The app closing it says nothing back.
   page.ws.deliver({ t: "patch", p: [{ op: "value", id: 2, value: 1 }] });
   const n = sent(page).length;
@@ -283,7 +283,12 @@ test("popovers sit under their anchor and report light dismissal", () => {
   assert.equal(box.style.top, "126px", "6 px under the anchor");
   assert.equal(box.style.left, "50px");
   box.dispatchEvent({ type: "toggle", newState: "closed" });
-  assert.deepEqual(lastSent(page), { t: "back", id: 3, depth: 0 });
+  assert.deepEqual(lastSent(page), { t: "back", id: 3, depth: 0, reason: "outside" });
+  // Closed right after Escape: the reason is Escape (#156).
+  page.ws.deliver({ t: "patch", p: [{ op: "value", id: 3, value: 1 }] });
+  page.document.dispatchEvent({ type: "keydown", key: "Escape" });
+  box.dispatchEvent({ type: "toggle", newState: "closed" });
+  assert.deepEqual(lastSent(page), { t: "back", id: 3, depth: 0, reason: "escape" });
 });
 
 test("popovers open on the side and alignment they ask for, flipping without room (#113)", () => {
@@ -382,7 +387,7 @@ test("a dialog opens beside its anchor, undimmed, at its size (#79)", () => {
   page.document.documentElement.dir = "";
   // A click outside it (on the clear backdrop) still closes it.
   box.dispatchEvent({ type: "click", target: box, clientX: 900, clientY: 700 });
-  assert.deepEqual(lastSent(page), { t: "back", id: 3, depth: 0 });
+  assert.deepEqual(lastSent(page), { t: "back", id: 3, depth: 0, reason: "outside" });
   // No room on either side (a phone): centered as usual.
   page.ws.deliver({ t: "patch", p: [{ op: "value", id: 3, value: 1 }] });
   page.window.innerWidth = 390;
@@ -462,7 +467,7 @@ test("a popover can leave the focus to its anchor's field (#70)", () => {
   assert.deepEqual(lastSent(page), { t: "click", id: 5 });
   // Escape inside a manual popover closes it (the app hears back).
   box.dispatchEvent({ type: "keydown", key: "Escape" });
-  assert.deepEqual(lastSent(page), { t: "back", id: 4, depth: 0 });
+  assert.deepEqual(lastSent(page), { t: "back", id: 4, depth: 0, reason: "escape" });
   // Leaving the focus implies no light dismiss.
   page.ws.deliver({ t: "patch", p: [{ op: "config", id: 4, config: "popover keepfocus" }] });
   assert.equal(box.getAttribute("popover"), "manual");

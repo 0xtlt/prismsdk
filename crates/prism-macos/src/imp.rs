@@ -85,6 +85,12 @@ fn report_state(id: NodeId, state: prism_core::Interaction, on: bool) {
 }
 
 thread_local! {
+    /// Why the closing popover closes (`popoverWillClose:`, #156).
+    static POPOVER_CLOSE_REASON: Cell<prism_core::DismissReason> =
+        const { Cell::new(prism_core::DismissReason::Unknown) };
+}
+
+thread_local! {
     /// The node with the keyboard focus, as last reported.
     static FOCUSED: Cell<Option<NodeId>> = const { Cell::new(None) };
 }
@@ -781,7 +787,10 @@ define_class!(
                 return;
             }
             if self.ivars().sheet_root.get() {
-                dispatch(UiEvent::Back(self.ivars().id.get(), 0));
+                dispatch(UiEvent::Dismiss(
+                    self.ivars().id.get(),
+                    prism_core::DismissReason::Escape,
+                ));
             } else {
                 unsafe { msg_send![super(self), cancelOperation: sender] }
             }
@@ -1823,6 +1832,30 @@ define_class!(
     }
 
     unsafe impl NSPopoverDelegate for Target {
+        /// The event closing it is still current here (#156): Escape or a
+        /// click outside.
+        #[unsafe(method(popoverWillClose:))]
+        fn popover_will_close(&self, _n: &NSNotification) {
+            let mtm = MainThreadMarker::new().expect("main thread");
+            let reason = match NSApplication::sharedApplication(mtm).currentEvent() {
+                Some(e) if e.r#type() == objc2_app_kit::NSEventType::KeyDown && e.keyCode() == 53 => {
+                    prism_core::DismissReason::Escape
+                }
+                Some(e)
+                    if matches!(
+                        e.r#type(),
+                        objc2_app_kit::NSEventType::LeftMouseDown
+                            | objc2_app_kit::NSEventType::RightMouseDown
+                            | objc2_app_kit::NSEventType::OtherMouseDown
+                    ) =>
+                {
+                    prism_core::DismissReason::Outside
+                }
+                _ => prism_core::DismissReason::Unknown,
+            };
+            POPOVER_CLOSE_REASON.set(reason);
+        }
+
         /// A popover closed: by the user (Escape, a click outside) unless
         /// Prism closed it.
         #[unsafe(method(popoverDidClose:))]
@@ -1840,7 +1873,8 @@ define_class!(
                 }
             });
             if let Some(id) = closed {
-                dispatch(UiEvent::Back(id, 0));
+                let reason = POPOVER_CLOSE_REASON.replace(prism_core::DismissReason::Unknown);
+                dispatch(UiEvent::Dismiss(id, reason));
             }
         }
     }

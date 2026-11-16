@@ -585,7 +585,14 @@ pub(crate) fn parse_event(v: &Value) -> Option<UiEvent> {
             Some(runs) => Some(UiEvent::RichInput(id, runs.to_string())),
             None => Some(UiEvent::Input(id, v.get("v")?.as_str()?.to_string())),
         },
-        "back" => Some(UiEvent::Back(id, v.get("depth")?.as_u64()? as usize)),
+        // An overlay closed by the user says how (#156).
+        "back" => match v.get("reason").and_then(Value::as_str) {
+            Some(reason) => Some(UiEvent::Dismiss(
+                id,
+                prism_core::DismissReason::from_name(reason),
+            )),
+            None => Some(UiEvent::Back(id, v.get("depth")?.as_u64()? as usize)),
+        },
         // `null`: an optional date picker was cleared (#89).
         "change" => Some(UiEvent::Change(id, change_value(v.get("v")?)?)),
         "menu" => Some(UiEvent::MenuSelect(id)),

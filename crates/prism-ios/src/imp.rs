@@ -259,14 +259,15 @@ pub(crate) fn relayout() {
     }
 }
 
-/// The user closed overlay `id` (swipe down, tap outside, Escape, Menu).
-pub(crate) fn overlay_closed(id: NodeId) {
+/// The user closed overlay `id` (swipe down, tap outside, Escape, Menu),
+/// and how (#156).
+pub(crate) fn overlay_closed(id: NodeId, reason: prism_core::DismissReason) {
     with_state(|s| {
         if let Some(o) = s.renderer.widgets.overlays.get(&id) {
             o.open.set(false);
         }
     });
-    dispatch(UiEvent::Back(id, 0));
+    dispatch(UiEvent::Dismiss(id, reason));
 }
 
 // ---------------------------------------------------------------------------
@@ -624,7 +625,10 @@ define_class!(
         /// Close button of a stack inside a sheet (tag = stack id).
         #[unsafe(method(onCloseStack:))]
         fn on_close_stack(&self, sender: &objc2_ui_kit::UIBarButtonItem) {
-            dispatch(UiEvent::Back(sender.tag() as NodeId, 0));
+            dispatch(UiEvent::Dismiss(
+                sender.tag() as NodeId,
+                prism_core::DismissReason::Back,
+            ));
         }
     }
 
@@ -687,7 +691,7 @@ define_class!(
             if let Some(content) = host.view().and_then(|v| v.subviews().firstObject()) {
                 let id = content.tag() as NodeId;
                 with_state(|s| s.renderer.widgets.presented.retain(|p| *p != id));
-                dispatch(UiEvent::Back(id, 0));
+                dispatch(UiEvent::Dismiss(id, prism_core::DismissReason::Swipe));
             }
         }
     }

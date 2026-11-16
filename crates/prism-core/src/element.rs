@@ -304,6 +304,51 @@ impl RichInputEvent {
 pub struct BackEvent {
     /// How many screens remain on the stack.
     pub depth: usize,
+    /// How the user closed an overlay (`on_dismiss`, #156): Escape, a tap
+    /// outside, a swipe… [`DismissReason::Back`] for a stack going back.
+    pub reason: DismissReason,
+}
+
+/// How the user closed a sheet, popover or dialog (`on_dismiss`, #156):
+/// a color picker cancels on Escape and keeps the choice on a click outside.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum DismissReason {
+    /// Escape (a hardware keyboard), or the TV remote's Menu button.
+    Escape,
+    /// A click or tap outside it (its backdrop, the page around a popover).
+    Outside,
+    /// A swipe down (a sheet on a phone or tablet).
+    Swipe,
+    /// A Back or Close button: the system's back (Android), the close
+    /// button of a sheet's stack, a stack going back.
+    #[default]
+    Back,
+    /// The platform did not say.
+    Unknown,
+}
+
+impl DismissReason {
+    /// `escape`, `outside`, `swipe`, `back` or `unknown`, as backends report it.
+    pub fn name(self) -> &'static str {
+        match self {
+            DismissReason::Escape => "escape",
+            DismissReason::Outside => "outside",
+            DismissReason::Swipe => "swipe",
+            DismissReason::Back => "back",
+            DismissReason::Unknown => "unknown",
+        }
+    }
+
+    /// Parses [`name`](Self::name)'s output (anything else: `Unknown`).
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "escape" => DismissReason::Escape,
+            "outside" => DismissReason::Outside,
+            "swipe" => DismissReason::Swipe,
+            "back" => DismissReason::Back,
+            _ => DismissReason::Unknown,
+        }
+    }
 }
 
 /// Reported by a stack when the host asks for a path (browser forward button).

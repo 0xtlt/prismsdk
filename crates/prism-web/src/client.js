@@ -416,14 +416,20 @@
       if (el._box && el._box.isConnected) { pendingOverlays.delete(el); showOverlay(el); }
     }
   }
-  /** The user closed it (Escape, a click outside): the app hears `back`. */
-  function overlayDismissed(el) {
+  /** The user closed it: the app hears `back`, with how (#156): `escape`,
+   *  `outside` (a click on the backdrop or around a popover), `unknown`. */
+  function overlayDismissed(el, reason) {
     if (!el._open || el._closing) return;
     el._open = false;
     placedOverlays.delete(el);
     hideOverlay(el);
-    send({ t: "back", id: Number(el.dataset.pid), depth: 0 });
+    send({ t: "back", id: Number(el.dataset.pid), depth: 0, reason: reason || "unknown" });
   }
+  // The browser's light dismiss does not say why a popover closed: an
+  // Escape just before it is the reason, otherwise a click outside.
+  let escapeAt = -Infinity;
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") escapeAt = performance.now(); }, true);
+  const lightDismissReason = () => (performance.now() - escapeAt < 500 ? "escape" : "outside");
   function overlayBox(el, config) {
     const t = config.split(" ");
     const kind = ["popover", "dialog"].includes(t[0]) ? t[0] : "sheet";
@@ -446,12 +452,12 @@
       box = document.createElement(kind === "popover" ? "div" : "dialog");
       box.className = `prism-overlay-box prism-ov-${kind}`;
       if (kind === "popover") {
-        box.addEventListener("toggle", (e) => { if (e.newState === "closed") overlayDismissed(el); });
+        box.addEventListener("toggle", (e) => { if (e.newState === "closed") overlayDismissed(el, lightDismissReason()); });
         // A manual popover hears Escape itself while the focus is inside.
         box.addEventListener("keydown", (e) => {
           if (e.key !== "Escape" || el._fixed || box.getAttribute("popover") !== "manual") return;
           e.stopPropagation();
-          overlayDismissed(el);
+          overlayDismissed(el, "escape");
         });
         // Clicks inside keep the focus where it is (the anchor's field),
         // unless they land in a field of the popover.
@@ -466,14 +472,19 @@
         box.addEventListener("cancel", (e) => {
           // Escape closes it, unless it is fixed (then the app offers a way out).
           if (el._fixed) e.preventDefault();
+          else el._dismissReason = "escape";
         });
-        box.addEventListener("close", () => overlayDismissed(el));
+        box.addEventListener("close", () => {
+          const reason = el._dismissReason;
+          el._dismissReason = null;
+          overlayDismissed(el, reason);
+        });
         // A click on the backdrop (the dialog box itself, outside its content).
         box.addEventListener("click", (e) => {
           if (e.target !== box || el._fixed) return;
           const r = box.getBoundingClientRect();
           const inside = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
-          if (!inside || !box.firstElementChild) { el._closing = false; overlayDismissed(el); }
+          if (!inside || !box.firstElementChild) { el._closing = false; overlayDismissed(el, "outside"); }
         });
       }
       if (old) { box.append(...old.childNodes); old.remove(); }
@@ -1011,7 +1022,7 @@
       el.className = "prism-sheet";
       el.setAttribute("aria-modal", "true");
       // Escape: let the app decide (it removes the sheet).
-      el.addEventListener("cancel", (e) => { e.preventDefault(); send({ t: "back", id, depth: 0 }); });
+      el.addEventListener("cancel", (e) => { e.preventDefault(); send({ t: "back", id, depth: 0, reason: "escape" }); });
     } else if (kind === "scroll") {
       el.className = "prism-scroll";
     } else if (kind === "picture") {
