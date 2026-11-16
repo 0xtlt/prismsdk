@@ -186,6 +186,29 @@ pub enum FlexDirection {
     /// Children stacked top to bottom (the default).
     #[default]
     Column,
+    /// Children side by side from trailing to leading (`row-reverse`): the
+    /// last child at the leading edge, and `justify_start` packs them
+    /// against the trailing edge.
+    RowReverse,
+    /// Children stacked bottom to top (`column-reverse`): the last child on
+    /// top, and `justify_start` packs them against the bottom.
+    ColumnReverse,
+}
+
+impl FlexDirection {
+    /// `Row` or `RowReverse`: the main axis is horizontal.
+    pub fn is_row(self) -> bool {
+        matches!(self, FlexDirection::Row | FlexDirection::RowReverse)
+    }
+
+    /// `RowReverse` or `ColumnReverse`: children run from the end of the
+    /// main axis.
+    pub fn is_reverse(self) -> bool {
+        matches!(
+            self,
+            FlexDirection::RowReverse | FlexDirection::ColumnReverse
+        )
+    }
 }
 
 /// Cross-axis alignment (`align-items` / `align-self`).
@@ -616,6 +639,11 @@ pub struct Style {
     pub flex_shrink: f32,
     /// Main-axis size before growing or shrinking.
     pub flex_basis: Length,
+    /// Place among its siblings (`order`, `0` by default): the layout sorts
+    /// a parent's children by it, keeping their order among equals. Only the
+    /// visual position changes: focus and assistive technologies keep the
+    /// children's order in the tree.
+    pub order: i32,
 
     /// Background color.
     pub background: Option<Color>,
@@ -1253,6 +1281,7 @@ impl Default for Style {
             flex_grow: 0.,
             flex_shrink: 1.,
             flex_basis: Length::Auto,
+            order: 0,
             background: None,
             corner_radius: 0.,
             rounded_corners: Corners::ALL,
@@ -1333,6 +1362,17 @@ pub trait Styled: Sized {
     /// Lays children out in a column (the default).
     fn flex_col(self) -> Self {
         self.with_style(|s| s.direction = FlexDirection::Column)
+    }
+    /// Lays children out in a row from trailing to leading
+    /// (`flex-direction: row-reverse`): the first child ends up at the
+    /// trailing edge. Usable in refinements (`.md(|s| s.flex_row_reverse())`).
+    fn flex_row_reverse(self) -> Self {
+        self.with_style(|s| s.direction = FlexDirection::RowReverse)
+    }
+    /// Lays children out in a column from bottom to top
+    /// (`flex-direction: column-reverse`).
+    fn flex_col_reverse(self) -> Self {
+        self.with_style(|s| s.direction = FlexDirection::ColumnReverse)
     }
     /// Wraps children onto new lines when they don't fit.
     fn flex_wrap(self) -> Self {
@@ -1417,6 +1457,13 @@ pub trait Styled: Sized {
     /// Never shrinks below its size.
     fn flex_shrink_0(self) -> Self {
         self.with_style(|s| s.flex_shrink = 0.)
+    }
+    /// Place among its siblings (CSS `order`, `0` by default): lower first,
+    /// the children's order among equals. Moves the node visually only;
+    /// focus order and assistive technologies follow the tree. Usable in
+    /// refinements: `.order(1).md(|s| s.order(0))`.
+    fn order(self, order: i32) -> Self {
+        self.with_style(|s| s.order = order)
     }
 
     // Spacing

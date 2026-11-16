@@ -2589,3 +2589,24 @@ fn pictures_lose_their_loading_background_once_loaded() {
     assert!(crate::CLIENT_JS.contains("img.dataset.loaded = \"1\""));
     assert!(crate::CLIENT_JS.contains("delete el.dataset.loaded;"));
 }
+
+#[test]
+fn reversed_directions_and_order_become_css() {
+    let c = |d: prism_core::Div| css(NodeKind::View, &style_of(d));
+    assert!(c(div().flex_row_reverse()).contains("flex-direction:row-reverse;"));
+    assert!(c(div().flex_col_reverse()).contains("flex-direction:column-reverse;"));
+    assert!(c(div().order(-2)).contains("order:-2;"));
+    assert!(
+        !c(div().order(0)).contains("order:"),
+        "the default is left out"
+    );
+    // Refinements are resolved before the CSS (here at `md`).
+    let mut d = div().order(1).md(|s| s.flex_row_reverse().order(0));
+    let s = d.style_mut().resolve(prism_core::StyleContext {
+        breakpoint: prism_core::Breakpoint::Medium,
+        ..Default::default()
+    });
+    let medium = css(NodeKind::View, &s);
+    assert!(medium.contains("flex-direction:row-reverse;"), "{medium}");
+    assert!(!medium.contains("order:"), "{medium}");
+}

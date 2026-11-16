@@ -233,7 +233,25 @@ fn resolve(app: &mut App, element: Element, out: &mut Vec<SNode>) {
 }
 
 impl SNode {
-    fn from_vnode(mut v: VNode, children: Vec<SNode>) -> SNode {
+    fn from_vnode(mut v: VNode, mut children: Vec<SNode>) -> SNode {
+        // Renderers lay children out in the order given, leading to
+        // trailing or top to bottom: `order` and reversed directions are
+        // resolved here (stable sort, then reversed; the main-axis packing
+        // flips with it).
+        children.sort_by_key(|c| c.style.order);
+        if v.style.direction.is_reverse() {
+            children.reverse();
+            v.style.direction = if v.style.direction.is_row() {
+                FlexDirection::Row
+            } else {
+                FlexDirection::Column
+            };
+            v.style.justify_content = match v.style.justify_content {
+                Justify::Start => Justify::End,
+                Justify::End => Justify::Start,
+                other => other,
+            };
+        }
         // Renderers take explicit sizes: a missing side follows the ratio.
         if let Some(r) = v.style.aspect_ratio {
             match (v.style.width, v.style.height) {

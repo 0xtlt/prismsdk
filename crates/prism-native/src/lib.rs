@@ -356,6 +356,8 @@ struct Entry<V> {
     /// Interaction states: the style as rendered (`style` is it in the
     /// current states), the states the node is in, and those it refines.
     states: EntryStates,
+    /// The `order` its parent's layout children were last sorted by.
+    layout_order: i32,
 }
 
 #[derive(Default)]
@@ -916,7 +918,34 @@ impl<W: Widgets> NativeRenderer<W> {
         }
     }
 
+    /// The layout nodes of `ids`, sorted by their `order` (stable: the
+    /// app's order among equals). The views keep the app's order, so focus
+    /// and assistive technologies follow the tree, as on the web.
+    fn sorted_layouts(&mut self, ids: &[NodeId]) -> Vec<taffy::NodeId> {
+        let mut kids: Vec<(i32, taffy::NodeId)> = Vec::with_capacity(ids.len());
+        for c in ids {
+            if let Some(e) = self.nodes.get_mut(c) {
+                e.layout_order = e.style.order;
+                kids.push((e.style.order, e.layout));
+            }
+        }
+        kids.sort_by_key(|k| k.0);
+        kids.into_iter().map(|k| k.1).collect()
+    }
+
+    /// A node's `order` changed: its parent sorts its layout children again.
+    fn sync_order(&mut self, id: NodeId) {
+        let Some(e) = self.nodes.get(&id) else { return };
+        if e.style.order == e.layout_order {
+            return;
+        }
+        if let Some(parent) = self.extras.parents.get(&id).copied() {
+            self.set_layout_children(parent);
+        }
+    }
+
     fn sync_layout_style(&mut self, id: NodeId) {
+        self.sync_order(id);
         let Some(e) = self.nodes.get(&id) else { return };
         let zoomed = e.style.scaled(self.zoom);
         let mut style = to_taffy(&zoomed, e.kind);
@@ -1252,6 +1281,7 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                             frame: None,
                             drawing: None,
                             states: EntryStates::default(),
+                            layout_order: 0,
                         },
                     );
                 }
@@ -1351,13 +1381,15 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                 }
                 Patch::SetChildren { id, children } => {
                     self.play_exits(*id, children, &destroyed);
-                    let Some(parent) = self.nodes.get(id) else {
+                    if !self.nodes.contains_key(id) {
                         continue;
-                    };
-                    let kids: Vec<&Entry<W::View>> =
-                        children.iter().filter_map(|c| self.nodes.get(c)).collect();
-                    let views: Vec<W::View> = kids.iter().map(|e| e.view.clone()).collect();
-                    let layouts: Vec<taffy::NodeId> = kids.iter().map(|e| e.layout).collect();
+                    }
+                    let views: Vec<W::View> = children
+                        .iter()
+                        .filter_map(|c| self.nodes.get(c).map(|e| e.view.clone()))
+                        .collect();
+                    let layouts = self.sorted_layouts(children);
+                    let parent = &self.nodes[id];
                     self.widgets.set_children(&parent.view, &views);
                     if is_managed(parent.kind) {
                         let _ = self.taffy.set_children(parent.layout, &[]);
@@ -1542,6 +1574,8 @@ pub fn to_taffy(s: &Style, kind: NodeKind) -> taffy::Style {
         flex_direction: match s.direction {
             FlexDirection::Row => taffy::FlexDirection::Row,
             FlexDirection::Column => taffy::FlexDirection::Column,
+            FlexDirection::RowReverse => taffy::FlexDirection::RowReverse,
+            FlexDirection::ColumnReverse => taffy::FlexDirection::ColumnReverse,
         },
         flex_wrap: if s.wrap {
             taffy::FlexWrap::Wrap
