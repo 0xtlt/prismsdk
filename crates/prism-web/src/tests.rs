@@ -2409,6 +2409,14 @@ fn decorations_become_css() {
     ] {
         assert!(c.contains(part), "{part} missing in {c}");
     }
+    // A conic gradient: CSS's own, from its start angle.
+    let wheel = Style::default().bg_gradient(Gradient::conic(
+        45.,
+        [rgb(0xFF0000), rgb(0x0000FF), rgb(0xFF0000)],
+    ));
+    assert!(css(NodeKind::View, &wheel).contains(
+        "background-image:conic-gradient(from 45deg, rgba(255,0,0,1) 0%, rgba(0,0,255,1) 50%, rgba(255,0,0,1) 100%);"
+    ));
     // A scroll view keeps scrolling.
     assert!(!css(NodeKind::Scroll, &s).contains("overflow:hidden"));
 

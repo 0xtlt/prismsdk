@@ -15,6 +15,7 @@ import android.graphics.RadialGradient;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Shader;
+import android.graphics.SweepGradient;
 import android.graphics.drawable.Drawable;
 import android.os.Build;
 import android.view.View;
@@ -306,6 +307,15 @@ final class PrismDecor {
             m.setScale(1, ry / rx, cx, cy);
             r.setLocalMatrix(m);
             return r;
+        }
+        if ("conic".equals(g.optString("kind"))) {
+            // CSS `conic-gradient(from <angle>)`: 0 is up, clockwise. A
+            // SweepGradient starts at 3 o'clock and turns clockwise too.
+            SweepGradient s = new SweepGradient(cx, cy, colors, at);
+            Matrix m = new Matrix();
+            m.setRotate((float) g.optDouble("angle", 0) - 90, cx, cy);
+            s.setLocalMatrix(m);
+            return s;
         }
         double a = Math.toRadians(g.optDouble("angle", 180));
         float dx = (float) Math.sin(a), dy = (float) -Math.cos(a);

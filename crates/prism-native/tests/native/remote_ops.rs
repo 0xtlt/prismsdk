@@ -723,6 +723,13 @@ fn style_ops_carry_decorations_only_when_set() {
     assert_eq!(s["blur"], json!(12.));
     assert_eq!(s["cursor"], json!("pointer"));
 
+    // A conic gradient: its start angle in `angle`.
+    let conic = Style::default().bg_gradient(Gradient::conic(30., [rgb(0xff0000), rgb(0x0000ff)]));
+    w.set_style(&4, &conic);
+    let grad = &last(&w)["s"]["grad"];
+    assert_eq!(grad["kind"], json!("conic"));
+    assert_eq!(grad["angle"], json!(30.));
+
     // None of them by default: older hosts see the same op.
     w.set_style(&4, &Style::default());
     let s = last(&w)["s"].clone();

@@ -255,9 +255,32 @@ fn clear_sublayers(layer: &CALayer) {
 }
 
 fn gradient_layer(g: &Gradient, size: NSSize, flipped: bool) -> Retained<CALayer> {
-    use objc2_quartz_core::{CAGradientLayer, kCAGradientLayerAxial, kCAGradientLayerRadial};
+    use objc2_quartz_core::{
+        CAGradientLayer, kCAGradientLayerAxial, kCAGradientLayerConic, kCAGradientLayerRadial,
+    };
     let l = CAGradientLayer::new();
     l.setFrame(NSRect::new(NSPoint::ZERO, size));
+    // A conic gradient turns towards positive angles of the layer's own
+    // coordinates: clockwise on screen when they are flipped (y down),
+    // counter-clockwise otherwise. CSS turns clockwise: unflipped, the stops
+    // are mirrored (`1 - at`, in reverse) around the same starting ray.
+    let reversed = matches!(g.kind, prism_core::GradientKind::Conic { .. }) && !flipped;
+    let stops: Vec<prism_core::GradientStop> = if reversed {
+        g.stops
+            .iter()
+            .rev()
+            .map(|s| prism_core::GradientStop {
+                color: s.color,
+                at: 1. - s.at,
+            })
+            .collect()
+    } else {
+        g.stops.clone()
+    };
+    let g = &Gradient {
+        kind: g.kind,
+        stops,
+    };
     let colors: Vec<_> = g.stops.iter().map(|s| cg(s.color)).collect();
     let objs: Vec<&AnyObject> = colors
         .iter()
@@ -321,6 +344,14 @@ fn gradient_layer(g: &Gradient, size: NSSize, flipped: bool) -> Retained<CALayer
             );
             l.setStartPoint(center);
             l.setEndPoint(NSPoint::new(center.x + rx as f64, center.y + ry as f64));
+        }
+        prism_core::GradientKind::Conic { .. } => {
+            // Around `startPoint`, the first color towards `endPoint`;
+            // angles are measured in points, so any point on the starting
+            // ray will do.
+            unsafe { l.setType(kCAGradientLayerConic) };
+            l.setStartPoint(unit(a, b));
+            l.setEndPoint(unit(c, e));
         }
     }
     Retained::into_super(l)
