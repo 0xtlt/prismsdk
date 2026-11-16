@@ -75,7 +75,8 @@ impl WebApp {
 
     /// [`connect`](WebApp::connect) with the host's context for the app
     /// (`cx.request_context::<T>()`), evaluated for this handshake (so again
-    /// at every reconnect).
+    /// at every reconnect). The context the page request had stays readable
+    /// once, in the page's first session (`cx.page_request_context::<T>()`).
     pub fn connect_with(
         &self,
         uri: &Uri,
@@ -118,6 +119,13 @@ impl WebApp {
             .split('&')
             .find_map(|kv| kv.strip_prefix("search="))
             .map(crate::app::percent_decode);
+        // The page's first handshake takes its request over (`cx.page_request()`).
+        let page_request = uri
+            .query()
+            .unwrap_or("")
+            .split('&')
+            .find_map(|kv| kv.strip_prefix("page="))
+            .and_then(|id| self.inner.handoffs.take(id, &sid));
         let request = crate::host::web_request(
             prism_core::RequestKind::Socket,
             self.page_url(&origin, &path, search.as_deref()),
@@ -139,7 +147,7 @@ impl WebApp {
                 options.wake_ui = Some(std::sync::Arc::new(move || {
                     let _ = waker.send(Inbound::Wake);
                 }));
-                let runtime = Runtime::with_options(&app.init_with(request), options);
+                let runtime = Runtime::with_options(&app.init_with(request, page_request), options);
                 Live {
                     device: device.unwrap_or_else(|| runtime.app.device_info()),
                     runtime,

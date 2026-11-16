@@ -3,8 +3,10 @@
 //!
 //! On the web, the first paint renders with the page request; the live
 //! session renders with the socket handshake (re-read at every reconnect).
-//! Native apps have no request: [`App::request`] and [`App::page_origin`]
-//! are `None` there.
+//! The first live session after a page load also gets that page's request
+//! back ([`App::page_request`]), for what the host hands out once (a flash
+//! message after a redirect, a one-time token). Native apps have no request:
+//! [`App::request`] and [`App::page_origin`] are `None` there.
 //!
 //! A handler that signs a user in sets the session cookie with
 //! [`App::set_cookie`] (or [`AsyncApp::set_cookie`](crate::AsyncApp::set_cookie)
@@ -120,6 +122,9 @@ impl UrlTarget {
 /// The slot that holds the session's request (a global).
 struct RequestSlot(WebRequest);
 
+/// The slot that holds the page request a live session took over (a global).
+struct PageRequestSlot(WebRequest);
+
 impl App {
     /// The web request this session renders for: the page request during the
     /// server-side render, the socket handshake in the live session. `None`
@@ -133,6 +138,30 @@ impl App {
     /// natively.
     pub fn request_context<T: Any + Send + Sync>(&self) -> Option<Arc<T>> {
         self.request()?.context::<T>()
+    }
+
+    /// The page request that drew the first paint. During that render it is
+    /// [`request`](App::request); in the live session, where `request` is
+    /// the socket handshake, it is the page's own request, with the context
+    /// the host attached to it then: for what the host hands out once (a
+    /// flash message read and cleared on the page request, a one-time
+    /// token), which the handshake no longer carries.
+    ///
+    /// One-shot: only the first live session after a page load gets it,
+    /// within a minute of the page, from the browser that loaded it. A
+    /// reconnect gets `None`. `None` natively.
+    pub fn page_request(&self) -> Option<&WebRequest> {
+        match self.try_global::<PageRequestSlot>() {
+            Some(slot) => Some(&slot.0),
+            None => self.request().filter(|r| r.kind == RequestKind::Page),
+        }
+    }
+
+    /// What the host attached to the [page request](App::page_request), if
+    /// it is a `T`. One-shot in the live session, like `page_request`.
+    /// `None` natively.
+    pub fn page_request_context<T: Any + Send + Sync>(&self) -> Option<Arc<T>> {
+        self.page_request()?.context::<T>()
     }
 
     /// The page's origin (`https://example.com`). `None` natively: an app has
@@ -179,6 +208,12 @@ impl App {
     /// Sets the request (web backends call it before the app's init).
     pub fn set_request(&mut self, request: WebRequest) {
         self.set_global(RequestSlot(request));
+    }
+
+    /// Sets the page request a live session took over (web backends call it
+    /// before the app's init; see [`page_request`](App::page_request)).
+    pub fn set_page_request(&mut self, request: WebRequest) {
+        self.set_global(PageRequestSlot(request));
     }
 
     /// Sets (or, with [`Cookie::remove`], deletes) a cookie in the browser,

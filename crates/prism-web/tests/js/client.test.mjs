@@ -83,6 +83,16 @@ test("the socket says where the page is and how big", () => {
   assert.equal(u.searchParams.get("path"), "/todos");
 });
 
+test("the first socket hands the page's request over, reconnects don't", () => {
+  const page = live([create(1, "text"), root(1)], { pageId: "0123abcd" });
+  assert.equal(new URL(page.ws.url).searchParams.get("page"), "0123abcd");
+  page.ws.onclose();
+  page.timers.at(-1).fn();
+  assert.equal(new URL(page.sockets.at(-1).url).searchParams.get("page"), null);
+  // A page without one (a HEAD, an older server) sends none.
+  assert.equal(new URL(live(null).ws.url).searchParams.get("page"), null);
+});
+
 test("the client builds the tree the server rendered", () => {
   const server = new Document();
   const ssr = parseHTML(server, fixture.ssr);

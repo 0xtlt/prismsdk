@@ -31,12 +31,18 @@ impl Render for Whoami {
             prism_core::RequestKind::Socket => "socket",
         });
         let theme = request.and_then(|r| r.cookie("theme")).unwrap_or("-");
+        let page = match (cx.page_request(), cx.page_request_context::<User>()) {
+            (Some(page), Some(user)) => format!("page {} of user {}", page.path(), user.id),
+            (Some(page), None) => format!("page {} of nobody", page.path()),
+            (None, _) => "no page".to_string(),
+        };
         div()
             .p(8.)
             .child(text(user))
             .child(text(format!("origin {}", cx.page_origin().unwrap_or("-"))))
             .child(text(format!("url {}", cx.page_url().unwrap_or("-"))))
             .child(text(format!("kind {kind} theme {theme}")))
+            .child(text(page))
             .child(text("same").p(8.))
             .child(text("<b>").p(8.))
     }
@@ -135,7 +141,7 @@ fn the_app_adds_fonts_icons_metas_styles_and_scripts_to_the_head() {
     assert!(page_css.contains("body{font-family:Inter, system-ui}"));
     // Prism's own tags carry the nonce too.
     assert!(page.contains(r#"<style id="prism-ssr" nonce="n0nce">"#));
-    assert!(page.contains(r#"data-base="" nonce="n0nce"></script>"#));
+    assert!(page.contains(r#" nonce="n0nce"></script>"#), "{page}");
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -367,6 +373,65 @@ fn a_session_sees_its_handshake_and_context() {
         "{t:?}"
     );
     assert!(t.contains(&"kind socket theme light".to_string()), "{t:?}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The page's `data-page` id.
+fn page_id(page: &str) -> String {
+    let start = page.find(r#"data-page=""#).expect("a page id") + 11;
+    page[start..start + 32].to_string()
+}
+
+#[test]
+fn the_first_session_takes_the_page_request_over_once() {
+    let (app, dir) = app("handoff", whoami());
+    let sid = "0123456789abcdef0123456789abcdef";
+    let cookie = format!("prism_sid={sid}");
+    let page_for = |user: u32| {
+        let mut req = Request::get("/orders")
+            .header("host", "localhost:3000")
+            .header("cookie", &cookie)
+            .body(())
+            .unwrap();
+        // A one-time value, given to the page request only (a flash message).
+        req.extensions_mut()
+            .insert(RequestContext::new(User { id: user }));
+        body(&app.handle(&req))
+    };
+    let page = page_for(5);
+    assert!(page.contains("page /orders of user 5"), "{page}");
+    let id = page_id(&page);
+    let socket = |id: &str, cookie: &str| {
+        let uri = format!("/ws?path=%2Forders&page={id}");
+        let headers = [
+            ("host", "localhost:3000"),
+            ("origin", "http://localhost:3000"),
+            ("cookie", cookie),
+        ];
+        texts(&next(&open(&app, &uri, &headers, Some(User { id: 6 }))))
+    };
+    // The live session: its handshake's context, and the page's.
+    let t = socket(&id, &cookie);
+    assert!(t.contains(&"user 6".to_string()), "{t:?}");
+    assert!(t.contains(&"kind socket theme -".to_string()), "{t:?}");
+    assert!(t.contains(&"page /orders of user 5".to_string()), "{t:?}");
+    // A reconnect with the same id: gone.
+    let t = socket(&id, &cookie);
+    assert!(t.contains(&"no page".to_string()), "{t:?}");
+    // Another browser with a page's id: refused (and the page's request gone).
+    let id = page_id(&page_for(7));
+    let other = "prism_sid=fedcba9876543210fedcba9876543210";
+    let t = socket(&id, other);
+    assert!(t.contains(&"no page".to_string()), "{t:?}");
+    assert!(socket(&id, &cookie).contains(&"no page".to_string()));
+    // A HEAD has no live session: nothing is kept for it.
+    let waiting = app.inner.handoffs.len();
+    let head = Request::head("/orders")
+        .header("host", "localhost:3000")
+        .body(())
+        .unwrap();
+    assert_eq!(app.handle(&head).status(), StatusCode::OK);
+    assert_eq!(app.inner.handoffs.len(), waiting);
     let _ = std::fs::remove_dir_all(dir);
 }
 
