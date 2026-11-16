@@ -907,6 +907,7 @@
     if (fromUser) {
       userNavigated = true;
       send({ t: "change", id: Number(tabs.dataset.pid), v: index });
+      if (index !== tabs._selected) awaitLazyTab(tabs, index);
     }
     tabs._selected = index;
     refreshTabs(tabs);
@@ -917,6 +918,7 @@
     const panels = tabs._tabs.map((i) => nodes.get(i)).filter(Boolean);
     const bar = tabs._bar;
     while (bar.children.length > panels.length) bar.lastElementChild.remove();
+    const shown = lazyTabShown(tabs, panels);
     panels.forEach((panel, i) => {
       let btn = bar.children[i];
       if (!btn) {
@@ -939,10 +941,39 @@
       panel.id = `prism-panel-${pid}`;
       panel.setAttribute("role", "tabpanel");
       panel.setAttribute("aria-labelledby", btn.id);
-      panel.hidden = !selected;
+      panel.hidden = i !== shown;
     });
     const s = navState();
     if (s && s.stack) refreshStack(s.stack);
+  }
+
+  // --- Lazy tabs: rendered by the server on their first selection ----------------
+  /** A lazy tab never selected: its stack has no screen yet. */
+  function lazyPanel(panel) {
+    const st = panel && panel.firstElementChild;
+    return !!st && st.dataset.kind === "stack" && !!st._screens && st._screens.length === 0;
+  }
+  /**
+   * Picking a tab the server has not rendered yet: the panel shown keeps
+   * showing until the server's answer (one round trip) instead of an empty
+   * one. Its answer selects the tab (a "value" patch), which ends the wait;
+   * so does a timeout, should it never come.
+   */
+  function awaitLazyTab(tabs, index) {
+    if (!lazyPanel(nodes.get(tabs._tabs[index]))) return;
+    tabs._awaiting = true;
+    clearTimeout(tabs._awaitTimer);
+    tabs._awaitTimer = setTimeout(() => { tabs._awaiting = false; refreshTabs(tabs); }, 1000);
+  }
+  function endLazyWait(tabs) {
+    tabs._awaiting = false;
+    clearTimeout(tabs._awaitTimer);
+  }
+  /** Index of the panel to show: the selected one, or the previous one while a lazy tab renders. */
+  function lazyTabShown(tabs, panels) {
+    const keep = tabs._awaiting && lazyPanel(panels[tabs._selected]) && panels[tabs._shown];
+    tabs._shown = keep ? tabs._shown : tabs._selected;
+    return tabs._shown;
   }
 
   // --- Form controls (prism-core `controls`) -------------------------------------
@@ -1181,7 +1212,7 @@
           if (owner && owner._screens) refreshStack(owner);
         }
         if (el.dataset.kind === "timer") { el.dataset.end = p.value; tick(); }
-        if (el.dataset.kind === "tabs") { el._selected = p.value; refreshTabs(el); }
+        if (el.dataset.kind === "tabs") { endLazyWait(el); el._selected = p.value; refreshTabs(el); }
         return;
       case "icon": {
         el._icon = p.icon;
@@ -1356,7 +1387,8 @@
       const panel = nodes.get((root._tabs || [])[tab]);
       stack = panel && panel.querySelector(".prism-stack");
     }
-    if (!stack || !stack._screens) return null;
+    // A lazy tab not rendered yet has no screen to follow.
+    if (!stack || !stack._screens || !stack._screens.length) return null;
     const path = root.dataset.kind === "tabs" ? root.dataset.path : stack.dataset.path;
     return { path: path || "/", depth: stack._screens.length, stack, tab };
   }

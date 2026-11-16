@@ -547,6 +547,60 @@ fn ssr_of_a_presented_sheet_keeps_the_screen_underneath_visible() {
     }
 }
 
+// --- Lazy tabs -------------------------------------------------------------------------
+
+/// A tab's screen with its own body text.
+struct TabPage(&'static str);
+impl Render for TabPage {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        screen(self.0).child(text(format!("{} body", self.0)))
+    }
+}
+
+fn lazy_tabs_page(path: &str) -> String {
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let router = Router::new()
+            .tab("Home", "house", "/")
+            .tab("More", "gear", "/more")
+            .tab("Pinned", "pin", "/pinned")
+            .eager()
+            .route("/", |cx, _| cx.new_entity(|_| TabPage("Home")))
+            .route("/more", |cx, _| cx.new_entity(|_| TabPage("More")))
+            .route("/more/deep", |cx, _| cx.new_entity(|_| TabPage("Deep")))
+            .route("/pinned", |cx, _| cx.new_entity(|_| TabPage("Pinned")))
+            .build(cx);
+        cx.set_root(router);
+    });
+    let mut rt = Runtime::with_path(&init, path);
+    html(&rt.render())
+}
+
+#[test]
+fn ssr_renders_the_selected_tab_and_eager_tabs_only() {
+    let page = lazy_tabs_page("/");
+    assert!(page.contains("Home body"), "{page}");
+    assert!(page.contains("Pinned body"), "eager: {page}");
+    assert!(!page.contains("More body"), "lazy: {page}");
+    // Every tab keeps its bar button and its (empty) panel.
+    assert_eq!(page.matches(r#"role="tab" "#).count(), 3);
+    assert_eq!(page.matches(r#"role="tabpanel""#).count(), 3);
+    assert!(page.contains("<span>More</span>"), "{page}");
+}
+
+#[test]
+fn ssr_of_a_deep_link_renders_its_tab_in_the_first_paint() {
+    for path in ["/more", "/more/deep"] {
+        let page = lazy_tabs_page(path);
+        assert!(page.contains("More body"), "{path}: {page}");
+        assert!(!page.contains("Home body"), "{path}: {page}");
+        assert!(
+            page.contains(r#"aria-selected="true" tabindex="0"><span class="prism-tab-icon" aria-hidden="true">"#),
+            "{page}"
+        );
+    }
+    assert!(lazy_tabs_page("/more/deep").contains("Deep body"));
+}
+
 // --- Styles → CSS ------------------------------------------------------------------------
 
 #[test]

@@ -246,7 +246,8 @@ fn deep_links_pick_the_tab_with_the_longest_matching_root() {
     let h = tab_app("/settings/privacy");
     assert_eq!(h.host.get(tabs_node(&h)).value, Some(1.));
     assert_eq!(path(&h), "/settings/privacy");
-    // The other tab still has its root screen.
+    // The other tab is in the bar, but lazy: no screen until selected.
+    assert_eq!(h.host.get(tabs_node(&h)).children.len(), 2);
     let all: Vec<String> = h
         .host
         .mounted()
@@ -254,7 +255,7 @@ fn deep_links_pick_the_tab_with_the_longest_matching_root() {
         .filter(|id| h.host.get(*id).kind == NodeKind::Screen)
         .map(|id| h.host.get(id).text.clone())
         .collect();
-    assert_eq!(all, ["home", "settings", "section privacy"]);
+    assert_eq!(all, ["settings", "section privacy"]);
     // A path under no other tab's root opens in the "/" tab.
     let h = tab_app("/todos/4");
     assert_eq!(h.host.get(tabs_node(&h)).value, Some(0.));
@@ -272,10 +273,15 @@ fn navigating_to_a_tab_root_switches_tab_and_keeps_stacks() {
         id: tabs,
         value: 1.
     }));
-    assert_eq!(creates(&p), 0, "switching tab creates nothing: {p:?}");
+    // Lazy tabs: the first visit renders the tab's root screen.
+    assert!(creates(&p) > 0);
     h.rt.app.navigate("/");
-    h.render();
+    let p = h.render().to_vec();
+    assert_eq!(creates(&p), 0, "switching tab creates nothing: {p:?}");
     assert_eq!(path(&h), "/todos/9");
+    h.rt.app.navigate("/settings");
+    let p = h.render().to_vec();
+    assert_eq!(creates(&p), 0, "a visited tab stays rendered: {p:?}");
 }
 
 #[test]

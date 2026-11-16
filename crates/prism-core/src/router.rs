@@ -268,6 +268,13 @@ struct TabState {
     icon: String,
     root: String,
     entries: Vec<Entry>,
+    // --- Lazy tabs ---
+    /// Rendered from the start ([`RouterBuilder::eager`]), not on first
+    /// selection.
+    eager: bool,
+    /// Whether the tab's screens are in the tree: it was selected since the
+    /// last reset (it then stays, state and nodes kept), or it is eager.
+    shown: bool,
 }
 
 /// The navigation state: one stack of screens per tab (a single implicit tab
@@ -303,6 +310,9 @@ pub struct RouterBuilder {
     header: Option<bool>,
     // --- Bar options (#30) ---
     tint: Option<crate::style::Color>,
+    // --- Lazy tabs ---
+    /// Indices of the tabs declared [`eager`](RouterBuilder::eager).
+    eager: Vec<usize>,
 }
 
 impl Router {
@@ -329,6 +339,16 @@ impl Router {
     /// Index of the selected tab.
     pub fn selected_tab(&self) -> usize {
         self.selected
+    }
+
+    /// Whether tab `index` has its screens in the tree: tabs render on
+    /// their first selection (then stay), or up front when declared
+    /// [`eager`](RouterBuilder::eager). An unrendered tab shows only its
+    /// tab-bar entry.
+    pub fn tab_rendered(&self, index: usize) -> bool {
+        self.tabs
+            .get(index)
+            .is_some_and(|t| t.shown || index == self.selected)
     }
 
     pub(crate) fn apply(&mut self, op: NavOp, cx: &mut Context<Self>) {
@@ -480,6 +500,22 @@ impl Router {
         }
     }
 
+    /// Lazy tabs: marks the selected tab rendered (it stays so). On watchOS
+    /// the tabs are pages the Digital Crown scrolls through, which shows the
+    /// next page during the swipe, before the selection changes: the tabs
+    /// next to the selected one render too.
+    fn show_selected_tab(&mut self, platform: crate::Platform) {
+        let near = if platform == crate::Platform::Watchos {
+            1
+        } else {
+            0
+        };
+        let (from, to) = (self.selected.saturating_sub(near), self.selected + near);
+        for t in self.tabs.iter_mut().take(to + 1).skip(from) {
+            t.shown = true;
+        }
+    }
+
     /// Opens `path` in the tab whose root best matches it. Each tab's root
     /// screen sits underneath, so "back" has somewhere to go.
     fn reset(&mut self, path: &str, cx: &mut Context<Self>) {
@@ -496,6 +532,8 @@ impl Router {
             .max_by_key(|(_, t)| t.root.len())
             .map_or(0, |(i, _)| i);
         for i in 0..self.tabs.len() {
+            // Fresh screens: only eager tabs (and the selected one) render.
+            self.tabs[i].shown = self.tabs[i].eager;
             for old in std::mem::take(&mut self.tabs[i].entries) {
                 release_screen(&self.shared, old.entity, cx);
             }
@@ -627,6 +665,24 @@ impl RouterBuilder {
         self
     }
 
+    /// Renders the tab declared just before up front, instead of on its
+    /// first selection: `.tab("Player", "play", "/player").eager()`.
+    ///
+    /// Tabs are lazy by default: an unvisited tab shows its tab-bar entry
+    /// (title and icon) with an empty panel, and its screens render when it
+    /// is first selected, then stay (their state and nodes are kept when
+    /// switching away). A page then ships only the visible tab (less HTML
+    /// and a smaller first update on the web, fewer native views). Make a
+    /// tab eager when switching to it must show content without waiting
+    /// for a render (a remote web session's round trip), or when its views
+    /// must exist while hidden. Without a tab before it, it does nothing.
+    pub fn eager(mut self) -> Self {
+        if let Some(last) = self.tabs.len().checked_sub(1) {
+            self.eager.push(last);
+        }
+        self
+    }
+
     /// Shows or hides the header bar (title and Back) of every stack:
     /// `.header(false)` for an app that draws its own chrome. Back stays
     /// available natively (swipe, system Back, browser Back, ⌘[) and through
@@ -664,11 +720,14 @@ impl RouterBuilder {
         let tabs = if tab_bar {
             self.tabs
                 .into_iter()
-                .map(|(title, icon, root)| TabState {
+                .enumerate()
+                .map(|(i, (title, icon, root))| TabState {
                     title,
                     icon,
                     root,
                     entries: Vec::new(),
+                    eager: self.eager.contains(&i),
+                    shown: false,
                 })
                 .collect()
         } else {
@@ -677,6 +736,8 @@ impl RouterBuilder {
                 icon: String::new(),
                 root: "/".into(),
                 entries: Vec::new(),
+                eager: true,
+                shown: true,
             }]
         };
         let router = app.new_entity(|_| Router {
@@ -719,7 +780,13 @@ fn tab_stack(
         .path(t.entries.last().map_or("/", |e| e.path.as_str()))
         .on_back(cx.listener(move |this, e: &BackEvent, cx| this.truncate(index, e.depth, cx)))
         .on_navigate(cx.listener(|this, e: &NavigateEvent, cx| this.push(&e.path, cx)))
-        .children(t.entries.iter().map(|e| Element::Entity(e.entity)))
+        // Lazy tabs: no screens until the tab is first selected.
+        .children(
+            t.entries
+                .iter()
+                .filter(|_| t.shown)
+                .map(|e| Element::Entity(e.entity)),
+        )
 }
 
 /// The sheet: a closable stack; closing it (button, swipe, Escape) dismisses.
@@ -755,6 +822,8 @@ impl Render for Router {
         // The router's tint, else the app's accent color (#30).
         let tint = self.tint.or_else(|| cx.accent_color());
         let sheet = modal_sheet(&self.modal, self.header, tint, cx);
+        // Lazy tabs: the selected tab renders, and stays rendered.
+        self.show_selected_tab(cx.platform());
         if !self.tab_bar {
             return tab_stack(&self.tabs[0], 0, self.header, cx)
                 .tint(tint)

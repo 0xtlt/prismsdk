@@ -85,6 +85,8 @@ pub fn run() {
             let focus = focus::install(cx, store);
             Router::new()
                 // Titles follow the language (recomputed on every render).
+                // Tabs render on their first selection; `.eager()` after a
+                // tab renders it up front.
                 .tab_with(strings::tabs_todos, "checklist", "/")
                 .tab_with(strings::tabs_focus, "timer", "/focus")
                 .tab_with(strings::tabs_components, "square.grid.2x2", "/components")
