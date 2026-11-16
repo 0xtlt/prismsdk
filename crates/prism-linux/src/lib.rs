@@ -24,6 +24,8 @@ mod padding;
 #[cfg(target_os = "linux")]
 mod push;
 #[cfg(target_os = "linux")]
+mod scene3d;
+#[cfg(target_os = "linux")]
 mod security;
 #[cfg(target_os = "linux")]
 mod services;

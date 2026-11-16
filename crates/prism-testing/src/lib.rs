@@ -253,6 +253,9 @@ impl Backend for Host {
                 Patch::SetIsland { id, tag, .. } => {
                     self.node(*id, "SetIsland").island = Some(tag.clone())
                 }
+                Patch::SetScene { id, .. } => {
+                    self.node(*id, "SetScene");
+                }
                 Patch::SetIslandProps { id, props } => {
                     let n = self.node(*id, "SetIslandProps");
                     for (k, v) in props {

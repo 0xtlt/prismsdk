@@ -466,5 +466,19 @@
     "just_now": "à l’instant",
     "native": "Les apps natives et les pages sans JavaScript affichent le graphique dessiné par Prism.",
     "summary": "{n} valeurs, la dernière : {last}"
+  },
+  "scene3d": {
+    "title": "Scène 3D",
+    "caption": "Glissez pour tourner, pincez ou faites défiler pour zoomer, touchez une forme.",
+    "picked": "Choisi : {name}",
+    "nothing": "Rien de choisi",
+    "shuffle": "Mélanger",
+    "label": "Un cube, une sphère, un cône et un anneau sur un sol",
+    "names": {
+      "cube": "cube",
+      "sphere": "sphère",
+      "cone": "cône",
+      "ring": "anneau"
+    }
   }
 }

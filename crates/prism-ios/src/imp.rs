@@ -1640,6 +1640,7 @@ impl Widgets for UiKit {
                 View::Image(v)
             }
             NodeKind::Progress => View::Progress(UIProgressView::new(mtm)),
+            NodeKind::Scene3d => View::Container(crate::scene::create(id)),
             NodeKind::Shape => {
                 let v: Retained<ShapeView> = unsafe { msg_send![ShapeView::alloc(mtm), init] };
                 v.setOpaque(false);
@@ -2205,6 +2206,10 @@ impl Widgets for UiKit {
     fn set_drawing(&mut self, view: &View, paths: &[prism_core::Path]) {
         SHAPES.with(|s| s.borrow_mut().insert(view.id(), paths.to_vec()));
         view.ui().setNeedsDisplay();
+    }
+
+    fn set_scene(&mut self, view: &View, update: &prism_core::scene3d::SceneUpdate, json: &str) {
+        crate::scene::set(view.ui(), update, json, &self.image_sources);
     }
 
     fn destroy(&mut self, view: &View) {

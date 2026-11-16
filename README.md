@@ -103,6 +103,10 @@ Transitions, transforms, enter/exit animations, loops and `with_animation`, nati
 
 Line, bar and pie charts, rings, stats and sparklines in `prism::ui`, and `shape()` for your own drawings; also in widgets, Live Activities and car screens. → [Charts and vector drawing](docs/src/guide/charts.md)
 
+## 3D scenes
+
+`scene3d()`: meshes, glTF models with skeletal animations, instancing, physically based materials, shadows and environment lighting, drawn by the GPU (SceneKit, WebGL 2, OpenGL ES 3, OpenGL); orbit, spin, clips, transitions and taps run on the device, and only changed nodes are sent. → [3D scenes](docs/src/guide/scene3d.md)
+
 ## Accessibility
 
 Built in: one description per node, mapped to ARIA, `UIAccessibility`, `NSAccessibility`, GTK and Android. → [Accessibility](docs/src/guide/accessibility.md)
@@ -189,7 +193,7 @@ An APK without Gradle; a small Java host shows real Android views. Phones, table
 
 ## Status
 
-Primitives: `div`, `text`, `button`, `text_input` (secure, keyboards, submit), `text_area`, `toggle`, `slider`, `picker`, `date_picker`, `spinner`, `scroll`, `picture`, `shape`, `VirtualList`, `screen`, `Router` (stacks, tabs, sheets). Component library `prism::ui`. Accessibility on all backends. Light/dark appearance.
+Primitives: `div`, `text`, `button`, `text_input` (secure, keyboards, submit), `text_area`, `toggle`, `slider`, `picker`, `date_picker`, `spinner`, `scroll`, `picture`, `shape`, `scene3d`, `VirtualList`, `screen`, `Router` (stacks, tabs, sheets). Component library `prism::ui`. Accessibility on all backends. Light/dark appearance.
 Widgets, Live Activities (Dynamic Island), car screens (CarPlay, Android Auto, Automotive), notifications with actions, remote push (APNs, FCM, Web Push, UnifiedPush) with a server-side sender, background tasks, device APIs (location, motion, photos, camera, haptics, clipboard, share), secure storage, biometrics, Sign in with Apple, OAuth/OIDC sign-in, alerts, context menus, tray and app menus, charts (also in widgets), async tasks, HTTP, storage, i18n/RTL, Dynamic Type, animations, `prism` CLI.
 Platforms: web, macOS, iOS/iPadOS, tvOS, watchOS, visionOS, Linux (GTK 4), Android (phones, tablets, Wear OS, Android TV). Not yet: Windows (the `Widgets` trait and `PlatformServices` are the extension points).
 

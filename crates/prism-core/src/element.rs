@@ -86,6 +86,13 @@ pub enum NodeKind {
     /// [`RadioConfig`](crate::controls::RadioConfig)). Value: the selected
     /// index (-1: none).
     RadioGroup,
+
+    // --- 3D ---
+    /// A 3D scene drawn by the GPU (its [`VNode::scene`], sent as
+    /// [`Patch::SetScene`](crate::Patch::SetScene)): SceneKit, WebGL 2,
+    /// OpenGL ES 3, OpenGL. No natural size. Reports
+    /// [`UiEvent::SceneTap`](crate::UiEvent::SceneTap).
+    Scene3d,
 }
 
 impl NodeKind {
@@ -116,6 +123,7 @@ impl NodeKind {
             NodeKind::Overlay => "overlay",
             NodeKind::Checkbox => "checkbox",
             NodeKind::RadioGroup => "radio_group",
+            NodeKind::Scene3d => "scene3d",
         }
     }
 
@@ -130,7 +138,7 @@ impl NodeKind {
             NodeKind::Progress | NodeKind::Spinner => Some(Role::ProgressBar),
             NodeKind::Slider => Some(Role::Slider),
             NodeKind::Picker => Some(Role::ComboBox),
-            NodeKind::Picture | NodeKind::Shape => Some(Role::Image),
+            NodeKind::Picture | NodeKind::Shape | NodeKind::Scene3d => Some(Role::Image),
             NodeKind::Checkbox => Some(Role::Checkbox),
             NodeKind::RadioGroup => Some(Role::RadioGroup),
             _ => None,
@@ -338,6 +346,12 @@ pub struct VNode {
     /// ([`App::on_widget_action`](crate::App::on_widget_action)) without
     /// opening it: `(action, payload)`.
     pub widget_action: Option<(String, String)>,
+
+    // --- 3D ---
+    /// A tap on a 3D scene ([`scene3d`](crate::scene3d::scene3d)).
+    pub on_scene_tap: Option<Handler<crate::scene3d::SceneTapEvent>>,
+    /// A 3D scene's contents (the reconciler sends what changed).
+    pub scene: Option<Box<crate::scene3d::SceneData>>,
 }
 
 impl VNode {
@@ -374,6 +388,8 @@ impl VNode {
             on_global_key_down: None,
             island: None,
             widget_action: None,
+            on_scene_tap: None,
+            scene: None,
         }
     }
 }

@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::sync::OnceLock;
 
-use jni_sys::{JNIEnv, jclass, jfloat, jstring};
+use jni_sys::{JNIEnv, jbyteArray, jclass, jfloat, jsize, jstring};
 use prism_core::{
     AppConfig, AppInit, Backend, DeviceInfo, DeviceKind, Orientation, Os, OsName, Runtime,
     ScreenInfo, UiEvent, WindowMode,
@@ -315,6 +315,34 @@ pub extern "system" fn Java_dev_prism_PrismHost_nativeWake(_env: *mut JNIEnv, _c
     });
     poll_headless();
     check_jobs();
+}
+
+/// `PrismHost.sceneBlob(id)`: a 3D scene's blob (mesh, instances, clip,
+/// skin, environment, embedded image; `prism_core::scene3d::blobs`), or
+/// null once nothing holds it. Any thread: PrismScene loads blobs off the
+/// main thread.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_prism_PrismHost_sceneBlob(
+    env: *mut JNIEnv,
+    _class: jclass,
+    id: jstring,
+) -> jbyteArray {
+    let id = unsafe { jni::rust_string(env, id) };
+    let Some((bytes, _)) = prism_core::scene3d::blobs::get(&id) else {
+        return std::ptr::null_mut();
+    };
+    let Ok(len) = jsize::try_from(bytes.len()) else {
+        return std::ptr::null_mut();
+    };
+    unsafe {
+        let e = (**env).v1_6;
+        // Null with an OutOfMemoryError pending: Java sees the error.
+        let array = (e.NewByteArray)(env, len);
+        if !array.is_null() {
+            (e.SetByteArrayRegion)(env, array, 0, len, bytes.as_ptr().cast());
+        }
+        array
+    }
 }
 
 // --- Background jobs (PrismJob.java) ---------------------------------------------------

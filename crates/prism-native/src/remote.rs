@@ -154,6 +154,11 @@ pub fn parse_input_event(v: &Value) -> Option<prism_core::UiEvent> {
             (Some(x), Some(y)) => UiEvent::ClickAt(id?, Point::new(x, y)),
             _ => UiEvent::Click(id?),
         }),
+        // A tap on a 3D scene: `{"t":"scene_tap","id","node","point"}`.
+        "scene_tap" => Some(UiEvent::SceneTap(
+            id?,
+            prism_core::SceneTapEvent::decode(&v.to_string()),
+        )),
         "pointer" => Some(UiEvent::Pointer(
             id?,
             PointerEvent {
@@ -749,6 +754,13 @@ impl Widgets for RemoteWidgets {
             .push(json!({ "op": "draw", "id": id, "paths": drawing(paths) }));
     }
 
+    fn set_scene(&mut self, id: &NodeId, _update: &prism_core::scene3d::SceneUpdate, json: &str) {
+        // The host applies it to its scene player (`prism_core::scene3d::wire`).
+        let update: Value = serde_json::from_str(json).unwrap_or(Value::Null);
+        self.ops
+            .push(json!({ "op": "scene", "id": id, "u": update }));
+    }
+
     fn set_hidden(&mut self, id: &NodeId, hidden: bool) {
         self.ops
             .push(json!({ "op": "display", "id": id, "hidden": hidden }));
@@ -1071,5 +1083,64 @@ pub mod device {
         } else {
             DeviceEvent::Motion(motion(v))
         }
+    }
+}
+
+#[cfg(test)]
+mod scene_tests {
+    #[test]
+    fn scene_taps_parse() {
+        let v = serde_json::json!({"t": "scene_tap", "id": 4, "node": "cube", "part": "lid", "instance": 2, "point": [1., 2., 3.]});
+        assert_eq!(
+            super::parse_input_event(&v),
+            Some(prism_core::UiEvent::SceneTap(
+                4,
+                prism_core::SceneTapEvent {
+                    node: Some("cube".into()),
+                    part: Some("lid".into()),
+                    instance: Some(2),
+                    point: Some([1., 2., 3.]),
+                }
+            ))
+        );
+        let v = serde_json::json!({"t": "scene_tap", "id": 4, "node": null, "point": null});
+        assert!(matches!(
+            super::parse_input_event(&v),
+            Some(prism_core::UiEvent::SceneTap(4, e)) if e == prism_core::SceneTapEvent::default()
+        ));
+    }
+
+    #[test]
+    fn scene_updates_go_to_the_host_as_scene_ops() {
+        use prism_core::scene3d::{SceneData, SceneUpdate, cube};
+        use prism_core::{Backend, NodeKind, Patch};
+        let mut r = crate::NativeRenderer::new(super::RemoteWidgets::new(|_| (0., 0.)));
+        let mut scene = SceneData::default();
+        scene.nodes.push(cube(1.).name("a"));
+        let update = SceneUpdate::full(&scene);
+        r.apply(&[
+            Patch::Create {
+                id: 1,
+                kind: NodeKind::Scene3d,
+            },
+            Patch::SetScene {
+                id: 1,
+                update: update.clone(),
+            },
+            Patch::SetRoot { id: 1 },
+        ]);
+        let op = r
+            .widgets
+            .ops
+            .iter()
+            .find(|o| o["op"] == "scene")
+            .expect("a scene op");
+        assert_eq!(op["id"], 1);
+        assert_eq!(op["u"]["v"], 2);
+        assert_eq!(op["u"]["full"], true);
+        assert_eq!(op["u"]["nodes"][0]["key"], "#a");
+        assert_eq!(SceneUpdate::from_json(&op["u"].to_string()), Some(update));
+        // Floats as short as the app's (not widened to f64).
+        assert!(op.to_string().contains(r#""near":0.1,"#), "{op}");
     }
 }

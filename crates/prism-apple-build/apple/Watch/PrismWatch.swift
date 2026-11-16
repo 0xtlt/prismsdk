@@ -9,6 +9,7 @@
 import Accessibility
 import CoreText
 import PhotosUI
+import SceneKit
 import SwiftUI
 import UniformTypeIdentifiers
 import WatchKit
@@ -490,6 +491,9 @@ struct Node {
     var pointerMask = 0
     /// A runtime layer's root: lets touches through where it has no child.
     var layer = false
+    /// A 3D scene: a count of its updates (`scene` ops, applied to its
+    /// `PrismSceneHost` as they come).
+    var sceneVersion = 0
 
     /// `hit_test(false)`: the subtree takes no touch.
     var noHit: Bool { (style["hit"] as? Bool) == false }
@@ -567,11 +571,17 @@ final class PrismStore: ObservableObject {
                               restart: p["restart"] as? Bool ?? false)
                 }
             case "create": nodes[id] = Node(kind: p["kind"] as? String ?? "view")
-            case "destroy": nodes[id] = nil
+            case "destroy":
+                nodes[id] = nil
+                PrismSceneHost.forget(id)
             case "root": root = id
             case "children": nodes[id]?.children = (p["children"] as? [NSNumber] ?? []).map(\.uint64Value)
             case "text": nodes[id]?.text = p["text"] as? String ?? ""
             case "draw": nodes[id]?.paths = p["paths"] as? [[String: Any]] ?? []
+            case "scene":
+                // Updates are diffs: each one goes to the scene's player at once.
+                PrismSceneHost.of(id).apply(p["u"])
+                nodes[id]?.sceneVersion += 1
             case "placeholder": nodes[id]?.placeholder = p["text"] as? String ?? ""
             case "icon": nodes[id]?.icon = p["icon"] as? String ?? ""
             case "value": nodes[id]?.value = (p["value"] as? NSNumber)?.doubleValue ?? 0
@@ -921,6 +931,8 @@ struct NodeView: View {
             Text(Date(timeIntervalSince1970: n.value), style: .timer).font(font(n).monospacedDigit()).foregroundStyle(fg)
         case "picture":
             Picture(source: n.text, fit: n.value == 1)
+        case "scene3d":
+            PrismScene3d(id: id, node: n, dark: dark)
         case "shape":
             PrismShape(paths: n.paths, dark: dark)
         case "scroll":
@@ -2215,6 +2227,150 @@ struct PrismWatchApp: App {
 }
 
 /// Called from Rust's `main`: runs the SwiftUI app (never returns).
+// MARK: 3D scenes
+
+/// A 3D scene (`scene3d`): SceneKit's SwiftUI view showing a
+/// `PrismSceneRenderer` (Bridge/PrismScene.swift, the player every Apple
+/// platform shares). A drag turns the camera; a tap reports what it hit.
+struct PrismScene3d: View {
+    let id: UInt64
+    let node: Node
+    let dark: Bool
+    @ObservedObject private var host: PrismSceneHost
+    /// The drag's translation so far, while a finger is down.
+    @State private var last: CGSize?
+
+    init(id: UInt64, node: Node, dark: Bool) {
+        self.id = id
+        self.node = node
+        self.dark = dark
+        host = PrismSceneHost.of(id)
+    }
+
+    var body: some View {
+        let settings = host.renderer.settings
+        let interactive = settings.orbit?.rotate == true || settings.tap
+        SceneView(scene: host.renderer.scene, pointOfView: host.renderer.cameraNode,
+                  options: host.animating ? [.rendersContinuously] : [], antialiasingMode: .multisampling4X)
+            .gesture(DragGesture(minimumDistance: 0)
+                .onChanged { g in
+                    let prev = last ?? .zero
+                    if last == nil { host.renderer.player.pointerDown() }
+                    last = g.translation
+                    host.renderer.player.drag(Float(g.translation.width - prev.width),
+                                              Float(g.translation.height - prev.height))
+                    host.redraw()
+                }
+                .onEnded { g in
+                    last = nil
+                    host.renderer.player.pointerUp()
+                    let moved = hypot(g.translation.width, g.translation.height)
+                    if moved < CGFloat(PrismScenePlayer.tapSlop), settings.tap {
+                        var event = host.renderer.hit(x: Float(g.startLocation.x), y: Float(g.startLocation.y)).fields
+                        event["t"] = "scene_tap"
+                        event["id"] = id
+                        send(event)
+                    }
+                    host.redraw()
+                }, including: interactive ? .all : .subviews)
+            .onAppear { host.show(size: node.frame.size, dark: dark) }
+            .onChange(of: node.sceneVersion) { host.show(size: node.frame.size, dark: dark) }
+            .onChange(of: node.frame.size) { host.show(size: node.frame.size, dark: dark) }
+            .onChange(of: dark) { host.show(size: node.frame.size, dark: dark) }
+            .onDisappear { host.stop() }
+    }
+}
+
+/// A scene's player and SceneKit graph, kept by node id from its first
+/// update to its `destroy` (updates are diffs: none may be missed). Moves
+/// the SceneKit nodes on changes, and every 60th of a second while
+/// something animates (no timer otherwise).
+final class PrismSceneHost: ObservableObject {
+    private static var hosts: [UInt64: PrismSceneHost] = [:]
+
+    /// The host of scene node `id`.
+    static func of(_ id: UInt64) -> PrismSceneHost {
+        if let h = hosts[id] { return h }
+        let h = PrismSceneHost()
+        hosts[id] = h
+        return h
+    }
+
+    /// Scene node `id` is gone.
+    static func forget(_ id: UInt64) {
+        hosts[id]?.stop()
+        hosts[id] = nil
+    }
+
+    let renderer = PrismSceneRenderer()
+    @Published private(set) var animating = false
+    /// Counts the updates (redraws the view: its gestures follow the scene).
+    @Published private(set) var version = 0
+    private var size = CGSize.zero
+    private var dark = false
+    private var timer: Timer?
+    /// Texture sources loading or loaded, for every scene.
+    private static var requested = Set<String>()
+
+    init() {
+        renderer.paintsBackground = true
+        renderer.changed = { [weak self] in self?.redraw() }
+    }
+
+    /// Applies a `SceneUpdate` (the `scene` op's `u`).
+    func apply(_ update: Any?) {
+        guard let d = update as? [String: Any], let update = PrismSceneUpdate(d) else { return }
+        renderer.apply(update)
+        load(update.textures)
+        version += 1
+        redraw()
+    }
+
+    func show(size: CGSize, dark: Bool) {
+        self.size = size
+        self.dark = dark
+        redraw()
+    }
+
+    func redraw() {
+        guard size.width > 0, size.height > 0 else { return }
+        let moving = renderer.tick(width: Float(size.width), height: Float(size.height), dark: dark)
+        if moving != animating { animating = moving }
+        if moving, timer == nil {
+            timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { [weak self] _ in self?.redraw() }
+        } else if !moving {
+            stop()
+        }
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    /// Textures load like pictures (`Picture`): `data:` URLs, remote URLs
+    /// (with headers), the bundle's assets. Embedded images (`p3d:`) come
+    /// from the blob store.
+    private func load(_ sources: [String]) {
+        for src in sources where !src.hasPrefix("p3d:") && !Self.requested.contains(src) {
+            Self.requested.insert(src)
+            Task { @MainActor in
+                if let image = await Self.image(src) { PrismSceneTextures.shared.add(src, image) }
+            }
+        }
+    }
+
+    @MainActor private static func image(_ src: String) async -> UIImage? {
+        if src.hasPrefix("data:") { return Picture.dataImage(src) }
+        if src.contains("\n") { return await AuthorizedPicture.load(src) }
+        if src.hasPrefix("http://") || src.hasPrefix("https://") {
+            guard let url = URL(string: src), let (data, _) = try? await URLSession.shared.data(from: url) else { return nil }
+            return UIImage(data: data)
+        }
+        return UIImage(contentsOfFile: src.hasPrefix("/") ? src : Bundle.main.bundlePath + "/assets/" + src)
+    }
+}
+
 @_cdecl("prism_watch_main")
 public func prismWatchMain() {
     prismRegisterFonts()

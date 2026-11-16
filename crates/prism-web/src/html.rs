@@ -34,6 +34,8 @@ struct HtmlNode {
     island: Option<(String, bool)>,
     /// An island's props (JSON).
     island_props: std::collections::BTreeMap<String, String>,
+    /// A 3D scene, as its updates left it.
+    scene: Option<prism_core::scene3d::FlatScene>,
 }
 
 /// Turns a picture source (`logo.png`, `https://…`) into its URL.
@@ -136,6 +138,9 @@ impl Backend for HtmlBackend {
                     }
                 }
                 Patch::SetText { id, text } => self.with(*id, |n| n.text = text.clone()),
+                Patch::SetScene { id, update } => self.with(*id, |n| {
+                    n.scene.get_or_insert_with(Default::default).apply(update)
+                }),
                 Patch::SetPlaceholder { id, text } => {
                     self.with(*id, |n| n.placeholder = text.clone())
                 }
@@ -287,6 +292,15 @@ pub fn a11y_attrs(kind: NodeKind, a: &Accessibility) -> String {
 }
 
 impl HtmlBackend {
+    /// The 3D scenes of the page, with the blobs they hold (meshes,
+    /// instances, clips…), taken out of the backend.
+    pub(crate) fn take_scenes(&mut self) -> Vec<prism_core::scene3d::FlatScene> {
+        self.nodes
+            .values_mut()
+            .filter_map(|n| n.scene.take())
+            .collect()
+    }
+
     fn with(&mut self, id: NodeId, f: impl FnOnce(&mut HtmlNode)) {
         if let Some(n) = self.nodes.get_mut(&id) {
             f(n);
@@ -535,6 +549,22 @@ impl HtmlBackend {
             // Drawn by the client once the box has a size (see client.js).
             NodeKind::Shape => {
                 let _ = write!(out, r#"<div {attrs} class="prism-shape"></div>"#);
+            }
+            // Drawn by the client with WebGL 2: it starts the scene from
+            // `data-scene` (a full update) before the socket connects.
+            NodeKind::Scene3d => {
+                let full =
+                    prism_core::scene3d::SceneUpdate::Full(n.scene.clone().unwrap_or_default());
+                let scene = scene_urls(&full, &|src: &str| match &self.asset_urls {
+                    Some(urls) => urls(src),
+                    None => picture_url(src),
+                })
+                .to_json();
+                let _ = write!(
+                    out,
+                    r#"<div {attrs} class="prism-scene3d" data-scene="{}"><canvas aria-hidden="true"></canvas></div>"#,
+                    escape(&scene)
+                );
             }
             NodeKind::Progress => {
                 let _ = write!(
@@ -839,6 +869,54 @@ fn runs_html_with(config: &str, style: &mut dyn FnMut(&str) -> String) -> String
         }
     }
     out
+}
+
+/// A scene update with its textures' sources turned into URLs by `url`,
+/// like pictures' (the browser cannot resolve app asset names). Embedded
+/// images (`p3d:<blob id>`) stay as they are: the client fetches them from
+/// `<base>/_prism/3d/<id>`.
+pub(crate) fn scene_urls<'a>(
+    update: &'a prism_core::scene3d::SceneUpdate,
+    url: &dyn Fn(&str) -> String,
+) -> std::borrow::Cow<'a, prism_core::scene3d::SceneUpdate> {
+    use prism_core::scene3d::Material;
+    fn sources(m: &mut Material) -> [&mut Option<String>; 5] {
+        [
+            &mut m.texture,
+            &mut m.mr_map,
+            &mut m.normal_map,
+            &mut m.emissive_map,
+            &mut m.ao_map,
+        ]
+    }
+    let resolvable = |s: &Option<String>| s.as_deref().is_some_and(|s| !s.starts_with("p3d:"));
+    // Most scenes have no texture: they go as they are.
+    let any = update.nodes().iter().any(|n| {
+        let m = &n.material;
+        [
+            &m.texture,
+            &m.mr_map,
+            &m.normal_map,
+            &m.emissive_map,
+            &m.ao_map,
+        ]
+        .into_iter()
+        .any(resolvable)
+    });
+    if !any {
+        return std::borrow::Cow::Borrowed(update);
+    }
+    let mut update = update.clone();
+    for n in update.nodes_mut() {
+        for src in sources(&mut n.material) {
+            if resolvable(src)
+                && let Some(s) = src.as_mut()
+            {
+                *s = url(s);
+            }
+        }
+    }
+    std::borrow::Cow::Owned(update)
 }
 
 /// Remote URLs as-is; anything else is an app asset under `/assets/`.

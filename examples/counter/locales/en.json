@@ -466,5 +466,19 @@
     "just_now": "just now",
     "native": "Native apps and pages without JavaScript show the chart drawn by Prism.",
     "summary": "{n} values, the last one {last}"
+  },
+  "scene3d": {
+    "title": "3D scene",
+    "caption": "Drag to turn, pinch or scroll to zoom, tap a shape.",
+    "picked": "Picked: {name}",
+    "nothing": "Nothing picked",
+    "shuffle": "Shuffle",
+    "label": "A cube, a sphere, a cone and a ring on a floor",
+    "names": {
+      "cube": "cube",
+      "sphere": "sphere",
+      "cone": "cone",
+      "ring": "ring"
+    }
   }
 }

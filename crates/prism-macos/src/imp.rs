@@ -2328,6 +2328,7 @@ impl Widgets for AppKit {
             }
             NodeKind::Picture => View::Picture(PrismView::new(mtm, id)),
             NodeKind::Shape => View::Container(PrismView::new(mtm, id)),
+            NodeKind::Scene3d => View::Container(crate::scene::create(mtm, id)),
             NodeKind::Slider => {
                 let s = PrismSlider::new(mtm, id, &self.target);
                 self.directional(&s);
@@ -2801,7 +2802,12 @@ impl Widgets for AppKit {
         }
     }
 
+    fn set_scene(&mut self, view: &View, update: &prism_core::scene3d::SceneUpdate, json: &str) {
+        crate::scene::set(view.id(), update, json, &self.image_sources);
+    }
+
     fn destroy(&mut self, view: &View) {
+        crate::scene::forget(view.id());
         crate::sticky::forget(view.id());
         crate::navbar::forget(view.id());
         crate::padding::forget(view.id());

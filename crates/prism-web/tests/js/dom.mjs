@@ -476,7 +476,7 @@ export function boot({ ssr = "", path = "/", base = "", glyphs = { plus: "+", ge
     screen: { width: 1440, height: 900 },
     navigator: { userAgent: "node-test", maxTouchPoints: 0 },
     WebSocket: Socket,
-    ResizeObserver: class { constructor(cb) { this.cb = cb; win.resizeObservers.push(this); this.targets = []; } observe(t) { this.targets.push(t); } },
+    ResizeObserver: class { constructor(cb) { this.cb = cb; win.resizeObservers.push(this); this.targets = []; } observe(t) { this.targets.push(t); } unobserve(t) { this.targets = this.targets.filter((x) => x !== t); } },
     resizeObservers: [],
     matchMedia: () => ({ matches: false, addEventListener() {} }),
     getComputedStyle: (el) => ({ position: el.style.position || "static" }),

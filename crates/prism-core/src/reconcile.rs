@@ -162,6 +162,14 @@ pub enum Patch {
         /// The destroyed node.
         id: NodeId,
     },
+    /// What a 3D scene shows: the whole scene the first time (and when the
+    /// node is created again), then only what changed.
+    SetScene {
+        /// The scene node.
+        id: NodeId,
+        /// The change.
+        update: crate::scene3d::SceneUpdate,
+    },
 
     // --- Pointer, keys, focus, layers (#17, #19, #25) ---
     /// Which pointer events a view reports (bits of
@@ -270,6 +278,10 @@ pub enum UiEvent {
     // --- Islands ---
     /// An island emitted an event: (id, event name, detail as JSON).
     Island(NodeId, String, String),
+
+    // --- 3D ---
+    /// A 3D scene was tapped (not dragged): what was hit.
+    SceneTap(NodeId, crate::scene3d::SceneTapEvent),
 }
 
 /// A mounted host node.
@@ -304,6 +316,9 @@ struct MNode {
     /// Its own style animates changes (`.animate(…)`, `.transition(…)`;
     /// not an animated update's).
     animates: bool,
+    /// A 3D scene as backends last got it (diffs are made against it; its
+    /// blobs stay alive with it).
+    scene: Option<crate::scene3d::FlatScene>,
 }
 
 /// What backends last got about a mounted island.
@@ -333,6 +348,7 @@ pub struct Reconciler {
     back: HashMap<NodeId, Handler<BackEvent>>,
     navigate: HashMap<NodeId, Handler<NavigateEvent>>,
     change: HashMap<NodeId, Handler<ChangeEvent>>,
+    scene_tap: HashMap<NodeId, Handler<crate::scene3d::SceneTapEvent>>,
     scroll: HashMap<NodeId, Handler<ScrollEvent>>,
     swipe: HashMap<(NodeId, SwipeDirection), Handler<ClickEvent>>,
     submit: HashMap<NodeId, Handler<ClickEvent>>,
@@ -416,6 +432,11 @@ impl Reconciler {
     /// The change handler of node `id`, if any.
     pub fn change_handler(&self, id: NodeId) -> Option<Handler<ChangeEvent>> {
         self.change.get(&id).cloned()
+    }
+
+    /// The tap handler of 3D scene `id`, if any.
+    pub fn scene_tap_handler(&self, id: NodeId) -> Option<Handler<crate::scene3d::SceneTapEvent>> {
+        self.scene_tap.get(&id).cloned()
     }
 
     /// The hover handler of node `id`, if any.
@@ -790,6 +811,8 @@ impl Reconciler {
             on_drag,
             on_key_down,
             on_global_key_down,
+            on_scene_tap,
+            scene,
             ..
         } = *vnode;
         app.window.watch_widths(&style);
@@ -906,6 +929,17 @@ impl Reconciler {
                 });
                 m.text = text;
             }
+            if let Some(scene) = scene {
+                let flat = scene.flatten();
+                let update = match &m.scene {
+                    Some(old) => old.diff(&flat),
+                    None => Some(crate::scene3d::SceneUpdate::Full(flat.clone())),
+                };
+                if let Some(update) = update {
+                    self.patches.push(Patch::SetScene { id, update });
+                }
+                m.scene = Some(flat);
+            }
             if m.placeholder != placeholder {
                 self.patches.push(Patch::SetPlaceholder {
                     id,
@@ -962,6 +996,10 @@ impl Reconciler {
         match on_submit {
             Some(h) => self.submit.insert(id, h),
             None => self.submit.remove(&id),
+        };
+        match on_scene_tap {
+            Some(h) => self.scene_tap.insert(id, h),
+            None => self.scene_tap.remove(&id),
         };
 
         // Children.
@@ -1333,6 +1371,7 @@ impl Reconciler {
                 name: None,
                 island: None,
                 animates: false,
+                scene: None,
             },
         );
         id
@@ -1367,6 +1406,7 @@ impl Reconciler {
         self.back.remove(&id);
         self.navigate.remove(&id);
         self.change.remove(&id);
+        self.scene_tap.remove(&id);
         self.submit.remove(&id);
         self.menu_items.retain(|k, _| k >> 16 != id);
         self.scroll.remove(&id);

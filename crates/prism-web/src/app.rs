@@ -239,6 +239,8 @@ impl WebApp {
         let mut response = if let Some(id) = path.strip_prefix("/_prism/picture/") {
             // A picture with headers, fetched here for its session.
             crate::pictures::serve(id, cookie_header(headers).and_then(session_id).as_deref())
+        } else if let Some(id) = path.strip_prefix("/_prism/3d/") {
+            scene_blob(id)
         } else if path == "/_prism/auth/callback" {
             // A sign-in provider's redirect: hand it to the session that asked.
             let mut r = Response::new(
@@ -467,6 +469,7 @@ impl WebApp {
         };
         let prefix = self.static_prefix();
         let (body, ssr_css) = html.to_html_and_css();
+        pin_first_paint(html.take_scenes());
         let head = &self.inner.head;
         let page = format!(
             r#"<!doctype html>
@@ -731,6 +734,50 @@ impl VisitorOwned {
 }
 
 // --- HTTP helpers -------------------------------------------------------------------------
+
+/// A 3D scene blob (`prism_core::scene3d::blobs`): a mesh, clip, skin,
+/// environment or embedded image, by its content hash. Never changes, so
+/// browsers and CDNs keep it; gone (404) once no rendered scene holds it.
+/// How long the blobs of a server-rendered page stay fetchable without a
+/// live session holding them: the time for the browser to load the page
+/// and its socket to take over.
+const FIRST_PAINT_PIN: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Scenes of recent first paints, kept so the blobs they reference (built
+/// during that render: `Instances`, `Mesh::custom`, clips) answer
+/// `/_prism/3d/<id>` until the page's session renders them again.
+type Pinned = std::collections::VecDeque<(std::time::Instant, Vec<prism_core::scene3d::FlatScene>)>;
+static FIRST_PAINT: std::sync::Mutex<Pinned> = std::sync::Mutex::new(Pinned::new());
+
+fn pin_first_paint(scenes: Vec<prism_core::scene3d::FlatScene>) {
+    let now = std::time::Instant::now();
+    let mut pinned = FIRST_PAINT.lock().unwrap_or_else(|e| e.into_inner());
+    while pinned
+        .front()
+        .is_some_and(|(at, _)| now.duration_since(*at) > FIRST_PAINT_PIN)
+    {
+        pinned.pop_front();
+    }
+    if !scenes.is_empty() {
+        pinned.push_back((now, scenes));
+    }
+}
+
+fn scene_blob(id: &str) -> Response<Vec<u8>> {
+    let Some((bytes, mime)) = prism_core::scene3d::blobs::get(id) else {
+        return status(StatusCode::NOT_FOUND);
+    };
+    let mut r = Response::new(bytes.to_vec());
+    if let Ok(v) = HeaderValue::from_str(&mime) {
+        r.headers_mut().insert(header::CONTENT_TYPE, v);
+    }
+    set(
+        &mut r,
+        header::CACHE_CONTROL,
+        "public, max-age=31536000, immutable",
+    );
+    r
+}
 
 fn status(code: StatusCode) -> Response<Vec<u8>> {
     let mut r = Response::new(Vec::new());
@@ -1064,6 +1111,43 @@ mod tests {
             app.services().capabilities().push,
             Some(prism_core::PushService::WebPush)
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn blobs_of_a_first_paint_stay_fetchable() {
+        use prism_core::scene3d::{Instances, cube};
+        struct Crowd;
+        impl Render for Crowd {
+            fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+                // Built during the render: nothing else holds this blob.
+                let set = Instances::grid([3, 1, 3], [1., 1., 1.]);
+                prism_core::scene3d()
+                    .child(cube(0.5).name("crowd").instances(&set))
+                    .h(px(100.))
+            }
+        }
+        let init: AppInit = Arc::new(|cx: &mut App| {
+            let root = cx.new_entity(|_| Crowd);
+            cx.set_root(root);
+        });
+        let dir = std::env::temp_dir().join(format!("prism-webapp-3d-{}", std::process::id()));
+        let app = WebApp::new(AppConfig::default(), init).data_dir(dir.join("data"));
+        let page = String::from_utf8(get(&app, "/", &[]).body().clone()).unwrap();
+        let scene = page
+            .split("data-scene=\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .expect("a scene")
+            .replace("&quot;", "\"");
+        let id = scene
+            .split("\"inst\":{\"id\":\"")
+            .nth(1)
+            .and_then(|s| s.get(..32))
+            .unwrap_or_else(|| panic!("an instance blob in {scene}"));
+        let blob = get(&app, &format!("/_prism/3d/{id}"), &[]);
+        assert_eq!(blob.status(), StatusCode::OK);
+        assert!(blob.body().starts_with(b"P3DI"));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

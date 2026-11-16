@@ -19,6 +19,7 @@
 - [Text and typography](guide/typography.md)
 - [Forms and feedback](guide/forms.md)
 - [Charts and vector drawing](guide/charts.md)
+- [3D scenes](guide/scene3d.md)
 - [Motion](guide/motion.md)
 - [Images, long lists, gestures](guide/images-lists-gestures.md)
 - [Pointer, keyboard, focus](guide/input.md)

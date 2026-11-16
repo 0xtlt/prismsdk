@@ -68,6 +68,17 @@ pub trait Widgets {
     /// turned into curves; colors may adapt to dark mode). Called when the
     /// drawing or the shape's size changes.
     fn set_drawing(&mut self, _view: &Self::View, _paths: &[prism_core::Path]) {}
+    /// What a 3D scene shows: the update (the whole scene the first time,
+    /// then what changed) and its JSON (hosts in other languages read the
+    /// JSON; see `prism_core::scene3d::wire`). Apply it to the scene's
+    /// player (`ScenePlayer::apply`); fetch the blobs it names by id.
+    fn set_scene(
+        &mut self,
+        _view: &Self::View,
+        _update: &prism_core::scene3d::SceneUpdate,
+        _json: &str,
+    ) {
+    }
     /// Control configuration (see `prism_core::controls`), before the value:
     /// `SliderConfig` (slider), `PickerConfig` (picker), `DateConfig` (date
     /// picker), `InputConfig` (text input, text area). Decode it with the
@@ -1219,8 +1230,10 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
             match patch {
                 Patch::Create { id, kind } => {
                     let view = self.widgets.create(*id, *kind);
-                    // Shapes have no content size: only their style sizes them.
-                    let container = is_container(*kind) || *kind == NodeKind::Shape;
+                    // Shapes and scenes have no content size: only their
+                    // style sizes them.
+                    let container =
+                        is_container(*kind) || matches!(*kind, NodeKind::Shape | NodeKind::Scene3d);
                     let layout = if container {
                         self.taffy.new_leaf(taffy::Style::default())
                     } else {
@@ -1301,6 +1314,11 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                             }
                         }
                         self.mark_all_dirty();
+                    }
+                }
+                Patch::SetScene { id, update } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.set_scene(&e.view, update, &update.to_json());
                     }
                 }
                 Patch::SetText { id, text } if self.is_shape(*id) => {
