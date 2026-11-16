@@ -179,6 +179,63 @@ fn the_first_paint_has_no_style_attribute() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// An order screen: `404` when its record is missing.
+struct Order(Option<u32>);
+
+impl Render for Order {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        match self.0 {
+            Some(id) => text(format!("order {id}")),
+            None => {
+                cx.set_page_status(404);
+                text("no such order")
+            }
+        }
+    }
+}
+
+#[test]
+fn a_matched_route_answers_the_status_it_sets() {
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = Router::new()
+            .route("/", |cx, _| cx.new_entity(|_| Whoami))
+            .route("/orders/:id", |cx, p| {
+                let id = p
+                    .get("id")
+                    .and_then(|id| id.parse().ok())
+                    .filter(|id| *id < 10);
+                cx.new_entity(|_| Order(id))
+            })
+            .route("/admin", |cx, _| {
+                cx.set_page_status(403);
+                cx.new_entity(|_| Whoami)
+            })
+            .build(cx);
+        cx.set_root(root);
+    });
+    let (app, dir) = app("status", init);
+    let found = app.handle(&Request::get("/orders/3").body(()).unwrap());
+    assert_eq!(found.status(), StatusCode::OK);
+    assert!(body(&found).contains("order 3"));
+    let missing = app.handle(&Request::get("/orders/42").body(()).unwrap());
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    // Still the page, with the screen's own not-found state.
+    let page = body(&missing);
+    assert!(page.contains(r#"<main id="prism-root">"#), "{page}");
+    assert!(page.contains("no such order"), "{page}");
+    assert_eq!(
+        app.handle(&Request::head("/orders/42").body(()).unwrap())
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        app.handle(&Request::get("/admin").body(()).unwrap())
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn unknown_paths_answer_404_with_the_not_found_screen() {
     for custom in [false, true] {
