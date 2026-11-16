@@ -232,6 +232,9 @@ impl LinuxServices {
             DeviceCall::WebAuth(r) => self
                 .loopback
                 .start(&r.url, &r.redirect, move |r| imp::device_reply(id, r)),
+            // No cookies here (secure storage keeps secrets), no live session.
+            DeviceCall::SetCookie(_) => reply(id, Err(DeviceError::Unavailable)),
+            DeviceCall::Reconnect => {}
         }
     }
 
@@ -601,6 +604,11 @@ impl PlatformServices for LinuxServices {
             PlatformRequest::RemoveTray(id) => crate::tray::remove(&id),
             // No car screens on Linux.
             PlatformRequest::SetCar(_) => {}
+            // Fonts are registered by the backend, which draws texts again
+            // (imp.rs, `load_font`); stylesheets are a web thing.
+            PlatformRequest::LoadFont(_)
+            | PlatformRequest::AddStylesheet(_)
+            | PlatformRequest::RemoveStylesheet(_) => {}
             // No widgets or Live Activities on Linux desktops.
             PlatformRequest::ReloadWidgets(_)
             | PlatformRequest::StartActivity { .. }

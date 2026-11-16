@@ -137,9 +137,29 @@ impl State {
             self.relayout();
         }
         for request in self.runtime.take_requests() {
+            if let prism_core::PlatformRequest::LoadFont(face) = request {
+                self.load_font(face);
+                continue;
+            }
             prism_core::PlatformServices::handle(&mut self.services, request);
         }
         schedule_timer(self.runtime.next_timer());
+    }
+
+    /// Registers a run-time font (`cx.load_font`) with Core Text and draws
+    /// the texts again. A URL comes back here with its bytes once loaded.
+    fn load_font(&mut self, face: prism_core::FontFace) {
+        let sources = self.renderer.widgets.image_sources.clone();
+        if let Some(font) = prism_native::fonts::prepare(&mut self.runtime.app, face, &sources) {
+            if !prism_native::fonts::register_apple_font_data(&font.bytes) {
+                eprintln!(
+                    "prism: font {:?}: already registered or refused",
+                    font.family
+                );
+            }
+            self.renderer.restyle_all();
+            self.relayout();
+        }
     }
 
     fn relayout(&mut self) {

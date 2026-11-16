@@ -1628,6 +1628,11 @@ struct BoxFill: View {
             // CSS: an ellipse the box's shape reaching the corners (0.5 is
             // the inscribed ellipse).
             box.fill(EllipticalGradient(gradient: gradient, center: .center, startRadiusFraction: 0, endRadiusFraction: 0.5 * 2.squareRoot()))
+        } else if g["kind"] as? String == "conic" {
+            // CSS `conic-gradient(from <angle>)`: 0 is up, clockwise.
+            // SwiftUI's angles start to the right and also turn clockwise.
+            let from = ((g["angle"] as? NSNumber)?.doubleValue ?? 0) - 90
+            box.fill(AngularGradient(gradient: gradient, center: .center, startAngle: .degrees(from), endAngle: .degrees(from + 360)))
         } else {
             // The CSS gradient line (prism_core `Gradient::geometry`).
             let a = ((g["angle"] as? NSNumber)?.doubleValue ?? 180) * .pi / 180

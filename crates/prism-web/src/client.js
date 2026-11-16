@@ -4,6 +4,9 @@
 (() => {
   // Where the app is mounted (`/app` when nested in another server's routes).
   const BASE = ((document.currentScript && document.currentScript.dataset.base) || "").replace(/\/$/, "");
+  // The id of this page's request: the first socket sends it back, so the
+  // live session takes that request over (`cx.page_request()`); reconnects don't.
+  let pageId = (document.currentScript && document.currentScript.dataset.page) || "";
   // App paths keep their query string (`/analytics?period=7d`).
   const urlFor = (path) => {
     const q = path.indexOf("?");
@@ -339,6 +342,9 @@
     // to its anchor (inline suggestion menus, #70).
     el._manual = t.includes("manual");
     el._keepFocus = kind === "popover" && t.includes("keepfocus");
+    // The side of the anchor it opens on and how it lines up (#113).
+    el._side = (t.find((x) => x.startsWith("side=")) || "side=bottom").slice(5);
+    el._align = (t.find((x) => x.startsWith("align=")) || "align=start").slice(6);
     let box = el._box;
     if (!box || el._boxKind !== kind) {
       const old = box;
@@ -425,20 +431,42 @@
     } catch {}
     el._closing = false;
   }
-  /** Below its anchor (the overlay's parent), above it if there is no room. */
+  /** On its side of its anchor (the overlay's parent): below by default,
+   *  above, or beside it (trailing is the right in left-to-right pages),
+   *  on the opposite side when there is no room, lined up with the
+   *  anchor's start, center or end, kept inside the window (#113). */
   function placePopover(el) {
     const box = el._box, anchor = el.parentElement;
     if (!box || !anchor || !el._open || el._boxKind !== "popover") return;
     const a = anchor.getBoundingClientRect(), b = box.getBoundingClientRect();
     const m = 8, gap = 6;
-    let top = a.bottom + gap;
-    if (top + b.height > innerHeight - m && a.top - gap - b.height >= m) top = a.top - gap - b.height;
     const rtl = document.documentElement.dir === "rtl";
-    let left = rtl ? a.right - b.width : a.left;
+    const physical = { trailing: rtl ? "left" : "right", leading: rtl ? "right" : "left", top: "top" };
+    let side = physical[el._side] || "bottom";
+    const fits = {
+      bottom: a.bottom + gap + b.height <= innerHeight - m,
+      top: a.top - gap - b.height >= m,
+      right: a.right + gap + b.width <= innerWidth - m,
+      left: a.left - gap - b.width >= m,
+    };
+    const opposite = { bottom: "top", top: "bottom", right: "left", left: "right" };
+    if (!fits[side] && fits[opposite[side]]) side = opposite[side];
+    const align = el._align;
+    let left, top;
+    if (side === "bottom" || side === "top") {
+      top = side === "bottom" ? a.bottom + gap : a.top - gap - b.height;
+      // Start is the leading edge: the right one in right-to-left pages.
+      const start = rtl ? a.right - b.width : a.left, end = rtl ? a.left : a.right - b.width;
+      left = align === "center" ? a.left + (a.width - b.width) / 2 : align === "end" ? end : start;
+    } else {
+      left = side === "right" ? a.right + gap : a.left - gap - b.width;
+      top = align === "center" ? a.top + (a.height - b.height) / 2 : align === "end" ? a.bottom - b.height : a.top;
+    }
     left = Math.max(m, Math.min(left, innerWidth - b.width - m));
     top = Math.max(m, Math.min(top, innerHeight - b.height - m));
     box.style.left = `${round(left)}px`;
     box.style.top = `${round(top)}px`;
+    box.dataset.side = side;
   }
   const replace = () => openPopovers.forEach(placePopover);
   addEventListener("resize", replace);
@@ -5093,6 +5121,7 @@ void main() {
           if (navigator.share) return navigator.share({ text: msg.text || undefined, url: msg.url || undefined }).catch(() => {});
           return navigator.clipboard?.writeText([msg.text, msg.url].filter(Boolean).join(" "));
         case "open_url": return openUrl(msg.url, msg.target);
+        case "set_cookie": return setCookie(msg, reply);
         case "web_auth": return webAuth(msg, reply);
         case "webauthn": return webauthn(msg, reply);
         default: return reply({ err: "unavailable" });
@@ -5114,12 +5143,39 @@ void main() {
     return window.open(url, "_blank", "noopener");
   }
 
+  /**
+   * `cx.set_cookie` (#91): the socket cannot set a cookie, so the page posts
+   * the cookie's one-time ticket to the app (same origin, in a header), whose
+   * answer sets it. One after the other, in the order the app set them;
+   * `cookies` settles once the browser has them all. The server answers the
+   * app when the ticket is redeemed: only failures are reported from here.
+   */
+  let cookies = Promise.resolve();
+  function setCookie(msg, reply) {
+    if (typeof fetch !== "function") return reply({ err: "unavailable" });
+    cookies = cookies.then(() => fetch(msg.url, {
+      method: "POST", credentials: "same-origin", cache: "no-store", redirect: "error",
+      headers: { "X-Prism-Cookie": msg.ticket },
+    })).then((r) => {
+      if (r.status !== 204) reply({ err: `the cookie was refused (${r.status})` });
+    }, (e) => reply({ err: String((e && e.message) || e) }));
+    return cookies;
+  }
+
   function service(msg) {
     switch (msg.t) {
       // The session ended for lack of activity: reconnect at the next one.
       case "idle": conn.idle = true; return;
       // The server refused the session (foreign origin, too many sessions).
       case "refused": conn.refused = msg.status || 0; return;
+      // `cx.reconnect()`: once the cookies set before it are stored, a new
+      // session at once (the host sees them in its handshake), no banner.
+      case "reconnect": {
+        const socket = ws;
+        conn.renew = true;
+        cookies.then(() => { if (socket && socket.readyState < 2) socket.close(); });
+        return;
+      }
       case "device": return device(msg);
       case "activity": return showActivity(msg.id, msg.c);
       case "activity_end": {
@@ -5143,6 +5199,43 @@ void main() {
         return;
       case "push_register": return pushRegister(msg.key);
       case "push_unregister": return pushUnregister();
+      case "font": return loadFont(msg);
+      case "sheets": return syncSheets(msg.urls || []);
+    }
+  }
+
+  // --- Run-time fonts and stylesheets (`cx.load_font`, `cx.add_stylesheet`) ----------
+  const fontsLoaded = new Set();
+  /** Registers a font face for this page: a URL or the file (base64url). */
+  function loadFont(msg) {
+    const key = JSON.stringify([msg.family, msg.url || msg.data, msg.weight, msg.style]);
+    if (fontsLoaded.has(key) || !("FontFace" in window) || !document.fonts) return;
+    fontsLoaded.add(key);
+    const desc = { style: msg.style || "normal", display: "swap" };
+    if (msg.weight) desc.weight = msg.weight;
+    try {
+      const source = msg.url ? `url(${JSON.stringify(msg.url)})` : unb64u(msg.data);
+      const face = new FontFace(msg.family, source, desc);
+      document.fonts.add(face);
+      face.load().catch((err) => console.warn(`prism: font ${msg.family}`, err));
+    } catch (err) {
+      console.warn(`prism: font ${msg.family}`, err);
+    }
+  }
+  /** Makes the page's app stylesheets exactly `urls` (the first paint's included). */
+  function syncSheets(urls) {
+    const want = new Set(urls);
+    for (const link of document.querySelectorAll("link[data-prism-sheet]")) {
+      if (want.has(link.getAttribute("href"))) want.delete(link.getAttribute("href"));
+      else link.remove();
+    }
+    for (const url of want) {
+      const link = document.createElement("link");
+      link.setAttribute("rel", "stylesheet");
+      link.setAttribute("href", url);
+      link.setAttribute("data-prism-sheet", "");
+      if (styleNonce) link.nonce = styleNonce;
+      document.head.appendChild(link);
     }
   }
 
@@ -5193,7 +5286,7 @@ void main() {
   // `<html data-prism-connection="connecting|online|reconnecting|offline|idle">`
   // styles the page (prism.css dims it and shows #prism-connection while
   // reconnecting); `prism:connection` events on window tell scripts.
-  const conn = { attempt: 0, timer: null, idle: false, refused: 0, opened: false };
+  const conn = { attempt: 0, timer: null, idle: false, refused: 0, opened: false, renew: false };
   function setConnection(state) {
     const root = document.documentElement;
     if (root.getAttribute("data-prism-connection") === state) return;
@@ -5229,6 +5322,11 @@ void main() {
   }
   function closed() {
     ws = null;
+    if (conn.renew) {
+      conn.renew = false;
+      clearTimeout(conn.timer);
+      return cookies.then(connect);
+    }
     if (conn.idle) return setConnection("idle");
     conn.attempt++;
     setConnection(conn.opened || conn.attempt > 1 ? "reconnecting" : "connecting");
@@ -5295,8 +5393,12 @@ void main() {
     flushStates();
     if (msg.t === "reset") sceneResetEnd();
     quiet = false;
-    // The live tree replaced the first paint: its style rules can go.
-    if (msg.t === "reset") document.getElementById("prism-ssr")?.remove();
+    // The live tree replaced the first paint: its style rules can go, and
+    // the app's stylesheets are the session's.
+    if (msg.t === "reset") {
+      document.getElementById("prism-ssr")?.remove();
+      syncSheets(msg.sheets || []);
+    }
     syncHistory();
   }
 
@@ -5304,7 +5406,9 @@ void main() {
     const path = encodeURIComponent(appPath());
     const search = location.search ? `&search=${encodeURIComponent(location.search)}` : "";
     const compress = inflate ? "&compress=deflate-raw" : "";
-    const socket = ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${BASE}/ws?path=${path}&tz=${tz}&w=${innerWidth}&h=${innerHeight}${search}${compress}`);
+    const page = pageId ? `&page=${encodeURIComponent(pageId)}` : "";
+    pageId = "";
+    const socket = ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${BASE}/ws?path=${path}&tz=${tz}&w=${innerWidth}&h=${innerHeight}${search}${compress}${page}`);
     ws.binaryType = "arraybuffer";
     ws.onmessage = (e) => onFrame(socket, e.data);
     ws.onclose = closed;

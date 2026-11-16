@@ -23,6 +23,7 @@ pub mod device;
 pub mod device_info;
 mod element;
 pub mod events;
+pub mod fonts;
 pub mod glyphs;
 pub mod i18n;
 pub mod interaction;
@@ -55,7 +56,9 @@ pub use assets::EmbeddedAssets;
 pub use background::{BackgroundKind, BackgroundTask, Lifecycle};
 pub use car::{CarButton, CarButtonStyle, CarItem, CarSection, CarTab, CarTemplate};
 pub use channel::{Receiver, Sender, channel};
-pub use controls::{Capitalize, DateMode, Keyboard, OverlayKind, ReturnKey};
+pub use controls::{
+    Capitalize, DateMode, Keyboard, OverlayKind, PopoverAlign, PopoverSide, ReturnKey,
+};
 pub use decoration::{
     BorderSide, BorderSides, BorderStyle, Cursor, Gradient, GradientKind, GradientStop, Shadow,
 };
@@ -89,6 +92,7 @@ pub use element::{picture_data, svg};
 pub use events::{
     DragEvent, DragPhase, HoverEvent, KeyEvent, Modifiers, Point, PointerEvent, PointerPhase,
 };
+pub use fonts::{FontFace, FontSource, Stylesheet};
 pub use i18n::{BasicFormatter, DateStyle, Direction, Formatter, Locale, Translations};
 pub use interaction::{Interaction, Interactions, States};
 pub use island::{Island, IslandEvent, IslandSource, island, web_component};
@@ -101,7 +105,7 @@ pub use push::{
     ActivityPushToken, PushEvent, PushFuture, PushMessage, PushService, PushSubscription,
 };
 pub use reconcile::{NodeId, Patch, Reconciler, RenderEnvironment, UiEvent};
-pub use request::{RequestKind, UrlTarget, WebRequest};
+pub use request::{Cookie, RequestKind, SameSite, UrlTarget, WebRequest};
 pub use router::{Params, Router, RouterBuilder, go_back, navigate_to, normalize_path};
 pub use router::{encode_query, parse_query};
 pub use scene3d::{Scene3d, SceneTapEvent, scene3d};
@@ -691,7 +695,10 @@ pub mod prelude {
     // App assets compiled into the binary (#61).
     pub use crate::EmbeddedAssets;
     // Typography and rich text.
-    pub use crate::{FontFamily, FontWeight, Span, TextTransform, icon, link, rich_text, span};
+    pub use crate::{
+        FontFace, FontFamily, FontWeight, Span, Stylesheet, TextTransform, icon, link, rich_text,
+        span,
+    };
     // Box decorations and interaction states.
     pub use crate::decoration::{shadow_lg, shadow_md, shadow_sm};
     pub use crate::{Color, Cursor, Gradient, Shadow};
@@ -701,7 +708,8 @@ pub mod prelude {
     // Pointer, keys, choice controls, overlays (#17, #18, #19).
     pub use crate::{
         DragEvent, DragPhase, HoverEvent, KeyEvent, Modifiers, PickFiles, Point, PointerEvent,
-        PointerPhase, checkbox, dialog, popover, radio_group, sheet, time_picker, time_picker_opt,
+        PointerPhase, PopoverAlign, PopoverSide, checkbox, dialog, popover, radio_group, sheet,
+        time_picker, time_picker_opt,
     };
     // Islands: client-side Web Components.
     pub use crate::{IslandEvent, island, web_component};

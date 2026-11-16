@@ -154,6 +154,11 @@ impl PlatformServices for AndroidServices {
             PlatformRequest::SetTray(_)
             | PlatformRequest::RemoveTray(_)
             | PlatformRequest::SetAppMenu(_) => return,
+            // Fonts are registered by the backend, which draws texts again
+            // (imp.rs, `load_font`); stylesheets are a web thing.
+            PlatformRequest::LoadFont(_)
+            | PlatformRequest::AddStylesheet(_)
+            | PlatformRequest::RemoveStylesheet(_) => return,
         };
         self.ops.push(op);
     }

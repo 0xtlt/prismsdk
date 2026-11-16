@@ -168,6 +168,16 @@ Without Axum, pass the context yourself with `WebApp::handle_with(&req, context)
 
 **What the app sees.** On the web, `cx.request()` is the page request during the first render, then the socket handshake in the live session. It gives `kind`, `url`, `origin`, `headers`, `header(name)`, `cookie(name)`, `path()` and `context::<T>()`. `cx.request_context::<T>()` returns the host's value, `cx.page_origin()` returns `https://example.com`, and `cx.page_url()` returns the full URL as the browser shows it, query included. The origin comes from the handshake's `Origin` header, or from `X-Forwarded-Proto` / `X-Forwarded-Host` / `Forwarded` / `Host`. All of these return `None` in native apps, which have no request and no address.
 
+**Values the host gives once.** The first paint and the live session are two runs of your app, one for the page request and one for the socket handshake. Something the host hands out once on the page request, such as a flash message it clears after a redirect or a one-time token, is not in the handshake. `cx.page_request()` keeps it: during the first render it is the page request, and in the live session it is that same page request, with the context the host attached to it then (`cx.page_request_context::<T>()`). The page carries a random id (`data-page` on Prism's script), and its first socket sends it back, so the session takes that page's request out of the server's memory. This works once, within a minute of the page, and only from the browser that loaded it. A reconnect gets `None`, so read the value in `init` or on the first render and keep it in your state.
+
+```rust
+// The host's middleware, on the page request only: read and clear the flash.
+req.extensions_mut().insert(prism_web::RequestContext::new(Flash(message)));
+
+// The app: the same message in the first paint and in the live session.
+let flash = cx.page_request_context::<Flash>();
+```
+
 **The page's `<head>`.** Use `WebApp::favicon`, `apple_touch_icon`, `theme_color`, `meta(name, content)`, `stylesheet(url)`, `preload_font(url)`, `script(url)`, `inline_script(js)`, `style(css)` (`@font-face`, your own rules), `body_background(color)`, `font_family(family)` and `head(raw_html)`. A URL without a leading `/` or a scheme names an app asset, so `"icon.png"` becomes `/assets/icon.<hash>.png` and is cached as immutable. Stylesheets come after Prism's own. With `Application`, configure the same calls in `.web(|w| w.favicon("icon.png").theme_color("#0a84ff"))`.
 
 **Content-Security-Policy.** The first paint has no `style="…"` attribute. Each distinct node style becomes one rule in `<style id="prism-ssr">`, and nodes carry `data-ps="pHASH"`. The client removes that block once the live tree replaces the page. Prism's own tags and the `<head>` additions get the nonce. After that, the client keeps the same scheme: each distinct style is one rule of a shared sheet (`<style id="prism-styles">`), written through the CSSOM, which CSP allows, and nodes carry its class, a short hash of the style (`p1x5rl6u`), the same name the first paint gives it in `data-ps`. Rules no node uses any more are reused, so the sheet stays the size of the styles on screen. Interaction states (`.hover(…)` and the like) share one `<style id="prism-states">`. A Prism page needs:
@@ -187,6 +197,33 @@ Without a nonce, the page's `<style>` blocks need `'unsafe-inline'` (or their ha
 **Status codes.** An unknown path renders the router's not-found screen (Prism's or `.not_found(...)`) with `404 Not Found`, so crawlers, monitoring and the host see it. A route that matches but whose data is missing (`/orders/:id` with an unknown id, or another user's) calls `cx.set_page_status(404)` while the first paint renders, in the screen's build or its `render`, and keeps drawing its own « not found » state; `403`, `410` or `500` work the same way. Only `2xx`, `4xx` and `5xx` codes are kept, the last call wins, and `cx.page_status()` reads the status the page will get. The live session and native apps ignore it: the response is already sent, or there is none. An app without a router answers `200` on every path unless it sets a status.
 
 **Leaving the app.** `cx.open_url(url)` loads a URL of the page's own origin in the same tab, such as the host's sign-out page or a download. Other origins open in a new tab. `cx.open_url_in(url, UrlTarget::SameTab | NewTab | Auto)` chooses explicitly. Natively, the system opens the URL whatever the target.
+
+**Cookies from a handler.** Signing in happens in a handler, a button or a form sent over the socket, but only an HTTP response can set a cookie. `cx.set_cookie(cookie)` does it for you: the server gives the cookie a one-time ticket, and the page posts it to `<base>/_prism/cookie`, whose `204` answer carries the `Set-Cookie`. Then `cx.reconnect()` opens a new session at once, without the « Reconnecting… » banner, once the browser has stored the cookies set before it. Your middleware runs on that new handshake and attaches the signed-in user:
+
+```rust
+button("Sign in").on_click(cx.listener(|this, _, cx| {
+    let (email, code) = (this.email.clone(), this.code.clone());
+    cx.spawn(async move |this, cx| {
+        // Your server code: checks the code, returns a session token.
+        let Some(token) = cx.background(move || sessions::create(&email, &code)).await else {
+            return cx.update_entity(&this, |s, _| s.error = Some("Wrong code".into()));
+        };
+        let cookie = Cookie::new("session", token).max_age(Duration::from_secs(30 * 86400));
+        match cx.set_cookie(cookie).await {
+            Ok(()) => cx.update(|cx| cx.reconnect()), // the host now sees the user
+            Err(e) => cx.update_entity(&this, |s, _| s.error = Some(e.to_string())),
+        }
+    });
+}))
+// Signing out: `cx.set_cookie(Cookie::remove("session"))`, then `cx.reconnect()`.
+```
+
+- `Cookie::new(name, value)` is `HttpOnly; Secure; SameSite=Lax; Path=/` until you change it with `.path`, `.domain`, `.max_age`, `.http_only(false)`, `.secure(false)` or `.same_site(SameSite::Strict | None)`. Without `max_age`, it lasts until the browser closes. `Cookie::remove(name)` deletes one; give it the path and domain it was set with.
+- `cx.set_cookie` on `App` does not wait. `AsyncApp::set_cookie(cookie).await` answers once the browser has the cookie. After that, `cx.request().cookie(name)` shows the new value, even before the reconnect. Cookies are stored one after the other, in the order they were set.
+- It fails with `DeviceError::Failed`, instead of being lost without a word, when the cookie is invalid (`Cookie::check`: a name that is not a token, a value with spaces, quotes, commas, `;` or `\`, `SameSite=None` without `Secure`, a `__Host-` or `__Secure-` name without what it needs, more than 4 KB), when it is `Secure` on a plain `http://` page other than `localhost`, or when its `Domain` does not cover the page's host. On `App`, an invalid cookie fails a debug assertion. Natively there are no cookies (keep secrets with [secure storage](../guide/security.md)): `set_cookie` answers `Unavailable` and `reconnect` does nothing.
+- `cx.reconnect()` starts the app again with the new handshake's request and context, so the app's state is not kept; keep what must survive in [storage](../guide/data.md) or on your server. The page stays where it is.
+- The ticket is 128 random bits, valid for 60 s, used once, and works only for the browser it was issued to (its `prism_sid` cookie). The page sends it in an `X-Prism-Cookie` header, never in the URL, so it stays out of access logs and the history. `POST <base>/_prism/cookie` is refused (`403`) without an `Origin` of the page's host, or with a `Sec-Fetch-Site` other than `same-origin`. The Axum router serves it; a host that calls `WebApp::handle` itself must also pass it that `POST`.
+- Safari does not treat `http://localhost` as secure for cookies: during development there, use `.secure(false)` or `https`.
 
 **Socket origin and limits.** A handshake whose `Origin` is not the host it was sent to gets `403`, because browsers send cookies with cross-site WebSocket handshakes. `WebApp::allow_origins(["https://admin.example.com"])` adds origins, and `"*"` allows any. Behind a proxy that rewrites `Host` without setting `X-Forwarded-Host`, list your public origin there. `WebApp::max_sessions(n)` refuses handshakes beyond `n` live sessions with `503`, since each session is a thread with its own runtime. `WebApp::idle_timeout(d)` ends a session that hears nothing from its page for `d`. The page then reconnects at the next pointer, key or focus event. `WebApp::accept_socket(&headers)` runs both checks: the Axum router calls it before upgrading, and other servers should too. A refused `connect` ends at once.
 

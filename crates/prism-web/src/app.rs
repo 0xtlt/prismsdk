@@ -60,6 +60,9 @@ pub(crate) struct Inner {
     pub islands: crate::islands::Islands,
     /// Send a strict CSP from the built-in router (`strict_csp`).
     pub strict_csp: bool,
+    /// Page requests waiting for the live session that takes the page over
+    /// (`cx.page_request()`).
+    pub handoffs: crate::handoff::Handoffs,
 }
 
 /// Prism's client, its base stylesheet, the app's assets and its islands.
@@ -110,6 +113,7 @@ impl WebApp {
                 first_paint_wait: std::time::Duration::ZERO,
                 islands,
                 strict_csp: env("PRISM_STRICT_CSP").is_some_and(|v| v != "0"),
+                handoffs: Default::default(),
             }),
         };
         let app = match env("PRISM_BASE_PATH") {
@@ -267,6 +271,10 @@ impl WebApp {
         req: &Request<B>,
         context: Option<crate::RequestContext>,
     ) -> Response<Vec<u8>> {
+        // `cx.set_cookie`: the page redeems its ticket (#91).
+        if req.method() == Method::POST && self.app_path(req.uri().path()) == "/_prism/cookie" {
+            return crate::cookies::redeem(req.headers());
+        }
         if req.method() != Method::GET && req.method() != Method::HEAD {
             return status(StatusCode::METHOD_NOT_ALLOWED);
         }
@@ -395,7 +403,10 @@ impl WebApp {
             viewport,
             device: Some(crate::device_info::from_request(user_agent, cookies)),
         };
-        let (page, code) = self.page(path, visitor, request, nonce);
+        // The live session of a GET takes this request over (`cx.page_request()`).
+        let page_id =
+            (req.method() == Method::GET).then(|| self.inner.handoffs.put(&sid, request.clone()));
+        let (page, code) = self.page(path, visitor, request, page_id.as_deref(), nonce);
         let mut r = Response::new(page.into_bytes());
         *r.status_mut() = StatusCode::from_u16(code).unwrap_or(StatusCode::OK);
         set(&mut r, header::CONTENT_TYPE, "text/html; charset=utf-8");
@@ -456,11 +467,19 @@ impl WebApp {
         format!("{}/files/{stored}", self.inner.base)
     }
 
-    /// The app's init, with the session's request set first (`cx.request()`).
-    pub(crate) fn init_with(&self, request: prism_core::WebRequest) -> AppInit {
+    /// The app's init, with the session's request set first (`cx.request()`),
+    /// and the page request a live session took over (`cx.page_request()`).
+    pub(crate) fn init_with(
+        &self,
+        request: prism_core::WebRequest,
+        page_request: Option<prism_core::WebRequest>,
+    ) -> AppInit {
         let init = self.inner.init.clone();
         Arc::new(move |app: &mut prism_core::App| {
             app.set_request(request.clone());
+            if let Some(page) = &page_request {
+                app.set_page_request(page.clone());
+            }
             init(app)
         })
     }
@@ -482,22 +501,41 @@ impl WebApp {
     /// Server-side render of a fresh session on `path`, as a full HTML
     /// document without `style` attributes (a strict CSP allows it), and
     /// its HTTP status (`cx.page_status()`: the app's, or `404` on the
-    /// not-found screen).
+    /// not-found screen). `page_id` names the request its live session takes
+    /// over (`data-page`, sent back on the socket).
     fn page(
         &self,
         path: &str,
         visitor: Visitor,
         request: prism_core::WebRequest,
+        page_id: Option<&str>,
         nonce: Option<&crate::CspNonce>,
     ) -> (String, u16) {
         let config = &self.inner.config;
         let asset_urls = self.session_asset_urls(visitor.sid);
-        let mut runtime =
-            Runtime::with_options(&self.init_with(request), self.options(visitor, path.into()));
+        let mut runtime = Runtime::with_options(
+            &self.init_with(request, None),
+            self.options(visitor, path.into()),
+        );
         let mut html = HtmlBackend::default();
         html.asset_urls = Some(asset_urls);
         html.base.clone_from(&self.inner.base);
         html.apply(&runtime.render_settled(self.inner.first_paint_wait));
+        // Run-time fonts (by URL) and stylesheets of the first paint; the
+        // live page registers them again (`client.js` keeps these).
+        let (mut fonts, mut sheets) = (Vec::new(), String::new());
+        for request in runtime.take_requests() {
+            if let prism_core::PlatformRequest::LoadFont(font) = request {
+                fonts.push(crate::session::font_at(font, &|src| self.picture_url(src)));
+            }
+        }
+        for url in runtime.app.stylesheets() {
+            sheets.push_str(&format!(
+                "<link rel=\"stylesheet\" href=\"{}\" data-prism-sheet{}>\n",
+                html::escape(&url),
+                crate::host::nonce_attr(nonce),
+            ));
+        }
         let code = runtime.app.page_status();
         let title = match html.screen_title() {
             Some(screen) if screen != config.title => format!("{screen} · {}", config.title),
@@ -515,8 +553,8 @@ impl WebApp {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
 <link rel="stylesheet" href="{prefix}/{css}"{n}>
-{app_head}<style id="prism-page"{n}>:root{{color-scheme:{scheme}}}
-{app_css}</style>
+{app_head}{sheets}<style id="prism-page"{n}>:root{{color-scheme:{scheme}}}
+{app_css}{font_css}</style>
 <style id="prism-ssr"{n}>{ssr_css}</style>
 </head>
 <body>
@@ -525,12 +563,13 @@ impl WebApp {
 <div id="prism-toasts" role="status" aria-live="polite"></div>
 <div id="prism-layers" popover="manual"></div>
 <div id="prism-connection" role="status" aria-live="polite" hidden>{reconnecting}</div>
-<script src="{prefix}/{js}" data-base="{base}"{n}></script>
+<script src="{prefix}/{js}" data-base="{base}"{page}{n}></script>
 </body>
 </html>"#,
             n = crate::host::nonce_attr(nonce),
             app_head = head.render(nonce, &|src: &str| self.picture_url(src)),
             app_css = crate::host::css_text(&head.css),
+            font_css = crate::session::font_face_css(&fonts),
             reconnecting = html::escape(&crate::host::reconnecting_text(&runtime.app)),
             title = html::escape(&title),
             scheme = html.color_scheme(),
@@ -544,6 +583,10 @@ impl WebApp {
             css = self.inner.assets.css(),
             js = self.inner.assets.client(),
             base = html::escape(&self.inner.base),
+            page = page_id.map_or(String::new(), |id| format!(
+                r#" data-page="{}""#,
+                html::escape(id)
+            )),
         );
         (page, code)
     }

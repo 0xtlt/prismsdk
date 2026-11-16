@@ -24,7 +24,7 @@ use objc2_foundation::{
     NSArray, NSObject, NSObjectProtocol, NSPoint, NSRect, NSRectEdge, NSSize, NSString,
 };
 use prism_core::controls::{OverlayConfig, RadioConfig};
-use prism_core::{KeyEvent, Modifiers, NodeId, OverlayKind};
+use prism_core::{KeyEvent, Modifiers, NodeId, OverlayKind, PopoverAlign, PopoverSide};
 
 use crate::imp::PrismView;
 
@@ -542,8 +542,10 @@ impl MacOverlay {
         let c = OverlayConfig::decode(config);
         self.host.ivars().overlay_fixed.set(c.fixed);
         // Shown the other way: presented again by the next layout.
+        let old = self.config.get();
+        let moved = !self.in_panel.get() && (c.side, c.align) != (old.side, old.align);
         if self.presented.get()
-            && (Self::panel_kind(c) != self.in_panel.get() || c.kind != self.config.get().kind)
+            && (Self::panel_kind(c) != self.in_panel.get() || c.kind != old.kind || moved)
         {
             self.dismiss(None);
         }
@@ -648,15 +650,32 @@ impl MacOverlay {
         popover.setAnimates(!std::env::var_os("PRISM_SNAPSHOT").is_some());
         popover.setDelegate(Some(delegate));
         self.presented.set(true);
+        let c = self.config.get();
+        let flipped = parent.isFlipped();
+        let rtl =
+            parent.userInterfaceLayoutDirection() == NSUserInterfaceLayoutDirection::RightToLeft;
         // AppKit shows no popover for an anchor scrolled out of view: bring
-        // it, and the room the popover takes below it, into view.
+        // it, and the room the popover takes below or above it, into view.
         let b = parent.bounds();
+        let room = match c.side {
+            PopoverSide::Bottom | PopoverSide::Top => size.height + 16.,
+            PopoverSide::Trailing | PopoverSide::Leading => 0.,
+        };
+        let down = (c.side == PopoverSide::Bottom) == flipped;
         parent.scrollRectToVisible(NSRect::new(
-            b.origin,
-            NSSize::new(b.size.width, b.size.height + size.height + 16.),
+            NSPoint::new(
+                b.origin.x,
+                if down { b.origin.y } else { b.origin.y - room },
+            ),
+            NSSize::new(b.size.width, b.size.height + room),
         ));
-        // Below the anchor (Prism views are flipped: max Y is the bottom).
-        popover.showRelativeToRect_ofView_preferredEdge(parent.bounds(), &parent, NSRectEdge::MaxY);
+        // On the asked side (AppKit flips it without room there), its
+        // arrow on the part of the anchor it lines up with (#113).
+        popover.showRelativeToRect_ofView_preferredEdge(
+            popover_rect(b, size, c.side, c.align, rtl, flipped),
+            &parent,
+            popover_edge(c.side, rtl, flipped),
+        );
         *self.popover.borrow_mut() = Some(popover);
     }
 
@@ -711,7 +730,8 @@ impl MacOverlay {
         panel.orderFront(None);
     }
 
-    /// Below the anchor (above it without room below), at the content's size.
+    /// On its side of the anchor (the opposite one without room there), at
+    /// the content's size.
     fn place_panel(&self, size: NSSize) {
         let Some((panel, background)) = self.panel.borrow().clone() else {
             return;
@@ -723,11 +743,14 @@ impl MacOverlay {
             return;
         };
         let anchor = window.convertRectToScreen(parent.convertRect_toView(parent.bounds(), None));
+        let c = self.config.get();
         let frame = panel_frame(
             anchor,
             size,
             window.screen().map(|s| s.visibleFrame()),
             parent.userInterfaceLayoutDirection() == NSUserInterfaceLayoutDirection::RightToLeft,
+            c.side,
+            c.align,
         );
         if panel.frame() != frame {
             panel.setFrame_display(frame, true);
@@ -769,34 +792,150 @@ impl MacOverlay {
     }
 }
 
+/// A side of the anchor on screen, once leading and trailing are resolved.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Edge {
+    Below,
+    Above,
+    Left,
+    Right,
+}
+
+impl Edge {
+    fn of(side: PopoverSide, rtl: bool) -> Self {
+        match side {
+            PopoverSide::Bottom => Edge::Below,
+            PopoverSide::Top => Edge::Above,
+            PopoverSide::Trailing if rtl => Edge::Left,
+            PopoverSide::Trailing => Edge::Right,
+            PopoverSide::Leading if rtl => Edge::Right,
+            PopoverSide::Leading => Edge::Left,
+        }
+    }
+
+    fn opposite(self) -> Self {
+        match self {
+            Edge::Below => Edge::Above,
+            Edge::Above => Edge::Below,
+            Edge::Left => Edge::Right,
+            Edge::Right => Edge::Left,
+        }
+    }
+}
+
 /// Where a `keep_focus` popover's panel goes, in screen coordinates
-/// (y up): under `anchor` with a 6 point gap, above it when the screen has
-/// no room below, leading-aligned, kept inside `screen`.
+/// (y up): on `side` of `anchor` with a 6 point gap (the opposite side
+/// when the screen has no room there), lined up as `align` says (leading
+/// or top edges for `Start`), kept inside `screen`.
 pub(crate) fn panel_frame(
     anchor: NSRect,
     size: NSSize,
     screen: Option<NSRect>,
     rtl: bool,
+    side: PopoverSide,
+    align: PopoverAlign,
 ) -> NSRect {
     let gap = 6.;
-    let mut x = if rtl {
-        anchor.origin.x + anchor.size.width - size.width
-    } else {
-        anchor.origin.x
-    };
-    let mut y = anchor.origin.y - gap - size.height;
-    if let Some(s) = screen {
-        if y < s.origin.y
-            && anchor.origin.y + anchor.size.height + gap + size.height
-                <= s.origin.y + s.size.height
-        {
-            y = anchor.origin.y + anchor.size.height + gap;
+    let (x0, x1) = (anchor.origin.x, anchor.origin.x + anchor.size.width);
+    let (y0, y1) = (anchor.origin.y, anchor.origin.y + anchor.size.height);
+    let fits = |e: Edge| {
+        let Some(s) = screen else { return true };
+        match e {
+            Edge::Below => y0 - gap - size.height >= s.origin.y,
+            Edge::Above => y1 + gap + size.height <= s.origin.y + s.size.height,
+            Edge::Left => x0 - gap - size.width >= s.origin.x,
+            Edge::Right => x1 + gap + size.width <= s.origin.x + s.size.width,
         }
+    };
+    let mut edge = Edge::of(side, rtl);
+    if !fits(edge) && fits(edge.opposite()) {
+        edge = edge.opposite();
+    }
+    let (mut x, mut y) = match edge {
+        Edge::Below | Edge::Above => {
+            let (start, end) = if rtl {
+                (x1 - size.width, x0)
+            } else {
+                (x0, x1 - size.width)
+            };
+            let x = match align {
+                PopoverAlign::Start => start,
+                PopoverAlign::Center => x0 + (anchor.size.width - size.width) / 2.,
+                PopoverAlign::End => end,
+            };
+            let y = if edge == Edge::Below {
+                y0 - gap - size.height
+            } else {
+                y1 + gap
+            };
+            (x, y)
+        }
+        Edge::Left | Edge::Right => {
+            let x = if edge == Edge::Right {
+                x1 + gap
+            } else {
+                x0 - gap - size.width
+            };
+            // y goes up: tops lined up is the anchor's max y.
+            let y = match align {
+                PopoverAlign::Start => y1 - size.height,
+                PopoverAlign::Center => y0 + (anchor.size.height - size.height) / 2.,
+                PopoverAlign::End => y0,
+            };
+            (x, y)
+        }
+    };
+    if let Some(s) = screen {
         x = x
             .min(s.origin.x + s.size.width - size.width)
             .max(s.origin.x);
+        y = y
+            .min(s.origin.y + s.size.height - size.height)
+            .max(s.origin.y);
     }
     NSRect::new(NSPoint::new(x, y), size)
+}
+
+/// The edge of the anchor an `NSPopover` opens on (AppKit takes the
+/// opposite one when the screen has no room there).
+pub(crate) fn popover_edge(side: PopoverSide, rtl: bool, flipped: bool) -> NSRectEdge {
+    match Edge::of(side, rtl) {
+        Edge::Below if flipped => NSRectEdge::MaxY,
+        Edge::Below => NSRectEdge::MinY,
+        Edge::Above if flipped => NSRectEdge::MinY,
+        Edge::Above => NSRectEdge::MaxY,
+        Edge::Left => NSRectEdge::MinX,
+        Edge::Right => NSRectEdge::MaxX,
+    }
+}
+
+/// The part of the anchor's `bounds` an `NSPopover` points at: AppKit
+/// centers the popover on it, so a part as long as the popover at the
+/// anchor's start, center or end lines their edges up. A popover longer
+/// than the anchor is centered on it (its arrow stays on the anchor).
+pub(crate) fn popover_rect(
+    bounds: NSRect,
+    size: NSSize,
+    side: PopoverSide,
+    align: PopoverAlign,
+    rtl: bool,
+    flipped: bool,
+) -> NSRect {
+    let o = bounds.origin;
+    let (w, h) = (bounds.size.width, bounds.size.height);
+    // Along the edge: x below or above the anchor, y beside it.
+    let (along, len, from_min) = if side.beside() {
+        // Start is the top: min y in a flipped view.
+        (h, size.height, flipped)
+    } else {
+        (w, size.width, !rtl)
+    };
+    let (offset, part) = align.arrow_span(along, len, from_min);
+    if side.beside() {
+        NSRect::new(NSPoint::new(o.x, o.y + offset), NSSize::new(w, part))
+    } else {
+        NSRect::new(NSPoint::new(o.x + offset, o.y), NSSize::new(part, h))
+    }
 }
 
 fn behavior(c: OverlayConfig) -> NSPopoverBehavior {
@@ -960,14 +1099,73 @@ mod tests {
         let size = NSSize::new(200., 100.);
         // Screen coordinates go up: under the anchor is a smaller y.
         let anchor = NSRect::new(NSPoint::new(100., 500.), NSSize::new(300., 24.));
-        let f = panel_frame(anchor, size, Some(screen), false);
+        let (b, s) = (PopoverSide::Bottom, PopoverAlign::Start);
+        let f = panel_frame(anchor, size, Some(screen), false, b, s);
         assert_eq!((f.origin.x, f.origin.y), (100., 394.));
-        let rtl = panel_frame(anchor, size, Some(screen), true);
+        let rtl = panel_frame(anchor, size, Some(screen), true, b, s);
         assert_eq!(rtl.origin.x, 200.);
         // No room below: above the anchor.
         let low = NSRect::new(NSPoint::new(900., 40.), NSSize::new(300., 24.));
-        let f = panel_frame(low, size, Some(screen), false);
+        let f = panel_frame(low, size, Some(screen), false, b, s);
         assert_eq!((f.origin.x, f.origin.y), (800., 70.));
+    }
+
+    #[test]
+    fn placed_panels_follow_their_side_and_alignment() {
+        let screen = NSRect::new(NSPoint::ZERO, NSSize::new(1000., 800.));
+        let size = NSSize::new(200., 100.);
+        let at = |anchor: NSRect, rtl, side, align| {
+            let f = panel_frame(anchor, size, Some(screen), rtl, side, align);
+            (f.origin.x, f.origin.y)
+        };
+        use PopoverAlign as A;
+        use PopoverSide as S;
+        // A menu item 300 × 24 whose top is at y 524.
+        let item = NSRect::new(NSPoint::new(100., 500.), NSSize::new(300., 24.));
+        // A submenu: beside it, tops lined up (y up: 524 - 100).
+        assert_eq!(at(item, false, S::Trailing, A::Start), (406., 424.));
+        assert_eq!(at(item, false, S::Trailing, A::End), (406., 500.));
+        assert_eq!(at(item, false, S::Trailing, A::Center), (406., 462.));
+        // No room on the left: it flips to the right.
+        assert_eq!(at(item, false, S::Leading, A::Start), (406., 424.));
+        // Right to left: trailing is the left side.
+        let far = NSRect::new(NSPoint::new(500., 500.), NSSize::new(300., 24.));
+        assert_eq!(at(far, true, S::Trailing, A::Start), (294., 424.));
+        // Near the right edge, a trailing submenu flips to the left.
+        assert_eq!(at(far, false, S::Trailing, A::Start), (294., 424.));
+        // Below, trailing edges lined up.
+        assert_eq!(at(item, false, S::Bottom, A::End), (200., 394.));
+        assert_eq!(at(item, false, S::Bottom, A::Center), (150., 394.));
+        assert_eq!(at(item, true, S::Bottom, A::End), (100., 394.));
+        // Above.
+        assert_eq!(at(item, false, S::Top, A::Start), (100., 530.));
+    }
+
+    #[test]
+    fn popovers_point_at_the_part_of_the_anchor_they_line_up_with() {
+        // A flipped 300 × 24 anchor (y down), a 200 × 100 popover.
+        let bounds = NSRect::new(NSPoint::ZERO, NSSize::new(300., 24.));
+        let size = NSSize::new(200., 100.);
+        let r = |side, align, rtl| {
+            let r = popover_rect(bounds, size, side, align, rtl, true);
+            (r.origin.x, r.origin.y, r.size.width, r.size.height)
+        };
+        use PopoverAlign as A;
+        use PopoverSide as S;
+        assert_eq!(r(S::Bottom, A::Start, false), (0., 0., 200., 24.));
+        assert_eq!(r(S::Bottom, A::End, false), (100., 0., 200., 24.));
+        assert_eq!(r(S::Bottom, A::Center, false), (50., 0., 200., 24.));
+        assert_eq!(r(S::Bottom, A::Start, true), (100., 0., 200., 24.));
+        // Taller than the anchor beside it: centered on it.
+        assert_eq!(r(S::Trailing, A::Start, false), (0., 0., 300., 24.));
+        let tall = NSRect::new(NSPoint::ZERO, NSSize::new(40., 300.));
+        let e = popover_rect(tall, size, S::Trailing, A::End, false, true);
+        assert_eq!((e.origin.y, e.size.height), (200., 100.));
+        assert_eq!(popover_edge(S::Bottom, false, true), NSRectEdge::MaxY);
+        assert_eq!(popover_edge(S::Top, false, true), NSRectEdge::MinY);
+        assert_eq!(popover_edge(S::Trailing, false, true), NSRectEdge::MaxX);
+        assert_eq!(popover_edge(S::Trailing, true, true), NSRectEdge::MinX);
+        assert_eq!(popover_edge(S::Leading, false, false), NSRectEdge::MinX);
     }
 
     #[test]

@@ -31,12 +31,18 @@ impl Render for Whoami {
             prism_core::RequestKind::Socket => "socket",
         });
         let theme = request.and_then(|r| r.cookie("theme")).unwrap_or("-");
+        let page = match (cx.page_request(), cx.page_request_context::<User>()) {
+            (Some(page), Some(user)) => format!("page {} of user {}", page.path(), user.id),
+            (Some(page), None) => format!("page {} of nobody", page.path()),
+            (None, _) => "no page".to_string(),
+        };
         div()
             .p(8.)
             .child(text(user))
             .child(text(format!("origin {}", cx.page_origin().unwrap_or("-"))))
             .child(text(format!("url {}", cx.page_url().unwrap_or("-"))))
             .child(text(format!("kind {kind} theme {theme}")))
+            .child(text(page))
             .child(text("same").p(8.))
             .child(text("<b>").p(8.))
     }
@@ -135,7 +141,7 @@ fn the_app_adds_fonts_icons_metas_styles_and_scripts_to_the_head() {
     assert!(page_css.contains("body{font-family:Inter, system-ui}"));
     // Prism's own tags carry the nonce too.
     assert!(page.contains(r#"<style id="prism-ssr" nonce="n0nce">"#));
-    assert!(page.contains(r#"data-base="" nonce="n0nce"></script>"#));
+    assert!(page.contains(r#" nonce="n0nce"></script>"#), "{page}");
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -370,6 +376,65 @@ fn a_session_sees_its_handshake_and_context() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// The page's `data-page` id.
+fn page_id(page: &str) -> String {
+    let start = page.find(r#"data-page=""#).expect("a page id") + 11;
+    page[start..start + 32].to_string()
+}
+
+#[test]
+fn the_first_session_takes_the_page_request_over_once() {
+    let (app, dir) = app("handoff", whoami());
+    let sid = "0123456789abcdef0123456789abcdef";
+    let cookie = format!("prism_sid={sid}");
+    let page_for = |user: u32| {
+        let mut req = Request::get("/orders")
+            .header("host", "localhost:3000")
+            .header("cookie", &cookie)
+            .body(())
+            .unwrap();
+        // A one-time value, given to the page request only (a flash message).
+        req.extensions_mut()
+            .insert(RequestContext::new(User { id: user }));
+        body(&app.handle(&req))
+    };
+    let page = page_for(5);
+    assert!(page.contains("page /orders of user 5"), "{page}");
+    let id = page_id(&page);
+    let socket = |id: &str, cookie: &str| {
+        let uri = format!("/ws?path=%2Forders&page={id}");
+        let headers = [
+            ("host", "localhost:3000"),
+            ("origin", "http://localhost:3000"),
+            ("cookie", cookie),
+        ];
+        texts(&next(&open(&app, &uri, &headers, Some(User { id: 6 }))))
+    };
+    // The live session: its handshake's context, and the page's.
+    let t = socket(&id, &cookie);
+    assert!(t.contains(&"user 6".to_string()), "{t:?}");
+    assert!(t.contains(&"kind socket theme -".to_string()), "{t:?}");
+    assert!(t.contains(&"page /orders of user 5".to_string()), "{t:?}");
+    // A reconnect with the same id: gone.
+    let t = socket(&id, &cookie);
+    assert!(t.contains(&"no page".to_string()), "{t:?}");
+    // Another browser with a page's id: refused (and the page's request gone).
+    let id = page_id(&page_for(7));
+    let other = "prism_sid=fedcba9876543210fedcba9876543210";
+    let t = socket(&id, other);
+    assert!(t.contains(&"no page".to_string()), "{t:?}");
+    assert!(socket(&id, &cookie).contains(&"no page".to_string()));
+    // A HEAD has no live session: nothing is kept for it.
+    let waiting = app.inner.handoffs.len();
+    let head = Request::head("/orders")
+        .header("host", "localhost:3000")
+        .body(())
+        .unwrap();
+    assert_eq!(app.handle(&head).status(), StatusCode::OK);
+    assert_eq!(app.inner.handoffs.len(), waiting);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn foreign_origins_are_refused_unless_allowed() {
     let (app, dir) = app("origins", whoami());
@@ -501,5 +566,226 @@ fn the_reconnecting_banner_follows_the_language() {
         r#"<div id="prism-connection" role="status" aria-live="polite" hidden>Reconnecting…</div>"#
     ));
     assert!(page("fr-FR").contains(">Reconnexion…</div>"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Sets a session cookie on its first render and shows the outcome.
+#[derive(Default)]
+struct SignsIn {
+    started: bool,
+    outcome: Option<String>,
+}
+
+impl Render for SignsIn {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.started {
+            self.started = true;
+            cx.spawn(async move |this, cx| {
+                let r = cx
+                    .set_cookie(prism_core::Cookie::new("session", "s1"))
+                    .await;
+                let outcome = match r {
+                    Ok(()) => "ok".to_string(),
+                    Err(e) => e.to_string(),
+                };
+                cx.update_entity(&this, |s, _| s.outcome = Some(outcome));
+            });
+        }
+        let cookie = cx
+            .request()
+            .and_then(|r| r.cookie("session"))
+            .unwrap_or("-")
+            .to_string();
+        text(format!(
+            "cookie {cookie} {}",
+            self.outcome.as_deref().unwrap_or("…")
+        ))
+    }
+}
+
+fn signs_in() -> AppInit {
+    Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| SignsIn::default());
+        cx.set_root(root);
+    })
+}
+
+const SID: &str = "0123456789abcdef0123456789abcdef";
+
+/// The next message of type `t`.
+fn next_of(rx: &mpsc::Receiver<String>, t: &str) -> Value {
+    loop {
+        let v = next(rx);
+        if v["t"] == t {
+            return v;
+        }
+    }
+}
+
+/// The page's `POST /_prism/cookie`.
+fn redeem(app: &WebApp, ticket: Option<&str>, headers: &[(&str, &str)]) -> Response<Vec<u8>> {
+    let mut req = Request::post("/_prism/cookie");
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    if let Some(t) = ticket {
+        req = req.header("x-prism-cookie", t);
+    }
+    app.handle(&req.body(()).unwrap())
+}
+
+#[test]
+fn a_session_sets_a_cookie_through_a_one_time_ticket() {
+    let (app, dir) = app("cookie", signs_in());
+    let cookie = format!("prism_sid={SID}; theme=dark");
+    let rx = open(
+        &app,
+        "/ws?path=%2F",
+        &[
+            ("host", "localhost:3000"),
+            ("origin", "http://localhost:3000"),
+            ("cookie", &cookie),
+        ],
+        None,
+    );
+    let call = next_of(&rx, "device");
+    assert_eq!(call["call"], "set_cookie");
+    assert_eq!(call["url"], "/_prism/cookie");
+    let ticket = call["ticket"].as_str().unwrap().to_string();
+    assert_eq!(ticket.len(), 22, "128 bits, base64url");
+    let page = [
+        ("host", "localhost:3000"),
+        ("origin", "http://localhost:3000"),
+        ("sec-fetch-site", "same-origin"),
+        ("cookie", cookie.as_str()),
+    ];
+    // Not the page's own fetch: refused, and the ticket still works.
+    assert_eq!(redeem(&app, None, &page).status(), StatusCode::BAD_REQUEST);
+    let mut cross = page;
+    cross[2] = ("sec-fetch-site", "cross-site");
+    assert_eq!(
+        redeem(&app, Some(&ticket), &cross).status(),
+        StatusCode::FORBIDDEN
+    );
+    let mut foreign = page;
+    foreign[1] = ("origin", "https://evil.example");
+    assert_eq!(
+        redeem(&app, Some(&ticket), &foreign).status(),
+        StatusCode::FORBIDDEN
+    );
+    let no_origin = [page[0], page[2], page[3]];
+    assert_eq!(
+        redeem(&app, Some(&ticket), &no_origin).status(),
+        StatusCode::FORBIDDEN
+    );
+    // A GET never redeems it.
+    let get = Request::get("/_prism/cookie")
+        .header("x-prism-cookie", &ticket)
+        .body(())
+        .unwrap();
+    assert!(app.handle(&get).headers().get("set-cookie").is_none());
+    // The page's fetch: the cookie, never cached.
+    let r = redeem(&app, Some(&ticket), &page);
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        r.headers()["set-cookie"],
+        "session=s1; Path=/; HttpOnly; Secure; SameSite=Lax"
+    );
+    assert_eq!(r.headers()["cache-control"], "no-store");
+    // The app hears it, and its request has the cookie.
+    loop {
+        let t = texts(&next_of(&rx, "patch"));
+        if t.contains(&"cookie s1 ok".to_string()) {
+            break;
+        }
+    }
+    // Once only.
+    assert_eq!(
+        redeem(&app, Some(&ticket), &page).status(),
+        StatusCode::FORBIDDEN
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_ticket_works_for_its_own_browser_only() {
+    let (app, dir) = app("cookie-sid", signs_in());
+    let cookie = format!("prism_sid={SID}");
+    let rx = open(
+        &app,
+        "/ws?path=%2F",
+        &[("host", "localhost:3000"), ("cookie", &cookie)],
+        None,
+    );
+    let ticket = next_of(&rx, "device")["ticket"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let page = |cookie: &str| {
+        redeem(
+            &app,
+            Some(&ticket),
+            &[
+                ("host", "localhost:3000"),
+                ("origin", "http://localhost:3000"),
+                ("cookie", cookie),
+            ],
+        )
+        .status()
+    };
+    assert_eq!(
+        page("prism_sid=ffffffffffffffffffffffffffffffff"),
+        StatusCode::FORBIDDEN
+    );
+    // Seen by another browser: spent.
+    assert_eq!(page(&cookie), StatusCode::FORBIDDEN);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_secure_cookie_on_plain_http_fails_instead_of_vanishing() {
+    let (app, dir) = app("cookie-http", signs_in());
+    let cookie = format!("prism_sid={SID}");
+    let rx = open(
+        &app,
+        "/ws?path=%2F",
+        &[
+            ("host", "app.example.com"),
+            ("origin", "http://app.example.com"),
+            ("cookie", &cookie),
+        ],
+        None,
+    );
+    loop {
+        let v = next(&rx);
+        assert_ne!(v["t"], "device", "no ticket for the page");
+        if texts(&v).iter().any(|t| t.contains("needs https")) {
+            break;
+        }
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn reconnect_tells_the_page_and_ends_the_session() {
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Whoami);
+        cx.set_root(root);
+        cx.reconnect();
+    });
+    let (app, dir) = app("reconnect", init);
+    let rx = open(&app, "/ws?path=%2F", &[], None);
+    assert_eq!(next(&rx)["t"], "reset");
+    assert_eq!(next(&rx), serde_json::json!({ "t": "reconnect" }));
+    for _ in 0..100 {
+        if app.session_count() == 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(app.session_count(), 0);
+    // The first paint has no session to renew: it renders as usual.
+    let page = app.handle(&Request::get("/").body(()).unwrap());
+    assert_eq!(page.status(), StatusCode::OK);
     let _ = std::fs::remove_dir_all(dir);
 }

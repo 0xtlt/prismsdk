@@ -212,6 +212,8 @@ public final class PrismHost {
         android.widget.PopupWindow popup;
         String overlay = "sheet";
         boolean fixed, medium, closing, manual, keepFocus, pendingOpen;
+        /** A popover's side of its anchor and alignment (#113). */
+        String side = "bottom", align = "start";
         // Padding (#14): the view's own padding while the app's replaces it,
         // and its own background while `.border(0.)` removes it.
         int[] basePad;
@@ -348,6 +350,7 @@ public final class PrismHost {
             case "notify_cancel": PrismDevice.cancelNotification(p.getString("nid")); return;
             case "notify_permission": PrismDevice.requestNotificationPermission(); return;
             case "alert": alert(p.getJSONObject("alert")); return;
+            case "font": PrismText.addFont(p.getString("path"), p.optString("alias")); return;
             case "bg_schedule": PrismJob.schedule(context, p); return;
             case "push_register": PrismPush.register(context); return;
             case "push_unregister": PrismPush.unregister(context); return;

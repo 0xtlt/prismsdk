@@ -339,7 +339,8 @@ pub fn ui_font(f: &FontSpec) -> Retained<UIFont> {
     let system = UIFont::systemFontOfSize_weight(size, weight);
     let mut descriptor: Retained<UIFontDescriptor> = match &f.family {
         FontFamily::Named(name) => {
-            let family = NSString::from_str(name);
+            // A run-time font's alias (`cx.load_font`) → its file's family.
+            let family = NSString::from_str(&prism_native::fonts::resolve_name(name));
             if UIFont::fontNamesForFamilyName(&family).count() == 0 {
                 unsafe { system.fontDescriptor() }
             } else {

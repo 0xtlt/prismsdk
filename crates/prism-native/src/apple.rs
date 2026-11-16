@@ -350,6 +350,12 @@ mod bridge {
                 DeviceCall::WebAuth(r) => {
                     prism_web_auth(id, c(&r.url).as_ptr(), c(&r.redirect).as_ptr(), r.ephemeral)
                 }
+                // No cookies natively (secure storage keeps secrets), no live
+                // session to renew.
+                DeviceCall::SetCookie(_) => {
+                    send(DeviceMessage::Reply(id, Err(DeviceError::Unavailable)));
+                }
+                DeviceCall::Reconnect => {}
             }
         }
     }

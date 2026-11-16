@@ -86,6 +86,28 @@ fn shadows_gradients_and_borders_build_and_print_as_css() {
     assert_eq!((cx, cy), (50., 25.));
     assert!((rx - 70.71).abs() < 0.01 && (ry - 35.36).abs() < 0.01);
 
+    // Conic: CSS `conic-gradient(from …)`, the stops over a full turn.
+    let wheel = Gradient::conic(90., [rgb(0xFF0000), rgb(0x00FF00), rgb(0xFF0000)]);
+    assert_eq!(wheel.kind, GradientKind::Conic { from: 90. });
+    assert_eq!(
+        wheel.stops.iter().map(|s| s.at).collect::<Vec<_>>(),
+        [0., 0.5, 1.]
+    );
+    assert_eq!(
+        wheel.to_css(),
+        "conic-gradient(from 90deg, rgba(255,0,0,1) 0%, rgba(0,255,0,1) 50%, rgba(255,0,0,1) 100%)"
+    );
+    // The center, and where the first color starts: to the right at 90°,
+    // on the largest circle inside the box; up at 0°.
+    assert!(close(wheel.geometry(100., 50.), [50., 25., 75., 25.]));
+    let up = Gradient::conic(0., [Color::BLACK, Color::WHITE]);
+    assert!(close(up.geometry(40., 40.), [20., 20., 20., 0.]));
+    // Colors resolve like the other kinds' and keep the angle.
+    let current = Gradient::conic(45., [Color::current(), Color::WHITE])
+        .map_colors(|c| c.resolve_current(rgb(0x0000FF)));
+    assert_eq!(current.kind, GradientKind::Conic { from: 45. });
+    assert_eq!(current.stops[0].color, rgb(0x0000FF));
+
     assert_eq!(BorderStyle::Solid.dash(2.), None);
     assert_eq!(BorderStyle::Dashed.dash(2.), Some((6., 4.)));
     assert_eq!(BorderStyle::Dotted.dash(2.), Some((0., 4.)));

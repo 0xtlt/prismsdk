@@ -1924,6 +1924,42 @@ impl Overlay {
     pub fn take_focus(self, take_focus: bool) -> Self {
         self.overlay_config(|c| c.keep_focus = !take_focus)
     }
+
+    /// The side of its anchor a popover opens on: below by default, above,
+    /// or beside it ([`Trailing`](crate::PopoverSide::Trailing) is to the
+    /// right in left-to-right layouts, to the left in right-to-left ones).
+    /// It flips to the opposite side when the window has no room there. A
+    /// submenu opens beside the item that opens it, tops lined up:
+    ///
+    /// ```ignore
+    /// div()
+    ///     .child(button("Turn into"))
+    ///     .child(popover(kinds).open(self.turn_into).side(PopoverSide::Trailing))
+    /// ```
+    ///
+    /// Web: placed by the client, like the default; macOS: an `NSPopover`
+    /// on that edge, its arrow on the anchor (a `take_focus(false)` panel is
+    /// placed exactly); iPad: the matching
+    /// `permittedArrowDirections`; Linux: `GtkPopover::set_position`;
+    /// Android: the `PopupWindow` is placed beside or above the anchor.
+    /// Phones that present popovers as sheets ignore it, as do sheets and
+    /// dialogs.
+    pub fn side(self, side: crate::PopoverSide) -> Self {
+        self.overlay_config(|c| c.side = side)
+    }
+
+    /// How a popover lines up with its anchor along its
+    /// [`side`](Overlay::side): leading edges (top edges beside the anchor)
+    /// by default, centered, or trailing edges (bottom edges beside). A
+    /// panel opened from a button at the end of a toolbar lines up with
+    /// the button's trailing edge and grows towards the window's middle:
+    /// `popover(panel).open(true).align(PopoverAlign::End)`. The popover
+    /// still stays inside the window. Arrowed popovers (macOS, iPad) point
+    /// at the anchor: they line up exactly when they are no longer than the
+    /// anchor along that edge, and are centered on it otherwise.
+    pub fn align(self, align: crate::PopoverAlign) -> Self {
+        self.overlay_config(|c| c.align = align)
+    }
 }
 
 // --- Navigation bar options (#30) ---

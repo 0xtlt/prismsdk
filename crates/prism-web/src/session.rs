@@ -25,6 +25,9 @@ pub(crate) enum Inbound {
     Close,
     /// A sign-in provider redirected (to `/_prism/auth/callback`) for call `id`.
     AuthRedirect(u64, String),
+    /// The page fetched the cookie of call `id` (`/_prism/cookie`): the
+    /// browser has it.
+    CookieSet(u64, prism_core::Cookie),
 }
 
 /// The server side of one open page. Pass it the page's messages; drop it
@@ -72,7 +75,8 @@ impl WebApp {
 
     /// [`connect`](WebApp::connect) with the host's context for the app
     /// (`cx.request_context::<T>()`), evaluated for this handshake (so again
-    /// at every reconnect).
+    /// at every reconnect). The context the page request had stays readable
+    /// once, in the page's first session (`cx.page_request_context::<T>()`).
     pub fn connect_with(
         &self,
         uri: &Uri,
@@ -115,6 +119,13 @@ impl WebApp {
             .split('&')
             .find_map(|kv| kv.strip_prefix("search="))
             .map(crate::app::percent_decode);
+        // The page's first handshake takes its request over (`cx.page_request()`).
+        let page_request = uri
+            .query()
+            .unwrap_or("")
+            .split('&')
+            .find_map(|kv| kv.strip_prefix("page="))
+            .and_then(|id| self.inner.handoffs.take(id, &sid));
         let request = crate::host::web_request(
             prism_core::RequestKind::Socket,
             self.page_url(&origin, &path, search.as_deref()),
@@ -136,7 +147,7 @@ impl WebApp {
                 options.wake_ui = Some(std::sync::Arc::new(move || {
                     let _ = waker.send(Inbound::Wake);
                 }));
-                let runtime = Runtime::with_options(&app.init_with(request), options);
+                let runtime = Runtime::with_options(&app.init_with(request, page_request), options);
                 Live {
                     device: device.unwrap_or_else(|| runtime.app.device_info()),
                     runtime,
@@ -155,6 +166,7 @@ impl WebApp {
                         base: app.base().to_string(),
                         title: app.config().title.clone(),
                         inbox: Some(inbox),
+                        sid: Some(sid.clone()),
                         ..app.services()
                     },
                     send: Box::new(send),
@@ -205,11 +217,24 @@ impl Live {
         // The tree that replaces the first paint waits for its data as the
         // first paint did, or the page would flash its loading state.
         let first = self.runtime.render_settled(self.app.inner.first_paint_wait);
-        if !self.patches("reset", &first) {
+        // The page learns its stylesheets with the first tree (none: the
+        // field is left out), so a reconnected page drops those of its
+        // previous session and keeps the first paint's.
+        let sheets = self.runtime.app.stylesheets();
+        let mut reset = json!({ "t": "reset", "p": self.encoder.encode(&first) });
+        if !sheets.is_empty() {
+            reset["sheets"] = json!(sheets);
+        }
+        self.services.sheets = sheets.into_iter().collect();
+        if !(self.send)(reset.to_string()) {
             return;
         }
         loop {
             if !self.flush_requests() {
+                return;
+            }
+            // `cx.reconnect()`: the page was told, it opens a new session.
+            if self.services.reconnect {
                 return;
             }
             // Idle for too long: the page reconnects at its next interaction.
@@ -256,6 +281,16 @@ impl Live {
                 Ok(Inbound::AuthRedirect(id, url)) => self
                     .runtime
                     .device_reply(id, Ok(prism_core::DeviceValue::Text(Some(url)))),
+                // The browser has the cookie: so does the session's request.
+                Ok(Inbound::CookieSet(id, cookie)) => {
+                    let app = &mut self.runtime.app;
+                    if let Some(mut request) = app.request().cloned() {
+                        request.apply_cookie(&cookie);
+                        app.set_request(request);
+                    }
+                    self.runtime
+                        .device_reply(id, Ok(prism_core::DeviceValue::Done))
+                }
                 Ok(Inbound::Wake) | Err(mpsc::RecvTimeoutError::Timeout) => self.tick(),
                 Ok(Inbound::Close) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
             };
@@ -281,8 +316,15 @@ impl Live {
     /// Hands platform requests to the page (notifications, device calls…).
     fn flush_requests(&mut self) -> bool {
         for request in self.runtime.take_requests() {
+            let request = match (request, &self.encoder.asset_urls) {
+                (PlatformRequest::LoadFont(font), Some(urls)) => {
+                    PlatformRequest::LoadFont(font_at(font, urls.as_ref()))
+                }
+                (other, _) => other,
+            };
             self.services.handle(request);
         }
+        self.services.sync_sheets();
         self.services
             .outbox
             .drain(..)
@@ -311,6 +353,7 @@ impl Live {
                 Some(id) => {
                     if v.get("err").is_some() {
                         crate::security::forget_redirect(id);
+                        crate::cookies::forget(id, &self.sid);
                     }
                     let result = device_result(&self.app, &self.sid, &v);
                     rt.device_reply(id, result)
@@ -660,6 +703,10 @@ pub(crate) struct WebServices {
     pub title: String,
     /// The session's own inbox (sign-in redirects arrive there).
     pub inbox: Option<mpsc::Sender<Inbound>>,
+    /// The browser's `prism_sid` (`None` while rendering a page).
+    pub sid: Option<String>,
+    /// `cx.reconnect()`: end the session once the page is told.
+    pub reconnect: bool,
     /// WebAuthn ceremonies waiting for the page, by call id.
     pub ceremonies: HashMap<u64, (crate::security::Ceremony, Gate)>,
     /// The browser has a platform authenticator with user verification.
@@ -669,6 +716,10 @@ pub(crate) struct WebServices {
     background: Vec<(String, Instant, Duration)>,
     /// The VAPID public key: Web Push is available.
     vapid: Option<String>,
+    /// Stylesheets the app added (`App::add_stylesheet`), and whether the
+    /// page has not been told the current set yet.
+    pub sheets: std::collections::BTreeSet<String>,
+    sheets_dirty: bool,
 }
 
 /// `PRISM_BACKGROUND_INTERVAL=<seconds>` shortens every background task's
@@ -697,6 +748,14 @@ impl WebServices {
         due.into_iter().map(|(id, _, _)| id).collect()
     }
 
+    /// The page's stylesheets, once they changed.
+    pub(crate) fn sync_sheets(&mut self) {
+        if std::mem::take(&mut self.sheets_dirty) {
+            self.outbox
+                .push(json!({ "t": "sheets", "urls": self.sheets.iter().collect::<Vec<_>>() }));
+        }
+    }
+
     fn next_background(&self) -> Option<Instant> {
         self.background.iter().map(|(_, at, _)| *at).min()
     }
@@ -706,6 +765,63 @@ impl WebServices {
     pub(crate) fn take_outbox(&mut self) -> Vec<Value> {
         std::mem::take(&mut self.outbox)
     }
+}
+
+/// `font` with an asset's name (`fonts/lora.ttf`) turned into its served URL
+/// (hashed, from the assets folder or the embedded assets), like a picture's.
+pub(crate) fn font_at(
+    font: prism_core::FontFace,
+    urls: &dyn Fn(&str) -> String,
+) -> prism_core::FontFace {
+    match &font.source {
+        prism_core::FontSource::Url(url) => {
+            let served = urls(url);
+            prism_core::FontFace {
+                source: prism_core::FontSource::Url(served),
+                ..font
+            }
+        }
+        prism_core::FontSource::Bytes(_) => font,
+    }
+}
+
+/// The page message registering `font`: its family, its source (a URL, or
+/// the file in base64url) and descriptors.
+fn font_message(font: &prism_core::FontFace) -> Value {
+    let mut msg = json!({
+        "t": "font",
+        "family": font.family,
+        "style": if font.italic { "italic" } else { "normal" },
+    });
+    match &font.source {
+        prism_core::FontSource::Url(url) => msg["url"] = json!(url),
+        prism_core::FontSource::Bytes(b) => msg["data"] = json!(crate::security::base64url(b)),
+    }
+    if let Some(w) = font.css_weight() {
+        msg["weight"] = json!(w);
+    }
+    msg
+}
+
+/// `@font-face` rules for the faces a first paint asked for by URL (bytes
+/// wait for the live page: they would weigh on every page load).
+pub(crate) fn font_face_css(fonts: &[prism_core::FontFace]) -> String {
+    let clean = |s: &str| s.replace(['"', '\\', '<', '>', '\n'], "");
+    fonts
+        .iter()
+        .filter_map(|f| match &f.source {
+            prism_core::FontSource::Url(url) => Some(format!(
+                "@font-face{{font-family:\"{}\";src:url(\"{}\");{}font-style:{};font-display:swap}}\n",
+                clean(&f.family),
+                clean(url),
+                f.css_weight()
+                    .map(|w| format!("font-weight:{w};"))
+                    .unwrap_or_default(),
+                if f.italic { "italic" } else { "normal" },
+            )),
+            prism_core::FontSource::Bytes(_) => None,
+        })
+        .collect()
 }
 
 fn activity_json(content: &ActivityContent) -> Value {
@@ -806,6 +922,17 @@ impl PlatformServices for WebServices {
             | PlatformRequest::RemoveTray(_)
             | PlatformRequest::SetAppMenu(_)
             | PlatformRequest::SetCar(_) => return,
+            // A `FontFace` in `document.fonts`, for this page.
+            PlatformRequest::LoadFont(font) => font_message(&font),
+            // Sent as the whole set (`sync_sheets`).
+            PlatformRequest::AddStylesheet(url) => {
+                self.sheets_dirty |= self.sheets.insert(url);
+                return;
+            }
+            PlatformRequest::RemoveStylesheet(url) => {
+                self.sheets_dirty |= self.sheets.remove(&url);
+                return;
+            }
         };
         self.outbox.push(msg);
     }
@@ -1127,6 +1254,32 @@ impl WebServices {
                     "t": "device", "id": id, "call": "web_auth",
                     "url": r.url, "provider": r.provider,
                 }))
+            }
+            C::SetCookie(cookie) => {
+                let refused = cookie
+                    .check()
+                    .err()
+                    .or_else(|| crate::cookies::refused(&cookie, &self.origin));
+                if let Some(why) = refused {
+                    self.reply(id, Err(E::Failed(why)));
+                    return None;
+                }
+                let (Some(sid), Some(tx)) = (self.sid.clone(), self.inbox.clone()) else {
+                    // The first paint: no page to fetch it yet.
+                    self.reply(id, Err(E::Unavailable));
+                    return None;
+                };
+                let ticket = crate::cookies::issue(&sid, cookie, tx, id);
+                Some(json!({
+                    "t": "device", "id": id, "call": "set_cookie",
+                    "url": format!("{}/_prism/cookie", self.base), "ticket": ticket,
+                }))
+            }
+            C::Reconnect => {
+                // Not during the first paint: there is no session to renew.
+                self.inbox.as_ref()?;
+                self.reconnect = true;
+                Some(json!({ "t": "reconnect" }))
             }
             other => Some(device_json(id, other)),
         }

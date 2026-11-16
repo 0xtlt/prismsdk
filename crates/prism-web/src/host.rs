@@ -14,7 +14,9 @@ use crate::html::escape;
 ///
 /// Insert it as a request extension in a middleware (Prism's Axum router
 /// reads it from the page request and from every socket handshake, so it is
-/// evaluated again when the page reconnects), or pass it to
+/// evaluated again when the page reconnects; the page request's own value
+/// stays readable once in the live session, with
+/// `cx.page_request_context::<T>()`), or pass it to
 /// [`WebApp::handle_with`](crate::WebApp::handle_with) /
 /// [`WebApp::connect_with`](crate::WebApp::connect_with):
 ///

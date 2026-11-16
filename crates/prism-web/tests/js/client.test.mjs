@@ -83,6 +83,16 @@ test("the socket says where the page is and how big", () => {
   assert.equal(u.searchParams.get("path"), "/todos");
 });
 
+test("the first socket hands the page's request over, reconnects don't", () => {
+  const page = live([create(1, "text"), root(1)], { pageId: "0123abcd" });
+  assert.equal(new URL(page.ws.url).searchParams.get("page"), "0123abcd");
+  page.ws.onclose();
+  page.timers.at(-1).fn();
+  assert.equal(new URL(page.sockets.at(-1).url).searchParams.get("page"), null);
+  // A page without one (a HEAD, an older server) sends none.
+  assert.equal(new URL(live(null).ws.url).searchParams.get("page"), null);
+});
+
 test("the client builds the tree the server rendered", () => {
   const server = new Document();
   const ssr = parseHTML(server, fixture.ssr);
@@ -881,6 +891,63 @@ test("a session the server refused probes at once", async () => {
   assert.equal(page.window.fetches.length, 1);
 });
 
+test("set_cookie posts each ticket in a header, one after the other, and reports refusals", async () => {
+  const answers = [];
+  const page = live(null, { fetch: (url, init) => new Promise((resolve) => answers.push({ url, init, resolve })) });
+  const flush = () => new Promise((r) => setImmediate(r));
+  page.ws.deliver({ t: "device", id: 7, call: "set_cookie", url: "/app/_prism/cookie", ticket: "T1" });
+  page.ws.deliver({ t: "device", id: 8, call: "set_cookie", url: "/app/_prism/cookie", ticket: "T2" });
+  await flush();
+  // The second waits for the first: the browser stores them in order.
+  assert.equal(answers.length, 1);
+  const { url, init } = answers[0];
+  assert.equal(url, "/app/_prism/cookie");
+  assert.equal(init.method, "POST");
+  assert.equal(init.credentials, "same-origin");
+  assert.equal(init.cache, "no-store");
+  assert.deepEqual(Object.entries(init.headers), [["X-Prism-Cookie", "T1"]]);
+  answers[0].resolve({ status: 204 });
+  await flush();
+  assert.equal(answers.length, 2);
+  assert.equal(answers[1].init.headers["X-Prism-Cookie"], "T2");
+  answers[1].resolve({ status: 403 });
+  await flush();
+  // The server answers successes itself (it redeemed the ticket); the page
+  // reports what failed.
+  const replies = page.ws.sent.filter((m) => m.t === "device_reply");
+  assert.deepEqual(replies, [{ t: "device_reply", id: 8, err: "the cookie was refused (403)" }]);
+});
+
+test("reconnect waits for the cookies, then opens a new session at once without the banner", async () => {
+  const answers = [];
+  const page = live([create(1, "text"), root(1)], { fetch: () => new Promise((resolve) => answers.push(resolve)) });
+  const flush = () => new Promise((r) => setImmediate(r));
+  const html = page.document.documentElement;
+  const states = [];
+  page.window.addEventListener("prism:connection", (e) => states.push(e.detail.state));
+  page.ws.deliver({ t: "device", id: 3, call: "set_cookie", url: "/_prism/cookie", ticket: "T" });
+  page.ws.deliver({ t: "reconnect" });
+  await flush();
+  assert.ok(!page.ws.closed, "the cookie is not stored yet");
+  answers[0]({ status: 204 });
+  await flush();
+  assert.ok(page.ws.closed, "the page closes the old session");
+  await flush();
+  assert.equal(page.sockets.length, 2, "a new session at once");
+  const timers = page.timers.length;
+  assert.equal(html.getAttribute("data-prism-connection"), "online");
+  assert.ok(page.document.getElementById("prism-connection").hidden);
+  assert.deepEqual(states, []);
+  page.sockets[1].open();
+  assert.equal(page.timers.length, timers, "no retry scheduled");
+  // The server closing first works the same.
+  page.sockets[1].deliver({ t: "reconnect" });
+  page.sockets[1].close();
+  await flush();
+  assert.equal(page.sockets.length, 3);
+  assert.deepEqual(states, []);
+});
+
 test("an idle session waits for the user before reconnecting", () => {
   const page = live([create(1, "text"), root(1)]);
   page.ws.deliver({ t: "idle" });
@@ -1291,4 +1358,42 @@ test("own-width rules: an inline style the client set is kept", () => {
   assert.equal(el.style.transition, "opacity 1s");
   assert.equal(el.style.position, "relative");
   assert.equal(cssOf(el), "padding:28px;position:relative;transition:opacity 1s;");
+});
+
+test("run-time fonts become FontFaces, once each (#81)", () => {
+  const page = live([create(1, "view"), root(1)]);
+  page.ws.deliver({ t: "font", family: "Lora", url: "https://fonts.example/lora.woff2", weight: "400 700", style: "normal" });
+  page.ws.deliver({ t: "font", family: "Lora", url: "https://fonts.example/lora.woff2", weight: "400 700", style: "normal" });
+  // "OTTO" in base64url, without padding.
+  page.ws.deliver({ t: "font", family: "Brand", data: "T1RUTw", style: "italic" });
+  const [lora, brand, ...rest] = page.document.fonts.added;
+  assert.equal(rest.length, 0, "the same face is added once");
+  assert.equal(lora.family, "Lora");
+  assert.equal(lora.source, 'url("https://fonts.example/lora.woff2")');
+  assert.deepEqual({ ...lora.descriptors }, { style: "normal", display: "swap", weight: "400 700" });
+  assert.equal(brand.family, "Brand");
+  assert.deepEqual([...brand.source], [0x4f, 0x54, 0x54, 0x4f]);
+  assert.deepEqual({ ...brand.descriptors }, { style: "italic", display: "swap" });
+});
+
+test("app stylesheets follow the set the server sends, first paint's included (#81)", () => {
+  const page = boot({ nonce: "n0nce" });
+  const ssr = page.document.createElement("link");
+  ssr.setAttribute("rel", "stylesheet");
+  ssr.setAttribute("href", "/fonts.css");
+  ssr.setAttribute("data-prism-sheet", "");
+  page.document.head.appendChild(ssr);
+  page.ws.open();
+  const hrefs = () => page.document.querySelectorAll("link[data-prism-sheet]").map((l) => l.getAttribute("href"));
+  page.ws.deliver({ t: "reset", p: [create(1, "view"), root(1)], sheets: ["/fonts.css", "/picker.css"] });
+  assert.deepEqual(hrefs(), ["/fonts.css", "/picker.css"], "the first paint's link is kept");
+  assert.equal(page.document.querySelector('link[href="/picker.css"]').nonce, "n0nce");
+  page.ws.deliver({ t: "sheets", urls: ["/picker.css"] });
+  assert.deepEqual(hrefs(), ["/picker.css"]);
+  page.ws.deliver({ t: "sheets", urls: [] });
+  assert.deepEqual(hrefs(), []);
+  // A new session without stylesheets drops the previous one's.
+  page.ws.deliver({ t: "sheets", urls: ["/old.css"] });
+  page.ws.deliver({ t: "reset", p: [create(1, "view"), root(1)] });
+  assert.deepEqual(hrefs(), []);
 });

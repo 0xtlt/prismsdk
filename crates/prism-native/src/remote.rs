@@ -63,8 +63,10 @@
 //! spread, color, inset}]` (the first on top); `sides`: per-side borders
 //! `[[w, color] × 4]` top, right, bottom, left (already mirrored right to
 //! left); `bstyle`: `dashed` or `dotted`; `clip`: children clipped to the
-//! rounded box; `grad`: `{kind: "linear" | "radial", angle, stops: [[color,
-//! at]]}` (angle in CSS degrees, 180 top to bottom); `blur`: backdrop blur
+//! rounded box; `grad`: `{kind: "linear" | "radial" | "conic", angle,
+//! stops: [[color, at]]}` (angle in CSS degrees: 180 top to bottom for a
+//! linear one, where the first color starts for a conic one, clockwise from
+//! up); `blur`: backdrop blur
 //! radius; `cursor`: a CSS cursor name. Colors are already resolved
 //! ([`prism_core::Color::current`] included).
 //!
@@ -294,7 +296,11 @@ pub fn typography(s: &Style) -> serde_json::Map<String, Value> {
     use prism_core::{FontFamily, TextTransform};
     let mut m = serde_json::Map::new();
     if s.font_family != FontFamily::System {
-        m.insert("ff".into(), json!(s.font_family.encode()));
+        // A run-time font's alias (`cx.load_font`) → its file's family.
+        m.insert(
+            "ff".into(),
+            json!(crate::fonts::resolve(&s.font_family).encode()),
+        );
     }
     for (key, on) in [
         ("it", s.italic),
@@ -355,7 +361,7 @@ pub fn runs_json(config: &str) -> Value {
                 m.insert("bg".into(), color(r.background));
             }
             if let Some(f) = &r.family {
-                m.insert("ff".into(), json!(f.encode()));
+                m.insert("ff".into(), json!(crate::fonts::resolve(f).encode()));
             }
             if let Some(z) = r.size {
                 m.insert("z".into(), json!(z));
@@ -478,6 +484,8 @@ fn decorations(o: &mut Value, s: &Style) {
         let (kind, angle) = match g.kind {
             GradientKind::Linear { angle } => ("linear", angle),
             GradientKind::Radial => ("radial", 0.),
+            // `angle`: where the first color starts, clockwise from up.
+            GradientKind::Conic { from } => ("conic", from),
         };
         o["grad"] = json!({
             "kind": kind,
@@ -1049,6 +1057,10 @@ pub mod device {
                 "call": "web_auth", "url": r.url, "redirect": r.redirect,
                 "ephemeral": r.ephemeral, "provider": r.provider,
             }),
+            // No cookies natively: the host answers « unavailable ».
+            DeviceCall::SetCookie(_) => json!({ "call": "set_cookie" }),
+            // No live session to renew: the host ignores it.
+            DeviceCall::Reconnect => json!({ "call": "reconnect" }),
         };
         body["op"] = json!("device");
         body["id"] = json!(id);

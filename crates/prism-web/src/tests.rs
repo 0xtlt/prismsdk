@@ -2581,6 +2581,14 @@ fn decorations_become_css() {
     ] {
         assert!(c.contains(part), "{part} missing in {c}");
     }
+    // A conic gradient: CSS's own, from its start angle.
+    let wheel = Style::default().bg_gradient(Gradient::conic(
+        45.,
+        [rgb(0xFF0000), rgb(0x0000FF), rgb(0xFF0000)],
+    ));
+    assert!(css(NodeKind::View, &wheel).contains(
+        "background-image:conic-gradient(from 45deg, rgba(255,0,0,1) 0%, rgba(0,0,255,1) 50%, rgba(255,0,0,1) 100%);"
+    ));
     // A scroll view keeps scrolling.
     assert!(!css(NodeKind::Scroll, &s).contains("overflow:hidden"));
 
@@ -3235,4 +3243,84 @@ fn the_backends_own_data_attributes_are_reserved() {
         open.is_empty(),
         "add these to prism_core::attributes::RESERVED_DATA_ATTRIBUTES: {open:?}"
     );
+}
+
+#[test]
+fn run_time_fonts_and_stylesheets_go_to_the_page() {
+    use crate::session::WebServices;
+    use prism_core::{FontFace, PlatformRequest, PlatformServices};
+    let mut s = WebServices::default();
+    s.handle(PlatformRequest::LoadFont(
+        FontFace::url("Lora", "https://fonts.example/lora.woff2").weights(400, 700),
+    ));
+    s.handle(PlatformRequest::LoadFont(
+        FontFace::bytes("Brand", &b"OTTO"[..]).italic(),
+    ));
+    s.handle(PlatformRequest::AddStylesheet("/a.css".into()));
+    s.handle(PlatformRequest::AddStylesheet("/b.css".into()));
+    s.handle(PlatformRequest::RemoveStylesheet("/a.css".into()));
+    s.sync_sheets();
+    s.sync_sheets();
+    let out = s.take_outbox();
+    assert_eq!(
+        out[0],
+        json!({ "t": "font", "family": "Lora", "url": "https://fonts.example/lora.woff2",
+                "weight": "400 700", "style": "normal" })
+    );
+    assert_eq!(
+        out[1],
+        json!({ "t": "font", "family": "Brand", "data": "T1RUTw", "style": "italic" })
+    );
+    // The whole set, once per change.
+    assert_eq!(out[2], json!({ "t": "sheets", "urls": ["/b.css"] }));
+    assert_eq!(out.len(), 3);
+}
+
+#[test]
+fn first_paints_carry_run_time_fonts_and_stylesheets() {
+    struct Picker {
+        _sheet: prism_core::Stylesheet,
+    }
+    impl Render for Picker {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            cx.load_font(FontFace::url("Lora", "/fonts/lora.woff2").weights(400, 700));
+            cx.load_font(FontFace::bytes("Brand", &b"OTTO"[..]));
+            // An asset's name: its served, hashed URL.
+            cx.load_font(FontFace::url("Extra", "fonts/extra.woff2"));
+            text("Lora").font_family("Lora")
+        }
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let picker = cx.new_entity(|cx| Picker {
+            _sheet: cx.add_stylesheet("/catalogue.css?v=1&x=<2>"),
+        });
+        cx.set_root(picker);
+    });
+    let (app, dir) = web_app(init, "runtime-fonts");
+    let app = app
+        .embedded_assets(prism_core::EmbeddedAssets::new().file("fonts/extra.woff2", &b"wOF2"[..]));
+    let page = app.handle(&Request::get("/").body(()).unwrap());
+    let body = String::from_utf8(page.body().clone()).unwrap();
+    assert!(
+        body.contains(
+            r#"<link rel="stylesheet" href="/catalogue.css?v=1&amp;x=&lt;2&gt;" data-prism-sheet>"#
+        ),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"@font-face{font-family:"Lora";src:url("/fonts/lora.woff2");font-weight:400 700;font-style:normal;font-display:swap}"#),
+        "{body}"
+    );
+    let extra = body
+        .split("font-family:\"Extra\";src:url(\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or_else(|| panic!("{body}"));
+    assert!(
+        extra.contains("fonts/extra.") && extra.ends_with(".woff2") && extra != "fonts/extra.woff2",
+        "{extra}"
+    );
+    // Bytes wait for the live page.
+    assert!(!body.contains("Brand"), "{body}");
+    let _ = std::fs::remove_dir_all(dir);
 }

@@ -209,6 +209,74 @@ test("popovers sit under their anchor and report light dismissal", () => {
   assert.deepEqual(lastSent(page), { t: "back", id: 3, depth: 0 });
 });
 
+test("popovers open on the side and alignment they ask for, flipping without room (#113)", () => {
+  const page = live([
+    { op: "create", id: 2, kind: "view" },
+    { op: "create", id: 3, kind: "overlay" }, { op: "config", id: 3, config: "popover side=trailing" },
+    { op: "children", id: 2, children: [3] },
+    ...root([2]),
+  ]);
+  // The anchor: 200 × 100 at (50, 20); the popover: 100 × 60.
+  placed(page.node(2));
+  const box = page.node(3).firstChild;
+  box.getBoundingClientRect = () => ({ left: 0, top: 0, width: 100, height: 60, right: 100, bottom: 60 });
+  const at = (config) => {
+    page.ws.deliver({ t: "patch", p: [{ op: "config", id: 3, config }, { op: "value", id: 3, value: 1 }] });
+    return [box.style.left, box.style.top, box.dataset.side];
+  };
+  // A submenu: beside the anchor, tops lined up.
+  assert.deepEqual(at("popover side=trailing"), ["256px", "20px", "right"]);
+  assert.deepEqual(at("popover side=trailing align=center"), ["256px", "40px", "right"]);
+  assert.deepEqual(at("popover side=trailing align=end"), ["256px", "60px", "right"]);
+  // Below, trailing edges lined up: it grows towards the start.
+  assert.deepEqual(at("popover align=end"), ["150px", "126px", "bottom"]);
+  assert.deepEqual(at("popover align=center"), ["100px", "126px", "bottom"]);
+  // Above: the window has room there (20 px above the anchor is too little,
+  // so it flips below).
+  assert.deepEqual(at("popover side=top"), ["50px", "126px", "bottom"]);
+  // Leading: no room left of the anchor (50 px), so it flips to the right.
+  assert.deepEqual(at("popover side=leading"), ["256px", "20px", "right"]);
+  // Still works with light_dismiss(false) / take_focus(false) (#70).
+  assert.deepEqual(at("popover manual keepfocus side=trailing"), ["256px", "20px", "right"]);
+  assert.equal(box.getAttribute("popover"), "manual");
+  // Near the window's right edge (1280 wide): a trailing submenu flips to
+  // the leading side.
+  page.node(2).getBoundingClientRect = () => ({ left: 1000, top: 300, width: 200, height: 30, right: 1200, bottom: 330 });
+  assert.deepEqual(at("popover side=trailing"), ["894px", "300px", "left"]);
+  // Room above: on top, ending at the anchor's top with the gap.
+  assert.deepEqual(at("popover side=top align=end"), ["1100px", "234px", "top"]);
+  // Right to left: trailing is the left side, start the right edge.
+  page.document.documentElement.dir = "rtl";
+  assert.deepEqual(at("popover side=trailing"), ["894px", "300px", "left"]);
+  assert.deepEqual(at("popover"), ["1100px", "336px", "bottom"]);
+  assert.deepEqual(at("popover align=end"), ["1000px", "336px", "bottom"]);
+  page.document.documentElement.dir = "";
+});
+
+test("a popover inside an open popover is placed against its own anchor (#113)", () => {
+  const page = live([
+    { op: "create", id: 2, kind: "view" },
+    { op: "create", id: 3, kind: "overlay" }, { op: "config", id: 3, config: "popover" }, { op: "value", id: 3, value: 1 },
+    { op: "create", id: 4, kind: "view" },
+    { op: "create", id: 5, kind: "overlay" }, { op: "config", id: 5, config: "popover side=trailing" }, { op: "value", id: 5, value: 1 },
+    { op: "children", id: 4, children: [5] },
+    { op: "children", id: 3, children: [4] },
+    { op: "children", id: 2, children: [3] },
+    ...root([2]),
+  ]);
+  placed(page.node(2));
+  const outer = page.node(3).firstChild, inner = page.node(5).firstChild;
+  outer.getBoundingClientRect = () => ({ left: 0, top: 0, width: 220, height: 200, right: 220, bottom: 200 });
+  // The item in the menu, where the menu sits (under the anchor).
+  page.node(4).getBoundingClientRect = () => ({ left: 54, top: 130, width: 212, height: 28, right: 266, bottom: 158 });
+  inner.getBoundingClientRect = () => ({ left: 0, top: 0, width: 160, height: 120, right: 160, bottom: 120 });
+  flushFrames(page);
+  assert.equal(outer.matches(":popover-open"), true);
+  assert.equal(inner.matches(":popover-open"), true, "both stay open");
+  assert.deepEqual([outer.style.left, outer.style.top], ["50px", "126px"]);
+  assert.deepEqual([inner.style.left, inner.style.top], ["272px", "130px"], "beside its item, tops lined up");
+});
+
 test("an overlay inserted already open is shown (#70)", () => {
   const page = live([...root([])]);
   // A menu that appears with its parent, open, in one patch.

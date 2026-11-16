@@ -34,9 +34,11 @@
 mod app;
 mod assets;
 mod compress;
+mod cookies;
 mod css;
 mod device_info;
 mod fonts;
+mod handoff;
 mod host;
 #[cfg(test)]
 mod host_tests;

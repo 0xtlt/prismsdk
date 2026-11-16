@@ -100,6 +100,11 @@ impl PlatformServices for WatchServices {
             | PlatformRequest::SetAppMenu(_)
             | PlatformRequest::SetCar(_)
             | PlatformRequest::WatchActivityPushToStart => {}
+            // Fonts are registered by the backend, which draws texts again
+            // (imp.rs, `load_font`); stylesheets are a web thing.
+            PlatformRequest::LoadFont(_)
+            | PlatformRequest::AddStylesheet(_)
+            | PlatformRequest::RemoveStylesheet(_) => {}
         }
     }
 }

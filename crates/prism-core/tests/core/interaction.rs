@@ -362,6 +362,53 @@ fn a_popover_can_be_inserted_open_and_leave_the_focus_to_its_anchor() {
     );
 }
 
+/// A menu with a submenu beside its item and a panel lined up with the
+/// trailing edge of its button (#113).
+struct Menus;
+
+impl Render for Menus {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .child(
+                div().child(text("Turn into")).child(
+                    popover(text("Heading"))
+                        .open(true)
+                        .side(PopoverSide::Trailing),
+                ),
+            )
+            .child(
+                div().child(button("More")).child(
+                    popover(text("Settings"))
+                        .open(true)
+                        .align(PopoverAlign::End)
+                        .light_dismiss(false),
+                ),
+            )
+            .child(div().child(popover(text("Plain")).open(true)))
+    }
+}
+
+#[test]
+fn popovers_say_their_side_and_alignment() {
+    let h = Harness::new(|cx| {
+        let root = cx.new_entity(|_| Menus);
+        mount(cx, root);
+    });
+    let configs: Vec<String> = (h.host.mounted().into_iter())
+        .map(|id| h.host.get(id))
+        .filter(|n| n.kind == NodeKind::Overlay)
+        .map(|n| n.config.clone())
+        .collect();
+    assert_eq!(
+        configs,
+        [
+            "popover side=trailing",
+            "popover manual align=end",
+            "popover"
+        ]
+    );
+}
+
 struct Choices {
     every: Option<usize>,
     remember: bool,
