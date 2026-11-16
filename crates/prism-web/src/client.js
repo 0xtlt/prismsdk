@@ -236,7 +236,14 @@
     const typed = e.key.length === 1 && !e.ctrlKey && !e.metaKey;
     if (!owner && !(globalKeys > 0 && !(typing && typed))) return;
     const mods = (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
-    send({ t: "key", id: owner ? Number(owner.dataset.pid) : 0, key: e.key, mods, repeat: !!e.repeat });
+    const msg = { t: "key", id: owner ? Number(owner.dataset.pid) : 0, key: e.key, mods, repeat: !!e.repeat };
+    // In a text field: its selection before the key acts (#86).
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA") && typing) {
+      if (t._selFlush) t._selFlush();
+      const sel = fieldSelection(t);
+      if (sel) msg.sel = sel;
+    }
+    send(msg);
     // The app handles arrows and space on its element: the page does not scroll.
     const control = typing || (t && ["SELECT", "INPUT"].includes(t.tagName));
     if (owner && !control && SCROLL_KEYS.includes(e.key)) e.preventDefault();
@@ -747,11 +754,13 @@
         if (e.key === "Enter" && !e.isComposing) send({ t: "submit", id });
       });
       trackComposition(el);
+      trackSelection(el, id);
     } else if (kind === "text_area") {
       el.className = "prism-textarea";
       el.rows = 3;
       el.addEventListener("input", () => { grow(el); sendTyped(el, id); });
       trackComposition(el);
+      trackSelection(el, id);
     } else if (kind === "slider") {
       el.type = "range";
       el.className = "prism-slider";
@@ -1149,12 +1158,94 @@
     el.addEventListener("compositionstart", () => { el._composing = true; });
     el.addEventListener("compositionend", () => {
       el._composing = false;
-      const text = el._deferred;
-      if (text === undefined) return;
+      const text = el._deferred, sel = el._deferredSel;
       delete el._deferred;
-      applyFieldText(el, text);
-      if (el.tagName === "TEXTAREA") grow(el);
+      delete el._deferredSel;
+      if (text !== undefined) {
+        applyFieldText(el, text);
+        if (el.tagName === "TEXTAREA") grow(el);
+      }
+      if (sel) applyFieldSelection(el, sel[0], sel[1]);
     });
+  }
+
+  // --- Text fields: selection and caret (#86) -----------------------------------
+  //
+  // Prism counts characters (code points); the DOM counts UTF-16 units.
+  // A field with `on_select` (`selev`) reports where its selection is after
+  // anything that may move it (selecting, clicking, arrows, typing), at most
+  // once per animation frame and only when it moved, after the `input` that
+  // moved it. Key presses in a field carry its selection before the key
+  // (`sel`). The app's `.selection(..)` (`sel` op) is applied unless the
+  // user typed past the text it was computed for (#73's rule).
+
+  /** The character offset of UTF-16 offset `units` in `text`. */
+  const toChars = (text, units) => Array.from(text.slice(0, units)).length;
+  /** The UTF-16 offset of character `chars` in `text` (clamped). */
+  function toUnits(text, chars) {
+    let units = 0, n = 0;
+    for (const c of text) {
+      if (n++ >= chars) break;
+      units += c.length;
+    }
+    return units;
+  }
+  /** Field `el`'s selection in characters, `null` without a caret. */
+  function fieldSelection(el) {
+    let s, e;
+    try { s = el.selectionStart; e = el.selectionEnd; } catch { return null; /* email, number */ }
+    if (s == null || e == null) return null;
+    const v = el.value || "";
+    return [toChars(v, Math.min(s, e)), toChars(v, Math.max(s, e))];
+  }
+  function trackSelection(el, id) {
+    let queued = false;
+    const report = () => {
+      queued = false;
+      if (!el._selev || document.activeElement !== el) return;
+      const sel = fieldSelection(el);
+      if (!sel) return;
+      const last = el._selSent;
+      if (last && last[0] === sel[0] && last[1] === sel[1]) return;
+      el._selSent = sel;
+      send({ t: "select", id, start: sel[0], end: sel[1] });
+    };
+    el._selCheck = () => {
+      if (!el._selev || queued) return;
+      queued = true;
+      requestAnimationFrame(report);
+    };
+    // A key reports the selection it acts on first (its `sel`), so the app
+    // sees the selection moves before the key.
+    el._selFlush = () => { if (queued) report(); };
+    for (const t of ["select", "selectionchange", "input", "keyup", "mouseup", "pointerup", "focus"]) {
+      el.addEventListener(t, el._selCheck);
+    }
+  }
+  // Browsers that fire `selectionchange` on the document only.
+  document.addEventListener("selectionchange", () => {
+    const a = document.activeElement;
+    if (a && a._selCheck) a._selCheck();
+  });
+  /** The `selev` op: whether field `el` reports its selection. */
+  function setSelectEvents(el, on) {
+    el._selev = !!on;
+    if (!on) delete el._selSent;
+    else if (document.activeElement === el && el._selCheck) el._selCheck();
+  }
+  /** The `sel` op: the app's selection for field `el`, in characters. */
+  function setFieldSelection(el, start, end) {
+    // Typing in flight: the selection was computed for a text the field
+    // has moved past since. Its echo (or the app's answer) comes next.
+    if (el._sent && el._sent.length) return;
+    if (el._composing && document.activeElement === el) { el._deferredSel = [start, end]; return; }
+    applyFieldSelection(el, start, end);
+  }
+  function applyFieldSelection(el, start, end) {
+    const v = el.value || "";
+    try { el.setSelectionRange(toUnits(v, start), toUnits(v, Math.max(start, end))); } catch { /* no caret (email, number) */ }
+    // Reported back (an echo the server recognises) if it moved.
+    if (el._selCheck) el._selCheck();
   }
 
   /** A text patch for an input or a text area. */
@@ -1480,6 +1571,9 @@
       // Pointer, keys, focus, layers (#17, #25).
       case "pointer": return setPointer(el, p.id, p.mask);
       case "keys": return setKeys(el, p.local, p.global);
+      // Text field selections (#86).
+      case "sel": return el && setFieldSelection(el, p.start, p.end);
+      case "selev": return el && setSelectEvents(el, p.on);
       case "focus": return el && focusNode(el);
       case "reveal": return el && reveal(el);
       // `cx.dismiss_keyboard()` (#29): the focused field lets go (phones

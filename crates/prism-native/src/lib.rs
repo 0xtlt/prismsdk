@@ -156,6 +156,12 @@ pub trait Widgets {
     /// view or a descendant has the focus (the view becomes focusable),
     /// `global` wherever the focus is.
     fn set_key_events(&mut self, _view: &Self::View, _local: bool, _global: bool) {}
+    /// Selects `start..end` (characters, clamped to the text) in a text
+    /// input or area (#86), focused or not. Sent after its text.
+    fn set_selection(&mut self, _view: &Self::View, _start: usize, _end: usize) {}
+    /// Whether a text input or area reports its selection and caret
+    /// (`UiEvent::Select`, in characters) when they move, typing included.
+    fn set_select_events(&mut self, _view: &Self::View, _on: bool) {}
     /// Gives the view the keyboard focus (first responder, `grab_focus`).
     fn focus(&mut self, _view: &Self::View) {}
     /// Scrolls the scroll views around the view so it is visible.
@@ -1366,6 +1372,16 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                     if let Some(e) = self.nodes.get(id) {
                         self.widgets.set_text(&e.view, text);
                         let _ = self.taffy.mark_dirty(e.layout);
+                    }
+                }
+                Patch::SetSelection { id, start, end } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.set_selection(&e.view, *start, *end);
+                    }
+                }
+                Patch::SetSelectEvents { id, on } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.set_select_events(&e.view, *on);
                     }
                 }
                 Patch::SetPlaceholder { id, text } => {

@@ -112,7 +112,26 @@ fn focused_node(responder: Option<&NSResponder>) -> Option<NodeId> {
 fn focus_changed(window: &NSWindow) {
     let window: Retained<NSWindow> = objc2::Message::retain(window);
     on_main_after(std::time::Duration::ZERO, move || {
-        let id = focused_node(window.firstResponder().as_deref());
+        let responder = window.firstResponder();
+        let id = focused_node(responder.as_deref());
+        // A selection the app set while the input was not being edited
+        // (#86): applied if the app focused it, else the user's click wins.
+        if let Some(id) = id
+            && let Some(tv) = responder.and_then(|r| r.downcast::<NSTextView>().ok())
+        {
+            let mut pending = None;
+            with_state(|s| {
+                let ix = &mut s.renderer.widgets.ix;
+                let by_app = ix.app_focus == Some(id);
+                if by_app {
+                    ix.app_focus = None;
+                }
+                pending = ix.pending_selection.remove(&id).filter(|_| by_app);
+            });
+            if let Some((start, end)) = pending {
+                crate::interact::select_text(&tv, start, end);
+            }
+        }
         let old = FOCUSED.with(|f| f.replace(id));
         if old == id {
             return;
@@ -1039,7 +1058,7 @@ impl PrismSlider {
 
 #[derive(Default)]
 pub struct TextViewIvars {
-    id: Cell<NodeId>,
+    pub(crate) id: Cell<NodeId>,
     placeholder: RefCell<String>,
 }
 
@@ -1216,6 +1235,24 @@ define_class!(
         }
 
         /// Reduce Motion or the language changed in System Settings.
+        /// A text view's selection moved: a text area, or the field editor
+        /// of a text input (#86).
+        #[unsafe(method(onTextSelection:))]
+        fn on_text_selection(&self, n: &NSNotification) {
+            let Some(tv) = n.object().and_then(|o| o.downcast::<NSTextView>().ok()) else {
+                return;
+            };
+            let Some(id) = crate::interact::text_node(&tv) else {
+                return;
+            };
+            // Not while Prism changes the field (`with_state` is busy).
+            let mut on = false;
+            with_state(|s| on = s.renderer.widgets.ix.select_events.contains(&id));
+            if on {
+                crate::interact::selection_changed(&tv, id);
+            }
+        }
+
         #[unsafe(method(onEnvironment:))]
         fn on_environment(&self, _n: &NSNotification) {
             with_state(|s| {
@@ -2931,6 +2968,9 @@ impl Widgets for AppKit {
     }
 
     fn destroy(&mut self, view: &View) {
+        self.ix.select_events.remove(&view.id());
+        self.ix.pending_selection.remove(&view.id());
+        crate::interact::forget_selection(view.id());
         crate::sticky::forget(view.id());
         crate::navbar::forget(view.id());
         crate::padding::forget(view.id());
@@ -3599,6 +3639,37 @@ impl Widgets for AppKit {
         }
     }
 
+    /// Text field selections (#86): through the field editor while an
+    /// input is edited (else when it takes the focus), on the text view of
+    /// a text area.
+    fn set_selection(&mut self, view: &View, start: usize, end: usize) {
+        match view {
+            View::Input(i) => {
+                let editor = i
+                    .field()
+                    .currentEditor()
+                    .and_then(|e| e.downcast::<NSTextView>().ok());
+                match editor {
+                    Some(e) => crate::interact::select_text(&e, start, end),
+                    None => {
+                        self.ix.pending_selection.insert(view.id(), (start, end));
+                    }
+                }
+            }
+            View::TextArea(t) => crate::interact::select_text(&t.text, start, end),
+            _ => {}
+        }
+    }
+
+    fn set_select_events(&mut self, view: &View, on: bool) {
+        if on {
+            self.ix.select_events.insert(view.id());
+        } else {
+            self.ix.select_events.remove(&view.id());
+            crate::interact::forget_selection(view.id());
+        }
+    }
+
     /// The key window's first responder lets go (the window keeps the
     /// focus itself), after the layout like `focus`.
     fn dismiss_keyboard(&mut self) {
@@ -3615,6 +3686,9 @@ impl Widgets for AppKit {
 
     /// First responder after the layout (sheets present then).
     fn focus(&mut self, view: &View) {
+        if let View::Input(_) = view {
+            self.ix.app_focus = Some(view.id());
+        }
         let v: Retained<NSView> = match view {
             View::Input(i) => Retained::into_super(Retained::into_super(i.field())),
             View::TextArea(t) => {
@@ -3968,7 +4042,16 @@ fn install_key_monitor() {
             }
         });
         if let Some(focused) = send {
-            dispatch(UiEvent::Key(focused, key));
+            // In a text area or input: its selection before the key (#86).
+            let selection = view
+                .as_ref()
+                .and_then(|v| v.downcast_ref::<NSTextView>())
+                .filter(|tv| crate::interact::text_node(tv).is_some())
+                .map(crate::interact::text_selection);
+            dispatch(UiEvent::Key(
+                focused,
+                prism_core::KeyEvent { selection, ..key },
+            ));
         }
         event.as_ptr()
     });
@@ -4624,6 +4707,12 @@ fn observe_system(target: &Target) {
             target,
             sel!(onEnvironment:),
             Some(objc2_foundation::NSCurrentLocaleDidChangeNotification),
+            None,
+        );
+        center.addObserver_selector_name_object(
+            target,
+            sel!(onTextSelection:),
+            Some(objc2_app_kit::NSTextViewDidChangeSelectionNotification),
             None,
         );
         center.addObserver_selector_name_object(

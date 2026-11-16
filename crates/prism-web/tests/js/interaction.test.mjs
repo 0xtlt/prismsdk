@@ -101,7 +101,8 @@ test("keys reach the focused element, and global listeners skip typing", () => {
   key(field, "a");
   assert.equal(sent(page).length, n);
   key(field, "Escape");
-  assert.deepEqual(lastSent(page), { t: "key", id: 0, key: "Escape", mods: 0, repeat: false });
+  // In a field, with its selection (#86).
+  assert.deepEqual(lastSent(page), { t: "key", id: 0, key: "Escape", mods: 0, repeat: false, sel: [0, 0] });
   key(field, "s", { metaKey: true });
   assert.equal(lastSent(page).mods, 8);
   key(page.document.body, "x");

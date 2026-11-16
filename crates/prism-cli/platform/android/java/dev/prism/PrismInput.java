@@ -213,9 +213,71 @@ final class PrismInput {
         put(ev, "key", name);
         put(ev, "mods", mods(e));
         put(ev, "repeat", e.getRepeatCount() > 0);
+        // In a text field: its selection before the key (#86).
+        if (focused instanceof EditText) {
+            int[] sel = selection((EditText) focused);
+            if (sel != null) put(ev, "sel", new JSONArray().put(sel[0]).put(sel[1]));
+        }
         PrismHost.send(ev);
         boolean arrow = name.startsWith("Arrow");
         return local && arrow && !(focused instanceof EditText);
+    }
+
+    // --- Text field selections (#86): Prism counts characters (code points) -------------
+
+    /** Characters of `t` before UTF-16 offset `units`. */
+    static int chars(CharSequence t, int units) {
+        return Character.codePointCount(t, 0, Math.max(0, Math.min(units, t.length())));
+    }
+
+    /** The UTF-16 offset of character `chars` in `t` (clamped to its end). */
+    static int units(CharSequence t, int chars) {
+        int n = Character.codePointCount(t, 0, t.length());
+        return Character.offsetByCodePoints(t, 0, Math.max(0, Math.min(chars, n)));
+    }
+
+    /** A field's selection in characters, ordered; null without one. */
+    static int[] selection(EditText e) {
+        int a = e.getSelectionStart(), b = e.getSelectionEnd();
+        if (a < 0 || b < 0) return null;
+        CharSequence t = e.getText();
+        return new int[]{chars(t, Math.min(a, b)), chars(t, Math.max(a, b))};
+    }
+
+    /**
+     * A field's selection moved (`onSelectionChanged`): reported once the
+     * edit is done (posted, so after its `input`), once per turn, and only
+     * when it moved.
+     */
+    static void selectionChanged(EditText e) {
+        PrismHost.Node n = byView == null ? null : byView.get(e);
+        if (n == null || !n.selectEvents || n.selPosted) return;
+        n.selPosted = true;
+        e.post(() -> {
+            n.selPosted = false;
+            if (!n.selectEvents) return;
+            int[] s = selection(e);
+            if (s == null || java.util.Arrays.equals(s, n.lastSel)) return;
+            n.lastSel = s;
+            JSONObject ev = PrismHost.event("select", n.id);
+            put(ev, "start", s[0]);
+            put(ev, "end", s[1]);
+            PrismHost.send(ev);
+        });
+    }
+
+    /** Op `selev`: whether the field reports its selection. */
+    static void selectEvents(PrismHost.Node n, boolean on) {
+        n.selectEvents = on;
+        if (!on) n.lastSel = null;
+    }
+
+    /** Op `sel`: the app's selection, in characters (clamped). */
+    static void select(PrismHost.Node n, int start, int end) {
+        if (!(n.view instanceof EditText)) return;
+        EditText e = (EditText) n.view;
+        CharSequence t = e.getText();
+        e.setSelection(units(t, start), units(t, Math.max(start, end)));
     }
 
     // --- Focus, scrolling ------------------------------------------------------------------

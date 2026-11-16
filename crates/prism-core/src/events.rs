@@ -203,6 +203,13 @@ pub struct KeyEvent {
     pub modifiers: Modifiers,
     /// Sent again because the key is held down.
     pub repeat: bool,
+    /// While a text input or area has the focus: its selection or caret
+    /// when the key was pressed, before the key acts (#86), in characters
+    /// like [`on_select`](crate::TextInput::on_select). So Enter can split
+    /// a block at the caret, Backspace at `0..0` merge it with the previous
+    /// one, ↑ on the first line move to the previous block. `None` when no
+    /// field has the focus (or the platform cannot tell: watchOS).
+    pub selection: Option<crate::SelectionEvent>,
 }
 
 impl KeyEvent {
@@ -212,7 +219,14 @@ impl KeyEvent {
             key: key.into(),
             modifiers: Modifiers::default(),
             repeat: false,
+            selection: None,
         }
+    }
+
+    /// The same press, made while a text field had `selection`.
+    pub fn with_selection(mut self, selection: impl Into<crate::SelectionEvent>) -> Self {
+        self.selection = Some(selection.into());
+        self
     }
 
     /// Whether this is `key` (`e.is("Escape")`). Single letters compare

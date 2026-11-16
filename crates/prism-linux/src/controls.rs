@@ -392,6 +392,13 @@ pub fn text_area(id: NodeId) -> Rc<TextArea> {
         let text = b.text(&b.start_iter(), &b.end_iter(), false).to_string();
         label.set_visible(text.is_empty());
         crate::imp::dispatch_typed(id, text);
+        crate::imp::report_selection(id, crate::imp::buffer_selection(b));
+    });
+    // The caret and the selection's other end moved (#86).
+    view.buffer().connect_mark_set(move |b, _, mark| {
+        if matches!(mark.name().as_deref(), Some("insert" | "selection_bound")) {
+            crate::imp::report_selection(id, crate::imp::buffer_selection(b));
+        }
     });
     Rc::new(TextArea {
         root,
@@ -406,6 +413,14 @@ impl TextArea {
     pub fn text(&self) -> String {
         let b = self.view.buffer();
         b.text(&b.start_iter(), &b.end_iter(), false).to_string()
+    }
+
+    /// Selects `start..end` (characters, clamped), the caret at `end` (#86).
+    pub fn select(&self, start: usize, end: usize) {
+        let b = self.view.buffer();
+        let len = b.char_count().max(0) as usize;
+        let at = |c: usize| b.iter_at_offset(c.min(len) as i32);
+        b.select_range(&at(end.max(start)), &at(start));
     }
 
     /// Prism's value, written when `takes` (the app's, not an echo of the

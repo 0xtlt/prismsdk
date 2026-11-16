@@ -34,6 +34,10 @@ pub struct HNode {
     pub pointer_mask: u8,
     /// Key events reported: (local, global).
     pub keys: (bool, bool),
+    /// The selection last set by the app (`Patch::SetSelection`, #86).
+    pub selection: Option<(usize, usize)>,
+    /// Selection changes reported (`Patch::SetSelectEvents`).
+    pub select_events: bool,
     /// An island's tag (`Patch::SetIsland`).
     pub island: Option<String>,
     /// An island's props, as JSON (`Patch::SetIslandProps`).
@@ -183,6 +187,8 @@ impl Backend for Host {
                             config: String::new(),
                             pointer_mask: 0,
                             keys: (false, false),
+                            selection: None,
+                            select_events: false,
                             island: None,
                             island_props: Default::default(),
                             link: None,
@@ -237,6 +243,12 @@ impl Backend for Host {
                 }
                 Patch::SetKeyEvents { id, local, global } => {
                     self.node(*id, "SetKeyEvents").keys = (*local, *global)
+                }
+                Patch::SetSelection { id, start, end } => {
+                    self.node(*id, "SetSelection").selection = Some((*start, *end))
+                }
+                Patch::SetSelectEvents { id, on } => {
+                    self.node(*id, "SetSelectEvents").select_events = *on
                 }
                 Patch::Focus { id } => {
                     self.node(*id, "Focus");

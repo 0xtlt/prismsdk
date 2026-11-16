@@ -162,6 +162,82 @@ pub struct InputEvent {
     pub value: String,
 }
 
+/// The selection of a text input or area moved (#86): the user selected
+/// text, moved the caret, or typed. `start..end` in **characters** (Rust
+/// `char`s, Unicode scalar values) of the field's text, not UTF-8 bytes
+/// nor UTF-16 units; `start == end` is a caret, and `start <= end` always
+/// (a selection made backwards is reported in order).
+///
+/// Use [`byte_range`](SelectionEvent::byte_range) to slice the text:
+///
+/// ```
+/// # use prism_core::SelectionEvent;
+/// let text = "héllo wörld";
+/// let e = SelectionEvent { start: 6, end: 11 };
+/// assert_eq!(&text[e.byte_range(text)], "wörld");
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SelectionEvent {
+    /// Where the selection starts, in characters.
+    pub start: usize,
+    /// Where it ends (excluded), in characters: equal to `start` for a caret.
+    pub end: usize,
+}
+
+impl SelectionEvent {
+    /// A selection from `start` to `end` characters (swapped if reversed).
+    pub fn new(start: usize, end: usize) -> Self {
+        SelectionEvent {
+            start: start.min(end),
+            end: start.max(end),
+        }
+    }
+
+    /// A caret (empty selection) at character `at`.
+    pub fn caret(at: usize) -> Self {
+        SelectionEvent { start: at, end: at }
+    }
+
+    /// Whether nothing is selected (`start == end`): a caret.
+    pub fn is_caret(&self) -> bool {
+        self.start == self.end
+    }
+
+    /// `start..end` in characters.
+    pub fn range(&self) -> std::ops::Range<usize> {
+        self.start..self.end
+    }
+
+    /// The same range in UTF-8 bytes of `text` (the field's value), to
+    /// slice or edit it: `&text[e.byte_range(text)]`. Offsets past the end
+    /// of `text` are clamped to its length.
+    pub fn byte_range(&self, text: &str) -> std::ops::Range<usize> {
+        char_to_byte(text, self.start)..char_to_byte(text, self.end)
+    }
+}
+
+impl From<std::ops::Range<usize>> for SelectionEvent {
+    fn from(r: std::ops::Range<usize>) -> Self {
+        SelectionEvent::new(r.start, r.end)
+    }
+}
+
+/// The UTF-8 byte offset of character `chars` in `text` (clamped to its
+/// length): turns a [`SelectionEvent`] offset into one `str` methods take.
+pub fn char_to_byte(text: &str, chars: usize) -> usize {
+    text.char_indices()
+        .nth(chars)
+        .map_or(text.len(), |(b, _)| b)
+}
+
+/// The character offset of UTF-8 byte `byte` in `text` (clamped; a byte
+/// inside a character counts as after it): the reverse of
+/// [`char_to_byte`], to give [`TextInput::selection`] a position found
+/// with `str::find`.
+pub fn byte_to_char(text: &str, byte: usize) -> usize {
+    text.char_indices().take_while(|(b, _)| *b < byte).count()
+}
+
 /// Reported by a stack when the user went back natively (iOS swipe, browser
 /// back button, macOS back button): only the first `depth` screens remain.
 #[derive(Clone, Debug)]
@@ -293,6 +369,11 @@ pub struct VNode {
     pub on_click: Option<Handler<ClickEvent>>,
     /// Every edit of a text input.
     pub on_input: Option<Handler<InputEvent>>,
+    /// The selection or caret of a text input or area moved (#86).
+    pub on_select: Option<Handler<SelectionEvent>>,
+    /// The selection the app sets on a text input or area, in characters
+    /// (applied when it changes, #86).
+    pub selection: Option<SelectionEvent>,
     /// The user went back natively on a stack.
     pub on_back: Option<Handler<BackEvent>>,
     /// The host asked a stack for a path.
@@ -357,6 +438,8 @@ impl VNode {
             children: Vec::new(),
             on_click: None,
             on_input: None,
+            on_select: None,
+            selection: None,
             on_back: None,
             on_navigate: None,
             on_change: None,
@@ -777,6 +860,31 @@ macro_rules! text_entry {
             /// Autocorrection and spell checking (on by default).
             pub fn autocorrect(self, on: bool) -> Self {
                 self.input_config(|c| c.autocorrect = on)
+            }
+
+            /// Called when the selection or the caret moves (#86): the user
+            /// selects text, clicks or taps in it, moves with the arrow
+            /// keys, and after each edit (after its `on_input`). Offsets are
+            /// in characters ([`SelectionEvent`]). The web sends at most one
+            /// per animation frame. A key handler that needs the caret
+            /// before the key acts reads [`KeyEvent::selection`](crate::KeyEvent::selection).
+            pub fn on_select(mut self, handler: Handler<SelectionEvent>) -> Self {
+                self.0.on_select = Some(handler);
+                self
+            }
+
+            /// Selects `start..end` (characters; `n..n` places the caret)
+            /// in the field (#86): after a command, to restore or move the
+            /// caret. Like `value`, it is applied when it changes, focused
+            /// or not, after the value. A selection the user made and the
+            /// app renders back (stored from [`on_select`](Self::on_select))
+            /// leaves the field alone, so keeping
+            /// `.selection(self.sel.clone())` in sync never fights the user;
+            /// a value that did not change is not applied again either.
+            /// Offsets past the end are clamped to the text.
+            pub fn selection(mut self, range: impl Into<SelectionEvent>) -> Self {
+                self.0.selection = Some(range.into());
+                self
             }
         }
     };

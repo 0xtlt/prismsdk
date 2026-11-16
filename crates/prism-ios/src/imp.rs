@@ -356,6 +356,7 @@ define_class!(
 
         #[unsafe(method(onBeginEditing:))]
         fn on_begin_editing(&self, sender: &UITextField) {
+            crate::forms::began_editing(sender);
             scroll_into_view(sender);
             crate::decor::focus(sender.tag() as NodeId, true);
             crate::interaction::refresh_suggestions(sender, self);
@@ -542,6 +543,12 @@ define_class!(
             let new = old.saturating_sub(range.length) + replacement.length();
             crate::interaction::edit_fits(field.tag() as NodeId, old, new)
         }
+
+        /// The caret or selection moved, typing included (#86).
+        #[unsafe(method(textFieldDidChangeSelection:))]
+        fn did_change_selection(&self, field: &UITextField) {
+            crate::forms::selection_changed(field);
+        }
     }
 
     unsafe impl UIGestureRecognizerDelegate for Target {
@@ -590,6 +597,12 @@ define_class!(
             crate::forms::text_area_changed(view);
             #[cfg(target_os = "tvos")]
             let _ = view;
+        }
+
+        /// The caret or selection moved, typing included (#86).
+        #[unsafe(method(textViewDidChangeSelection:))]
+        fn text_view_did_change_selection(&self, view: &objc2_ui_kit::UITextView) {
+            crate::forms::selection_changed(view);
         }
 
         #[unsafe(method(textViewDidBeginEditing:))]
@@ -2212,6 +2225,7 @@ impl Widgets for UiKit {
 
     fn destroy(&mut self, view: &View) {
         let id = view.id();
+        crate::forms::forget_selection(id);
         crate::decor::destroy(id);
         crate::navbar::forget(id);
         crate::padding::forget(id);
@@ -2839,7 +2853,24 @@ impl Widgets for UiKit {
         }
     }
 
+    /// Text field selections (#86).
+    fn set_selection(&mut self, view: &View, start: usize, end: usize) {
+        match view {
+            View::Input(f) => crate::forms::set_selection(f, start, end),
+            #[cfg(not(target_os = "tvos"))]
+            View::TextArea(t) => crate::forms::set_selection(&t.view, start, end),
+            _ => {}
+        }
+    }
+
+    fn set_select_events(&mut self, view: &View, on: bool) {
+        crate::forms::set_select_events(view.id(), on);
+    }
+
     fn focus(&mut self, view: &View) {
+        if let View::Input(_) = view {
+            crate::forms::app_focuses(view.id());
+        }
         let target: Retained<UIView> = match view {
             #[cfg(not(target_os = "tvos"))]
             View::TextArea(t) => Retained::into_super(Retained::into_super(t.view.clone())),
