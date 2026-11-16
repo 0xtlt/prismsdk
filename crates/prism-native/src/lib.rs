@@ -564,7 +564,13 @@ impl<W: Widgets> NativeRenderer<W> {
         let (Some(d), Some((_, _, w, h))) = (&e.drawing, e.frame) else {
             return;
         };
-        let mut paths = d.resolve(w, h, self.zoom);
+        // `Color::current()` paths (an SVG's `currentColor`) take the
+        // node's text color, else the label color, like its box (#51).
+        let text = e
+            .style
+            .text_color
+            .map_or_else(label_color, |c| c.resolve_current(label_color()));
+        let mut paths = d.with_current_color(text).resolve(w, h, self.zoom);
         if self.env.direction == Direction::Rtl {
             // Like the layout around it: charts read right to left.
             for p in &mut paths {
@@ -1166,6 +1172,9 @@ impl<W: Widgets> NativeRenderer<W> {
             return changed;
         }
         let was_hidden = e.style.display_none;
+        let repaint = e.kind == NodeKind::Shape
+            && e.style.text_color != style.text_color
+            && e.drawing.as_ref().is_some_and(|d| d.uses_current_color());
         e.style = style;
         let e = &self.nodes[&id];
         let s = self.effective_style(&e.style, e.kind);
@@ -1176,6 +1185,9 @@ impl<W: Widgets> NativeRenderer<W> {
         match s.transition {
             Some(t) if e.frame.is_some() => self.widgets.set_style_animated(&view, &s, t),
             _ => self.widgets.set_style(&view, &s),
+        }
+        if repaint {
+            self.redraw(id);
         }
         self.sync_layout_style(id);
         true
@@ -1278,8 +1290,17 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                             self.widgets.set_repeat(&view, &s, s.animations.repeat);
                         }
                     }
+                    let mut repaint = false;
                     if let Some(e) = self.nodes.get_mut(id) {
+                        // A shape painted in `Color::current()` follows its
+                        // text color.
+                        repaint = e.kind == NodeKind::Shape
+                            && e.style.text_color != style.text_color
+                            && e.drawing.as_ref().is_some_and(|d| d.uses_current_color());
                         e.style = style.clone();
+                    }
+                    if repaint {
+                        self.redraw(*id);
                     }
                     self.sync_layout_style(*id);
                     self.style_changed(*id);
@@ -1852,6 +1873,48 @@ mod tests {
             first(&renderer),
             [Segment::Move(200., 100.), Segment::Line(0., 0.)]
         );
+    }
+
+    struct Icon {
+        tint: Option<prism_core::Color>,
+    }
+    impl Render for Icon {
+        fn render(&mut self, _: &mut prism_core::Context<Self>) -> impl IntoElement {
+            let icon = prism_core::svg(
+                r#"<svg width="10" height="10"><path d="M0 0H10V10Z" fill="currentColor"/></svg>"#,
+            );
+            div().child(match self.tint {
+                Some(c) => icon.text_color(c),
+                None => icon,
+            })
+        }
+    }
+
+    #[test]
+    fn svg_current_color_is_the_shape_text_color() {
+        // #51: `currentColor` follows `.text_color(…)`, else the label color.
+        let icon: Arc<std::sync::Mutex<Option<prism_core::Entity<Icon>>>> = Default::default();
+        let out = icon.clone();
+        let init: AppInit = Arc::new(move |cx: &mut prism_core::App| {
+            let r = cx.new_entity(|_| Icon { tint: None });
+            *out.lock().unwrap() = Some(r);
+            cx.set_root(r);
+        });
+        let mut rt = Runtime::new(&init);
+        let mut renderer = NativeRenderer::new(Fake::default());
+        renderer.apply(&rt.render());
+        renderer.layout(400., 300., Insets::default());
+        let fill = |r: &NativeRenderer<Fake>| r.widgets.drawings[&2][0].fill;
+        assert_eq!(fill(&renderer), Some(label_color()));
+        let red = prism_core::rgb(0xff0000);
+        let icon = icon.lock().unwrap().unwrap();
+        icon.update(&mut rt.app, |i, cx| {
+            i.tint = Some(red);
+            cx.notify();
+        });
+        renderer.apply(&rt.poll());
+        renderer.layout(400., 300., Insets::default());
+        assert_eq!(fill(&renderer), Some(red));
     }
 
     #[test]

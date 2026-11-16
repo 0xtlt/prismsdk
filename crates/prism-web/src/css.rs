@@ -306,6 +306,12 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
     {
         w.push_str("border:none;");
     }
+    // A field that draws its own box (padding, a background, a border,
+    // `.border(0.)`) or its own focus look skips the page's `:focus-visible`
+    // outline (`prism.css`), as natively: the caret shows the focus (#52).
+    if matches!(kind, NodeKind::TextInput | NodeKind::TextArea) && own_field_look(s) {
+        w.push_str("outline:none;");
+    }
     if kind != NodeKind::View {
         typography(kind, s, w);
     }
@@ -406,6 +412,19 @@ pub fn run_css(r: &prism_core::TextRun) -> String {
     w
 }
 
+/// Whether a text field draws Prism's box instead of the browser's (the
+/// Layout chapter) or refines its focused look.
+fn own_field_look(s: &Style) -> bool {
+    use prism_core::Interaction;
+    !s.padding.is_zero()
+        || s.background.is_some()
+        || has_border(s)
+        || s.border_none
+        || s.states
+            .resolved()
+            .any(|(i, _)| matches!(i, Interaction::Focus | Interaction::FocusWithin))
+}
+
 fn has_border(s: &Style) -> bool {
     s.borders().iter().any(|b| b.width > 0.)
 }
@@ -504,7 +523,9 @@ pub fn states_css(kind: NodeKind, id: prism_core::NodeId, s: &Style) -> String {
         }
         // Gone in this state: back to the initial value.
         for (p, _) in &base {
-            if !now.iter().any(|(np, _)| np == p) {
+            // (A state's style has no states of its own: the base decides
+            // whether a field keeps the focus outline.)
+            if p != "outline" && !now.iter().any(|(np, _)| np == p) {
                 let _ = write!(body, "{p}:unset !important;");
             }
         }

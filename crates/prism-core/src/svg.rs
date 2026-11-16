@@ -9,8 +9,10 @@
 //! `opacity`, `fill-opacity`, `stroke-opacity`, `stroke-linecap` /
 //! `stroke-linejoin` (round or not), `stroke-dasharray` (its first dash and
 //! gap), `fill-rule`, `display` / `visibility`, as attributes or in `style`.
-//! Colors: hex, `rgb()` / `rgba()`, common names, `currentColor` (black,
-//! or the `color` attribute). Skipped: text, gradients and patterns (their
+//! Colors: hex, `rgb()` / `rgba()`, common names, `currentColor` (the
+//! `color` attribute, else [`Color::current`]: the text color of the node
+//! the SVG is drawn in, so `svg(icon).text_color(…)` tints it and an
+//! adaptive text color follows dark mode). Skipped: text, gradients and patterns (their
 //! shapes are drawn in the fallback color, or not at all), filters, masks,
 //! clip paths, `use`, CSS style sheets.
 
@@ -366,7 +368,7 @@ impl Default for State {
             round: false,
             even_odd: false,
             dash: None,
-            color: Color::BLACK,
+            color: Color::current(),
             hidden: false,
             transform: IDENTITY,
         }
@@ -1208,6 +1210,41 @@ mod tests {
         assert_eq!(s.drawing.paths.len(), 1);
         assert_eq!(s.drawing.paths[0].fill, Some(rgba(0x00ff00, 1.)));
         assert!(s.drawing.paths[0].even_odd);
+    }
+
+    #[test]
+    fn current_color_follows_the_node_unless_the_svg_sets_color() {
+        // #51: `currentColor` without a `color` attribute is the node's
+        // text color (`Color::current()`), at the path's opacity.
+        let s = parse(
+            r#"<svg viewBox="0 0 10 10">
+              <path d="M0 0H5V5Z" fill="currentColor" fill-opacity=".5"/>
+              <path d="M0 0L10 10" stroke="currentColor" fill="none"/>
+            </svg>"#,
+        )
+        .unwrap();
+        let fill = s.drawing.paths[0].fill.unwrap();
+        assert!(fill.is_current());
+        assert_eq!(fill.a, 0.5);
+        assert!(s.drawing.paths[1].stroke.unwrap().is_current());
+        // Encoded for backends and read back.
+        let d = crate::shape::Drawing::decode(&s.drawing.encode());
+        assert!(d.uses_current_color());
+        assert!((d.paths[0].fill.unwrap().a - 0.5).abs() < 0.01);
+        // Resolved against a text color, adaptive included.
+        let text = Color::adaptive(rgba(0x111111, 1.), rgba(0xeeeeee, 1.));
+        let r = d.with_current_color(text);
+        assert_eq!(r.paths[1].stroke, Some(text));
+        assert!(!r.uses_current_color());
+        // A fill left to its default stays black.
+        let black = parse(r#"<svg viewBox="0 0 1 1"><rect width="1" height="1"/></svg>"#).unwrap();
+        assert_eq!(black.drawing.paths[0].fill, Some(Color::BLACK));
+        // Tinted: every painted path, each at its own opacity.
+        let t = black.drawing.tinted(text);
+        assert_eq!(t.paths[0].fill, Some(text));
+        let half = d.tinted(rgba(0xff0000, 1.));
+        assert!((half.paths[0].fill.unwrap().a - 0.5).abs() < 0.01);
+        assert_eq!(half.paths[1].stroke, Some(rgba(0xff0000, 1.)));
     }
 
     #[test]

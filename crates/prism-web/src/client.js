@@ -25,6 +25,15 @@
     return el;
   };
   const baseTitle = document.title.split(" · ").pop();
+  // Pictures lose their loading background once loaded (`prism.css`), so a
+  // transparent image shows its parent. `load` does not bubble: capture it.
+  const markLoaded = (img) => { if (img.naturalWidth) img.dataset.loaded = "1"; };
+  document.addEventListener("load", (e) => {
+    const img = e.target;
+    if (img.tagName === "IMG" && img.classList.contains("prism-picture")) markLoaded(img);
+  }, true);
+  // The first render's images may have loaded before this script ran.
+  for (const img of document.querySelectorAll("img.prism-picture")) if (img.complete) markLoaded(img);
   const nodes = new Map();
 
   // Node styles: one rule per distinct style in a shared sheet, applied by a
@@ -456,6 +465,12 @@
 
   const shapeColor = (s) => {
     if (!s) return "none";
+    // `Color::current()` (an SVG's `currentColor`): `~` and its alpha.
+    if (s[0] === "~") {
+      const a = parseInt(s.slice(1), 16);
+      if (isNaN(a) || a >= 255) return "currentColor";
+      return `color-mix(in srgb, currentColor ${Math.round(a / 2.55 * 10) / 10}%, transparent)`;
+    }
     const [light, dark] = s.split("/");
     return dark ? `light-dark(${light}, ${dark})` : light;
   };
@@ -1179,7 +1194,10 @@
         if (kind === "picture") {
           // The server resolves asset URLs (hashed, maybe on a CDN).
           const src = p.text;
-          if (el.getAttribute("src") !== src) el.src = src;
+          if (el.getAttribute("src") !== src) {
+            delete el.dataset.loaded;
+            el.src = src;
+          }
           return;
         }
         if (kind === "checkbox") { el._label.textContent = p.text; return; }

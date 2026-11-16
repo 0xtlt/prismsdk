@@ -2436,3 +2436,41 @@ fn style_names_are_short_hashes_shared_with_the_client() {
     );
     assert_eq!(crate::html::style_class(""), "pztntfp");
 }
+
+#[test]
+fn fields_with_their_own_look_skip_the_focus_outline() {
+    // #52: a bare field keeps the page's `:focus-visible` outline…
+    let plain = css::css(NodeKind::TextInput, &Style::default());
+    assert!(!plain.contains("outline:none;"), "{plain}");
+    // …a field drawing its own box, or its own focus look, does not.
+    for s in [
+        Style::default().border(0.).p(0.),
+        Style::default().p(12.),
+        Style::default().bg(rgb(0xFFFFFF)),
+        Style::default().border(1.),
+    ] {
+        let s = s.resolve(Default::default());
+        for kind in [NodeKind::TextInput, NodeKind::TextArea] {
+            let c = css::css(kind, &s);
+            assert!(c.contains("outline:none;"), "{kind:?}: {c}");
+        }
+    }
+    let ring = Style::default()
+        .focus(|s| s.shadow(Shadow::ring(1., rgb(0x0000FF))))
+        .resolve(Default::default());
+    assert!(css::css(NodeKind::TextInput, &ring).contains("outline:none;"));
+    // The focused state does not bring the outline back.
+    let rules = css::states_css(NodeKind::TextInput, 3, &ring);
+    assert!(!rules.contains("outline"), "{rules}");
+    // Other kinds keep it.
+    assert!(!css::css(NodeKind::Button, &Style::default().p(12.)).contains("outline:none;"));
+}
+
+#[test]
+fn pictures_lose_their_loading_background_once_loaded() {
+    // #54: the grey box is for pictures still loading; the client marks
+    // loaded ones.
+    assert!(crate::PRISM_CSS.contains(".prism-picture:not([data-loaded]) { background:"));
+    assert!(crate::CLIENT_JS.contains("img.dataset.loaded = \"1\""));
+    assert!(crate::CLIENT_JS.contains("delete el.dataset.loaded;"));
+}
