@@ -117,10 +117,28 @@ pub struct Accessibility {
     pub value: Option<String>,
     /// Checked state for switches, checkboxes and selected tabs.
     pub checked: Option<bool>,
+    /// Selected state of one item among several (tabs, options, rows of a
+    /// list): `Some(false)` says the item can be selected but is not.
+    pub selected: Option<bool>,
+    /// The item that stands for where the user is: the current page of a
+    /// navigation (a sidebar, breadcrumbs), the current step of a flow.
+    pub current: bool,
     /// Shown as unavailable and not operable.
     pub disabled: bool,
     /// Removed from the accessibility tree (decorations, duplicates).
     pub hidden: bool,
+}
+
+impl Accessibility {
+    /// Whether native screen readers read the element as selected: it is
+    /// [`selected`](Self::selected), [`current`](Self::current), or a checked
+    /// tab, radio or toggle button.
+    pub fn is_selected(&self) -> bool {
+        self.selected == Some(true)
+            || self.current
+            || (self.checked == Some(true)
+                && matches!(self.role, Some(Role::Tab | Role::Button | Role::Radio)))
+    }
 }
 
 /// Accessibility modifiers, available on every element builder.
@@ -155,6 +173,23 @@ pub trait Accessible: Sized {
     /// Sets the checked state (switches, checkboxes, selected tabs).
     fn accessibility_checked(mut self, checked: bool) -> Self {
         self.a11y_mut().checked = Some(checked);
+        self
+    }
+
+    /// Sets the selected state of one item among several (a tab, an option,
+    /// a row): `aria-selected` on the web, the selected trait or state on
+    /// the native platforms. For the destination a navigation is showing,
+    /// use [`accessibility_current`](Self::accessibility_current).
+    fn accessibility_selected(mut self, selected: bool) -> Self {
+        self.a11y_mut().selected = Some(selected);
+        self
+    }
+
+    /// Marks the element as the current one of a set: the page shown, in a
+    /// sidebar, a tab bar of links or a breadcrumb trail. `aria-current` on
+    /// the web (`"page"` on a link), read as selected on the native platforms.
+    fn accessibility_current(mut self, current: bool) -> Self {
+        self.a11y_mut().current = current;
         self
     }
 

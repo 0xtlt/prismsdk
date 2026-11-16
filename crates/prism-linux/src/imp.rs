@@ -2036,6 +2036,9 @@ impl Widgets for Gtk {
         if let Some(hint) = &a11y.hint {
             set_accessible_string(&w, a11y_property::DESCRIPTION, hint);
         }
+        // A selected item or the current page of a navigation (GTK has no
+        // « current » state).
+        set_accessible_selected(&w, a11y.is_selected());
         match view {
             // GtkScale exposes its own range and value (VALUE_MIN/MAX/NOW,
             // gtkrange.c); a formatted value ("40 %") is read instead.
@@ -2673,6 +2676,18 @@ fn set_accessible_checked(w: &impl IsA<gtk::Widget>, checked: bool) {
     // SAFETY: every GtkWidget implements GtkAccessible; one tristate state.
     unsafe {
         gtk_accessible_update_state_value(widget.cast(), 1, &CHECKED, value.to_glib_none_mut().0);
+    }
+}
+
+/// `GTK_ACCESSIBLE_STATE_SELECTED` (gtkenums.h): a selected item.
+pub(crate) fn set_accessible_selected(w: &impl IsA<gtk::Widget>, selected: bool) {
+    use gtk::glib::translate::{ToGlibPtr, ToGlibPtrMut};
+    const SELECTED: i32 = 7;
+    let mut value = selected.to_value();
+    let widget: *mut gtk::ffi::GtkWidget = w.as_ref().to_glib_none().0;
+    // SAFETY: every GtkWidget implements GtkAccessible; one boolean state.
+    unsafe {
+        gtk_accessible_update_state_value(widget.cast(), 1, &SELECTED, value.to_glib_none_mut().0);
     }
 }
 

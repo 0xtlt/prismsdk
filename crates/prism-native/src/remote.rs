@@ -10,7 +10,7 @@
 //! | `style` | `s`: `bg`, `radius`, `bw`, `bc`, `opacity`, `color`, `font`, `weight`, `talign` (colors `[r,g,b,a, dark r,g,b,a]`); `tint` on tab bars and stacks when set; `hit: false` (the subtree ignores pointer input) and `inert: true` (no input, no focus, hidden from assistive technologies) only when set |
 //! | `text`, `placeholder`, `icon`, `value`, `clickable`, `display` | the value |
 //! | `text` of a `picture` | its source: for a remote one, the URL, then one `name: value` line per header to send (`Picture::header`) |
-//! | `a11y` | `label`, `hidden`, `role` (ARIA name: `slider`, `combobox`, `status`…), `value` |
+//! | `a11y` | `label`, `hidden`, `role` (ARIA name: `slider`, `combobox`, `status`…), `value`, `selected` (a selected item or the current page: `Accessibility::is_selected`) |
 //! | `config` | `config`: a control's config string (`prism_core::controls`: slider `min max step`, picker options one per line, date `mode min max`, input tokens; a screen's bar options, `prism_core::navbar`, with `glyphs`: each bar button's icon glyph, `""` if none) |
 //! | `children` | `children`: ids in order |
 //! | `frame` | `f`: `[x, y, w, h]` in the parent |
@@ -724,6 +724,7 @@ impl Widgets for RemoteWidgets {
             "role": a11y.role.map(|r| r.aria()), "value": a11y.value,
             // Switches, checkboxes and drawn radios (#84): on or chosen.
             "checked": a11y.checked,
+            "selected": a11y.is_selected(),
         }));
     }
 

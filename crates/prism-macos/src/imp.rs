@@ -3820,6 +3820,9 @@ impl Widgets for AppKit {
             unsafe { v.setAccessibilityValue(Some(&NSString::from_str(value))) };
         }
         v.setAccessibilityEnabled(!a.disabled);
+        // Selected items and the current page of a navigation: AppKit has no
+        // « current » attribute, VoiceOver reads them as selected.
+        v.setAccessibilitySelected(a.is_selected());
     }
 
     fn screen_viewport(&mut self, stack: &View, screen: &View) -> Viewport {

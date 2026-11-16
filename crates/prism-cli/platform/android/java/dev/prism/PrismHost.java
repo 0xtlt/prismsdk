@@ -420,6 +420,8 @@ public final class PrismHost {
                         ? View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS : View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
                 n.a11yRole = p.isNull("role") ? null : p.optString("role", null);
                 n.a11yChecked = p.isNull("checked") ? null : p.optBoolean("checked");
+                // A selected item or the current page: TalkBack says « selected ».
+                if (n.view.isSelected() != p.optBoolean("selected")) n.view.setSelected(p.optBoolean("selected"));
                 PrismText.clickable(n);
                 PrismForms.a11y(n, n.a11yRole, p.isNull("value") ? null : p.optString("value", null));
                 break;

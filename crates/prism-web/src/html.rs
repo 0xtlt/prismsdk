@@ -265,7 +265,18 @@ pub fn a11y_attrs(kind: NodeKind, a: &Accessibility) -> String {
         let _ = write!(out, r#" aria-pressed="{pressed}""#);
     }
     if a.role == Some(Role::Tab) {
-        let _ = write!(out, r#" aria-selected="{}""#, a.checked.unwrap_or(false));
+        let selected = a.selected.or(a.checked).unwrap_or(false);
+        let _ = write!(out, r#" aria-selected="{selected}""#);
+    } else if let Some(selected) = a.selected {
+        let _ = write!(out, r#" aria-selected="{selected}""#);
+    }
+    if a.current {
+        let current = if a.role == Some(Role::Link) {
+            "page"
+        } else {
+            "true"
+        };
+        let _ = write!(out, r#" aria-current="{current}""#);
     }
     if let (Some(Role::Slider), Some(v)) = (a.role, &a.value) {
         let _ = write!(out, r#" aria-valuetext="{}""#, escape(v));

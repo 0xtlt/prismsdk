@@ -581,6 +581,77 @@ fn accessibility_defaults_are_resolved_in_core() {
     );
 }
 
+struct Sidebar {
+    page: usize,
+}
+
+impl Render for Sidebar {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let item = |i: usize, name: &str, cx: &mut Context<Self>| {
+            div()
+                .on_click(cx.listener(move |this, _, _| this.page = i))
+                .accessibility_role(Role::Link)
+                .accessibility_current(self.page == i)
+                .accessibility_selected(self.page == i)
+                .child(text(name))
+        };
+        div()
+            .accessibility_role(Role::Navigation)
+            .child(item(0, "Home", cx))
+            .child(item(1, "Settings", cx))
+    }
+}
+
+#[test]
+fn the_current_item_of_a_navigation_is_described_and_moves() {
+    let (mut rt, first) = boot(|cx| {
+        let root = cx.new_entity(|_| Sidebar { page: 0 });
+        cx.set_root(root);
+    });
+    let item = |patches: &[Patch], name: &str| {
+        patches
+            .iter()
+            .find_map(|p| match p {
+                Patch::SetAccessibility { id, a11y } if a11y.label.as_deref() == Some(name) => {
+                    Some((*id, a11y.clone()))
+                }
+                _ => None,
+            })
+            .unwrap()
+    };
+    let (home, a) = item(&first, "Home");
+    assert!(a.current && a.selected == Some(true) && a.is_selected());
+    let (settings, a) = item(&first, "Settings");
+    assert!(!a.current && a.selected == Some(false) && !a.is_selected());
+
+    // Going to Settings moves the state: both items get a new description.
+    let patches = rt.dispatch(UiEvent::Click(settings));
+    assert!(!a11y_of(&patches, home).unwrap().current);
+    assert!(a11y_of(&patches, settings).unwrap().current);
+    // Same page again: nothing to send.
+    assert!(
+        rt.dispatch(UiEvent::Click(settings))
+            .iter()
+            .all(|p| !matches!(p, Patch::SetAccessibility { .. }))
+    );
+}
+
+#[test]
+fn checked_tabs_and_toggle_buttons_read_as_selected() {
+    let checked = |role| Accessibility {
+        role: Some(role),
+        checked: Some(true),
+        ..Default::default()
+    };
+    assert!(checked(Role::Tab).is_selected());
+    assert!(checked(Role::Radio).is_selected());
+    assert!(
+        !checked(Role::Switch).is_selected(),
+        "a switch is on, not selected"
+    );
+    assert!(!Accessibility::default().is_selected());
+}
+
 struct Themed;
 #[derive(Default)]
 struct Brand(&'static str);

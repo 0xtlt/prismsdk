@@ -291,7 +291,7 @@ fn chrome_ops() {
     );
     assert_eq!(
         last(&w),
-        json!({"op": "a11y", "id": 2, "label": "Close", "hidden": false, "role": null, "value": null, "checked": null})
+        json!({"op": "a11y", "id": 2, "label": "Close", "hidden": false, "role": null, "value": null, "checked": null, "selected": false})
     );
     // A drawn radio (#84) says whether it is the one chosen.
     w.set_accessibility(
@@ -304,8 +304,18 @@ fn chrome_ops() {
     );
     assert_eq!(
         last(&w),
-        json!({"op": "a11y", "id": 3, "label": null, "hidden": false, "role": "radio", "value": null, "checked": true})
+        json!({"op": "a11y", "id": 3, "label": null, "hidden": false, "role": "radio", "value": null, "checked": true, "selected": true})
     );
+    // The current page of a navigation is sent as selected (#64).
+    w.set_accessibility(
+        &3,
+        &Accessibility {
+            role: Some(prism_core::Role::Link),
+            current: true,
+            ..Default::default()
+        },
+    );
+    assert_eq!(last(&w)["selected"], json!(true));
     w.set_icon(&2, "heart.fill");
     assert_eq!(
         last(&w),

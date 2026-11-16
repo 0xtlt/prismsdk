@@ -482,6 +482,8 @@ struct Node {
     /// picker options one per line, date `mode min max`, input tokens.
     var config = ""
     var a11yHidden = false
+    /// A selected item or the current page of a navigation (`.isSelected`).
+    var a11ySelected = false
     var hidden = false
     var style: [String: Any] = [:]
     /// x, y, width, height in the parent (from Rust's layout).
@@ -603,6 +605,7 @@ final class PrismStore: ObservableObject {
                 }
                 nodes[id]?.label = p["label"] as? String
                 nodes[id]?.a11yHidden = p["hidden"] as? Bool ?? false
+                nodes[id]?.a11ySelected = p["selected"] as? Bool ?? false
                 nodes[id]?.role = role
                 nodes[id]?.a11yValue = value
                 nodes[id]?.checked = p["checked"] as? Bool
@@ -872,6 +875,7 @@ struct NodeView: View {
                 // A drawn radio (#84): a button, selected when it is the choice.
                 .accessibilityAddTraits(n.role == "radio" ? (n.checked == true ? [.isButton, .isSelected] : .isButton) : [])
                 .accessibilityHidden(n.a11yHidden || n.inert)
+                .accessibilityAddTraits(n.a11ySelected ? .isSelected : [])
                 .allowsHitTesting(!n.noHit && !n.inert)
                 .disabled(n.inert)
                 .id(id)

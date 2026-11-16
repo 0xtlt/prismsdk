@@ -445,6 +445,58 @@ fn aria_attributes_mirror_the_client() {
         ),
         r#" role="tab" aria-selected="true" tabindex="0""#
     );
+    // Selected and current items (#64): a tab's own `selected` wins over
+    // `checked`, other roles say it only when set; the current destination
+    // of a navigation is `aria-current="page"` on a link.
+    assert_eq!(
+        a11y_attrs(
+            NodeKind::View,
+            &Accessibility {
+                role: Some(Role::Tab),
+                checked: Some(true),
+                selected: Some(false),
+                ..Default::default()
+            }
+        ),
+        r#" role="tab" aria-selected="false" tabindex="0""#
+    );
+    assert_eq!(
+        a11y_attrs(
+            NodeKind::View,
+            &Accessibility {
+                role: Some(Role::ListItem),
+                selected: Some(true),
+                ..Default::default()
+            }
+        ),
+        r#" role="listitem" aria-selected="true""#
+    );
+    assert_eq!(
+        a11y_attrs(
+            NodeKind::View,
+            &Accessibility {
+                role: Some(Role::Link),
+                current: true,
+                ..Default::default()
+            }
+        ),
+        r#" role="link" aria-current="page" tabindex="0""#
+    );
+    assert_eq!(
+        a11y_attrs(
+            NodeKind::View,
+            &Accessibility {
+                role: Some(Role::Button),
+                current: true,
+                ..Default::default()
+            }
+        ),
+        r#" role="button" aria-current="true" tabindex="0""#
+    );
+    assert_eq!(
+        a11y_attrs(NodeKind::View, &a(Role::Link)),
+        r#" role="link" tabindex="0""#
+    );
     // Hidden: out of the tree and of the tab order.
     assert_eq!(
         a11y_attrs(
@@ -1113,6 +1165,15 @@ fn every_patch_has_a_stable_json_encoding() {
                 ..Default::default()
             },
         ),
+        a11y(
+            7,
+            Accessibility {
+                role: Some(Role::Link),
+                selected: Some(false),
+                current: true,
+                ..Default::default()
+            },
+        ),
         Patch::SetAppearance {
             appearance: Appearance::Light,
         },
@@ -1142,6 +1203,11 @@ fn every_patch_has_a_stable_json_encoding() {
         { "op": "a11y", "id": 8, "a11y": {
             "role": "heading", "level": 3, "label": "L", "hint": null, "value": null,
             "checked": true, "disabled": false, "hidden": false,
+        }},
+        { "op": "a11y", "id": 7, "a11y": {
+            "role": "link", "level": null, "label": null, "hint": null, "value": null,
+            "checked": null, "disabled": false, "hidden": false,
+            "selected": false, "current": true,
         }},
         { "op": "appearance", "value": "light" },
         { "op": "root", "id": 7 },
