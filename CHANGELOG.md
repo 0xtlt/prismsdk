@@ -285,6 +285,21 @@ The first version, not yet on crates.io.
   once; keyed nodes and entity roots stay the same node. On the web, the
   rule an element's own width picks (`.when_width_at_least`) at its first
   layout also applies without a transition. Later changes still animate.
+- iOS, tvOS, visionOS and watchOS simulators: `secure_storage()` works again
+  in apps without widgets or Live Activities (#38). Since the App Group was
+  left out of those apps, their simulator builds had no entitlement the
+  keychain could use as an access group, so `set` failed with
+  `errSecMissingEntitlement`. Simulator builds now carry the
+  `application-identifier` a device profile grants (`SIMULATOR.<bundle id>`,
+  the extension `<bundle id>.widgets`). It goes in the binary's entitlement
+  sections only, because the simulator does not launch an ad hoc signature
+  that claims it.
+- iOS device and store builds: the « no Push Notifications capability » note
+  (and the iCloud and Sign in with Apple ones) comes from the app's own
+  provisioning profile only, never from the widget extension's, and names
+  the bundle id (#45). The profile logic moved to
+  `platform/scripts/profile-entitlements.py`, with unit tests.
+
 - iOS: a Live Activity started by a push reports its update token through
   `on_activity_push_token`, with `activity: Some(id)`, and again whenever
   the token changes (#43). `Push::start_live_activity(kind, id, ..)` gives the

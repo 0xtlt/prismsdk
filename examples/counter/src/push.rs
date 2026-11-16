@@ -64,15 +64,18 @@ pub fn install(cx: &mut App) {
     });
     // Live Activities started with `push_updates()` (focus.rs): a server
     // updates them with `prism_push::Push::live_activity` and this token.
-    cx.on_activity_push_token(|t, app| {
-        eprintln!(
-            "counter: Live Activity push token {:?} {}",
-            t.activity, t.token
-        );
-        if t.activity.is_some() {
-            app.update_global::<PushStatus, _>(|s| s.activity_token = Some(t.token.clone()));
-        }
-    });
+    // (A token handler alone brings the widget extension along.)
+    if !crate::widgets::no_widgets() {
+        cx.on_activity_push_token(|t, app| {
+            eprintln!(
+                "counter: Live Activity push token {:?} {}",
+                t.activity, t.token
+            );
+            if t.activity.is_some() {
+                app.update_global::<PushStatus, _>(|s| s.activity_token = Some(t.token.clone()));
+            }
+        });
+    }
     // A silent push: the system keeps the app awake until this returns.
     cx.on_background_push(|push, cx| async move {
         // Stands in for fetching what the push announced.
