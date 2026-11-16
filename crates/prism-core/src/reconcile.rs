@@ -379,6 +379,11 @@ pub enum UiEvent {
     /// knows has it). Handlers of that node and its ancestors run, then
     /// global ones.
     Key(Option<NodeId>, crate::events::KeyEvent),
+    /// A key released, routed like [`Key`](Self::Key) (#159).
+    KeyUp(Option<NodeId>, crate::events::KeyEvent),
+    /// A click with its keys and count (#159), where the backend knows
+    /// them; like [`ClickAt`](Self::ClickAt) otherwise.
+    ClickWith(NodeId, crate::element::ClickEvent),
 
     // --- Islands ---
     /// An island emitted an event: (id, event name, detail as JSON).
@@ -524,6 +529,8 @@ pub struct Reconciler {
     magnify: HashMap<NodeId, Handler<crate::events::MagnifyEvent>>,
     key_down: HashMap<NodeId, Handler<crate::events::KeyEvent>>,
     global_key: HashMap<NodeId, Handler<crate::events::KeyEvent>>,
+    key_up: HashMap<NodeId, Handler<crate::events::KeyEvent>>,
+    global_key_up: HashMap<NodeId, Handler<crate::events::KeyEvent>>,
     /// `.id(…)` names of mounted nodes.
     names: HashMap<String, NodeId>,
     /// Nodes created with `.autofocus()` in this render.
@@ -706,16 +713,33 @@ impl Reconciler {
     /// node's and its ancestors' `on_key_down`, then every
     /// `on_global_key_down`, most recently mounted first.
     pub fn key_handlers(&self, focused: Option<NodeId>) -> Vec<Handler<crate::events::KeyEvent>> {
+        self.key_handlers_of(focused, &self.key_down, &self.global_key)
+    }
+
+    /// Like [`key_handlers`](Self::key_handlers), for a released key
+    /// (`on_key_up`, then `on_global_key_up`, #159).
+    pub fn key_up_handlers(
+        &self,
+        focused: Option<NodeId>,
+    ) -> Vec<Handler<crate::events::KeyEvent>> {
+        self.key_handlers_of(focused, &self.key_up, &self.global_key_up)
+    }
+
+    fn key_handlers_of(
+        &self,
+        focused: Option<NodeId>,
+        local: &HashMap<NodeId, Handler<crate::events::KeyEvent>>,
+        global: &HashMap<NodeId, Handler<crate::events::KeyEvent>>,
+    ) -> Vec<Handler<crate::events::KeyEvent>> {
         let mut out = Vec::new();
         let mut next = focused;
         while let Some(id) = next {
-            if let Some(h) = self.key_down.get(&id) {
+            if let Some(h) = local.get(&id) {
                 out.push(h.clone());
             }
             next = self.nodes.get(&id).and_then(|n| n.parent);
         }
-        let mut global: Vec<(&NodeId, &Handler<crate::events::KeyEvent>)> =
-            self.global_key.iter().collect();
+        let mut global: Vec<(&NodeId, &Handler<crate::events::KeyEvent>)> = global.iter().collect();
         global.sort_by(|a, b| b.0.cmp(a.0));
         out.extend(global.into_iter().map(|(_, h)| h.clone()));
         out
@@ -1103,6 +1127,8 @@ impl Reconciler {
             on_drag,
             on_key_down,
             on_global_key_down,
+            on_key_up,
+            on_global_key_up,
             on_scene_tap,
             scene,
             attributes,
@@ -1133,7 +1159,7 @@ impl Reconciler {
             name,
             (on_hover, on_pointer_move, on_drag, drag_buttons),
             (on_wheel, on_magnify),
-            (on_key_down, on_global_key_down),
+            (on_key_down, on_global_key_down, on_key_up, on_global_key_up),
         );
         let mut style = resolved;
         if let Some(t) = self.animation
@@ -1539,6 +1565,8 @@ impl Reconciler {
         keys: (
             Option<Handler<crate::events::KeyEvent>>,
             Option<Handler<crate::events::KeyEvent>>,
+            Option<Handler<crate::events::KeyEvent>>,
+            Option<Handler<crate::events::KeyEvent>>,
         ),
     ) {
         use crate::events::pointer_mask::{DRAG_ANY, HOVER, MAGNIFY, MOVE, WHEEL};
@@ -1567,7 +1595,11 @@ impl Reconciler {
             m.pointer_mask = mask;
             self.patches.push(Patch::SetPointerEvents { id, mask });
         }
-        let flags = (keys.0.is_some(), keys.1.is_some());
+        // Key ups (#159) come with the same reports as key downs.
+        let flags = (
+            keys.0.is_some() || keys.2.is_some(),
+            keys.1.is_some() || keys.3.is_some(),
+        );
         if m.keys != flags {
             m.keys = flags;
             self.patches.push(Patch::SetKeyEvents {
@@ -1589,6 +1621,8 @@ impl Reconciler {
         set(&mut self.magnify, id, gestures.1);
         set(&mut self.key_down, id, keys.0);
         set(&mut self.global_key, id, keys.1);
+        set(&mut self.key_up, id, keys.2);
+        set(&mut self.global_key_up, id, keys.3);
     }
 
     /// Recomputes the automatic labels of `from` and its ancestors (after a
@@ -1868,6 +1902,8 @@ impl Reconciler {
         self.magnify.remove(&id);
         self.key_down.remove(&id);
         self.global_key.remove(&id);
+        self.key_up.remove(&id);
+        self.global_key_up.remove(&id);
         if node.island.is_some() {
             self.island_events.retain(|(n, _), _| *n != id);
         }

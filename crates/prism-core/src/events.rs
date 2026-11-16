@@ -215,6 +215,14 @@ pub struct Modifiers {
 }
 
 impl Modifiers {
+    /// No key held.
+    pub const NONE: Modifiers = Modifiers {
+        shift: false,
+        control: false,
+        alt: false,
+        meta: false,
+    };
+
     /// Bit mask as backends report it: 1 shift, 2 control, 4 alt, 8 meta.
     pub fn bits(self) -> u8 {
         self.shift as u8

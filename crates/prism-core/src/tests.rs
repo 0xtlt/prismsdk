@@ -2500,6 +2500,78 @@ fn webauthn_ceremonies_pass_the_servers_options_through() {
     find_text(&patches, r#"true | {"id":"x"}"#);
 }
 
+/// #159: clicks carry their keys and count; key releases reach on_key_up
+/// and on_global_key_up.
+#[test]
+fn clicks_say_keys_and_count_and_key_ups_are_heard() {
+    struct Row {
+        log: Vec<String>,
+    }
+    impl Render for Row {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .on_global_key_up(cx.listener(|this, e: &KeyEvent, _| {
+                    this.log.push(format!("global up {}", e.key))
+                }))
+                .child(
+                    div()
+                        .on_click(cx.listener(|this, e: &ClickEvent, _| {
+                            this.log.push(format!(
+                                "click {} {}",
+                                e.count,
+                                if e.modifiers.shift { "shift" } else { "-" }
+                            ))
+                        }))
+                        .on_key_up(cx.listener(|this, e: &KeyEvent, _| {
+                            this.log.push(format!("up {}", e.key))
+                        }))
+                        .child(text(self.log.join(","))),
+                )
+        }
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Row { log: Vec::new() });
+        cx.set_root(root);
+    });
+    let mut rt = Runtime::new(&init);
+    let patches = rt.render();
+    // The row asked for key reports (key ups come with them).
+    let row = patches
+        .iter()
+        .find_map(|p| match p {
+            Patch::SetKeyEvents {
+                id,
+                local: true,
+                global: false,
+            } => Some(*id),
+            _ => None,
+        })
+        .expect("the row reports keys");
+    let shift = Modifiers {
+        shift: true,
+        ..Modifiers::NONE
+    };
+    let click = ClickEvent {
+        position: Some(Point::new(1., 2.)),
+        modifiers: shift,
+        count: 2,
+    };
+    find_text(
+        &rt.dispatch(UiEvent::ClickWith(row, click)),
+        "click 2 shift",
+    );
+    find_text(
+        &rt.dispatch(UiEvent::ClickAt(row, Point::new(0., 0.))),
+        "click 2 shift,click 1 -",
+    );
+    let up = KeyEvent::new(" ");
+    find_text(
+        &rt.dispatch(UiEvent::KeyUp(Some(row), up.clone())),
+        "click 2 shift,click 1 -,up  ,global up  ",
+    );
+    assert!(ClickEvent.count == 1 && !ClickEvent.is_double());
+}
+
 /// #156: on_dismiss says how the user closed the overlay.
 #[test]
 fn dismissals_say_how() {

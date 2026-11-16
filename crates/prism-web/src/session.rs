@@ -651,7 +651,24 @@ fn parse_input_event(v: &Value) -> Option<UiEvent> {
     let num = |k: &str| v.get(k).and_then(Value::as_f64).map(|n| n as f32);
     let id = v.get("id").and_then(Value::as_u64);
     match v.get("t")?.as_str()? {
-        "click" => Some(UiEvent::ClickAt(id?, Point::new(num("x")?, num("y")?))),
+        // With the keys held and the click count (#159) when the page says.
+        "click" => {
+            let position = Point::new(num("x")?, num("y")?);
+            let mods = v.get("mods").and_then(Value::as_u64).unwrap_or(0) as u8;
+            let count = v.get("n").and_then(Value::as_u64).unwrap_or(1).max(1) as u32;
+            Some(if mods == 0 && count == 1 {
+                UiEvent::ClickAt(id?, position)
+            } else {
+                UiEvent::ClickWith(
+                    id?,
+                    prism_core::ClickEvent {
+                        position: Some(position),
+                        modifiers: Modifiers::from_bits(mods),
+                        count,
+                    },
+                )
+            })
+        }
         "pointer" => Some(UiEvent::Pointer(
             id?,
             PointerEvent {
@@ -708,6 +725,18 @@ fn parse_input_event(v: &Value) -> Option<UiEvent> {
             },
         )),
 
+        // A key released (#159): like `key`, without a selection.
+        "keyup" => Some(UiEvent::KeyUp(
+            id.filter(|i| *i != 0),
+            KeyEvent {
+                key: v.get("key")?.as_str()?.to_string(),
+                modifiers: Modifiers::from_bits(
+                    v.get("mods").and_then(Value::as_u64).unwrap_or(0) as u8
+                ),
+                repeat: false,
+                selection: None,
+            },
+        )),
         "key" => Some(UiEvent::Key(
             id.filter(|i| *i != 0),
             KeyEvent {

@@ -405,9 +405,25 @@ impl Runtime {
                 if let Some(h) = self.reconciler.click_handler(id) {
                     let e = ClickEvent {
                         position: Some(position),
+                        ..ClickEvent
                     };
                     h(&e, &mut self.app);
                 }
+            }
+            UiEvent::ClickWith(id, e) => {
+                if let Some(h) = self.reconciler.click_handler(id) {
+                    h(&e, &mut self.app);
+                }
+            }
+            UiEvent::KeyUp(focused, e) => {
+                self.app.stop_propagation = false;
+                for h in self.reconciler.key_up_handlers(focused) {
+                    h(&e, &mut self.app);
+                    if self.app.stop_propagation {
+                        break;
+                    }
+                }
+                self.app.stop_propagation = false;
             }
             UiEvent::Pointer(id, e) => self.dispatch_pointer(id, e),
             UiEvent::Drag(id, e) => {

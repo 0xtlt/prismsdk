@@ -51,6 +51,37 @@ tvOS has no pointer over views, the watch neither hover nor keys: those handlers
 
 Web events travel over the app's WebSocket: moves and drags are throttled to one per animation frame, so a fast pointer does not flood the connection; clicks, drag starts and ends are never dropped.
 
+## Click keys and count, key releases
+
+```rust
+row.on_click(cx.listener(|this, e: &ClickEvent, cx| {
+    if e.is_double() { this.rename(); }                      // e.count: 2, 3…
+    else if e.modifiers.shift { this.extend_selection(); }   // ⇧-click
+    else if e.modifiers.command() { this.open_in_new_tab(); } // ⌘-click (Ctrl elsewhere)
+    else { this.select(); }
+}))
+canvas
+    .on_global_key_down(cx.listener(|this, e: &KeyEvent, _| if e.key == " " { this.panning = true }))
+    .on_global_key_up(cx.listener(|this, e: &KeyEvent, _| if e.key == " " { this.panning = false }))
+```
+
+`ClickEvent::modifiers` are the keys held and `ClickEvent::count` the
+click's number in a quick series, as the system counts it with the user's
+double-click speed (#159): a double click calls the handler twice, with
+`count` 1 then 2. Keyboard activations have `count` 1 and no keys.
+`on_key_up` and `on_global_key_up` hear key releases with the same rules as
+`on_key_down` and `on_global_key_down`; a release comes only for a press
+that was reported, and keys still held when the window loses the focus are
+released then (no key-up arrives otherwise), so a « hold Space to pan »
+never sticks.
+
+| | Click keys and count | Key releases |
+|---|---|---|
+| Web | `MouseEvent` keys and `detail` | `keyup`; `blur` releases held keys |
+| macOS | `modifierFlags`, `clickCount` on Prism views | `keyUp:` and the window's key monitor; resigning key releases held keys |
+
+Other backends report count 1 and no keys, and no releases, for now.
+
 ## Dragging with other buttons
 
 ```rust
