@@ -215,8 +215,11 @@ impl State {
         // re-renders when it crosses a breakpoint or the insets move.
         let (w, h) = (size.width as f32, size.height as f32);
         let i = self.renderer.widgets.root.safeAreaInsets();
+        // A custom chrome (#67) lays the content out from the window's top
+        // edge: the app draws its own title bar there.
+        let custom = crate::chrome::chrome().is_custom();
         let safe = prism_core::Edges {
-            top: i.top as f32,
+            top: if custom { 0. } else { i.top as f32 },
             right: i.right as f32,
             bottom: i.bottom as f32,
             left: i.left as f32,
@@ -227,6 +230,23 @@ impl State {
             let patches = self.runtime.set_window(w, h, safe);
             if !patches.is_empty() {
                 self.renderer.apply(&patches);
+            }
+        }
+        // Full screen and the traffic lights (#67): `cx.is_fullscreen()`,
+        // `cx.window_controls()`.
+        if let Some(window) = self.renderer.widgets.root.window() {
+            let fullscreen = crate::chrome::is_fullscreen();
+            let controls = crate::chrome::controls(&window);
+            if (fullscreen, controls)
+                != (
+                    self.runtime.app.is_fullscreen(),
+                    self.runtime.app.window_controls(),
+                )
+            {
+                let patches = self.runtime.set_window_chrome(fullscreen, controls);
+                if !patches.is_empty() {
+                    self.renderer.apply(&patches);
+                }
             }
         }
         // Fullscreen, another screen: `cx.device_info()`.
@@ -306,6 +326,9 @@ pub struct ViewIvars {
     dragging: Cell<bool>,
     /// Reports keys while focused (it can take the focus).
     pub(crate) key_local: Cell<bool>,
+    // --- Custom window chrome (#67) ---
+    /// `.window_drag()`: a press moves the window, a double click zooms it.
+    window_drag: Cell<bool>,
 }
 
 define_class!(
@@ -340,6 +363,15 @@ define_class!(
         fn view_did_change_effective_appearance(&self) {
             let _: () = unsafe { msg_send![super(self), viewDidChangeEffectiveAppearance] };
             self.setNeedsDisplay(true);
+            // The title bar is laid out again in the new appearance: the
+            // custom traffic lights (#67) take their place back after it.
+            if let Some(window) = self.window()
+                && window.contentView().is_some_and(|c| *c == *self.as_super())
+            {
+                on_main_after(std::time::Duration::ZERO, move || {
+                    crate::chrome::place_traffic_lights(&window);
+                });
+            }
         }
 
         #[unsafe(method(updateLayer))]
@@ -592,8 +624,30 @@ define_class!(
             NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(self.bounds(), r, r).fill();
         }
 
+        /// Only `.window_drag()` regions move the window (#67): a custom
+        /// chrome's title bar area is the app's content.
+        #[unsafe(method(mouseDownCanMoveWindow))]
+        fn mouse_down_can_move_window(&self) -> bool {
+            false
+        }
+
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
+            // `.window_drag()` (#67): presses that clickable descendants
+            // did not take move the window; a double click zooms it.
+            let iv = self.ivars();
+            if iv.window_drag.get()
+                && !iv.clickable.get()
+                && iv.pointer_mask.get() & prism_core::events::pointer_mask::DRAG == 0
+                && let Some(window) = self.window()
+            {
+                if event.clickCount() >= 2 {
+                    crate::chrome::double_click(&window);
+                } else {
+                    window.performWindowDragWithEvent(event);
+                }
+                return;
+            }
             if self.ivars().report_active.get() {
                 report_state(self.ivars().id.get(), prism_core::Interaction::Active, true);
             }
@@ -1410,7 +1464,42 @@ define_class!(
 
     unsafe impl NSWindowDelegate for Target {
         #[unsafe(method(windowDidResize:))]
-        fn window_did_resize(&self, _n: &NSNotification) {
+        fn window_did_resize(&self, n: &NSNotification) {
+            place_traffic_lights(n);
+            with_state(State::relayout);
+        }
+
+        // --- Custom window chrome (#67): AppKit puts the traffic lights
+        // back after these. ---
+
+        #[unsafe(method(windowDidEndLiveResize:))]
+        fn window_did_end_live_resize(&self, n: &NSNotification) {
+            place_traffic_lights(n);
+        }
+
+        #[unsafe(method(windowWillEnterFullScreen:))]
+        fn window_will_enter_full_screen(&self, _n: &NSNotification) {
+            crate::chrome::set_fullscreen(true);
+            with_state(State::relayout);
+        }
+
+        /// Takes the window, not a notification.
+        #[unsafe(method(windowDidFailToEnterFullScreen:))]
+        fn window_did_fail_to_enter_full_screen(&self, window: &NSWindow) {
+            crate::chrome::set_fullscreen(false);
+            crate::chrome::place_traffic_lights(window);
+            with_state(State::relayout);
+        }
+
+        #[unsafe(method(windowWillExitFullScreen:))]
+        fn window_will_exit_full_screen(&self, _n: &NSNotification) {
+            crate::chrome::set_fullscreen(false);
+            with_state(State::relayout);
+        }
+
+        #[unsafe(method(windowDidExitFullScreen:))]
+        fn window_did_exit_full_screen(&self, n: &NSNotification) {
+            place_traffic_lights(n);
             with_state(State::relayout);
         }
 
@@ -1428,6 +1517,14 @@ define_class!(
         }
     }
 );
+
+/// The window of a window notification takes its custom traffic lights'
+/// place again (#67).
+fn place_traffic_lights(n: &NSNotification) {
+    if let Some(window) = n.object().and_then(|o| o.downcast::<NSWindow>().ok()) {
+        crate::chrome::place_traffic_lights(&window);
+    }
+}
 
 impl Target {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
@@ -2475,6 +2572,10 @@ impl Widgets for AppKit {
         }
         // `hit_test(false)` / `inert`: clicks go through the subtree.
         crate::interact::set_no_hit(view.ns(), !style.hit_test || style.inert);
+        // `.window_drag()` (#67).
+        if let Some(v) = view.prism_view() {
+            v.ivars().window_drag.set(style.window_drag);
+        }
         if crate::interact::set_inert(view.ns(), style.inert) {
             crate::interact::refuse_focus(view.ns(), style.inert);
             view.ns().setAccessibilityHidden(style.inert);
@@ -3668,6 +3769,8 @@ pub fn run(config: AppConfig, init: AppInit) {
         | NSWindowStyleMask::Closable
         | NSWindowStyleMask::Miniaturizable
         | NSWindowStyleMask::Resizable;
+    // Custom window chrome (#67): the content covers the title bar.
+    let style = crate::chrome::style_mask(config.window_chrome, style);
     let window = unsafe {
         NSWindow::initWithContentRect_styleMask_backing_defer(
             NSWindow::alloc(mtm),
@@ -3680,6 +3783,7 @@ pub fn run(config: AppConfig, init: AppInit) {
     unsafe { window.setReleasedWhenClosed(false) };
     window.setTitle(&NSString::from_str(&config.title));
     window.setContentView(Some(&root));
+    crate::chrome::setup(&window, config.window_chrome);
     window.setDelegate(Some(ProtocolObject::from_ref(&*target)));
     observe_focus(&window, &target);
     window.center();

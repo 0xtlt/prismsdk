@@ -32,6 +32,11 @@ pub(crate) struct Window {
     pub full: (f32, f32),
     /// What the system's bars, cutouts and side bars cover of the window.
     pub safe_area: crate::style::Edges,
+    // --- Custom window chrome (#67) ---
+    /// The window fills the screen (macOS full screen).
+    pub fullscreen: bool,
+    /// The system's window buttons drawn over the content, if any.
+    pub controls: Option<WindowControls>,
 }
 
 impl Default for Window {
@@ -45,7 +50,67 @@ impl Default for Window {
             thresholds: Vec::new(),
             full: (390., 844.),
             safe_area: crate::style::Edges::default(),
+            fullscreen: false,
+            controls: None,
         }
+    }
+}
+
+// --- Custom window chrome (#67) ---
+
+/// How the desktop window is framed (`Application::window_chrome`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum WindowChrome {
+    /// The system's title bar above the content (the default).
+    #[default]
+    Standard,
+    /// No title bar: the content fills the window from its top edge and the
+    /// app draws its own (tabs, a sidebar reaching the top). The system's
+    /// window buttons (the macOS traffic lights) stay, drawn over the
+    /// content; mark the app's title bar with
+    /// [`window_drag`](crate::Styled::window_drag) so it moves the window.
+    ///
+    /// macOS only; other platforms keep their standard frame.
+    Custom {
+        /// Where the window buttons' top-left corner goes, in points from
+        /// the window's top-left corner. `None`: where the system puts them.
+        traffic_lights: Option<crate::events::Point>,
+    },
+}
+
+impl WindowChrome {
+    /// The content reaches the window's top edge.
+    pub fn is_custom(self) -> bool {
+        matches!(self, WindowChrome::Custom { .. })
+    }
+}
+
+/// Where the system's window buttons (the macOS traffic lights) sit over
+/// the content of a window with a [`WindowChrome::Custom`] chrome, in points
+/// from the window's top-left corner: leave room for them in the app's
+/// title bar.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WindowControls {
+    /// Distance of their left edge from the window's left edge.
+    pub x: f32,
+    /// Distance of their top edge from the window's top edge.
+    pub y: f32,
+    /// Width of the three buttons and the gaps between them.
+    pub width: f32,
+    /// Height of a button.
+    pub height: f32,
+}
+
+impl WindowControls {
+    /// Distance of their right edge from the window's left edge: where the
+    /// app's own title bar content can start.
+    pub fn right(&self) -> f32 {
+        self.x + self.width
+    }
+
+    /// Distance of their bottom edge from the window's top edge.
+    pub fn bottom(&self) -> f32 {
+        self.y + self.height
     }
 }
 
@@ -82,6 +147,40 @@ impl App {
     /// re-renders everything).
     pub fn on_resize(&mut self, f: impl Fn((f32, f32), &mut App) + 'static) {
         self.window.handlers.push(Rc::new(f));
+    }
+
+    /// Whether the window fills the screen (macOS full screen; `false`
+    /// elsewhere). The system's window buttons are hidden then:
+    /// [`window_controls`](Self::window_controls) is `None`, so an app's
+    /// title bar can drop the room it kept for them. Changes re-render.
+    pub fn is_fullscreen(&self) -> bool {
+        self.window.fullscreen
+    }
+
+    /// Where the system's window buttons sit over the content: `Some` only
+    /// for a [`WindowChrome::Custom`] window out of full screen (macOS).
+    /// Changes re-render.
+    ///
+    /// ```ignore
+    /// let lead = cx.window_controls().map_or(12., |c| c.right() + 12.);
+    /// div().h(40.).pl(lead).window_drag().child(tabs)
+    /// ```
+    pub fn window_controls(&self) -> Option<WindowControls> {
+        self.window.controls
+    }
+
+    /// The backend reports full screen and the window buttons' frame.
+    pub(crate) fn set_window_chrome_state(
+        &mut self,
+        fullscreen: bool,
+        controls: Option<WindowControls>,
+    ) {
+        if (self.window.fullscreen, self.window.controls) == (fullscreen, controls) {
+            return;
+        }
+        self.window.fullscreen = fullscreen;
+        self.window.controls = controls;
+        self.refresh();
     }
 
     pub(crate) fn set_viewport(&mut self, size: (f32, f32)) {

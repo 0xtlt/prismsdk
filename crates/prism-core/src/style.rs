@@ -767,6 +767,11 @@ pub struct Style {
     /// the router from `RouterBuilder::tint` or the app's accent color.
     /// `None`: the platform's.
     pub tint: Option<Color>,
+
+    // --- Custom window chrome (#67) ---
+    /// Dragging the element moves the window and double-clicking it zooms
+    /// (or minimizes) it, like a title bar: see [`Styled::window_drag`].
+    pub window_drag: bool,
 }
 
 impl Style {
@@ -1290,6 +1295,8 @@ impl Default for Style {
             border_none: false,
 
             tint: None,
+
+            window_drag: false,
         }
     }
 }
@@ -2174,5 +2181,18 @@ pub trait Styled: Sized {
     /// screen behind a custom overlay). It stays visible.
     fn inert(self, on: bool) -> Self {
         self.with_style(|s| s.inert = on)
+    }
+
+    // --- Custom window chrome (#67) ---
+
+    /// Makes the element a title bar for the window: dragging it moves the
+    /// window, and a double click does what the user chose in System
+    /// Settings (« Double-click a window's title bar »: zoom by default,
+    /// minimize, or nothing). Clickable descendants (buttons, tabs,
+    /// `on_click` views) keep their clicks; put it on a container (on a
+    /// clickable element the click wins). Pairs with a custom window chrome
+    /// (`Application::window_chrome`). macOS only: ignored elsewhere.
+    fn window_drag(self) -> Self {
+        self.with_style(|s| s.window_drag = true)
     }
 }

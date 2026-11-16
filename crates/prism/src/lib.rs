@@ -190,6 +190,26 @@ impl Application {
         self
     }
 
+    /// The desktop window's frame (macOS; ignored elsewhere). The default,
+    /// [`WindowChrome::Standard`], keeps the system's title bar;
+    /// [`WindowChrome::Custom`] removes it so the content fills the window
+    /// from its top edge, the traffic lights drawn over it where
+    /// `traffic_lights` says. Mark the app's own title bar with
+    /// `.window_drag()` so it moves the window, and leave room for the
+    /// buttons with `cx.window_controls()`. The [`title`](Self::title)
+    /// still names the window (Mission Control, the Window menu, VoiceOver).
+    ///
+    /// ```ignore
+    /// Application::new()
+    ///     .title("Notes")
+    ///     .window_chrome(WindowChrome::Custom { traffic_lights: Some(Point::new(16., 13.)) })
+    ///     .run(|cx| cx.new_entity(|_| Notes::default()));
+    /// ```
+    pub fn window_chrome(mut self, chrome: WindowChrome) -> Self {
+        self.config.window_chrome = chrome;
+        self
+    }
+
     /// Directory of app assets (images…) for `picture("name.png")`.
     pub fn assets(mut self, dir: impl Into<String>) -> Self {
         self.config.assets = Some(dir.into());
@@ -367,4 +387,27 @@ impl Application {
 pub mod prelude {
     pub use crate::Application;
     pub use prism_core::prelude::*;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn window_chrome_is_passed_to_the_backend() {
+        assert_eq!(
+            Application::new().config.window_chrome,
+            WindowChrome::Standard
+        );
+        let custom = WindowChrome::Custom {
+            traffic_lights: Some(Point::new(16., 13.)),
+        };
+        assert_eq!(
+            Application::new()
+                .window_chrome(custom)
+                .config
+                .window_chrome,
+            custom
+        );
+    }
 }
