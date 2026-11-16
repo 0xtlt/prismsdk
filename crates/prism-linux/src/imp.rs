@@ -1416,6 +1416,9 @@ impl Widgets for Gtk {
                 });
                 View::Sheet(id, sheet)
             }
+            // No web view on Linux yet (#62): an empty box sized by its
+            // style (`capabilities().web_view` is false).
+            NodeKind::WebView => View::Container(id, kind, layout::container()),
             NodeKind::Checkbox => View::Check(id, controls::checkbox(id)),
             NodeKind::RadioGroup => View::Radio(id, controls::radio_group(id)),
             NodeKind::Overlay => {

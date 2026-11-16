@@ -100,6 +100,8 @@ impl IosServices {
                 web_auth: true,
                 // The build declares aps-environment (`[push]` in Prism.toml).
                 push: prism_native::apple::push::service(),
+                // WKWebView (#62); tvOS has no WebKit.
+                web_view: cfg!(not(target_os = "tvos")),
             },
             controller,
         }
@@ -226,6 +228,16 @@ impl PlatformServices for IosServices {
             | PlatformRequest::AddStylesheet(_)
             | PlatformRequest::RemoveStylesheet(_) => {}
         }
+    }
+}
+
+/// Called by the Swift bridge when a web view's page posts a message or
+/// finishes loading (#62). Dispatched on the next turn: WebKit may call
+/// while Prism updates its views.
+#[unsafe(no_mangle)]
+pub extern "C" fn prism_web_view_event(id: u64, kind: i32, a: *const c_char, b: *const c_char) {
+    if let Some(event) = unsafe { prism_native::apple::web::event(id, kind, a, b) } {
+        dispatch2::DispatchQueue::main().exec_async(move || crate::imp::dispatch(event));
     }
 }
 

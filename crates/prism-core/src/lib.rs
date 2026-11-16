@@ -46,6 +46,7 @@ mod style;
 pub mod surfaces;
 pub mod svg;
 mod task;
+pub mod web_view;
 mod window;
 pub use window::{WindowChrome, WindowControls};
 
@@ -125,6 +126,7 @@ pub use surfaces::{
 };
 pub use task::{AsyncApp, Background, Sleep, TaskHandle, WakeUi};
 pub use task::{DEFAULT_BACKGROUND_THREADS, background_threads, set_background_threads};
+pub use web_view::{WebLoadEvent, WebMessageEvent, WebSandbox, WebView, web_view};
 
 use std::sync::Arc;
 
@@ -384,6 +386,16 @@ impl Runtime {
             UiEvent::SceneTap(id, e) => {
                 if let Some(h) = self.reconciler.scene_tap_handler(id) {
                     h(&e, &mut self.app);
+                }
+            }
+            UiEvent::WebMessage(id, data, origin) => {
+                if let Some(h) = self.reconciler.web_message_handler(id) {
+                    h(&web_view::WebMessageEvent { data, origin }, &mut self.app);
+                }
+            }
+            UiEvent::WebLoad(id, url) => {
+                if let Some(h) = self.reconciler.web_load_handler(id) {
+                    h(&web_view::WebLoadEvent { url }, &mut self.app);
                 }
             }
             UiEvent::Key(focused, e) => {
@@ -715,6 +727,8 @@ pub mod prelude {
     pub use crate::{IslandEvent, island, web_component};
     // 3D scenes (the nodes, lights and camera: `use prism::scene3d::*`).
     pub use crate::{SceneTapEvent, scene3d};
+    // Web views (#62).
+    pub use crate::{WebLoadEvent, WebMessageEvent, WebSandbox, web_view};
 }
 
 #[cfg(test)]

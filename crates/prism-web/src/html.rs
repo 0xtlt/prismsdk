@@ -192,7 +192,9 @@ impl Backend for HtmlBackend {
                 | Patch::SetSelectEvents { .. }
                 | Patch::Focus { .. }
                 | Patch::DismissKeyboard
-                | Patch::ScrollIntoView { .. } => {}
+                | Patch::ScrollIntoView { .. }
+                | Patch::PostWebMessage { .. }
+                | Patch::ReloadWebView { .. } => {}
                 Patch::SetLayers { ids } => self.layers.clone_from(ids),
                 Patch::SetIsland {
                     id, tag, source, ..
@@ -609,6 +611,24 @@ impl HtmlBackend {
                         None => picture_url(&n.text),
                     }),
                     escape(alt)
+                );
+            }
+            // The live tree replaces the first paint: the frame loads its
+            // page then (`data-src`), once, rather than twice.
+            NodeKind::WebView => {
+                let c = prism_core::web_view::WebViewConfig::decode(&n.config);
+                let sandbox = match c.sandbox {
+                    Some(s) => format!(r#" sandbox="{}""#, s.attribute()),
+                    None => String::new(),
+                };
+                let title = match &n.a11y.label {
+                    Some(label) => format!(r#" title="{}""#, escape(label)),
+                    None => String::new(),
+                };
+                let _ = write!(
+                    out,
+                    r#"<iframe {attrs} class="prism-web-view" data-src="{}"{title}{sandbox}></iframe>"#,
+                    escape(&n.text)
                 );
             }
             // Drawn by the client once the box has a size (see client.js).

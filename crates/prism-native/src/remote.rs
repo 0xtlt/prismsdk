@@ -27,6 +27,8 @@
 //! | `sel` | `start`, `end`: select these characters of a text field (#86) |
 //! | `selev` | `on`: a text field reports its selection (`select` events) |
 //! | `layers` | `ids`: runtime layers above everything, bottom first (no `id`) |
+//! | `webpost` | `data`: a message (JSON text) for a `web_view`'s page (#62) |
+//! | `webreload` | reload a `web_view`'s page |
 //!
 //! Hosts report the new input events as `{"t":"click","id","x","y"}`
 //! (position optional), `{"t":"pointer","id","phase","x","y"}`,
@@ -36,7 +38,10 @@
 //! `{"t":"select","id","start","end"}` (a text field's selection moved, in
 //! characters) (see [`parse_input_event`]).
 //! An overlay's host reports its content area like a modal's
-//! (`{"t":"viewport","id":overlay,"w","h"}`).
+//! (`{"t":"viewport","id":overlay,"w","h"}`). A web view reports its page's
+//! messages as `{"t":"webmsg","id","data","origin"}` (`data`: JSON text) and
+//! its loads as `{"t":"webload","id","url"}`; its `text` is the URL, its
+//! `config` a `prism_core::web_view::WebViewConfig`.
 //!
 //! Styles carry `tf`: `[x, y, scale, degrees]` (null: none). `style`, `frame`,
 //! `exit` and `repeat` may carry `anim`: `{d, delay, ease}` (seconds, cubic
@@ -208,6 +213,15 @@ pub fn parse_input_event(v: &Value) -> Option<prism_core::UiEvent> {
             id?,
             v.get("start")?.as_u64()? as usize,
             v.get("end")?.as_u64()? as usize,
+        )),
+        "webmsg" => Some(prism_core::UiEvent::WebMessage(
+            id?,
+            v.get("data")?.as_str()?.to_string(),
+            v.get("origin")?.as_str()?.to_string(),
+        )),
+        "webload" => Some(prism_core::UiEvent::WebLoad(
+            id?,
+            v.get("url")?.as_str()?.to_string(),
         )),
         _ => None,
     }
@@ -957,6 +971,15 @@ impl Widgets for RemoteWidgets {
 
     fn set_layers(&mut self, layers: &[NodeId]) {
         self.ops.push(json!({ "op": "layers", "ids": layers }));
+    }
+
+    fn post_web_message(&mut self, id: &NodeId, data: &str) {
+        self.ops
+            .push(json!({ "op": "webpost", "id": id, "data": data }));
+    }
+
+    fn reload_web_view(&mut self, id: &NodeId) {
+        self.ops.push(json!({ "op": "webreload", "id": id }));
     }
 
     /// The area the host reported for the overlay (its sheet, dialog or

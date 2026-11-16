@@ -63,6 +63,8 @@ pub(crate) struct Inner {
     /// Page requests waiting for the live session that takes the page over
     /// (`cx.page_request()`).
     pub handoffs: crate::handoff::Handoffs,
+    /// Origins web views may show under the strict CSP (`frame_origin`).
+    pub frame_origins: Vec<String>,
 }
 
 /// Prism's client, its base stylesheet, the app's assets and its islands.
@@ -114,6 +116,7 @@ impl WebApp {
                 islands,
                 strict_csp: env("PRISM_STRICT_CSP").is_some_and(|v| v != "0"),
                 handoffs: Default::default(),
+                frame_origins: Vec::new(),
             }),
         };
         let app = match env("PRISM_BASE_PATH") {

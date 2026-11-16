@@ -3419,3 +3419,87 @@ fn first_paints_carry_run_time_fonts_and_stylesheets() {
     assert!(!body.contains("Brand"), "{body}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// --- Web views (#62) ----------------------------------------------------------------------
+
+#[test]
+fn ssr_web_views_are_frames_the_client_loads() {
+    use prism_core::web_view::{WebSandbox, WebViewConfig};
+    let config = WebViewConfig {
+        messages: true,
+        sandbox: Some(WebSandbox::new().scripts()),
+        ..Default::default()
+    };
+    assert_eq!(
+        html(&[
+            create(1, NodeKind::WebView),
+            set_text(1, "https://example.com/a?b=1&c=2"),
+            Patch::SetConfig {
+                id: 1,
+                config: config.encode(),
+            },
+            a11y(
+                1,
+                Accessibility {
+                    label: Some("Preview".into()),
+                    ..Default::default()
+                }
+            ),
+            Patch::SetRoot { id: 1 },
+        ]),
+        // Loaded once, by the live tree (`data-src`), not twice.
+        r#"<iframe data-pid="1" data-kind="web_view" style="" aria-label="Preview" class="prism-web-view" data-src="https://example.com/a?b=1&amp;c=2" title="Preview" sandbox="allow-scripts"></iframe>"#
+    );
+}
+
+#[test]
+fn web_view_messages_on_the_wire() {
+    use crate::session::parse_event;
+    let mut e = Encoder::default();
+    let out = e.encode(&[
+        Patch::PostWebMessage {
+            id: 4,
+            data: r#"{"select":"s1"}"#.into(),
+        },
+        Patch::ReloadWebView { id: 4 },
+    ]);
+    assert_eq!(
+        out[0],
+        json!({"op": "webpost", "id": 4, "data": {"select": "s1"}})
+    );
+    assert_eq!(out[1], json!({"op": "webreload", "id": 4}));
+    assert_eq!(
+        parse_event(
+            &json!({"t": "webmsg", "id": 4, "data": {"a": [1, 2]}, "origin": "https://example.com"})
+        ),
+        Some(UiEvent::WebMessage(
+            4,
+            r#"{"a":[1,2]}"#.into(),
+            "https://example.com".into()
+        ))
+    );
+    assert_eq!(
+        parse_event(&json!({"t": "webload", "id": 4, "url": "https://example.com/"})),
+        Some(UiEvent::WebLoad(4, "https://example.com/".into()))
+    );
+    assert_eq!(
+        parse_event(&json!({"t": "webmsg", "id": 4, "data": 1})),
+        None,
+        "an origin"
+    );
+}
+
+#[test]
+fn frame_origins_join_the_strict_csp() {
+    let app = WebApp::new(AppConfig::default(), counter_init());
+    let nonce = crate::CspNonce("n".into());
+    assert!(!app.content_security_policy(&nonce).contains("frame-src"));
+    let app = WebApp::new(AppConfig::default(), counter_init())
+        .frame_origin("https://preview.example.com/")
+        .frame_origin("https://preview.example.com");
+    let csp = app.content_security_policy(&nonce);
+    assert!(
+        csp.contains(" frame-src 'self' https://preview.example.com; "),
+        "{csp}"
+    );
+}

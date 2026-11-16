@@ -1755,6 +1755,15 @@ pub enum View {
     Overlay(Rc<MacOverlay>),
     Check(Retained<NSButton>),
     Radios(Rc<MacRadios>),
+    /// A web view (#62): a Prism view (its box) holding the WKWebView host.
+    Web(Rc<MacWeb>),
+}
+
+/// A web view: its box, and the bridge's host view filling it (`None`
+/// without WebKit).
+pub struct MacWeb {
+    container: Retained<PrismView>,
+    host: Option<prism_native::apple::web::WebHost>,
 }
 
 impl View {
@@ -1781,6 +1790,7 @@ impl View {
             View::Overlay(o) => &o.anchor,
             View::Check(v) => v,
             View::Radios(r) => &r.container,
+            View::Web(w) => &w.container,
         }
     }
 
@@ -1788,6 +1798,7 @@ impl View {
     fn prism_view(&self) -> Option<&Retained<PrismView>> {
         match self {
             View::Container(v) | View::Screen(v) | View::Tab(v) | View::Picture(v) => Some(v),
+            View::Web(w) => Some(&w.container),
             View::TextArea(t) => Some(&t.container),
             View::Input(i) => Some(&i.host),
             _ => None,
@@ -1822,6 +1833,7 @@ impl View {
             View::Overlay(o) => o.id,
             View::Check(v) => v.tag() as NodeId,
             View::Radios(r) => r.id,
+            View::Web(w) => w.container.ivars().id.get(),
         }
     }
 }
@@ -1876,6 +1888,18 @@ pub(crate) fn node_id(view: &PrismView) -> NodeId {
 
 impl AppKit {
     /// Shadows, gradient, borders, clipping, blur and cursor of a Prism view.
+    /// A Prism view's box: background, border, corners, decorations.
+    fn style_box(&mut self, v: &Retained<PrismView>, style: &Style) {
+        let iv = v.ivars();
+        *iv.background.borrow_mut() = style.background.map(ns_color);
+        *iv.border_color.borrow_mut() = style.border_color.map(ns_color);
+        iv.radius.set(style.corner_radius as f64);
+        iv.corners.set(style.rounded_corners);
+        iv.border.set(style.border_width as f64);
+        self.apply_decor(v, style);
+        v.setNeedsDisplay(true);
+    }
+
     fn apply_decor(&self, v: &PrismView, style: &Style) {
         let decor = crate::decor::Decor::from_style(style);
         let mut st = v.ivars().decor.borrow_mut();
@@ -2496,6 +2520,16 @@ impl Widgets for AppKit {
             NodeKind::Picture => View::Picture(PrismView::new(mtm, id)),
             NodeKind::Shape => View::Container(PrismView::new(mtm, id)),
             NodeKind::Scene3d => View::Container(crate::scene::create(mtm, id)),
+            NodeKind::WebView => {
+                let container = PrismView::new(mtm, id);
+                let host = prism_native::apple::web::WebHost::new(id);
+                if let Some(h) = &host {
+                    // SAFETY: the bridge's host is an NSView, kept alive by `host`.
+                    let v = unsafe { &*(h.view_ptr() as *const NSView) };
+                    container.addSubview(v);
+                }
+                View::Web(Rc::new(MacWeb { container, host }))
+            }
             NodeKind::Slider => {
                 let s = PrismSlider::new(mtm, id, &self.target);
                 self.directional(&s);
@@ -2764,15 +2798,10 @@ impl Widgets for AppKit {
                 l.setAlignment(alignment(style.text_align));
             }
             View::Container(v) | View::Screen(v) | View::Tab(v) | View::Picture(v) => {
-                let iv = v.ivars();
-                *iv.background.borrow_mut() = style.background.map(ns_color);
-                *iv.border_color.borrow_mut() = style.border_color.map(ns_color);
-                iv.radius.set(style.corner_radius as f64);
-                iv.corners.set(style.rounded_corners);
-                iv.border.set(style.border_width as f64);
-                self.apply_decor(v, style);
-                v.setNeedsDisplay(true);
+                self.style_box(v, style)
             }
+            // A web view's box: its background shows while the page loads.
+            View::Web(w) => self.style_box(&w.container, style),
             View::Label(l) => crate::label::set_style(l, style),
             View::Input(i) => {
                 // Padding, a background, a border or `.border(0.)`: Prism's
@@ -2816,6 +2845,11 @@ impl Widgets for AppKit {
             View::Label(l) => crate::label::set_text(l, text),
             View::Timer(l) => l.setStringValue(&s),
             View::Picture(v) => self.load_picture(view.id(), v, text),
+            View::Web(w) => {
+                if let Some(h) = &w.host {
+                    h.load(text);
+                }
+            }
             // Events reach the app synchronously, so an echo of the typing
             // equals the field (left alone, caret and selection included);
             // anything else is the app's value, written even while focused,
@@ -3092,6 +3126,8 @@ impl Widgets for AppKit {
             View::Image(v) => v.fittingSize(),
             View::Timer(l) => l.fittingSize(),
             // Natural size of the loaded image, scaled to the available width.
+            // Sized by its style only (no measure context).
+            View::Web(_) => NSSize::ZERO,
             View::Picture(v) => match v.ivars().image.borrow().as_ref() {
                 Some(img) => {
                     let size = img.size();
@@ -3358,6 +3394,11 @@ impl Widgets for AppKit {
 
     fn set_config(&mut self, view: &View, _kind: NodeKind, config: &str) {
         match view {
+            View::Web(w) => {
+                if let Some(h) = &w.host {
+                    h.configure(config);
+                }
+            }
             // Bar buttons (#30): the stack showing the screen puts them up.
             View::Screen(_) => {
                 if crate::navbar::set_config(view.id(), config) {
@@ -3723,6 +3764,22 @@ impl Widgets for AppKit {
         } else {
             self.ix.select_events.remove(&view.id());
             crate::interact::forget_selection(view.id());
+        }
+    }
+
+    fn post_web_message(&mut self, view: &View, data: &str) {
+        if let View::Web(w) = view
+            && let Some(h) = &w.host
+        {
+            h.post(data);
+        }
+    }
+
+    fn reload_web_view(&mut self, view: &View) {
+        if let View::Web(w) = view
+            && let Some(h) = &w.host
+        {
+            h.reload();
         }
     }
 

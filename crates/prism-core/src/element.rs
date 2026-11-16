@@ -93,6 +93,15 @@ pub enum NodeKind {
     /// OpenGL ES 3, OpenGL. No natural size. Reports
     /// [`UiEvent::SceneTap`](crate::UiEvent::SceneTap).
     Scene3d,
+
+    // --- Web views (#62) ---
+    /// Another web page shown inside the app: an `<iframe>` on the web,
+    /// `WKWebView` on Apple platforms, `android.webkit.WebView` on Android
+    /// (see [`web_view`](crate::web_view())). Its text is the URL, its
+    /// config a [`WebViewConfig`](crate::web_view::WebViewConfig). No
+    /// natural size: give it one. Reports `UiEvent::WebMessage` and
+    /// `UiEvent::WebLoad`.
+    WebView,
 }
 
 impl NodeKind {
@@ -124,6 +133,7 @@ impl NodeKind {
             NodeKind::Checkbox => "checkbox",
             NodeKind::RadioGroup => "radio_group",
             NodeKind::Scene3d => "scene3d",
+            NodeKind::WebView => "web_view",
         }
     }
 
@@ -445,6 +455,12 @@ pub struct VNode {
     /// see [`crate::attributes`]), in the order first set. Native backends
     /// ignore them.
     pub attributes: Vec<(String, String)>,
+
+    // --- Web views (#62) ---
+    /// A web view's page posted a message.
+    pub on_web_message: Option<Handler<crate::web_view::WebMessageEvent>>,
+    /// A web view finished loading a page.
+    pub on_web_load: Option<Handler<crate::web_view::WebLoadEvent>>,
 }
 
 impl VNode {
@@ -486,6 +502,8 @@ impl VNode {
             on_scene_tap: None,
             scene: None,
             attributes: Vec::new(),
+            on_web_message: None,
+            on_web_load: None,
         }
     }
 }

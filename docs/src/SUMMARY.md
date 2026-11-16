@@ -34,6 +34,7 @@
 - [Remote push notifications](guide/push.md)
 - [In the car](guide/car.md)
 - [Islands: code in the browser](guide/islands.md)
+- [Web views](guide/web-views.md)
 
 # Platforms
 

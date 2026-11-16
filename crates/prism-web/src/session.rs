@@ -511,6 +511,16 @@ pub(crate) fn parse_event(v: &Value) -> Option<UiEvent> {
             v.get("detail")
                 .map_or_else(|| "null".into(), Value::to_string),
         )),
+        // A web view's page posted a message (from an allowed origin):
+        // `{"t":"webmsg","id","data","origin"}`; it loaded a page:
+        // `{"t":"webload","id","url"}`.
+        "webmsg" => Some(UiEvent::WebMessage(
+            id,
+            v.get("data")
+                .map_or_else(|| "null".into(), Value::to_string),
+            v.get("origin")?.as_str()?.to_string(),
+        )),
+        "webload" => Some(UiEvent::WebLoad(id, v.get("url")?.as_str()?.to_string())),
         _ => None,
     }
 }
@@ -864,6 +874,8 @@ impl PlatformServices for WebServices {
                 .vapid
                 .as_ref()
                 .map(|_| prism_core::PushService::WebPush),
+            // An `<iframe>`.
+            web_view: true,
         }
     }
 
@@ -1111,6 +1123,12 @@ impl Encoder {
             Patch::SetAttributes { id, attributes } => {
                 json!({ "op": "attrs", "id": id, "attrs": attributes })
             }
+            // Web views (#62): `client.js` posts to the frame (once loaded).
+            Patch::PostWebMessage { id, data } => {
+                let data: Value = serde_json::from_str(data).unwrap_or(Value::Null);
+                json!({ "op": "webpost", "id": id, "data": data })
+            }
+            Patch::ReloadWebView { id } => json!({ "op": "webreload", "id": id }),
         }
     }
 }
