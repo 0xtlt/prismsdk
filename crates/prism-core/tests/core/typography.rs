@@ -86,6 +86,16 @@ fn families_and_transforms() {
         TextTransform::Capitalize.apply("hello wide-world, it's l'été"),
         "Hello Wide-World, It's L'été"
     );
+    // A run continues the word the previous one ended in.
+    let c = TextTransform::Capitalize;
+    assert_eq!(c.apply_after("Hel", "lo world"), "lo World");
+    assert_eq!(c.apply_after("it", "'s"), "'s");
+    assert_eq!(c.apply_after("one ", "two"), "Two");
+    assert_eq!(TextTransform::Uppercase.apply_after("x", "ab"), "AB");
+    assert_eq!(
+        text("x").capitalize().style_mut().text_transform,
+        TextTransform::Capitalize
+    );
 }
 
 #[test]

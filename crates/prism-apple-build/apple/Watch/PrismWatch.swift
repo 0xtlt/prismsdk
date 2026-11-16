@@ -229,17 +229,24 @@ func prismUIFont(family: String?, size: Double, weight: Double, italic: Bool, ta
     return italic || tabular ? UIFont(descriptor: d, size: size) : font
 }
 
+/// Whether a word starts after `c`: anything but a letter, a digit or an
+/// apostrophe.
+private func prismStartsWord(after c: Character) -> Bool {
+    !(c.isLetter || c.isNumber) && c != "'" && c != "\u{2019}"
+}
+
 /// The text as drawn (`tt`): CSS `text-transform` (capitalize only raises
-/// the first letter of each word).
-func prismTransform(_ s: String, _ tt: String?) -> String {
+/// the first letter of each word). `before` is the previous run of the same
+/// text, so a word cut by a run boundary is capitalized once.
+func prismTransform(_ s: String, _ tt: String?, after before: String = "") -> String {
     switch tt {
     case "upper": return s.uppercased()
     case "lower": return s.lowercased()
     case "capitalize":
-        var out = "", start = true
+        var out = "", start = before.last.map { prismStartsWord(after: $0) } ?? true
         for c in s {
             out += start && (c.isLetter || c.isNumber) ? c.uppercased() : String(c)
-            start = !(c.isLetter || c.isNumber) && c != "'" && c != "\u{2019}"
+            start = prismStartsWord(after: c)
         }
         return out
     default: return s
@@ -299,18 +306,22 @@ struct PrismTypo {
     func measure(_ text: String, runs: [[String: Any]], maxWidth: Double) -> CGSize {
         let s = NSMutableAttributedString()
         var lineH = font.lineHeight
+        var before = ""
         for r in self.runs(text, runs) {
             let f = font(r)
             lineH = max(lineH, f.lineHeight)
             if let icon = r["icon"] as? String {
+                before = ""
                 let config = UIImage.SymbolConfiguration(pointSize: f.pointSize, weight: .regular)
                 let attachment = NSTextAttachment()
                 attachment.image = UIImage(systemName: icon, withConfiguration: config)
                 s.append(NSAttributedString(attachment: attachment))
                 continue
             }
-            s.append(NSAttributedString(string: prismTransform(r["t"] as? String ?? "", transform),
+            let raw = r["t"] as? String ?? ""
+            s.append(NSAttributedString(string: prismTransform(raw, transform, after: before),
                                         attributes: [.font: f, .kern: letterSpacing]))
+            before = raw
         }
         if s.length == 0 { return .zero }
         let para = NSMutableParagraphStyle()
@@ -339,17 +350,21 @@ struct PrismTypo {
             out = out.map { Text("\($0)\(t)") } ?? t
             pending = AttributedString()
         }
+        var before = ""
         for r in self.runs(text, runs) {
             let f = Font(font(r) as CTFont)
             let color = PrismColor(r["c"]).map { dark ? $0.dark : $0.light }
             if let icon = r["icon"] as? String {
+                before = ""
                 flush()
                 var t = Text(Image(systemName: icon)).font(f)
                 if let color { t = t.foregroundColor(color) }
                 out = out.map { Text("\($0)\(t)") } ?? t
                 continue
             }
-            var a = AttributedString(prismTransform(r["t"] as? String ?? "", transform))
+            let raw = r["t"] as? String ?? ""
+            var a = AttributedString(prismTransform(raw, transform, after: before))
+            before = raw
             a.font = f
             if let color { a.foregroundColor = color }
             if let bg = PrismColor(r["bg"]) { a.backgroundColor = dark ? bg.dark : bg.light }

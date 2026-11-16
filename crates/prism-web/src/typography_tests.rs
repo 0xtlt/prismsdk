@@ -3,7 +3,7 @@
 
 use prism_core::{
     Accessibility, Backend, Color, FontFamily, FontWeight, Length, NodeKind, Patch, Role, Style,
-    TextRun, TextTransform, encode_runs, rgb,
+    Styled, TextRun, TextTransform, encode_runs, rgb,
 };
 
 use crate::css::{css, run_css};
@@ -58,6 +58,8 @@ fn typography_becomes_css_only_when_set() {
         },
     );
     assert!(px.contains("line-height:1.5rem;"), "{px}");
+    let cap = css(NodeKind::Text, &Style::default().capitalize());
+    assert!(cap.contains("text-transform:capitalize;"), "{cap}");
     // Families also apply to buttons and inputs (after their `inherit`).
     let b = css(
         NodeKind::Button,

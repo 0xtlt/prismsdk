@@ -101,12 +101,22 @@ impl StyledText {
             runs
         };
         let (mut utf16, mut bytes) = (0, 0);
+        // The text before each run, so a word split across runs is
+        // capitalized once (an icon ends a word).
+        let mut before = "";
         let runs = runs
             .iter()
             .map(|r| {
                 let text = match &r.icon {
-                    Some(_) => r.text.clone(),
-                    None => style.text_transform.apply(&r.text),
+                    Some(_) => {
+                        before = "";
+                        r.text.clone()
+                    }
+                    None => {
+                        let t = style.text_transform.apply_after(before, &r.text);
+                        before = &r.text;
+                        t
+                    }
                 };
                 let run = StyledRun {
                     utf16_start: utf16,
@@ -262,6 +272,30 @@ mod tests {
         assert_eq!(t.link_at_utf16(3), None);
         assert_eq!(t.link_at_byte(8 + 4 + 2), Some(7));
         assert_eq!(t.links(), vec![("😀 go".to_string(), 7)]);
+    }
+
+    #[test]
+    fn capitalize_spans_run_boundaries() {
+        let run = |text: &str| TextRun {
+            text: text.into(),
+            ..Default::default()
+        };
+        let runs = vec![
+            run("hel"),
+            run("lo wor"),
+            run("ld, it"),
+            run("'s "),
+            TextRun {
+                icon: Some("star".into()),
+                ..run("*")
+            },
+            run("ok"),
+        ];
+        let style = Style::default().capitalize();
+        let t = StyledText::new("", &encode_runs(&runs), &style);
+        assert_eq!(t.text(), "Hello World, It's *Ok");
+        let t = StyledText::new("l'été à paris", "", &style);
+        assert_eq!(t.text(), "L'été À Paris");
     }
 
     #[test]
