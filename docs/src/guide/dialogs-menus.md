@@ -28,7 +28,7 @@ The overlay takes no room where it is placed; its content is only built while it
 
 | | Sheet | Popover | Dialog |
 |---|---|---|---|
-| Web | modal `<dialog>` (bottom sheet on phones), blurred backdrop | popover API, placed under its anchor | modal `<dialog>` |
+| Web | modal `<dialog>` (bottom sheet on phones), blurred backdrop | popover API, placed under its anchor | modal `<dialog>`, blurred backdrop |
 | macOS | `NSWindow` sheet | `NSPopover` | `NSWindow` sheet |
 | iOS, iPadOS, visionOS | `UISheetPresentationController` (medium / large detents) | `UIPopoverPresentationController` (a sheet on iPhone) | centered card over a dimmed window |
 | tvOS | centered card over a blurred screen (Menu closes it) | same | same |
@@ -96,7 +96,36 @@ A popover can open from an item of another open popover (a submenu of a menu): e
 | Linux | `GtkPopover::set_position` (GTK flips it) | `set_pointing_to`, like the `NSPopover` |
 | Android | the `PopupWindow` placed by Prism, flipped without room | exact |
 
-Phones that show popovers as sheets, tvOS and watchOS ignore both options, as do sheets and dialogs.
+Phones that show popovers as sheets, tvOS and watchOS ignore both options, as do sheets. On a dialog, `.side(…)` places it beside its anchor (below).
+
+### Beside the anchor, without a dim
+
+An editor opens small choice panels (a list of options, a colour picker) beside the column that asked for them, over the edge of the page being edited, without dimming it: the user keeps seeing what they change. A dialog with a side does that and stays a modal dialog: the focus stays inside, the rest is out of reach, and Escape or a click outside closes it.
+
+```rust
+div()
+    .child(row("Colour", value).on_click(cx.listener(|this, _, _| this.picking = true)))
+    .child(dialog(color_picker)
+        .open(self.picking)
+        .side(PopoverSide::Trailing)      // after the column (left of it in right-to-left languages)
+        .backdrop(Backdrop::Clear)        // the page stays in sight
+        .size(320., 0.)                   // 320 points wide, as high as its content
+        .on_dismiss(cx.listener(|this, _, _| this.picking = false)))
+```
+
+- `.side(PopoverSide::…)` on a dialog: the side of its anchor (the element that contains the overlay) it opens on, lined up as `.align(…)` says, like a popover. It goes on the opposite side when its own has no room; a dialog with room on neither side (a phone) is centered as usual. A dialog without `.side(…)` is centered.
+- `.backdrop(Backdrop::Clear | Dim | Blur)`: what a sheet or dialog shows over the page. A clear backdrop still takes the click outside that closes the overlay. Popovers have none.
+- `.size(width, height)`: the content area in points, instead of the platform's default width (`0`: keep it) and the content's height (`0`: fit it), kept inside the window. The content's own `.w()` / `.h()` still apply inside it.
+
+| | Placed dialog | Backdrop | Size |
+|---|---|---|---|
+| Web | the modal `<dialog>`, positioned beside the anchor | `::backdrop`: none, a dim, or a dim and a blur (the default) | the box's size; a sheet on a phone stays full width |
+| macOS | an `NSPopover` on that edge | none (sheets are windows) | the popover's or window's content size |
+| iOS, iPadOS, visionOS | the card beside the anchor | the card's: clear, a dim (the default) or a blur; a clear sheet leaves the window undimmed | popovers and dialogs |
+| tvOS | centered cards (focus moves by direction) | the card's: a blur (the default), a dim or clear | popovers and dialogs |
+| Linux | a `GtkPopover` at that position | none (sheets and dialogs are windows) | popovers and dialogs |
+| Android | the dialog's window beside the anchor | the dialog's dim, off, or with a blur (Android 12+) | popovers and dialogs |
+| watchOS | `.sheet` | – | – |
 
 Toasts (and any `cx.add_layer` entity) stay above overlays on the web, macOS (a transparent child window), iOS, iPadOS, tvOS and visionOS (a pass-through window). On Linux and Android, sheets and dialogs are separate windows, and on watchOS sheets cover the app: layers stay under them there. On the web, layers are in the server-rendered first paint too (see [Web](../platforms/web.md#layers-in-the-first-paint)).
 

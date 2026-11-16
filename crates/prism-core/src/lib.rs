@@ -57,7 +57,7 @@ pub use background::{BackgroundKind, BackgroundTask, Lifecycle};
 pub use car::{CarButton, CarButtonStyle, CarItem, CarSection, CarTab, CarTemplate};
 pub use channel::{Receiver, Sender, channel};
 pub use controls::{
-    Capitalize, DateMode, Keyboard, OverlayKind, PopoverAlign, PopoverSide, ReturnKey,
+    Backdrop, Capitalize, DateMode, Keyboard, OverlayKind, PopoverAlign, PopoverSide, ReturnKey,
 };
 pub use decoration::{
     BorderSide, BorderSides, BorderStyle, Cursor, Gradient, GradientKind, GradientStop, Shadow,
@@ -716,6 +716,8 @@ pub mod prelude {
         PointerPhase, PopoverAlign, PopoverSide, checkbox, dialog, popover, radio_group, sheet,
         time_picker, time_picker_opt,
     };
+    // Anchored overlays without a dim (#79).
+    pub use crate::Backdrop;
     // Islands: client-side Web Components.
     pub use crate::{IslandEvent, island, web_component};
     // Web views (#62).

@@ -4,8 +4,8 @@ use std::rc::Rc;
 
 use prism_core::{
     App, Backend, ClickEvent, Context, DeviceCall, DragPhase, FluentBuilder, IntoElement, KeyEvent,
-    NodeKind, ParentElement, PickFiles, Point, PointerPhase, Render, Styled, UiEvent, div, popover,
-    sheet, text,
+    NodeKind, ParentElement, PickFiles, Point, PointerPhase, Render, Styled, UiEvent, dialog, div,
+    popover, sheet, text,
 };
 use prism_native::Widgets;
 use prism_native::remote::{RemoteWidgets, device, parse_input_event};
@@ -27,6 +27,10 @@ impl Render for Screen {
             .child(text("Sort"));
         let overlay = match self.kind {
             0 => popover(content),
+            // A dialog the app sizes (#79): wider and taller than its
+            // content, its width kept inside a 400 wide window.
+            2 => dialog(content).size(520., 200.),
+            3 => sheet(content).size(120., 100.),
             _ => sheet(content),
         };
         div()
@@ -63,6 +67,28 @@ fn sheets_fill_their_area() {
     let ov = f.of_kind(NodeKind::Overlay)[0];
     let content = f.children[&ov][0];
     assert_eq!(f.frame(content), (10., 20., 300., 400.));
+    assert_eq!(f.content[&ov], (300., 400.));
+}
+
+#[test]
+fn an_overlay_takes_the_size_the_app_asks_for() {
+    let mut h = Harness::root(|| Screen {
+        kind: 2,
+        open: true,
+    });
+    let f = h.layout(400., 600.);
+    let ov = f.of_kind(NodeKind::Overlay)[0];
+    let content = f.children[&ov][0];
+    // 520 kept inside the window (less 16), 200 high, filled.
+    assert_eq!(f.frame(content), (10., 20., 384., 200.));
+    assert_eq!(f.content[&ov], (384., 200.));
+    // Sheets keep the platform's area.
+    let mut h = Harness::root(|| Screen {
+        kind: 3,
+        open: true,
+    });
+    let f = h.layout(400., 600.);
+    let ov = f.of_kind(NodeKind::Overlay)[0];
     assert_eq!(f.content[&ov], (300., 400.));
 }
 
