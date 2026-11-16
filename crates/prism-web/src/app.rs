@@ -540,7 +540,11 @@ impl WebApp {
             _ => config.title.clone(),
         };
         let prefix = self.static_prefix();
-        let (body, ssr_css) = html.to_html_and_css();
+        let html::PageHtml {
+            root: body,
+            layers,
+            css: ssr_css,
+        } = html.to_page();
         let head = &self.inner.head;
         let page = format!(
             r#"<!doctype html>
@@ -558,7 +562,7 @@ impl WebApp {
 <main id="prism-root">{body}</main>
 <div id="prism-island" role="status" aria-live="polite"></div>
 <div id="prism-toasts" role="status" aria-live="polite"></div>
-<div id="prism-layers" popover="manual"></div>
+<div id="prism-layers" popover="manual">{layers}</div>
 <div id="prism-connection" role="status" aria-live="polite" hidden>{reconnecting}</div>
 <script src="{prefix}/{js}" data-base="{base}"{page}{n}></script>
 </body>

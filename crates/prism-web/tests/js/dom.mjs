@@ -446,16 +446,18 @@ FakeSocket.instances = [];
 const CLIENT = new URL("../../src/client.js", import.meta.url);
 
 /**
- * Runs client.js on a page whose `<main id="prism-root">` holds `ssr`, and
+ * Runs client.js on a page whose `<main id="prism-root">` holds `ssr` (and,
+ * when `layers` is given, a `<div id="prism-layers">` holding it), and
  * returns the page, its window and the socket it opened.
  */
-export function boot({ ssr = "", path = "/", base = "", glyphs = { plus: "+", gear: "⚙", house: "⌂" }, fetch = null, search = "", nonce = "", importModule = null, decompress = true, pageId = "" } = {}) {
+export function boot({ ssr = "", layers = null, path = "/", base = "", glyphs = { plus: "+", gear: "⚙", house: "⌂" }, fetch = null, search = "", nonce = "", importModule = null, decompress = true, pageId = "" } = {}) {
   const document = new Document();
   const customElements = new CustomElementRegistry();
   document.registry = customElements;
   const imports = [];
   document.body.innerHTML =
     `<main id="prism-root">${ssr}</main><div id="prism-island"></div><div id="prism-toasts"></div>` +
+    (layers === null ? "" : `<div id="prism-layers" popover="manual">${layers}</div>`) +
     `<div id="prism-connection" role="status" hidden>Reconnecting…</div>`;
   const script = document.createElement("script");
   script.dataset.base = base;
