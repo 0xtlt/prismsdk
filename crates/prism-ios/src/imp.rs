@@ -1325,7 +1325,8 @@ impl UiKit {
                 host.insertSubview_atIndex(v, i as isize);
             }
         }
-        for sub in host.subviews().iter() {
+        // A copy: removing from the array being enumerated aborts (#66).
+        for sub in host.subviews().to_vec() {
             if !self.layers.iter().any(|l| **l == *sub) {
                 sub.removeFromSuperview();
             }
@@ -2159,7 +2160,8 @@ impl Widgets for UiKit {
         // Remove former Prism children only (tag > 0); UIKit's own subviews,
         // like scroll indicators, have tag 0.
         let keep: Vec<isize> = children.iter().map(|c| c.ui().tag()).collect();
-        for sub in parent.subviews().iter() {
+        // A copy: removing from the array being enumerated aborts (#66).
+        for sub in parent.subviews().to_vec() {
             if sub.tag() > 0 && !keep.contains(&sub.tag()) {
                 sub.removeFromSuperview();
             }
@@ -2168,10 +2170,10 @@ impl Widgets for UiKit {
     }
 
     fn set_root(&mut self, view: &View) {
-        for sub in self.root.subviews().iter() {
+        for sub in self.root.subviews().to_vec() {
             sub.removeFromSuperview();
         }
-        for child in self.controller.childViewControllers().iter() {
+        for child in self.controller.childViewControllers().to_vec() {
             child.removeFromParentViewController();
         }
         // Proper containment, so container controllers get the safe area,
