@@ -481,10 +481,7 @@ pub fn attributed(t: &StyledText, focused: Option<usize>) -> Retained<NSAttribut
     paragraph.setAlignment(alignment(t.align));
     paragraph.setLineBreakMode(line_break(t));
     paragraph.setLineBreakStrategy(line_strategy(t));
-    if let Some(lh) = t.line_height {
-        paragraph.setMinimumLineHeight(lh as f64);
-        paragraph.setMaximumLineHeight(lh as f64);
-    }
+    set_line_height(&paragraph, t.line_height);
     let out = NSMutableAttributedString::new();
     let mut link_index = 0;
     for run in &t.runs {
@@ -541,18 +538,30 @@ pub fn attributed(t: &StyledText, focused: Option<usize>) -> Retained<NSAttribut
             if run.strikethrough {
                 add(NSStrikethroughStyleAttributeName, &NSNumber::new_isize(1));
             }
-            if let Some(lh) = t.line_height {
-                // The extra space of a fixed line height goes above the
-                // glyphs: raise them by half of it, centered like CSS.
-                let natural = font.ascender() - font.descender() + font.leading();
-                let offset = (lh as f64 - natural) / 2.;
-                if offset.abs() > 0.01 {
-                    add(NSBaselineOffsetAttributeName, &NSNumber::new_f64(offset));
-                }
+            if let Some(offset) = baseline_offset(&font, t.line_height) {
+                add(NSBaselineOffsetAttributeName, &NSNumber::new_f64(offset));
             }
         }
     }
     Retained::into_super(out)
+}
+
+/// A fixed line height (`None`: the font's), shared by labels and text
+/// fields so a field lines up with the same text shown by `text()` (#179).
+pub(crate) fn set_line_height(paragraph: &NSMutableParagraphStyle, line_height: Option<f32>) {
+    if let Some(lh) = line_height {
+        paragraph.setMinimumLineHeight(lh as f64);
+        paragraph.setMaximumLineHeight(lh as f64);
+    }
+}
+
+/// The extra space of a fixed line height goes above the glyphs: raise
+/// them by half of it, centered like CSS (`None`: nothing to move).
+pub(crate) fn baseline_offset(font: &NSFont, line_height: Option<f32>) -> Option<f64> {
+    let lh = line_height?;
+    let natural = font.ascender() - font.descender() + font.leading();
+    let offset = (lh as f64 - natural) / 2.;
+    (offset.abs() > 0.01).then_some(offset)
 }
 
 /// Line breaking for pretty and balanced wrapping (#95): AppKit avoids a

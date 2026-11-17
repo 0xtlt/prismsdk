@@ -158,15 +158,16 @@ pub fn field_content(f: &UITextField, style: &Style) -> CGSize {
 }
 
 /// A text area's padding replaces its text container's inset (8 above and
-/// below by default; `.p(0.)`: none, #69).
+/// below and 5 on the sides by default, UIKit's look; `.p(0.)`: none, #69,
+/// #179).
 #[cfg(not(target_os = "tvos"))]
 pub fn style_text_area(t: &crate::forms::TextArea, style: &Style) {
     let inset = if !style.has_padding() {
         UIEdgeInsets {
             top: 8.,
-            left: 0.,
+            left: 5.,
             bottom: 8.,
-            right: 0.,
+            right: 5.,
         }
     } else {
         edge_insets(style.padding)

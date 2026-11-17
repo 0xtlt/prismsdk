@@ -422,6 +422,8 @@ mod text_area {
     pub struct TextArea {
         pub view: Retained<UITextView>,
         pub placeholder: Retained<UILabel>,
+        /// The style's line height (#179): kept on the text as it changes.
+        pub line_height: std::cell::Cell<Option<f32>>,
     }
 
     impl TextArea {
@@ -440,7 +442,57 @@ mod text_area {
             // VoiceOver reads the field's label, not this.
             placeholder.setIsAccessibilityElement(false, mtm);
             view.addSubview(&placeholder);
-            TextArea { view, placeholder }
+            // The inset holds all of the space around the text (#179): an
+            // explicit `p(0.)` puts it where `text()` draws it.
+            view.textContainer().setLineFragmentPadding(0.);
+            // TextKit 1, like labels: its fixed line heights match theirs.
+            let _ = view.layoutManager();
+            TextArea {
+                view,
+                placeholder,
+                line_height: std::cell::Cell::new(None),
+            }
+        }
+
+        /// The text, and what is typed next, take the font, color,
+        /// alignment and line height of the style, with the baseline of
+        /// `text()` (#179).
+        pub fn apply_line_height(&self) {
+            use objc2_ui_kit::{
+                NSBaselineOffsetAttributeName, NSFontAttributeName, NSForegroundColorAttributeName,
+                NSMutableParagraphStyle, NSParagraphStyleAttributeName,
+            };
+            let v = &self.view;
+            let Some(font) = v.font() else { return };
+            let color = v.textColor().unwrap_or_else(UIColor::labelColor);
+            let lh = self.line_height.get();
+            let paragraph = NSMutableParagraphStyle::new();
+            paragraph.setAlignment(v.textAlignment());
+            if let Some(lh) = lh {
+                paragraph.setMinimumLineHeight(lh as f64);
+                paragraph.setMaximumLineHeight(lh as f64);
+            }
+            let offset =
+                crate::label::baseline_offset(&font, lh).map(objc2_foundation::NSNumber::new_f64);
+            let mut keys: Vec<&objc2_foundation::NSAttributedStringKey> = unsafe {
+                vec![
+                    NSFontAttributeName,
+                    NSForegroundColorAttributeName,
+                    NSParagraphStyleAttributeName,
+                ]
+            };
+            let mut values: Vec<&AnyObject> = vec![&font, &color, &paragraph];
+            if let Some(o) = &offset {
+                keys.push(unsafe { NSBaselineOffsetAttributeName });
+                values.push(o);
+            }
+            let attrs = objc2_foundation::NSDictionary::from_slices(&keys, &values);
+            let storage = v.textStorage();
+            let all = objc2_foundation::NSRange::new(0, storage.length());
+            storage.beginEditing();
+            unsafe { storage.setAttributes_range(Some(&attrs), all) };
+            storage.endEditing();
+            unsafe { v.setTypingAttributes(&attrs) };
         }
 
         /// Places the placeholder where the first line of text starts.
@@ -462,6 +514,7 @@ mod text_area {
                 super::set_field_text(&*self.view, || {
                     self.view.setText(Some(&NSString::from_str(text)))
                 });
+                self.apply_line_height();
             }
             self.placeholder.setHidden(!text.is_empty());
         }
@@ -471,7 +524,12 @@ mod text_area {
             let v = &self.view;
             let fit = v.sizeThatFits(CGSize::new(width, f64::MAX / 4.));
             let inset = v.textContainerInset();
-            let line = v.font().map_or(20., |f| unsafe { f.lineHeight() });
+            let line = self
+                .line_height
+                .get()
+                .map(f64::from)
+                .or_else(|| v.font().map(|f| unsafe { f.lineHeight() }))
+                .unwrap_or(20.);
             let min = 3. * line + inset.top + inset.bottom;
             CGSize::new(width, fit.height.max(min))
         }
