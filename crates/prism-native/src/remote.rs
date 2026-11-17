@@ -134,6 +134,8 @@ pub struct RemoteWidgets {
     styles: HashMap<NodeId, Style>,
     /// Content size of each stack or tab container, reported by the host.
     pub viewports: HashMap<NodeId, (f32, f32)>,
+    /// Each video's size, reported by the host once known (#207).
+    pub video_sizes: HashMap<NodeId, (f32, f32)>,
     frames: HashMap<NodeId, (f32, f32)>,
     measure: Measure,
     /// The root view (overlays default to its size).
@@ -150,6 +152,7 @@ impl RemoteWidgets {
             configs: HashMap::new(),
             styles: HashMap::new(),
             viewports: HashMap::new(),
+            video_sizes: HashMap::new(),
             frames: HashMap::new(),
             measure,
             root: None,
@@ -762,6 +765,19 @@ impl Widgets for RemoteWidgets {
 
     fn measure(&mut self, id: &NodeId, max_width: Option<f32>) -> (f32, f32) {
         let kind = self.kinds.get(id).copied().unwrap_or(NodeKind::View);
+        // A video (#207): its size once the host knows it, else 16:9.
+        if kind == NodeKind::Video {
+            return match self.video_sizes.get(id) {
+                Some(&(w, h)) if w > 0. => {
+                    let shown = max_width.map_or(w, |m| m.min(w));
+                    (shown, shown * h / w)
+                }
+                _ => {
+                    let w = max_width.unwrap_or(320.);
+                    (w, w * 9. / 16.)
+                }
+            };
+        }
         let style = self.styles.get(id).cloned().unwrap_or_default();
         if style.has_padding() && kind != NodeKind::Text && kind != NodeKind::Timer {
             return self.measure_padded(id, kind, &style, max_width);

@@ -1068,3 +1068,40 @@ fn rows_of_their_own_height_take_the_slot_their_edge_reaches() {
     h.dispatch(UiEvent::Drag(first, drag(DragPhase::End, 30.)));
     assert_eq!(names(&h), ["Test", "Write", "Ship"]);
 }
+
+/// #207: a video's node carries its source and headers, its config, and
+/// hears the end of the playback.
+struct Clip {
+    ended: u32,
+}
+
+impl Render for Clip {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        div().child(
+            prism_core::video("https://example.com/talk.mp4")
+                .header("Authorization", "Bearer s3cret")
+                .poster("talk.jpg")
+                .muted(true)
+                .on_ended(cx.listener(|this, _: &prism_core::EndedEvent, _| this.ended += 1)),
+        )
+    }
+}
+
+#[test]
+fn a_video_carries_its_source_config_and_hears_its_end() {
+    let mut h = Harness::new(|cx| {
+        let root = cx.new_entity(|_| Clip { ended: 0 });
+        mount(cx, root);
+    });
+    let v = h.host.find(|n| n.kind == NodeKind::Video).expect("a video");
+    let node = h.host.get(v);
+    assert_eq!(
+        node.text,
+        "https://example.com/talk.mp4\nAuthorization: Bearer s3cret"
+    );
+    let c = prism_core::VideoConfig::decode(&node.config);
+    assert!(c.controls && c.muted && !c.autoplay);
+    assert_eq!(c.poster.as_deref(), Some("talk.jpg"));
+    h.dispatch(UiEvent::Ended(v));
+    assert_eq!(h.root::<Clip>().read(&h.rt.app).ended, 1);
+}

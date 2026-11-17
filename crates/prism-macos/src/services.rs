@@ -376,6 +376,18 @@ pub extern "C" fn prism_web_view_event(id: u64, kind: i32, a: *const c_char, b: 
     }
 }
 
+/// Called by the Swift bridge for videos (#207): its size is known (lay
+/// out again) or it played to the end.
+#[unsafe(no_mangle)]
+pub extern "C" fn prism_video_event(id: u64, kind: i32) {
+    dispatch2::DispatchQueue::main().exec_async(move || {
+        match prism_native::apple::video::event(id, kind) {
+            Some(event) => crate::imp::dispatch(event),
+            None => crate::imp::relayout_all(),
+        }
+    });
+}
+
 /// Called by the Swift bridge for drop targets (#111): accepted files left
 /// or came over a node, or were dropped (their copies). On the next turn:
 /// AppKit calls during its drag session.

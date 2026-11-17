@@ -5,6 +5,7 @@ picture("https://…/photo.jpg").alt("A river").fill()   // cached on disk; or p
 picture_data(png_bytes, "image/png").alt("Avatar")      // bytes in memory (a data: URL)
 picture(avatar_url).header("Authorization", format!("Bearer {token}"))  // behind a token
 svg(server_made_svg).alt("Pairing code").w(px(160.))    // SVG markup, drawn as vectors
+video("https://…/talk.mp4").poster("talk.jpg").w_full() // a video with the platform's controls
 ui::qr_code("https://example.com/pair/42").size(180.)    // a QR code, no image involved
 VirtualList::new(10_000, 56., |i| row(i))               // only the visible rows exist
 ReorderList::new(cx, keys, 52., row, on_move)           // rows the user puts in another order
@@ -19,6 +20,38 @@ Linux; Android and watchOS read the bundle's folder only). See
 [Assets compiled into the binary](../platforms/web.md#assets-compiled-into-the-binary).
 
 **Size.** A picture with no size is as wide as the image (narrower if it must) and as tall as its ratio says. Give it only a width (`w(px(480.))`, `w_full()`, a percentage) and its height follows the image's own ratio once it has loaded (#208), wider than the image included: portrait photos, screenshots and panoramas keep their proportions without the app reading their dimensions. Until it loads it is 0 high: give it a `min_h` (or an `aspect_ratio` you know) to hold the place. A height, or an `aspect_ratio`, wins over the image's ratio (then `fill()` crops and `fit()` letterboxes).
+
+## Videos
+
+`video(src)` plays a video with the platform's own player and controls (#207): play and pause, the timeline, full screen, picture in picture where the platform has it.
+
+```rust
+video("https://cdn.example.com/talk.mp4")
+    .header("Authorization", format!("Bearer {token}"))  // a video behind a token
+    .poster("talk.jpg")                                  // shown before it plays (web)
+    .autoplay(true).muted(true).looping(true)           // a silent, looping clip
+    .controls(false)                                     // no controls (on by default)
+    .on_ended(cx.listener(|this, _: &EndedEvent, cx| this.next(cx)))
+    .alt("Keynote")
+    .w_full()
+```
+
+- `src` is a URL, a file path or an app asset (`video("intro.mp4")`), like `picture`. Embedded assets are written once to the app's cache, since players read files.
+- **Size.** Like a picture: give it a width and its height follows the video's own ratio once its size is known; until then it is 16:9. A height or an `aspect_ratio` wins.
+- `poster` is drawn on the web; native players show the video's first frame instead.
+- `on_ended` runs when the playback reaches the end (not while `looping`).
+- Autoplay with sound is up to the platform: browsers only start a video by itself if it is `muted`.
+
+| | Player | Headers |
+|---|---|---|
+| macOS | `AVPlayerView` (inline controls) | `AVURLAsset` HTTP header fields |
+| iOS, iPadOS, tvOS, visionOS | `AVPlayerViewController` | `AVURLAsset` HTTP header fields |
+| Android | `VideoView` with a `MediaController` | `setVideoURI(uri, headers)` |
+| Linux | `GtkVideo` (GStreamer) | not sent |
+| Web | `<video playsinline preload="metadata">` | the server, as `<base>/_prism/media/<id>` |
+| watchOS | nothing is drawn | |
+
+On the web a video with headers goes through the server like a picture behind a token: the token stays on the server, the URL is bound to the session, and the server forwards the browser's byte ranges (at most 4 MiB per answer), so seeking works without loading the whole file. Only `video/*`, `audio/*` and `application/octet-stream` answers are passed on.
 
 ## Lists the user reorders
 

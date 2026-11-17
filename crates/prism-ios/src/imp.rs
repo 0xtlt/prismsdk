@@ -120,6 +120,15 @@ pub(crate) fn dispatch_event(event: UiEvent) {
     dispatch(event);
 }
 
+/// Lays everything out again, measures included (a video's size became
+/// known, #207).
+pub(crate) fn relayout_all() {
+    with_state(|s| {
+        s.renderer.mark_all_dirty();
+        s.relayout();
+    });
+}
+
 pub(crate) fn dispatch(event: UiEvent) {
     with_state(|s| {
         let patches = s.runtime.dispatch(event);
@@ -1339,6 +1348,14 @@ pub enum View {
     Radio(Rc<crate::choice::RadioGroup>),
     /// A web view (#62): a box holding the bridge's WKWebView host.
     Web(Rc<WebBox>),
+    /// A video (#207): a box holding the bridge's AVKit player.
+    Video(Rc<VideoBox>),
+}
+
+/// A video: its box and the bridge's player host.
+pub struct VideoBox {
+    view: Retained<UIView>,
+    host: Option<prism_native::apple::video::VideoHost>,
 }
 
 /// A web view: its box, and the bridge's host view filling it (`None` on
@@ -1374,6 +1391,7 @@ impl View {
             View::Checkbox(c) => &c.button,
             View::Radio(r) => &r.view,
             View::Web(w) => &w.view,
+            View::Video(v) => &v.view,
         }
     }
 
@@ -1835,6 +1853,18 @@ impl Widgets for UiKit {
                 }
                 View::Web(Rc::new(WebBox { view, host }))
             }
+            NodeKind::Video => {
+                let view = UIView::new(mtm);
+                view.setClipsToBounds(true);
+                let host = prism_native::apple::video::VideoHost::new(id);
+                if let Some(h) = &host {
+                    // SAFETY: the bridge's host is a UIView, kept alive by `host`.
+                    let v = unsafe { &*(h.view_ptr() as *const UIView) };
+                    v.setFrame(view.bounds());
+                    view.addSubview(v);
+                }
+                View::Video(Rc::new(VideoBox { view, host }))
+            }
             NodeKind::Picture => {
                 let v = UIImageView::new(mtm);
                 v.setClipsToBounds(true);
@@ -2046,7 +2076,8 @@ impl Widgets for UiKit {
             | View::Picture(_)
             | View::Toggle(_)
             | View::Overlay(_)
-            | View::Web(_) => {}
+            | View::Web(_)
+            | View::Video(_) => {}
             View::Checkbox(c) => c.set_style(font(style), text_color.clone()),
             View::Radio(r) => r.set_style(font(style), text_color.clone()),
             #[cfg(not(target_os = "tvos"))]
@@ -2141,6 +2172,14 @@ impl Widgets for UiKit {
                     h.load(text);
                 }
             }
+            // A video's source (#207): assets and files as file URLs.
+            View::Video(v) => {
+                if let Some(h) = &v.host
+                    && let Some(url) = prism_native::images::media_url(text, &self.image_sources)
+                {
+                    h.load(&url);
+                }
+            }
             // The app's value reaches a focused field too (#73).
             View::Input(f) => {
                 if f.text().map(|t| t.to_string()).unwrap_or_default() != text {
@@ -2194,6 +2233,11 @@ impl Widgets for UiKit {
     fn set_config(&mut self, view: &View, _kind: NodeKind, config: &str) {
         use prism_core::controls::{DateConfig, PickerConfig, SliderConfig};
         match view {
+            View::Video(v) => {
+                if let Some(h) = &v.host {
+                    h.configure(&prism_core::VideoConfig::decode(config));
+                }
+            }
             View::Web(w) => {
                 if let Some(h) = &w.host {
                     h.configure(config);
@@ -2468,6 +2512,14 @@ impl Widgets for UiKit {
             View::Timer(l) => l.sizeThatFits(limit),
             // A progress bar takes the width it is given.
             View::Progress(_) => CGSize::new(max_width.unwrap_or(120.) as f64, 4.),
+            // The video's size, once AVKit knows it (#207).
+            View::Video(v) => match &v.host {
+                Some(h) => {
+                    let (w, h) = prism_native::apple::video::measure(h, max_width);
+                    CGSize::new(w as f64, h as f64)
+                }
+                None => CGSize::ZERO,
+            },
             // Natural size of the loaded image, scaled to the available width.
             View::Picture(v) => match v.image() {
                 Some(img) => {

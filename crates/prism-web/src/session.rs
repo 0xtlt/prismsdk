@@ -655,6 +655,8 @@ pub(crate) fn parse_event(v: &Value) -> Option<UiEvent> {
             v.get("origin")?.as_str()?.to_string(),
         )),
         "webload" => Some(UiEvent::WebLoad(id, v.get("url")?.as_str()?.to_string())),
+        // A video played to the end (#207).
+        "ended" => Some(UiEvent::Ended(id)),
         _ => None,
     }
 }
@@ -1187,6 +1189,11 @@ impl Encoder {
                         Some(urls) => urls(text),
                         None => crate::html::picture_url(text),
                     },
+                    // A video (#207): its asset or proxy URL (ranges).
+                    Some(NodeKind::Video) => crate::html::media_url(&match &self.asset_urls {
+                        Some(urls) => urls(text),
+                        None => crate::html::picture_url(text),
+                    }),
                     _ => text.clone(),
                 };
                 json!({ "op": "text", "id": id, "text": text })
@@ -1233,6 +1240,18 @@ impl Encoder {
                 "menu": menu.as_ref().map(|m| serde_json::from_str::<Value>(&m.to_json()).unwrap_or(Value::Null)),
             }),
             Patch::SetConfig { id, config } => {
+                // A video's poster is a picture: its URL (#207).
+                let config = match self.kinds.get(id) {
+                    Some(NodeKind::Video) => {
+                        let mut c = prism_core::VideoConfig::decode(config);
+                        c.poster = c.poster.map(|p| match &self.asset_urls {
+                            Some(urls) => urls(&p),
+                            None => crate::html::picture_url(&p),
+                        });
+                        c.encode()
+                    }
+                    _ => config.clone(),
+                };
                 json!({ "op": "config", "id": id, "config": config })
             }
             Patch::SetIcon { id, icon } => {

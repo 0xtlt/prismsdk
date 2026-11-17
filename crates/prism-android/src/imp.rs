@@ -698,6 +698,16 @@ pub extern "system" fn Java_dev_prism_PrismHost_nativeEvent(
                 s.safe = edges("safe");
                 Vec::new()
             }
+            // A video's size, once its player knows it (#207).
+            Some("video_size") => {
+                if let (Some(id), Some(w), Some(h)) =
+                    (v.get("id").and_then(Value::as_u64), num("w"), num("h"))
+                    && s.renderer.widgets.video_sizes.insert(id, (w, h)) != Some((w, h))
+                {
+                    s.renderer.mark_all_dirty();
+                }
+                Vec::new()
+            }
             // The area a stack, tab view or modal gives its screens.
             Some("viewport") => {
                 if let (Some(id), Some(w), Some(h)) =
@@ -759,6 +769,8 @@ fn parse(v: &Value) -> Option<UiEvent> {
             None => UiEvent::Back(id, v.get("depth")?.as_u64()? as usize),
         },
         "menu" => UiEvent::MenuSelect(id),
+        // A video played to the end (#207).
+        "ended" => UiEvent::Ended(id),
         "alert" => UiEvent::AlertAction(id, v.get("index")?.as_u64()? as usize),
         "scroll" => UiEvent::Scroll(
             id,

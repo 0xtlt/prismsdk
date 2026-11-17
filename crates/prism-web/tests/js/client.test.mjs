@@ -1393,6 +1393,23 @@ test("the app scrolls a scroll view by or to an offset (#193)", () => {
   ]);
 });
 
+test("a video plays with the browser's controls and says when it ended (#207)", () => {
+  const page = live([create(1, "video"), textOp(1, "/app/_prism/media/abc"),
+    { op: "config", id: 1, config: "controls muted poster=/assets/talk.jpg" }, root(1)]);
+  const v = page.node(1);
+  assert.equal(v.localName, "video");
+  assert.equal(v.getAttribute("src"), "/app/_prism/media/abc");
+  assert.equal(v.controls, true);
+  assert.equal(v.muted, true);
+  assert.equal(v.autoplay, false);
+  assert.equal(v.poster, "/assets/talk.jpg");
+  v.dispatchEvent({ type: "ended" });
+  assert.deepEqual(lastSent(page), { t: "ended", id: 1 });
+  page.ws.deliver({ t: "patch", p: [{ op: "config", id: 1, config: "loop" }] });
+  assert.equal(v.controls, false);
+  assert.equal(v.loop, true);
+});
+
 test("the header bar hides for a whole stack or a bare screen", () => {
   const page = live([
     create(1, "stack"), { op: "value", id: 1, value: 0 }, create(2, "screen"), textOp(2, "Home"),

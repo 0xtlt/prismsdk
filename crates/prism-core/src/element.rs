@@ -113,6 +113,13 @@ pub enum NodeKind {
     /// rich editing show a text area of the plain value instead (see
     /// `prism_native::Widgets::rich_input`).
     RichInput,
+
+    // --- Media (#207) ---
+    /// A video with the platform's controls ([`video`](crate::video())):
+    /// its text is the source (then one `name: value` header per line), its
+    /// config a [`VideoConfig`](crate::video::VideoConfig). Its natural size
+    /// is the video's. Reports `UiEvent::Ended`.
+    Video,
 }
 
 impl NodeKind {
@@ -146,6 +153,7 @@ impl NodeKind {
             NodeKind::Scene3d => "scene3d",
             NodeKind::WebView => "web_view",
             NodeKind::RichInput => "rich_input",
+            NodeKind::Video => "video",
         }
     }
 
@@ -608,6 +616,8 @@ pub struct VNode {
     )>,
     /// The upload of what was dropped on the node (#199).
     pub on_drop_progress: Option<Handler<crate::events::DropProgress>>,
+    /// A video's playback reached the end (#207).
+    pub on_ended: Option<Handler<crate::video::EndedEvent>>,
 }
 
 impl VNode {
@@ -662,6 +672,7 @@ impl VNode {
             consume_keys: Vec::new(),
             on_drop_files: None,
             on_drop_progress: None,
+            on_ended: None,
         }
     }
 }

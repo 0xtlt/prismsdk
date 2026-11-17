@@ -205,6 +205,11 @@ public final class PrismHost {
         boolean focusRing, touchInstalled;
         // Pointer, keys, hit testing, overlays (PrismInput).
         int pointerMask;
+        // A video (#207): its player, controls and playback options.
+        android.widget.VideoView video;
+        android.widget.MediaController videoControls;
+        String videoSource;
+        boolean videoControlsOn = true, videoAutoplay, videoLoop, videoMuted;
         // Keys its `on_key_down` takes from the focused field (#181).
         java.util.Set<String> consumeKeys;
         // A pinch over the node (#133): whether it is on, the fingers'
@@ -447,6 +452,7 @@ public final class PrismHost {
                 // A screen's bar buttons (#30).
                 if (n.kind.equals("screen")) PrismNavbar.config(n, p.optString("config"), p.optJSONArray("glyphs"));
                 else if (n.kind.equals("web_view")) PrismWeb.config(n, p.optString("config"));
+                else if (n.kind.equals("video")) PrismVideo.config(n, p.optString("config"));
                 else PrismForms.config(n, p.optString("config"));
                 break;
             case "runs": {
@@ -699,6 +705,7 @@ public final class PrismHost {
             case "shape": n.view = new PrismShape(activity); break;
             case "scene3d": n.view = new PrismScene(activity, id); break;
             case "web_view": n.view = PrismWeb.create(n); break;
+            case "video": n.view = PrismVideo.create(n); break;
             case "overlay": {
                 // Takes no room; its parent is the popover's anchor. The
                 // content is shown in a dialog or popup (PrismInput.open).
@@ -901,6 +908,7 @@ public final class PrismHost {
                 break;
             }
             case "picture": loadPicture((ImageView) n.view, text); break;
+            case "video": PrismVideo.load(n, text); break;
             case "screen": {
                 Node parent = parentOf(n);
                 if (parent != null && parent.kind.equals("stack")) refreshStack(parent);
