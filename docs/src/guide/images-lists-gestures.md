@@ -18,6 +18,8 @@ binary with `Application::embedded_assets`, found first (web, macOS, iOS and
 Linux; Android and watchOS read the bundle's folder only). See
 [Assets compiled into the binary](../platforms/web.md#assets-compiled-into-the-binary).
 
+**Size.** A picture with no size is as wide as the image (narrower if it must) and as tall as its ratio says. Give it only a width (`w(px(480.))`, `w_full()`, a percentage) and its height follows the image's own ratio once it has loaded (#208), wider than the image included: portrait photos, screenshots and panoramas keep their proportions without the app reading their dimensions. Until it loads it is 0 high: give it a `min_h` (or an `aspect_ratio` you know) to hold the place. A height, or an `aspect_ratio`, wins over the image's ratio (then `fill()` crops and `fit()` letterboxes).
+
 ## Lists the user reorders
 
 `ReorderList` is a column of rows of a fixed height that the user puts in another order (#168): a task list, a playlist, the widgets of a dashboard. Each row gets a handle (three bars) at its trailing edge. Dragging the handle lifts the row and the others make room. With the focus on the handle (Tab, a click), ↑ and ↓ move the row by one, and Home and End move it to the top or the bottom. The rest of the row is the app's own: its clicks, its scrolling.
