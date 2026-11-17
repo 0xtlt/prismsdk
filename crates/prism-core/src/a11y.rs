@@ -127,6 +127,18 @@ pub struct Accessibility {
     pub disabled: bool,
     /// Removed from the accessibility tree (decorations, duplicates).
     pub hidden: bool,
+    /// The tooltip shown while the pointer rests on it (#216).
+    pub tooltip: Option<Tooltip>,
+}
+
+/// A tooltip (#216): the platform's own, with its own delay.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Tooltip {
+    /// This text.
+    Text(String),
+    /// A text's full content, only while it is cut short (an ellipsis, a
+    /// line clamp): see [`Accessible::tooltip_when_truncated`].
+    WhenTruncated,
 }
 
 impl Accessibility {
@@ -202,6 +214,26 @@ pub trait Accessible: Sized {
     /// Hides a decorative element from screen readers.
     fn accessibility_hidden(mut self) -> Self {
         self.a11y_mut().hidden = true;
+        self
+    }
+
+    /// The platform's tooltip, shown while the pointer rests on the element
+    /// (#216): `toolTip` on macOS, `UIToolTipInteraction` on iPadOS and
+    /// visionOS (iOS 15), the `title` attribute on the web, GTK tooltips,
+    /// `setTooltipText` on Android. Screen readers read it as a description.
+    /// Touch screens without a pointer show none (Android: a long press).
+    fn tooltip(mut self, text: impl Into<String>) -> Self {
+        self.a11y_mut().tooltip = Some(Tooltip::Text(text.into()));
+        self
+    }
+
+    /// On a text: its full content as a tooltip, only while it is
+    /// truncated (`truncate()`, `line_clamp(n)`), checked by the platform
+    /// as the pointer rests on it (#216). The full title of a tab or a
+    /// sidebar row without measuring it. macOS, Linux, Android and the web;
+    /// iPadOS shows none.
+    fn tooltip_when_truncated(mut self) -> Self {
+        self.a11y_mut().tooltip = Some(Tooltip::WhenTruncated);
         self
     }
 

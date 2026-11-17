@@ -896,13 +896,21 @@ impl Widgets for RemoteWidgets {
     }
 
     fn set_accessibility(&mut self, id: &NodeId, a11y: &Accessibility) {
-        self.ops.push(json!({
+        let mut op = json!({
             "op": "a11y", "id": id, "label": a11y.label, "hidden": a11y.hidden,
             "role": a11y.role.map(|r| r.aria()), "value": a11y.value,
             // Switches, checkboxes and drawn radios (#84): on or chosen.
             "checked": a11y.checked,
             "selected": a11y.is_selected(),
-        }));
+        });
+        // A tooltip (#216): its text, or `true` for the full text while
+        // ellipsized.
+        match &a11y.tooltip {
+            Some(prism_core::Tooltip::Text(t)) => op["tip"] = json!(t),
+            Some(prism_core::Tooltip::WhenTruncated) => op["tip"] = json!(true),
+            None => {}
+        }
+        self.ops.push(op);
     }
 
     fn set_value(&mut self, id: &NodeId, value: f64) {

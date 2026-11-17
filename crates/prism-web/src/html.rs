@@ -266,6 +266,10 @@ pub fn a11y_attrs(kind: NodeKind, a: &Accessibility) -> String {
     if a.hidden {
         out.push_str(r#" aria-hidden="true""#);
     }
+    // A tooltip (#216); one shown while truncated waits for the client.
+    if let Some(prism_core::Tooltip::Text(t)) = &a.tooltip {
+        let _ = write!(out, r#" title="{}""#, escape(t));
+    }
     if matches!(
         kind,
         NodeKind::Stack | NodeKind::Tabs | NodeKind::Tab | NodeKind::Screen

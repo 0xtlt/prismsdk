@@ -971,3 +971,23 @@ test("inert styles and hit testing", () => {
   page.ws.deliver({ t: "patch", p: [{ op: "style", id: 2, css: "" }] });
   assert.equal(el.hasAttribute("inert"), false);
 });
+
+test("tooltips: the browser's title, or the full text only while truncated (#216)", () => {
+  const page = live([
+    { op: "create", id: 2, kind: "view" }, { op: "create", id: 3, kind: "text" }, { op: "text", id: 3, text: "Quarterly report" },
+    ...root([2, 3]),
+  ]);
+  const a11y = (id, extra) => page.ws.deliver({ t: "patch", p: [{ op: "a11y", id, a11y: { hidden: false, ...extra } }] });
+  a11y(2, { tip: "Close tab" });
+  assert.equal(page.node(2).getAttribute("title"), "Close tab");
+  a11y(2, {});
+  assert.equal(page.node(2).getAttribute("title"), null, "removed with the tooltip");
+  const t = page.node(3);
+  a11y(3, { tip: true });
+  Object.assign(t, { scrollWidth: 100, clientWidth: 100, scrollHeight: 20, clientHeight: 20 });
+  t.dispatchEvent({ type: "mouseenter", bubbles: false });
+  assert.equal(t.getAttribute("title"), null, "fits: no tooltip");
+  t.scrollWidth = 240;
+  t.dispatchEvent({ type: "mouseenter", bubbles: false });
+  assert.equal(t.getAttribute("title"), "Quarterly report");
+});

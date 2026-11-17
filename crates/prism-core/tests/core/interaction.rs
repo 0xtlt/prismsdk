@@ -1220,3 +1220,35 @@ fn middle_clicks_reach_on_aux_click() {
     assert_eq!(tabs.opened, 1);
     assert_eq!(ClickEvent.button, PointerButton::Primary);
 }
+
+/// #216: tooltips travel with the accessibility description.
+struct Tipped;
+
+impl Render for Tipped {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        div().child(div().tooltip("Close tab")).child(
+            text("A very long title")
+                .truncate()
+                .tooltip_when_truncated(),
+        )
+    }
+}
+
+#[test]
+fn tooltips_reach_the_backend() {
+    let h = Harness::new(|cx| {
+        let root = cx.new_entity(|_| Tipped);
+        mount(cx, root);
+    });
+    let root = h.host.root.unwrap();
+    let close = h.host.get(root).children[0];
+    let title = h.host.find(|n| n.kind == NodeKind::Text).unwrap();
+    assert_eq!(
+        h.host.get(close).a11y.tooltip,
+        Some(prism_core::Tooltip::Text("Close tab".into()))
+    );
+    assert_eq!(
+        h.host.get(title).a11y.tooltip,
+        Some(prism_core::Tooltip::WhenTruncated)
+    );
+}

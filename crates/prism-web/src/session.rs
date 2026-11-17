@@ -1310,6 +1310,13 @@ impl Encoder {
                 if a11y.current {
                     a["current"] = json!(true);
                 }
+                // A tooltip (#216): its text, or `true` for the full text
+                // while truncated.
+                match &a11y.tooltip {
+                    Some(prism_core::Tooltip::Text(t)) => a["tip"] = json!(t),
+                    Some(prism_core::Tooltip::WhenTruncated) => a["tip"] = json!(true),
+                    None => {}
+                }
                 json!({ "op": "a11y", "id": id, "a11y": a })
             }
             Patch::SetRoot { id } => json!({ "op": "root", "id": id }),
