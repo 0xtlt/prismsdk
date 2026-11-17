@@ -205,6 +205,10 @@ public final class PrismHost {
         boolean focusRing, touchInstalled;
         // Pointer, keys, hit testing, overlays (PrismInput).
         int pointerMask;
+        // A pinch over the node (#133): whether it is on, the fingers'
+        // spread at the last report and where it was when they settled.
+        boolean scaling;
+        float pinchSpan, pinchFrom;
         boolean keysLocal, keysGlobal, noHit, inert, a11yHidden, dragging;
         // Text field selections (#86): reported (`selev`), last sent, a report posted.
         boolean selectEvents, selPosted;
