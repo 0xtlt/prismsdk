@@ -1014,3 +1014,57 @@ fn the_app_scrolls_a_scroll_view_by_or_to_an_offset() {
     h.dispatch(UiEvent::Scroll(list, 120., 300.));
     assert_eq!(h.rt.app.scroll_offset("list"), Some(120.));
 }
+
+/// #201: rows as tall as their content, the app's handle at the leading edge.
+#[test]
+fn rows_of_their_own_height_take_the_slot_their_edge_reaches() {
+    let mut h = Harness::new(|cx| {
+        let root = cx.new_entity(|_| Tasks {
+            names: vec!["Write", "Test", "Ship"],
+            list: None,
+        });
+        let list = ReorderList::with_options(
+            cx,
+            ["w", "t", "s"],
+            prism_core::ReorderOptions::default()
+                .handle_leading()
+                .handle(|_, _| text("≡")),
+            move |i, app| text(app.read(&root).names[i]),
+            move |from, to, app| {
+                root.update(app, |t, _| {
+                    let name = t.names.remove(from);
+                    t.names.insert(to, name);
+                })
+            },
+        );
+        root.update(cx, |t, _| t.list = Some(list));
+        mount(cx, root);
+    });
+    // The app's grip, before each row's content.
+    let first = handle(&h, 1);
+    assert_eq!(h.host.child_texts(first), ["≡"]);
+    let row = h.host.find(|n| n.children.contains(&first)).expect("a row");
+    assert_eq!(h.host.get(row).children.first(), Some(&first), "leading");
+    // Measured: a tall first row (100), two short ones (20).
+    let rows: Vec<_> = h
+        .host
+        .mounted()
+        .into_iter()
+        .filter(|id| h.host.get(*id).reports_layout)
+        .collect();
+    assert_eq!(rows.len(), 3);
+    for (id, height) in rows.iter().zip([100., 20., 20.]) {
+        h.dispatch(UiEvent::Layout(
+            *id,
+            prism_core::Rect::new(0., 0., 300., height),
+        ));
+    }
+    // 30 points down: its bottom (130) passed the next row's middle (110),
+    // not the last one's (130). A 40-point row would not have moved.
+    h.dispatch(UiEvent::Drag(first, drag(DragPhase::Start, 4.)));
+    h.dispatch(UiEvent::Drag(first, drag(DragPhase::Move, 30.)));
+    let list = h.rt.app.read(&h.root::<Tasks>()).list.unwrap();
+    assert_eq!(h.rt.app.read(&list).dragging(), Some((0, 1)));
+    h.dispatch(UiEvent::Drag(first, drag(DragPhase::End, 30.)));
+    assert_eq!(names(&h), ["Test", "Write", "Ship"]);
+}

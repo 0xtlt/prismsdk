@@ -44,6 +44,23 @@ list.update(cx, |l, cx| l.set_keys(new_keys, cx)); // rows added or removed
 - Screen readers hear each handle as a "Reorder" button with the row's position ("2 of 5") and a hint about the arrow keys, in the app's language (`prism.reorder`, `prism.reorder_hint` and `prism.reorder_position` in the app's translations override them).
 - It is built on Prism's drag and key events, so it works wherever they do: the web, macOS, iOS, iPadOS, visionOS, Android and Linux. tvOS has no drag, but the keys still move rows there.
 
+`ReorderList::with_options` lays it out differently (#201): rows as tall as their content, and the app's own handle at either edge.
+
+```rust
+ReorderList::with_options(
+    cx,
+    keys,
+    ReorderOptions::default()                                   // rows follow their content
+        .handle_leading()                                       // the handle before the row
+        .handle(|_, _| icon("line.3.horizontal").text_color(rgb(0x8e8e93))),
+    render_row,
+    on_move,
+)
+```
+
+- `ReorderOptions::row_height(h)` gives every row the same height, like `ReorderList::new`. Without it, each row is as tall as its content: the list measures the rows after layout (`on_layout`, #192) and places the drop slot and the rows making room by their real heights. A row is passed once its leading edge (its bottom going down, its top going up) reaches the row's middle.
+- `.handle(|i, app| …)` replaces the three bars with the app's content (at least 44 points wide, for touch). Prism keeps its button role, its label, position and hint, the arrow keys and the drag around it. `.handle_leading()` puts it at the leading edge.
+
 ## Pictures behind a token
 
 `picture(url).header(name, value)` (any number of headers) loads a remote image that needs credentials, such as a per-user rendering behind the API's bearer token:
