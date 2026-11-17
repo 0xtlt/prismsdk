@@ -1556,11 +1556,57 @@ impl UiKit {
     }
 }
 
+/// A picture's fit (`true`: letterboxed) and focal point (#218).
+type PictureScale = (bool, Option<(f32, f32)>);
+
+thread_local! {
+    /// Each picture's scaling.
+    static PICTURES: RefCell<HashMap<NodeId, PictureScale>> = RefCell::default();
+}
+
+/// Scales picture `v` as it asks: fitted, filled around the center, or
+/// filled around a focal point (#218): the part of the image that covers
+/// the frame (`contentsRect`), stretched over it.
+fn refocus(v: &UIImageView) {
+    use objc2_ui_kit::UIViewContentMode as M;
+    let (fit, at) = PICTURES.with(|p| {
+        p.borrow()
+            .get(&(v.tag() as NodeId))
+            .copied()
+            .unwrap_or_default()
+    });
+    let b = v.bounds().size;
+    let crop = match (fit, at, v.image()) {
+        (false, Some(at), Some(img)) => {
+            // SAFETY: a plain property read.
+            let s = unsafe { img.size() };
+            Some(prism_core::cover_crop(
+                (s.width as f32, s.height as f32),
+                (b.width as f32, b.height as f32),
+                at,
+            ))
+        }
+        _ => None,
+    };
+    v.setContentMode(match (fit, crop) {
+        (true, _) => M::ScaleAspectFit,
+        (false, Some(_)) => M::ScaleToFill,
+        (false, None) => M::ScaleAspectFill,
+    });
+    let (x, y, w, h) = crop.unwrap_or((0., 0., 1., 1.));
+    v.layer()
+        .setContentsRect(objc2_core_foundation::CGRect::new(
+            objc2_core_foundation::CGPoint::new(x as f64, y as f64),
+            objc2_core_foundation::CGSize::new(w as f64, h as f64),
+        ));
+}
+
 impl UiKit {
     /// Shows `src` in `view`: from memory, or loaded on a background thread.
     fn load_picture(&mut self, id: NodeId, view: &Retained<UIImageView>, src: &str) {
         if let Some(img) = self.image_cache.get(src) {
             view.setImage(Some(img));
+            refocus(view);
             return;
         }
         view.setImage(None);
@@ -1596,6 +1642,7 @@ impl UiKit {
         };
         for (_, view) in waiting {
             view.setImage(Some(&img));
+            refocus(&view);
         }
         self.image_cache.insert(src.to_string(), img);
     }
@@ -2237,6 +2284,15 @@ impl Widgets for UiKit {
     fn set_config(&mut self, view: &View, _kind: NodeKind, config: &str) {
         use prism_core::controls::{DateConfig, PickerConfig, SliderConfig};
         match view {
+            // A filled picture's focal point (#218).
+            View::Picture(v) => {
+                let at = prism_core::picture_position(config);
+                PICTURES.with(|p| {
+                    p.borrow_mut().entry(view.id()).or_default().1 =
+                        (at != (0.5, 0.5)).then_some(at)
+                });
+                refocus(v);
+            }
             View::Video(v) => {
                 if let Some(h) = &v.host {
                     h.configure(&prism_core::VideoConfig::decode(config));
@@ -2630,6 +2686,9 @@ impl Widgets for UiKit {
         }
         place(view.ui(), x, y, w, h);
         crate::layout::framed(view.id());
+        if let View::Picture(v) = view {
+            refocus(v);
+        }
         #[cfg(not(target_os = "tvos"))]
         if let View::DatePicker(p) = view {
             crate::dates::framed(p);
@@ -2810,11 +2869,10 @@ impl Widgets for UiKit {
                 }
             }
             View::Progress(p) => p.setProgress_animated(value as f32, true),
-            View::Picture(v) => v.setContentMode(if value == 1. {
-                objc2_ui_kit::UIViewContentMode::ScaleAspectFit
-            } else {
-                objc2_ui_kit::UIViewContentMode::ScaleAspectFill
-            }),
+            View::Picture(v) => {
+                PICTURES.with(|p| p.borrow_mut().entry(view.id()).or_default().0 = value == 1.);
+                refocus(v);
+            }
             #[cfg(not(target_os = "tvos"))]
             View::Scroll(s) => {
                 if let Some(rc) = s.refreshControl() {

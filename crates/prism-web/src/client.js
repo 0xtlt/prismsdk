@@ -2208,6 +2208,8 @@
   }
   function applyConfig(el, config) {
     const kind = el.dataset.kind;
+    // A picture's focal point (#218): `object-position:…;`.
+    if (kind === "picture") { el.style.objectPosition = config.replace(/^object-position:|;$/g, ""); return; }
     if (kind === "screen") {
       // Bar buttons and title size (#30): its stack shows them.
       el._barConfig = config;

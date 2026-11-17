@@ -1802,6 +1802,34 @@ pub const STACK_CLOSABLE: u32 = 1;
 /// Bit 2 of a stack's value: no header bar ([`Stack::header`]).
 pub const STACK_NO_HEADER: u32 = 2;
 
+/// A picture's [`object_position`](Picture::object_position) from its
+/// config (#218): `(x, y)` in fractions, the center when unset.
+pub fn picture_position(config: &str) -> (f32, f32) {
+    let mut it = config.split_whitespace().map(|v| v.parse::<f32>().ok());
+    match (it.next().flatten(), it.next().flatten()) {
+        (Some(x), Some(y)) if x.is_finite() && y.is_finite() => (x.clamp(0., 1.), y.clamp(0., 1.)),
+        _ => (0.5, 0.5),
+    }
+}
+
+/// The part of an image of `image` size that covers a frame of `frame`
+/// size around the focal point `at` (#218): `(x, y, width, height)` in
+/// fractions of the image, from its top-left corner. What
+/// [`fill`](Picture::fill) shows with an
+/// [`object_position`](Picture::object_position).
+pub fn cover_crop(image: (f32, f32), frame: (f32, f32), at: (f32, f32)) -> (f32, f32, f32, f32) {
+    let (iw, ih) = image;
+    let (fw, fh) = frame;
+    if iw <= 0. || ih <= 0. || fw <= 0. || fh <= 0. {
+        return (0., 0., 1., 1.);
+    }
+    // The image scaled to cover: the share of each side the frame shows.
+    let scale = (fw / iw).max(fh / ih);
+    let w = (fw / (iw * scale)).min(1.);
+    let h = (fh / (ih * scale)).min(1.);
+    ((1. - w) * at.0, (1. - h) * at.1, w, h)
+}
+
 /// An image from a URL (`https://…`) or an app asset (`"logo.png"`, served
 /// from `assets/`). Decorative unless given [`Picture::alt`].
 pub fn picture(src: impl Into<String>) -> Picture {
@@ -1904,6 +1932,19 @@ impl Picture {
     /// Scales to fill the frame, cropping (default).
     pub fn fill(mut self) -> Self {
         self.0.value = Some(0.);
+        self
+    }
+    /// The point a [`fill`](Self::fill)ed picture is cropped around (#218),
+    /// like CSS `object-position`: `x` and `y` from 0 (left, top) to 1
+    /// (right, bottom), the center (0.5, 0.5) by default. A cover's focal
+    /// point, which the user can drag. No effect with [`fit`](Self::fit).
+    pub fn object_position(mut self, x: f32, y: f32) -> Self {
+        let (x, y) = (x.clamp(0., 1.), y.clamp(0., 1.));
+        self.0.config = if (x, y) == (0.5, 0.5) {
+            String::new()
+        } else {
+            format!("{x} {y}")
+        };
         self
     }
 }

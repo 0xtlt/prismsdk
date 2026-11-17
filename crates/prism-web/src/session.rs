@@ -1281,6 +1281,8 @@ impl Encoder {
                         });
                         c.encode()
                     }
+                    // A picture's focal point (#218): CSS for the page.
+                    Some(NodeKind::Picture) => crate::html::object_position_css(config),
                     _ => config.clone(),
                 };
                 json!({ "op": "config", "id": id, "config": config })

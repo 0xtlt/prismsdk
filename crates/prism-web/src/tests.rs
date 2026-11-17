@@ -4133,3 +4133,32 @@ fn named_groups_have_their_own_rules() {
         b.to_html()
     );
 }
+
+/// #218: a picture's focal point is CSS `object-position`, served and live.
+#[test]
+fn pictures_keep_their_focal_point() {
+    let mut b = HtmlBackend::default();
+    b.apply(&[
+        create(3, NodeKind::Picture),
+        set_text(3, "https://example.com/cover.jpg"),
+        Patch::SetConfig {
+            id: 3,
+            config: "0.2 1".into(),
+        },
+        Patch::SetRoot { id: 3 },
+    ]);
+    let (html, css) = b.to_html_and_css();
+    assert!(
+        format!("{html}{css}").contains("object-position:20% 100%"),
+        "{html} {css}"
+    );
+    let mut e = Encoder::default();
+    let out = e.encode(&[
+        create(3, NodeKind::Picture),
+        Patch::SetConfig {
+            id: 3,
+            config: "0.2 1".into(),
+        },
+    ]);
+    assert_eq!(out[1]["config"], json!("object-position:20% 100%;"));
+}

@@ -21,6 +21,14 @@ Linux; Android and watchOS read the bundle's folder only). See
 
 **Size.** A picture with no size is as wide as the image (narrower if it must) and as tall as its ratio says. Give it only a width (`w(px(480.))`, `w_full()`, a percentage) and its height follows the image's own ratio once it has loaded (#208), wider than the image included: portrait photos, screenshots and panoramas keep their proportions without the app reading their dimensions. Until it loads it is 0 high: give it a `min_h` (or an `aspect_ratio` you know) to hold the place. A height, or an `aspect_ratio`, wins over the image's ratio (then `fill()` crops and `fit()` letterboxes).
 
+**Focal point.** A filled picture crops around its center; `.object_position(x, y)` (fractions, `0, 0` the top-left corner) crops around another point, like CSS `object-position` (#218): a page cover the user repositions, a banner, a thumbnail of a face.
+
+```rust
+picture(cover).w_full().h(px(220.)).object_position(0.5, self.cover_y)   // drag to set cover_y
+```
+
+The web sets `object-position`; macOS and iOS show the part of the image that covers the frame (`contentsRect`), Android a matrix, Linux a paintable that covers the picture around the point. It follows the frame as it resizes, and has no effect with `fit()`.
+
 ## Videos
 
 `video(src)` plays a video with the platform's own player and controls (#207): play and pause, the timeline, full screen, picture in picture where the platform has it.
