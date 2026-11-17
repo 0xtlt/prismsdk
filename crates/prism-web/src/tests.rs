@@ -4182,3 +4182,21 @@ fn link_buttons_are_anchors() {
     assert!(html.contains(r#"href="/cart""#), "{html}");
     assert!(html.contains(">Checkout</a>"), "{html}");
 }
+
+/// #228: auto margins are CSS `auto` on their logical sides.
+#[test]
+fn auto_margins_are_css_auto() {
+    let s = Style::default().mx_auto().mt(4.).mb_auto();
+    let c = css(NodeKind::View, &s);
+    assert!(
+        c.contains("margin-block:4px auto;margin-inline:auto auto;"),
+        "{c}"
+    );
+    let pushed = css(NodeKind::View, &Style::default().ml_auto());
+    assert!(pushed.contains("margin-inline:auto 0px;"), "{pushed}");
+    let plain = css(NodeKind::View, &Style::default().m(2.));
+    assert!(
+        plain.contains("margin-block:2px 2px;margin-inline:2px 2px;"),
+        "{plain}"
+    );
+}

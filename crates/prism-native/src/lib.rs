@@ -1960,11 +1960,19 @@ pub fn to_taffy(s: &Style, kind: NodeKind) -> taffy::Style {
         bottom: LengthPercentage::length(e.bottom),
         left: LengthPercentage::length(e.left),
     };
+    // `auto` sides take the free space (#228).
+    let side = |v: f32, auto: bool| {
+        if auto {
+            LengthPercentageAuto::auto()
+        } else {
+            LengthPercentageAuto::length(v)
+        }
+    };
     let margin = Rect {
-        top: LengthPercentageAuto::length(s.margin.top),
-        right: LengthPercentageAuto::length(s.margin.right),
-        bottom: LengthPercentageAuto::length(s.margin.bottom),
-        left: LengthPercentageAuto::length(s.margin.left),
+        top: side(s.margin.top, s.margin_auto[0]),
+        right: side(s.margin.right, s.margin_auto[1]),
+        bottom: side(s.margin.bottom, s.margin_auto[2]),
+        left: side(s.margin.left, s.margin_auto[3]),
     };
     let mut style = taffy::Style {
         display: if s.display_none {
