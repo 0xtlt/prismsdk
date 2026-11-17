@@ -471,6 +471,16 @@ final class PrismForms {
     static void inputConfig(PrismHost.Node n, String config) {
         EditText e = (EditText) n.view;
         boolean multi = n.kind.equals("text_area");
+        // A text area's minimum lines (#235): `rows=N`, three by default.
+        if (multi) {
+            int rows = 3;
+            for (String t : config.split("\n", -1)[0].split(" ")) {
+                if (t.startsWith("rows=")) {
+                    try { rows = Math.max(1, Integer.parseInt(t.substring(5))); } catch (NumberFormatException ignored) {}
+                }
+            }
+            e.setMinLines(rows);
+        }
         boolean secure = false, autocorrect = true;
         String keyboard = "", ret = "", cap = "sentences";
         int max = -1;

@@ -418,6 +418,11 @@ impl HtmlBackend {
         if kind == NodeKind::Picture && !n.config.is_empty() {
             css += &object_position_css(&n.config);
         }
+        // A text area's minimum lines (#235).
+        let rows = prism_core::controls::InputConfig::decode(&n.config).min_rows();
+        if kind == NodeKind::TextArea && rows != 3 {
+            css += &format!("--prism-rows:{rows};");
+        }
         // A view or a text made a link is an `<a href>` (not an island,
         // whose tag is its custom element's): a link by itself, focusable.
         let link = match (&n.link, &n.island, kind) {
@@ -540,7 +545,7 @@ impl HtmlBackend {
             NodeKind::TextArea => {
                 let _ = write!(
                     out,
-                    r#"<textarea name="prism-{id}" {attrs} class="prism-textarea" rows="3" placeholder="{}"{}>{}</textarea>"#,
+                    r#"<textarea name="prism-{id}" {attrs} class="prism-textarea" rows="{rows}" placeholder="{}"{}>{}</textarea>"#,
                     escape(&n.placeholder),
                     input_attrs(&n.config),
                     escape(&n.text)

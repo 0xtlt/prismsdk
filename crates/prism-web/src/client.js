@@ -2217,6 +2217,13 @@
     el.spellcheck = !noCorrect;
     set("maxlength", get("max"));
     if (el.tagName === "INPUT") setSuggestions(el, lines.slice(1));
+    // A text area's minimum lines (#235).
+    if (el.tagName === "TEXTAREA") {
+      const rows = Number(get("rows")) || 3;
+      el.rows = rows;
+      if (rows === 3) el.style.removeProperty("--prism-rows"); else el.style.setProperty("--prism-rows", rows);
+      grow(el);
+    }
   }
   function applyConfig(el, config) {
     const kind = el.dataset.kind;

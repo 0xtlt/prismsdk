@@ -416,6 +416,8 @@ pub struct TextArea {
     placeholder: gtk::Label,
     /// The text's insets: left, right, top, bottom (its padding, #14).
     pad: Cell<(i32, i32, i32, i32)>,
+    /// Its minimum lines (#235).
+    pub rows: Cell<u32>,
 }
 
 pub fn text_area(id: NodeId) -> Rc<TextArea> {
@@ -462,6 +464,7 @@ pub fn text_area(id: NodeId) -> Rc<TextArea> {
         view,
         placeholder,
         pad: Cell::new((AREA_PAD_X, AREA_PAD_X, AREA_PAD_Y, AREA_PAD_Y)),
+        rows: Cell::new(3),
     })
 }
 
@@ -533,7 +536,7 @@ impl TextArea {
         layout.set_wrap(gtk::pango::WrapMode::WordChar);
         let text_h = layout.pixel_size().1 as f32;
         let line = self.view.create_pango_layout(Some("Ag")).pixel_size().1 as f32;
-        text_h.max(line * 3.) + (t + b) as f32
+        text_h.max(line * self.rows.get().max(1) as f32) + (t + b) as f32
     }
 }
 

@@ -955,7 +955,11 @@ fn an_explicit_zero_padding_replaces_a_fields_own_inset() {
     // A text area: no default inset, and its three-line minimum without it.
     let c = css(NodeKind::TextArea, &style(text_area().p(0.)));
     assert!(c.contains("padding-block:0px 0px;"), "{c}");
-    assert!(c.contains("min-height:3lh;"), "{c}");
+    // Its minimum lines (#235), three by default.
+    assert!(
+        c.contains("min-height:calc(var(--prism-rows, 3) * 1lh);"),
+        "{c}"
+    );
     let c = css(NodeKind::TextArea, &style(text_area()));
     assert!(!c.contains("min-height"), "{c}");
     // No padding given: the default inset stays.
@@ -4198,5 +4202,32 @@ fn auto_margins_are_css_auto() {
     assert!(
         plain.contains("margin-block:2px 2px;margin-inline:2px 2px;"),
         "{plain}"
+    );
+}
+
+/// #235: a text area's minimum lines.
+#[test]
+fn text_areas_start_at_their_rows() {
+    let mut b = HtmlBackend::default();
+    b.apply(&[
+        create(2, NodeKind::TextArea),
+        Patch::SetConfig {
+            id: 2,
+            config: "rows=1".into(),
+        },
+        Patch::SetRoot { id: 2 },
+    ]);
+    let (html, css) = b.to_html_and_css();
+    assert!(html.contains(r#"rows="1""#), "{html}");
+    assert!(
+        format!("{html}{css}").contains("--prism-rows:1;"),
+        "{html} {css}"
+    );
+    let mut b = HtmlBackend::default();
+    b.apply(&[create(2, NodeKind::TextArea), Patch::SetRoot { id: 2 }]);
+    let html = b.to_html();
+    assert!(
+        html.contains(r#"rows="3""#) && !html.contains("--prism-rows"),
+        "{html}"
     );
 }

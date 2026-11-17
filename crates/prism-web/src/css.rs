@@ -298,7 +298,7 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
             // Its padding replaces the default one, which `prism.css`'s
             // three-line minimum counts (#69).
             if s.has_padding() && s.min_height == Length::Auto {
-                w.push_str("min-height:3lh;");
+                w.push_str("min-height:calc(var(--prism-rows, 3) * 1lh);");
             }
         }
         NodeKind::TextInput => {
