@@ -28,7 +28,11 @@ borders, corners and pictures are layer properties ([Performance](../performance
 - **Storage:** Application Support; iCloud key-value storage needs a Mac
   provisioning profile ([Data](../guide/data.md)).
 - **Accessibility:** `NSAccessibility` roles and labels, Full Keyboard Access,
-  focus ring ([Accessibility](../guide/accessibility.md)).
+  focus ring ([Accessibility](../guide/accessibility.md)). Like native
+  buttons, a clickable view takes the focus (a click included) only with
+  Full Keyboard Access on, or from `cx.focus`; a view with `on_key_down`
+  takes it on click but shows the ring only when focused from the keyboard
+  or by the app (#177).
 - **Background:** `NSBackgroundActivityScheduler` ([Background execution](../guide/background.md)).
 
 The Swift bridge (`crates/prism-apple-build/apple/Bridge`) is compiled by
