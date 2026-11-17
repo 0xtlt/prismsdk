@@ -217,6 +217,71 @@ impl PickImages {
 
 // --- Files (#18) ---------------------------------------------------------------
 
+/// Options for [`AsyncApp::pick_folder`] (#225).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct PickFolder {
+    /// The picker's prompt (macOS, Linux): "Import".
+    pub title: Option<String>,
+}
+
+impl PickFolder {
+    /// A folder picker with the platform's prompt.
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// The picker's prompt, where the platform shows one (macOS, Linux).
+    pub fn title(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into());
+        self
+    }
+}
+
+/// A folder the user picked, with every file in it (#225).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PickedFolder {
+    /// The folder's name (`Export`).
+    pub name: String,
+    /// Its path where the files are read in place (macOS, Linux); `None`
+    /// where they were copied for the app (iOS, Android, the web).
+    pub path: Option<String>,
+    /// Its files, sub-folders included (hidden ones left out). Each one's
+    /// `name` is its path in the folder (`notes/2024/a.md`, `/` between
+    /// folders); read them with [`PickedFile::read`].
+    pub files: Vec<PickedFile>,
+}
+
+/// The MIME type a backend gives the folder itself, first in the files it
+/// answers a [`DeviceCall::PickFolder`] with.
+pub const FOLDER_MIME: &str = "inode/directory";
+
+impl PickedFolder {
+    /// The folder in a backend's answer (#225): the folder first
+    /// ([`FOLDER_MIME`]), then its files named by their path in it. Without
+    /// that first entry (the web), the names start with the folder's name,
+    /// which is taken off. Hidden files and folders (`.git`, `.DS_Store`)
+    /// are left out. `None` for no answer at all.
+    pub fn from_files(mut files: Vec<PickedFile>) -> Option<PickedFolder> {
+        let (name, path) = match files.first() {
+            Some(f) if f.mime == FOLDER_MIME => {
+                let f = files.remove(0);
+                (f.name, (!f.path.is_empty()).then_some(f.path))
+            }
+            Some(f) => {
+                let root = f.name.split('/').next().unwrap_or_default().to_string();
+                for f in &mut files {
+                    if let Some(rest) = f.name.strip_prefix(&format!("{root}/")) {
+                        f.name = rest.to_string();
+                    }
+                }
+                (root, None)
+            }
+            None => return None,
+        };
+        files.retain(|f| !f.name.split('/').any(|s| s.starts_with('.')));
+        Some(PickedFolder { name, path, files })
+    }
+}
+
 /// Options for [`AsyncApp::pick_files`]: which files, and how many.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct PickFiles {
@@ -544,6 +609,9 @@ pub enum DeviceCall {
     /// Opens the file picker (`<input type=file>`, `UIDocumentPickerViewController`,
     /// `NSOpenPanel`, `GtkFileChooserNative`, `ACTION_OPEN_DOCUMENT`).
     PickFiles(PickFiles),
+    /// Opens a folder picker (#225); answers `Files`: the folder first
+    /// ([`FOLDER_MIME`]), then its files named by their path in it.
+    PickFolder(PickFolder),
     /// The clipboard's text.
     ReadClipboard,
     /// Starts a stream; events use this call's id.
@@ -1048,6 +1116,28 @@ impl AsyncApp {
                 path: (!f.path.is_empty()).then(|| std::path::PathBuf::from(f.path)),
                 name: f.name,
             })),
+            Err(DeviceError::Cancelled) => Ok(None),
+            Err(e) => Err(e),
+            Ok(other) => Err(DeviceError::Failed(format!("unexpected answer {other:?}"))),
+        }
+    }
+
+    /// Lets the user choose a folder and gives its files with their tree
+    /// (#225): an export of documents, a folder of images. `None` if they
+    /// cancel. Each file's `name` is its path in the folder; read it with
+    /// [`PickedFile::read`]. Natively on the desktop the files are read in
+    /// place ([`PickedFolder::path`]); on iOS, iPadOS, Android and the web
+    /// they are copied for the app (the web uploads them, like
+    /// [`pick_files`](Self::pick_files)). `NSOpenPanel` on macOS, the Files
+    /// app's folder picker on iOS, `ACTION_OPEN_DOCUMENT_TREE` on Android,
+    /// GTK's folder chooser on Linux, `<input webkitdirectory>` on the web;
+    /// [`DeviceError::Unavailable`] on tvOS and watchOS.
+    pub async fn pick_folder(
+        &self,
+        options: PickFolder,
+    ) -> Result<Option<PickedFolder>, DeviceError> {
+        match self.device(DeviceCall::PickFolder(options)).await {
+            Ok(DeviceValue::Files(f)) => Ok(PickedFolder::from_files(f)),
             Err(DeviceError::Cancelled) => Ok(None),
             Err(e) => Err(e),
             Ok(other) => Err(DeviceError::Failed(format!("unexpected answer {other:?}"))),

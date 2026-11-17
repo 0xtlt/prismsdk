@@ -1120,7 +1120,12 @@ impl PlatformServices for WebServices {
             PlatformRequest::WatchActivityPushToStart => return,
             PlatformRequest::Device { id, call } => match self.security(id, call) {
                 // The page sends the chosen files in chunks (#112).
-                Some(msg) if matches!(msg["call"].as_str(), Some("pick_files" | "pick_images")) => {
+                Some(msg)
+                    if matches!(
+                        msg["call"].as_str(),
+                        Some("pick_files" | "pick_images" | "pick_folder")
+                    ) =>
+                {
                     self.uploads.expect(id);
                     msg
                 }
@@ -1458,6 +1463,8 @@ pub(crate) fn device_json(id: u64, call: prism_core::DeviceCall) -> Value {
         C::PickFiles(o) => {
             json!({ "call": "pick_files", "types": o.types, "multiple": o.multiple })
         }
+        // A folder and its files, uploaded like picked files (#225).
+        C::PickFolder(_) => json!({ "call": "pick_folder" }),
         C::ReadClipboard => json!({ "call": "paste" }),
         C::Haptic(h) => json!({ "call": "haptic", "kind": h.name() }),
         C::CopyText(t) => json!({ "call": "copy", "text": t }),

@@ -1199,6 +1199,8 @@ pub mod device {
             DeviceCall::PickFiles(o) => {
                 json!({ "call": "pick_files", "types": o.types, "multiple": o.multiple })
             }
+            // A folder and its files (#225).
+            DeviceCall::PickFolder(o) => json!({ "call": "pick_folder", "title": o.title }),
             DeviceCall::ReadClipboard => json!({ "call": "paste" }),
             DeviceCall::Haptic(h) => json!({ "call": "haptic", "kind": h.name() }),
             DeviceCall::CopyText(t) => json!({ "call": "copy", "text": t }),

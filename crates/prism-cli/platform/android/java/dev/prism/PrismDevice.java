@@ -91,6 +91,7 @@ final class PrismDevice {
             case "stop": stop(id); break;
             case "pick_images": pick(id, c.optInt("limit"), c.optBoolean("camera")); break;
             case "pick_files": pickFiles(id, c.optJSONArray("types"), c.optBoolean("multiple")); break;
+            case "pick_folder": pickFolder(id); break;
             case "haptic": haptic(c.optString("kind")); reply(id, null, null); break;
             case "copy": {
                 ClipboardManager cb = (ClipboardManager) ctx().getSystemService(Context.CLIPBOARD_SERVICE);
@@ -363,6 +364,81 @@ final class PrismDevice {
         }
     }
 
+    /** Folder picks waiting for the user (#225), by request code. */
+    static final Map<Integer, Long> folders = new HashMap<>();
+
+    /**
+     * A folder and its files (#225): the storage picker for a tree
+     * (ACTION_OPEN_DOCUMENT_TREE), then every file under it copied into the
+     * cache, named by its path in the folder; the folder comes first
+     * (`inode/directory`).
+     */
+    static void pickFolder(long id) {
+        int code = 30_000 + nextCode++;
+        folders.put(code, id);
+        try {
+            PrismHost.activity.startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), code);
+        } catch (Exception e) {
+            folders.remove(code);
+            fail(id, "unavailable", false);
+        }
+    }
+
+    static void folderResult(long id, int result, Intent data) {
+        Uri tree = data != null ? data.getData() : null;
+        if (result != android.app.Activity.RESULT_OK || tree == null) {
+            fail(id, "cancelled", false);
+            return;
+        }
+        new Thread(() -> {
+            try {
+                String rootId = android.provider.DocumentsContract.getTreeDocumentId(tree);
+                Uri root = android.provider.DocumentsContract.buildDocumentUriUsingTree(tree, rootId);
+                String name = "folder";
+                try (Cursor c = ctx().getContentResolver().query(root, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+                    if (c != null && c.moveToFirst()) name = c.getString(0);
+                }
+                JSONArray files = new JSONArray();
+                JSONObject folder = new JSONObject();
+                folder.put("path", "");
+                folder.put("name", name);
+                folder.put("mime", "inode/directory");
+                folder.put("size", 0);
+                files.put(folder);
+                walkFolder(tree, rootId, "", files);
+                reply(id, "files", files);
+            } catch (Exception e) {
+                fail(id, e.getMessage() != null ? e.getMessage() : "could not read the folder", false);
+            }
+        }).start();
+    }
+
+    static void walkFolder(Uri tree, String docId, String prefix, JSONArray out) throws JSONException {
+        String dir = android.provider.DocumentsContract.Document.MIME_TYPE_DIR;
+        Uri children = android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(tree, docId);
+        String[] cols = {
+            android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            android.provider.DocumentsContract.Document.COLUMN_MIME_TYPE,
+        };
+        try (Cursor c = ctx().getContentResolver().query(children, cols, null, null, null)) {
+            while (c != null && c.moveToNext()) {
+                String child = c.getString(0), name = c.getString(1), mime = c.getString(2);
+                if (name == null || name.startsWith(".")) continue;
+                String rel = prefix.isEmpty() ? name : prefix + "/" + name;
+                if (dir.equals(mime)) {
+                    walkFolder(tree, child, rel, out);
+                } else {
+                    JSONObject f = copy(android.provider.DocumentsContract.buildDocumentUriUsingTree(tree, child), true);
+                    if (f != null) {
+                        f.put("name", rel);
+                        out.put(f);
+                    }
+                }
+            }
+        }
+    }
+
     /** Files waiting for the document the user creates (#210), by request code. */
     static final Map<Integer, Object[]> saving = new HashMap<>();
 
@@ -438,6 +514,11 @@ final class PrismDevice {
     }
 
     static void activityResult(int code, int result, Intent data) {
+        Long folder = folders.remove(code);
+        if (folder != null) {
+            folderResult(folder, result, data);
+            return;
+        }
         Object[] save = saving.remove(code);
         if (save != null) {
             savedResult(save, result, data);

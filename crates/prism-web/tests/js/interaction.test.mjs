@@ -1021,3 +1021,24 @@ test("a text area starts at its minimum rows (#235)", () => {
   assert.equal(t.rows, 3);
   assert.equal(t.style.getPropertyValue("--prism-rows"), "");
 });
+
+
+test("a picked folder's files go up named by their path in it (#225)", async () => {
+  const page = live([{ op: "create", id: 2, kind: "view" }, ...root([2])]);
+  const inputs = [];
+  const make = page.document.createElement.bind(page.document);
+  page.document.createElement = (tag) => { const el = make(tag); if (tag === "input") inputs.push(el); return el; };
+  page.ws.deliver({ t: "device", id: 7, call: "pick_folder" });
+  assert.equal(inputs[0].webkitdirectory, true);
+  const file = (path, text) => {
+    const bytes = new TextEncoder().encode(text);
+    return { name: path.split("/").pop(), webkitRelativePath: path, type: "text/markdown", size: bytes.length,
+      slice: (a, b) => ({ arrayBuffer: async () => bytes.slice(a, b).buffer }) };
+  };
+  inputs[0].files = [file("Export/a.md", "a"), file("Export/notes/b.md", "b")];
+  inputs[0].dispatchEvent({ type: "change" });
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  const start = page.ws.sent.find((m) => m.t === "upload_start" && m.id === 7);
+  assert.deepEqual(start.files.map((f) => f.name), ["Export/a.md", "Export/notes/b.md"]);
+  assert.deepEqual(page.ws.sent.filter((m) => m.id === 7).at(-1), { t: "device_reply", id: 7, uploaded: true });
+});
