@@ -1167,3 +1167,56 @@ fn keys_are_taken_from_a_field_at_the_caret_edges_declared() {
     assert_eq!(CaretEdges::decode("sfl"), CaretEdges::caret(0, 3, 0, 1));
     assert_eq!(CaretEdges::caret(3, 3, 0, 1).encode(), "efl");
 }
+
+/// #215: tabs closed with the middle button; `on_click` stays the primary's.
+struct Tabs {
+    closed: Vec<String>,
+    opened: u32,
+}
+
+impl Render for Tabs {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        div().child(
+            div()
+                .on_click(cx.listener(|this, _: &ClickEvent, _| this.opened += 1))
+                .on_aux_click(cx.listener(|this, e: &ClickEvent, _| {
+                    this.closed.push(format!("{:?} {}", e.button, e.count))
+                })),
+        )
+    }
+}
+
+#[test]
+fn middle_clicks_reach_on_aux_click() {
+    use prism_core::events::pointer_mask::AUX_CLICK;
+    let mut h = Harness::new(|cx| {
+        let root = cx.new_entity(|_| Tabs {
+            closed: Vec::new(),
+            opened: 0,
+        });
+        mount(cx, root);
+    });
+    let root = h.host.root.unwrap();
+    let tab = h.host.get(root).children[0];
+    assert_eq!(h.host.get(tab).pointer_mask & AUX_CLICK, AUX_CLICK);
+    h.dispatch(UiEvent::AuxClick(
+        tab,
+        ClickEvent {
+            button: PointerButton::Middle,
+            ..ClickEvent
+        },
+    ));
+    h.dispatch(UiEvent::AuxClick(
+        tab,
+        ClickEvent {
+            button: PointerButton::BACK,
+            count: 2,
+            ..ClickEvent
+        },
+    ));
+    h.dispatch(UiEvent::Click(tab));
+    let tabs = h.root::<Tabs>().read(&h.rt.app);
+    assert_eq!(tabs.closed, ["Middle 1", "Other(3) 2"]);
+    assert_eq!(tabs.opened, 1);
+    assert_eq!(ClickEvent.button, PointerButton::Primary);
+}

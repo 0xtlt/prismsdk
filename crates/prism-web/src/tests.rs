@@ -2623,6 +2623,24 @@ fn pointer_drag_and_key_messages_become_ui_events() {
         ev(json!({"t": "key", "id": 0, "key": "Escape"})),
         Some(UiEvent::Key(None, _))
     ));
+    // Middle, back and forward clicks (#215).
+    let Some(UiEvent::AuxClick(4, c)) = ev(
+        json!({"t": "auxclick", "id": 4, "button": "middle", "x": 1, "y": 2, "mods": 2, "n": 1}),
+    ) else {
+        panic!("aux click")
+    };
+    assert_eq!(c.button, prism_core::PointerButton::Middle);
+    assert!(c.modifiers.control && c.position == Some(Point::new(1., 2.)));
+    let Some(UiEvent::AuxClick(4, c)) =
+        ev(json!({"t": "auxclick", "id": 4, "button": "other:3", "x": 0, "y": 0}))
+    else {
+        panic!("back")
+    };
+    assert_eq!(c.button, prism_core::PointerButton::BACK);
+    assert_eq!(
+        ev(json!({"t": "auxclick", "id": 4, "button": "primary", "x": 0, "y": 0})),
+        None
+    );
     // Clicks with keys and a count, key releases (#159).
     let Some(UiEvent::ClickWith(4, c)) =
         ev(json!({"t": "click", "id": 4, "x": 1, "y": 2, "mods": 8, "n": 2}))

@@ -457,6 +457,11 @@ impl Runtime {
                     h(&e, &mut self.app);
                 }
             }
+            UiEvent::AuxClick(id, e) => {
+                if let Some(h) = self.reconciler.aux_click_handler(id) {
+                    h(&e, &mut self.app);
+                }
+            }
             UiEvent::Magnify(id, e) => {
                 if let Some(h) = self.reconciler.magnify_handler(id) {
                     h(&e, &mut self.app);

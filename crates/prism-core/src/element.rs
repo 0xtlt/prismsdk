@@ -194,6 +194,10 @@ pub struct ClickEvent {
     /// with the user's double-click speed (#159): 2 on a double click, 3 on
     /// a triple click. 1 for a single click and from the keyboard.
     pub count: u32,
+    /// The button (#215): [`Primary`](crate::PointerButton::Primary) for
+    /// `on_click` (and from the keyboard), the middle, back or forward
+    /// button for [`on_aux_click`](Div::on_aux_click).
+    pub button: crate::events::PointerButton,
 }
 
 impl Default for ClickEvent {
@@ -216,6 +220,7 @@ pub const ClickEvent: ClickEvent = ClickEvent {
     position: None,
     modifiers: crate::events::Modifiers::NONE,
     count: 1,
+    button: crate::events::PointerButton::Primary,
 };
 
 /// Fired on every edit of a text input, with its new content.
@@ -605,6 +610,8 @@ pub struct VNode {
     // --- Wheel and pinch (#133) ---
     /// Wheel and trackpad scrolling over the node.
     pub on_wheel: Option<Handler<crate::events::WheelEvent>>,
+    /// Clicks with the middle, back or forward button (#215).
+    pub on_aux_click: Option<Handler<ClickEvent>>,
     /// Pinches over the node.
     pub on_magnify: Option<Handler<crate::events::MagnifyEvent>>,
 
@@ -665,6 +672,7 @@ impl VNode {
             on_web_message: None,
             on_web_load: None,
             on_wheel: None,
+            on_aux_click: None,
             on_magnify: None,
             on_layout: None,
             track_layout: false,
@@ -2054,6 +2062,24 @@ impl Div {
     /// [`on_drag`](Div::on_drag)); an iPad's trackpad or mouse scrolls here.
     pub fn on_wheel(mut self, handler: Handler<crate::events::WheelEvent>) -> Self {
         self.0.on_wheel = Some(handler);
+        self
+    }
+
+    /// Called for a click with the middle button (pressing the wheel), or
+    /// the back or forward button of a mouse (#215): close a tab with the
+    /// middle button, open a row in a new tab. `e.button` says which.
+    /// `on_click` stays for the primary button, the context menu for the
+    /// secondary one. On the web the middle button's autoscroll is kept
+    /// from starting over the element. Desktop and the web: touch screens
+    /// have no such buttons.
+    ///
+    /// ```ignore
+    /// tab.on_aux_click(cx.listener(move |this, e: &ClickEvent, cx| {
+    ///     if e.button == PointerButton::Middle { this.close_tab(i, cx) }
+    /// }))
+    /// ```
+    pub fn on_aux_click(mut self, handler: Handler<ClickEvent>) -> Self {
+        self.0.on_aux_click = Some(handler);
         self
     }
 

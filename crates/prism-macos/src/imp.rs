@@ -1111,6 +1111,7 @@ define_class!(
                         position: Some(at),
                         modifiers: crate::interact::modifiers(event.modifierFlags()),
                         count: event.clickCount().max(1) as u32,
+                        button: prism_core::PointerButton::Primary,
                     },
                 ));
             }
@@ -1190,7 +1191,8 @@ impl PrismView {
     fn button_down(&self, event: &NSEvent, button: prism_core::PointerButton) -> bool {
         let iv = self.ivars();
         let bit = button.drag_bit();
-        if bit == 0 || iv.pointer_mask.get() & bit == 0 || iv.dragging.get() {
+        let drags = bit != 0 && iv.pointer_mask.get() & bit != 0;
+        if !(drags || self.aux_clicks(button)) || iv.dragging.get() {
             return false;
         }
         iv.drag_button.set(button);
@@ -1206,6 +1208,11 @@ impl PrismView {
         let Some(start) = iv.other_press.get() else {
             return false;
         };
+        // Taken for a click only (#215): no drag.
+        let bit = iv.drag_button.get().drag_bit();
+        if bit == 0 || iv.pointer_mask.get() & bit == 0 {
+            return true;
+        }
         let at = event.locationInWindow();
         let (dx, dy) = (at.x - start.x, start.y - at.y);
         if !iv.dragging.get() {
@@ -1229,8 +1236,31 @@ impl PrismView {
         if dragged {
             let at = event.locationInWindow();
             self.drag(DragPhase::End, start, at.x - start.x, start.y - at.y);
+        } else if self.aux_clicks(iv.drag_button.get()) {
+            // A middle, back or forward click (#215), released over the view.
+            let p = self.convertPoint_fromView(event.locationInWindow(), None);
+            let b = self.bounds();
+            if p.x >= 0. && p.y >= 0. && p.x <= b.size.width && p.y <= b.size.height {
+                dispatch(UiEvent::AuxClick(
+                    iv.id.get(),
+                    prism_core::ClickEvent {
+                        position: Some(Point::new(p.x as f32, p.y as f32)),
+                        modifiers: crate::interact::modifiers(event.modifierFlags()),
+                        count: event.clickCount().max(1) as u32,
+                        button: iv.drag_button.get(),
+                    },
+                ));
+            }
         }
         Some(dragged)
+    }
+
+    /// Whether the view hears clicks of `button` (#215): the middle, back
+    /// and forward buttons, with `on_aux_click`.
+    fn aux_clicks(&self, button: prism_core::PointerButton) -> bool {
+        use prism_core::PointerButton as B;
+        self.ivars().pointer_mask.get() & prism_core::events::pointer_mask::AUX_CLICK != 0
+            && !matches!(button, B::Primary | B::Secondary)
     }
 
     /// Hover and move events through a tracking area (key window only).

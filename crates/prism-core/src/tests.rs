@@ -2659,6 +2659,7 @@ fn clicks_say_keys_and_count_and_key_ups_are_heard() {
         position: Some(Point::new(1., 2.)),
         modifiers: shift,
         count: 2,
+        button: crate::PointerButton::Primary,
     };
     find_text(
         &rt.dispatch(UiEvent::ClickWith(row, click)),

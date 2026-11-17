@@ -195,6 +195,7 @@ pub fn parse_input_event(v: &Value) -> Option<prism_core::UiEvent> {
                         position,
                         modifiers: Modifiers::from_bits(mods),
                         count,
+                        button: prism_core::PointerButton::Primary,
                     },
                 ),
                 Some(p) => UiEvent::ClickAt(id?, p),

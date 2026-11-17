@@ -104,6 +104,21 @@ div()
 | Android | `Layout.getLineForOffset` against `getLineCount` |
 | Linux (GTK) | `GtkTextView` iterator locations of the caret, the start and the end |
 
+## Middle, back and forward clicks
+
+`on_aux_click` hears clicks with the middle button (pressing the wheel) and a mouse's back and forward buttons (#215): close a tab with the middle button, open a row in a new tab.
+
+```rust
+tab.on_aux_click(cx.listener(move |this, e: &ClickEvent, cx| {
+    if e.button == PointerButton::Middle { this.close_tab(i, cx) }
+    if e.button == PointerButton::BACK { this.go_back(cx) }
+}))
+```
+
+- `ClickEvent::button` says which: `Middle`, `PointerButton::BACK` (`Other(3)`) or `FORWARD` (`Other(4)`), numbered like the web on every platform. `on_click` stays the primary button's (its `button` is `Primary`), the context menu the secondary one's.
+- A press that moves into a drag (`drag_buttons(&[Middle])`) is a drag, not a click.
+- Web: `auxclick`; the middle button's autoscroll and the back and forward buttons' navigation are kept from starting over the element. macOS: `otherMouseDown` / `otherMouseUp` (button numbers 2, 3, 4). Linux: `GtkGestureClick` (buttons 2, 8, 9). Touch screens have no such buttons; iPadOS and Android mice are not reported yet.
+
 ## Click keys and count, key releases
 
 ```rust
