@@ -242,6 +242,42 @@ test("consumed keys are reported, then kept from the focused field (#181)", () =
   assert.equal(fieldSaw, 2);
 });
 
+test("keys are taken from a field only at the caret edges declared (#211)", () => {
+  const page = live([
+    { op: "create", id: 2, kind: "view" }, { op: "keys", id: 2, local: true, global: false },
+    { op: "consume", id: 2, keys: ["ArrowUp@first-line", "ArrowDown@last-line", "ArrowLeft@start", "ArrowRight@end"] },
+    { op: "create", id: 3, kind: "text_area" },
+    { op: "children", id: 2, children: [3] },
+    ...root([2]),
+  ]);
+  const field = page.node(3);
+  field.value = "one\ntwo";
+  const key = (k, at, to = at) => {
+    field.selectionStart = at;
+    field.selectionEnd = to;
+    const e = { type: "keydown", key: k };
+    field.dispatchEvent(e);
+    return e;
+  };
+  // The caret on the first line: ↑ is the app's, ↓ moves the caret.
+  assert.equal(key("ArrowUp", 2).defaultPrevented, true);
+  assert.equal(lastSent(page).edges, "f");
+  assert.equal(key("ArrowDown", 2).defaultPrevented, false);
+  // On the last line: the other way round.
+  assert.equal(key("ArrowDown", 5).defaultPrevented, true);
+  assert.equal(key("ArrowUp", 5).defaultPrevented, false);
+  assert.equal(lastSent(page).edges, "l");
+  // ← at the start, → at the end; not inside.
+  assert.equal(key("ArrowLeft", 0).defaultPrevented, true);
+  assert.equal(lastSent(page).edges, "sf");
+  assert.equal(key("ArrowLeft", 1).defaultPrevented, false);
+  assert.equal(key("ArrowRight", 7).defaultPrevented, true);
+  assert.equal(lastSent(page).edges, "el");
+  // Text selected: the key acts on the selection.
+  assert.equal(key("ArrowUp", 0, 3).defaultPrevented, false);
+  assert.equal(lastSent(page).edges, "");
+});
+
 test("keys reach the focused element, and global listeners skip typing", () => {
   const page = live([
     { op: "create", id: 2, kind: "view" }, { op: "keys", id: 2, local: true, global: false },
@@ -264,8 +300,9 @@ test("keys reach the focused element, and global listeners skip typing", () => {
   key(field, "a");
   assert.equal(sent(page).length, n);
   key(field, "Escape");
-  // In a field, with its selection (#86).
-  assert.deepEqual(lastSent(page), { t: "key", id: 0, key: "Escape", mods: 0, repeat: false, sel: [0, 0] });
+  // In a field, with its selection (#86) and where its caret is (#211):
+  // an empty field's caret is at every edge.
+  assert.deepEqual(lastSent(page), { t: "key", id: 0, key: "Escape", mods: 0, repeat: false, sel: [0, 0], edges: "sefl" });
   key(field, "s", { metaKey: true });
   assert.equal(lastSent(page).mods, 8);
   key(page.document.body, "x");

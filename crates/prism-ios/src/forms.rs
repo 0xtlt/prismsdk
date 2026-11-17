@@ -80,6 +80,44 @@ fn selection_of<T: objc2_ui_kit::UITextInput + objc2::Message>(
     ))
 }
 
+/// Where `field`'s caret is (#211): at the start or end of its text, on
+/// its first or last visual line (wrapping included), comparing the caret's
+/// rectangle with those at the start and end of the text.
+fn edges_of<T: objc2_ui_kit::UITextInput + objc2::Message>(
+    field: &T,
+) -> Option<prism_core::CaretEdges> {
+    let r = field.selectedTextRange()?;
+    if !r.isEmpty() {
+        return Some(prism_core::CaretEdges::default());
+    }
+    let (begin, end, caret) = (
+        field.beginningOfDocument(),
+        field.endOfDocument(),
+        r.start(),
+    );
+    let rect = |p: &objc2_ui_kit::UITextPosition| field.caretRectForPosition(p);
+    let same_line = |a: objc2_core_foundation::CGRect, b: objc2_core_foundation::CGRect| {
+        let h = a.size.height.max(b.size.height).max(1.);
+        let mid = |r: objc2_core_foundation::CGRect| r.origin.y + r.size.height / 2.;
+        (mid(a) - mid(b)).abs() < h / 2.
+    };
+    let at = rect(&caret);
+    Some(prism_core::CaretEdges {
+        start: field.offsetFromPosition_toPosition(&begin, &caret) <= 0,
+        end: field.offsetFromPosition_toPosition(&caret, &end) <= 0,
+        first_line: same_line(at, rect(&begin)),
+        last_line: same_line(at, rect(&end)),
+    })
+}
+
+/// [`edges_of`] the focused text field or text view.
+pub fn current_edges(view: &objc2_ui_kit::UIView) -> Option<prism_core::CaretEdges> {
+    if let Some(f) = view.downcast_ref::<objc2_ui_kit::UITextField>() {
+        return edges_of(f);
+    }
+    edges_of(view.downcast_ref::<objc2_ui_kit::UITextView>()?)
+}
+
 /// Selects `start..end` (characters, clamped) in `field` showing `text`.
 fn select_in<T: objc2_ui_kit::UITextInput + objc2::Message>(
     field: &T,

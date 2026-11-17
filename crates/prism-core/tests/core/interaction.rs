@@ -894,17 +894,17 @@ fn consumed_keys_are_taken_from_the_focused_field_while_declared() {
         ["ArrowUp", "ArrowDown", "Enter"]
     );
     // The field's keys go up to its ancestors' declarations (#181).
-    assert!(h.rt.consumes_key(Some(field), "ArrowDown"));
-    assert!(h.rt.consumes_key(Some(root), "Enter"));
-    assert!(!h.rt.consumes_key(Some(field), "a"));
-    assert!(!h.rt.consumes_key(None, "ArrowDown"));
+    assert!(h.rt.consumes_key(Some(field), "ArrowDown", None));
+    assert!(h.rt.consumes_key(Some(root), "Enter", None));
+    assert!(!h.rt.consumes_key(Some(field), "a", None));
+    assert!(!h.rt.consumes_key(None, "ArrowDown", None));
     // The menu closed: the field gets its keys back, with one patch.
     let p = h.update::<Suggest>(|s| s.open = false).to_vec();
     assert!(p.contains(&Patch::SetConsumedKeys {
         id: root,
         keys: vec![]
     }));
-    assert!(!h.rt.consumes_key(Some(field), "ArrowDown"));
+    assert!(!h.rt.consumes_key(Some(field), "ArrowDown", None));
     // An unrelated render sends nothing.
     h.rt.app.refresh();
     let again = h.render().to_vec();
@@ -1104,4 +1104,66 @@ fn a_video_carries_its_source_config_and_hears_its_end() {
     assert_eq!(c.poster.as_deref(), Some("talk.jpg"));
     h.dispatch(UiEvent::Ended(v));
     assert_eq!(h.root::<Clip>().read(&h.rt.app).ended, 1);
+}
+
+/// #211: blocks of a document: ↑ leaves a field from its first visual line,
+/// ↓ from its last, ← from its start; elsewhere the field keeps them.
+struct Blocks;
+
+impl Render for Blocks {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .child(text_area().value("one\ntwo"))
+            .on_key_down(Rc::new(|_: &KeyEvent, _: &mut App| {}))
+            .consume_keys(&["Escape"])
+            .consume_key_at("ArrowUp", CaretEdge::FirstLine)
+            .consume_key_at("ArrowDown", CaretEdge::LastLine)
+            .consume_key_at("ArrowLeft", CaretEdge::Start)
+    }
+}
+
+#[test]
+fn keys_are_taken_from_a_field_at_the_caret_edges_declared() {
+    let h = Harness::new(|cx| {
+        let root = cx.new_entity(|_| Blocks);
+        mount(cx, root);
+    });
+    let root = h.host.root.unwrap();
+    let field = h.host.find(|n| n.kind == NodeKind::TextArea).unwrap();
+    assert_eq!(
+        h.host.get(root).consumed_keys,
+        [
+            "Escape",
+            "ArrowUp@first-line",
+            "ArrowDown@last-line",
+            "ArrowLeft@start"
+        ]
+    );
+    let first = CaretEdges::caret(1, 7, 0, 2);
+    let last = CaretEdges::caret(5, 7, 1, 2);
+    let start = CaretEdges::caret(0, 7, 0, 2);
+    let up = |e| h.rt.consumes_key(Some(field), "ArrowUp", Some(e));
+    assert!(up(first) && up(start) && !up(last));
+    assert!(h.rt.consumes_key(Some(field), "ArrowDown", Some(last)));
+    assert!(!h.rt.consumes_key(Some(field), "ArrowDown", Some(first)));
+    assert!(h.rt.consumes_key(Some(field), "ArrowLeft", Some(start)));
+    assert!(!h.rt.consumes_key(Some(field), "ArrowLeft", Some(first)));
+    // A selection: the key acts on it.
+    assert!(
+        !h.rt
+            .consumes_key(Some(field), "ArrowUp", Some(CaretEdges::default()))
+    );
+    // No field focused: nothing to keep the key from.
+    assert!(h.rt.consumes_key(Some(root), "ArrowUp", None));
+    assert!(h.rt.consumes_key(Some(field), "Escape", Some(last)));
+    assert!(!h.rt.consumes_key(Some(field), "ArrowRight", Some(last)));
+
+    // The handler hears the same.
+    let e = KeyEvent::new("ArrowUp").with_edges(first);
+    assert!(e.at(CaretEdge::FirstLine) && !e.at(CaretEdge::LastLine));
+    assert!(KeyEvent::new("ArrowUp").at(CaretEdge::FirstLine));
+    // The wire format.
+    assert_eq!(start.encode(), "sf");
+    assert_eq!(CaretEdges::decode("sfl"), CaretEdges::caret(0, 3, 0, 1));
+    assert_eq!(CaretEdges::caret(3, 3, 0, 1).encode(), "efl");
 }

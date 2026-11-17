@@ -4986,21 +4986,27 @@ fn install_key_monitor() {
         });
         if let Some(focused) = send {
             // In a text area or input: its selection before the key (#86).
-            let selection = view
+            let field = view
                 .as_ref()
                 .and_then(|v| v.downcast_ref::<NSTextView>())
-                .filter(|tv| crate::interact::text_node(tv).is_some())
-                .map(crate::interact::text_selection);
+                .filter(|tv| crate::interact::text_node(tv).is_some());
+            let selection = field.map(crate::interact::text_selection);
+            // And where its caret is (#211), for `consume_key_at`.
+            let edges = field.map(crate::interact::caret_edges);
             hold_key(&key, focused);
             // The app's alone (`consume_keys`, #181): the focused text view
             // does not also act on it (↑ moving its caret, ↵ submitting).
             // Decided as pressed: the handler may close the menu that
             // declared it (↵ picking a suggestion).
             let mut consumed = false;
-            with_state(|s| consumed = s.runtime.consumes_key(focused, &key.key));
+            with_state(|s| consumed = s.runtime.consumes_key(focused, &key.key, edges));
             dispatch(UiEvent::Key(
                 focused,
-                prism_core::KeyEvent { selection, ..key },
+                prism_core::KeyEvent {
+                    selection,
+                    edges,
+                    ..key
+                },
             ));
             if consumed {
                 return std::ptr::null_mut();

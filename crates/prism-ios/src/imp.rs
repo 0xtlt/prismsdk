@@ -76,9 +76,13 @@ thread_local! {
 /// Whether a key pressed in `focused` is the app's alone (`consume_keys`,
 /// #181).
 #[cfg(not(target_os = "tvos"))]
-pub(crate) fn consumes_key(focused: Option<NodeId>, key: &str) -> bool {
+pub(crate) fn consumes_key(
+    focused: Option<NodeId>,
+    key: &str,
+    edges: Option<prism_core::CaretEdges>,
+) -> bool {
     let mut out = false;
-    with_state(|s| out = s.runtime.consumes_key(focused, key));
+    with_state(|s| out = s.runtime.consumes_key(focused, key, edges));
     out
 }
 
