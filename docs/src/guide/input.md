@@ -42,7 +42,7 @@ cx.scroll_to("list", 0., 0., true);                             // back to the t
 
 | | Click position | Hover / move | Drag | Keys | Focus, scroll into view |
 |---|---|---|---|---|---|
-| Web | pointer events | `pointerenter` / `pointermove` (one per frame) | pointer capture (one move per frame) | `keydown` | `focus()`, `scrollIntoView` |
+| Web | pointer events | `pointerenter` / `pointermove` (one per frame) | followed on the window from the press (a fast flick off a small handle still starts, #194), pointer capture once it is a drag (one move per frame) | `keydown` | `focus()`, `scrollIntoView` |
 | macOS | mouse up | `NSTrackingArea` | mouse dragged | `keyDown`, a local event monitor | first responder, `scrollRectToVisible` |
 | iOS, iPadOS, visionOS | tap location | `UIHoverGestureRecognizer`; touches | `UIPanGestureRecognizer` | `pressesBegan` (hardware keyboards) | first responder, `scrollRectToVisible` |
 | tvOS | — | — | — | Siri Remote presses | focus engine, `scrollRectToVisible` |

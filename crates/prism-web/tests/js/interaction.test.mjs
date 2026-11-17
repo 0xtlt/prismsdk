@@ -49,6 +49,35 @@ test("hover and moves are reported, moves once per frame", () => {
   assert.equal(lastSent(page).phase, "leave");
 });
 
+test("a fast drag off a small handle still starts, and clicks inside stay clicks (#194)", () => {
+  const page = live([
+    { op: "create", id: 2, kind: "view" }, { op: "pointer", id: 2, mask: 4 },
+    { op: "create", id: 3, kind: "view" }, { op: "clickable", id: 3, on: true },
+    { op: "children", id: 2, children: [3] },
+    ...root([2]),
+  ]);
+  const handle = placed(page.node(2));
+  const body = page.document.body;
+  const p = (target, type, x, y) => target.dispatchEvent({ type, pointerId: 7, button: 0, clientX: x, clientY: y });
+  p(handle, "pointerdown", 60, 30);
+  // The first move past the slop is already off the handle.
+  p(body, "pointermove", 140, 30);
+  assert.deepEqual(lastSent(page), { t: "drag", id: 2, x: 10, y: 10, dx: 80, dy: 0, phase: "start" });
+  p(body, "pointerup", 150, 30);
+  assert.deepEqual(lastSent(page), { t: "drag", id: 2, phase: "end", x: 10, y: 10, dx: 90, dy: 0 });
+  // Released: moves elsewhere no longer drag it.
+  const n = sent(page).length;
+  p(body, "pointermove", 200, 30);
+  assert.equal(sent(page).length, n);
+  // A press on a child that does not move: no capture, the child clicks.
+  page.timers.splice(0).forEach((t) => t.fn());
+  p(page.node(3), "pointerdown", 61, 31);
+  p(page.node(3), "pointerup", 61, 31);
+  page.node(3).dispatchEvent({ type: "click", detail: 1, clientX: 61, clientY: 31 });
+  assert.equal(lastSent(page).t, "click");
+  assert.equal(lastSent(page).id, 3);
+});
+
 test("drags start past the slop, move once per frame, and do not click", () => {
   const page = live([
     { op: "create", id: 2, kind: "view" }, { op: "pointer", id: 2, mask: 4 }, { op: "clickable", id: 2, on: true },
