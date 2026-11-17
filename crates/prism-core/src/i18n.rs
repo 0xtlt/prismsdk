@@ -81,6 +81,22 @@ impl Locale {
         &self.0
     }
 
+    /// The best of `supported` for a user of this locale (#229): the same
+    /// tag, else the same language, else the first one. `None` when the
+    /// list is empty.
+    pub fn best_match(&self, supported: &[Locale]) -> Option<Locale> {
+        supported
+            .iter()
+            .find(|l| l.tag().eq_ignore_ascii_case(self.tag()))
+            .or_else(|| {
+                supported
+                    .iter()
+                    .find(|l| l.language().eq_ignore_ascii_case(self.language()))
+            })
+            .or_else(|| supported.first())
+            .cloned()
+    }
+
     /// `fr` for `fr-FR`.
     pub fn language(&self) -> &str {
         self.0.split('-').next().unwrap_or("en")
@@ -796,6 +812,23 @@ impl App {
         self.locale_override.as_ref()
     }
 
+    /// The app's own locale (#229), applied as the app starts (every
+    /// window, every web session): `locale`, else the best match of the
+    /// user's among `supported`. `PRISM_LOCALE` wins over both. What
+    /// `Application::locale` and `supported_locales` do.
+    pub fn apply_app_locale(&mut self, locale: Option<&Locale>, supported: &[Locale]) {
+        if std::env::var_os("PRISM_LOCALE").is_some_and(|v| !v.is_empty()) {
+            return;
+        }
+        let chosen = match locale {
+            Some(l) => Some(l.clone()),
+            None => self.environment().locale.best_match(supported),
+        };
+        if let Some(l) = chosen {
+            self.set_locale(Some(l));
+        }
+    }
+
     /// Overrides the system locale (`None` follows the system again).
     pub fn set_locale(&mut self, locale: Option<Locale>) {
         if self.locale_override != locale {
@@ -867,6 +900,17 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn best_matches_follow_the_tag_then_the_language() {
+        let l = |t: &str| Locale::new(t);
+        let supported = [l("fr-FR"), l("en-GB")];
+        assert_eq!(l("en-GB").best_match(&supported), Some(l("en-GB")));
+        assert_eq!(l("en-US").best_match(&supported), Some(l("en-GB")));
+        assert_eq!(l("de-DE").best_match(&supported), Some(l("fr-FR")));
+        assert_eq!(l("de-DE").best_match(&[]), None);
+    }
+
     use super::*;
 
     #[test]

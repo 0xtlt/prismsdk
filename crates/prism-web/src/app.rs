@@ -135,6 +135,37 @@ impl WebApp {
         self
     }
 
+    /// The app's language (#229), instead of the browser's
+    /// `Accept-Language`, for an app mounted in a host server (see
+    /// `prism::Application::locale`). `PRISM_LOCALE` still wins.
+    pub fn locale(self, tag: &str) -> Self {
+        self.app_locale(Some(prism_core::Locale::new(tag)), Vec::new())
+    }
+
+    /// The languages the app is written in (#229): the browser's when it is
+    /// one of them, else the closest, else the first one.
+    pub fn supported_locales<S: AsRef<str>>(self, tags: impl IntoIterator<Item = S>) -> Self {
+        let tags = tags
+            .into_iter()
+            .map(|t| prism_core::Locale::new(t.as_ref()))
+            .collect();
+        self.app_locale(None, tags)
+    }
+
+    fn app_locale(
+        self,
+        locale: Option<prism_core::Locale>,
+        supported: Vec<prism_core::Locale>,
+    ) -> Self {
+        self.configure(move |i| {
+            let init = i.init.clone();
+            i.init = Arc::new(move |app: &mut prism_core::App| {
+                app.apply_app_locale(locale.as_ref(), &supported);
+                init(app)
+            });
+        })
+    }
+
     /// Mount point (`/app`) when the app is nested in another server's routes.
     pub fn base_path(self, base: &str) -> Self {
         let base = format!("/{}", base.trim_matches('/'));

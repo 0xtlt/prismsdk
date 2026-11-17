@@ -143,6 +143,9 @@ pub struct Application {
     web: WebSetup,
     /// Smallest widths of the `Medium`, `Expanded` and `Large` size classes.
     breakpoints: Option<[f32; 3]>,
+    /// The app's own locale, or the ones it supports (#229).
+    locale: Option<prism_core::Locale>,
+    supported_locales: Vec<prism_core::Locale>,
 }
 
 /// What [`Application::web`] does to the web app.
@@ -175,6 +178,28 @@ impl Application {
     /// An app with default settings.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The app's language (#229), instead of the system's or the browser's:
+    /// an app written in one language says so. `<html lang>` and its
+    /// direction in the first paint, Prism's own texts (« Reconnecting… »,
+    /// pickers), `cx.locale()` and the app's translations follow it, on
+    /// every backend. `PRISM_LOCALE` still wins; `cx.set_locale` changes it
+    /// later.
+    pub fn locale(mut self, tag: &str) -> Self {
+        self.locale = Some(prism_core::Locale::new(tag));
+        self
+    }
+
+    /// The languages the app is written in (#229): the user's (the
+    /// browser's `Accept-Language`, the system's) when it is one of them,
+    /// the same language in another region, else the first one.
+    pub fn supported_locales<S: AsRef<str>>(mut self, tags: impl IntoIterator<Item = S>) -> Self {
+        self.supported_locales = tags
+            .into_iter()
+            .map(|t| prism_core::Locale::new(t.as_ref()))
+            .collect();
+        self
     }
 
     /// Window title (native) or page `<title>` (web).
@@ -292,10 +317,12 @@ impl Application {
         init: impl Fn(&mut App) -> Entity<V> + Send + Sync + 'static,
     ) -> prism_web::WebApp {
         let breakpoints = self.breakpoints;
+        let (locale, supported) = (self.locale.clone(), self.supported_locales.clone());
         let init: AppInit = Arc::new(move |app: &mut App| {
             if let Some(b) = breakpoints {
                 app.set_breakpoints(b);
             }
+            app.apply_app_locale(locale.as_ref(), &supported);
             let root = init(app);
             app.set_root(root);
         });
@@ -306,10 +333,12 @@ impl Application {
     /// entity; it runs once per window, or once per browser session on the web.
     pub fn run<V: Render>(self, init: impl Fn(&mut App) -> Entity<V> + Send + Sync + 'static) {
         let breakpoints = self.breakpoints;
+        let (locale, supported) = (self.locale.clone(), self.supported_locales.clone());
         let init: AppInit = Arc::new(move |app: &mut App| {
             if let Some(b) = breakpoints {
                 app.set_breakpoints(b);
             }
+            app.apply_app_locale(locale.as_ref(), &supported);
             let root = init(app);
             app.set_root(root);
         });
