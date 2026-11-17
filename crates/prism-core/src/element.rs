@@ -1963,7 +1963,7 @@ impl Div {
     /// over the container (#133): pan an infinite canvas, a map, an image.
     /// The container takes the events: what is behind it does not scroll.
     /// Touch screens have no wheel (their panning is
-    /// [`on_drag`](Div::on_drag)).
+    /// [`on_drag`](Div::on_drag)); an iPad's trackpad or mouse scrolls here.
     pub fn on_wheel(mut self, handler: Handler<crate::events::WheelEvent>) -> Self {
         self.0.on_wheel = Some(handler);
         self
@@ -1971,7 +1971,9 @@ impl Div {
 
     /// Called as two fingers pinch over the container (#133): zoom a canvas
     /// around [`MagnifyEvent::position`](crate::MagnifyEvent::position). The
-    /// container takes the pinch (the page does not zoom).
+    /// container takes the pinch (the page does not zoom). On a touch screen
+    /// (#172) it runs alongside [`on_drag`](Div::on_drag): one finger drags,
+    /// and during a pinch the drag follows the fingers' center.
     pub fn on_magnify(mut self, handler: Handler<crate::events::MagnifyEvent>) -> Self {
         self.0.on_magnify = Some(handler);
         self

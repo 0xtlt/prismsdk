@@ -132,5 +132,8 @@ div()
 |---|---|---|
 | Web | `wheel` (non-passive, one report per animation frame, lines and pages in points) | Ctrl + `wheel` (how browsers report a trackpad pinch), Safari's `gesturechange`; with `on_wheel` alone, Ctrl + wheel is a wheel event with Ctrl held |
 | macOS | `scrollWheel:` with `hasPreciseScrollingDeltas`, phases and momentum | `magnifyWithEvent:` |
+| iOS, iPadOS, visionOS | an iPad trackpad or mouse: a scroll-only `UIPanGestureRecognizer` (`Start`, `Move`, `End`, no momentum; always `precise`) | `UIPinchGestureRecognizer`: two fingers, an iPad trackpad pinch |
 
 Other backends do not report them yet: the handlers simply never run there.
+
+On a touch screen, one finger drags and two fingers pinch (#172). With `on_drag` and `on_magnify` on the same element, both run during a pinch: the drag follows the fingers' center, so a two-finger pan while pinching moves the canvas through `on_drag`, and zooming around `MagnifyEvent::position` keeps the content under the fingers. Fingers never send `on_wheel`; on an iPad, a finger still scrolls a `scroll()` around an element with `on_wheel`, while the trackpad's scrolling goes to the element.
