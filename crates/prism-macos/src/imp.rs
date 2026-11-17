@@ -119,7 +119,35 @@ fn release_all_keys() {
     }
 }
 
+/// What makes a Prism view focusable.
+#[derive(Clone, Copy)]
+struct FocusRole {
+    clickable: bool,
+    sheet_root: bool,
+    keys: bool,
+}
+
+/// Whether a view takes the focus (#177): a clickable one only with Full
+/// Keyboard Access or when the app asks (`keyboard`), like native buttons;
+/// a sheet's root and a view with `on_key_down` always.
+fn takes_focus(role: FocusRole, keyboard: bool) -> bool {
+    (role.clickable && keyboard) || role.sheet_root || role.keys
+}
+
+/// Whether a focus came from a mouse press (then no ring, #177): not when
+/// the app moves it.
+fn focused_by_mouse(event: Option<objc2_app_kit::NSEventType>, app: bool) -> bool {
+    use objc2_app_kit::NSEventType as T;
+    !app && matches!(
+        event,
+        Some(T::LeftMouseDown | T::RightMouseDown | T::OtherMouseDown)
+    )
+}
+
 thread_local! {
+    /// `cx.focus` is moving the focus (#177): clickable views accept it
+    /// without Full Keyboard Access, and show their ring.
+    static APP_FOCUS: Cell<bool> = const { Cell::new(false) };
     /// The app has unsaved changes (`cx.set_unsaved_changes`, #158).
     static UNSAVED: Cell<bool> = const { Cell::new(false) };
 }
@@ -453,6 +481,8 @@ pub struct ViewIvars {
     pub(crate) decor: RefCell<crate::decor::DecorState>,
     /// Reports presses (`.active(|s| …)` refinements).
     report_active: Cell<bool>,
+    /// It took the focus from a mouse press: no focus ring (#177).
+    mouse_focus: Cell<bool>,
     // Pointer, keys, overlays, layers (#17, #19, #25).
     /// A layer's root: clicks where it has no child go to the windows below.
     pub(crate) pass_through: Cell<bool>,
@@ -679,14 +709,36 @@ define_class!(
             objc2::runtime::Bool::YES
         }
 
-        // Full keyboard access: clickable views take focus, show a focus
-        // ring, and activate with Space or Return. Views with `on_key_down`
-        // take it too.
+        // Like native buttons (#177): clickable views take the focus (a
+        // click included) only with Full Keyboard Access, then show a ring
+        // and activate with Space or Return; `cx.focus` still focuses them.
+        // Views with `on_key_down` always take it.
         #[unsafe(method(acceptsFirstResponder))]
         fn accepts_first_responder(&self) -> bool {
             let iv = self.ivars();
-            (iv.clickable.get() || iv.sheet_root.get() || iv.key_local.get())
-                && !crate::interact::in_inert(self)
+            takes_focus(
+                FocusRole {
+                    clickable: iv.clickable.get(),
+                    sheet_root: iv.sheet_root.get(),
+                    keys: iv.key_local.get(),
+                },
+                APP_FOCUS.get()
+                    || NSApplication::sharedApplication(self.mtm()).isFullKeyboardAccessEnabled(),
+            ) && !crate::interact::in_inert(self)
+        }
+
+        /// Focused by a mouse press: no ring (#177), like native controls;
+        /// Tab and `cx.focus` show it.
+        #[unsafe(method(becomeFirstResponder))]
+        fn become_first_responder(&self) -> bool {
+            let event = NSApplication::sharedApplication(self.mtm())
+                .currentEvent()
+                .map(|e| e.r#type());
+            self.ivars()
+                .mouse_focus
+                .set(focused_by_mouse(event, APP_FOCUS.get()));
+            self.noteFocusRingMaskChanged();
+            true
         }
 
         /// `hit_test(false)` and `inert` subtrees let clicks through; a
@@ -931,11 +983,18 @@ define_class!(
 
         #[unsafe(method(focusRingMaskBounds))]
         fn focus_ring_mask_bounds(&self) -> NSRect {
+            if self.ivars().mouse_focus.get() {
+                return NSRect::ZERO;
+            }
             self.bounds()
         }
 
+        /// An empty mask draws no ring (#177): after a mouse press.
         #[unsafe(method(drawFocusRingMask))]
         fn draw_focus_ring_mask(&self) {
+            if self.ivars().mouse_focus.get() {
+                return;
+            }
             let r = self.ivars().radius.get();
             NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(self.bounds(), r, r).fill();
         }
@@ -4418,7 +4477,10 @@ impl Widgets for AppKit {
         };
         on_main_after(std::time::Duration::ZERO, move || {
             if let Some(w) = v.window() {
+                // The app asks: a clickable view takes it (#177).
+                APP_FOCUS.set(true);
                 w.makeFirstResponder(Some(&v));
+                APP_FOCUS.set(false);
             }
         });
     }
@@ -5708,5 +5770,40 @@ mod escape_tests {
         // Without a next responder.
         let lone = PrismView::new(mtm, 3);
         let _: () = unsafe { msg_send![&*lone, cancelOperation: none] };
+    }
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use super::*;
+    use objc2_app_kit::NSEventType as T;
+
+    /// #177: a click on a clickable view does not focus it (no ring)
+    /// unless Full Keyboard Access is on or the app asks; `on_key_down`
+    /// views and a sheet's root always take the focus.
+    #[test]
+    fn clickable_views_take_the_focus_like_native_buttons() {
+        let role = |clickable, sheet_root, keys| FocusRole {
+            clickable,
+            sheet_root,
+            keys,
+        };
+        assert!(!takes_focus(role(true, false, false), false));
+        assert!(takes_focus(role(true, false, false), true));
+        assert!(takes_focus(role(false, false, true), false));
+        assert!(takes_focus(role(false, true, false), false));
+        assert!(!takes_focus(role(false, false, false), true));
+    }
+
+    /// #177: a focus from a mouse press draws no ring; Tab (a key event)
+    /// and `cx.focus` do.
+    #[test]
+    fn only_a_mouse_focus_hides_the_ring() {
+        assert!(focused_by_mouse(Some(T::LeftMouseDown), false));
+        assert!(focused_by_mouse(Some(T::RightMouseDown), false));
+        assert!(focused_by_mouse(Some(T::OtherMouseDown), false));
+        assert!(!focused_by_mouse(Some(T::LeftMouseDown), true));
+        assert!(!focused_by_mouse(Some(T::KeyDown), false));
+        assert!(!focused_by_mouse(None, false));
     }
 }
