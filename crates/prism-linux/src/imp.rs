@@ -1687,7 +1687,15 @@ impl Widgets for Gtk {
                 adj.connect_value_changed(move |a| {
                     place_sticky(&stickies, id, a.value());
                     if events.borrow().contains(&id) {
-                        dispatch(UiEvent::Scroll(id, a.value() as f32, a.page_size() as f32));
+                        // Also when the app moved it (`scroll_by`, #204)
+                        // while Prism applied patches: reported right after.
+                        let event = UiEvent::Scroll(id, a.value() as f32, a.page_size() as f32);
+                        glib::idle_add_local_once(move || {
+                            with_state(|s| {
+                                let patches = s.runtime.dispatch(event);
+                                commit(s, patches);
+                            })
+                        });
                     }
                 });
                 View::Scroll(id, s, content)

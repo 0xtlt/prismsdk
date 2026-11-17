@@ -69,6 +69,18 @@ pub(crate) fn dispatch(event: UiEvent) {
     with_state(|s| s.dispatch(event));
 }
 
+/// Dispatches `event` now, or on the next turn of the run loop when Prism is
+/// busy (the platform calls back while Prism applies patches: a scroll view
+/// moved by `scroll_by`, #204), instead of dropping it.
+pub(crate) fn dispatch_or_defer(event: UiEvent) {
+    let busy = STATE.with(|cell| cell.try_borrow_mut().is_err());
+    if busy {
+        on_main_after(std::time::Duration::ZERO, move || dispatch(event));
+    } else {
+        dispatch(event);
+    }
+}
+
 /// Files came over a drop target or left it (#111).
 pub(crate) fn report_drop_hover(id: NodeId, on: bool) {
     report_state(id, prism_core::Interaction::DropHover, on);
@@ -1818,7 +1830,13 @@ define_class!(
                 return;
             }
             let b = clip.bounds();
-            dispatch(UiEvent::Scroll(doc.ivars().id.get(), b.origin.y as f32, b.size.height as f32));
+            // Moved by the app (`scroll_by`, `scroll_into_view`) while Prism
+            // applies patches: reported right after, not lost (#204).
+            dispatch_or_defer(UiEvent::Scroll(
+                doc.ivars().id.get(),
+                b.origin.y as f32,
+                b.size.height as f32,
+            ));
         }
 
         /// A stack's header Back button (tag = stack id).
