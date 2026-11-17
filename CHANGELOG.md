@@ -11,6 +11,7 @@ The first version, not yet on crates.io.
 
 ### Added
 
+- `.z_index(n)` (#232): paint order among siblings, like CSS `z-index`. A handle or badge overflowing into the next element is drawn (and clicked) above it. The web writes `z-index`; native backends order the views by each child's value or the highest one inside it, up to a node that sets its own (the layout is unchanged; stacks and tab bars keep their order). `Style::z_index`.
 - `text_area().rows(n)` (#235): a text area's minimum height in lines, three by default. `rows(1)` starts like a one-line field and grows with its text (up to `max_h`): a title, a table cell. The web sets `rows` and the minimum height; native backends measure that many lines (`setMinLines` on Android). `InputConfig::rows` and `min_rows` are new.
 - `on_focus_change(|e: &FocusEvent, cx| …)` (#224) on text fields, rich inputs, text areas and views: the node took (`e.focused`) or lost the keyboard focus, for « commit on blur » in inspectors and inline renames. The web reports `focusin` / `focusout`; native backends report what their shared focus tracking sees (`NativeRenderer::take_focus_changes`). `UiEvent::FocusChange` is new.
 - Auto margins (#228): `m_auto()`, `mx_auto()`, `my_auto()`, `mt_auto()`, `mr_auto()`, `mb_auto()`, `ml_auto()` take the free space like CSS `margin: auto`: a centered column without an `items_center()` parent, the last item of a row pushed to the end without a spacer, a footer at the bottom. `Style::margin_auto`; CSS `auto` on the web, taffy's auto margins natively.

@@ -4231,3 +4231,16 @@ fn text_areas_start_at_their_rows() {
         "{html}"
     );
 }
+
+/// #232: `z_index` is CSS `z-index`, after a sticky node's own.
+#[test]
+fn z_index_is_css_z_index() {
+    let c = css(NodeKind::View, &Style::default().z_index(2));
+    assert!(c.contains("z-index:2;"), "{c}");
+    assert!(!css(NodeKind::View, &Style::default()).contains("z-index"));
+    let sticky = css(NodeKind::View, &Style::default().sticky().z_index(5));
+    assert!(
+        sticky.find("z-index:1;") < sticky.find("z-index:5;"),
+        "{sticky}"
+    );
+}

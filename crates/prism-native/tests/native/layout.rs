@@ -1124,3 +1124,49 @@ fn a_margin_in_points_replaces_auto() {
     let v = f.of_kind(NodeKind::View);
     assert_eq!(f.frame(v[1]).0, 8.);
 }
+
+/// #232: a `z_index` inside a cell paints the cell above its neighbours;
+/// the layout keeps the tree order.
+#[test]
+fn z_index_sets_the_paint_order_not_the_layout() {
+    let mut h = tree(|| {
+        div()
+            .flex_row()
+            .child(div().w(50.).h(10.).child(div().w(10.).h(10.).z_index(1)))
+            .child(div().w(50.).h(10.))
+    });
+    let f = h.layout(400., 300.);
+    let v = f.of_kind(NodeKind::View);
+    let (row, first, second) = (v[0], v[1], v[3]);
+    assert_eq!(
+        h.w().children[&row],
+        [second, first],
+        "the cell with the handle on top"
+    );
+    let f = h.layout(400., 300.);
+    assert_eq!(
+        (f.frame(first).0, f.frame(second).0),
+        (0., 50.),
+        "laid out in order"
+    );
+}
+
+/// #232: tabs and stacks keep their order whatever their screens hold.
+#[test]
+fn z_index_leaves_tabs_in_their_order() {
+    struct App;
+    impl Render for App {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            let _ = cx;
+            prism_core::tabs(0)
+                .child(prism_core::tab("A", "a").child(div()))
+                .child(prism_core::tab("B", "b").child(div().child(div().z_index(3))))
+                .child(prism_core::tab("C", "c").child(div()))
+        }
+    }
+    let mut h = Harness::root(|| App);
+    h.layout(400., 300.);
+    let bar = h.w().of_kind(NodeKind::Tabs)[0];
+    let tabs = h.w().of_kind(NodeKind::Tab);
+    assert_eq!(h.w().children[&bar], tabs);
+}
