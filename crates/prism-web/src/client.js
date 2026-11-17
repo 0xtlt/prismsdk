@@ -6439,6 +6439,11 @@ void main() {
       case "notify_permission":
         if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
         return;
+      // The app icon's badge (#239), where the browser has the Badging API.
+      case "badge":
+        if (msg.n > 0) navigator.setAppBadge?.(msg.n)?.catch?.(() => {});
+        else navigator.clearAppBadge?.()?.catch?.(() => {});
+        return;
       case "push_register": return pushRegister(msg.key);
       case "push_unregister": return pushUnregister();
       case "font": return loadFont(msg);

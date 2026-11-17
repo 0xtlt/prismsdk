@@ -26,6 +26,7 @@ unsafe extern "C" {
     fn prism_notify(json: *const c_char);
     fn prism_notify_cancel(id: *const c_char);
     fn prism_notify_permission();
+    fn prism_set_badge(count: i32);
     fn prism_bg_register();
     fn prism_bg_schedule(
         id: *const c_char,
@@ -191,6 +192,10 @@ impl PlatformServices for IosServices {
                 prism_notify_cancel(c(&id).as_ptr())
             },
             PlatformRequest::RequestNotificationPermission => unsafe { prism_notify_permission() },
+            // The app icon's badge (#239).
+            PlatformRequest::SetBadge(n) => unsafe {
+                prism_set_badge(n.map_or(-1, |n| n.min(i32::MAX as u32) as i32))
+            },
             PlatformRequest::RegisterPush => prism_native::apple::push::register(),
             PlatformRequest::UnregisterPush => prism_native::apple::push::unregister(),
             PlatformRequest::WatchActivityPushToStart => {

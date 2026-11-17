@@ -102,11 +102,14 @@ public func prismBridgeInit() -> Bool {
 
 @_cdecl("prism_notify_permission")
 public func prismNotifyPermission() {
+    // Outside an app bundle the center throws (#239).
+    guard Bundle.main.bundleIdentifier != nil else { return }
     UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
 }
 
 @_cdecl("prism_notify")
 public func prismNotify(_ json: UnsafePointer<CChar>) {
+    guard Bundle.main.bundleIdentifier != nil else { return }
     guard let data = String(cString: json).data(using: .utf8),
           let n = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
     let content = UNMutableNotificationContent()

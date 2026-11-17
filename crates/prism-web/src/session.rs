@@ -1107,6 +1107,8 @@ impl PlatformServices for WebServices {
             }),
             PlatformRequest::CancelNotification(id) => json!({ "t": "notify_cancel", "id": id }),
             PlatformRequest::RequestNotificationPermission => json!({ "t": "notify_permission" }),
+            // The Badging API (#239): `null` clears it.
+            PlatformRequest::SetBadge(n) => json!({ "t": "badge", "n": n }),
             PlatformRequest::RegisterPush => match &self.vapid {
                 Some(key) => json!({ "t": "push_register", "key": key }),
                 // No VAPID key: capabilities().push is None (register_for_push

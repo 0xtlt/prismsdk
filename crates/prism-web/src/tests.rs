@@ -2150,6 +2150,16 @@ fn notifications_and_alerts_go_to_the_page() {
     assert_eq!(out[1], json!({ "t": "notify_cancel", "id": "n1" }));
     assert_eq!(out[2], json!({ "t": "notify_permission" }));
     assert!(!s.capabilities().widgets && s.capabilities().notifications);
+    // The app icon's badge on its own (#239).
+    s.handle(PlatformRequest::SetBadge(Some(3)));
+    s.handle(PlatformRequest::SetBadge(None));
+    assert_eq!(
+        s.take_outbox(),
+        [
+            json!({ "t": "badge", "n": 3 }),
+            json!({ "t": "badge", "n": null })
+        ]
+    );
 }
 
 #[test]

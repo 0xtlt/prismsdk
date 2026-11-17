@@ -227,6 +227,8 @@ public func prismDevicePermission(_ id: UInt64, _ name: UnsafePointer<CChar>, _ 
         permissionReply(id, "unavailable")
         #endif
     case "notifications":
+        // Outside an app bundle (`cargo run` on macOS) the center throws (#239).
+        guard Bundle.main.bundleIdentifier != nil else { return permissionReply(id, "unavailable") }
         let center = UNUserNotificationCenter.current()
         let map = { (s: UNAuthorizationStatus) -> String in
             switch s {

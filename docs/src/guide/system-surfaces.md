@@ -36,7 +36,10 @@ cx.send_notification(
         .action(NotificationAction::new("note", "Add a todo…").reply("What's next?")),
 );
 cx.on_notification_response(|r, app| match r.action.as_deref() { Some("note") => add(app, r.text.clone()), _ => {} });
+cx.set_badge(Some(unread));   // the app icon's number, without a notification (#239); None clears it
 ```
+
+**The app badge** (#239): `cx.set_badge(Some(n))` sets the number on the app icon on its own, when the app's unread count changes (`None` or 0 clears it): the Dock tile on macOS, the home screen on iOS, iPadOS, tvOS and visionOS (with the notification permission, badges included), the Badging API on the web where the browser has it (installed web apps). Android launchers and Linux docks badge from notifications only, and watchOS has none: nothing happens there. **Outside an app bundle** (`cargo run` on macOS), notification calls do nothing and the notification permission answers `Unavailable` instead of throwing.
 
 | | iOS | macOS | Web | Android (planned) |
 |---|---|---|---|---|

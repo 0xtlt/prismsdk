@@ -4206,3 +4206,19 @@ fn save_file_names_are_file_names() {
         "application/octet-stream"
     );
 }
+
+/// #239: the badge is a request of its own.
+#[test]
+fn the_badge_is_set_on_its_own() {
+    let mut app = App::new();
+    app.set_badge(Some(5));
+    app.set_badge(None);
+    let r = app.take_requests();
+    assert!(matches!(
+        r.as_slice(),
+        [
+            crate::PlatformRequest::SetBadge(Some(5)),
+            crate::PlatformRequest::SetBadge(None)
+        ]
+    ));
+}

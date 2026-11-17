@@ -74,6 +74,8 @@ impl PlatformServices for WatchServices {
                 prism_notify_cancel(c(&id).as_ptr())
             },
             PlatformRequest::RequestNotificationPermission => unsafe { prism_notify_permission() },
+            // No app icon badge to set on the watch (#239).
+            PlatformRequest::SetBadge(_) => {}
             PlatformRequest::RegisterPush => prism_native::apple::push::register(),
             PlatformRequest::UnregisterPush => prism_native::apple::push::unregister(),
             PlatformRequest::Device { id, call } => prism_native::apple::device_call(id, call),
