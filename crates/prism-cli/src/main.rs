@@ -460,6 +460,11 @@ fn apple_command(
     if p.apple_sign_in {
         cmd.env("PRISM_APPLE_SIGNIN", "1");
     }
+    // `[ios] associated_domains` (#191): the entitlement, when the profile
+    // grants the capability.
+    if !p.associated_domains.is_empty() {
+        cmd.env("PRISM_ASSOCIATED_DOMAINS", p.associated_domains.join(","));
+    }
     // Remote push: entitlements, background mode, Android receivers.
     if let Some(env) = &p.push {
         cmd.env("PRISM_PUSH", env);

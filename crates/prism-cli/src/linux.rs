@@ -220,6 +220,7 @@ mod tests {
             device: None,
             icloud: false,
             apple_sign_in: false,
+            associated_domains: Vec::new(),
             push: None,
             google_services: None,
             vapid_public_key: None,

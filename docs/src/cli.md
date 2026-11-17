@@ -52,6 +52,7 @@ team = "ABCDE12345"           # Apple team for real devices
 simulator = "iPhone 17"       # default simulator
 device = "My iPhone"          # default device (instead of a simulator)
 icloud = true                 # iCloud key-value storage (cloud_storage)
+associated_domains = ["webcredentials:example.com", "applinks:example.com"]  # passkeys, universal links
 deployment_target = "17.0"    # oldest iOS/iPadOS (the default)
 
 [macos]                       # likewise [tvos] (17.0), [watchos] (10.0), [visionos] (26.0)
