@@ -4244,3 +4244,34 @@ fn z_index_is_css_z_index() {
         "{sticky}"
     );
 }
+
+/// #229: an app in one language says so, whatever the browser asks.
+#[test]
+fn the_app_locale_wins_over_the_browser() {
+    if std::env::var_os("PRISM_LOCALE").is_some() {
+        return; // it wins over both, by design
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Home);
+        cx.set_root(root);
+    });
+    let (fixed, dir) = web_app(init.clone(), "app-locale");
+    let fixed = fixed.locale("fr-FR");
+    let (picked, dir2) = web_app(init, "app-locales");
+    let picked = picked.supported_locales(["fr-FR", "ar-EG"]);
+    let page = |app: &crate::WebApp, lang: &str| {
+        let r = app.handle(
+            &Request::get("/")
+                .header("accept-language", lang)
+                .body(())
+                .unwrap(),
+        );
+        String::from_utf8(r.body().clone()).unwrap()
+    };
+    assert!(page(&fixed, "en-US").contains(r#"lang="fr-FR" dir="ltr""#));
+    // Among the supported ones: the browser's language, else the first.
+    assert!(page(&picked, "ar").contains(r#"lang="ar-EG" dir="rtl""#));
+    assert!(page(&picked, "de-DE").contains(r#"lang="fr-FR""#));
+    let _ = std::fs::remove_dir_all(dir);
+    let _ = std::fs::remove_dir_all(dir2);
+}
