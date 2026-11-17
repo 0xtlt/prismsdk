@@ -118,6 +118,29 @@ impl Rect {
     }
 }
 
+/// How far files dropped on a target are on their way to the app (#199):
+/// [`Div::on_drop_progress`](crate::Div::on_drop_progress). Web only: the
+/// browser sends them over the app's connection; natively they are on the
+/// device already.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DropProgress {
+    /// Bytes received so far, every dropped file included.
+    pub sent: u64,
+    /// Bytes of every dropped file.
+    pub total: u64,
+}
+
+impl DropProgress {
+    /// `sent / total`, from 0 to 1 (1 for empty files).
+    pub fn fraction(&self) -> f32 {
+        if self.total == 0 {
+            1.
+        } else {
+            (self.sent.min(self.total) as f64 / self.total as f64) as f32
+        }
+    }
+}
+
 /// An element was laid out: [`Div::on_layout`](crate::Div::on_layout)
 /// (#192). Sent after the layout that placed it, when its frame changed.
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -417,6 +417,15 @@ impl Live {
                     (Some((sent, total)), crate::uploads::Key::Call(id)) => {
                         rt.device_event(id, prism_core::DeviceEvent::Upload { sent, total })
                     }
+                    // A drop's progress goes to its target (#199).
+                    (Some((sent, total)), crate::uploads::Key::Drop(drop)) => {
+                        match self.drops.get(&drop) {
+                            Some(&node) => {
+                                rt.dispatch(prism_core::UiEvent::DropProgress(node, sent, total))
+                            }
+                            None => Vec::new(),
+                        }
+                    }
                     _ => Vec::new(),
                 }
             }
@@ -439,11 +448,12 @@ impl Live {
                 let uploads = &mut self.services.uploads;
                 if accepted && !files.is_empty() && uploads.expect_drop(drop) {
                     let key = crate::uploads::Key::Drop(drop);
-                    if uploads.start(&self.app, &self.sid, key, files).is_some() {
+                    if let Some((sent, total)) = uploads.start(&self.app, &self.sid, key, files) {
                         self.drops.insert(drop, node);
-                    } else {
-                        uploads.finish(&self.app, key, true);
+                        // Its first progress, as the upload starts (#199).
+                        return rt.dispatch(prism_core::UiEvent::DropProgress(node, sent, total));
                     }
+                    uploads.finish(&self.app, key, true);
                 }
                 Vec::new()
             }
