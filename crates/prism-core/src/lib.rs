@@ -93,8 +93,8 @@ pub use element::{STACK_CLOSABLE, STACK_NO_HEADER};
 pub use element::{SelectionEvent, byte_to_char, char_to_byte};
 pub use element::{picture_data, svg};
 pub use events::{
-    DragEvent, DragPhase, FileDropEvent, GesturePhase, HoverEvent, KeyEvent, MagnifyEvent,
-    Modifiers, Point, PointerButton, PointerEvent, PointerPhase, WheelEvent,
+    DragEvent, DragPhase, FileDropEvent, GesturePhase, HoverEvent, KeyEvent, LayoutEvent,
+    MagnifyEvent, Modifiers, Point, PointerButton, PointerEvent, PointerPhase, Rect, WheelEvent,
 };
 pub use fonts::{FontFace, FontSource, Stylesheet};
 pub use i18n::{BasicFormatter, DateStyle, Direction, Formatter, Locale, Translations};
@@ -388,6 +388,16 @@ impl Runtime {
                     h(&ScrollEvent { offset, viewport }, &mut self.app);
                 }
             }
+            UiEvent::Layout(id, frame) => {
+                // Kept for `cx.frame_of` (#192), then the handler.
+                self.app.frames.insert(id, frame);
+                if let Some(name) = self.reconciler.name_of(id) {
+                    self.app.frame_names.insert(name.to_string(), id);
+                }
+                if let Some(h) = self.reconciler.layout_handler(id) {
+                    h(&LayoutEvent { frame }, &mut self.app);
+                }
+            }
             UiEvent::Swipe(id, dir) => {
                 if let Some(h) = self.reconciler.swipe_handler(id, dir) {
                     h(&ClickEvent, &mut self.app);
@@ -653,6 +663,13 @@ impl Runtime {
     /// Renders dirty entities, then remembers the route for `prism dev`.
     fn render_dirty(&mut self) -> Vec<Patch> {
         let patches = self.reconciler.render(&mut self.app);
+        // Frames of elements no longer laid out are gone (#192).
+        if !self.app.frames.is_empty() {
+            let r = &self.reconciler;
+            self.app.frames.retain(|id, _| r.reports_layout(*id));
+            let frames = &self.app.frames;
+            self.app.frame_names.retain(|_, id| frames.contains_key(id));
+        }
         if let Some((file, saved)) = &mut self.dev_state
             && let Some(path) = self.app.current_path()
             && path != saved
@@ -804,10 +821,10 @@ pub mod prelude {
     pub use crate::bar_button;
     // Pointer, keys, choice controls, overlays (#17, #18, #19).
     pub use crate::{
-        DragEvent, DragPhase, FileDropEvent, GesturePhase, HoverEvent, KeyEvent, MagnifyEvent,
-        Modifiers, PickFiles, Point, PointerButton, PointerEvent, PointerPhase, PopoverAlign,
-        PopoverSide, WheelEvent, checkbox, dialog, popover, radio_group, sheet, time_picker,
-        time_picker_opt,
+        DragEvent, DragPhase, FileDropEvent, GesturePhase, HoverEvent, KeyEvent, LayoutEvent,
+        MagnifyEvent, Modifiers, PickFiles, Point, PointerButton, PointerEvent, PointerPhase,
+        PopoverAlign, PopoverSide, Rect, WheelEvent, checkbox, dialog, popover, radio_group, sheet,
+        time_picker, time_picker_opt,
     };
     // Anchored overlays without a dim (#79).
     pub use crate::Backdrop;

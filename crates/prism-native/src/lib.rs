@@ -421,6 +421,20 @@ struct EntryStates {
     used: Option<prism_core::Interactions>,
 }
 
+/// Dispatches the frames of the elements that report their layout and
+/// moved or resized (#192), after a layout: the patches their handlers
+/// produced, for the backend to commit (which lays out and reports again).
+pub fn report_layout<W: Widgets>(
+    runtime: &mut prism_core::Runtime,
+    renderer: &mut NativeRenderer<W>,
+) -> Vec<Patch> {
+    let mut patches = Vec::new();
+    for (id, frame) in renderer.take_layout_changes() {
+        patches.extend(runtime.dispatch(prism_core::UiEvent::Layout(id, frame)));
+    }
+    patches
+}
+
 /// Applies patches to native widgets and lays them out.
 pub struct NativeRenderer<W: Widgets> {
     pub widgets: W,
@@ -458,6 +472,8 @@ pub struct NativeRenderer<W: Widgets> {
     /// insets their content by the bars, so it is laid out in what is
     /// visible between them (#76).
     under_bars: HashMap<NodeId, UnderBars>,
+    /// Nodes that report their frame (#192), and the frame last reported.
+    layout_reports: HashMap<NodeId, Option<prism_core::Rect>>,
 }
 
 /// What the platform insets a scroll view's content by, at the top and the
@@ -498,6 +514,7 @@ impl<W: Widgets> NativeRenderer<W> {
             areas: HashMap::new(),
             settling: false,
             under_bars: HashMap::new(),
+            layout_reports: HashMap::new(),
         }
     }
 
@@ -1335,6 +1352,42 @@ impl<W: Widgets> NativeRenderer<W> {
         changed
     }
 
+    /// The frames of the nodes that report their layout (#192) and moved or
+    /// resized since they were last reported: in the window's layout
+    /// coordinates before scrolling (the frames of their ancestors added
+    /// up), in points. Backends dispatch them as `UiEvent::Layout` after a
+    /// layout (see [`report_layout`]).
+    pub fn take_layout_changes(&mut self) -> Vec<(NodeId, prism_core::Rect)> {
+        let ids: Vec<NodeId> = self.layout_reports.keys().copied().collect();
+        let mut out = Vec::new();
+        for id in ids {
+            let Some(frame) = self.layout_frame(id) else {
+                continue;
+            };
+            if self.layout_reports.insert(id, Some(frame)) != Some(Some(frame)) {
+                out.push((id, frame));
+            }
+        }
+        out.sort_by_key(|(id, _)| *id);
+        out
+    }
+
+    /// `id`'s laid-out frame in the window's layout coordinates (#192):
+    /// `None` until it and its ancestors have been placed.
+    fn layout_frame(&self, id: NodeId) -> Option<prism_core::Rect> {
+        let (_, _, w, h) = self.nodes.get(&id)?.frame?;
+        let (mut x, mut y) = (0., 0.);
+        let mut node = Some(id);
+        while let Some(n) = node {
+            let (fx, fy, _, _) = self.nodes.get(&n)?.frame?;
+            x += fx;
+            y += fy;
+            node = self.parent_of(n);
+        }
+        let z = self.zoom.max(0.01);
+        Some(prism_core::Rect::new(x / z, y / z, w / z, h / z))
+    }
+
     fn parent_of(&self, id: NodeId) -> Option<NodeId> {
         let e = self.nodes.get(&id)?;
         match self.taffy.parent(e.layout) {
@@ -1668,6 +1721,7 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                 }
                 Patch::Destroy { id } => {
                     self.forget_extras(*id);
+                    self.layout_reports.remove(id);
                     if self.focused == Some(*id) {
                         self.focused = None;
                         self.set_focus_within(*id, false);
@@ -1700,6 +1754,13 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                 Patch::SetConsumedKeys { id, keys } => {
                     if let Some(e) = self.nodes.get(id) {
                         self.widgets.set_consumed_keys(&e.view, keys);
+                    }
+                }
+                Patch::SetLayoutEvents { id, on } => {
+                    if *on {
+                        self.layout_reports.entry(*id).or_insert(None);
+                    } else {
+                        self.layout_reports.remove(id);
                     }
                 }
                 Patch::Focus { id } => {
@@ -2008,6 +2069,57 @@ mod tests {
         );
         // 50 rows × 20pt + 10pt padding top and bottom.
         assert_eq!(w.content[&2], (400., 1020.));
+    }
+
+    /// Rows with their frames reported (#192), inside a padded scroll.
+    struct Tracked;
+    impl Render for Tracked {
+        fn render(&mut self, _: &mut prism_core::Context<Self>) -> impl IntoElement {
+            let row = |i: usize| {
+                div()
+                    .id(format!("row{i}"))
+                    .h(prism_core::px(30.))
+                    .flex_shrink_0()
+                    .track_layout()
+            };
+            div()
+                .p(10.)
+                .child(scroll().h(prism_core::px(100.)).children((0..20).map(row)))
+        }
+    }
+
+    #[test]
+    fn tracked_frames_add_up_their_ancestors_and_ignore_scrolling() {
+        let init: AppInit = Arc::new(|cx: &mut prism_core::App| {
+            let r = cx.new_entity(|_| Tracked);
+            cx.set_root(r);
+        });
+        let mut rt = Runtime::new(&init);
+        let mut renderer = NativeRenderer::new(Fake::default());
+        renderer.apply(&rt.render());
+        renderer.layout(400., 600., Insets::default());
+        let changes = renderer.take_layout_changes();
+        assert_eq!(changes.len(), 20, "every tracked row, once laid out");
+        // Rows below the 100pt viewport still have their content frame.
+        assert!(report_layout(&mut rt, &mut renderer).is_empty());
+        let mut rt2 = Runtime::new(&init);
+        let mut r2 = NativeRenderer::new(Fake::default());
+        r2.apply(&rt2.render());
+        r2.layout(400., 600., Insets::default());
+        let _ = report_layout(&mut rt2, &mut r2);
+        let f0 = rt2.app.frame_of("row0").unwrap();
+        let f1 = rt2.app.frame_of("row1").unwrap();
+        let f9 = rt2.app.frame_of("row9").unwrap();
+        assert_eq!((f0.x, f0.y, f0.width, f0.height), (10., 10., 380., 30.));
+        assert_eq!(f1.y, 40.);
+        assert_eq!(f9.y, 10. + 9. * 30., "below the viewport: unscrolled");
+        // Nothing moved: nothing to report.
+        assert!(r2.take_layout_changes().is_empty());
+        // A narrower window resizes every row: reported again.
+        r2.layout(300., 600., Insets::default());
+        let changed = r2.take_layout_changes();
+        assert_eq!(changed.len(), 20);
+        assert_eq!(changed[0].1.width, 280.);
     }
 
     /// Two fitted scroll views (3 rows, then 50) and a line of text below.

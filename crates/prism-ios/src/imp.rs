@@ -251,6 +251,11 @@ impl State {
             .layout(size.width as f32, size.height as f32, insets);
         self.renderer.widgets.attach_layers();
         crate::interaction::claim_keys(&self.renderer.widgets.controller);
+        // Elements that report their frame and moved (#192).
+        let more = prism_native::report_layout(&mut self.runtime, &mut self.renderer);
+        if !more.is_empty() {
+            self.commit(more);
+        }
     }
 }
 

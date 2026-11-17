@@ -64,6 +64,68 @@ pub struct PointerEvent {
     pub position: Point,
 }
 
+/// An element's frame (#192): its origin and size in points, in the
+/// window's layout coordinates before any scrolling. Two frames inside the
+/// same [`scroll()`](crate::scroll()) keep their distance as it scrolls, so
+/// hit-testing rows against a point measured in the same space works at any
+/// scroll offset; subtract the scroll view's offset (`on_scroll`) for the
+/// position on screen. Transforms (`offset`, animations) are not included.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Rect {
+    /// Left edge.
+    pub x: f32,
+    /// Top edge.
+    pub y: f32,
+    /// Width.
+    pub width: f32,
+    /// Height.
+    pub height: f32,
+}
+
+impl Rect {
+    /// The rectangle at (`x`, `y`) of `width` × `height`.
+    pub const fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// Whether `p` is inside (edges included on the top and left).
+    pub fn contains(&self, p: Point) -> bool {
+        p.x >= self.x && p.y >= self.y && p.x < self.x + self.width && p.y < self.y + self.height
+    }
+
+    /// Whether the two overlap (a rubber-band selection against a row).
+    pub fn intersects(&self, other: &Rect) -> bool {
+        self.x < other.x + other.width
+            && other.x < self.x + self.width
+            && self.y < other.y + other.height
+            && other.y < self.y + self.height
+    }
+
+    /// Its center.
+    pub fn center(&self) -> Point {
+        Point::new(self.x + self.width / 2., self.y + self.height / 2.)
+    }
+
+    /// `p`, in this element's coordinates (`DragEvent::position`), as a
+    /// point of the same space as the frames.
+    pub fn to_layout(&self, p: Point) -> Point {
+        Point::new(self.x + p.x, self.y + p.y)
+    }
+}
+
+/// An element was laid out: [`Div::on_layout`](crate::Div::on_layout)
+/// (#192). Sent after the layout that placed it, when its frame changed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LayoutEvent {
+    /// Where it is (see [`Rect`]).
+    pub frame: Rect,
+}
+
 /// The pointer came over an element or left it:
 /// [`Div::on_hover`](crate::Div::on_hover).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

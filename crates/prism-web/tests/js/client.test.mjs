@@ -1322,6 +1322,27 @@ test("the first screen names the page once live, header or not (#185)", () => {
   }
 });
 
+test("frames of reporting elements are sent unscrolled, once per change (#192)", () => {
+  const page = live([create(1, "scroll"), create(2, "view"), children(1, [2]), root(1)]);
+  const list = page.node(1), row = page.node(2);
+  row.clientWidth = 300; row.clientHeight = 24;
+  page.ws.deliver({ t: "patch", p: [{ op: "layout", id: 2, on: true }] });
+  flush(page);
+  const layouts = () => page.ws.sent.filter((m) => m.t === "layout");
+  assert.deepEqual(layouts(), [{ t: "layout", id: 2, x: 0, y: 0, w: 300, h: 24 }]);
+  // Scrolling moves it on screen, not in layout coordinates: nothing sent.
+  list.scrollTop = 80;
+  row.getBoundingClientRect = () => ({ left: 0, top: -80, width: 300, height: 24 });
+  page.ws.deliver({ t: "patch", p: [] });
+  flush(page);
+  assert.equal(layouts().length, 1);
+  // A resize is.
+  row.getBoundingClientRect = () => ({ left: 0, top: -80, width: 300, height: 48 });
+  page.ws.deliver({ t: "patch", p: [] });
+  flush(page);
+  assert.deepEqual(layouts().at(-1), { t: "layout", id: 2, x: 0, y: 0, w: 300, h: 48 });
+});
+
 test("the header bar hides for a whole stack or a bare screen", () => {
   const page = live([
     create(1, "stack"), { op: "value", id: 1, value: 0 }, create(2, "screen"), textOp(2, "Home"),

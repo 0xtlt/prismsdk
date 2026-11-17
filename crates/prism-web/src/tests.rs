@@ -1484,6 +1484,14 @@ fn page_events_become_ui_events() {
         ev(json!({"t": "menu", "id": 65536})),
         Some(UiEvent::MenuSelect(65536))
     );
+    // A frame the page measured (#192).
+    assert_eq!(
+        ev(json!({"t": "layout", "id": 3, "x": 0, "y": 40.5, "w": 300, "h": 24})),
+        Some(UiEvent::Layout(
+            3,
+            prism_core::Rect::new(0., 40.5, 300., 24.)
+        ))
+    );
     assert_eq!(
         ev(json!({"t": "scroll", "id": 3, "o": 120.5, "v": 600})),
         Some(UiEvent::Scroll(3, 120.5, 600.))
