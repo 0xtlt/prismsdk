@@ -35,7 +35,7 @@ final class PrismInput {
     /** Every Prism view, to find the node that has the focus. */
     static final Map<View, PrismHost.Node> byView = new WeakHashMap<>();
 
-    static final int HOVER = 1, MOVE = 2, DRAG = 4;
+    static final int HOVER = 1, MOVE = 2, DRAG = 4, WHEEL = 8, MAGNIFY = 16;
 
     static float dp(float px) { return px / PrismHost.density; }
 
@@ -59,9 +59,142 @@ final class PrismInput {
         put(ev, "x", dp(n.down[0]));
         put(ev, "y", dp(n.down[1]));
         // Raw coordinates: the view may move while it is dragged (reordering).
-        put(ev, "dx", e == null ? 0 : dp(e.getRawX() - n.down[2]));
-        put(ev, "dy", e == null ? 0 : dp(e.getRawY() - n.down[3]));
+        // The fingers' center: a second finger (a pinch) moves it too.
+        float[] c = e == null ? null : center(e, -1);
+        put(ev, "dx", c == null ? 0 : dp(c[0] - n.down[2]));
+        put(ev, "dy", c == null ? 0 : dp(c[1] - n.down[3]));
         PrismHost.send(ev);
+    }
+
+    /** The raw center of the touching pointers, leaving out pointer `skip` (-1: none). */
+    static float[] center(MotionEvent e, int skip) {
+        float x = 0, y = 0;
+        int count = 0;
+        for (int i = 0; i < e.getPointerCount(); i++) {
+            if (i == skip) continue;
+            x += e.getRawX(i);
+            y += e.getRawY(i);
+            count++;
+        }
+        return count == 0 ? new float[]{e.getRawX(), e.getRawY()} : new float[]{x / count, y / count};
+    }
+
+    /** A finger joined or left: the drag goes on from the new center without a jump. */
+    static void recenter(PrismHost.Node n, float[] before, float[] after) {
+        n.down[2] += after[0] - before[0];
+        n.down[3] += after[1] - before[1];
+    }
+
+    /** A pinch report (#133): `{"t":"magnify","id","scale","x","y","phase"}`. */
+    static void magnify(PrismHost.Node n, String phase, float scale, float x, float y) {
+        JSONObject ev = PrismHost.event("magnify", n.id);
+        put(ev, "phase", phase);
+        put(ev, "scale", scale);
+        put(ev, "x", dp(x));
+        put(ev, "y", dp(y));
+        PrismHost.send(ev);
+    }
+
+    /** How far the pointers are from their center, doubled (two fingers: their distance), leaving out `skip`. */
+    static float span(MotionEvent e, int skip) {
+        float[] c = focus(e, skip);
+        float sum = 0;
+        int count = 0;
+        for (int i = 0; i < e.getPointerCount(); i++) {
+            if (i == skip) continue;
+            sum += (float) Math.hypot(e.getX(i) - c[0], e.getY(i) - c[1]);
+            count++;
+        }
+        return count < 2 ? 0 : 2 * sum / count;
+    }
+
+    /** The pointers' center in the view, leaving out `skip`. */
+    static float[] focus(MotionEvent e, int skip) {
+        float x = 0, y = 0;
+        int count = 0;
+        for (int i = 0; i < e.getPointerCount(); i++) {
+            if (i == skip) continue;
+            x += e.getX(i);
+            y += e.getY(i);
+            count++;
+        }
+        return count == 0 ? new float[]{e.getX(), e.getY()} : new float[]{x / count, y / count};
+    }
+
+    /**
+     * Two fingers pinch (a touchscreen, a touchpad's pinch) over a view with
+     * `on_magnify` (#133): once they moved apart or together past the touch
+     * slop (no minimum distance between them, unlike `ScaleGestureDetector`),
+     * the scale since the previous report, around their center. The view's
+     * taps stop when the pinch starts.
+     */
+    static void pinch(PrismHost.Node n, MotionEvent e, android.view.GestureDetector g) {
+        int a = e.getActionMasked();
+        int count = e.getPointerCount();
+        if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL
+                || (a == MotionEvent.ACTION_POINTER_UP && count == 2)) {
+            if (n.scaling) {
+                n.scaling = false;
+                float[] f = focus(e, -1);
+                magnify(n, "end", 1f, f[0], f[1]);
+            }
+            n.pinchSpan = 0;
+            return;
+        }
+        if (a == MotionEvent.ACTION_POINTER_DOWN || a == MotionEvent.ACTION_POINTER_UP) {
+            // The fingers changed: measure from the ones that stay.
+            n.pinchSpan = span(e, a == MotionEvent.ACTION_POINTER_UP ? e.getActionIndex() : -1);
+            if (!n.scaling) n.pinchFrom = n.pinchSpan;
+            return;
+        }
+        if (a != MotionEvent.ACTION_MOVE || count < 2 || n.pinchSpan <= 0) return;
+        float span = span(e, -1);
+        float[] f = focus(e, -1);
+        if (!n.scaling) {
+            int slop = ViewConfiguration.get(n.view.getContext()).getScaledTouchSlop();
+            if (Math.abs(span - n.pinchFrom) <= slop) return;
+            n.scaling = true;
+            if (n.view.getParent() != null) n.view.getParent().requestDisallowInterceptTouchEvent(true);
+            // A pinch, not a tap or a long press.
+            MotionEvent cancel = MotionEvent.obtain(e);
+            cancel.setAction(MotionEvent.ACTION_CANCEL);
+            g.onTouchEvent(cancel);
+            cancel.recycle();
+            magnify(n, "start", 1f, f[0], f[1]);
+            n.pinchSpan = n.pinchFrom;
+        }
+        if (span <= 0) return;
+        magnify(n, "move", Math.max(0.01f, span / n.pinchSpan), f[0], f[1]);
+        n.pinchSpan = span;
+    }
+
+    /**
+     * Mouse wheels and touchpad scrolling over a view with `on_wheel` (#133),
+     * in points like the web's deltas: positive y scrolls toward the end.
+     */
+    static void wheel(PrismHost.Node n) {
+        View v = n.view;
+        if ((n.pointerMask & WHEEL) == 0) {
+            v.setOnGenericMotionListener(null);
+            return;
+        }
+        v.setOnGenericMotionListener((view, e) -> {
+            if (e.getActionMasked() != MotionEvent.ACTION_SCROLL) return false;
+            ViewConfiguration c = ViewConfiguration.get(view.getContext());
+            float dx = e.getAxisValue(MotionEvent.AXIS_HSCROLL) * c.getScaledHorizontalScrollFactor();
+            float dy = -e.getAxisValue(MotionEvent.AXIS_VSCROLL) * c.getScaledVerticalScrollFactor();
+            if (dx == 0 && dy == 0) return false;
+            JSONObject ev = PrismHost.event("wheel", n.id);
+            put(ev, "dx", dp(dx));
+            put(ev, "dy", dp(dy));
+            put(ev, "x", dp(e.getX()));
+            put(ev, "y", dp(e.getY()));
+            put(ev, "mods", mods(e.getMetaState()));
+            // A touchpad's fingers scroll by points, a mouse wheel by notches.
+            put(ev, "precise", e.getToolType(0) == MotionEvent.TOOL_TYPE_FINGER);
+            PrismHost.send(ev);
+            return true;
+        });
     }
 
     /** Hover (mouse, stylus): enter, move, leave. */
@@ -152,6 +285,7 @@ final class PrismInput {
     static void hover(PrismHost.Node n) {
         // Shared with the hover state (`.hover(|s| …)`): one listener.
         PrismHost.installHover(n);
+        wheel(n);
     }
 
     /**
@@ -160,6 +294,7 @@ final class PrismInput {
      */
     static boolean touch(PrismHost.Node n, android.view.GestureDetector g, MotionEvent e) {
         int a = e.getActionMasked();
+        if ((n.pointerMask & MAGNIFY) != 0) pinch(n, e, g);
         if ((n.pointerMask & MOVE) != 0 && (a == MotionEvent.ACTION_DOWN || a == MotionEvent.ACTION_MOVE)) {
             pointer(n, "move", e.getX(), e.getY());
         }
@@ -169,8 +304,15 @@ final class PrismInput {
                     n.down = new float[]{e.getX(), e.getY(), e.getRawX(), e.getRawY()};
                     n.dragging = false;
                     break;
+                case MotionEvent.ACTION_POINTER_DOWN:
+                    recenter(n, center(e, e.getActionIndex()), center(e, -1));
+                    break;
+                case MotionEvent.ACTION_POINTER_UP:
+                    recenter(n, center(e, -1), center(e, e.getActionIndex()));
+                    break;
                 case MotionEvent.ACTION_MOVE: {
-                    float dx = e.getRawX() - n.down[2], dy = e.getRawY() - n.down[3];
+                    float[] c = center(e, -1);
+                    float dx = c[0] - n.down[2], dy = c[1] - n.down[3];
                     int slop = ViewConfiguration.get(n.view.getContext()).getScaledTouchSlop();
                     if (!n.dragging && dx * dx + dy * dy > slop * slop) {
                         n.dragging = true;
@@ -202,6 +344,7 @@ final class PrismInput {
             }
             if (n.dragging) return true;
         }
+        if (n.scaling) return true;
         return g.onTouchEvent(e) || n.pointerMask != 0;
     }
 
@@ -257,7 +400,13 @@ final class PrismInput {
     }
 
     static int mods(KeyEvent e) {
-        return (e.isShiftPressed() ? 1 : 0) | (e.isCtrlPressed() ? 2 : 0) | (e.isAltPressed() ? 4 : 0) | (e.isMetaPressed() ? 8 : 0);
+        return mods(e.getMetaState());
+    }
+
+    /** Prism's modifier bits (shift 1, control 2, alt 4, meta 8). */
+    static int mods(int meta) {
+        return ((meta & KeyEvent.META_SHIFT_ON) != 0 ? 1 : 0) | ((meta & KeyEvent.META_CTRL_ON) != 0 ? 2 : 0)
+            | ((meta & KeyEvent.META_ALT_ON) != 0 ? 4 : 0) | ((meta & KeyEvent.META_META_ON) != 0 ? 8 : 0);
     }
 
     /** The node of `v` or of its nearest Prism ancestor. */

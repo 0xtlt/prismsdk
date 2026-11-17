@@ -189,6 +189,23 @@ fn remote_ops_and_input_events() {
         ev(json!({"t": "magnify", "id": 4, "scale": 0.5})),
         UiEvent::Magnify(4, m) if m.scale == 0.5
     ));
+    // As the Android host sends them: a wheel with Ctrl held and no phase,
+    // a pinch's start at the fingers' center.
+    assert!(matches!(
+        ev(json!({"t": "wheel", "id": 4, "dx": 0, "dy": 37.5, "x": 10, "y": 20, "mods": 2, "precise": false})),
+        UiEvent::Wheel(4, w) if w.delta.y == 37.5
+            && w.position == Point::new(10., 20.)
+            && w.modifiers.control
+            && !w.modifiers.shift
+            && w.phase == prism_core::GesturePhase::None
+            && !w.precise
+    ));
+    assert!(matches!(
+        ev(json!({"t": "magnify", "id": 4, "phase": "start", "scale": 1, "x": 40, "y": 60})),
+        UiEvent::Magnify(4, m) if m.scale == 1.
+            && m.position == Point::new(40., 60.)
+            && m.phase == prism_core::GesturePhase::Start
+    ));
     // Drop targets (#111): the op, then the host's copies of dropped files.
     let mut d = RemoteWidgets::new(|_| (0., 0.));
     d.set_drop_target(&3, Some(&["image/*".to_string()]));

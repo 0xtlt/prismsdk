@@ -622,6 +622,54 @@ fn dispatch_latest(id: NodeId, channel: u8, event: UiEvent) {
 /// Where a drag's pointer went down, and whether it moved past the slop.
 type DragStart = ((f64, f64), bool);
 
+/// A wheel or touchpad scroll of `dx`, `dy` (#133) as Prism's `WheelEvent`:
+/// points, positive `y` toward the end (GTK's sign, after the user's
+/// natural scrolling), at the pointer in the element.
+fn wheel_event(
+    id: NodeId,
+    c: &gtk::EventControllerScroll,
+    dx: f64,
+    dy: f64,
+    phase: prism_core::GesturePhase,
+) -> UiEvent {
+    // A wheel counts notches: 16 points a line, three lines a notch, like
+    // browsers. A touchpad counts surface pixels.
+    let precise = c.unit() == gdk::ScrollUnit::Surface;
+    let k = if precise { 1. } else { 48. };
+    let mods = c.current_event_state();
+    UiEvent::Wheel(
+        id,
+        prism_core::WheelEvent {
+            delta: point(dx * k, dy * k),
+            position: event_point(c),
+            modifiers: prism_core::Modifiers {
+                shift: mods.contains(gdk::ModifierType::SHIFT_MASK),
+                control: mods.contains(gdk::ModifierType::CONTROL_MASK),
+                alt: mods.contains(gdk::ModifierType::ALT_MASK),
+                meta: mods.intersects(gdk::ModifierType::SUPER_MASK | gdk::ModifierType::META_MASK),
+            },
+            phase,
+            precise,
+        },
+    )
+}
+
+/// Where the controller's current event is, in its widget.
+fn event_point(c: &impl IsA<gtk::EventController>) -> prism_core::Point {
+    let at = (|| {
+        let w = c.widget()?;
+        let (x, y) = c.current_event()?.position()?;
+        let native = w.native()?;
+        let (nx, ny) = native.surface_transform();
+        let p = native.compute_point(
+            &w,
+            &gtk::graphene::Point::new((x - nx) as f32, (y - ny) as f32),
+        )?;
+        Some(point(p.x() as f64, p.y() as f64))
+    })();
+    at.unwrap_or_default()
+}
+
 fn point(x: f64, y: f64) -> prism_core::Point {
     prism_core::Point::new(x as f32, y as f32)
 }
@@ -2598,7 +2646,7 @@ impl Widgets for Gtk {
     }
 
     fn set_pointer_events(&mut self, view: &View, mask: u8) {
-        use prism_core::events::pointer_mask::{DRAG, HOVER, MOVE};
+        use prism_core::events::pointer_mask::{DRAG, HOVER, MAGNIFY, MOVE, WHEEL};
         let id = view.id();
         self.pointer.borrow_mut().insert(id, mask);
         let w = view.widget();
@@ -2688,6 +2736,75 @@ impl Widgets for Gtk {
                 }
             });
             w.add_controller(drag);
+        }
+        if mask & WHEEL != 0 && self.pointer_attached.insert((id, WHEEL)) {
+            // Wheels and touchpads (#133): the element takes the scrolling.
+            let scroll =
+                gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES);
+            let masks = self.pointer.clone();
+            let on = move || masks.borrow().get(&id).is_some_and(|m| m & WHEEL != 0);
+            // A touchpad's gesture: between `scroll-begin` and `scroll-end`.
+            let gesture: Rc<Cell<Option<bool>>> = Rc::default();
+            let g = gesture.clone();
+            scroll.connect_scroll_begin(move |_| g.set(Some(false)));
+            let (g, on2) = (gesture.clone(), on.clone());
+            scroll.connect_scroll_end(move |c| {
+                if g.take() == Some(true) && on2() {
+                    dispatch(wheel_event(id, c, 0., 0., prism_core::GesturePhase::End));
+                }
+            });
+            scroll.connect_scroll(move |c, dx, dy| {
+                if !on() {
+                    return glib::Propagation::Proceed;
+                }
+                let phase = match gesture.get() {
+                    None => prism_core::GesturePhase::None,
+                    Some(false) => {
+                        gesture.set(Some(true));
+                        prism_core::GesturePhase::Start
+                    }
+                    Some(true) => prism_core::GesturePhase::Move,
+                };
+                dispatch(wheel_event(id, c, dx, dy, phase));
+                glib::Propagation::Stop
+            });
+            w.add_controller(scroll);
+        }
+        if mask & MAGNIFY != 0 && self.pointer_attached.insert((id, MAGNIFY)) {
+            // Pinches (#133): touchscreens and touchpads. GTK gives the scale
+            // since the gesture began; Prism the change since the last event.
+            let zoom = gtk::GestureZoom::new();
+            let masks = self.pointer.clone();
+            let last = Rc::new(Cell::new(1.));
+            let event = move |g: &gtk::GestureZoom, scale: f64, phase| {
+                let (x, y) = g.bounding_box_center().unwrap_or_default();
+                UiEvent::Magnify(
+                    id,
+                    prism_core::MagnifyEvent {
+                        scale: scale.max(0.01) as f32,
+                        position: point(x, y),
+                        phase,
+                    },
+                )
+            };
+            let l = last.clone();
+            zoom.connect_begin(move |g, _| {
+                if !masks.borrow().get(&id).is_some_and(|m| m & MAGNIFY != 0) {
+                    g.set_state(gtk::EventSequenceState::Denied);
+                    return;
+                }
+                l.set(1.);
+                dispatch(event(g, 1., prism_core::GesturePhase::Start));
+            });
+            let l = last.clone();
+            zoom.connect_scale_changed(move |g, now| {
+                let ratio = now / l.replace(now).max(0.01);
+                dispatch(event(g, ratio, prism_core::GesturePhase::Move));
+            });
+            zoom.connect_end(move |g, _| {
+                dispatch(event(g, 1., prism_core::GesturePhase::End));
+            });
+            w.add_controller(zoom);
         }
     }
 
