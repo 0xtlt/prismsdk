@@ -9,7 +9,10 @@
 //! - Hover: `UIHoverGestureRecognizer` (iPadOS pointer, Apple Vision Pro
 //!   gaze). Moves while touching: a zero-duration long press that never
 //!   blocks other gestures. Drags: `UIPanGestureRecognizer`, which a scroll
-//!   view's pan waits for. tvOS has no pointer on views: none of these.
+//!   view's pan waits for. Pinches: `UIPinchGestureRecognizer` (fingers and
+//!   an iPad trackpad), alongside a drag. Wheel: a scroll-only
+//!   `UIPanGestureRecognizer` (an iPad trackpad or mouse, #172). tvOS has no
+//!   pointer on views: none of these.
 //! - Keys: `pressesBegan:` with `UIKey` (hardware keyboards) and the remote's
 //!   press types (tvOS), on the view that listens and on the root view
 //!   controller for global listeners.
@@ -152,18 +155,22 @@ fn named_key(code: isize) -> Option<String> {
     )
 }
 
+/// UIKit's modifier flags as Prism's.
+fn modifiers(flags: objc2_ui_kit::UIKeyModifierFlags) -> Modifiers {
+    use objc2_ui_kit::UIKeyModifierFlags as F;
+    Modifiers {
+        shift: flags.contains(F::Shift),
+        control: flags.contains(F::Control),
+        alt: flags.contains(F::Alternate),
+        meta: flags.contains(F::Command),
+    }
+}
+
 /// What a press means as a Prism key: a hardware key, or the TV remote's
 /// arrows, select ("Enter"), play/pause and Menu ("Escape").
 pub fn key_event(press: &UIPress, mtm: MainThreadMarker) -> Option<KeyEvent> {
     if let Some(key) = press.key(mtm) {
-        use objc2_ui_kit::UIKeyModifierFlags as F;
-        let flags = key.modifierFlags();
-        let modifiers = Modifiers {
-            shift: flags.contains(F::Shift),
-            control: flags.contains(F::Control),
-            alt: flags.contains(F::Alternate),
-            meta: flags.contains(F::Command),
-        };
+        let modifiers = modifiers(key.modifierFlags());
         let name = match named_key(key.keyCode().0) {
             Some(n) => n,
             None => {
@@ -465,16 +472,20 @@ pub fn set_activatable(view: &UIView, on: bool) {
 const HOVER: &str = "prism.hover";
 const MOVE: &str = "prism.move";
 const DRAG: &str = "prism.drag";
+const MAGNIFY: &str = "prism.magnify";
+const WHEEL: &str = "prism.wheel";
 
 fn has_name(g: &UIGestureRecognizer, name: &str) -> bool {
     g.name().is_some_and(|n| n.to_string() == name)
 }
 
-/// Adds or removes the hover, touch-move and pan recognizers of `view`.
+/// Adds or removes the hover, touch-move, pan, pinch and wheel recognizers
+/// of `view`.
 #[cfg(not(target_os = "tvos"))]
 pub fn set_pointer_events(view: &UIView, mask: u8, target: &AnyObject) {
     use objc2_ui_kit::{
         UIHoverGestureRecognizer, UILongPressGestureRecognizer, UIPanGestureRecognizer,
+        UIPinchGestureRecognizer, UIScrollTypeMask,
     };
     use prism_core::events::pointer_mask;
     let mtm = view.mtm();
@@ -486,6 +497,8 @@ pub fn set_pointer_events(view: &UIView, mask: u8, target: &AnyObject) {
         (pointer_mask::HOVER | pointer_mask::MOVE, HOVER),
         (pointer_mask::MOVE, MOVE),
         (pointer_mask::DRAG, DRAG),
+        (pointer_mask::MAGNIFY, MAGNIFY),
+        (pointer_mask::WHEEL, WHEEL),
     ] {
         let present = existing.iter().find(|g| has_name(g, name));
         let wanted = mask & bit != 0;
@@ -512,6 +525,27 @@ pub fn set_pointer_events(view: &UIView, mask: u8, target: &AnyObject) {
                         g.setAllowableMovement(f64::MAX);
                         Retained::into_super(g)
                     }
+                    MAGNIFY => Retained::into_super(unsafe {
+                        UIPinchGestureRecognizer::initWithTarget_action(
+                            UIPinchGestureRecognizer::alloc(mtm),
+                            Some(target),
+                            Some(sel!(onPinch:)),
+                        )
+                    }),
+                    WHEEL => {
+                        let g = unsafe {
+                            UIPanGestureRecognizer::initWithTarget_action(
+                                UIPanGestureRecognizer::alloc(mtm),
+                                Some(target),
+                                Some(sel!(onWheel:)),
+                            )
+                        };
+                        // Scrolling only (a trackpad's two fingers, a
+                        // mouse wheel): no touch starts it.
+                        g.setAllowedScrollTypesMask(UIScrollTypeMask::All);
+                        g.setMaximumNumberOfTouches(0);
+                        Retained::into_super(g)
+                    }
                     _ => Retained::into_super(unsafe {
                         UIPanGestureRecognizer::initWithTarget_action(
                             UIPanGestureRecognizer::alloc(mtm),
@@ -522,7 +556,7 @@ pub fn set_pointer_events(view: &UIView, mask: u8, target: &AnyObject) {
                 };
                 g.setName(Some(&NSString::from_str(name)));
                 // Taps, scrolling and buttons keep working alongside.
-                g.setCancelsTouchesInView(name == DRAG);
+                g.setCancelsTouchesInView(name == DRAG || name == MAGNIFY);
                 g.setDelaysTouchesEnded(false);
                 let delegate: &AnyObject = target;
                 let _: () = unsafe { msg_send![&*g, setDelegate: delegate] };
@@ -613,6 +647,74 @@ pub fn on_pan(g: &objc2_ui_kit::UIPanGestureRecognizer) {
     ));
 }
 
+/// A pinch (#172): the scale since the previous report, around the
+/// fingers' center.
+#[cfg(not(target_os = "tvos"))]
+pub fn on_pinch(g: &objc2_ui_kit::UIPinchGestureRecognizer) {
+    use prism_core::{GesturePhase, MagnifyEvent};
+    let Some(view) = g.view() else { return };
+    let Some(phase) = gesture_phase(g.state()) else {
+        return;
+    };
+    let scale = if phase == GesturePhase::End {
+        1.
+    } else {
+        g.scale().max(0.01) as f32
+    };
+    // Relative: the next report starts from 1.
+    g.setScale(1.);
+    let at = g.locationInView(Some(&view));
+    crate::imp::dispatch(UiEvent::Magnify(
+        view.tag() as NodeId,
+        MagnifyEvent {
+            scale,
+            position: point(at),
+            phase,
+        },
+    ));
+}
+
+/// A trackpad or mouse wheel scrolled over the view (#172): the distance
+/// since the previous report.
+#[cfg(not(target_os = "tvos"))]
+pub fn on_wheel(g: &objc2_ui_kit::UIPanGestureRecognizer) {
+    use prism_core::{Point, WheelEvent};
+    let Some(view) = g.view() else { return };
+    let Some(phase) = gesture_phase(g.state()) else {
+        return;
+    };
+    let t = g.translationInView(Some(&view));
+    g.setTranslation_inView(CGPoint::new(0., 0.), Some(&view));
+    let at = g.locationInView(Some(&view));
+    crate::imp::dispatch(UiEvent::Wheel(
+        view.tag() as NodeId,
+        WheelEvent {
+            // UIKit's translation moves the content; Prism's delta scrolls
+            // it (positive y: toward the end), like the web and macOS.
+            delta: Point::new(-t.x as f32, -t.y as f32),
+            position: point(at),
+            modifiers: modifiers(g.modifierFlags()),
+            phase,
+            precise: true,
+        },
+    ));
+}
+
+/// A continuous recognizer's state as a gesture phase (`None`: nothing to
+/// report).
+#[cfg(not(target_os = "tvos"))]
+fn gesture_phase(state: UIGestureRecognizerState) -> Option<prism_core::GesturePhase> {
+    use prism_core::GesturePhase;
+    match state {
+        UIGestureRecognizerState::Began => Some(GesturePhase::Start),
+        UIGestureRecognizerState::Changed => Some(GesturePhase::Move),
+        UIGestureRecognizerState::Ended | UIGestureRecognizerState::Cancelled => {
+            Some(GesturePhase::End)
+        }
+        _ => None,
+    }
+}
+
 thread_local! {
     /// Where each drag started, by node.
     static START: RefCell<HashMap<NodeId, prism_core::Point>> = RefCell::new(HashMap::new());
@@ -622,15 +724,31 @@ fn point(p: CGPoint) -> prism_core::Point {
     prism_core::Point::new(p.x as f32, p.y as f32)
 }
 
-/// Gesture delegate: hover and touch-move recognizers never block others.
-pub fn simultaneous(g: &UIGestureRecognizer) -> bool {
-    has_name(g, HOVER) || has_name(g, MOVE)
+/// Gesture delegate: hover and touch-move recognizers never block others;
+/// a pinch and a drag of the same view both run (one finger drags, two
+/// pinch while the drag follows their center).
+pub fn simultaneous(g: &UIGestureRecognizer, other: &UIGestureRecognizer) -> bool {
+    let pair = |a: &UIGestureRecognizer, b: &UIGestureRecognizer| {
+        has_name(a, MAGNIFY) && (has_name(b, DRAG) || has_name(b, WHEEL))
+    };
+    [g, other]
+        .iter()
+        .any(|r| has_name(r, HOVER) || has_name(r, MOVE))
+        || pair(g, other)
+        || pair(other, g)
 }
 
-/// Gesture delegate: a scroll view's pan waits for a drag to fail, so
-/// dragging a view inside a scroll view drags it.
+/// Gesture delegate: the wheel recognizer never tracks a touch (a finger
+/// keeps scrolling what is behind it).
+pub fn receives_touch(g: &UIGestureRecognizer) -> bool {
+    !has_name(g, WHEEL)
+}
+
+/// Gesture delegate: a scroll view's pan waits for a drag (or a view's
+/// wheel) to fail, so dragging a view inside a scroll view drags it, and
+/// scrolling over a view with `on_wheel` does not scroll what is behind.
 pub fn required_to_fail_by(g: &UIGestureRecognizer, other: &UIGestureRecognizer) -> bool {
-    has_name(g, DRAG)
+    (has_name(g, DRAG) || has_name(g, WHEEL))
         && other
             .view()
             .is_some_and(|v| v.isKindOfClass(objc2_ui_kit::UIScrollView::class()))

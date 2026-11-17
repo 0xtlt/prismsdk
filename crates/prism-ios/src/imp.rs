@@ -535,6 +535,26 @@ define_class!(
             let _ = sender;
         }
 
+        /// A pinch over a view with `on_magnify` (#172).
+        #[unsafe(method(onPinch:))]
+        fn on_pinch(&self, sender: &objc2_ui_kit::UIGestureRecognizer) {
+            #[cfg(not(target_os = "tvos"))]
+            if let Some(g) = sender.downcast_ref::<objc2_ui_kit::UIPinchGestureRecognizer>() {
+                crate::interaction::on_pinch(g);
+            }
+            #[cfg(target_os = "tvos")]
+            let _ = sender;
+        }
+
+        /// Trackpad or mouse scrolling over a view with `on_wheel` (#172).
+        #[unsafe(method(onWheel:))]
+        fn on_wheel(&self, sender: &objc2_ui_kit::UIPanGestureRecognizer) {
+            #[cfg(not(target_os = "tvos"))]
+            crate::interaction::on_wheel(sender);
+            #[cfg(target_os = "tvos")]
+            let _ = sender;
+        }
+
         /// A checkbox was pressed: flip it and report.
         #[unsafe(method(onCheckbox:))]
         fn on_checkbox(&self, sender: &UIButton) {
@@ -597,7 +617,16 @@ define_class!(
             g: &objc2_ui_kit::UIGestureRecognizer,
             other: &objc2_ui_kit::UIGestureRecognizer,
         ) -> bool {
-            crate::interaction::simultaneous(g) || crate::interaction::simultaneous(other)
+            crate::interaction::simultaneous(g, other)
+        }
+
+        #[unsafe(method(gestureRecognizer:shouldReceiveTouch:))]
+        fn should_receive_touch(
+            &self,
+            g: &objc2_ui_kit::UIGestureRecognizer,
+            _touch: &objc2_ui_kit::UITouch,
+        ) -> bool {
+            crate::interaction::receives_touch(g)
         }
 
         #[unsafe(method(gestureRecognizer:shouldBeRequiredToFailByGestureRecognizer:))]
