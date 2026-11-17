@@ -140,10 +140,22 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
         }
     }
     let m = s.margin;
+    // `auto` sides take the free space (#228).
+    let side = |v: f32, auto: bool| {
+        if auto {
+            "auto".to_string()
+        } else {
+            format!("{v}px")
+        }
+    };
+    let a = s.margin_auto;
     let _ = write!(
         w,
-        "margin-block:{}px {}px;margin-inline:{}px {}px;",
-        m.top, m.bottom, m.left, m.right
+        "margin-block:{} {};margin-inline:{} {};",
+        side(m.top, a[0]),
+        side(m.bottom, a[2]),
+        side(m.left, a[3]),
+        side(m.right, a[1])
     );
     for (prop, v) in [
         ("width", s.width),

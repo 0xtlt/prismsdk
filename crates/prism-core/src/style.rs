@@ -654,6 +654,10 @@ pub struct Style {
     pub padding: Edges,
     /// Outer spacing, points.
     pub margin: Edges,
+    /// Sides whose margin is `auto` (#228), taking the free space like CSS:
+    /// top, trailing, bottom, leading (the order of [`Edges`]). Overrides
+    /// the side's `margin`.
+    pub margin_auto: [bool; 4],
     /// In the flow (default) or absolutely positioned at `inset`.
     pub position: Position,
     /// Distances from the parent's edges when `position` is `Absolute`.
@@ -1323,6 +1327,7 @@ impl Default for Style {
             gap: 0.,
             padding: Edges::default(),
             margin: Edges::default(),
+            margin_auto: [false; 4],
             position: Position::Relative,
             inset: Inset::default(),
             width: Length::Auto,
@@ -1580,37 +1585,95 @@ pub trait Styled: Sized {
     }
     /// Margin on every edge, points.
     fn m(self, v: f32) -> Self {
-        self.with_style(|s| s.margin = Edges::all(v))
+        self.with_style(|s| {
+            s.margin = Edges::all(v);
+            s.margin_auto = [false; 4]
+        })
     }
     /// Leading and trailing margin, points.
     fn mx(self, v: f32) -> Self {
         self.with_style(|s| {
             s.margin.left = v;
-            s.margin.right = v
+            s.margin.right = v;
+            s.margin_auto[1] = false;
+            s.margin_auto[3] = false
         })
     }
     /// Top and bottom margin, points.
     fn my(self, v: f32) -> Self {
         self.with_style(|s| {
             s.margin.top = v;
-            s.margin.bottom = v
+            s.margin.bottom = v;
+            s.margin_auto[0] = false;
+            s.margin_auto[2] = false
         })
     }
     /// Top margin, points.
     fn mt(self, v: f32) -> Self {
-        self.with_style(|s| s.margin.top = v)
+        self.with_style(|s| {
+            s.margin.top = v;
+            s.margin_auto[0] = false
+        })
     }
     /// Leading margin (flips in right-to-left languages).
     fn ml(self, v: f32) -> Self {
-        self.with_style(|s| s.margin.left = v)
+        self.with_style(|s| {
+            s.margin.left = v;
+            s.margin_auto[3] = false
+        })
     }
     /// Trailing margin.
     fn mr(self, v: f32) -> Self {
-        self.with_style(|s| s.margin.right = v)
+        self.with_style(|s| {
+            s.margin.right = v;
+            s.margin_auto[1] = false
+        })
     }
     /// Bottom margin, points.
     fn mb(self, v: f32) -> Self {
-        self.with_style(|s| s.margin.bottom = v)
+        self.with_style(|s| {
+            s.margin.bottom = v;
+            s.margin_auto[2] = false
+        })
+    }
+    /// `auto` margins on every side (#228): centered in the parent, both
+    /// ways, like CSS `margin: auto`.
+    fn m_auto(self) -> Self {
+        self.with_style(|s| s.margin_auto = [true; 4])
+    }
+    /// `auto` leading and trailing margins (#228): a column centered in
+    /// its parent (`w_full().max_w(px(1152.)).mx_auto()`), without making
+    /// the parent `items_center()`.
+    fn mx_auto(self) -> Self {
+        self.with_style(|s| {
+            s.margin_auto[1] = true;
+            s.margin_auto[3] = true
+        })
+    }
+    /// `auto` top and bottom margins: centered vertically.
+    fn my_auto(self) -> Self {
+        self.with_style(|s| {
+            s.margin_auto[0] = true;
+            s.margin_auto[2] = true
+        })
+    }
+    /// An `auto` top margin: pushed to the bottom of a column (a footer).
+    fn mt_auto(self) -> Self {
+        self.with_style(|s| s.margin_auto[0] = true)
+    }
+    /// An `auto` leading margin: pushed to the end of a row (the last
+    /// button of a toolbar), with no spacer. Flips in right-to-left
+    /// languages, like `ml`.
+    fn ml_auto(self) -> Self {
+        self.with_style(|s| s.margin_auto[3] = true)
+    }
+    /// An `auto` trailing margin: what follows is pushed to the end.
+    fn mr_auto(self) -> Self {
+        self.with_style(|s| s.margin_auto[1] = true)
+    }
+    /// An `auto` bottom margin: what follows is pushed to the bottom.
+    fn mb_auto(self) -> Self {
+        self.with_style(|s| s.margin_auto[2] = true)
     }
 
     // Position

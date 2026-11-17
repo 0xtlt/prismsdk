@@ -1091,3 +1091,36 @@ fn reversed_directions_follow_responsive_refinements() {
     assert_eq!(f.frame(f.by_text("a")).0, 792.);
     assert_eq!(f.frame(f.by_text("b")).0, 784.);
 }
+
+/// #228: auto margins take the free space, like CSS.
+#[test]
+fn auto_margins_center_and_push() {
+    let mut h = tree(|| {
+        div()
+            .h(300.)
+            // A centered column, the parent left as it is.
+            .child(div().w_full().max_w(200.).h(10.).mx_auto())
+            // The last item of a row pushed to the end, with no spacer.
+            .child(
+                div()
+                    .flex_row()
+                    .child(div().w(20.).h(10.))
+                    .child(div().w(30.).h(10.).ml_auto()),
+            )
+            // A footer pinned to the bottom of the column.
+            .child(div().h(20.).mt_auto())
+    });
+    let f = h.layout(400., 300.);
+    let v = f.of_kind(NodeKind::View);
+    assert_eq!(f.frame(v[1]), (100., 0., 200., 10.), "centered column");
+    assert_eq!(f.frame(v[4]).0, 370., "pushed to the end of the row");
+    assert_eq!(f.frame(v[5]).1, 280., "footer at the bottom");
+}
+
+#[test]
+fn a_margin_in_points_replaces_auto() {
+    let mut h = tree(|| div().child(div().w(100.).h(10.).mx_auto().ml(8.)));
+    let f = h.layout(400., 300.);
+    let v = f.of_kind(NodeKind::View);
+    assert_eq!(f.frame(v[1]).0, 8.);
+}

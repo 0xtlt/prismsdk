@@ -85,6 +85,18 @@ follow the tree, as on the web. Both work in refinements (`md`, `at_width`,
 order per breakpoint without rebuilding it in `render`. Right to left, a
 reversed row starts at the left edge.
 
+## Auto margins
+
+`m_auto()`, `mx_auto()`, `my_auto()`, `mt_auto()`, `mr_auto()`, `mb_auto()` and `ml_auto()` give a side an `auto` margin, which takes the free space like CSS `margin: auto` (#228):
+
+```rust
+div().w_full().max_w(px(1152.)).mx_auto()                    // a centered page column
+div().flex_row().child(title).child(actions.ml_auto())        // pushed to the end, no spacer
+div().h_full().child(content).child(footer.mt_auto())         // pinned to the bottom
+```
+
+Leading and trailing follow the text direction, like `ml` and `mr`. A margin in points on the same side (`ml(8.)`) replaces `auto`. They work in refinements (`.md(|s| s.mx_auto())`). The web writes `margin-*: auto`; native backends use taffy's auto margins.
+
 ## Padding on every node
 
 `.p()`, `.px()`, `.py()`, `.pt()`, `.pr()`, `.pb()` and `.pl()` work on
