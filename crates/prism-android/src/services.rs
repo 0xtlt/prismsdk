@@ -113,6 +113,8 @@ impl PlatformServices for AndroidServices {
             }),
             PlatformRequest::CancelNotification(id) => json!({ "op": "notify_cancel", "nid": id }),
             PlatformRequest::RequestNotificationPermission => json!({ "op": "notify_permission" }),
+            // Launchers badge the icon from its notifications (#239).
+            PlatformRequest::SetBadge(_) => return,
             PlatformRequest::RegisterPush => json!({ "op": "push_register" }),
             PlatformRequest::UnregisterPush => json!({ "op": "push_unregister" }),
             // Live Updates notifications have no push tokens.

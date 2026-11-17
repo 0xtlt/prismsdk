@@ -132,6 +132,8 @@ pub enum PlatformRequest {
     CancelNotification(String),
     /// Ask the user for permission to show notifications.
     RequestNotificationPermission,
+    /// The number on the app icon (#239); `None` clears it.
+    SetBadge(Option<u32>),
     /// Get a push token (answer with `Runtime::push_registered`).
     RegisterPush,
     /// Forget the push token (stop receiving pushes).
@@ -2013,6 +2015,19 @@ impl App {
         self.surfaces
             .requests
             .push(PlatformRequest::CancelNotification(id.into()));
+    }
+
+    /// The number on the app's icon (#239), set on its own, without a
+    /// notification: unread items read in the app, banners turned off.
+    /// `None` (or 0) clears it. The Dock tile on macOS, the home screen on
+    /// iOS, iPadOS, tvOS and visionOS (it needs the notification permission,
+    /// badges included), the Badging API (`navigator.setAppBadge`) on the
+    /// web where the browser has it (installed web apps). Nothing on
+    /// Android, Linux and watchOS, whose badges come from notifications.
+    pub fn set_badge(&mut self, count: Option<u32>) {
+        self.surfaces
+            .requests
+            .push(PlatformRequest::SetBadge(count));
     }
 
     /// Asks for permission to show notifications now (otherwise asked on the

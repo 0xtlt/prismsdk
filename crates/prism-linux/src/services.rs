@@ -664,6 +664,8 @@ impl PlatformServices for LinuxServices {
                 self.app.withdraw_notification(&id);
             }
             PlatformRequest::RequestNotificationPermission => {}
+            // No standard app badge on the Linux desktop (#239).
+            PlatformRequest::SetBadge(_) => {}
             PlatformRequest::RegisterPush => crate::push::register(
                 self.data_dir.clone(),
                 |r| {

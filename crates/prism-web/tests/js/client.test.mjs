@@ -1764,3 +1764,13 @@ test("a button can be a link, with the look of a button (#230)", () => {
   assert.equal(page.node(2).localName, "button");
   assert.equal(page.node(2).type, "button");
 });
+
+test("the app badge uses the Badging API where there is one (#239)", async () => {
+  const page = live([create(1, "view"), root(1)]);
+  const calls = [];
+  page.window.navigator.setAppBadge = (n) => { calls.push(["set", n]); return Promise.resolve(); };
+  page.window.navigator.clearAppBadge = () => { calls.push(["clear"]); return Promise.resolve(); };
+  page.ws.deliver({ t: "badge", n: 4 });
+  page.ws.deliver({ t: "badge", n: null });
+  assert.deepEqual(calls, [["set", 4], ["clear"]]);
+});

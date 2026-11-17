@@ -23,6 +23,7 @@ unsafe extern "C" {
     fn prism_notify(json: *const c_char);
     fn prism_notify_cancel(id: *const c_char);
     fn prism_notify_permission();
+    fn prism_set_badge(count: i32);
 }
 
 fn c(s: &str) -> CString {
@@ -314,6 +315,10 @@ impl PlatformServices for MacServices {
                     NSStatusBar::systemStatusBar().removeStatusItem(&item);
                 }
             }
+            // The app icon's badge (#239).
+            PlatformRequest::SetBadge(n) => unsafe {
+                prism_set_badge(n.map_or(-1, |n| n.min(i32::MAX as u32) as i32))
+            },
             PlatformRequest::RequestNotificationPermission => {
                 if self.caps.notifications {
                     unsafe { prism_notify_permission() }
