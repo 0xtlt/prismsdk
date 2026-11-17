@@ -2725,6 +2725,11 @@ fn files_are_picked_with_their_types() {
         ),
         json!({ "t": "device", "id": 3, "call": "pick_files", "types": ["image/*", ".pdf"], "multiple": true })
     );
+    // A folder (#225).
+    assert_eq!(
+        device_json(4, DeviceCall::PickFolder(prism_core::PickFolder::new())),
+        json!({ "t": "device", "id": 4, "call": "pick_folder" })
+    );
 }
 
 #[test]

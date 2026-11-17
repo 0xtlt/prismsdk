@@ -4222,3 +4222,40 @@ fn the_badge_is_set_on_its_own() {
         ]
     ));
 }
+
+/// #225: a folder answer, natively (the folder first) and on the web
+/// (names starting with the folder's).
+#[test]
+fn picked_folders_keep_their_tree() {
+    use crate::device::{FOLDER_MIME, PickedFile, PickedFolder};
+    let f = |path: &str, name: &str, mime: &str| PickedFile {
+        path: path.into(),
+        name: name.into(),
+        mime: mime.into(),
+        size: 1,
+    };
+    let native = PickedFolder::from_files(vec![
+        f("/Users/me/Export", "Export", FOLDER_MIME),
+        f("/Users/me/Export/a.md", "a.md", "text/markdown"),
+        f("/Users/me/Export/notes/b.md", "notes/b.md", "text/markdown"),
+        f("/Users/me/Export/.git/HEAD", ".git/HEAD", "text/plain"),
+    ])
+    .unwrap();
+    assert_eq!(native.name, "Export");
+    assert_eq!(native.path.as_deref(), Some("/Users/me/Export"));
+    let names: Vec<_> = native.files.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["a.md", "notes/b.md"], "hidden ones left out");
+    // Copied for the app: no path.
+    let copied = PickedFolder::from_files(vec![f("", "Export", FOLDER_MIME)]).unwrap();
+    assert_eq!((copied.path, copied.files.len()), (None, 0));
+    let web = PickedFolder::from_files(vec![
+        f("/files/1", "Export/a.md", "text/markdown"),
+        f("/files/2", "Export/notes/b.md", "text/markdown"),
+        f("/files/3", "Export/.DS_Store", ""),
+    ])
+    .unwrap();
+    assert_eq!(web.name, "Export");
+    let names: Vec<_> = web.files.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["a.md", "notes/b.md"]);
+    assert_eq!(PickedFolder::from_files(Vec::new()), None);
+}

@@ -486,6 +486,89 @@ public func prismDevicePickFiles(_ id: UInt64, _ types: UnsafePointer<CChar>, _ 
     #endif
 }
 
+// MARK: Folders (#225)
+
+/// The regular files under `root`, with their path in it (`/` between
+/// folders); hidden files and package contents left out.
+func prismFolderFiles(_ root: URL) -> [(URL, String)] {
+    let keys: [URLResourceKey] = [.isRegularFileKey]
+    guard let walk = FileManager.default.enumerator(at: root, includingPropertiesForKeys: keys,
+                                                    options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return [] }
+    let base = root.standardizedFileURL.path
+    var out: [(URL, String)] = []
+    for case let url as URL in walk {
+        guard (try? url.resourceValues(forKeys: Set(keys)))?.isRegularFile == true else { continue }
+        var rel = url.standardizedFileURL.path
+        if rel.hasPrefix(base) { rel = String(rel.dropFirst(base.count)) }
+        rel = rel.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        // Lines and fields of the answer stay apart.
+        out.append((url, rel.replacingOccurrences(of: "\t", with: " ").replacingOccurrences(of: "\n", with: " ")))
+    }
+    return out
+}
+
+/// The answer's first line: the folder (`inode/directory`), its path when
+/// its files are read in place.
+func prismFolderLine(_ root: URL, inPlace: Bool) -> String {
+    [inPlace ? root.path : "", root.lastPathComponent, "inode/directory", "0"].joined(separator: "\t")
+}
+
+#if os(iOS) || os(visionOS)
+final class PrismFolderPicker: NSObject, UIDocumentPickerDelegate {
+    let id: UInt64
+    init(id: UInt64) { self.id = id }
+
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        pickers[id] = nil
+        guard let root = urls.first else { return replyFiles(id, []) }
+        let id = self.id
+        DispatchQueue.global(qos: .userInitiated).async {
+            // The folder is the app's while it reads it: its files are copied.
+            let scoped = root.startAccessingSecurityScopedResource()
+            defer { if scoped { root.stopAccessingSecurityScopedResource() } }
+            let files = prismFolderFiles(root).compactMap { url, rel in prismKeep(url).map { prismDescribe($0, name: rel) } }
+            replyFiles(id, [prismFolderLine(root, inPlace: false)] + files)
+        }
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        replyFiles(id, [])
+        pickers[id] = nil
+    }
+}
+#endif
+
+@_cdecl("prism_device_pick_folder")
+public func prismDevicePickFolder(_ id: UInt64, _ title: UnsafePointer<CChar>?) {
+    let title = string(title)
+    #if os(watchOS) || os(tvOS)
+    _ = title
+    fail(id, "unavailable") // no folders to pick on the watch or the TV
+    #elseif os(iOS) || os(visionOS)
+    _ = title
+    guard let top = topController() else { return fail(id, "no window to present the picker") }
+    let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder])
+    let delegate = PrismFolderPicker(id: id)
+    pickers[id] = delegate
+    picker.delegate = delegate
+    top.present(picker, animated: true)
+    #else
+    let panel = NSOpenPanel()
+    panel.canChooseDirectories = true
+    panel.canChooseFiles = false
+    panel.allowsMultipleSelection = false
+    if let t = title { panel.message = t; panel.prompt = t }
+    panel.begin { response in
+        guard response == .OK, let root = panel.url else { return replyFiles(id, []) }
+        // Read in place: the panel gave the app this folder.
+        DispatchQueue.global(qos: .userInitiated).async {
+            let files = prismFolderFiles(root).map { url, rel in prismDescribe(url.path, name: rel) }
+            replyFiles(id, [prismFolderLine(root, inPlace: true)] + files)
+        }
+    }
+    #endif
+}
+
 // MARK: Haptics, clipboard, share, URLs
 
 @_cdecl("prism_device_haptic")

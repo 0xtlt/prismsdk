@@ -463,6 +463,7 @@ mod bridge {
         fn prism_device_stop(id: u64);
         fn prism_device_pick_images(id: u64, limit: u32, camera: bool);
         fn prism_device_pick_files(id: u64, types: *const c_char, multiple: bool);
+        fn prism_device_pick_folder(id: u64, title: *const c_char);
         fn prism_device_haptic(kind: *const c_char);
         fn prism_device_copy(text: *const c_char);
         fn prism_device_paste(id: u64);
@@ -571,6 +572,14 @@ mod bridge {
                 // Types one per line: MIME types or `.ext`.
                 DeviceCall::PickFiles(o) => {
                     prism_device_pick_files(id, c(&o.types.join("\n")).as_ptr(), o.multiple)
+                }
+                // A folder and its files (#225).
+                DeviceCall::PickFolder(o) => {
+                    let title = o.title.as_deref().map(c);
+                    prism_device_pick_folder(
+                        id,
+                        title.as_ref().map_or(std::ptr::null(), |t| t.as_ptr()),
+                    )
                 }
                 DeviceCall::ReadClipboard => prism_device_paste(id),
                 DeviceCall::Haptic(h) => prism_device_haptic(c(h.name()).as_ptr()),

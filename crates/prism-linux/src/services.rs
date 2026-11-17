@@ -208,6 +208,7 @@ impl LinuxServices {
                 self.pick_images(id, o.limit);
             }
             DeviceCall::PickFiles(o) => self.pick_files(id, o),
+            DeviceCall::PickFolder(o) => self.pick_folder(id, o),
             DeviceCall::SaveFile(f) => self.save_file(id, f),
             DeviceCall::RevealPath(p) => reveal(&p),
             DeviceCall::ReadClipboard => {
@@ -434,6 +435,38 @@ impl LinuxServices {
                 }
             }
             reply(id, Ok(DeviceValue::Files(picked)));
+        });
+        chooser.show();
+    }
+
+    /// GTK's folder chooser (#225), then the folder's files read in place,
+    /// off the main thread.
+    fn pick_folder(&mut self, id: u64, o: prism_core::PickFolder) {
+        let chooser = gtk::FileChooserNative::new(
+            o.title.as_deref(),
+            Some(&self.window),
+            gtk::FileChooserAction::SelectFolder,
+            o.title.as_deref(),
+            None,
+        );
+        let keep = chooser.clone();
+        chooser.connect_response(move |c, response| {
+            let _ = &keep;
+            if response != gtk::ResponseType::Accept {
+                return reply(id, Err(DeviceError::from_message("cancelled")));
+            }
+            let Some(root) = c.file().and_then(|f| f.path()) else {
+                return reply(id, Err(DeviceError::Failed("not a local folder".into())));
+            };
+            glib::MainContext::default().spawn_local(async move {
+                match gio::spawn_blocking(move || folder_files(&root)).await {
+                    Ok(files) => reply(id, Ok(DeviceValue::Files(files))),
+                    Err(_) => reply(
+                        id,
+                        Err(DeviceError::Failed("could not read the folder".into())),
+                    ),
+                }
+            });
         });
         chooser.show();
     }
@@ -943,6 +976,57 @@ mod geoclue {
 /// Copies a picked file under the cache directory, like the other backends.
 fn copy_picked(file: &gio::File) -> Option<PickedFile> {
     copy_picked_path(file.path()?)
+}
+
+/// Folder `root` and its files (#225): the folder first
+/// ([`prism_core::FOLDER_MIME`]), then every regular file under it, read in
+/// place and named by its path in it; hidden ones left out.
+fn folder_files(root: &std::path::Path) -> Vec<PickedFile> {
+    let mut out = vec![PickedFile {
+        path: root.to_string_lossy().to_string(),
+        name: root
+            .file_name()
+            .map_or_else(|| "folder".into(), |n| n.to_string_lossy().to_string()),
+        mime: prism_core::FOLDER_MIME.into(),
+        size: 0,
+    }];
+    let mut todo = vec![(root.to_path_buf(), String::new())];
+    while let Some((dir, prefix)) = todo.pop() {
+        let Ok(read) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut entries: Vec<_> = read.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            let rel = if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}/{name}")
+            };
+            let Ok(kind) = e.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                todo.push((e.path(), rel));
+            } else if kind.is_file() {
+                let path = e.path();
+                let mime = gio::content_type_guess(Some(&path), None::<&[u8]>).0;
+                let mime = gio::content_type_get_mime_type(&mime)
+                    .map_or("application/octet-stream".into(), |m| m.to_string());
+                out.push(PickedFile {
+                    size: e.metadata().map_or(0, |m| m.len()),
+                    path: path.to_string_lossy().to_string(),
+                    name: rel,
+                    mime,
+                });
+            }
+        }
+    }
+    out
 }
 
 /// [`copy_picked`] for a local path (any thread: dropped files are copied

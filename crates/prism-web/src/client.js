@@ -6017,7 +6017,8 @@ void main() {
   }
   /** `start` with the files' names, types and sizes, then their chunks (`key` names the upload). */
   async function sendFiles(start, key, files, stopped) {
-    send({ ...start, files: files.map((f) => ({ name: f.name, mime: f.type, size: f.size })) });
+    // A folder's files (#225) go by their path in it.
+    send({ ...start, files: files.map((f) => ({ name: f.webkitRelativePath || f.name, mime: f.type, size: f.size })) });
     for (let i = 0; i < files.length && !stopped(); i++) {
       for (let at = 0; at < files[i].size && !stopped(); at += CHUNK) {
         while (ws && ws.bufferedAmount > 4 * CHUNK && !stopped()) await new Promise((r) => setTimeout(r, 20));
@@ -6339,6 +6340,16 @@ void main() {
           input.addEventListener("change", () => {
             upload(msg, [...input.files].slice(0, msg.multiple ? Infinity : 1), reply);
           });
+          return input.click();
+        }
+        case "pick_folder": {
+          // A folder and its files (#225): uploaded like picked files, each
+          // named by its path (`Export/notes/a.md`).
+          const input = document.createElement("input");
+          input.type = "file";
+          input.webkitdirectory = true;
+          input.addEventListener("cancel", () => reply({ err: "cancelled" }));
+          input.addEventListener("change", () => upload(msg, [...input.files], reply));
           return input.click();
         }
         case "paste":

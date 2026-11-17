@@ -65,12 +65,12 @@ pub use controls::{
 pub use decoration::{
     BorderSide, BorderSides, BorderStyle, Cursor, Gradient, GradientKind, GradientStop, Shadow,
 };
-pub use device::PickFiles;
 pub use device::{
     Accuracy, DeviceCall, DeviceError, DeviceEvent, DeviceValue, Haptic, Location, Motion,
     Permission, PermissionState, PickImages, PickedFile, SaveFile, SaveSource, SavedFile, Share,
     Upload, UploadProgress, Watch,
 };
+pub use device::{FOLDER_MIME, PickFiles, PickFolder, PickedFolder};
 pub use device_info::{
     Browser, DeviceInfo, DeviceKind, Engine, Fold, Orientation, Os, OsName, Posture, Rotation,
     ScreenInfo, Version, WindowMode,
