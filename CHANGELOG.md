@@ -329,6 +329,7 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- macOS, iOS, Linux: a `scroll()` the app moves (`cx.scroll_by`, `scroll_to`, `scroll_into_view`) reports its new offset (#204). `on_scroll` runs and `cx.scroll_offset(id)` follows. The platform's scroll callback came while Prism was applying the patches that moved it, so the event was dropped; it is now dispatched right after.
 - Web: a fast drag off a small handle starts (#194). The page now follows the pointer on the window from the press until the release, so a flick whose first move past the slop is already off the element still starts `on_drag`. The pointer is captured only once it is a drag, so a click on a child stays the child's.
 - Web: the page title keeps the top screen's name once the live session starts (#185). The first tree built the main stack before the `root` patch that made it the main one, so the tab fell back to the app's name ("Sign in · App" became "App"), with or without a header bar.
 - A `take_focus(false)` popover light-dismisses (#182): a press outside it, the anchor's text field included, closes it and calls `on_dismiss` with `Outside`, and the press still reaches what it landed on (the caret moves). Typing does not close it; `light_dismiss(false)` keeps it open as before. On macOS it is shown in a child panel and never closed. The web, Linux, iOS and Android now watch presses around it too; `take_focus(false)` no longer implies `light_dismiss(false)`.

@@ -736,7 +736,14 @@ define_class!(
                 return;
             }
             let y = s.contentOffset().y + s.adjustedContentInset().top;
-            dispatch(UiEvent::Scroll(s.tag() as NodeId, y as f32, s.bounds().size.height as f32));
+            let event = UiEvent::Scroll(s.tag() as NodeId, y as f32, s.bounds().size.height as f32);
+            // Moved by the app (`scroll_by`, #204) while Prism applies
+            // patches: reported right after, not lost.
+            if STATE.with(|cell| cell.try_borrow_mut().is_err()) {
+                dispatch2::DispatchQueue::main().exec_async(move || dispatch(event));
+            } else {
+                dispatch(event);
+            }
         }
     }
 
