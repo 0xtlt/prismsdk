@@ -1596,6 +1596,7 @@ fn op_with_text(patches: &Value, text: &str) -> u64 {
 fn dropped_files_reach_the_drop_target() {
     struct Zone {
         got: String,
+        progress: String,
     }
     impl Render for Zone {
         fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1609,14 +1610,22 @@ fn dropped_files_reach_the_drop_target() {
                                 this.got = format!("{} {}", f.name, f.read().unwrap().len());
                             }),
                         )
+                        // The upload's progress (#199).
+                        .on_drop_progress(cx.listener(|this, e: &DropProgress, _| {
+                            this.progress = format!("{}/{}", e.sent, e.total);
+                        }))
                         .drop_hover(|s| s.bg(rgb(0xeeeeff)))
-                        .child(text(self.got.clone())),
+                        .child(text(self.got.clone()))
+                        .child(text(self.progress.clone())),
                 )
                 .child(text("elsewhere"))
         }
     }
     let init: AppInit = Arc::new(|cx: &mut App| {
-        let root = cx.new_entity(|_| Zone { got: "…".into() });
+        let root = cx.new_entity(|_| Zone {
+            got: "…".into(),
+            progress: "-".into(),
+        });
         cx.set_root(root);
     });
     let (app, dir) = web_app(init, "drop");
@@ -1627,6 +1636,7 @@ fn dropped_files_reach_the_drop_target() {
     assert_eq!(drop["types"], json!(["image/*"]));
     let zone = drop["id"].as_u64().unwrap();
     let got = op_with_text(&reset["p"], "…");
+    let progress = op_with_text(&reset["p"], "-");
     let other = op_with_text(&reset["p"], "elsewhere");
     let png = json!([{ "name": "cat.png", "mime": "image/png", "size": 3 }]);
     // Refused: not a drop target, a type it does not take, too many bytes.
@@ -1638,11 +1648,20 @@ fn dropped_files_reach_the_drop_target() {
     page.send(json!({ "t": "upload_chunk", "drop": 2, "file": 0, "data": "aGk=" }));
     page.send(json!({ "t": "drop_end", "drop": 2 }));
     page.send(json!({ "t": "drop_start", "drop": 3, "node": zone, "files": png }));
+    // An accepted drop starts reporting its progress (#199).
+    assert_eq!(
+        page.next(),
+        json!({ "t": "patch", "p": [{ "op": "text", "id": progress, "text": "0/3" }] })
+    );
     page.send(json!({ "t": "upload_chunk", "drop": 3, "file": 0, "data": "AQIDBA==" }));
     page.send(json!({ "t": "drop_end", "drop": 3 }));
-    // Accepted: the handler gets the file.
+    // Accepted: progress, then the handler gets the file.
     page.send(json!({ "t": "drop_start", "drop": 4, "node": zone, "files": png }));
     page.send(json!({ "t": "upload_chunk", "drop": 4, "file": 0, "data": "AQID" }));
+    assert_eq!(
+        page.next(),
+        json!({ "t": "patch", "p": [{ "op": "text", "id": progress, "text": "3/3" }] })
+    );
     page.send(json!({ "t": "drop_end", "drop": 4 }));
     assert_eq!(
         page.next(),

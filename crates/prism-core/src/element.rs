@@ -606,6 +606,8 @@ pub struct VNode {
         crate::device::PickFiles,
         Handler<crate::events::FileDropEvent>,
     )>,
+    /// The upload of what was dropped on the node (#199).
+    pub on_drop_progress: Option<Handler<crate::events::DropProgress>>,
 }
 
 impl VNode {
@@ -659,6 +661,7 @@ impl VNode {
             drag_buttons: crate::events::pointer_mask::DRAG,
             consume_keys: Vec::new(),
             on_drop_files: None,
+            on_drop_progress: None,
         }
     }
 }
@@ -2046,6 +2049,18 @@ impl Div {
         handler: Handler<crate::events::FileDropEvent>,
     ) -> Self {
         self.0.on_drop_files = Some((crate::device::PickFiles::new().types(types), handler));
+        self
+    }
+
+    /// Called while files dropped on the container
+    /// ([`on_drop_files`](Div::on_drop_files)) reach the app (#199): on the
+    /// web the browser sends them over the app's connection, which takes a
+    /// while for a video or a batch of photos. The first call (`sent == 0`)
+    /// comes as the drop starts uploading, the last one when every byte
+    /// arrived, just before `on_drop_files`. Natively the files are on the
+    /// device already: it is not called.
+    pub fn on_drop_progress(mut self, handler: Handler<crate::events::DropProgress>) -> Self {
+        self.0.on_drop_progress = Some(handler);
         self
     }
 }

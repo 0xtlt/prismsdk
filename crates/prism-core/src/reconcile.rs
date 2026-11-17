@@ -407,6 +407,8 @@ pub enum UiEvent {
     Dismiss(NodeId, crate::element::DismissReason),
     /// Wheel or trackpad scrolling over a view that listens to it (#133).
     Wheel(NodeId, crate::events::WheelEvent),
+    /// Files dropped on a target are uploading (#199): bytes sent, total.
+    DropProgress(NodeId, u64, u64),
     /// A node that reports its layout was laid out at a new frame (#192).
     Layout(NodeId, crate::events::Rect),
     /// A pinch over a view that listens to it (#133).
@@ -567,6 +569,7 @@ pub struct Reconciler {
     drag: HashMap<NodeId, Handler<crate::events::DragEvent>>,
     wheel: HashMap<NodeId, Handler<crate::events::WheelEvent>>,
     layout: HashMap<NodeId, Handler<crate::events::LayoutEvent>>,
+    drop_progress: HashMap<NodeId, Handler<crate::events::DropProgress>>,
     magnify: HashMap<NodeId, Handler<crate::events::MagnifyEvent>>,
     key_down: HashMap<NodeId, Handler<crate::events::KeyEvent>>,
     global_key: HashMap<NodeId, Handler<crate::events::KeyEvent>>,
@@ -764,6 +767,14 @@ impl Reconciler {
         focused: Option<NodeId>,
     ) -> Vec<Handler<crate::events::KeyEvent>> {
         self.key_handlers_of(focused, &self.key_up, &self.global_key_up)
+    }
+
+    /// The `on_drop_progress` handler of node `id` (#199).
+    pub fn drop_progress_handler(
+        &self,
+        id: NodeId,
+    ) -> Option<Handler<crate::events::DropProgress>> {
+        self.drop_progress.get(&id).cloned()
     }
 
     /// The `on_layout` handler of node `id` (#192).
@@ -1221,6 +1232,7 @@ impl Reconciler {
             on_web_message,
             on_web_load,
             on_drop_files,
+            on_drop_progress,
             on_wheel,
             on_magnify,
             drag_buttons,
@@ -1518,6 +1530,10 @@ impl Reconciler {
         match on_drop_files {
             Some(d) => self.drop_files.insert(id, d),
             None => self.drop_files.remove(&id),
+        };
+        match on_drop_progress {
+            Some(h) => self.drop_progress.insert(id, h),
+            None => self.drop_progress.remove(&id),
         };
 
         // Children.
@@ -2004,6 +2020,7 @@ impl Reconciler {
         self.web_message.remove(&id);
         self.web_load.remove(&id);
         self.drop_files.remove(&id);
+        self.drop_progress.remove(&id);
         self.menu_items.retain(|k, _| k >> 16 != id);
         self.scroll.remove(&id);
         self.swipe.retain(|(n, _), _| *n != id);

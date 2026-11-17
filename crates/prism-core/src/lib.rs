@@ -93,8 +93,9 @@ pub use element::{STACK_CLOSABLE, STACK_NO_HEADER};
 pub use element::{SelectionEvent, byte_to_char, char_to_byte};
 pub use element::{picture_data, svg};
 pub use events::{
-    DragEvent, DragPhase, FileDropEvent, GesturePhase, HoverEvent, KeyEvent, LayoutEvent,
-    MagnifyEvent, Modifiers, Point, PointerButton, PointerEvent, PointerPhase, Rect, WheelEvent,
+    DragEvent, DragPhase, DropProgress, FileDropEvent, GesturePhase, HoverEvent, KeyEvent,
+    LayoutEvent, MagnifyEvent, Modifiers, Point, PointerButton, PointerEvent, PointerPhase, Rect,
+    WheelEvent,
 };
 pub use fonts::{FontFace, FontSource, Stylesheet};
 pub use i18n::{BasicFormatter, DateStyle, Direction, Formatter, Locale, Translations};
@@ -456,6 +457,11 @@ impl Runtime {
             UiEvent::Magnify(id, e) => {
                 if let Some(h) = self.reconciler.magnify_handler(id) {
                     h(&e, &mut self.app);
+                }
+            }
+            UiEvent::DropProgress(id, sent, total) => {
+                if let Some(h) = self.reconciler.drop_progress_handler(id) {
+                    h(&DropProgress { sent, total }, &mut self.app);
                 }
             }
             UiEvent::DropFiles(id, files) => {
@@ -835,10 +841,10 @@ pub mod prelude {
     pub use crate::bar_button;
     // Pointer, keys, choice controls, overlays (#17, #18, #19).
     pub use crate::{
-        DragEvent, DragPhase, FileDropEvent, GesturePhase, HoverEvent, KeyEvent, LayoutEvent,
-        MagnifyEvent, Modifiers, PickFiles, Point, PointerButton, PointerEvent, PointerPhase,
-        PopoverAlign, PopoverSide, Rect, WheelEvent, checkbox, dialog, popover, radio_group, sheet,
-        time_picker, time_picker_opt,
+        DragEvent, DragPhase, DropProgress, FileDropEvent, GesturePhase, HoverEvent, KeyEvent,
+        LayoutEvent, MagnifyEvent, Modifiers, PickFiles, Point, PointerButton, PointerEvent,
+        PointerPhase, PopoverAlign, PopoverSide, Rect, WheelEvent, checkbox, dialog, popover,
+        radio_group, sheet, time_picker, time_picker_opt,
     };
     // Anchored overlays without a dim (#79).
     pub use crate::Backdrop;
