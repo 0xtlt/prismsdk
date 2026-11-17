@@ -34,6 +34,7 @@
 //! simulator = "iPhone 17"       # default simulator
 //! device = "My iPhone"          # default device (instead of a simulator)
 //! sign_in_with_apple = true     # the com.apple.developer.applesignin entitlement
+//! associated_domains = ["webcredentials:example.com"]  # passkeys, universal links (on one line)
 //! deployment_target = "17.0"    # oldest iOS/iPadOS (IPHONEOS_DEPLOYMENT_TARGET)
 //!
 //! [macos]                       # also [tvos], [watchos], [visionos]
@@ -88,6 +89,10 @@ pub struct Project {
     pub icloud: bool,
     /// `[ios] sign_in_with_apple = true`: the Sign in with Apple entitlement.
     pub apple_sign_in: bool,
+    /// `[ios] associated_domains`: the `com.apple.developer.associated-domains`
+    /// entitlement (`webcredentials:` for passkeys, `applinks:` for
+    /// universal links), checked (#191).
+    pub associated_domains: Vec<String>,
     /// `[push] enabled = true`: the APNs environment (`development` unless
     /// `apns_environment = "production"`).
     pub push: Option<String>,
@@ -280,6 +285,12 @@ impl Project {
             device: get("ios.device"),
             icloud: get("ios.icloud").is_some_and(|v| v == "true"),
             apple_sign_in: get("ios.sign_in_with_apple").is_some_and(|v| v == "true"),
+            associated_domains: get("ios.associated_domains")
+                .map(|v| parse_list(&v))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|d| associated_domain(&d))
+                .collect::<Result<_, _>>()?,
             push: get("push.enabled")
                 .filter(|v| v == "true")
                 .map(|_| get("push.apns_environment").unwrap_or_else(|| "development".into())),
@@ -336,6 +347,47 @@ fn http_host(raw: &str) -> Result<String, String> {
             "Prism.toml [network] allow_http: {raw:?} is not a host name (no scheme, port or path: \"preview.localhost\")"
         ))
     }
+}
+
+/// An associated domain (#191): `service:host`, with an optional
+/// `?mode=developer|managed|developer+managed`. The services Apple knows:
+/// `webcredentials` (passkeys, passwords), `applinks` (universal links),
+/// `activitycontinuation`, `appclips`. The host may start with `*.`.
+fn associated_domain(raw: &str) -> Result<String, String> {
+    const SERVICES: [&str; 4] = [
+        "webcredentials",
+        "applinks",
+        "activitycontinuation",
+        "appclips",
+    ];
+    let entry = raw.trim();
+    let err = || {
+        format!(
+            "Prism.toml [ios] associated_domains: {raw:?} is not service:host (\"webcredentials:example.com\"; services: {})",
+            SERVICES.join(", ")
+        )
+    };
+    let (service, rest) = entry.split_once(':').ok_or_else(err)?;
+    let (host, mode) = match rest.split_once("?mode=") {
+        Some((h, m)) => (h, Some(m)),
+        None => (rest, None),
+    };
+    let host = host.to_ascii_lowercase();
+    let bare = host.strip_prefix("*.").unwrap_or(&host);
+    let host_ok = !bare.is_empty()
+        && bare.contains('.')
+        && !bare.starts_with(['.', '-'])
+        && bare
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
+    let mode_ok = mode.is_none_or(|m| matches!(m, "developer" | "managed" | "developer+managed"));
+    if !SERVICES.contains(&service) || !host_ok || !mode_ok {
+        return Err(err());
+    }
+    Ok(match mode {
+        Some(m) => format!("{service}:{host}?mode={m}"),
+        None => format!("{service}:{host}"),
+    })
 }
 
 /// A one-line TOML array of strings: `["a", 'b']` → `a`, `b`.

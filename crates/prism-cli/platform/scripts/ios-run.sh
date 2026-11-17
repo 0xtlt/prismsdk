@@ -302,6 +302,7 @@ else
 $( [[ $WIDGETS == 1 ]] && echo "  <key>com.apple.security.application-groups</key><array><string>$GROUP</string></array>" )
 $( [[ "${PRISM_ICLOUD:-}" == 1 ]] && echo "  <key>com.apple.developer.ubiquity-kvstore-identifier</key><string>${PRISM_TEAM:-SIMULATOR}.$BUNDLE_ID</string>" )
 $( [[ -n "${PRISM_PUSH:-}" ]] && echo "  <key>aps-environment</key><string>$PRISM_PUSH</string>" )
+$( [[ -n "${PRISM_ASSOCIATED_DOMAINS:-}" ]] && echo "  <key>com.apple.developer.associated-domains</key><array>$(IFS=,; for d in $PRISM_ASSOCIATED_DOMAINS; do printf '<string>%s</string>' "$d"; done)</array>" )
 </dict>
 </plist>
 PLIST

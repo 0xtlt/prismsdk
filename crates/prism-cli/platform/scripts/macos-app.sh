@@ -225,6 +225,10 @@ fi
 if [[ "${PRISM_ICLOUD:-}" == 1 && -z "${PRISM_MAC_PROFILE:-}" ]]; then
   echo "note: iCloud on macOS needs PRISM_MAC_PROFILE (a Mac provisioning profile); cloud_storage stays local" >&2
 fi
+# Associated domains are restricted too: App Store builds only (#191).
+if [[ -n "${PRISM_ASSOCIATED_DOMAINS:-}" && "$DIST" != appstore ]]; then
+  echo "note: associated domains on macOS need an App Store build with a profile granting them (prism build macos --store); passkeys of your relying party fail without" >&2
+fi
 # Same for Sign in with Apple (a restricted entitlement).
 if [[ "${PRISM_APPLE_SIGNIN:-}" == 1 ]]; then
   echo "note: Sign in with Apple on macOS needs a Mac provisioning profile with the capability; capabilities().sign_in_with_apple stays false" >&2
@@ -354,6 +358,11 @@ if dist == "appstore":
     kv = "com.apple.developer.ubiquity-kvstore-identifier"
     if os.environ.get("ICLOUD") == "1" and kv in p:
         app[kv] = p[kv]
+    # Associated domains (#191), when the profile grants the capability.
+    ad = "com.apple.developer.associated-domains"
+    domains = [d for d in os.environ.get("PRISM_ASSOCIATED_DOMAINS", "").split(",") if d]
+    if domains and ad in p:
+        app[ad] = domains
     if widgets:
         granted(profile("widgets.profile.plist"), appex)
 # Remote push: only with a Mac provisioning profile granting it (PUSH_ENT).

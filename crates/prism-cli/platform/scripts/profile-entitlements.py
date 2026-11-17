@@ -3,9 +3,9 @@
     profile-entitlements.py <profile plist> <output plist> <bundle id> app|extension
 
 The profile's entitlements, for this bundle id: its application-identifier,
-no wildcard keychain-access-groups, iCloud key-value storage and Sign in
-with Apple only when the app asks for them (PRISM_ICLOUD=1,
-PRISM_APPLE_SIGNIN=1).
+no wildcard keychain-access-groups, iCloud key-value storage, Sign in
+with Apple and associated domains only when the app asks for them
+(PRISM_ICLOUD=1, PRISM_APPLE_SIGNIN=1, PRISM_ASSOCIATED_DOMAINS=a,b).
 
 The capability notes (iCloud, Sign in with Apple, Push Notifications with
 PRISM_PUSH) are about the app's own profile: an extension's profile (the
@@ -46,6 +46,16 @@ def main():
         e.pop(siwa, None)
     elif siwa not in e:
         note("has no Sign in with Apple: enable the capability for the App ID")
+    # Associated domains (#191): the profile grants the capability (a
+    # wildcard); the app lists its own domains.
+    ad = "com.apple.developer.associated-domains"
+    domains = [d for d in os.environ.get("PRISM_ASSOCIATED_DOMAINS", "").split(",") if d]
+    if not domains or not app:
+        e.pop(ad, None)
+    elif ad in e:
+        e[ad] = domains
+    else:
+        note("has no Associated Domains: passkeys and universal links will fail (enable the capability for the App ID)")
     if os.environ.get("PRISM_PUSH") and "aps-environment" not in e:
         note("has no Push Notifications capability: register_for_push will fail (enable it for the App ID)")
     with open(output, "wb") as f:

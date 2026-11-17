@@ -91,6 +91,47 @@ fn network_allow_http_dev_stays_out_of_release_builds() {
     assert!(err.contains("allow_http"), "{err}");
 }
 
+/// #191: associated domains, checked and normalized.
+#[test]
+fn ios_associated_domains_are_checked() {
+    let dir = TempDir::new("assoc");
+    let p = project(
+        &dir,
+        Some(
+            "[ios]\nassociated_domains = [\"webcredentials:Example.com\", \"applinks:*.example.com?mode=developer\"]\n",
+        ),
+        CARGO,
+    )
+    .unwrap();
+    assert_eq!(
+        p.associated_domains,
+        [
+            "webcredentials:example.com",
+            "applinks:*.example.com?mode=developer"
+        ]
+    );
+    assert!(
+        project(&dir, Some("[app]\nname = \"x\"\n"), CARGO)
+            .unwrap()
+            .associated_domains
+            .is_empty()
+    );
+    for bad in [
+        "example.com",
+        "passkeys:example.com",
+        "webcredentials:",
+        "webcredentials:localhost",
+        "webcredentials:https://example.com",
+        "applinks:example.com?mode=test",
+    ] {
+        let toml = format!("[ios]\nassociated_domains = [\"{bad}\"]\n");
+        let err = project(&dir, Some(&toml), CARGO)
+            .err()
+            .unwrap_or_else(|| panic!("{bad} accepted"));
+        assert!(err.contains("associated_domains"), "{err}");
+    }
+}
+
 /// #152: plain-HTTP hosts, checked.
 #[test]
 fn network_allow_http_lists_hosts() {
