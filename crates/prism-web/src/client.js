@@ -221,25 +221,38 @@
       // Only what differs from a plain primary drag goes up.
       const extra = { ...(e.button ? { button: ["primary", "middle", "secondary"][e.button] } : {}), ...(mods ? { mods } : {}) };
       drag = { pointer: e.pointerId, cx: e.clientX, cy: e.clientY, x: at.x, y: at.y, started: false, button: e.button, extra };
+      // Followed on the window until it is released (#194): a fast flick off
+      // a small handle still starts the drag. The pointer is captured only
+      // once it is a drag, so a click on a child stays the child's.
+      addEventListener("pointermove", dragMove, true);
+      addEventListener("pointerup", dragUp, true);
+      addEventListener("pointercancel", dragCancel, true);
     });
+    const dragMove = (e) => {
+      if (!drag || e.pointerId !== drag.pointer) return;
+      const dx = round(e.clientX - drag.cx), dy = round(e.clientY - drag.cy);
+      const msg = { t: "drag", id, x: drag.x, y: drag.y, dx, dy, ...drag.extra };
+      if (!drag.started) {
+        // Past the slop: a drag, not a click.
+        if (Math.hypot(dx, dy) < 4) return;
+        drag.started = true;
+        try { el.setPointerCapture(e.pointerId); } catch {}
+        send({ ...msg, phase: "start" });
+      } else drags.queue({ ...msg, phase: "move" });
+    };
     el.addEventListener("pointermove", (e) => {
-      if (drag && e.pointerId === drag.pointer) {
-        const dx = round(e.clientX - drag.cx), dy = round(e.clientY - drag.cy);
-        const msg = { t: "drag", id, x: drag.x, y: drag.y, dx, dy, ...drag.extra };
-        if (!drag.started) {
-          // Past the slop: a drag, not a click.
-          if (Math.hypot(dx, dy) < 4) return;
-          drag.started = true;
-          try { el.setPointerCapture(e.pointerId); } catch {}
-          send({ ...msg, phase: "start" });
-        } else drags.queue({ ...msg, phase: "move" });
-      }
       if (el._pmask & 2) moves.queue({ t: "pointer", id, phase: "move", ...local(el, e) });
     });
+    const unfollow = () => {
+      removeEventListener("pointermove", dragMove, true);
+      removeEventListener("pointerup", dragUp, true);
+      removeEventListener("pointercancel", dragCancel, true);
+    };
     const finish = (e, phase) => {
       if (!drag || e.pointerId !== drag.pointer) return;
       const d = drag;
       drag = null;
+      unfollow();
       if (!d.started) return;
       drags.drop();
       if (d.button === 2) el._rightDragged = true;
@@ -247,8 +260,8 @@
       dragJustEnded = true;
       setTimeout(() => { dragJustEnded = false; }, 0);
     };
-    el.addEventListener("pointerup", (e) => finish(e, "end"));
-    el.addEventListener("pointercancel", (e) => finish(e, "cancel"));
+    const dragUp = (e) => finish(e, "end");
+    const dragCancel = (e) => finish(e, "cancel");
   }
   /**
    * Wheel (8) and pinch (16) reports (#133): the element takes them, so

@@ -244,6 +244,11 @@ export class Element extends Node {
     event.stopImmediatePropagation = () => { stopped = true; now = true; };
     const path = [];
     for (let n = this; n; n = n.parentNode) path.push(n);
+    const win = path[path.length - 1]._window;
+    if (win && event.bubbles !== false) {
+      win.capture(event);
+      if (stopped) return !event.defaultPrevented;
+    }
     const run = (n, capture) => {
       event.currentTarget = n;
       for (const l of [...((n.listeners && n.listeners.get(event.type)) || [])]) {
@@ -255,8 +260,9 @@ export class Element extends Node {
     for (const n of [...path].reverse().slice(0, -1)) { run(n, true); if (stopped) return !event.defaultPrevented; }
     for (const n of path) {
       run(n, false);
-      if (stopped || event.bubbles === false) break;
+      if (stopped || event.bubbles === false) return !event.defaultPrevented;
     }
+    if (win) win.bubble(event);
     return !event.defaultPrevented;
   }
   // A field's value and caret: writing the value puts the caret at its end,
@@ -524,6 +530,13 @@ export function boot({ ssr = "", layers = null, path = "/", base = "", glyphs = 
   };
   const go = (url) => Object.assign(win.location, split(url));
   const winListeners = {};
+  // Window listeners in the capture phase run before any element's, the
+  // others after the document's, as in browsers.
+  const winCapture = {};
+  document._window = {
+    capture: (e) => { for (const fn of [...(winCapture[e.type] || [])]) fn(e); },
+    bubble: (e) => { for (const fn of [...(winListeners[e.type] || [])]) fn(e); },
+  };
   const sockets = [];
   class Socket extends FakeSocket {
     constructor(url) { super(url); sockets.push(this); }
@@ -541,7 +554,7 @@ export function boot({ ssr = "", layers = null, path = "/", base = "", glyphs = 
     fetches: [],
     sessionStorage: { items: {}, getItem(k) { return this.items[k] ?? null; }, setItem(k, v) { this.items[k] = String(v); } },
     CustomEvent: class { constructor(type, init = {}) { this.type = type; this.detail = init.detail; } },
-    dispatchEvent: (e) => { (winListeners[e.type] || []).forEach((fn) => fn(e)); return true; },
+    dispatchEvent: (e) => { document._window.capture(e); document._window.bubble(e); return true; },
     history,
     innerWidth: 1280,
     innerHeight: 800,
@@ -558,7 +571,16 @@ export function boot({ ssr = "", layers = null, path = "/", base = "", glyphs = 
     clearTimeout: () => {},
     setInterval: () => 0,
     performance: { now: () => 0 },
-    addEventListener: (t, fn) => (winListeners[t] ||= []).push(fn),
+    addEventListener: (t, fn, options) => {
+      const capture = options === true || !!(options && options.capture);
+      ((capture ? winCapture : winListeners)[t] ||= []).push(fn);
+    },
+    removeEventListener: (t, fn, options) => {
+      const capture = options === true || !!(options && options.capture);
+      const l = (capture ? winCapture : winListeners)[t];
+      const i = l ? l.indexOf(fn) : -1;
+      if (i >= 0) l.splice(i, 1);
+    },
     removeEventListener: () => {},
     console,
     customElements,
@@ -619,7 +641,7 @@ export function boot({ ssr = "", layers = null, path = "/", base = "", glyphs = 
     imports,
     customElements,
     /** Window events (popstate…). */
-    fire: (type, event = {}) => (winListeners[type] || []).forEach((fn) => fn({ type, ...event })),
+    fire: (type, event = {}) => { const e = { type, ...event }; document._window.capture(e); document._window.bubble(e); },
     /** The element for Prism node `id`, found in the page. */
     node: (id) => document.querySelector(`[data-pid=${id}]`),
   };
