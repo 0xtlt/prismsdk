@@ -75,7 +75,11 @@ final class PrismSecurity {
             case "authenticate": authenticate(id, c.optString("reason"), c.optBoolean("passcode", true)); break;
             case "auth_redirect": PrismDevice.reply(id, "text", redirect(c.optString("preferred", ""))); break;
             case "web_auth": webAuth(id, c.optString("url"), c.optString("redirect")); break;
-            case "webauthn": passkey(id, c.optBoolean("create"), c.optString("options")); break;
+            // A sign-in in a field's suggestions (#203): not on Android yet.
+            case "webauthn":
+                if (c.optBoolean("conditional")) PrismDevice.fail(id, "unavailable", false);
+                else passkey(id, c.optBoolean("create"), c.optString("options"));
+                break;
             // Sign in with Apple is Apple's (use prism::oauth with Apple's web endpoints).
             default: PrismDevice.fail(id, "unavailable", false);
         }

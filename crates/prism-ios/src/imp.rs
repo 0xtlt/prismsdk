@@ -82,6 +82,26 @@ pub(crate) fn consumes_key(focused: Option<NodeId>, key: &str) -> bool {
     out
 }
 
+/// The UIKit content type of an HTML `autocomplete` value (#203): its
+/// first token UIKit knows (`username webauthn` is a username field).
+fn text_content_type(value: &str) -> Option<&'static objc2_ui_kit::UITextContentType> {
+    use objc2_ui_kit::*;
+    value.split_whitespace().find_map(|token| unsafe {
+        Some(match token {
+            "username" => UITextContentTypeUsername,
+            "current-password" => UITextContentTypePassword,
+            "new-password" => UITextContentTypeNewPassword,
+            "one-time-code" => UITextContentTypeOneTimeCode,
+            "email" => UITextContentTypeEmailAddress,
+            "name" => UITextContentTypeName,
+            "tel" => UITextContentTypeTelephoneNumber,
+            "postal-code" => UITextContentTypePostalCode,
+            "url" => UITextContentTypeURL,
+            _ => return None,
+        })
+    })
+}
+
 fn with_state(f: impl FnOnce(&mut State)) {
     STATE.with(|cell| {
         // The platform can call back while we mutate views (layout passes,
@@ -3104,6 +3124,20 @@ impl Widgets for UiKit {
 
     fn scroll_into_view(&mut self, view: &View) {
         scroll_into_view(view.ui());
+    }
+
+    /// A text field's `autocomplete` (#203): its content type, so the
+    /// keyboard's suggestions offer passkeys, passwords or codes.
+    fn set_attributes(&mut self, view: &View, attributes: &[(String, String)]) {
+        let View::Input(field) = view else {
+            return;
+        };
+        let value = attributes
+            .iter()
+            .find(|(n, _)| n == "autocomplete")
+            .map(|(_, v)| v.to_ascii_lowercase());
+        let kind = value.as_deref().and_then(text_content_type);
+        objc2_ui_kit::UITextInputTraits::setTextContentType(&**field, kind);
     }
 
     /// `cx.scroll_by` / `cx.scroll_to` (#193): the content offset, kept

@@ -406,7 +406,7 @@ mod bridge {
         fn prism_apple_sign_in_available() -> bool;
         fn prism_auth_redirect(id: u64, preferred: *const c_char);
         fn prism_web_auth(id: u64, url: *const c_char, redirect: *const c_char, ephemeral: bool);
-        fn prism_webauthn(id: u64, create: bool, options: *const c_char);
+        fn prism_webauthn(id: u64, create: bool, conditional: bool, options: *const c_char);
         fn prism_passkeys_available() -> bool;
     }
 
@@ -544,7 +544,9 @@ mod bridge {
                     prism_web_auth(id, c(&r.url).as_ptr(), c(&r.redirect).as_ptr(), r.ephemeral)
                 }
                 // Passkeys of the app's own relying party (#94).
-                DeviceCall::WebAuthn(r) => prism_webauthn(id, r.create, c(&r.options).as_ptr()),
+                DeviceCall::WebAuthn(r) => {
+                    prism_webauthn(id, r.create, r.conditional, c(&r.options).as_ptr())
+                }
                 // No cookies natively (secure storage keeps secrets), no live
                 // session to renew.
                 DeviceCall::SetCookie(_) => {

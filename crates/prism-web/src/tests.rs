@@ -1984,9 +1984,10 @@ fn device_calls_are_encoded_for_the_client() {
             DeviceCall::WebAuthn(prism_core::WebAuthnRequest {
                 create: true,
                 options: r#"{"challenge":"AQID","rp":{"id":"example.com"}}"#.into(),
+                conditional: false,
             })
         ),
-        json!({ "t": "device", "id": 9, "call": "webauthn_rp", "create": true,
+        json!({ "t": "device", "id": 9, "call": "webauthn_rp", "create": true, "conditional": false,
             "options": { "challenge": "AQID", "rp": { "id": "example.com" } } })
     );
     assert_eq!(
