@@ -542,7 +542,11 @@ test("interaction states: one style sheet for all nodes, groups flagged, rules g
   page.ws.deliver({ t: "patch", p: [{ op: "style", id: 1, css: "", states: "[data-pid=\"1\"]:hover{}" }] });
   assert.equal(sheet().textContent, `[data-pid="1"]:hover{}\n${active}`);
   assert.equal(page.node(1).dataset.group, undefined);
+  // A named group (#212).
+  page.ws.deliver({ t: "patch", p: [{ op: "style", id: 1, css: "", gn: "row" }] });
+  assert.equal(page.node(1).dataset.gn, "row");
   page.ws.deliver({ t: "patch", p: [{ op: "style", id: 1, css: "" }] });
+  assert.equal(page.node(1).dataset.gn, undefined);
   assert.equal(sheet().textContent, active);
   page.ws.deliver({ t: "patch", p: [{ op: "destroy", id: 2 }] });
   assert.equal(sheet().textContent, "");

@@ -524,8 +524,19 @@ pub fn states_css(kind: NodeKind, id: prism_core::NodeId, s: &Style) -> String {
     };
     let base = decls(&css(kind, s));
     let mut out = String::new();
-    for (state, st) in s.states.resolved() {
-        let node = format!(r#"[data-pid="{id}"]"#);
+    let node = format!(r#"[data-pid="{id}"]"#);
+    // Refinements that follow a named group ancestor (#212).
+    let named = s.states.resolved_named().filter_map(|(state, name, st)| {
+        let group = format!(r#"[data-gn="{}"]"#, css_string(name));
+        let (selector, media) = match state {
+            Interaction::GroupHover => (format!("{group}:hover {node}"), true),
+            Interaction::GroupFocusWithin => (format!("{group}:focus-within {node}"), false),
+            Interaction::GroupActive => (format!("{group}:active {node}"), false),
+            _ => return None,
+        };
+        Some((selector, media, st))
+    });
+    let unnamed = s.states.resolved().filter_map(|(state, st)| {
         let (selector, media) = match state {
             // Touch screens keep `:hover` after a tap: pointers only.
             Interaction::Hover => (format!("{node}:hover"), true),
@@ -538,8 +549,14 @@ pub fn states_css(kind: NodeKind, id: prism_core::NodeId, s: &Style) -> String {
             // Set by the client while accepted files are over it (#111).
             Interaction::DropHover => (format!("{node}[data-prism-drop]"), false),
             // Resolved by the server (the disabled refinement is applied).
-            Interaction::Disabled => continue,
+            Interaction::Disabled => return None,
         };
+        Some((selector, media, st))
+    });
+    // Group states apply first (`Interaction::ALL`), named and unnamed.
+    let (groups, own): (Vec<_>, Vec<_>) =
+        unnamed.partition(|(sel, ..)| sel.starts_with("[data-group]"));
+    for (selector, media, st) in groups.into_iter().chain(named).chain(own) {
         let now = decls(&css(kind, st));
         let mut body = String::new();
         for (p, v) in &now {
@@ -563,6 +580,26 @@ pub fn states_css(kind: NodeKind, id: prism_core::NodeId, s: &Style) -> String {
             let _ = write!(out, "@media (hover:hover){{{rule}}}");
         } else {
             out.push_str(&rule);
+        }
+    }
+    out
+}
+
+/// `s` inside a double-quoted CSS string: quotes, backslashes, angle
+/// brackets and control characters escaped.
+fn css_string(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        match c {
+            '"' | '\\' => {
+                out.push('\\');
+                out.push(c);
+            }
+            // `<` too: the rules may sit in a `<style>` element.
+            c if c.is_control() || c == '<' || c == '>' => {
+                let _ = write!(out, "\\{:x} ", c as u32);
+            }
+            c => out.push(c),
         }
     }
     out

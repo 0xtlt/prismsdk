@@ -30,6 +30,8 @@ struct HtmlNode {
     states: String,
     /// Descendants' `group_*` refinements follow it (`data-group`).
     group: bool,
+    /// A named group (#212): `data-gn`.
+    group_name: Option<String>,
     /// `Style::inert`: the `inert` attribute.
     inert: bool,
     /// An island: its tag and whether it is a WASM island.
@@ -160,6 +162,7 @@ impl Backend for HtmlBackend {
                         n.hscroll = style.scroll_axis == prism_core::ScrollAxis::Horizontal;
                         n.scrollbar = style.scrollbar;
                         n.group = style.group;
+                        n.group_name = style.group_name.as_deref().map(str::to_string);
                         n.states =
                             crate::css::states_css(n.kind.unwrap_or(NodeKind::View), *id, style);
                         n.inert = style.inert;
@@ -434,7 +437,10 @@ impl HtmlBackend {
         } else {
             a11y_attrs(kind, &n.a11y)
         };
-        let group = if n.group { " data-group" } else { "" };
+        let mut group = if n.group { " data-group" } else { "" }.to_string();
+        if let Some(name) = &n.group_name {
+            group += &format!(r#" data-gn="{}""#, escape(name));
+        }
         let inert = if n.inert { " inert" } else { "" };
         // A checkbox's accessible name is its visible label.
         let aria = if kind == NodeKind::Checkbox {

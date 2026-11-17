@@ -1183,6 +1183,9 @@ impl Encoder {
                 if style.group {
                     op["group"] = json!(true);
                 }
+                if let Some(name) = &style.group_name {
+                    op["gn"] = json!(name.as_ref());
+                }
                 // `inert` is an attribute, not CSS.
                 if style.inert {
                     op["inert"] = json!(true);

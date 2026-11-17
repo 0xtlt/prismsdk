@@ -2329,6 +2329,8 @@
         ownWidth(el, p.css, p.cq);
         setStates(p.id, p.states);
         if (p.group) el.dataset.group = ""; else delete el.dataset.group;
+        // A named group (#212): `[data-gn="row"]:hover …` rules follow it.
+        if (p.gn) el.dataset.gn = p.gn; else delete el.dataset.gn;
         if (p.inert) el.inert = true; else if (el.inert) el.inert = false;
         if (p.inert) el.setAttribute("inert", ""); else el.removeAttribute("inert");
         if (el.dataset.kind === "text_area") grow(el);

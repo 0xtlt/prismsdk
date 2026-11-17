@@ -809,6 +809,9 @@ pub struct Style {
     pub cursor: Option<crate::decoration::Cursor>,
     /// Descendants' `group_*` refinements follow this node's states.
     pub group: bool,
+    /// A named group (#212): descendants' `group_*_named` refinements with
+    /// this name follow this node's states (and only theirs).
+    pub group_name: Option<std::rc::Rc<str>>,
 
     // Motion: offsets relative to the element's own size.
     /// Extra offset in percent of the element's own width and height (CSS
@@ -847,6 +850,14 @@ pub struct Style {
     /// Dragging the element moves the window and double-clicking it zooms
     /// (or minimizes) it, like a title bar: see [`Styled::window_drag`].
     pub window_drag: bool,
+}
+
+impl Style {
+    /// Whether descendants' group refinements follow this node: a
+    /// [`group`](Styled::group) or a [`named one`](Styled::group_named).
+    pub fn is_group(&self) -> bool {
+        self.group || self.group_name.is_some()
+    }
 }
 
 impl Style {
@@ -1373,6 +1384,7 @@ impl Default for Style {
             states: crate::interaction::States::default(),
             cursor: None,
             group: false,
+            group_name: None,
             translate_percent: (0., 0.),
             hit_test: true,
             inert: false,
@@ -2268,6 +2280,58 @@ pub trait Styled: Sized {
         self.with_style(|s| {
             s.states.push(
                 crate::interaction::Interaction::GroupHover,
+                std::rc::Rc::new(f),
+            )
+        })
+    }
+    /// Marks the node as a group named `name` (#212): descendants'
+    /// [`group_hover_named`](Self::group_hover_named) (and
+    /// `group_active_named`, `group_focus_within_named`) refinements with
+    /// that name follow its states, whatever groups sit in between. Like
+    /// CSS `.group/name`: plain `group_hover` refinements don't follow it.
+    ///
+    /// ```ignore
+    /// div().group_named("row").child(
+    ///     grip().opacity(0.).group_hover_named("row", |s| s.opacity(1.).w(px(16.))),
+    /// )
+    /// ```
+    fn group_named(self, name: &str) -> Self {
+        let name: std::rc::Rc<str> = name.into();
+        self.with_style(move |s| s.group_name = Some(name.clone()))
+    }
+    /// Style changes while the [`group_named`](Self::group_named) ancestor
+    /// `name` is hovered, resolved by the backend like `group_hover` (no
+    /// app round trip). Layout changes (a width, a padding) apply too.
+    fn group_hover_named(self, name: &str, f: impl Fn(Style) -> Style + 'static) -> Self {
+        let name: std::rc::Rc<str> = name.into();
+        self.with_style(move |s| {
+            s.states.push_named(
+                crate::interaction::Interaction::GroupHover,
+                name.clone(),
+                std::rc::Rc::new(f),
+            )
+        })
+    }
+    /// Style changes while the [`group_named`](Self::group_named) ancestor
+    /// `name` is pressed.
+    fn group_active_named(self, name: &str, f: impl Fn(Style) -> Style + 'static) -> Self {
+        let name: std::rc::Rc<str> = name.into();
+        self.with_style(move |s| {
+            s.states.push_named(
+                crate::interaction::Interaction::GroupActive,
+                name.clone(),
+                std::rc::Rc::new(f),
+            )
+        })
+    }
+    /// Style changes while the [`group_named`](Self::group_named) ancestor
+    /// `name` contains the keyboard focus.
+    fn group_focus_within_named(self, name: &str, f: impl Fn(Style) -> Style + 'static) -> Self {
+        let name: std::rc::Rc<str> = name.into();
+        self.with_style(move |s| {
+            s.states.push_named(
+                crate::interaction::Interaction::GroupFocusWithin,
+                name.clone(),
                 std::rc::Rc::new(f),
             )
         })

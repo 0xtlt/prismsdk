@@ -66,9 +66,20 @@ Shadow offsets are physical (positive `x` goes right in every language), like CS
 | `.focus_within(\|s\| …)` | the node or a descendant has the keyboard focus |
 | `.disabled(\|s\| …)` | the node is disabled (`accessibility_disabled(true)`); a disabled node ignores its hover, press and focus refinements |
 | `.group_hover(…)`, `.group_active(…)`, `.group_focus_within(…)` | an ancestor marked `.group()` is in that state (a row's actions under the pointer, a field's Clear button) |
+| `.group_hover_named("row", …)`, `.group_active_named(…)`, `.group_focus_within_named(…)` | the ancestor marked `.group_named("row")` is in that state, whatever groups sit in between (#212) |
 | `.cursor(Cursor::Text)` | the pointer's shape over the node; clickable nodes show a pointing hand by default |
 
 Refinements are written like the [responsive](responsive.md) ones and apply on top of them; when several states hold at once, they apply in this order (later wins): group hover, group focus-within, group press, hover, focus-within, focus, press, disabled. With `.animate(ms)` (see [Motion](motion.md)) the change animates. A refinement may change anything, layout included (`display_none`, sizes); native backends lay out again when it does.
+
+**Named groups** (#212) say which ancestor a refinement follows when groups nest: a grip in a cell of a table, inside a block that reveals its controls on hover. Like CSS `.group/name` and `group-hover/name:`, plain `group_hover` refinements don't follow a named group, and named ones follow only theirs.
+
+```rust
+div().group_named("block").child(
+    table_row(cells).group().child(
+        grip().opacity(0.).w(px(8.)).group_hover_named("block", |s| s.opacity(1.).w(px(16.))),
+    ),
+)
+```
 
 Each state is resolved natively: the platform says when the pointer enters, a press starts or the focus moves, and only that node is restyled (no re-render of the app).
 

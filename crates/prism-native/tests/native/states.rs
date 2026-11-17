@@ -129,6 +129,44 @@ fn groups_drive_their_descendants_and_can_show_hidden_nodes() {
     assert_eq!(h.w().hidden.get(&clear), Some(&true));
 }
 
+/// #212: a refinement follows the group it names, through other groups,
+/// and its size changes are laid out.
+#[test]
+fn named_groups_drive_only_their_refinements() {
+    let mut h = tree(|| {
+        div().group_named("block").child(
+            div().group().child(
+                div()
+                    .w(8.)
+                    .h(8.)
+                    .group_hover_named("block", |s| s.w(16.).bg(rgb(RED)))
+                    .group_hover(|s| s.opacity(0.5)),
+            ),
+        )
+    });
+    let [block, row, grip] = views(&h)[..] else {
+        panic!("three views")
+    };
+    // A named group reports its states too.
+    assert!(h.w().interactions[&block].contains(Interaction::Hover));
+    assert_eq!(h.layout(400., 300.).frame(grip).2, 8.);
+
+    // The inner (unnamed) group: only the unnamed refinement.
+    h.r.set_interaction(row, Interaction::Hover, true);
+    assert_eq!(h.w().styles[&grip].opacity, 0.5);
+    assert_eq!(h.w().styles[&grip].background, None);
+    h.r.set_interaction(row, Interaction::Hover, false);
+
+    // The named block: its refinement, width included.
+    assert!(h.r.set_interaction(block, Interaction::Hover, true));
+    assert_eq!(h.w().styles[&grip].background, Some(rgb(RED)));
+    assert_eq!(h.w().styles[&grip].opacity, 1.);
+    assert_eq!(h.layout(400., 300.).frame(grip).2, 16.);
+    h.r.set_interaction(block, Interaction::Hover, false);
+    assert_eq!(h.w().styles[&grip].background, None);
+    assert_eq!(h.layout(400., 300.).frame(grip).2, 8.);
+}
+
 #[test]
 fn disabled_nodes_get_their_refinement_and_no_others() {
     let mut h = tree(|| {

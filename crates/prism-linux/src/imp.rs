@@ -1446,7 +1446,7 @@ impl Gtk {
                 report = report.with(i, used.contains(i));
             }
         }
-        if s.group {
+        if s.is_group() {
             report = report.with(I::Hover, true).with(I::Active, true);
         }
         // Text fields always report their focus: ancestors' focus-within
@@ -1455,7 +1455,7 @@ impl Gtk {
             report = report.with(I::Focus, true);
         }
         // GTK only sets `:active` on widgets that handle presses themselves.
-        let pressable = used.contains(I::Active) || s.group;
+        let pressable = used.contains(I::Active) || s.is_group();
         if report.is_empty() && !pressable {
             self.reports.borrow_mut().remove(&id);
             return;
@@ -2009,6 +2009,16 @@ impl Widgets for Gtk {
             w.add_css_class("prism-group");
         } else {
             w.remove_css_class("prism-group");
+        }
+        // A named group (#212): its own class.
+        let named = s.group_name.as_deref().map(crate::decor::group_class);
+        for c in w.css_classes() {
+            if c.starts_with("prism-gn-") && Some(c.as_str()) != named.as_deref() {
+                w.remove_css_class(&c);
+            }
+        }
+        if let Some(c) = &named {
+            w.add_css_class(c);
         }
         self.watch_states(id, &w, s, inner_focus);
         match s.cursor {
