@@ -2111,6 +2111,39 @@ fn notifications_and_alerts_go_to_the_page() {
     assert!(!s.capabilities().widgets && s.capabilities().notifications);
 }
 
+#[test]
+fn app_menu_shortcut_ids_are_exact_in_the_page() {
+    use crate::session::WebServices;
+    use prism_core::PlatformServices;
+    // A real app menu, as the page gets its shortcuts (#170).
+    let init: prism_core::AppInit = Arc::new(|cx: &mut App| {
+        cx.set_menu_bar(vec![
+            Menu::titled("App").item(
+                MenuItem::new("Search")
+                    .shortcut("cmd+K")
+                    .on_select(std::rc::Rc::new(|_, _| {})),
+            ),
+        ]);
+    });
+    let mut rt = prism_core::Runtime::new(&init);
+    let _ = rt.render();
+    let mut s = WebServices::default();
+    for r in rt.take_requests() {
+        s.handle(r);
+    }
+    let out = s.take_outbox();
+    let msg = out.iter().find(|m| m["t"] == "shortcuts").unwrap();
+    let id = msg["list"][0][1].as_u64().unwrap();
+    // JavaScript numbers are exact up to 2^53: the page's `{t:"menu", id}`
+    // names this item (`interaction.test.mjs` replays this id).
+    assert!(id < 1 << 53);
+    assert_eq!(msg["list"][0], json!(["cmd+k", 4503599627370497u64]));
+    assert_eq!(
+        crate::session::parse_event(&json!({"t": "menu", "id": 4503599627370497u64})),
+        Some(UiEvent::MenuSelect(id))
+    );
+}
+
 // --- Static files and mount points ------------------------------------------------------
 
 #[test]

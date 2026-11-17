@@ -320,6 +320,7 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- Web: the shortcuts of app menu items (`set_menu_bar`, `set_app_menu`) run their item (#170). Their ids started at 2^62, beyond the 2^53 a JavaScript number holds exactly, so the page sent back a rounded id that named no item. App menu ids now start at 2^52 on every platform (context menus, derived from node ids, stay below).
 - macOS: Escape outside a sheet no longer crashes the app (#163). AppKit sends `cancelOperation:` up the responder chain from a focused field; Prism views forwarded it to `NSView`, which has no such method (« invalid message send »). It now goes on up the chain, to whatever handles it; the app's key handlers hear `"Escape"` from the key monitor as before.
 - Apple platforms: a variable font given as bytes (`EmbeddedAssets`, `FontFace::bytes`) has all its weights (#150); it drew every weight as regular. Registering a `CGFont` keeps only the default instance, so the bytes now go through a cache file registered by URL, like the bundle's fonts (the `CGFont` remains the fallback without a writable cache).
 - Web: a dialog opened in the same update as `.autofocus()` or `cx.focus` keeps that focus (#148); `showModal()` moved it to the dialog's first control.
