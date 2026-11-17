@@ -189,6 +189,15 @@ fn remote_ops_and_input_events() {
         ev(json!({"t": "magnify", "id": 4, "scale": 0.5})),
         UiEvent::Magnify(4, m) if m.scale == 0.5
     ));
+    // A drag with the middle mouse button and Shift held, as the Android
+    // host sends it (#136).
+    assert!(matches!(
+        ev(json!({"t": "drag", "id": 4, "phase": "start", "x": 1, "y": 2, "dx": 3, "dy": 4,
+                  "button": "middle", "mods": 1})),
+        UiEvent::Drag(4, d) if d.button == prism_core::PointerButton::Middle
+            && d.modifiers.shift
+            && d.translation == Point::new(3., 4.)
+    ));
     // As the Android host sends them: a wheel with Ctrl held and no phase,
     // a pinch's start at the fingers' center.
     assert!(matches!(

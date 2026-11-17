@@ -35,7 +35,7 @@ final class PrismInput {
     /** Every Prism view, to find the node that has the focus. */
     static final Map<View, PrismHost.Node> byView = new WeakHashMap<>();
 
-    static final int HOVER = 1, MOVE = 2, DRAG = 4, WHEEL = 8, MAGNIFY = 16;
+    static final int HOVER = 1, MOVE = 2, DRAG = 4, WHEEL = 8, MAGNIFY = 16, DRAG_MIDDLE = 32, DRAG_SECONDARY = 64;
 
     static float dp(float px) { return px / PrismHost.density; }
 
@@ -63,7 +63,28 @@ final class PrismInput {
         float[] c = e == null ? null : center(e, -1);
         put(ev, "dx", c == null ? 0 : dp(c[0] - n.down[2]));
         put(ev, "dy", c == null ? 0 : dp(c[1] - n.down[3]));
+        // The button and keys it started with (#136).
+        put(ev, "button", n.dragButton);
+        put(ev, "mods", n.dragMods);
         PrismHost.send(ev);
+    }
+
+    /** The mouse button a press is made with (fingers and pens: primary). */
+    static String button(MotionEvent e) {
+        if (!e.isFromSource(android.view.InputDevice.SOURCE_MOUSE)) return "primary";
+        int b = e.getButtonState();
+        if ((b & MotionEvent.BUTTON_TERTIARY) != 0) return "middle";
+        if ((b & MotionEvent.BUTTON_SECONDARY) != 0) return "secondary";
+        return "primary";
+    }
+
+    /** The pointer-mask bit that lets `button` start a drag (`drag_buttons`, #136). */
+    static int dragBit(String button) {
+        switch (button) {
+            case "middle": return DRAG_MIDDLE;
+            case "secondary": return DRAG_SECONDARY;
+            default: return DRAG;
+        }
     }
 
     /** The raw center of the touching pointers, leaving out pointer `skip` (-1: none). */
@@ -298,7 +319,11 @@ final class PrismInput {
         if ((n.pointerMask & MOVE) != 0 && (a == MotionEvent.ACTION_DOWN || a == MotionEvent.ACTION_MOVE)) {
             pointer(n, "move", e.getX(), e.getY());
         }
-        if ((n.pointerMask & DRAG) != 0) {
+        if (a == MotionEvent.ACTION_DOWN) {
+            n.dragButton = button(e);
+            n.dragMods = mods(e.getMetaState());
+        }
+        if ((n.pointerMask & dragBit(n.dragButton)) != 0) {
             switch (a) {
                 case MotionEvent.ACTION_DOWN:
                     n.down = new float[]{e.getX(), e.getY(), e.getRawX(), e.getRawY()};

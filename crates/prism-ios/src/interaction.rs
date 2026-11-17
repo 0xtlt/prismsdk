@@ -489,6 +489,7 @@ pub fn set_pointer_events(view: &UIView, mask: u8, target: &AnyObject) {
     };
     use prism_core::events::pointer_mask;
     let mtm = view.mtm();
+    MASKS.with(|m| m.borrow_mut().insert(view.tag() as NodeId, mask));
     let existing: Vec<Retained<UIGestureRecognizer>> = view
         .gestureRecognizers()
         .map(|a| a.to_vec())
@@ -496,7 +497,7 @@ pub fn set_pointer_events(view: &UIView, mask: u8, target: &AnyObject) {
     for (bit, name) in [
         (pointer_mask::HOVER | pointer_mask::MOVE, HOVER),
         (pointer_mask::MOVE, MOVE),
-        (pointer_mask::DRAG, DRAG),
+        (pointer_mask::DRAG_ANY, DRAG),
         (pointer_mask::MAGNIFY, MAGNIFY),
         (pointer_mask::WHEEL, WHEEL),
     ] {
@@ -622,12 +623,14 @@ pub fn on_pan(g: &objc2_ui_kit::UIPanGestureRecognizer) {
     };
     let t = g.translationInView(Some(&view));
     let at = g.locationInView(Some(&view));
-    // Moving the view while it is dragged does not shift the start.
-    let start = START.with(|s| {
+    // Moving the view while it is dragged does not shift the start; the
+    // button is the one that started it.
+    let (start, button, mods) = START.with(|s| {
         let mut s = s.borrow_mut();
         if phase == DragPhase::Start {
             let p = Point::new((at.x - t.x) as f32, (at.y - t.y) as f32);
-            s.insert(view.tag() as NodeId, p);
+            let mods = modifiers(g.modifierFlags());
+            s.insert(view.tag() as NodeId, (p, drag_button(g), mods));
         }
         s.get(&(view.tag() as NodeId)).copied().unwrap_or_default()
     });
@@ -640,11 +643,49 @@ pub fn on_pan(g: &objc2_ui_kit::UIPanGestureRecognizer) {
             phase,
             start,
             translation: Point::new(t.x as f32, t.y as f32),
-            // A finger, a pen or the pointer's main button.
-            button: prism_core::PointerButton::Primary,
-            modifiers: Default::default(),
+            // A finger or a pen is the primary button; an iPad's pointer
+            // says which (#136).
+            button,
+            // The keys held when it started.
+            modifiers: mods,
         },
     ));
+}
+
+/// The pointer button a pan runs with (fingers and pens: primary).
+#[cfg(not(target_os = "tvos"))]
+fn drag_button(g: &UIGestureRecognizer) -> prism_core::PointerButton {
+    use objc2_ui_kit::UIEventButtonMask;
+    let mask = g.buttonMask();
+    if mask.contains(UIEventButtonMask::for_button_number(3)) {
+        prism_core::PointerButton::Middle
+    } else if mask.contains(UIEventButtonMask::Secondary) {
+        prism_core::PointerButton::Secondary
+    } else {
+        prism_core::PointerButton::Primary
+    }
+}
+
+/// Gesture delegate: a drag starts only with a button the element drags
+/// with (`drag_buttons`, #136); other recognizers start as usual.
+pub fn should_begin(g: &UIGestureRecognizer) -> bool {
+    if cfg!(target_os = "tvos") || !has_name(g, DRAG) {
+        return true;
+    }
+    let Some(view) = g.view() else { return true };
+    let mask = MASKS.with(|m| {
+        m.borrow()
+            .get(&(view.tag() as NodeId))
+            .copied()
+            .unwrap_or(0)
+    });
+    #[cfg(not(target_os = "tvos"))]
+    return mask & drag_button(g).drag_bit() != 0;
+    #[cfg(target_os = "tvos")]
+    {
+        let _ = mask;
+        true
+    }
 }
 
 /// A pinch (#172): the scale since the previous report, around the
@@ -716,9 +757,15 @@ fn gesture_phase(state: UIGestureRecognizerState) -> Option<prism_core::GestureP
 }
 
 thread_local! {
-    /// Where each drag started, by node.
-    static START: RefCell<HashMap<NodeId, prism_core::Point>> = RefCell::new(HashMap::new());
+    /// Where each drag started, with which button and keys, by node.
+    static START: RefCell<HashMap<NodeId, DragStart>> = RefCell::new(HashMap::new());
+    /// The pointer events each node listens to.
+    static MASKS: RefCell<HashMap<NodeId, u8>> = RefCell::new(HashMap::new());
 }
+
+/// Where a drag started, with which button and keys.
+#[cfg_attr(target_os = "tvos", allow(dead_code))]
+type DragStart = (prism_core::Point, prism_core::PointerButton, Modifiers);
 
 fn point(p: CGPoint) -> prism_core::Point {
     prism_core::Point::new(p.x as f32, p.y as f32)
