@@ -52,7 +52,7 @@ pub mod web_view;
 mod window;
 pub use window::{WindowChrome, WindowControls};
 
-pub use a11y::{Accessibility, Accessible, Role};
+pub use a11y::{Accessibility, Accessible, Role, Tooltip};
 pub use animation::{Animations, Pose, Transform};
 pub use app::{AnyEntity, App, Appearance, Context, Entity, EntityId, Environment, Render};
 pub use assets::EmbeddedAssets;

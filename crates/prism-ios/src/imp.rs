@@ -3002,6 +3002,33 @@ impl Widgets for UiKit {
     fn set_accessibility(&mut self, view: &View, a: &Accessibility) {
         let mtm = self.mtm;
         let v = view.ui();
+        // Tooltips (#216): under an iPad or visionOS pointer.
+        #[cfg(not(target_os = "tvos"))]
+        {
+            use objc2_ui_kit::UIToolTipInteraction;
+            let tip = UIToolTipInteraction::class();
+            let existing = v.interactions().iter().find(|i| {
+                let any: &AnyObject = i.as_ref();
+                std::ptr::eq(any.class(), tip)
+            });
+            match (&a.tooltip, existing) {
+                (Some(prism_core::Tooltip::Text(t)), Some(i)) => {
+                    let any: &AnyObject = i.as_ref();
+                    if let Some(i) = any.downcast_ref::<UIToolTipInteraction>() {
+                        i.setDefaultToolTip(Some(&NSString::from_str(t)));
+                    }
+                }
+                (Some(prism_core::Tooltip::Text(t)), None) => {
+                    let i = UIToolTipInteraction::initWithDefaultToolTip(
+                        UIToolTipInteraction::alloc(mtm),
+                        &NSString::from_str(t),
+                    );
+                    v.addInteraction(ProtocolObject::from_ref(&*i));
+                }
+                (_, Some(i)) => v.removeInteraction(&i),
+                (_, None) => {}
+            }
+        }
         let ns = |s: &Option<String>| s.as_deref().map(NSString::from_str);
         let id = view.id();
         if a.hidden {

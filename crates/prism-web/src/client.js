@@ -2274,11 +2274,28 @@
     el._attrs = names;
   }
 
+  // Tooltips (#216): the browser's own (`title`), or the full text, only
+  // while it is cut short (checked as the pointer comes over it).
+  function applyTip(el, a) {
+    if (a.tip != null || el._tip != null) {
+      el._tip = a.tip ?? null;
+      if (typeof a.tip === "string") el.setAttribute("title", a.tip); else el.removeAttribute("title");
+      if (a.tip === true && !el._tipBound) {
+        el._tipBound = true;
+        el.addEventListener("mouseenter", () => {
+          if (el._tip !== true) return;
+          const cut = el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1;
+          if (cut) el.setAttribute("title", el.textContent); else el.removeAttribute("title");
+        });
+      }
+    }
+  }
   function applyA11y(el, a) {
     const kind = el.dataset.kind;
     const set = (name, v) =>
       v === undefined || v === null || v === false ? el.removeAttribute(name) : el.setAttribute(name, v === true ? "true" : v);
     set("aria-hidden", a.hidden || null);
+    applyTip(el, a);
     if (kind === "stack" || kind === "tabs" || kind === "tab" || kind === "screen") return;
     if (kind === "overlay") return;
     if (kind === "checkbox") {
@@ -2451,7 +2468,7 @@
       }
       case "scene": return sceneUpdate(el, p.u);
       case "a11y":
-        if (el.dataset.kind === "picture") { el.alt = p.a11y.hidden ? "" : p.a11y.label || ""; return; }
+        if (el.dataset.kind === "picture") { el.alt = p.a11y.hidden ? "" : p.a11y.label || ""; return applyTip(el, p.a11y); }
         // A frame is named by its title.
         if (el.dataset.kind === "web_view") { if (p.a11y.label) el.setAttribute("title", p.a11y.label); else el.removeAttribute("title"); }
         return applyA11y(el, p.a11y);

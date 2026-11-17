@@ -51,6 +51,7 @@ define_class!(
     pub struct PrismLabel;
 
     impl PrismLabel {
+
         #[unsafe(method(acceptsFirstResponder))]
         fn accepts_first_responder(&self) -> bool {
             self.interactive()
@@ -166,6 +167,23 @@ define_class!(
             self.bounds()
         }
 
+        /// The full text as a tooltip, only while it is cut short
+        /// (`tooltip_when_truncated`, #216): asked as the pointer rests.
+        #[unsafe(method_id(view:stringForToolTip:point:userData:))]
+        fn string_for_tool_tip(
+            &self,
+            _view: &NSView,
+            _tag: isize,
+            _point: NSPoint,
+            _data: *mut std::ffi::c_void,
+        ) -> Retained<NSString> {
+            if self.truncated() {
+                NSString::from_str(&self.ivars().text.borrow())
+            } else {
+                NSString::new()
+            }
+        }
+
         /// The text's box (background, border, rounding) under the text,
         /// which is drawn inside the padding (#14).
         #[unsafe(method(drawRect:))]
@@ -187,6 +205,37 @@ define_class!(
 );
 
 impl PrismLabel {
+    /// Whether the text is cut short (#216): wider than its box on one
+    /// line, or taller than its line clamp lets it be.
+    pub(crate) fn truncated(&self) -> bool {
+        let Some(cell) = self.cell() else {
+            return false;
+        };
+        let padding = self.ivars().style.borrow().padding;
+        let inner = crate::padding::inset_rect(self, self.bounds(), padding);
+        let (max_lines, no_wrap) = self
+            .ivars()
+            .styled
+            .borrow()
+            .as_ref()
+            .map_or((None, false), |t| (t.max_lines, t.no_wrap));
+        if max_lines == Some(1) || no_wrap {
+            return cell.cellSize().width > inner.size.width + 0.5;
+        }
+        if max_lines.is_none() {
+            return false;
+        }
+        // The height of every line, without the clamp.
+        let clamp = self.maximumNumberOfLines();
+        self.setMaximumNumberOfLines(0);
+        let all = cell.cellSizeForBounds(NSRect::new(
+            NSPoint::ZERO,
+            objc2_foundation::NSSize::new(inner.size.width, 1e7),
+        ));
+        self.setMaximumNumberOfLines(clamp);
+        all.height > inner.size.height + 0.5
+    }
+
     /// A click released at `event`: the link under it, or the text.
     fn click_at(&self, event: &NSEvent) {
         let p = self.convertPoint_fromView(event.locationInWindow(), None);

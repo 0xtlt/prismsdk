@@ -62,3 +62,22 @@ div()
 | `selected` | `aria-selected` | selected trait | `.isSelected` | `accessibilitySelected` | `View.setSelected` | `GTK_ACCESSIBLE_STATE_SELECTED` |
 
 Only the web tells « current page » and « selected » apart; the native platforms have one selected state for both. A checked tab, radio or toggle button also reads as selected (`Accessibility::is_selected`).
+
+## Tooltips
+
+`.tooltip(text)` gives any element the platform's own tooltip, with its own delay (#216). `.tooltip_when_truncated()` on a text shows its full content only while it is cut short (`truncate()`, `line_clamp(n)`): the full title of a tab or a sidebar row, without measuring it.
+
+```rust
+icon_button("xmark").tooltip("Close tab")
+text(tab.title.clone()).truncate().tooltip_when_truncated()
+```
+
+| | Tooltip | Truncated text |
+|---|---|---|
+| macOS | `NSView.toolTip` | the label answers `view:stringForToolTip:…` as the pointer rests, with its text only when it overflows its box or its line clamp |
+| iPadOS, visionOS | `UIToolTipInteraction` (pointer) | none |
+| Web | the `title` attribute | `title` set as the pointer comes over it when `scrollWidth` / `scrollHeight` exceed the box |
+| Linux (GTK) | `gtk_widget_set_tooltip_text` | `query-tooltip`, while the label's layout is ellipsized |
+| Android | `setTooltipText` (a long press, or a mouse hover) | set after each layout while the last line is ellipsized |
+
+Screen readers read a tooltip as a description where the platform does (the web's `title`). Touch screens without a pointer show none.

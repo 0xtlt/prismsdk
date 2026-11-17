@@ -4717,6 +4717,22 @@ impl Widgets for AppKit {
             self.announce(view.id(), a.value.as_deref().unwrap_or(""));
         }
         v.setAccessibilityHidden(a.hidden || crate::interact::in_inert(v));
+        // Tooltips (#216): AppKit's own, or the label's full text while it
+        // is cut short (asked of the label as the pointer rests).
+        v.removeAllToolTips();
+        match &a.tooltip {
+            Some(prism_core::Tooltip::Text(t)) => v.setToolTip(Some(&NSString::from_str(t))),
+            Some(prism_core::Tooltip::WhenTruncated) => {
+                v.setToolTip(None);
+                if let View::Label(l) = view {
+                    let owner: &AnyObject = l;
+                    let all = NSRect::new(NSPoint::ZERO, NSSize::new(1e6, 1e6));
+                    // SAFETY: the label owns its tooltip rect and outlives it.
+                    unsafe { l.addToolTipRect_owner_userData(all, owner, std::ptr::null_mut()) };
+                }
+            }
+            None => v.setToolTip(None),
+        }
         let ns = |s: &Option<String>| s.as_deref().map(NSString::from_str);
         let native = matches!(
             view,

@@ -2628,6 +2628,33 @@ impl Widgets for Gtk {
         // A selected item or the current page of a navigation (GTK has no
         // « current » state).
         set_accessible_selected(&w, a11y.is_selected());
+        // Tooltips (#216): GTK's, or a label's full text while it is
+        // ellipsized (asked as the pointer rests).
+        match (&a11y.tooltip, view) {
+            (Some(prism_core::Tooltip::Text(t)), _) => {
+                w.remove_css_class("prism-tip-cut");
+                w.set_tooltip_text(Some(t));
+            }
+            (Some(prism_core::Tooltip::WhenTruncated), View::Text(_, l)) => {
+                w.set_tooltip_text(None);
+                l.add_css_class("prism-tip-cut");
+                l.set_has_tooltip(true);
+                if !l.has_css_class("prism-tip-bound") {
+                    l.add_css_class("prism-tip-bound");
+                    l.connect_query_tooltip(|l, _, _, _, tip| {
+                        let cut = l.has_css_class("prism-tip-cut") && l.layout().is_ellipsized();
+                        if cut {
+                            tip.set_text(Some(&l.text()));
+                        }
+                        cut
+                    });
+                }
+            }
+            _ => {
+                w.remove_css_class("prism-tip-cut");
+                w.set_tooltip_text(None);
+            }
+        }
         match view {
             // GtkScale exposes its own range and value (VALUE_MIN/MAX/NOW,
             // gtkrange.c); a formatted value ("40 %") is read instead.

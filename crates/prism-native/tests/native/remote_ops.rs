@@ -316,6 +316,15 @@ fn chrome_ops() {
         last(&w),
         json!({"op": "a11y", "id": 2, "label": "Close", "hidden": false, "role": null, "value": null, "checked": null, "selected": false})
     );
+    // A tooltip (#216): its text, or `true` while truncated.
+    w.set_accessibility(
+        &2,
+        &Accessibility {
+            tooltip: Some(prism_core::Tooltip::WhenTruncated),
+            ..Default::default()
+        },
+    );
+    assert_eq!(last(&w)["tip"], json!(true));
     // A drawn radio (#84) says whether it is the one chosen.
     w.set_accessibility(
         &3,

@@ -195,6 +195,8 @@ public final class PrismHost {
         /** The ARIA role name the app gave (`radio`, `checkbox`…), and its checked state. */
         String a11yRole;
         Boolean a11yChecked;
+        /** The tooltip is the text's full content while ellipsized (#216). */
+        boolean tipTruncated, tipBound;
         // `.sticky()`: the scroll view it follows (-1: none) and its range.
         long stickyScroll = -1;
         float stickyTop, stickyInset, stickyMax;
@@ -486,6 +488,7 @@ public final class PrismHost {
                 if (n.view.isSelected() != p.optBoolean("selected")) n.view.setSelected(p.optBoolean("selected"));
                 PrismText.clickable(n);
                 PrismForms.a11y(n, n.a11yRole, p.isNull("value") ? null : p.optString("value", null));
+                tooltip(n, p.opt("tip"));
                 break;
             case "children": setChildren(n, p.getJSONArray("children")); break;
             case "frame": {
@@ -756,6 +759,30 @@ public final class PrismHost {
     static Node parentOf(Node child) {
         for (Node n : nodes.values()) if (n.children.contains(child.id)) return n;
         return null;
+    }
+
+    /**
+     * Tooltips (#216): the platform's (`setTooltipText`, a long press or a
+     * mouse hover), or a text's full content while it is ellipsized,
+     * checked after each layout.
+     */
+    static void tooltip(Node n, Object tip) {
+        n.tipTruncated = Boolean.TRUE.equals(tip);
+        n.view.setTooltipText(tip instanceof String ? (String) tip : null);
+        if (!n.tipTruncated || !(n.view instanceof android.widget.TextView)) return;
+        android.widget.TextView tv = (android.widget.TextView) n.view;
+        Runnable check = () -> {
+            if (!n.tipTruncated) return;
+            android.text.Layout l = tv.getLayout();
+            int last = l == null ? -1 : l.getLineCount() - 1;
+            boolean cut = last >= 0 && l.getEllipsisCount(last) > 0;
+            tv.setTooltipText(cut ? tv.getText() : null);
+        };
+        if (!n.tipBound) {
+            n.tipBound = true;
+            tv.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> check.run());
+        }
+        tv.post(check);
     }
 
     static void setChildren(Node n, JSONArray ids) throws JSONException {
