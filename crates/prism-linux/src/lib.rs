@@ -12,6 +12,8 @@ mod controls;
 #[cfg(target_os = "linux")]
 mod decor;
 #[cfg(target_os = "linux")]
+mod focal;
+#[cfg(target_os = "linux")]
 mod imp;
 // Key and icon names: no GTK, tested everywhere.
 mod input;

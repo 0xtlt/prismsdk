@@ -991,3 +991,11 @@ test("tooltips: the browser's title, or the full text only while truncated (#216
   t.dispatchEvent({ type: "mouseenter", bubbles: false });
   assert.equal(t.getAttribute("title"), "Quarterly report");
 });
+
+test("a filled picture is cropped around its focal point (#218)", () => {
+  const page = live([{ op: "create", id: 2, kind: "picture" }, ...root([2])]);
+  page.ws.deliver({ t: "patch", p: [{ op: "config", id: 2, config: "object-position:20% 100%;" }] });
+  assert.equal(page.node(2).style.objectPosition, "20% 100%");
+  page.ws.deliver({ t: "patch", p: [{ op: "config", id: 2, config: "object-position:50% 50%;" }] });
+  assert.equal(page.node(2).style.objectPosition, "50% 50%");
+});

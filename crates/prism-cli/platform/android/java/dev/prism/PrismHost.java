@@ -197,6 +197,8 @@ public final class PrismHost {
         Boolean a11yChecked;
         /** The tooltip is the text's full content while ellipsized (#216). */
         boolean tipTruncated, tipBound;
+        /** A filled picture's focal point (#218), in fractions. */
+        float focusX = 0.5f, focusY = 0.5f;
         // `.sticky()`: the scroll view it follows (-1: none) and its range.
         long stickyScroll = -1;
         float stickyTop, stickyInset, stickyMax;
@@ -455,6 +457,13 @@ public final class PrismHost {
                 if (n.kind.equals("screen")) PrismNavbar.config(n, p.optString("config"), p.optJSONArray("glyphs"));
                 else if (n.kind.equals("web_view")) PrismWeb.config(n, p.optString("config"));
                 else if (n.kind.equals("video")) PrismVideo.config(n, p.optString("config"));
+                else if (n.kind.equals("picture")) {
+                    // A filled picture's focal point (#218): `x y`, or none.
+                    String[] at = p.optString("config").trim().split("\\s+");
+                    n.focusX = at.length == 2 ? Math.max(0f, Math.min(1f, parse(at[0]))) : 0.5f;
+                    n.focusY = at.length == 2 ? Math.max(0f, Math.min(1f, parse(at[1]))) : 0.5f;
+                    scalePicture(n);
+                }
                 else PrismForms.config(n, p.optString("config"));
                 break;
             case "runs": {
@@ -629,6 +638,8 @@ public final class PrismHost {
                 ImageView i = new ImageView(activity);
                 i.setScaleType(ImageView.ScaleType.CENTER_CROP);
                 i.setClipToOutline(true);
+                // The crop around a focal point follows the size (#218).
+                i.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> scalePicture(n));
                 n.view = i;
                 break;
             }
@@ -969,9 +980,7 @@ public final class PrismHost {
         switch (n.kind) {
             case "toggle": ((Switch) n.view).setChecked(value != 0); break;
             case "progress": ((ProgressBar) n.view).setProgress((int) Math.round(value * 1000)); break;
-            case "picture":
-                ((ImageView) n.view).setScaleType(value == 1 ? ImageView.ScaleType.FIT_CENTER : ImageView.ScaleType.CENTER_CROP);
-                break;
+            case "picture": scalePicture(n); break;
             case "timer":
                 timers.put(n.id, n);
                 if (!ticking) { ticking = true; tick(); }
@@ -1483,7 +1492,41 @@ public final class PrismHost {
 
     static void loadPicture(ImageView view, String src) {
         view.setTag(src); // the source shown now (a late download checks it)
-        bitmap(src, b -> { if (src.equals(view.getTag())) view.setImageBitmap(b); });
+        bitmap(src, b -> {
+            if (!src.equals(view.getTag())) return;
+            view.setImageBitmap(b);
+            Node n = PrismInput.nodeOf(view);
+            if (n != null) scalePicture(n);
+        });
+    }
+
+    static float parse(String s) {
+        try { return Float.parseFloat(s); } catch (NumberFormatException e) { return 0.5f; }
+    }
+
+    /**
+     * Scales a picture as it asks: fitted, filled around the center, or
+     * filled around its focal point (#218), with a matrix that covers the
+     * view and keeps that point where it would be.
+     */
+    static void scalePicture(Node n) {
+        ImageView v = (ImageView) n.view;
+        if (n.value == 1) { v.setScaleType(ImageView.ScaleType.FIT_CENTER); return; }
+        android.graphics.drawable.Drawable d = v.getDrawable();
+        int vw = v.getWidth() - v.getPaddingLeft() - v.getPaddingRight();
+        int vh = v.getHeight() - v.getPaddingTop() - v.getPaddingBottom();
+        boolean centered = n.focusX == 0.5f && n.focusY == 0.5f;
+        if (centered || d == null || vw <= 0 || vh <= 0 || d.getIntrinsicWidth() <= 0 || d.getIntrinsicHeight() <= 0) {
+            v.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            return;
+        }
+        float dw = d.getIntrinsicWidth(), dh = d.getIntrinsicHeight();
+        float s = Math.max(vw / dw, vh / dh);
+        android.graphics.Matrix m = new android.graphics.Matrix();
+        m.setScale(s, s);
+        m.postTranslate((vw - dw * s) * n.focusX, (vh - dh * s) * n.focusY);
+        v.setScaleType(ImageView.ScaleType.MATRIX);
+        v.setImageMatrix(m);
     }
 
     /**

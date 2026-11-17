@@ -493,6 +493,8 @@ pub struct ViewIvars {
     /// Picture content, drawn aspect-fill (or aspect-fit).
     image: RefCell<Option<Retained<NSImage>>>,
     fit: Cell<bool>,
+    /// A filled picture's focal point (#218); `None`: the center.
+    focus: Cell<Option<(f32, f32)>>,
     /// Trackpad swipes (left, right) reported to Prism.
     swipe: Cell<(bool, bool)>,
     /// What a shape draws, in points, and the layers drawing it.
@@ -619,8 +621,30 @@ define_class!(
                     let any: &AnyObject = &*(c as *const _ as *const AnyObject);
                     any
                 }));
+                // A focal point (#218): the part of the image that covers
+                // the frame, stretched over it (contents go up from the
+                // bottom unless the layer is flipped).
+                let crop = match (iv.fit.get(), iv.focus.get(), image.as_deref()) {
+                    (false, Some(at), Some(img)) => {
+                        let (s, b) = (img.size(), self.bounds().size);
+                        let (x, y, w, h) = prism_core::cover_crop(
+                            (s.width as f32, s.height as f32),
+                            (b.width as f32, b.height as f32),
+                            at,
+                        );
+                        let y = if crate::decor::is_flipped(&layer) { y } else { 1. - y - h };
+                        Some(NSRect::new(
+                            NSPoint::new(x as f64, y as f64),
+                            NSSize::new(w as f64, h as f64),
+                        ))
+                    }
+                    _ => None,
+                };
+                layer.setContentsRect(crop.unwrap_or(NSRect::new(NSPoint::ZERO, NSSize::new(1., 1.))));
                 layer.setContentsGravity(if iv.fit.get() {
                     objc2_quartz_core::kCAGravityResizeAspect
+                } else if crop.is_some() {
+                    objc2_quartz_core::kCAGravityResize
                 } else {
                     objc2_quartz_core::kCAGravityResizeAspectFill
                 });
@@ -4191,6 +4215,12 @@ impl Widgets for AppKit {
 
     fn set_config(&mut self, view: &View, _kind: NodeKind, config: &str) {
         match view {
+            // A filled picture's focal point (#218).
+            View::Picture(v) => {
+                let at = prism_core::picture_position(config);
+                v.ivars().focus.set((at != (0.5, 0.5)).then_some(at));
+                v.setNeedsDisplay(true);
+            }
             View::Video(v) => {
                 if let Some(h) = &v.host {
                     h.configure(&prism_core::VideoConfig::decode(config));

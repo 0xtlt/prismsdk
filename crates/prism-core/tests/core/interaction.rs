@@ -1252,3 +1252,42 @@ fn tooltips_reach_the_backend() {
         Some(prism_core::Tooltip::WhenTruncated)
     );
 }
+
+/// #218: a filled picture's focal point, and the crop it gives.
+struct Cover;
+
+impl Render for Cover {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .child(picture("cover.jpg").object_position(0.2, 1.))
+            .child(picture("plain.jpg").object_position(0.5, 0.5))
+    }
+}
+
+#[test]
+fn pictures_carry_their_focal_point() {
+    let h = Harness::new(|cx| {
+        let root = cx.new_entity(|_| Cover);
+        mount(cx, root);
+    });
+    let pics: Vec<_> = h.host.root.map(|r| h.host.get(r).children.clone()).unwrap();
+    assert_eq!(h.host.get(pics[0]).config, "0.2 1");
+    assert_eq!(h.host.get(pics[1]).config, "", "the center is the default");
+    assert_eq!(prism_core::picture_position("0.2 1"), (0.2, 1.));
+    assert_eq!(prism_core::picture_position(""), (0.5, 0.5));
+    assert_eq!(prism_core::picture_position("x 3"), (0.5, 0.5));
+    // A 400 × 100 image in a 100 × 100 frame shows a quarter of its width.
+    assert_eq!(
+        prism_core::cover_crop((400., 100.), (100., 100.), (0., 0.5)),
+        (0., 0., 0.25, 1.)
+    );
+    assert_eq!(
+        prism_core::cover_crop((400., 100.), (100., 100.), (1., 0.5)),
+        (0.75, 0., 0.25, 1.)
+    );
+    // A tall image: the height is cropped.
+    assert_eq!(
+        prism_core::cover_crop((100., 400.), (100., 100.), (0.5, 1.)),
+        (0., 0.75, 1., 0.25)
+    );
+}

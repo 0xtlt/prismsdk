@@ -1734,6 +1734,16 @@ impl Widgets for Gtk {
             NodeKind::Picture => {
                 let p = gtk::Picture::new();
                 p.set_content_fit(gtk::ContentFit::Cover);
+                // New content (a load, a file): cropped around its focal
+                // point (#218).
+                p.connect_paintable_notify(move |p| {
+                    if !p
+                        .paintable()
+                        .is_some_and(|c| c.is::<crate::focal::FocalPaintable>())
+                    {
+                        crate::focal::apply(id, p);
+                    }
+                });
                 View::Picture(id, p)
             }
             NodeKind::Timer => View::Timer(id, gtk::Label::new(None)),
@@ -2339,6 +2349,9 @@ impl Widgets for Gtk {
     }
 
     fn destroy(&mut self, view: &View) {
+        if let View::Picture(id, _) = view {
+            crate::focal::forget(*id);
+        }
         let id = view.id();
         TYPED.with(|t| t.borrow_mut().remove(&id));
         forget_selection(id);
@@ -2718,11 +2731,7 @@ impl Widgets for Gtk {
         match view {
             View::Toggle(_, t) => t.set_active(value != 0.),
             View::Progress(_, p) => p.set_fraction(value.clamp(0., 1.)),
-            View::Picture(_, p) => p.set_content_fit(if value == 1. {
-                gtk::ContentFit::Contain
-            } else {
-                gtk::ContentFit::Cover
-            }),
+            View::Picture(id, p) => crate::focal::set_fit(*id, p, value == 1.),
             View::Timer(id, l) => {
                 l.set_text(&prism_core::format_remaining(value));
                 self.timers.insert(*id, (l.clone(), value));
@@ -2761,6 +2770,8 @@ impl Widgets for Gtk {
 
     fn set_config(&mut self, view: &View, _kind: NodeKind, config: &str) {
         match view {
+            // A filled picture's focal point (#218).
+            View::Picture(id, p) => crate::focal::set_focus(*id, p, config),
             // How a video plays (#207). GTK's player always offers its
             // controls on hover.
             View::Video(_, v) => {

@@ -413,7 +413,11 @@ impl HtmlBackend {
         let Some(n) = self.nodes.get(&id) else { return };
         let kind = n.kind.unwrap_or(NodeKind::View);
         let hidden = if hidden { " hidden" } else { "" };
-        let css = n.css.clone();
+        let mut css = n.css.clone();
+        // A picture's focal point (#218).
+        if kind == NodeKind::Picture && !n.config.is_empty() {
+            css += &object_position_css(&n.config);
+        }
         // A view or a text made a link is an `<a href>` (not an island,
         // whose tag is its custom element's): a link by itself, focusable.
         let link = match (&n.link, &n.island, kind) {
@@ -1006,6 +1010,12 @@ pub fn input_attrs(config: &str) -> String {
         out.push_str(r#" autocorrect="off" spellcheck="false""#);
     }
     out
+}
+
+/// A picture's `object_position` (#218) as CSS: `object-position:20% 0%;`.
+pub(crate) fn object_position_css(config: &str) -> String {
+    let (x, y) = prism_core::picture_position(config);
+    format!("object-position:{}% {}%;", x * 100., y * 100.)
 }
 
 pub fn escape(s: &str) -> String {

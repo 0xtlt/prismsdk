@@ -75,7 +75,6 @@ pub use device_info::{
     Browser, DeviceInfo, DeviceKind, Engine, Fold, Orientation, Os, OsName, Posture, Rotation,
     ScreenInfo, Version, WindowMode,
 };
-pub use element::picture_source;
 pub use element::scroll_x;
 pub use element::{
     BackEvent, Button, ChangeEvent, ClickEvent, DatePicker, DismissReason, Div, Element,
@@ -93,6 +92,7 @@ pub use element::{
 pub use element::{RichInput, RichInputEvent, rich_input};
 pub use element::{STACK_CLOSABLE, STACK_NO_HEADER};
 pub use element::{SelectionEvent, byte_to_char, char_to_byte};
+pub use element::{cover_crop, picture_position, picture_source};
 pub use element::{picture_data, svg};
 pub use events::{
     CaretEdge, CaretEdges, DragEvent, DragPhase, DropProgress, FileDropEvent, GesturePhase,
