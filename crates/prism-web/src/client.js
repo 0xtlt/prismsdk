@@ -192,6 +192,22 @@
       el.addEventListener("mousedown", (e) => { if (e.button === 1 && (el._pmask & 32)) e.preventDefault(); });
       el.addEventListener("auxclick", (e) => { if (e.button === 1 && (el._pmask & 32)) e.preventDefault(); });
     }
+    // Middle, back and forward clicks (#215): reported, without the middle
+    // button's autoscroll or the browser's back and forward.
+    if ((mask & 128) && !el._auxBound) {
+      el._auxBound = true;
+      const aux = (e) => (el._pmask & 128) && e.button !== 0 && e.button !== 2;
+      el.addEventListener("mousedown", (e) => { if (aux(e)) e.preventDefault(); });
+      el.addEventListener("mouseup", (e) => { if (aux(e) && e.button > 2) e.preventDefault(); });
+      el.addEventListener("auxclick", (e) => {
+        if (!aux(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const mods = (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
+        const button = e.button === 1 ? "middle" : `other:${e.button}`;
+        send({ t: "auxclick", id, button, mods, n: Math.max(1, e.detail || 1), ...local(el, e) });
+      });
+    }
     // After a secondary-button drag, no context menu (#136).
     if ((mask & 64) && !el._secondaryBound) {
       el._secondaryBound = true;

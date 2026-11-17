@@ -407,6 +407,9 @@ pub enum UiEvent {
     Dismiss(NodeId, crate::element::DismissReason),
     /// Wheel or trackpad scrolling over a view that listens to it (#133).
     Wheel(NodeId, crate::events::WheelEvent),
+    /// A click with the middle, back or forward button (#215), for
+    /// `on_aux_click`; `button` says which.
+    AuxClick(NodeId, crate::element::ClickEvent),
     /// Files dropped on a target are uploading (#199): bytes sent, total.
     DropProgress(NodeId, u64, u64),
     /// A video's playback reached the end (#207).
@@ -570,6 +573,7 @@ pub struct Reconciler {
     pointer_move: HashMap<NodeId, Handler<crate::events::PointerEvent>>,
     drag: HashMap<NodeId, Handler<crate::events::DragEvent>>,
     wheel: HashMap<NodeId, Handler<crate::events::WheelEvent>>,
+    aux_click: HashMap<NodeId, Handler<crate::element::ClickEvent>>,
     layout: HashMap<NodeId, Handler<crate::events::LayoutEvent>>,
     drop_progress: HashMap<NodeId, Handler<crate::events::DropProgress>>,
     ended: HashMap<NodeId, Handler<crate::video::EndedEvent>>,
@@ -738,6 +742,11 @@ impl Reconciler {
     /// The wheel handler of node `id`, if any (#133).
     pub fn wheel_handler(&self, id: NodeId) -> Option<Handler<crate::events::WheelEvent>> {
         self.wheel.get(&id).cloned()
+    }
+
+    /// Node `id`'s `on_aux_click` handler (#215).
+    pub fn aux_click_handler(&self, id: NodeId) -> Option<Handler<crate::element::ClickEvent>> {
+        self.aux_click.get(&id).cloned()
     }
 
     /// The pinch handler of node `id`, if any (#133).
@@ -1254,6 +1263,7 @@ impl Reconciler {
             on_ended,
             on_wheel,
             on_magnify,
+            on_aux_click,
             drag_buttons,
             consume_keys,
             on_layout,
@@ -1299,7 +1309,7 @@ impl Reconciler {
             id,
             name,
             (on_hover, on_pointer_move, on_drag, drag_buttons),
-            (on_wheel, on_magnify),
+            (on_wheel, on_magnify, on_aux_click),
             (on_key_down, on_global_key_down, on_key_up, on_global_key_up),
         );
         let mut style = resolved;
@@ -1710,6 +1720,7 @@ impl Reconciler {
         gestures: (
             Option<Handler<crate::events::WheelEvent>>,
             Option<Handler<crate::events::MagnifyEvent>>,
+            Option<Handler<crate::element::ClickEvent>>,
         ),
         keys: (
             Option<Handler<crate::events::KeyEvent>>,
@@ -1718,7 +1729,7 @@ impl Reconciler {
             Option<Handler<crate::events::KeyEvent>>,
         ),
     ) {
-        use crate::events::pointer_mask::{DRAG_ANY, HOVER, MAGNIFY, MOVE, WHEEL};
+        use crate::events::pointer_mask::{AUX_CLICK, DRAG_ANY, HOVER, MAGNIFY, MOVE, WHEEL};
         let m = self.nodes.get_mut(&id).expect("node exists");
         if m.name != name {
             if let Some(old) = m.name.take()
@@ -1739,7 +1750,8 @@ impl Reconciler {
                 0
             }
             | if gestures.0.is_some() { WHEEL } else { 0 }
-            | if gestures.1.is_some() { MAGNIFY } else { 0 };
+            | if gestures.1.is_some() { MAGNIFY } else { 0 }
+            | if gestures.2.is_some() { AUX_CLICK } else { 0 };
         if m.pointer_mask != mask {
             m.pointer_mask = mask;
             self.patches.push(Patch::SetPointerEvents { id, mask });
@@ -1768,6 +1780,7 @@ impl Reconciler {
         set(&mut self.drag, id, pointer.2);
         set(&mut self.wheel, id, gestures.0);
         set(&mut self.magnify, id, gestures.1);
+        set(&mut self.aux_click, id, gestures.2);
         set(&mut self.key_down, id, keys.0);
         set(&mut self.global_key, id, keys.1);
         set(&mut self.key_up, id, keys.2);
@@ -2053,6 +2066,7 @@ impl Reconciler {
         self.drag.remove(&id);
         self.wheel.remove(&id);
         self.magnify.remove(&id);
+        self.aux_click.remove(&id);
         self.layout.remove(&id);
         self.key_down.remove(&id);
         self.global_key.remove(&id);

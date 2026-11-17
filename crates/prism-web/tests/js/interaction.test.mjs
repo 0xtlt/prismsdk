@@ -32,6 +32,30 @@ test("clicks say where they landed; keyboard activations do not", () => {
   assert.deepEqual(lastSent(page), { t: "click", id: 2 });
 });
 
+test("middle, back and forward clicks are reported, without autoscroll (#215)", () => {
+  const page = live([
+    { op: "create", id: 2, kind: "view" }, { op: "pointer", id: 2, mask: 128 },
+    ...root([2]),
+  ]);
+  const el = placed(page.node(2));
+  const down = { type: "mousedown", button: 1 };
+  el.dispatchEvent(down);
+  assert.equal(down.defaultPrevented, true, "no autoscroll");
+  const left = { type: "mousedown", button: 0 };
+  el.dispatchEvent(left);
+  assert.equal(!!left.defaultPrevented, false, "the primary button is untouched");
+  el.dispatchEvent({ type: "auxclick", button: 1, detail: 1, clientX: 60, clientY: 30, ctrlKey: true });
+  assert.deepEqual(lastSent(page), { t: "auxclick", id: 2, button: "middle", mods: 2, n: 1, x: 10, y: 10 });
+  el.dispatchEvent({ type: "auxclick", button: 3, detail: 1, clientX: 20, clientY: 20 });
+  assert.equal(lastSent(page).button, "other:3");
+  const n = sent(page).length;
+  el.dispatchEvent({ type: "auxclick", button: 2, detail: 1, clientX: 20, clientY: 20 });
+  assert.equal(sent(page).length, n, "the secondary button is the context menu's");
+  page.ws.deliver({ t: "patch", p: [{ op: "pointer", id: 2, mask: 0 }] });
+  el.dispatchEvent({ type: "auxclick", button: 1, detail: 1, clientX: 20, clientY: 20 });
+  assert.equal(sent(page).length, n, "no longer listening");
+});
+
 test("hover and moves are reported, moves once per frame", () => {
   const page = live([
     { op: "create", id: 2, kind: "view" }, { op: "pointer", id: 2, mask: 3 },

@@ -689,10 +689,32 @@ fn parse_input_event(v: &Value) -> Option<UiEvent> {
                         position: Some(position),
                         modifiers: Modifiers::from_bits(mods),
                         count,
+                        button: prism_core::PointerButton::Primary,
                     },
                 )
             })
         }
+        // The middle, back or forward button (#215): `{"t":"auxclick","id",
+        // "button","x","y","mods","n"}`.
+        "auxclick" => Some(UiEvent::AuxClick(
+            id?,
+            prism_core::ClickEvent {
+                position: Some(Point::new(num("x")?, num("y")?)),
+                modifiers: Modifiers::from_bits(
+                    v.get("mods").and_then(Value::as_u64).unwrap_or(0) as u8
+                ),
+                count: v.get("n").and_then(Value::as_u64).unwrap_or(1).max(1) as u32,
+                button: prism_core::PointerButton::from_name(v.get("button")?.as_str()?).filter(
+                    |b| {
+                        !matches!(
+                            b,
+                            prism_core::PointerButton::Primary
+                                | prism_core::PointerButton::Secondary
+                        )
+                    },
+                )?,
+            },
+        )),
         "pointer" => Some(UiEvent::Pointer(
             id?,
             PointerEvent {

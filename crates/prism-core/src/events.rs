@@ -243,6 +243,11 @@ pub enum PointerButton {
 }
 
 impl PointerButton {
+    /// The back button (thumb button of a mouse), as the web numbers it.
+    pub const BACK: PointerButton = PointerButton::Other(3);
+    /// The forward button, as the web numbers it.
+    pub const FORWARD: PointerButton = PointerButton::Other(4);
+
     /// `primary`, `middle`, `secondary` or `other:N` (as backends report it).
     pub fn name(self) -> String {
         match self {
@@ -553,6 +558,8 @@ pub mod pointer_mask {
     pub const DRAG_SECONDARY: u8 = 64;
     /// Every drag bit.
     pub const DRAG_ANY: u8 = DRAG | DRAG_MIDDLE | DRAG_SECONDARY;
+    /// Clicks with the middle, back and forward buttons (#215).
+    pub const AUX_CLICK: u8 = 128;
 }
 
 /// Where a trackpad gesture is: [`WheelEvent::phase`],

@@ -582,6 +582,7 @@ fn click_event(
                 position,
                 modifiers,
                 count,
+                button: prism_core::PointerButton::Primary,
             },
         ),
         Some(p) => UiEvent::ClickAt(id, p),
@@ -3062,6 +3063,35 @@ impl Widgets for Gtk {
                 }
             });
             w.add_controller(drag);
+        }
+        // Middle, back and forward clicks (#215).
+        let aux = prism_core::events::pointer_mask::AUX_CLICK;
+        if mask & aux != 0 && self.pointer_attached.insert((id, aux)) {
+            let click = gtk::GestureClick::new();
+            click.set_button(0);
+            let masks = self.pointer.clone();
+            click.connect_released(move |g, n, x, y| {
+                let button = match g.current_button() {
+                    2 => prism_core::PointerButton::Middle,
+                    8 => prism_core::PointerButton::BACK,
+                    9 => prism_core::PointerButton::FORWARD,
+                    _ => return,
+                };
+                if !masks.borrow().get(&id).is_some_and(|m| m & aux != 0) {
+                    return;
+                }
+                g.set_state(gtk::EventSequenceState::Claimed);
+                dispatch(UiEvent::AuxClick(
+                    id,
+                    prism_core::ClickEvent {
+                        position: Some(point(x, y)),
+                        modifiers: modifiers(g.current_event_state()),
+                        count: n.max(1) as u32,
+                        button,
+                    },
+                ));
+            });
+            w.add_controller(click);
         }
         if mask & WHEEL != 0 && self.pointer_attached.insert((id, WHEEL)) {
             // Wheels and touchpads (#133): the element takes the scrolling.
