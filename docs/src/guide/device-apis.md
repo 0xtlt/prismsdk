@@ -33,4 +33,4 @@ location = "Shows todos near you."
 camera = "Adds a photo to a todo."
 ```
 
-`cx.capabilities()` says what exists (`location`, `motion`, `camera`, `photos`, `haptics`, `share`); unsupported calls fail with `DeviceError::Unavailable`.
+`cx.capabilities()` says what exists (`location`, `motion`, `camera`, `photos`, `haptics`, `share`); unsupported calls fail with `DeviceError::Unavailable`. A failure the platform names is `DeviceError::Platform { name, message }` (#189): match `e.name()`, show `e` (its message).

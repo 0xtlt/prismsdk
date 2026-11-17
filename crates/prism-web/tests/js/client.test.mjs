@@ -950,6 +950,16 @@ test("passkeys of the app's relying party run with the server's options (#94)", 
     response: { clientDataJSON: "e30", attestationObject: "CQ", transports: ["internal"] },
   });
   assert.deepEqual(JSON.parse(replies[1].text), { id: "AQI", type: "public-key" });
+  // A passkey already on the device: the error keeps its name (#189).
+  page.window.navigator.credentials.create = async () => {
+    throw Object.assign(new Error("The authenticator was previously registered"), { name: "InvalidStateError" });
+  };
+  page.ws.deliver({ t: "device", id: 7, call: "webauthn_rp", create: true, options: {
+    challenge: "AQID", rp: { id: "example.com", name: "Example" }, user: { id: "BAU", name: "ada", displayName: "Ada" },
+  } });
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(page.ws.sent.filter((m) => m.id === 7),
+    [{ t: "device_reply", id: 7, err: "InvalidStateError\u001fThe authenticator was previously registered" }]);
   // Without WebAuthn: unavailable.
   delete page.window.PublicKeyCredential;
   page.ws.deliver({ t: "device", id: 6, call: "webauthn_rp", create: false, options: { challenge: "AQID" } });

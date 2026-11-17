@@ -157,7 +157,20 @@ final class PrismSecurity {
 
     private static String passkeyError(String type, String message) {
         if (type != null && type.contains("USER_CANCELED")) return "cancelled";
-        return message != null ? message : String.valueOf(type);
+        String text = message != null ? message : String.valueOf(type);
+        // A WebAuthn DOM exception names itself after its last `TYPE_`
+        // (`…/androidx.credentials.TYPE_INVALID_STATE_ERROR`): the web's name,
+        // before U+001F (#189).
+        int at = type == null ? -1 : type.lastIndexOf("TYPE_");
+        if (type != null && type.contains("DOM_EXCEPTION") && at >= 0) {
+            StringBuilder name = new StringBuilder();
+            for (String part : type.substring(at + 5).split("_")) {
+                if (part.isEmpty()) continue;
+                name.append(part.charAt(0)).append(part.substring(1).toLowerCase(java.util.Locale.ROOT));
+            }
+            if (name.length() > 0) return name + "\u001f" + text;
+        }
+        return text;
     }
 
     // --- Secrets ---------------------------------------------------------------------------

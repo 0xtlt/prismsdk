@@ -556,7 +556,13 @@ final class PrismPasskeys: NSObject, ASAuthorizationControllerDelegate, ASAuthor
 
     func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
         defer { passkeyRequests[id] = nil }
-        switch (error as? ASAuthorizationError)?.code {
+        let code = (error as? ASAuthorizationError)?.code
+        // `matchedExcludedCredential` (1006, iOS 18 / macOS 15): the passkey
+        // is already on this device, the web's `InvalidStateError` (#189).
+        if code?.rawValue == 1006 {
+            return failure(id, "InvalidStateError\u{1f}\(error.localizedDescription)")
+        }
+        switch code {
         case .canceled: failure(id, "cancelled")
         case .notHandled, .unknown:
             failure(id, "passkeys failed: the relying party's domain must list this app (a webcredentials: associated domain) (\(error.localizedDescription))")
