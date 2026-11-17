@@ -72,7 +72,9 @@ impl SecurityDemo {
             DeviceError::Cancelled => strings::security_cancelled(cx),
             DeviceError::Unavailable => strings::security_unavailable(cx),
             DeviceError::Denied => strings::security_denied(cx),
-            DeviceError::Failed(m) => strings::device_error(cx, m),
+            DeviceError::Failed(m) | DeviceError::Platform { message: m, .. } => {
+                strings::device_error(cx, m)
+            }
         }
     }
 

@@ -68,7 +68,7 @@ cx.spawn(async move |this, cx| {
   server.finish_passkey_sign_in(assertion).await?;
   ```
 
-  Options and answers are the WebAuthn JSON forms (binary fields in base64url, what server libraries produce and `PublicKeyCredential.toJSON()` gives); a `{"publicKey": …}` wrapper is accepted. Prism only runs the ceremony: your server checks the challenge, origin and signature. `Err(Cancelled)` when the user declines, `Err(Unavailable)` where there are no passkeys (`capabilities().passkeys`).
+  Options and answers are the WebAuthn JSON forms (binary fields in base64url, what server libraries produce and `PublicKeyCredential.toJSON()` gives); a `{"publicKey": …}` wrapper is accepted. Prism only runs the ceremony: your server checks the challenge, origin and signature. `Err(Cancelled)` when the user declines, `Err(Unavailable)` where there are no passkeys (`capabilities().passkeys`). Errors the platform names come back as `DeviceError::Platform { name, message }` (#189), with the web's `DOMException` names on every platform: `e.name() == Some("InvalidStateError")` when registering a passkey this device already holds (an `excludeCredentials` match: the web's `InvalidStateError`, Apple's `matchedExcludedCredential`, Android's invalid-state DOM exception). Match on the name, never on the message, which depends on the browser, the OS and the language.
 
   | | Ceremony | Needs |
   |---|---|---|

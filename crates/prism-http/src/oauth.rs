@@ -170,7 +170,9 @@ impl From<DeviceError> for OAuthError {
                 error: "access_denied".into(),
                 description: None,
             },
-            DeviceError::Failed(m) => OAuthError::Failed(m),
+            DeviceError::Failed(m) | DeviceError::Platform { message: m, .. } => {
+                OAuthError::Failed(m)
+            }
         }
     }
 }

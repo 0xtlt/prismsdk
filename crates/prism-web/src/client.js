@@ -5947,6 +5947,11 @@ void main() {
     };
     if (!open()) withGesture(msg.provider || location.host, () => { if (!open()) reply({ err: "popup blocked" }); }, () => reply({ err: "cancelled" }));
   }
+  /** An error as `name` U+001F message, when the platform named it (#189). */
+  const named = (e) => {
+    const message = String((e && e.message) || e);
+    return e && typeof e.name === "string" && e.name && e.name !== "Error" ? `${e.name}\u001f${message}` : message;
+  };
   async function webauthn(msg, reply) {
     if (!window.PublicKeyCredential || !navigator.credentials) return reply({ err: "unavailable" });
     const ceremony = async () => {
@@ -6019,9 +6024,11 @@ void main() {
       if (!c) throw Object.assign(new Error("no credential"), { name: "NotAllowedError" });
       return JSON.stringify(json(c));
     };
+    // Other errors keep their name (#189): `InvalidStateError` is a passkey
+    // already on this device.
     const error = (e) => ({ err: e && e.name === "NotAllowedError" ? "cancelled"
       : e && (e.name === "SecurityError" || e.name === "NotSupportedError") ? "unavailable"
-      : String((e && e.message) || e) });
+      : named(e) });
     const started = Date.now();
     try {
       reply({ text: await ceremony() });

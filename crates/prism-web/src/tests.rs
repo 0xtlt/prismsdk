@@ -1973,6 +1973,15 @@ fn device_replies_become_values() {
     use crate::session::device_result;
     use prism_core::{DeviceError, DeviceValue, PermissionState};
     let r = |v: Value| device_result(&v);
+    // A named error (#189): matched by name, shown by its message.
+    let named = r(json!({ "err": "InvalidStateError\u{1f}Already registered" })).unwrap_err();
+    assert_eq!(named.name(), Some("InvalidStateError"));
+    assert_eq!(named.to_string(), "Already registered");
+    assert_eq!(
+        r(json!({ "err": "plain" })).unwrap_err(),
+        DeviceError::Failed("plain".into())
+    );
+    assert_eq!(r(json!({ "err": "plain" })).unwrap_err().name(), None);
     assert!(matches!(
         r(json!({ "permission": "granted" })),
         Ok(DeviceValue::Permission(PermissionState::Granted))

@@ -485,6 +485,16 @@ pub enum DeviceError {
     Unavailable,
     /// Anything else, with the platform's message.
     Failed(String),
+    /// An error the platform names (#189): `name` is the web's
+    /// `DOMException` name where platforms share one (`"InvalidStateError"`:
+    /// the passkey being registered is already on this device), `message`
+    /// its text. Match on [`name`](DeviceError::name), never on the text.
+    Platform {
+        /// The error's name, as the web calls it.
+        name: String,
+        /// The platform's message.
+        message: String,
+    },
 }
 
 impl std::fmt::Display for DeviceError {
@@ -494,6 +504,7 @@ impl std::fmt::Display for DeviceError {
             DeviceError::Cancelled => f.write_str("cancelled"),
             DeviceError::Unavailable => f.write_str("not available on this device"),
             DeviceError::Failed(m) => f.write_str(m),
+            DeviceError::Platform { message, .. } => f.write_str(message),
         }
     }
 }
@@ -501,13 +512,33 @@ impl std::fmt::Display for DeviceError {
 impl std::error::Error for DeviceError {}
 
 impl DeviceError {
-    /// For backends: `denied`, `cancelled`, `unavailable` or a message.
+    /// The marker between an error's name and its message in backend
+    /// replies (#189): `"InvalidStateError\u{1f}The credential exists"`.
+    pub const NAME_SEPARATOR: char = '\u{1f}';
+
+    /// For backends: `denied`, `cancelled`, `unavailable`, a message, or a
+    /// named error as `name` + [`NAME_SEPARATOR`](Self::NAME_SEPARATOR) +
+    /// message.
     pub fn from_message(message: &str) -> Self {
         match message {
             "denied" => DeviceError::Denied,
             "cancelled" => DeviceError::Cancelled,
             "unavailable" => DeviceError::Unavailable,
-            m => DeviceError::Failed(m.to_string()),
+            m => match m.split_once(Self::NAME_SEPARATOR) {
+                Some((name, message)) if !name.is_empty() => DeviceError::Platform {
+                    name: name.to_string(),
+                    message: message.to_string(),
+                },
+                _ => DeviceError::Failed(m.to_string()),
+            },
+        }
+    }
+
+    /// The platform's name for the error (#189), when it gave one.
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            DeviceError::Platform { name, .. } => Some(name),
+            _ => None,
         }
     }
 }
