@@ -1302,6 +1302,16 @@ test("query strings: the socket, pushes, replaces and Back keep them", () => {
   assert.deepEqual(lastSent(page), { t: "navigate", id: 1, path: "/analytics?period=1d" });
 });
 
+test("the first screen names the page once live, header or not (#185)", () => {
+  for (const value of [0, 2]) {
+    const page = live([
+      create(1, "stack"), { op: "value", id: 1, value }, textOp(1, "/login"),
+      create(2, "screen"), textOp(2, "Sign in"), children(1, [2]), root(1),
+    ]);
+    assert.equal(page.document.title, "Sign in · Prism", `stack value ${value}`);
+  }
+});
+
 test("the header bar hides for a whole stack or a bare screen", () => {
   const page = live([
     create(1, "stack"), { op: "value", id: 1, value: 0 }, create(2, "screen"), textOp(2, "Home"),

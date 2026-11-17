@@ -2367,7 +2367,7 @@
           setChildren(el, p.children);
         }
         return;
-      case "root": return mount.replaceChildren(el);
+      case "root": mount.replaceChildren(el); return retitle();
       // Pointer, keys, focus, layers (#17, #25).
       case "pointer": return setPointer(el, p.id, p.mask);
       case "drop": return el && setDropTarget(el, p.id, p.types);
@@ -5233,6 +5233,15 @@ void main() {
   }
 
   const isMainStack = (st) => navState()?.stack === st;
+  /** The main stack's top screen names the page: its stack was built before
+   *  the root that makes it the main one (the first tree, a reconnection). */
+  function retitle() {
+    const st = navState()?.stack;
+    if (!st) return;
+    const top = nodes.get(st._screens[st._screens.length - 1]);
+    screenTitle = (top && top._titleText) || "";
+    showTitle();
+  }
 
   let hist = null; // { depth, tab } the browser history currently reflects
   let ignorePops = 0;
