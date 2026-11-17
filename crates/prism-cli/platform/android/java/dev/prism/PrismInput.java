@@ -378,6 +378,18 @@ final class PrismInput {
         JSONObject ev = PrismHost.event("click", n.id);
         put(ev, "x", dp(e.getX()));
         put(ev, "y", dp(e.getY()));
+        // The keys held (a keyboard, a mouse) and the tap's number in a quick
+        // series, with the system's double-tap timeout and slop (#159).
+        put(ev, "mods", mods(e.getMetaState()));
+        int slop = ViewConfiguration.get(n.view.getContext()).getScaledDoubleTapSlop();
+        boolean series = n.tapCount > 0
+            && e.getEventTime() - n.tapTime <= ViewConfiguration.getDoubleTapTimeout()
+            && Math.hypot(e.getRawX() - n.tapX, e.getRawY() - n.tapY) <= slop;
+        n.tapCount = series ? n.tapCount + 1 : 1;
+        n.tapTime = e.getEventTime();
+        n.tapX = e.getRawX();
+        n.tapY = e.getRawY();
+        put(ev, "n", n.tapCount);
         PrismHost.send(ev);
     }
 
@@ -451,6 +463,10 @@ final class PrismInput {
      * not also move the focus).
      */
     static boolean key(KeyEvent e, View focused) {
+        if (e.getAction() == KeyEvent.ACTION_UP) {
+            keyUp(e);
+            return false;
+        }
         if (e.getAction() != KeyEvent.ACTION_DOWN) return false;
         String name = keyName(e);
         if (name == null) return false;
@@ -477,8 +493,35 @@ final class PrismInput {
             if (sel != null) put(ev, "sel", new JSONArray().put(sel[0]).put(sel[1]));
         }
         PrismHost.send(ev);
+        HELD.put(name, target != null ? target.id : 0);
         boolean arrow = name.startsWith("Arrow");
         return local && arrow && !(focused instanceof EditText);
+    }
+
+    /** Keys whose press was reported, and the node it went to (0: none), for their release (#159). */
+    static final Map<String, Long> HELD = new java.util.LinkedHashMap<>();
+
+    /** A key released: reported when its press was, to the same node (#159). */
+    static void keyUp(KeyEvent e) {
+        String name = keyName(e);
+        if (name == null) return;
+        Long id = HELD.remove(name);
+        if (id == null) return;
+        JSONObject ev = PrismHost.event("keyup", id);
+        put(ev, "key", name);
+        put(ev, "mods", mods(e));
+        PrismHost.send(ev);
+    }
+
+    /** The window lost the focus: the keys still held get no release, so they are released now (#159). */
+    static void releaseKeys() {
+        for (Map.Entry<String, Long> k : HELD.entrySet()) {
+            JSONObject ev = PrismHost.event("keyup", k.getValue());
+            put(ev, "key", k.getKey());
+            put(ev, "mods", 0);
+            PrismHost.send(ev);
+        }
+        HELD.clear();
     }
 
     // --- Text field selections (#86): Prism counts characters (code points) -------------

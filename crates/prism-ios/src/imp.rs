@@ -452,6 +452,10 @@ define_class!(
                     prism_core::Lifecycle::Inactive
                 }
             };
+            // Keys held as the app leaves get their release (#159).
+            if phase != prism_core::Lifecycle::Active {
+                crate::interaction::release_all_keys();
+            }
             with_state(|s| {
                 let patches = s.runtime.set_lifecycle(phase);
                 s.commit(patches);
@@ -502,12 +506,8 @@ define_class!(
         /// see `PrismContainerView`).
         #[unsafe(method(onTap:))]
         fn on_tap(&self, sender: &UITapGestureRecognizer) {
-            if let Some(view) = sender.view() {
-                let id = view.tag() as NodeId;
-                dispatch(match crate::interaction::tap_position(sender) {
-                    Some(p) => UiEvent::ClickAt(id, p),
-                    None => UiEvent::Click(id),
-                });
+            if let Some(event) = crate::interaction::tap_event(sender) {
+                dispatch(event);
             }
         }
 
@@ -629,9 +629,9 @@ define_class!(
         fn should_receive_touch(
             &self,
             g: &objc2_ui_kit::UIGestureRecognizer,
-            _touch: &objc2_ui_kit::UITouch,
+            touch: &objc2_ui_kit::UITouch,
         ) -> bool {
-            crate::interaction::receives_touch(g)
+            crate::interaction::receives_touch(g, touch)
         }
 
         #[unsafe(method(gestureRecognizer:shouldBeRequiredToFailByGestureRecognizer:))]
@@ -806,6 +806,19 @@ define_class!(
         ) {
             if !crate::interaction::handle_presses(presses, self, None, false) {
                 let _: () = unsafe { msg_send![super(self), pressesEnded: presses, withEvent: event] };
+            }
+        }
+
+        /// A press the system took (a shortcut, the app leaving): released.
+        #[unsafe(method(pressesCancelled:withEvent:))]
+        fn presses_cancelled(
+            &self,
+            presses: &objc2_foundation::NSSet<objc2_ui_kit::UIPress>,
+            event: Option<&objc2_ui_kit::UIPressesEvent>,
+        ) {
+            if !crate::interaction::handle_presses(presses, self, None, false) {
+                let _: () =
+                    unsafe { msg_send![super(self), pressesCancelled: presses, withEvent: event] };
             }
         }
 
@@ -2233,6 +2246,8 @@ impl Widgets for UiKit {
             };
             #[cfg(target_os = "tvos")]
             crate::tv::select_press_only(&tap);
+            // The delegate notes each touch's tap count (#159).
+            let _: () = unsafe { msg_send![&*tap, setDelegate: target] };
             v.addGestureRecognizer(&tap);
         }
         #[cfg(target_os = "tvos")]

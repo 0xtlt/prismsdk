@@ -15,7 +15,9 @@
 //!   pointer on views: none of these.
 //! - Keys: `pressesBegan:` with `UIKey` (hardware keyboards) and the remote's
 //!   press types (tvOS), on the view that listens and on the root view
-//!   controller for global listeners.
+//!   controller for global listeners; their releases (`pressesEnded:`,
+//!   `pressesCancelled:`, #159) go where the press went.
+//! - Clicks: a tap's modifier keys and `UITouch.tapCount` (#159).
 //! - Layers: a pass-through `UIWindow` above the app's (above its sheets).
 
 #[cfg_attr(target_os = "tvos", allow(unused_imports))]
@@ -310,14 +312,61 @@ pub fn handle_presses(
 ) -> bool {
     let mtm = responder.mtm();
     let window = window_of(responder);
+    if !began {
+        // Releases (#159) go to where their press went, wherever the focus
+        // is now.
+        let mut released = false;
+        for press in presses.iter() {
+            let Some(key) = key_event(&press, mtm) else {
+                continue;
+            };
+            if let Some(target) = release_key(&key.key) {
+                released = true;
+                let key = KeyEvent {
+                    repeat: false,
+                    selection: None,
+                    ..key
+                };
+                crate::imp::dispatch(UiEvent::KeyUp(target, key));
+            }
+        }
+        return released || wanted(presses, window.as_deref(), local, mtm).is_some();
+    }
     match wanted(presses, window.as_deref(), local, mtm) {
         Some((target, key)) => {
-            if began {
-                crate::imp::dispatch(UiEvent::Key(target, key));
-            }
+            HELD_KEYS.with(|h| {
+                let mut h = h.borrow_mut();
+                if !h.iter().any(|(k, _)| *k == key.key) {
+                    h.push((key.key.clone(), target));
+                }
+            });
+            crate::imp::dispatch(UiEvent::Key(target, key));
             true
         }
         None => false,
+    }
+}
+
+thread_local! {
+    /// Keys whose press was reported, and the node it went to (#159).
+    static HELD_KEYS: RefCell<Vec<(String, Option<NodeId>)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The node a held key's press went to, or `None` if it was not reported.
+fn release_key(key: &str) -> Option<Option<NodeId>> {
+    HELD_KEYS.with(|h| {
+        let mut h = h.borrow_mut();
+        let i = h.iter().position(|(k, _)| k == key)?;
+        Some(h.remove(i).1)
+    })
+}
+
+/// The app stopped being active: UIKit may send no release for the keys
+/// still held, so they are released now (#159).
+pub fn release_all_keys() {
+    let held = HELD_KEYS.with(|h| std::mem::take(&mut *h.borrow_mut()));
+    for (key, target) in held {
+        crate::imp::dispatch(UiEvent::KeyUp(target, KeyEvent::new(key)));
     }
 }
 
@@ -373,6 +422,15 @@ define_class!(
             let local = self.ivars().keys.get().then_some(self.tag() as NodeId);
             if local.is_none() || !handle_presses(presses, self, local, false) {
                 let _: () = unsafe { msg_send![super(self), pressesEnded: presses, withEvent: event] };
+            }
+        }
+
+        #[unsafe(method(pressesCancelled:withEvent:))]
+        fn presses_cancelled(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
+            let local = self.ivars().keys.get().then_some(self.tag() as NodeId);
+            if local.is_none() || !handle_presses(presses, self, local, false) {
+                let _: () =
+                    unsafe { msg_send![super(self), pressesCancelled: presses, withEvent: event] };
             }
         }
 
@@ -786,9 +844,50 @@ pub fn simultaneous(g: &UIGestureRecognizer, other: &UIGestureRecognizer) -> boo
 }
 
 /// Gesture delegate: the wheel recognizer never tracks a touch (a finger
-/// keeps scrolling what is behind it).
-pub fn receives_touch(g: &UIGestureRecognizer) -> bool {
+/// keeps scrolling what is behind it). A tap notes the touch's number in a
+/// quick series, as the system counts it (#159).
+pub fn receives_touch(g: &UIGestureRecognizer, touch: &objc2_ui_kit::UITouch) -> bool {
+    if g.isKindOfClass(objc2_ui_kit::UITapGestureRecognizer::class())
+        && let Some(view) = g.view()
+    {
+        TAP_COUNTS.with(|t| {
+            t.borrow_mut()
+                .insert(view.tag() as NodeId, touch.tapCount().max(1) as u32)
+        });
+    }
     !has_name(g, WHEEL)
+}
+
+thread_local! {
+    /// The number of the last touch a view's tap saw, in a quick series.
+    static TAP_COUNTS: RefCell<HashMap<NodeId, u32>> = RefCell::new(HashMap::new());
+}
+
+/// A tap as Prism's click: with its position, keys and count (#159).
+pub fn tap_event(g: &UIGestureRecognizer) -> Option<UiEvent> {
+    let view = g.view()?;
+    let id = view.tag() as NodeId;
+    let position = tap_position(g);
+    let count = TAP_COUNTS.with(|t| t.borrow().get(&id).copied().unwrap_or(1));
+    #[cfg(not(target_os = "tvos"))]
+    let modifiers = modifiers(g.modifierFlags());
+    #[cfg(target_os = "tvos")]
+    let modifiers = Modifiers::default();
+    Some(if count > 1 || modifiers != Modifiers::default() {
+        UiEvent::ClickWith(
+            id,
+            prism_core::ClickEvent {
+                position,
+                modifiers,
+                count,
+            },
+        )
+    } else {
+        match position {
+            Some(p) => UiEvent::ClickAt(id, p),
+            None => UiEvent::Click(id),
+        }
+    })
 }
 
 /// Gesture delegate: a scroll view's pan waits for a drag (or a view's

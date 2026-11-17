@@ -115,6 +115,13 @@ public class PrismActivity extends Activity {
         return super.dispatchKeyEvent(e);
     }
 
+    /** Keys held when the window loses the focus get their release (#159). */
+    @Override
+    public void onWindowFocusChanged(boolean focused) {
+        super.onWindowFocusChanged(focused);
+        if (ready && !focused) PrismInput.releaseKeys();
+    }
+
     @Override
     @SuppressWarnings("deprecation")
     public void onBackPressed() {

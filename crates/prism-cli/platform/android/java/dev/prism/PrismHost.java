@@ -212,6 +212,11 @@ public final class PrismHost {
         // The button the current press started with (#136).
         String dragButton = "primary";
         int dragMods;
+        // The last tap (#159): when and where (raw pixels), and its number
+        // in a quick series.
+        long tapTime;
+        float tapX, tapY;
+        int tapCount;
         boolean keysLocal, keysGlobal, noHit, inert, a11yHidden, dragging;
         // Text field selections (#86): reported (`selev`), last sent, a report posted.
         boolean selectEvents, selPosted;
@@ -1205,6 +1210,9 @@ public final class PrismHost {
                 return false;
             }
         });
+        // Every tap reaches `onSingleTapUp`, the second of a double tap
+        // included: PrismInput counts the series (#159).
+        g.setOnDoubleTapListener(null);
         n.gesture = g;
         installTouch(n);
         // Pointer events only: no click, focus or menu.

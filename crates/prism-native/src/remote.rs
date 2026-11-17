@@ -30,11 +30,12 @@
 //! | `webpost` | `data`: a message (JSON text) for a `web_view`'s page (#62) |
 //! | `webreload` | reload a `web_view`'s page |
 //!
-//! Hosts report the new input events as `{"t":"click","id","x","y"}`
-//! (position optional), `{"t":"pointer","id","phase","x","y"}`,
+//! Hosts report the new input events as `{"t":"click","id","x","y","mods","n"}`
+//! (position, keys and click count optional, #159), `{"t":"pointer","id","phase","x","y"}`,
 //! `{"t":"drag","id","phase","x","y","dx","dy"}` and
 //! `{"t":"key","id","key","mods","repeat","sel"}` (`sel`: `[start, end]`,
-//! the focused text field's selection in characters, #86) and
+//! the focused text field's selection in characters, #86),
+//! `{"t":"keyup","id","key","mods"}` (a reported key released, #159) and
 //! `{"t":"select","id","start","end"}` (a text field's selection moved, in
 //! characters) (see [`parse_input_event`]).
 //! An overlay's host reports its content area like a modal's
@@ -175,10 +176,28 @@ pub fn parse_input_event(v: &Value) -> Option<prism_core::UiEvent> {
     let num = |k: &str| v.get(k).and_then(Value::as_f64).map(|n| n as f32);
     let id = v.get("id").and_then(Value::as_u64);
     match v.get("t")?.as_str()? {
-        "click" => Some(match (num("x"), num("y")) {
-            (Some(x), Some(y)) => UiEvent::ClickAt(id?, Point::new(x, y)),
-            _ => UiEvent::Click(id?),
-        }),
+        // With the keys held and the click's number in a series (`mods`,
+        // `n`, #159) when the host says.
+        "click" => {
+            let mods = v.get("mods").and_then(Value::as_u64).unwrap_or(0) as u8;
+            let count = v.get("n").and_then(Value::as_u64).unwrap_or(1).max(1) as u32;
+            let position = match (num("x"), num("y")) {
+                (Some(x), Some(y)) => Some(Point::new(x, y)),
+                _ => None,
+            };
+            Some(match position {
+                _ if mods != 0 || count > 1 => UiEvent::ClickWith(
+                    id?,
+                    prism_core::ClickEvent {
+                        position,
+                        modifiers: Modifiers::from_bits(mods),
+                        count,
+                    },
+                ),
+                Some(p) => UiEvent::ClickAt(id?, p),
+                None => UiEvent::Click(id?),
+            })
+        }
         // A tap on a 3D scene: `{"t":"scene_tap","id","node","point"}`.
         "scene_tap" => Some(UiEvent::SceneTap(
             id?,
@@ -240,6 +259,18 @@ pub fn parse_input_event(v: &Value) -> Option<prism_core::UiEvent> {
             },
         )),
 
+        // A key released (#159): like `key`, without a selection.
+        "keyup" => Some(UiEvent::KeyUp(
+            id.filter(|i| *i != 0),
+            KeyEvent {
+                key: v.get("key")?.as_str()?.to_string(),
+                modifiers: Modifiers::from_bits(
+                    v.get("mods").and_then(Value::as_u64).unwrap_or(0) as u8
+                ),
+                repeat: false,
+                selection: None,
+            },
+        )),
         "key" => Some(UiEvent::Key(
             id.filter(|i| *i != 0),
             KeyEvent {
