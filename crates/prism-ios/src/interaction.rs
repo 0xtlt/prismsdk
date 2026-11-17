@@ -193,6 +193,7 @@ pub fn key_event(press: &UIPress, mtm: MainThreadMarker) -> Option<KeyEvent> {
             modifiers,
             repeat: false,
             selection: None,
+            edges: None,
         });
     }
     let name = match press.r#type() {
@@ -262,15 +263,21 @@ fn wanted(
 ) -> Option<(Option<NodeId>, KeyEvent)> {
     let focused = focused_node(window);
     // In a text field: its selection before the key (#86).
-    let selection = focused
+    let field = focused
         .filter(|f| f.1)
-        .and_then(|_| window.and_then(|w| find_first_responder(w)))
-        .and_then(|r| crate::forms::current_selection(&r));
+        .and_then(|_| window.and_then(|w| find_first_responder(w)));
+    let selection = field.as_deref().and_then(crate::forms::current_selection);
+    // And where its caret is (#211).
+    let edges = field.as_deref().and_then(crate::forms::current_edges);
     for press in presses.iter() {
         let Some(key) = key_event(&press, mtm) else {
             continue;
         };
-        let key = KeyEvent { selection, ..key };
+        let key = KeyEvent {
+            selection,
+            edges,
+            ..key
+        };
         let remote_menu = press.key(mtm).is_none() && press.r#type() == UIPressType::Menu;
         match local {
             // The remote's Menu stays the system's Back for local listeners.
@@ -325,6 +332,7 @@ pub fn handle_presses(
                 let key = KeyEvent {
                     repeat: false,
                     selection: None,
+                    edges: None,
                     ..key
                 };
                 crate::imp::dispatch(UiEvent::KeyUp(target, key));
@@ -1226,9 +1234,12 @@ pub fn consumed_key_commands(responder: &UIResponder) -> Vec<Retained<objc2_ui_k
         return Vec::new();
     };
     let mtm = responder.mtm();
+    // Asked as a key is pressed: entries of `consume_key_at` (#211) follow
+    // the caret now.
+    let edges = focused_edges(window.as_deref());
     command_inputs()
         .into_iter()
-        .filter(|(name, _)| crate::imp::consumes_key(Some(focused), name))
+        .filter(|(name, _)| crate::imp::consumes_key(Some(focused), name, edges))
         .map(|(_, input)| {
             let c = unsafe {
                 objc2_ui_kit::UIKeyCommand::keyCommandWithInput_modifierFlags_action(
@@ -1244,6 +1255,13 @@ pub fn consumed_key_commands(responder: &UIResponder) -> Vec<Retained<objc2_ui_k
         .collect()
 }
 
+/// Where the focused text field's caret is (#211), if one has the focus.
+#[cfg(not(target_os = "tvos"))]
+fn focused_edges(window: Option<&UIWindow>) -> Option<prism_core::CaretEdges> {
+    let field = find_first_responder(window?)?;
+    crate::forms::current_edges(&field)
+}
+
 /// A consumed key's command fired: reported like a press.
 #[cfg(not(target_os = "tvos"))]
 pub fn consumed_key(responder: &UIResponder, command: &objc2_ui_kit::UIKeyCommand) {
@@ -1257,5 +1275,17 @@ pub fn consumed_key(responder: &UIResponder, command: &objc2_ui_kit::UIKeyComman
     };
     let window = window_of(responder);
     let focused = focused_node(window.as_deref()).map(|f| f.0);
-    crate::imp::dispatch(UiEvent::Key(focused, KeyEvent::new(name)));
+    let mut key = KeyEvent::new(name);
+    if let Some(field) = window
+        .as_deref()
+        .and_then(|w| find_first_responder(w))
+        .filter(|r| {
+            r.isKindOfClass(objc2_ui_kit::UITextField::class())
+                || r.isKindOfClass(objc2_ui_kit::UITextView::class())
+        })
+    {
+        key.selection = crate::forms::current_selection(&field);
+        key.edges = crate::forms::current_edges(&field);
+    }
+    crate::imp::dispatch(UiEvent::Key(focused, key));
 }

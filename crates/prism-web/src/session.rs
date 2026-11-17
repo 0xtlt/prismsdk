@@ -759,6 +759,7 @@ fn parse_input_event(v: &Value) -> Option<UiEvent> {
                 ),
                 repeat: false,
                 selection: None,
+                edges: None,
             },
         )),
         "key" => Some(UiEvent::Key(
@@ -773,6 +774,11 @@ fn parse_input_event(v: &Value) -> Option<UiEvent> {
                     let at = |i: usize| a.get(i).and_then(Value::as_u64).map(|n| n as usize);
                     Some(prism_core::SelectionEvent::new(at(0)?, at(1)?))
                 }),
+                // Where the field's caret was (#211): `"sfl"`…
+                edges: v
+                    .get("edges")
+                    .and_then(Value::as_str)
+                    .map(prism_core::CaretEdges::decode),
             },
         )),
         // A text field's selection moved (#86), in characters.

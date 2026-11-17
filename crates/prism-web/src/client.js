@@ -339,8 +339,22 @@
   // Keys an element takes from the focused field in it (`consume_keys`,
   // #181): reported first, in the capture phase, then kept from the field
   // (↑ moving the caret, ↵ submitting) and the page.
+  // `consume_key_at` (#211): "ArrowUp@first-line" takes the key only while
+  // the focused field's caret is there, measured now, before the key acts.
+  const EDGES = { start: "s", end: "e", "first-line": "f", "last-line": "l" };
   function consumes(t, key) {
-    for (let n = t; n; n = n.parentElement) if (n._consume && n._consume.has(key)) return true;
+    let edges;
+    for (let n = t; n; n = n.parentElement) {
+      if (!n._consume) continue;
+      if (n._consume.has(key)) return true;
+      for (const k of n._consume) {
+        const at = k.indexOf("@");
+        if (at <= 0 || k.slice(0, at) !== key) continue;
+        if (edges === undefined) edges = editable(t) ? caretEdges(t) : null;
+        // No field: no caret to move, the key is the element's.
+        if (edges == null || edges.includes(EDGES[k.slice(at + 1)])) return true;
+      }
+    }
     return false;
   }
   document.addEventListener("keydown", (e) => {
@@ -367,6 +381,8 @@
       if (t._selFlush) t._selFlush();
       const sel = fieldSelection(t);
       if (sel) msg.sel = sel;
+      const edges = caretEdges(t);
+      if (edges != null) msg.edges = edges;
     }
     send(msg);
     keysDown.set(e.key, msg.id);
@@ -1497,6 +1513,66 @@
     if (s == null || e == null) return null;
     const v = el.value || "";
     return [toChars(v, Math.min(s, e)), toChars(v, Math.max(s, e))];
+  }
+  /**
+   * Where field `el`'s caret is (#211): "s" at the start, "e" at the end,
+   * "f" on the first visual line, "l" on the last (wrapping included); ""
+   * while text is selected, null when it cannot tell.
+   */
+  function caretEdges(el) {
+    const sel = fieldSelection(el);
+    if (!sel) return null;
+    if (sel[0] !== sel[1]) return "";
+    const text = el._rich ? richText(el._model) : (el.value || "");
+    const pos = sel[0];
+    let lines = [true, true];
+    if (el._rich || el.tagName === "TEXTAREA") lines = visualLines(el, text, pos) || logicalLines(text, pos);
+    return (pos === 0 ? "s" : "") + (pos >= clen(text) ? "e" : "") + (lines[0] ? "f" : "") + (lines[1] ? "l" : "");
+  }
+  /** [first line, last line] counting line breaks only. */
+  function logicalLines(text, pos) {
+    const chars = [...text];
+    return [!chars.slice(0, pos).includes("\n"), !chars.slice(pos).includes("\n")];
+  }
+  /** [first line, last line] as laid out, wrapping included; null without layout. */
+  function visualLines(el, text, pos) {
+    try {
+      if (el._rich) {
+        const s = document.getSelection();
+        if (!s || !s.rangeCount) return null;
+        const r = s.getRangeAt(0);
+        let caret = r.getBoundingClientRect();
+        if (!caret || !(caret.height > 0)) caret = [...r.getClientRects()].find((c) => c.height > 0);
+        const all = document.createRange();
+        all.selectNodeContents(el);
+        const boxes = [...all.getClientRects()].filter((c) => c.height > 0);
+        if (!caret || !boxes.length) return null;
+        const mid = (caret.top + caret.bottom) / 2;
+        return [mid < boxes[0].bottom, mid > boxes[boxes.length - 1].top];
+      }
+      // A textarea: a hidden copy laid out the same, with marks at the
+      // start, the caret and the end.
+      const cs = getComputedStyle(el);
+      const m = document.createElement("div");
+      for (const p of ["fontFamily", "fontSize", "fontWeight", "fontStyle", "letterSpacing", "wordSpacing",
+        "lineHeight", "textIndent", "textTransform", "tabSize", "paddingLeft", "paddingRight"]) m.style[p] = cs[p];
+      const pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+      Object.assign(m.style, {
+        position: "absolute", visibility: "hidden", left: "-9999px", top: "0", boxSizing: "content-box",
+        width: Math.max(0, el.clientWidth - pad) + "px", whiteSpace: "pre-wrap", overflowWrap: "break-word",
+      });
+      const mark = () => { const b = document.createElement("span"); b.textContent = "\u200b"; return b; };
+      const chars = [...text];
+      const [a, c, z] = [mark(), mark(), mark()];
+      m.append(a, chars.slice(0, pos).join(""), c, chars.slice(pos).join(""), z);
+      document.body.appendChild(m);
+      const [top, at, end, h] = [a.offsetTop, c.offsetTop, z.offsetTop, c.offsetHeight];
+      m.remove();
+      if (![top, at, end].every(Number.isFinite) || !(h > 0) || !(el.clientWidth > 0)) return null;
+      return [at - top < h / 2, end - at < h / 2];
+    } catch {
+      return null;
+    }
   }
   function trackSelection(el, id) {
     let queued = false;

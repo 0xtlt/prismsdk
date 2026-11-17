@@ -807,13 +807,23 @@ impl Reconciler {
 
     /// Whether `key` pressed in node `focused` is taken from the focused
     /// control by it or an ancestor (`consume_keys`, #181).
-    pub fn consumes_key(&self, focused: Option<NodeId>, key: &str) -> bool {
+    /// `edges`: where the focused text field's caret is (#211), for
+    /// entries of [`consume_key_at`](crate::Div::consume_key_at).
+    pub fn consumes_key(
+        &self,
+        focused: Option<NodeId>,
+        key: &str,
+        edges: Option<crate::events::CaretEdges>,
+    ) -> bool {
         let mut next = focused;
         while let Some(id) = next {
             let Some(n) = self.nodes.get(&id) else {
                 return false;
             };
-            if n.consume_keys.iter().any(|k| k == key) {
+            if n.consume_keys
+                .iter()
+                .any(|k| crate::events::consume_entry_matches(k, key, edges))
+            {
                 return true;
             }
             next = n.parent;

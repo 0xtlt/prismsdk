@@ -95,9 +95,9 @@ pub use element::{STACK_CLOSABLE, STACK_NO_HEADER};
 pub use element::{SelectionEvent, byte_to_char, char_to_byte};
 pub use element::{picture_data, svg};
 pub use events::{
-    DragEvent, DragPhase, DropProgress, FileDropEvent, GesturePhase, HoverEvent, KeyEvent,
-    LayoutEvent, MagnifyEvent, Modifiers, Point, PointerButton, PointerEvent, PointerPhase, Rect,
-    WheelEvent,
+    CaretEdge, CaretEdges, DragEvent, DragPhase, DropProgress, FileDropEvent, GesturePhase,
+    HoverEvent, KeyEvent, LayoutEvent, MagnifyEvent, Modifiers, Point, PointerButton, PointerEvent,
+    PointerPhase, Rect, WheelEvent,
 };
 pub use fonts::{FontFace, FontSource, Stylesheet};
 pub use i18n::{BasicFormatter, DateStyle, Direction, Formatter, Locale, Translations};
@@ -570,9 +570,16 @@ impl Runtime {
 
     /// Whether a key pressed in node `focused` is the app's alone
     /// (`consume_keys`, #181): the backend keeps the focused control from
-    /// acting on it after dispatching it.
-    pub fn consumes_key(&self, focused: Option<NodeId>, key: &str) -> bool {
-        self.reconciler.consumes_key(focused, key)
+    /// acting on it after dispatching it. `edges`: where the focused text
+    /// field's caret was when the key was pressed (#211), for entries of
+    /// [`consume_key_at`](Div::consume_key_at).
+    pub fn consumes_key(
+        &self,
+        focused: Option<NodeId>,
+        key: &str,
+        edges: Option<CaretEdges>,
+    ) -> bool {
+        self.reconciler.consumes_key(focused, key, edges)
     }
 
     /// Platform work requested by the app (widgets, Live Activities,
@@ -818,19 +825,19 @@ pub mod prelude {
     pub use crate::{
         Accessible, Accuracy, Activity, Alert, Animations, App, AppleSignIn, AsyncApp, AuthRequest,
         BackEvent, BackgroundTask, BiometryKind, Breakpoint, Capitalize, CarButton, CarButtonStyle,
-        CarItem, CarSection, CarTab, CarTemplate, ChangeEvent, ClickEvent, Context, Corners,
-        DateMode, DateStyle, DeviceInfo, DeviceKind, DismissReason, Entity, FluentBuilder, Handler,
-        Haptic, InputEvent, IntoElement, Keyboard, Lifecycle, Locale, Location, Menu, MenuItem,
-        Motion, Notification, NotificationAction, NotificationResponse, Orientation, Params,
-        ParentElement, Path, Permission, PermissionState, PickImages, PickedFile, Platform, Pose,
-        Posture, PushEvent, PushMessage, PushService, PushSubscription, Render, ReorderList,
-        ReorderOptions, ReturnKey, Role, Router, SaveFile, SavedFile, ScrollEvent, SecureOptions,
-        SelectionEvent, Share, Styled, SwipeDirection, SystemAction, Transition, Translations,
-        Tray, UploadProgress, VirtualList, Watch, Widget, WidgetConfig, WidgetFamily, WidgetOption,
-        WidgetParameter, WindowChrome, WindowControls, adaptive, button, date_picker,
-        date_picker_opt, div, go_back, image, lazy, navigate_to, picker, picture, progress, px,
-        relative, rgb, rgba, screen, scroll, shape, slider, spinner, text, text_area, text_input,
-        timer, toggle,
+        CarItem, CarSection, CarTab, CarTemplate, CaretEdge, CaretEdges, ChangeEvent, ClickEvent,
+        Context, Corners, DateMode, DateStyle, DeviceInfo, DeviceKind, DismissReason, Entity,
+        FluentBuilder, Handler, Haptic, InputEvent, IntoElement, Keyboard, Lifecycle, Locale,
+        Location, Menu, MenuItem, Motion, Notification, NotificationAction, NotificationResponse,
+        Orientation, Params, ParentElement, Path, Permission, PermissionState, PickImages,
+        PickedFile, Platform, Pose, Posture, PushEvent, PushMessage, PushService, PushSubscription,
+        Render, ReorderList, ReorderOptions, ReturnKey, Role, Router, SaveFile, SavedFile,
+        ScrollEvent, SecureOptions, SelectionEvent, Share, Styled, SwipeDirection, SystemAction,
+        Transition, Translations, Tray, UploadProgress, VirtualList, Watch, Widget, WidgetConfig,
+        WidgetFamily, WidgetOption, WidgetParameter, WindowChrome, WindowControls, adaptive,
+        button, date_picker, date_picker_opt, div, go_back, image, lazy, navigate_to, picker,
+        picture, progress, px, relative, rgb, rgba, screen, scroll, shape, slider, spinner, text,
+        text_area, text_input, timer, toggle,
     };
     pub use crate::{
         GridTrack, ScrollAxis, Scrollbar, auto_fill, auto_fit, fr, minmax, repeat, scroll_x,

@@ -76,6 +76,33 @@ While the focus is in the element, those keys reach its `on_key_down` (and its a
 | Android | `dispatchKeyEvent` consumes the press and its release |
 | Linux (GTK) | the window's capture-phase key controller stops it |
 
+### Leaving a field at its edges
+
+A grid of cells or a document of blocks moves to the next field only when the caret is at the field's edge: ← at its start, → at its end, ↑ on its first visual line, ↓ on its last (wrapped lines count). Elsewhere the field moves its caret. `consume_key_at` declares a key with its edge, and the platform checks the caret when the key is pressed, before the field acts (#211):
+
+```rust
+div()
+    .child(text_area().value(block.text.clone()).id(format!("block-{i}")))
+    .consume_key_at("ArrowUp", CaretEdge::FirstLine)
+    .consume_key_at("ArrowDown", CaretEdge::LastLine)
+    .on_key_down(cx.listener(move |this, e: &KeyEvent, cx| {
+        if e.is("ArrowUp") && e.at(CaretEdge::FirstLine) { this.focus_block(i - 1, cx) }
+        if e.is("ArrowDown") && e.at(CaretEdge::LastLine) { this.focus_block(i + 1, cx) }
+    }))
+```
+
+- `KeyEvent::edges` says where the focused field's caret was (`CaretEdges { start, end, first_line, last_line }`), and `e.at(edge)` reads it with the same rule as `consume_key_at`: the handler moves the focus exactly when the key was taken from the field. With text selected, the caret is at no edge (the key acts on the selection). With no field focused, `at` is `true` and the key is taken.
+- `consume_key_at` adds to `consume_keys`: call it after.
+- Edges `Start`, `End`, `FirstLine` and `LastLine`. A single-line field's caret is on its first and last line.
+
+| | First and last visual lines |
+|---|---|
+| Web | `<textarea>`: a hidden copy laid out the same, with marks at the start, the caret and the end; rich inputs: the selection's line box against the content's first and last ones. Line breaks only when the page has no layout. |
+| macOS | `firstRectForCharacterRange` of the caret against the start and end of the text |
+| iOS, iPadOS, visionOS | `caretRect(for:)` of the caret against `beginningOfDocument` and `endOfDocument` |
+| Android | `Layout.getLineForOffset` against `getLineCount` |
+| Linux (GTK) | `GtkTextView` iterator locations of the caret, the start and the end |
+
 ## Click keys and count, key releases
 
 ```rust

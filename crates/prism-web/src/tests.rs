@@ -2606,6 +2606,14 @@ fn pointer_drag_and_key_messages_become_ui_events() {
         panic!("key in a field")
     };
     assert_eq!(k.selection, Some(prism_core::SelectionEvent::new(1, 4)));
+    assert_eq!(k.edges, None);
+    // Where its caret was (#211).
+    let Some(UiEvent::Key(Some(3), k)) =
+        ev(json!({"t": "key", "id": 3, "key": "ArrowUp", "sel": [0, 0], "edges": "sf"}))
+    else {
+        panic!("key with edges")
+    };
+    assert!(k.at(prism_core::CaretEdge::FirstLine) && !k.at(prism_core::CaretEdge::LastLine));
     assert_eq!(
         ev(json!({"t": "select", "id": 3, "start": 2, "end": 7})),
         Some(UiEvent::Select(3, 2, 7))

@@ -272,6 +272,7 @@ pub fn parse_input_event(v: &Value) -> Option<prism_core::UiEvent> {
                 ),
                 repeat: false,
                 selection: None,
+                edges: None,
             },
         )),
         "key" => Some(UiEvent::Key(
@@ -283,6 +284,11 @@ pub fn parse_input_event(v: &Value) -> Option<prism_core::UiEvent> {
                 ),
                 repeat: v.get("repeat").and_then(Value::as_bool).unwrap_or(false),
                 selection: selection(v.get("sel")),
+                // Where the field's caret was (#211): `"sfl"`…
+                edges: v
+                    .get("edges")
+                    .and_then(Value::as_str)
+                    .map(prism_core::CaretEdges::decode),
             },
         )),
         "select" => Some(UiEvent::Select(

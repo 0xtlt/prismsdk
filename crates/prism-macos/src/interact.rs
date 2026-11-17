@@ -96,6 +96,7 @@ pub(crate) fn key_event(event: &NSEvent) -> Option<KeyEvent> {
         modifiers: modifiers(event.modifierFlags()),
         repeat: event.isARepeat(),
         selection: None,
+        edges: None,
     })
 }
 
@@ -1449,6 +1450,38 @@ pub(crate) fn text_selection(tv: &objc2_app_kit::NSTextView) -> prism_core::Sele
     let r = tv.selectedRange();
     let at = |u: usize| prism_native::fields::utf16_to_chars(&text, u);
     prism_core::SelectionEvent::new(at(r.location), at(r.location + r.length))
+}
+
+/// Where `tv`'s caret is (#211): at the start or end of its text, on its
+/// first or last visual line (wrapping included), by comparing the caret's
+/// line box with the text's first and last ones.
+pub(crate) fn caret_edges(tv: &objc2_app_kit::NSTextView) -> prism_core::CaretEdges {
+    use objc2_foundation::{NSRange, NSRect};
+    let r = tv.selectedRange();
+    if r.length > 0 {
+        return prism_core::CaretEdges::default();
+    }
+    let len = tv.string().length();
+    // SAFETY: a null `actualRange` is allowed.
+    let rect = |at: usize| unsafe {
+        objc2_app_kit::NSTextInputClient::firstRectForCharacterRange_actualRange(
+            tv,
+            NSRange::new(at.min(len), 0),
+            std::ptr::null_mut(),
+        )
+    };
+    let same_line = |a: NSRect, b: NSRect| {
+        let h = a.size.height.max(b.size.height).max(1.);
+        let mid = |r: NSRect| r.origin.y + r.size.height / 2.;
+        (mid(a) - mid(b)).abs() < h / 2.
+    };
+    let caret = rect(r.location);
+    prism_core::CaretEdges {
+        start: r.location == 0,
+        end: r.location >= len,
+        first_line: same_line(caret, rect(0)),
+        last_line: same_line(caret, rect(len)),
+    }
 }
 
 /// Selects `start..end` (characters) in `tv`, clamped to its text.

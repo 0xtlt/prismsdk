@@ -632,6 +632,7 @@ fn attach_keys(window: &gtk::Window, keys: Rc<KeyState>) {
                     modifiers: modifiers(mods),
                     repeat: false,
                     selection: None,
+                    edges: None,
                 },
             ));
         }
@@ -660,14 +661,18 @@ fn attach_keys(window: &gtk::Window, keys: Rc<KeyState>) {
             .as_ref()
             .is_some_and(|f| f.is::<gtk::Text>() || f.is::<gtk::TextView>());
         // In a text field: its selection before the key (#86).
-        let selection = focus.as_ref().and_then(|f| {
-            if let Some(t) = f.downcast_ref::<gtk::Text>() {
-                Some(editable_selection(t))
-            } else {
-                f.downcast_ref::<gtk::TextView>()
-                    .map(|v| buffer_selection(&v.buffer()))
+        // And where its caret is (#211).
+        let (selection, edges) = match focus.as_ref() {
+            Some(f) if f.is::<gtk::Text>() => {
+                let t = f.downcast_ref::<gtk::Text>().expect("a text");
+                (Some(editable_selection(t)), Some(editable_edges(t)))
             }
-        });
+            Some(f) if f.is::<gtk::TextView>() => {
+                let v = f.downcast_ref::<gtk::TextView>().expect("a text view");
+                (Some(buffer_selection(&v.buffer())), Some(view_edges(v)))
+            }
+            _ => (None, None),
+        };
         // The nearest focused node with `on_key_down`.
         let mut target = None;
         let mut next = focus.clone();
@@ -710,7 +715,7 @@ fn attach_keys(window: &gtk::Window, keys: Rc<KeyState>) {
             found
         };
         let mut consumed = false;
-        with_state(|s| consumed = s.runtime.consumes_key(focused_node, &name));
+        with_state(|s| consumed = s.runtime.consumes_key(focused_node, &name, edges));
         let claimed = claimed || consumed;
         dispatch(UiEvent::Key(
             target,
@@ -719,6 +724,7 @@ fn attach_keys(window: &gtk::Window, keys: Rc<KeyState>) {
                 modifiers,
                 repeat,
                 selection,
+                edges,
             },
         ));
         if claimed {
@@ -872,6 +878,40 @@ pub(crate) fn editable_selection(e: &impl IsA<gtk::Editable>) -> prism_core::Sel
     match e.selection_bounds() {
         Some((a, b)) => prism_core::SelectionEvent::new(a.max(0) as usize, b.max(0) as usize),
         None => prism_core::SelectionEvent::caret(e.position().max(0) as usize),
+    }
+}
+
+/// Where the caret of a single-line field is (#211).
+fn editable_edges(e: &impl IsA<gtk::Editable>) -> prism_core::CaretEdges {
+    if e.selection_bounds().is_some_and(|(a, b)| a != b) {
+        return prism_core::CaretEdges::default();
+    }
+    let len = e.text().chars().count();
+    prism_core::CaretEdges::caret(e.position().max(0) as usize, len, 0, 1)
+}
+
+/// Where a text view's caret is (#211): its location against those of the
+/// buffer's start and end, so wrapped lines count.
+fn view_edges(v: &gtk::TextView) -> prism_core::CaretEdges {
+    let b = v.buffer();
+    if b.has_selection() {
+        return prism_core::CaretEdges::default();
+    }
+    let caret = b.iter_at_mark(&b.get_insert());
+    let mid = |i: &gtk::TextIter| {
+        let r = v.iter_location(i);
+        (
+            r.y() as f32 + r.height() as f32 / 2.,
+            r.height().max(1) as f32,
+        )
+    };
+    let (at, h) = mid(&caret);
+    let same_line = |i: &gtk::TextIter| (mid(i).0 - at).abs() < h / 2.;
+    prism_core::CaretEdges {
+        start: caret.is_start(),
+        end: caret.is_end(),
+        first_line: same_line(&b.start_iter()),
+        last_line: same_line(&b.end_iter()),
     }
 }
 

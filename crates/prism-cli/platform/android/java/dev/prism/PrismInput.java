@@ -484,7 +484,9 @@ final class PrismInput {
         }
         // The app's alone (`consume_keys`, #181): decided as pressed, before
         // its handler may close the menu that declared it.
-        boolean consumed = consumes(target, name);
+        // Where a field's caret is (#211), for `consume_key_at`.
+        String edges = focused instanceof EditText ? edges((EditText) focused) : null;
+        boolean consumed = consumes(target, name, edges);
         boolean typing = focused instanceof EditText && name.length() <= 2 && (mods(e) & (2 | 8)) == 0;
         // Typing in a field reaches only that field's own handlers.
         if (typing && !local) return false;
@@ -497,6 +499,7 @@ final class PrismInput {
         if (focused instanceof EditText) {
             int[] sel = selection((EditText) focused);
             if (sel != null) put(ev, "sel", new JSONArray().put(sel[0]).put(sel[1]));
+            if (edges != null) put(ev, "edges", edges);
         }
         PrismHost.send(ev);
         HELD.put(name, target != null ? target.id : 0);
@@ -521,12 +524,46 @@ final class PrismInput {
         for (int i = 0; i < keys.length(); i++) n.consumeKeys.add(keys.optString(i));
     }
 
-    /** Whether `key` pressed in `n` is taken by it or an ancestor (#181). */
-    static boolean consumes(PrismHost.Node n, String key) {
+    /**
+     * Whether `key` pressed in `n` is taken by it or an ancestor (#181).
+     * `ArrowUp@first-line` (`consume_key_at`, #211) only while the focused
+     * field's caret is there (`edges`; null: no field, taken).
+     */
+    static boolean consumes(PrismHost.Node n, String key, String edges) {
         for (PrismHost.Node a = n; a != null; a = PrismHost.parentOf(a)) {
-            if (a.consumeKeys != null && a.consumeKeys.contains(key)) return true;
+            if (a.consumeKeys == null) continue;
+            if (a.consumeKeys.contains(key)) return true;
+            for (String k : a.consumeKeys) {
+                int at = k.indexOf('@');
+                if (at <= 0 || !k.substring(0, at).equals(key)) continue;
+                String edge = k.substring(at + 1);
+                String letter = edge.equals("start") ? "s" : edge.equals("end") ? "e"
+                    : edge.equals("first-line") ? "f" : edge.equals("last-line") ? "l" : null;
+                if (letter != null && (edges == null || edges.contains(letter))) return true;
+            }
         }
         return false;
+    }
+
+    /**
+     * Where a field's caret is (#211): "s" start, "e" end, "f" first visual
+     * line, "l" last (the layout's lines, wrapping included); "" while text
+     * is selected.
+     */
+    static String edges(EditText f) {
+        int a = f.getSelectionStart(), b = f.getSelectionEnd();
+        if (a < 0 || b < 0) return null;
+        if (a != b) return "";
+        int len = f.length();
+        StringBuilder out = new StringBuilder();
+        if (a == 0) out.append('s');
+        if (a >= len) out.append('e');
+        android.text.Layout layout = f.getLayout();
+        int line = layout != null ? layout.getLineForOffset(a) : 0;
+        int lines = layout != null ? layout.getLineCount() : 1;
+        if (line == 0) out.append('f');
+        if (line >= lines - 1) out.append('l');
+        return out.toString();
     }
 
     /** Keys whose press was reported, and the node it went to (0: none), for their release (#159). */

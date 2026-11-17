@@ -866,6 +866,31 @@ macro_rules! builder {
                 self
             }
 
+            /// Takes `key` from the focused text field in this element only
+            /// while its caret is at `edge` (#211), decided by the platform
+            /// when the key is pressed: ← at the start or → at the end moves
+            /// to the previous or next cell of a grid, ↑ on the first visual
+            /// line or ↓ on the last one (wrapping included) to the previous
+            /// or next block of a document. Elsewhere the field moves its
+            /// caret. [`KeyEvent::at`](crate::KeyEvent::at) tells the handler
+            /// the same. Adds to [`consume_keys`](Self::consume_keys) (call
+            /// it after).
+            ///
+            /// ```ignore
+            /// div()
+            ///     .child(text_area(block.text.clone()))
+            ///     .consume_key_at("ArrowUp", CaretEdge::FirstLine)
+            ///     .consume_key_at("ArrowDown", CaretEdge::LastLine)
+            ///     .on_key_down(cx.listener(move |this, e: &KeyEvent, cx| {
+            ///         if e.is("ArrowUp") && e.at(CaretEdge::FirstLine) { this.focus_block(i - 1, cx) }
+            ///         if e.is("ArrowDown") && e.at(CaretEdge::LastLine) { this.focus_block(i + 1, cx) }
+            ///     }))
+            /// ```
+            pub fn consume_key_at(mut self, key: &str, edge: crate::events::CaretEdge) -> Self {
+                self.0.consume_keys.push(format!("{key}@{}", edge.name()));
+                self
+            }
+
             /// Called for every key pressed in the window while this element
             /// is mounted, whatever has the focus (Escape to close, arrows
             /// for a remote pad). While a text field has the focus, only

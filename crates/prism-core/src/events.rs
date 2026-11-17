@@ -368,6 +368,123 @@ pub struct KeyEvent {
     /// one, ↑ on the first line move to the previous block. `None` when no
     /// field has the focus (or the platform cannot tell: watchOS).
     pub selection: Option<crate::SelectionEvent>,
+    /// While a text field has the focus: where its caret was when the key
+    /// was pressed, before the key acts (#211), wrapped lines included. So
+    /// ↑ can leave a multi-line field only from its first visual line.
+    /// `None` when no field has the focus (or the platform cannot tell:
+    /// watchOS). See [`at`](Self::at).
+    pub edges: Option<CaretEdges>,
+}
+
+/// Where a text field's caret is (#211): at the start or end of its text,
+/// on its first or last visual line (wrapping included). All `false` while
+/// text is selected: the key then acts on the selection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CaretEdges {
+    /// Before the first character.
+    pub start: bool,
+    /// After the last character.
+    pub end: bool,
+    /// On the first visual line (a single-line field: always).
+    pub first_line: bool,
+    /// On the last visual line (a single-line field: always).
+    pub last_line: bool,
+}
+
+/// An edge of a text field's caret ([`Div::consume_key_at`](crate::Div::consume_key_at), #211).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CaretEdge {
+    /// Before the first character: ← or Backspace leave the field.
+    Start,
+    /// After the last character: → or Delete leave the field.
+    End,
+    /// On the first visual line: ↑ leaves the field.
+    FirstLine,
+    /// On the last visual line: ↓ leaves the field.
+    LastLine,
+}
+
+impl CaretEdge {
+    /// The name backends receive (`ArrowUp@first-line`).
+    pub fn name(self) -> &'static str {
+        match self {
+            CaretEdge::Start => "start",
+            CaretEdge::End => "end",
+            CaretEdge::FirstLine => "first-line",
+            CaretEdge::LastLine => "last-line",
+        }
+    }
+
+    /// Parses [`name`](Self::name).
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "start" => CaretEdge::Start,
+            "end" => CaretEdge::End,
+            "first-line" => CaretEdge::FirstLine,
+            "last-line" => CaretEdge::LastLine,
+            _ => return None,
+        })
+    }
+}
+
+impl CaretEdges {
+    /// The caret of a field with nothing selected: at `caret` of `len`
+    /// characters, on `line` of `lines` visual lines (from 0).
+    pub fn caret(caret: usize, len: usize, line: usize, lines: usize) -> Self {
+        CaretEdges {
+            start: caret == 0,
+            end: caret >= len,
+            first_line: line == 0,
+            last_line: line + 1 >= lines,
+        }
+    }
+
+    /// Whether the caret is at `edge`.
+    pub fn at(self, edge: CaretEdge) -> bool {
+        match edge {
+            CaretEdge::Start => self.start,
+            CaretEdge::End => self.end,
+            CaretEdge::FirstLine => self.first_line,
+            CaretEdge::LastLine => self.last_line,
+        }
+    }
+
+    /// As backends send it: the letters `s`, `e`, `f`, `l` of the edges
+    /// the caret is at (`"sfl"`: the start of a single-line field).
+    pub fn encode(self) -> String {
+        [
+            (self.start, 's'),
+            (self.end, 'e'),
+            (self.first_line, 'f'),
+            (self.last_line, 'l'),
+        ]
+        .into_iter()
+        .filter_map(|(on, c)| on.then_some(c))
+        .collect()
+    }
+
+    /// Parses [`encode`](Self::encode).
+    pub fn decode(s: &str) -> Self {
+        CaretEdges {
+            start: s.contains('s'),
+            end: s.contains('e'),
+            first_line: s.contains('f'),
+            last_line: s.contains('l'),
+        }
+    }
+}
+
+/// Whether a `consume_keys` entry (`"ArrowUp"`, or `"ArrowUp@first-line"`
+/// from [`Div::consume_key_at`](crate::Div::consume_key_at)) takes `key`
+/// pressed with the caret at `edges` (#211). With no text field focused
+/// (`None`), an entry with an edge takes it too: there is no caret to move.
+pub fn consume_entry_matches(entry: &str, key: &str, edges: Option<CaretEdges>) -> bool {
+    match entry.split_once('@') {
+        None => entry == key,
+        Some((k, edge)) => {
+            k == key && CaretEdge::from_name(edge).is_some_and(|e| edges.is_none_or(|c| c.at(e)))
+        }
+    }
 }
 
 impl KeyEvent {
@@ -378,6 +495,7 @@ impl KeyEvent {
             modifiers: Modifiers::default(),
             repeat: false,
             selection: None,
+            edges: None,
         }
     }
 
@@ -385,6 +503,24 @@ impl KeyEvent {
     pub fn with_selection(mut self, selection: impl Into<crate::SelectionEvent>) -> Self {
         self.selection = Some(selection.into());
         self
+    }
+
+    /// The same press, made with a text field's caret at `edges`.
+    pub fn with_edges(mut self, edges: CaretEdges) -> Self {
+        self.edges = Some(edges);
+        self
+    }
+
+    /// Whether a text field's caret was at `edge` when the key was pressed
+    /// (#211), `true` when no field has the focus: the same rule as
+    /// [`consume_key_at`](crate::Div::consume_key_at), so a handler moves the
+    /// focus exactly when the key was taken from the field.
+    ///
+    /// ```ignore
+    /// if e.is("ArrowUp") && e.at(CaretEdge::FirstLine) { this.focus_previous(cx) }
+    /// ```
+    pub fn at(&self, edge: CaretEdge) -> bool {
+        self.edges.is_none_or(|c| c.at(edge))
     }
 
     /// Whether this is `key` (`e.is("Escape")`). Single letters compare
