@@ -214,12 +214,22 @@ impl View {
 // window for sheets and dialogs
 // ---------------------------------------------------------------------------
 
+/// Marks a popover a press around closes while it leaves the focus to its
+/// anchor (#182).
+const LIGHT_BESIDE_FOCUS: &str = "prism-light-beside-focus";
+
 /// Autohide (close on a click outside, which also grabs the keyboard focus)
 /// unless the popover is fixed, manual, or leaves the focus to its anchor;
-/// one that leaves the focus never takes it.
+/// one that leaves the focus never takes it, and a press around it closes
+/// it through `OverlayView::watch_outside` instead (#182).
 fn set_popover_mode(p: &gtk::Popover, config: prism_core::controls::OverlayConfig) {
     p.set_autohide(!(config.fixed || config.manual || config.keep_focus));
     p.set_can_focus(!config.keep_focus);
+    if config.light_dismiss_beside_focus() {
+        p.add_css_class(LIGHT_BESIDE_FOCUS);
+    } else {
+        p.remove_css_class(LIGHT_BESIDE_FOCUS);
+    }
     p.set_has_arrow(!config.bare);
     set_bare(p, config.bare);
 }
@@ -286,6 +296,9 @@ pub struct OverlayView {
     open: Cell<bool>,
     /// Content size from the last layout.
     size: Cell<(i32, i32)>,
+    /// The press watcher on the anchor's window of a popover that leaves
+    /// the focus to its anchor (#182).
+    outside: RefCell<Option<(gtk::Window, gtk::GestureClick)>>,
 }
 
 impl OverlayView {
@@ -410,6 +423,7 @@ impl OverlayView {
     }
 
     fn teardown(&self) {
+        self.unwatch_outside();
         if let Some(p) = self.popover.borrow_mut().take() {
             p.set_child(None::<&gtk::Widget>);
             if p.parent().is_some() {
@@ -452,6 +466,7 @@ impl OverlayView {
             if let Some(parent) = p.parent() {
                 place_popover(p, &parent, self.config.get(), self.size.get());
                 p.popup();
+                self.watch_outside(p, &parent);
             }
         }
         if let Some(w) = self.window.borrow().as_ref() {
@@ -460,6 +475,44 @@ impl OverlayView {
                 w.set_default_size(cw, ch);
             }
             w.present();
+        }
+    }
+
+    /// A popover that leaves the focus to its anchor has no autohide (it
+    /// would take the focus and swallow the press): a press anywhere in the
+    /// anchor's window closes it and goes on to what it landed on (#182).
+    /// Presses in the popover are its own surface's, not the window's.
+    fn watch_outside(&self, p: &gtk::Popover, parent: &gtk::Widget) {
+        let Some(window) = parent.root().and_downcast::<gtk::Window>() else {
+            return;
+        };
+        if self
+            .outside
+            .borrow()
+            .as_ref()
+            .is_some_and(|(w, _)| *w == window)
+        {
+            return;
+        }
+        self.unwatch_outside();
+        let click = gtk::GestureClick::new();
+        click.set_button(0);
+        click.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let p = p.clone();
+        click.connect_pressed(move |_, _, _, _| {
+            // Not claimed: the press goes on to what it landed on.
+            if p.has_css_class(LIGHT_BESIDE_FOCUS) && p.is_visible() {
+                // `connect_closed` tells the app, with `Outside`.
+                p.popdown();
+            }
+        });
+        window.add_controller(click.clone());
+        *self.outside.borrow_mut() = Some((window, click));
+    }
+
+    fn unwatch_outside(&self) {
+        if let Some((w, c)) = self.outside.borrow_mut().take() {
+            w.remove_controller(&c);
         }
     }
 
@@ -1729,6 +1782,7 @@ impl Widgets for Gtk {
                         config: Cell::new(Default::default()),
                         open: Cell::new(false),
                         size: Cell::new((0, 0)),
+                        outside: RefCell::new(None),
                     }),
                 )
             }

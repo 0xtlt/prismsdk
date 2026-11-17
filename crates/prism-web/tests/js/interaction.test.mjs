@@ -595,7 +595,8 @@ test("a popover can leave the focus to its anchor's field (#70)", () => {
   // Escape inside a manual popover closes it (the app hears back).
   box.dispatchEvent({ type: "keydown", key: "Escape" });
   assert.deepEqual(lastSent(page), { t: "back", id: 4, depth: 0, reason: "escape" });
-  // Leaving the focus implies no light dismiss.
+  // Leaving the focus: the browser's light dismiss stays off (#182 closes
+  // it on presses around instead).
   page.ws.deliver({ t: "patch", p: [{ op: "config", id: 4, config: "popover keepfocus" }] });
   assert.equal(box.getAttribute("popover"), "manual");
   // Without `keepfocus` presses inside behave as usual.
@@ -604,6 +605,40 @@ test("a popover can leave the focus to its anchor's field (#70)", () => {
   const plain = { type: "mousedown" };
   item.dispatchEvent(plain);
   assert.equal(plain.defaultPrevented, false);
+});
+
+test("a popover that leaves the focus closes on a press around it, which goes on (#182)", () => {
+  const page = live([
+    { op: "create", id: 2, kind: "view" },
+    { op: "create", id: 3, kind: "text_input" },
+    { op: "create", id: 4, kind: "overlay" }, { op: "config", id: 4, config: "popover keepfocus" },
+    { op: "create", id: 5, kind: "view" }, { op: "text", id: 5, text: "Heading" },
+    { op: "children", id: 4, children: [5] },
+    { op: "children", id: 2, children: [3, 4] },
+    ...root([2]),
+  ]);
+  page.ws.deliver({ t: "patch", p: [{ op: "value", id: 4, value: 1 }] });
+  const box = page.node(4).firstChild;
+  assert.equal(box.matches(":popover-open"), true);
+  const press = (target) => {
+    const e = { type: "pointerdown" };
+    target.dispatchEvent(e);
+    return e;
+  };
+  const backs = () => sent(page).filter((m) => m.t === "back").length;
+  // Inside: it stays.
+  press(page.node(5));
+  assert.equal(backs(), 0);
+  // On the anchor's field: it closes, and the press is not held.
+  const onField = press(page.node(3));
+  assert.deepEqual(lastSent(page), { t: "back", id: 4, depth: 0, reason: "outside" });
+  assert.equal(onField.defaultPrevented, false, "the caret still moves");
+  assert.equal(box.matches(":popover-open"), false);
+  // `light_dismiss(false)` keeps it open.
+  page.ws.deliver({ t: "patch", p: [{ op: "config", id: 4, config: "popover manual keepfocus" }, { op: "value", id: 4, value: 1 }] });
+  press(page.node(3));
+  assert.equal(backs(), 1);
+  assert.equal(box.matches(":popover-open"), true);
 });
 
 test("checkboxes and radio groups are native inputs", () => {

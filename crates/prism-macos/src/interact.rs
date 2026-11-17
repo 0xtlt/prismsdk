@@ -564,7 +564,7 @@ impl MacOverlay {
     /// from it, go on as usual.
     fn hold_outside_presses(&self, popover: &Retained<NSPopover>, page: Retained<NSWindow>) {
         let popover = popover.clone();
-        self.hold_presses_behind(page, move || {
+        self.hold_presses_behind(page, true, move || {
             if !popover.isShown() {
                 return false;
             }
@@ -575,15 +575,22 @@ impl MacOverlay {
     }
 
     /// While open, presses on the window behind (`page`) go to `outside`,
-    /// and no further when it says so (it handled them).
-    fn hold_presses_behind(&self, page: Retained<NSWindow>, outside: impl Fn() -> bool + 'static) {
+    /// and, when it says it handled them, no further if `hold` (a modal
+    /// dialog) or on to what they landed on otherwise (an inline popover,
+    /// #182).
+    fn hold_presses_behind(
+        &self,
+        page: Retained<NSWindow>,
+        hold: bool,
+        outside: impl Fn() -> bool + 'static,
+    ) {
         self.release_outside_presses();
         let block =
             block2::RcBlock::new(move |event: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
                 let e = unsafe { event.as_ref() };
                 let mtm = MainThreadMarker::new().expect("main thread");
                 let behind = e.window(mtm).is_some_and(|w| *w == *page);
-                if !behind || !outside() {
+                if !behind || !outside() || !hold {
                     return event.as_ptr();
                 }
                 std::ptr::null_mut()
@@ -843,6 +850,22 @@ impl MacOverlay {
         unsafe { window.addChildWindow_ordered(&panel, NSWindowOrderingMode::Above) };
         if !dialog {
             panel.orderFront(None);
+            // A press anywhere else in the window closes it and still
+            // reaches what it landed on (the anchor's field, #182).
+            if self.config.get().light_dismiss_beside_focus() {
+                let shown = panel.clone();
+                let id = self.id;
+                self.hold_presses_behind(window, false, move || {
+                    if !shown.isVisible() {
+                        return false;
+                    }
+                    crate::imp::dispatch(prism_core::UiEvent::Dismiss(
+                        id,
+                        prism_core::DismissReason::Outside,
+                    ));
+                    true
+                });
+            }
             return;
         }
         // Modal like any dialog: the keys go to it (Escape reaches the
@@ -852,7 +875,7 @@ impl MacOverlay {
         panel.makeFirstResponder(Some(&self.host));
         let (host, shown) = (self.host.clone(), panel.clone());
         let id = self.id;
-        self.hold_presses_behind(window, move || {
+        self.hold_presses_behind(window, true, move || {
             if !shown.isVisible() {
                 return false;
             }
