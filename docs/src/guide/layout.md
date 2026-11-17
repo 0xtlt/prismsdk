@@ -97,6 +97,18 @@ div().h_full().child(content).child(footer.mt_auto())         // pinned to the b
 
 Leading and trailing follow the text direction, like `ml` and `mr`. A margin in points on the same side (`ml(8.)`) replaces `auto`. They work in refinements (`.md(|s| s.mx_auto())`). The web writes `margin-*: auto`; native backends use taffy's auto margins.
 
+## Paint order: `z_index`
+
+`.z_index(n)` draws a node above its siblings, like CSS `z-index` (#232): a handle sticking out of a grid cell over the next cell, a badge over a neighbour. Higher is above, 0 (the default) keeps the tree order, equal values keep theirs. Clicks go to what is drawn on top. It changes the drawing only, never the layout, and works in refinements (`.hover(|s| s.z_index(1))`).
+
+```rust
+div().flex_row()
+    .child(cell().child(handle().absolute().right(px(-12.)).z_index(1)))   // over the next cell
+    .child(cell())
+```
+
+The web writes `z-index` (flex and grid items take it as they are). Native backends order each parent's views by the value each child shows: its own, or the highest one inside it up to a node that sets its own, so the cell holding the handle is drawn after the next cell. Stacks and tab bars keep their order.
+
 ## Padding on every node
 
 `.p()`, `.px()`, `.py()`, `.pt()`, `.pr()`, `.pb()` and `.pl()` work on

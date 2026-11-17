@@ -139,6 +139,12 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
             }
         }
     }
+    // Paint order among siblings (#232): flex and grid items take a
+    // `z-index` without being positioned. After a sticky or fixed node's
+    // own, so it wins.
+    if s.z_index != 0 {
+        let _ = write!(w, "z-index:{};", s.z_index);
+    }
     let m = s.margin;
     // `auto` sides take the free space (#228).
     let side = |v: f32, auto: bool| {

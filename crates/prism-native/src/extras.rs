@@ -56,6 +56,10 @@ pub(crate) struct Extras {
     pub in_width_pass: bool,
     /// Some node aligns on baselines: leaves report theirs.
     pub baselines: bool,
+    /// Nodes with a `z_index` (#232), and the paint order last given to
+    /// each parent that has one.
+    pub z_nodes: HashSet<NodeId>,
+    pub painted: HashMap<NodeId, Vec<NodeId>>,
 }
 
 /// Containers that fixed nodes are positioned against.
@@ -362,6 +366,8 @@ impl<W: crate::Widgets> crate::NativeRenderer<W> {
     }
 
     pub(crate) fn forget_extras(&mut self, id: NodeId) {
+        self.extras.z_nodes.remove(&id);
+        self.extras.painted.remove(&id);
         self.extras.children.remove(&id);
         self.extras.parents.remove(&id);
         self.extras.own_width.remove(&id);
@@ -452,14 +458,90 @@ impl<W: crate::Widgets> crate::NativeRenderer<W> {
             return;
         }
         let ids = self.effective_children(id);
-        let views: Vec<W::View> = ids
+        let painted = self.paint_order(&ids);
+        let views: Vec<W::View> = painted
             .iter()
             .filter_map(|c| self.nodes.get(c).map(|e| e.view.clone()))
             .collect();
+        self.extras.painted.insert(id, painted);
         let layouts = self.sorted_layouts(&ids);
         let (view, layout) = (self.nodes[&id].view.clone(), self.nodes[&id].layout);
         self.widgets.set_children(&view, &views);
         let _ = self.taffy.set_children(layout, &layouts);
+    }
+
+    /// `children` in paint order (#232): by the `z_index` each one shows,
+    /// its own or the highest one inside it (up to a node that sets its
+    /// own), the tree order among equals. The tree order when no node has
+    /// a `z_index`.
+    pub(crate) fn paint_order(&self, children: &[NodeId]) -> Vec<NodeId> {
+        if self.extras.z_nodes.is_empty() {
+            return children.to_vec();
+        }
+        // What each node shows: its own value, or the highest one it holds.
+        let mut shown: HashMap<NodeId, i32> = HashMap::new();
+        for &n in &self.extras.z_nodes {
+            let z = self.nodes.get(&n).map_or(0, |e| e.style.z_index);
+            let own = shown.entry(n).or_insert(z);
+            *own = z;
+            let mut cur = self.extras.parents.get(&n).copied();
+            while let Some(a) = cur {
+                if self.extras.z_nodes.contains(&a) {
+                    break;
+                }
+                let v = shown.entry(a).or_insert(0);
+                *v = (*v).max(z);
+                cur = self.extras.parents.get(&a).copied();
+            }
+        }
+        let mut order = children.to_vec();
+        order.sort_by_key(|c| shown.get(c).copied().unwrap_or(0));
+        order
+    }
+
+    /// Paints the children of `id` and of its ancestors in their order
+    /// again (#232): a `z_index` changed under them.
+    pub(crate) fn restack(&mut self, id: NodeId) {
+        let mut cur = Some(id);
+        while let Some(p) = cur {
+            cur = self.extras.parents.get(&p).copied();
+            let Some(parent) = self.nodes.get(&p) else {
+                continue;
+            };
+            if crate::is_managed(parent.kind) {
+                continue;
+            }
+            let ids = self.effective_children(p);
+            let painted = self.paint_order(&ids);
+            let same = match self.extras.painted.get(&p) {
+                Some(old) => *old == painted,
+                None => painted == ids,
+            };
+            if same {
+                continue;
+            }
+            let views: Vec<W::View> = painted
+                .iter()
+                .filter_map(|c| self.nodes.get(c).map(|e| e.view.clone()))
+                .collect();
+            self.extras.painted.insert(p, painted);
+            let view = self.nodes[&p].view.clone();
+            self.widgets.set_children(&view, &views);
+        }
+    }
+
+    /// Node `id` shows `z` now (#232): its siblings are painted again if
+    /// that changed their order.
+    pub(crate) fn z_changed(&mut self, id: NodeId, z: i32) {
+        let had = self.extras.z_nodes.contains(&id);
+        if z != 0 {
+            self.extras.z_nodes.insert(id);
+        } else {
+            self.extras.z_nodes.remove(&id);
+        }
+        if had || z != 0 {
+            self.restack(id);
+        }
     }
 
     /// Sorts the layout children of `id` again (a child's `order` changed);

@@ -1533,7 +1533,12 @@ impl<W: Widgets> NativeRenderer<W> {
         let repaint = e.kind == NodeKind::Shape
             && e.style.text_color != style.text_color
             && e.drawing.as_ref().is_some_and(|d| d.uses_current_color());
+        let z = (e.style.z_index != style.z_index).then_some(style.z_index);
         e.style = style;
+        // A refinement changed its paint order (#232).
+        if let Some(z) = z {
+            self.z_changed(id, z);
+        }
         let e = &self.nodes[&id];
         let s = self.effective_style(&e.style, e.kind);
         let view = e.view.clone();
@@ -1661,6 +1666,7 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                         }
                     }
                     let mut repaint = false;
+                    let z_before = self.nodes.get(id).map(|e| e.style.z_index);
                     if let Some(e) = self.nodes.get_mut(id) {
                         // A shape painted in `Color::current()` follows its
                         // text color.
@@ -1671,6 +1677,12 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                     }
                     if repaint {
                         self.redraw(*id);
+                    }
+                    // Paint order (#232).
+                    if z_before.is_some_and(|z| z != style.z_index)
+                        || (style.z_index != 0 && !self.extras.z_nodes.contains(id))
+                    {
+                        self.z_changed(*id, style.z_index);
                     }
                     self.sync_layout_style(*id);
                     self.style_changed(*id);
@@ -1746,10 +1758,19 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                     if !self.nodes.contains_key(id) {
                         continue;
                     }
-                    let views: Vec<W::View> = children
+                    // Drawn in their `z_index` order (#232); a stack's screens
+                    // and a tab bar's tabs keep theirs.
+                    let managed = self.nodes.get(id).is_some_and(|e| is_managed(e.kind));
+                    let painted = if managed {
+                        children.clone()
+                    } else {
+                        self.paint_order(children)
+                    };
+                    let views: Vec<W::View> = painted
                         .iter()
                         .filter_map(|c| self.nodes.get(c).map(|e| e.view.clone()))
                         .collect();
+                    self.extras.painted.insert(*id, painted);
                     let layouts = self.sorted_layouts(children);
                     let parent = &self.nodes[id];
                     self.widgets.set_children(&parent.view, &views);
@@ -1760,6 +1781,10 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                         let _ = self.taffy.set_children(parent.layout, &layouts);
                     }
                     self.children_changed(*id, children);
+                    // A `z_index` inside lifts this node among its siblings.
+                    if !self.extras.z_nodes.is_empty() {
+                        self.restack(*id);
+                    }
                 }
                 Patch::SetAccessibility { id, a11y } => {
                     if let Some(e) = self.nodes.get(id) {

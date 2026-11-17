@@ -816,6 +816,9 @@ pub struct Style {
     /// A named group (#212): descendants' `group_*_named` refinements with
     /// this name follow this node's states (and only theirs).
     pub group_name: Option<std::rc::Rc<str>>,
+    /// Paint order among siblings (#232): higher is drawn above (and hit
+    /// first); 0 keeps the tree order. See [`Styled::z_index`].
+    pub z_index: i32,
 
     // Motion: offsets relative to the element's own size.
     /// Extra offset in percent of the element's own width and height (CSS
@@ -1390,6 +1393,7 @@ impl Default for Style {
             cursor: None,
             group: false,
             group_name: None,
+            z_index: 0,
             translate_percent: (0., 0.),
             hit_test: true,
             inert: false,
@@ -2346,6 +2350,17 @@ pub trait Styled: Sized {
                 std::rc::Rc::new(f),
             )
         })
+    }
+    /// Draws the node above its siblings and what is in them (#232), like
+    /// CSS `z-index`: a handle sticking out of a grid cell over the next
+    /// cell, a badge over a neighbour. Higher is above; 0 (the default)
+    /// keeps the tree order; siblings with the same value keep theirs.
+    /// Natively a child's value also lifts its ancestors among their own
+    /// siblings (up to one that sets its own), so the handle of a cell is
+    /// above the next cell. Clicks go to what is drawn on top (with #213).
+    /// Works in refinements: `.hover(|s| s.z_index(1))`.
+    fn z_index(self, z: i32) -> Self {
+        self.with_style(|s| s.z_index = z)
     }
     /// Marks the node as a group named `name` (#212): descendants'
     /// [`group_hover_named`](Self::group_hover_named) (and
