@@ -209,6 +209,9 @@ public final class PrismHost {
         // spread at the last report and where it was when they settled.
         boolean scaling;
         float pinchSpan, pinchFrom;
+        // The button the current press started with (#136).
+        String dragButton = "primary";
+        int dragMods;
         boolean keysLocal, keysGlobal, noHit, inert, a11yHidden, dragging;
         // Text field selections (#86): reported (`selev`), last sent, a report posted.
         boolean selectEvents, selPosted;

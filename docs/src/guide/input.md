@@ -104,8 +104,11 @@ it). Fingers and pens are the primary button.
 |---|---|---|
 | Web | `pointerdown` with `button === 1` (`mousedown` and `auxclick` prevented) | `button === 2`, no `contextmenu` after a drag |
 | macOS | `otherMouseDown` / `Dragged` / `Up` (`buttonNumber == 2`) | `rightMouseDown` / `Dragged` / `Up`; the menu opens on a press that did not move |
+| Linux (GTK) | `GestureDrag` on any button (`BUTTON_MIDDLE`), claimed past the drag threshold | `BUTTON_SECONDARY`; the menu opens on a release that did not move |
+| iPadOS (pointer) | the pan's `buttonMask` (button 3) | `buttonMask` `.secondary` |
+| Android (mouse) | `BUTTON_TERTIARY` | `BUTTON_SECONDARY`; a drag cancels the long press's menu |
 
-Other backends drag with the primary button only for now.
+tvOS and watchOS have no pointer buttons. Fingers and pens drag with the primary button everywhere.
 
 ## Wheel and pinch
 

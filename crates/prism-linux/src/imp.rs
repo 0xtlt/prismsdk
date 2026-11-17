@@ -532,12 +532,7 @@ fn attach_keys(window: &gtk::Window, keys: Rc<KeyState>) {
             return glib::Propagation::Proceed;
         };
         let repeat = !keys.down.borrow_mut().insert(key.into_glib());
-        let modifiers = prism_core::Modifiers {
-            shift: mods.contains(gdk::ModifierType::SHIFT_MASK),
-            control: mods.contains(gdk::ModifierType::CONTROL_MASK),
-            alt: mods.contains(gdk::ModifierType::ALT_MASK),
-            meta: mods.intersects(gdk::ModifierType::SUPER_MASK | gdk::ModifierType::META_MASK),
-        };
+        let modifiers = modifiers(mods);
         let focus = c
             .widget()
             .and_downcast::<gtk::Window>()
@@ -619,8 +614,36 @@ fn dispatch_latest(id: NodeId, channel: u8, event: UiEvent) {
     }
 }
 
-/// Where a drag's pointer went down, and whether it moved past the slop.
-type DragStart = ((f64, f64), bool);
+/// Where a drag's pointer went down, with which button and keys, and
+/// whether it moved past the slop.
+#[derive(Clone, Copy)]
+struct DragStart {
+    at: (f64, f64),
+    button: prism_core::PointerButton,
+    mods: prism_core::Modifiers,
+    started: bool,
+}
+
+/// GTK's button number as Prism's (touches are the primary button).
+fn drag_button(button: u32) -> prism_core::PointerButton {
+    use prism_core::PointerButton as B;
+    match button {
+        0 | gdk::BUTTON_PRIMARY => B::Primary,
+        gdk::BUTTON_MIDDLE => B::Middle,
+        gdk::BUTTON_SECONDARY => B::Secondary,
+        n => B::Other(n.min(255) as u8),
+    }
+}
+
+/// GDK's modifier state as Prism's.
+fn modifiers(mods: gdk::ModifierType) -> prism_core::Modifiers {
+    prism_core::Modifiers {
+        shift: mods.contains(gdk::ModifierType::SHIFT_MASK),
+        control: mods.contains(gdk::ModifierType::CONTROL_MASK),
+        alt: mods.contains(gdk::ModifierType::ALT_MASK),
+        meta: mods.intersects(gdk::ModifierType::SUPER_MASK | gdk::ModifierType::META_MASK),
+    }
+}
 
 /// A wheel or touchpad scroll of `dx`, `dy` (#133) as Prism's `WheelEvent`:
 /// points, positive `y` toward the end (GTK's sign, after the user's
@@ -636,18 +659,12 @@ fn wheel_event(
     // browsers. A touchpad counts surface pixels.
     let precise = c.unit() == gdk::ScrollUnit::Surface;
     let k = if precise { 1. } else { 48. };
-    let mods = c.current_event_state();
     UiEvent::Wheel(
         id,
         prism_core::WheelEvent {
             delta: point(dx * k, dy * k),
             position: event_point(c),
-            modifiers: prism_core::Modifiers {
-                shift: mods.contains(gdk::ModifierType::SHIFT_MASK),
-                control: mods.contains(gdk::ModifierType::CONTROL_MASK),
-                alt: mods.contains(gdk::ModifierType::ALT_MASK),
-                meta: mods.intersects(gdk::ModifierType::SUPER_MASK | gdk::ModifierType::META_MASK),
-            },
+            modifiers: modifiers(c.current_event_state()),
             phase,
             precise,
         },
@@ -1149,9 +1166,24 @@ impl Gtk {
         };
         let right = gtk::GestureClick::new();
         right.set_button(gdk::BUTTON_SECONDARY);
-        let open_right = open.clone();
+        // An element dragged with the secondary button (#136) opens its menu
+        // on a release that did not move (a drag claims the press first).
+        let masks = self.pointer.clone();
+        let drags_secondary = move || {
+            masks
+                .borrow()
+                .get(&id)
+                .is_some_and(|m| m & prism_core::events::pointer_mask::DRAG_SECONDARY != 0)
+        };
+        let (open_right, drags) = (open.clone(), drags_secondary.clone());
         right.connect_pressed(move |g, _, x, y| {
-            if open_right(x, y) {
+            if !drags() && open_right(x, y) {
+                g.set_state(gtk::EventSequenceState::Claimed);
+            }
+        });
+        let open_right = open.clone();
+        right.connect_released(move |g, _, x, y| {
+            if drags_secondary() && open_right(x, y) {
                 g.set_state(gtk::EventSequenceState::Claimed);
             }
         });
@@ -2646,7 +2678,7 @@ impl Widgets for Gtk {
     }
 
     fn set_pointer_events(&mut self, view: &View, mask: u8) {
-        use prism_core::events::pointer_mask::{DRAG, HOVER, MAGNIFY, MOVE, WHEEL};
+        use prism_core::events::pointer_mask::{DRAG_ANY, HOVER, MAGNIFY, MOVE, WHEEL};
         let id = view.id();
         self.pointer.borrow_mut().insert(id, mask);
         let w = view.widget();
@@ -2682,57 +2714,71 @@ impl Widgets for Gtk {
             });
             w.add_controller(motion);
         }
-        if mask & DRAG != 0 && self.pointer_attached.insert((id, DRAG)) {
+        if mask & DRAG_ANY != 0 && self.pointer_attached.insert((id, DRAG_ANY)) {
             let drag = gtk::GestureDrag::new();
+            // Any button; the element's `drag_buttons` pick (#136).
+            drag.set_button(0);
             let masks = self.pointer.clone();
-            // Where the pointer went down, and whether the drag started.
+            // Where the pointer went down, with which button, and whether
+            // the drag started.
             let state: Rc<Cell<Option<DragStart>>> = Rc::default();
             let threshold = gtk::Settings::default()
                 .map_or(8, |s| s.gtk_dnd_drag_threshold())
                 .max(1) as f64;
-            let event = move |phase, start: (f64, f64), dx: f64, dy: f64| {
+            let event = move |phase, d: DragStart, dx: f64, dy: f64| {
                 UiEvent::Drag(
                     id,
                     prism_core::DragEvent {
                         phase,
-                        start: point(start.0, start.1),
+                        start: point(d.at.0, d.at.1),
                         translation: point(dx, dy),
-                        button: prism_core::PointerButton::Primary,
-                        modifiers: Default::default(),
+                        button: d.button,
+                        modifiers: d.mods,
                     },
                 )
             };
             let st = state.clone();
-            drag.connect_drag_begin(move |_, x, y| {
-                let on = masks.borrow().get(&id).is_some_and(|m| m & DRAG != 0);
-                st.set(on.then_some(((x, y), false)));
+            drag.connect_drag_begin(move |g, x, y| {
+                let button = drag_button(g.current_button());
+                let on = masks
+                    .borrow()
+                    .get(&id)
+                    .is_some_and(|m| m & button.drag_bit() != 0);
+                st.set(on.then_some(DragStart {
+                    at: (x, y),
+                    button,
+                    mods: modifiers(g.current_event_state()),
+                    started: false,
+                }));
             });
             let st = state.clone();
             drag.connect_drag_update(move |g, dx, dy| {
-                let Some((start, started)) = st.get() else {
+                let Some(d) = st.get() else {
                     return;
                 };
-                if !started {
+                if !d.started {
                     if dx.hypot(dy) < threshold {
                         return;
                     }
-                    // A drag, not a click: the click gestures stop here.
+                    // A drag, not a click: the click gestures (and the
+                    // middle button's paste, the secondary's menu) stop here.
                     g.set_state(gtk::EventSequenceState::Claimed);
-                    st.set(Some((start, true)));
-                    dispatch(event(prism_core::DragPhase::Start, start, dx, dy));
+                    let d = DragStart { started: true, ..d };
+                    st.set(Some(d));
+                    dispatch(event(prism_core::DragPhase::Start, d, dx, dy));
                     return;
                 }
-                dispatch_latest(id, 1, event(prism_core::DragPhase::Move, start, dx, dy));
+                dispatch_latest(id, 1, event(prism_core::DragPhase::Move, d, dx, dy));
             });
             let st = state.clone();
             drag.connect_drag_end(move |_, dx, dy| {
-                if let Some((start, true)) = st.take() {
-                    dispatch(event(prism_core::DragPhase::End, start, dx, dy));
+                if let Some(d) = st.take().filter(|d| d.started) {
+                    dispatch(event(prism_core::DragPhase::End, d, dx, dy));
                 }
             });
             drag.connect_cancel(move |_, _| {
-                if let Some((start, true)) = state.take() {
-                    dispatch(event(prism_core::DragPhase::Cancel, start, 0., 0.));
+                if let Some(d) = state.take().filter(|d| d.started) {
+                    dispatch(event(prism_core::DragPhase::Cancel, d, 0., 0.));
                 }
             });
             w.add_controller(drag);

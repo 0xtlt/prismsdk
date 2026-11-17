@@ -620,6 +620,11 @@ define_class!(
             crate::interaction::simultaneous(g, other)
         }
 
+        #[unsafe(method(gestureRecognizerShouldBegin:))]
+        fn should_begin(&self, g: &objc2_ui_kit::UIGestureRecognizer) -> bool {
+            crate::interaction::should_begin(g)
+        }
+
         #[unsafe(method(gestureRecognizer:shouldReceiveTouch:))]
         fn should_receive_touch(
             &self,
