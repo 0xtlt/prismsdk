@@ -462,6 +462,8 @@ mod text_area {
         pub placeholder: Retained<UILabel>,
         /// The style's line height (#179): kept on the text as it changes.
         pub line_height: std::cell::Cell<Option<f32>>,
+        /// The minimum lines (#235).
+        pub rows: std::cell::Cell<u32>,
     }
 
     impl TextArea {
@@ -489,6 +491,7 @@ mod text_area {
                 view,
                 placeholder,
                 line_height: std::cell::Cell::new(None),
+                rows: std::cell::Cell::new(3),
             }
         }
 
@@ -568,7 +571,7 @@ mod text_area {
                 .map(f64::from)
                 .or_else(|| v.font().map(|f| unsafe { f.lineHeight() }))
                 .unwrap_or(20.);
-            let min = 3. * line + inset.top + inset.bottom;
+            let min = self.rows.get().max(1) as f64 * line + inset.top + inset.bottom;
             CGSize::new(width, fit.height.max(min))
         }
     }

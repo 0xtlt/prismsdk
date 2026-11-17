@@ -1354,6 +1354,13 @@ pub fn text_area() -> TextArea {
 }
 
 impl TextArea {
+    /// Its minimum height, in lines (#235): 3 by default. `rows(1)` starts
+    /// like a one-line field and grows with its text (up to its `max_h`):
+    /// a title, a table cell, a label that may be long.
+    pub fn rows(self, rows: u32) -> Self {
+        self.input_config(|c| c.rows = Some(rows.max(1)))
+    }
+
     /// Called when this node takes or loses the keyboard focus (#224):
     /// commit a field's value when the user tabs away or clicks elsewhere,
     /// not on every keystroke. `e.focused` says which. For the node itself

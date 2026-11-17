@@ -16,6 +16,7 @@ text_input().secure(true).return_key(ReturnKey::Go)
     .on_submit(cx.listener(|this, _, cx| this.sign_in(cx)))
 text_input().keyboard(Keyboard::Email).capitalize(Capitalize::None).autocorrect(false)
 text_area().value(&self.notes).max_h(px(160.))                // grows, then scrolls
+text_area().value(&self.title).rows(1)                         // starts on one line (#235)
 spinner().large()
 
 // Themed (label, value, accent), with `.native()` for the bare control

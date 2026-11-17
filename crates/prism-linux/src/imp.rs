@@ -2805,7 +2805,12 @@ impl Widgets for Gtk {
             View::Picker(_, p) => p.set_options(config),
             View::DatePicker(_, p) => p.set_config(config),
             View::Input(_, e) => controls::configure_entry(e, config),
-            View::TextArea(_, t) => controls::configure_text_view(&t.view, config),
+            View::TextArea(_, t) => {
+                controls::configure_text_view(&t.view, config);
+                // Its minimum lines (#235).
+                t.rows
+                    .set(prism_core::controls::InputConfig::decode(config).min_rows());
+            }
             // A rich text's runs.
             View::Text(id, l) => {
                 let state = self.labels.entry(*id).or_default();

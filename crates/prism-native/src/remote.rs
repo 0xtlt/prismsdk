@@ -652,9 +652,14 @@ impl RemoteWidgets {
         max_width: Option<f32>,
     ) -> (f32, f32) {
         let value = self.texts.get(id).cloned().unwrap_or_default();
+        // A text area's minimum lines (#235).
+        let rows = prism_core::controls::InputConfig::decode(
+            self.configs.get(id).map(String::as_str).unwrap_or(""),
+        )
+        .min_rows() as usize;
         let text = match kind {
             NodeKind::TextInput => "Ag".to_string(),
-            NodeKind::TextArea if value.lines().count() < 3 => "Ag\nAg\nAg".to_string(),
+            NodeKind::TextArea if value.lines().count() < rows => vec!["Ag"; rows].join("\n"),
             _ => value,
         };
         let spec = Value::Object(typography(style)).to_string();

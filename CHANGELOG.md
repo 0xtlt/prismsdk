@@ -11,6 +11,7 @@ The first version, not yet on crates.io.
 
 ### Added
 
+- `text_area().rows(n)` (#235): a text area's minimum height in lines, three by default. `rows(1)` starts like a one-line field and grows with its text (up to `max_h`): a title, a table cell. The web sets `rows` and the minimum height; native backends measure that many lines (`setMinLines` on Android). `InputConfig::rows` and `min_rows` are new.
 - `on_focus_change(|e: &FocusEvent, cx| …)` (#224) on text fields, rich inputs, text areas and views: the node took (`e.focused`) or lost the keyboard focus, for « commit on blur » in inspectors and inline renames. The web reports `focusin` / `focusout`; native backends report what their shared focus tracking sees (`NativeRenderer::take_focus_changes`). `UiEvent::FocusChange` is new.
 - Auto margins (#228): `m_auto()`, `mx_auto()`, `my_auto()`, `mt_auto()`, `mr_auto()`, `mb_auto()`, `ml_auto()` take the free space like CSS `margin: auto`: a centered column without an `items_center()` parent, the last item of a row pushed to the end without a spacer, a footer at the bottom. `Style::margin_auto`; CSS `auto` on the web, taffy's auto margins natively.
 - `button(label).link(path)` and `ui::button(label).link(path)` (#230): a button that navigates. Natively it stays the platform's (or the theme's) button; on the web it is an `<a href>` with a button's look, so Cmd/Ctrl-click, a middle click and « Open in new tab » work, before the script runs too. It is announced as a link.

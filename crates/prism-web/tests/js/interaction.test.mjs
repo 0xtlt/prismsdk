@@ -1009,3 +1009,15 @@ test("fields report when they take and lose the focus (#224)", () => {
   page.node(3).dispatchEvent({ type: "focusin" });
   assert.deepEqual(lastSent(page), { t: "focus", id: 3, on: true });
 });
+
+test("a text area starts at its minimum rows (#235)", () => {
+  const page = live([{ op: "create", id: 2, kind: "text_area" }, ...root([2])]);
+  const t = page.node(2);
+  assert.equal(t.rows, 3);
+  page.ws.deliver({ t: "patch", p: [{ op: "config", id: 2, config: "rows=1" }] });
+  assert.equal(t.rows, 1);
+  assert.equal(t.style.getPropertyValue("--prism-rows"), "1");
+  page.ws.deliver({ t: "patch", p: [{ op: "config", id: 2, config: "" }] });
+  assert.equal(t.rows, 3);
+  assert.equal(t.style.getPropertyValue("--prism-rows"), "");
+});

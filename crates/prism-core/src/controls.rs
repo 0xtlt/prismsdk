@@ -277,6 +277,8 @@ pub struct InputConfig {
     pub autocorrect: bool,
     /// The most characters the field accepts (`None`: no limit).
     pub max_length: Option<u32>,
+    /// A text area's minimum number of lines (#235); `None`: three.
+    pub rows: Option<u32>,
 }
 
 impl Default for InputConfig {
@@ -288,11 +290,17 @@ impl Default for InputConfig {
             capitalize: Capitalize::Sentences,
             autocorrect: true,
             max_length: None,
+            rows: None,
         }
     }
 }
 
 impl InputConfig {
+    /// A text area's minimum number of lines (#235): three unless set.
+    pub fn min_rows(&self) -> u32 {
+        self.rows.unwrap_or(3)
+    }
+
     /// Space-separated tokens; the default config is the empty string.
     pub fn encode(&self) -> String {
         let mut t: Vec<&str> = Vec::new();
@@ -328,6 +336,10 @@ impl InputConfig {
         if let Some(m) = &max {
             t.push(m);
         }
+        let rows = self.rows.map(|r| format!("rows={r}"));
+        if let Some(r) = &rows {
+            t.push(r);
+        }
         t.retain(|s| !s.is_empty());
         t.join(" ")
     }
@@ -339,6 +351,10 @@ impl InputConfig {
         for token in s.lines().next().unwrap_or("").split_whitespace() {
             if let Some(m) = token.strip_prefix("max=") {
                 c.max_length = m.parse().ok();
+                continue;
+            }
+            if let Some(r) = token.strip_prefix("rows=") {
+                c.rows = r.parse().ok().filter(|r| *r > 0);
                 continue;
             }
             match token {
@@ -791,9 +807,14 @@ mod tests {
             capitalize: Capitalize::None,
             autocorrect: false,
             max_length: Some(12),
+            rows: Some(1),
         };
         assert_eq!(InputConfig::decode(&i.encode()), i);
         assert_eq!(InputConfig::default().encode(), "");
+        // A text area's minimum lines (#235): three unless set.
+        assert_eq!(InputConfig::default().min_rows(), 3);
+        assert_eq!(InputConfig::decode("rows=1").min_rows(), 1);
+        assert_eq!(InputConfig::decode("rows=0").min_rows(), 3);
     }
 
     #[test]

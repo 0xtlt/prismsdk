@@ -2328,7 +2328,12 @@ impl Widgets for UiKit {
             View::Radio(r) => r.set_config(config),
             View::Overlay(o) => o.set_config(config),
             #[cfg(not(target_os = "tvos"))]
-            View::TextArea(t) => crate::forms::apply_input_config(&t.view, config),
+            View::TextArea(t) => {
+                crate::forms::apply_input_config(&t.view, config);
+                // Its minimum lines (#235).
+                t.rows
+                    .set(prism_core::controls::InputConfig::decode(config).min_rows());
+            }
             #[cfg(not(target_os = "tvos"))]
             View::Slider(s) => s.configure(SliderConfig::decode(config)),
             #[cfg(target_os = "tvos")]

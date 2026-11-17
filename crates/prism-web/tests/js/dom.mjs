@@ -61,6 +61,7 @@ function makeStyle() {
       if (prop === "cssText") return [...decls].map(([k, v]) => `${k}:${v};`).join("");
       if (prop === "setProperty") return (k, v) => decls.set(k, String(v));
       if (prop === "getPropertyValue") return (k) => decls.get(k) || "";
+      if (prop === "removeProperty") return (k) => { const v = decls.get(k) || ""; decls.delete(k); return v; };
       if (prop === "_decls") return decls;
       if (typeof prop !== "string") return undefined;
       return decls.get(kebab(prop)) || "";

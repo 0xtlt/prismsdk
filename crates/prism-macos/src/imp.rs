@@ -1609,6 +1609,8 @@ pub struct TextViewIvars {
     placeholder: RefCell<String>,
     /// A rich input (#115): runs drawn as attributes (`crate::rich`).
     pub(crate) rich: Cell<bool>,
+    /// A text area's minimum lines (#235); 0: three.
+    pub(crate) rows: Cell<u32>,
     /// Its encoded runs.
     pub(crate) runs: RefCell<String>,
     /// Its style (font, color), once set.
@@ -3200,7 +3202,12 @@ fn text_area_size(t: &MacTextArea, max_width: Option<f32>) -> NSSize {
                 .unwrap_or_else(|| NSFont::systemFontOfSize(NSFont::systemFontSize()));
             // A rich input is a paragraph: one line at least (#115). A
             // fixed line height sets the lines' (#179).
-            let lines = if t.text.ivars().rich.get() { 1. } else { 3. };
+            let lines = match (t.text.ivars().rich.get(), t.text.ivars().rows.get()) {
+                (true, _) => 1.,
+                (false, 0) => 3.,
+                // `rows(n)` (#235).
+                (false, n) => n as f64,
+            };
             let line = t
                 .text
                 .ivars()
@@ -4297,6 +4304,7 @@ impl Widgets for AppKit {
             }
             View::TextArea(t) => {
                 let c = InputConfig::decode(config);
+                t.text.ivars().rows.set(c.min_rows());
                 set_text_checking(&t.text, c.autocorrect);
                 t.text.setAutomaticTextCompletionEnabled(c.autocorrect);
             }
