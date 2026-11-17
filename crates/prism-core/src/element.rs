@@ -1118,6 +1118,17 @@ impl Button {
         self.0.on_click = Some(handler);
         self
     }
+
+    /// Makes the button a link to an app path (or a URL) (#230), like
+    /// [`Div::link`]: pressing it navigates, and on the web it is an `<a
+    /// href>` with the button's look, so a middle click or « Open in new
+    /// tab » works, and it works before the page's script runs. Announced
+    /// as a link. An `on_click` handler, if any, runs instead of the
+    /// navigation in the app.
+    pub fn link(mut self, path: impl Into<String>) -> Self {
+        self.0.link = Some(path.into());
+        self
+    }
 }
 
 impl TextInput {

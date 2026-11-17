@@ -178,6 +178,8 @@ pub struct Button {
     pub on_click: Option<Handler<ClickEvent>>,
     /// Accessibility hint read after the label.
     pub hint: Option<String>,
+    /// An app path (or a URL) it leads to (#230).
+    pub link: Option<String>,
     refine: Refine,
 }
 
@@ -192,6 +194,7 @@ pub fn button(label: impl Into<String>) -> Button {
         native: None,
         on_click: None,
         hint: None,
+        link: None,
         refine: Refine::default(),
     }
 }
@@ -258,6 +261,13 @@ impl Button {
         self.on_click = Some(handler);
         self
     }
+    /// Navigates to an app path (or a URL) when pressed (#230): a real
+    /// link on the web (`<a href>`, new tab, middle click), announced as a
+    /// link. Not while disabled.
+    pub fn link(mut self, path: impl Into<String>) -> Self {
+        self.link = Some(path.into());
+        self
+    }
 }
 
 refinable!(Button);
@@ -271,6 +281,9 @@ impl Component for Button {
                 .when_some(self.hint, |b, h| b.accessibility_hint(h));
             if let (Some(h), false) = (self.on_click, self.disabled) {
                 b = b.on_click(h);
+            }
+            if let (Some(path), false) = (self.link.clone(), self.disabled) {
+                b = b.link(path);
             }
             return self.refine.apply(b).into_element();
         }
@@ -292,7 +305,11 @@ impl Component for Button {
             .px(px_)
             .py(py_)
             .rounded(t.radius)
-            .accessibility_role(Role::Button)
+            .accessibility_role(if self.link.is_some() {
+                Role::Link
+            } else {
+                Role::Button
+            })
             .accessibility_label(self.label.clone())
             .accessibility_disabled(self.disabled)
             .when_some(self.hint, |d, h| d.accessibility_hint(h))
@@ -307,8 +324,15 @@ impl Component for Button {
                     .semibold()
                     .accessibility_hidden(),
             );
+        let link = self.link.clone().filter(|_| !self.disabled);
+        let active = link.is_some() || (self.on_click.is_some() && !self.disabled);
+        if let Some(path) = link {
+            el = el.link(path);
+        }
         if let (Some(h), false) = (self.on_click, self.disabled) {
             el = el.on_click(h);
+        }
+        if active {
             // Feedback under the pointer and while pressed.
             el = match self.variant {
                 Variant::Ghost => {

@@ -1025,7 +1025,8 @@
   // link is a new node): the element becomes an `<a>`.
   function setLink(el, id, href) {
     const kind = el && el.dataset.kind;
-    if ((kind !== "view" && kind !== "text") || el._island) return;
+    // Views, texts, and buttons (#230): an `<a>` with the button's look.
+    if ((kind !== "view" && kind !== "text" && kind !== "button") || el._island) return;
     if ((href != null) !== (el.localName === "a")) {
       create(id, kind, href != null ? "a" : null);
       const fresh = nodes.get(id);
@@ -1202,10 +1203,13 @@
         activate(el, id);
       });
     } else if (kind === "button") {
-      el.type = "button";
+      // A link button is an `<a>` (#230), with the look of one.
+      if (el.localName === "a") el.className = "prism-link-button"; else el.type = "button";
       el.dataset.clickable = "1";
       el.addEventListener("click", (e) => {
         e.stopPropagation();
+        // ⌘-click, a middle click: the browser opens the link (#230).
+        if (browserFollows(el, e)) return;
         activate(el, id, e);
       });
     } else if (kind === "overlay") {

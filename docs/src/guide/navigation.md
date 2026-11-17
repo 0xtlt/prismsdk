@@ -115,7 +115,11 @@ Values are decoded (`%20`, `+`); `p.parse_query::<u32>("room")` parses the first
 div().link(format!("/orders/{}", order.id)).child(text(&order.title))  // a row of a list
 text("Terms of use").underline().link("/terms")
 text("Docs").link("https://example.com/docs")
+button("Checkout").link("/cart")                                       // a button that navigates (#230)
+ui::button("See all").secondary().link("/orders")
 ```
+
+A button that only navigates takes `.link(path)` too (#230): natively it stays the platform's button and navigates when pressed; on the web it is an `<a href class="prism-link-button">` with a button's look (or the themed `ui::button` look), so the same new-tab gestures work. It is announced as a link. An `on_click` handler, if given, runs instead of the navigation.
 
 On the web the node is an `<a href>` (app paths under the mount point, `rel="noopener"` for a URL), in the first paint too, so what a real link gives works: Cmd/Ctrl-click, a middle click and the context menu open it in a new tab or copy it, hovering shows its URL, and it works before the socket connects or without JavaScript (a page load). A plain click still navigates in the app, with no page load. A node that gains or loses its link is a new element there. Natively it is a clickable view with the link role; in widgets and Live Activities it opens the app on `path`.
 

@@ -103,6 +103,8 @@ dialog.prism-sheet > * { flex: 1; }
    pictures): a transparent image is drawn over its parent, as natively. */
 .prism-picture:not([data-loaded]) { background: rgba(128,128,128,.12); }
 .prism-picture { object-fit: cover; }
+/* A button that is a link (#230): an `<a>` that looks like a button. */
+a.prism-link-button { appearance: button; -webkit-appearance: button; display: inline-flex; align-items: center; justify-content: center; text-decoration: none; color: ButtonText; font-size: 13.333px; padding: 1px 6px; cursor: pointer; }
 .prism-picture.prism-fit { object-fit: contain; }
 .prism-refresh { position: absolute; left: -9999px; }
 .prism-refresh:focus { position: static; margin: 8px auto; padding: 6px 12px; border-radius: 8px; }

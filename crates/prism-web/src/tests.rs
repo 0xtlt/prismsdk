@@ -4162,3 +4162,23 @@ fn pictures_keep_their_focal_point() {
     ]);
     assert_eq!(out[1]["config"], json!("object-position:20% 100%;"));
 }
+
+/// #230: a link button is an `<a href>` with the button's look.
+#[test]
+fn link_buttons_are_anchors() {
+    let mut b = HtmlBackend::default();
+    b.apply(&[
+        create(2, NodeKind::Button),
+        set_text(2, "Checkout"),
+        Patch::SetLink {
+            id: 2,
+            href: Some("/cart".into()),
+        },
+        Patch::SetRoot { id: 2 },
+    ]);
+    let html = b.to_html();
+    assert!(html.contains("<a "), "{html}");
+    assert!(html.contains(r#"class="prism-link-button""#), "{html}");
+    assert!(html.contains(r#"href="/cart""#), "{html}");
+    assert!(html.contains(">Checkout</a>"), "{html}");
+}
