@@ -66,6 +66,31 @@ fn project(dir: &TempDir, prism_toml: Option<&str>, cargo_toml: &str) -> Result<
 const CARGO: &str =
     "[package]\nname = \"my_app\"\nversion = \"2.3.4\"\nedition = \"2024\"\n\n[workspace]\n";
 
+/// #187: hosts for development builds only, checked like `allow_http`.
+#[test]
+fn network_allow_http_dev_stays_out_of_release_builds() {
+    let dir = TempDir::new("http-dev");
+    let p = project(
+        &dir,
+        Some(
+            "[network]\nallow_http = [\"shared.dev\"]\nallow_http_dev = [\"192.168.1.20\", \"Shared.dev\"]\n",
+        ),
+        CARGO,
+    )
+    .unwrap();
+    assert_eq!(p.http_hosts_dev, ["192.168.1.20", "shared.dev"]);
+    assert_eq!(p.http_hosts_for(false), ["shared.dev", "192.168.1.20"]);
+    assert_eq!(p.http_hosts_for(true), ["shared.dev"]);
+    let err = project(
+        &dir,
+        Some("[network]\nallow_http_dev = [\"http://x.dev\"]\n"),
+        CARGO,
+    )
+    .err()
+    .unwrap();
+    assert!(err.contains("allow_http"), "{err}");
+}
+
 /// #152: plain-HTTP hosts, checked.
 #[test]
 fn network_allow_http_lists_hosts() {
