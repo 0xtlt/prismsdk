@@ -272,6 +272,9 @@ impl Backend for Host {
                 Patch::SetLayoutEvents { id, on } => {
                     self.node(*id, "SetLayoutEvents").reports_layout = *on
                 }
+                Patch::ScrollTo { id, .. } => {
+                    self.node(*id, "ScrollTo");
+                }
                 Patch::SetSelection { id, start, end } => {
                     self.node(*id, "SetSelection").selection = Some((*start, *end))
                 }

@@ -384,6 +384,11 @@ impl Runtime {
             }
             UiEvent::AlertAction(alert, index) => self.app.alert_action(alert, index),
             UiEvent::Scroll(id, offset, viewport) => {
+                // Kept for `cx.scroll_offset` (#193).
+                self.app.scroll_offsets.insert(id, offset);
+                if let Some(name) = self.reconciler.name_of(id) {
+                    self.app.scroll_names.insert(name.to_string(), id);
+                }
                 if let Some(h) = self.reconciler.scroll_handler(id) {
                     h(&ScrollEvent { offset, viewport }, &mut self.app);
                 }
@@ -663,6 +668,15 @@ impl Runtime {
     /// Renders dirty entities, then remembers the route for `prism dev`.
     fn render_dirty(&mut self) -> Vec<Patch> {
         let patches = self.reconciler.render(&mut self.app);
+        // Offsets of scroll views no longer mounted are gone (#193).
+        if !self.app.scroll_offsets.is_empty() {
+            let r = &self.reconciler;
+            self.app.scroll_offsets.retain(|id, _| r.is_mounted(*id));
+            let offsets = &self.app.scroll_offsets;
+            self.app
+                .scroll_names
+                .retain(|_, id| offsets.contains_key(id));
+        }
         // Frames of elements no longer laid out are gone (#192).
         if !self.app.frames.is_empty() {
             let r = &self.reconciler;

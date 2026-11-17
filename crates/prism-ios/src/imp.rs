@@ -3106,6 +3106,35 @@ impl Widgets for UiKit {
         scroll_into_view(view.ui());
     }
 
+    /// `cx.scroll_by` / `cx.scroll_to` (#193): the content offset, kept
+    /// within the content and its insets.
+    fn scroll_to(&mut self, view: &View, x: f32, y: f32, relative: bool, animated: bool) {
+        let View::Scroll(s) = view else {
+            return;
+        };
+        let inset = s.adjustedContentInset();
+        let size = s.contentSize();
+        let b = s.bounds().size;
+        let now = s.contentOffset();
+        let (tx, ty) = if relative {
+            (now.x + x as f64, now.y + y as f64)
+        } else {
+            (x as f64 - inset.left, y as f64 - inset.top)
+        };
+        let clamp = |v: f64, min: f64, max: f64| {
+            if v.is_nan() {
+                min
+            } else {
+                v.clamp(min, max.max(min))
+            }
+        };
+        let to = CGPoint::new(
+            clamp(tx, -inset.left, size.width - b.width + inset.right),
+            clamp(ty, -inset.top, size.height - b.height + inset.bottom),
+        );
+        s.setContentOffset_animated(to, animated);
+    }
+
     /// Every field of the window resigns (the keyboard hides; sheets and
     /// overlays are in the same window).
     fn post_web_message(&mut self, view: &View, data: &str) {

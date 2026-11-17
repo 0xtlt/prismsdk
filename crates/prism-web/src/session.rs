@@ -1275,6 +1275,18 @@ impl Encoder {
             Patch::SetKeyEvents { id, local, global } => {
                 json!({ "op": "keys", "id": id, "local": local, "global": global })
             }
+            // Scroll a scroll view (#193): finite numbers for JSON (the end
+            // is a big one, the browser clamps).
+            Patch::ScrollTo {
+                id,
+                x,
+                y,
+                relative,
+                animated,
+            } => {
+                let n = |v: &f32| if v.is_finite() { v.min(1e9) } else { 1e9 };
+                json!({ "op": "scrollto", "id": id, "x": n(x), "y": n(y), "rel": relative, "anim": animated })
+            }
             // Elements whose frame the page reports (#192).
             Patch::SetLayoutEvents { id, on } => json!({ "op": "layout", "id": id, "on": on }),
             // Keys the page keeps from the focused field (#181).

@@ -954,3 +954,63 @@ fn laid_out_frames_reach_on_layout_and_frame_of() {
     h.update::<Framed>(|f| f.shown = false);
     assert_eq!(h.rt.app.frame_of("row"), None);
 }
+
+/// A list the app scrolls (#193), and a plain view with an id.
+struct Scrolled;
+
+impl Render for Scrolled {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .child(
+                scroll()
+                    .id("list")
+                    .on_scroll(cx.listener(|_, _: &ScrollEvent, _| {}))
+                    .child(text("rows")),
+            )
+            .child(div().id("plain"))
+    }
+}
+
+#[test]
+fn the_app_scrolls_a_scroll_view_by_or_to_an_offset() {
+    let mut h = Harness::new(|cx| {
+        let root = cx.new_entity(|_| Scrolled);
+        mount(cx, root);
+    });
+    let list = h.host.find(|n| n.kind == NodeKind::Scroll).unwrap();
+    h.rt.app.scroll_by("list", 0., 24.);
+    h.rt.app.scroll_to("list", 0., f32::MAX, true);
+    // Only scroll views scroll.
+    h.rt.app.scroll_by("plain", 0., 24.);
+    h.rt.app.scroll_by("missing", 0., 24.);
+    h.rt.app.refresh();
+    let p = h.render().to_vec();
+    let scrolls: Vec<_> = p
+        .iter()
+        .filter(|p| matches!(p, Patch::ScrollTo { .. }))
+        .cloned()
+        .collect();
+    assert_eq!(
+        scrolls,
+        [
+            Patch::ScrollTo {
+                id: list,
+                x: 0.,
+                y: 24.,
+                relative: true,
+                animated: false
+            },
+            Patch::ScrollTo {
+                id: list,
+                x: 0.,
+                y: f32::MAX,
+                relative: false,
+                animated: true
+            },
+        ]
+    );
+    // Its offset, once it reported one.
+    assert_eq!(h.rt.app.scroll_offset("list"), None);
+    h.dispatch(UiEvent::Scroll(list, 120., 300.));
+    assert_eq!(h.rt.app.scroll_offset("list"), Some(120.));
+}

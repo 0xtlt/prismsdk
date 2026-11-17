@@ -1343,6 +1343,22 @@ test("frames of reporting elements are sent unscrolled, once per change (#192)",
   assert.deepEqual(layouts().at(-1), { t: "layout", id: 2, x: 0, y: 0, w: 300, h: 48 });
 });
 
+test("the app scrolls a scroll view by or to an offset (#193)", () => {
+  const page = live([create(1, "scroll"), root(1)]);
+  const list = page.node(1);
+  const calls = [];
+  list.scrollBy = (o) => calls.push(["by", o]);
+  list.scrollTo = (o) => calls.push(["to", o]);
+  page.ws.deliver({ t: "patch", p: [
+    { op: "scrollto", id: 1, x: 0, y: 24, rel: true, anim: false },
+    { op: "scrollto", id: 1, x: 0, y: 1e9, rel: false, anim: true },
+  ] });
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    ["by", { left: 0, top: 24, behavior: "auto" }],
+    ["to", { left: 0, top: 1e9, behavior: "smooth" }],
+  ]);
+});
+
 test("the header bar hides for a whole stack or a bare screen", () => {
   const page = live([
     create(1, "stack"), { op: "value", id: 1, value: 0 }, create(2, "screen"), textOp(2, "Home"),

@@ -196,6 +196,7 @@ impl Backend for HtmlBackend {
                 | Patch::SetKeyEvents { .. }
                 | Patch::SetConsumedKeys { .. }
                 | Patch::SetLayoutEvents { .. }
+                | Patch::ScrollTo { .. }
                 | Patch::SetSelection { .. }
                 | Patch::SetSelectEvents { .. }
                 | Patch::Focus { .. }

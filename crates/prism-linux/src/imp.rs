@@ -3103,6 +3103,24 @@ impl Widgets for Gtk {
     }
 
     /// Scrolls every scroll view around the widget so its frame is visible.
+    /// `cx.scroll_by` / `cx.scroll_to` (#193): the scrolled window's
+    /// adjustments, kept within the content.
+    fn scroll_to(&mut self, view: &View, x: f32, y: f32, relative: bool, _animated: bool) {
+        let View::Scroll(_, sw, _) = view else {
+            return;
+        };
+        for (adj, v) in [(sw.hadjustment(), x as f64), (sw.vadjustment(), y as f64)] {
+            let target = if relative { adj.value() + v } else { v };
+            let max = (adj.upper() - adj.page_size()).max(adj.lower());
+            let target = if target.is_nan() {
+                adj.lower()
+            } else {
+                target.clamp(adj.lower(), max)
+            };
+            adj.set_value(target);
+        }
+    }
+
     fn scroll_into_view(&mut self, view: &View) {
         let mut w = view.widget();
         loop {
