@@ -774,6 +774,16 @@ define_class!(
             crate::interact::hit(self, point)
         }
 
+        /// Hover over the part drawn outside its parent (#213).
+        #[unsafe(method(updateTrackingAreas))]
+        fn update_tracking_areas(&self) {
+            let own = self.ivars().tracking.borrow().clone();
+            if let Some(new) = crate::interact::refresh_tracking(self, own.as_deref()) {
+                *self.ivars().tracking.borrow_mut() = Some(new);
+            }
+            unsafe { msg_send![super(self), updateTrackingAreas] }
+        }
+
         #[unsafe(method(mouseEntered:))]
         fn mouse_entered(&self, event: &NSEvent) {
             self.pointer(PointerPhase::Enter, event);
@@ -1248,6 +1258,8 @@ impl PrismView {
             };
             self.addTrackingArea(&area);
             *iv.tracking.borrow_mut() = Some(area);
+            // Overflowing its parent: over the part outside it too (#213).
+            self.updateTrackingAreas();
         }
     }
 
@@ -3694,10 +3706,22 @@ impl Widgets for AppKit {
                 };
                 view.ns().addTrackingArea(&area);
                 self.hover_areas.insert(id, area);
+                // Overflowing its parent: over the part outside it too (#213).
+                if let Some(v) = view.ns().downcast_ref::<PrismView>() {
+                    v.updateTrackingAreas();
+                }
             }
             (false, true) => {
-                if let Some(area) = self.hover_areas.remove(&id) {
-                    view.ns().removeTrackingArea(&area);
+                self.hover_areas.remove(&id);
+                // The target's area, as `updateTrackingAreas` may have
+                // replaced it (#213).
+                let target: &AnyObject = &self.target;
+                for a in view.ns().trackingAreas().iter() {
+                    if a.options().contains(O::ActiveAlways)
+                        && a.owner().is_some_and(|o| std::ptr::eq(&*o, target))
+                    {
+                        view.ns().removeTrackingArea(&a);
+                    }
                 }
             }
             _ => {}

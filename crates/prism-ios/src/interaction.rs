@@ -443,10 +443,15 @@ define_class!(
         }
 
         /// A layer's root takes no touch itself: only its children do.
+        /// Children drawn outside a view that doesn't clip are hit there too
+        /// (#213), like on the web.
         #[unsafe(method_id(hitTest:withEvent:))]
         fn hit_test(&self, point: CGPoint, event: Option<&UIEvent>) -> Option<Retained<UIView>> {
-            let hit: Option<Retained<UIView>> =
+            let mut hit: Option<Retained<UIView>> =
                 unsafe { msg_send![super(self), hitTest: point, withEvent: event] };
+            if hit.is_none() {
+                hit = overflow_hit(self, point, event);
+            }
             let me: &UIView = self;
             if self.ivars().pass_through.get() && hit.as_deref().is_some_and(|h| std::ptr::eq(h, me)) {
                 None
@@ -1171,6 +1176,32 @@ pub fn set_leading_icon(field: &objc2_ui_kit::UITextField, icon: &str) {
     iv.setFrame(CGRect::new(CGPoint::ZERO, CGSize::new(32., 20.)));
     field.setLeftView(Some(&iv));
     field.setLeftViewMode(objc2_ui_kit::UITextFieldViewMode::Always);
+}
+
+/// A child of `view` drawn outside it, under `point` (#213): UIKit only
+/// looks inside a view's bounds, so overflowing children of a view that
+/// doesn't clip are visited here, topmost first.
+#[cfg(not(target_os = "tvos"))]
+fn overflow_hit(
+    view: &UIView,
+    point: CGPoint,
+    event: Option<&UIEvent>,
+) -> Option<Retained<UIView>> {
+    if view.isHidden()
+        || !view.isUserInteractionEnabled()
+        || view.alpha() < 0.01
+        || view.clipsToBounds()
+    {
+        return None;
+    }
+    let subs: Vec<Retained<UIView>> = view.subviews().iter().collect();
+    for sub in subs.into_iter().rev() {
+        let p = view.convertPoint_toView(point, Some(&sub));
+        if let Some(hit) = sub.hitTest_withEvent(p, event) {
+            return Some(hit);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

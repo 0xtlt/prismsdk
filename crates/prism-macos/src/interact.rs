@@ -188,6 +188,8 @@ pub(crate) fn refuse_focus(v: &NSView, on: bool) {
 
 /// `NSView.hitTest:` skipping views that take no pointer input. A pass-
 /// through view (a layer's root) is never the hit itself, only its children.
+/// Children drawn outside a view that doesn't clip are hit there too (#213),
+/// like on the web: a handle sticking out of a grid takes its clicks.
 pub(crate) fn hit(view: &PrismView, point: NSPoint) -> *mut NSView {
     if view.isHidden() || is_no_hit(view) {
         return std::ptr::null_mut();
@@ -199,7 +201,7 @@ pub(crate) fn hit(view: &PrismView, point: NSPoint) -> *mut NSView {
         && p.y >= b.origin.y
         && p.x < b.origin.x + b.size.width
         && p.y < b.origin.y + b.size.height;
-    if !inside {
+    if !inside && clips(view) {
         return std::ptr::null_mut();
     }
     let subs: Vec<Retained<NSView>> = view.subviews().iter().collect();
@@ -211,11 +213,103 @@ pub(crate) fn hit(view: &PrismView, point: NSPoint) -> *mut NSView {
             return Retained::autorelease_return(found);
         }
     }
-    if view.ivars().pass_through.get() {
+    // Outside its bounds: only its overflowing children, never itself.
+    if !inside || view.ivars().pass_through.get() {
         return std::ptr::null_mut();
     }
     let me: &NSView = view;
     Retained::autorelease_return(objc2::Message::retain(me))
+}
+
+/// Whether `view` crops its children (`clip`, a picture): then nothing of
+/// them is drawn, or hit, outside it.
+fn clips(view: &NSView) -> bool {
+    view.layer().is_some_and(|l| l.masksToBounds())
+}
+
+/// The part of `view` the pointer can reach (#213): its bounds, cut by the
+/// ancestors that crop it (scroll views, clipping Prism views, other AppKit
+/// views), but not by Prism views it overflows without clipping.
+fn reachable_rect(view: &NSView) -> NSRect {
+    let mut r = view.bounds();
+    let mut child: Retained<NSView> = objc2::Message::retain(view);
+    while let Some(sup) = unsafe { child.superview() } {
+        let open = sup.isKindOfClass(PrismView::class()) && !clips(&sup);
+        if !open {
+            let b = view.convertRect_fromView(sup.bounds(), Some(&sup));
+            r = intersect(r, b);
+        }
+        child = sup;
+    }
+    r
+}
+
+fn intersect(a: NSRect, b: NSRect) -> NSRect {
+    let x0 = a.origin.x.max(b.origin.x);
+    let y0 = a.origin.y.max(b.origin.y);
+    let x1 = (a.origin.x + a.size.width).min(b.origin.x + b.size.width);
+    let y1 = (a.origin.y + a.size.height).min(b.origin.y + b.size.height);
+    NSRect::new(
+        NSPoint::new(x0, y0),
+        objc2_foundation::NSSize::new((x1 - x0).max(0.), (y1 - y0).max(0.)),
+    )
+}
+
+/// Prism's hover tracking areas on `view` follow what the pointer can
+/// reach (#213): AppKit's visible rect when it covers that
+/// (`InVisibleRect`, kept up to date by AppKit), an explicit rect covering
+/// the overflowing part otherwise (recomputed in
+/// `updateTrackingAreas`, which AppKit calls when the view moves or
+/// scrolls). Returns the area replacing `own` (the view's pointer area).
+pub(crate) fn refresh_tracking(
+    view: &NSView,
+    own: Option<&objc2_app_kit::NSTrackingArea>,
+) -> Option<Retained<objc2_app_kit::NSTrackingArea>> {
+    use objc2_app_kit::{NSTrackingArea, NSTrackingAreaOptions as O};
+    let reach = reachable_rect(view);
+    // What AppKit tracks with `InVisibleRect`: since macOS 14 views don't
+    // clip by default and it already covers the overflow; before, it stops
+    // at the parent's bounds.
+    let visible = intersect(view.bounds(), view.visibleRect());
+    let same = |a: NSRect, b: NSRect| {
+        (a.origin.x - b.origin.x).abs() < 0.5
+            && (a.origin.y - b.origin.y).abs() < 0.5
+            && (a.size.width - b.size.width).abs() < 0.5
+            && (a.size.height - b.size.height).abs() < 0.5
+    };
+    let overflows = !same(reach, visible);
+    let mut replaced = None;
+    for area in view.trackingAreas().iter() {
+        let options = area.options();
+        // Only Prism's: hover (and moves) for the view or for its states.
+        if !options.contains(O::MouseEnteredAndExited) {
+            continue;
+        }
+        let in_visible = options.contains(O::InVisibleRect);
+        let (rect, options) = match (overflows, in_visible) {
+            (false, true) => continue,
+            (true, false) if same(area.rect(), reach) => continue,
+            (true, _) => (reach, options & !O::InVisibleRect),
+            (false, false) => (NSRect::ZERO, options | O::InVisibleRect),
+        };
+        let owner = area.owner();
+        let info = area.userInfo();
+        let new = unsafe {
+            NSTrackingArea::initWithRect_options_owner_userInfo(
+                <NSTrackingArea as objc2::AllocAnyThread>::alloc(),
+                rect,
+                options,
+                owner.as_deref(),
+                info.as_deref(),
+            )
+        };
+        view.removeTrackingArea(&area);
+        view.addTrackingArea(&new);
+        if own.is_some_and(|o| std::ptr::eq(o, &*area)) {
+            replaced = Some(new);
+        }
+    }
+    replaced
 }
 
 // --- Radio groups ----------------------------------------------------------------
