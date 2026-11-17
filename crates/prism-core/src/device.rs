@@ -359,6 +359,165 @@ impl Share {
     }
 }
 
+/// A file the app holds, for the user to keep ([`AsyncApp::save_file`],
+/// #210): bytes it has in memory (fetched with a token, generated) or a
+/// file of its own (in its cache or data directory).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SaveFile {
+    /// What is saved.
+    pub source: SaveSource,
+    /// The name offered to the user (`report.pdf`).
+    pub name: String,
+    /// The MIME type; guessed from the name's extension when `None`.
+    pub mime: Option<String>,
+}
+
+/// What a [`SaveFile`] holds.
+#[derive(Clone, PartialEq)]
+pub enum SaveSource {
+    /// Bytes in memory.
+    Bytes(Vec<u8>),
+    /// A file on the device (natively) or on the server (web).
+    Path(std::path::PathBuf),
+}
+
+impl std::fmt::Debug for SaveSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SaveSource::Bytes(b) => write!(f, "Bytes({} bytes)", b.len()),
+            SaveSource::Path(p) => f.debug_tuple("Path").field(p).finish(),
+        }
+    }
+}
+
+impl SaveFile {
+    /// `bytes`, offered as `name`.
+    pub fn bytes(bytes: impl Into<Vec<u8>>, name: impl Into<String>) -> Self {
+        SaveFile {
+            source: SaveSource::Bytes(bytes.into()),
+            name: name.into(),
+            mime: None,
+        }
+    }
+
+    /// The file at `path`, offered under its own name (see [`name`](Self::name)).
+    pub fn path(path: impl Into<std::path::PathBuf>) -> Self {
+        let path = path.into();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        SaveFile {
+            source: SaveSource::Path(path),
+            name,
+            mime: None,
+        }
+    }
+
+    /// Offers it as `name` instead.
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
+        self
+    }
+
+    /// Its MIME type (`application/pdf`), when the extension doesn't say.
+    pub fn mime(mut self, mime: impl Into<String>) -> Self {
+        self.mime = Some(mime.into());
+        self
+    }
+
+    /// The name as a file name: no path separators or control characters,
+    /// `file` when empty.
+    pub fn file_name(&self) -> String {
+        let name: String = self
+            .name
+            .chars()
+            .map(|c| {
+                if matches!(c, '/' | '\\') || c.is_control() {
+                    '_'
+                } else {
+                    c
+                }
+            })
+            .collect();
+        let name = name.trim().trim_start_matches('.');
+        if name.is_empty() {
+            "file".into()
+        } else {
+            name.into()
+        }
+    }
+
+    /// The MIME type: the one given, else the extension's, else
+    /// `application/octet-stream`.
+    pub fn mime_type(&self) -> String {
+        if let Some(m) = &self.mime {
+            return m.clone();
+        }
+        let ext = self
+            .name
+            .rsplit_once('.')
+            .map(|(_, e)| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        match ext.as_str() {
+            "pdf" => "application/pdf",
+            "json" => "application/json",
+            "zip" => "application/zip",
+            "txt" | "log" => "text/plain",
+            "csv" => "text/csv",
+            "md" => "text/markdown",
+            "html" | "htm" => "text/html",
+            "xml" => "application/xml",
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            "heic" => "image/heic",
+            "svg" => "image/svg+xml",
+            "mp4" | "m4v" => "video/mp4",
+            "mov" => "video/quicktime",
+            "mp3" => "audio/mpeg",
+            "m4a" => "audio/mp4",
+            "wav" => "audio/wav",
+            "ics" => "text/calendar",
+            "vcf" => "text/vcard",
+            "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            _ => "application/octet-stream",
+        }
+        .into()
+    }
+
+    /// Its bytes (reads the file of a [`SaveSource::Path`]).
+    pub fn read(&self) -> std::io::Result<std::borrow::Cow<'_, [u8]>> {
+        match &self.source {
+            SaveSource::Bytes(b) => Ok(std::borrow::Cow::Borrowed(b)),
+            SaveSource::Path(p) => std::fs::read(p).map(std::borrow::Cow::Owned),
+        }
+    }
+
+    /// Writes it to `dest`, replacing what is there; returns the size.
+    pub fn write_to(&self, dest: &std::path::Path) -> std::io::Result<u64> {
+        match &self.source {
+            SaveSource::Bytes(b) => std::fs::write(dest, b).map(|_| b.len() as u64),
+            SaveSource::Path(p) if p == dest => std::fs::metadata(p).map(|m| m.len()),
+            SaveSource::Path(p) => std::fs::copy(p, dest),
+        }
+    }
+}
+
+/// Where [`AsyncApp::save_file`] put the file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedFile {
+    /// The file's path where the platform says it (macOS, Linux, iOS and
+    /// iPadOS): for [`App::reveal_path`]. `None` on the web (the browser
+    /// downloads it) and on Android (a document of the storage provider).
+    pub path: Option<std::path::PathBuf>,
+    /// Its name, as the user chose it where the platform says it.
+    pub name: String,
+}
+
 /// How precise a location must be (precision costs battery and time).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Accuracy {
@@ -447,6 +606,16 @@ pub enum DeviceCall {
     /// Opens a URL: on the web in this tab or a new one; natively like
     /// [`DeviceCall::OpenUrl`] (the system decides).
     OpenUrlIn(String, crate::request::UrlTarget),
+
+    // --- Handing a file to the user (#210) ---
+    /// Lets the user keep a file: a save panel (macOS, Linux), "Save to
+    /// Files" (iOS, iPadOS, visionOS), `ACTION_CREATE_DOCUMENT` (Android), a
+    /// download (web). Answers `Files` with the saved file (an empty path
+    /// where the platform doesn't say it), `Cancelled` if the user cancels.
+    SaveFile(SaveFile),
+    /// Shows a file in the system's file manager, selected (macOS, Linux).
+    /// No answer.
+    RevealPath(std::path::PathBuf),
 
     // --- Cookies and the live session (web) ---
     /// Sets a cookie in the browser ([`App::set_cookie`]); natively
@@ -710,6 +879,14 @@ impl App {
         self.device_call(DeviceCall::Share(content));
     }
 
+    /// Shows `path` in the system's file manager with the file selected
+    /// (#210): the Finder on macOS, the desktop's file manager on Linux
+    /// (`org.freedesktop.FileManager1`, else its folder opens). Nothing on
+    /// the web or mobile platforms.
+    pub fn reveal_path(&mut self, path: impl Into<std::path::PathBuf>) {
+        self.device_call(DeviceCall::RevealPath(path.into()));
+    }
+
     /// Opens a web page, a `mailto:`/`tel:` link or another app.
     pub fn open_url(&mut self, url: impl Into<String>) {
         self.device_call(DeviceCall::OpenUrl(url.into()));
@@ -846,6 +1023,32 @@ impl AsyncApp {
         match result {
             Ok(DeviceValue::Files(f)) => Ok(f),
             Err(DeviceError::Cancelled) => Ok(Vec::new()),
+            Err(e) => Err(e),
+            Ok(other) => Err(DeviceError::Failed(format!("unexpected answer {other:?}"))),
+        }
+    }
+
+    /// Lets the user keep a file the app holds (#210), with the platform's
+    /// own UI: a save panel on macOS and Linux (the user picks the name and
+    /// folder), "Save to Files" on iOS, iPadOS and visionOS, the storage
+    /// picker (`ACTION_CREATE_DOCUMENT`) on Android, a download on the web
+    /// (bytes the server holds, so no bearer header is needed). `None` if
+    /// the user cancels; on the web, `Some` once the download starts.
+    /// [`DeviceError::Unavailable`] on tvOS and watchOS.
+    ///
+    /// ```ignore
+    /// let saved = cx.save_file(SaveFile::bytes(pdf, "report.pdf")).await?;
+    /// if let Some(path) = saved.and_then(|s| s.path) {
+    ///     cx.update(|app| app.reveal_path(path));
+    /// }
+    /// ```
+    pub async fn save_file(&self, file: SaveFile) -> Result<Option<SavedFile>, DeviceError> {
+        match self.device(DeviceCall::SaveFile(file)).await {
+            Ok(DeviceValue::Files(f)) => Ok(f.into_iter().next().map(|f| SavedFile {
+                path: (!f.path.is_empty()).then(|| std::path::PathBuf::from(f.path)),
+                name: f.name,
+            })),
+            Err(DeviceError::Cancelled) => Ok(None),
             Err(e) => Err(e),
             Ok(other) => Err(DeviceError::Failed(format!("unexpected answer {other:?}"))),
         }

@@ -584,6 +584,98 @@ public func prismDeviceOpenURL(_ url: UnsafePointer<CChar>) {
     #endif
 }
 
+// MARK: Saving a file the app holds (#210)
+
+/// Removes a copy Rust staged for the user (`prism_native::save`).
+private func prismDiscardStaged(_ url: URL) {
+    let folder = url.deletingLastPathComponent()
+    if folder.lastPathComponent.hasPrefix("prism-save-") {
+        try? FileManager.default.removeItem(at: folder)
+    }
+}
+
+#if os(iOS) || os(visionOS)
+final class PrismExportPicker: NSObject, UIDocumentPickerDelegate {
+    let id: UInt64
+    let source: URL
+    init(id: UInt64, source: URL) { self.id = id; self.source = source }
+
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        // The exported copy, where the user put it in Files.
+        replyFiles(id, urls.prefix(1).map { prismDescribe($0.path, name: $0.lastPathComponent) })
+        done()
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        replyFiles(id, [])
+        done()
+    }
+
+    private func done() {
+        prismDiscardStaged(source)
+        pickers[id] = nil
+    }
+}
+#endif
+
+/// `path`: a file named as offered (staged by Rust when needed).
+@_cdecl("prism_device_save_file")
+public func prismDeviceSaveFile(_ id: UInt64, _ path: UnsafePointer<CChar>, _ name: UnsafePointer<CChar>) {
+    let source = URL(fileURLWithPath: String(cString: path))
+    let name = String(cString: name)
+    #if os(watchOS) || os(tvOS)
+    _ = name
+    prismDiscardStaged(source)
+    fail(id, "unavailable") // no Files app on the watch or the TV
+    #elseif os(iOS) || os(visionOS)
+    // "Save to Files": the user picks the folder (and may rename it).
+    _ = name
+    guard let top = topController() else {
+        prismDiscardStaged(source)
+        return fail(id, "no window to present the picker")
+    }
+    let picker = UIDocumentPickerViewController(forExporting: [source], asCopy: true)
+    let delegate = PrismExportPicker(id: id, source: source)
+    pickers[id] = delegate
+    picker.delegate = delegate
+    top.present(picker, animated: true)
+    #else
+    let panel = NSSavePanel()
+    panel.nameFieldStringValue = name
+    panel.canCreateDirectories = true
+    panel.isExtensionHidden = false
+    let finish: (NSApplication.ModalResponse) -> Void = { response in
+        defer { prismDiscardStaged(source) }
+        guard response == .OK, let dest = panel.url else { return replyFiles(id, []) }
+        do {
+            // The panel already asked before replacing a file.
+            if FileManager.default.fileExists(atPath: dest.path) {
+                try FileManager.default.removeItem(at: dest)
+            }
+            try FileManager.default.copyItem(at: source, to: dest)
+            replyFiles(id, [prismDescribe(dest.path, name: dest.lastPathComponent)])
+        } catch {
+            fail(id, error.localizedDescription)
+        }
+    }
+    if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+        panel.beginSheetModal(for: window, completionHandler: finish)
+    } else {
+        panel.begin(completionHandler: finish)
+    }
+    #endif
+}
+
+/// The Finder, with the file selected (#210). Nothing elsewhere.
+@_cdecl("prism_device_reveal")
+public func prismDeviceReveal(_ path: UnsafePointer<CChar>) {
+    #if os(macOS)
+    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: String(cString: path))])
+    #else
+    _ = path
+    #endif
+}
+
 private func withOptional<R>(_ s: String?, _ body: (UnsafePointer<CChar>?) -> R) -> R {
     guard let s else { return body(nil) }
     return s.withCString { body($0) }

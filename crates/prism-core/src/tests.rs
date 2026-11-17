@@ -4089,3 +4089,119 @@ fn snapshots_resolve_order_and_reversed_directions() {
         r#"{"k":"v","c":[{"k":"t","s":"b"},{"k":"t","s":"a"}]}"#
     );
 }
+
+/// #210: `save_file` sends the file and answers where it went, `None` when
+/// the user cancels; `reveal_path` is a call of its own.
+#[test]
+fn saved_files_answer_where_they_went() {
+    use crate::PlatformRequest;
+    use crate::device::*;
+    struct Saver {
+        text: String,
+    }
+    impl Render for Saver {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            text(self.text.clone())
+        }
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|cx: &mut Context<Saver>| {
+            cx.spawn(async move |this, cx| {
+                let first = cx
+                    .save_file(SaveFile::bytes(b"%PDF".to_vec(), "report.pdf"))
+                    .await;
+                let path = match &first {
+                    Ok(Some(SavedFile {
+                        path: Some(p),
+                        name,
+                    })) => format!("{} {name}", p.display()),
+                    other => format!("{other:?}"),
+                };
+                cx.update_entity(&this, |s, cx| {
+                    s.text = path;
+                    cx.notify();
+                });
+                let second = cx
+                    .save_file(SaveFile::path("/data/cache/q3.csv").name("Q3.csv"))
+                    .await;
+                cx.update_entity(&this, |s, cx| {
+                    s.text = format!("second {second:?}");
+                    cx.notify();
+                });
+            });
+            Saver { text: "…".into() }
+        });
+        cx.set_root(root);
+    });
+    let mut rt = Runtime::new(&init);
+    rt.render();
+    let saved = |rt: &mut Runtime| {
+        rt.take_requests()
+            .into_iter()
+            .find_map(|r| match r {
+                PlatformRequest::Device {
+                    id,
+                    call: DeviceCall::SaveFile(f),
+                } => Some((id, f)),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let (id, f) = saved(&mut rt);
+    assert_eq!(f.source, SaveSource::Bytes(b"%PDF".to_vec()));
+    assert_eq!(
+        (f.file_name(), f.mime_type()),
+        ("report.pdf".into(), "application/pdf".into())
+    );
+    let file = PickedFile {
+        path: "/Users/me/Documents/report 2.pdf".into(),
+        name: "report 2.pdf".into(),
+        mime: "application/pdf".into(),
+        size: 4,
+    };
+    find_text(
+        &rt.device_reply(id, Ok(DeviceValue::Files(vec![file]))),
+        "/Users/me/Documents/report 2.pdf report 2.pdf",
+    );
+    let (id, f) = saved(&mut rt);
+    assert_eq!(f.source, SaveSource::Path("/data/cache/q3.csv".into()));
+    assert_eq!(
+        (f.file_name(), f.mime_type()),
+        ("Q3.csv".into(), "text/csv".into())
+    );
+    find_text(
+        &rt.device_reply(id, Err(DeviceError::Cancelled)),
+        "second Ok(None)",
+    );
+
+    let mut app = App::new();
+    app.reveal_path("/tmp/report.pdf");
+    assert!(matches!(
+        app.take_requests().as_slice(),
+        [PlatformRequest::Device { call: DeviceCall::RevealPath(p), .. }] if p.as_os_str() == "/tmp/report.pdf"
+    ));
+}
+
+#[test]
+fn save_file_names_are_file_names() {
+    use crate::device::SaveFile;
+    let name = |n: &str| SaveFile::bytes(Vec::new(), n).file_name();
+    assert_eq!(name("../../etc/passwd"), "_.._etc_passwd");
+    assert_eq!(name(" .hidden "), "hidden");
+    assert_eq!(name("a\nb.txt"), "a_b.txt");
+    assert_eq!(name(""), "file");
+    assert_eq!(
+        SaveFile::bytes(Vec::new(), "x.bin")
+            .mime("application/x-thing")
+            .mime_type(),
+        "application/x-thing"
+    );
+    assert_eq!(
+        SaveFile::bytes(Vec::new(), "NOTES.TXT").mime_type(),
+        "text/plain"
+    );
+    assert_eq!(
+        SaveFile::bytes(Vec::new(), "noext").mime_type(),
+        "application/octet-stream"
+    );
+}

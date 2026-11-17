@@ -60,6 +60,40 @@ fn event(id: u64, e: DeviceEvent) {
     glib::idle_add_local_once(move || imp::device_event(id, e));
 }
 
+/// Shows `path` selected in the desktop's file manager (#210), through
+/// `org.freedesktop.FileManager1.ShowItems` (Files, Dolphin, Nemo, Thunar…);
+/// without one, opens its folder.
+fn reveal(path: &std::path::Path) {
+    let uri = gio::File::for_path(path).uri().to_string();
+    let folder = path
+        .parent()
+        .map(|p| gio::File::for_path(p).uri().to_string());
+    let open_folder = move || {
+        if let Some(folder) = &folder {
+            let _ = gio::AppInfo::launch_default_for_uri(folder, None::<&gio::AppLaunchContext>);
+        }
+    };
+    let Ok(bus) = gio::bus_get_sync(gio::BusType::Session, None::<&gio::Cancellable>) else {
+        return open_folder();
+    };
+    bus.call(
+        Some("org.freedesktop.FileManager1"),
+        "/org/freedesktop/FileManager1",
+        "org.freedesktop.FileManager1",
+        "ShowItems",
+        Some(&(vec![uri], "").to_variant()),
+        None,
+        gio::DBusCallFlags::NONE,
+        5000,
+        None::<&gio::Cancellable>,
+        move |r| {
+            if r.is_err() {
+                open_folder();
+            }
+        },
+    );
+}
+
 fn system_bus() -> Option<gio::DBusConnection> {
     gio::bus_get_sync(gio::BusType::System, None::<&gio::Cancellable>).ok()
 }
@@ -174,6 +208,8 @@ impl LinuxServices {
                 self.pick_images(id, o.limit);
             }
             DeviceCall::PickFiles(o) => self.pick_files(id, o),
+            DeviceCall::SaveFile(f) => self.save_file(id, f),
+            DeviceCall::RevealPath(p) => reveal(&p),
             DeviceCall::ReadClipboard => {
                 let clipboard = self.window.clipboard();
                 clipboard.read_text_async(None::<&gio::Cancellable>, move |r| {
@@ -398,6 +434,56 @@ impl LinuxServices {
                 }
             }
             reply(id, Ok(DeviceValue::Files(picked)));
+        });
+        chooser.show();
+    }
+
+    /// A save dialog (#210): the user picks the name and folder (GTK asks
+    /// before replacing a file), then the file is written off the main
+    /// thread.
+    fn save_file(&mut self, id: u64, f: prism_core::SaveFile) {
+        let chooser = gtk::FileChooserNative::new(
+            None,
+            Some(&self.window),
+            gtk::FileChooserAction::Save,
+            None,
+            None,
+        );
+        chooser.set_current_name(&f.file_name());
+        let keep = chooser.clone();
+        let file = RefCell::new(Some(f));
+        chooser.connect_response(move |c, response| {
+            let _ = &keep;
+            let Some(f) = file.borrow_mut().take() else {
+                return;
+            };
+            if response != gtk::ResponseType::Accept {
+                return reply(id, Err(DeviceError::from_message("cancelled")));
+            }
+            let Some(path) = c.file().and_then(|file| file.path()) else {
+                return reply(id, Err(DeviceError::Failed("not a local file".into())));
+            };
+            glib::MainContext::default().spawn_local(async move {
+                let dest = path.clone();
+                let mime = f.mime_type();
+                let written = gio::spawn_blocking(move || f.write_to(&dest)).await;
+                reply(
+                    id,
+                    match written {
+                        Ok(Ok(size)) => Ok(DeviceValue::Files(vec![PickedFile {
+                            name: path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default(),
+                            path: path.to_string_lossy().into_owned(),
+                            mime,
+                            size,
+                        }])),
+                        Ok(Err(e)) => Err(DeviceError::Failed(e.to_string())),
+                        Err(_) => Err(DeviceError::Failed("could not save the file".into())),
+                    },
+                );
+            });
         });
         chooser.show();
     }

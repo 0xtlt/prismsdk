@@ -1186,6 +1186,16 @@ pub mod device {
                 json!({ "call": "share", "text": s.text, "url": s.url, "files": s.files })
             }
             DeviceCall::OpenUrl(u) => json!({ "call": "open_url", "url": u }),
+            // #210: the host stages bytes first (`crate::save::stage`), so a
+            // file arrives here; the host removes a staged copy once done.
+            DeviceCall::SaveFile(f) => match &f.source {
+                prism_core::SaveSource::Path(p) => json!({
+                    "call": "save_file", "path": p.to_string_lossy(),
+                    "name": f.file_name(), "mime": f.mime_type(),
+                }),
+                prism_core::SaveSource::Bytes(_) => json!({ "call": "unavailable" }),
+            },
+            DeviceCall::RevealPath(p) => json!({ "call": "reveal", "path": p.to_string_lossy() }),
             // Android has no tabs to choose: an ACTION_VIEW intent either way.
             DeviceCall::OpenUrlIn(u, _) => json!({ "call": "open_url", "url": u }),
             DeviceCall::SecureGet {

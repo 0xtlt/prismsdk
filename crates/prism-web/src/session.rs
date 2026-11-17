@@ -1567,6 +1567,39 @@ impl WebServices {
                 self.reconnect = true;
                 Some(json!({ "t": "reconnect" }))
             }
+            // #210: the server keeps the file, the page downloads it.
+            C::SaveFile(f) => {
+                let bytes = match f.read() {
+                    Ok(b) => b.into_owned(),
+                    Err(e) => {
+                        self.reply(id, Err(E::Failed(e.to_string())));
+                        return None;
+                    }
+                };
+                let (name, mime, size) = (f.file_name(), f.mime_type(), bytes.len() as u64);
+                let url = crate::downloads::offer(
+                    &self.base,
+                    self.sid.as_deref(),
+                    name.clone(),
+                    mime.clone(),
+                    bytes,
+                );
+                // Answered now: the browser downloads it where it saves files.
+                self.reply(
+                    id,
+                    Ok(V::Files(vec![prism_core::PickedFile {
+                        path: String::new(),
+                        name: name.clone(),
+                        mime,
+                        size,
+                    }])),
+                );
+                Some(
+                    json!({ "t": "device", "id": id, "call": "save_file", "url": url, "name": name }),
+                )
+            }
+            // No file manager to show it in.
+            C::RevealPath(_) => None,
             other => Some(device_json(id, other)),
         }
     }

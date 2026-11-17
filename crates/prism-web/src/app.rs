@@ -294,6 +294,9 @@ impl WebApp {
                 cookie_header(headers).and_then(session_id).as_deref(),
                 range,
             )
+        } else if let Some(id) = path.strip_prefix("/_prism/download/") {
+            // A file the app handed to this session (#210).
+            crate::downloads::serve(id, cookie_header(headers).and_then(session_id).as_deref())
         } else if let Some(id) = path.strip_prefix("/_prism/3d/") {
             scene_blob(id)
         } else if path == "/_prism/auth/callback" {
