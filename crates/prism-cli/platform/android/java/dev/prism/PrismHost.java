@@ -205,6 +205,8 @@ public final class PrismHost {
         boolean focusRing, touchInstalled;
         // Pointer, keys, hit testing, overlays (PrismInput).
         int pointerMask;
+        // Keys its `on_key_down` takes from the focused field (#181).
+        java.util.Set<String> consumeKeys;
         // A pinch over the node (#133): whether it is on, the fingers'
         // spread at the last report and where it was when they settled.
         boolean scaling;
@@ -528,6 +530,7 @@ public final class PrismHost {
                 PrismInput.hover(n);
                 break;
             case "keys": PrismInput.keys(n, p.optBoolean("local"), p.optBoolean("global")); break;
+            case "consume": PrismInput.consume(n, p.optJSONArray("keys")); break;
             case "sel": PrismInput.select(n, p.optInt("start"), p.optInt("end")); break;
             case "selev": PrismInput.selectEvents(n, p.optBoolean("on")); break;
             case "focus": PrismInput.focus(n); break;

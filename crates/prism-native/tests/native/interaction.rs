@@ -228,6 +228,13 @@ fn remote_ops_and_input_events() {
             && m.position == Point::new(40., 60.)
             && m.phase == prism_core::GesturePhase::Start
     ));
+    // Keys taken from the focused field (#181): one op for the host.
+    let mut c = RemoteWidgets::new(|_| (0., 0.));
+    c.set_consumed_keys(&3, &["ArrowDown".to_string(), "Enter".to_string()]);
+    assert_eq!(
+        c.ops,
+        [json!({"op": "consume", "id": 3, "keys": ["ArrowDown", "Enter"]})]
+    );
     // Drop targets (#111): the op, then the host's copies of dropped files.
     let mut d = RemoteWidgets::new(|_| (0., 0.));
     d.set_drop_target(&3, Some(&["image/*".to_string()]));

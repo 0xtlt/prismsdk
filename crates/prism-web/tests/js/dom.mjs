@@ -224,25 +224,38 @@ export class Element extends Node {
     return c;
   }
 
-  addEventListener(type, fn) {
+  addEventListener(type, fn, options) {
     if (!this.listeners.has(type)) this.listeners.set(type, []);
-    this.listeners.get(type).push(fn);
+    const capture = options === true || !!(options && options.capture);
+    this.listeners.get(type).push({ fn, capture });
   }
   removeEventListener(type, fn) {
     const l = this.listeners.get(type);
-    if (l) l.splice(l.indexOf(fn) >>> 0, 1);
+    const i = l ? l.findIndex((x) => x.fn === fn) : -1;
+    if (i >= 0) l.splice(i, 1);
   }
-  /** Dispatches `event` here, then bubbles it to the ancestors. */
+  /** Dispatches `event`: capture listeners from the root down, then the target's and the bubbling ones. */
   dispatchEvent(event) {
     event.target ??= this;
     event.defaultPrevented ??= false;
-    let stopped = false;
+    let stopped = false, now = false;
     event.preventDefault = () => { event.defaultPrevented = true; };
     event.stopPropagation = () => { stopped = true; };
-    for (let n = this; n && !stopped; n = n.parentNode) {
+    event.stopImmediatePropagation = () => { stopped = true; now = true; };
+    const path = [];
+    for (let n = this; n; n = n.parentNode) path.push(n);
+    const run = (n, capture) => {
       event.currentTarget = n;
-      for (const fn of [...((n.listeners && n.listeners.get(event.type)) || [])]) fn.call(n, event);
-      if (event.bubbles === false) break;
+      for (const l of [...((n.listeners && n.listeners.get(event.type)) || [])]) {
+        if (l.capture !== capture && n !== this) continue;
+        l.fn.call(n, event);
+        if (now) return;
+      }
+    };
+    for (const n of [...path].reverse().slice(0, -1)) { run(n, true); if (stopped) return !event.defaultPrevented; }
+    for (const n of path) {
+      run(n, false);
+      if (stopped || event.bubbles === false) break;
     }
     return !event.defaultPrevented;
   }

@@ -323,7 +323,23 @@
   const editable = (t) => !!t && (t.isContentEditable || t.tagName === "TEXTAREA"
     || (t.tagName === "INPUT" && !["checkbox", "radio", "range", "button", "submit", "color", "file"].includes(t.type)));
   const SCROLL_KEYS = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " ", "PageUp", "PageDown", "Home", "End"];
+  // Keys an element takes from the focused field in it (`consume_keys`,
+  // #181): reported first, in the capture phase, then kept from the field
+  // (↑ moving the caret, ↵ submitting) and the page.
+  function consumes(t, key) {
+    for (let n = t; n; n = n.parentElement) if (n._consume && n._consume.has(key)) return true;
+    return false;
+  }
   document.addEventListener("keydown", (e) => {
+    if (e.isComposing || !e.key || e.prismShortcut) return;
+    const t = e.target && e.target.closest ? e.target : null;
+    if (!t || !consumes(t, e.key)) return;
+    reportKey(e);
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }, true);
+  document.addEventListener("keydown", reportKey);
+  function reportKey(e) {
     if (e.isComposing || !e.key || e.prismShortcut) return;
     const t = e.target && e.target.closest ? e.target : null;
     const owner = t && t.closest("[data-keys]");
@@ -344,7 +360,7 @@
     // The app handles arrows and space on its element: the page does not scroll.
     const control = typing || (t && ["SELECT", "INPUT"].includes(t.tagName));
     if (owner && !control && SCROLL_KEYS.includes(e.key)) e.preventDefault();
-  });
+  }
   // The app menus' shortcuts (#161), `cmd` being ⌘ on Apple platforms and
   // Ctrl elsewhere: taken before the browser (⌘Z in a field, ⌘S, ⌘K) and
   // sent as the item's choice; the key is then not reported as a key.
@@ -2346,6 +2362,7 @@
       case "pointer": return setPointer(el, p.id, p.mask);
       case "drop": return el && setDropTarget(el, p.id, p.types);
       case "keys": return setKeys(el, p.local, p.global);
+      case "consume": el._consume = p.keys && p.keys.length ? new Set(p.keys) : null; return;
       // Text field selections (#86).
       case "sel": return el && setFieldSelection(el, p.start, p.end);
       // A rich input's runs (#115).

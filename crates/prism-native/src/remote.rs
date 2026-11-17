@@ -1053,6 +1053,13 @@ impl Widgets for RemoteWidgets {
             .push(json!({ "op": "keys", "id": id, "local": local, "global": global }));
     }
 
+    /// `{"op":"consume","id","keys"}` (#181): the host keeps the focused
+    /// control from acting on these keys.
+    fn set_consumed_keys(&mut self, id: &NodeId, keys: &[String]) {
+        self.ops
+            .push(json!({ "op": "consume", "id": id, "keys": keys }));
+    }
+
     fn focus(&mut self, id: &NodeId) {
         self.ops.push(json!({ "op": "focus", "id": id }));
     }

@@ -539,6 +539,13 @@ impl Runtime {
         self.app.executor.has_background_work()
     }
 
+    /// Whether a key pressed in node `focused` is the app's alone
+    /// (`consume_keys`, #181): the backend keeps the focused control from
+    /// acting on it after dispatching it.
+    pub fn consumes_key(&self, focused: Option<NodeId>, key: &str) -> bool {
+        self.reconciler.consumes_key(focused, key)
+    }
+
     /// Platform work requested by the app (widgets, Live Activities,
     /// notifications). Backends call this after each render or dispatch.
     pub fn take_requests(&mut self) -> Vec<PlatformRequest> {

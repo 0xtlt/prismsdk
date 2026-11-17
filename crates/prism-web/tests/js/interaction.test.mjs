@@ -179,6 +179,40 @@ test("an app menu's real id comes back exact from its shortcut (#170)", () => {
   assert.equal(out, `{"t":"menu","id":${id}}`, "the server finds the item's handler");
 });
 
+test("consumed keys are reported, then kept from the focused field (#181)", () => {
+  const page = live([
+    { op: "create", id: 2, kind: "view" }, { op: "keys", id: 2, local: true, global: false },
+    { op: "consume", id: 2, keys: ["ArrowDown", "Enter"] },
+    { op: "create", id: 3, kind: "text_input" },
+    { op: "children", id: 2, children: [3] },
+    ...root([2]),
+  ]);
+  const field = page.node(3);
+  // The field's own handler (submitting on Enter) must not run.
+  let fieldSaw = 0;
+  field.addEventListener("keydown", () => fieldSaw++);
+  const key = (k) => {
+    const e = { type: "keydown", key: k };
+    field.dispatchEvent(e);
+    return e;
+  };
+  const down = key("ArrowDown");
+  assert.equal(down.defaultPrevented, true, "the caret does not move");
+  assert.equal(lastSent(page).key, "ArrowDown");
+  assert.equal(lastSent(page).id, 2);
+  assert.equal(sent(page).filter((m) => m.t === "key").length, 1, "reported once");
+  key("Enter");
+  assert.equal(fieldSaw, 0, "the field never sees them");
+  // Other keys type as usual.
+  const a = key("ArrowLeft");
+  assert.equal(a.defaultPrevented, false);
+  assert.equal(fieldSaw, 1);
+  // The menu closed: the field gets its keys back.
+  page.ws.deliver({ t: "patch", p: [{ op: "consume", id: 2, keys: [] }] });
+  assert.equal(key("ArrowDown").defaultPrevented, false);
+  assert.equal(fieldSaw, 2);
+});
+
 test("keys reach the focused element, and global listeners skip typing", () => {
   const page = live([
     { op: "create", id: 2, kind: "view" }, { op: "keys", id: 2, local: true, global: false },

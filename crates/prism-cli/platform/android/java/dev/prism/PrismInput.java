@@ -465,7 +465,10 @@ final class PrismInput {
     static boolean key(KeyEvent e, View focused) {
         if (e.getAction() == KeyEvent.ACTION_UP) {
             keyUp(e);
-            return false;
+            // A consumed key's release stays the app's too (a text field
+            // acts on Enter's release).
+            String up = keyName(e);
+            return up != null && CONSUMED_DOWN.remove(up);
         }
         if (e.getAction() != KeyEvent.ACTION_DOWN) return false;
         String name = keyName(e);
@@ -479,6 +482,9 @@ final class PrismInput {
         for (PrismHost.Node n : PrismHost.nodes.values()) {
             if (n.keysGlobal) { global = true; break; }
         }
+        // The app's alone (`consume_keys`, #181): decided as pressed, before
+        // its handler may close the menu that declared it.
+        boolean consumed = consumes(target, name);
         boolean typing = focused instanceof EditText && name.length() <= 2 && (mods(e) & (2 | 8)) == 0;
         // Typing in a field reaches only that field's own handlers.
         if (typing && !local) return false;
@@ -494,8 +500,33 @@ final class PrismInput {
         }
         PrismHost.send(ev);
         HELD.put(name, target != null ? target.id : 0);
+        if (consumed) {
+            CONSUMED_DOWN.add(name);
+            return true;
+        }
         boolean arrow = name.startsWith("Arrow");
         return local && arrow && !(focused instanceof EditText);
+    }
+
+    /** Keys whose press was consumed, so their release is too (#181). */
+    static final java.util.Set<String> CONSUMED_DOWN = new java.util.HashSet<>();
+
+    /** `consume_keys` of a node (#181): null or empty, none. */
+    static void consume(PrismHost.Node n, JSONArray keys) {
+        if (keys == null || keys.length() == 0) {
+            n.consumeKeys = null;
+            return;
+        }
+        n.consumeKeys = new java.util.HashSet<>();
+        for (int i = 0; i < keys.length(); i++) n.consumeKeys.add(keys.optString(i));
+    }
+
+    /** Whether `key` pressed in `n` is taken by it or an ancestor (#181). */
+    static boolean consumes(PrismHost.Node n, String key) {
+        for (PrismHost.Node a = n; a != null; a = PrismHost.parentOf(a)) {
+            if (a.consumeKeys != null && a.consumeKeys.contains(key)) return true;
+        }
+        return false;
     }
 
     /** Keys whose press was reported, and the node it went to (0: none), for their release (#159). */

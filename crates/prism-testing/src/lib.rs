@@ -36,6 +36,8 @@ pub struct HNode {
     pub drop_types: Option<Vec<String>>,
     /// Key events reported: (local, global).
     pub keys: (bool, bool),
+    /// Keys taken from the focused control (`consume_keys`, #181).
+    pub consumed_keys: Vec<String>,
     /// The selection last set by the app (`Patch::SetSelection`, #86).
     pub selection: Option<(usize, usize)>,
     /// Selection changes reported (`Patch::SetSelectEvents`).
@@ -198,6 +200,7 @@ impl Backend for Host {
                             pointer_mask: 0,
                             drop_types: None,
                             keys: (false, false),
+                            consumed_keys: Vec::new(),
                             selection: None,
                             select_events: false,
                             island: None,
@@ -259,6 +262,9 @@ impl Backend for Host {
                 }
                 Patch::SetKeyEvents { id, local, global } => {
                     self.node(*id, "SetKeyEvents").keys = (*local, *global)
+                }
+                Patch::SetConsumedKeys { id, keys } => {
+                    self.node(*id, "SetConsumedKeys").consumed_keys = keys.clone()
                 }
                 Patch::SetSelection { id, start, end } => {
                     self.node(*id, "SetSelection").selection = Some((*start, *end))

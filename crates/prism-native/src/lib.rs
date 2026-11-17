@@ -173,6 +173,10 @@ pub trait Widgets {
     /// view or a descendant has the focus (the view becomes focusable),
     /// `global` wherever the focus is.
     fn set_key_events(&mut self, _view: &Self::View, _local: bool, _global: bool) {}
+    /// Keys taken from the focused control in the view (`consume_keys`,
+    /// #181). Backends that dispatch keys synchronously ask
+    /// `Runtime::consumes_key` instead; hosts in another process need them.
+    fn set_consumed_keys(&mut self, _view: &Self::View, _keys: &[String]) {}
     /// Whether the backend edits rich text (#115): it creates
     /// [`NodeKind::RichInput`] views and gets their runs in
     /// [`set_rich_value`](Self::set_rich_value). Otherwise (the default) a
@@ -1691,6 +1695,11 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                 Patch::SetKeyEvents { id, local, global } => {
                     if let Some(e) = self.nodes.get(id) {
                         self.widgets.set_key_events(&e.view, *local, *global);
+                    }
+                }
+                Patch::SetConsumedKeys { id, keys } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.set_consumed_keys(&e.view, keys);
                     }
                 }
                 Patch::Focus { id } => {

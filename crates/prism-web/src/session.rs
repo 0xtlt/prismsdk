@@ -1265,6 +1265,10 @@ impl Encoder {
             Patch::SetKeyEvents { id, local, global } => {
                 json!({ "op": "keys", "id": id, "local": local, "global": global })
             }
+            // Keys the page keeps from the focused field (#181).
+            Patch::SetConsumedKeys { id, keys } => {
+                json!({ "op": "consume", "id": id, "keys": keys })
+            }
             Patch::Focus { id } => json!({ "op": "focus", "id": id }),
             // Text field selections (#86), in characters.
             Patch::SetSelection { id, start, end } => {

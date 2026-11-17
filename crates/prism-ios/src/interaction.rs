@@ -1188,3 +1188,74 @@ mod tests {
         assert!(edit_fits(9, 3, 40));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Consumed keys (#181): taken before a focused text field acts on them
+// ---------------------------------------------------------------------------
+
+/// The keys `consume_keys` may list, with the input of a key command
+/// (UIKit matches them before the focused field: ↑ does not move its caret).
+#[cfg(not(target_os = "tvos"))]
+fn command_inputs() -> [(&'static str, Retained<NSString>); 12] {
+    use objc2_ui_kit::*;
+    let s = |x: &NSString| x.retain();
+    unsafe {
+        [
+            ("ArrowUp", s(UIKeyInputUpArrow)),
+            ("ArrowDown", s(UIKeyInputDownArrow)),
+            ("ArrowLeft", s(UIKeyInputLeftArrow)),
+            ("ArrowRight", s(UIKeyInputRightArrow)),
+            ("Escape", s(UIKeyInputEscape)),
+            ("Home", s(UIKeyInputHome)),
+            ("End", s(UIKeyInputEnd)),
+            ("PageUp", s(UIKeyInputPageUp)),
+            ("PageDown", s(UIKeyInputPageDown)),
+            ("Enter", NSString::from_str("\r")),
+            ("Tab", NSString::from_str("\t")),
+            (" ", NSString::from_str(" ")),
+        ]
+    }
+}
+
+/// Key commands for the keys the focused node takes (`consume_keys`):
+/// the root controller's, with priority over the text field's own use.
+#[cfg(not(target_os = "tvos"))]
+pub fn consumed_key_commands(responder: &UIResponder) -> Vec<Retained<objc2_ui_kit::UIKeyCommand>> {
+    let window = window_of(responder);
+    let Some((focused, _)) = focused_node(window.as_deref()) else {
+        return Vec::new();
+    };
+    let mtm = responder.mtm();
+    command_inputs()
+        .into_iter()
+        .filter(|(name, _)| crate::imp::consumes_key(Some(focused), name))
+        .map(|(_, input)| {
+            let c = unsafe {
+                objc2_ui_kit::UIKeyCommand::keyCommandWithInput_modifierFlags_action(
+                    &input,
+                    objc2_ui_kit::UIKeyModifierFlags::empty(),
+                    sel!(onConsumedKey:),
+                    mtm,
+                )
+            };
+            c.setWantsPriorityOverSystemBehavior(true);
+            c
+        })
+        .collect()
+}
+
+/// A consumed key's command fired: reported like a press.
+#[cfg(not(target_os = "tvos"))]
+pub fn consumed_key(responder: &UIResponder, command: &objc2_ui_kit::UIKeyCommand) {
+    let Some(input) = command.input() else { return };
+    let Some(name) = command_inputs()
+        .into_iter()
+        .find(|(_, i)| i.isEqualToString(&input))
+        .map(|(n, _)| n)
+    else {
+        return;
+    };
+    let window = window_of(responder);
+    let focused = focused_node(window.as_deref()).map(|f| f.0);
+    crate::imp::dispatch(UiEvent::Key(focused, KeyEvent::new(name)));
+}

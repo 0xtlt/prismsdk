@@ -51,6 +51,28 @@ tvOS has no pointer over views, the watch neither hover nor keys: those handlers
 
 Web events travel over the app's WebSocket: moves and drags are throttled to one per animation frame, so a fast pointer does not flood the connection; clicks, drag starts and ends are never dropped.
 
+## Keys a field around you must not act on
+
+A suggestion menu under a text field (type `@` or `/`, then ↑ ↓ to move the highlight and ↵ to pick) needs those keys for itself: the field must not also move its caret or submit. `consume_keys` declares them at render, on the element whose `on_key_down` handles them (#181):
+
+```rust
+div()
+    .child(rich_input(self.runs.clone()))
+    .child(suggestions(&self.menu))
+    .on_key_down(cx.listener(|this, e: &KeyEvent, _| this.menu_key(e)))
+    .consume_keys(if self.menu.is_open() { &["ArrowUp", "ArrowDown", "Enter", "Escape"][..] } else { &[] })
+```
+
+While the focus is in the element, those keys reach its `on_key_down` (and its ancestors', then the global ones, as usual) and nothing else: not the focused field, not the page, not the window. Other keys type as before. The declaration is read as the key is pressed, so a handler that closes the menu on ↵ still keeps that ↵ from the field. `cx.stop_propagation()` only stops other Prism handlers; it never reaches the platform, which is why the keys are declared rather than consumed from the handler: on the web the handler runs on the server, after the browser has acted.
+
+| | How the field is kept out |
+|---|---|
+| Web | a capture-phase `keydown`: reported, then `preventDefault()` and stopped |
+| macOS | the key monitor returns no event |
+| iOS, iPadOS, visionOS | `UIKeyCommand`s with priority over the system's behaviour on the root controller (named keys: arrows, Enter, Tab, Escape, Space, Home, End, Page Up / Down) |
+| Android | `dispatchKeyEvent` consumes the press and its release |
+| Linux (GTK) | the window's capture-phase key controller stops it |
+
 ## Click keys and count, key releases
 
 ```rust

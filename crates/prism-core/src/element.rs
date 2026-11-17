@@ -585,6 +585,9 @@ pub struct VNode {
     /// The `pointer_mask` drag bits of the buttons that start a drag
     /// (#136), the primary one by default.
     pub drag_buttons: u8,
+    /// Keys the element's `on_key_down` takes from the focused control in
+    /// it (#181): a text field does not also act on them.
+    pub consume_keys: Vec<String>,
 
     // --- Wheel and pinch (#133) ---
     /// Wheel and trackpad scrolling over the node.
@@ -647,6 +650,7 @@ impl VNode {
             on_wheel: None,
             on_magnify: None,
             drag_buttons: crate::events::pointer_mask::DRAG,
+            consume_keys: Vec::new(),
             on_drop_files: None,
         }
     }
@@ -818,6 +822,26 @@ macro_rules! builder {
             /// engine, an Android D-pad).
             pub fn on_key_down(mut self, handler: Handler<crate::events::KeyEvent>) -> Self {
                 self.0.on_key_down = Some(handler);
+                self
+            }
+
+            /// Keys (`"ArrowDown"`, `"Enter"`, as [`KeyEvent::key`](crate::KeyEvent::key)
+            /// names them) that go to the `on_key_down` handlers here and no
+            /// further (#181): while the focus is in this element, a text
+            /// field in it does not also act on them (↑ does not move its
+            /// caret, Enter does not submit), nor does the page or the
+            /// window. Declared at render, so it works the same on every
+            /// platform, the web included: set them while a suggestion
+            /// menu is open, `&[]` when it closes.
+            ///
+            /// ```ignore
+            /// div()
+            ///     .child(rich_input(runs))
+            ///     .on_key_down(cx.listener(|this, e: &KeyEvent, _| this.menu_key(e)))
+            ///     .consume_keys(if menu_open { &["ArrowUp", "ArrowDown", "Enter", "Escape"][..] } else { &[] })
+            /// ```
+            pub fn consume_keys(mut self, keys: &[&str]) -> Self {
+                self.0.consume_keys = keys.iter().map(|k| k.to_string()).collect();
                 self
             }
 

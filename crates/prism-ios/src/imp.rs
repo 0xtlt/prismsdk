@@ -73,6 +73,15 @@ thread_local! {
     static RELAYOUT_MISSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// Whether a key pressed in `focused` is the app's alone (`consume_keys`,
+/// #181).
+#[cfg(not(target_os = "tvos"))]
+pub(crate) fn consumes_key(focused: Option<NodeId>, key: &str) -> bool {
+    let mut out = false;
+    with_state(|s| out = s.runtime.consumes_key(focused, key));
+    out
+}
+
 fn with_state(f: impl FnOnce(&mut State)) {
     STATE.with(|cell| {
         // The platform can call back while we mutate views (layout passes,
@@ -783,6 +792,26 @@ define_class!(
         #[unsafe(method(canBecomeFirstResponder))]
         fn can_become_first_responder(&self) -> bool {
             crate::interaction::has_global_keys()
+        }
+
+        /// Keys the focused node takes from its text field (`consume_keys`,
+        /// #181): matched before the field acts on them.
+        #[cfg(not(target_os = "tvos"))]
+        #[unsafe(method_id(keyCommands))]
+        fn key_commands(&self) -> Option<Retained<objc2_foundation::NSArray<objc2_ui_kit::UIKeyCommand>>> {
+            let own = crate::interaction::consumed_key_commands(self);
+            let base: Option<Retained<objc2_foundation::NSArray<objc2_ui_kit::UIKeyCommand>>> =
+                unsafe { msg_send![super(self), keyCommands] };
+            let mut all: Vec<Retained<objc2_ui_kit::UIKeyCommand>> =
+                base.map(|b| b.to_vec()).unwrap_or_default();
+            all.extend(own);
+            Some(objc2_foundation::NSArray::from_retained_slice(&all))
+        }
+
+        #[cfg(not(target_os = "tvos"))]
+        #[unsafe(method(onConsumedKey:))]
+        fn on_consumed_key(&self, command: &objc2_ui_kit::UIKeyCommand) {
+            crate::interaction::consumed_key(self, command);
         }
 
         /// Keys nothing below handled: global listeners (and local ones

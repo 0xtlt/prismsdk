@@ -222,6 +222,16 @@ pub enum Patch {
         /// Keys anywhere in the window.
         global: bool,
     },
+    /// Keys the node's `on_key_down` takes from the focused control in it
+    /// (`consume_keys`, #181): backends keep the control (and the page)
+    /// from acting on them. Native backends can also ask
+    /// [`Runtime::consumes_key`](crate::Runtime::consumes_key).
+    SetConsumedKeys {
+        /// The node.
+        id: NodeId,
+        /// The keys, as `KeyEvent::key` names them (empty: none).
+        keys: Vec<String>,
+    },
     /// Give the node the keyboard focus (`cx.focus`, `.autofocus()`). Sent
     /// after the node is mounted.
     Focus {
@@ -430,6 +440,8 @@ struct MNode {
     pointer_mask: u8,
     /// Key events reported: (local, global).
     keys: (bool, bool),
+    /// Keys taken from the focused control in it (#181).
+    consume_keys: Vec<String>,
     /// The selection the app last rendered (`.selection`, #86).
     selection: Option<SelectionEvent>,
     /// The selection the field shows, as far as Prism knows: the last one
@@ -723,6 +735,22 @@ impl Reconciler {
         focused: Option<NodeId>,
     ) -> Vec<Handler<crate::events::KeyEvent>> {
         self.key_handlers_of(focused, &self.key_up, &self.global_key_up)
+    }
+
+    /// Whether `key` pressed in node `focused` is taken from the focused
+    /// control by it or an ancestor (`consume_keys`, #181).
+    pub fn consumes_key(&self, focused: Option<NodeId>, key: &str) -> bool {
+        let mut next = focused;
+        while let Some(id) = next {
+            let Some(n) = self.nodes.get(&id) else {
+                return false;
+            };
+            if n.consume_keys.iter().any(|k| k == key) {
+                return true;
+            }
+            next = n.parent;
+        }
+        false
     }
 
     fn key_handlers_of(
@@ -1138,6 +1166,7 @@ impl Reconciler {
             on_wheel,
             on_magnify,
             drag_buttons,
+            consume_keys,
             ..
         } = *vnode;
         app.window.watch_widths(&style);
@@ -1153,6 +1182,16 @@ impl Reconciler {
         }
         if autofocus && reusable.is_none() {
             self.autofocus.push(id);
+        }
+        {
+            let m = self.nodes.get_mut(&id).expect("node exists");
+            if m.consume_keys != consume_keys {
+                self.patches.push(Patch::SetConsumedKeys {
+                    id,
+                    keys: consume_keys.clone(),
+                });
+                m.consume_keys = consume_keys;
+            }
         }
         self.diff_events(
             id,
@@ -1840,6 +1879,7 @@ impl Reconciler {
                 pointer_mask: 0,
                 drop_types: None,
                 keys: (false, false),
+                consume_keys: Vec::new(),
                 selection: None,
                 shown_selection: None,
                 select_events: false,
