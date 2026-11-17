@@ -651,8 +651,10 @@ pub struct TraySpec {
 // ---------------------------------------------------------------------------
 
 /// Ids of menus owned by the app (tray, app menu) live above this; ids of
-/// context menus are derived from node ids below it.
-pub(crate) const APP_MENU_BASE: u64 = 1 << 62;
+/// context menus are derived from node ids below it (`node << 16`, so up to
+/// 2^36 nodes). 2^52 keeps every id exact in a JavaScript number (2^53):
+/// the web page sends the ids of the app menus' shortcuts back (#170).
+pub(crate) const APP_MENU_BASE: u64 = 1 << 52;
 
 #[derive(Default)]
 pub(crate) struct Menus {

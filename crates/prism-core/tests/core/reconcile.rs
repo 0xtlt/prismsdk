@@ -676,3 +676,57 @@ fn menu_ids(spec: &prism_core::menu::MenuSpec) -> Vec<u64> {
         })
         .collect()
 }
+
+thread_local! {
+    static APP_MENU_PICKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[test]
+fn app_menu_ids_fit_a_javascript_number_and_run_their_item() {
+    let mut h = Harness::new(|cx| {
+        cx.set_menu_bar(vec![
+            prism_core::Menu::titled("App").item(
+                prism_core::MenuItem::new("Search")
+                    .shortcut("cmd+k")
+                    .on_select(std::rc::Rc::new(|_, _| {
+                        APP_MENU_PICKS.with(|n| n.set(n.get() + 1))
+                    })),
+            ),
+        ]);
+        let root = cx.new_entity(|_| WithMenu {
+            menu: true,
+            picked: vec![],
+        });
+        mount(cx, root);
+    });
+    let menus =
+        h.rt.take_requests()
+            .into_iter()
+            .find_map(|r| match r {
+                prism_core::PlatformRequest::SetMenuBar(m) => Some(m),
+                _ => None,
+            })
+            .unwrap();
+    let root = h.host.root.unwrap();
+    let spec = h
+        .last
+        .iter()
+        .find_map(|p| match p {
+            Patch::SetMenu { menu: Some(m), .. } => Some(m.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let context = menu_ids(&spec);
+    let ids = menu_ids(&menus[0]);
+    assert_eq!(ids.len(), 1);
+    // The web page sends the id back as a JavaScript number (#170): exact
+    // only up to 2^53.
+    assert!(ids[0] < 1 << 53, "{} is rounded by JavaScript", ids[0]);
+    h.dispatch(UiEvent::MenuSelect(ids[0]));
+    assert_eq!(APP_MENU_PICKS.with(|n| n.get()), 1);
+    // Context menus keep their own ids, below the app's.
+    assert!(context.iter().all(|id| *id < ids[0] && id >> 16 == root));
+    h.dispatch(UiEvent::MenuSelect(context[0]));
+    assert_eq!(h.root::<WithMenu>().read(&h.rt.app).picked, vec!["copy"]);
+    assert_eq!(APP_MENU_PICKS.with(|n| n.get()), 1);
+}

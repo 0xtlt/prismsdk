@@ -441,19 +441,22 @@ export class CustomElementRegistry {
   }
 }
 
-/** A socket the tests drive: `deliver` plays the server, `sent` is what the page said. */
+/** A socket the tests drive: `deliver` plays the server, `sent` is what the page said (`sentText` as written). */
 class FakeSocket {
   constructor(url) {
     this.url = url;
     this.readyState = 1;
     this.sent = [];
+    this.sentText = [];
     this.listeners = {};
     FakeSocket.instances.push(this);
   }
-  send(text) { this.sent.push(JSON.parse(text)); }
+  send(text) { this.sentText.push(text); this.sent.push(JSON.parse(text)); }
   addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
   open() { (this.listeners.open || []).forEach((fn) => fn({})); }
   deliver(msg) { this.onmessage({ data: JSON.stringify(msg) }); }
+  /** A message exactly as the server wrote it (ids above 2^53 do not survive `JSON.stringify`). */
+  deliverText(text) { this.onmessage({ data: text }); }
   /** A binary frame of raw DEFLATE, as `prism_web::Frame::Binary` (an ArrayBuffer, `binaryType = "arraybuffer"`). */
   deliverCompressed(msg) { this.deliverBinary(zlib.deflateRawSync(Buffer.from(JSON.stringify(msg)))); }
   deliverBinary(bytes) {

@@ -166,6 +166,19 @@ test("the app menus' shortcuts are taken before the browser (#161)", () => {
   assert.equal(lastSent(page).t, "key");
 });
 
+test("an app menu's real id comes back exact from its shortcut (#170)", () => {
+  const page = live(root([]));
+  // As the server sends it (the first app menu item, `app_menu_shortcut_ids_are_exact_in_the_page`):
+  // the page parses the text, so an id above 2^53 would be rounded here.
+  const id = "4503599627370497";
+  page.ws.deliverText(`{"t":"shortcuts","list":[["cmd+k",${id}]]}`);
+  const e = { type: "keydown", key: "k", ctrlKey: true, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+  page.window.dispatchEvent(e);
+  assert.equal(e.defaultPrevented, true);
+  const out = page.ws.sentText.at(-1);
+  assert.equal(out, `{"t":"menu","id":${id}}`, "the server finds the item's handler");
+});
+
 test("keys reach the focused element, and global listeners skip typing", () => {
   const page = live([
     { op: "create", id: 2, kind: "view" }, { op: "keys", id: 2, local: true, global: false },
