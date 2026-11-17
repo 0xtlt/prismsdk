@@ -914,3 +914,43 @@ fn consumed_keys_are_taken_from_the_focused_field_while_declared() {
             .any(|p| matches!(p, Patch::SetConsumedKeys { .. }))
     );
 }
+
+/// A row that reports its frame (#192), mounted while `shown`.
+struct Framed {
+    shown: bool,
+    seen: Vec<prism_core::Rect>,
+}
+
+impl Render for Framed {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        div().when(self.shown, |d| {
+            d.child(
+                div()
+                    .id("row")
+                    .on_layout(cx.listener(|this, e: &LayoutEvent, _| this.seen.push(e.frame))),
+            )
+        })
+    }
+}
+
+#[test]
+fn laid_out_frames_reach_on_layout_and_frame_of() {
+    let mut h = Harness::new(|cx| {
+        let root = cx.new_entity(|_| Framed {
+            shown: true,
+            seen: vec![],
+        });
+        mount(cx, root);
+    });
+    let row = h.host.find(|n| n.reports_layout).expect("the row reports");
+    assert_eq!(h.rt.app.frame_of("row"), None, "not laid out yet");
+    let frame = prism_core::Rect::new(0., 40., 300., 24.);
+    h.dispatch(UiEvent::Layout(row, frame));
+    assert_eq!(h.root::<Framed>().read(&h.rt.app).seen, vec![frame]);
+    assert_eq!(h.rt.app.frame_of("row"), Some(frame));
+    assert!(frame.contains(prism_core::Point::new(10., 50.)));
+    assert!(!frame.contains(prism_core::Point::new(10., 64.)));
+    // Unmounted: no frame.
+    h.update::<Framed>(|f| f.shown = false);
+    assert_eq!(h.rt.app.frame_of("row"), None);
+}

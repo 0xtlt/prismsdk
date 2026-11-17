@@ -179,6 +179,10 @@ pub struct App {
     pub(crate) ui_commands: Vec<UiCommand>,
     pub(crate) layers: Vec<AnyEntity>,
     pub(crate) stop_propagation: bool,
+    /// The last frames of elements with `on_layout` / `track_layout`, and
+    /// the `.id()` of those that have one (#192).
+    pub(crate) frames: HashMap<crate::NodeId, crate::events::Rect>,
+    pub(crate) frame_names: HashMap<String, crate::NodeId>,
     /// The title the app set (`cx.set_title`, #154).
     title: Option<String>,
     /// The app has unsaved changes (`cx.set_unsaved_changes`, #158).
@@ -239,6 +243,8 @@ impl Default for App {
             ui_commands: Vec::new(),
             layers: Vec::new(),
             stop_propagation: false,
+            frames: HashMap::new(),
+            frame_names: HashMap::new(),
             title: None,
             unsaved: false,
             children: HashMap::new(),
@@ -635,6 +641,15 @@ impl App {
     /// a submit. Does nothing if nothing has the focus.
     pub fn dismiss_keyboard(&mut self) {
         self.ui_commands.push(UiCommand::DismissKeyboard);
+    }
+
+    /// The last laid-out frame of the element named `id` (`.id(id)`) that
+    /// reports its layout ([`on_layout`](crate::Div::on_layout) or
+    /// [`track_layout`](crate::Div::track_layout)), in the window's layout
+    /// coordinates before scrolling (see [`Rect`](crate::Rect)), #192.
+    /// `None` until it has been laid out, or when it is not mounted.
+    pub fn frame_of(&self, id: &str) -> Option<crate::events::Rect> {
+        self.frames.get(self.frame_names.get(id)?).copied()
     }
 
     /// Scrolls the scroll views around the element named `id` (`.id(id)`)

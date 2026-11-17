@@ -333,6 +333,11 @@ fn relayout(s: &mut State) {
     if !ops.is_empty() {
         jni::apply(&Value::Array(ops).to_string());
     }
+    // Elements that report their frame and moved (#192).
+    let more = prism_native::report_layout(&mut s.runtime, &mut s.renderer);
+    if !more.is_empty() {
+        commit(s, &more);
+    }
 }
 
 /// Async work or a timer is due.

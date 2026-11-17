@@ -443,6 +443,11 @@ impl State {
         if let Some(main) = w.root.window() {
             w.ix.follow(&main);
         }
+        // Elements that report their frame and moved (#192).
+        let more = prism_native::report_layout(&mut self.runtime, &mut self.renderer);
+        if !more.is_empty() {
+            self.commit(more);
+        }
     }
 }
 

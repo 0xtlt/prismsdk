@@ -2373,6 +2373,7 @@
       case "drop": return el && setDropTarget(el, p.id, p.types);
       case "keys": return setKeys(el, p.local, p.global);
       case "consume": el._consume = p.keys && p.keys.length ? new Set(p.keys) : null; return;
+      case "layout": return setLayoutReports(el, p.on);
       // Text field selections (#86).
       case "sel": return el && setFieldSelection(el, p.start, p.end);
       // A rich input's runs (#115).
@@ -5233,6 +5234,46 @@ void main() {
   }
 
   const isMainStack = (st) => navState()?.stack === st;
+  // --- Element frames (#192): measured by the page, sent when they change ---
+  /** Elements that report their frame, with the frame last sent. */
+  const layoutEls = new Map();
+  const layoutObserver = typeof ResizeObserver === "function" ? new ResizeObserver(() => reportLayouts()) : null;
+  function setLayoutReports(el, on) {
+    if (!el) return;
+    if (on && !layoutEls.has(el)) { layoutEls.set(el, null); layoutObserver?.observe(el); }
+    if (!on && layoutEls.has(el)) { layoutEls.delete(el); layoutObserver?.unobserve(el); }
+  }
+  /** `el`'s frame in the page's layout coordinates before scrolling: the
+   *  scroll offsets of its scrolling ancestors and of the window added back. */
+  function layoutFrame(el) {
+    const r = el.getBoundingClientRect();
+    let x = r.left + (window.scrollX || 0), y = r.top + (window.scrollY || 0);
+    for (let n = el.parentElement; n; n = n.parentElement) {
+      x += n.scrollLeft || 0;
+      y += n.scrollTop || 0;
+    }
+    return { x, y, w: r.width, h: r.height };
+  }
+  let layoutQueued = false;
+  /** Sends the frames that changed, once the browser laid the page out. */
+  function reportLayouts() {
+    if (!layoutEls.size || layoutQueued) return;
+    layoutQueued = true;
+    const run = () => {
+      layoutQueued = false;
+      for (const [el, last] of layoutEls) {
+        if (!el.isConnected) { layoutEls.delete(el); layoutObserver?.unobserve(el); continue; }
+        const f = layoutFrame(el);
+        const round = (v) => Math.round(v * 100) / 100;
+        const now = { x: round(f.x), y: round(f.y), w: round(f.w), h: round(f.h) };
+        if (last && last.x === now.x && last.y === now.y && last.w === now.w && last.h === now.h) continue;
+        layoutEls.set(el, now);
+        send({ t: "layout", id: Number(el.dataset.pid), ...now });
+      }
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(run); else run();
+  }
+  addEventListener("resize", () => reportLayouts());
   /** The main stack's top screen names the page: its stack was built before
    *  the root that makes it the main one (the first tree, a reconnection). */
   function retitle() {
@@ -6387,6 +6428,7 @@ void main() {
     flushOverlays();
     focusAsked = null;
     flushStates();
+    reportLayouts();
     if (msg.t === "reset") sceneResetEnd();
     quiet = false;
     // The live tree replaced the first paint: its style rules can go, and

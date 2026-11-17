@@ -188,6 +188,27 @@ how long the content is.
 | iOS, iPadOS, visionOS, watchOS, Android | the usual indicators (already overlay) | indicators off |
 | Linux | GTK overlay scrolling | `PolicyType::External` |
 
+## Where an element ended up
+
+`on_layout` hears an element's frame after each layout that moved or resized it, and `cx.frame_of(id)` reads the last one of an element with an `.id()` that reports it (`on_layout`, or `track_layout()` without a handler), #192. Hit-test a rubber-band selection against rows, find the drop slot under the pointer, without estimating heights from fonts:
+
+```rust
+div()
+    .children(self.rows.iter().map(|r| {
+        div().id(format!("row-{}", r.id)).track_layout().child(row_view(r))
+    }))
+    .on_drag(cx.listener(|this, e: &DragEvent, cx| {
+        // The pointer, in the same space as the frames.
+        let Some(list) = cx.frame_of("list") else { return };
+        let at = list.to_layout(e.position());
+        this.hovered = this.rows.iter().position(|r| {
+            cx.frame_of(&format!("row-{}", r.id)).is_some_and(|f| f.contains(at))
+        });
+    }))
+```
+
+A frame (`Rect { x, y, width, height }`, with `contains`, `intersects`, `center`) is in points, in the window's layout coordinates **before scrolling**: two elements in the same `scroll()` keep their distance as it scrolls, so frames and a point measured from one of them (`to_layout`) compare at any scroll offset. Add the scroll view's offset (`on_scroll`) for a position on screen. Transforms (`offset`, animations) are not included. Native backends report it from Prism's layout (the frames of the ancestors added up, as soon as a layout moves it); the web from the page's (`getBoundingClientRect` with the scroll offsets added back, after each update, on resize and when the element itself resizes). Frames of different screens or overlays are not in a shared space.
+
 ## Backends
 
 | | Web | macOS | iOS · tvOS · visionOS | watchOS | Linux | Android |

@@ -598,6 +598,16 @@ pub(crate) fn parse_event(v: &Value) -> Option<UiEvent> {
         // `null`: an optional date picker was cleared (#89).
         "change" => Some(UiEvent::Change(id, change_value(v.get("v")?)?)),
         "menu" => Some(UiEvent::MenuSelect(id)),
+        // A frame the page measured (#192): `{"t":"layout","id","x","y","w","h"}`.
+        "layout" => Some(UiEvent::Layout(
+            id,
+            prism_core::Rect::new(
+                v.get("x")?.as_f64()? as f32,
+                v.get("y")?.as_f64()? as f32,
+                v.get("w")?.as_f64()? as f32,
+                v.get("h")?.as_f64()? as f32,
+            ),
+        )),
         "scroll" => Some(UiEvent::Scroll(
             id,
             v.get("o")?.as_f64()? as f32,
@@ -1265,6 +1275,8 @@ impl Encoder {
             Patch::SetKeyEvents { id, local, global } => {
                 json!({ "op": "keys", "id": id, "local": local, "global": global })
             }
+            // Elements whose frame the page reports (#192).
+            Patch::SetLayoutEvents { id, on } => json!({ "op": "layout", "id": id, "on": on }),
             // Keys the page keeps from the focused field (#181).
             Patch::SetConsumedKeys { id, keys } => {
                 json!({ "op": "consume", "id": id, "keys": keys })

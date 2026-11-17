@@ -589,6 +589,11 @@ pub struct VNode {
     /// it (#181): a text field does not also act on them.
     pub consume_keys: Vec<String>,
 
+    /// Its frame after each layout that moved or resized it (#192).
+    pub on_layout: Option<Handler<crate::events::LayoutEvent>>,
+    /// Its frame is kept for [`App::frame_of`](crate::App::frame_of) (#192).
+    pub track_layout: bool,
+
     // --- Wheel and pinch (#133) ---
     /// Wheel and trackpad scrolling over the node.
     pub on_wheel: Option<Handler<crate::events::WheelEvent>>,
@@ -649,6 +654,8 @@ impl VNode {
             on_web_load: None,
             on_wheel: None,
             on_magnify: None,
+            on_layout: None,
+            track_layout: false,
             drag_buttons: crate::events::pointer_mask::DRAG,
             consume_keys: Vec::new(),
             on_drop_files: None,
@@ -1980,6 +1987,24 @@ impl Div {
     /// which one drags.
     pub fn drag_buttons(mut self, buttons: &[crate::events::PointerButton]) -> Self {
         self.0.drag_buttons = buttons.iter().fold(0, |bits, b| bits | b.drag_bit());
+        self
+    }
+
+    /// Called after a layout that moved or resized the container, with its
+    /// frame in the window's layout coordinates before scrolling (#192, see
+    /// [`Rect`](crate::Rect)): hit-test a rubber-band selection against
+    /// rows, find the drop slot under the pointer. Also keeps the frame for
+    /// [`App::frame_of`](crate::App::frame_of) when it has an `.id()`. The
+    /// web reports it from the page's layout, native backends from Prism's.
+    pub fn on_layout(mut self, handler: Handler<crate::events::LayoutEvent>) -> Self {
+        self.0.on_layout = Some(handler);
+        self
+    }
+
+    /// Keeps the container's frame for [`App::frame_of`](crate::App::frame_of)
+    /// (with its `.id()`), without a handler (#192).
+    pub fn track_layout(mut self) -> Self {
+        self.0.track_layout = true;
         self
     }
 

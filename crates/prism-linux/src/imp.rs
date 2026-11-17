@@ -1031,6 +1031,11 @@ fn relayout(s: &mut State) {
     }
     let insets = s.renderer.widgets.chrome_insets();
     s.renderer.layout(w, h, insets);
+    // Elements that report their frame and moved (#192).
+    let more = prism_native::report_layout(&mut s.runtime, &mut s.renderer);
+    if !more.is_empty() {
+        commit(s, more);
+    }
 }
 
 pub(crate) fn device_reply(

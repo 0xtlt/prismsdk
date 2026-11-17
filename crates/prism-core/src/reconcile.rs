@@ -222,6 +222,15 @@ pub enum Patch {
         /// Keys anywhere in the window.
         global: bool,
     },
+    /// Whether a node reports its frame after layout (`on_layout`,
+    /// `track_layout`, #192): backends send `UiEvent::Layout` when it moves
+    /// or resizes.
+    SetLayoutEvents {
+        /// The node.
+        id: NodeId,
+        /// Reports its frame.
+        on: bool,
+    },
     /// Keys the node's `on_key_down` takes from the focused control in it
     /// (`consume_keys`, #181): backends keep the control (and the page)
     /// from acting on them. Native backends can also ask
@@ -383,6 +392,8 @@ pub enum UiEvent {
     Dismiss(NodeId, crate::element::DismissReason),
     /// Wheel or trackpad scrolling over a view that listens to it (#133).
     Wheel(NodeId, crate::events::WheelEvent),
+    /// A node that reports its layout was laid out at a new frame (#192).
+    Layout(NodeId, crate::events::Rect),
     /// A pinch over a view that listens to it (#133).
     Magnify(NodeId, crate::events::MagnifyEvent),
     /// A key press: the node with the focus (or `None` if nothing Prism
@@ -442,6 +453,8 @@ struct MNode {
     keys: (bool, bool),
     /// Keys taken from the focused control in it (#181).
     consume_keys: Vec<String>,
+    /// It reports its frame (#192).
+    layout_events: bool,
     /// The selection the app last rendered (`.selection`, #86).
     selection: Option<SelectionEvent>,
     /// The selection the field shows, as far as Prism knows: the last one
@@ -538,6 +551,7 @@ pub struct Reconciler {
     pointer_move: HashMap<NodeId, Handler<crate::events::PointerEvent>>,
     drag: HashMap<NodeId, Handler<crate::events::DragEvent>>,
     wheel: HashMap<NodeId, Handler<crate::events::WheelEvent>>,
+    layout: HashMap<NodeId, Handler<crate::events::LayoutEvent>>,
     magnify: HashMap<NodeId, Handler<crate::events::MagnifyEvent>>,
     key_down: HashMap<NodeId, Handler<crate::events::KeyEvent>>,
     global_key: HashMap<NodeId, Handler<crate::events::KeyEvent>>,
@@ -735,6 +749,21 @@ impl Reconciler {
         focused: Option<NodeId>,
     ) -> Vec<Handler<crate::events::KeyEvent>> {
         self.key_handlers_of(focused, &self.key_up, &self.global_key_up)
+    }
+
+    /// The `on_layout` handler of node `id` (#192).
+    pub fn layout_handler(&self, id: NodeId) -> Option<Handler<crate::events::LayoutEvent>> {
+        self.layout.get(&id).cloned()
+    }
+
+    /// Whether node `id` is mounted and reports its frame (#192).
+    pub fn reports_layout(&self, id: NodeId) -> bool {
+        self.nodes.get(&id).is_some_and(|n| n.layout_events)
+    }
+
+    /// The `.id()` of node `id`, if it has one.
+    pub fn name_of(&self, id: NodeId) -> Option<&str> {
+        self.nodes.get(&id).and_then(|n| n.name.as_deref())
     }
 
     /// Whether `key` pressed in node `focused` is taken from the focused
@@ -1167,6 +1196,8 @@ impl Reconciler {
             on_magnify,
             drag_buttons,
             consume_keys,
+            on_layout,
+            track_layout,
             ..
         } = *vnode;
         app.window.watch_widths(&style);
@@ -1184,6 +1215,17 @@ impl Reconciler {
             self.autofocus.push(id);
         }
         {
+            let m = self.nodes.get_mut(&id).expect("node exists");
+            let reports = on_layout.is_some() || track_layout;
+            if m.layout_events != reports {
+                m.layout_events = reports;
+                self.patches
+                    .push(Patch::SetLayoutEvents { id, on: reports });
+            }
+            match on_layout {
+                Some(h) => self.layout.insert(id, h),
+                None => self.layout.remove(&id),
+            };
             let m = self.nodes.get_mut(&id).expect("node exists");
             if m.consume_keys != consume_keys {
                 self.patches.push(Patch::SetConsumedKeys {
@@ -1880,6 +1922,7 @@ impl Reconciler {
                 drop_types: None,
                 keys: (false, false),
                 consume_keys: Vec::new(),
+                layout_events: false,
                 selection: None,
                 shown_selection: None,
                 select_events: false,
@@ -1940,6 +1983,7 @@ impl Reconciler {
         self.drag.remove(&id);
         self.wheel.remove(&id);
         self.magnify.remove(&id);
+        self.layout.remove(&id);
         self.key_down.remove(&id);
         self.global_key.remove(&id);
         self.key_up.remove(&id);

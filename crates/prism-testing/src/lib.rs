@@ -38,6 +38,8 @@ pub struct HNode {
     pub keys: (bool, bool),
     /// Keys taken from the focused control (`consume_keys`, #181).
     pub consumed_keys: Vec<String>,
+    /// It reports its frame (`on_layout`, `track_layout`, #192).
+    pub reports_layout: bool,
     /// The selection last set by the app (`Patch::SetSelection`, #86).
     pub selection: Option<(usize, usize)>,
     /// Selection changes reported (`Patch::SetSelectEvents`).
@@ -201,6 +203,7 @@ impl Backend for Host {
                             drop_types: None,
                             keys: (false, false),
                             consumed_keys: Vec::new(),
+                            reports_layout: false,
                             selection: None,
                             select_events: false,
                             island: None,
@@ -265,6 +268,9 @@ impl Backend for Host {
                 }
                 Patch::SetConsumedKeys { id, keys } => {
                     self.node(*id, "SetConsumedKeys").consumed_keys = keys.clone()
+                }
+                Patch::SetLayoutEvents { id, on } => {
+                    self.node(*id, "SetLayoutEvents").reports_layout = *on
                 }
                 Patch::SetSelection { id, start, end } => {
                     self.node(*id, "SetSelection").selection = Some((*start, *end))
