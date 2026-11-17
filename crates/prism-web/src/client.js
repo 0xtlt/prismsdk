@@ -382,6 +382,14 @@
     e.stopImmediatePropagation();
   }, true);
   document.addEventListener("keydown", reportKey);
+  // Focus changes (#224): a Prism element (a field, a focusable view) took
+  // or lost the focus, the window's included.
+  for (const [type, on] of [["focusin", true], ["focusout", false]]) {
+    document.addEventListener(type, (e) => {
+      const t = e.target;
+      if (t && t.dataset && t.dataset.pid) send({ t: "focus", id: Number(t.dataset.pid), on });
+    });
+  }
   function reportKey(e) {
     if (e.isComposing || !e.key || e.prismShortcut) return;
     const t = e.target && e.target.closest ? e.target : null;

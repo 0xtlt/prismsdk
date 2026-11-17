@@ -999,3 +999,13 @@ test("a filled picture is cropped around its focal point (#218)", () => {
   page.ws.deliver({ t: "patch", p: [{ op: "config", id: 2, config: "object-position:50% 50%;" }] });
   assert.equal(page.node(2).style.objectPosition, "50% 50%");
 });
+
+test("fields report when they take and lose the focus (#224)", () => {
+  const page = live([{ op: "create", id: 2, kind: "text_input" }, { op: "create", id: 3, kind: "text_area" }, ...root([2, 3])]);
+  page.node(2).dispatchEvent({ type: "focusin" });
+  assert.deepEqual(lastSent(page), { t: "focus", id: 2, on: true });
+  page.node(2).dispatchEvent({ type: "focusout" });
+  assert.deepEqual(lastSent(page), { t: "focus", id: 2, on: false });
+  page.node(3).dispatchEvent({ type: "focusin" });
+  assert.deepEqual(lastSent(page), { t: "focus", id: 3, on: true });
+});

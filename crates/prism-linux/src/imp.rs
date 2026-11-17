@@ -1605,6 +1605,11 @@ fn report_state(id: NodeId, state: prism_core::Interaction, on: bool) {
                 relayout(s);
                 UPDATING.set(false);
             }
+            // The app hears focus changes (#224).
+            for e in s.renderer.take_focus_changes() {
+                let patches = s.runtime.dispatch(e);
+                commit(s, patches);
+            }
         })
     });
 }

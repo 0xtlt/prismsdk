@@ -736,7 +736,12 @@ pub extern "system" fn Java_dev_prism_PrismHost_nativeEvent(
                 if let Some((id, state, on)) = prism_native::remote::state_event(&v) {
                     s.renderer.set_interaction(id, state, on);
                 }
-                Vec::new()
+                // The app hears focus changes (#224).
+                let mut patches = Vec::new();
+                for e in s.renderer.take_focus_changes() {
+                    patches.extend(s.runtime.dispatch(e));
+                }
+                patches
             }
             Some(t) if t.starts_with("device") || t == "notif" => {
                 crate::services::event(&mut s.runtime, &v)

@@ -471,6 +471,8 @@ pub struct NativeRenderer<W: Widgets> {
     extras: extras::Extras,
     /// The node with the keyboard focus (its ancestors are focus-within).
     focused: Option<NodeId>,
+    /// Focus changes for the app (`on_focus_change`, #224), in order.
+    focus_changes: Vec<(NodeId, bool)>,
     /// Runtime-mounted layers (separate layout roots covering the window).
     layers: Vec<NodeId>,
     /// Overlay presentations (sheets fill their area, others fit content).
@@ -524,6 +526,7 @@ impl<W: Widgets> NativeRenderer<W> {
             zoom: 1.,
             extras: extras::Extras::default(),
             focused: None,
+            focus_changes: Vec::new(),
             layers: Vec::new(),
             overlays: HashMap::new(),
             window: (0., 0.),
@@ -1354,13 +1357,29 @@ impl<W: Widgets> NativeRenderer<W> {
             {
                 changed |= self.set_state_bit(previous, Interaction::Focus, false);
                 changed |= self.set_focus_within(previous, false);
+                self.focus_changes.push((previous, false));
             }
         } else if self.focused == Some(id) {
             self.focused = None;
         }
+        // For the app (#224): only real changes.
+        let was = self.interactions(id).contains(Interaction::Focus);
+        if was != on && self.nodes.contains_key(&id) {
+            self.focus_changes.push((id, on));
+        }
         changed |= self.set_state_bit(id, Interaction::Focus, on);
         changed |= self.set_focus_within(id, on);
         changed
+    }
+
+    /// Focus changes since the last call, as events for the runtime
+    /// (`on_focus_change`, #224). Backends dispatch them after reporting a
+    /// focus state with [`set_interaction`](Self::set_interaction).
+    pub fn take_focus_changes(&mut self) -> Vec<prism_core::UiEvent> {
+        self.focus_changes
+            .drain(..)
+            .map(|(id, on)| prism_core::UiEvent::FocusChange(id, on))
+            .collect()
     }
 
     /// The interaction states `id` is in.

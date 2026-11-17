@@ -11,6 +11,7 @@ The first version, not yet on crates.io.
 
 ### Added
 
+- `on_focus_change(|e: &FocusEvent, cx| …)` (#224) on text fields, rich inputs, text areas and views: the node took (`e.focused`) or lost the keyboard focus, for « commit on blur » in inspectors and inline renames. The web reports `focusin` / `focusout`; native backends report what their shared focus tracking sees (`NativeRenderer::take_focus_changes`). `UiEvent::FocusChange` is new.
 - Auto margins (#228): `m_auto()`, `mx_auto()`, `my_auto()`, `mt_auto()`, `mr_auto()`, `mb_auto()`, `ml_auto()` take the free space like CSS `margin: auto`: a centered column without an `items_center()` parent, the last item of a row pushed to the end without a spacer, a footer at the bottom. `Style::margin_auto`; CSS `auto` on the web, taffy's auto margins natively.
 - `button(label).link(path)` and `ui::button(label).link(path)` (#230): a button that navigates. Natively it stays the platform's (or the theme's) button; on the web it is an `<a href>` with a button's look, so Cmd/Ctrl-click, a middle click and « Open in new tab » work, before the script runs too. It is announced as a link.
 - `picture(src).object_position(x, y)` (#218) crops a filled picture around a focal point (fractions, the center by default), like CSS `object-position`, on every backend: `object-position` on the web, `contentsRect` on macOS, iOS, iPadOS, tvOS and visionOS, a matrix on Android, a covering paintable on Linux. `prism_core::cover_crop` and `picture_position` compute it.

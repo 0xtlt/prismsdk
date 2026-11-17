@@ -235,3 +235,26 @@ fn zoom_scales_shadows_borders_and_blur() {
     assert_eq!(s.borders()[2].width, 2.);
     assert_eq!(s.backdrop_blur, 20.);
 }
+
+/// #224: focus moves become events for the app, in order, once each.
+#[test]
+fn focus_changes_are_queued_for_the_app() {
+    use prism_core::UiEvent;
+    let mut h = tree(|| div().child(text_input()).child(text_input()));
+    let fields = h.w().of_kind(NodeKind::TextInput);
+    let (a, b) = (fields[0], fields[1]);
+    h.r.set_interaction(a, Interaction::Focus, true);
+    assert_eq!(h.r.take_focus_changes(), [UiEvent::FocusChange(a, true)]);
+    h.r.set_interaction(a, Interaction::Focus, true);
+    assert!(h.r.take_focus_changes().is_empty(), "no change, no event");
+    h.r.set_interaction(b, Interaction::Focus, true);
+    assert_eq!(
+        h.r.take_focus_changes(),
+        [
+            UiEvent::FocusChange(a, false),
+            UiEvent::FocusChange(b, true)
+        ]
+    );
+    h.r.set_interaction(b, Interaction::Focus, false);
+    assert_eq!(h.r.take_focus_changes(), [UiEvent::FocusChange(b, false)]);
+}
