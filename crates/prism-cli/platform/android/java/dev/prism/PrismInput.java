@@ -938,7 +938,9 @@ final class PrismInput {
             float r = 14 * d;
             p.setBackgroundDrawable(surface(new float[]{r, r, r, r, r, r, r, r}));
             p.setElevation(12 * d);
-            p.setOutsideTouchable(!(n.fixed || n.manual || n.keepFocus));
+            // `keepfocus` too (#182): not focusable, so the touch outside
+            // still reaches the anchor's field while the popup closes.
+            p.setOutsideTouchable(!(n.fixed || n.manual));
             // A touch outside closes it: say so (#156); otherwise it is Back.
             p.setTouchInterceptor((v, e) -> {
                 if (e.getAction() == MotionEvent.ACTION_OUTSIDE) n.dismissReason = "outside";

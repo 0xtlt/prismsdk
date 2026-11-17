@@ -604,6 +604,16 @@ pub fn place_beside(
     })
 }
 
+impl OverlayConfig {
+    /// A popover that leaves the focus to its anchor and closes on a press
+    /// outside it, which still reaches what it landed on (#182): backends
+    /// watch presses around it instead of the platform's light dismiss
+    /// (which would take the focus or swallow the press).
+    pub fn light_dismiss_beside_focus(&self) -> bool {
+        self.kind == OverlayKind::Popover && self.keep_focus && !self.manual && !self.fixed
+    }
+}
+
 /// An overlay's presentation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct OverlayConfig {
@@ -620,8 +630,9 @@ pub struct OverlayConfig {
     pub manual: bool,
     /// A popover that leaves the keyboard focus where it is (the anchor's
     /// text field keeps receiving keys) and does not take it on a click
-    /// inside: inline suggestion menus. Implies `manual`. See
-    /// [`Overlay::take_focus`](crate::Overlay::take_focus).
+    /// inside: inline suggestion menus. A press outside still closes it
+    /// unless `manual` (#182); the press then reaches what it landed on.
+    /// See [`Overlay::take_focus`](crate::Overlay::take_focus).
     pub keep_focus: bool,
     /// The side of its anchor a popover opens on. See
     /// [`Overlay::side`](crate::Overlay::side).
@@ -822,6 +833,35 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(inline.encode(), "popover manual keepfocus");
+        // #182: a popover beside the focus closes on presses around it
+        // unless manual or fixed; other overlays never watch them.
+        assert!(!inline.light_dismiss_beside_focus());
+        let light = OverlayConfig {
+            manual: false,
+            ..inline
+        };
+        assert!(light.light_dismiss_beside_focus());
+        assert!(
+            !OverlayConfig {
+                fixed: true,
+                ..light
+            }
+            .light_dismiss_beside_focus()
+        );
+        assert!(
+            !OverlayConfig {
+                keep_focus: false,
+                ..light
+            }
+            .light_dismiss_beside_focus()
+        );
+        assert!(
+            !OverlayConfig {
+                kind: OverlayKind::Dialog,
+                ..light
+            }
+            .light_dismiss_beside_focus()
+        );
         assert_eq!(OverlayConfig::decode(&inline.encode()), inline);
         let all = OverlayConfig {
             kind: OverlayKind::Sheet,

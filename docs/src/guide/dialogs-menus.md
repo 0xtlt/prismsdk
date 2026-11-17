@@ -99,21 +99,21 @@ div()
     .children(text.starts_with('/').then(|| {
         popover(menu(items))
             .open(true)
-            .light_dismiss(false)   // a click outside (in the field) does not close it
             .take_focus(false)      // the field keeps the keyboard focus
+            .on_dismiss(…)          // a press outside it, in the field too, closes it
     }))
 ```
 
 - `.light_dismiss(false)`: only the app closes it (`open(false)`, or by no longer rendering it), or Escape while the focus is inside it (then `on_dismiss` runs). `dismissible(false)` also refuses Escape.
-- `.take_focus(false)`: showing it moves no focus, and clicking or tapping its items runs their handlers without taking the focus from the field. Keys go to the field: handle Escape, the arrows and Enter there (`on_key`). It implies `light_dismiss(false)` (a click in the field would otherwise close it). Fields inside such a popover cannot be typed in.
+- `.take_focus(false)`: showing it moves no focus, and clicking or tapping its items runs their handlers without taking the focus from the field. Keys go to the field: handle Escape, the arrows and Enter there (`on_key_down`, with `consume_keys` so the field does not also act on them, #181). A press outside it, the field included, closes it (`on_dismiss`, reason `Outside`) and still reaches what it landed on: the caret moves, a drag starts (#182). Typing does not close it. Add `.light_dismiss(false)` to keep it open until the app closes it. Fields inside such a popover cannot be typed in.
 
 | | `light_dismiss(false)` | `take_focus(false)` |
 |---|---|---|
-| Web | `popover="manual"` | no focus move; presses inside keep the field focused |
-| macOS | `NSPopover`, application-defined behavior | a borderless, non-activating child panel (it never becomes key) |
-| iOS, iPadOS, visionOS | taps around it reach the window (passthrough views) | the field stays first responder, the keyboard stays up (if UIKit moves the first responder while presenting, the field takes it back) |
-| Linux | `GtkPopover` without autohide | a `GtkPopover` without autohide that cannot take the focus |
-| Android | `PopupWindow` ignoring outside touches | a non-focusable `PopupWindow` above the keyboard |
+| Web | `popover="manual"` | no focus move; presses inside keep the field focused; a capture-phase `pointerdown` around it closes it without holding the press |
+| macOS | `NSPopover`, application-defined behavior | a borderless, non-activating child panel (it never becomes key); a local mouse-down monitor on the window closes it and returns the event |
+| iOS, iPadOS, visionOS | taps around it reach the window (passthrough views) | the field stays first responder, the keyboard stays up (if UIKit moves the first responder while presenting, the field takes it back); a passive touch watcher on the window closes it once a touch outside ends |
+| Linux | `GtkPopover` without autohide | a `GtkPopover` without autohide that cannot take the focus; an unclaimed capture-phase click gesture on the window closes it |
+| Android | `PopupWindow` ignoring outside touches | a non-focusable `PopupWindow` above the keyboard; outside touches close it and reach the window below |
 
 Sheets and dialogs ignore both options. On macOS the panel follows the anchor at each layout, not while a scroll view scrolls under it.
 

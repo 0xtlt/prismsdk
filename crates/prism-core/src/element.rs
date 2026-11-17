@@ -2274,18 +2274,22 @@ impl Overlay {
     /// div()
     ///     .child(text_input().value(text).on_input(..))
     ///     .children(text.starts_with('/').then(|| {
-    ///         popover(menu).open(true).light_dismiss(false).take_focus(false)
+    ///         popover(menu).open(true).take_focus(false).on_dismiss(close)
     ///     }))
     /// ```
     ///
-    /// It implies [`light_dismiss(false)`](Overlay::light_dismiss): a click
-    /// in the field would otherwise close it. Keys stay with the field:
-    /// handle Escape and the arrows there. Web: no focus move, presses
-    /// inside keep the field focused; macOS: a non-activating child panel
-    /// instead of an `NSPopover`; iOS: the field stays first responder (the
-    /// keyboard stays up); Linux: a `GtkPopover` without autohide that
-    /// cannot take the focus; Android: a non-focusable `PopupWindow`.
-    /// Sheets and dialogs ignore it.
+    /// A press outside it, the anchor's field included, closes it
+    /// (`on_dismiss` with [`DismissReason::Outside`](crate::DismissReason::Outside))
+    /// and still reaches what it landed on: the caret moves, a button runs
+    /// (#182). Typing in the field does not close it.
+    /// [`light_dismiss(false)`](Overlay::light_dismiss) keeps it open until
+    /// the app closes it. Keys stay with the field: handle Escape and the
+    /// arrows there, with [`consume_keys`](crate::Div::consume_keys) (#181).
+    /// Web: no focus move, presses inside keep the field focused; macOS: a
+    /// non-activating child panel instead of an `NSPopover`; iOS: the field
+    /// stays first responder (the keyboard stays up); Linux: a `GtkPopover`
+    /// without autohide that cannot take the focus; Android: a
+    /// non-focusable `PopupWindow`. Sheets and dialogs ignore it.
     pub fn take_focus(self, take_focus: bool) -> Self {
         self.overlay_config(|c| c.keep_focus = !take_focus)
     }

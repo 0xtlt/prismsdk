@@ -27,7 +27,9 @@
 //! (`present_if_pending`). A `manual` or `keep_focus` popover lets taps
 //! through to the window around it (passthrough views, so they do not
 //! close it); a `keep_focus` one leaves the first responder where it is
-//! (the keyboard stays up), taking it back if UIKit moved it.
+//! (the keyboard stays up), taking it back if UIKit moved it, and unless
+//! `manual` a touch around it closes it all the same (a passive watcher on
+//! the window, #182).
 //!
 //! A popover opens on its `side` of the anchor (#113): the matching
 //! `permittedArrowDirections`, the opposite one when the window has no room
@@ -44,8 +46,8 @@ use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSObject, NSObjectProtocol, NSSet};
 use objc2_ui_kit::{
     NSObjectUIAccessibility, UIAdaptivePresentationControllerDelegate, UIColor,
-    UIModalPresentationStyle, UIPress, UIPressesEvent, UIResponder, UITapGestureRecognizer,
-    UITraitCollection, UIView, UIViewController,
+    UIGestureRecognizerDelegate, UIModalPresentationStyle, UIPress, UIPressesEvent, UIResponder,
+    UITapGestureRecognizer, UITraitCollection, UIView, UIViewController,
 };
 use prism_core::NodeId;
 use prism_core::controls::{Backdrop, OverlayConfig, OverlayKind, place_beside};
@@ -57,6 +59,16 @@ pub struct ControllerIvars {
     /// A card over a dimmed screen (dialogs; every overlay on tvOS).
     card: Retained<UIView>,
     custom: Cell<bool>,
+    /// The touch watcher on the window around a popover that leaves the
+    /// focus to its anchor (#182).
+    outside: std::cell::RefCell<
+        Option<(
+            Retained<UIView>,
+            Retained<objc2_ui_kit::UIGestureRecognizer>,
+        )>,
+    >,
+    /// The current touch went down outside the popover.
+    pressed_outside: Cell<bool>,
 }
 
 define_class!(
@@ -99,6 +111,43 @@ define_class!(
             }
         }
 
+        /// A touch in the window around a popover that leaves the focus to
+        /// its anchor (#182): one that went down outside it closes it once
+        /// it ends, after what it landed on has had it (a button's action,
+        /// the field's caret): closing during the touch would cancel it.
+        #[unsafe(method(onOutsideTouch:))]
+        fn on_outside_touch(&self, g: &objc2_ui_kit::UIGestureRecognizer) {
+            use objc2_ui_kit::UIGestureRecognizerState as S;
+            match g.state() {
+                S::Began => {
+                    let Some(view) = self.viewIfLoaded() else { return };
+                    let p = g.locationInView(Some(&view));
+                    let b = view.bounds();
+                    let inside =
+                        p.x >= 0. && p.y >= 0. && p.x <= b.size.width && p.y <= b.size.height;
+                    self.ivars().pressed_outside.set(!inside);
+                }
+                S::Ended | S::Cancelled | S::Failed => {
+                    if !self.ivars().pressed_outside.replace(false) || self.ivars().fixed.get() {
+                        return;
+                    }
+                    // On the next turn of the run loop: the touch ends first.
+                    let none: Option<&AnyObject> = None;
+                    let _: () = unsafe {
+                        msg_send![self, performSelector: sel!(closeOutside), withObject: none, afterDelay: 0.0f64]
+                    };
+                }
+                _ => {}
+            }
+        }
+
+        #[unsafe(method(closeOutside))]
+        fn close_outside(&self) {
+            if self.presentingViewController().is_some() {
+                self.close_by_user(prism_core::DismissReason::Outside);
+            }
+        }
+
         /// A tap on the dimmed backdrop, outside the card.
         #[unsafe(method(onBackdrop:))]
         fn on_backdrop(&self, tap: &UITapGestureRecognizer) {
@@ -131,6 +180,8 @@ impl OverlayController {
             fixed: Cell::new(false),
             card,
             custom: Cell::new(false),
+            outside: Default::default(),
+            pressed_outside: Cell::new(false),
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -144,7 +195,40 @@ impl OverlayController {
         })
     }
 
+    /// Watches touches in `window` while shown (#182): a zero-duration
+    /// press that never blocks or cancels anything (the field still gets
+    /// its tap).
+    #[cfg_attr(target_os = "tvos", allow(dead_code))]
+    fn watch_outside(&self, window: &UIView, delegate: &OverlayDelegate) {
+        self.unwatch_outside();
+        let target: &AnyObject = self;
+        let g = unsafe {
+            objc2_ui_kit::UILongPressGestureRecognizer::initWithTarget_action(
+                objc2_ui_kit::UILongPressGestureRecognizer::alloc(self.mtm()),
+                Some(target),
+                Some(sel!(onOutsideTouch:)),
+            )
+        };
+        g.setMinimumPressDuration(0.);
+        g.setAllowableMovement(f64::MAX);
+        g.setCancelsTouchesInView(false);
+        g.setDelaysTouchesBegan(false);
+        g.setDelaysTouchesEnded(false);
+        let d: &AnyObject = delegate;
+        let _: () = unsafe { msg_send![&*g, setDelegate: d] };
+        let g: Retained<objc2_ui_kit::UIGestureRecognizer> = Retained::into_super(g);
+        window.addGestureRecognizer(&g);
+        *self.ivars().outside.borrow_mut() = Some((window.retain(), g));
+    }
+
+    fn unwatch_outside(&self) {
+        if let Some((w, g)) = self.ivars().outside.borrow_mut().take() {
+            w.removeGestureRecognizer(&g);
+        }
+    }
+
     fn close_by_user(&self, reason: prism_core::DismissReason) {
+        self.unwatch_outside();
         let id = self.ivars().id.get();
         if self.presentingViewController().is_some() {
             self.dismissViewControllerAnimated_completion(true, None);
@@ -163,6 +247,18 @@ define_class!(
     pub struct OverlayDelegate;
 
     unsafe impl NSObjectProtocol for OverlayDelegate {}
+
+    /// The outside-touch watcher (#182) runs beside every other gesture.
+    unsafe impl UIGestureRecognizerDelegate for OverlayDelegate {
+        #[unsafe(method(gestureRecognizer:shouldRecognizeSimultaneouslyWithGestureRecognizer:))]
+        fn simultaneous(
+            &self,
+            _g: &objc2_ui_kit::UIGestureRecognizer,
+            _other: &objc2_ui_kit::UIGestureRecognizer,
+        ) -> bool {
+            true
+        }
+    }
 
     unsafe impl UIAdaptivePresentationControllerDelegate for OverlayDelegate {
         /// A popover closes on a tap outside it, a sheet on a swipe down.
@@ -316,6 +412,11 @@ impl Overlay {
             #[cfg(target_os = "tvos")]
             let _ = (&vc, keep_focus);
         });
+        // A press around it closes it, and reaches what it landed on (#182).
+        #[cfg(not(target_os = "tvos"))]
+        if self.config.get().light_dismiss_beside_focus() {
+            self.vc.watch_outside(&window, &self.delegate);
+        }
         // A bare dialog appears at once: no cross-fade of its own (#166).
         let animated = !self.config.get().bare;
         top.presentViewController_animated_completion(&self.vc, animated, Some(&done));
@@ -336,6 +437,7 @@ impl Overlay {
 
     pub fn close(&self) {
         self.open.set(false);
+        self.vc.unwatch_outside();
         if self.presented() {
             self.vc.dismissViewControllerAnimated_completion(true, None);
         }

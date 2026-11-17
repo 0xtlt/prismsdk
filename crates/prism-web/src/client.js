@@ -497,6 +497,16 @@
   let escapeAt = -Infinity;
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") escapeAt = performance.now(); }, true);
   const lightDismissReason = () => (performance.now() - escapeAt < 500 ? "escape" : "outside");
+  // A press around an open popover that leaves the focus to its anchor
+  // closes it, and goes on to what it landed on (the field's caret, #182).
+  document.addEventListener("pointerdown", (e) => {
+    const t = e.target;
+    for (const el of [...placedOverlays]) {
+      if (el._boxKind !== "popover" || !el._keepFocus || el._manual || el._fixed || !el._open) continue;
+      if (el._box && t && el._box.contains(t)) continue;
+      overlayDismissed(el, "outside");
+    }
+  }, true);
   function overlayBox(el, config) {
     const t = config.split(" ");
     const kind = ["popover", "dialog"].includes(t[0]) ? t[0] : "sheet";
@@ -559,8 +569,8 @@
       el._box = box;
       el._boxKind = kind;
     }
-    // Leaving the focus to the anchor implies no light dismiss (a click in
-    // the anchor's field would close it).
+    // Leaving the focus to the anchor: a manual popover (the browser's light
+    // dismiss would swallow the press), closed by `pressedAround` (#182).
     if (kind === "popover") box.setAttribute("popover", el._fixed || el._manual || el._keepFocus ? "manual" : "auto");
     box.dataset.medium = t.includes("medium") ? "1" : "";
     box.dataset.prismBackdrop = ["clear", "dim", "blur"].includes(opt("backdrop")) ? opt("backdrop") : "";
