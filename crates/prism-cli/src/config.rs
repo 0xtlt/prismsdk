@@ -41,6 +41,7 @@
 //!
 //! [network]
 //! allow_http = ["preview.localhost"]  # plain-HTTP hosts (and their subdomains), on one line
+//! allow_http_dev = ["192.168.1.20"]   # the same, in development builds only (not --release)
 //!
 //! [web]
 //! islands = ["islands/chart"]   # WASM island crates (on one line)
@@ -113,6 +114,26 @@ pub struct Project {
     /// reach over plain HTTP: App Transport Security exceptions on Apple
     /// platforms, cleartext traffic on Android (#152).
     pub http_hosts: Vec<String>,
+    /// `[network] allow_http_dev`: the same, for development builds only
+    /// (`prism run` / `dev` without `--release`): release builds and
+    /// store uploads leave them out (#187).
+    pub http_hosts_dev: Vec<String>,
+}
+
+impl Project {
+    /// The plain-HTTP hosts of a build: `allow_http`, plus
+    /// `allow_http_dev` unless it is a release build (#187).
+    pub fn http_hosts_for(&self, release: bool) -> Vec<String> {
+        let mut hosts = self.http_hosts.clone();
+        if !release {
+            for h in &self.http_hosts_dev {
+                if !hosts.contains(h) {
+                    hosts.push(h.clone());
+                }
+            }
+        }
+        hosts
+    }
 }
 
 /// The `Prism.toml` section of each deployment-target variable.
@@ -283,6 +304,12 @@ impl Project {
                 None => crate::islands::DEFAULT_BUDGET_KB,
             },
             http_hosts: get("network.allow_http")
+                .map(|v| parse_list(&v))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|h| http_host(&h))
+                .collect::<Result<_, _>>()?,
+            http_hosts_dev: get("network.allow_http_dev")
                 .map(|v| parse_list(&v))
                 .unwrap_or_default()
                 .into_iter()

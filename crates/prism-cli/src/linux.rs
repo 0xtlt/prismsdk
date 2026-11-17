@@ -229,6 +229,7 @@ mod tests {
             islands: vec![],
             island_budget_kb: 40.,
             http_hosts: Vec::new(),
+            http_hosts_dev: Vec::new(),
         }
     }
 

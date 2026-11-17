@@ -59,6 +59,7 @@ deployment_target = "13.0"
 
 [network]
 allow_http = ["preview.localhost"]  # plain-HTTP hosts and their subdomains, on one line
+allow_http_dev = ["192.168.1.20"]   # the same, in development builds only
 
 [web]
 islands = ["islands/chart"]   # WASM island crates, on one line (see Islands)
@@ -76,6 +77,12 @@ watchOS and macOS `Info.plist`, and a `network_security_config` with
 cannot name) turns on `NSAllowsLocalNetworking` instead. Give hosts only,
 without a scheme, port or path. App Review asks why a shipped app loads plain
 HTTP: keep it to development hosts.
+
+`[network] allow_http_dev` takes the same hosts, checked the same way, for
+development builds only (#187): `prism run` and `prism dev` without `--release`
+add them; `prism build`, `--release` and `prism publish` leave them out, so a
+store build carries no exception for a laptop's address. A host in both lists
+is allowed everywhere.
 
 `prism run|dev|build web` builds the [islands](guide/islands.md) for
 `wasm32-unknown-unknown` with a size profile, runs wasm-bindgen as a library
