@@ -638,6 +638,23 @@ fn attach_keys(window: &gtk::Window, keys: Rc<KeyState>) {
                 held.push((code, name.clone(), target));
             }
         }
+        // The app's alone (`consume_keys`, #181): the focused field does not
+        // also act on it. Asked from the focused node, wherever its handler is.
+        let focused_node = {
+            let mut next = focus.clone();
+            let mut found = None;
+            while let Some(w) = next {
+                if let Some(id) = node_of(&w) {
+                    found = Some(id);
+                    break;
+                }
+                next = w.parent();
+            }
+            found
+        };
+        let mut consumed = false;
+        with_state(|s| consumed = s.runtime.consumes_key(focused_node, &name));
+        let claimed = claimed || consumed;
         dispatch(UiEvent::Key(
             target,
             prism_core::KeyEvent {

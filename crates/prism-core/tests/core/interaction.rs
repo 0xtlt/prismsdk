@@ -861,3 +861,56 @@ fn arrow_keys_on_a_handle_move_its_row_by_one() {
     assert_eq!(names(&h), ["Write", "Test", "Ship"]);
     assert_eq!(row_texts(&h), ["Write", "Test", "Ship"]);
 }
+
+/// A field under a suggestion menu: the menu takes ↑ ↓ ↵ while open.
+struct Suggest {
+    open: bool,
+}
+
+impl Render for Suggest {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        let keys: &[&str] = if self.open {
+            &["ArrowUp", "ArrowDown", "Enter"]
+        } else {
+            &[]
+        };
+        div()
+            .child(text_input().id("query"))
+            .on_key_down(Rc::new(|_: &KeyEvent, _: &mut App| {}))
+            .consume_keys(keys)
+    }
+}
+
+#[test]
+fn consumed_keys_are_taken_from_the_focused_field_while_declared() {
+    let mut h = Harness::new(|cx| {
+        let root = cx.new_entity(|_| Suggest { open: true });
+        mount(cx, root);
+    });
+    let root = h.host.root.unwrap();
+    let field = h.host.find(|n| n.kind == NodeKind::TextInput).unwrap();
+    assert_eq!(
+        h.host.get(root).consumed_keys,
+        ["ArrowUp", "ArrowDown", "Enter"]
+    );
+    // The field's keys go up to its ancestors' declarations (#181).
+    assert!(h.rt.consumes_key(Some(field), "ArrowDown"));
+    assert!(h.rt.consumes_key(Some(root), "Enter"));
+    assert!(!h.rt.consumes_key(Some(field), "a"));
+    assert!(!h.rt.consumes_key(None, "ArrowDown"));
+    // The menu closed: the field gets its keys back, with one patch.
+    let p = h.update::<Suggest>(|s| s.open = false).to_vec();
+    assert!(p.contains(&Patch::SetConsumedKeys {
+        id: root,
+        keys: vec![]
+    }));
+    assert!(!h.rt.consumes_key(Some(field), "ArrowDown"));
+    // An unrelated render sends nothing.
+    h.rt.app.refresh();
+    let again = h.render().to_vec();
+    assert!(
+        !again
+            .iter()
+            .any(|p| matches!(p, Patch::SetConsumedKeys { .. }))
+    );
+}

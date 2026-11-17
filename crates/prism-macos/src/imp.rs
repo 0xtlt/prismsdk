@@ -4882,10 +4882,19 @@ fn install_key_monitor() {
                 .filter(|tv| crate::interact::text_node(tv).is_some())
                 .map(crate::interact::text_selection);
             hold_key(&key, focused);
+            // The app's alone (`consume_keys`, #181): the focused text view
+            // does not also act on it (↑ moving its caret, ↵ submitting).
+            // Decided as pressed: the handler may close the menu that
+            // declared it (↵ picking a suggestion).
+            let mut consumed = false;
+            with_state(|s| consumed = s.runtime.consumes_key(focused, &key.key));
             dispatch(UiEvent::Key(
                 focused,
                 prism_core::KeyEvent { selection, ..key },
             ));
+            if consumed {
+                return std::ptr::null_mut();
+            }
         }
         event.as_ptr()
     });
