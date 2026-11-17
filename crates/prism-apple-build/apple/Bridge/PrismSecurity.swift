@@ -500,7 +500,7 @@ public func prismWebAuth(_ id: UInt64, _ url: UnsafePointer<CChar>, _ redirect: 
 
 #if os(watchOS)
 @_cdecl("prism_webauthn")
-public func prismWebAuthn(_ id: UInt64, _ create: Bool, _ options: UnsafePointer<CChar>) {
+public func prismWebAuthn(_ id: UInt64, _ create: Bool, _ conditional: Bool, _ options: UnsafePointer<CChar>) {
     failure(id, "unavailable") // no platform passkeys on the watch
 }
 
@@ -523,6 +523,8 @@ private var passkeyRequests: [UInt64: PrismPasskeys] = [:]
 final class PrismPasskeys: NSObject, ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
     let id: UInt64
     var controller: ASAuthorizationController?
+    /// Offered in a field's suggestions (#203).
+    var autofill = false
     init(id: UInt64) { self.id = id }
 
     func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor { anchor() }
@@ -580,7 +582,17 @@ private func userVerification(_ o: [String: Any]?) -> ASAuthorizationPublicKeyCr
 }
 
 @_cdecl("prism_webauthn")
-public func prismWebAuthn(_ id: UInt64, _ create: Bool, _ options: UnsafePointer<CChar>) {
+public func prismWebAuthn(_ id: UInt64, _ create: Bool, _ conditional: Bool, _ options: UnsafePointer<CChar>) {
+    // A pending AutoFill-assisted request (#203) gives way to any new one.
+    #if os(iOS) || os(visionOS)
+    if #available(iOS 16.0, visionOS 1.0, *) {
+        for (pending, request) in passkeyRequests where request.autofill {
+            request.controller?.cancel()
+            passkeyRequests[pending] = nil
+            failure(pending, "cancelled")
+        }
+    }
+    #endif
     guard let o = (try? JSONSerialization.jsonObject(with: Data(String(cString: options).utf8))) as? [String: Any],
           let challenge = base64url(o["challenge"] as? String)
     else { return failure(id, "the WebAuthn options have no challenge") }
@@ -623,6 +635,18 @@ public func prismWebAuthn(_ id: UInt64, _ create: Bool, _ options: UnsafePointer
     controller.presentationContextProvider = delegate
     delegate.controller = controller
     passkeyRequests[id] = delegate
+    // In the suggestions of a field with `textContentType = .username` (#203).
+    if conditional && !create {
+        #if os(iOS) || os(visionOS)
+        if #available(iOS 16.0, visionOS 1.0, *) {
+            delegate.autofill = true
+            controller.performAutoFillAssistedRequests()
+            return
+        }
+        #endif
+        passkeyRequests[id] = nil
+        return failure(id, "unavailable")
+    }
     controller.performRequests()
 }
 

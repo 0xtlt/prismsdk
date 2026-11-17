@@ -967,6 +967,40 @@ test("passkeys of the app's relying party run with the server's options (#94)", 
   assert.deepEqual(page.ws.sent.filter((m) => m.id === 6), [{ t: "device_reply", id: 6, err: "unavailable" }]);
 });
 
+test("a sign-in in a field's suggestions waits, and gives way to another ceremony (#203)", async () => {
+  const page = live([create(1, "view"), root(1)]);
+  const asked = [];
+  page.window.AbortController = class { constructor() { this.signal = { aborted: false }; } abort() { this.signal.aborted = true; this.rejectLater?.(); } };
+  page.window.PublicKeyCredential = function () {};
+  page.window.PublicKeyCredential.isConditionalMediationAvailable = async () => true;
+  page.window.navigator.credentials = {
+    get: (o) => {
+      asked.push(o);
+      if (o.mediation === "conditional") {
+        return new Promise((_, reject) => { o.signal.rejectLater = () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })); });
+      }
+      return Promise.resolve({ toJSON: () => ({ id: "AQI", type: "public-key" }) });
+    },
+  };
+  page.ws.deliver({ t: "device", id: 4, call: "webauthn_rp", create: false, conditional: true, options: { challenge: "AQID", rpId: "example.com" } });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(asked[0].mediation, "conditional");
+  assert.ok(asked[0].signal, "abortable");
+  assert.equal(page.ws.sent.filter((m) => m.id === 4).length, 0, "it waits for the user");
+  // A modal ceremony replaces it: the pending one answers « cancelled ».
+  page.ws.deliver({ t: "device", id: 5, call: "webauthn_rp", create: false, options: { challenge: "AQID", rpId: "example.com" } });
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(page.ws.sent.filter((m) => m.id === 4), [{ t: "device_reply", id: 4, err: "cancelled" }]);
+  assert.equal(asked[1].mediation, undefined);
+  assert.deepEqual(JSON.parse(page.ws.sent.find((m) => m.id === 5).text), { id: "AQI", type: "public-key" });
+  // A browser without it: unavailable.
+  page.window.PublicKeyCredential.isConditionalMediationAvailable = async () => false;
+  page.ws.deliver({ t: "device", id: 6, call: "webauthn_rp", create: false, conditional: true, options: { challenge: "AQID" } });
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(page.ws.sent.filter((m) => m.id === 6), [{ t: "device_reply", id: 6, err: "unavailable" }]);
+});
+
 test("the current .link() of a navigation is the current page (#144)", () => {
   const page = live([create(2, "view"), { op: "link", id: 2, href: "/orders" }, { op: "a11y", id: 2, a11y: { current: true } }, root(2)]);
   assert.equal(page.node(2).localName, "a");

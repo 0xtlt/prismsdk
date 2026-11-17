@@ -2500,6 +2500,48 @@ fn webauthn_ceremonies_pass_the_servers_options_through() {
     find_text(&patches, r#"true | {"id":"x"}"#);
 }
 
+/// #203: a sign-in in a field's suggestions is a conditional `get`.
+#[test]
+fn webauthn_autofill_asks_for_a_conditional_sign_in() {
+    use crate::PlatformRequest;
+    use crate::device::*;
+    struct Plain;
+    impl Render for Plain {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|cx: &mut Context<Plain>| {
+            cx.spawn(async move |_, cx| {
+                let _ = cx
+                    .webauthn_autofill(r#"{"challenge":"AQID","rpId":"example.com"}"#)
+                    .await;
+            });
+            Plain
+        });
+        cx.set_root(root);
+    });
+    let mut rt = Runtime::new(&init);
+    rt.render();
+    let request = rt
+        .take_requests()
+        .into_iter()
+        .find_map(|r| match r {
+            PlatformRequest::Device {
+                call: DeviceCall::WebAuthn(w),
+                ..
+            } => Some(w),
+            _ => None,
+        })
+        .expect("a ceremony");
+    assert!(request.conditional && !request.create);
+    assert_eq!(
+        request.options,
+        r#"{"challenge":"AQID","rpId":"example.com"}"#
+    );
+}
+
 /// #161: the app's whole menu bar, with system items next to its own.
 #[test]
 fn the_menu_bar_mixes_system_and_app_items() {

@@ -268,6 +268,9 @@ pub struct WebAuthnRequest {
     /// `PublicKeyCredentialRequestOptionsJSON`: binary fields in base64url),
     /// with or without the `{"publicKey": …}` wrapper.
     pub options: String,
+    /// A sign-in offered in a field's suggestions (#203): conditional
+    /// mediation, answered when the user picks a passkey there.
+    pub conditional: bool,
 }
 
 /// A browser sign-in session (OAuth 2 / OpenID Connect): see `prism::oauth`.
@@ -417,7 +420,7 @@ impl AsyncApp {
     /// passkeys (`capabilities().passkeys`), `Err(Cancelled)` when the user
     /// declines.
     pub async fn webauthn_create(&self, options: impl Into<String>) -> Result<String, DeviceError> {
-        self.webauthn(true, options.into()).await
+        self.webauthn(true, false, options.into()).await
     }
 
     /// Signs in with a passkey of the app's own relying party (#94):
@@ -425,10 +428,37 @@ impl AsyncApp {
     /// and the answer is the assertion as JSON (`AuthenticationResponseJSON`)
     /// for the server to verify. See [`webauthn_create`](Self::webauthn_create).
     pub async fn webauthn_get(&self, options: impl Into<String>) -> Result<String, DeviceError> {
-        self.webauthn(false, options.into()).await
+        self.webauthn(false, false, options.into()).await
     }
 
-    async fn webauthn(&self, create: bool, options: String) -> Result<String, DeviceError> {
+    /// Offers the app's passkeys in the suggestions of a sign-in field
+    /// (#203, « conditional mediation »): starts at once with the server's
+    /// `PublicKeyCredentialRequestOptionsJSON` (no `allowCredentials`) and
+    /// answers the assertion JSON when the user picks a passkey from the
+    /// suggestions of a field marked `.attr("autocomplete", "username webauthn")`.
+    /// Start it as the sign-in screen appears; a
+    /// [`webauthn_get`](Self::webauthn_get) or another call replaces it
+    /// (this one then answers `Err(Cancelled)`).
+    ///
+    /// Web: `navigator.credentials.get({ mediation: "conditional" })` where
+    /// the browser has it; iOS, iPadOS, visionOS:
+    /// `ASAuthorizationController.performAutoFillAssistedRequests` (the
+    /// field gets `textContentType = .username` from its `autocomplete`).
+    /// `Err(Unavailable)` elsewhere (macOS, Android, older browsers): keep a
+    /// « Sign in with a passkey » button calling `webauthn_get`.
+    pub async fn webauthn_autofill(
+        &self,
+        options: impl Into<String>,
+    ) -> Result<String, DeviceError> {
+        self.webauthn(false, true, options.into()).await
+    }
+
+    async fn webauthn(
+        &self,
+        create: bool,
+        conditional: bool,
+        options: String,
+    ) -> Result<String, DeviceError> {
         // The bare options: backends hand them to the platform as they are.
         let options = match serde_json::from_str::<serde_json::Value>(&options) {
             Ok(serde_json::Value::Object(mut o)) => match o.remove("publicKey") {
@@ -442,7 +472,11 @@ impl AsyncApp {
             }
         };
         match self
-            .device(DeviceCall::WebAuthn(WebAuthnRequest { create, options }))
+            .device(DeviceCall::WebAuthn(WebAuthnRequest {
+                create,
+                options,
+                conditional,
+            }))
             .await?
         {
             DeviceValue::Text(Some(json)) => Ok(json),

@@ -1207,6 +1207,7 @@ pub mod device {
             // JSON text; the host answers the credential's JSON (`text`).
             DeviceCall::WebAuthn(r) => json!({
                 "call": "webauthn", "create": r.create, "options": r.options,
+                "conditional": r.conditional,
             }),
             // No cookies natively: the host answers « unavailable ».
             DeviceCall::SetCookie(_) => json!({ "call": "set_cookie" }),

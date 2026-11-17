@@ -6009,6 +6009,15 @@ void main() {
     };
     if (!open()) withGesture(msg.provider || location.host, () => { if (!open()) reply({ err: "popup blocked" }); }, () => reply({ err: "cancelled" }));
   }
+  /** The pending conditional sign-in (#203), aborted by any other ceremony: it answers « cancelled ». */
+  let conditional = null;
+  function abortConditional() {
+    if (!conditional) return;
+    const { ctl, reply } = conditional;
+    conditional = null;
+    try { ctl.abort(); } catch {}
+    reply({ err: "cancelled" });
+  }
   /** An error as `name` U+001F message, when the platform named it (#189). */
   const named = (e) => {
     const message = String((e && e.message) || e);
@@ -6016,6 +6025,7 @@ void main() {
   };
   async function webauthn(msg, reply) {
     if (!window.PublicKeyCredential || !navigator.credentials) return reply({ err: "unavailable" });
+    abortConditional();
     const ceremony = async () => {
       if (msg.mode === "create") {
         const c = await navigator.credentials.create({ publicKey: {
@@ -6081,6 +6091,25 @@ void main() {
           signature: b64u(r.signature), userHandle: r.userHandle ? b64u(r.userHandle) : undefined };
       return out;
     };
+    // A pending sign-in in a field's suggestions gives way (#203).
+    abortConditional();
+    if (msg.conditional && !msg.create) {
+      // In the suggestions of a field marked `autocomplete="username webauthn"` (#203).
+      const ok = typeof PKC.isConditionalMediationAvailable === "function" && await PKC.isConditionalMediationAvailable().catch(() => false);
+      if (!ok || typeof AbortController !== "function") return reply({ err: "unavailable" });
+      const ctl = new AbortController();
+      conditional = { ctl, reply };
+      try {
+        const c = await navigator.credentials.get({ publicKey, mediation: "conditional", signal: ctl.signal });
+        if (conditional && conditional.ctl === ctl) conditional = null;
+        if (!c) return reply({ err: "cancelled" });
+        reply({ text: JSON.stringify(json(c)) });
+      } catch (e) {
+        if (conditional && conditional.ctl === ctl) conditional = null;
+        if (!ctl.signal.aborted) reply(e && e.name === "AbortError" ? { err: "cancelled" } : { err: named(e) });
+      }
+      return;
+    }
     const ceremony = async () => {
       const c = msg.create ? await navigator.credentials.create({ publicKey }) : await navigator.credentials.get({ publicKey });
       if (!c) throw Object.assign(new Error("no credential"), { name: "NotAllowedError" });

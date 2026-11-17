@@ -1406,6 +1406,7 @@ pub(crate) fn device_json(id: u64, call: prism_core::DeviceCall) -> Value {
         C::WebAuthn(r) => json!({
             "call": "webauthn_rp",
             "create": r.create,
+            "conditional": r.conditional,
             "options": serde_json::from_str::<Value>(&r.options).unwrap_or(Value::Null),
         }),
         // Handled by WebServices::security.

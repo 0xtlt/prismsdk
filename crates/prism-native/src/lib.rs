@@ -203,6 +203,9 @@ pub trait Widgets {
     fn focus(&mut self, _view: &Self::View) {}
     /// Scrolls the scroll views around the view so it is visible.
     fn scroll_into_view(&mut self, _view: &Self::View) {}
+    /// The app's HTML attributes (`.attr`): backends read the ones that mean
+    /// something natively, such as `autocomplete` on a text field (#203).
+    fn set_attributes(&mut self, _view: &Self::View, _attributes: &[(String, String)]) {}
     /// Scrolls a scroll view (#193): to (`x`, `y`) in its content, or by
     /// them from its offset when `relative`, kept within its content.
     fn scroll_to(
@@ -1815,8 +1818,13 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                 // children (the island's fallback) as a plain view.
                 // A link is activated like any clickable view (`SetClickable`).
                 Patch::SetIsland { .. } | Patch::SetIslandProps { .. } | Patch::SetLink { .. } => {}
-                // HTML attributes (`.attr(…)`): browser integrations only.
-                Patch::SetAttributes { .. } => {}
+                // HTML attributes (`.attr(…)`): browser integrations, and
+                // `autocomplete` for a text field's content type (#203).
+                Patch::SetAttributes { id, attributes } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.set_attributes(&e.view, attributes);
+                    }
+                }
                 // Web views (#62).
                 Patch::PostWebMessage { id, data } => {
                     if let Some(e) = self.nodes.get(id) {

@@ -559,8 +559,9 @@ fn device_calls_golden() {
             DeviceCall::WebAuthn(prism_core::WebAuthnRequest {
                 create: false,
                 options: r#"{"challenge":"AQID"}"#.into(),
+                conditional: false,
             }),
-            json!({"call": "webauthn", "create": false, "options": r#"{"challenge":"AQID"}"#}),
+            json!({"call": "webauthn", "create": false, "options": r#"{"challenge":"AQID"}"#, "conditional": false}),
         ),
     ];
     for (call, mut golden) in cases {
