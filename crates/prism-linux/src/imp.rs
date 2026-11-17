@@ -497,12 +497,49 @@ impl OverlayView {
 // Keys (#17): one controller per window, in the capture phase
 // ---------------------------------------------------------------------------
 
-/// Nodes that listen to keys, and the keys held down (to flag repeats).
+/// Nodes that listen to keys, the keys held down (to flag repeats), and
+/// those whose press was reported: hardware keycode, name and target, for
+/// their release (#159).
 #[derive(Default)]
 pub struct KeyState {
     local: RefCell<HashSet<NodeId>>,
     global: RefCell<HashSet<NodeId>>,
     down: RefCell<HashSet<u32>>,
+    held: RefCell<Vec<(u32, String, Option<NodeId>)>>,
+}
+
+/// A click with its count (GTK's `n_press`, the system's double-click
+/// time and distance) and keys (#159).
+fn click_event(
+    id: NodeId,
+    position: Option<prism_core::Point>,
+    n_press: i32,
+    g: &gtk::GestureClick,
+) -> UiEvent {
+    let count = n_press.max(1) as u32;
+    let modifiers = modifiers(g.current_event_state());
+    match position {
+        _ if count > 1 || modifiers != prism_core::Modifiers::default() => UiEvent::ClickWith(
+            id,
+            prism_core::ClickEvent {
+                position,
+                modifiers,
+                count,
+            },
+        ),
+        Some(p) => UiEvent::ClickAt(id, p),
+        None => UiEvent::Click(id),
+    }
+}
+
+/// Releases every key whose press was reported (the window lost the focus:
+/// GTK sends no release for them, #159).
+fn release_keys(keys: &KeyState) {
+    keys.down.borrow_mut().clear();
+    let held = std::mem::take(&mut *keys.held.borrow_mut());
+    for (_, name, target) in held {
+        dispatch(UiEvent::KeyUp(target, prism_core::KeyEvent::new(name)));
+    }
 }
 
 /// The Prism node a widget belongs to (its `p{id}` class), if any.
@@ -520,10 +557,35 @@ fn attach_keys(window: &gtk::Window, keys: Rc<KeyState>) {
     let controller = gtk::EventControllerKey::new();
     controller.set_propagation_phase(gtk::PropagationPhase::Capture);
     let up = keys.clone();
-    controller.connect_key_released(move |_, key, _, _| {
+    controller.connect_key_released(move |_, key, code, mods| {
         up.down.borrow_mut().remove(&key.into_glib());
+        // A release goes where its press went (#159), by hardware key: Shift
+        // may have changed the key's name meanwhile.
+        let pressed = {
+            let mut held = up.held.borrow_mut();
+            held.iter()
+                .position(|(c, ..)| *c == code)
+                .map(|i| held.remove(i))
+        };
+        if let Some((_, name, target)) = pressed {
+            dispatch(UiEvent::KeyUp(
+                target,
+                prism_core::KeyEvent {
+                    key: name,
+                    modifiers: modifiers(mods),
+                    repeat: false,
+                    selection: None,
+                },
+            ));
+        }
     });
-    controller.connect_key_pressed(move |c, key, _, mods| {
+    let gone = keys.clone();
+    window.connect_is_active_notify(move |w| {
+        if !w.is_active() {
+            release_keys(&gone);
+        }
+    });
+    controller.connect_key_pressed(move |c, key, code, mods| {
         if keys.local.borrow().is_empty() && keys.global.borrow().is_empty() {
             return glib::Propagation::Proceed;
         }
@@ -569,8 +631,15 @@ fn attach_keys(window: &gtk::Window, keys: Rc<KeyState>) {
         let claimed = target
             .as_ref()
             .is_some_and(|(_, w)| Some(w) == focus.as_ref() && crate::input::claims(&name));
+        let target = target.map(|(id, _)| id);
+        {
+            let mut held = keys.held.borrow_mut();
+            if !held.iter().any(|(c, ..)| *c == code) {
+                held.push((code, name.clone(), target));
+            }
+        }
         dispatch(UiEvent::Key(
-            target.map(|(id, _)| id),
+            target,
             prism_core::KeyEvent {
                 key: name,
                 modifiers,
@@ -1407,10 +1476,10 @@ impl Widgets for Gtk {
                 let c = layout::container();
                 let gesture = gtk::GestureClick::new();
                 let clickable = self.clickable.clone();
-                gesture.connect_released(move |g, _, x, y| {
+                gesture.connect_released(move |g, n, x, y| {
                     if clickable.borrow().contains(&id) {
                         g.set_state(gtk::EventSequenceState::Claimed);
-                        dispatch(UiEvent::ClickAt(id, point(x, y)));
+                        dispatch(click_event(id, Some(point(x, y)), n, g));
                     }
                 });
                 c.add_controller(gesture);
@@ -1434,13 +1503,13 @@ impl Widgets for Gtk {
                 // (not on one of its links, which handle themselves).
                 let gesture = gtk::GestureClick::new();
                 let clickable = self.clickable.clone();
-                gesture.connect_released(move |g, _, _, _| {
+                gesture.connect_released(move |g, n, _, _| {
                     let on_link = g
                         .widget()
                         .and_then(|w| w.downcast::<gtk::Label>().ok())
                         .is_some_and(|l| l.current_uri().is_some());
                     if clickable.borrow().contains(&id) && !on_link {
-                        dispatch(UiEvent::Click(id));
+                        dispatch(click_event(id, None, n, g));
                     }
                 });
                 l.add_controller(gesture);

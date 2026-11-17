@@ -180,6 +180,19 @@ fn remote_ops_and_input_events() {
 
     let ev = |v| parse_input_event(&v).unwrap();
     assert_eq!(ev(json!({"t": "click", "id": 4})), UiEvent::Click(4));
+    // Keys and the click count (#159), as the Android host sends them.
+    assert_eq!(
+        ev(json!({"t": "click", "id": 4, "x": 1, "y": 2, "mods": 0, "n": 1})),
+        UiEvent::ClickAt(4, Point::new(1., 2.))
+    );
+    assert!(matches!(
+        ev(json!({"t": "click", "id": 4, "x": 1, "y": 2, "mods": 8, "n": 2})),
+        UiEvent::ClickWith(4, c) if c.count == 2 && c.modifiers.meta && c.position == Some(Point::new(1., 2.))
+    ));
+    assert!(matches!(
+        ev(json!({"t": "keyup", "id": 0, "key": " ", "mods": 0})),
+        UiEvent::KeyUp(None, k) if k.key == " "
+    ));
     // Wheel and pinch from hosts (#133).
     assert!(matches!(
         ev(json!({"t": "wheel", "id": 4, "dx": 1, "dy": 2, "phase": "start", "precise": true})),
