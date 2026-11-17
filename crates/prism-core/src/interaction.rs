@@ -157,10 +157,15 @@ type Rule = Rc<dyn Fn(Style) -> Style>;
 /// [`Interaction::ALL`] ([`Style::interacted`]).
 #[derive(Clone, Default)]
 pub struct States {
-    rules: Vec<(Interaction, Rule)>,
-    resolved: Vec<(Interaction, Style)>,
+    /// Each refinement: its state, the group it follows when named (#212).
+    rules: Vec<(Interaction, Option<Rc<str>>, Rule)>,
+    resolved: Vec<(Interaction, Option<Rc<str>>, Style)>,
     cx: Option<StyleContext>,
 }
+
+/// The states of the named groups around a node (#212): each name with the
+/// group states (`GroupHover`…) it is in.
+pub type GroupStates = [(Rc<str>, Interactions)];
 
 impl States {
     /// Whether no refinement is set.
@@ -168,21 +173,41 @@ impl States {
         self.rules.is_empty()
     }
 
-    /// The states that have a refinement.
+    /// The states that have a refinement (named groups' excluded).
     pub fn used(&self) -> Interactions {
         self.rules
             .iter()
-            .fold(Interactions::NONE, |set, (i, _)| set.with(*i, true))
+            .filter(|(_, name, _)| name.is_none())
+            .fold(Interactions::NONE, |set, (i, _, _)| set.with(*i, true))
+    }
+
+    /// Whether a refinement follows group `name` in `state` (#212).
+    pub fn uses_named(&self, state: Interaction, name: &str) -> bool {
+        self.rules
+            .iter()
+            .any(|(i, n, _)| *i == state && n.as_deref() == Some(name))
     }
 
     /// Each refined state with the resolved style it gives on its own, in
-    /// the order they apply (empty until the style is resolved).
+    /// the order they apply (empty until the style is resolved). Named
+    /// groups' refinements are in [`resolved_named`](Self::resolved_named).
     pub fn resolved(&self) -> impl Iterator<Item = (Interaction, &Style)> {
         Interaction::ALL.into_iter().flat_map(move |i| {
             self.resolved
                 .iter()
-                .filter(move |(j, _)| *j == i)
-                .map(|(j, s)| (*j, s))
+                .filter(move |(j, n, _)| *j == i && n.is_none())
+                .map(|(j, _, s)| (*j, s))
+        })
+    }
+
+    /// The refinements that follow a named group (#212): the group state,
+    /// the group's name, the resolved style it gives on its own.
+    pub fn resolved_named(&self) -> impl Iterator<Item = (Interaction, &str, &Style)> {
+        Interaction::ALL.into_iter().flat_map(move |i| {
+            self.resolved.iter().filter_map(move |(j, n, s)| match n {
+                Some(n) if *j == i => Some((*j, n.as_ref(), s)),
+                _ => None,
+            })
         })
     }
 
@@ -192,13 +217,23 @@ impl States {
     pub fn map_resolved(&self, f: impl Fn(&Style) -> Style) -> States {
         States {
             rules: self.rules.clone(),
-            resolved: self.resolved.iter().map(|(i, s)| (*i, f(s))).collect(),
+            resolved: self
+                .resolved
+                .iter()
+                .map(|(i, n, s)| (*i, n.clone(), f(s)))
+                .collect(),
             cx: self.cx,
         }
     }
 
     pub(crate) fn push(&mut self, state: Interaction, rule: Rule) {
-        self.rules.push((state, rule));
+        self.rules.push((state, None, rule));
+        self.resolved.clear();
+        self.cx = None;
+    }
+
+    pub(crate) fn push_named(&mut self, state: Interaction, group: Rc<str>, rule: Rule) {
+        self.rules.push((state, Some(group), rule));
         self.resolved.clear();
         self.cx = None;
     }
@@ -207,7 +242,7 @@ impl States {
 impl std::fmt::Debug for States {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_list()
-            .entries(self.rules.iter().map(|(i, _)| i))
+            .entries(self.rules.iter().map(|(i, n, _)| (i, n)))
             .finish()
     }
 }
@@ -247,7 +282,13 @@ impl Style {
             .states
             .rules
             .iter()
-            .map(|(i, rule)| (*i, rule(base.clone()).resolve(cx).without_states()))
+            .map(|(i, n, rule)| {
+                (
+                    *i,
+                    n.clone(),
+                    rule(base.clone()).resolve(cx).without_states(),
+                )
+            })
             .collect();
         self.states.resolved = resolved;
         self.states.cx = Some(cx);
@@ -257,15 +298,27 @@ impl Style {
     /// of those states applied in the order of [`Interaction::ALL`]. The
     /// result keeps the refinements (backends still need them).
     pub fn interacted(&self, states: Interactions) -> Style {
+        self.interacted_in(states, &[])
+    }
+
+    /// [`interacted`](Self::interacted), with the named groups around the
+    /// node in `groups` (#212): their refinements apply with the unnamed
+    /// group ones.
+    pub fn interacted_in(&self, states: Interactions, groups: &GroupStates) -> Style {
+        let on = |i: Interaction, name: &Option<Rc<str>>| match name {
+            None => states.contains(i),
+            Some(n) => groups
+                .iter()
+                .any(|(g, set)| g.as_ref() == n.as_ref() && set.contains(i)),
+        };
         let active: Vec<&Rule> = Interaction::ALL
             .into_iter()
-            .filter(|i| states.contains(*i))
             .flat_map(|i| {
                 self.states
                     .rules
                     .iter()
-                    .filter(move |(j, _)| *j == i)
-                    .map(|(_, r)| r)
+                    .filter(move |(j, n, _)| *j == i && on(i, n))
+                    .map(|(_, _, r)| r)
             })
             .collect();
         if active.is_empty() {

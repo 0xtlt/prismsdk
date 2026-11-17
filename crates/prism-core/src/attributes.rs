@@ -28,6 +28,7 @@ pub const RESERVED_DATA_ATTRIBUTES: &[&str] = &[
     "clickable",
     "empty",
     "end",
+    "gn",
     "group",
     "icon",
     "island",

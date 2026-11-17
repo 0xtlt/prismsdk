@@ -204,7 +204,21 @@ pub(crate) fn state_rules(
     let base = paint(s, dark, text);
     let node = format!(".p{id}");
     let mut out = String::new();
-    for (state, st) in s.states.resolved() {
+    // Refinements that follow a named group ancestor (#212), with the
+    // unnamed group ones (they apply first).
+    let named = s.states.resolved_named().filter_map(|(state, name, st)| {
+        let group = format!(".{}", group_class(name));
+        Some((
+            match state {
+                Interaction::GroupHover => format!("{group}:hover {node}"),
+                Interaction::GroupFocusWithin => format!("{group}:focus-within {node}"),
+                Interaction::GroupActive => format!("{group}:active {node}"),
+                _ => return None,
+            },
+            st,
+        ))
+    });
+    let unnamed = s.states.resolved().filter_map(|(state, st)| {
         let selector = match state {
             Interaction::Hover => format!("{node}:hover"),
             Interaction::Active => format!("{node}:active"),
@@ -217,8 +231,13 @@ pub(crate) fn state_rules(
             // Set by GtkDropTarget while accepted files are over it (#111).
             Interaction::DropHover => format!("{node}:drop(active)"),
             // Applied by prism-core before the backend sees the style.
-            Interaction::Disabled => continue,
+            Interaction::Disabled => return None,
         };
+        Some((selector, st))
+    });
+    let (groups, own): (Vec<_>, Vec<_>) =
+        unnamed.partition(|(sel, _)| sel.starts_with(".prism-group:"));
+    for (selector, st) in groups.into_iter().chain(named).chain(own) {
         let now = paint(st, dark, text);
         let mut body = String::new();
         for (p, v) in &now {
@@ -236,6 +255,16 @@ pub(crate) fn state_rules(
         }
     }
     out
+}
+
+/// The CSS class of the named group `name` (#212): `prism-gn-` and the
+/// name's bytes in hex, so any name is a valid class.
+pub(crate) fn group_class(name: &str) -> String {
+    let mut c = String::from("prism-gn-");
+    for b in name.bytes() {
+        c += &format!("{b:02x}");
+    }
+    c
 }
 
 #[cfg(test)]

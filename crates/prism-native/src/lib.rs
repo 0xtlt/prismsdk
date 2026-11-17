@@ -434,6 +434,8 @@ struct EntryStates {
     declared: Style,
     current: prism_core::Interactions,
     used: Option<prism_core::Interactions>,
+    /// The named groups around it in a group state (#212).
+    groups: Vec<(std::rc::Rc<str>, prism_core::Interactions)>,
 }
 
 /// Dispatches the frames of the elements that report their layout and
@@ -1315,7 +1317,7 @@ impl<W: Widgets> NativeRenderer<W> {
         };
         e.states.declared = style.clone();
         let mut used = style.states.used();
-        if style.group {
+        if style.is_group() {
             // A group reports its states for its descendants' refinements.
             use prism_core::Interaction as I;
             for i in [I::Hover, I::Active, I::FocusWithin] {
@@ -1328,7 +1330,7 @@ impl<W: Widgets> NativeRenderer<W> {
             self.widgets.set_interactions(&view, used);
         }
         let e = &self.nodes[&id];
-        style.interacted(e.states.current)
+        style.interacted_in(e.states.current, &e.states.groups)
     }
 
     /// The platform saw `id` enter or leave `state` (pointer over it,
@@ -1437,12 +1439,20 @@ impl<W: Widgets> NativeRenderer<W> {
         }
         e.states.current = current;
         let mut changed = false;
-        // A group's hover, press and focus-within reach its descendants.
-        if e.states.declared.group
-            && let Some(group_state) = state.for_group()
-        {
-            for d in self.descendants(id) {
-                changed |= self.set_state_bit(d, group_state, on);
+        // A group's hover, press and focus-within reach its descendants: a
+        // named group's only their refinements of that name (#212).
+        if let Some(group_state) = state.for_group() {
+            let group = e.states.declared.group;
+            let name = e.states.declared.group_name.clone();
+            if group || name.is_some() {
+                for d in self.descendants(id) {
+                    if group {
+                        changed |= self.set_state_bit(d, group_state, on);
+                    }
+                    if let Some(name) = &name {
+                        changed |= self.set_group_bit(d, name, group_state, on);
+                    }
+                }
             }
         }
         let Some(e) = self.nodes.get_mut(&id) else {
@@ -1451,9 +1461,54 @@ impl<W: Widgets> NativeRenderer<W> {
         if !e.states.declared.states.used().contains(state) {
             return changed;
         }
-        let style = e.states.declared.interacted(current);
+        changed | self.restyle_states(id)
+    }
+
+    /// Node `id`'s named group `name` (an ancestor) entered or left `state`
+    /// (#212): restyled if a refinement follows it.
+    fn set_group_bit(
+        &mut self,
+        id: NodeId,
+        name: &std::rc::Rc<str>,
+        state: prism_core::Interaction,
+        on: bool,
+    ) -> bool {
+        let Some(e) = self.nodes.get_mut(&id) else {
+            return false;
+        };
+        let groups = &mut e.states.groups;
+        let slot = match groups.iter().position(|(g, _)| g == name) {
+            Some(i) => i,
+            None => {
+                groups.push((name.clone(), prism_core::Interactions::NONE));
+                groups.len() - 1
+            }
+        };
+        let now = groups[slot].1.with(state, on);
+        if now == groups[slot].1 {
+            return false;
+        }
+        groups[slot].1 = now;
+        if now.is_empty() {
+            groups.remove(slot);
+        }
+        if !e.states.declared.states.uses_named(state, name) {
+            return false;
+        }
+        self.restyle_states(id)
+    }
+
+    /// Restyles `id` in its current states and named groups' states.
+    fn restyle_states(&mut self, id: NodeId) -> bool {
+        let Some(e) = self.nodes.get_mut(&id) else {
+            return false;
+        };
+        let style = e
+            .states
+            .declared
+            .interacted_in(e.states.current, &e.states.groups);
         if style == e.style {
-            return changed;
+            return false;
         }
         let was_hidden = e.style.display_none;
         let repaint = e.kind == NodeKind::Shape

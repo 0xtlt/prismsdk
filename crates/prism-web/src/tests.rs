@@ -4056,3 +4056,62 @@ fn a_saved_file_is_downloaded_from_the_session() {
     });
     assert!(s.take_outbox().is_empty());
 }
+
+/// #212: refinements follow the named group they name, sizes included.
+#[test]
+fn named_groups_have_their_own_rules() {
+    use crate::css;
+    let grip = Style::default()
+        .opacity(0.)
+        .w(px(8.))
+        .group_hover_named("row", |s| s.opacity(1.).w(px(16.)))
+        .group_hover(|s| s.opacity(0.5))
+        .resolve(Default::default());
+    let rules = css::states_css(NodeKind::View, 7, &grip);
+    // Opacity back to 1 is `unset` (its initial value).
+    assert!(
+        rules.contains(r#"@media (hover:hover){[data-gn="row"]:hover [data-pid="7"]{width:16px !important;opacity:unset !important;}}"#),
+        "{rules}"
+    );
+    // The unnamed group's rule stays, before the named one's (same state).
+    assert!(
+        rules.contains(r#"[data-group]:hover [data-pid="7"]{opacity:0.5 !important;}"#),
+        "{rules}"
+    );
+    // Names are CSS strings: no way out of the selector or a `<style>`.
+    let odd = Style::default()
+        .group_hover_named("a\"]</style>", |s| s.opacity(0.5))
+        .resolve(Default::default());
+    let r = css::states_css(NodeKind::View, 8, &odd);
+    assert!(r.contains(r#"[data-gn="a\"]\3c /style\3e "]:hover"#), "{r}");
+
+    // The style op names the group; the page carries `data-gn`.
+    let mut e = Encoder::default();
+    let out = e.encode(&[
+        create(3, NodeKind::View),
+        Patch::SetStyle {
+            id: 3,
+            style: Style::default()
+                .group_named("row")
+                .resolve(Default::default()),
+        },
+    ]);
+    assert_eq!(out[1]["gn"], json!("row"));
+    assert!(out[1].get("group").is_none());
+    let mut b = HtmlBackend::default();
+    b.apply(&[
+        create(3, NodeKind::View),
+        Patch::SetStyle {
+            id: 3,
+            style: Style::default()
+                .group_named("r&w")
+                .resolve(Default::default()),
+        },
+        Patch::SetRoot { id: 3 },
+    ]);
+    assert!(
+        b.to_html().contains(r#" data-gn="r&amp;w""#),
+        "{}",
+        b.to_html()
+    );
+}
