@@ -1738,3 +1738,29 @@ test("app stylesheets follow the set the server sends, first paint's included (#
   page.ws.deliver({ t: "reset", p: [create(1, "view"), root(1)] });
   assert.deepEqual(hrefs(), []);
 });
+
+test("a button can be a link, with the look of a button (#230)", () => {
+  const page = live([
+    create(1, "view"),
+    create(2, "button"), { op: "link", id: 2, href: "/cart" }, textOp(2, "Checkout"),
+    children(1, [2]), root(1),
+  ], { base: "/app" });
+  const b = page.node(2);
+  assert.equal(b.localName, "a");
+  assert.equal(b.className, "prism-link-button");
+  assert.equal(b.getAttribute("href"), "/app/cart");
+  assert.equal(b.textContent, "Checkout");
+  const plain = { type: "click", detail: 1 };
+  b.dispatchEvent(plain);
+  assert.ok(plain.defaultPrevented, "the app navigates");
+  assert.equal(lastSent(page).id, 2);
+  page.ws.sent.length = 0;
+  const tab = { type: "click", detail: 1, metaKey: true };
+  b.dispatchEvent(tab);
+  assert.ok(!tab.defaultPrevented, "the browser opens a new tab");
+  assert.deepEqual(sent(page), []);
+  // No longer a link: a `<button>` again.
+  page.ws.deliver({ t: "patch", p: [{ op: "link", id: 2, href: null }] });
+  assert.equal(page.node(2).localName, "button");
+  assert.equal(page.node(2).type, "button");
+});

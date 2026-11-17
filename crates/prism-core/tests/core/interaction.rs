@@ -1291,3 +1291,23 @@ fn pictures_carry_their_focal_point() {
         (0., 0.75, 1., 0.25)
     );
 }
+
+/// #230: a button that only navigates is a link.
+struct Cart;
+
+impl Render for Cart {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        div().child(button("Checkout").link("/cart"))
+    }
+}
+
+#[test]
+fn buttons_can_be_links() {
+    let h = Harness::new(|cx| {
+        let root = cx.new_entity(|_| Cart);
+        mount(cx, root);
+    });
+    let b = h.host.find(|n| n.kind == NodeKind::Button).unwrap();
+    assert_eq!(h.host.get(b).link.as_deref(), Some("/cart"));
+    assert_eq!(h.host.get(b).a11y.role, Some(prism_core::Role::Link));
+}

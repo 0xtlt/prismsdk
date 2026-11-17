@@ -421,7 +421,9 @@ impl HtmlBackend {
         // A view or a text made a link is an `<a href>` (not an island,
         // whose tag is its custom element's): a link by itself, focusable.
         let link = match (&n.link, &n.island, kind) {
-            (Some(path), None, NodeKind::View | NodeKind::Text) => Some(path.as_str()),
+            (Some(path), None, NodeKind::View | NodeKind::Text | NodeKind::Button) => {
+                Some(path.as_str())
+            }
             _ => None,
         };
         // A picture's description is its `alt` (like the client sets it).
@@ -820,6 +822,10 @@ impl HtmlBackend {
             }
             kind => {
                 let (tag, class) = match kind {
+                    // A link button (#230): an `<a>` with the button's look.
+                    NodeKind::Button if link.is_some() => {
+                        ("button", r#" class="prism-link-button""#)
+                    }
                     NodeKind::Button => ("button", ""),
                     NodeKind::Screen => ("section", ""),
                     NodeKind::Scroll if n.hscroll => {
