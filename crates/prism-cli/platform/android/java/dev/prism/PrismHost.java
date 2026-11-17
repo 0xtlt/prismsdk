@@ -535,6 +535,7 @@ public final class PrismHost {
             case "selev": PrismInput.selectEvents(n, p.optBoolean("on")); break;
             case "focus": PrismInput.focus(n); break;
             case "reveal": PrismInput.reveal(n); break;
+            case "scrollto": PrismInput.scrollTo(n, (float) p.optDouble("x"), (float) p.optDouble("y"), p.optBoolean("rel"), p.optBoolean("anim")); break;
             // Web views (#62).
             case "webpost": if (n.kind.equals("web_view")) PrismWeb.post(n, p.optString("data")); break;
             case "webreload": if (n.kind.equals("web_view")) PrismWeb.reload(n); break;

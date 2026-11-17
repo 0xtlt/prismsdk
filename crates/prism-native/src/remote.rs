@@ -1077,6 +1077,17 @@ impl Widgets for RemoteWidgets {
         self.ops.push(json!({ "op": "reveal", "id": id }));
     }
 
+    /// `{"op":"scrollto","id","x","y","rel","anim"}` (#193): `x`, `y` in
+    /// points (by them from the offset when `rel`), the host keeps them
+    /// within the content.
+    fn scroll_to(&mut self, id: &NodeId, x: f32, y: f32, relative: bool, animated: bool) {
+        let clamp = |v: f32| if v.is_finite() { v.min(1e9) } else { 1e9 };
+        self.ops.push(json!({
+            "op": "scrollto", "id": id, "x": clamp(x), "y": clamp(y),
+            "rel": relative, "anim": animated,
+        }));
+    }
+
     fn dismiss_keyboard(&mut self) {
         self.ops.push(json!({ "op": "blur" }));
     }

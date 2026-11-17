@@ -2381,6 +2381,14 @@
       case "selev": return el && setSelectEvents(el, p.on);
       case "focus": if (el) { focusAsked = el; focusNode(el); } return;
       case "reveal": return el && reveal(el);
+      // `cx.scroll_by` / `cx.scroll_to` (#193): the browser keeps it within the content.
+      case "scrollto": {
+        if (!el) return;
+        const behavior = p.anim && !reducedMotion?.matches ? "smooth" : "auto";
+        if (p.rel) el.scrollBy?.({ left: p.x, top: p.y, behavior });
+        else el.scrollTo?.({ left: p.x, top: p.y, behavior });
+        return;
+      }
       // `cx.dismiss_keyboard()` (#29): the focused field lets go (phones
       // hide their keyboard).
       case "blur": {

@@ -643,6 +643,24 @@ final class PrismInput {
         v.post(() -> v.requestRectangleOnScreen(new Rect(0, 0, v.getWidth(), v.getHeight()), false));
     }
 
+    /** `cx.scroll_by` / `cx.scroll_to` (#193): points to pixels; the view keeps it within its content. */
+    static void scrollTo(PrismHost.Node n, float x, float y, boolean relative, boolean animated) {
+        View v = n.view;
+        float d = PrismHost.density;
+        int px = (int) Math.max(-1e8f, Math.min(1e8f, x * d)), py = (int) Math.max(-1e8f, Math.min(1e8f, y * d));
+        v.post(() -> {
+            if (v instanceof android.widget.ScrollView) {
+                android.widget.ScrollView s = (android.widget.ScrollView) v;
+                if (relative) { if (animated) s.smoothScrollBy(0, py); else s.scrollBy(0, py); }
+                else if (animated) s.smoothScrollTo(0, py); else s.scrollTo(0, py);
+            } else if (v instanceof android.widget.HorizontalScrollView) {
+                android.widget.HorizontalScrollView s = (android.widget.HorizontalScrollView) v;
+                if (relative) { if (animated) s.smoothScrollBy(px, 0); else s.scrollBy(px, 0); }
+                else if (animated) s.smoothScrollTo(px, 0); else s.scrollTo(px, 0);
+            }
+        });
+    }
+
     // --- Hit testing -----------------------------------------------------------------------
 
     /** `hit: false` and `inert: true` from the style op. */

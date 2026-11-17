@@ -203,6 +203,17 @@ pub trait Widgets {
     fn focus(&mut self, _view: &Self::View) {}
     /// Scrolls the scroll views around the view so it is visible.
     fn scroll_into_view(&mut self, _view: &Self::View) {}
+    /// Scrolls a scroll view (#193): to (`x`, `y`) in its content, or by
+    /// them from its offset when `relative`, kept within its content.
+    fn scroll_to(
+        &mut self,
+        _view: &Self::View,
+        _x: f32,
+        _y: f32,
+        _relative: bool,
+        _animated: bool,
+    ) {
+    }
     /// The runtime's layers, bottom first: mount them above everything
     /// (sheets and dialogs too), covering the window, letting pointer input
     /// through where they have no child. Their frames come from `set_frame`.
@@ -1771,6 +1782,21 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                 Patch::ScrollIntoView { id } => {
                     if let Some(e) = self.nodes.get(id) {
                         self.widgets.scroll_into_view(&e.view);
+                    }
+                }
+                Patch::ScrollTo {
+                    id,
+                    x,
+                    y,
+                    relative,
+                    animated,
+                } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        // In the platform's units; `f32::MAX` (the end) may
+                        // become infinite: backends clamp to the content.
+                        let z = self.zoom;
+                        self.widgets
+                            .scroll_to(&e.view, x * z, y * z, *relative, *animated);
                     }
                 }
                 Patch::DismissKeyboard => self.widgets.dismiss_keyboard(),

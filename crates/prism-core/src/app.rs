@@ -183,6 +183,9 @@ pub struct App {
     /// the `.id()` of those that have one (#192).
     pub(crate) frames: HashMap<crate::NodeId, crate::events::Rect>,
     pub(crate) frame_names: HashMap<String, crate::NodeId>,
+    /// The last offsets scroll views reported, and their `.id()` (#193).
+    pub(crate) scroll_offsets: HashMap<crate::NodeId, f32>,
+    pub(crate) scroll_names: HashMap<String, crate::NodeId>,
     /// The title the app set (`cx.set_title`, #154).
     title: Option<String>,
     /// The app has unsaved changes (`cx.set_unsaved_changes`, #158).
@@ -201,6 +204,9 @@ pub struct App {
 pub(crate) enum UiCommand {
     Focus(String),
     ScrollIntoView(String),
+    /// `scroll_by` / `scroll_to` (#193): the scroll view's name, x, y,
+    /// relative to its offset, animated.
+    Scroll(String, f32, f32, bool, bool),
     /// `dismiss_keyboard` (#29).
     DismissKeyboard,
     /// `post_web_message` (#62): the web view's name, the message as JSON.
@@ -245,6 +251,8 @@ impl Default for App {
             stop_propagation: false,
             frames: HashMap::new(),
             frame_names: HashMap::new(),
+            scroll_offsets: HashMap::new(),
+            scroll_names: HashMap::new(),
             title: None,
             unsaved: false,
             children: HashMap::new(),
@@ -641,6 +649,32 @@ impl App {
     /// a submit. Does nothing if nothing has the focus.
     pub fn dismiss_keyboard(&mut self) {
         self.ui_commands.push(UiCommand::DismissKeyboard);
+    }
+
+    /// Scrolls the [`scroll()`](crate::scroll()) named `id` (`.id(id)`) by
+    /// `dx`, `dy` points from where it is, at once, after the next render
+    /// (#193): auto-scroll while a drag stays near an edge, a step per
+    /// frame or timer tick. Kept within its content. Does nothing if no
+    /// such scroll view is mounted.
+    pub fn scroll_by(&mut self, id: impl Into<String>, dx: f32, dy: f32) {
+        self.ui_commands
+            .push(UiCommand::Scroll(id.into(), dx, dy, true, false));
+    }
+
+    /// Scrolls the [`scroll()`](crate::scroll()) named `id` so its content's
+    /// point (`x`, `y`) is at its top-left corner, after the next render
+    /// (#193), animated or at once. Kept within its content: `(0., 0.)` is
+    /// the top, `f32::MAX` the end.
+    pub fn scroll_to(&mut self, id: impl Into<String>, x: f32, y: f32, animated: bool) {
+        self.ui_commands
+            .push(UiCommand::Scroll(id.into(), x, y, false, animated));
+    }
+
+    /// The last offset the [`scroll()`](crate::scroll()) named `id`
+    /// reported, along its axis (#193): needs its
+    /// [`on_scroll`](crate::Scroll::on_scroll). `None` before it scrolled.
+    pub fn scroll_offset(&self, id: &str) -> Option<f32> {
+        self.scroll_offsets.get(self.scroll_names.get(id)?).copied()
     }
 
     /// The last laid-out frame of the element named `id` (`.id(id)`) that

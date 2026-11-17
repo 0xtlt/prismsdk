@@ -4530,6 +4530,40 @@ impl Widgets for AppKit {
         });
     }
 
+    /// `cx.scroll_by` / `cx.scroll_to` (#193): the clip view's origin, kept
+    /// within the document (flipped: y from the top).
+    fn scroll_to(&mut self, view: &View, x: f32, y: f32, relative: bool, animated: bool) {
+        let View::Scroll(s) = view else {
+            return;
+        };
+        let clip = s.scroll.contentView();
+        let bounds = clip.bounds();
+        let doc = s.document.frame().size;
+        let (tx, ty) = if relative {
+            (bounds.origin.x + x as f64, bounds.origin.y + y as f64)
+        } else {
+            (x as f64, y as f64)
+        };
+        let clamp = |v: f64, max: f64| {
+            if v.is_nan() {
+                0.
+            } else {
+                v.clamp(0., max.max(0.))
+            }
+        };
+        let to = NSPoint::new(
+            clamp(tx, doc.width - bounds.size.width),
+            clamp(ty, doc.height - bounds.size.height),
+        );
+        if animated {
+            let proxy: Retained<objc2::runtime::AnyObject> = unsafe { msg_send![&*clip, animator] };
+            let _: () = unsafe { msg_send![&*proxy, setBoundsOrigin: to] };
+        } else {
+            clip.scrollToPoint(to);
+        }
+        s.scroll.reflectScrolledClipView(&clip);
+    }
+
     fn set_layers(&mut self, layers: &[View]) {
         let views: Vec<Retained<NSView>> = layers
             .iter()

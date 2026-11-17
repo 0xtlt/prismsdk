@@ -256,6 +256,21 @@ pub enum Patch {
         /// The node.
         id: NodeId,
     },
+    /// Scroll a scroll view (`cx.scroll_by`, `cx.scroll_to`, #193): to
+    /// (`x`, `y`) in its content, or by them from its offset when
+    /// `relative`, kept within its content.
+    ScrollTo {
+        /// The scroll view.
+        id: NodeId,
+        /// Horizontal offset (or distance).
+        x: f32,
+        /// Vertical offset (or distance).
+        y: f32,
+        /// By `x`, `y` from where it is.
+        relative: bool,
+        /// Animated (`scroll_to` only).
+        animated: bool,
+    },
     /// Nodes the runtime mounts above the root, in order (the toaster):
     /// each covers the window like the root, above everything else
     /// (sheets and dialogs included), and lets pointer input through
@@ -761,6 +776,11 @@ impl Reconciler {
         self.nodes.get(&id).is_some_and(|n| n.layout_events)
     }
 
+    /// Whether node `id` is mounted.
+    pub fn is_mounted(&self, id: NodeId) -> bool {
+        self.nodes.contains_key(&id)
+    }
+
     /// The `.id()` of node `id`, if it has one.
     pub fn name_of(&self, id: NodeId) -> Option<&str> {
         self.nodes.get(&id).and_then(|n| n.name.as_deref())
@@ -986,6 +1006,7 @@ impl Reconciler {
             use crate::app::UiCommand as C;
             let name = match &command {
                 C::Focus(n) | C::ScrollIntoView(n) | C::ReloadWebView(n) => n,
+                C::Scroll(n, ..) => n,
                 C::PostWebMessage(n, _) => n,
                 C::DismissKeyboard => {
                     patches.push(Patch::DismissKeyboard);
@@ -996,9 +1017,17 @@ impl Reconciler {
                 continue;
             };
             let web_view = self.nodes[&id].kind == NodeKind::WebView;
+            let scroll = self.nodes[&id].kind == NodeKind::Scroll;
             patches.push(match command {
                 C::Focus(_) => Patch::Focus { id },
                 C::ScrollIntoView(_) => Patch::ScrollIntoView { id },
+                C::Scroll(_, x, y, relative, animated) if scroll => Patch::ScrollTo {
+                    id,
+                    x,
+                    y,
+                    relative,
+                    animated,
+                },
                 C::PostWebMessage(_, data) if web_view => Patch::PostWebMessage { id, data },
                 C::ReloadWebView(_) if web_view => Patch::ReloadWebView { id },
                 _ => continue,
