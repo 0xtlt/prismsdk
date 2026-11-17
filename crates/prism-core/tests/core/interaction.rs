@@ -1311,3 +1311,29 @@ fn buttons_can_be_links() {
     assert_eq!(h.host.get(b).link.as_deref(), Some("/cart"));
     assert_eq!(h.host.get(b).a11y.role, Some(prism_core::Role::Link));
 }
+
+/// #224: a field commits its value when it loses the focus.
+struct Rename {
+    log: Vec<bool>,
+}
+
+impl Render for Rename {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        div().child(
+            text_input()
+                .on_focus_change(cx.listener(|this, e: &FocusEvent, _| this.log.push(e.focused))),
+        )
+    }
+}
+
+#[test]
+fn fields_hear_focus_changes() {
+    let mut h = Harness::new(|cx| {
+        let root = cx.new_entity(|_| Rename { log: Vec::new() });
+        mount(cx, root);
+    });
+    let field = h.host.find(|n| n.kind == NodeKind::TextInput).unwrap();
+    h.dispatch(UiEvent::FocusChange(field, true));
+    h.dispatch(UiEvent::FocusChange(field, false));
+    assert_eq!(h.root::<Rename>().read(&h.rt.app).log, [true, false]);
+}

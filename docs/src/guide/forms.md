@@ -101,6 +101,20 @@ let files = cx.pick_files_with_progress(PickFiles::new(), |p, cx| {             
 - **Platform notes**: tvOS has no `UISlider`, `UIDatePicker` or editable `UITextView` (`API_UNAVAILABLE(tvos)`), hence the focus-driven stand-ins. watchOS sliders always step (a continuous one moves by a tenth of its range), and dates open the system wheels in a sheet. `GtkCalendar` has no min/max, so out-of-range days snap back. Before GTK 4.14, Linux has no `gtk_accessible_announce`: the status text changes but may not be spoken. Android announces through a polite live region (`announceForAccessibility` is deprecated in API 36), and the date dialog's header follows the device language, not the app's.
 - **Dev hooks for forms**: macOS `PRISM_TAP=<label>`, `PRISM_TYPE=<text>` (`\n` is Return), `PRISM_INCREMENT=<label>` (VoiceOver increment), `PRISM_A11Y_LOG=1`; Linux `PRISM_CLICK` opens pickers and date pickers, `fill:<placeholder>=<text>`, `fill:@slider=40`, `submit:<placeholder>`, open popovers saved as `out-N.png`; watchOS `PRISM_SCROLL=<pt>`, `PRISM_PRESENT=<label>` (opens a date picker), `PRISM_DEBUG_A11Y=1`. The watch's `ImageRenderer` snapshot can't draw native controls: use `xcrun simctl io <udid> screenshot`.
 
+## Leaving a field
+
+`on_focus_change` hears a field (or a view focusable through `on_key_down`) take and lose the keyboard focus (#224): commit an inspector's value or an inline rename when the user tabs away or clicks elsewhere, not on every keystroke and not only on Enter.
+
+```rust
+text_input().value(self.draft.clone())
+    .on_input(cx.listener(|this, e: &InputEvent, _| this.draft = e.value.clone()))
+    .on_focus_change(cx.listener(|this, e: &FocusEvent, cx| {
+        if !e.focused { this.commit_rename(cx) }
+    }))
+```
+
+It is the node's own focus (for a group, style with `focus_within`). Every backend reports it: the web from `focusin` / `focusout` (switching to another window or tab counts as leaving), macOS from the window's first responder, iOS, Linux and Android from their focus states, all through the same focus tracking as `.focus(|s| …)`. Natively, switching to another app keeps the field focused.
+
 ## Selection and caret
 
 A text input or area reports where its selection is with `on_select`, and takes one from the app with `.selection(range)`. Offsets are **characters** (Rust `char`s), not UTF-8 bytes nor UTF-16 units, on every backend; `start == end` is a caret. `e.byte_range(&text)` (and `prism::char_to_byte` / `byte_to_char`) converts them to slice a `&str`. Key presses in a focused field carry its selection in `KeyEvent::selection`, read before the key acts, so `on_key_down` can split or merge blocks:

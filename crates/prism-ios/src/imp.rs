@@ -148,6 +148,11 @@ pub(crate) fn set_interaction(id: NodeId, state: prism_core::Interaction, on: bo
             if s.renderer.set_interaction(id, state, on) {
                 s.relayout();
             }
+            // The app hears focus changes (#224).
+            for e in s.renderer.take_focus_changes() {
+                let patches = s.runtime.dispatch(e);
+                s.commit(patches);
+            }
         })
     });
 }

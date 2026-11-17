@@ -102,6 +102,10 @@ fn report_state(id: NodeId, state: prism_core::Interaction, on: bool) {
         if s.renderer.set_interaction(id, state, on) {
             s.relayout();
         }
+        // The app hears focus changes (#224).
+        for e in s.renderer.take_focus_changes() {
+            s.dispatch(e);
+        }
     });
 }
 

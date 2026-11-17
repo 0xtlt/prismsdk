@@ -410,6 +410,8 @@ pub enum UiEvent {
     /// A click with the middle, back or forward button (#215), for
     /// `on_aux_click`; `button` says which.
     AuxClick(NodeId, crate::element::ClickEvent),
+    /// A node took (`true`) or lost the keyboard focus (#224).
+    FocusChange(NodeId, bool),
     /// Files dropped on a target are uploading (#199): bytes sent, total.
     DropProgress(NodeId, u64, u64),
     /// A video's playback reached the end (#207).
@@ -574,6 +576,7 @@ pub struct Reconciler {
     drag: HashMap<NodeId, Handler<crate::events::DragEvent>>,
     wheel: HashMap<NodeId, Handler<crate::events::WheelEvent>>,
     aux_click: HashMap<NodeId, Handler<crate::element::ClickEvent>>,
+    focus_change: HashMap<NodeId, Handler<crate::element::FocusEvent>>,
     layout: HashMap<NodeId, Handler<crate::events::LayoutEvent>>,
     drop_progress: HashMap<NodeId, Handler<crate::events::DropProgress>>,
     ended: HashMap<NodeId, Handler<crate::video::EndedEvent>>,
@@ -742,6 +745,11 @@ impl Reconciler {
     /// The wheel handler of node `id`, if any (#133).
     pub fn wheel_handler(&self, id: NodeId) -> Option<Handler<crate::events::WheelEvent>> {
         self.wheel.get(&id).cloned()
+    }
+
+    /// Node `id`'s `on_focus_change` handler (#224).
+    pub fn focus_change_handler(&self, id: NodeId) -> Option<Handler<crate::element::FocusEvent>> {
+        self.focus_change.get(&id).cloned()
     }
 
     /// Node `id`'s `on_aux_click` handler (#215).
@@ -1264,6 +1272,7 @@ impl Reconciler {
             on_wheel,
             on_magnify,
             on_aux_click,
+            on_focus_change,
             drag_buttons,
             consume_keys,
             on_layout,
@@ -1305,6 +1314,10 @@ impl Reconciler {
                 m.consume_keys = consume_keys;
             }
         }
+        match on_focus_change {
+            Some(h) => self.focus_change.insert(id, h),
+            None => self.focus_change.remove(&id),
+        };
         self.diff_events(
             id,
             name,
@@ -2067,6 +2080,7 @@ impl Reconciler {
         self.wheel.remove(&id);
         self.magnify.remove(&id);
         self.aux_click.remove(&id);
+        self.focus_change.remove(&id);
         self.layout.remove(&id);
         self.key_down.remove(&id);
         self.global_key.remove(&id);

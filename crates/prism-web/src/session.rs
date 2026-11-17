@@ -803,6 +803,8 @@ fn parse_input_event(v: &Value) -> Option<UiEvent> {
                     .map(prism_core::CaretEdges::decode),
             },
         )),
+        // A node took or lost the focus (#224).
+        "focus" => Some(UiEvent::FocusChange(id?, v.get("on")?.as_bool()?)),
         // A text field's selection moved (#86), in characters.
         "select" => Some(UiEvent::Select(
             id?,

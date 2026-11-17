@@ -336,6 +336,14 @@ impl RichInputEvent {
     }
 }
 
+/// A node took or lost the keyboard focus (#224): a field the user tabbed
+/// into or clicked out of. See [`Div::on_focus_change`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FocusEvent {
+    /// `true` when it took the focus, `false` when it lost it.
+    pub focused: bool,
+}
+
 /// Reported by a stack when the user went back natively (iOS swipe, browser
 /// back button, macOS back button): only the first `depth` screens remain.
 #[derive(Clone, Debug)]
@@ -612,6 +620,8 @@ pub struct VNode {
     pub on_wheel: Option<Handler<crate::events::WheelEvent>>,
     /// Clicks with the middle, back or forward button (#215).
     pub on_aux_click: Option<Handler<ClickEvent>>,
+    /// The node took or lost the keyboard focus (#224).
+    pub on_focus_change: Option<Handler<FocusEvent>>,
     /// Pinches over the node.
     pub on_magnify: Option<Handler<crate::events::MagnifyEvent>>,
 
@@ -673,6 +683,7 @@ impl VNode {
             on_web_load: None,
             on_wheel: None,
             on_aux_click: None,
+            on_focus_change: None,
             on_magnify: None,
             on_layout: None,
             track_layout: false,
@@ -1132,6 +1143,16 @@ impl Button {
 }
 
 impl TextInput {
+    /// Called when this node takes or loses the keyboard focus (#224):
+    /// commit a field's value when the user tabs away or clicks elsewhere,
+    /// not on every keystroke. `e.focused` says which. For the node itself
+    /// (a field, or a view focusable through `on_key_down`); use
+    /// `focus_within` styles for a group.
+    pub fn on_focus_change(mut self, handler: Handler<FocusEvent>) -> Self {
+        self.0.on_focus_change = Some(handler);
+        self
+    }
+
     /// The controlled value of the field.
     pub fn value(mut self, value: impl Into<String>) -> Self {
         self.0.text = value.into();
@@ -1284,6 +1305,16 @@ pub fn rich_input(spans: impl IntoIterator<Item = crate::spans::Span>) -> RichIn
 }
 
 impl RichInput {
+    /// Called when this node takes or loses the keyboard focus (#224):
+    /// commit a field's value when the user tabs away or clicks elsewhere,
+    /// not on every keystroke. `e.focused` says which. For the node itself
+    /// (a field, or a view focusable through `on_key_down`); use
+    /// `focus_within` styles for a group.
+    pub fn on_focus_change(mut self, handler: Handler<FocusEvent>) -> Self {
+        self.0.on_focus_change = Some(handler);
+        self
+    }
+
     /// Replaces the runs (see [`rich_input`]).
     pub fn spans(mut self, spans: impl IntoIterator<Item = crate::spans::Span>) -> Self {
         self.0.spans = spans.into_iter().collect();
@@ -1323,6 +1354,16 @@ pub fn text_area() -> TextArea {
 }
 
 impl TextArea {
+    /// Called when this node takes or loses the keyboard focus (#224):
+    /// commit a field's value when the user tabs away or clicks elsewhere,
+    /// not on every keystroke. `e.focused` says which. For the node itself
+    /// (a field, or a view focusable through `on_key_down`); use
+    /// `focus_within` styles for a group.
+    pub fn on_focus_change(mut self, handler: Handler<FocusEvent>) -> Self {
+        self.0.on_focus_change = Some(handler);
+        self
+    }
+
     /// The controlled value of the field.
     pub fn value(mut self, value: impl Into<String>) -> Self {
         self.0.text = value.into();
@@ -2132,6 +2173,16 @@ impl Div {
     /// ```
     pub fn on_aux_click(mut self, handler: Handler<ClickEvent>) -> Self {
         self.0.on_aux_click = Some(handler);
+        self
+    }
+
+    /// Called when this node takes or loses the keyboard focus (#224):
+    /// commit a field's value when the user tabs away or clicks elsewhere,
+    /// not on every keystroke. `e.focused` says which. For the node itself
+    /// (a field, or a view focusable through `on_key_down`); use
+    /// `focus_within` styles for a group.
+    pub fn on_focus_change(mut self, handler: Handler<FocusEvent>) -> Self {
+        self.0.on_focus_change = Some(handler);
         self
     }
 
