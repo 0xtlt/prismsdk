@@ -14,6 +14,8 @@ pub(crate) struct AndroidServices {
     pub ops: Vec<Value>,
     /// Background tasks while the app runs: id → (next run, interval).
     background: Vec<(String, std::time::Instant, std::time::Duration)>,
+    /// Where files to save are staged (#210): the app's files folder.
+    stage_dir: std::path::PathBuf,
 }
 
 impl AndroidServices {
@@ -25,7 +27,10 @@ impl AndroidServices {
                 .and_then(Value::as_str)
                 .unwrap_or("none"),
         );
+        let stage_dir =
+            std::path::PathBuf::from(info.get("dataDir").and_then(Value::as_str).unwrap_or("."));
         AndroidServices {
+            stage_dir,
             caps: Capabilities {
                 car: has("car"),
                 widgets: true,
@@ -83,6 +88,24 @@ impl PlatformServices for AndroidServices {
 
     fn handle(&mut self, request: PlatformRequest) {
         let op = match request {
+            // #210: bytes become a file the host copies to the document
+            // the user creates.
+            PlatformRequest::Device {
+                id,
+                call: prism_core::DeviceCall::SaveFile(f),
+            } => match prism_native::save::stage(&f, &self.stage_dir) {
+                Ok(path) => device::call(
+                    id,
+                    prism_core::DeviceCall::SaveFile(prism_core::SaveFile {
+                        source: prism_core::SaveSource::Path(path),
+                        ..f
+                    }),
+                ),
+                // The host answers it as this error.
+                Err(e) => json!({
+                    "op": "device", "id": id, "call": "fail", "message": e.to_string(),
+                }),
+            },
             PlatformRequest::Device { id, call } => device::call(id, call),
             PlatformRequest::Notify(n) => json!({
                 "op": "notify",

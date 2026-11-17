@@ -15,6 +15,7 @@ pub mod fields;
 pub mod fonts;
 pub mod images;
 pub mod remote;
+pub mod save;
 pub mod text;
 
 pub use extras::Sticky;

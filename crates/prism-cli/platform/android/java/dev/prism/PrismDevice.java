@@ -106,6 +106,9 @@ final class PrismDevice {
                 break;
             }
             case "share": share(c); reply(id, null, null); break;
+            case "save_file": saveFile(id, c); break;
+            case "reveal": reply(id, null, null); break; // no file manager to show it in
+            case "fail": fail(id, c.optString("message"), false); break;
             case "open_url": {
                 try {
                     ctx().startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(c.optString("url"))));
@@ -360,7 +363,86 @@ final class PrismDevice {
         }
     }
 
+    /** Files waiting for the document the user creates (#210), by request code. */
+    static final Map<Integer, Object[]> saving = new HashMap<>();
+
+    /**
+     * Keeps a file the app holds (#210): the storage picker
+     * (ACTION_CREATE_DOCUMENT) creates the document, then the file is copied
+     * into it. `path` is a file named as offered; Rust staged it in a
+     * {@code prism-save-*} folder when needed, removed once done.
+     */
+    static void saveFile(long id, JSONObject c) {
+        File source = new File(c.optString("path"));
+        int code = 20_000 + nextCode++;
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType(c.optString("mime", "application/octet-stream"));
+        intent.putExtra(Intent.EXTRA_TITLE, c.optString("name", source.getName()));
+        saving.put(code, new Object[]{id, source});
+        try {
+            PrismHost.activity.startActivityForResult(intent, code);
+        } catch (Exception e) {
+            saving.remove(code);
+            discardStaged(source);
+            fail(id, "unavailable", false);
+        }
+    }
+
+    static void discardStaged(File source) {
+        File folder = source.getParentFile();
+        if (folder == null || !folder.getName().startsWith("prism-save-")) return;
+        File[] files = folder.listFiles();
+        if (files != null) for (File f : files) f.delete();
+        folder.delete();
+    }
+
+    static void savedResult(Object[] pending, int result, Intent data) {
+        long id = (Long) pending[0];
+        File source = (File) pending[1];
+        Uri dest = data != null ? data.getData() : null;
+        if (result != android.app.Activity.RESULT_OK || dest == null) {
+            discardStaged(source);
+            fail(id, "cancelled", false);
+            return;
+        }
+        new Thread(() -> {
+            String name = source.getName();
+            try (InputStream in = new java.io.FileInputStream(source);
+                 OutputStream out = ctx().getContentResolver().openOutputStream(dest, "wt")) {
+                byte[] buf = new byte[64 * 1024];
+                int n;
+                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            } catch (Exception e) {
+                discardStaged(source);
+                fail(id, e.getMessage() != null ? e.getMessage() : "could not save the file", false);
+                return;
+            }
+            try (Cursor cur = ctx().getContentResolver().query(dest, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+                if (cur != null && cur.moveToFirst()) name = cur.getString(0);
+            } catch (Exception ignored) {
+            }
+            long size = source.length();
+            discardStaged(source);
+            try {
+                // A document of the storage provider: no path the app can use.
+                JSONObject f = new JSONObject();
+                f.put("path", "");
+                f.put("name", name);
+                f.put("mime", ctx().getContentResolver().getType(dest));
+                f.put("size", size);
+                reply(id, "files", new JSONArray().put(f));
+            } catch (JSONException e) {
+                fail(id, "could not save the file", false);
+            }
+        }).start();
+    }
+
     static void activityResult(int code, int result, Intent data) {
+        Object[] save = saving.remove(code);
+        if (save != null) {
+            savedResult(save, result, data);
+            return;
+        }
         Object[] pending = picking.remove(code);
         if (pending == null) return;
         long id = (Long) pending[0];

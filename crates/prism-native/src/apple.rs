@@ -468,6 +468,8 @@ mod bridge {
         fn prism_device_paste(id: u64);
         fn prism_device_share(text: *const c_char, url: *const c_char, files: *const c_char);
         fn prism_device_open_url(url: *const c_char);
+        fn prism_device_save_file(id: u64, path: *const c_char, name: *const c_char);
+        fn prism_device_reveal(path: *const c_char);
         // PrismSecurity.swift
         fn prism_secure_get(id: u64, key: *const c_char, prompt: *const c_char, shared: bool);
         fn prism_secure_set(
@@ -582,6 +584,20 @@ mod bridge {
                     prism_device_share(ptr(&text), ptr(&url), ptr(&files))
                 }
                 DeviceCall::OpenUrl(u) => prism_device_open_url(c(&u).as_ptr()),
+                // #210: a file on disk with the offered name; the bridge
+                // removes a staged copy once done.
+                DeviceCall::SaveFile(f) => match crate::save::stage(&f, &std::env::temp_dir()) {
+                    Ok(path) => prism_device_save_file(
+                        id,
+                        c(&path.to_string_lossy()).as_ptr(),
+                        c(&f.file_name()).as_ptr(),
+                    ),
+                    Err(e) => send(DeviceMessage::Reply(
+                        id,
+                        Err(DeviceError::Failed(e.to_string())),
+                    )),
+                },
+                DeviceCall::RevealPath(p) => prism_device_reveal(c(&p.to_string_lossy()).as_ptr()),
                 // No tabs here: the system opens it (Safari, Mail, another app).
                 DeviceCall::OpenUrlIn(u, _) => prism_device_open_url(c(&u).as_ptr()),
                 DeviceCall::SecureGet {

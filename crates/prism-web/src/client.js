@@ -6218,6 +6218,18 @@ void main() {
           if (navigator.share) return navigator.share({ text: msg.text || undefined, url: msg.url || undefined }).catch(() => {});
           return navigator.clipboard?.writeText([msg.text, msg.url].filter(Boolean).join(" "));
         case "open_url": return openUrl(msg.url, msg.target);
+        // A file the app holds (#210): the server answered already, the
+        // browser downloads it from the session's URL.
+        case "save_file": {
+          const a = document.createElement("a");
+          a.href = msg.url;
+          a.download = msg.name || "";
+          a.rel = "noopener";
+          a.style.display = "none";
+          document.body.appendChild(a);
+          a.click();
+          return a.remove();
+        }
         case "set_cookie": return setCookie(msg, reply);
         case "web_auth": return webAuth(msg, reply);
         case "webauthn": return webauthn(msg, reply);

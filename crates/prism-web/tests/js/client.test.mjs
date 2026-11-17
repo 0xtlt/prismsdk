@@ -846,6 +846,24 @@ test("picked files go up in chunks, then the reply (#112)", async () => {
   assert.deepEqual(msgs[4], { t: "device_reply", id: 5, uploaded: true });
 });
 
+test("a file the app holds is downloaded from the session's URL (#210)", async () => {
+  const page = live([create(1, "view"), root(1)]);
+  const links = [];
+  const make = page.document.createElement.bind(page.document);
+  page.document.createElement = (tag) => {
+    const el = make(tag);
+    if (tag === "a") {
+      el.click = () => links.push({ href: el.href, download: el.download, inPage: !!el.parentNode });
+    }
+    return el;
+  };
+  page.ws.deliver({ t: "device", id: 9, call: "save_file", url: "/app/_prism/download/x1", name: "report.pdf" });
+  await settle();
+  assert.deepEqual(links, [{ href: "/app/_prism/download/x1", download: "report.pdf", inPage: true }]);
+  assert.equal(page.document.body.querySelectorAll("a").length, 0, "the link is gone");
+  assert.deepEqual(page.ws.sent.filter((m) => m.id === 9), [], "the server answered already");
+});
+
 test("a cancelled upload stops sending and says so (#112)", async () => {
   const page = live([create(1, "view"), root(1)]);
   const inputs = fileInputs(page);

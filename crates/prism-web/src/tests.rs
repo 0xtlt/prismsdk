@@ -4007,3 +4007,44 @@ fn rich_inputs_have_a_wire_format_and_a_first_paint() {
     );
     assert!(page.contains("Road &amp; map</span>"), "{page}");
 }
+
+/// #210: the server keeps a file the app hands over, answers at once, and
+/// the page downloads it from a URL bound to its session.
+#[test]
+fn a_saved_file_is_downloaded_from_the_session() {
+    use prism_core::surfaces::PlatformRequest;
+    use prism_core::{DeviceCall, DeviceValue, PlatformServices, SaveFile};
+    let mut s = crate::session::WebServices::new(None);
+    s.base = "/app".into();
+    s.sid = Some("sid-1".into());
+    s.handle(PlatformRequest::Device {
+        id: 7,
+        call: DeviceCall::SaveFile(SaveFile::bytes(b"a,b\n1,2\n".to_vec(), "export.csv")),
+    });
+    let out = s.take_outbox();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0]["call"], "save_file");
+    assert_eq!(out[0]["name"], "export.csv");
+    let url = out[0]["url"].as_str().unwrap();
+    let id = url.strip_prefix("/app/_prism/download/").expect(url);
+    let r = crate::downloads::serve(id, Some("sid-1"));
+    assert_eq!(r.body(), b"a,b\n1,2\n");
+    assert_eq!(r.headers()[http::header::CONTENT_TYPE], "text/csv");
+    let (reply_id, answer) = s.local.pop().unwrap();
+    assert_eq!(reply_id, 7);
+    match answer {
+        Ok(DeviceValue::Files(f)) => {
+            assert_eq!(
+                (f[0].path.as_str(), f[0].name.as_str(), f[0].size),
+                ("", "export.csv", 8)
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+    // Nothing to reveal in a browser.
+    s.handle(PlatformRequest::Device {
+        id: 8,
+        call: DeviceCall::RevealPath("/tmp/export.csv".into()),
+    });
+    assert!(s.take_outbox().is_empty());
+}
