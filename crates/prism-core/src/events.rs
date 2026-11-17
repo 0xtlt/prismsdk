@@ -221,8 +221,9 @@ pub struct DragEvent {
     /// The mouse button held (#136): [`PointerButton::Primary`] for a
     /// finger, a pen or the main button.
     pub button: PointerButton,
-    /// Keys held when the drag started (Shift to constrain, Option to
-    /// duplicate…).
+    /// Keys held now (Shift to constrain, Option to duplicate…): updated on
+    /// every move (#223), and a `Move` where the drag is comes when only the
+    /// keys change (the web and macOS), so ⇧ and ⌥ act live.
     pub modifiers: Modifiers,
 }
 

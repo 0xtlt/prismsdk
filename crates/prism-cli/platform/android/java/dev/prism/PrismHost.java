@@ -1385,6 +1385,13 @@ public final class PrismHost {
                 case "text": type = android.view.PointerIcon.TYPE_TEXT; break;
                 case "crosshair": type = android.view.PointerIcon.TYPE_CROSSHAIR; break;
                 case "move": type = android.view.PointerIcon.TYPE_ALL_SCROLL; break;
+                // Edges, corners and zoom (#223).
+                case "n-resize": case "s-resize": type = android.view.PointerIcon.TYPE_VERTICAL_DOUBLE_ARROW; break;
+                case "e-resize": case "w-resize": type = android.view.PointerIcon.TYPE_HORIZONTAL_DOUBLE_ARROW; break;
+                case "ne-resize": case "sw-resize": case "nesw-resize": type = android.view.PointerIcon.TYPE_TOP_RIGHT_DIAGONAL_DOUBLE_ARROW; break;
+                case "nw-resize": case "se-resize": case "nwse-resize": type = android.view.PointerIcon.TYPE_TOP_LEFT_DIAGONAL_DOUBLE_ARROW; break;
+                case "zoom-in": type = android.view.PointerIcon.TYPE_ZOOM_IN; break;
+                case "zoom-out": type = android.view.PointerIcon.TYPE_ZOOM_OUT; break;
                 case "grab": type = android.view.PointerIcon.TYPE_GRAB; break;
                 case "grabbing": type = android.view.PointerIcon.TYPE_GRABBING; break;
                 case "not-allowed": type = android.view.PointerIcon.TYPE_NO_DROP; break;

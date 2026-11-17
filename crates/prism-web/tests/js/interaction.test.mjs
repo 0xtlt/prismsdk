@@ -155,9 +155,10 @@ test("the middle and secondary buttons drag where allowed, with their keys (#136
   assert.equal(drags().length, 0, "the primary button selects");
   assert.ok(p(canvas, "pointerdown", 1, 60, 30, { shiftKey: true }).defaultPrevented, "no autoscroll");
   assert.ok(p(canvas, "mousedown", 1, 60, 30).defaultPrevented);
-  p(canvas, "pointermove", 1, 70, 30);
+  // The keys held now go with each report (#223).
+  p(canvas, "pointermove", 1, 70, 30, { shiftKey: true });
   assert.deepEqual(lastSent(page), { t: "drag", id: 2, x: 10, y: 10, dx: 10, dy: 0, button: "middle", mods: 1, phase: "start" });
-  p(canvas, "pointerup", 1, 75, 30);
+  p(canvas, "pointerup", 1, 75, 30, { shiftKey: true });
   assert.deepEqual(lastSent(page), { t: "drag", id: 2, phase: "end", x: 10, y: 10, dx: 15, dy: 0, button: "middle", mods: 1 });
   assert.ok(p(canvas, "auxclick", 1, 75, 30).defaultPrevented, "no new tab, no paste");
   // The secondary button: a drag, then no context menu; a plain press keeps it.
@@ -1041,4 +1042,43 @@ test("a picked folder's files go up named by their path in it (#225)", async () 
   const start = page.ws.sent.find((m) => m.t === "upload_start" && m.id === 7);
   assert.deepEqual(start.files.map((f) => f.name), ["Export/a.md", "Export/notes/b.md"]);
   assert.deepEqual(page.ws.sent.filter((m) => m.id === 7).at(-1), { t: "device_reply", id: 7, uploaded: true });
+});
+
+
+test("drags report the keys held now, and their release makes no click (#223)", () => {
+  const page = live([
+    { op: "create", id: 1, kind: "view" }, { op: "clickable", id: 1, on: true },
+    { op: "create", id: 2, kind: "view" }, { op: "pointer", id: 2, mask: 4 }, { op: "clickable", id: 2, on: true },
+    { op: "children", id: 1, children: [2] },
+    { op: "root", id: 1 },
+  ]);
+  const shape = placed(page.node(2));
+  const p = (type, x, more = {}) => { const e = { type, pointerId: 1, button: 0, clientX: x, clientY: 30, ...more }; shape.dispatchEvent(e); return e; };
+  const drags = () => sent(page).filter((m) => m.t === "drag");
+  p("pointerdown", 60);
+  p("pointermove", 80);
+  assert.equal(drags().at(-1).mods, undefined);
+  // ⇧ alone, mid-drag: the drag again, where it is, with ⇧.
+  page.window.dispatchEvent({ type: "keydown", key: "Shift", shiftKey: true });
+  flushFrames(page);
+  assert.deepEqual(drags().at(-1), { t: "drag", id: 2, x: 10, y: 10, dx: 20, dy: 0, mods: 1, phase: "move" });
+  p("pointermove", 90, { shiftKey: true, altKey: true });
+  flushFrames(page);
+  assert.equal(drags().at(-1).mods, 5);
+  page.window.dispatchEvent({ type: "keyup", key: "Shift", altKey: true });
+  flushFrames(page);
+  assert.equal(drags().at(-1).mods, 4);
+  p("pointerup", 90);
+  assert.equal(drags().at(-1).phase, "end");
+  // The click the release makes reaches no one, not even the parent.
+  const before = sent(page).filter((m) => m.t === "click").length;
+  const click = { type: "click", detail: 1, clientX: 90, clientY: 30 };
+  shape.dispatchEvent(click);
+  assert.equal(sent(page).filter((m) => m.t === "click").length, before);
+  assert.ok(click.defaultPrevented);
+  // The next press and click are clicks again.
+  p("pointerdown", 60);
+  p("pointerup", 60);
+  shape.dispatchEvent({ type: "click", detail: 1, clientX: 60, clientY: 30 });
+  assert.equal(sent(page).filter((m) => m.t === "click").length, before + 1);
 });

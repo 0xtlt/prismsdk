@@ -406,6 +406,30 @@ pub enum Cursor {
     Help,
     /// Busy in the background, still usable.
     Progress,
+    /// Resizing from the top edge.
+    ResizeN,
+    /// Resizing from the bottom edge.
+    ResizeS,
+    /// Resizing from the right edge.
+    ResizeE,
+    /// Resizing from the left edge.
+    ResizeW,
+    /// Resizing from the top right corner.
+    ResizeNe,
+    /// Resizing from the top left corner.
+    ResizeNw,
+    /// Resizing from the bottom right corner.
+    ResizeSe,
+    /// Resizing from the bottom left corner.
+    ResizeSw,
+    /// Diagonal arrows, bottom left to top right (#223).
+    ResizeNeSw,
+    /// Diagonal arrows, top left to bottom right (#223).
+    ResizeNwSe,
+    /// A magnifier with a plus.
+    ZoomIn,
+    /// A magnifier with a minus.
+    ZoomOut,
 }
 
 impl Cursor {
@@ -424,6 +448,18 @@ impl Cursor {
             Cursor::ResizeVertical => "ns-resize",
             Cursor::Help => "help",
             Cursor::Progress => "progress",
+            Cursor::ResizeN => "n-resize",
+            Cursor::ResizeS => "s-resize",
+            Cursor::ResizeE => "e-resize",
+            Cursor::ResizeW => "w-resize",
+            Cursor::ResizeNe => "ne-resize",
+            Cursor::ResizeNw => "nw-resize",
+            Cursor::ResizeSe => "se-resize",
+            Cursor::ResizeSw => "sw-resize",
+            Cursor::ResizeNeSw => "nesw-resize",
+            Cursor::ResizeNwSe => "nwse-resize",
+            Cursor::ZoomIn => "zoom-in",
+            Cursor::ZoomOut => "zoom-out",
         }
     }
 
@@ -442,6 +478,18 @@ impl Cursor {
             "ns-resize" => Cursor::ResizeVertical,
             "help" => Cursor::Help,
             "progress" => Cursor::Progress,
+            "n-resize" => Cursor::ResizeN,
+            "s-resize" => Cursor::ResizeS,
+            "e-resize" => Cursor::ResizeE,
+            "w-resize" => Cursor::ResizeW,
+            "ne-resize" => Cursor::ResizeNe,
+            "nw-resize" => Cursor::ResizeNw,
+            "se-resize" => Cursor::ResizeSe,
+            "sw-resize" => Cursor::ResizeSw,
+            "nesw-resize" => Cursor::ResizeNeSw,
+            "nwse-resize" => Cursor::ResizeNwSe,
+            "zoom-in" => Cursor::ZoomIn,
+            "zoom-out" => Cursor::ZoomOut,
             _ => return None,
         })
     }

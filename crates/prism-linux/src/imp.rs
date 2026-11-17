@@ -3082,9 +3082,12 @@ impl Widgets for Gtk {
             });
             let st = state.clone();
             drag.connect_drag_update(move |g, dx, dy| {
-                let Some(d) = st.get() else {
+                let Some(mut d) = st.get() else {
                     return;
                 };
+                // The keys held now (#223), not only at the press.
+                d.mods = modifiers(g.current_event_state());
+                st.set(Some(d));
                 if !d.started {
                     if dx.hypot(dy) < threshold {
                         return;

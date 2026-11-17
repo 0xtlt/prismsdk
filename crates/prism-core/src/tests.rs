@@ -4259,3 +4259,28 @@ fn picked_folders_keep_their_tree() {
     assert_eq!(names, ["a.md", "notes/b.md"]);
     assert_eq!(PickedFolder::from_files(Vec::new()), None);
 }
+
+/// #223: every cursor has its CSS (and GTK) name, and back.
+#[test]
+fn cursors_round_trip_through_their_css_names() {
+    use crate::decoration::Cursor as C;
+    for c in [
+        C::ResizeN,
+        C::ResizeS,
+        C::ResizeE,
+        C::ResizeW,
+        C::ResizeNe,
+        C::ResizeNw,
+        C::ResizeSe,
+        C::ResizeSw,
+        C::ResizeNeSw,
+        C::ResizeNwSe,
+        C::ZoomIn,
+        C::ZoomOut,
+        C::ResizeHorizontal,
+    ] {
+        assert_eq!(C::from_css(c.css()), Some(c), "{}", c.css());
+    }
+    assert_eq!(C::ResizeNwSe.css(), "nwse-resize");
+    assert_eq!(C::ZoomIn.css(), "zoom-in");
+}

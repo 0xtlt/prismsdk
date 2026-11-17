@@ -153,6 +153,10 @@ never sticks.
 
 tvOS counts presses of the remote's select button as single clicks; watchOS reports count 1 and no keys.
 
+## Keys during a drag, and no click after it
+
+A shape editor's ⇧ (keep proportions) and ⌥ (from the centre, duplicate) act live (#223): `DragEvent::modifiers` holds the keys held now, updated on every move, and pressing or releasing a modifier alone mid-drag sends a `Move` where the drag is, with the new keys (the web and macOS; Linux updates them as the pointer moves). Once a drag has started, the release that ends it makes no click on the element or around it: on the web the click is swallowed before any handler or link until the next press; natively the drag takes the press.
+
 ## Dragging with other buttons
 
 ```rust

@@ -169,6 +169,15 @@
   };
   /** Set from a drag's end until the click it produces has been ignored. */
   let dragJustEnded = false;
+  const modsOf = (e) => (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
+  // The click a drag's release makes (#223): no handler, no link, hears it.
+  document.addEventListener("click", (e) => {
+    if (!dragJustEnded) return;
+    dragJustEnded = false;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }, true);
+  document.addEventListener("pointerdown", () => { dragJustEnded = false; }, true);
   /** One message per animation frame: the latest one wins. */
   function throttled() {
     let pending = null, queued = false;
@@ -233,21 +242,24 @@
       e.prismDrag = true;
       if (e.button === 1) e.preventDefault();
       const at = local(el, e);
-      const mods = (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
-      // Only what differs from a plain primary drag goes up.
-      const extra = { ...(e.button ? { button: ["primary", "middle", "secondary"][e.button] } : {}), ...(mods ? { mods } : {}) };
-      drag = { pointer: e.pointerId, cx: e.clientX, cy: e.clientY, x: at.x, y: at.y, started: false, button: e.button, extra };
+      // Only what differs from a plain primary drag goes up; the keys held
+      // go with each report (#223).
+      const extra = e.button ? { button: ["primary", "middle", "secondary"][e.button] } : {};
+      drag = { pointer: e.pointerId, cx: e.clientX, cy: e.clientY, x: at.x, y: at.y, started: false, button: e.button, extra, mods: modsOf(e), dx: 0, dy: 0 };
       // Followed on the window until it is released (#194): a fast flick off
       // a small handle still starts the drag. The pointer is captured only
       // once it is a drag, so a click on a child stays the child's.
       addEventListener("pointermove", dragMove, true);
       addEventListener("pointerup", dragUp, true);
       addEventListener("pointercancel", dragCancel, true);
+      addEventListener("keydown", dragKey, true);
+      addEventListener("keyup", dragKey, true);
     });
     const dragMove = (e) => {
       if (!drag || e.pointerId !== drag.pointer) return;
       const dx = round(e.clientX - drag.cx), dy = round(e.clientY - drag.cy);
-      const msg = { t: "drag", id, x: drag.x, y: drag.y, dx, dy, ...drag.extra };
+      drag.mods = modsOf(e);
+      const msg = { t: "drag", id, x: drag.x, y: drag.y, dx, dy, ...drag.extra, ...(drag.mods ? { mods: drag.mods } : {}) };
       if (!drag.started) {
         // Past the slop: a drag, not a click.
         if (Math.hypot(dx, dy) < 4) return;
@@ -255,6 +267,17 @@
         try { el.setPointerCapture(e.pointerId); } catch {}
         send({ ...msg, phase: "start" });
       } else drags.queue({ ...msg, phase: "move" });
+      drag.dx = dx;
+      drag.dy = dy;
+    };
+    // ⇧, ⌥, ⌘ or ⌃ pressed or released alone during a drag (#223): reported
+    // where the drag is, with the keys held now.
+    const dragKey = (e) => {
+      if (!drag || !drag.started || !["Shift", "Alt", "Meta", "Control"].includes(e.key)) return;
+      const mods = modsOf(e);
+      if (mods === drag.mods) return;
+      drag.mods = mods;
+      drags.queue({ t: "drag", id, x: drag.x, y: drag.y, dx: drag.dx, dy: drag.dy, ...drag.extra, ...(mods ? { mods } : {}), phase: "move" });
     };
     el.addEventListener("pointermove", (e) => {
       if (el._pmask & 2) moves.queue({ t: "pointer", id, phase: "move", ...local(el, e) });
@@ -263,6 +286,8 @@
       removeEventListener("pointermove", dragMove, true);
       removeEventListener("pointerup", dragUp, true);
       removeEventListener("pointercancel", dragCancel, true);
+      removeEventListener("keydown", dragKey, true);
+      removeEventListener("keyup", dragKey, true);
     };
     const finish = (e, phase) => {
       if (!drag || e.pointerId !== drag.pointer) return;
@@ -272,9 +297,12 @@
       if (!d.started) return;
       drags.drop();
       if (d.button === 2) el._rightDragged = true;
-      send({ t: "drag", id, phase, x: d.x, y: d.y, dx: round(e.clientX - d.cx), dy: round(e.clientY - d.cy), ...d.extra });
+      const mods = modsOf(e);
+      send({ t: "drag", id, phase, x: d.x, y: d.y, dx: round(e.clientX - d.cx), dy: round(e.clientY - d.cy), ...d.extra, ...(mods ? { mods } : {}) });
+      // The click this release makes is not a click, on the element or
+      // around it (#223): swallowed before any handler, until the next press.
       dragJustEnded = true;
-      setTimeout(() => { dragJustEnded = false; }, 0);
+      setTimeout(() => { dragJustEnded = false; }, 500);
     };
     const dragUp = (e) => finish(e, "end");
     const dragCancel = (e) => finish(e, "cancel");
