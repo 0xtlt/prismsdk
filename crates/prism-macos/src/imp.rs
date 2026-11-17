@@ -901,6 +901,9 @@ define_class!(
             };
             let at = event.locationInWindow();
             let (dx, dy) = (at.x - start.x, start.y - at.y);
+            // The keys held now (#223), not only at the press.
+            iv.drag_modifiers
+                .set(crate::interact::modifiers(event.modifierFlags()));
             if !iv.dragging.get() {
                 if dx.hypot(dy) < 3. {
                     return;
@@ -1202,6 +1205,16 @@ impl PrismView {
     fn drag(&self, phase: DragPhase, start: NSPoint, dx: f64, dy: f64) {
         let p = self.convertPoint_fromView(start, None);
         let iv = self.ivars();
+        // The drag in progress (#223): ⇧ or ⌥ pressed alone resend it.
+        DRAGGED.with(|d| {
+            *d.borrow_mut() = match phase {
+                DragPhase::Start | DragPhase::Move => {
+                    let me: &PrismView = self;
+                    Some((objc2::Message::retain(me), start, dx, dy))
+                }
+                _ => None,
+            }
+        });
         dispatch(UiEvent::Drag(
             iv.id.get(),
             DragEvent {
@@ -1243,6 +1256,9 @@ impl PrismView {
         }
         let at = event.locationInWindow();
         let (dx, dy) = (at.x - start.x, start.y - at.y);
+        // The keys held now (#223).
+        iv.drag_modifiers
+            .set(crate::interact::modifiers(event.modifierFlags()));
         if !iv.dragging.get() {
             if dx.hypot(dy) < 3. {
                 return true;
@@ -5012,6 +5028,7 @@ pub fn run(config: AppConfig, init: AppInit) {
 
     observe_system(&target);
     install_key_monitor();
+    install_flags_monitor();
     window.makeKeyAndOrderFront(None);
     app.activate();
     if std::env::var_os("PRISM_SNAPSHOT").is_some()
@@ -5037,6 +5054,39 @@ thread_local! {
     static LAST_LEN: Cell<usize> = const { Cell::new(0) };
     /// `complete:` re-enters `controlTextDidChange:`.
     static COMPLETING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The view being dragged, where the drag started and how far it went
+/// (#223).
+type Dragged = (Retained<PrismView>, NSPoint, f64, f64);
+
+thread_local! {
+    static DRAGGED: RefCell<Option<Dragged>> = const { RefCell::new(None) };
+}
+
+/// Modifier keys pressed or released alone during a drag (#223): the drag
+/// is reported again with them, where it is.
+fn install_flags_monitor() {
+    let block = block2::RcBlock::new(|event: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
+        // SAFETY: AppKit hands the monitor a valid event.
+        let e = unsafe { event.as_ref() };
+        let dragged = DRAGGED.with(|d| d.borrow().clone());
+        if let Some((view, start, dx, dy)) = dragged {
+            let mods = crate::interact::modifiers(e.modifierFlags());
+            if view.ivars().drag_modifiers.replace(mods) != mods {
+                view.drag(DragPhase::Move, start, dx, dy);
+            }
+        }
+        event.as_ptr()
+    });
+    let monitor = unsafe {
+        NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+            objc2_app_kit::NSEventMask::FlagsChanged,
+            &block,
+        )
+    };
+    // Lives as long as the app.
+    std::mem::forget(monitor);
 }
 
 /// Key presses for `on_key_down` handlers around the focus (text fields,

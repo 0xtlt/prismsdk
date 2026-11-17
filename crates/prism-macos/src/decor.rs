@@ -671,6 +671,44 @@ pub(crate) fn ns_cursor(c: Cursor) -> Retained<NSCursor> {
         Cursor::NotAllowed => NSCursor::operationNotAllowedCursor(),
         Cursor::ResizeHorizontal => NSCursor::resizeLeftRightCursor(),
         Cursor::ResizeVertical => NSCursor::resizeUpDownCursor(),
+        // Edges, corners and zoom (#223): macOS 15's frame-resize and zoom
+        // cursors; before, the nearest ones.
+        c => edge_cursor(c),
+    }
+}
+
+/// A frame-resize or zoom cursor (#223), when the system has them (macOS
+/// 15): diagonal arrows at corners. Earlier systems get the two-way arrows
+/// of the edge, a crosshair at corners, the arrow for zoom.
+#[allow(deprecated)]
+fn edge_cursor(c: Cursor) -> Retained<NSCursor> {
+    use objc2::ClassType;
+    use objc2_app_kit::{NSCursorFrameResizeDirections as D, NSCursorFrameResizePosition as P};
+    let modern: bool = unsafe {
+        objc2::msg_send![
+            NSCursor::class(),
+            respondsToSelector: objc2::sel!(frameResizeCursorFromPosition:inDirections:)
+        ]
+    };
+    let position = match c {
+        Cursor::ResizeN => Some(P::Top),
+        Cursor::ResizeS => Some(P::Bottom),
+        Cursor::ResizeE => Some(P::Right),
+        Cursor::ResizeW => Some(P::Left),
+        Cursor::ResizeNe | Cursor::ResizeNeSw => Some(P::TopRight),
+        Cursor::ResizeNw | Cursor::ResizeNwSe => Some(P::TopLeft),
+        Cursor::ResizeSe => Some(P::BottomRight),
+        Cursor::ResizeSw => Some(P::BottomLeft),
+        _ => None,
+    };
+    match (modern, position, c) {
+        (true, Some(p), _) => NSCursor::frameResizeCursorFromPosition_inDirections(p, D::All),
+        (true, None, Cursor::ZoomIn) => NSCursor::zoomInCursor(),
+        (true, None, Cursor::ZoomOut) => NSCursor::zoomOutCursor(),
+        (false, _, Cursor::ResizeN | Cursor::ResizeS) => NSCursor::resizeUpDownCursor(),
+        (false, _, Cursor::ResizeE | Cursor::ResizeW) => NSCursor::resizeLeftRightCursor(),
+        (false, Some(_), _) => NSCursor::crosshairCursor(),
+        _ => NSCursor::arrowCursor(),
     }
 }
 
