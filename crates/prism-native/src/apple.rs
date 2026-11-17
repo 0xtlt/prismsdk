@@ -180,6 +180,92 @@ pub mod push;
 /// (`apple/Bridge/PrismWebView.swift`), shared by the macOS and UIKit
 /// backends. tvOS has no WebKit: `WebHost::new` returns `None` there.
 #[cfg(all(feature = "apple-bridge", not(target_os = "watchos")))]
+/// Videos (#207): the Swift bridge's AVKit player in a host view.
+pub mod video {
+    use std::ffi::{CString, c_char, c_void};
+    use std::ptr::NonNull;
+
+    use prism_core::{NodeId, UiEvent};
+
+    unsafe extern "C" {
+        fn prism_video_new(id: u64) -> *mut c_void;
+        fn prism_video_load(host: *mut c_void, src: *const c_char);
+        fn prism_video_config(
+            host: *mut c_void,
+            controls: bool,
+            autoplay: bool,
+            looping: bool,
+            muted: bool,
+        );
+        fn prism_video_size(host: *mut c_void, w: *mut f64, h: *mut f64) -> bool;
+        fn prism_video_release(host: *mut c_void);
+    }
+
+    /// A video's host view (an `NSView` / `UIView` holding the player).
+    /// Dropping it stops the playback.
+    pub struct VideoHost(NonNull<c_void>);
+
+    impl VideoHost {
+        /// The host view of node `id`, or `None` without AVKit (watchOS).
+        pub fn new(id: NodeId) -> Option<VideoHost> {
+            NonNull::new(unsafe { prism_video_new(id) }).map(VideoHost)
+        }
+
+        /// The host view (borrowed).
+        pub fn view_ptr(&self) -> *mut c_void {
+            self.0.as_ptr()
+        }
+
+        /// The source: a URL (assets resolved to a file URL), then one
+        /// `name: value` header per line.
+        pub fn load(&self, src: &str) {
+            let c = CString::new(src.replace('\0', "")).unwrap_or_default();
+            unsafe { prism_video_load(self.0.as_ptr(), c.as_ptr()) }
+        }
+
+        /// How it plays (`prism_core::VideoConfig`).
+        pub fn configure(&self, c: &prism_core::VideoConfig) {
+            unsafe {
+                prism_video_config(self.0.as_ptr(), c.controls, c.autoplay, c.looping, c.muted)
+            }
+        }
+
+        /// The video's size in points, once known.
+        pub fn natural_size(&self) -> Option<(f32, f32)> {
+            let (mut w, mut h) = (0., 0.);
+            unsafe { prism_video_size(self.0.as_ptr(), &mut w, &mut h) }
+                .then_some((w as f32, h as f32))
+        }
+    }
+
+    impl Drop for VideoHost {
+        fn drop(&mut self) {
+            unsafe { prism_video_release(self.0.as_ptr()) }
+        }
+    }
+
+    /// A video's measure: its natural size scaled to `max_width`, 16:9 at
+    /// that width (or 320 wide) before it is known.
+    pub fn measure(host: &VideoHost, max_width: Option<f32>) -> (f32, f32) {
+        match host.natural_size() {
+            Some((w, h)) => {
+                let shown = max_width.map_or(w, |m| m.min(w));
+                (shown, shown * h / w)
+            }
+            None => {
+                let w = max_width.unwrap_or(320.);
+                (w, w * 9. / 16.)
+            }
+        }
+    }
+
+    /// What the bridge reported: `Some(Ended)` at the end; `None` for a
+    /// size (the backend lays out again).
+    pub fn event(id: NodeId, kind: i32) -> Option<UiEvent> {
+        (kind == 1).then_some(UiEvent::Ended(id))
+    }
+}
+
 pub mod web {
     use std::ffi::{CStr, CString, c_char, c_void};
     use std::ptr::NonNull;

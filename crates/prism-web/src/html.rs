@@ -641,6 +641,34 @@ impl HtmlBackend {
                     escape(alt)
                 );
             }
+            // A video (#207): the browser's player and controls.
+            NodeKind::Video => {
+                let c = prism_core::VideoConfig::decode(&n.config);
+                let url = |src: &str| match &self.asset_urls {
+                    Some(urls) => urls(src),
+                    None => picture_url(src),
+                };
+                let flag = |on: bool, name: &str| {
+                    if on {
+                        format!(" {name}")
+                    } else {
+                        String::new()
+                    }
+                };
+                let _ = write!(
+                    out,
+                    r#"<video {attrs} class="prism-video" src="{}"{}{}{}{}{} playsinline preload="metadata"></video>"#,
+                    escape(&media_url(&url(&n.text))),
+                    flag(c.controls, "controls"),
+                    flag(c.autoplay, "autoplay"),
+                    flag(c.looping, "loop"),
+                    flag(c.muted, "muted"),
+                    c.poster
+                        .as_deref()
+                        .map(|p| format!(r#" poster="{}""#, escape(&url(p))))
+                        .unwrap_or_default(),
+                );
+            }
             // The live tree replaces the first paint: the frame loads its
             // page then (`data-src`), once, rather than twice.
             NodeKind::WebView => {
@@ -1151,6 +1179,12 @@ fn link_attrs(base: &str, path: &str) -> String {
 /// Remote URLs as-is; anything else is an app asset under `/assets/`.
 /// Headers (`Picture::header`) are dropped: only a [`WebApp`](crate::WebApp)
 /// can serve such a picture (its server fetches it with them).
+/// A video's URL (#207): a proxied source (headers) is served by the media
+/// route, which answers ranges.
+pub fn media_url(url: &str) -> String {
+    url.replacen("/_prism/picture/", "/_prism/media/", 1)
+}
+
 pub fn picture_url(src: &str) -> String {
     let src = prism_core::picture_source(src).0;
     if src.starts_with("http://")

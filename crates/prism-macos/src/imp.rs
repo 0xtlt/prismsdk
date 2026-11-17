@@ -69,6 +69,15 @@ pub(crate) fn dispatch(event: UiEvent) {
     with_state(|s| s.dispatch(event));
 }
 
+/// Lays everything out again, measures included (a video's size became
+/// known, #207).
+pub(crate) fn relayout_all() {
+    with_state(|s| {
+        s.renderer.mark_all_dirty();
+        s.relayout();
+    });
+}
+
 /// Dispatches `event` now, or on the next turn of the run loop when Prism is
 /// busy (the platform calls back while Prism applies patches: a scroll view
 /// moved by `scroll_by`, #204), instead of dropping it.
@@ -2391,6 +2400,14 @@ pub enum View {
     Radios(Rc<MacRadios>),
     /// A web view (#62): a Prism view (its box) holding the WKWebView host.
     Web(Rc<MacWeb>),
+    /// A video (#207): its box, and the bridge's AVKit player filling it.
+    Video(Rc<MacVideo>),
+}
+
+/// A video: its box and the bridge's player host (`None` without AVKit).
+pub struct MacVideo {
+    container: Retained<PrismView>,
+    host: Option<prism_native::apple::video::VideoHost>,
 }
 
 /// A web view: its box, and the bridge's host view filling it (`None`
@@ -2425,6 +2442,7 @@ impl View {
             View::Check(v) => v,
             View::Radios(r) => &r.container,
             View::Web(w) => &w.container,
+            View::Video(v) => &v.container,
         }
     }
 
@@ -2433,6 +2451,7 @@ impl View {
         match self {
             View::Container(v) | View::Screen(v) | View::Tab(v) | View::Picture(v) => Some(v),
             View::Web(w) => Some(&w.container),
+            View::Video(v) => Some(&v.container),
             View::TextArea(t) => Some(&t.container),
             View::Input(i) => Some(&i.host),
             _ => None,
@@ -2468,6 +2487,7 @@ impl View {
             View::Check(v) => v.tag() as NodeId,
             View::Radios(r) => r.id,
             View::Web(w) => w.container.ivars().id.get(),
+            View::Video(v) => v.container.ivars().id.get(),
         }
     }
 }
@@ -3209,6 +3229,17 @@ impl Widgets for AppKit {
                 }
                 View::Web(Rc::new(MacWeb { container, host }))
             }
+            NodeKind::Video => {
+                let container = PrismView::new(mtm, id);
+                let host = prism_native::apple::video::VideoHost::new(id);
+                if let Some(h) = &host {
+                    // SAFETY: the bridge's host is an NSView, kept alive by `host`.
+                    let v = unsafe { &*(h.view_ptr() as *const NSView) };
+                    v.setFrame(container.bounds());
+                    container.addSubview(v);
+                }
+                View::Video(Rc::new(MacVideo { container, host }))
+            }
             NodeKind::Slider => {
                 let s = PrismSlider::new(mtm, id, &self.target);
                 self.directional(&s);
@@ -3495,6 +3526,7 @@ impl Widgets for AppKit {
             }
             // A web view's box: its background shows while the page loads.
             View::Web(w) => self.style_box(&w.container, style),
+            View::Video(v) => self.style_box(&v.container, style),
             View::Label(l) => crate::label::set_style(l, style),
             View::Input(i) => {
                 // Padding, a background, a border or `.border(0.)`: Prism's
@@ -3541,6 +3573,14 @@ impl Widgets for AppKit {
             View::Web(w) => {
                 if let Some(h) = &w.host {
                     h.load(text);
+                }
+            }
+            // A video's source (#207): assets and files as file URLs.
+            View::Video(v) => {
+                if let Some(h) = &v.host
+                    && let Some(url) = prism_native::images::media_url(text, &self.image_sources)
+                {
+                    h.load(&url);
                 }
             }
             // Events reach the app synchronously, so an echo of the typing
@@ -3823,6 +3863,14 @@ impl Widgets for AppKit {
             // Natural size of the loaded image, scaled to the available width.
             // Sized by its style only (no measure context).
             View::Web(_) => NSSize::ZERO,
+            // The video's size, once AVKit knows it (#207).
+            View::Video(v) => match &v.host {
+                Some(h) => {
+                    let (w, h) = prism_native::apple::video::measure(h, max_width);
+                    NSSize::new(w as f64, h as f64)
+                }
+                None => NSSize::ZERO,
+            },
             View::Picture(v) => match v.ivars().image.borrow().as_ref() {
                 Some(img) => {
                     let size = img.size();
@@ -4089,6 +4137,11 @@ impl Widgets for AppKit {
 
     fn set_config(&mut self, view: &View, _kind: NodeKind, config: &str) {
         match view {
+            View::Video(v) => {
+                if let Some(h) = &v.host {
+                    h.configure(&prism_core::VideoConfig::decode(config));
+                }
+            }
             View::Web(w) => {
                 if let Some(h) = &w.host {
                     h.configure(config);
@@ -5675,14 +5728,18 @@ thread_local! {
 
 /// Runs `f` on the main thread after `delay` (`f` need not be `Send`: it
 /// stays on this thread, only its number travels).
+/// Nothing runs once the thread's state is being torn down (a view removed
+/// while the app quits can still move the focus).
 pub(crate) fn on_main_after(delay: std::time::Duration, f: impl FnOnce() + 'static) {
-    let id = LATER.with(|l| {
+    let Ok(id) = LATER.try_with(|l| {
         let mut l = l.borrow_mut();
         l.0 += 1;
         let id = l.0;
         l.1.insert(id, Box::new(f));
         id
-    });
+    }) else {
+        return;
+    };
     let when = dispatch2::DispatchTime::try_from(delay).unwrap_or(dispatch2::DispatchTime::NOW);
     let _ = dispatch2::DispatchQueue::main().after(when, move || {
         if let Some(f) = LATER.with(|l| l.borrow_mut().1.remove(&id)) {

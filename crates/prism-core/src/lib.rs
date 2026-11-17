@@ -47,6 +47,7 @@ mod style;
 pub mod surfaces;
 pub mod svg;
 mod task;
+pub mod video;
 pub mod web_view;
 mod window;
 pub use window::{WindowChrome, WindowControls};
@@ -136,6 +137,7 @@ pub use surfaces::{
 };
 pub use task::{AsyncApp, Background, Sleep, TaskHandle, WakeUi};
 pub use task::{DEFAULT_BACKGROUND_THREADS, background_threads, set_background_threads};
+pub use video::{EndedEvent, Video, VideoConfig, video};
 pub use web_view::{WebLoadEvent, WebMessageEvent, WebSandbox, WebView, web_view};
 
 use std::sync::Arc;
@@ -457,6 +459,11 @@ impl Runtime {
             UiEvent::Magnify(id, e) => {
                 if let Some(h) = self.reconciler.magnify_handler(id) {
                     h(&e, &mut self.app);
+                }
+            }
+            UiEvent::Ended(id) => {
+                if let Some(h) = self.reconciler.ended_handler(id) {
+                    h(&EndedEvent, &mut self.app);
                 }
             }
             UiEvent::DropProgress(id, sent, total) => {
@@ -854,6 +861,8 @@ pub mod prelude {
     pub use crate::{SceneTapEvent, scene3d};
     // Web views (#62).
     pub use crate::{WebLoadEvent, WebMessageEvent, WebSandbox, web_view};
+    // Videos (#207).
+    pub use crate::{EndedEvent, video};
 }
 
 #[cfg(test)]

@@ -140,6 +140,43 @@ pub fn load(src: &str, sources: &ImageSources) -> Option<Vec<u8>> {
         .find_map(|dir| std::fs::read(dir.join(src)).ok())
 }
 
+/// A URL the platform's media player opens for `src` (#207): a remote URL
+/// as it is (headers on the following lines), a file as a `file://` URL,
+/// an app asset as the file URL of its copy in an asset folder, or, for
+/// one compiled into the binary, of a copy in the cache.
+pub fn media_url(src: &str, sources: &ImageSources) -> Option<String> {
+    let (url, _) = prism_core::picture_source(src);
+    if is_remote(url) {
+        return Some(src.to_string());
+    }
+    if url.starts_with("file://") {
+        return Some(url.to_string());
+    }
+    if url.starts_with('/') {
+        return Some(format!("file://{url}"));
+    }
+    if url.split('/').any(|s| s == "..") {
+        return None;
+    }
+    if let Some(path) = sources
+        .asset_dirs
+        .iter()
+        .map(|d| d.join(url))
+        .find(|p| p.exists())
+    {
+        return Some(format!("file://{}", path.display()));
+    }
+    let bytes = sources.embedded.get(url)?;
+    let dir = sources.cache_dir.as_ref()?.join("media");
+    let _ = std::fs::create_dir_all(&dir);
+    let name = url.replace('/', "_");
+    let path = dir.join(name);
+    if !path.exists() {
+        std::fs::write(&path, bytes).ok()?;
+    }
+    Some(format!("file://{}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,5 +236,31 @@ mod tests {
         // Without the header: refused.
         assert_eq!(load(&url, &sources), None);
         let _ = std::fs::remove_dir_all(cache);
+    }
+
+    #[test]
+    fn media_urls_point_at_files_the_player_opens() {
+        let dir = std::env::temp_dir().join(format!("prism-media-{}", std::process::id()));
+        let assets = dir.join("assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::write(assets.join("intro.mp4"), b"mp4").unwrap();
+        let sources = ImageSources {
+            embedded: EmbeddedAssets::new().file("clips/outro.mp4", &b"mp4"[..]),
+            asset_dirs: vec![assets.clone()],
+            cache_dir: Some(dir.join("cache")),
+        };
+        let remote = "https://example.com/a.mp4\nAuthorization: Bearer t";
+        assert_eq!(media_url(remote, &sources).as_deref(), Some(remote));
+        assert_eq!(
+            media_url("/tmp/a.mp4", &sources).as_deref(),
+            Some("file:///tmp/a.mp4")
+        );
+        let asset = format!("file://{}", assets.join("intro.mp4").display());
+        assert_eq!(media_url("intro.mp4", &sources), Some(asset));
+        let copy = media_url("clips/outro.mp4", &sources).unwrap();
+        assert!(copy.ends_with("media/clips_outro.mp4"));
+        assert!(std::path::Path::new(copy.trim_start_matches("file://")).exists());
+        assert_eq!(media_url("../secret.mp4", &sources), None);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -136,6 +136,113 @@ pub(crate) fn serve(id: &str, sid: Option<&str>) -> Response<Vec<u8>> {
     r
 }
 
+/// The most bytes one ranged media request fetches (#207): the browser
+/// asks for the rest as it plays.
+const MEDIA_CHUNK: u64 = 4 * 1024 * 1024;
+
+/// `GET <base>/_prism/media/<id>` (#207): a video or audio file behind
+/// headers, for the session `sid`, in ranges (`range`: the browser's
+/// `Range` header). The id is the one [`proxied`] gives (the same
+/// registry); the upstream gets the headers and a range of at most
+/// [`MEDIA_CHUNK`] bytes.
+pub(crate) fn serve_media(id: &str, sid: Option<&str>, range: Option<&str>) -> Response<Vec<u8>> {
+    let src = {
+        let r = registry().lock().unwrap();
+        match r.entries.get(id) {
+            Some(e) if e.sid.is_none() || e.sid.as_deref() == sid => e.src.clone(),
+            _ => return status(StatusCode::NOT_FOUND),
+        }
+    };
+    let (start, end) = parse_range(range);
+    let last = end
+        .unwrap_or(start + MEDIA_CHUNK - 1)
+        .min(start + MEDIA_CHUNK - 1);
+    let (url, headers) = prism_core::picture_source(&src);
+    let mut request =
+        prism_http::Request::get(url).header("Range", format!("bytes={start}-{last}"));
+    for (name, value) in headers {
+        request = request.header(name, value);
+    }
+    let res = match request.send_blocking() {
+        Ok(res) => res,
+        Err(e) => {
+            eprintln!("prism-web: media {url}: {e}");
+            return status(StatusCode::BAD_GATEWAY);
+        }
+    };
+    if !(res.ok() || res.status == 206) {
+        eprintln!("prism-web: media {url}: HTTP {}", res.status);
+        return status(match res.status {
+            401 | 403 | 404 | 410 => StatusCode::NOT_FOUND,
+            416 => StatusCode::RANGE_NOT_SATISFIABLE,
+            _ => StatusCode::BAD_GATEWAY,
+        });
+    }
+    let mime = res
+        .header("content-type")
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let media = mime.starts_with("video/")
+        || mime.starts_with("audio/")
+        || mime == "application/octet-stream";
+    if !media {
+        eprintln!("prism-web: media {url}: not a video ({mime:?})");
+        return status(StatusCode::BAD_GATEWAY);
+    }
+    // The upstream's range when it answered one; else the whole file came:
+    // pass the asked part on, as a range.
+    let content_range = res.header("content-range").map(str::to_string);
+    let (body, content_range) = match content_range {
+        Some(cr) if res.status == 206 => (res.body, cr),
+        _ => {
+            let total = res.body.len() as u64;
+            if start >= total {
+                return status(StatusCode::RANGE_NOT_SATISFIABLE);
+            }
+            let stop = last.min(total - 1);
+            let part = res.body[start as usize..=stop as usize].to_vec();
+            (part, format!("bytes {start}-{stop}/{total}"))
+        }
+    };
+    let mut r = Response::new(body);
+    *r.status_mut() = StatusCode::PARTIAL_CONTENT;
+    let h = r.headers_mut();
+    if let Ok(v) = HeaderValue::from_str(&mime) {
+        h.insert(header::CONTENT_TYPE, v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&content_range) {
+        h.insert(header::CONTENT_RANGE, v);
+    }
+    h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    h.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=300"),
+    );
+    h.insert(header::VARY, HeaderValue::from_static("Cookie"));
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    r
+}
+
+/// `bytes=start-[end]` (one range; anything else: from the start).
+fn parse_range(range: Option<&str>) -> (u64, Option<u64>) {
+    let Some(spec) = range.and_then(|r| r.trim().strip_prefix("bytes=")) else {
+        return (0, None);
+    };
+    let (a, b) = spec
+        .split(',')
+        .next()
+        .unwrap_or("")
+        .split_once('-')
+        .unwrap_or(("", ""));
+    let start = a.trim().parse().unwrap_or(0);
+    let end = b.trim().parse().ok().filter(|e: &u64| *e >= start);
+    (start, end)
+}
+
 fn status(code: StatusCode) -> Response<Vec<u8>> {
     let mut r = Response::new(Vec::new());
     *r.status_mut() = code;
@@ -145,6 +252,58 @@ fn status(code: StatusCode) -> Response<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #207: one range, else from the start.
+    #[test]
+    fn media_ranges_parse() {
+        assert_eq!(parse_range(None), (0, None));
+        assert_eq!(parse_range(Some("bytes=0-")), (0, None));
+        assert_eq!(parse_range(Some("bytes=100-199")), (100, Some(199)));
+        assert_eq!(parse_range(Some("bytes=100-50")), (100, None));
+        assert_eq!(parse_range(Some("bytes=5-9, 20-30")), (5, Some(9)));
+        assert_eq!(parse_range(Some("items=1-2")), (0, None));
+    }
+
+    /// #207: a video behind a token, served in ranges for its session.
+    #[test]
+    fn media_behind_headers_is_served_in_ranges() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut s, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 4096];
+                let len = s.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..len]).to_ascii_lowercase();
+                let body = b"0123456789";
+                let reply = if !req.contains("authorization: bearer s3cret") {
+                    "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n".to_string()
+                } else {
+                    // A server that ignores ranges: the whole file.
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        String::from_utf8_lossy(body)
+                    )
+                };
+                let _ = s.write_all(reply.as_bytes());
+            }
+        });
+        let src = format!("http://{addr}/talk.mp4\nAuthorization: Bearer s3cret");
+        let url = proxied("/app", Some("sid-a"), &src).unwrap();
+        let id = url.rsplit('/').next().unwrap();
+        assert_eq!(
+            serve_media(id, Some("sid-b"), None).status(),
+            StatusCode::NOT_FOUND
+        );
+        let r = serve_media(id, Some("sid-a"), Some("bytes=2-5"));
+        assert_eq!(r.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(r.body(), b"2345");
+        assert_eq!(r.headers()[header::CONTENT_RANGE], "bytes 2-5/10");
+        assert_eq!(r.headers()[header::CONTENT_TYPE], "video/mp4");
+        let all = serve_media(id, Some("sid-a"), None);
+        assert_eq!(all.body(), b"0123456789");
+    }
     use std::io::{Read, Write};
     use std::net::TcpListener;
 

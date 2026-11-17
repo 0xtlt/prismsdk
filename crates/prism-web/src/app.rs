@@ -286,6 +286,14 @@ impl WebApp {
         let mut response = if let Some(id) = path.strip_prefix("/_prism/picture/") {
             // A picture with headers, fetched here for its session.
             crate::pictures::serve(id, cookie_header(headers).and_then(session_id).as_deref())
+        } else if let Some(id) = path.strip_prefix("/_prism/media/") {
+            // A video with headers (#207), in ranges.
+            let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
+            crate::pictures::serve_media(
+                id,
+                cookie_header(headers).and_then(session_id).as_deref(),
+                range,
+            )
         } else if let Some(id) = path.strip_prefix("/_prism/3d/") {
             scene_blob(id)
         } else if path == "/_prism/auth/callback" {

@@ -131,7 +131,7 @@
     image: "span", progress: "progress", timer: "span", modal: "dialog", picture: "img",
     shape: "div", slider: "input", picker: "select", date_picker: "input", text_area: "textarea",
     spinner: "span", overlay: "div", checkbox: "label", radio_group: "div", scene3d: "div",
-    rich_input: "div",
+    rich_input: "div", video: "video",
     web_view: "iframe",
   };
   // SF Symbol names → glyphs (table generated from Rust: glyphs.rs).
@@ -1117,6 +1117,13 @@
       el.addEventListener("cancel", (e) => { e.preventDefault(); send({ t: "back", id, depth: 0, reason: "escape" }); });
     } else if (kind === "scroll") {
       el.className = "prism-scroll";
+    } else if (kind === "video") {
+      // The browser's player (#207): it says when it played to the end.
+      el.className = "prism-video";
+      el.playsInline = true;
+      el.setAttribute("playsinline", "");
+      el.preload = "metadata";
+      el.addEventListener("ended", () => send({ t: "ended", id }));
     } else if (kind === "picture") {
       el.className = "prism-picture";
       el.loading = "lazy";
@@ -2147,6 +2154,15 @@
       radioOptions(el, Number(el.dataset.pid), config);
     } else if (kind === "web_view") {
       webViewConfig(el, config);
+    } else if (kind === "video") {
+      // `controls autoplay loop muted poster=<url>` (#207).
+      const [flags, poster] = config.split("poster=");
+      const has = (t) => flags.split(/\s+/).includes(t);
+      el.controls = has("controls");
+      el.autoplay = has("autoplay");
+      el.loop = has("loop");
+      el.muted = has("muted");
+      if (poster && poster.trim()) el.poster = poster.trim(); else el.removeAttribute("poster");
     }
   }
 
@@ -2260,6 +2276,11 @@
         }
         if (kind === "scene3d") return; // its scene comes as updates ("scene")
         if (kind === "web_view") return webViewSrc(el, p.text);
+        if (kind === "video") {
+          // The server resolves the URL (assets, the media proxy).
+          if (el.getAttribute("src") !== p.text) el.src = p.text;
+          return;
+        }
         if (kind === "picture") {
           // The server resolves asset URLs (hashed, maybe on a CDN).
           const src = p.text;

@@ -86,6 +86,8 @@ pub enum View {
     Check(NodeId, gtk::CheckButton),
     Radio(NodeId, Rc<controls::RadioGroup>),
     Overlay(NodeId, Rc<OverlayView>),
+    /// A video (#207): GTK's player (GStreamer) with its own controls.
+    Video(NodeId, gtk::Video),
 }
 
 thread_local! {
@@ -177,7 +179,8 @@ impl View {
             | View::Spinner(id, _)
             | View::Check(id, _)
             | View::Radio(id, _)
-            | View::Overlay(id, _) => *id,
+            | View::Overlay(id, _)
+            | View::Video(id, _) => *id,
         }
     }
 
@@ -205,6 +208,7 @@ impl View {
             View::Check(_, b) => b.clone().upcast(),
             View::Radio(_, r) => r.root.clone().upcast(),
             View::Overlay(_, o) => o.anchor.clone().upcast(),
+            View::Video(_, v) => v.clone().upcast(),
         }
     }
 }
@@ -993,6 +997,36 @@ fn commit(s: &mut State, patches: Vec<prism_core::Patch>) {
     }
 }
 
+/// A video player (#207): reports the end of the playback, and lays out
+/// again once the stream knows its size.
+fn video_widget(id: NodeId) -> gtk::Video {
+    let v = gtk::Video::new();
+    v.set_autoplay(false);
+    v.connect_media_stream_notify(move |v| {
+        let Some(stream) = v.media_stream() else {
+            return;
+        };
+        // SAFETY: set by `set_config` as a bool.
+        let muted = unsafe { v.data::<bool>("prism-muted").map(|m| *m.as_ref()) };
+        stream.set_muted(muted.unwrap_or(false));
+        let looping = v.is_loop();
+        stream.connect_ended_notify(move |s| {
+            if s.is_ended() && !looping {
+                dispatch(UiEvent::Ended(id));
+            }
+        });
+        stream.connect_invalidate_size(|_| {
+            glib::idle_add_local_once(|| {
+                with_state(|s| {
+                    s.renderer.mark_all_dirty();
+                    relayout(s);
+                })
+            });
+        });
+    });
+    v
+}
+
 /// Registers a run-time font (`cx.load_font`) with fontconfig (from a file in
 /// the user's cache) and draws the texts again. A URL comes back here
 /// with its bytes once loaded.
@@ -1779,6 +1813,7 @@ impl Widgets for Gtk {
             // No web view on Linux yet (#62): an empty box sized by its
             // style (`capabilities().web_view` is false).
             NodeKind::WebView => View::Container(id, kind, layout::container()),
+            NodeKind::Video => View::Video(id, video_widget(id)),
             NodeKind::Checkbox => View::Check(id, controls::checkbox(id)),
             NodeKind::RadioGroup => View::Radio(id, controls::radio_group(id)),
             NodeKind::Overlay => {
@@ -2041,6 +2076,19 @@ impl Widgets for Gtk {
                 }
             }
             View::Check(_, b) => b.set_label((!text.is_empty()).then_some(text)),
+            // A video's source (#207): a URL, a file or an asset. GTK's
+            // player sends no headers: the first line is the URL.
+            View::Video(_, v) => {
+                let sources = prism_native::images::ImageSources {
+                    embedded: self.embedded.clone(),
+                    asset_dirs: self.assets.iter().cloned().collect(),
+                    cache_dir: gtk::glib::user_cache_dir().join("prism").into(),
+                };
+                if let Some(url) = prism_native::images::media_url(text, &sources) {
+                    let url = prism_core::picture_source(&url).0.to_string();
+                    v.set_file(Some(&gtk::gio::File::for_uri(&url)));
+                }
+            }
             // A remote image (with its headers, `Picture::header`): loaded
             // on a background thread.
             View::Picture(_, p) if prism_native::images::is_remote(text) => {
@@ -2310,6 +2358,23 @@ impl Widgets for Gtk {
         let (px, py) = (p.left + p.right, p.top + p.bottom);
         let (_, nat_w, _, _) = w.measure(gtk::Orientation::Horizontal, -1);
         let nat_w = (nat_w as f32 - px).max(0.);
+        // A video (#207): the stream's size once known, else 16:9.
+        if let View::Video(_, v) = view {
+            let natural = v
+                .media_stream()
+                .map(|m| (m.intrinsic_width(), m.intrinsic_height()));
+            return match natural {
+                Some((w, h)) if w > 0 && h > 0 => {
+                    let (w, h) = (w as f32, h as f32);
+                    let shown = max_width.map_or(w, |m| m.min(w));
+                    (shown, shown * h / w)
+                }
+                _ => {
+                    let w = max_width.unwrap_or(320.);
+                    (w, w * 9. / 16.)
+                }
+            };
+        }
         let width = match (view, max_width) {
             (View::Text(..), Some(m)) => nat_w.min(m),
             (View::Input(..) | View::Progress(..), Some(m)) => m,
@@ -2618,6 +2683,18 @@ impl Widgets for Gtk {
 
     fn set_config(&mut self, view: &View, _kind: NodeKind, config: &str) {
         match view {
+            // How a video plays (#207). GTK's player always offers its
+            // controls on hover.
+            View::Video(_, v) => {
+                let c = prism_core::VideoConfig::decode(config);
+                v.set_autoplay(c.autoplay);
+                v.set_loop(c.looping);
+                if let Some(stream) = v.media_stream() {
+                    stream.set_muted(c.muted);
+                }
+                // SAFETY: a plain bool kept on the widget for new streams.
+                unsafe { v.set_data("prism-muted", c.muted) };
+            }
             // Bar buttons (#30): the stack showing the screen puts them up.
             View::Container(id, NodeKind::Screen, _) => {
                 if crate::navbar::set_config(*id, config) {

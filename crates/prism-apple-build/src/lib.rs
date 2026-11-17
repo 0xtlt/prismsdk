@@ -318,6 +318,9 @@ fn build_swift(dirs: &[&str], module: &str) {
         "Security",
         "LocalAuthentication",
         "AuthenticationServices",
+        // Videos (PrismVideo.swift, #207).
+        "AVFoundation",
+        "AVKit",
     ] {
         if frameworks.join(format!("{fw}.framework")).exists()
             && !(fw == "ActivityKit" && sdk == "macosx")
