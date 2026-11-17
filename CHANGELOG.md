@@ -329,6 +329,7 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- Native backends: a `picture` given only a width (`w(px(…))`, `w_full()`, a percentage) takes its height from the image's own ratio at that width, wider than the image included (#208). It used to keep the image's natural height, or the height of the image narrowed to the width. The web already did this.
 - macOS, iOS, Linux: a `scroll()` the app moves (`cx.scroll_by`, `scroll_to`, `scroll_into_view`) reports its new offset (#204). `on_scroll` runs and `cx.scroll_offset(id)` follows. The platform's scroll callback came while Prism was applying the patches that moved it, so the event was dropped; it is now dispatched right after.
 - Web: a fast drag off a small handle starts (#194). The page now follows the pointer on the window from the press until the release, so a flick whose first move past the slop is already off the element still starts `on_drag`. The pointer is captured only once it is a drag, so a click on a child stays the child's.
 - Web: the page title keeps the top screen's name once the live session starts (#185). The first tree built the main stack before the `root` patch that made it the main one, so the tab fell back to the app's name ("Sign in · App" became "App"), with or without a header bar.

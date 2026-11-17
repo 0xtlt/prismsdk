@@ -921,6 +921,17 @@ impl<W: Widgets> NativeRenderer<W> {
                                     AvailableSpace::MaxContent => None,
                                 });
                         let (w, h) = widgets.measure(view, max_width);
+                        // A picture given a width and no height: its height
+                        // follows the image's own ratio at that width, wider
+                        // than the image included (#208).
+                        let picture = by_layout
+                            .get(&node)
+                            .and_then(|id| nodes.get(id))
+                            .is_some_and(|e| e.kind == NodeKind::Picture);
+                        let h = match known.width {
+                            Some(kw) if picture && w > 0. => h * kw / w,
+                            _ => h,
+                        };
                         Size {
                             width: known.width.unwrap_or(w),
                             height: known.height.unwrap_or(h),
@@ -2103,6 +2114,39 @@ mod tests {
         );
         // 50 rows × 20pt + 10pt padding top and bottom.
         assert_eq!(w.content[&2], (400., 1020.));
+    }
+
+    /// A picture and a text given a width (#208): the picture's height
+    /// follows its natural ratio (the fake's 50 × 20), the text's does not.
+    struct Pictured;
+    impl Render for Pictured {
+        fn render(&mut self, _: &mut prism_core::Context<Self>) -> impl IntoElement {
+            div()
+                .child(prism_core::picture("cat.png").w(prism_core::px(250.)))
+                .child(text("caption").w(prism_core::px(250.)))
+                .child(prism_core::picture("dog.png").w_full())
+        }
+    }
+
+    #[test]
+    fn a_picture_with_a_width_takes_its_height_from_its_ratio() {
+        let init: AppInit = Arc::new(|cx: &mut prism_core::App| {
+            let r = cx.new_entity(|_| Pictured);
+            cx.set_root(r);
+        });
+        let mut rt = Runtime::new(&init);
+        let mut renderer = NativeRenderer::new(Fake::default());
+        renderer.apply(&rt.render());
+        renderer.layout(400., 600., Insets::default());
+        let f = &renderer.widgets.frames;
+        // Ids: 1 div, 2 picture, 3 text, 4 picture.
+        assert_eq!((f[&2].2, f[&2].3), (250., 100.), "250 wide: 250 × 20 / 50");
+        assert_eq!((f[&3].2, f[&3].3), (250., 20.), "a text keeps its height");
+        assert_eq!(
+            (f[&4].2, f[&4].3),
+            (400., 160.),
+            "the full width: 400 × 20 / 50"
+        );
     }
 
     /// Rows with their frames reported (#192), inside a padded scroll.
