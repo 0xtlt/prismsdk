@@ -119,9 +119,13 @@ pub(crate) fn show(tv: &PrismTextView) {
 
 type Attributes = Retained<NSDictionary<NSAttributedStringKey, AnyObject>>;
 
-/// The field's font and color, for text typed before the app restyles it.
-fn base_attributes(style: &Style) -> Attributes {
-    use objc2_app_kit::{NSFontAttributeName, NSForegroundColorAttributeName};
+/// The field's font, color, alignment and line height, for text typed
+/// before the app restyles it, and for a plain text area's text (#179).
+pub(crate) fn base_attributes(style: &Style) -> Attributes {
+    use objc2_app_kit::{
+        NSBaselineOffsetAttributeName, NSFontAttributeName, NSForegroundColorAttributeName,
+        NSParagraphStyleAttributeName,
+    };
     let font = crate::label::ns_font(&prism_native::text::FontSpec {
         family: style.font_family.clone(),
         size: style.font_size,
@@ -130,13 +134,51 @@ fn base_attributes(style: &Style) -> Attributes {
         tabular: style.tabular_numbers,
     });
     let color = style.text_color.map_or_else(NSColor::labelColor, ns_color);
-    let (f, c): (&AnyObject, &AnyObject) = (&font, &color);
-    unsafe {
-        NSDictionary::from_slices(
-            &[NSFontAttributeName, NSForegroundColorAttributeName],
-            &[f, c],
-        )
+    let paragraph = paragraph(style.text_align, style.line_height_points());
+    let offset =
+        crate::label::baseline_offset(&font, style.line_height_points()).map(NSNumber::new_f64);
+    let mut keys: Vec<&NSAttributedStringKey> = unsafe {
+        vec![
+            NSFontAttributeName,
+            NSForegroundColorAttributeName,
+            NSParagraphStyleAttributeName,
+        ]
+    };
+    let mut values: Vec<&AnyObject> = vec![&font, &color, &paragraph];
+    if let Some(o) = &offset {
+        keys.push(unsafe { NSBaselineOffsetAttributeName });
+        values.push(o);
     }
+    NSDictionary::from_slices(&keys, &values)
+}
+
+/// The paragraph style of a field's text: its alignment, and the line
+/// height `text()` uses (#179).
+fn paragraph(
+    align: prism_core::TextAlign,
+    line_height: Option<f32>,
+) -> Retained<NSMutableParagraphStyle> {
+    let paragraph = NSMutableParagraphStyle::new();
+    paragraph.setAlignment(match align {
+        prism_core::TextAlign::Left => objc2_app_kit::NSTextAlignment::Left,
+        prism_core::TextAlign::Center => objc2_app_kit::NSTextAlignment::Center,
+        prism_core::TextAlign::Right => objc2_app_kit::NSTextAlignment::Right,
+    });
+    crate::label::set_line_height(&paragraph, line_height);
+    paragraph
+}
+
+/// A plain text area's text takes its style's line height and baseline,
+/// like `text()` (#179): the whole text and what is typed next.
+pub(crate) fn set_plain_style(tv: &NSTextView, style: &Style) {
+    let attrs = base_attributes(style);
+    if let Some(storage) = unsafe { tv.textStorage() } {
+        let all = NSRange::new(0, storage.length());
+        storage.beginEditing();
+        unsafe { storage.addAttributes_range(&attrs, all) };
+        storage.endEditing();
+    }
+    unsafe { tv.setTypingAttributes(&attrs) };
 }
 
 /// One run's characters and attributes: its text, or for a chip the
@@ -149,12 +191,9 @@ fn piece(s: &StyledRun, run: &TextRun, t: &StyledText) -> (String, Attributes) {
     };
     let font = crate::label::ns_font(&s.font);
     let color = s.color.map_or_else(NSColor::labelColor, ns_color);
-    let paragraph = NSMutableParagraphStyle::new();
-    paragraph.setAlignment(match t.align {
-        prism_core::TextAlign::Left => objc2_app_kit::NSTextAlignment::Left,
-        prism_core::TextAlign::Center => objc2_app_kit::NSTextAlignment::Center,
-        prism_core::TextAlign::Right => objc2_app_kit::NSTextAlignment::Right,
-    });
+    // Same line height and baseline as `text()` (#179).
+    let paragraph = paragraph(t.align, t.line_height);
+    let offset = crate::label::baseline_offset(&font, t.line_height).map(NSNumber::new_f64);
     let one = NSNumber::new_isize(1);
     let background = s.background.map(ns_color);
     let attachment = run.chip.is_some().then(|| {
@@ -188,6 +227,10 @@ fn piece(s: &StyledRun, run: &TextRun, t: &StyledText) -> (String, Attributes) {
             prism_core::OBJECT_CHAR.to_string(),
             NSDictionary::from_slices(&keys, &values),
         );
+    }
+    if let Some(o) = &offset {
+        keys.push(unsafe { objc2_app_kit::NSBaselineOffsetAttributeName });
+        values.push(o);
     }
     if let Some(bg) = &background {
         keys.push(unsafe { NSBackgroundColorAttributeName });
@@ -295,6 +338,51 @@ fn chip_link(runs: &[TextRun], index: usize) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #179: a field's text takes the style's line height and the
+    /// baseline `text()` uses, so it lines up with the same text shown.
+    #[test]
+    fn a_field_takes_the_line_height_and_baseline_of_text() {
+        use objc2_app_kit::{
+            NSBaselineOffsetAttributeName, NSFontAttributeName, NSParagraphStyle,
+            NSParagraphStyleAttributeName,
+        };
+        let style = Style {
+            font_size: 16.,
+            line_height: prism_core::Length::Px(24.),
+            ..Style::default()
+        };
+        let attrs = base_attributes(&style);
+        let p = attrs
+            .objectForKey(unsafe { NSParagraphStyleAttributeName })
+            .and_then(|p| p.downcast::<NSParagraphStyle>().ok())
+            .unwrap();
+        assert_eq!((p.minimumLineHeight(), p.maximumLineHeight()), (24., 24.));
+        let font = attrs
+            .objectForKey(unsafe { NSFontAttributeName })
+            .and_then(|f| f.downcast::<NSFont>().ok())
+            .unwrap();
+        let offset = attrs
+            .objectForKey(unsafe { NSBaselineOffsetAttributeName })
+            .and_then(|n| n.downcast::<NSNumber>().ok())
+            .unwrap()
+            .doubleValue();
+        assert_eq!(
+            Some(offset),
+            crate::label::baseline_offset(&font, Some(24.)),
+            "the label's offset"
+        );
+        // No line height: the font's own, nothing raised.
+        let plain = base_attributes(&Style {
+            font_size: 16.,
+            ..Style::default()
+        });
+        assert!(
+            plain
+                .objectForKey(unsafe { NSBaselineOffsetAttributeName })
+                .is_none()
+        );
+    }
 
     #[test]
     fn a_chip_is_one_attachment_character_and_reports_its_link() {

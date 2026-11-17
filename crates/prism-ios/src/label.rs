@@ -432,6 +432,14 @@ fn line_break(t: &StyledText) -> NSLineBreakMode {
     }
 }
 
+/// The extra space of a fixed line height goes above the glyphs: raise
+/// them to center them, like CSS. Shared with text areas, so a field lines
+/// up with the same text shown by `text()` (#179).
+pub fn baseline_offset(font: &objc2_ui_kit::UIFont, line_height: Option<f32>) -> Option<f64> {
+    let offset = (line_height? as f64 - unsafe { font.lineHeight() }) / 4.;
+    (offset.abs() > 0.01).then_some(offset)
+}
+
 /// The attributed string of `t`.
 pub fn attributed(t: &StyledText) -> Retained<NSAttributedString> {
     use objc2_ui_kit::{
@@ -495,13 +503,8 @@ pub fn attributed(t: &StyledText) -> Retained<NSAttributedString> {
             if run.strikethrough {
                 add(NSStrikethroughStyleAttributeName, &NSNumber::new_isize(1));
             }
-            if let Some(lh) = t.line_height {
-                // The extra space of a fixed line height goes above the
-                // glyphs: raise them to center them, like CSS.
-                let offset = (lh as f64 - font.lineHeight()) / 4.;
-                if offset.abs() > 0.01 {
-                    add(NSBaselineOffsetAttributeName, &NSNumber::new_f64(offset));
-                }
+            if let Some(offset) = baseline_offset(&font, t.line_height) {
+                add(NSBaselineOffsetAttributeName, &NSNumber::new_f64(offset));
             }
         }
     }

@@ -2014,6 +2014,8 @@ impl Widgets for UiKit {
                 unsafe { t.placeholder.setFont(Some(&f)) };
                 t.placeholder.setTextAlignment(alignment(style.text_align));
                 crate::padding::style_text_area(t, style);
+                t.line_height.set(style.line_height_points());
+                t.apply_line_height();
             }
             View::Spinner(s) => unsafe { s.setColor(text_color.as_deref()) },
             View::Image(v) => {

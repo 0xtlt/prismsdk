@@ -170,6 +170,7 @@ self.sel = SelectionEvent::caret(at - 2);
 - **Typing** takes the style of the run before the caret (as editors do), except after a chip or a link: then the run after it, or plain text. Over a selection, the style of its first character. The app may restyle what comes back (a « pending bold » after ⌘B on a caret, Markdown shortcuts).
 - **Paste** is plain text, in the style of where it lands (object characters dropped: only the app makes chips); copy and cut give plain text, a chip as its label. Formatting commands of the platform (the browser's ⌘B, the font panel) do nothing.
 - **Enter** calls `on_submit` and inserts nothing; **Shift+Enter** inserts a line break (`'\n'`). The field wraps like a paragraph and grows with its text (one line at least; cap it with `max_h`).
+- **Click to edit**: with no padding, border or background (`.p(0.).border(0.).bg(transparent)`), a `rich_input` or `text_area` with the same typography as a `text()` draws its text exactly where the text was: same start, same line height (`line_height`), same baseline, on every line (#179). Swap one for the other and nothing moves.
 - **App values and echoes** follow the text field rules: runs the user just typed, rendered back, leave the field alone (caret, IME composition); other runs are the app's and replace the field's, the caret keeping its distance from the end, after the composition on the web. `.selection(..)` after them places the caret.
 
 | | Rich editing |

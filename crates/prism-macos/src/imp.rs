@@ -1566,7 +1566,8 @@ impl PrismTextView {
         let attrs = objc2_foundation::NSDictionary::from_slices(&keys, &[f, c]);
         let s = NSString::from_str(&placeholder);
         let origin = self.textContainerOrigin();
-        let pad = unsafe { self.textContainer() }.map_or(5., |c| c.lineFragmentPadding());
+        let pad = unsafe { self.textContainer() }
+            .map_or(LABEL_FRAGMENT_PADDING, |c| c.lineFragmentPadding());
         let size = unsafe { s.sizeWithAttributes(Some(&attrs)) };
         let rtl = self.userInterfaceLayoutDirection()
             == objc2_app_kit::NSUserInterfaceLayoutDirection::RightToLeft;
@@ -2706,12 +2707,21 @@ impl AppKit {
         let mtm = self.mtm;
         let storage = NSTextStorage::new();
         let layout = NSLayoutManager::new();
+        // Laid out like a label's text (`NSStringDrawing`'s typesetter), so
+        // its lines sit where `text()` draws them (#179).
+        layout.setTypesetterBehavior(
+            objc2_app_kit::NSTypesetterBehavior::Behavior_10_2_WithCompatibility,
+        );
         storage.addLayoutManager(&layout);
         let tc = NSTextContainer::initWithSize(
             objc2::AllocAnyThread::alloc(),
             NSSize::new(0., f64::MAX / 4.),
         );
         tc.setWidthTracksTextView(true);
+        // The line fragment padding of a label's cell (2 pt, not the text
+        // view's 5, #179): with an explicit `p(0.)` the text starts where
+        // `text()` draws it.
+        tc.setLineFragmentPadding(LABEL_FRAGMENT_PADDING);
         layout.addTextContainer(&tc);
         let this = PrismTextView::alloc(mtm).set_ivars(TextViewIvars {
             id: Cell::new(id),
@@ -2729,7 +2739,7 @@ impl AppKit {
         text.setMinSize(NSSize::ZERO);
         text.setMaxSize(NSSize::new(f64::MAX / 4., f64::MAX / 4.));
         text.setAutoresizingMask(objc2_app_kit::NSAutoresizingMaskOptions::ViewWidthSizable);
-        text.setTextContainerInset(NSSize::new(7., 8.));
+        text.setTextContainerInset(TEXT_AREA_INSET);
         text.setTextColor(Some(&NSColor::labelColor()));
         // Default `autocorrect`: as the user set it in System Settings.
         set_text_checking(&text, true);
@@ -3046,6 +3056,14 @@ fn alignment(a: TextAlign) -> NSTextAlignment {
     }
 }
 
+/// The horizontal padding `NSTextFieldCell` (`text()`) lays its text out
+/// with; a text area's container uses it too (#179).
+const LABEL_FRAGMENT_PADDING: f64 = 2.;
+
+/// A text area's default inset: with the fragment padding, the text sits
+/// where AppKit's 7 × 8 inset and 5 pt padding put it (#179).
+const TEXT_AREA_INSET: NSSize = NSSize::new(10., 8.);
+
 /// A text area's content height for `max_width` (at least three lines),
 /// with its insets and border. Taffy caps it at `max_height`; beyond, the
 /// text scrolls.
@@ -3067,9 +3085,18 @@ fn text_area_size(t: &MacTextArea, max_width: Option<f32>) -> NSSize {
                 .text
                 .font()
                 .unwrap_or_else(|| NSFont::systemFontOfSize(NSFont::systemFontSize()));
-            // A rich input is a paragraph: one line at least (#115).
+            // A rich input is a paragraph: one line at least (#115). A
+            // fixed line height sets the lines' (#179).
             let lines = if t.text.ivars().rich.get() { 1. } else { 3. };
-            used.max(lines * lm.defaultLineHeightForFont(&font))
+            let line = t
+                .text
+                .ivars()
+                .style
+                .borrow()
+                .as_ref()
+                .and_then(Style::line_height_points)
+                .map_or_else(|| lm.defaultLineHeightForFont(&font), f64::from);
+            used.max(lines * line)
         }
         _ => 54.,
     };
@@ -3401,7 +3428,7 @@ impl Widgets for AppKit {
                 // Its padding replaces the text's own inset (#14), an
                 // explicit zero included (#69).
                 t.text.setTextContainerInset(if !style.has_padding() {
-                    NSSize::new(7., 8.)
+                    TEXT_AREA_INSET
                 } else {
                     NSSize::ZERO
                 });
@@ -3410,9 +3437,14 @@ impl Widgets for AppKit {
                     &style.text_color.map_or_else(NSColor::labelColor, ns_color),
                 ));
                 t.text.setAlignment(alignment(style.text_align));
-                // A rich input draws its runs again over the new font.
+                // A rich input draws its runs again over the new font; a
+                // plain one takes the line height and baseline of `text()`
+                // (#179).
                 if t.text.ivars().rich.get() {
                     crate::rich::set_style(&t.text, style);
+                } else {
+                    *t.text.ivars().style.borrow_mut() = Some(style.clone());
+                    crate::rich::set_plain_style(&t.text, style);
                 }
             }
             View::Image(v) => {
@@ -5770,6 +5802,20 @@ mod escape_tests {
         // Without a next responder.
         let lone = PrismView::new(mtm, 3);
         let _: () = unsafe { msg_send![&*lone, cancelOperation: none] };
+    }
+}
+
+#[cfg(test)]
+mod text_area_tests {
+    use super::*;
+
+    /// #179: the text area's default look keeps AppKit's 12 pt before the
+    /// text (7 inset + 5 padding), now 10 + the label's 2, so `p(0.)` only
+    /// leaves the 2 a label has too.
+    #[test]
+    fn the_default_inset_keeps_appkits_look() {
+        assert_eq!(TEXT_AREA_INSET.width + LABEL_FRAGMENT_PADDING, 7. + 5.);
+        assert_eq!(TEXT_AREA_INSET.height, 8.);
     }
 }
 
