@@ -413,6 +413,14 @@ export class Document extends Element {
       setBaseAndExtent(an, ao, fn, fo) { Object.assign(this, { anchorNode: an, anchorOffset: ao, focusNode: fn, focusOffset: fo }); },
       collapse(n, o) { this.setBaseAndExtent(n, o, n, o); },
       removeAllRanges() { this.setBaseAndExtent(null, 0, null, 0); },
+      // Its range's boxes: `rect` (set by a test) in viewport coordinates.
+      getRangeAt() {
+        const sel = this;
+        return {
+          getBoundingClientRect: () => sel.rect || { left: 0, top: 0, width: 0, height: 0, right: 0, bottom: 0 },
+          getClientRects: () => (sel.rect ? [sel.rect] : []),
+        };
+      },
     };
   }
   createElement(tag) {

@@ -326,3 +326,97 @@ test("a selection set while the field is not focused lands when the app focuses 
   page.ws.deliver({ t: "patch", p: [{ op: "focus", id: 1 }] });
   assert.deepEqual([sel.anchorOffset, sel.focusOffset], [2, 4]);
 });
+
+test("the app's copy, cut and paste: asked, then written or inserted (#217)", async () => {
+  const e = editor(enc("Hello ", ["bold", BOLD], " world"), [{ op: "editev", id: 1, mask: 2 | 4 | 8 }]);
+  // Copy: the plain text at once, then the app is asked.
+  e.select(3, 12);
+  let copied = null;
+  e.el.dispatchEvent({ type: "copy", clipboardData: { setData: (t, v) => { copied = [t, v]; } } });
+  assert.deepEqual(copied, ["text/plain", "lo bold w"]);
+  assert.deepEqual(e.page.ws.sent.filter((m) => m.t === "copy").at(-1), { t: "copy", id: 1, cut: false, start: 3, end: 12, text: "lo bold w" });
+  // Its answer is written as one item, a type the browser lacks as a custom one.
+  const written = [];
+  e.page.window.ClipboardItem = class { constructor(parts) { this.parts = parts; } static supports(t) { return t === "text/plain" || t === "text/html" || t.startsWith("web "); } };
+  e.page.window.Blob = class { constructor(parts, opts) { this.parts = parts; this.type = opts.type; } };
+  e.page.window.navigator.clipboard = { write: async (items) => { written.push(...items); }, writeText: async () => {} };
+  e.patch({ op: "clip", id: 1, items: [["text/plain", "lo bold w"], ["text/markdown", "lo **bold** w"], ["text/html", "lo <b>bold</b> w"]] });
+  await Promise.resolve();
+  assert.deepEqual(Object.keys(written[0].parts), ["text/plain", "web text/markdown", "text/html"]);
+  // Cut: asked too, then deleted.
+  e.select(0, 6);
+  e.el.dispatchEvent({ type: "cut", clipboardData: { setData() {} } });
+  assert.equal(e.page.ws.sent.filter((m) => m.t === "copy").at(-1).cut, true);
+  assert.equal(e.last().v, "bold world");
+  // Paste: nothing inserted until the app leaves it to the field.
+  e.select(4);
+  const n = e.sent().length;
+  const pasted = e.el.dispatchEvent({
+    type: "paste",
+    clipboardData: {
+      types: ["text/plain", "text/html", "application/x-blocks", "Files"],
+      items: [{ kind: "file", type: "image/png" }],
+      getData: (t) => ({ "text/plain": "one\ntwo", "text/html": "<p>one</p>", "application/x-blocks": "[1,2]" })[t] || "",
+    },
+  });
+  assert.equal(pasted, false);
+  assert.equal(e.sent().length, n, "nothing inserted yet");
+  assert.deepEqual(e.page.ws.sent.filter((m) => m.t === "paste").at(-1), {
+    t: "paste", id: 1, start: 4, end: 4, text: "one\ntwo", html: "<p>one</p>",
+    types: ["text/plain", "text/html", "application/x-blocks", "image/png"], data: [["application/x-blocks", "[1,2]"]],
+  });
+  e.patch({ op: "instext", id: 1, text: "one\ntwo" });
+  assert.equal(e.last().v, "boldone\ntwo world");
+  // Without the hooks: the field copies and pastes as before, asking nothing.
+  const plain = editor(enc("abc"));
+  plain.select(0, 3);
+  plain.el.dispatchEvent({ type: "copy", clipboardData: { setData() {} } });
+  plain.el.dispatchEvent({ type: "paste", clipboardData: { getData: () => "x" } });
+  assert.equal(plain.page.ws.sent.filter((m) => m.t === "copy" || m.t === "paste").length, 0);
+  assert.equal(plain.last().v, "x");
+});
+
+test("the selection's rectangle, in the field, once per frame (#217)", () => {
+  const e = editor(enc("Hello world"), [{ op: "editev", id: 1, mask: 1 }]);
+  e.el.clientWidth = 300;
+  e.el.clientHeight = 40;
+  const sel = e.page.document.getSelection();
+  e.select(6, 11);
+  sel.rect = { left: 60, top: 4, width: 40, height: 18, right: 100, bottom: 22 };
+  e.el.dispatchEvent({ type: "keyup" });
+  e.page.frames.splice(0).forEach((f) => f());
+  const rects = () => e.page.ws.sent.filter((m) => m.t === "selrect");
+  assert.deepEqual(rects().at(-1), { t: "selrect", id: 1, start: 6, end: 11, x: 60, y: 4, w: 40, h: 18 });
+  // The same again: not sent twice.
+  e.el.dispatchEvent({ type: "keyup" });
+  e.page.frames.splice(0).forEach((f) => f());
+  assert.equal(rects().length, 1);
+  // A caret is one point wide.
+  e.select(2);
+  sel.rect = { left: 20, top: 4, width: 0, height: 18, right: 20, bottom: 22 };
+  e.el.dispatchEvent({ type: "keyup" });
+  e.page.frames.splice(0).forEach((f) => f());
+  assert.deepEqual(rects().at(-1), { t: "selrect", id: 1, start: 2, end: 2, x: 20, y: 4, w: 1, h: 18 });
+  // Without the hook: none.
+  e.patch({ op: "editev", id: 1, mask: 0 });
+  e.select(3);
+  e.el.dispatchEvent({ type: "keyup" });
+  e.page.frames.splice(0).forEach((f) => f());
+  assert.equal(rects().length, 2);
+});
+
+test("a click with ⌘, Ctrl or ⌥ on a run is the app's on_span_click (#217)", () => {
+  const e = editor(enc("See ", ["docs", "u", "l=9", "h=/docs"], " now"), [{ op: "editev", id: 1, mask: 16 }]);
+  const link = e.el.childNodes[1];
+  const clicked = e.el.dispatchEvent({ type: "click", target: link, metaKey: true, clientX: 0, clientY: 0 });
+  assert.equal(clicked, false);
+  assert.deepEqual(e.page.ws.sent.filter((m) => m.t === "spanclick").at(-1), { t: "spanclick", id: 1, at: 4, mods: 8 });
+  assert.ok(!e.page.ws.sent.some((m) => m.t === "menu"), "instead of the link's own click");
+  // A plain click places the caret: not reported.
+  e.el.dispatchEvent({ type: "click", target: e.el.childNodes[2] });
+  assert.equal(e.page.ws.sent.filter((m) => m.t === "spanclick").length, 1);
+  // Without the hook, ⌘-click opens the link as before.
+  const f = editor(enc("See ", ["docs", "u", "l=9", "h=/docs"]));
+  f.el.dispatchEvent({ type: "click", target: f.el.childNodes[1], metaKey: true });
+  assert.deepEqual(f.page.ws.sent.filter((m) => m.t === "menu").at(-1), { t: "menu", id: 9 });
+});

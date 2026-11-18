@@ -716,6 +716,9 @@ pub struct VNode {
     )>,
     /// The upload of what was dropped on the node (#199).
     pub on_drop_progress: Option<Handler<crate::events::DropProgress>>,
+    /// A rich input's editing hooks (#217): its selection's rectangle,
+    /// copy, cut and paste, modifier-clicks on its spans.
+    pub edit: crate::text_edit::EditHandlers,
     /// A video's playback reached the end (#207).
     pub on_ended: Option<Handler<crate::video::EndedEvent>>,
     /// A text field's own bar above the on-screen keyboard (#242): placed
@@ -780,6 +783,7 @@ impl VNode {
             consume_keys: Vec::new(),
             on_drop_files: None,
             on_drop_progress: None,
+            edit: Default::default(),
             on_ended: None,
             keyboard_toolbar: None,
         }
@@ -1486,6 +1490,110 @@ impl RichInput {
     /// The return key's label on touch keyboards: Done, Go, Next, Search, Send.
     pub fn return_key(self, key: crate::controls::ReturnKey) -> Self {
         self.input_config(|c| c.return_key = key)
+    }
+
+    /// Called with the rectangle of the caret or the selection (#217)
+    /// when it moves or the text under it changes: place a formatting
+    /// toolbar or a link popover above the selected words.
+    /// [`rect`](crate::SelectionRectEvent::rect) is in the field's
+    /// coordinates; [`frame`](crate::SelectionRectEvent::frame) in the
+    /// window's, like [`App::frame_of`](crate::App::frame_of). To anchor a
+    /// popover, wrap the field in a container (laid out at the field's
+    /// origin: no padding) and put the popover in an absolutely positioned
+    /// element at `rect`:
+    ///
+    /// ```text
+    /// div()
+    ///     .child(rich_input(runs).on_selection_rect(cx.listener(|this, e: &SelectionRectEvent, _| {
+    ///         this.toolbar = (!e.selection.is_caret()).then_some(e.rect)
+    ///     })))
+    ///     .children(self.toolbar.map(|r| {
+    ///         div().absolute().left(r.x).top(r.y).w(r.width).h(r.height)
+    ///             .child(popover(toolbar).open(true).side(PopoverSide::Top).take_focus(false))
+    ///     }))
+    /// ```
+    ///
+    /// Web: the selection's client rectangles; macOS: the layout manager's
+    /// glyph box, the caret's `firstRectForCharacterRange`; iOS, iPadOS,
+    /// visionOS: `UITextView`'s `caretRect` and `selectionRects`; Linux:
+    /// the text view's iter locations; Android: the `Layout`'s line bounds.
+    /// A selection over several lines is the box around them. tvOS and
+    /// watchOS report none.
+    pub fn on_selection_rect(mut self, handler: Handler<crate::SelectionRectEvent>) -> Self {
+        self.0.edit.on_selection_rect = Some(handler);
+        self
+    }
+
+    /// Keeps the selection's rectangle for
+    /// [`App::selection_rect`](crate::App::selection_rect) (with the
+    /// field's `.id()`), without a handler (#217).
+    pub fn track_selection_rect(mut self) -> Self {
+        self.0.edit.track_selection_rect = true;
+        self
+    }
+
+    /// Called when the user copies (⌘C, Ctrl+C, the Edit or context menu)
+    /// with text selected (#217). [`CopyEvent::write`](crate::CopyEvent::write)
+    /// puts the app's own content on the clipboard (Markdown, HTML, a type
+    /// of its own, built from [`spans`](crate::CopyEvent::spans)); without
+    /// it the selection's plain text is copied.
+    ///
+    /// ```text
+    /// rich_input(runs).on_copy(cx.listener(|_, e: &CopyEvent, _| {
+    ///     e.write(ClipboardContent::text(&e.text).markdown(to_markdown(&e.spans)))
+    /// }))
+    /// ```
+    ///
+    /// Web: the `copy` event (the plain text is set at once; the app's
+    /// content follows through the async Clipboard API, which Safari may
+    /// refuse outside the key press); macOS: `copy:` of the text view
+    /// (`NSPasteboard`, every type); iOS, iPadOS, visionOS: `copy:`
+    /// (`UIPasteboard`, every type); Linux: the text view's `copy-clipboard`
+    /// (every type); Android: the text field's copy action (plain text and
+    /// HTML). tvOS and watchOS have no clipboard.
+    pub fn on_copy(mut self, handler: Handler<crate::CopyEvent>) -> Self {
+        self.0.edit.on_copy = Some(handler);
+        self
+    }
+
+    /// Called when the user cuts (⌘X) with text selected (#217): like
+    /// [`on_copy`](Self::on_copy) (`e.cut` is true); the selection is then
+    /// deleted, which [`on_input`](Self::on_input) reports.
+    pub fn on_cut(mut self, handler: Handler<crate::CopyEvent>) -> Self {
+        self.0.edit.on_cut = Some(handler);
+        self
+    }
+
+    /// Called when the user pastes (⌘V, the Edit or context menu) with
+    /// what the clipboard holds (#217): its plain text, its HTML and its
+    /// types ([`PasteEvent`](crate::PasteEvent)).
+    /// [`prevent_default`](crate::PasteEvent::prevent_default) takes the
+    /// paste over (split a multi-line text into blocks, upload an image);
+    /// otherwise the plain text is inserted over the selection.
+    ///
+    /// Web: the `paste` event's `clipboardData`; macOS: `paste:` and the
+    /// general pasteboard (every type's text data); iOS, iPadOS, visionOS:
+    /// `paste:` and `UIPasteboard`; Linux: the text view's `paste-clipboard`
+    /// (plain text and the clipboard's types, no HTML); Android: the text
+    /// field's paste action (plain text, HTML, types). tvOS and watchOS
+    /// have no clipboard.
+    pub fn on_paste(mut self, handler: Handler<crate::PasteEvent>) -> Self {
+        self.0.edit.on_paste = Some(handler);
+        self
+    }
+
+    /// Called on a click with a modifier key held on a span while the
+    /// field is being edited (#217): open a link with ⌘-click, follow a
+    /// mention. [`span`](crate::SpanClickEvent::span) is its index in the
+    /// spans given to [`rich_input`]. A plain click still places the caret;
+    /// with this handler a modifier-click is the app's, instead of moving
+    /// the caret or running a link's own handler. Web: ⌘, Ctrl or ⌥;
+    /// macOS: ⌘ or ⌥ (⌃-click stays the context menu); Linux: Ctrl or Alt.
+    /// Touch screens have no modifier-click: iOS, iPadOS, Android, tvOS and
+    /// watchOS report none.
+    pub fn on_span_click(mut self, handler: Handler<crate::SpanClickEvent>) -> Self {
+        self.0.edit.on_span_click = Some(handler);
+        self
     }
 }
 

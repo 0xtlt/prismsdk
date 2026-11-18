@@ -222,6 +222,20 @@ pub trait Widgets {
     /// empty list removes them. Never touches the field's own caret,
     /// selection or composition. Default: none drawn.
     fn set_remote_carets(&mut self, _view: &Self::View, _carets: &[prism_core::RemoteCaret]) {}
+    /// Which editing events a rich input reports (#217): bits of
+    /// [`prism_core::edit_events`]. With `COPY`, `CUT` or `PASTE`, the
+    /// field writes and inserts nothing itself: it reports
+    /// `UiEvent::Copy` / `UiEvent::Paste` (a cut still deletes the
+    /// selection) and the answer follows (`write_clipboard`,
+    /// `insert_text`). With `SELECTION_RECT` it reports
+    /// `UiEvent::SelectionRect` as its selection moves; with `SPAN_CLICK`,
+    /// clicks with ⌘, Ctrl or ⌥ (`UiEvent::SpanClick`).
+    fn set_edit_events(&mut self, _view: &Self::View, _mask: u8) {}
+    /// Writes `content` to the clipboard, every type as one item (#217).
+    fn write_clipboard(&mut self, _view: &Self::View, _content: &prism_core::ClipboardContent) {}
+    /// Inserts `text` over the field's selection like a plain-text paste
+    /// (#217), then reports the edit as usual.
+    fn insert_text(&mut self, _view: &Self::View, _text: &str) {}
     /// Gives the view the keyboard focus (first responder, `grab_focus`).
     fn focus(&mut self, _view: &Self::View) {}
     /// Scrolls the scroll views around the view so it is visible.
@@ -1775,6 +1789,21 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                 Patch::SetRemoteCarets { id, carets } => {
                     if let Some(e) = self.nodes.get(id) {
                         self.widgets.set_remote_carets(&e.view, carets);
+                    }
+                }
+                Patch::SetEditEvents { id, mask } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.set_edit_events(&e.view, *mask);
+                    }
+                }
+                Patch::WriteClipboard { id, content } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.write_clipboard(&e.view, content);
+                    }
+                }
+                Patch::InsertText { id, text } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.insert_text(&e.view, text);
                     }
                 }
                 Patch::SetPlaceholder { id, text } => {

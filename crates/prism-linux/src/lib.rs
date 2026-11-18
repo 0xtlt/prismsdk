@@ -14,6 +14,8 @@ mod controls;
 #[cfg(target_os = "linux")]
 mod decor;
 #[cfg(target_os = "linux")]
+mod edit;
+#[cfg(target_os = "linux")]
 mod focal;
 #[cfg(target_os = "linux")]
 mod imp;

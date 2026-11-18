@@ -431,6 +431,11 @@ final class PrismForms {
             @Override protected void onSelectionChanged(int start, int end) {
                 super.onSelectionChanged(start, end);
                 PrismInput.selectionChanged(this);
+                PrismInput.rectChanged(this);
+            }
+            // Copy, cut and paste go to the app when it has the hooks (#217).
+            @Override public boolean onTextContextMenuItem(int item) {
+                return PrismInput.menuItem(this, item) || super.onTextContextMenuItem(item);
             }
         };
         e.setSingleLine(false);

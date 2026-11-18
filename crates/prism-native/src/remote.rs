@@ -298,6 +298,32 @@ pub fn parse_input_event(v: &Value) -> Option<prism_core::UiEvent> {
             v.get("start")?.as_u64()? as usize,
             v.get("end")?.as_u64()? as usize,
         )),
+        // A rich input's editing hooks (#217), as the web client sends them.
+        "selrect" => {
+            let num = |k: &str| v.get(k).and_then(Value::as_f64).map(|n| n as f32);
+            Some(UiEvent::SelectionRect(
+                id?,
+                v.get("start")?.as_u64()? as usize,
+                v.get("end")?.as_u64()? as usize,
+                prism_core::Rect::new(num("x")?, num("y")?, num("w")?.max(0.), num("h")?.max(0.)),
+            ))
+        }
+        "copy" => Some(UiEvent::Copy(
+            id?,
+            v.get("cut").and_then(Value::as_bool).unwrap_or(false),
+            v.get("start")?.as_u64()? as usize,
+            v.get("end")?.as_u64()? as usize,
+            v.get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+        )),
+        "paste" => Some(UiEvent::Paste(id?, prism_core::PasteEvent::from_json(v)?)),
+        "spanclick" => Some(UiEvent::SpanClick(
+            id?,
+            v.get("at")?.as_u64()? as usize,
+            Modifiers::from_bits(v.get("mods").and_then(Value::as_u64).unwrap_or(0) as u8),
+        )),
         "webmsg" => Some(prism_core::UiEvent::WebMessage(
             id?,
             v.get("data")?.as_str()?.to_string(),
@@ -1139,6 +1165,26 @@ impl Widgets for RemoteWidgets {
             .collect();
         self.ops
             .push(json!({ "op": "carets", "id": id, "carets": carets }));
+    }
+
+    fn set_edit_events(&mut self, id: &NodeId, mask: u8) {
+        self.ops
+            .push(json!({ "op": "editev", "id": id, "mask": mask }));
+    }
+
+    fn write_clipboard(&mut self, id: &NodeId, content: &prism_core::ClipboardContent) {
+        let items: Vec<Value> = content
+            .entries()
+            .into_iter()
+            .map(|(m, d)| json!([m, d]))
+            .collect();
+        self.ops
+            .push(json!({ "op": "clip", "id": id, "items": items }));
+    }
+
+    fn insert_text(&mut self, id: &NodeId, text: &str) {
+        self.ops
+            .push(json!({ "op": "instext", "id": id, "text": text }));
     }
 
     fn scroll_into_view(&mut self, id: &NodeId) {

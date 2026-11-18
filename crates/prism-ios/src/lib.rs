@@ -17,6 +17,8 @@ mod dates;
 mod decor;
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "visionos"))]
 mod device_info;
+#[cfg(any(target_os = "ios", target_os = "visionos"))]
+mod edit;
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "visionos"))]
 mod forms;
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "visionos"))]

@@ -16,6 +16,7 @@ mod pictures;
 mod reconcile;
 mod remote_carets;
 mod request;
+mod rich_edit;
 mod rich_input;
 mod router;
 mod selection;

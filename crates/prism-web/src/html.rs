@@ -209,7 +209,10 @@ impl Backend for HtmlBackend {
                 | Patch::ScrollIntoView { .. }
                 | Patch::ShowMenu { .. }
                 | Patch::PostWebMessage { .. }
-                | Patch::ReloadWebView { .. } => {}
+                | Patch::ReloadWebView { .. }
+                | Patch::SetEditEvents { .. }
+                | Patch::WriteClipboard { .. }
+                | Patch::InsertText { .. } => {}
                 Patch::SetLayers { ids } => self.layers.clone_from(ids),
                 Patch::SetIsland {
                     id, tag, source, ..

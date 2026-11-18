@@ -237,6 +237,11 @@ public final class PrismHost {
         // Text field selections (#86): reported (`selev`), last sent, a report posted.
         boolean selectEvents, selPosted;
         int[] lastSel;
+        // A rich input's editing hooks (#217): `editev` bits, the last
+        // rectangle sent, a report posted.
+        int editMask;
+        String lastRect;
+        boolean rectPosted;
         /** Where the pointer went down: view x, y, then raw x, y (pixels). */
         float[] down = {0, 0, 0, 0};
         android.widget.PopupWindow popup;
@@ -563,6 +568,10 @@ public final class PrismHost {
             case "selev": PrismInput.selectEvents(n, p.optBoolean("on")); break;
             // Other people's carets (#240).
             case "carets": PrismInput.carets(n, p.optJSONArray("carets")); break;
+            // A rich input's editing hooks (#217).
+            case "editev": PrismInput.editEvents(n, p.optInt("mask")); break;
+            case "clip": PrismInput.writeClipboard(p.optJSONArray("items")); break;
+            case "instext": PrismInput.insertText(n, p.optString("text")); break;
             case "focus": PrismInput.focus(n); break;
             case "reveal": PrismInput.reveal(n); break;
             case "scrollto": PrismInput.scrollTo(n, (float) p.optDouble("x"), (float) p.optDouble("y"), p.optBoolean("rel"), p.optBoolean("anim")); break;

@@ -667,6 +667,131 @@ final class PrismInput {
         });
     }
 
+    // --- A rich input's editing hooks (#217) -----------------------------------------------
+
+    /** Op `editev`: the editing events the field reports (prism_core::edit_events bits). */
+    static void editEvents(PrismHost.Node n, int mask) {
+        n.editMask = mask;
+        n.lastRect = null;
+        if ((mask & 1) != 0 && n.view instanceof EditText) rectChanged((EditText) n.view);
+    }
+
+    /** Copy, cut or paste from the field's menu: the app's when it has the hook. */
+    static boolean menuItem(EditText e, int item) {
+        PrismHost.Node n = byView.get(e);
+        if (n == null) return false;
+        boolean cut = item == android.R.id.cut;
+        if (item == android.R.id.copy || cut) {
+            if ((n.editMask & (cut ? 4 : 2)) == 0) return false;
+            int a = Math.min(e.getSelectionStart(), e.getSelectionEnd());
+            int b = Math.max(e.getSelectionStart(), e.getSelectionEnd());
+            if (a < 0 || a == b) return false;
+            CharSequence t = e.getText();
+            JSONObject ev = PrismHost.event("copy", n.id);
+            put(ev, "cut", cut);
+            put(ev, "start", chars(t, a));
+            put(ev, "end", chars(t, b));
+            put(ev, "text", t.subSequence(a, b).toString());
+            PrismHost.send(ev);
+            if (cut) e.getText().delete(a, b);
+            return true;
+        }
+        if (item == android.R.id.paste || item == android.R.id.pasteAsPlainText) {
+            if ((n.editMask & 8) == 0) return false;
+            int[] s = selection(e);
+            JSONObject ev = PrismHost.event("paste", n.id);
+            put(ev, "start", s == null ? 0 : s[0]);
+            put(ev, "end", s == null ? 0 : s[1]);
+            android.content.ClipboardManager cb = (android.content.ClipboardManager) e.getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+            android.content.ClipData clip = cb == null ? null : cb.getPrimaryClip();
+            JSONArray types = new JSONArray();
+            String text = "", html = null;
+            if (clip != null) {
+                for (int i = 0; i < clip.getDescription().getMimeTypeCount(); i++) types.put(clip.getDescription().getMimeType(i));
+                if (clip.getItemCount() > 0) {
+                    android.content.ClipData.Item it = clip.getItemAt(0);
+                    CharSequence c = it.coerceToText(e.getContext());
+                    text = c == null ? "" : c.toString();
+                    html = it.getHtmlText();
+                }
+            }
+            put(ev, "text", text);
+            if (html != null) put(ev, "html", html);
+            put(ev, "types", types);
+            PrismHost.send(ev);
+            return true;
+        }
+        return false;
+    }
+
+    /** Op `clip`: what a copy writes (plain text, and HTML when there is some). */
+    static void writeClipboard(JSONArray items) {
+        if (items == null) return;
+        String text = "", html = null;
+        for (int i = 0; i < items.length(); i++) {
+            JSONArray pair = items.optJSONArray(i);
+            if (pair == null) continue;
+            if ("text/plain".equals(pair.optString(0))) text = pair.optString(1);
+            else if ("text/html".equals(pair.optString(0))) html = pair.optString(1);
+        }
+        android.content.ClipboardManager cb = (android.content.ClipboardManager) PrismHost.themed().getSystemService(Context.CLIPBOARD_SERVICE);
+        if (cb == null) return;
+        cb.setPrimaryClip(html != null
+                ? android.content.ClipData.newHtmlText("text", text, html)
+                : android.content.ClipData.newPlainText("text", text));
+    }
+
+    /** Op `instext`: a paste the app left to the field, over its selection. */
+    static void insertText(PrismHost.Node n, String text) {
+        if (!(n.view instanceof EditText)) return;
+        EditText e = (EditText) n.view;
+        // After the ops: the field then reports the edit.
+        e.post(() -> {
+            int a = Math.max(0, Math.min(e.getSelectionStart(), e.getSelectionEnd()));
+            int b = Math.max(0, Math.max(e.getSelectionStart(), e.getSelectionEnd()));
+            e.getText().replace(a, b, text);
+        });
+    }
+
+    /** The field's caret or selection moved: its rectangle (points, in the field), once per turn. */
+    static void rectChanged(EditText e) {
+        PrismHost.Node n = byView == null ? null : byView.get(e);
+        if (n == null || (n.editMask & 1) == 0 || n.rectPosted) return;
+        n.rectPosted = true;
+        e.post(() -> {
+            n.rectPosted = false;
+            android.text.Layout l = e.getLayout();
+            int[] s = selection(e);
+            if ((n.editMask & 1) == 0 || l == null || s == null) return;
+            int a = Math.max(0, Math.min(e.getSelectionStart(), e.getSelectionEnd()));
+            int b = Math.max(0, Math.max(e.getSelectionStart(), e.getSelectionEnd()));
+            int la = l.getLineForOffset(a), lb = l.getLineForOffset(b);
+            float dx = e.getTotalPaddingLeft() - e.getScrollX(), dy = e.getTotalPaddingTop() - e.getScrollY();
+            float x0, x1;
+            if (la == lb) {
+                x0 = l.getPrimaryHorizontal(a);
+                x1 = a == b ? x0 + PrismHost.density : l.getPrimaryHorizontal(b);
+            } else {
+                x0 = 0;
+                x1 = l.getWidth();
+            }
+            float d = PrismHost.density;
+            float x = (Math.min(x0, x1) + dx) / d, y = (l.getLineTop(la) + dy) / d;
+            float w = Math.max(1, Math.abs(x1 - x0) / d), h = (l.getLineBottom(lb) - l.getLineTop(la)) / d;
+            String key = s[0] + "," + s[1] + "," + Math.round(x * 2) + "," + Math.round(y * 2) + "," + Math.round(w * 2) + "," + Math.round(h * 2);
+            if (key.equals(n.lastRect)) return;
+            n.lastRect = key;
+            JSONObject ev = PrismHost.event("selrect", n.id);
+            put(ev, "start", s[0]);
+            put(ev, "end", s[1]);
+            put(ev, "x", x);
+            put(ev, "y", y);
+            put(ev, "w", w);
+            put(ev, "h", h);
+            PrismHost.send(ev);
+        });
+    }
+
     /** Op `selev`: whether the field reports its selection. */
     static void selectEvents(PrismHost.Node n, boolean on) {
         n.selectEvents = on;

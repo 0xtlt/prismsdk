@@ -1805,6 +1805,7 @@
   document.addEventListener("selectionchange", () => {
     const a = document.activeElement;
     if (a && a._selCheck) a._selCheck();
+    if (a && a._rectCheck) a._rectCheck();
     // A rich input's chips show they are selected (#115).
     const sel = a && a._rich ? richSelection(a) : null;
     if (sel) richMarkChips(a, sel[0], sel[1]);
@@ -2129,13 +2130,17 @@
       if (sel) applyFieldSelection(el, sel[0], sel[1]);
     });
     // Copy and cut as plain text (a chip as its label, an icon its glyph).
+    // With the app's `on_copy` / `on_cut` (#217) the plain text is set at
+    // once and the app is asked: its content follows (`clip` op).
     const copy = (e, cut) => {
       const sel = richSelection(el);
       if (!sel || sel[0] === sel[1] || !e.clipboardData) return;
       e.preventDefault();
       const [, rest] = richSplit(el._model, sel[0]);
       const [mid] = richSplit(rest, sel[1] - sel[0]);
-      e.clipboardData.setData("text/plain", mid.map((r) => (r.a.k ? r.a.n || "" : r.a.g ? glyphs[r.a.g] || "" : r.text)).join(""));
+      const text = mid.map((r) => (r.a.k ? r.a.n || "" : r.a.g ? glyphs[r.a.g] || "" : r.text)).join("");
+      e.clipboardData.setData("text/plain", text);
+      if ((el._editMask || 0) & (cut ? EDIT_CUT : EDIT_COPY)) send({ t: "copy", id, cut, start: sel[0], end: sel[1], text });
       if (cut) richEdit(el, id, sel[0], sel[1], "");
     };
     el.addEventListener("copy", (e) => copy(e, false));
@@ -2143,19 +2148,146 @@
     el.addEventListener("paste", (e) => {
       e.preventDefault();
       const text = e.clipboardData ? e.clipboardData.getData("text/plain") : "";
+      // The app's `on_paste` (#217): it gets the clipboard, and the text
+      // only lands if it leaves it to the field (`instext` op).
+      if ((el._editMask || 0) & EDIT_PASTE) {
+        const [start, end] = richSelected(el);
+        send({ t: "paste", id, start, end, ...pasteData(e.clipboardData, text) });
+        return;
+      }
       richEdit(el, id, ...richSelected(el), text);
     });
     // A clickable chip reports its click; a link, a click with ⌘ or Ctrl.
+    // With the app's `on_span_click` (#217), a click with ⌘, Ctrl or ⌥ on
+    // any run is the app's instead.
     el.addEventListener("click", (e) => {
+      if (((el._editMask || 0) & EDIT_SPAN_CLICK) && (e.metaKey || e.ctrlKey || e.altKey)) {
+        const at = richClickOffset(el, e);
+        if (at !== null) {
+          e.preventDefault();
+          send({ t: "spanclick", id, at, mods: modsOf(e) });
+          return;
+        }
+      }
       const hit = e.target && e.target.closest && e.target.closest("[data-link]");
       if (!hit || !el.contains(hit)) return;
       if (!hit._chip && !hit.classList.contains("prism-chip") && !(e.metaKey || e.ctrlKey)) return;
       activateRun(e);
     });
+    trackSelectionRect(el, id);
     // A selection the app set while the field was not focused lands when
     // the app focuses it; a click puts the caret where the user clicked.
     el.addEventListener("pointerdown", () => { delete el._pendingSel; });
     trackSelection(el, id);
+  }
+
+  // --- A rich input's editing hooks (#217) ------------------------------------
+  // `editev` op bits: the selection's rectangle, copy, cut, paste,
+  // modifier-clicks (prism_core::edit_events).
+  const EDIT_RECT = 1, EDIT_COPY = 2, EDIT_CUT = 4, EDIT_PASTE = 8, EDIT_SPAN_CLICK = 16;
+  /** What a `paste` event's clipboard holds: text, HTML, types, other text data. */
+  function pasteData(data, text) {
+    const types = [], extra = [];
+    let html = null;
+    if (data) {
+      for (const t of data.types || []) if (t !== "Files" && !types.includes(t)) types.push(t);
+      for (const item of data.items || []) if (item.kind === "file" && item.type && !types.includes(item.type)) types.push(item.type);
+      html = data.getData("text/html") || null;
+      for (const t of types) {
+        if (t === "text/plain" || t === "text/html" || !(t.startsWith("text/") || t.startsWith("application/"))) continue;
+        const v = data.getData(t);
+        if (v) extra.push([t, v]);
+      }
+    }
+    if (text && !types.includes("text/plain")) types.unshift("text/plain");
+    return { text, html, types, data: extra };
+  }
+  /** The `clip` op: what a copy writes, every type as one item. */
+  function writeClipContent(items) {
+    const text = (items.find(([t]) => t === "text/plain") || [, ""])[1];
+    const cb = navigator.clipboard;
+    if (!cb) return;
+    const plain = () => (cb.writeText ? cb.writeText(text).catch(() => {}) : null);
+    if (!cb.write || typeof ClipboardItem === "undefined" || items.length < 2) return plain();
+    const supports = (t) => (typeof ClipboardItem.supports === "function" ? ClipboardItem.supports(t) : t === "text/plain" || t === "text/html");
+    const parts = {};
+    for (const [t, v] of items) {
+      // Types the browser has no format for go as custom ones (`web …`).
+      const name = supports(t) ? t : supports(`web ${t}`) ? `web ${t}` : null;
+      if (name) parts[name] = new Blob([v], { type: t });
+    }
+    return cb.write([new ClipboardItem(parts)]).catch(plain);
+  }
+  /** The `instext` op: a paste the app left to the field. */
+  function insertText(el, id, text) {
+    if (el._rich) return richEdit(el, id, ...richSelected(el), text);
+    if (typeof el.setRangeText === "function") {
+      el.setRangeText(text, el.selectionStart, el.selectionEnd, "end");
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  }
+  /** The character a click on field `el` landed on, `null` outside its runs. */
+  function richClickOffset(el, e) {
+    let child = e.target;
+    while (child && child.parentNode !== el) child = child.parentNode;
+    if (!child || child._tail) return null;
+    let n = 0;
+    for (const c of el.childNodes) { if (c === child) break; n += richLen(c); }
+    const len = richLen(child);
+    if (!len) return null;
+    if (child._chip) return n;
+    // The caret the click puts down, kept inside the run clicked.
+    let at = null;
+    if (document.caretPositionFromPoint) {
+      const p = document.caretPositionFromPoint(e.clientX, e.clientY);
+      if (p) at = richOffset(el, p.offsetNode, p.offset);
+    } else if (document.caretRangeFromPoint) {
+      const r = document.caretRangeFromPoint(e.clientX, e.clientY);
+      if (r) at = richOffset(el, r.startContainer, r.startOffset);
+    }
+    if (at === null) at = n;
+    return Math.max(n, Math.min(n + len - 1, at));
+  }
+  /** Reports where field `el`'s caret or selection is (`selrect`), once per frame. */
+  function trackSelectionRect(el, id) {
+    let queued = false;
+    const report = () => {
+      queued = false;
+      if (!((el._editMask || 0) & EDIT_RECT) || document.activeElement !== el) return;
+      const sel = richSelection(el);
+      const s = document.getSelection && document.getSelection();
+      if (!sel || !s || !s.rangeCount) return;
+      const range = s.getRangeAt(0);
+      let r = range.getBoundingClientRect();
+      if (!r.width && !r.height) {
+        // A collapsed caret between two runs (or in an empty field) has
+        // no box: the first of its client rects, else the run beside it.
+        const rects = range.getClientRects();
+        if (rects.length) r = rects[0];
+        else {
+          const [node] = richPoint(el, sel[0]);
+          const box = (node.nodeType === 3 ? node.parentNode : node);
+          const b = box && box !== el ? box.getBoundingClientRect() : null;
+          const lh = parseFloat(getComputedStyle(el).lineHeight) || parseFloat(getComputedStyle(el).fontSize) * 1.2 || 16;
+          const er = el.getBoundingClientRect();
+          r = b ? { left: b.right, top: b.top, width: 0, height: b.height } : { left: er.left + (parseFloat(getComputedStyle(el).paddingLeft) || 0), top: er.top + (parseFloat(getComputedStyle(el).paddingTop) || 0), width: 0, height: lh };
+        }
+      }
+      const er = el.getBoundingClientRect();
+      const msg = { t: "selrect", id, start: sel[0], end: sel[1], x: r.left - er.left, y: r.top - er.top, w: sel[0] === sel[1] ? Math.max(1, r.width) : r.width, h: r.height };
+      const key = JSON.stringify(msg);
+      if (key === el._rectSent) return;
+      el._rectSent = key;
+      send(msg);
+    };
+    el._rectCheck = () => {
+      if (!((el._editMask || 0) & EDIT_RECT) || queued) return;
+      queued = true;
+      requestAnimationFrame(report);
+    };
+    for (const t of ["input", "focus", "keyup", "pointerup"]) el.addEventListener(t, el._rectCheck);
+    // The text wraps again: the rectangle moves.
+    if (typeof ResizeObserver !== "undefined") new ResizeObserver(() => el._rectCheck()).observe(el);
   }
 
   /** The selection to edit: the current one, `[0, 0]` without one. */
@@ -2907,6 +3039,10 @@
       case "selev": return el && setSelectEvents(el, p.on);
       // Other people's carets and selections (#240).
       case "carets": return el && setRemoteCarets(el, p.carets);
+      // A rich input's editing hooks (#217).
+      case "editev": if (el) { el._editMask = p.mask || 0; delete el._rectSent; if (el._rectCheck && document.activeElement === el) el._rectCheck(); } return;
+      case "clip": return writeClipContent(p.items || []);
+      case "instext": return el && insertText(el, p.id, p.text || "");
       case "focus": if (el) { focusAsked = el; focusNode(el); } return;
       case "reveal": return el && reveal(el);
       // A pop-up menu (#247): at a point in the node (the page when it has

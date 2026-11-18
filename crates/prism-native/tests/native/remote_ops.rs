@@ -1314,3 +1314,52 @@ fn remote_caret_ops() {
     w.set_remote_carets(&4, &[]);
     assert_eq!(last(&w), json!({"op": "carets", "id": 4, "carets": []}));
 }
+
+/// A rich input's editing hooks (#217): the ops a host gets, the events it
+/// sends back.
+#[test]
+fn rich_input_editing_hook_ops_and_events() {
+    use prism_core::{ClipboardContent, UiEvent};
+    use prism_native::remote::parse_input_event;
+    let mut w = RemoteWidgets::new(measure);
+    w.create(4, NodeKind::TextArea);
+    w.set_edit_events(&4, 10);
+    assert_eq!(last(&w), json!({"op": "editev", "id": 4, "mask": 10}));
+    w.write_clipboard(&4, &ClipboardContent::text("a").html("<b>a</b>"));
+    assert_eq!(
+        last(&w),
+        json!({"op": "clip", "id": 4, "items": [["text/plain", "a"], ["text/html", "<b>a</b>"]]})
+    );
+    w.insert_text(&4, "pasted");
+    assert_eq!(
+        last(&w),
+        json!({"op": "instext", "id": 4, "text": "pasted"})
+    );
+
+    assert_eq!(
+        parse_input_event(
+            &json!({"t": "copy", "id": 4, "cut": true, "start": 1, "end": 3, "text": "bc"})
+        ),
+        Some(UiEvent::Copy(4, true, 1, 3, "bc".into()))
+    );
+    let Some(UiEvent::Paste(4, p)) = parse_input_event(&json!({"t": "paste", "id": 4, "start": 2,
+        "end": 2, "text": "x", "html": "<i>x</i>", "types": ["text/plain", "text/html"]}))
+    else {
+        panic!("paste")
+    };
+    assert_eq!(
+        (p.text.as_str(), p.html.as_deref()),
+        ("x", Some("<i>x</i>"))
+    );
+    assert_eq!(
+        parse_input_event(
+            &json!({"t": "selrect", "id": 4, "start": 0, "end": 2, "x": 1, "y": 2, "w": 3, "h": 4})
+        ),
+        Some(UiEvent::SelectionRect(
+            4,
+            0,
+            2,
+            prism_core::Rect::new(1., 2., 3., 4.)
+        ))
+    );
+}

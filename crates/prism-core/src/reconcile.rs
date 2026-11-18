@@ -390,6 +390,36 @@ pub enum Patch {
         /// Its runs, encoded.
         runs: String,
     },
+    // --- Rich input editing hooks (#217) ---
+    /// Which editing events a rich input reports: bits of
+    /// [`edit_events`](crate::edit_events) (selection rectangle, copy,
+    /// cut, paste, modifier-clicks on spans). A copy, cut or paste it
+    /// reports is the app's: the backend writes and inserts nothing itself
+    /// (a cut still deletes the selection).
+    SetEditEvents {
+        /// The rich input.
+        id: NodeId,
+        /// `edit_events` bits; 0 reports none.
+        mask: u8,
+    },
+    /// Write `content` to the clipboard, every type of it as one item
+    /// (#217): the answer to a copy or a cut the field reported.
+    WriteClipboard {
+        /// The field copied from.
+        id: NodeId,
+        /// What to write.
+        content: crate::ClipboardContent,
+    },
+    /// Insert `text` over the field's selection as if the user had pasted
+    /// it as plain text (#217): a paste the app left to the field. The
+    /// field then reports the edit (`Input` / `RichInput`) and the caret
+    /// like any other.
+    InsertText {
+        /// The field.
+        id: NodeId,
+        /// The text to insert.
+        text: String,
+    },
 }
 
 /// An event reported by a backend.
@@ -478,6 +508,21 @@ pub enum UiEvent {
     /// can read; on the web the uploaded files). The runtime keeps those
     /// the target accepts.
     DropFiles(NodeId, Vec<crate::PickedFile>),
+    // --- Rich input editing hooks (#217) ---
+    /// Where a rich input's caret or selection is: (id, start, end in
+    /// characters, its rectangle in the field's coordinates).
+    SelectionRect(NodeId, usize, usize, crate::events::Rect),
+    /// The user copied or cut (`true`) in a rich input that reports it:
+    /// (id, start, end in characters, the selection's plain text). The
+    /// runtime answers with [`Patch::WriteClipboard`].
+    Copy(NodeId, bool, usize, usize, String),
+    /// The user pasted in a rich input that reports it: what the
+    /// clipboard holds. The runtime answers with [`Patch::InsertText`]
+    /// unless the app took the paste.
+    Paste(NodeId, crate::PasteEvent),
+    /// A click with ⌘, Ctrl or ⌥ on character `offset` of a rich input
+    /// being edited: (id, offset, the keys held).
+    SpanClick(NodeId, usize, crate::events::Modifiers),
 }
 
 /// A mounted host node.
@@ -511,6 +556,8 @@ struct MNode {
     consume_keys: Vec<String>,
     /// It reports its frame (#192).
     layout_events: bool,
+    /// The editing events it reports (#217, `edit_events` bits).
+    edit_mask: u8,
     /// The selection the app last rendered (`.selection`, #86).
     selection: Option<SelectionEvent>,
     /// The selection the field shows, as far as Prism knows: the last one
@@ -611,6 +658,8 @@ pub struct Reconciler {
     wheel: HashMap<NodeId, Handler<crate::events::WheelEvent>>,
     aux_click: HashMap<NodeId, Handler<crate::element::ClickEvent>>,
     focus_change: HashMap<NodeId, Handler<crate::element::FocusEvent>>,
+    /// Rich inputs' editing hooks (#217).
+    edit: HashMap<NodeId, crate::text_edit::EditHandlers>,
     layout: HashMap<NodeId, Handler<crate::events::LayoutEvent>>,
     drop_progress: HashMap<NodeId, Handler<crate::events::DropProgress>>,
     ended: HashMap<NodeId, Handler<crate::video::EndedEvent>>,
@@ -779,6 +828,20 @@ impl Reconciler {
     /// The wheel handler of node `id`, if any (#133).
     pub fn wheel_handler(&self, id: NodeId) -> Option<Handler<crate::events::WheelEvent>> {
         self.wheel.get(&id).cloned()
+    }
+
+    /// Rich input `id`'s editing hooks (#217), if it has any.
+    pub fn edit_handlers(&self, id: NodeId) -> Option<&crate::text_edit::EditHandlers> {
+        self.edit.get(&id)
+    }
+
+    /// The spans rich input `id` showed at the last render (#217), as the
+    /// app gave them (empty for another node).
+    pub fn rich_spans(&self, id: NodeId) -> Vec<crate::spans::Span> {
+        self.rich
+            .get(&id)
+            .map(|r| r.spans.iter().map(|(_, s)| s.clone()).collect())
+            .unwrap_or_default()
     }
 
     /// Node `id`'s `on_focus_change` handler (#224).
@@ -1353,6 +1416,7 @@ impl Reconciler {
             consume_keys,
             on_layout,
             track_layout,
+            edit,
             ..
         } = *vnode;
         app.window.watch_widths(&style);
@@ -1371,7 +1435,22 @@ impl Reconciler {
         }
         {
             let m = self.nodes.get_mut(&id).expect("node exists");
-            let reports = on_layout.is_some() || track_layout;
+            // A selection's rectangle is also given in the window (#217).
+            let edit_mask = if m.kind == NodeKind::RichInput {
+                edit.mask()
+            } else {
+                0
+            };
+            let reports = on_layout.is_some()
+                || track_layout
+                || edit_mask & crate::edit_events::SELECTION_RECT != 0;
+            if m.edit_mask != edit_mask {
+                m.edit_mask = edit_mask;
+                self.patches.push(Patch::SetEditEvents {
+                    id,
+                    mask: edit_mask,
+                });
+            }
             if m.layout_events != reports {
                 m.layout_events = reports;
                 self.patches
@@ -1394,6 +1473,11 @@ impl Reconciler {
             Some(h) => self.focus_change.insert(id, h),
             None => self.focus_change.remove(&id),
         };
+        if edit.is_empty() {
+            self.edit.remove(&id);
+        } else {
+            self.edit.insert(id, edit);
+        }
         self.diff_events(
             id,
             name,
@@ -2133,6 +2217,7 @@ impl Reconciler {
                 keys: (false, false),
                 consume_keys: Vec::new(),
                 layout_events: false,
+                edit_mask: 0,
                 selection: None,
                 shown_selection: None,
                 remote_carets: Vec::new(),
@@ -2198,6 +2283,7 @@ impl Reconciler {
         self.magnify.remove(&id);
         self.aux_click.remove(&id);
         self.focus_change.remove(&id);
+        self.edit.remove(&id);
         self.layout.remove(&id);
         self.key_down.remove(&id);
         self.global_key.remove(&id);

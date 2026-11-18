@@ -58,6 +58,8 @@ pub struct HNode {
     pub attributes: Vec<(String, String)>,
     /// A rich input's encoded runs (`Patch::SetRichValue`, #115).
     pub runs: String,
+    /// The editing events it reports (`Patch::SetEditEvents`, #217).
+    pub edit_events: u8,
 }
 
 #[derive(Default)]
@@ -85,6 +87,10 @@ pub struct Host {
         prism_core::menu::MenuSpec,
         Option<prism_core::Point>,
     )>,
+    /// What was written to the clipboard, in order (`Patch::WriteClipboard`, #217).
+    pub clipboard: Vec<(NodeId, prism_core::ClipboardContent)>,
+    /// Texts inserted in fields, in order (`Patch::InsertText`, #217).
+    pub inserted: Vec<(NodeId, String)>,
 }
 
 impl Host {
@@ -223,6 +229,7 @@ impl Backend for Host {
                             link: None,
                             attributes: Vec::new(),
                             runs: String::new(),
+                            edit_events: 0,
                         },
                     );
                 }
@@ -351,6 +358,13 @@ impl Backend for Host {
                 Patch::SetRichValue { id, runs } => {
                     self.node(*id, "SetRichValue").runs = runs.clone()
                 }
+                Patch::SetEditEvents { id, mask } => {
+                    self.node(*id, "SetEditEvents").edit_events = *mask
+                }
+                Patch::WriteClipboard { id, content } => {
+                    self.clipboard.push((*id, content.clone()))
+                }
+                Patch::InsertText { id, text } => self.inserted.push((*id, text.clone())),
             }
         }
         // Destroyed nodes are gone from the mounted tree once a frame is applied.
