@@ -22,6 +22,12 @@ the sheet shows the parameter's title as a placeholder (#49). The query never
 answers nil (an empty placeholder entity before the app wrote its options),
 and the intent reads each value through `valueState` where it exists, so an
 unset value never traps.
+
+`entities(for:)` answers every id it is asked (#277): an unknown one (an
+option gone since, the empty placeholder) gets an entity of that id, titled
+like the default option, which the provider reads as « the default ». Left
+out, the required parameter would be missing and WidgetKit would never ask
+for a timeline.
 """
 import json
 import re
@@ -59,7 +65,7 @@ def configurable(w, name, kind, fams):
             "",
             f"struct {query}: EntityQuery {{",
             f"    func entities(for identifiers: [String]) async throws -> [{entity}] {{",
-            f"        prismOptions({kind}, {pid}).filter {{ identifiers.contains($0.id) }}.map {make}",
+            f"        prismResolve({kind}, {pid}, identifiers, placeholder: {swift_str(p['title'])}).map {make}",
             "    }",
             f"    func suggestedEntities() async throws -> [{entity}] {{",
             f"        prismOptions({kind}, {pid}).map {make}",

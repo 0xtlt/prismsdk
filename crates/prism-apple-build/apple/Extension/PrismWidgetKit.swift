@@ -65,6 +65,20 @@ func prismDefaultOption(_ kind: String, _ parameter: String) -> (id: String, tit
     return p.options.first { $0.id == p.default }
 }
 
+/// The options for the ids WidgetKit resolves (`EntityQuery.entities(for:)`),
+/// one per id, in its order (#277). A known id gets its option. An unknown
+/// one (an option gone since, or the empty placeholder an instance keeps when
+/// it was added before the app wrote its options) gets an entity of that id,
+/// titled like the default option, or `placeholder` (the parameter's title)
+/// without one: left out, the required parameter would be missing, WidgetKit
+/// would never ask for a timeline and the widget would stay a grey
+/// placeholder. `prismChosen` drops the unknown value, so the default is drawn.
+func prismResolve(_ kind: String, _ parameter: String, _ ids: [String], placeholder: String) -> [(id: String, title: String)] {
+    let p = prismParameter(prismLoadWidget(kind), parameter)
+    let fallback = p.options.first { $0.id == p.default }?.title ?? placeholder
+    return ids.map { id in p.options.first { $0.id == id } ?? (id, fallback) }
+}
+
 private func prismParameter(_ doc: PNode?, _ id: String) -> (default: String?, options: [(id: String, title: String)]) {
     let p = (doc?["parameters"] as? [PNode])?.first { $0["id"] as? String == id }
     let options = (p?["options"] as? [PNode] ?? []).compactMap { o -> (id: String, title: String)? in
