@@ -355,6 +355,7 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- `Runtime::dispatch` no longer returns answers (a selection, a highlight, a clipboard write) aimed at nodes its own re-render destroyed (#265): an `on_edit_across` handler that merges fields can be tested through `dispatch` with `prism-testing`, which panicked on them.
 - Linux: `prism-linux` builds again (a rich input is created as a text area, as `prism-native` already asks), and screen-reader states no longer log GTK criticals: the checked and selected states are passed as the ints GTK reads (GTK 4.8 and later). `cargo doc` with `-D warnings` passes again (two `scene3d` links).
 - macOS, iOS, iPadOS, visionOS: a child drawn outside its parent (absolutely positioned with a negative offset) gets clicks, hovers and drags in the part outside it, unless the parent clips (#213). AppKit and UIKit only hit-tested inside the parent's bounds; before macOS 14, hover tracking stopped there too.
 - Native backends: a `picture` given only a width (`w(px(…))`, `w_full()`, a percentage) takes its height from the image's own ratio at that width, wider than the image included (#208). It used to keep the image's natural height, or the height of the image narrowed to the width. The web already did this.

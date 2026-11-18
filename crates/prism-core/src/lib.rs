@@ -652,6 +652,18 @@ impl Runtime {
         } else {
             Vec::new()
         };
+        // Answers aimed at a node the re-render destroyed (an edit that
+        // merged fields, #265) reach no one.
+        let destroyed: std::collections::HashSet<NodeId> = patches
+            .iter()
+            .filter_map(|p| match p {
+                Patch::Destroy { id } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        if !destroyed.is_empty() {
+            answers.retain(|a| !answer_targets(a).any(|id| destroyed.contains(&id)));
+        }
         patches.extend(answers);
         patches
     }
@@ -1166,3 +1178,24 @@ pub mod prelude {
 
 #[cfg(test)]
 mod tests;
+
+/// The nodes an answer of `dispatch` (a selection, a highlight, a clipboard
+/// write) is aimed at (#265).
+fn answer_targets(p: &Patch) -> impl Iterator<Item = NodeId> {
+    let ids: Vec<NodeId> = match p {
+        Patch::SetSelection { id, .. }
+        | Patch::SetSelectionHighlight { id, .. }
+        | Patch::Focus { id }
+        | Patch::WriteClipboard { id, .. }
+        | Patch::InsertText { id, .. } => vec![*id],
+        Patch::SetSelectionAcross { group, range } => {
+            let mut v = vec![*group];
+            if let Some(((a, _), (b, _))) = range {
+                v.extend([*a, *b]);
+            }
+            v
+        }
+        _ => Vec::new(),
+    };
+    ids.into_iter()
+}

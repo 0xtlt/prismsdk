@@ -15,6 +15,8 @@ struct Doc {
     edits: Vec<EditAcross>,
     copies: Vec<(String, Option<usize>, bool)>,
     handle_edits: bool,
+    /// An edit merges the blocks into the first one (#265).
+    merge: bool,
 }
 
 impl Render for Doc {
@@ -38,9 +40,13 @@ impl Render for Doc {
                 cx.listener(|this: &mut Doc, e: &SelectionAcross, _| this.seen.push(e.clone())),
             );
         if self.handle_edits {
-            flow.on_edit_across(
-                cx.listener(|this: &mut Doc, e: &EditAcross, _| this.edits.push(e.clone())),
-            )
+            flow.on_edit_across(cx.listener(|this: &mut Doc, e: &EditAcross, cx| {
+                this.edits.push(e.clone());
+                if this.merge {
+                    this.blocks.truncate(1);
+                    cx.notify();
+                }
+            }))
         } else {
             flow
         }
@@ -337,4 +343,31 @@ fn a_key_the_backend_left_to_the_field_does_not_act() {
     let d = h.root::<Doc>();
     assert!(h.rt.app.read(&d).edits.is_empty());
     assert!(h.host.across.is_some());
+}
+
+/// #265: an edit that merges the fields destroys them in the re-render; the
+/// answers aimed at them (their highlight, the selection) are dropped
+/// instead of reaching destroyed nodes.
+#[test]
+fn answers_skip_the_fields_an_edit_destroyed() {
+    let (mut h, f) = doc(true);
+    let d = h.root::<Doc>();
+    h.rt.app.update(&d, |doc, _| doc.merge = true);
+    press(&mut h, f[0], shift_down(2, 5));
+    // Typing over the selection: the app merges, the host must not panic.
+    let patches = press(&mut h, f[0], KeyEvent::new("x"));
+    let gone: Vec<NodeId> = patches
+        .iter()
+        .filter_map(|p| match p {
+            Patch::Destroy { id } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    assert!(gone.contains(&f[1]) && gone.contains(&f[2]), "{patches:?}");
+    for p in &patches {
+        if let Patch::SetSelectionHighlight { id, .. } | Patch::SetSelection { id, .. } = p {
+            assert!(!gone.contains(id), "{p:?}");
+        }
+    }
+    assert_eq!(h.rt.app.read(&d).blocks.len(), 1);
 }
