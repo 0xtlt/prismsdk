@@ -222,6 +222,18 @@ impl LinuxServices {
                 self.window.clipboard().set_text(&t);
                 reply(id, Ok(DeviceValue::Done));
             }
+            // #246: every type the clipboard offers, images as PNG.
+            DeviceCall::ReadClipboardItem => {
+                let clipboard = self.window.clipboard();
+                glib::MainContext::default().spawn_local(async move {
+                    let item = read_clipboard_item(&clipboard).await;
+                    reply(id, Ok(DeviceValue::Clipboard(item)));
+                });
+            }
+            DeviceCall::WriteClipboard(item) => {
+                write_clipboard_item(&self.window.clipboard(), &item);
+                reply(id, Ok(DeviceValue::Done));
+            }
             // No tabs here: the default handler opens it either way.
             DeviceCall::OpenUrl(url) | DeviceCall::OpenUrlIn(url, _) => {
                 let ok = gio::AppInfo::launch_default_for_uri(&url, None::<&gio::AppLaunchContext>);
@@ -565,6 +577,84 @@ impl LinuxServices {
             _ => app.send_notification(Some(&id), &notification),
         }
     }
+}
+
+// --- Clipboard types (#246) ----------------------------------------------------------
+
+/// The clipboard's MIME types (X11 atoms such as `UTF8_STRING` left out):
+/// the text through GDK's text reader, one image as PNG through its
+/// texture, the others as their bytes.
+async fn read_clipboard_item(clipboard: &gtk::gdk::Clipboard) -> prism_core::ClipboardItem {
+    let mut item = prism_core::ClipboardItem::new();
+    let formats = clipboard.formats();
+    let mimes: Vec<String> = formats.mime_types().iter().map(|m| m.to_string()).collect();
+    let base = |m: &str| {
+        m.split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase()
+    };
+    if mimes.iter().any(|m| base(m) == "text/plain")
+        && let Ok(Some(text)) = clipboard.read_text_future().await
+    {
+        item = item.text(text.as_str());
+    }
+    if (formats.contains_type(gtk::gdk::Texture::static_type())
+        || mimes.iter().any(|m| m.starts_with("image/")))
+        && let Ok(Some(texture)) = clipboard.read_texture_future().await
+    {
+        item = item.image(texture.save_to_png_bytes().to_vec(), "image/png");
+    }
+    let mut seen = Vec::new();
+    for mime in &mimes {
+        let ty = base(mime);
+        if !ty.contains('/') || ty == "text/plain" || ty.starts_with("image/") || seen.contains(&ty)
+        {
+            continue;
+        }
+        seen.push(ty.clone());
+        let Ok((stream, _)) = clipboard
+            .read_future(&[mime.as_str()], glib::Priority::DEFAULT)
+            .await
+        else {
+            continue;
+        };
+        let out = gio::MemoryOutputStream::new_resizable();
+        let flags =
+            gio::OutputStreamSpliceFlags::CLOSE_SOURCE | gio::OutputStreamSpliceFlags::CLOSE_TARGET;
+        if out
+            .splice_future(&stream, flags, glib::Priority::DEFAULT)
+            .await
+            .is_ok()
+        {
+            item = item.custom(ty, out.steal_as_bytes().to_vec());
+        }
+    }
+    item
+}
+
+/// Every type of `item` on the clipboard: text through GDK's text value
+/// (so X11 and Wayland clients get it in their encodings), an image also
+/// as a texture (other apps then paste it in the format they ask for).
+fn write_clipboard_item(clipboard: &gtk::gdk::Clipboard, item: &prism_core::ClipboardItem) {
+    use gtk::gdk::ContentProvider;
+    let mut providers = Vec::new();
+    for (ty, data) in item.entries() {
+        if ty == prism_core::ClipboardItem::TEXT {
+            providers.push(ContentProvider::for_value(
+                &String::from_utf8_lossy(data).to_value(),
+            ));
+        } else {
+            providers.push(ContentProvider::for_bytes(ty, &glib::Bytes::from(data)));
+        }
+    }
+    if let Some(image) = item.as_image()
+        && let Ok(texture) = gtk::gdk::Texture::from_bytes(&glib::Bytes::from_owned(image.bytes))
+    {
+        providers.push(ContentProvider::for_value(&texture.to_value()));
+    }
+    let _ = clipboard.set_content(Some(&ContentProvider::new_union(&providers)));
 }
 
 // --- Menus --------------------------------------------------------------------------

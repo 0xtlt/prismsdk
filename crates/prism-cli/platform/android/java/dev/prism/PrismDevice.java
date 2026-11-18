@@ -106,6 +106,8 @@ final class PrismDevice {
                 reply(id, "text", text == null ? JSONObject.NULL : text.toString());
                 break;
             }
+            case "paste_item": pasteItem(id); break;
+            case "copy_item": copyItem(c.optJSONArray("entries")); reply(id, null, null); break;
             case "share": share(c); reply(id, null, null); break;
             case "save_file": saveFile(id, c); break;
             case "reveal": reply(id, null, null); break; // no file manager to show it in
@@ -575,6 +577,103 @@ final class PrismDevice {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    // --- Clipboard types (#246) ---------------------------------------------------------------
+
+    /** The primary clip's types, as files named by their MIME type (cache/prism-clipboard). */
+    static void pasteItem(long id) {
+        ClipboardManager cb = (ClipboardManager) ctx().getSystemService(Context.CLIPBOARD_SERVICE);
+        ClipData clip = cb.getPrimaryClip();
+        if (clip == null || clip.getItemCount() == 0) { reply(id, "text", JSONObject.NULL); return; }
+        File dir = new File(ctx().getCacheDir(), "prism-clipboard");
+        File[] old = dir.listFiles();
+        if (old != null) for (File f : old) f.delete();
+        dir.mkdirs();
+        JSONArray files = new JSONArray();
+        ClipData.Item item = clip.getItemAt(0);
+        try {
+            if (item.getHtmlText() != null) files.put(clipFile(dir, "text/html", item.getHtmlText().getBytes("UTF-8")));
+            CharSequence text = item.getText();
+            if (text == null && item.getUri() == null) text = item.coerceToText(ctx());
+            if (text != null) files.put(clipFile(dir, "text/plain", text.toString().getBytes("UTF-8")));
+            Uri uri = item.getUri();
+            if (uri != null) {
+                String mime = ctx().getContentResolver().getType(uri);
+                if (mime != null && mime.startsWith("image/")) {
+                    try (InputStream in = ctx().getContentResolver().openInputStream(uri)) {
+                        java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+                        byte[] buf = new byte[64 * 1024];
+                        int n;
+                        while ((n = in.read(buf)) > 0) bytes.write(buf, 0, n);
+                        files.put(clipFile(dir, mime, bytes.toByteArray()));
+                    }
+                } else if (text == null) {
+                    files.put(clipFile(dir, "text/uri-list", uri.toString().getBytes("UTF-8")));
+                }
+            }
+        } catch (Exception e) {
+            fail(id, String.valueOf(e.getMessage()), false);
+            return;
+        }
+        if (files.length() == 0) reply(id, "text", JSONObject.NULL);
+        else reply(id, "files", files);
+    }
+
+    static JSONObject clipFile(File dir, String mime, byte[] data) throws Exception {
+        File out = new File(dir, String.valueOf(dir.list() == null ? 0 : dir.list().length));
+        try (OutputStream os = new FileOutputStream(out)) { os.write(data); }
+        JSONObject f = new JSONObject();
+        f.put("path", out.getAbsolutePath());
+        f.put("name", mime);
+        f.put("mime", mime);
+        f.put("size", out.length());
+        return f;
+    }
+
+    /**
+     * Text, HTML and one image (behind Prism's content provider, kept in
+     * cache/prism-clip until the next copy) on the primary clip. Other
+     * types have no place on Android's clipboard.
+     */
+    static void copyItem(JSONArray entries) {
+        if (entries == null) return;
+        String text = null, html = null;
+        Uri image = null;
+        for (int i = 0; i < entries.length(); i++) {
+            JSONObject e = entries.optJSONObject(i);
+            if (e == null) continue;
+            String type = e.optString("type");
+            if (type.equals("text/plain")) text = e.optString("text");
+            else if (type.equals("text/html")) html = e.optString("text");
+            else if (type.startsWith("image/") && image == null && e.has("data")) {
+                try {
+                    File dir = new File(ctx().getCacheDir(), "prism-clip");
+                    File[] old = dir.listFiles();
+                    if (old != null) for (File f : old) f.delete();
+                    dir.mkdirs();
+                    String ext = android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(type);
+                    File out = new File(dir, UUID.randomUUID() + "." + (ext != null ? ext : "png"));
+                    try (OutputStream os = new FileOutputStream(out)) {
+                        os.write(android.util.Base64.decode(e.optString("data"), android.util.Base64.DEFAULT));
+                    }
+                    image = PrismFiles.uriFor(ctx(), out);
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        ClipData clip;
+        if (image != null) {
+            clip = ClipData.newUri(ctx().getContentResolver(), "image", image);
+            if (text != null || html != null) clip.addItem(html != null ? new ClipData.Item(text != null ? text : "", html) : new ClipData.Item(text));
+        } else if (html != null) {
+            clip = ClipData.newHtmlText("text", text != null ? text : "", html);
+        } else if (text != null) {
+            clip = ClipData.newPlainText("text", text);
+        } else {
+            return;
+        }
+        ((ClipboardManager) ctx().getSystemService(Context.CLIPBOARD_SERVICE)).setPrimaryClip(clip);
     }
 
     // --- Haptics, sharing ---------------------------------------------------------------------

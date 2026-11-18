@@ -6056,6 +6056,68 @@ void main() {
     }
   }
 
+  // --- The clipboard's types (#246) ---------------------------------------------
+  // Read: every type of the first item, uploaded like picked files, each
+  // named by its type (a custom `web x/y` format comes back as `x/y`).
+  // Without `clipboard.read` (or when the browser refuses it), the text.
+  async function readClipboardItem(msg, reply) {
+    const files = [];
+    try {
+      const [item] = await navigator.clipboard.read();
+      for (const t of item ? item.types : []) {
+        const type = t.startsWith("web ") ? t.slice(4) : t;
+        const blob = await item.getType(t).catch(() => null);
+        if (blob && !files.some((f) => f.name === type)) files.push(new File([blob], type, { type }));
+      }
+    } catch {
+      const text = await navigator.clipboard?.readText?.().catch(() => null);
+      if (text) files.push(new File([text], "text/plain", { type: "text/plain" }));
+    }
+    if (!files.length) return reply({ text: null });
+    return upload(msg, files, reply);
+  }
+  // Write: text inline, other bytes fetched from the session's URL. The
+  // browser takes text/plain, text/html and image/png (another image is
+  // converted to PNG), other types as custom `web …` formats where it can;
+  // what it refuses is left out, the text last of all.
+  const CLIPBOARD_TYPES = ["text/plain", "text/html", "image/png"];
+  async function toPng(blob) {
+    const bitmap = await createImageBitmap(blob);
+    const canvas = document.createElement("canvas");
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    canvas.getContext("2d").drawImage(bitmap, 0, 0);
+    return new Promise((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("png"))), "image/png"));
+  }
+  async function writeClipboard(entries) {
+    const clipboard = navigator.clipboard;
+    if (!clipboard) return;
+    const text = entries.find((e) => e.type === "text/plain");
+    const plain = () => (text ? clipboard.writeText(text.text ?? "").catch(() => {}) : undefined);
+    if (!clipboard.write || typeof ClipboardItem === "undefined") return plain();
+    // Each blob typed as its key (a custom format's too: `web x/y`).
+    const blob = (e, type = e.type) => (e.url
+      ? fetch(e.url, { credentials: "same-origin" }).then((r) => r.blob()).then((b) => new Blob([b], { type }))
+      : Promise.resolve(new Blob([e.text ?? ""], { type })));
+    const supports = (t) => typeof ClipboardItem.supports !== "function" || ClipboardItem.supports(t);
+    const data = {};
+    for (const e of entries) {
+      if (e.type.startsWith("image/") && e.type !== "image/png") {
+        if (!entries.some((x) => x.type === "image/png") && !data["image/png"]) data["image/png"] = blob(e).then(toPng);
+        continue;
+      }
+      const type = CLIPBOARD_TYPES.includes(e.type) ? e.type : "web " + e.type;
+      if (supports(type)) data[type] = blob(e, type);
+    }
+    const write = (types) => clipboard.write([new ClipboardItem(Object.fromEntries(types))]);
+    const all = Object.entries(data);
+    if (!all.length) return plain();
+    try { await write(all); } catch {
+      const basic = all.filter(([t]) => CLIPBOARD_TYPES.includes(t));
+      try { if (basic.length < all.length && basic.length) await write(basic); else throw 0; } catch { await plain(); }
+    }
+  }
+
   // --- Drop targets (#111) -------------------------------------------------------
   // Files dragged from the system onto a node: `data-prism-drop` while they
   // are over it (the `drop_hover` state), then they go up like picked files
@@ -6383,6 +6445,8 @@ void main() {
         case "paste":
           return reply({ text: await navigator.clipboard?.readText().catch(() => null) ?? null });
         case "copy": return navigator.clipboard?.writeText(msg.text);
+        case "read_clipboard_item": return readClipboardItem(msg, reply);
+        case "write_clipboard": return writeClipboard(msg.entries || []);
         case "haptic":
           return navigator.vibrate?.({ selection: 5, light: 10, medium: 20, heavy: 35, success: [10, 40, 10], warning: [20, 60, 20], error: [30, 50, 30, 50, 30] }[msg.kind] || 10);
         case "share":

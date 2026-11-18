@@ -17,6 +17,7 @@ pub mod attributes;
 pub mod background;
 pub mod car;
 pub mod channel;
+pub mod clipboard;
 pub mod controls;
 pub mod decoration;
 pub mod device;
@@ -59,6 +60,7 @@ pub use assets::EmbeddedAssets;
 pub use background::{BackgroundKind, BackgroundTask, Lifecycle};
 pub use car::{CarButton, CarButtonStyle, CarItem, CarSection, CarTab, CarTemplate};
 pub use channel::{Receiver, Sender, channel};
+pub use clipboard::{ClipboardImage, ClipboardItem};
 pub use controls::{
     Backdrop, Capitalize, DateMode, Keyboard, OverlayKind, PopoverAlign, PopoverSide, ReturnKey,
 };
@@ -836,18 +838,18 @@ pub mod prelude {
         Accessible, Accuracy, Activity, Alert, Animations, App, AppleSignIn, AsyncApp, AuthRequest,
         BackEvent, BackgroundTask, BiometryKind, Breakpoint, Capitalize, CarButton, CarButtonStyle,
         CarItem, CarSection, CarTab, CarTemplate, CaretEdge, CaretEdges, ChangeEvent, ClickEvent,
-        Context, Corners, DateMode, DateStyle, DeviceInfo, DeviceKind, DismissReason, Entity,
-        FluentBuilder, FocusEvent, Handler, Haptic, InputEvent, IntoElement, Keyboard, Lifecycle,
-        Locale, Location, Menu, MenuItem, Motion, Notification, NotificationAction,
-        NotificationResponse, Orientation, Params, ParentElement, Path, Permission,
-        PermissionState, PickImages, PickedFile, Platform, Pose, Posture, PushEvent, PushMessage,
-        PushService, PushSubscription, Render, ReorderList, ReorderOptions, ReturnKey, Role,
-        Router, SaveFile, SavedFile, ScrollEvent, SecureOptions, SelectionEvent, Share, Styled,
-        SwipeDirection, SystemAction, Transition, Translations, Tray, UploadProgress, VirtualList,
-        Watch, Widget, WidgetConfig, WidgetFamily, WidgetOption, WidgetParameter, WindowChrome,
-        WindowControls, adaptive, button, date_picker, date_picker_opt, div, go_back, image, lazy,
-        navigate_to, picker, picture, progress, px, relative, rgb, rgba, screen, scroll, shape,
-        slider, spinner, text, text_area, text_input, timer, toggle,
+        ClipboardImage, ClipboardItem, Context, Corners, DateMode, DateStyle, DeviceInfo,
+        DeviceKind, DismissReason, Entity, FluentBuilder, FocusEvent, Handler, Haptic, InputEvent,
+        IntoElement, Keyboard, Lifecycle, Locale, Location, Menu, MenuItem, Motion, Notification,
+        NotificationAction, NotificationResponse, Orientation, Params, ParentElement, Path,
+        Permission, PermissionState, PickImages, PickedFile, Platform, Pose, Posture, PushEvent,
+        PushMessage, PushService, PushSubscription, Render, ReorderList, ReorderOptions, ReturnKey,
+        Role, Router, SaveFile, SavedFile, ScrollEvent, SecureOptions, SelectionEvent, Share,
+        Styled, SwipeDirection, SystemAction, Transition, Translations, Tray, UploadProgress,
+        VirtualList, Watch, Widget, WidgetConfig, WidgetFamily, WidgetOption, WidgetParameter,
+        WindowChrome, WindowControls, adaptive, button, date_picker, date_picker_opt, div, go_back,
+        image, lazy, navigate_to, picker, picture, progress, px, relative, rgb, rgba, screen,
+        scroll, shape, slider, spinner, text, text_area, text_input, timer, toggle,
     };
     pub use crate::{
         GridTrack, ScrollAxis, Scrollbar, auto_fill, auto_fit, fr, minmax, repeat, scroll_x,

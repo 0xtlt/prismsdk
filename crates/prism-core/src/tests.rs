@@ -4284,3 +4284,146 @@ fn cursors_round_trip_through_their_css_names() {
     assert_eq!(C::ResizeNwSe.css(), "nwse-resize");
     assert_eq!(C::ZoomIn.css(), "zoom-in");
 }
+
+/// #246: a clipboard item keeps its types in order, one data per type; the
+/// image is the PNG first; files come from `text/uri-list`.
+#[test]
+fn clipboard_items_hold_several_types() {
+    use crate::ClipboardItem;
+    let item = ClipboardItem::new()
+        .text("caption")
+        .image(b"jpeg".to_vec(), "image/jpeg")
+        .image(b"png".to_vec(), "Image/PNG")
+        .custom("application/x-notes", br#"{"b":1}"#.to_vec())
+        .text("Caption");
+    assert_eq!(
+        item.types(),
+        [
+            "text/plain",
+            "image/jpeg",
+            "image/png",
+            "application/x-notes"
+        ]
+    );
+    assert_eq!(item.as_text().as_deref(), Some("Caption"));
+    assert_eq!(item.as_html(), None);
+    let image = item.as_image().unwrap();
+    assert_eq!(
+        (image.bytes.as_slice(), image.mime.as_str()),
+        (&b"png"[..], "image/png")
+    );
+    assert_eq!(item.get("application/x-notes"), Some(&br#"{"b":1}"#[..]));
+    assert!(!item.has("text/rtf"));
+    let files = ClipboardItem::new()
+        .custom(ClipboardItem::URI_LIST, "# copied\r\nfile:///Users/me/My%20Shot.png\r\nfile://localhost/tmp/a.txt\r\nhttps://x.dev/\r\n");
+    assert_eq!(
+        files.files(),
+        [
+            std::path::PathBuf::from("/Users/me/My Shot.png"),
+            std::path::PathBuf::from("/tmp/a.txt")
+        ]
+    );
+    assert!(ClipboardItem::is_text("text/html", b"<b>x</b>"));
+    assert!(!ClipboardItem::is_text("image/png", b"png"));
+}
+
+/// #246: `read_clipboard_item` takes the platform's files (one per type),
+/// an item, or plain text; `None` when empty. `write_clipboard` sends the
+/// whole item.
+#[test]
+fn clipboard_items_are_read_and_written() {
+    use crate::device::*;
+    use crate::{ClipboardItem, PlatformRequest};
+    struct Paster {
+        text: String,
+    }
+    impl Render for Paster {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            text(self.text.clone())
+        }
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|cx: &mut Context<Paster>| {
+            cx.spawn(async move |this, cx| {
+                for round in 0..4 {
+                    let item = cx.read_clipboard_item().await;
+                    let shown = match &item {
+                        Some(i) => format!(
+                            "{round}: {} {:?} {:?}",
+                            i.types().join(","),
+                            i.as_text(),
+                            i.as_image().map(|img| img.bytes.len())
+                        ),
+                        None => format!("{round}: none"),
+                    };
+                    cx.update_entity(&this, |s, cx| {
+                        s.text = shown;
+                        cx.notify();
+                    });
+                }
+            });
+            Paster { text: "…".into() }
+        });
+        cx.set_root(root);
+    });
+    let mut rt = Runtime::new(&init);
+    rt.render();
+    let read = |rt: &mut Runtime| {
+        rt.take_requests()
+            .into_iter()
+            .find_map(|r| match r {
+                PlatformRequest::Device {
+                    id,
+                    call: DeviceCall::ReadClipboardItem,
+                } => Some(id),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let dir = std::env::temp_dir().join(format!("prism-clip-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = |n: &str, ty: &str, data: &[u8]| {
+        let path = dir.join(n);
+        std::fs::write(&path, data).unwrap();
+        PickedFile {
+            path: path.to_string_lossy().into_owned(),
+            name: ty.into(),
+            mime: ty.into(),
+            size: data.len() as u64,
+        }
+    };
+    let id = read(&mut rt);
+    let files = vec![
+        file("0", "image/png", b"\x89PNG"),
+        file("1", "text/plain", "légende".as_bytes()),
+    ];
+    find_text(
+        &rt.device_reply(id, Ok(DeviceValue::Files(files))),
+        "0: image/png,text/plain Some(\"légende\") Some(4)",
+    );
+    let id = read(&mut rt);
+    find_text(&rt.device_reply(id, Ok(DeviceValue::Text(None))), "1: none");
+    let id = read(&mut rt);
+    find_text(
+        &rt.device_reply(id, Ok(DeviceValue::Text(Some("hi".into())))),
+        "2: text/plain Some(\"hi\") None",
+    );
+    let id = read(&mut rt);
+    find_text(
+        &rt.device_reply(
+            id,
+            Ok(DeviceValue::Clipboard(
+                ClipboardItem::new().html("<b>x</b>"),
+            )),
+        ),
+        "3: text/html None None",
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let mut app = App::new();
+    app.write_clipboard(ClipboardItem::new().text("a").html("<i>a</i>"));
+    assert!(matches!(
+        app.take_requests().as_slice(),
+        [PlatformRequest::Device { call: DeviceCall::WriteClipboard(i), .. }] if i.types() == ["text/plain", "text/html"]
+    ));
+}

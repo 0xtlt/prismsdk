@@ -614,6 +614,10 @@ pub enum DeviceCall {
     PickFolder(PickFolder),
     /// The clipboard's text.
     ReadClipboard,
+    /// The clipboard in all its types (#246): answers
+    /// [`DeviceValue::Clipboard`], or `Files` each named by its type, or
+    /// `Text(None)` when it is empty.
+    ReadClipboardItem,
     /// Starts a stream; events use this call's id.
     WatchLocation(Accuracy),
     /// Starts a motion stream, one sample about every interval.
@@ -624,6 +628,8 @@ pub enum DeviceCall {
     Haptic(Haptic),
     /// Puts text on the clipboard.
     CopyText(String),
+    /// Puts every type of the item on the clipboard (#246). No answer.
+    WriteClipboard(crate::clipboard::ClipboardItem),
     /// Opens the share sheet.
     Share(Share),
     /// Opens a URL with the system (browser, mail, another app).
@@ -705,6 +711,8 @@ pub enum DeviceValue {
     Files(Vec<PickedFile>),
     /// Answer to `ReadClipboard` (`None` when it holds no text).
     Text(Option<String>),
+    /// Answer to `ReadClipboardItem` from backends that hold the data.
+    Clipboard(crate::clipboard::ClipboardItem),
     /// Named values (biometry status, an Apple ID credential…).
     Fields(std::collections::BTreeMap<String, String>),
     /// The call completed without a value.

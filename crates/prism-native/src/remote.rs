@@ -1202,6 +1202,19 @@ pub mod device {
             // A folder and its files (#225).
             DeviceCall::PickFolder(o) => json!({ "call": "pick_folder", "title": o.title }),
             DeviceCall::ReadClipboard => json!({ "call": "paste" }),
+            // #246: the host answers files named by their type.
+            DeviceCall::ReadClipboardItem => json!({ "call": "paste_item" }),
+            // Text types as text, others in base64.
+            DeviceCall::WriteClipboard(item) => json!({
+                "call": "copy_item",
+                "entries": item.entries().map(|(ty, data)| {
+                    if prism_core::ClipboardItem::is_text(ty, data) {
+                        json!({ "type": ty, "text": String::from_utf8_lossy(data) })
+                    } else {
+                        json!({ "type": ty, "data": prism_core::clipboard::base64(data) })
+                    }
+                }).collect::<Vec<_>>(),
+            }),
             DeviceCall::Haptic(h) => json!({ "call": "haptic", "kind": h.name() }),
             DeviceCall::CopyText(t) => json!({ "call": "copy", "text": t }),
             DeviceCall::Share(s) => {

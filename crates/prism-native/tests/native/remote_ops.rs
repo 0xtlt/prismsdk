@@ -543,6 +543,19 @@ fn device_calls_golden() {
             json!({"call": "pick_images", "limit": 3, "camera": true}),
         ),
         (DeviceCall::ReadClipboard, json!({"call": "paste"})),
+        // #246: text types as text, other bytes in base64.
+        (DeviceCall::ReadClipboardItem, json!({"call": "paste_item"})),
+        (
+            DeviceCall::WriteClipboard(
+                prism_core::ClipboardItem::new()
+                    .text("hi")
+                    .image(vec![0x89, b'P', b'N', b'G'], "image/png"),
+            ),
+            json!({"call": "copy_item", "entries": [
+                {"type": "text/plain", "text": "hi"},
+                {"type": "image/png", "data": "iVBORw=="},
+            ]}),
+        ),
         (
             DeviceCall::Haptic(Haptic::Success),
             json!({"call": "haptic", "kind": "success"}),
