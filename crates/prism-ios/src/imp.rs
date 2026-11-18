@@ -587,6 +587,15 @@ define_class!(
             let _ = sender;
         }
 
+        /// A drag after a long press (#243).
+        #[unsafe(method(onHoldDrag:))]
+        fn on_hold_drag(&self, sender: &objc2_ui_kit::UIGestureRecognizer) {
+            #[cfg(not(target_os = "tvos"))]
+            crate::interaction::on_hold(sender);
+            #[cfg(target_os = "tvos")]
+            let _ = sender;
+        }
+
         /// A pinch over a view with `on_magnify` (#172).
         #[unsafe(method(onPinch:))]
         fn on_pinch(&self, sender: &objc2_ui_kit::UIGestureRecognizer) {
@@ -3250,6 +3259,14 @@ impl Widgets for UiKit {
         crate::interaction::set_pointer_events(view.ui(), mask, &self.target);
         #[cfg(target_os = "tvos")]
         let _ = (view, mask);
+    }
+
+    fn set_drag_delay(&mut self, view: &View, ms: u32) {
+        // tvOS has no touch on views.
+        #[cfg(not(target_os = "tvos"))]
+        crate::interaction::set_drag_delay(view.ui(), ms, &self.target);
+        #[cfg(target_os = "tvos")]
+        let _ = (view, ms);
     }
 
     fn set_drop_target(&mut self, view: &View, types: Option<&[String]>) {

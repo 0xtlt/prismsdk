@@ -451,7 +451,10 @@
     "jump_button": "Aller au champ de recherche",
     "tile": "Tuile animée",
     "tile_beside": "Change de ligne sans réapparaître en fondu.",
-    "tile_move": "Déplacer la tuile"
+    "tile_move": "Déplacer la tuile",
+    "cards": "Cartes",
+    "cards_hint": "Sur un écran tactile, balayez pour faire défiler, ou maintenez une carte pour la déplacer.",
+    "card": "Carte {n}"
   },
   "islands": {
     "title": "Îlots",

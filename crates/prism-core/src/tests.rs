@@ -2890,6 +2890,65 @@ fn drag_buttons_become_pointer_bits() {
     }
 }
 
+/// #243: a long-press drag sends its hold once, only for a node that drags,
+/// and 0 when it goes back to dragging on movement.
+#[test]
+fn drag_after_long_press_sends_its_hold() {
+    use std::sync::atomic::{AtomicU8, Ordering};
+    // 0: no delay, 1: a 400 ms hold, 2: a hold without a drag handler.
+    static MODE: AtomicU8 = AtomicU8::new(1);
+    struct Card;
+    impl Render for Card {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            let hold = std::time::Duration::from_millis(400);
+            match MODE.load(Ordering::SeqCst) {
+                0 => div().on_drag(cx.listener(|_, _: &DragEvent, _| {})),
+                1 => div()
+                    .on_drag(cx.listener(|_, _: &DragEvent, _| {}))
+                    .drag_after_long_press(hold),
+                _ => div().drag_after_long_press(hold),
+            }
+        }
+    }
+    let delays = |patches: &[Patch]| -> Vec<u32> {
+        patches
+            .iter()
+            .filter_map(|p| match p {
+                Patch::SetDragDelay { ms, .. } => Some(*ms),
+                _ => None,
+            })
+            .collect()
+    };
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Card);
+        cx.set_root(root);
+    });
+    MODE.store(1, Ordering::SeqCst);
+    let mut rt = Runtime::new(&init);
+    let patches = rt.render();
+    // After the pointer bits, so backends know it drags.
+    let pointer = patches
+        .iter()
+        .position(|p| matches!(p, Patch::SetPointerEvents { .. }));
+    let delay = patches
+        .iter()
+        .position(|p| matches!(p, Patch::SetDragDelay { .. }));
+    assert!(pointer < delay, "{patches:?}");
+    assert_eq!(delays(&patches), [400]);
+    rt.app.refresh();
+    assert_eq!(
+        delays(&rt.render()),
+        [] as [u32; 0],
+        "unchanged: not sent again"
+    );
+    MODE.store(0, Ordering::SeqCst);
+    rt.app.refresh();
+    assert_eq!(delays(&rt.render()), [0]);
+    MODE.store(2, Ordering::SeqCst);
+    rt.app.refresh();
+    assert_eq!(delays(&rt.render()), [] as [u32; 0], "nothing drags it");
+}
+
 /// #133: wheel and pinch handlers set their pointer bits and get their events.
 #[test]
 fn wheel_and_magnify_reach_their_element() {

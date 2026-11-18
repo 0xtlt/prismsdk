@@ -609,6 +609,10 @@ pub struct VNode {
     /// The `pointer_mask` drag bits of the buttons that start a drag
     /// (#136), the primary one by default.
     pub drag_buttons: u8,
+    /// On touch screens, how long a press must be held still before an
+    /// [`on_drag`](Div::on_drag) starts, in milliseconds (#243); 0 starts
+    /// it on movement.
+    pub drag_delay_ms: u32,
     /// Keys the element's `on_key_down` takes from the focused control in
     /// it (#181): a text field does not also act on them.
     pub consume_keys: Vec<String>,
@@ -695,6 +699,7 @@ impl VNode {
             on_layout: None,
             track_layout: false,
             drag_buttons: crate::events::pointer_mask::DRAG,
+            drag_delay_ms: 0,
             consume_keys: Vec::new(),
             on_drop_files: None,
             on_drop_progress: None,
@@ -2180,6 +2185,23 @@ impl Div {
     /// which one drags.
     pub fn drag_buttons(mut self, buttons: &[crate::events::PointerButton]) -> Self {
         self.0.drag_buttons = buttons.iter().fold(0, |bits, b| bits | b.drag_bit());
+        self
+    }
+
+    /// On touch screens (fingers and pens), the [`on_drag`](Div::on_drag)
+    /// starts only once the press is held still for `delay` (#243): « long
+    /// press to pick up, then drag », with the platform's lift haptic. Until
+    /// then a swipe scrolls what is around it (a card in a horizontally
+    /// scrolling board, a row in a list); once lifted, the drag takes over
+    /// from any scroll view around it. A mouse or a trackpad still drags on
+    /// movement. iOS, iPadOS and visionOS, Android, the web on touch
+    /// screens and Linux touch screens; macOS has no touch screen.
+    ///
+    /// ```ignore
+    /// card.on_drag(move_card).drag_after_long_press(Duration::from_millis(400))
+    /// ```
+    pub fn drag_after_long_press(mut self, delay: std::time::Duration) -> Self {
+        self.0.drag_delay_ms = delay.as_millis().clamp(1, u32::MAX as u128) as u32;
         self
     }
 

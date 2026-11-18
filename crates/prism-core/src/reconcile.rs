@@ -241,6 +241,16 @@ pub enum Patch {
         /// The keys, as `KeyEvent::key` names them (empty: none).
         keys: Vec<String>,
     },
+    /// How long a touch must be held still before the node's drag starts
+    /// (`drag_after_long_press`, #243), in milliseconds; 0 starts it on
+    /// movement, and mice always do. Sent when it changes, after
+    /// [`SetPointerEvents`](Patch::SetPointerEvents).
+    SetDragDelay {
+        /// The node.
+        id: NodeId,
+        /// The hold, in milliseconds.
+        ms: u32,
+    },
     /// Give the node the keyboard focus (`cx.focus`, `.autofocus()`). Sent
     /// after the node is mounted.
     Focus {
@@ -484,6 +494,8 @@ struct MNode {
     children: Vec<NodeId>,
     /// Pointer events reported (`pointer_mask` bits).
     pointer_mask: u8,
+    /// Touch hold before a drag, in milliseconds (#243).
+    drag_delay_ms: u32,
     /// Key events reported: (local, global).
     keys: (bool, bool),
     /// Keys taken from the focused control in it (#181).
@@ -1325,6 +1337,7 @@ impl Reconciler {
             on_aux_click,
             on_focus_change,
             drag_buttons,
+            drag_delay_ms,
             consume_keys,
             on_layout,
             track_layout,
@@ -1376,6 +1389,19 @@ impl Reconciler {
             (on_wheel, on_magnify, on_aux_click),
             (on_key_down, on_global_key_down, on_key_up, on_global_key_up),
         );
+        {
+            // Only for a node that drags (#243).
+            let m = self.nodes.get_mut(&id).expect("node exists");
+            let ms = if m.pointer_mask & crate::events::pointer_mask::DRAG_ANY != 0 {
+                drag_delay_ms
+            } else {
+                0
+            };
+            if m.drag_delay_ms != ms {
+                m.drag_delay_ms = ms;
+                self.patches.push(Patch::SetDragDelay { id, ms });
+            }
+        }
         let mut style = resolved;
         if let Some(t) = self.animation
             && style.transition.is_none()
@@ -2074,6 +2100,7 @@ impl Reconciler {
                 parent: None,
                 children: Vec::new(),
                 pointer_mask: 0,
+                drag_delay_ms: 0,
                 drop_types: None,
                 keys: (false, false),
                 consume_keys: Vec::new(),

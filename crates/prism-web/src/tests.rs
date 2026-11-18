@@ -2553,6 +2553,24 @@ fn some_corners_rounded_use_logical_properties() {
     assert!(!all.contains("-radius:0"), "{all}");
 }
 
+// A touch drag after a long press (#243): sent to the client, not rendered.
+#[test]
+fn drag_delay_goes_to_the_client() {
+    let mut e = Encoder::default();
+    let out = e.encode(&[
+        create(1, NodeKind::View),
+        Patch::SetPointerEvents { id: 1, mask: 4 },
+        Patch::SetDragDelay { id: 1, ms: 400 },
+    ]);
+    assert_eq!(out[2], json!({ "op": "dragdelay", "id": 1, "ms": 400 }));
+    let page = html(&[
+        create(1, NodeKind::View),
+        Patch::SetDragDelay { id: 1, ms: 400 },
+        Patch::SetRoot { id: 1 },
+    ]);
+    assert!(!page.contains("data-prism-hold"), "{page}");
+}
+
 // --- Pointer, keys, overlays, layers, choice controls (#17, #18, #19, #25) -------------
 
 #[test]

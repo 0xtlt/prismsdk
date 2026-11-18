@@ -32,6 +32,8 @@ pub struct HNode {
     pub config: String,
     /// Pointer events reported (`Patch::SetPointerEvents`).
     pub pointer_mask: u8,
+    /// Touch hold before a drag, in ms (`Patch::SetDragDelay`, #243).
+    pub drag_delay_ms: u32,
     /// File types it accepts dropped (`Patch::SetDropTarget`, #111).
     pub drop_types: Option<Vec<String>>,
     /// Key events reported: (local, global).
@@ -206,6 +208,7 @@ impl Backend for Host {
                             scroll_events: false,
                             config: String::new(),
                             pointer_mask: 0,
+                            drag_delay_ms: 0,
                             drop_types: None,
                             keys: (false, false),
                             consumed_keys: Vec::new(),
@@ -265,6 +268,9 @@ impl Backend for Host {
                 Patch::SetAppearance { appearance } => self.appearance = Some(*appearance),
                 Patch::SetPointerEvents { id, mask } => {
                     self.node(*id, "SetPointerEvents").pointer_mask = *mask
+                }
+                Patch::SetDragDelay { id, ms } => {
+                    self.node(*id, "SetDragDelay").drag_delay_ms = *ms
                 }
                 Patch::SetDropTarget { id, types } => {
                     self.node(*id, "SetDropTarget").drop_types = types.clone()

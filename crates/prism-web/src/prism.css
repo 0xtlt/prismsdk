@@ -146,6 +146,8 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 @media (prefers-reduced-motion: reduce) { .prism-spinner { animation-duration: 2s; } }
 /* Pointer and drag (#17): no page scroll or text selection while dragging. */
 .prism-draggable { touch-action: none; user-select: none; -webkit-user-select: none; }
+/* A touch drag after a long press (#243): swipes scroll until it lifts. */
+.prism-draggable[data-prism-hold] { touch-action: pan-x pan-y; -webkit-touch-callout: none; }
 /* Choice controls (#18). */
 .prism-check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .prism-check > input, .prism-radios input { margin: 0; width: 18px; height: 18px; accent-color: inherit; flex-shrink: 0; cursor: pointer; }

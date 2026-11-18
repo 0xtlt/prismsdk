@@ -112,6 +112,7 @@ impl Render for Root {
                 .id("pad")
                 .on_click(Rc::new(|_: &ClickEvent, _: &mut App| {}))
                 .on_drag(Rc::new(|_, _: &mut App| {}))
+                .drag_after_long_press(std::time::Duration::from_millis(350))
                 .on_key_down(Rc::new(|_: &KeyEvent, _: &mut App| {}))
                 .when(true, |d| d.child(text("pad"))),
         )
@@ -146,6 +147,8 @@ fn layers_cover_the_window_and_events_reach_the_widgets() {
     let pad = f.by_text("pad");
     let pad_view = *f.children.iter().find(|(_, c)| c.contains(&pad)).unwrap().0;
     assert_eq!(f.pointer[&pad_view], 4);
+    // A touch drag after a long press (#243).
+    assert_eq!(f.drag_delay[&pad_view], 350);
     assert_eq!(f.keys[&pad_view], (true, false));
     h.rt.app.scroll_into_view("pad");
     let p = h.rt.poll();
@@ -157,6 +160,7 @@ fn layers_cover_the_window_and_events_reach_the_widgets() {
 fn remote_ops_and_input_events() {
     let mut w = RemoteWidgets::new(|_| (0., 0.));
     w.set_pointer_events(&3, 5);
+    w.set_drag_delay(&3, 400);
     w.set_key_events(&3, true, false);
     w.focus(&3);
     w.scroll_into_view(&3);
@@ -165,6 +169,7 @@ fn remote_ops_and_input_events() {
         w.ops,
         [
             json!({"op": "pointer", "id": 3, "mask": 5}),
+            json!({"op": "dragdelay", "id": 3, "ms": 400}),
             json!({"op": "keys", "id": 3, "local": true, "global": false}),
             json!({"op": "focus", "id": 3}),
             json!({"op": "reveal", "id": 3}),

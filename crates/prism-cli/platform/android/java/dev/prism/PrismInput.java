@@ -328,6 +328,27 @@ final class PrismInput {
                 case MotionEvent.ACTION_DOWN:
                     n.down = new float[]{e.getX(), e.getY(), e.getRawX(), e.getRawY()};
                     n.dragging = false;
+                    // A finger or a pen on a node that drags after a long
+                    // press (#243): held still, it lifts; a swipe before
+                    // is the scroll view's. A mouse drags on movement.
+                    unhold(n);
+                    n.holdPress = n.dragDelay > 0 && e.getToolType(0) != MotionEvent.TOOL_TYPE_MOUSE;
+                    if (n.holdPress) {
+                        long downTime = e.getDownTime();
+                        n.lift = () -> {
+                            n.lift = null;
+                            n.dragging = true;
+                            if (n.view.getParent() != null) n.view.getParent().requestDisallowInterceptTouchEvent(true);
+                            n.view.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS);
+                            // No tap or long press after this.
+                            MotionEvent cancel = MotionEvent.obtain(downTime, android.os.SystemClock.uptimeMillis(),
+                                MotionEvent.ACTION_CANCEL, n.down[0], n.down[1], 0);
+                            g.onTouchEvent(cancel);
+                            cancel.recycle();
+                            drag(n, "start", null);
+                        };
+                        n.view.postDelayed(n.lift, n.dragDelay);
+                    }
                     break;
                 case MotionEvent.ACTION_POINTER_DOWN:
                     recenter(n, center(e, e.getActionIndex()), center(e, -1));
@@ -339,7 +360,10 @@ final class PrismInput {
                     float[] c = center(e, -1);
                     float dx = c[0] - n.down[2], dy = c[1] - n.down[3];
                     int slop = ViewConfiguration.get(n.view.getContext()).getScaledTouchSlop();
-                    if (!n.dragging && dx * dx + dy * dy > slop * slop) {
+                    if (n.holdPress && !n.dragging) {
+                        // Moved before the hold: a scroll, not a drag.
+                        if (dx * dx + dy * dy > slop * slop) unhold(n);
+                    } else if (!n.dragging && dx * dx + dy * dy > slop * slop) {
                         n.dragging = true;
                         if (n.view.getParent() != null) n.view.getParent().requestDisallowInterceptTouchEvent(true);
                         // No tap or long press after this.
@@ -354,6 +378,7 @@ final class PrismInput {
                     break;
                 }
                 case MotionEvent.ACTION_UP:
+                    unhold(n);
                     if (n.dragging) {
                         n.dragging = false;
                         drag(n, "end", e);
@@ -361,6 +386,7 @@ final class PrismInput {
                     }
                     break;
                 case MotionEvent.ACTION_CANCEL:
+                    unhold(n);
                     if (n.dragging) {
                         n.dragging = false;
                         drag(n, "cancel", e);
@@ -371,6 +397,12 @@ final class PrismInput {
         }
         if (n.scaling) return true;
         return g.onTouchEvent(e) || n.pointerMask != 0;
+    }
+
+    /** The pending lift of a long-press drag (#243), if any, will not happen. */
+    static void unhold(PrismHost.Node n) {
+        if (n.lift != null) n.view.removeCallbacks(n.lift);
+        n.lift = null;
     }
 
     /** A tap's position goes with its click. */

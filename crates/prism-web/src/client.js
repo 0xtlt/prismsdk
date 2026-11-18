@@ -246,6 +246,20 @@
       // go with each report (#223).
       const extra = e.button ? { button: ["primary", "middle", "secondary"][e.button] } : {};
       drag = { pointer: e.pointerId, cx: e.clientX, cy: e.clientY, x: at.x, y: at.y, started: false, button: e.button, extra, mods: modsOf(e), dx: 0, dy: 0 };
+      // A finger or a pen on a node that drags after a long press (#243):
+      // held still that long, it lifts; a swipe before scrolls the page.
+      if (el._dragDelay && e.pointerType !== "mouse") {
+        const d = drag;
+        d.timer = setTimeout(() => {
+          if (drag !== d) return;
+          d.started = true;
+          d.lifted = true;
+          el._lifted = true;
+          try { el.setPointerCapture(d.pointer); } catch {}
+          try { navigator.vibrate?.(10); } catch {}
+          send({ t: "drag", id, x: d.x, y: d.y, dx: d.dx, dy: d.dy, ...d.extra, ...(d.mods ? { mods: d.mods } : {}), phase: "start" });
+        }, el._dragDelay);
+      }
       // Followed on the window until it is released (#194): a fast flick off
       // a small handle still starts the drag. The pointer is captured only
       // once it is a drag, so a click on a child stays the child's.
@@ -260,6 +274,14 @@
       const dx = round(e.clientX - drag.cx), dy = round(e.clientY - drag.cy);
       drag.mods = modsOf(e);
       const msg = { t: "drag", id, x: drag.x, y: drag.y, dx, dy, ...drag.extra, ...(drag.mods ? { mods: drag.mods } : {}) };
+      if (drag.timer && !drag.started) {
+        // Moved before the long press (#243): a scroll, not a drag.
+        if (Math.hypot(dx, dy) < 8) { drag.dx = dx; drag.dy = dy; return; }
+        clearTimeout(drag.timer);
+        drag = null;
+        unfollow();
+        return;
+      }
       if (!drag.started) {
         // Past the slop: a drag, not a click.
         if (Math.hypot(dx, dy) < 4) return;
@@ -294,6 +316,8 @@
       const d = drag;
       drag = null;
       unfollow();
+      clearTimeout(d.timer);
+      el._lifted = false;
       if (!d.started) return;
       drags.drop();
       if (d.button === 2) el._rightDragged = true;
@@ -306,6 +330,20 @@
     };
     const dragUp = (e) => finish(e, "end");
     const dragCancel = (e) => finish(e, "cancel");
+  }
+  /**
+   * A touch drag after a long press (#243): until the press is held still
+   * for `ms`, the browser may pan what is around the node (`touch-action`);
+   * once lifted, its touch moves stop scrolling and the long touch opens no
+   * menu or callout. Mice drag on movement.
+   */
+  function setDragDelay(el, ms) {
+    el._dragDelay = ms > 0 ? ms : 0;
+    if (el._dragDelay) el.setAttribute("data-prism-hold", ""); else el.removeAttribute("data-prism-hold");
+    if (!el._dragDelay || el._holdBound) return;
+    el._holdBound = true;
+    el.addEventListener("touchmove", (e) => { if (el._lifted && e.cancelable) e.preventDefault(); }, { passive: false });
+    el.addEventListener("contextmenu", (e) => { if (el._dragDelay && (el._lifted || e.pointerType === "touch")) e.preventDefault(); });
   }
   /**
    * Wheel (8) and pinch (16) reports (#133): the element takes them, so
@@ -2681,6 +2719,7 @@
       case "root": mount.replaceChildren(el); return retitle();
       // Pointer, keys, focus, layers (#17, #25).
       case "pointer": return setPointer(el, p.id, p.mask);
+      case "dragdelay": return el && setDragDelay(el, p.ms);
       case "drop": return el && setDropTarget(el, p.id, p.types);
       case "keys": return setKeys(el, p.local, p.global);
       case "consume": el._consume = p.keys && p.keys.length ? new Set(p.keys) : null; return;
@@ -5828,7 +5867,7 @@ void main() {
     if (el._menuBound) return;
     el._menuBound = true;
     el.addEventListener("contextmenu", (e) => {
-      if (!el._menuSpec) return;
+      if (!el._menuSpec || el._lifted) return;
       e.preventDefault();
       e.stopPropagation();
       showMenu(el, el._menuSpec, e.clientX, e.clientY);
@@ -5844,7 +5883,8 @@ void main() {
     // Long touch opens the menu too.
     let timer;
     el.addEventListener("pointerdown", (e) => {
-      if (e.pointerType !== "touch" || !el._menuSpec) return;
+      // A long-press drag (#243) owns the long touch.
+      if (e.pointerType !== "touch" || !el._menuSpec || el._dragDelay) return;
       timer = setTimeout(() => showMenu(el, el._menuSpec, e.clientX, e.clientY), 500);
     });
     ["pointerup", "pointercancel", "pointermove"].forEach((t) => el.addEventListener(t, () => clearTimeout(timer)));

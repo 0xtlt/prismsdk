@@ -66,6 +66,8 @@ pub struct Fake {
     pub interactions: HashMap<NodeId, prism_core::Interactions>,
     // Pointer, keys, focus, layers (#17, #25).
     pub pointer: HashMap<NodeId, u8>,
+    /// Touch holds before a drag (#243).
+    pub drag_delay: HashMap<NodeId, u32>,
     pub keys: HashMap<NodeId, (bool, bool)>,
     pub focused: Vec<NodeId>,
     pub revealed: Vec<NodeId>,
@@ -276,6 +278,9 @@ impl Widgets for Fake {
     }
     fn set_pointer_events(&mut self, v: &NodeId, mask: u8) {
         self.pointer.insert(*v, mask);
+    }
+    fn set_drag_delay(&mut self, v: &NodeId, ms: u32) {
+        self.drag_delay.insert(*v, ms);
     }
     fn set_key_events(&mut self, v: &NodeId, local: bool, global: bool) {
         self.keys.insert(*v, (local, global));

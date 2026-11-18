@@ -185,6 +185,42 @@ it). Fingers and pens are the primary button.
 
 tvOS and watchOS have no pointer buttons. Fingers and pens drag with the primary button everywhere.
 
+## Long press to drag on touch screens
+
+```rust
+// A kanban board: columns in a horizontal scroll, cards that move.
+scroll_x().child(columns.iter().map(|c| {
+    column(c).children(c.cards.iter().map(|card| {
+        card_view(card)
+            .on_drag(cx.listener(move |this, e: &DragEvent, cx| this.move_card(card.id, e, cx)))
+            .drag_after_long_press(Duration::from_millis(400))
+    }))
+}))
+```
+
+On a touch screen, a draggable element inside a scroll view competes with
+it for the finger: a quick swipe should scroll the board, not pick up the
+card. `.drag_after_long_press(delay)` (#243) makes fingers and pens wait:
+the drag starts only once the press is held still for `delay`, with the
+platform's « lift » haptic, and from then on it wins over every scroll view
+around the element (the finger moves the card, the board no longer
+scrolls). A swipe before the delay scrolls as usual, and a tap still clicks.
+With a mouse, a trackpad or an iPad's pointer the drag starts on movement,
+as without it. `DragEvent::start` is where the finger went down;
+`translation` counts from the lift.
+
+| | Long press | Then |
+|---|---|---|
+| iOS, iPadOS, visionOS | a `UILongPressGestureRecognizer` for fingers and the Pencil (`minimumPressDuration`, 10 points of slop); the pan keeps the iPad pointer | a medium `UIImpactFeedbackGenerator` impact (not on visionOS); the scroll views around it stop and its taps are cancelled |
+| Android | a timer from `ACTION_DOWN`, cancelled past the touch slop (`ViewConfiguration`); a mouse drags at once | `HapticFeedbackConstants.LONG_PRESS`; `requestDisallowInterceptTouchEvent` keeps the scroll view off |
+| Web | touch and pen pointers: a timer from `pointerdown`, cancelled past 8 px; meanwhile `touch-action: pan-x pan-y` lets the browser scroll | pointer capture, `navigator.vibrate` where there is one, and non-passive `touchmove`s prevented so the page stops scrolling; no callout or long-touch menu |
+| Linux (GTK) | touchscreen and pen devices: the `GestureDrag` waits (denied past the drag threshold) | the gesture is claimed: the `GtkScrolledWindow` lets go |
+
+macOS has no touch screen (its drags start on movement); tvOS and watchOS
+have no drags on views. A long touch can only be one thing: don't give the
+same element a context menu (on the web the drag wins and the menu opens
+with the mouse or the keyboard only).
+
 ## Wheel and pinch
 
 ```rust

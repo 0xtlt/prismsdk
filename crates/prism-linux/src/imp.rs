@@ -772,6 +772,8 @@ struct DragStart {
     button: prism_core::PointerButton,
     mods: prism_core::Modifiers,
     started: bool,
+    /// A touch waiting for its long press (#243).
+    holding: bool,
 }
 
 /// GTK's button number as Prism's (touches are the primary button).
@@ -1236,6 +1238,8 @@ pub struct Gtk {
     pointer: Rc<RefCell<HashMap<NodeId, u8>>>,
     /// Nodes whose motion / drag controllers are attached.
     pointer_attached: HashSet<(NodeId, u8)>,
+    /// Touch holds before each node's drag, in ms (#243).
+    drag_delays: Rc<RefCell<HashMap<NodeId, u32>>>,
     /// Drop targets' controllers (#111).
     drop_targets: HashMap<NodeId, gtk::DropTarget>,
     keys: Rc<KeyState>,
@@ -2408,6 +2412,7 @@ impl Widgets for Gtk {
             o.teardown();
         }
         self.pointer.borrow_mut().remove(&id);
+        self.drag_delays.borrow_mut().remove(&id);
         self.pointer_attached.retain(|(n, _)| *n != id);
         self.drop_targets.remove(&id);
         self.keys.local.borrow_mut().remove(&id);
@@ -3039,6 +3044,16 @@ impl Widgets for Gtk {
         self.drop_targets.insert(id, target);
     }
 
+    fn set_drag_delay(&mut self, view: &View, ms: u32) {
+        // Read by the drag gesture when a touch goes down (#243).
+        let mut delays = self.drag_delays.borrow_mut();
+        if ms == 0 {
+            delays.remove(&view.id());
+        } else {
+            delays.insert(view.id(), ms);
+        }
+    }
+
     fn set_pointer_events(&mut self, view: &View, mask: u8) {
         use prism_core::events::pointer_mask::{DRAG_ANY, HOVER, MAGNIFY, MOVE, WHEEL};
         let id = view.id();
@@ -3099,21 +3114,76 @@ impl Widgets for Gtk {
                     },
                 )
             };
+            // A touch on a node that drags after a long press (#243): the
+            // lift waits for it, and the drag's offset while it waits.
+            let lift: Rc<RefCell<Option<glib::SourceId>>> = Rc::default();
+            let held_at: Rc<Cell<(f64, f64)>> = Rc::default();
+            let unhold = {
+                let lift = lift.clone();
+                move || {
+                    if let Some(source) = lift.borrow_mut().take() {
+                        source.remove();
+                    }
+                }
+            };
             let st = state.clone();
+            let delays = self.drag_delays.clone();
+            let (lf, held) = (lift.clone(), held_at.clone());
+            let un = unhold.clone();
             drag.connect_drag_begin(move |g, x, y| {
+                un();
                 let button = drag_button(g.current_button());
                 let on = masks
                     .borrow()
                     .get(&id)
                     .is_some_and(|m| m & button.drag_bit() != 0);
-                st.set(on.then_some(DragStart {
+                // Fingers and pens hold first; a mouse drags on movement.
+                let touch = g.device().is_some_and(|d| {
+                    matches!(
+                        d.source(),
+                        gdk::InputSource::Touchscreen | gdk::InputSource::Pen
+                    )
+                });
+                let delay = delays.borrow().get(&id).copied().filter(|_| touch);
+                let d = DragStart {
                     at: (x, y),
                     button,
                     mods: modifiers(g.current_event_state()),
                     started: false,
-                }));
+                    holding: delay.is_some(),
+                };
+                st.set(on.then_some(d));
+                let (Some(ms), true) = (delay, on) else {
+                    return;
+                };
+                held.set((0., 0.));
+                let (st, g, lift, held) = (st.clone(), g.downgrade(), lf.clone(), held.clone());
+                let source = glib::timeout_add_local_once(
+                    std::time::Duration::from_millis(ms.into()),
+                    move || {
+                        lift.borrow_mut().take();
+                        let (Some(g), Some(d)) = (g.upgrade(), st.get()) else {
+                            return;
+                        };
+                        if !d.holding {
+                            return;
+                        }
+                        // Lifted: the scrolled window around it lets go.
+                        g.set_state(gtk::EventSequenceState::Claimed);
+                        let d = DragStart {
+                            started: true,
+                            holding: false,
+                            ..d
+                        };
+                        st.set(Some(d));
+                        let (dx, dy) = held.get();
+                        dispatch(event(prism_core::DragPhase::Start, d, dx, dy));
+                    },
+                );
+                *lf.borrow_mut() = Some(source);
             });
             let st = state.clone();
+            let un = unhold.clone();
             drag.connect_drag_update(move |g, dx, dy| {
                 let Some(mut d) = st.get() else {
                     return;
@@ -3121,6 +3191,16 @@ impl Widgets for Gtk {
                 // The keys held now (#223), not only at the press.
                 d.mods = modifiers(g.current_event_state());
                 st.set(Some(d));
+                if d.holding {
+                    held_at.set((dx, dy));
+                    if dx.hypot(dy) >= threshold {
+                        // Moved before the long press: a scroll.
+                        un();
+                        st.set(None);
+                        g.set_state(gtk::EventSequenceState::Denied);
+                    }
+                    return;
+                }
                 if !d.started {
                     if dx.hypot(dy) < threshold {
                         return;
@@ -3136,12 +3216,15 @@ impl Widgets for Gtk {
                 dispatch_latest(id, 1, event(prism_core::DragPhase::Move, d, dx, dy));
             });
             let st = state.clone();
+            let un = unhold.clone();
             drag.connect_drag_end(move |_, dx, dy| {
+                un();
                 if let Some(d) = st.take().filter(|d| d.started) {
                     dispatch(event(prism_core::DragPhase::End, d, dx, dy));
                 }
             });
             drag.connect_cancel(move |_, _| {
+                unhold();
                 if let Some(d) = state.take().filter(|d| d.started) {
                     dispatch(event(prism_core::DragPhase::Cancel, d, 0., 0.));
                 }
@@ -3863,6 +3946,7 @@ fn activate(app: &gtk::Application) {
         cursors: HashMap::new(),
         pointer: Rc::new(RefCell::new(HashMap::new())),
         pointer_attached: HashSet::new(),
+        drag_delays: Rc::default(),
         drop_targets: HashMap::new(),
         keys: keys.clone(),
         layers: Vec::new(),
