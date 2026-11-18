@@ -715,19 +715,18 @@ fn attach_keys(window: &gtk::Window, keys: Rc<KeyState>) {
             }
             found
         };
+        // A selection group's keys too (#231), from the key as dispatched.
+        let key = prism_core::KeyEvent {
+            key: name,
+            modifiers,
+            repeat,
+            selection,
+            edges,
+        };
         let mut consumed = false;
-        with_state(|s| consumed = s.runtime.consumes_key(focused_node, &name, edges));
+        with_state(|s| consumed = s.runtime.consumes_key_event(focused_node, &key));
         let claimed = claimed || consumed;
-        dispatch(UiEvent::Key(
-            target,
-            prism_core::KeyEvent {
-                key: name,
-                modifiers,
-                repeat,
-                selection,
-                edges,
-            },
-        ));
+        dispatch(UiEvent::Key(target, key));
         if claimed {
             glib::Propagation::Stop
         } else {
@@ -3351,6 +3350,13 @@ impl Widgets for Gtk {
     fn set_remote_carets(&mut self, view: &View, carets: &[prism_core::RemoteCaret]) {
         if let View::TextArea(id, t) = view {
             crate::carets::set(*id, t, carets);
+        }
+    }
+
+    fn set_selection_highlight(&mut self, view: &View, start: usize, end: usize) {
+        // Text areas and rich inputs (#231); an entry has no text tags.
+        if let View::TextArea(_, t) = view {
+            t.highlight(start, end);
         }
     }
 

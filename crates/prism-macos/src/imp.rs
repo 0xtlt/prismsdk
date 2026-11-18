@@ -4763,6 +4763,14 @@ impl Widgets for AppKit {
         }
     }
 
+    fn set_selection_highlight(&mut self, view: &View, start: usize, end: usize) {
+        // Text areas and rich inputs (#231); a one-line input has no text
+        // of its own to draw on while another field has the focus.
+        if let View::TextArea(t) = view {
+            crate::interact::highlight_text(&t.text, start, end);
+        }
+    }
+
     fn set_select_events(&mut self, view: &View, on: bool) {
         if on {
             self.ix.select_events.insert(view.id());
@@ -5279,16 +5287,16 @@ fn install_key_monitor() {
             // does not also act on it (↑ moving its caret, ↵ submitting).
             // Decided as pressed: the handler may close the menu that
             // declared it (↵ picking a suggestion).
+            // A selection group's keys too (#231), decided from the key as
+            // dispatched: its modifiers, the field's selection and edges.
+            let key = prism_core::KeyEvent {
+                selection,
+                edges,
+                ..key
+            };
             let mut consumed = false;
-            with_state(|s| consumed = s.runtime.consumes_key(focused, &key.key, edges));
-            dispatch(UiEvent::Key(
-                focused,
-                prism_core::KeyEvent {
-                    selection,
-                    edges,
-                    ..key
-                },
-            ));
+            with_state(|s| consumed = s.runtime.consumes_key_event(focused, &key));
+            dispatch(UiEvent::Key(focused, key));
             if consumed {
                 return std::ptr::null_mut();
             }

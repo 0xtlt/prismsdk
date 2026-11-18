@@ -1,6 +1,7 @@
 //! The Forms card of the Components tab: sliders, a select, date and time
 //! pickers, text input variants, a text area, a rich note with a toolbar
-//! over its selection (#217), a spinner and toasts. It is
+//! over its selection (#217), blocks selected as one text (#231), a spinner
+//! and toasts. It is
 //! its own entity, so dragging a slider only re-renders this card.
 
 use std::time::{Duration, SystemTime};
@@ -29,6 +30,10 @@ pub struct Forms {
     note_sel: SelectionEvent,
     toolbar: Option<Rect>,
     note_log: String,
+    /// Paragraphs selected as one text (#231), and how many the selection
+    /// spans.
+    blocks: Vec<String>,
+    blocks_selected: usize,
 }
 
 impl Default for Forms {
@@ -56,6 +61,12 @@ impl Default for Forms {
             note_sel: SelectionEvent::default(),
             toolbar: None,
             note_log: String::new(),
+            blocks: vec![
+                "Select from the middle of this paragraph,".into(),
+                "through this one,".into(),
+                "into the last one. Then type, or copy.".into(),
+            ],
+            blocks_selected: 0,
         }
     }
 }
@@ -200,6 +211,7 @@ impl Render for Forms {
             )
             .child(self.shared_draft(cx))
             .child(self.note(cx))
+            .child(self.blocks(cx))
             .child(ui::spinner().label(strings::forms_syncing(cx)))
             .child(
                 div()
@@ -334,6 +346,74 @@ impl Forms {
                     .on_input(
                         cx.listener(|this, e: &InputEvent, _| this.shared = Some(e.value.clone())),
                     ),
+            )
+    }
+
+    /// Paragraphs that share one selection (#231): typing over a range
+    /// that spans several merges them, Enter splits there.
+    fn blocks(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let flow = text_flow()
+            .gap(4.)
+            .children(self.blocks.iter().enumerate().map(|(i, b)| {
+                rich_input([span(b.clone())])
+                    .id(format!("block-{i}"))
+                    .placeholder(strings::forms_block_label(cx, i as i64 + 1))
+                    .accessibility_label(strings::forms_block_label(cx, i as i64 + 1))
+                    .on_input(cx.listener(move |this, e: &RichInputEvent, _| {
+                        this.blocks[i] = prism::spans_text(&e.spans)
+                    }))
+            }))
+            .on_selection_across(cx.listener(|this, e: &SelectionAcross, _| {
+                this.blocks_selected = if e.is_across() { e.fields.len() } else { 0 }
+            }))
+            .on_edit_across(cx.listener(|this, e: &EditAcross, cx| {
+                let index = |name: &str| {
+                    name.strip_prefix("block-")
+                        .and_then(|n| n.parse::<usize>().ok())
+                };
+                let (Some(first), Some(last)) =
+                    (e.selection.fields.first(), e.selection.fields.last())
+                else {
+                    return;
+                };
+                let (Some(a), Some(z)) = (index(&first.field), index(&last.field)) else {
+                    return;
+                };
+                let head: String = this.blocks[a].chars().take(first.start).collect();
+                let tail: String = this.blocks[z].chars().skip(last.end).collect();
+                let caret = head.chars().count() + e.text.chars().count();
+                let merged = if e.cause == EditCause::Enter {
+                    vec![head, tail]
+                } else {
+                    vec![format!("{head}{}{tail}", e.text)]
+                };
+                this.blocks.splice(a..=z, merged);
+                this.blocks_selected = 0;
+                // The caret after the new text (the next block's start after Enter).
+                if e.cause == EditCause::Enter {
+                    cx.set_selection_across(
+                        (format!("block-{}", a + 1), 0),
+                        (format!("block-{}", a + 1), 0),
+                    );
+                } else {
+                    cx.set_selection_across(
+                        (format!("block-{a}"), caret),
+                        (format!("block-{a}"), caret),
+                    );
+                }
+            }));
+        div()
+            .flex_col()
+            .gap(4.)
+            .child(text(strings::forms_blocks(cx)).text_size(12.))
+            .child(flow)
+            .child(
+                text(if self.blocks_selected > 1 {
+                    strings::forms_blocks_selected(cx, self.blocks_selected as i64)
+                } else {
+                    String::new()
+                })
+                .text_size(12.),
             )
     }
 }

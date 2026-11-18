@@ -20,6 +20,7 @@ mod rich_edit;
 mod rich_input;
 mod router;
 mod selection;
+mod selection_across;
 mod spawn;
 mod storage;
 mod typography;

@@ -2601,6 +2601,299 @@
     }
   }
 
+  // --- One selection across several fields (#231) ------------------------------
+  //
+  // A selection group (`selgroup`, `data-selgroup`) makes its text fields
+  // one selection space. The client extends it itself, as the user acts:
+  // ⇧+arrows at a field's edge, then ⇧→/⇧← a character and ⇧↓/⇧↑ a field
+  // at a time, and pointer drags from one field into another. The field
+  // where it started keeps its own selection; the others draw their part
+  // with the CSS Custom Highlight API (`::highlight(prism-across)`, rich
+  // inputs) or look selected whole (`data-across`, a text area or input in
+  // between). The server hears `across` (and draws nothing back), and
+  // takes copies (`acrosscopy`, the plain text already written) and edits
+  // (`acrossedit`) of the range.
+  let across = null; // { g, a: [field, offset], h: [field, offset] }
+  const highlights = new Map(); // field → [start, end]
+  const isTextField = (el) => !!el && (el._rich || el.tagName === "TEXTAREA"
+    || (el.tagName === "INPUT" && editable(el)));
+  function selGroupOf(el) {
+    if (!isTextField(el)) return null;
+    const g = el.parentElement && el.parentElement.closest("[data-selgroup]");
+    return g || null;
+  }
+  const groupFields = (g) => [...g.querySelectorAll("[data-pid]")].filter((f) => isTextField(f) && selGroupOf(f) === g);
+  const fieldLen = (el) => clen(el._rich ? richText(el._model || []) : (el.value || ""));
+  function fieldPart(el, start, end) {
+    const text = el._rich ? richText(el._model || []).replace(/￼/g, "") : (el.value || "");
+    return [...text].slice(start, end).join("");
+  }
+  const pid = (el) => Number(el.dataset.pid);
+  /** Each field's part of anchor..head: [field, start, end], first to last. */
+  function acrossParts(fields, a, h) {
+    const ia = fields.indexOf(a[0]), ih = fields.indexOf(h[0]);
+    if (ia < 0 || ih < 0) return [];
+    const [lo, hi] = ia < ih || (ia === ih && a[1] <= h[1]) ? [[ia, a[1]], [ih, h[1]]] : [[ih, h[1]], [ia, a[1]]];
+    const out = [];
+    for (let i = lo[0]; i <= hi[0]; i++) {
+      const len = fieldLen(fields[i]);
+      out.push([fields[i], i === lo[0] ? Math.min(lo[1], len) : 0, i === hi[0] ? Math.min(hi[1], len) : len]);
+    }
+    return out;
+  }
+  function paintHighlights() {
+    const H = globalThis.CSS && CSS.highlights;
+    const ranges = [];
+    for (const [el, [s, e]] of highlights) {
+      if (!el.isConnected) { highlights.delete(el); continue; }
+      // A text area or input can't highlight a part: whole, or nothing.
+      if (!el._rich) { if (s === 0 && e >= fieldLen(el) && e > 0) el.dataset.across = ""; else delete el.dataset.across; continue; }
+      delete el.dataset.across;
+      if (s >= e || typeof Range === "undefined") continue;
+      try {
+        const r = document.createRange();
+        const [sn, so] = richPoint(el, s);
+        const [en, eo] = richPoint(el, e);
+        r.setStart(sn, so);
+        r.setEnd(en, eo);
+        ranges.push(r);
+      } catch { /* a field being redrawn */ }
+    }
+    for (const el of document.querySelectorAll("[data-across]")) if (!highlights.has(el)) delete el.dataset.across;
+    if (H && typeof Highlight !== "undefined") {
+      if (ranges.length) H.set("prism-across", new Highlight(...ranges)); else H.delete("prism-across");
+    }
+  }
+  /** The `selhl` op: field `el`'s highlighted part (`start == end`: none). */
+  function setHighlight(el, start, end) {
+    if (start < end) highlights.set(el, [start, end]); else highlights.delete(el);
+    paintHighlights();
+  }
+  /** Shows anchor..head in group `g` (the same field: given back to it). */
+  function drawAcross(g, a, h) {
+    const fields = groupFields(g);
+    highlights.clear();
+    if (a[0] === h[0]) {
+      across = null;
+      paintHighlights();
+      applyFieldSelection(a[0], Math.min(a[1], h[1]), Math.max(a[1], h[1]));
+      return;
+    }
+    across = { g, a, h };
+    for (const [f, s, e] of acrossParts(fields, a, h)) {
+      if (f === a[0]) applyFieldSelection(f, s, e); else highlights.set(f, [s, e]);
+    }
+    paintHighlights();
+  }
+  function reportAcross(g, a, h) {
+    send(a ? { t: "across", id: pid(g), a: [pid(a[0]), a[1]], h: [pid(h[0]), h[1]] } : { t: "across", id: pid(g) });
+  }
+  function endAcross(report) {
+    if (!across) return;
+    const g = across.g;
+    across = null;
+    highlights.clear();
+    paintHighlights();
+    if (report) reportAcross(g, null);
+  }
+  /** The `across` op: the selection the app (or the runtime) set. */
+  function setAcross(g, a, h) {
+    const fa = a && nodes.get(a[0]), fh = h && nodes.get(h[0]);
+    if (!fa || !fh || fa === fh) { across = null; return; }
+    across = { g, a: [fa, a[1]], h: [fh, h[1]] };
+  }
+  /** Where ⇧-arrow `dir` (-2 ↑, -1 ←, 1 →, 2 ↓) takes `head`. */
+  function acrossStep(fields, [f, off], dir) {
+    const i = fields.indexOf(f), len = fieldLen(f);
+    if (dir === 1) return off < len ? [f, off + 1] : fields[i + 1] ? [fields[i + 1], 0] : [f, off];
+    if (dir === -1) return off > 0 ? [f, off - 1] : fields[i - 1] ? [fields[i - 1], fieldLen(fields[i - 1])] : [f, off];
+    if (dir === 2) return off < len ? [f, len] : fields[i + 1] ? [fields[i + 1], fieldLen(fields[i + 1])] : [f, off];
+    return off > 0 ? [f, 0] : fields[i - 1] ? [fields[i - 1], 0] : [f, off];
+  }
+  const ARROWS = { ArrowUp: -2, ArrowLeft: -1, ArrowRight: 1, ArrowDown: 2 };
+  // Before every other listener (the window's capture phase).
+  addEventListener("keydown", (e) => {
+    if (e.isComposing || !e.key) return;
+    const t = e.target;
+    const g = selGroupOf(t);
+    if (!g) return;
+    const fields = groupFields(g);
+    if (!fields.includes(t)) return;
+    const dir = ARROWS[e.key];
+    const command = e.metaKey || e.ctrlKey;
+    const take = () => { e.preventDefault(); e.stopImmediatePropagation(); };
+    if (across && across.g === g) {
+      const { a, h } = across;
+      if (dir !== undefined) {
+        if (command || e.altKey) return;
+        take();
+        if (e.shiftKey) {
+          const head = acrossStep(fields, h, dir);
+          drawAcross(g, a, head);
+          return reportAcross(g, a, head);
+        }
+        // An arrow ends it at one end: the caret goes there.
+        const parts = acrossParts(fields, a, h);
+        const [f, s, end] = dir < 0 ? parts[0] : parts[parts.length - 1];
+        const at = dir < 0 ? s : end;
+        endAcross(false);
+        focusNode(f);
+        applyFieldSelection(f, at, at);
+        return reportAcross(g, [f, at], [f, at]);
+      }
+      if (e.key === "Escape") {
+        take();
+        endAcross(false);
+        focusNode(h[0]);
+        applyFieldSelection(h[0], h[1], h[1]);
+        return reportAcross(g, h, h);
+      }
+      // Copy, cut and paste: their own events, below.
+      if (command) return;
+      const cause = e.key === "Backspace" ? "backspace" : e.key === "Delete" ? "delete"
+        : e.key === "Enter" ? "enter" : e.key.length === 1 && !e.altKey ? "typing" : null;
+      if (!cause) return;
+      if (!g._acrossEdits) {
+        // No `on_edit_across`: back into the field it started in, which acts.
+        const part = acrossParts(fields, a, h).find(([f]) => f === a[0]);
+        endAcross(false);
+        if (part) {
+          applyFieldSelection(part[0], part[1], part[2]);
+          reportAcross(g, [part[0], part[1]], [part[0], part[2]]);
+        }
+        return;
+      }
+      take();
+      endAcross(false);
+      return send({ t: "acrossedit", id: pid(g), cause, text: cause === "typing" ? e.key : cause === "enter" ? "\n" : "" });
+    }
+    // A ⇧-arrow at the field's edge starts one.
+    if (dir === undefined || !e.shiftKey || command || e.altKey) return;
+    const sel = fieldSelection(t);
+    if (!sel) return;
+    const i = fields.indexOf(t), len = fieldLen(t), edges = caretEdges(t) || "";
+    const selected = sel[0] !== sel[1];
+    let anchor, head;
+    if (dir > 0 && fields[i + 1]) {
+      const atEnd = dir === 2 ? edges.includes("l") || (selected && sel[1] >= len) : edges.includes("e") || sel[1] >= len;
+      if (!atEnd) return;
+      anchor = [t, sel[0]];
+      head = dir === 2 ? [fields[i + 1], fieldLen(fields[i + 1])] : [fields[i + 1], 0];
+    } else if (dir < 0 && fields[i - 1]) {
+      const atStart = dir === -2 ? edges.includes("f") || (selected && sel[0] === 0) : edges.includes("s") || sel[0] === 0;
+      if (!atStart) return;
+      anchor = [t, sel[1]];
+      head = dir === -2 ? [fields[i - 1], 0] : [fields[i - 1], fieldLen(fields[i - 1])];
+    } else return;
+    take();
+    drawAcross(g, anchor, head);
+    reportAcross(g, anchor, head);
+  }, true);
+  // Copy and cut of the whole range: its plain text now, the app's content
+  // next (`clip`); a cut's removal is the app's (`on_edit_across`).
+  for (const cut of [false, true]) {
+    document.addEventListener(cut ? "cut" : "copy", (e) => {
+      if (!across || !across.g.contains(e.target)) return;
+      const g = across.g;
+      const text = acrossParts(groupFields(g), across.a, across.h).map(([f, s, end]) => fieldPart(f, s, end)).join("\n");
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      try { e.clipboardData.setData("text/plain", text); } catch { /* no clipboardData */ }
+      send({ t: "acrosscopy", id: pid(g), cut });
+      if (cut && g._acrossEdits) endAcross(false);
+    }, true);
+  }
+  document.addEventListener("paste", (e) => {
+    if (!across || !across.g.contains(e.target) || !across.g._acrossEdits) return;
+    const g = across.g;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    let text = "";
+    try { text = e.clipboardData.getData("text/plain") || ""; } catch { /* none */ }
+    endAcross(false);
+    send({ t: "acrossedit", id: pid(g), cause: "paste", text });
+  }, true);
+  // Typing that no key announced (an on-screen keyboard, dictation).
+  document.addEventListener("beforeinput", (e) => {
+    if (!across || !across.g.contains(e.target) || !across.g._acrossEdits) return;
+    const g = across.g;
+    const cause = /^delete/.test(e.inputType) ? (/Backward/.test(e.inputType) ? "backspace" : "delete")
+      : e.inputType === "insertParagraph" ? "enter" : e.inputType === "insertText" ? "typing" : null;
+    if (!cause) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    endAcross(false);
+    send({ t: "acrossedit", id: pid(g), cause, text: cause === "typing" ? e.data || "" : cause === "enter" ? "\n" : "" });
+  }, true);
+  /** The character offset under point (`x`, `y`) in field `el`. */
+  function offsetAt(el, x, y) {
+    if (el._rich) {
+      let node = null, off = 0;
+      if (document.caretPositionFromPoint) {
+        const p = document.caretPositionFromPoint(x, y);
+        if (p) { node = p.offsetNode; off = p.offset; }
+      } else if (document.caretRangeFromPoint) {
+        const r = document.caretRangeFromPoint(x, y);
+        if (r) { node = r.startContainer; off = r.startOffset; }
+      }
+      const at = node && el.contains(node) ? richOffset(el, node, off) : null;
+      if (at !== null) return at;
+    }
+    // A text area or input (or no caret there): its start above its
+    // middle, its end below.
+    const r = el.getBoundingClientRect();
+    return y < r.top + r.height / 2 ? 0 : fieldLen(el);
+  }
+  // Pointer drags from one field of a group into another (mouse, pen).
+  let acrossDrag = null; // { g, field, anchor }
+  document.addEventListener("pointerdown", (e) => {
+    const g = selGroupOf(e.target);
+    let ended = false;
+    if (across && (g !== across.g || e.button === 0)) {
+      // A press elsewhere ends it: in the group, where the caret lands is
+      // reported on release.
+      ended = g === across.g;
+      endAcross(!ended);
+    }
+    if (!g || e.button !== 0 || e.pointerType === "touch") return;
+    acrossDrag = { g, field: e.target, anchor: null, backInside: ended };
+  }, true);
+  document.addEventListener("pointermove", (e) => {
+    const d = acrossDrag;
+    if (!d || !(e.buttons & 1)) return;
+    // Where the drag started, as the browser placed it.
+    if (d.anchor === null) {
+      const sel = fieldSelection(d.field);
+      d.anchor = sel ? sel[0] : offsetAt(d.field, e.clientX, e.clientY);
+    }
+    const under = document.elementFromPoint && document.elementFromPoint(e.clientX, e.clientY);
+    let over = under && (isTextField(under) ? under : under.closest && [...groupFields(d.g)].find((f) => f.contains(under)));
+    if (!over || selGroupOf(over) !== d.g) {
+      // Between fields: the nearest one above or below.
+      const fields = groupFields(d.g);
+      over = fields.find((f) => f.getBoundingClientRect().bottom >= e.clientY) || fields[fields.length - 1];
+    }
+    if (!over) return;
+    if (over === d.field) {
+      if (across) { endAcross(false); d.backInside = true; }
+      return;
+    }
+    const head = [over, offsetAt(over, e.clientX, e.clientY)];
+    const a = [d.field, d.anchor];
+    if (across && across.h[0] === head[0] && across.h[1] === head[1]) return;
+    drawAcross(d.g, a, head);
+    reportAcross(d.g, a, head);
+    // The browser's own drag selection stays in the first field.
+    e.preventDefault();
+  }, true);
+  document.addEventListener("pointerup", () => {
+    const d = acrossDrag;
+    acrossDrag = null;
+    if (!d || across || !d.backInside) return;
+    const sel = fieldSelection(d.field);
+    if (sel) reportAcross(d.g, [d.field, sel[0]], [d.field, sel[1]]);
+  }, true);
+
   /** A text patch for an input or a text area. */
   function setFieldText(el, text) {
     const sent = el._sent;
@@ -3043,6 +3336,14 @@
       case "editev": if (el) { el._editMask = p.mask || 0; delete el._rectSent; if (el._rectCheck && document.activeElement === el) el._rectCheck(); } return;
       case "clip": return writeClipContent(p.items || []);
       case "instext": return el && insertText(el, p.id, p.text || "");
+      // One selection across several fields (#231).
+      case "selgroup":
+        if (!el) return;
+        if (p.on) el.dataset.selgroup = ""; else delete el.dataset.selgroup;
+        el._acrossEdits = !!p.edits;
+        return;
+      case "selhl": return el && setHighlight(el, p.start || 0, p.end || 0);
+      case "across": return el && setAcross(el, p.a, p.h);
       case "focus": if (el) { focusAsked = el; focusNode(el); } return;
       case "reveal": return el && reveal(el);
       // A pop-up menu (#247): at a point in the node (the page when it has

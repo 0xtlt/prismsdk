@@ -1495,22 +1495,63 @@ pub fn consumed_key_commands(responder: &UIResponder) -> Vec<Retained<objc2_ui_k
     // Asked as a key is pressed: entries of `consume_key_at` (#211) follow
     // the caret now.
     let edges = focused_edges(window.as_deref());
-    command_inputs()
+    let command = |input: &NSString, flags: objc2_ui_kit::UIKeyModifierFlags| {
+        let c = unsafe {
+            objc2_ui_kit::UIKeyCommand::keyCommandWithInput_modifierFlags_action(
+                input,
+                flags,
+                sel!(onConsumedKey:),
+                mtm,
+            )
+        };
+        c.setWantsPriorityOverSystemBehavior(true);
+        c
+    };
+    let mut out: Vec<_> = command_inputs()
         .into_iter()
         .filter(|(name, _)| crate::imp::consumes_key(Some(focused), name, edges))
-        .map(|(_, input)| {
-            let c = unsafe {
-                objc2_ui_kit::UIKeyCommand::keyCommandWithInput_modifierFlags_action(
-                    &input,
-                    objc2_ui_kit::UIKeyModifierFlags::empty(),
-                    sel!(onConsumedKey:),
-                    mtm,
-                )
-            };
-            c.setWantsPriorityOverSystemBehavior(true);
-            c
-        })
-        .collect()
+        .map(|(_, input)| command(&input, objc2_ui_kit::UIKeyModifierFlags::empty()))
+        .collect();
+    // A selection group's keys (#231): ⇧-arrows at the field's edge, and
+    // arrows, Escape, Return, Backspace, ⌘C, ⌘X and ⌘V while its selection
+    // spans several fields.
+    let selection = window
+        .as_deref()
+        .and_then(|w| find_first_responder(w))
+        .and_then(|f| crate::forms::current_selection(&f));
+    for (name, input, flags) in across_inputs() {
+        let mut key = KeyEvent::new(name);
+        key.modifiers = modifiers(flags);
+        key.selection = selection;
+        key.edges = edges;
+        let taken = !flags.is_empty() || !crate::imp::consumes_key(Some(focused), name, edges);
+        if taken && crate::imp::consumes_key_event(Some(focused), &key) {
+            out.push(command(&input, flags));
+        }
+    }
+    out
+}
+
+/// The keys a selection group may take (#231): (name, key command input,
+/// modifiers).
+#[cfg(not(target_os = "tvos"))]
+fn across_inputs() -> Vec<(
+    &'static str,
+    Retained<NSString>,
+    objc2_ui_kit::UIKeyModifierFlags,
+)> {
+    use objc2_ui_kit::UIKeyModifierFlags as F;
+    let mut out = Vec::new();
+    for (name, input) in command_inputs().into_iter().take(5) {
+        out.push((name, input.clone(), F::Shift));
+        out.push((name, input, F::empty()));
+    }
+    out.push(("Enter", NSString::from_str("\r"), F::empty()));
+    out.push(("Backspace", NSString::from_str("\u{8}"), F::empty()));
+    for letter in ["c", "x", "v"] {
+        out.push((letter, NSString::from_str(letter), F::Command));
+    }
+    out
 }
 
 /// Where the focused text field's caret is (#211), if one has the focus.
@@ -1524,8 +1565,10 @@ fn focused_edges(window: Option<&UIWindow>) -> Option<prism_core::CaretEdges> {
 #[cfg(not(target_os = "tvos"))]
 pub fn consumed_key(responder: &UIResponder, command: &objc2_ui_kit::UIKeyCommand) {
     let Some(input) = command.input() else { return };
+    let flags = command.modifierFlags();
     let Some(name) = command_inputs()
         .into_iter()
+        .chain(across_inputs().into_iter().map(|(n, i, _)| (n, i)))
         .find(|(_, i)| i.isEqualToString(&input))
         .map(|(n, _)| n)
     else {
@@ -1534,6 +1577,7 @@ pub fn consumed_key(responder: &UIResponder, command: &objc2_ui_kit::UIKeyComman
     let window = window_of(responder);
     let focused = focused_node(window.as_deref()).map(|f| f.0);
     let mut key = KeyEvent::new(name);
+    key.modifiers = modifiers(flags);
     if let Some(field) = window
         .as_deref()
         .and_then(|w| find_first_responder(w))

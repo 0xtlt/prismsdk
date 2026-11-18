@@ -86,6 +86,15 @@ pub(crate) fn consumes_key(
     out
 }
 
+/// Whether `key` pressed in `focused` is the app's alone, a selection
+/// group's keys included (#231).
+#[cfg(not(target_os = "tvos"))]
+pub(crate) fn consumes_key_event(focused: Option<NodeId>, key: &prism_core::KeyEvent) -> bool {
+    let mut out = false;
+    with_state(|s| out = s.runtime.consumes_key_event(focused, key));
+    out
+}
+
 /// The UIKit content type of an HTML `autocomplete` value (#203): its
 /// first token UIKit knows (`username webauthn` is a username field).
 fn text_content_type(value: &str) -> Option<&'static objc2_ui_kit::UITextContentType> {
@@ -3332,6 +3341,15 @@ impl Widgets for UiKit {
             View::Input(f) => crate::carets::set(self.mtm, view.id(), f, carets),
             View::TextArea(t) => crate::carets::set(self.mtm, view.id(), &t.view, carets),
             _ => {}
+        }
+    }
+
+    /// A text area's part of a selection across fields (#231); a one-line
+    /// input draws none.
+    #[cfg(not(target_os = "tvos"))]
+    fn set_selection_highlight(&mut self, view: &View, start: usize, end: usize) {
+        if let View::TextArea(t) = view {
+            crate::edit::highlight(&t.view, start, end);
         }
     }
 

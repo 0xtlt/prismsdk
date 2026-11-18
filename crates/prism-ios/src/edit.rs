@@ -296,3 +296,51 @@ fn selection_rect(tv: &UITextView) -> Option<Rect> {
         r.size.height as f32,
     ))
 }
+
+// --- One selection across several fields (#231) ----------------------------
+
+/// The tag of the views drawing a highlighted part.
+const HIGHLIGHT_TAG: isize = 0x231_0000;
+
+/// Draws characters `start..end` of `tv` like a selection without
+/// selecting it (#231): tinted boxes behind its text, from its own layout
+/// (`selectionRectsForRange:`). `start == end` removes them.
+pub fn highlight(tv: &UITextView, start: usize, end: usize) {
+    for sub in tv.subviews().to_vec() {
+        if sub.tag() == HIGHLIGHT_TAG {
+            sub.removeFromSuperview();
+        }
+    }
+    if start >= end {
+        return;
+    }
+    let text = tv.text().to_string();
+    let at = |c: usize| prism_native::fields::chars_to_utf16(&text, c) as isize;
+    let begin = tv.beginningOfDocument();
+    let (Some(from), Some(to)) = (
+        tv.positionFromPosition_offset(&begin, at(start)),
+        tv.positionFromPosition_offset(&begin, at(end)),
+    ) else {
+        return;
+    };
+    let Some(range) = tv.textRangeFromPosition_toPosition(&from, &to) else {
+        return;
+    };
+    let mtm = tv.mtm();
+    let color = tv
+        .tintColor()
+        .unwrap_or_else(objc2_ui_kit::UIColor::systemBlueColor)
+        .colorWithAlphaComponent(0.25);
+    for s in tv.selectionRectsForRange(&range).to_vec() {
+        let r = s.rect();
+        if r.size.width <= 0. || r.size.height <= 0. {
+            continue;
+        }
+        let v = UIView::initWithFrame(UIView::alloc(mtm), r);
+        v.setBackgroundColor(Some(&color));
+        v.setUserInteractionEnabled(false);
+        v.setTag(HIGHLIGHT_TAG);
+        // Behind the text.
+        tv.insertSubview_atIndex(&v, 0);
+    }
+}

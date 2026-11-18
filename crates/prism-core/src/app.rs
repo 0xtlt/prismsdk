@@ -224,6 +224,8 @@ pub(crate) enum UiCommand {
         crate::menu::MenuSpec,
         Option<crate::events::Point>,
     ),
+    /// `set_selection_across` / `clear_selection_across` (#231).
+    SelectionAcross(Option<(crate::SelectionPoint, crate::SelectionPoint)>),
 }
 
 /// The element a pop-up menu opens over (#247).
@@ -719,6 +721,31 @@ impl App {
         self.selection_rects
             .get(self.selection_names.get(id)?)
             .copied()
+    }
+
+    /// Selects from `anchor` to `head` across the fields of a
+    /// [`selection_group`](crate::Div::selection_group) (#231), after the
+    /// next render: `cx.set_selection_across(("p1", 4), ("p3", 2))`. Both
+    /// fields must be named (`.id(…)`) and in the same group; the anchor's
+    /// field takes the focus. In a single field, it selects there. The
+    /// group's [`on_selection_across`](crate::Div::on_selection_across) is
+    /// not called for it.
+    pub fn set_selection_across(
+        &mut self,
+        anchor: impl Into<crate::SelectionPoint>,
+        head: impl Into<crate::SelectionPoint>,
+    ) {
+        self.ui_commands.push(UiCommand::SelectionAcross(Some((
+            anchor.into(),
+            head.into(),
+        ))));
+    }
+
+    /// Ends a selection across fields (#231), after the next render: the
+    /// other fields' highlights go, the field where it started keeps its
+    /// part.
+    pub fn clear_selection_across(&mut self) {
+        self.ui_commands.push(UiCommand::SelectionAcross(None));
     }
 
     /// Scrolls the scroll views around the element named `id` (`.id(id)`)

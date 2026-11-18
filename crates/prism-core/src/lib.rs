@@ -41,6 +41,7 @@ pub mod request;
 mod router;
 pub mod scene3d;
 pub mod security;
+pub mod selection_across;
 pub mod shape;
 pub mod spans;
 pub mod storage;
@@ -125,6 +126,9 @@ pub use scene3d::{Scene3d, SceneTapEvent, scene3d};
 pub use security::{
     AppleCredential, AppleSignIn, AuthRequest, Biometry, BiometryKind, SecureOptions,
     SecureStorage, WebAuthRequest, WebAuthnRequest,
+};
+pub use selection_across::{
+    EditAcross, EditCause, FieldSelection, SelectionAcross, SelectionPoint, text_flow,
 };
 pub use shape::{Drawing, Path, Segment};
 pub use spans::{
@@ -233,6 +237,10 @@ pub struct Runtime {
     reconciler: Reconciler,
     /// `prism dev`: where the current route is saved, so a restart reopens it.
     dev_state: Option<(std::path::PathBuf, String)>,
+    /// The key (name, modifier bits) a selection group took last
+    /// (`consumes_key_event`, #231): its press acts on the group when
+    /// dispatched. A key the backend let the field have does not.
+    across_key: Option<(String, u8)>,
 }
 
 impl Runtime {
@@ -292,6 +300,7 @@ impl Runtime {
             app,
             reconciler: Reconciler::new(),
             dev_state: std::env::var_os("PRISM_DEV_STATE").map(|p| (p.into(), String::new())),
+            across_key: None,
         }
     }
 
@@ -357,6 +366,10 @@ impl Runtime {
                 }
             }
             UiEvent::Select(id, start, end) => {
+                // A selection across fields (#231) ends where the user
+                // selects anew.
+                let out = self.reconciler.across_select(id, start, end);
+                self.finish_across(out, &mut answers);
                 let e = SelectionEvent::new(start, end);
                 // What the field shows: rendered back, it is an echo.
                 self.reconciler.selection_reported(id, e);
@@ -523,6 +536,18 @@ impl Runtime {
                 }
             }
             UiEvent::Key(focused, e) => {
+                // A selection group's keys (#231): ⇧-arrows across fields,
+                // edits and copies of a selection spanning them.
+                // (The web client handles them itself.)
+                let taken = self.across_key.take() == Some((e.key.clone(), e.modifiers.bits()));
+                if taken
+                    && self.app.platform() != Platform::Web
+                    && let (Some(f), Some((group, fields, action))) =
+                        (focused, self.reconciler.across_key(focused, &e))
+                {
+                    let out = self.reconciler.apply_across(group, &fields, f, action);
+                    self.finish_across(out, &mut answers);
+                }
                 self.app.stop_propagation = false;
                 for h in self.reconciler.key_handlers(focused) {
                     h(&e, &mut self.app);
@@ -578,6 +603,20 @@ impl Runtime {
                 if !e.is_default_prevented() && !e.text.is_empty() {
                     answers.push(Patch::InsertText { id, text: e.text });
                 }
+            }
+            UiEvent::SelectionAcross(group, range) => {
+                let out = self.reconciler.across_reported(group, range);
+                self.finish_across(out, &mut answers);
+            }
+            UiEvent::EditAcross(group, cause, text) => {
+                let out = self
+                    .reconciler
+                    .across_client_edit(group, Some((cause, text)), None);
+                self.finish_across(out, &mut answers);
+            }
+            UiEvent::CopyAcross(group, cut) => {
+                let out = self.reconciler.across_client_edit(group, None, Some(cut));
+                self.finish_across(out, &mut answers);
             }
             UiEvent::SpanClick(id, offset, modifiers) => {
                 let spans = self.reconciler.rich_spans(id);
@@ -644,6 +683,51 @@ impl Runtime {
     /// other threads: backends that cannot be woken directly poll meanwhile.
     pub fn has_background_work(&self) -> bool {
         self.app.executor.has_background_work()
+    }
+
+    /// Whether `key`, pressed in node `focused`, is the app's alone: its
+    /// [`consumes_key`](Self::consumes_key), or a key a selection group
+    /// takes from its focused field (#231: ⇧-arrows at a field's edge, and
+    /// arrows, edits and copies while the selection spans several fields).
+    /// Backends call this with the key as they will dispatch it (its
+    /// modifiers, the field's selection and caret edges).
+    ///
+    /// A key it takes for a selection group acts on the group when it is
+    /// then dispatched (`UiEvent::Key` with the same key and modifiers);
+    /// a key the backend did not ask about stays the field's.
+    pub fn consumes_key_event(&mut self, focused: Option<NodeId>, key: &KeyEvent) -> bool {
+        let across = self.app.platform() != Platform::Web
+            && self.reconciler.across_key(focused, key).is_some();
+        if across {
+            self.across_key = Some((key.key.clone(), key.modifiers.bits()));
+        }
+        across || self.reconciler.consumes_key(focused, &key.key, key.edges)
+    }
+
+    /// Runs what a selection group's key, report or edit led to (#231).
+    fn finish_across(&mut self, out: reconcile::AcrossOutcome, answers: &mut Vec<Patch>) {
+        answers.extend(out.patches);
+        if let Some((h, e)) = out.report {
+            h(&e, &mut self.app);
+        }
+        if let Some((id, handler, e)) = out.copy {
+            if let Some(h) = handler {
+                h(&e, &mut self.app);
+            }
+            let content = e
+                .written()
+                .unwrap_or_else(|| ClipboardContent::text(e.text.clone()));
+            answers.push(Patch::WriteClipboard { id, content });
+        }
+        if let Some((h, e)) = out.edit {
+            h(&e, &mut self.app);
+        }
+        if let Some((h, selection)) = out.paste {
+            self.app.spawn(move |cx| async move {
+                let text = cx.read_clipboard().await.unwrap_or_default();
+                cx.update(|app| h(&EditAcross::new(selection, text, EditCause::Paste), app));
+            });
+        }
     }
 
     /// Whether a key pressed in node `focused` is the app's alone
@@ -930,6 +1014,8 @@ pub mod prelude {
         relative, rgb, rgba, screen, scroll, shape, slider, spinner, text, text_area, text_input,
         timer, toggle,
     };
+    // One selection across several text fields (#231).
+    pub use crate::{EditAcross, EditCause, SelectionAcross, SelectionPoint, text_flow};
     pub use crate::{
         GridTrack, ScrollAxis, Scrollbar, auto_fill, auto_fit, fr, minmax, repeat, scroll_x,
     };
