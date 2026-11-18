@@ -157,7 +157,7 @@ text_input()
 
 ## Rich text input
 
-`rich_input(spans)` edits the runs of a [`rich_text`](typography.md#rich-text) in place: bold, italic, underline, strikethrough, inline code (`font_mono()` with a `bg`) and links stay styled while the user types, and a `chip(key, label)` (a mention of a page, a person, a date: an optional `chip_icon`, then its label) is one character the caret jumps over and one Backspace deletes. It is controlled like `text_input`: render the spans you store, store the spans `on_input` gives back.
+`rich_input(spans)` edits the runs of a [`rich_text`](typography.md#rich-text) in place: bold, italic, underline, strikethrough, inline code (`font_mono()` with a `bg`) and links stay styled while the user types, and a `chip(key, label)` (a mention of a page, a person, a date: an optional `chip_icon`, then its label) is one character the caret jumps over and one Backspace deletes. So is an `icon(name)` (#221): one character, drawn as its symbol. Underline colors and styles (`underline_color`, `underline_style`) are drawn too. It is controlled like `text_input`: render the spans you store, store the spans `on_input` gives back.
 
 ```rust
 struct Note { spans: Vec<Span>, sel: SelectionEvent }
@@ -181,10 +181,10 @@ self.spans = splice_spans(&self.spans, at - 3..at, [chip("page:42", "Roadmap").c
 self.sel = SelectionEvent::caret(at - 2);
 ```
 
-- **The value**: `RichInputEvent { value, spans }`. `value` is the plain text, a chip being `prism::OBJECT_CHAR` (U+FFFC); selections (`on_select`, `.selection`, `KeyEvent::selection`) count its characters, a chip as one. Each span keeps the style, link, `on_click` and chip key of the run it came from; read them with `text()`, `is_bold()`, `is_italic()`, `is_underlined()`, `is_strikethrough()`, `is_mono()`, `href()`, `chip_key()`, `chip_label()` to map them to your own model. Spans come back normalized (no empty run, equal neighbours merged).
+- **The value**: `RichInputEvent { value, spans }`. `value` is the plain text, a chip or an icon being `prism::OBJECT_CHAR` (U+FFFC); selections (`on_select`, `.selection`, `KeyEvent::selection`) count its characters, a chip as one. Each span keeps the style, link, `on_click` and chip key of the run it came from; read them with `text()`, `is_bold()`, `is_italic()`, `is_underlined()`, `underline_color_value()`, `underline_style_value()`, `is_strikethrough()`, `is_mono()`, `href()`, `chip_key()`, `chip_label()`, `icon_name()` to map them to your own model. Spans come back normalized (no empty run, equal neighbours merged).
 - **Editing helpers**, by characters: `split_spans(&spans, at)` (split a block at the caret), `restyle_spans(&spans, range, f)` (format a selection), `splice_spans(&spans, range, insert)` (insert or replace, chips included), `normalize_spans`, `spans_text`.
-- **Typing** takes the style of the run before the caret (as editors do), except after a chip or a link: then the run after it, or plain text. Over a selection, the style of its first character. The app may restyle what comes back (a « pending bold » after ⌘B on a caret, Markdown shortcuts).
-- **Paste** is plain text, in the style of where it lands (object characters dropped: only the app makes chips); copy and cut give plain text, a chip as its label. Formatting commands of the platform (the browser's ⌘B, the font panel) do nothing.
+- **Typing** takes the style of the run before the caret (as editors do), except after a chip, an icon or a link: then the run after it, or plain text. Over a selection, the style of its first character. The app may restyle what comes back (a « pending bold » after ⌘B on a caret, Markdown shortcuts).
+- **Paste** is plain text, in the style of where it lands (object characters dropped: only the app makes chips); copy and cut give plain text, a chip as its label (on the web, an icon as its glyph). Formatting commands of the platform (the browser's ⌘B, the font panel) do nothing.
 - **Enter** calls `on_submit` and inserts nothing; **Shift+Enter** inserts a line break (`'\n'`). The field wraps like a paragraph and grows with its text (one line at least; cap it with `max_h`).
 - **Click to edit**: with no padding, border or background (`.p(0.).border(0.).bg(transparent)`), a `rich_input` or `text_area` with the same typography as a `text()` draws its text exactly where the text was: same start, same line height (`line_height`), same baseline, on every line (#179). Swap one for the other and nothing moves.
 - **App values and echoes** follow the text field rules: runs the user just typed, rendered back, leave the field alone (caret, IME composition); other runs are the app's and replace the field's, the caret keeping its distance from the end, after the composition on the web. `.selection(..)` after them places the caret.
@@ -192,8 +192,8 @@ self.sel = SelectionEvent::caret(at - 2);
 | | Rich editing |
 |---|---|
 | Web | a `contenteditable` drawn from runs the client owns: `beforeinput` edits them (typing, deletion by character, word or line, a chip as one character), an IME composition is the browser's and is read back when it ends, undo/redo step through the field's own edits |
-| macOS | `NSTextView` with the runs as attributes and each chip an `NSTextAttachment` (its icon and label drawn in a rounded box); undo is AppKit's |
-| iOS, iPadOS, visionOS, GTK, Android, watchOS | **not yet**: a plain multi-line field of `value` (no styles drawn, a chip shows as U+FFFC). Edits still come back as spans that keep the styles around them, a deleted U+FFFC removes its chip, and Enter (a line break typed alone) calls `on_submit` when the input has one; tvOS shows one line |
+| macOS | `NSTextView` with the runs as attributes and each chip an `NSTextAttachment` (its icon and label drawn in a rounded box), each icon an attachment of its SF Symbol; undo is AppKit's |
+| iOS, iPadOS, visionOS, GTK, Android, watchOS | **not yet**: a plain multi-line field of `value` (no styles drawn, a chip or an icon shows as U+FFFC). Edits still come back as spans that keep the styles around them, a deleted U+FFFC removes its chip, and Enter (a line break typed alone) calls `on_submit` when the input has one; tvOS shows one line |
 
 **Sheets, popovers, dialogs** that a screen opens without a route: see [Dialogs, menus, tray](dialogs-menus.md#sheets-popovers-and-dialogs-without-a-route).
 

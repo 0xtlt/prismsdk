@@ -372,7 +372,18 @@ struct PrismTypo {
             a.font = f
             if let color { a.foregroundColor = color }
             if let bg = PrismColor(r["bg"]) { a.backgroundColor = dark ? bg.dark : bg.light }
-            if underline || (r["u"] as? Bool ?? false) { a.underlineStyle = .single }
+            if underline || (r["u"] as? Bool ?? false) {
+                // Its own color and pattern (#221); SwiftUI draws thick and
+                // double underlines as one line.
+                let uc = PrismColor(r["uc"]).map { dark ? $0.dark : $0.light }
+                let pattern: Text.LineStyle.Pattern
+                switch r["us"] as? String {
+                case "dotted": pattern = .dot
+                case "dashed": pattern = .dash
+                default: pattern = .solid
+                }
+                a.underlineStyle = Text.LineStyle(pattern: pattern, color: uc)
+            }
             if strike || (r["s"] as? Bool ?? false) { a.strikethroughStyle = .single }
             if letterSpacing != 0 { a.kern = letterSpacing }
             if let link = (r["link"] as? NSNumber)?.uint64Value { a.link = URL(string: "prism-link://\(link)") }

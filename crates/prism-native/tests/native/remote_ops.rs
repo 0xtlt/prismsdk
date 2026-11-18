@@ -948,6 +948,13 @@ fn typography_and_runs_reach_the_host_and_its_measure() {
             icon: Some("star.fill".into()),
             ..TextRun::default()
         },
+        TextRun {
+            text: "note".into(),
+            underline: true,
+            underline_color: Some(rgb(0x0000ff)),
+            underline_style: prism_core::UnderlineStyle::Dotted,
+            ..TextRun::default()
+        },
     ]);
     w.set_config(&1, NodeKind::Text, &runs);
     assert_eq!(
@@ -956,6 +963,8 @@ fn typography_and_runs_reach_the_host_and_its_measure() {
             { "t": "Hi " },
             { "t": "you", "w": 700, "c": [1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0], "link": 9, "href": "/me" },
             { "t": "★", "icon": "star.fill", "glyph": prism_core::glyphs::glyph("star.fill") },
+            // Its own underline (#221).
+            { "t": "note", "u": true, "uc": [0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0], "us": "dotted" },
         ]})
     );
     // Controls still get their raw config.

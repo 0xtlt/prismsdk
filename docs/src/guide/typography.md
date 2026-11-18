@@ -180,6 +180,41 @@ clamp…) apply to every run.
 
 Inline icons are SF Symbols on Apple platforms (sized and tinted like the
 text) and their fallback glyph elsewhere (see `prism::glyphs`).
+`Span::icon(name, points)` is `icon(name).text_size(points)`: a small bell
+before a date, in its own color.
+
+### Underline color and style
+
+A span's underline can have its own color and line (#221), whatever the
+text's color: a commented passage in an accent color, a spelling-style
+dotted line, a thicker link underline. Either one underlines the span.
+
+```rust
+rich_text([
+    span("A "),
+    span("commented passage")
+        .underline_color(rgb(0xE8A317))
+        .underline_style(UnderlineStyle::Thick),
+    span(" and a "),
+    span("speling").underline_style(UnderlineStyle::Dotted).underline_color(red),
+    span(" · "),
+    Span::icon("bell", 12.).text_color(overdue),
+    span(" Friday").text_color(overdue),
+])
+```
+
+`UnderlineStyle` is `Single` (the default), `Thick`, `Double`, `Dotted` or
+`Dashed`. They apply in read-only text and in a
+[`rich_input`](forms.md#rich-text-input) that draws its runs (the web,
+macOS).
+
+| | Color | Styles |
+|---|---|---|
+| Web | `text-decoration-color` | `text-decoration-style`; thick is `text-decoration-thickness: max(2px, .12em)` |
+| macOS, iOS, iPadOS, tvOS, visionOS | `NSUnderlineColorAttributeName` | `NSUnderlineStyle` single, thick, double; dotted and dashed are a single line with the dot and dash patterns |
+| watchOS | `Text.LineStyle` color | dotted and dashed patterns; thick and double are one line |
+| Android | drawn by a span under each line | every style (the paint's underline has no color or style) |
+| Linux | Pango underline color | single, double; dotted is Pango's « error » line; thick and dashed are single |
 
 ## Clickable text
 

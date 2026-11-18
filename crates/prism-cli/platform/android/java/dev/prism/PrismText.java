@@ -1,6 +1,11 @@
 package dev.prism;
 
 import android.content.res.AssetManager;
+import android.graphics.Canvas;
+import android.graphics.DashPathEffect;
+import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
@@ -10,6 +15,7 @@ import android.text.method.LinkMovementMethod;
 import android.text.style.BackgroundColorSpan;
 import android.text.style.ClickableSpan;
 import android.text.style.ForegroundColorSpan;
+import android.text.style.LineBackgroundSpan;
 import android.text.style.RelativeSizeSpan;
 import android.text.style.StrikethroughSpan;
 import android.text.style.TypefaceSpan;
@@ -58,6 +64,11 @@ final class PrismText {
         configure(t, s, size, s.optInt("weight", 400));
         CharSequence text = build(n.text, s, n.runs, size, n.id);
         t.setText(text);
+        // Styled underlines draw from the view's layout (#221).
+        if (t.getText() instanceof Spanned) {
+            Spanned shown = (Spanned) t.getText();
+            for (StyledUnderline u : shown.getSpans(0, shown.length(), StyledUnderline.class)) u.view = t;
+        }
         boolean links = hasLinks(n.runs);
         // Links: tappable, reachable with the keyboard / D-pad, listed by TalkBack.
         t.setMovementMethod(links ? LinkMovementMethod.getInstance() : null);
@@ -184,9 +195,17 @@ final class PrismText {
                 Integer bg = PrismHost.color(r.optJSONArray("bg"));
                 if (bg != null) b.setSpan(new BackgroundColorSpan(bg), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
                 boolean u = r.optBoolean("u");
+                // Its own underline color or style (#221): drawn by the span,
+                // not the paint's underline.
+                Integer uc = PrismHost.color(r.optJSONArray("uc"));
+                String us = r.optString("us", "");
+                boolean styled = u && (uc != null || !us.isEmpty());
+                if (styled) {
+                    b.setSpan(new StyledUnderline(uc != null ? uc : c, us), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                }
                 if (r.has("link")) {
-                    b.setSpan(new Link(r.optLong("link"), u), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                } else if (u) {
+                    b.setSpan(new Link(r.optLong("link"), u && !styled), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                } else if (u && !styled) {
                     b.setSpan(new UnderlineSpan(), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
                 }
                 if (r.optBoolean("s")) b.setSpan(new StrikethroughSpan(), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
@@ -214,6 +233,60 @@ final class PrismText {
 
         @Override public void updateDrawState(TextPaint ds) {
             ds.setUnderlineText(underline);
+        }
+    }
+
+    /**
+     * An underline with its own color and line (#221): thick, double, dotted or dashed. Android's
+     * paint underline has neither, so the span draws it under each line it covers, from the
+     * TextView's layout (set by `render`; measuring never draws).
+     */
+    static final class StyledUnderline implements LineBackgroundSpan {
+        final Integer color;
+        final String style;
+        TextView view;
+        private final Path path = new Path();
+        private final RectF bounds = new RectF();
+        private final Paint pen = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        StyledUnderline(Integer color, String style) {
+            this.color = color;
+            this.style = style;
+        }
+
+        @Override public void drawBackground(Canvas canvas, Paint paint, int left, int right, int top,
+                int baseline, int bottom, CharSequence text, int start, int end, int lineNumber) {
+            if (view == null || !(text instanceof Spanned)) return;
+            android.text.Layout layout = view.getLayout();
+            if (layout == null) return;
+            Spanned sp = (Spanned) text;
+            int from = Math.max(sp.getSpanStart(this), start);
+            int to = Math.min(sp.getSpanEnd(this), end);
+            // Not under a line's trailing break.
+            while (to > from && text.charAt(to - 1) == '\n') to--;
+            if (from >= to) return;
+            path.reset();
+            layout.getSelectionPath(from, to, path);
+            path.computeBounds(bounds, true);
+            if (bounds.isEmpty()) return;
+            float thickness = Math.max(1f, paint.getUnderlineThickness());
+            float y = baseline + paint.getUnderlinePosition();
+            pen.setColor(color != null ? color : paint.getColor());
+            pen.setStyle(Paint.Style.STROKE);
+            pen.setPathEffect(null);
+            switch (style) {
+                case "thick": thickness *= 2; break;
+                case "dotted": pen.setPathEffect(new DashPathEffect(new float[] {thickness, thickness * 2}, 0)); break;
+                case "dashed": pen.setPathEffect(new DashPathEffect(new float[] {thickness * 4, thickness * 2}, 0)); break;
+                default: break;
+            }
+            pen.setStrokeWidth(thickness);
+            y += thickness / 2;
+            canvas.drawLine(bounds.left, y, bounds.right, y, pen);
+            if (style.equals("double")) {
+                float y2 = y + thickness * 2;
+                canvas.drawLine(bounds.left, y2, bounds.right, y2, pen);
+            }
         }
     }
 

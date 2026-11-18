@@ -445,7 +445,8 @@ pub fn attributed(t: &StyledText) -> Retained<NSAttributedString> {
     use objc2_ui_kit::{
         NSBackgroundColorAttributeName, NSBaselineOffsetAttributeName, NSFontAttributeName,
         NSForegroundColorAttributeName, NSKernAttributeName, NSParagraphStyleAttributeName,
-        NSStrikethroughStyleAttributeName, NSUnderlineStyleAttributeName,
+        NSStrikethroughStyleAttributeName, NSUnderlineColorAttributeName,
+        NSUnderlineStyleAttributeName,
     };
     let paragraph = NSMutableParagraphStyle::new();
     paragraph.setAlignment(alignment(t.align));
@@ -498,7 +499,11 @@ pub fn attributed(t: &StyledText) -> Retained<NSAttributedString> {
                 );
             }
             if run.underline {
-                add(NSUnderlineStyleAttributeName, &NSNumber::new_isize(1));
+                let style = prism_native::text::ns_underline_style(run.underline_style);
+                add(NSUnderlineStyleAttributeName, &NSNumber::new_isize(style));
+                if let Some(c) = run.underline_color.map(ui_color) {
+                    add(NSUnderlineColorAttributeName, &c);
+                }
             }
             if run.strikethrough {
                 add(NSStrikethroughStyleAttributeName, &NSNumber::new_isize(1));

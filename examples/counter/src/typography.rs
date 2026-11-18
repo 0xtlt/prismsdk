@@ -2,7 +2,8 @@
 //! tabular figure at a custom weight and line height, a monospaced code,
 //! a two-line clamp, single-line truncation, decorations and families, a
 //! rich-text paragraph with a bold run, an inline link, an icon and a
-//! clickable run, and a clickable text.
+//! clickable run, underlines with their own color and line, and a
+//! clickable text.
 
 use prism::prelude::*;
 use prism::ui::{self, Theme};
@@ -71,6 +72,24 @@ impl Render for Typography {
                     .child(word(strings::typography_rounded(cx)).font_rounded().bold())
                     .child(word(strings::typography_mono(cx)).font_mono()),
             )
+            // Underlines with their own color and line, and a sized icon (#221).
+            .child(rich_text([
+                span(strings::typography_underline(cx))
+                    .underline_color(t.accent)
+                    .underline_style(UnderlineStyle::Thick),
+                span(" "),
+                span(strings::typography_underline(cx))
+                    .underline_color(t.danger)
+                    .underline_style(UnderlineStyle::Dotted),
+                span(" "),
+                span(strings::typography_underline(cx)).underline_style(UnderlineStyle::Double),
+                span(" "),
+                span(strings::typography_underline(cx))
+                    .underline_color(t.accent)
+                    .underline_style(UnderlineStyle::Dashed),
+                span(" "),
+                Span::icon("bell.fill", 12.).text_color(t.danger),
+            ]))
             .child(rich_text([
                 span(strings::typography_signed_in(cx)),
                 span("Ada Lovelace").bold(),

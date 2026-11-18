@@ -5,7 +5,9 @@
 //! merging and link ids are the same everywhere, and measuring the native
 //! label measures exactly what is drawn.
 
-use prism_core::{Color, FontFamily, FontWeight, Style, TextAlign, TextRun, TextWrap, decode_runs};
+use prism_core::{
+    Color, FontFamily, FontWeight, Style, TextAlign, TextRun, TextWrap, UnderlineStyle, decode_runs,
+};
 
 /// The font of one run.
 #[derive(Clone, Debug, PartialEq)]
@@ -40,13 +42,18 @@ pub struct StyledRun {
     pub background: Option<Color>,
     /// Underlined.
     pub underline: bool,
+    /// The underline's color (`None`: the text's, #221).
+    pub underline_color: Option<Color>,
+    /// How the underline is drawn (#221).
+    pub underline_style: UnderlineStyle,
     /// Struck through.
     pub strikethrough: bool,
     /// Clickable run: report `UiEvent::MenuSelect(link)`.
     pub link: Option<u64>,
     /// The link's path or URL.
     pub href: Option<String>,
-    /// An inline symbol (SF Symbol name); `text` is its fallback glyph.
+    /// An inline symbol (SF Symbol name); `text` is its fallback glyph
+    /// (U+FFFC in a rich input).
     pub icon: Option<String>,
 }
 
@@ -135,6 +142,8 @@ impl StyledText {
                     color: r.color.or(style.text_color),
                     background: r.background,
                     underline: style.underline || r.underline,
+                    underline_color: r.underline_color,
+                    underline_style: r.underline_style,
                     strikethrough: style.strikethrough || r.strikethrough,
                     link: r.link,
                     href: r.href.clone(),
@@ -209,6 +218,21 @@ impl StyledText {
     }
 }
 
+/// The `NSUnderlineStyle` of an underline (#221), for AppKit and UIKit:
+/// single, thick or double; dotted and dashed are single lines with a
+/// pattern.
+pub fn ns_underline_style(style: UnderlineStyle) -> isize {
+    // NSUnderlineStyleSingle 0x01, Thick 0x02, Double 0x09; the patterns
+    // Dot 0x0100 and Dash 0x0200.
+    match style {
+        UnderlineStyle::Single => 0x01,
+        UnderlineStyle::Thick => 0x02,
+        UnderlineStyle::Double => 0x09,
+        UnderlineStyle::Dotted => 0x0101,
+        UnderlineStyle::Dashed => 0x0201,
+    }
+}
+
 /// `w` between the platform's fixed weights `steps` (the values at 100,
 /// 200 … 900), interpolated for the weights in between (650).
 pub fn interpolate_weight(w: FontWeight, steps: [f64; 9]) -> f64 {
@@ -222,6 +246,24 @@ pub fn interpolate_weight(w: FontWeight, steps: [f64; 9]) -> f64 {
 mod tests {
     use super::*;
     use prism_core::{Styled, TextTransform, encode_runs, rgb};
+
+    #[test]
+    fn a_run_keeps_its_underline_color_and_style() {
+        let runs = [TextRun {
+            text: "x".into(),
+            underline: true,
+            underline_color: Some(rgb(0xe8a317)),
+            underline_style: UnderlineStyle::Dashed,
+            ..Default::default()
+        }];
+        let t = StyledText::from_runs("", &runs, &Style::default());
+        assert!(t.runs[0].underline);
+        assert_eq!(t.runs[0].underline_color, Some(rgb(0xe8a317)));
+        assert_eq!(t.runs[0].underline_style, UnderlineStyle::Dashed);
+        assert!(!t.is_simple());
+        assert_eq!(ns_underline_style(UnderlineStyle::Single), 1);
+        assert_eq!(ns_underline_style(UnderlineStyle::Dotted), 0x0101);
+    }
 
     #[test]
     fn plain_text_is_one_run_with_the_node_style() {

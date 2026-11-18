@@ -106,6 +106,27 @@ test("typing takes the style of the run before the caret, not of a link or a chi
   assert.equal(s.last().runs, enc("a", ["B", BOLD], "z"));
 });
 
+test("an icon is one non-editable character drawn as its glyph; underlines keep their line (#221)", () => {
+  const BELL = [OBJ, "g=gear", "c=#E03131FF"];
+  const DUE = ["Friday", "u", "uc=#E8A317FF", "us=thick"];
+  const e = editor(enc("Due ", BELL, DUE));
+  const [, icon, due] = e.el.childNodes;
+  assert.ok(icon.classList.contains("prism-symbol"));
+  assert.equal(icon.getAttribute("contenteditable"), "false");
+  assert.equal(icon.textContent, "⚙", "its glyph");
+  const css = e.el.ownerDocument.getElementById("prism-styles").sheet.cssRules.map((r) => r.style.cssText).join();
+  assert.match(css, /text-decoration-color:\s*#E8A317FF/);
+  assert.match(css, /text-decoration-thickness:\s*max\(2px,\s*\.12em\)/);
+  // The caret counts it as one character; typing after it takes the run after.
+  e.select(5);
+  e.input("insertText", "x");
+  assert.deepEqual(e.last(), { t: "input", id: 1, v: `Due ${OBJ}xFriday`, runs: enc("Due ", BELL, ["xFriday", ...DUE.slice(1)]) });
+  // One Backspace deletes it.
+  e.select(5);
+  e.input("deleteContentBackward");
+  assert.equal(e.last().v, "Due xFriday");
+});
+
 test("a chip is one character for the caret, the selection and deletion (#115)", () => {
   const e = editor(enc("a", CHIP, "b"));
   // Selection offsets count the chip as one.

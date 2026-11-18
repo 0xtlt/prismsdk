@@ -131,7 +131,11 @@ pub(crate) fn apply(label: &gtk::Label, state: &LabelState, dark: bool) -> Style
             add(pango::AttrSize::new_size_absolute(pango_units(r.font.size)).upcast());
         }
         if r.underline {
-            add(pango::AttrInt::new_underline(pango::Underline::Single).upcast());
+            add(pango::AttrInt::new_underline(underline(r.underline_style)).upcast());
+            if let Some(c) = r.underline_color {
+                let (red, green, blue, _) = rgba16(c, dark);
+                add(pango::AttrColor::new_underline_color(red, green, blue).upcast());
+            }
         }
         if r.strikethrough {
             add(pango::AttrInt::new_strikethrough(true).upcast());
@@ -294,6 +298,17 @@ fn embedded_font_files(
     out
 }
 
+/// Pango's underline for a run's (#221): it has no thick or dashed line
+/// (single), and draws a dotted one as its "error" line.
+fn underline(style: prism_core::UnderlineStyle) -> pango::Underline {
+    use prism_core::UnderlineStyle as U;
+    match style {
+        U::Single | U::Thick | U::Dashed => pango::Underline::Single,
+        U::Double => pango::Underline::Double,
+        U::Dotted => pango::Underline::Error,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,6 +325,15 @@ mod tests {
         assert_eq!(std::fs::read(&files[0]).unwrap(), b"font");
         assert_eq!(embedded_font_files(&embedded, &cache), files);
         let _ = std::fs::remove_dir_all(cache);
+    }
+
+    #[test]
+    fn underline_styles_map_to_pango() {
+        use prism_core::UnderlineStyle as U;
+        assert_eq!(underline(U::Single), pango::Underline::Single);
+        assert_eq!(underline(U::Double), pango::Underline::Double);
+        assert_eq!(underline(U::Dotted), pango::Underline::Error);
+        assert_eq!(underline(U::Thick), pango::Underline::Single);
     }
 
     #[test]

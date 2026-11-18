@@ -1606,6 +1606,12 @@ test("rich text: runs become spans, links and symbols; links report their id", (
   assert.match(cssOf(link), /text-decoration-line:\s*underline/);
   assert.equal(symbol.getAttribute("aria-hidden"), "true");
   assert.equal(run.getAttribute("role"), "link");
+  // An underline's own color and line (#221).
+  const marked = live([create(1, "text"), root(1), textOp(1, "note"),
+    { op: "config", id: 1, config: ["note", "u", "uc=#E8A317FF", "us=dotted"].join(FS) }]).node(1).firstChild;
+  assert.match(cssOf(marked), /text-decoration-line:\s*underline/);
+  assert.match(cssOf(marked), /text-decoration-color:\s*#E8A317FF/);
+  assert.match(cssOf(marked), /text-decoration-style:\s*dotted/);
   assert.equal(run.getAttribute("tabindex"), "0");
 
   // A click on a link: the app navigates (no page load).

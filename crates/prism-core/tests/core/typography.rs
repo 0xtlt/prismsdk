@@ -2,8 +2,8 @@
 
 use prism_core::prelude::*;
 use prism_core::{
-    DeviceCall, Length, NodeKind, PlatformRequest, Style, TextRun, UiEvent, decode_runs,
-    encode_runs,
+    DeviceCall, Length, NodeKind, OBJECT_CHAR, PlatformRequest, Style, TextRun, UiEvent,
+    UnderlineStyle, decode_runs, encode_runs,
 };
 use prism_testing::{Harness, mount};
 
@@ -106,6 +106,8 @@ fn runs_round_trip_through_their_encoding() {
             weight: Some(FontWeight::Custom(650)),
             italic: true,
             underline: true,
+            underline_color: Some(adaptive(rgb(0xe8a317), rgb(0xffd43b))),
+            underline_style: UnderlineStyle::Dotted,
             strikethrough: true,
             color: Some(rgb(0x112233)),
             background: Some(adaptive(rgb(0xffffff), rgb(0x000000))),
@@ -195,6 +197,10 @@ fn rich_text_is_one_text_node_with_runs() {
     assert!(runs[3].link.is_some());
     assert!(runs[5].link.is_some() && runs[5].href.is_none());
     assert_eq!(runs[4].icon.as_deref(), Some("star.fill"));
+    assert_eq!(
+        runs[4].text, "★",
+        "read-only, an icon is its fallback glyph"
+    );
     assert!(runs[0].link.is_none());
     // Icons have no label: the paragraph is read without them.
     assert_eq!(
@@ -234,4 +240,51 @@ fn texts_can_be_clicked_and_be_links() {
     let home = h.host.by_text("Home");
     assert!(h.host.get(home).clickable);
     assert_eq!(h.host.get(home).a11y.role, Some(Role::Link));
+}
+
+#[test]
+fn spans_have_their_own_underline_color_and_style() {
+    let s = span("passage")
+        .underline_color(rgb(0xe8a317))
+        .underline_style(UnderlineStyle::Dashed);
+    assert!(s.is_underlined(), "a color or a style underlines");
+    assert_eq!(s.underline_color_value(), Some(rgb(0xe8a317)));
+    assert_eq!(s.underline_style_value(), UnderlineStyle::Dashed);
+    assert!(!s.clone().no_underline().is_underlined());
+    // Every style survives the encoding; single is the default, unwritten.
+    for style in [
+        UnderlineStyle::Single,
+        UnderlineStyle::Thick,
+        UnderlineStyle::Double,
+        UnderlineStyle::Dotted,
+        UnderlineStyle::Dashed,
+    ] {
+        let run = TextRun {
+            text: "x".into(),
+            underline: true,
+            underline_style: style,
+            ..TextRun::default()
+        };
+        assert_eq!(decode_runs(&encode_runs(std::slice::from_ref(&run))), [run]);
+        assert_eq!(UnderlineStyle::from_name(style.name()), style);
+    }
+    assert!(
+        !encode_runs(&[TextRun {
+            underline: true,
+            ..TextRun::default()
+        }])
+        .contains("us=")
+    );
+    // Two runs differing only by their underline are two runs.
+    let a = span("a").underline();
+    assert!(!a.same_style(&span("b").underline_style(UnderlineStyle::Double)));
+    assert!(a.same_style(&span("b").underline()));
+}
+
+#[test]
+fn a_sized_icon_reads_as_its_glyph_in_a_read_only_text() {
+    let s = Span::icon("bell", 12.);
+    assert!(s.is_icon() && s.is_object());
+    assert_eq!(s.len(), 1);
+    assert_eq!(s.text(), OBJECT_CHAR.to_string());
 }
