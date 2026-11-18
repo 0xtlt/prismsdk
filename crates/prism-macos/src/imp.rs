@@ -90,6 +90,30 @@ pub(crate) fn dispatch_or_defer(event: UiEvent) {
     }
 }
 
+thread_local! {
+    /// An autoscroll step is scheduled (#251).
+    static AUTOSCROLL: Cell<bool> = const { Cell::new(false) };
+}
+
+/// While a dragged payload stays near a scroll view's edge (#251): a step
+/// every frame, the drag reported again over what moved under it.
+fn schedule_autoscroll() {
+    if AUTOSCROLL.replace(true) {
+        return;
+    }
+    on_main_after(prism_native::dnd::AUTOSCROLL_INTERVAL, || {
+        AUTOSCROLL.set(false);
+        with_state(|s| {
+            if let Some((event, relayout)) = s.renderer.autoscroll() {
+                if relayout {
+                    s.relayout();
+                }
+                s.dispatch(event);
+            }
+        });
+    });
+}
+
 /// Files came over a drop target or left it (#111).
 pub(crate) fn report_drop_hover(id: NodeId, on: bool) {
     report_state(id, prism_core::Interaction::DropHover, on);
@@ -355,8 +379,16 @@ fn go_back(stack: Option<NodeId>) {
 
 impl State {
     fn dispatch(&mut self, event: UiEvent) {
+        // A draggable's drag, with the drop target under the pointer (#251).
+        let (event, relayout) = self.renderer.locate_drag(event);
+        if relayout {
+            self.relayout();
+        }
         let patches = self.runtime.dispatch(event);
         self.commit(patches);
+        if self.renderer.autoscroll_due() {
+            schedule_autoscroll();
+        }
     }
 
     /// Applies patches, lays out, and hands platform requests to the OS.
@@ -2667,6 +2699,8 @@ pub struct AppKit {
     hover_areas: HashMap<NodeId, Retained<objc2_app_kit::NSTrackingArea>>,
     /// Keys, overlays, layers, suggestions (#17, #19, #25).
     ix: crate::interact::Interaction,
+    /// The snapshot following a dragged payload (#251).
+    drag_preview: Option<Retained<NSImageView>>,
 }
 
 fn ca_equal(a: objc2_quartz_core::CATransform3D, b: objc2_quartz_core::CATransform3D) -> bool {
@@ -4667,6 +4701,85 @@ impl Widgets for AppKit {
         }
     }
 
+    // --- Drag and drop between elements (#251) ---
+
+    fn window_origin(&mut self, view: &View) -> Option<(f32, f32)> {
+        let v = view.ns();
+        v.window()?;
+        let r = self.root.convertRect_fromView(v.bounds(), Some(v));
+        // The root is flipped: y grows down, like Prism's.
+        Some((r.origin.x as f32, r.origin.y as f32))
+    }
+
+    fn node_at(&mut self, x: f32, y: f32) -> Option<NodeId> {
+        // The preview is never what is under the pointer.
+        let preview = self.drag_preview.clone();
+        if let Some(p) = &preview {
+            p.setHidden(true);
+        }
+        let root: &NSView = &self.root;
+        let p = root.convertPoint_toView(
+            NSPoint::new(x as f64, y as f64),
+            unsafe { root.superview() }.as_deref(),
+        );
+        let hit = root.hitTest(p);
+        if let Some(p) = &preview {
+            p.setHidden(false);
+        }
+        let mut view = hit;
+        while let Some(v) = view {
+            if let Some(p) = v.downcast_ref::<PrismView>()
+                && node_id(p) != 0
+            {
+                return Some(node_id(p));
+            }
+            view = unsafe { v.superview() };
+        }
+        None
+    }
+
+    fn scroll_offset(&mut self, view: &View) -> (f32, f32) {
+        match view {
+            View::Scroll(s) => {
+                let o = s.scroll.contentView().bounds().origin;
+                (o.x as f32, o.y as f32)
+            }
+            _ => (0., 0.),
+        }
+    }
+
+    fn set_drag_preview(&mut self, view: &View, at: Option<(f32, f32)>) {
+        let Some((x, y)) = at else {
+            if let Some(p) = self.drag_preview.take() {
+                p.removeFromSuperview();
+            }
+            return;
+        };
+        if self.drag_preview.is_none() {
+            let v = view.ns();
+            let bounds = v.bounds();
+            let Some(rep) = v.bitmapImageRepForCachingDisplayInRect(bounds) else {
+                return;
+            };
+            v.cacheDisplayInRect_toBitmapImageRep(bounds, &rep);
+            let image = NSImage::initWithSize(objc2::AllocAnyThread::alloc(), bounds.size);
+            image.addRepresentation(&rep);
+            let preview = NSImageView::imageViewWithImage(&image, self.mtm);
+            preview.setFrame(bounds);
+            preview.setAlphaValue(0.85);
+            preview.setImageScaling(objc2_app_kit::NSImageScaling::ScaleAxesIndependently);
+            let shadow = objc2_app_kit::NSShadow::new();
+            shadow.setShadowBlurRadius(12.);
+            shadow.setShadowOffset(NSSize::new(0., -4.));
+            preview.setShadow(Some(&shadow));
+            self.root.addSubview(&preview);
+            self.drag_preview = Some(preview);
+        }
+        if let Some(p) = &self.drag_preview {
+            p.setFrameOrigin(NSPoint::new(x as f64, y as f64));
+        }
+    }
+
     fn set_key_events(&mut self, view: &View, local: bool, global: bool) {
         let id = view.id();
         if let View::Container(v) | View::Screen(v) | View::Tab(v) | View::Picture(v) = view {
@@ -5126,6 +5239,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         bare: Default::default(),
         hover_areas: HashMap::new(),
         ix: Default::default(),
+        drag_preview: None,
     });
     let first = runtime.render();
     let mut state = State {

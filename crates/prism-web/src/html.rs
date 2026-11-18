@@ -197,6 +197,7 @@ impl Backend for HtmlBackend {
                 Patch::SetPointerEvents { .. }
                 | Patch::SetDragDelay { .. }
                 | Patch::SetDropTarget { .. }
+                | Patch::SetDragAndDrop { .. }
                 | Patch::SetKeyEvents { .. }
                 | Patch::SetConsumedKeys { .. }
                 | Patch::SetLayoutEvents { .. }

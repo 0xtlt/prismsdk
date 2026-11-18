@@ -220,6 +220,11 @@ public final class PrismHost {
         // spread at the last report and where it was when they settled.
         boolean scaling;
         float pinchSpan, pinchFrom;
+        // Drag and drop between elements (#251): the payload kind it
+        // carries (null: not draggable), its preview, the kinds it takes.
+        String dragKind;
+        boolean dragPreview;
+        java.util.Set<String> accepts;
         // The button the current press started with (#136).
         String dragButton = "primary";
         int dragMods;
@@ -556,6 +561,18 @@ public final class PrismHost {
             case "drop":
                 PrismInput.setDropTarget(n, p.optJSONArray("types"));
                 break;
+            case "dnd": {
+                // Drag and drop between elements (#251).
+                n.dragKind = p.isNull("kind") ? null : p.optString("kind");
+                n.dragPreview = p.optBoolean("preview");
+                JSONArray kinds = p.optJSONArray("accepts");
+                n.accepts = null;
+                if (kinds != null && kinds.length() > 0) {
+                    n.accepts = new java.util.HashSet<>();
+                    for (int i = 0; i < kinds.length(); i++) n.accepts.add(kinds.optString(i));
+                }
+                break;
+            }
             case "pointer":
                 n.pointerMask = p.optInt("mask");
                 setClickable(n);

@@ -142,6 +142,7 @@ impl LinuxServices {
                 push: crate::push::distributor().map(|_| prism_core::PushService::UnifiedPush),
                 // GtkDropTarget (#111).
                 drop_files: true,
+                drag_and_drop: true,
                 ..Default::default()
             },
             data_dir,

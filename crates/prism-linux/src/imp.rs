@@ -754,10 +754,7 @@ fn dispatch_latest(id: NodeId, channel: u8, event: UiEvent) {
     if first {
         glib::idle_add_local_once(move || {
             if let Some(e) = COALESCED.with(|c| c.borrow_mut().remove(&(id, channel))) {
-                with_state(|s| {
-                    let patches = s.runtime.dispatch(e);
-                    commit(s, patches);
-                });
+                with_state(|s| deliver(s, e));
             }
         });
     }
@@ -1000,11 +997,46 @@ pub(crate) fn dispatch(event: UiEvent) {
     if UPDATING.get() {
         return;
     }
-    glib::idle_add_local_once(move || {
+    glib::idle_add_local_once(move || with_state(|s| deliver(s, event)));
+}
+
+/// Dispatches `event` now; a draggable's drag goes with the drop target
+/// under the pointer (#251).
+fn deliver(s: &mut State, event: UiEvent) {
+    let (event, restyled) = s.renderer.locate_drag(event);
+    if restyled {
+        s.renderer.widgets.flush_css();
+        relayout(s);
+    }
+    let patches = s.runtime.dispatch(event);
+    commit(s, patches);
+    if s.renderer.autoscroll_due() {
+        schedule_autoscroll();
+    }
+}
+
+thread_local! {
+    /// An autoscroll step is scheduled (#251).
+    static AUTOSCROLL: Cell<bool> = const { Cell::new(false) };
+}
+
+/// While a dragged payload stays near a scroll view's edge (#251): a step
+/// every frame, the drag reported again over what moved under it.
+fn schedule_autoscroll() {
+    if AUTOSCROLL.replace(true) {
+        return;
+    }
+    glib::timeout_add_local_once(prism_native::dnd::AUTOSCROLL_INTERVAL, || {
+        AUTOSCROLL.set(false);
         with_state(|s| {
-            let patches = s.runtime.dispatch(event);
-            commit(s, patches);
-        })
+            if let Some((event, restyled)) = s.renderer.autoscroll() {
+                if restyled {
+                    s.renderer.widgets.flush_css();
+                    relayout(s);
+                }
+                deliver(s, event);
+            }
+        });
     });
 }
 
@@ -1250,6 +1282,8 @@ pub struct Gtk {
     /// Styles with an adaptive color: their CSS rule picks the light or the
     /// dark variant, so it is rebuilt when the appearance changes.
     adaptive: HashMap<NodeId, (View, Style)>,
+    /// The snapshot following a dragged payload (#251).
+    drag_preview: Option<gtk::Picture>,
 }
 
 /// Scroll view → its sticky views (node, widget, range).
@@ -2997,6 +3031,70 @@ impl Widgets for Gtk {
 
     // --- Pointer, keys, focus, layers, overlays (#17, #19, #25) ---------------
 
+    // --- Drag and drop between elements (#251) ---
+
+    fn window_origin(&mut self, view: &View) -> Option<(f32, f32)> {
+        let p = view
+            .widget()
+            .compute_point(&self.root, &gtk::graphene::Point::new(0., 0.))?;
+        Some((p.x(), p.y()))
+    }
+
+    fn node_at(&mut self, x: f32, y: f32) -> Option<NodeId> {
+        // The preview cannot be targeted: picking goes through it.
+        let mut w = self.root.pick(x as f64, y as f64, gtk::PickFlags::DEFAULT);
+        while let Some(widget) = w {
+            if let Some(id) = node_of(&widget) {
+                return Some(id);
+            }
+            w = widget.parent();
+        }
+        None
+    }
+
+    fn scroll_offset(&mut self, view: &View) -> (f32, f32) {
+        match view {
+            View::Scroll(_, sw, _) => (
+                sw.hadjustment().value() as f32,
+                sw.vadjustment().value() as f32,
+            ),
+            _ => (0., 0.),
+        }
+    }
+
+    fn set_drag_preview(&mut self, view: &View, at: Option<(f32, f32)>) {
+        let Some((x, y)) = at else {
+            if let Some(p) = self.drag_preview.take() {
+                layout::forget(&p);
+                p.unparent();
+            }
+            return;
+        };
+        let (w, h) = self.sizes.get(&view.id()).copied().unwrap_or_default();
+        let preview = self.drag_preview.get_or_insert_with(|| {
+            let paintable = gtk::WidgetPaintable::new(Some(&view.widget()));
+            let p = gtk::Picture::for_paintable(&paintable);
+            p.set_can_target(false);
+            p.set_opacity(0.85);
+            p.add_css_class("prism-drag-preview");
+            p
+        });
+        if preview.parent().is_none() {
+            preview.set_parent(&self.root);
+        }
+        layout::set_frame(preview, rect(x, y, w, h));
+    }
+
+    fn set_drop_hover(&mut self, view: &View, on: bool) {
+        // GTK styles `drop_hover` as `:drop(active)`.
+        let w = view.widget();
+        if on {
+            w.set_state_flags(gtk::StateFlags::DROP_ACTIVE, false);
+        } else {
+            w.unset_state_flags(gtk::StateFlags::DROP_ACTIVE);
+        }
+    }
+
     fn set_drop_target(&mut self, view: &View, types: Option<&[String]>) {
         use prism_core::Interaction::DropHover;
         let id = view.id();
@@ -3987,6 +4085,7 @@ fn activate(app: &gtk::Application) {
         layers: Vec::new(),
         inert: HashSet::new(),
         adaptive: HashMap::new(),
+        drag_preview: None,
     });
     STATE.with(|s| {
         *s.borrow_mut() = Some(State {

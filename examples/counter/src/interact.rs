@@ -1,8 +1,8 @@
 //! The Interaction card of the Components tab: checkbox, radio group, a time
 //! of day, a search field with an icon and suggestions, a file input, a
 //! drawn level bar (drag and tap position), a pointer read-out, an
-//! arrow-key pad, a row of cards that move after a long press (#243), and
-//! a sheet, a popover and a dialog opened without a route. Its own entity, so dragging the level only re-renders this card.
+//! arrow-key pad, a row of cards that move after a long press (#243), a
+//! board whose cards are dragged between two columns (#251), and a sheet, a popover and a dialog opened without a route. Its own entity, so dragging the level only re-renders this card.
 
 use prism::Div;
 use prism::prelude::*;
@@ -38,6 +38,10 @@ pub struct Interact {
     cards: Vec<u32>,
     /// The card being dragged, by its number.
     lifted: Option<u32>,
+    /// The board's columns (#251): card numbers, in order.
+    columns: [Vec<usize>; 2],
+    /// Where a dragged card would land: its column and slot.
+    slot: Option<(usize, usize)>,
 }
 
 impl Default for Interact {
@@ -61,6 +65,8 @@ impl Default for Interact {
             lit: false,
             cards: (1..=8).collect(),
             lifted: None,
+            columns: [vec![0, 1, 2, 3], vec![4, 5]],
+            slot: None,
         }
     }
 }
@@ -70,6 +76,9 @@ const BAR: f32 = 240.;
 /// A card of the sideways row and the gap after it, in points.
 const CARD: f32 = 88.;
 const CARD_GAP: f32 = 8.;
+/// Height of a board card and the gap under it, in points.
+const BOARD_CARD: f32 = 40.;
+const BOARD_GAP: f32 = 6.;
 
 impl Interact {
     fn set_level(&mut self, x: f32) {
@@ -184,6 +193,104 @@ impl Interact {
                     .text_size(13.)
                     .text_color(t.muted),
             )
+    }
+
+    /// Where a card dropped at `y` in a column goes (#251).
+    fn slot_at(&self, column: usize, y: f32) -> usize {
+        let slot = ((y - 8.) / (BOARD_CARD + BOARD_GAP) + 0.5).max(0.) as usize;
+        slot.min(self.columns[column].len())
+    }
+
+    /// Two columns of cards (#251): a card is dragged onto the other column
+    /// (or within its own), a line shows where it would land, and the
+    /// first column scrolls when the pointer stays near its edge.
+    fn board(&self, cx: &mut Context<Self>) -> Div {
+        let t = Theme::of(cx);
+        let names = strings::interact_board_cards(cx);
+        let names: Vec<&str> = names.split(',').collect();
+        let titles = [
+            strings::interact_board_todo(cx),
+            strings::interact_board_done(cx),
+        ];
+        let line = || div().h(px(3.)).rounded(1.5).bg(t.accent).flex_shrink_0();
+        let mut columns = div().flex_row().gap(12.);
+        for (c, title) in titles.into_iter().enumerate() {
+            let mut cards = Vec::new();
+            for (i, card) in self.columns[c].iter().enumerate() {
+                if self.slot == Some((c, i)) {
+                    cards.push(line().into_element());
+                }
+                cards.push(
+                    div()
+                        .key(format!("card-{card}"))
+                        .id(format!("card-{card}"))
+                        .h(px(BOARD_CARD))
+                        .flex_shrink_0()
+                        .px(12.)
+                        .justify_center()
+                        .rounded(t.radius)
+                        .bg(t.surface)
+                        .border(1.)
+                        .border_color(t.border)
+                        .draggable(DragPayload::new("card", card.to_string()))
+                        .child(text(names.get(*card).copied().unwrap_or("?")).text_size(14.))
+                        .into_element(),
+                );
+            }
+            if self.slot == Some((c, self.columns[c].len())) {
+                cards.push(line().into_element());
+            }
+            let column = scroll()
+                .id(format!("board-{c}"))
+                .fit()
+                .h(px(if c == 0 { 150. } else { 200. }))
+                .flex_shrink_0()
+                .p(8.)
+                .gap(BOARD_GAP)
+                .rounded(t.radius)
+                .bg(t.border.with_alpha(0.35))
+                .drop_hover(move |s| s.bg(t.accent.with_alpha(0.12)))
+                .accessibility_label(title.clone())
+                .children(cards)
+                .on_drag_over(
+                    "card",
+                    cx.listener(move |this, e: &DragOverEvent, _| {
+                        this.slot = match e.phase {
+                            DragOverPhase::Leave => None,
+                            _ => Some((c, this.slot_at(c, e.position.y))),
+                        };
+                    }),
+                )
+                .on_drop_payload(
+                    "card",
+                    cx.listener(move |this, e: &DropEvent, _| {
+                        let Ok(card) = e.payload.data.parse::<usize>() else {
+                            return;
+                        };
+                        let mut slot = this.slot_at(c, e.position.y);
+                        for (k, col) in this.columns.iter_mut().enumerate() {
+                            if let Some(i) = col.iter().position(|x| *x == card) {
+                                col.remove(i);
+                                if k == c && i < slot {
+                                    slot -= 1;
+                                }
+                            }
+                        }
+                        this.columns[c].insert(slot.min(this.columns[c].len()), card);
+                    }),
+                );
+            columns = columns.child(
+                div()
+                    .flex_1()
+                    .gap(6.)
+                    .child(text(title).text_size(13.).semibold().text_color(t.muted))
+                    .child(column),
+            );
+        }
+        div()
+            .gap(8.)
+            .child(text(strings::interact_board(cx)).semibold())
+            .child(columns)
     }
 
     fn pointer_area(&self, cx: &mut Context<Self>) -> Div {
@@ -398,6 +505,7 @@ impl Render for Interact {
         let key_pad = self.key_pad(cx);
         let overlays = self.overlays(cx);
         let moving_tile = self.moving_tile(cx);
+        let board = self.board(cx);
         let this = cx.entity();
         // The bytes reach the app: `read()` them (here, just counted).
         let on_pick = move |files: Vec<PickedFile>, app: &mut App| {
@@ -478,6 +586,7 @@ impl Render for Interact {
                             .min_w(px(0.)),
                     ),
             )
+            .child(board)
             .child(overlays)
             .child(moving_tile)
             .when(self.confirmed > 0, |d| {

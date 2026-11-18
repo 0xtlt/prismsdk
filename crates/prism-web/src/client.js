@@ -287,8 +287,10 @@
         if (Math.hypot(dx, dy) < 4) return;
         drag.started = true;
         try { el.setPointerCapture(e.pointerId); } catch {}
-        send({ ...msg, phase: "start" });
-      } else drags.queue({ ...msg, phase: "move" });
+        // A draggable's payload (#251): its preview, the target under it.
+        if (el._dnd) payloadStart(el, drag, (m) => drags.queue({ ...m, t: "drag", id, x: drag.x, y: drag.y, dx: drag.dx, dy: drag.dy, ...drag.extra, ...(drag.mods ? { mods: drag.mods } : {}), phase: "move" }));
+        send({ ...msg, ...payloadAt(el, e.clientX, e.clientY), phase: "start" });
+      } else drags.queue({ ...msg, ...payloadAt(el, e.clientX, e.clientY), phase: "move" });
       drag.dx = dx;
       drag.dy = dy;
     };
@@ -299,7 +301,7 @@
       const mods = modsOf(e);
       if (mods === drag.mods) return;
       drag.mods = mods;
-      drags.queue({ t: "drag", id, x: drag.x, y: drag.y, dx: drag.dx, dy: drag.dy, ...drag.extra, ...(mods ? { mods } : {}), phase: "move" });
+      drags.queue({ t: "drag", id, x: drag.x, y: drag.y, dx: drag.dx, dy: drag.dy, ...drag.extra, ...(mods ? { mods } : {}), ...payloadLast(el), phase: "move" });
     };
     el.addEventListener("pointermove", (e) => {
       if (el._pmask & 2) moves.queue({ t: "pointer", id, phase: "move", ...local(el, e) });
@@ -322,7 +324,10 @@
       drags.drop();
       if (d.button === 2) el._rightDragged = true;
       const mods = modsOf(e);
-      send({ t: "drag", id, phase, x: d.x, y: d.y, dx: round(e.clientX - d.cx), dy: round(e.clientY - d.cy), ...d.extra, ...(mods ? { mods } : {}) });
+      // Released over a target: dropped there (#251); cancelled: nowhere.
+      const over = phase === "end" ? payloadAt(el, e.clientX, e.clientY) : {};
+      payloadEnd(el);
+      send({ t: "drag", id, phase, x: d.x, y: d.y, dx: round(e.clientX - d.cx), dy: round(e.clientY - d.cy), ...d.extra, ...(mods ? { mods } : {}), ...over });
       // The click this release makes is not a click, on the element or
       // around it (#223): swallowed before any handler, until the next press.
       dragJustEnded = true;
@@ -331,6 +336,105 @@
     const dragUp = (e) => finish(e, "end");
     const dragCancel = (e) => finish(e, "cancel");
   }
+  // --- Drag and drop between elements (#251) ------------------------------------
+  // A draggable's drag is reported like any drag, with the drop target under
+  // the pointer (`over`, and `ox`, `oy` in it, scrolling included). Pointer
+  // events, not HTML5 drag and drop: the same drag as `on_drag` (the slop,
+  // the buttons, live keys, no click after it) on touch screens too, a
+  // preview the page draws itself, and `elementFromPoint` finds the target
+  // with the browser's own hit-testing (scrolling, clipping, z-index).
+  let payload = null;
+  const PAYLOAD_EDGE = 44, PAYLOAD_STEP = 14;
+  function setDnd(el, p) {
+    el._dnd = p.kind ? { kind: p.kind, preview: !!p.preview } : null;
+    el._accepts = p.accepts && p.accepts.length ? p.accepts : null;
+    if (!el._accepts) el.removeAttribute("data-prism-drop");
+  }
+  /** Starts carrying `el`'s payload: a see-through copy follows the pointer. */
+  function payloadStart(el, drag, resend) {
+    payloadEnd();
+    const r = el.getBoundingClientRect();
+    let ghost = null;
+    if (el._dnd.preview) {
+      // The copy keeps `data-pid` for its styles; it is inert and hidden.
+      ghost = el.cloneNode(true);
+      ghost.removeAttribute("id");
+      ghost.querySelectorAll("[id]").forEach((n) => n.removeAttribute("id"));
+      ghost.setAttribute("aria-hidden", "true");
+      ghost.inert = true;
+      ghost.classList.add("prism-drag-preview");
+      Object.assign(ghost.style, {
+        position: "fixed", margin: "0", left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px`,
+        pointerEvents: "none", opacity: "0.85", zIndex: "2147483647", transition: "none", boxSizing: "border-box",
+      });
+      document.body.appendChild(ghost);
+    }
+    payload = { el, kind: el._dnd.kind, ghost, gx: drag.cx - r.left, gy: drag.cy - r.top, over: null, last: {}, at: [drag.cx, drag.cy], scroll: null, raf: 0, resend };
+  }
+  /** The target under (`cx`, `cy`) that takes the payload, and the pointer in it. */
+  function payloadAt(el, cx, cy) {
+    const p = payload;
+    if (!p || p.el !== el) return {};
+    p.at = [cx, cy];
+    if (p.ghost) { p.ghost.style.left = `${cx - p.gx}px`; p.ghost.style.top = `${cy - p.gy}px`; }
+    const hit = document.elementFromPoint(cx, cy);
+    // Not the dragged element or what is inside it.
+    let t = hit && el.contains(hit) ? el.parentElement : hit;
+    while (t && !(t._accepts && t._accepts.includes(p.kind) && t.dataset.pid)) t = t.parentElement;
+    if (t !== p.over) {
+      p.over?.removeAttribute("data-prism-drop");
+      t?.setAttribute("data-prism-drop", "");
+      p.over = t;
+    }
+    payloadScroller(hit, cx, cy);
+    if (!t) return (p.last = {});
+    const r = t.getBoundingClientRect();
+    p.last = { over: Number(t.dataset.pid), ox: round(cx - r.left - t.clientLeft + t.scrollLeft), oy: round(cy - r.top - t.clientTop + t.scrollTop) };
+    return p.last;
+  }
+  const payloadLast = (el) => (payload && payload.el === el ? payload.last : {});
+  /** The scroll view whose edge the pointer is near scrolls, on every frame. */
+  function payloadScroller(hit, cx, cy) {
+    const p = payload;
+    const speed = (from, length) => {
+      const edge = Math.min(PAYLOAD_EDGE, length / 3);
+      if (from < edge) return -PAYLOAD_STEP * (1 - Math.max(0, from) / edge);
+      if (from > length - edge) return PAYLOAD_STEP * (1 - Math.max(0, length - from) / edge);
+      return 0;
+    };
+    p.scroll = null;
+    for (let n = hit; n && n !== document.body; n = n.parentElement) {
+      if (p.el.contains(n)) continue;
+      const cs = getComputedStyle(n);
+      const r = n.getBoundingClientRect();
+      const sx = /(auto|scroll)/.test(cs.overflowX) && n.scrollWidth > n.clientWidth ? speed(cx - r.left, r.width) : 0;
+      const sy = /(auto|scroll)/.test(cs.overflowY) && n.scrollHeight > n.clientHeight ? speed(cy - r.top, r.height) : 0;
+      if (sx || sy) { p.scroll = { n, sx, sy }; break; }
+    }
+    if (p.scroll && !p.raf) p.raf = requestAnimationFrame(payloadTick);
+  }
+  function payloadTick() {
+    const p = payload;
+    if (!p) return;
+    p.raf = 0;
+    if (!p.scroll) return;
+    const { n, sx, sy } = p.scroll;
+    const before = [n.scrollLeft, n.scrollTop];
+    n.scrollBy(sx, sy);
+    if (n.scrollLeft === before[0] && n.scrollTop === before[1]) { p.scroll = null; return; }
+    // The content moved under the pointer: where it is now.
+    p.resend(payloadAt(p.el, p.at[0], p.at[1]));
+    if (p.scroll && !p.raf) p.raf = requestAnimationFrame(payloadTick);
+  }
+  function payloadEnd(el) {
+    const p = payload;
+    if (!p || (el && p.el !== el)) return;
+    payload = null;
+    if (p.raf) cancelAnimationFrame(p.raf);
+    p.ghost?.remove();
+    p.over?.removeAttribute("data-prism-drop");
+  }
+
   /**
    * A touch drag after a long press (#243): until the press is held still
    * for `ms`, the browser may pan what is around the node (`touch-action`);
@@ -3322,6 +3426,7 @@
       case "pointer": return setPointer(el, p.id, p.mask);
       case "dragdelay": return el && setDragDelay(el, p.ms);
       case "drop": return el && setDropTarget(el, p.id, p.types);
+      case "dnd": return el && setDnd(el, p);
       case "keys": return setKeys(el, p.local, p.global);
       case "consume": el._consume = p.keys && p.keys.length ? new Set(p.keys) : null; return;
       case "layout": return setLayoutReports(el, p.on);

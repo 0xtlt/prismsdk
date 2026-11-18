@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 
 #[cfg(target_vendor = "apple")]
 pub mod apple;
+pub mod dnd;
 mod extras;
 pub mod fields;
 pub mod fonts;
@@ -186,6 +187,45 @@ pub trait Widgets {
     /// [`NativeRenderer::set_interaction`] with `DropHover` while accepted
     /// files are over it.
     fn set_drop_target(&mut self, _view: &Self::View, _types: Option<&[String]>) {}
+
+    // --- Drag and drop between elements (#251, see `dnd`) ---
+
+    /// What kind of payload `view` carries when dragged (`None`: not
+    /// draggable), its preview, and the kinds it takes dropped. Backends
+    /// that locate drags through [`NativeRenderer::locate_drag`] need
+    /// nothing here; a host in another process that hit-tests itself does.
+    fn set_drag_and_drop(
+        &mut self,
+        _view: &Self::View,
+        _kind: Option<&str>,
+        _preview: prism_core::DragPreview,
+        _accepts: &[String],
+    ) {
+    }
+    /// Where `view`'s top-left corner is in the window, as drawn (scrolling
+    /// included), in view units. `None`: the backend does not locate drags
+    /// ([`NativeRenderer::locate_drag`] leaves them as they are).
+    fn window_origin(&mut self, _view: &Self::View) -> Option<(f32, f32)> {
+        None
+    }
+    /// The innermost node whose view is under the window point (view
+    /// units), by the platform's hit-testing; never the drag preview.
+    fn node_at(&mut self, _x: f32, _y: f32) -> Option<NodeId> {
+        None
+    }
+    /// How far a scroll view's content is scrolled (view units).
+    fn scroll_offset(&mut self, _view: &Self::View) -> (f32, f32) {
+        (0., 0.)
+    }
+    /// Shows a see-through snapshot of `view` above everything, its
+    /// top-left corner at the window point `at` (view units), taken when
+    /// first shown and moved after; `None` removes it. It lets the pointer
+    /// through.
+    fn set_drag_preview(&mut self, _view: &Self::View, _at: Option<(f32, f32)>) {}
+    /// A dragged payload `view` takes is over it (or not anymore): for
+    /// backends whose styles follow a platform state (GTK's `:drop(active)`);
+    /// the renderer also sets [`prism_core::Interaction::DropHover`].
+    fn set_drop_hover(&mut self, _view: &Self::View, _on: bool) {}
     /// Whether key presses are reported (`UiEvent::Key`): `local` while the
     /// view or a descendant has the focus (the view becomes focusable),
     /// `global` wherever the focus is.
@@ -542,6 +582,8 @@ pub struct NativeRenderer<W: Widgets> {
     layout_reports: HashMap<NodeId, Option<prism_core::Rect>>,
     /// The keyboard bar serving each text field that has one (#242).
     keyboard_bars: HashMap<NodeId, NodeId>,
+    /// Drag and drop between elements (#251).
+    dnd: dnd::Dnd,
 }
 
 /// What the platform insets a scroll view's content by, at the top and the
@@ -585,6 +627,7 @@ impl<W: Widgets> NativeRenderer<W> {
             under_bars: HashMap::new(),
             layout_reports: HashMap::new(),
             keyboard_bars: HashMap::new(),
+            dnd: dnd::Dnd::default(),
         }
     }
 
@@ -1924,6 +1967,7 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                 }
                 Patch::Destroy { id } => {
                     self.forget_extras(*id);
+                    self.dnd.forget(*id);
                     self.layout_reports.remove(id);
                     if self.focused == Some(*id) {
                         self.focused = None;
@@ -1954,6 +1998,12 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                         self.widgets.set_drop_target(&e.view, types.as_deref());
                     }
                 }
+                Patch::SetDragAndDrop {
+                    id,
+                    kind,
+                    preview,
+                    accepts,
+                } => self.set_drag_and_drop(*id, kind.as_deref(), *preview, accepts),
                 Patch::SetKeyEvents { id, local, global } => {
                     if let Some(e) = self.nodes.get(id) {
                         self.widgets.set_key_events(&e.view, *local, *global);

@@ -221,6 +221,23 @@ pub enum Patch {
         /// Accepted types, `None`: not a drop target.
         types: Option<Vec<String>>,
     },
+    /// Drag and drop between elements (#251): what kind of payload a view
+    /// carries when dragged ([`Div::draggable`](crate::Div::draggable); it
+    /// also gets the `DRAG` pointer bit) and the kinds it takes dropped.
+    /// Backends report drags of such a view as [`UiEvent::PayloadDrag`]
+    /// with the innermost accepting target under the pointer, show the
+    /// preview, set [`DropHover`](crate::Interaction::DropHover) on the
+    /// target and scroll a scroll view whose edge the pointer stays near.
+    SetDragAndDrop {
+        /// The view.
+        id: NodeId,
+        /// The kind it carries, `None`: not draggable.
+        kind: Option<String>,
+        /// What follows the pointer while it is dragged.
+        preview: crate::events::DragPreview,
+        /// The kinds dropped on it that it takes (empty: none).
+        accepts: Vec<String>,
+    },
     /// Whether a node reports key presses: `local` while it or something
     /// in it has the focus (a view can then take the focus), `global`
     /// whatever has the focus.
@@ -498,6 +515,15 @@ pub enum UiEvent {
     Pointer(NodeId, crate::events::PointerEvent),
     /// A drag on a view that listens to drags.
     Drag(NodeId, crate::events::DragEvent),
+    /// A drag of a [`draggable`](crate::Div::draggable) view (#251), with
+    /// the drop target the backend found under the pointer (`None`: over
+    /// nothing that takes its kind). A plain [`Drag`](Self::Drag) of such
+    /// a view is one over nothing.
+    PayloadDrag(
+        NodeId,
+        crate::events::DragEvent,
+        Option<crate::events::DropPoint>,
+    ),
     /// The user closed a sheet, popover or dialog, and how (#156). Like
     /// `Back(id, 0)` with the reason.
     Dismiss(NodeId, crate::element::DismissReason),
@@ -661,6 +687,9 @@ struct MNode {
     runs: String,
     /// The file types it accepts dropped (#111), as last sent.
     drop_types: Option<Vec<String>>,
+    /// The payload kind it carries and its preview, and the kinds it takes
+    /// (#251), as last sent.
+    dnd: (Option<(String, crate::events::DragPreview)>, Vec<String>),
 }
 
 /// What backends last got about a mounted island.
@@ -761,6 +790,11 @@ pub struct Reconciler {
     /// Web views' handlers (#62).
     web_message: HashMap<NodeId, Handler<crate::web_view::WebMessageEvent>>,
     web_load: HashMap<NodeId, Handler<crate::web_view::WebLoadEvent>>,
+    /// What draggable nodes carry (#251).
+    drag_payloads: HashMap<NodeId, crate::events::DragPayload>,
+    /// Payload drop targets' handlers, by kind (#251).
+    drop_payload: HashMap<NodeId, Vec<(String, Handler<crate::events::DropEvent>)>>,
+    drag_over: HashMap<NodeId, Vec<(String, Handler<crate::events::DragOverEvent>)>>,
     /// Drop targets' accepted types and handlers (#111).
     drop_files: HashMap<
         NodeId,
@@ -937,6 +971,39 @@ impl Reconciler {
     /// The pinch handler of node `id`, if any (#133).
     pub fn magnify_handler(&self, id: NodeId) -> Option<Handler<crate::events::MagnifyEvent>> {
         self.magnify.get(&id).cloned()
+    }
+
+    /// What node `id` carries when dragged (#251), if it is draggable.
+    pub fn drag_payload(&self, id: NodeId) -> Option<&crate::events::DragPayload> {
+        self.drag_payloads.get(&id)
+    }
+
+    /// Whether node `id` takes dropped payloads of `kind` (#251).
+    pub fn accepts_payload(&self, id: NodeId, kind: &str) -> bool {
+        let drops = self.drop_payload.get(&id);
+        let overs = self.drag_over.get(&id);
+        drops.is_some_and(|v| v.iter().any(|(k, _)| k == kind))
+            || overs.is_some_and(|v| v.iter().any(|(k, _)| k == kind))
+    }
+
+    /// Node `id`'s `on_drop_payload` handler for `kind` (#251).
+    pub fn drop_payload_handler(
+        &self,
+        id: NodeId,
+        kind: &str,
+    ) -> Option<Handler<crate::events::DropEvent>> {
+        let v = self.drop_payload.get(&id)?;
+        v.iter().find(|(k, _)| k == kind).map(|(_, h)| h.clone())
+    }
+
+    /// Node `id`'s `on_drag_over` handler for `kind` (#251).
+    pub fn drag_over_handler(
+        &self,
+        id: NodeId,
+        kind: &str,
+    ) -> Option<Handler<crate::events::DragOverEvent>> {
+        let v = self.drag_over.get(&id)?;
+        v.iter().find(|(k, _)| k == kind).map(|(_, h)| h.clone())
     }
 
     /// The accepted types and the handler of drop target `id` (#111).
@@ -1490,6 +1557,9 @@ impl Reconciler {
             on_web_load,
             on_drop_files,
             on_drop_progress,
+            drag_payload,
+            on_drop_payload,
+            on_drag_over,
             on_ended,
             on_wheel,
             on_magnify,
@@ -1585,6 +1655,48 @@ impl Reconciler {
             self.groups.remove(&id);
             on_key_down
         };
+        // Drag and drop between elements (#251), before the pointer bits: a
+        // draggable node reports its drags.
+        {
+            let mut accepts: Vec<String> = Vec::new();
+            for k in on_drop_payload
+                .iter()
+                .map(|(k, _)| k)
+                .chain(on_drag_over.iter().map(|(k, _)| k))
+            {
+                if !accepts.contains(k) {
+                    accepts.push(k.clone());
+                }
+            }
+            let dnd = (
+                drag_payload.as_ref().map(|p| (p.kind.clone(), p.preview)),
+                accepts,
+            );
+            let m = self.nodes.get_mut(&id).expect("node exists");
+            if m.dnd != dnd {
+                self.patches.push(Patch::SetDragAndDrop {
+                    id,
+                    kind: dnd.0.as_ref().map(|(k, _)| k.clone()),
+                    preview: dnd.0.as_ref().map(|(_, p)| *p).unwrap_or_default(),
+                    accepts: dnd.1.clone(),
+                });
+                m.dnd = dnd;
+            }
+            match drag_payload {
+                Some(p) => self.drag_payloads.insert(id, p),
+                None => self.drag_payloads.remove(&id),
+            };
+            if on_drop_payload.is_empty() {
+                self.drop_payload.remove(&id);
+            } else {
+                self.drop_payload.insert(id, on_drop_payload);
+            }
+            if on_drag_over.is_empty() {
+                self.drag_over.remove(&id);
+            } else {
+                self.drag_over.insert(id, on_drag_over);
+            }
+        }
         self.diff_events(
             id,
             name,
@@ -2064,7 +2176,7 @@ impl Reconciler {
         }
         let mask = if pointer.0.is_some() { HOVER } else { 0 }
             | if pointer.1.is_some() { MOVE } else { 0 }
-            | if pointer.2.is_some() {
+            | if pointer.2.is_some() || self.drag_payloads.contains_key(&id) {
                 pointer.3 & DRAG_ANY
             } else {
                 0
@@ -2321,6 +2433,7 @@ impl Reconciler {
                 pointer_mask: 0,
                 drag_delay_ms: 0,
                 drop_types: None,
+                dnd: (None, Vec::new()),
                 keys: (false, false),
                 consume_keys: Vec::new(),
                 layout_events: false,
@@ -2380,6 +2493,9 @@ impl Reconciler {
         self.web_load.remove(&id);
         self.drop_files.remove(&id);
         self.drop_progress.remove(&id);
+        self.drag_payloads.remove(&id);
+        self.drop_payload.remove(&id);
+        self.drag_over.remove(&id);
         self.ended.remove(&id);
         self.menu_items.retain(|k, _| k >> 16 != id);
         self.scroll.remove(&id);

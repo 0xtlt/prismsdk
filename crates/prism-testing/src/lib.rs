@@ -36,6 +36,9 @@ pub struct HNode {
     pub drag_delay_ms: u32,
     /// File types it accepts dropped (`Patch::SetDropTarget`, #111).
     pub drop_types: Option<Vec<String>>,
+    /// The payload kind it carries when dragged, and the kinds it takes
+    /// dropped (`Patch::SetDragAndDrop`, #251).
+    pub dnd: (Option<String>, Vec<String>),
     /// Key events reported: (local, global).
     pub keys: (bool, bool),
     /// Keys taken from the focused control (`consume_keys`, #181).
@@ -225,6 +228,7 @@ impl Backend for Host {
                             drag_delay_ms: 0,
                             drop_types: None,
                             highlight: None,
+                            dnd: (None, Vec::new()),
                             keys: (false, false),
                             consumed_keys: Vec::new(),
                             reports_layout: false,
@@ -292,6 +296,9 @@ impl Backend for Host {
                 Patch::SetDropTarget { id, types } => {
                     self.node(*id, "SetDropTarget").drop_types = types.clone()
                 }
+                Patch::SetDragAndDrop {
+                    id, kind, accepts, ..
+                } => self.node(*id, "SetDragAndDrop").dnd = (kind.clone(), accepts.clone()),
                 Patch::SetKeyEvents { id, local, global } => {
                     self.node(*id, "SetKeyEvents").keys = (*local, *global)
                 }
@@ -447,6 +454,47 @@ impl Harness {
     pub fn click(&mut self, text: &str) -> &[Patch] {
         let id = self.host.by_text(text);
         self.dispatch(UiEvent::Click(id))
+    }
+
+    /// The mounted node named `name` (`.id(name)`).
+    pub fn by_name(&self, name: &str) -> NodeId {
+        self.rt
+            .node_named(name)
+            .unwrap_or_else(|| panic!("no node named {name:?}"))
+    }
+
+    /// Drags draggable `source` over `target` and releases it there at `at`
+    /// (in the target), like a backend would (#251): `on_drag_over` hears
+    /// it enter and leave, `on_drop_payload` the drop.
+    pub fn drag_payload_to(
+        &mut self,
+        source: NodeId,
+        target: NodeId,
+        at: prism_core::Point,
+    ) -> &[Patch] {
+        assert!(
+            self.host.nodes[&source].dnd.0.is_some(),
+            "node {source} is not draggable"
+        );
+        let event = |phase| prism_core::DragEvent {
+            phase,
+            start: prism_core::Point::new(0., 0.),
+            translation: prism_core::Point::new(10., 10.),
+            button: prism_core::PointerButton::Primary,
+            modifiers: Default::default(),
+        };
+        let over = Some(prism_core::DropPoint {
+            target,
+            position: at,
+        });
+        for phase in [prism_core::DragPhase::Start, prism_core::DragPhase::Move] {
+            self.dispatch(UiEvent::PayloadDrag(source, event(phase), over));
+        }
+        self.dispatch(UiEvent::PayloadDrag(
+            source,
+            event(prism_core::DragPhase::End),
+            over,
+        ))
     }
 
     /// Drops `files` on drop target `id`, like the platform would (#111).

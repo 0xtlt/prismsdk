@@ -292,6 +292,23 @@ fn remote_ops_and_input_events() {
     };
     assert!(k.is("ArrowUp") && k.modifiers.shift && !k.repeat);
     assert!(parse_input_event(&json!({"t": "drag", "id": 4, "phase": "fly"})).is_none());
+    // A draggable's drag over the drop target the host found (#251).
+    assert!(matches!(
+        ev(json!({"t": "drag", "id": 4, "phase": "move", "x": 1, "y": 2, "dx": 3, "dy": 4,
+            "over": 7, "ox": 5, "oy": 60})),
+        UiEvent::PayloadDrag(4, d, Some(p))
+            if d.translation == Point::new(3., 4.) && p.target == 7 && p.position == Point::new(5., 60.)
+    ));
+    let mut w = RemoteWidgets::new(|_| (0., 0.));
+    w.set_drag_and_drop(&4, Some("card"), prism_core::DragPreview::Snapshot, &[]);
+    w.set_drag_and_drop(&7, None, prism_core::DragPreview::None, &["card".into()]);
+    assert_eq!(
+        w.ops,
+        [
+            json!({"op": "dnd", "id": 4, "kind": "card", "preview": true, "accepts": []}),
+            json!({"op": "dnd", "id": 7, "kind": null, "preview": false, "accepts": ["card"]}),
+        ]
+    );
     assert_eq!(
         device::call(
             1,
@@ -355,4 +372,130 @@ fn web_views_are_sized_by_their_style_and_take_messages() {
         parse_input_event(&json!({"t": "webload", "id": 7, "url": "https://example.com/"})),
         Some(UiEvent::WebLoad(7, "https://example.com/".into()))
     );
+}
+
+// --- Drag and drop between elements (#251) -------------------------------------
+
+struct Kanban {
+    log: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+}
+
+impl Render for Kanban {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        let (over, dropped) = (self.log.clone(), self.log.clone());
+        let card = |name: &'static str| {
+            div()
+                .id(name)
+                .h(60.)
+                .flex_shrink_0()
+                .child(text(name))
+                .draggable(prism_core::DragPayload::new("card", name))
+        };
+        div()
+            .flex_row()
+            .w(400.)
+            .h(300.)
+            .child(
+                prism_core::scroll()
+                    .id("todo")
+                    .w(200.)
+                    .h(100.)
+                    .child(card("a"))
+                    .child(card("b"))
+                    .child(card("c"))
+                    .on_drag_over(
+                        "card",
+                        Rc::new(move |e: &prism_core::DragOverEvent, _: &mut App| {
+                            over.borrow_mut()
+                                .push(format!("todo {:?} {}", e.phase, e.position.y))
+                        }),
+                    ),
+            )
+            .child(
+                div()
+                    .id("done")
+                    .w(200.)
+                    .h(300.)
+                    .drop_hover(|s| s.opacity(0.5))
+                    .on_drop_payload(
+                        "card",
+                        Rc::new(move |e: &prism_core::DropEvent, _: &mut App| {
+                            dropped.borrow_mut().push(format!(
+                                "drop {} at {} {}",
+                                e.payload.data, e.position.x, e.position.y
+                            ))
+                        }),
+                    ),
+            )
+    }
+}
+
+#[test]
+fn a_dragged_payload_is_located_on_the_target_under_the_pointer() {
+    type Log = std::rc::Rc<std::cell::RefCell<Vec<String>>>;
+    let mut h = Harness::new(move |cx| {
+        let log: Log = Default::default();
+        cx.set_global(log.clone());
+        let e = cx.new_entity(|_| Kanban { log });
+        cx.set_root(e);
+    });
+    let log = h.rt.app.global::<Log>().clone();
+    h.layout(400., 300.);
+    let card = h.rt.node_named("b").unwrap();
+    let todo = h.rt.node_named("todo").unwrap();
+    let done = h.rt.node_named("done").unwrap();
+    // Grabbed 10 pt into card b (its top at 60 in the column).
+    let drag = |phase, dx: f32, dy: f32| {
+        UiEvent::Drag(
+            card,
+            prism_core::DragEvent {
+                phase,
+                start: Point::new(10., 10.),
+                translation: Point::new(dx, dy),
+                button: prism_core::PointerButton::Primary,
+                modifiers: Default::default(),
+            },
+        )
+    };
+    let send = |h: &mut Harness, e: UiEvent| {
+        let (e, _) = h.r.locate_drag(e);
+        let p = h.rt.dispatch(e.clone());
+        h.r.apply(&p);
+        e
+    };
+    // Over its own column, the pointer on itself: the column (scrolling
+    // included), with the preview held where it was grabbed.
+    let e = send(&mut h, drag(DragPhase::Start, 0., 5.));
+    let UiEvent::PayloadDrag(_, _, Some(p)) = e else {
+        panic!("located: {e:?}")
+    };
+    assert_eq!((p.target, p.position), (todo, Point::new(10., 75.)));
+    assert_eq!(h.w().preview, Some((card, (0., 65.))));
+    // Near the column's bottom edge: it scrolls on the timer, and the drag
+    // is reported again over the content that moved under the pointer.
+    send(&mut h, drag(DragPhase::Move, 0., 25.));
+    assert!(h.r.autoscroll_due());
+    let (e, _) = h.r.autoscroll().expect("scrolled");
+    assert!(h.w().scroll_offsets[&todo].1 > 0.);
+    let UiEvent::PayloadDrag(_, _, Some(p)) = e else {
+        panic!("{e:?}")
+    };
+    assert!(p.position.y > 95., "{p:?}");
+    let p = h.rt.dispatch(e);
+    h.r.apply(&p);
+    // Into the other column: it is drop-hovered (styled), then takes the drop.
+    send(&mut h, drag(DragPhase::Move, 250., 100.));
+    assert_eq!(h.w().drop_hover, [done]);
+    assert!(
+        h.r.interactions(done)
+            .contains(prism_core::Interaction::DropHover)
+    );
+    assert!(!h.r.autoscroll_due());
+    send(&mut h, drag(DragPhase::End, 250., 120.));
+    assert!(h.w().drop_hover.is_empty());
+    assert_eq!(h.w().preview, None);
+    let log = log.borrow();
+    assert_eq!(log[0], "todo Enter 75");
+    assert!(log.iter().any(|l| l.starts_with("todo Leave")), "{log:?}");
+    assert_eq!(log.last().unwrap(), "drop b at 60 190");
 }

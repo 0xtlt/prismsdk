@@ -292,6 +292,106 @@ impl DragEvent {
     }
 }
 
+/// What an element carries when it is dragged (#251):
+/// [`Div::draggable`](crate::Div::draggable). Its `kind` says which drop
+/// targets take it ([`Div::on_drop_payload`](crate::Div::on_drop_payload),
+/// [`Div::on_drag_over`](crate::Div::on_drag_over)); `data` is the app's
+/// own (an id, JSON). It stays in the app: nothing goes through the
+/// system's pasteboard.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DragPayload {
+    /// What it is (`"card"`, `"component"`): targets accept kinds.
+    pub kind: String,
+    /// The app's data (an id, JSON).
+    pub data: String,
+    /// What follows the pointer during the drag.
+    pub preview: DragPreview,
+}
+
+impl DragPayload {
+    /// A payload of `kind` carrying `data`, previewed by a snapshot of the
+    /// element.
+    pub fn new(kind: impl Into<String>, data: impl Into<String>) -> Self {
+        DragPayload {
+            kind: kind.into(),
+            data: data.into(),
+            preview: DragPreview::Snapshot,
+        }
+    }
+
+    /// Sets what follows the pointer ([`DragPreview::None`] when the app
+    /// moves the element itself, with `on_drag`).
+    pub fn preview(mut self, preview: DragPreview) -> Self {
+        self.preview = preview;
+        self
+    }
+}
+
+/// What follows the pointer while a [`DragPayload`] is dragged (#251).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum DragPreview {
+    /// A see-through picture of the dragged element, held where it was
+    /// grabbed.
+    #[default]
+    Snapshot,
+    /// Nothing (the app shows the drag itself).
+    None,
+}
+
+/// Where a dragged payload is over a drop target:
+/// [`DragOverEvent::phase`] (#251).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DragOverPhase {
+    /// The payload came over the target.
+    Enter,
+    /// It moved over the target (or the keys held changed, or a scroll view
+    /// scrolled under it).
+    Move,
+    /// It left the target: the pointer went elsewhere, it was dropped
+    /// (after [`on_drop_payload`](crate::Div::on_drop_payload)), or the drag
+    /// was cancelled. Clear insertion marks here.
+    Leave,
+}
+
+/// A dragged payload over a drop target:
+/// [`Div::on_drag_over`](crate::Div::on_drag_over) (#251).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DragOverEvent {
+    /// Entered, moved or left.
+    pub phase: DragOverPhase,
+    /// What is dragged.
+    pub payload: DragPayload,
+    /// Where the pointer is, in the target (in its content for a scroll
+    /// view: scrolling included). The last position for `Leave`.
+    pub position: Point,
+    /// Keys held now.
+    pub modifiers: Modifiers,
+}
+
+/// A payload dropped on a target:
+/// [`Div::on_drop_payload`](crate::Div::on_drop_payload) (#251).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DropEvent {
+    /// What was dropped.
+    pub payload: DragPayload,
+    /// Where it was released, in the target (in its content for a scroll
+    /// view: scrolling included).
+    pub position: Point,
+    /// Keys held at the release (⌥ to copy instead of moving).
+    pub modifiers: Modifiers,
+}
+
+/// The drop target a backend found under a dragged payload (#251):
+/// `UiEvent::PayloadDrag`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DropPoint {
+    /// The target, the innermost node under the pointer that accepts the
+    /// payload's kind (not the dragged element or what is inside it).
+    pub target: crate::NodeId,
+    /// The pointer in the target (its content for a scroll view).
+    pub position: Point,
+}
+
 /// Modifier keys held during a key press.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Modifiers {

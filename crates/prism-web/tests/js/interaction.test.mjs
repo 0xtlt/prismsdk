@@ -1178,3 +1178,58 @@ test("keyboard bars show above the on-screen keyboard for the fields they serve 
   page.node(2).dispatchEvent({ type: "focusin" });
   assert.ok(!own._popoverOpen);
 });
+
+test("a draggable carries its payload to the target under the pointer, previewed and scrolled (#251)", () => {
+  const page = live([
+    // A column (3, scrolling) holding a card (4), and another column (5).
+    { op: "create", id: 3, kind: "scroll" }, { op: "dnd", id: 3, kind: null, preview: false, accepts: ["card"] },
+    { op: "create", id: 4, kind: "view" }, { op: "pointer", id: 4, mask: 4 },
+    { op: "dnd", id: 4, kind: "card", preview: true, accepts: [] },
+    { op: "children", id: 3, children: [4] },
+    { op: "create", id: 5, kind: "view" }, { op: "dnd", id: 5, kind: null, preview: false, accepts: ["card", "file"] },
+    ...root([3, 5]),
+  ]);
+  const [column, card, other] = [page.node(3), page.node(4), page.node(5)];
+  const box = (el, left, top, width, height) => { el.getBoundingClientRect = () => ({ left, top, width, height, right: left + width, bottom: top + height }); };
+  box(column, 0, 0, 200, 300);
+  Object.assign(column, { clientWidth: 200, clientHeight: 300, scrollHeight: 900, scrollTop: 40 });
+  column.style.overflowY = "auto";
+  box(card, 10, 50, 180, 60);
+  box(other, 200, 0, 200, 300);
+  // What the browser's hit-testing finds: the card, then the columns.
+  page.document.elementFromPoint = (x, y) => (x >= 200 ? other : x >= 10 && x < 190 && y >= 50 && y < 110 ? card : column);
+  const p = (type, x, y, extra = {}) => card.dispatchEvent({ type, pointerId: 1, button: 0, clientX: x, clientY: y, ...extra });
+  p("pointerdown", 20, 60);
+  p("pointermove", 20, 70);
+  // Over itself: its column, the pointer in its content.
+  assert.deepEqual(lastSent(page), { t: "drag", id: 4, x: 10, y: 10, dx: 0, dy: 10, over: 3, ox: 20, oy: 110, phase: "start" });
+  const ghost = page.document.body.childNodes.find((n) => n.className && n.className.includes("prism-drag-preview"));
+  assert.ok(ghost, "a copy follows the pointer");
+  assert.equal(ghost.getAttribute("aria-hidden"), "true");
+  assert.equal(ghost.style.pointerEvents, "none");
+  assert.equal(column.hasAttribute("data-prism-drop"), true, "drop_hover");
+  // Near the column's bottom edge: it scrolls every frame and the drag
+  // goes again with the content that moved under the pointer.
+  p("pointermove", 20, 290);
+  flushFrames(page);
+  assert.ok(column.scrollTop > 40, `scrolled to ${column.scrollTop}`);
+  flushFrames(page);
+  assert.equal(lastSent(page).over, 3);
+  assert.ok(lastSent(page).oy > 330);
+  // Into the other column, released there with ⌥.
+  p("pointermove", 260, 100);
+  flushFrames(page);
+  assert.equal(column.hasAttribute("data-prism-drop"), false);
+  assert.equal(other.hasAttribute("data-prism-drop"), true);
+  p("pointerup", 262, 104, { altKey: true });
+  assert.deepEqual(lastSent(page), { t: "drag", id: 4, phase: "end", x: 10, y: 10, dx: 242, dy: 44, mods: 4, over: 5, ox: 62, oy: 104 });
+  assert.equal(other.hasAttribute("data-prism-drop"), false);
+  assert.ok(!page.document.body.childNodes.includes(ghost), "the copy is gone");
+  // A cancelled drag goes nowhere.
+  page.timers.splice(0).forEach((t) => t.fn());
+  p("pointerdown", 20, 60);
+  p("pointermove", 260, 60);
+  p("pointercancel", 260, 60);
+  assert.equal(lastSent(page).phase, "cancel");
+  assert.equal(lastSent(page).over, undefined);
+});

@@ -215,9 +215,10 @@ pub fn parse_input_event(v: &Value) -> Option<prism_core::UiEvent> {
                 position: Point::new(num("x").unwrap_or(0.), num("y").unwrap_or(0.)),
             },
         )),
-        "drag" => Some(UiEvent::Drag(
-            id?,
-            DragEvent {
+        // A draggable's drag over a drop target (#251): `"over"` (the
+        // target), `"ox"`, `"oy"` (the pointer in it, scrolling included).
+        "drag" => {
+            let e = DragEvent {
                 phase: DragPhase::from_name(v.get("phase")?.as_str()?)?,
                 start: Point::new(num("x").unwrap_or(0.), num("y").unwrap_or(0.)),
                 translation: Point::new(num("dx").unwrap_or(0.), num("dy").unwrap_or(0.)),
@@ -231,8 +232,19 @@ pub fn parse_input_event(v: &Value) -> Option<prism_core::UiEvent> {
                 modifiers: Modifiers::from_bits(
                     v.get("mods").and_then(Value::as_u64).unwrap_or(0) as u8
                 ),
-            },
-        )),
+            };
+            Some(match v.get("over").and_then(Value::as_u64) {
+                Some(target) => UiEvent::PayloadDrag(
+                    id?,
+                    e,
+                    Some(prism_core::DropPoint {
+                        target,
+                        position: Point::new(num("ox").unwrap_or(0.), num("oy").unwrap_or(0.)),
+                    }),
+                ),
+                None => UiEvent::Drag(id?, e),
+            })
+        }
         // Wheel and pinch (#133): `{"t":"wheel","id","dx","dy","x","y","mods",
         // "phase","precise"}`, `{"t":"magnify","id","scale","x","y","phase"}`.
         "wheel" => Some(UiEvent::Wheel(
@@ -1122,6 +1134,25 @@ impl Widgets for RemoteWidgets {
     fn set_drop_target(&mut self, id: &NodeId, types: Option<&[String]>) {
         self.ops
             .push(json!({ "op": "drop", "id": id, "types": types }));
+    }
+
+    /// `{"op":"dnd","id","kind","preview","accepts"}` (#251): the host
+    /// finds the drop target under a draggable's drag and reports it with
+    /// the drag (`over`, `ox`, `oy`), shows the preview and scrolls.
+    fn set_drag_and_drop(
+        &mut self,
+        id: &NodeId,
+        kind: Option<&str>,
+        preview: prism_core::DragPreview,
+        accepts: &[String],
+    ) {
+        self.ops.push(json!({
+            "op": "dnd",
+            "id": id,
+            "kind": kind,
+            "preview": preview == prism_core::DragPreview::Snapshot,
+            "accepts": accepts,
+        }));
     }
 
     fn set_key_events(&mut self, id: &NodeId, local: bool, global: bool) {
