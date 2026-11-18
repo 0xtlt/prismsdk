@@ -65,6 +65,36 @@ fn parameters_are_required_and_default_to_the_apps_default_option() {
     assert!(swift.contains(".accessoryInline"), "lock screen on iOS");
 }
 
+/// #277: an instance whose option is gone, or that kept the empty
+/// placeholder, is still resolved. Filtered out, the required parameter
+/// would be missing and WidgetKit would never ask for a timeline.
+#[test]
+fn every_requested_id_is_answered_unknown_ones_included() {
+    let Some(swift) = generate(CONFIGURABLE, "ios") else {
+        return;
+    };
+    assert!(
+        swift.contains(
+            r#"func entities(for identifiers: [String]) async throws -> [PrismEntity_reading_0] {
+        prismResolve("reading", "place", identifiers, placeholder: "Place").map { PrismEntity_reading_0(id: $0.id, title: $0.title) }"#
+        ),
+        "{swift}"
+    );
+    assert!(!swift.contains("identifiers.contains"), "{swift}");
+    // One answer per id, an unknown one titled like the default option.
+    let kit = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("apple/Extension/PrismWidgetKit.swift"),
+    )
+    .unwrap();
+    assert!(
+        kit.contains("return ids.map { id in p.options.first { $0.id == id } ?? (id, fallback) }"),
+        "prismResolve answers every id"
+    );
+    assert!(
+        kit.contains("let fallback = p.options.first { $0.id == p.default }?.title ?? placeholder")
+    );
+}
+
 #[test]
 fn macos_leaves_lock_screen_families_and_live_activities_out() {
     let Some(swift) = generate(CONFIGURABLE, "macos") else {
