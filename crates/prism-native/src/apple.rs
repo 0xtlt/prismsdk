@@ -467,6 +467,8 @@ mod bridge {
         fn prism_device_haptic(kind: *const c_char);
         fn prism_device_copy(text: *const c_char);
         fn prism_device_paste(id: u64);
+        fn prism_device_paste_item(id: u64);
+        fn prism_device_copy_item(entries: *const c_char);
         fn prism_device_share(text: *const c_char, url: *const c_char, files: *const c_char);
         fn prism_device_open_url(url: *const c_char);
         fn prism_device_save_file(id: u64, path: *const c_char, name: *const c_char);
@@ -582,6 +584,16 @@ mod bridge {
                     )
                 }
                 DeviceCall::ReadClipboard => prism_device_paste(id),
+                // #246: the bridge answers files named by their type.
+                DeviceCall::ReadClipboardItem => prism_device_paste_item(id),
+                // One entry per line: type \t base64.
+                DeviceCall::WriteClipboard(item) => {
+                    let lines: Vec<String> = item
+                        .entries()
+                        .map(|(ty, data)| format!("{ty}\t{}", prism_core::clipboard::base64(data)))
+                        .collect();
+                    prism_device_copy_item(c(&lines.join("\n")).as_ptr())
+                }
                 DeviceCall::Haptic(h) => prism_device_haptic(c(h.name()).as_ptr()),
                 DeviceCall::CopyText(t) => prism_device_copy(c(&t).as_ptr()),
                 DeviceCall::Share(s) => {

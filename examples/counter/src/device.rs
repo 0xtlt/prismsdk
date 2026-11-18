@@ -224,7 +224,12 @@ impl Render for DeviceDemo {
                                 .small()
                                 .ghost()
                                 .on_click(cx.listener(|this, _, cx| {
-                                    cx.copy_text("Prism ♥ Rust");
+                                    // Text and HTML: rich editors paste the bold (#246).
+                                    cx.write_clipboard(
+                                        ClipboardItem::new()
+                                            .text("Prism ♥ Rust")
+                                            .html("<b>Prism</b> ♥ Rust"),
+                                    );
                                     this.status = Some(strings::device_copied(cx));
                                 })),
                         )
@@ -234,11 +239,21 @@ impl Render for DeviceDemo {
                                 .ghost()
                                 .on_click(cx.listener(|_, _, cx| {
                                     cx.spawn(async move |this, cx| {
-                                        let text = cx.read_clipboard().await;
+                                        // Every type (#246): a screenshot is image/png.
+                                        let item = cx.read_clipboard_item().await;
                                         cx.update_entity(&this, |d, cx| {
-                                            d.status = Some(
-                                                text.unwrap_or_else(|| strings::device_empty(cx)),
-                                            )
+                                            d.status = Some(match item {
+                                                Some(i) => match (i.as_image(), i.as_text()) {
+                                                    (None, Some(text)) => text,
+                                                    (Some(img), _) => format!(
+                                                        "{} ({} KB)",
+                                                        img.mime,
+                                                        img.bytes.len().div_ceil(1024)
+                                                    ),
+                                                    _ => i.types().join(", "),
+                                                },
+                                                None => strings::device_empty(cx),
+                                            })
                                         });
                                     });
                                 })),

@@ -850,6 +850,84 @@ test("picked files go up in chunks, then the reply (#112)", async () => {
   assert.deepEqual(msgs[4], { t: "device_reply", id: 5, uploaded: true });
 });
 
+test("the clipboard's types go up like picked files, each named by its type (#246)", async () => {
+  const page = live([create(1, "view"), root(1)]);
+  Object.assign(page.window, { File, Blob });
+  const png = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: "image/png" });
+  const item = {
+    types: ["image/png", "text/plain", "web application/x-notes"],
+    getType: async (t) => (t === "image/png" ? png : new Blob([t === "text/plain" ? "Shot" : "{}"], { type: t })),
+  };
+  page.window.navigator.clipboard = { read: async () => [item] };
+  page.ws.deliver({ t: "device", id: 5, call: "read_clipboard_item" });
+  await settle();
+  const msgs = page.ws.sent.filter((m) => m.id === 5);
+  assert.deepEqual(msgs[0].files, [
+    { name: "image/png", mime: "image/png", size: 4 },
+    { name: "text/plain", mime: "text/plain", size: 4 },
+    { name: "application/x-notes", mime: "application/x-notes", size: 2 },
+  ]);
+  assert.deepEqual(msgs.map((m) => m.t), ["upload_start", "upload_chunk", "upload_chunk", "upload_chunk", "device_reply"]);
+  assert.equal(Buffer.from(msgs[2].data, "base64").toString(), "Shot");
+  // Refused (or no `read`): the text alone; nothing: no files.
+  page.window.navigator.clipboard = { read: async () => { throw new Error("NotAllowedError"); }, readText: async () => "plain" };
+  page.ws.deliver({ t: "device", id: 6, call: "read_clipboard_item" });
+  await settle();
+  assert.deepEqual(page.ws.sent.find((m) => m.id === 6 && m.t === "upload_start").files, [{ name: "text/plain", mime: "text/plain", size: 5 }]);
+  page.window.navigator.clipboard = { readText: async () => "" };
+  page.ws.deliver({ t: "device", id: 7, call: "read_clipboard_item" });
+  await settle();
+  assert.deepEqual(page.ws.sent.filter((m) => m.id === 7), [{ t: "device_reply", id: 7, text: null }]);
+});
+
+test("a clipboard item is written with every type the browser takes (#246)", async () => {
+  const page = live([create(1, "view"), root(1)]);
+  const written = [];
+  class ClipboardItem {
+    constructor(data) { this.data = data; }
+    static supports(t) { return ["text/plain", "text/html", "image/png", "web application/x-notes"].includes(t); }
+  }
+  Object.assign(page.window, {
+    Blob, ClipboardItem,
+    fetch: async (url) => ({ blob: async () => new Blob([url === "/app/_prism/download/p1" ? "PNG" : "?"]) }),
+  });
+  let refuse = false;
+  page.window.navigator.clipboard = {
+    write: async ([item]) => {
+      const types = Object.keys(item.data);
+      if (refuse && types.some((t) => t.startsWith("web "))) throw new Error("NotAllowedError");
+      const out = {};
+      for (const t of types) { const b = await item.data[t]; out[t] = [b.type, await b.text()]; }
+      written.push(out);
+    },
+    writeText: async (t) => written.push(t),
+  };
+  const entries = [
+    { type: "text/plain", text: "a cat" },
+    { type: "image/png", url: "/app/_prism/download/p1" },
+    { type: "application/x-notes", text: "{}" },
+    { type: "application/x-other", text: "no" },
+  ];
+  page.ws.deliver({ t: "device", id: 8, call: "write_clipboard", entries });
+  await settle();
+  assert.deepEqual(written.shift(), {
+    "text/plain": ["text/plain", "a cat"],
+    "image/png": ["image/png", "PNG"],
+    "web application/x-notes": ["web application/x-notes", "{}"],
+  });
+  // A browser refusing custom formats: the standard ones.
+  refuse = true;
+  page.ws.deliver({ t: "device", id: 9, call: "write_clipboard", entries });
+  await settle();
+  assert.deepEqual(Object.keys(written.shift()), ["text/plain", "image/png"]);
+  // No `clipboard.write`: the text.
+  delete page.window.navigator.clipboard.write;
+  page.ws.deliver({ t: "device", id: 10, call: "write_clipboard", entries });
+  await settle();
+  assert.deepEqual(written, ["a cat"]);
+  assert.deepEqual(page.ws.sent.filter((m) => m.t === "device_reply"), [], "no answer");
+});
+
 test("a file the app holds is downloaded from the session's URL (#210)", async () => {
   const page = live([create(1, "view"), root(1)]);
   const links = [];

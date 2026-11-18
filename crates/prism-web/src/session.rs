@@ -1123,7 +1123,7 @@ impl PlatformServices for WebServices {
                 Some(msg)
                     if matches!(
                         msg["call"].as_str(),
-                        Some("pick_files" | "pick_images" | "pick_folder")
+                        Some("pick_files" | "pick_images" | "pick_folder" | "read_clipboard_item")
                     ) =>
                 {
                     self.uploads.expect(id);
@@ -1466,6 +1466,8 @@ pub(crate) fn device_json(id: u64, call: prism_core::DeviceCall) -> Value {
         // A folder and its files, uploaded like picked files (#225).
         C::PickFolder(_) => json!({ "call": "pick_folder" }),
         C::ReadClipboard => json!({ "call": "paste" }),
+        // #246: its types go up like picked files, each named by its type.
+        C::ReadClipboardItem => json!({ "call": "read_clipboard_item" }),
         C::Haptic(h) => json!({ "call": "haptic", "kind": h.name() }),
         C::CopyText(t) => json!({ "call": "copy", "text": t }),
         C::Share(s) => json!({ "call": "share", "text": s.text, "url": s.url }),
@@ -1651,6 +1653,30 @@ impl WebServices {
             }
             // No file manager to show it in.
             C::RevealPath(_) => None,
+            // #246: text types go as text; images and other bytes stay on
+            // the server, the page fetches them from the session's URL.
+            C::WriteClipboard(item) => {
+                let entries: Vec<Value> = item
+                    .entries()
+                    .map(|(ty, data)| {
+                        if prism_core::ClipboardItem::is_text(ty, data) {
+                            json!({ "type": ty, "text": String::from_utf8_lossy(data) })
+                        } else {
+                            let url = crate::downloads::offer(
+                                &self.base,
+                                self.sid.as_deref(),
+                                "clipboard".into(),
+                                ty.to_string(),
+                                data.to_vec(),
+                            );
+                            json!({ "type": ty, "url": url })
+                        }
+                    })
+                    .collect();
+                Some(
+                    json!({ "t": "device", "id": id, "call": "write_clipboard", "entries": entries }),
+                )
+            }
             other => Some(device_json(id, other)),
         }
     }

@@ -628,6 +628,139 @@ public func prismDevicePaste(_ id: UInt64) {
     if let text { text.withCString { prismReplyText(id, $0) } } else { prismReplyText(id, nil) }
 }
 
+// MARK: Clipboard types (#246)
+
+#if !os(tvOS) && !os(watchOS)
+/// The pasteboard name of a MIME type: its UTI, a dynamic one for an
+/// app's own type (`dyn.…`, which keeps the MIME type).
+private func prismPasteboardType(_ mime: String) -> String {
+    switch mime {
+    case "text/plain": return UTType.utf8PlainText.identifier
+    case "text/uri-list": return UTType.fileURL.identifier
+    default: return UTType(mimeType: mime)?.identifier ?? mime
+    }
+}
+
+/// The MIME type of a pasteboard type, `nil` for types without one
+/// (legacy names, private types of other apps).
+private func prismMimeType(_ type: String) -> String? {
+    if type.contains("/") { return type }
+    guard let t = UTType(type) else { return nil }
+    if t.conforms(to: .plainText) { return "text/plain" }
+    if t == .fileURL { return "text/uri-list" }
+    if t == .rtf { return "text/rtf" }
+    return t.preferredMIMEType
+}
+#endif
+
+/// Every type of the clipboard's first item (#246), as files named by
+/// their MIME type (Caches/prism-clipboard, emptied on each read).
+@_cdecl("prism_device_paste_item")
+public func prismDevicePasteItem(_ id: UInt64) {
+    #if os(tvOS) || os(watchOS)
+    prismReplyText(id, nil) // no clipboard on tvOS or watchOS
+    #else
+    var entries: [(String, Data)] = []
+    func add(_ mime: String, _ data: Data?) {
+        guard let data, !entries.contains(where: { $0.0 == mime }) else { return }
+        entries.append((mime, data))
+    }
+    var fileURLs: [URL] = []
+    #if os(iOS) || os(visionOS)
+    let pb = UIPasteboard.general
+    for type in pb.types {
+        guard let mime = prismMimeType(type) else { continue }
+        if mime == "text/plain" { add(mime, pb.string?.data(using: .utf8)); continue }
+        if mime == "text/uri-list" { continue }
+        if UTType(type)?.conforms(to: .image) == true, mime != "image/png", !pb.types.contains(UTType.png.identifier) {
+            // A photo copied from Photos: PNG like every image here.
+            add("image/png", pb.image?.pngData())
+            continue
+        }
+        add(mime, pb.data(forPasteboardType: type))
+    }
+    fileURLs = (pb.urls ?? []).filter(\.isFileURL)
+    #else
+    let pb = NSPasteboard.general
+    for item in pb.pasteboardItems ?? [] {
+        if let s = item.string(forType: .fileURL), let url = URL(string: s) { fileURLs.append(url) }
+    }
+    if let item = pb.pasteboardItems?.first {
+        for type in item.types {
+            if type == .tiff {
+                // Screenshots and most image copies: TIFF, given as PNG.
+                if let data = item.data(forType: .tiff), let png = NSBitmapImageRep(data: data)?.representation(using: .png, properties: [:]) {
+                    add("image/png", png)
+                }
+                continue
+            }
+            guard let mime = prismMimeType(type.rawValue), mime != "text/uri-list" else { continue }
+            if mime == "text/plain" { add(mime, item.string(forType: type)?.data(using: .utf8)); continue }
+            add(mime, item.data(forType: type))
+        }
+    }
+    #endif
+    if !fileURLs.isEmpty {
+        // A copied image file: its content too, as its image type.
+        if !entries.contains(where: { $0.0.hasPrefix("image/") }),
+           let url = fileURLs.first, let type = UTType(filenameExtension: url.pathExtension), type.conforms(to: .image),
+           let mime = type.preferredMIMEType {
+            add(mime, try? Data(contentsOf: url))
+        }
+        add("text/uri-list", fileURLs.map(\.absoluteString).joined(separator: "\r\n").data(using: .utf8))
+    }
+    if entries.isEmpty { return prismReplyText(id, nil) }
+    let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("prism-clipboard")
+    try? FileManager.default.removeItem(at: dir)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    var lines: [String] = []
+    for (i, (mime, data)) in entries.enumerated() {
+        let url = dir.appendingPathComponent("\(i)")
+        if (try? data.write(to: url)) != nil {
+            lines.append([url.path, mime, mime, String(data.count)].joined(separator: "\t"))
+        }
+    }
+    lines.joined(separator: "\n").withCString { prismReplyFiles(id, $0) }
+    #endif
+}
+
+/// One entry per line: MIME type \t base64 (#246). Replaces the clipboard.
+@_cdecl("prism_device_copy_item")
+public func prismDeviceCopyItem(_ entries: UnsafePointer<CChar>) {
+    let entries: [(String, Data)] = String(cString: entries).split(separator: "\n").compactMap { line in
+        let parts = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2, let data = Data(base64Encoded: String(parts[1])) else { return nil }
+        return (String(parts[0]), data)
+    }
+    #if os(tvOS) || os(watchOS)
+    _ = entries // no clipboard on tvOS or watchOS
+    #elseif os(iOS) || os(visionOS)
+    var item: [String: Any] = [:]
+    for (mime, data) in entries {
+        let type = prismPasteboardType(mime)
+        if mime.hasPrefix("text/"), let text = String(data: data, encoding: .utf8) {
+            item[type] = text
+        } else {
+            item[type] = data
+        }
+    }
+    UIPasteboard.general.setItems([item])
+    #else
+    let item = NSPasteboardItem()
+    for (mime, data) in entries {
+        item.setData(data, forType: NSPasteboard.PasteboardType(prismPasteboardType(mime)))
+    }
+    // Apps that read images as TIFF only (older AppKit apps).
+    if !entries.contains(where: { $0.0 == "image/tiff" }),
+       let image = entries.first(where: { $0.0.hasPrefix("image/") }),
+       let tiff = NSBitmapImageRep(data: image.1)?.tiffRepresentation {
+        item.setData(tiff, forType: .tiff)
+    }
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.writeObjects([item])
+    #endif
+}
+
 @_cdecl("prism_device_share")
 public func prismDeviceShare(_ text: UnsafePointer<CChar>?, _ url: UnsafePointer<CChar>?, _ files: UnsafePointer<CChar>?) {
     var items: [Any] = []

@@ -33,6 +33,43 @@ location = "Shows todos near you."
 camera = "Adds a photo to a todo."
 ```
 
+## Images and other types on the clipboard
+
+`cx.read_clipboard()` and `cx.copy_text()` move text. `cx.read_clipboard_item()` and `cx.write_clipboard()` move everything the clipboard holds, in every type at once (#246): a screenshot pasted as an image block, HTML from a browser, the files copied in the file manager, the app's own format next to text for other apps.
+
+```rust
+cx.spawn(async move |this, cx| {
+    let Some(item) = cx.read_clipboard_item().await else { return };
+    if let Some(img) = item.as_image() {
+        upload(img.bytes, img.mime);                    // image/png
+    } else if let Some(block) = item.get("application/x-notes-block") {
+        insert_block(block);                            // copied from this app
+    } else if let Some(text) = item.as_text() { … }
+    // item.types(), item.as_html(), item.files() (text/uri-list)
+});
+
+cx.write_clipboard(
+    ClipboardItem::new()
+        .text("Q3 revenue")                              // every app pastes this
+        .html("<b>Q3</b> revenue")
+        .image(png_bytes, "image/png")
+        .custom("application/x-notes-block", json),     // only apps that know it
+);
+```
+
+Types are MIME types. A type set twice keeps its last data; `as_image()` gives the PNG when there is one.
+
+| | Reads | Writes |
+|---|---|---|
+| macOS | `NSPasteboard`: TIFF (screenshots) becomes PNG, a copied image file also gives its image | every type, a TIFF copy of the image for older apps |
+| iOS, iPadOS, visionOS | `UIPasteboard` (the system may ask to allow pasting) | every type |
+| Web | `navigator.clipboard.read()`, uploaded to the server like picked files; else the text | `text/plain`, `text/html`, `image/png` (other images converted), other types as the browser's `web …` custom formats where it has them; the text alone when it refuses |
+| Android | the primary clip: text, HTML, an image behind a content URI | text, HTML and one image (through Prism's file provider) |
+| Linux | GDK formats: text, the image as PNG, other MIME types | every type, the image also as a texture |
+| tvOS, watchOS | `None` (no clipboard) | nothing |
+
+On macOS and iOS custom types travel as dynamic UTIs that keep the MIME type, so they come back under their name. Browsers read clipboards only after a user gesture and may prompt.
+
 ## Saving a file the app holds
 
 `cx.save_file` hands a file to the user with the platform's own UI (#210): bytes the app has (a PDF fetched with a bearer token, an export it generated) or a file of its own (in its cache). `cx.reveal_path` then shows it in the Finder or the file manager.

@@ -4094,6 +4094,50 @@ fn a_saved_file_is_downloaded_from_the_session() {
     assert!(s.take_outbox().is_empty());
 }
 
+/// #246: text types go to the page as text, images stay on the server
+/// behind the session's URL; reading expects the types as an upload.
+#[test]
+fn clipboard_items_go_to_the_page() {
+    use prism_core::surfaces::PlatformRequest;
+    use prism_core::{ClipboardItem, DeviceCall, PlatformServices};
+    let mut s = crate::session::WebServices::new(None);
+    s.base = "/app".into();
+    s.sid = Some("sid-1".into());
+    s.handle(PlatformRequest::Device {
+        id: 3,
+        call: DeviceCall::WriteClipboard(
+            ClipboardItem::new()
+                .text("a cat")
+                .image(b"\x89PNG".to_vec(), "image/png")
+                .custom("application/x-notes", br#"{"k":1}"#.to_vec()),
+        ),
+    });
+    let out = s.take_outbox();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0]["call"], "write_clipboard");
+    let entries = out[0]["entries"].as_array().unwrap();
+    assert_eq!(
+        entries[0],
+        serde_json::json!({ "type": "text/plain", "text": "a cat" })
+    );
+    assert_eq!(entries[1]["type"], "image/png");
+    let url = entries[1]["url"].as_str().unwrap();
+    let id = url.strip_prefix("/app/_prism/download/").expect(url);
+    let r = crate::downloads::serve(id, Some("sid-1"));
+    assert_eq!(r.body(), b"\x89PNG");
+    assert_eq!(r.headers()[http::header::CONTENT_TYPE], "image/png");
+    assert!(entries[2]["url"].is_string(), "{entries:?}");
+    assert!(s.local.is_empty(), "no answer");
+
+    s.handle(PlatformRequest::Device {
+        id: 4,
+        call: DeviceCall::ReadClipboardItem,
+    });
+    let out = s.take_outbox();
+    assert_eq!(out[0]["call"], "read_clipboard_item");
+    assert!(s.uploads.has(crate::uploads::Key::Call(4)));
+}
+
 /// #212: refinements follow the named group they name, sizes included.
 #[test]
 fn named_groups_have_their_own_rules() {
