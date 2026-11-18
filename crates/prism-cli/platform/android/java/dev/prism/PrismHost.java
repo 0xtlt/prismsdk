@@ -561,6 +561,8 @@ public final class PrismHost {
             case "consume": PrismInput.consume(n, p.optJSONArray("keys")); break;
             case "sel": PrismInput.select(n, p.optInt("start"), p.optInt("end")); break;
             case "selev": PrismInput.selectEvents(n, p.optBoolean("on")); break;
+            // Other people's carets (#240).
+            case "carets": PrismInput.carets(n, p.optJSONArray("carets")); break;
             case "focus": PrismInput.focus(n); break;
             case "reveal": PrismInput.reveal(n); break;
             case "scrollto": PrismInput.scrollTo(n, (float) p.optDouble("x"), (float) p.optDouble("y"), p.optBoolean("rel"), p.optBoolean("anim")); break;

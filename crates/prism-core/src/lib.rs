@@ -91,9 +91,9 @@ pub use element::{
     Checkbox, Overlay, RadioGroup, checkbox, dialog, keyboard_toolbar, popover, radio_group, sheet,
     time_picker, time_picker_opt,
 };
+pub use element::{RemoteCaret, SelectionEvent, byte_to_char, char_to_byte};
 pub use element::{RichInput, RichInputEvent, rich_input};
 pub use element::{STACK_CLOSABLE, STACK_NO_HEADER};
-pub use element::{SelectionEvent, byte_to_char, char_to_byte};
 pub use element::{cover_crop, picture_position, picture_source};
 pub use element::{picture_data, svg};
 pub use events::{
@@ -843,13 +843,14 @@ pub mod prelude {
         IntoElement, Keyboard, Lifecycle, Locale, Location, Menu, MenuItem, Motion, Notification,
         NotificationAction, NotificationResponse, Orientation, Params, ParentElement, Path,
         Permission, PermissionState, PickImages, PickedFile, Platform, Pose, Posture, PushEvent,
-        PushMessage, PushService, PushSubscription, Render, ReorderList, ReorderOptions, ReturnKey,
-        Role, Router, SaveFile, SavedFile, ScrollEvent, SecureOptions, SelectionEvent, Share,
-        Styled, SwipeDirection, SystemAction, Transition, Translations, Tray, UploadProgress,
-        VirtualList, Watch, Widget, WidgetConfig, WidgetFamily, WidgetOption, WidgetParameter,
-        WindowChrome, WindowControls, adaptive, button, date_picker, date_picker_opt, div, go_back,
-        image, lazy, navigate_to, picker, picture, progress, px, relative, rgb, rgba, screen,
-        scroll, shape, slider, spinner, text, text_area, text_input, timer, toggle,
+        PushMessage, PushService, PushSubscription, RemoteCaret, Render, ReorderList,
+        ReorderOptions, ReturnKey, Role, Router, SaveFile, SavedFile, ScrollEvent, SecureOptions,
+        SelectionEvent, Share, Styled, SwipeDirection, SystemAction, Transition, Translations,
+        Tray, UploadProgress, VirtualList, Watch, Widget, WidgetConfig, WidgetFamily, WidgetOption,
+        WidgetParameter, WindowChrome, WindowControls, adaptive, button, date_picker,
+        date_picker_opt, div, go_back, image, lazy, navigate_to, picker, picture, progress, px,
+        relative, rgb, rgba, screen, scroll, shape, slider, spinner, text, text_area, text_input,
+        timer, toggle,
     };
     pub use crate::{
         GridTrack, ScrollAxis, Scrollbar, auto_fill, auto_fit, fr, minmax, repeat, scroll_x,

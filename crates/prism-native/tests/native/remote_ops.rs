@@ -1290,3 +1290,27 @@ fn text_fields_learn_their_keyboard_bar() {
             .any(|o| o["op"] == "content" && o["id"] == shared && o["size"] == json!([320., 44.]))
     );
 }
+
+/// Other people's carets (#240): offsets in characters, the color in both
+/// appearances, the name and whether it fades; an empty list removes them.
+#[test]
+fn remote_caret_ops() {
+    let mut w = RemoteWidgets::new(measure);
+    w.create(4, NodeKind::TextArea);
+    w.set_remote_carets(
+        &4,
+        &[
+            prism_core::RemoteCaret::caret(12, rgb(0xFF0000)).label("Camille"),
+            prism_core::RemoteCaret::new(3, 9, rgb(0x0000FF)).idle(true),
+        ],
+    );
+    assert_eq!(
+        last(&w),
+        json!({"op": "carets", "id": 4, "carets": [
+            {"anchor": 12, "head": 12, "color": [1., 0., 0., 1., 1., 0., 0., 1.], "label": "Camille", "idle": false},
+            {"anchor": 3, "head": 9, "color": [0., 0., 1., 1., 0., 0., 1., 1.], "label": null, "idle": true},
+        ]})
+    );
+    w.set_remote_carets(&4, &[]);
+    assert_eq!(last(&w), json!({"op": "carets", "id": 4, "carets": []}));
+}

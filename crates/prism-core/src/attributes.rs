@@ -31,6 +31,7 @@ pub const RESERVED_DATA_ATTRIBUTES: &[&str] = &[
     "gn",
     "group",
     "icon",
+    "idle",
     "island",
     "keys",
     "kind",

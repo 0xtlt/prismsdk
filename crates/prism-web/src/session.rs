@@ -1379,6 +1379,12 @@ impl Encoder {
                 json!({ "op": "sel", "id": id, "start": start, "end": end })
             }
             Patch::SetSelectEvents { id, on } => json!({ "op": "selev", "id": id, "on": on }),
+            // Other people's carets (#240), drawn over the field by the client.
+            Patch::SetRemoteCarets { id, carets } => json!({
+                "op": "carets",
+                "id": id,
+                "carets": carets.iter().map(remote_caret_json).collect::<Vec<_>>(),
+            }),
             Patch::ScrollIntoView { id } => json!({ "op": "reveal", "id": id }),
             Patch::DismissKeyboard => json!({ "op": "blur" }),
             // A pop-up menu (#247): over the node (`id` null: the page), at
@@ -1425,6 +1431,18 @@ impl Encoder {
             Patch::SetRichValue { id, runs } => json!({ "op": "rich", "id": id, "runs": runs }),
         }
     }
+}
+
+/// A remote caret for the client (#240): its offsets in characters, its
+/// color in CSS (`light-dark()` when it adapts), its label, whether idle.
+fn remote_caret_json(c: &prism_core::RemoteCaret) -> Value {
+    json!({
+        "anchor": c.anchor,
+        "head": c.head,
+        "color": c.color.to_css(),
+        "label": c.label,
+        "idle": c.idle,
+    })
 }
 
 /// The shortcuts of the app menus' enabled items, as `[keys, id]` (#161),

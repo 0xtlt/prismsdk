@@ -349,6 +349,8 @@
     "notes": "Notes",
     "notes_placeholder": "Grows as you type, then scrolls",
     "notes_helper": "{count} characters",
+    "shared": "Shared draft",
+    "shared_text": "Camille and Noor are editing this paragraph with you: their carets stay put while you type.",
     "syncing": "Syncing…",
     "keyboard_clear": "Clear",
     "keyboard_done": "Done",

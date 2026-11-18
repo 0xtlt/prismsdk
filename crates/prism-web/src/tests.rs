@@ -2630,6 +2630,40 @@ fn new_patches_have_a_stable_json_encoding() {
     assert!(!plain[0]["css"].as_str().unwrap().contains("pointer-events"));
 }
 
+/// Other people's carets (#240): the client draws them over the field once
+/// it runs; the first paint has none, and the field's text is unchanged.
+#[test]
+fn remote_carets_go_to_the_client() {
+    use prism_core::{RemoteCaret, rgb};
+    let carets = vec![
+        RemoteCaret::caret(4, rgb(0xFF0000)).label("Camille"),
+        RemoteCaret::new(0, 2, rgb(0x0000FF)).idle(true),
+    ];
+    let mut e = Encoder::default();
+    let out = e.encode(&[Patch::SetRemoteCarets {
+        id: 3,
+        carets: carets.clone(),
+    }]);
+    assert_eq!(
+        out,
+        [json!({ "op": "carets", "id": 3, "carets": [
+            { "anchor": 4, "head": 4, "color": "rgba(255,0,0,1)", "label": "Camille", "idle": false },
+            { "anchor": 0, "head": 2, "color": "rgba(0,0,255,1)", "label": null, "idle": true },
+        ]})]
+    );
+    let page = html(&[
+        create(3, NodeKind::TextArea),
+        Patch::SetText {
+            id: 3,
+            text: "Hello".into(),
+        },
+        Patch::SetRemoteCarets { id: 3, carets },
+        Patch::SetRoot { id: 3 },
+    ]);
+    assert!(page.contains(">Hello</textarea>"), "{page}");
+    assert!(!page.contains("prism-carets"), "{page}");
+}
+
 #[test]
 fn pointer_drag_and_key_messages_become_ui_events() {
     use crate::session::parse_event;

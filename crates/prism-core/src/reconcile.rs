@@ -143,6 +143,15 @@ pub enum Patch {
         /// End of the selection (excluded), `start` for a caret.
         end: usize,
     },
+    /// Other people's carets and selections in a text field (#240): the
+    /// app's `.remote_carets(..)` changed (empty: none). Only the overlay
+    /// changes; the field's value, caret and selection are left alone.
+    SetRemoteCarets {
+        /// The text input, area or rich input.
+        id: NodeId,
+        /// The carets, in characters.
+        carets: Vec<crate::RemoteCaret>,
+    },
     /// Whether a text input or area reports its selection
     /// (`UiEvent::Select`): it has an `on_select` handler (#86).
     SetSelectEvents {
@@ -509,6 +518,8 @@ struct MNode {
     shown_selection: Option<SelectionEvent>,
     /// It reports its selection (`on_select`).
     select_events: bool,
+    /// Other people's carets, as last sent (#240).
+    remote_carets: Vec<crate::RemoteCaret>,
     /// Its `.id(…)`.
     name: Option<String>,
     /// An island's tag, source, props and events.
@@ -1304,6 +1315,7 @@ impl Reconciler {
             on_rich_input,
             on_select,
             selection,
+            remote_carets,
             on_back,
             on_navigate,
             on_change,
@@ -1564,6 +1576,15 @@ impl Reconciler {
                 });
                 m.icon = icon;
             }
+            // A secure field hides its text: no one's caret shows in it (#240).
+            let remote_carets = if kind == NodeKind::TextInput
+                && !remote_carets.is_empty()
+                && crate::controls::InputConfig::decode(&config).secure
+            {
+                Vec::new()
+            } else {
+                remote_carets
+            };
             // Before the value: a slider clamps it to its range.
             if m.config != config {
                 self.patches.push(Patch::SetConfig {
@@ -1595,6 +1616,13 @@ impl Reconciler {
                     m.shown_selection = Some(sel);
                 }
                 m.selection = selection;
+            }
+            if m.remote_carets != remote_carets {
+                self.patches.push(Patch::SetRemoteCarets {
+                    id,
+                    carets: remote_carets.clone(),
+                });
+                m.remote_carets = remote_carets;
             }
             let reports = on_select.is_some();
             if m.select_events != reports {
@@ -2107,6 +2135,7 @@ impl Reconciler {
                 layout_events: false,
                 selection: None,
                 shown_selection: None,
+                remote_carets: Vec::new(),
                 select_events: false,
                 name: None,
                 island: None,

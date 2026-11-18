@@ -349,6 +349,8 @@
     "notes": "Notes",
     "notes_placeholder": "S’agrandit pendant la saisie, puis défile",
     "notes_helper": "{count} caractères",
+    "shared": "Brouillon partagé",
+    "shared_text": "Camille et Noor modifient ce paragraphe avec vous : leurs curseurs restent en place pendant que vous tapez.",
     "syncing": "Synchronisation…",
     "keyboard_clear": "Effacer",
     "keyboard_done": "OK",

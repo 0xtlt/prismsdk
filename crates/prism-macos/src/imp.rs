@@ -1862,11 +1862,22 @@ define_class!(
             let Some(id) = crate::interact::text_node(&tv) else {
                 return;
             };
+            // Typing and scrolling the field move other people's carets (#240).
+            crate::carets::refresh(id);
             // Not while Prism changes the field (`with_state` is busy).
             let mut on = false;
             with_state(|s| on = s.renderer.widgets.ix.select_events.contains(&id));
             if on {
                 crate::interact::selection_changed(&tv, id);
+            }
+        }
+
+        /// A clip view scrolled: other people's carets in the text it
+        /// shows follow (#240).
+        #[unsafe(method(onClipScroll:))]
+        fn on_clip_scroll(&self, n: &NSNotification) {
+            if let Some(v) = n.object().and_then(|o| o.downcast::<NSView>().ok()) {
+                crate::carets::scrolled(&v);
             }
         }
 
@@ -2954,6 +2965,7 @@ impl AppKit {
         let name = input.icon.borrow().0.clone();
         let icon = crate::interact::set_leading_icon(&input.field(), &name, None);
         input.icon.borrow_mut().1 = icon;
+        crate::carets::input_swapped(input.id, &input.host, &input.field());
     }
 
     fn new_stack(&self, id: NodeId) -> MacStack {
@@ -3659,6 +3671,8 @@ impl Widgets for AppKit {
 
     fn set_text(&mut self, view: &View, text: &str) {
         let s = NSString::from_str(text);
+        // Other people's carets follow the new text (#240).
+        crate::carets::refresh(view.id());
         match view {
             View::Label(l) => crate::label::set_text(l, text),
             View::Timer(l) => l.setStringValue(&s),
@@ -3882,6 +3896,7 @@ impl Widgets for AppKit {
 
     fn destroy(&mut self, view: &View) {
         crate::scene::forget(view.id());
+        crate::carets::forget(view.id());
         self.ix.select_events.remove(&view.id());
         self.ix.pending_selection.remove(&view.id());
         crate::interact::forget_selection(view.id());
@@ -4089,6 +4104,7 @@ impl Widgets for AppKit {
                 (t, room)
             };
             field.setFrame(rect(l, y, (w as f64 - l - e.right as f64).max(0.), fh));
+            crate::carets::laid_out(i.id);
             if let Some(icon) = i.icon.borrow().1.as_deref() {
                 crate::interact::place_icon(&i.field(), icon);
             }
@@ -4121,6 +4137,7 @@ impl Widgets for AppKit {
             t.text
                 .setFrameSize(NSSize::new(visible.width, current.max(visible.height)));
             t.text.sizeToFit();
+            crate::carets::laid_out(t.text.ivars().id.get());
         }
         if let View::Tabs(t) = view {
             let w = w as f64;
@@ -4660,6 +4677,29 @@ impl Widgets for AppKit {
                 }
             }
             View::TextArea(t) => crate::interact::select_text(&t.text, start, end),
+            _ => {}
+        }
+    }
+
+    fn set_remote_carets(&mut self, view: &View, carets: &[prism_core::RemoteCaret]) {
+        use crate::carets::Host;
+        match view {
+            View::TextArea(t) => {
+                let host = Host::Text {
+                    host: &t.container,
+                    scroll: &t.scroll,
+                    text: &t.text,
+                };
+                crate::carets::set(self.mtm, view.id(), host, carets);
+            }
+            View::Input(i) => {
+                let field = i.field();
+                let host = Host::Input {
+                    host: &i.host,
+                    field: &field,
+                };
+                crate::carets::set(self.mtm, view.id(), host, carets);
+            }
             _ => {}
         }
     }
@@ -5858,6 +5898,12 @@ fn observe_system(target: &Target) {
             target,
             sel!(onTextSelection:),
             Some(objc2_app_kit::NSTextViewDidChangeSelectionNotification),
+            None,
+        );
+        center.addObserver_selector_name_object(
+            target,
+            sel!(onClipScroll:),
+            Some(objc2_app_kit::NSViewBoundsDidChangeNotification),
             None,
         );
         center.addObserver_selector_name_object(
