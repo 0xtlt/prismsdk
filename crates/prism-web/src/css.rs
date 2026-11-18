@@ -424,6 +424,19 @@ pub fn typography(kind: NodeKind, s: &Style, w: &mut String) {
     }
 }
 
+/// A run's underline style (#221) as CSS (nothing for a single line). The
+/// same as `client.js`'s `runCss`.
+fn underline_css(style: prism_core::UnderlineStyle) -> &'static str {
+    use prism_core::UnderlineStyle as U;
+    match style {
+        U::Single => "",
+        U::Thick => "text-decoration-thickness:max(2px,.12em);",
+        U::Double => "text-decoration-style:double;",
+        U::Dotted => "text-decoration-style:dotted;",
+        U::Dashed => "text-decoration-style:dashed;",
+    }
+}
+
 /// Inline CSS of one rich-text run (see `prism_core::spans`).
 pub fn run_css(r: &prism_core::TextRun) -> String {
     let mut w = String::new();
@@ -438,6 +451,13 @@ pub fn run_css(r: &prism_core::TextRun) -> String {
         (true, false) => w.push_str("text-decoration-line:underline;"),
         (false, true) => w.push_str("text-decoration-line:line-through;"),
         (false, false) => {}
+    }
+    if r.underline {
+        // Its own color and line (#221).
+        if let Some(c) = r.underline_color {
+            let _ = write!(w, "text-decoration-color:{};", c.to_css());
+        }
+        w.push_str(underline_css(r.underline_style));
     }
     if let Some(c) = r.color {
         let _ = write!(w, "color:{};", c.to_css());

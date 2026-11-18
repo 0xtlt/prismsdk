@@ -984,10 +984,13 @@
     serif: 'ui-serif,"New York",Georgia,"Times New Roman",serif',
     rounded: `ui-rounded,"SF Pro Rounded",${SYSTEM_FONT}`,
   };
+  // An underline's own line (#221), as `css::underline_css`.
+  const UNDERLINE = { thick: "text-decoration-thickness:max(2px,.12em)", double: "text-decoration-style:double", dotted: "text-decoration-style:dotted", dashed: "text-decoration-style:dashed" };
   const runCss = (r) => {
     const d = [r.u && "underline", r.s && "line-through"].filter(Boolean).join(" ");
     return [
       r.w && `font-weight:${r.w}`, r.i && "font-style:italic", d && `text-decoration-line:${d}`,
+      r.u && r.uc && `text-decoration-color:${shapeColor(r.uc)}`, r.u && UNDERLINE[r.us],
       r.c && `color:${shapeColor(r.c)}`, r.b && `background-color:${shapeColor(r.b)};border-radius:3px`,
       r.f && `font-family:${fam[r.f] || `"${r.f.replace(/["\\<>]/g, "")}",${SYSTEM_FONT}`}`,
       r.z && `font-size:${r.z}em`,
@@ -1719,11 +1722,12 @@
         a[i < 0 ? f : f.slice(0, i)] = i < 0 ? true : f.slice(i + 1);
       }
       const run = { text, f: own.join("\u001f"), a, l: link ? link.slice(2) : undefined };
-      if (run.a.k) run.text = OBJ;
+      if (run.a.k || run.a.g) run.text = OBJ;
       return run;
     });
   }
-  const isChip = (r) => !!r.a.k;
+  /** An inline object: a chip, or an icon (#221). One U+FFFC each. */
+  const isChip = (r) => !!(r.a.k || r.a.g);
   /** Runs without empty ones, equal neighbours merged (`normalize_spans`). */
   function richNormalize(runs) {
     const out = [];
@@ -1807,14 +1811,14 @@
       if (runs !== undefined) richApply(el, runs);
       if (sel) applyFieldSelection(el, sel[0], sel[1]);
     });
-    // Copy and cut as plain text (a chip as its label).
+    // Copy and cut as plain text (a chip as its label, an icon its glyph).
     const copy = (e, cut) => {
       const sel = richSelection(el);
       if (!sel || sel[0] === sel[1] || !e.clipboardData) return;
       e.preventDefault();
       const [, rest] = richSplit(el._model, sel[0]);
       const [mid] = richSplit(rest, sel[1] - sel[0]);
-      e.clipboardData.setData("text/plain", mid.map((r) => (isChip(r) ? r.a.n || "" : r.text)).join(""));
+      e.clipboardData.setData("text/plain", mid.map((r) => (r.a.k ? r.a.n || "" : r.a.g ? glyphs[r.a.g] || "" : r.text)).join(""));
       if (cut) richEdit(el, id, sel[0], sel[1], "");
     };
     el.addEventListener("copy", (e) => copy(e, false));
@@ -1828,7 +1832,7 @@
     el.addEventListener("click", (e) => {
       const hit = e.target && e.target.closest && e.target.closest("[data-link]");
       if (!hit || !el.contains(hit)) return;
-      if (!hit.classList.contains("prism-chip") && !(e.metaKey || e.ctrlKey)) return;
+      if (!hit._chip && !hit.classList.contains("prism-chip") && !(e.metaKey || e.ctrlKey)) return;
       activateRun(e);
     });
     // A selection the app set while the field was not focused lands when
@@ -2023,7 +2027,14 @@
     const node = document.createElement("span");
     node._run = r;
     if (r.l !== undefined) node.dataset.link = r.l;
-    if (isChip(r)) {
+    if (r.a.g && !r.a.k) {
+      // An inline icon (#221): one character, its glyph.
+      node._chip = true;
+      node.className = "prism-symbol";
+      node.setAttribute("contenteditable", "false");
+      node.setAttribute("aria-hidden", "true");
+      node.appendChild(document.createTextNode(glyphs[r.a.g] || ""));
+    } else if (isChip(r)) {
       node._chip = true;
       node.className = "prism-chip";
       node.setAttribute("contenteditable", "false");

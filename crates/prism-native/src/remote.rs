@@ -454,9 +454,11 @@ pub fn typography(s: &Style) -> serde_json::Map<String, Value> {
     m
 }
 
-/// A rich text's runs for a host: `[{t, w, i, u, s, c, bg, ff, z, link,
-/// href, icon, glyph}]`, only the keys a run sets (`t` text, `w` CSS weight,
-/// `i`/`u`/`s` italic, underline, strikethrough, `c`/`bg` colors, `ff`
+/// A rich text's runs for a host: `[{t, w, i, u, uc, us, s, c, bg, ff, z,
+/// link, href, icon, glyph}]`, only the keys a run sets (`t` text, `w` CSS
+/// weight, `i`/`u`/`s` italic, underline, strikethrough, `uc` the
+/// underline's color, `us` its style when not single (`thick`, `double`,
+/// `dotted`, `dashed`, #221), `c`/`bg` colors, `ff`
 /// family, `z` size as a multiple of the text's, `link` the id to report as
 /// `{"t":"menu","id":link}`, `href` its path, `icon` an SF Symbol name and
 /// `glyph` its fallback glyph).
@@ -473,6 +475,12 @@ pub fn runs_json(config: &str) -> Value {
                 if on {
                     m.insert(key.into(), json!(true));
                 }
+            }
+            if r.underline_color.is_some() {
+                m.insert("uc".into(), color(r.underline_color));
+            }
+            if r.underline_style != prism_core::UnderlineStyle::Single {
+                m.insert("us".into(), json!(r.underline_style.name()));
             }
             if r.color.is_some() {
                 m.insert("c".into(), color(r.color));

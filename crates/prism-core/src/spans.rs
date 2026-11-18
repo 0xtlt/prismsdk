@@ -80,12 +80,56 @@ pub fn link(text: impl Into<String>, path: impl Into<String>) -> Span {
 
 /// An inline symbol (an SF Symbol name; a glyph where SF Symbols don't
 /// exist, see [`glyphs`](crate::glyphs)), sized and colored like the text
-/// around it. Decorative unless given a [`label`](Span::label).
+/// around it ([`text_size`](Span::text_size), [`text_color`](Span::text_color)).
+/// Decorative unless given a [`label`](Span::label). In a
+/// [`rich_input`](crate::rich_input) it is one character of the value,
+/// [`OBJECT_CHAR`], like a [`chip`] (#221): the caret jumps over it and one
+/// Backspace deletes it; a read-only text shows it in place of its glyph.
 pub fn icon(name: impl Into<String>) -> Span {
-    let name = name.into();
-    let mut s = span(crate::glyphs::glyph(&name));
-    s.run.icon = Some(name);
+    let mut s = span(OBJECT_CHAR.to_string());
+    s.run.icon = Some(name.into());
     s
+}
+
+/// How an underline is drawn (#221): [`Span::underline_style`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum UnderlineStyle {
+    /// One thin line (the default).
+    #[default]
+    Single,
+    /// One thicker line.
+    Thick,
+    /// Two thin lines.
+    Double,
+    /// A dotted line (spelling-style marks).
+    Dotted,
+    /// A dashed line.
+    Dashed,
+}
+
+impl UnderlineStyle {
+    /// Its name in the run encoding and in CSS-like terms (`"thick"`).
+    pub fn name(self) -> &'static str {
+        match self {
+            UnderlineStyle::Single => "single",
+            UnderlineStyle::Thick => "thick",
+            UnderlineStyle::Double => "double",
+            UnderlineStyle::Dotted => "dotted",
+            UnderlineStyle::Dashed => "dashed",
+        }
+    }
+
+    /// The style named `name` ([`name`](Self::name)); unknown names are
+    /// [`Single`](Self::Single).
+    pub fn from_name(name: &str) -> UnderlineStyle {
+        match name {
+            "thick" => UnderlineStyle::Thick,
+            "double" => UnderlineStyle::Double,
+            "dotted" => UnderlineStyle::Dotted,
+            "dashed" => UnderlineStyle::Dashed,
+            _ => UnderlineStyle::Single,
+        }
+    }
 }
 
 /// The character an inline object ([`chip`]) takes in the value of a
@@ -115,6 +159,12 @@ pub fn chip(key: impl Into<String>, label: impl Into<String>) -> Span {
 }
 
 impl Span {
+    /// An inline symbol `points` tall (#221): `icon(name).text_size(points)`.
+    /// See [`icon`].
+    pub fn icon(name: impl Into<String>, points: f32) -> Span {
+        icon(name).text_size(points)
+    }
+
     /// A [`chip`]'s symbol (an SF Symbol name), drawn before its label.
     pub fn chip_icon(mut self, symbol: impl Into<String>) -> Self {
         self.run.chip_icon = Some(symbol.into());
@@ -127,15 +177,15 @@ impl Span {
     }
 
     /// The same run with another text (its style, link and handler kept).
-    /// A chip keeps its single [`OBJECT_CHAR`].
+    /// A chip or an icon keeps its single [`OBJECT_CHAR`].
     pub fn with_text(mut self, text: impl Into<String>) -> Self {
-        if !self.run.is_chip() {
+        if !self.run.is_object() {
             self.run.text = text.into();
         }
         self
     }
 
-    /// Its length in characters (a chip is one).
+    /// Its length in characters (a chip or an icon is one).
     pub fn len(&self) -> usize {
         self.run.text.chars().count()
     }
@@ -148,6 +198,32 @@ impl Span {
     /// Whether it is an inline object ([`chip`]).
     pub fn is_chip(&self) -> bool {
         self.run.is_chip()
+    }
+
+    /// Whether it is an inline [`icon`].
+    pub fn is_icon(&self) -> bool {
+        self.run.icon.is_some()
+    }
+
+    /// An [`icon`]'s symbol name.
+    pub fn icon_name(&self) -> Option<&str> {
+        self.run.icon.as_deref()
+    }
+
+    /// Whether it takes one [`OBJECT_CHAR`] of a rich input's value: a
+    /// [`chip`] or an [`icon`].
+    pub fn is_object(&self) -> bool {
+        self.run.is_object()
+    }
+
+    /// Its underline's color, if it sets one (#221).
+    pub fn underline_color_value(&self) -> Option<Color> {
+        self.run.underline_color
+    }
+
+    /// How its underline is drawn (#221).
+    pub fn underline_style_value(&self) -> UnderlineStyle {
+        self.run.underline_style
     }
 
     /// A [`chip`]'s key.
@@ -201,7 +277,7 @@ impl Span {
     }
 
     /// Whether `other` looks and behaves the same (everything but the
-    /// text): two such neighbours are one run. Chips never are.
+    /// text): two such neighbours are one run. Chips and icons never are.
     pub fn same_style(&self, other: &Span) -> bool {
         let handlers = match (&self.on_click, &other.on_click) {
             (None, None) => true,
@@ -212,20 +288,18 @@ impl Span {
             text: String::new(),
             ..s.run.clone()
         };
-        !self.is_chip()
-            && !other.is_chip()
+        !self.is_object()
+            && !other.is_object()
             && handlers
             && self.size == other.size
             && self.label == other.label
             && plain(self) == plain(other)
     }
 
-    /// What a read-only text shows: a chip's label, else the text.
+    /// What a read-only text shows: a chip's label, an icon's fallback
+    /// glyph, else the text.
     pub(crate) fn display_text(&self) -> &str {
-        match (&self.run.chip, &self.run.chip_label) {
-            (Some(_), Some(label)) => label,
-            _ => &self.run.text,
-        }
+        self.run.display_text()
     }
 
     /// Text weight.
@@ -257,6 +331,19 @@ impl Span {
     /// Underlined.
     pub fn underline(mut self) -> Self {
         self.run.underline = true;
+        self
+    }
+    /// Underlined in `c` (#221), whatever the text's color: a commented
+    /// passage, a spelling mark. Adaptive colors follow dark mode.
+    pub fn underline_color(mut self, c: Color) -> Self {
+        self.run.underline = true;
+        self.run.underline_color = Some(c);
+        self
+    }
+    /// Underlined with this line (#221): thick, double, dotted, dashed.
+    pub fn underline_style(mut self, style: UnderlineStyle) -> Self {
+        self.run.underline = true;
+        self.run.underline_style = style;
         self
     }
     /// Not underlined (links are by default).
@@ -310,7 +397,8 @@ impl Span {
 /// A run as backends receive it (see [`encode_runs`]).
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct TextRun {
-    /// The text (an icon's fallback glyph for icons).
+    /// The text. An icon's fallback glyph in a read-only text; a chip's
+    /// label there; [`OBJECT_CHAR`] for both in a rich input.
     pub text: String,
     /// Weight (`None`: the paragraph's).
     pub weight: Option<FontWeight>,
@@ -318,6 +406,10 @@ pub struct TextRun {
     pub italic: bool,
     /// Underlined.
     pub underline: bool,
+    /// Underline color (`None`: the text's, #221).
+    pub underline_color: Option<Color>,
+    /// How the underline is drawn (#221).
+    pub underline_style: UnderlineStyle,
     /// Struck through.
     pub strikethrough: bool,
     /// Text color (`None`: the paragraph's).
@@ -332,7 +424,8 @@ pub struct TextRun {
     pub link: Option<u64>,
     /// The link's path or URL (the web's `href`; native links report `link`).
     pub href: Option<String>,
-    /// An inline symbol (SF Symbol name; `text` is its glyph).
+    /// An inline symbol (SF Symbol name). In a read-only text, `text` is
+    /// its fallback glyph; in a rich input, [`OBJECT_CHAR`].
     pub icon: Option<String>,
     /// An inline object ([`chip`], #115): the app's key for it. Its `text`
     /// is [`OBJECT_CHAR`] in a rich input, its label in a read-only text.
@@ -352,6 +445,24 @@ impl TextRun {
     /// Whether the run is an inline object ([`chip`]).
     pub fn is_chip(&self) -> bool {
         self.chip.is_some()
+    }
+
+    /// Whether the run takes one [`OBJECT_CHAR`] in a rich input: a
+    /// [`chip`] or an [`icon`].
+    pub fn is_object(&self) -> bool {
+        self.chip.is_some() || self.icon.is_some()
+    }
+
+    /// What a read-only text shows for the run: a chip's label, an icon's
+    /// fallback glyph ([`glyphs::glyph`](crate::glyphs::glyph)), else its text.
+    pub fn display_text(&self) -> &str {
+        match (&self.chip, &self.chip_label, &self.icon) {
+            (Some(_), Some(label), _) => label,
+            (None, _, Some(name)) if self.text == OBJECT_CHAR.to_string() => {
+                crate::glyphs::glyph(name)
+            }
+            _ => &self.text,
+        }
     }
 }
 
@@ -385,7 +496,9 @@ pub fn parse_color(s: &str) -> Option<Color> {
 /// `key=value` fields separated by U+001F: `w=700` weight, `i` italic, `u`
 /// underline, `s` strikethrough, `c=#RRGGBBAA[/#RRGGBBAA]` color (light /
 /// dark), `b=…` background, `f=mono` family (`system`, `mono`, `serif`,
-/// `rounded` or a name), `z=1.25` size (× the paragraph's), `l=123` link id,
+/// `rounded` or a name), `uc=…` underline color, `us=thick` underline style
+/// (`double`, `dotted`, `dashed`; none: single), `z=1.25` size (× the
+/// paragraph's), `l=123` link id,
 /// `h=/path` href, `g=star.fill` icon, and for a [`chip`] `k=key`, `n=label`,
 /// `m=icon`. Control characters U+001E and U+001F are dropped from texts.
 pub fn encode_runs(runs: &[TextRun]) -> String {
@@ -408,6 +521,12 @@ pub fn encode_runs(runs: &[TextRun]) -> String {
         }
         if r.underline {
             field("u".into());
+        }
+        if let Some(c) = r.underline_color {
+            field(format!("uc={}", color_code(c)));
+        }
+        if r.underline_style != UnderlineStyle::Single {
+            field(format!("us={}", r.underline_style.name()));
         }
         if r.strikethrough {
             field("s".into());
@@ -465,6 +584,8 @@ pub fn decode_runs(s: &str) -> Vec<TextRun> {
                     "i" => run.italic = true,
                     "u" => run.underline = true,
                     "s" => run.strikethrough = true,
+                    "uc" => run.underline_color = parse_color(v),
+                    "us" => run.underline_style = UnderlineStyle::from_name(v),
                     "c" => run.color = parse_color(v),
                     "b" => run.background = parse_color(v),
                     "f" => run.family = Some(FontFamily::decode(v)),
@@ -511,7 +632,7 @@ pub fn normalize_spans(spans: impl IntoIterator<Item = Span>) -> Vec<Span> {
     out
 }
 
-/// `span` cut at character `at` (not a chip: it has one).
+/// `span` cut at character `at` (not a chip or an icon: they have one).
 fn cut(span: &Span, at: usize) -> (Span, Span) {
     let b = crate::element::char_to_byte(&span.run.text, at);
     let (mut l, mut r) = (span.clone(), span.clone());
@@ -583,9 +704,9 @@ pub fn splice_spans(
 }
 
 /// Whether text typed right after (or before) `s` takes its style: not a
-/// chip, not a link (typing at the end of a link writes plain text).
+/// chip or an icon, not a link (typing at the end of a link writes plain text).
 fn continues(s: &Span) -> bool {
-    !s.is_chip() && !s.is_clickable()
+    !s.is_object() && !s.is_clickable()
 }
 
 /// The span whose style text typed at character `at` of `spans` takes
@@ -608,7 +729,7 @@ pub(crate) fn typing_style(spans: &[Span], at: usize, replaced: usize) -> Span {
     }
     let pick = match (left, right) {
         // Inside one run (a link included).
-        (Some(l), Some(r)) if std::ptr::eq(l, r) && !l.is_chip() => Some(l),
+        (Some(l), Some(r)) if std::ptr::eq(l, r) && !l.is_object() => Some(l),
         (_, Some(r)) if replaced > 0 && continues(r) => Some(r),
         (Some(l), _) if continues(l) => Some(l),
         (_, Some(r)) if continues(r) => Some(r),
@@ -681,7 +802,7 @@ pub(crate) fn edit_runs(old: &[(TextRun, Span)], font_size: f32, runs: Vec<TextR
             on_click: None,
             label: None,
         });
-        if s.is_chip() {
+        if s.is_object() {
             // One run per object character.
             s.run.text = OBJECT_CHAR.to_string();
             let n = r.text.chars().filter(|c| *c == OBJECT_CHAR).count().max(1);

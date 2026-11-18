@@ -1,7 +1,8 @@
 //! Rich inputs (#115): a text area's `NSTextView` drawing the runs of a
 //! [`rich_input`](prism_core::rich_input) as attributes, each chip as an
 //! `NSTextAttachment` (one character, U+FFFC, that the caret, the selection
-//! and Backspace treat as one).
+//! and Backspace treat as one), and each inline icon as its symbol, an
+//! attachment too (#221).
 //!
 //! Edits reach the app as the plain text (`UiEvent::Input`): prism-core
 //! gives the typed text the style of the run around it and keeps the other
@@ -187,7 +188,8 @@ fn piece(s: &StyledRun, run: &TextRun, t: &StyledText) -> (String, Attributes) {
     use objc2_app_kit::{
         NSAttachmentAttributeName, NSBackgroundColorAttributeName, NSFontAttributeName,
         NSForegroundColorAttributeName, NSParagraphStyleAttributeName,
-        NSStrikethroughStyleAttributeName, NSUnderlineStyleAttributeName,
+        NSStrikethroughStyleAttributeName, NSUnderlineColorAttributeName,
+        NSUnderlineStyleAttributeName,
     };
     let font = crate::label::ns_font(&s.font);
     let color = s.color.map_or_else(NSColor::labelColor, ns_color);
@@ -211,6 +213,23 @@ fn piece(s: &StyledRun, run: &TextRun, t: &StyledText) -> (String, Attributes) {
         a.setImage(Some(&image));
         a.setBounds(bounds);
         a
+    });
+    // An inline icon (#221): its symbol, or its glyph drawn as an image
+    // (it stays one character either way).
+    let attachment = attachment.or_else(|| {
+        let name = run.icon.as_deref()?;
+        let a = NSTextAttachment::new();
+        match crate::label::symbol(name, &s.font, &color) {
+            Some(image) => a.setImage(Some(&image)),
+            None => {
+                let clear = NSColor::clearColor();
+                let glyph = prism_core::glyphs::glyph(name);
+                let (image, bounds) = chip_image(glyph, None, &font, &color, &clear);
+                a.setImage(Some(&image));
+                a.setBounds(bounds);
+            }
+        }
+        Some(a)
     });
     let mut keys: Vec<&NSAttributedStringKey> = unsafe {
         vec![
@@ -236,9 +255,15 @@ fn piece(s: &StyledRun, run: &TextRun, t: &StyledText) -> (String, Attributes) {
         keys.push(unsafe { NSBackgroundColorAttributeName });
         values.push(bg);
     }
+    let underline = NSNumber::new_isize(prism_native::text::ns_underline_style(s.underline_style));
+    let underline_color = s.underline_color.map(ns_color);
     if s.underline {
         keys.push(unsafe { NSUnderlineStyleAttributeName });
-        values.push(&one);
+        values.push(&underline);
+        if let Some(c) = &underline_color {
+            keys.push(unsafe { NSUnderlineColorAttributeName });
+            values.push(c);
+        }
     }
     if s.strikethrough {
         keys.push(unsafe { NSStrikethroughStyleAttributeName });
@@ -321,14 +346,14 @@ pub(crate) fn link_at(tv: &NSTextView, index: usize) -> Option<u64> {
     chip_link(&decode_runs(&tv.ivars().runs.borrow()), index)
 }
 
-/// The link id of the clickable chip at UTF-16 offset `index` of `runs`
-/// (a chip is one unit, its attachment character).
+/// The link id of the clickable chip (or icon) at UTF-16 offset `index`
+/// of `runs` (one unit each, its attachment character).
 fn chip_link(runs: &[TextRun], index: usize) -> Option<u64> {
     let mut at = 0;
     for r in runs {
         let len = r.text.encode_utf16().count();
         if index >= at && index < at + len {
-            return r.link.filter(|_| r.chip.is_some());
+            return r.link.filter(|_| r.is_object());
         }
         at += len;
     }

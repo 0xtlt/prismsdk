@@ -127,8 +127,8 @@ pub use security::{
 };
 pub use shape::{Drawing, Path, Segment};
 pub use spans::{
-    OBJECT_CHAR, Span, TextRun, chip, decode_runs, encode_runs, icon, link, normalize_spans,
-    restyle_spans, span, spans_text, splice_spans, split_spans,
+    OBJECT_CHAR, Span, TextRun, UnderlineStyle, chip, decode_runs, encode_runs, icon, link,
+    normalize_spans, restyle_spans, span, spans_text, splice_spans, split_spans,
 };
 pub use storage::{FileStorage, MemoryStorage, Storage};
 pub use style::*;
@@ -859,7 +859,7 @@ pub mod prelude {
     // Typography and rich text.
     pub use crate::{
         FontFace, FontFamily, FontWeight, RichInputEvent, Span, Stylesheet, TextTransform,
-        TextWrap, chip, icon, link, rich_input, rich_text, span,
+        TextWrap, UnderlineStyle, chip, icon, link, rich_input, rich_text, span,
     };
     // Box decorations and interaction states.
     pub use crate::decoration::{shadow_lg, shadow_md, shadow_sm};

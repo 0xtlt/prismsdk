@@ -1921,10 +1921,9 @@ impl Reconciler {
         let mut relabelled = false;
         for (i, span) in spans.into_iter().enumerate() {
             let mut run = span.run;
-            // Read-only, a chip shows its label (#115).
-            if let (Some(_), Some(label)) = (&run.chip, &run.chip_label) {
-                run.text = label.clone();
-            }
+            // Read-only, a chip shows its label (#115), an icon its
+            // fallback glyph (#221).
+            run.text = run.display_text().to_string();
             if let Some(size) = span.size.filter(|_| font_size > 0.) {
                 run.size = Some(size / font_size);
             }
@@ -1953,7 +1952,7 @@ impl Reconciler {
     /// Registers the handlers of a rich input's clickable runs (links,
     /// chips with `on_click`), remembers its spans to rebuild edits from,
     /// and returns its encoded runs (#115). Unlike a read-only text, a chip
-    /// is [`OBJECT_CHAR`](crate::OBJECT_CHAR) there.
+    /// or an icon is [`OBJECT_CHAR`](crate::OBJECT_CHAR) there.
     fn mount_rich(&mut self, id: NodeId, font_size: f32, spans: Vec<crate::spans::Span>) -> String {
         let mut runs = Vec::with_capacity(spans.len());
         let mut keyed = Vec::with_capacity(spans.len());

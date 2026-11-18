@@ -524,7 +524,8 @@ pub fn attributed(t: &StyledText, focused: Option<usize>) -> Retained<NSAttribut
     use objc2_app_kit::{
         NSBackgroundColorAttributeName, NSBaselineOffsetAttributeName, NSFontAttributeName,
         NSForegroundColorAttributeName, NSKernAttributeName, NSParagraphStyleAttributeName,
-        NSStrikethroughStyleAttributeName, NSUnderlineStyleAttributeName,
+        NSStrikethroughStyleAttributeName, NSUnderlineColorAttributeName,
+        NSUnderlineStyleAttributeName,
     };
     let paragraph = NSMutableParagraphStyle::new();
     paragraph.setAlignment(alignment(t.align));
@@ -581,7 +582,17 @@ pub fn attributed(t: &StyledText, focused: Option<usize>) -> Retained<NSAttribut
                     &NSNumber::new_f64(t.letter_spacing as f64),
                 );
             }
-            if run.underline || focus {
+            if run.underline {
+                add(
+                    NSUnderlineStyleAttributeName,
+                    &NSNumber::new_isize(prism_native::text::ns_underline_style(
+                        run.underline_style,
+                    )),
+                );
+                if let Some(c) = run.underline_color {
+                    add(NSUnderlineColorAttributeName, &ns_color(c));
+                }
+            } else if focus {
                 add(NSUnderlineStyleAttributeName, &NSNumber::new_isize(1));
             }
             if run.strikethrough {
@@ -648,7 +659,7 @@ pub(crate) fn symbol_image(
 }
 
 /// An SF Symbol at the run's size and weight, in its color.
-fn symbol(name: &str, font: &FontSpec, color: &NSColor) -> Option<Retained<NSImage>> {
+pub(crate) fn symbol(name: &str, font: &FontSpec, color: &NSColor) -> Option<Retained<NSImage>> {
     let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
         &NSString::from_str(name),
         None,

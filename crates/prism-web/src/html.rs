@@ -1089,10 +1089,21 @@ fn runs_html_with(
                 out,
                 r#"<span class="prism-chip" contenteditable="false"{link}{style}>{icon}{label}</span>"#
             );
-        } else if r.icon.is_some() {
+        } else if let Some(name) = r.icon.as_deref() {
+            // In a rich input an icon is one unit (#221): U+FFFC, drawn as
+            // its glyph and not editable. Read-only, its text is the glyph.
+            let object = r.text == prism_core::OBJECT_CHAR.to_string();
+            let (editable, glyph) = if object {
+                (
+                    r#" contenteditable="false""#,
+                    escape(prism_core::glyphs::glyph(name)),
+                )
+            } else {
+                ("", text)
+            };
             let _ = write!(
                 out,
-                r#"<span class="prism-symbol" aria-hidden="true"{style}>{text}</span>"#
+                r#"<span class="prism-symbol" aria-hidden="true"{editable}{style}>{glyph}</span>"#
             );
         } else if let Some(link) = r.link {
             match (&r.href, base) {

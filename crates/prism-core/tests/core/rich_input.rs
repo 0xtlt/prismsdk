@@ -279,3 +279,47 @@ fn a_read_only_rich_text_shows_a_chip_as_its_label() {
     assert_eq!(runs[1].text, "Roadmap");
     assert_eq!(runs[1].chip.as_deref(), Some("page:1"));
 }
+
+#[test]
+fn an_icon_is_one_object_character_with_its_underline_kept() {
+    // A date mention with a reminder bell (#221).
+    let (mut h, id) = note(|| {
+        vec![
+            span("Due "),
+            Span::icon("bell", 12.).text_color(rgb(0xe03131)),
+            span("Friday")
+                .underline_color(rgb(0xe8a317))
+                .underline_style(UnderlineStyle::Thick),
+        ]
+    });
+    let n = h.host.get(id);
+    assert_eq!(
+        n.text,
+        format!("Due {OBJECT_CHAR}Friday"),
+        "an icon is one character"
+    );
+    let runs = decode_runs(&n.runs);
+    assert_eq!(runs.len(), 3);
+    assert_eq!(runs[1].text, OBJECT_CHAR.to_string());
+    assert_eq!(runs[1].icon.as_deref(), Some("bell"));
+    assert!(runs[2].underline);
+    assert_eq!(runs[2].underline_color, Some(rgb(0xe8a317)));
+    assert_eq!(runs[2].underline_style, UnderlineStyle::Thick);
+    // Typed right after the icon: the style of the run after it (an icon,
+    // like a chip, never extends), the icon untouched.
+    h.dispatch(UiEvent::Input(id, format!("Due {OBJECT_CHAR}xFriday")));
+    let e = last_event(&h);
+    assert_eq!(e.spans.len(), 3);
+    assert_eq!(e.spans[1].icon_name(), Some("bell"));
+    assert_eq!(e.spans[2].text(), "xFriday");
+    assert_eq!(
+        e.spans[2].underline_style_value(),
+        UnderlineStyle::Thick,
+        "the underline kept its style"
+    );
+    // One Backspace deletes it.
+    h.dispatch(UiEvent::Input(id, "Due xFriday".into()));
+    let e = last_event(&h);
+    assert!(e.spans.iter().all(|s| !s.is_icon()));
+    assert_eq!(e.value, "Due xFriday");
+}

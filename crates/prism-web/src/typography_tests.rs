@@ -158,6 +158,33 @@ fn runs() -> String {
 }
 
 #[test]
+fn a_run_underline_has_its_own_color_and_line() {
+    use prism_core::UnderlineStyle;
+    let run = |style| TextRun {
+        text: "x".into(),
+        underline: true,
+        underline_color: Some(rgb(0xe8a317)),
+        underline_style: style,
+        ..TextRun::default()
+    };
+    assert_eq!(
+        run_css(&run(UnderlineStyle::Dotted)),
+        "text-decoration-line:underline;text-decoration-color:rgba(232,163,23,1);text-decoration-style:dotted;"
+    );
+    assert!(
+        run_css(&run(UnderlineStyle::Thick)).contains("text-decoration-thickness:max(2px,.12em);")
+    );
+    assert!(run_css(&run(UnderlineStyle::Double)).contains("text-decoration-style:double;"));
+    assert!(!run_css(&run(UnderlineStyle::Single)).contains("text-decoration-style"));
+    // Not underlined: no underline color or line.
+    let plain = TextRun {
+        underline: false,
+        ..run(UnderlineStyle::Dashed)
+    };
+    assert_eq!(run_css(&plain), "");
+}
+
+#[test]
 fn runs_become_inline_spans_and_links() {
     let r = &prism_core::decode_runs(&runs())[1];
     assert_eq!(

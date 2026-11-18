@@ -4051,6 +4051,23 @@ fn rich_inputs_have_a_wire_format_and_a_first_paint() {
         "{page}"
     );
     assert!(page.contains("Road &amp; map</span>"), "{page}");
+
+    // An icon (#221): one unit too, its glyph, not editable.
+    let page = html(&[
+        create(1, NodeKind::RichInput),
+        Patch::SetRichValue {
+            id: 1,
+            runs: "Due \u{1e}\u{fffc}\u{1f}g=bell".into(),
+        },
+        Patch::SetRoot { id: 1 },
+    ]);
+    assert!(
+        page.contains(&format!(
+            r#"<span class="prism-symbol" aria-hidden="true" contenteditable="false">{}</span>"#,
+            prism_core::glyphs::glyph("bell")
+        )),
+        "{page}"
+    );
 }
 
 /// #210: the server keeps a file the app hands over, answers at once, and
