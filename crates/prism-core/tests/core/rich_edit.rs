@@ -17,6 +17,8 @@ struct Block {
     pastes: Vec<PasteEvent>,
     take_pastes: bool,
     clicks: Vec<SpanClickEvent>,
+    /// Plain clicks with their character (#266).
+    field_clicks: Vec<ClickEvent>,
     hooks: bool,
 }
 
@@ -59,6 +61,11 @@ impl Render for Block {
             .on_span_click(
                 cx.listener(|this: &mut Block, e: &SpanClickEvent, _| this.clicks.push(*e)),
             )
+            .on_click(
+                cx.listener(|this: &mut Block, e: &ClickEvent, _| {
+                    this.field_clicks.push(e.clone())
+                }),
+            )
     }
 }
 
@@ -89,6 +96,7 @@ fn a_rich_input_reports_only_the_hooks_it_has() {
             | edit_events::CUT
             | edit_events::PASTE
             | edit_events::SPAN_CLICK
+            | edit_events::CLICK
     );
     // Its frame gives the rectangle in the window too.
     assert!(n.reports_layout);
@@ -218,4 +226,29 @@ fn a_copied_chip_is_its_label() {
     );
     assert_eq!(e.text, "See Roadmap");
     assert_eq!(e.spans.len(), 2);
+}
+
+/// #266: a click in the field reaches its `on_click` with the character
+/// under the pointer and the keys (⇧-click to extend from elsewhere).
+#[test]
+fn a_click_in_a_field_says_which_character() {
+    let (mut h, id) = block(true);
+    h.dispatch(UiEvent::FieldClick(
+        id,
+        ClickEvent {
+            modifiers: Modifiers {
+                shift: true,
+                ..Modifiers::NONE
+            },
+            text_offset: Some(8),
+            ..ClickEvent
+        },
+    ));
+    let b = h.root::<Block>();
+    let clicks = h.rt.app.read(&b).field_clicks.clone();
+    assert_eq!(clicks.len(), 1);
+    assert_eq!(clicks[0].text_offset, Some(8));
+    assert!(clicks[0].modifiers.shift);
+    // Elsewhere, clicks carry no character.
+    assert_eq!(ClickEvent.text_offset, None);
 }

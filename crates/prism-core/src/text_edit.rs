@@ -439,6 +439,9 @@ pub mod edit_events {
     pub const PASTE: u8 = 8;
     /// Clicks with ⌘, Ctrl or ⌥ (`UiEvent::SpanClick`).
     pub const SPAN_CLICK: u8 = 16;
+    /// Every click, with the character under it (`UiEvent::FieldClick`,
+    /// #266); the field still places its caret.
+    pub const CLICK: u8 = 32;
 }
 
 /// The handlers of a rich input's editing events (#217).
@@ -456,6 +459,8 @@ pub struct EditHandlers {
     pub on_paste: Option<crate::Handler<PasteEvent>>,
     /// [`RichInput::on_span_click`](crate::RichInput::on_span_click).
     pub on_span_click: Option<crate::Handler<SpanClickEvent>>,
+    /// [`RichInput::on_click`](crate::RichInput::on_click) (#266).
+    pub on_click: Option<crate::Handler<crate::ClickEvent>>,
 }
 
 impl EditHandlers {
@@ -470,6 +475,7 @@ impl EditHandlers {
             | bit(self.on_cut.is_some(), CUT)
             | bit(self.on_paste.is_some(), PASTE)
             | bit(self.on_span_click.is_some(), SPAN_CLICK)
+            | bit(self.on_click.is_some(), CLICK)
     }
 
     /// Whether no handler is set.

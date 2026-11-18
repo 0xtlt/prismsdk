@@ -690,6 +690,7 @@ fn parse_input_event(v: &Value) -> Option<UiEvent> {
                         modifiers: Modifiers::from_bits(mods),
                         count,
                         button: prism_core::PointerButton::Primary,
+                        text_offset: None,
                     },
                 )
             })
@@ -713,6 +714,7 @@ fn parse_input_event(v: &Value) -> Option<UiEvent> {
                         )
                     },
                 )?,
+                text_offset: None,
             },
         )),
         "pointer" => Some(UiEvent::Pointer(
@@ -867,6 +869,19 @@ fn parse_input_event(v: &Value) -> Option<UiEvent> {
         "acrosscopy" => Some(UiEvent::CopyAcross(
             id?,
             v.get("cut").and_then(Value::as_bool).unwrap_or(false),
+        )),
+        // A click in a rich input (#266): the character under it.
+        "fieldclick" => Some(UiEvent::FieldClick(
+            id?,
+            prism_core::ClickEvent {
+                position: Some(Point::new(num("x").unwrap_or(0.), num("y").unwrap_or(0.))),
+                modifiers: Modifiers::from_bits(
+                    v.get("mods").and_then(Value::as_u64).unwrap_or(0) as u8
+                ),
+                count: v.get("n").and_then(Value::as_u64).unwrap_or(1).max(1) as u32,
+                button: prism_core::PointerButton::Primary,
+                text_offset: Some(v.get("at")?.as_u64()? as usize),
+            },
         )),
         "spanclick" => Some(UiEvent::SpanClick(
             id?,

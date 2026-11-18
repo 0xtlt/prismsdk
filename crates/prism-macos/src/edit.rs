@@ -9,7 +9,7 @@ use objc2::DefinedClass;
 use objc2::rc::Retained;
 use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSPasteboard, NSTextView, NSView};
 use objc2_foundation::{NSCopying, NSPoint, NSRange, NSRect, NSSize, NSString};
-use prism_core::edit_events::{COPY, CUT, PASTE, SELECTION_RECT, SPAN_CLICK};
+use prism_core::edit_events::{CLICK, COPY, CUT, PASTE, SELECTION_RECT, SPAN_CLICK};
 use prism_core::{ClipboardContent, NodeId, PasteEvent, Rect, UiEvent};
 
 use crate::imp::PrismTextView;
@@ -138,22 +138,11 @@ pub(crate) fn insert_text(tv: &PrismTextView, text: &str) {
     });
 }
 
-/// A click with ⌘ or ⌥ (#217): reported as a click on the character under
-/// it instead of placing the caret (⌘-click would add a selection). ⌃-click
-/// stays the context menu.
-pub(crate) fn mouse_down(tv: &PrismTextView, event: &NSEvent) -> bool {
-    let flags = event.modifierFlags();
-    if mask(tv) & SPAN_CLICK == 0
-        || !flags.intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Option)
-    {
-        return false;
-    }
-    let Some(id) = crate::interact::text_node(tv) else {
-        return false;
-    };
+/// The character under `event`'s pointer in `tv`.
+fn char_at(tv: &PrismTextView, event: &NSEvent) -> Option<usize> {
     let (Some(lm), Some(tc)) = (unsafe { tv.layoutManager() }, unsafe { tv.textContainer() })
     else {
-        return false;
+        return None;
     };
     let p = tv.convertPoint_fromView(event.locationInWindow(), None);
     let origin = tv.textContainerOrigin();
@@ -167,7 +156,42 @@ pub(crate) fn mouse_down(tv: &PrismTextView, event: &NSEvent) -> bool {
         )
     };
     let text = tv.string().to_string();
-    let at = prism_native::fields::utf16_to_chars(&text, index);
+    Some(prism_native::fields::utf16_to_chars(&text, index))
+}
+
+/// A click in the field. With `on_click` (#266), reported with the
+/// character under it, the field still placing its caret. With ⌘ or ⌥
+/// (#217): reported as a click on the character under it instead of
+/// placing the caret (⌘-click would add a selection); ⌃-click stays the
+/// context menu.
+pub(crate) fn mouse_down(tv: &PrismTextView, event: &NSEvent) -> bool {
+    let flags = event.modifierFlags();
+    let Some(id) = crate::interact::text_node(tv) else {
+        return false;
+    };
+    if mask(tv) & CLICK != 0
+        && let Some(at) = char_at(tv, event)
+    {
+        let p = tv.convertPoint_fromView(event.locationInWindow(), None);
+        crate::imp::dispatch_or_defer(UiEvent::FieldClick(
+            id,
+            prism_core::ClickEvent {
+                position: Some(prism_core::Point::new(p.x as f32, p.y as f32)),
+                modifiers: crate::interact::modifiers(flags),
+                count: event.clickCount().max(1) as u32,
+                button: prism_core::PointerButton::Primary,
+                text_offset: Some(at),
+            },
+        ));
+    }
+    if mask(tv) & SPAN_CLICK == 0
+        || !flags.intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Option)
+    {
+        return false;
+    }
+    let Some(at) = char_at(tv, event) else {
+        return false;
+    };
     crate::imp::dispatch_or_defer(UiEvent::SpanClick(
         id,
         at,

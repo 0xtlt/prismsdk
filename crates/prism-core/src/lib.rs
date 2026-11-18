@@ -633,6 +633,15 @@ impl Runtime {
                 let out = self.reconciler.across_client_edit(group, None, Some(cut));
                 self.finish_across(out, &mut answers);
             }
+            UiEvent::FieldClick(id, e) => {
+                let handler = self
+                    .reconciler
+                    .edit_handlers(id)
+                    .and_then(|h| h.on_click.clone());
+                if let Some(h) = handler {
+                    h(&e, &mut self.app);
+                }
+            }
             UiEvent::SpanClick(id, offset, modifiers) => {
                 let spans = self.reconciler.rich_spans(id);
                 let handler = self

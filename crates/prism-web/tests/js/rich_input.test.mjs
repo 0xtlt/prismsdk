@@ -420,3 +420,16 @@ test("a click with ⌘, Ctrl or ⌥ on a run is the app's on_span_click (#217)",
   f.el.dispatchEvent({ type: "click", target: f.el.childNodes[1], metaKey: true });
   assert.deepEqual(f.page.ws.sent.filter((m) => m.t === "menu").at(-1), { t: "menu", id: 9 });
 });
+
+
+test("every click in the field says which character, with on_click (#266)", () => {
+  const e = editor(enc("See ", ["docs", "u"], " now"), [{ op: "editev", id: 1, mask: 32 }]);
+  e.el.dispatchEvent({ type: "click", target: e.el.childNodes[1], shiftKey: true, detail: 1, clientX: 0, clientY: 0 });
+  const c = e.page.ws.sent.filter((m) => m.t === "fieldclick").at(-1);
+  assert.equal(c.at, 4);
+  assert.equal(c.mods, 1);
+  // Without the hook: none.
+  e.patch({ op: "editev", id: 1, mask: 0 });
+  e.el.dispatchEvent({ type: "click", target: e.el.childNodes[1], detail: 1 });
+  assert.equal(e.page.ws.sent.filter((m) => m.t === "fieldclick").length, 1);
+});

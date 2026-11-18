@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use gtk::prelude::*;
 use gtk::{gdk, glib};
-use prism_core::edit_events::{COPY, CUT, PASTE, SELECTION_RECT, SPAN_CLICK};
+use prism_core::edit_events::{CLICK, COPY, CUT, PASTE, SELECTION_RECT, SPAN_CLICK};
 use prism_core::{ClipboardContent, NodeId, PasteEvent, Rect, UiEvent};
 
 use crate::controls::TextArea;
@@ -108,23 +108,38 @@ pub(crate) fn connect(id: NodeId, view: &gtk::TextView) {
     let click = gtk::GestureClick::new();
     click.set_propagation_phase(gtk::PropagationPhase::Capture);
     let v = view.clone();
-    click.connect_pressed(move |g, _, x, y| {
+    click.connect_pressed(move |g, n, x, y| {
         let mods = g.current_event_state();
+        let (bx, by) = v.window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
+        let at = v
+            .iter_at_location(bx, by)
+            .map(|i| i.offset().max(0) as usize);
+        // Every click, with the character under it (#266); the view still
+        // places its caret.
+        if mask(id) & CLICK != 0
+            && let Some(at) = at
+        {
+            crate::imp::dispatch(UiEvent::FieldClick(
+                id,
+                prism_core::ClickEvent {
+                    position: Some(prism_core::Point::new(x as f32, y as f32)),
+                    modifiers: crate::imp::modifiers(mods),
+                    count: n.max(1) as u32,
+                    button: prism_core::PointerButton::Primary,
+                    text_offset: Some(at),
+                },
+            ));
+        }
         if mask(id) & SPAN_CLICK == 0
             || !mods.intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK)
         {
             return;
         }
-        g.set_state(gtk::EventSequenceState::Claimed);
-        let (bx, by) = v.window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
-        let Some(iter) = v.iter_at_location(bx, by) else {
+        let Some(at) = at else {
             return;
         };
-        crate::imp::dispatch(UiEvent::SpanClick(
-            id,
-            iter.offset().max(0) as usize,
-            crate::imp::modifiers(mods),
-        ));
+        g.set_state(gtk::EventSequenceState::Claimed);
+        crate::imp::dispatch(UiEvent::SpanClick(id, at, crate::imp::modifiers(mods)));
     });
     view.add_controller(click);
 }

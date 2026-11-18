@@ -1175,6 +1175,7 @@ define_class!(
                         modifiers: crate::interact::modifiers(event.modifierFlags()),
                         count: event.clickCount().max(1) as u32,
                         button: prism_core::PointerButton::Primary,
+                        text_offset: None,
                     },
                 ));
             }
@@ -1324,6 +1325,7 @@ impl PrismView {
                         modifiers: crate::interact::modifiers(event.modifierFlags()),
                         count: event.clickCount().max(1) as u32,
                         button: iv.drag_button.get(),
+                        text_offset: None,
                     },
                 ));
             }
