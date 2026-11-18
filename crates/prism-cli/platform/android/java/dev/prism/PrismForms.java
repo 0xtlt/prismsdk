@@ -437,7 +437,12 @@ final class PrismForms {
             @Override public boolean onTextContextMenuItem(int item) {
                 return PrismInput.menuItem(this, item) || super.onTextContextMenuItem(item);
             }
+            // A mouse drag into the other fields of a selection group (#231).
+            @Override public boolean dispatchTouchEvent(MotionEvent ev) {
+                return PrismInput.acrossTouch(this, ev) || super.dispatchTouchEvent(ev);
+            }
         };
+        PrismInput.filters(e, n, -1);
         e.setSingleLine(false);
         e.setHorizontallyScrolling(false);
         e.setMinLines(3);
@@ -533,8 +538,7 @@ final class PrismForms {
             if (start >= 0 && end <= e.length()) e.setSelection(start, end);
         }
         // InputConfig::max_length.
-        e.setFilters(max >= 0 ? new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(max)}
-                : new android.text.InputFilter[0]);
+        PrismInput.filters(e, n, max);
         if (multi) return;
         // Suggestions: the lines after the first (the system's completion list).
         if (e instanceof android.widget.AutoCompleteTextView) {

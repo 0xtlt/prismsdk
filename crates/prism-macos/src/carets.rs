@@ -307,47 +307,93 @@ fn in_text_view(tv: &NSTextView, carets: &[RemoteCaret]) -> Vec<Shape> {
         .collect()
 }
 
+/// A text input's one line of text as drawn while it is not being edited:
+/// measured with its font, in the field's coordinates.
+pub(crate) struct FieldLine {
+    text: String,
+    attrs: Retained<NSDictionary<NSString, AnyObject>>,
+    /// Where its first character starts.
+    pub x0: f64,
+    /// Its line's top and height.
+    pub y: f64,
+    pub h: f64,
+}
+
+impl FieldLine {
+    pub(crate) fn of(field: &NSTextField) -> Option<Self> {
+        let cell = field.cell()?;
+        let title = cell.titleRectForBounds(field.bounds());
+        let font = field
+            .font()
+            .unwrap_or_else(|| NSFont::systemFontOfSize(NSFont::systemFontSize()));
+        let attrs = {
+            let f: &AnyObject = &font;
+            unsafe { NSDictionary::from_slices(&[objc2_app_kit::NSFontAttributeName], &[f]) }
+        };
+        let mut line = FieldLine {
+            text: field.stringValue().to_string(),
+            attrs,
+            x0: 0.,
+            y: title.origin.y,
+            h: (font.ascender() - font.descender() + font.leading())
+                .ceil()
+                .min(title.size.height.max(1.)),
+        };
+        // The field editor's line fragment padding.
+        let inner = title.size.width - 4.;
+        let full = line.width(usize::MAX);
+        line.x0 = title.origin.x
+            + 2.
+            + match field.alignment() {
+                objc2_app_kit::NSTextAlignment::Center => ((inner - full) / 2.).max(0.),
+                objc2_app_kit::NSTextAlignment::Right => (inner - full).max(0.),
+                _ => 0.,
+            };
+        Some(line)
+    }
+
+    /// The width of its first `chars` characters.
+    pub(crate) fn width(&self, chars: usize) -> f64 {
+        let prefix: String = self.text.chars().take(chars).collect();
+        unsafe { NSString::from_str(&prefix).sizeWithAttributes(Some(&self.attrs)) }.width
+    }
+
+    /// The character boundary nearest to `x`.
+    pub(crate) fn offset_at(&self, x: f64) -> usize {
+        let n = self.text.chars().count();
+        let (mut lo, mut hi) = (0, n);
+        // The first boundary at or after `x` (widths grow with the prefix).
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if self.x0 + self.width(mid) < x {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        if lo > 0 && x - (self.x0 + self.width(lo - 1)) < self.x0 + self.width(lo) - x {
+            lo - 1
+        } else {
+            lo
+        }
+    }
+}
+
 /// Carets of a text input that is not being edited: its text measured
 /// with its font, in the field's coordinates (one line).
 fn in_field(field: &NSTextField, carets: &[RemoteCaret]) -> Vec<Shape> {
-    let Some(cell) = field.cell() else {
+    let Some(line) = FieldLine::of(field) else {
         return Vec::new();
     };
-    let title = cell.titleRectForBounds(field.bounds());
-    let font = field
-        .font()
-        .unwrap_or_else(|| NSFont::systemFontOfSize(NSFont::systemFontSize()));
-    let text = field.stringValue().to_string();
-    let attrs = {
-        let f: &AnyObject = &font;
-        unsafe { NSDictionary::from_slices(&[objc2_app_kit::NSFontAttributeName], &[f]) }
-    };
-    let width = |chars: usize| {
-        let prefix: String = text.chars().take(chars).collect();
-        unsafe { NSString::from_str(&prefix).sizeWithAttributes(Some(&attrs)) }.width
-    };
-    // The field editor's line fragment padding.
-    let inner = title.size.width - 4.;
-    let full = width(usize::MAX);
-    let x0 = title.origin.x
-        + 2.
-        + match field.alignment() {
-            objc2_app_kit::NSTextAlignment::Center => ((inner - full) / 2.).max(0.),
-            objc2_app_kit::NSTextAlignment::Right => (inner - full).max(0.),
-            _ => 0.,
-        };
-    let h = (font.ascender() - font.descender() + font.leading())
-        .ceil()
-        .min(title.size.height.max(1.));
-    let y = title.origin.y;
+    let (x0, y, h) = (line.x0, line.y, line.h);
     carets
         .iter()
         .map(|c| {
             let range = c.range();
-            let (a, b) = (width(range.start), width(range.end));
+            let (a, b) = (line.width(range.start), line.width(range.end));
             Shape {
                 bar: Some(NSRect::new(
-                    NSPoint::new(x0 + width(c.head), y),
+                    NSPoint::new(x0 + line.width(c.head), y),
                     NSSize::new(0., h),
                 )),
                 boxes: if b > a {

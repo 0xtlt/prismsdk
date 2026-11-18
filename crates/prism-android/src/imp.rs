@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::sync::OnceLock;
 
-use jni_sys::{JNIEnv, jbyteArray, jclass, jfloat, jsize, jstring};
+use jni_sys::{JNIEnv, jboolean, jbyteArray, jclass, jfloat, jlong, jsize, jstring};
 use prism_core::{
     AppConfig, AppInit, Backend, DeviceInfo, DeviceKind, Orientation, Os, OsName, Runtime,
     ScreenInfo, UiEvent, WindowMode,
@@ -352,6 +352,43 @@ pub extern "system" fn Java_dev_prism_PrismHost_nativeWake(_env: *mut JNIEnv, _c
     });
     poll_headless();
     check_jobs();
+}
+
+/// `PrismHost.nativeConsumesKey(json)`: whether a key press (the `key`
+/// event about to be sent) is the app's alone, a selection group's keys
+/// included (#231, `Runtime::consumes_key_event`). Main thread, before the
+/// key event itself.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_prism_PrismHost_nativeConsumesKey(
+    env: *mut JNIEnv,
+    _class: jclass,
+    json: jstring,
+) -> jboolean {
+    let text = unsafe { jni::rust_string(env, json) };
+    let Some(UiEvent::Key(focused, key)) = serde_json::from_str::<Value>(&text)
+        .ok()
+        .and_then(|v| prism_native::remote::parse_input_event(&v))
+    else {
+        return false;
+    };
+    let mut out = false;
+    with_state(|s| out = s.runtime.consumes_key_event(focused, &key));
+    out
+}
+
+/// `PrismHost.nativeTakesText(id)`: whether text an input method types
+/// into field `id` goes to its selection group (#231,
+/// `Runtime::takes_text_across`): the host then keeps it out of the field
+/// and sends a `typeacross` event.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_prism_PrismHost_nativeTakesText(
+    _env: *mut JNIEnv,
+    _class: jclass,
+    id: jlong,
+) -> jboolean {
+    let mut out = false;
+    with_state(|s| out = s.runtime.takes_text_across(id as u64));
+    out
 }
 
 /// `PrismHost.sceneBlob(id)`: a 3D scene's blob (mesh, instances, clip,

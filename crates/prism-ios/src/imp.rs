@@ -142,6 +142,43 @@ pub(crate) fn relayout_all() {
     });
 }
 
+/// A text field of a selection group (#231), as a pointer drag looks for
+/// it.
+#[cfg(not(target_os = "tvos"))]
+pub(crate) enum GroupField {
+    Area(Retained<objc2_ui_kit::UITextView>),
+    Input(Retained<UITextField>),
+}
+
+/// The text fields of selection group `group` (#231), in document order.
+#[cfg(not(target_os = "tvos"))]
+pub(crate) fn group_fields(group: NodeId) -> Vec<(NodeId, GroupField)> {
+    let mut out = Vec::new();
+    with_state(|s| {
+        out = s
+            .runtime
+            .selection_group_fields(group)
+            .into_iter()
+            .filter_map(|f| Some((f, crate::across::field_view(s.renderer.view(f)?)?)))
+            .collect();
+    });
+    out
+}
+
+/// Whether `text`, about to be typed into field `field`, goes to its
+/// selection group (#231, `Runtime::takes_text_across`): then the field
+/// refuses it and the group hears it once UIKit's callback returned.
+fn type_across(field: NodeId, text: &NSString) -> bool {
+    let mut takes = false;
+    with_state(|s| takes = s.runtime.takes_text_across(field));
+    if takes {
+        let text = text.to_string();
+        dispatch2::DispatchQueue::main()
+            .exec_async(move || dispatch(UiEvent::TypeAcross(field, text)));
+    }
+    takes
+}
+
 pub(crate) fn dispatch(event: UiEvent) {
     with_state(|s| {
         // A draggable's drag, with the drop target under the finger (#251).
@@ -636,6 +673,15 @@ define_class!(
             let _ = sender;
         }
 
+        /// An iPad pointer's drag over a selection group (#231).
+        #[unsafe(method(onAcrossPan:))]
+        fn on_across_pan(&self, sender: &objc2_ui_kit::UIPanGestureRecognizer) {
+            #[cfg(not(target_os = "tvos"))]
+            crate::across::on_pan(sender);
+            #[cfg(target_os = "tvos")]
+            let _ = sender;
+        }
+
         /// A drag after a long press (#243).
         #[unsafe(method(onHoldDrag:))]
         fn on_hold_drag(&self, sender: &objc2_ui_kit::UIGestureRecognizer) {
@@ -710,7 +756,9 @@ define_class!(
         ) -> bool {
             let old = field.text().map_or(0, |t| t.length());
             let new = old.saturating_sub(range.length) + replacement.length();
-            crate::interaction::edit_fits(field.tag() as NodeId, old, new)
+            // Typed over a selection across fields: the group's (#231).
+            !type_across(field.tag() as NodeId, replacement)
+                && crate::interaction::edit_fits(field.tag() as NodeId, old, new)
         }
 
         /// The caret or selection moved, typing included (#86).
@@ -777,6 +825,18 @@ define_class!(
     }
 
     unsafe impl UITextViewDelegate for Target {
+        /// Typed over a selection across fields (#231): the group's, from
+        /// a hardware keyboard or the on-screen one.
+        #[unsafe(method(textView:shouldChangeTextInRange:replacementText:))]
+        fn text_view_should_change(
+            &self,
+            view: &objc2_ui_kit::UITextView,
+            _range: objc2_foundation::NSRange,
+            text: &NSString,
+        ) -> bool {
+            !type_across(view.tag() as NodeId, text)
+        }
+
         #[unsafe(method(textViewDidChange:))]
         fn text_view_did_change(&self, view: &objc2_ui_kit::UITextView) {
             #[cfg(not(target_os = "tvos"))]
@@ -3444,12 +3504,22 @@ impl Widgets for UiKit {
         }
     }
 
-    /// A text area's part of a selection across fields (#231); a one-line
-    /// input draws none.
+    /// A selection group follows an iPad pointer's drags across its fields
+    /// (#231).
+    fn set_selection_group(&mut self, view: &View, on: bool) {
+        #[cfg(not(target_os = "tvos"))]
+        crate::across::set_group(view.ui(), on, &self.target);
+        #[cfg(target_os = "tvos")]
+        let _ = (view, on);
+    }
+
+    /// A text field's part of a selection across fields (#231).
     #[cfg(not(target_os = "tvos"))]
     fn set_selection_highlight(&mut self, view: &View, start: usize, end: usize) {
-        if let View::TextArea(t) = view {
-            crate::edit::highlight(&t.view, start, end);
+        match view {
+            View::TextArea(t) => crate::edit::highlight(&t.view, start, end),
+            View::Input(f) => crate::edit::highlight_field(f, start, end),
+            _ => {}
         }
     }
 

@@ -359,6 +359,7 @@
     "note_clicked": "⌘-clicked span {count}",
     "blocks": "Blocks: select across paragraphs with ⇧↓ or a drag",
     "blocks_selected": "Selected across {count} blocks",
+    "blocks_select_all": "Select all blocks",
     "block_label": "Paragraph {count}",
     "syncing": "Syncing…",
     "keyboard_clear": "Clear",

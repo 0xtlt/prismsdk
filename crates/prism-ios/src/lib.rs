@@ -5,6 +5,8 @@
 //! the app bundle's Info.plist must declare `PrismSceneDelegate` (see
 //! `platform/scripts/ios-run.sh` in `prism-cli`).
 
+#[cfg(any(target_os = "ios", target_os = "visionos"))]
+mod across;
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "visionos"))]
 mod automation;
 #[cfg(any(target_os = "ios", target_os = "visionos"))]

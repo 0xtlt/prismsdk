@@ -2112,6 +2112,11 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
 }
 
 impl<W: Widgets> NativeRenderer<W> {
+    /// The native view of node `id`, if mounted.
+    pub fn view(&self, id: NodeId) -> Option<&W::View> {
+        self.nodes.get(&id).map(|e| &e.view)
+    }
+
     /// The keyboard bar serving text field `field` (#242): its own (the
     /// keyboard overlay right after it, `field_only`), else the nearest
     /// container's shared one.

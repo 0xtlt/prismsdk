@@ -402,11 +402,20 @@ impl Forms {
                     );
                 }
             }));
+        // From the app (touch screens have no ⇧↓): the whole document.
+        let last = self.blocks.len().saturating_sub(1);
+        let end = self.blocks.last().map_or(0, |b| b.chars().count());
+        let select_all = ui::button(strings::forms_blocks_select_all(cx)).on_click(cx.listener(
+            move |_, _, cx| {
+                cx.set_selection_across(("block-0", 0), (format!("block-{last}"), end));
+            },
+        ));
         div()
             .flex_col()
             .gap(4.)
             .child(text(strings::forms_blocks(cx)).text_size(12.))
             .child(flow)
+            .child(div().flex_row().child(select_all))
             .child(
                 text(if self.blocks_selected > 1 {
                     strings::forms_blocks_selected(cx, self.blocks_selected as i64)

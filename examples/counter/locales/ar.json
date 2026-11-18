@@ -383,6 +383,7 @@
     "note_clicked": "⌘-نقر على المقطع {count}",
     "blocks": "كتل: حدّد عبر الفقرات باستخدام ⇧↓ أو بالسحب",
     "blocks_selected": "تحديد عبر {count} كتل",
+    "blocks_select_all": "تحديد كل الكتل",
     "block_label": "الفقرة {count}",
     "syncing": "جارٍ المزامنة…",
     "keyboard_clear": "مسح",

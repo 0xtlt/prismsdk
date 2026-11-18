@@ -65,6 +65,42 @@ fn with_state(f: impl FnOnce(&mut State)) {
     });
 }
 
+/// A text field of a selection group (#231), as a drag looks for it: its
+/// text view or field, and the view framing it.
+pub(crate) enum GroupField {
+    Area(Retained<PrismTextView>, Retained<NSView>),
+    Input(Retained<NSTextField>, Retained<NSView>),
+}
+
+/// The text fields of the selection group text field `id` is in (#231),
+/// in document order; `None` outside one.
+pub(crate) fn group_fields(id: NodeId) -> Option<Vec<(NodeId, GroupField)>> {
+    let mut out = None;
+    with_state(|s| {
+        let Some(group) = s.runtime.selection_group(id) else {
+            return;
+        };
+        let fields = s.runtime.selection_group_fields(group);
+        out = Some(
+            fields
+                .into_iter()
+                .filter_map(|f| match s.renderer.view(f)? {
+                    View::TextArea(t) => Some((
+                        f,
+                        GroupField::Area(t.text.clone(), Retained::into_super(t.container.clone())),
+                    )),
+                    View::Input(i) => Some((
+                        f,
+                        GroupField::Input(i.field(), Retained::into_super(i.host.clone())),
+                    )),
+                    _ => None,
+                })
+                .collect(),
+        );
+    });
+    out
+}
+
 pub(crate) fn dispatch(event: UiEvent) {
     with_state(|s| s.dispatch(event));
 }
@@ -4883,10 +4919,12 @@ impl Widgets for AppKit {
     }
 
     fn set_selection_highlight(&mut self, view: &View, start: usize, end: usize) {
-        // Text areas and rich inputs (#231); a one-line input has no text
-        // of its own to draw on while another field has the focus.
-        if let View::TextArea(t) = view {
-            crate::interact::highlight_text(&t.text, start, end);
+        // Text areas and rich inputs draw it with their layout manager, a
+        // one-line input over its text (#231).
+        match view {
+            View::TextArea(t) => crate::interact::highlight_text(&t.text, start, end),
+            View::Input(i) => crate::across::highlight_field(&i.field(), start, end),
+            _ => {}
         }
     }
 
@@ -5558,6 +5596,66 @@ fn post_click(window: &NSWindow, view: &NSView) {
     }
 }
 
+/// A mouse drag from a third of the way into `from` to a third of the way
+/// into `to` (`PRISM_DRAG_TO`, #231), in a few steps, as the mouse sends it.
+fn post_drag(window: &NSWindow, from: &NSView, to: &NSView) {
+    use objc2_app_kit::{NSEventModifierFlags, NSEventType};
+    let third = |v: &NSView| {
+        let b = v.bounds();
+        v.convertPoint_toView(
+            NSPoint::new(
+                b.origin.x + b.size.width / 3.,
+                b.origin.y + b.size.height / 3.,
+            ),
+            None,
+        )
+    };
+    // A field's label can be on the box around its text view.
+    fn text_view(v: &NSView) -> Retained<NSView> {
+        fn find(v: &NSView) -> Option<Retained<NSView>> {
+            if v.downcast_ref::<PrismTextView>().is_some() {
+                return Some(objc2::Message::retain(v));
+            }
+            v.subviews().iter().find_map(|s| find(&s))
+        }
+        find(v).unwrap_or_else(|| objc2::Message::retain(v))
+    }
+    let (from, to) = (text_view(from), text_view(to));
+    // Both on screen, as the user would see them.
+    to.scrollRectToVisible(to.bounds());
+    from.scrollRectToVisible(from.bounds());
+    let (a, z) = (third(&from), third(&to));
+    let app = NSApplication::sharedApplication(window.mtm());
+    let now = objc2_foundation::NSProcessInfo::processInfo().systemUptime();
+    let event = |kind, at| {
+        NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+            kind,
+            at,
+            NSEventModifierFlags::empty(),
+            now,
+            window.windowNumber(),
+            None,
+            0,
+            1,
+            1.,
+        )
+    };
+    for i in 1..=8 {
+        let t = i as f64 / 8.;
+        let at = NSPoint::new(a.x + (z.x - a.x) * t, a.y + (z.y - a.y) * t);
+        if let Some(e) = event(NSEventType::LeftMouseDragged, at) {
+            app.postEvent_atStart(&e, false);
+        }
+    }
+    if let (Some(down), Some(up)) = (
+        event(NSEventType::LeftMouseDown, a),
+        event(NSEventType::LeftMouseUp, z),
+    ) {
+        app.postEvent_atStart(&up, false);
+        from.mouseDown(&down);
+    }
+}
+
 /// Types `text` into the focused view, one key every 50 ms, as the text
 /// system receives key presses once interpreted: `insertText:` for
 /// characters, `doCommandBySelector: insertNewline:` for Return (`\n`).
@@ -5872,7 +5970,15 @@ fn run_automation(mtm: MainThreadMarker) {
         // Menus and calendars track the mouse in a loop of their own: click
         // on the next turn, after scheduling the snapshot.
         let (w, t) = (window.clone(), target.clone());
-        on_main_after(std::time::Duration::ZERO, move || post_click(&w, &t));
+        // `PRISM_DRAG_TO=<label>`: the press drags from a third of the way
+        // into the tapped view to a third of the way into that one (#231).
+        let to = std::env::var("PRISM_DRAG_TO")
+            .ok()
+            .and_then(|l| find_labelled(&root, &l));
+        on_main_after(std::time::Duration::ZERO, move || match to {
+            Some(to) => post_drag(&w, &t, &to),
+            None => post_click(&w, &t),
+        });
         if let Ok(text) = std::env::var("PRISM_TYPE") {
             post_typing(&window, &text.replace("\\n", "\n"));
         }

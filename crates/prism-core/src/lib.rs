@@ -636,6 +636,12 @@ impl Runtime {
                 let out = self.reconciler.across_client_edit(group, None, Some(cut));
                 self.finish_across(out, &mut answers);
             }
+            UiEvent::TypeAcross(field, text) => {
+                if let Some((group, fields, action)) = self.reconciler.across_text(field, &text) {
+                    let out = self.reconciler.apply_across(group, &fields, field, action);
+                    self.finish_across(out, &mut answers);
+                }
+            }
             UiEvent::FieldClick(id, e) => {
                 let handler = self
                     .reconciler
@@ -817,6 +823,33 @@ impl Runtime {
     /// other threads: backends that cannot be woken directly poll meanwhile.
     pub fn has_background_work(&self) -> bool {
         self.app.executor.has_background_work()
+    }
+
+    /// The selection group (#231) text field `field` belongs to, if any:
+    /// a backend extends a pointer drag from it into the other fields of
+    /// that group (`UiEvent::SelectionAcross`).
+    pub fn selection_group(&self, field: NodeId) -> Option<NodeId> {
+        self.reconciler.group_of(field)
+    }
+
+    /// The text fields of selection group `group` (#231), in document
+    /// order: where a backend looks for the field under a pointer drag.
+    pub fn selection_group_fields(&self, group: NodeId) -> Vec<NodeId> {
+        self.reconciler
+            .group_fields(group)
+            .into_iter()
+            .map(|f| f.id)
+            .collect()
+    }
+
+    /// Whether text typed into field `field` by an input method or a soft
+    /// keyboard (#231) goes to its selection group instead of the field:
+    /// the selection spans several of the group's fields and the group has
+    /// `on_edit_across`. The backend then keeps the field from inserting
+    /// it and dispatches `UiEvent::TypeAcross` with the text (`""` for a
+    /// deletion), after the field's own callback returned.
+    pub fn takes_text_across(&self, field: NodeId) -> bool {
+        self.app.platform() != Platform::Web && self.reconciler.across_text(field, "x").is_some()
     }
 
     /// Whether `key`, pressed in node `focused`, is the app's alone: its

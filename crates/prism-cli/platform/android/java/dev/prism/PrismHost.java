@@ -60,6 +60,10 @@ public final class PrismHost {
     static native void nativeReady(float width, float height, float density, String info);
     static native void nativeEvent(String json);
     static native void nativeWake();
+    /** Whether a key (the `key` event about to be sent) is the app's alone, a selection group's included (#231). */
+    static native boolean nativeConsumesKey(String json);
+    /** Whether text an input method types into field `id` goes to its selection group (#231). */
+    static native boolean nativeTakesText(long id);
     static native void nativeBackground(String task, String info);
     static native void nativeBackgroundExpired(String task);
     /** The car (PrismCarService): `connected` (1/0), `select` (id), `back` (depth). */
@@ -216,6 +220,8 @@ public final class PrismHost {
         boolean videoControlsOn = true, videoAutoplay, videoLoop, videoMuted;
         // Keys its `on_key_down` takes from the focused field (#181).
         java.util.Set<String> consumeKeys;
+        /** A selection group (#231): its text fields share one selection. */
+        boolean selGroup;
         // A pinch over the node (#133): whether it is on, the fingers'
         // spread at the last report and where it was when they settled.
         boolean scaling;
@@ -582,6 +588,9 @@ public final class PrismHost {
             case "keys": PrismInput.keys(n, p.optBoolean("local"), p.optBoolean("global")); break;
             case "consume": PrismInput.consume(n, p.optJSONArray("keys")); break;
             case "sel": PrismInput.select(n, p.optInt("start"), p.optInt("end")); break;
+            // One selection across several fields (#231).
+            case "selhl": PrismInput.highlight(n, p.optInt("start"), p.optInt("end")); break;
+            case "selgroup": n.selGroup = p.optBoolean("on"); break;
             case "selev": PrismInput.selectEvents(n, p.optBoolean("on")); break;
             // Other people's carets (#240).
             case "carets": PrismInput.carets(n, p.optJSONArray("carets")); break;
@@ -634,7 +643,12 @@ public final class PrismHost {
                         super.onSelectionChanged(start, end);
                         PrismInput.selectionChanged(this);
                     }
+                    // A mouse drag into the other fields of a selection group (#231).
+                    @Override public boolean dispatchTouchEvent(MotionEvent ev) {
+                        return PrismInput.acrossTouch(this, ev) || super.dispatchTouchEvent(ev);
+                    }
                 };
+                PrismInput.filters(e, n, -1);
                 e.setThreshold(1);
                 e.setSingleLine(true);
                 e.addTextChangedListener(new TextWatcher() {
@@ -852,14 +866,30 @@ public final class PrismHost {
             n.dialog.show();
             return;
         }
-        n.host.removeAllViews();
+        // Only the views that leave or move are taken out: a focused text
+        // field that stays keeps its focus, caret and input method (a
+        // sibling removed, blocks merged, #231).
+        java.util.Set<View> keep = new java.util.HashSet<>();
+        for (Node c : kids) if (!c.kind.equals("modal")) keep.add(c.view);
+        View focused = n.host.findFocus();
+        for (int i = n.host.getChildCount() - 1; i >= 0; i--) {
+            if (!keep.contains(n.host.getChildAt(i))) n.host.removeViewAt(i);
+        }
+        int at = 0;
         for (Node c : kids) {
             if (c.kind.equals("modal")) {
                 if (c.dialog != null && !c.dialog.isShowing()) c.dialog.show();
                 continue;
             }
-            attach(n.host, c);
+            if (n.host.getChildAt(at) != c.view) {
+                ViewGroup old = (ViewGroup) c.view.getParent();
+                if (old != null) old.removeView(c.view);
+                n.host.addView(c.view, at, PrismLayout.frameOf(c.view));
+            }
+            at++;
         }
+        // One that moved gets its focus back.
+        if (focused != null && !focused.isFocused() && focused.isAttachedToWindow()) focused.requestFocus();
         if (n.kind.equals("stack")) refreshStack(n);
         if (n.kind.equals("tabs")) refreshTabs(n);
     }

@@ -306,6 +306,20 @@ pub fn parse_input_event(v: &Value) -> Option<prism_core::UiEvent> {
                     .map(prism_core::CaretEdges::decode),
             },
         )),
+        // A pointer drag across a selection group's fields (#231, #264):
+        // `{"t":"across","id":group,"a":[field,n],"h":[field,n]}`.
+        "across" => {
+            let end = |k: &str| {
+                let p = v.get(k)?;
+                Some((p.get(0)?.as_u64()?, p.get(1)?.as_u64()? as usize))
+            };
+            Some(UiEvent::SelectionAcross(id?, Some((end("a")?, end("h")?))))
+        }
+        // Text an input method typed over a selection across fields (#231).
+        "typeacross" => Some(UiEvent::TypeAcross(
+            id?,
+            v.get("text")?.as_str()?.to_string(),
+        )),
         "select" => Some(UiEvent::Select(
             id?,
             v.get("start")?.as_u64()? as usize,
@@ -1219,6 +1233,21 @@ impl Widgets for RemoteWidgets {
     fn insert_text(&mut self, id: &NodeId, text: &str) {
         self.ops
             .push(json!({ "op": "instext", "id": id, "text": text }));
+    }
+
+    /// `{"op":"selhl","id","start","end"}` (#231): a field's part of a
+    /// selection across fields, drawn like a selection (`start == end`:
+    /// none).
+    fn set_selection_highlight(&mut self, id: &NodeId, start: usize, end: usize) {
+        self.ops
+            .push(json!({ "op": "selhl", "id": id, "start": start, "end": end }));
+    }
+
+    /// `{"op":"selgroup","id","on"}` (#231): the host extends a pointer
+    /// drag across the group's text fields (`across` events).
+    fn set_selection_group(&mut self, id: &NodeId, on: bool) {
+        self.ops
+            .push(json!({ "op": "selgroup", "id": id, "on": on }));
     }
 
     fn scroll_into_view(&mut self, id: &NodeId) {

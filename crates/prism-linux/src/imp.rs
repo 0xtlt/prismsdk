@@ -983,6 +983,60 @@ fn field_takes(id: NodeId, text: &str, current: &str) -> bool {
     })
 }
 
+/// The selection group text field `id` is in (#231).
+pub(crate) fn selection_group_of(id: NodeId) -> Option<NodeId> {
+    let mut out = None;
+    with_state(|s| out = s.runtime.selection_group(id));
+    out
+}
+
+/// The field of the selection group of field `id` under `p` (in `root`'s
+/// coordinates) and the character there (#231).
+pub(crate) fn group_field_at(
+    id: NodeId,
+    root: &gtk::Widget,
+    p: &gtk::graphene::Point,
+) -> Option<(NodeId, usize)> {
+    let mut out = None;
+    with_state(|s| {
+        let Some(group) = s.runtime.selection_group(id) else {
+            return;
+        };
+        for f in s.runtime.selection_group_fields(group) {
+            let (frame, hit): (gtk::Widget, _) = match s.renderer.view(f) {
+                Some(View::TextArea(_, t)) => (t.root.clone().upcast(), Some(t.view.clone())),
+                Some(View::Input(_, e)) => (e.clone().upcast(), None),
+                _ => continue,
+            };
+            let inside = frame.is_mapped()
+                && frame
+                    .compute_bounds(root)
+                    .is_some_and(|b| b.contains_point(p));
+            if !inside {
+                continue;
+            }
+            let Some(local) = root.compute_point(&frame, p) else {
+                continue;
+            };
+            out = Some(match (hit, s.renderer.view(f)) {
+                (Some(view), _) => {
+                    let l = root.compute_point(&view, p).unwrap_or(local);
+                    (
+                        f,
+                        crate::across::offset_in_view(&view, l.x() as f64, l.y() as f64),
+                    )
+                }
+                (None, Some(View::Input(_, e))) => {
+                    (f, crate::across::offset_in_entry(e, local.x() as f64))
+                }
+                _ => continue,
+            });
+            break;
+        }
+    });
+    out
+}
+
 fn with_state(f: impl FnOnce(&mut State)) {
     STATE.with(|cell| {
         if let Ok(mut guard) = cell.try_borrow_mut()
@@ -3454,9 +3508,12 @@ impl Widgets for Gtk {
     }
 
     fn set_selection_highlight(&mut self, view: &View, start: usize, end: usize) {
-        // Text areas and rich inputs (#231); an entry has no text tags.
-        if let View::TextArea(_, t) = view {
-            t.highlight(start, end);
+        // Text areas and rich inputs with a text tag, an entry with a
+        // background attribute (#231).
+        match view {
+            View::TextArea(_, t) => t.highlight(start, end),
+            View::Input(_, e) => crate::across::highlight_entry(e, start, end),
+            _ => {}
         }
     }
 

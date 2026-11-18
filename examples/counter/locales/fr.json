@@ -359,6 +359,7 @@
     "note_clicked": "⌘-clic sur le segment {count}",
     "blocks": "Blocs : sélectionnez sur plusieurs paragraphes avec ⇧↓ ou en glissant",
     "blocks_selected": "Sélection sur {count} blocs",
+    "blocks_select_all": "Tout sélectionner",
     "block_label": "Paragraphe {count}",
     "syncing": "Synchronisation…",
     "keyboard_clear": "Effacer",

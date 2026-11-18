@@ -1221,8 +1221,8 @@ impl ParentElement for Div {
 impl Div {
     /// Groups the named text fields inside (`.id(…)`: rich inputs, text
     /// areas, text inputs) into one selection (#231): ⇧+arrows at a
-    /// field's edge (and pointer drags, on the web) extend the selection
-    /// into the next or previous field. See
+    /// field's edge, and mouse drags from one field into another, extend
+    /// the selection into the next or previous field. See
     /// [`selection_across`](crate::selection_across) and [`text_flow`](crate::text_flow).
     pub fn selection_group(mut self) -> Self {
         self.0.selection_group = true;
