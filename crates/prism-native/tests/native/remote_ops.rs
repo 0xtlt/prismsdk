@@ -430,7 +430,17 @@ fn measure_requests_carry_kind_text_font_and_width() {
     w.create(3, NodeKind::Image);
     w.set_icon(&3, "star");
     w.measure(&3, None);
+    // A timer with a longer `after` text measures it (#281), whatever
+    // text it shows now.
+    w.create(4, NodeKind::Timer);
+    w.set_placeholder(&4, "Departed");
+    w.set_text(&4, "1:05");
+    w.measure(&4, None);
     let seen = SEEN.with(|s| s.borrow().clone());
+    assert_eq!(
+        (seen[6].0.as_str(), seen[6].1.as_str()),
+        ("timer", "Departed")
+    );
     assert_eq!(
         seen[0],
         ("text".into(), "a bb cccc".into(), 12., 700, Some(50.))

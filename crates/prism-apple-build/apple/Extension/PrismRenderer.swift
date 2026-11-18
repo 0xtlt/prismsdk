@@ -138,6 +138,39 @@ private func prismText(_ n: PNode, _ fg: Color?) -> AnyView {
     return v
 }
 
+/// The instant a widget entry is drawn for (`PrismEntry.date`): WidgetKit
+/// draws the entries of a timeline ahead of time, so a timer compares its
+/// end with it, not with the moment it is drawn. Nil elsewhere (Live
+/// Activities): now.
+struct PrismEntryDateKey: EnvironmentKey {
+    static let defaultValue: Date? = nil
+}
+
+extension EnvironmentValues {
+    var prismEntryDate: Date? {
+        get { self[PrismEntryDateKey.self] }
+        set { self[PrismEntryDateKey.self] = newValue }
+    }
+}
+
+/// A countdown: the time left until `end`, ticking by itself. Once ended,
+/// its `after` text (`timer(..).after`, #281), else 0:00. A widget switches
+/// to it with a timeline entry at `end` (see `prismTimerEnds`).
+struct PrismTimerText: View {
+    let end: Date
+    let after: String?
+    @Environment(\.prismEntryDate) private var entryDate
+
+    var body: some View {
+        let now = entryDate ?? .now
+        if end > now {
+            Text(timerInterval: now...end, countsDown: true)
+        } else {
+            Text(after.flatMap { $0.isEmpty ? nil : $0 } ?? "0:00")
+        }
+    }
+}
+
 /// Renders a node, or nothing.
 func prismView(_ node: Any?) -> AnyView {
     guard let n = node as? PNode else { return AnyView(EmptyView()) }
@@ -158,12 +191,10 @@ func prismBuild(_ node: PNode) -> AnyView {
             .foregroundStyle(fg ?? .primary))
     case "m":
         let end = Date(timeIntervalSince1970: num(n["v"]) ?? 0)
-        let text = end > .now
-            ? Text(timerInterval: Date.now...end, countsDown: true)
-            : Text("0:00")
         // A timer takes the width it is offered and lays its digits out by
         // its own alignment: centering it from outside does nothing (#279).
-        view = AnyView(text.font(font(n)).monospacedDigit().foregroundStyle(fg ?? .primary)
+        view = AnyView(PrismTimerText(end: end, after: n["ph"] as? String)
+            .font(font(n)).monospacedDigit().foregroundStyle(fg ?? .primary)
             .multilineTextAlignment(prismTextAlign(n)))
     case "p":
         view = AnyView(ProgressView(value: min(max(num(n["v"]) ?? 0, 0), 1)).tint(fg))

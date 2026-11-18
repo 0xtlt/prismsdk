@@ -15,7 +15,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::NSString;
 use prism_core::surfaces::{ActivityContent, PlatformRequest};
-use prism_core::{ActivityId, Capabilities, NodeKind, PlatformServices, SNode, format_remaining};
+use prism_core::{ActivityId, Capabilities, NodeKind, PlatformServices, SNode, timer_text};
 
 unsafe extern "C" {
     fn prism_bridge_init() -> bool;
@@ -32,8 +32,9 @@ fn c(s: &str) -> CString {
 
 struct StatusActivity {
     item: Retained<NSStatusItem>,
-    /// Countdown end (Unix seconds) shown as the title, if any.
-    countdown: Option<f64>,
+    /// Countdown end (Unix seconds) shown as the title, if any, and its
+    /// text once ended (#281).
+    countdown: Option<(f64, String)>,
     text: String,
     link: Option<String>,
 }
@@ -139,8 +140,11 @@ impl MacServices {
 
     pub fn tick(&self) {
         for a in self.activities.values() {
-            if let (Some(end), Some(button)) = (a.countdown, a.item.button(self.mtm)) {
-                button.setTitle(&NSString::from_str(&format!(" {}", format_remaining(end))));
+            if let (Some(end), Some(button)) = (&a.countdown, a.item.button(self.mtm)) {
+                button.setTitle(&NSString::from_str(&format!(
+                    " {}",
+                    timer_text(end.0, &end.1)
+                )));
             }
         }
     }
@@ -167,7 +171,7 @@ impl MacServices {
             .iter()
             .filter_map(|n| n.as_ref())
             .find_map(|n| first(n, NodeKind::Timer))
-            .and_then(|n| n.value);
+            .and_then(|n| Some((n.value?, n.placeholder.clone())));
         entry.text = content
             .compact_trailing
             .as_ref()
@@ -183,8 +187,8 @@ impl MacServices {
                 )
             });
             button.setImage(image.as_deref());
-            let title = match entry.countdown {
-                Some(end) => format!(" {}", format_remaining(end)),
+            let title = match &entry.countdown {
+                Some((end, after)) => format!(" {}", timer_text(*end, after)),
                 None => format!(" {}", entry.text),
             };
             button.setTitle(&NSString::from_str(&title));

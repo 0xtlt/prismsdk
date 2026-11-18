@@ -319,6 +319,33 @@ fn placeholders_label_text_inputs() {
     assert_eq!(h.host.get(input).a11y.label.as_deref(), Some("Email"));
 }
 
+/// #281: a timer's `after` text reaches backends as its placeholder, and a
+/// change of it as a patch.
+#[test]
+fn a_timers_after_text_is_its_placeholder() {
+    struct Countdown {
+        after: &'static str,
+    }
+    impl Render for Countdown {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            let past = std::time::SystemTime::now() - std::time::Duration::from_secs(5);
+            div().child(timer(past).after(self.after))
+        }
+    }
+    let mut h = Harness::new(|cx| {
+        let root = cx.new_entity(|_| Countdown { after: "Departed" });
+        mount(cx, root);
+    });
+    let t = h.host.find(|n| n.kind == NodeKind::Timer).unwrap();
+    assert_eq!(h.host.get(t).placeholder, "Departed");
+    assert_eq!(h.host.get(t).text, "Departed");
+    let p = h.update::<Countdown>(|s| s.after = "Gone").to_vec();
+    assert!(p.contains(&Patch::SetPlaceholder {
+        id: t,
+        text: "Gone".into()
+    }));
+}
+
 // --- Clickable containers and nested entities ------------------------------
 
 struct Card {

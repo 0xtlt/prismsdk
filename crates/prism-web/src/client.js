@@ -3338,6 +3338,8 @@
         return;
       }
       case "placeholder":
+        // A countdown's text once ended (`timer(..).after`, #281).
+        if (el.dataset.kind === "timer") { el.dataset.after = p.text; showTimer(el); return; }
         if (el._rich) el.dataset.placeholder = p.text;
         else if (el._ph) el._ph.textContent = p.text;
         else el.placeholder = p.text;
@@ -3371,7 +3373,7 @@
           const owner = el.parentElement && el.parentElement.parentElement;
           if (owner && owner._screens) refreshStack(owner);
         }
-        if (el.dataset.kind === "timer") { el.dataset.end = p.value; tick(); }
+        if (el.dataset.kind === "timer") { el.dataset.end = p.value; showTimer(el); }
         if (el.dataset.kind === "tabs") { endLazyWait(el); el._selected = p.value; refreshTabs(el); }
         return;
       case "icon": {
@@ -6661,17 +6663,24 @@ void main() {
     const pad = (n) => String(n).padStart(2, "0");
     return h ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
   }
+  /** The time left, or the `after` text once it shows 0:00 (#281). */
+  function timerText(end, after) {
+    const text = remaining(end);
+    return after && text === "0:00" ? after : text;
+  }
+  function showTimer(el) {
+    if (el.dataset.end === undefined) return;
+    const text = timerText(Number(el.dataset.end), el.dataset.after);
+    if (el.dataset.kind === "timer") {
+      let t = el.firstChild && el.firstChild.nodeType === 3 ? el.firstChild : null;
+      if (!t) { t = document.createTextNode(""); el.prepend(t); }
+      if (t.data !== text) t.data = text;
+    } else if (el.textContent !== text) {
+      el.textContent = text;
+    }
+  }
   function tick() {
-    document.querySelectorAll("[data-end]").forEach((el) => {
-      const text = remaining(Number(el.dataset.end));
-      if (el.dataset.kind === "timer") {
-        let t = el.firstChild && el.firstChild.nodeType === 3 ? el.firstChild : null;
-        if (!t) { t = document.createTextNode(""); el.prepend(t); }
-        if (t.data !== text) t.data = text;
-      } else if (el.textContent !== text) {
-        el.textContent = text;
-      }
-    });
+    document.querySelectorAll("[data-end]").forEach(showTimer);
   }
   setInterval(tick, 1000);
 
@@ -6709,7 +6718,12 @@ void main() {
     if (n.o !== undefined) st.opacity = n.o;
     if (n.k === "t") el.textContent = n.s || "";
     if (n.k === "i") { el.textContent = glyphs[n.s] || "•"; el.className = "prism-symbol"; }
-    if (n.k === "m") { el.dataset.end = n.v; st.fontVariantNumeric = "tabular-nums"; el.textContent = remaining(n.v); }
+    if (n.k === "m") {
+      el.dataset.end = n.v;
+      if (n.ph) el.dataset.after = n.ph;
+      st.fontVariantNumeric = "tabular-nums";
+      el.textContent = timerText(n.v, n.ph);
+    }
     if (n.k === "p") { el.max = 1; el.value = n.v || 0; }
     if (n.al) el.setAttribute("aria-label", n.al);
     if (n.ah) el.setAttribute("aria-hidden", "true");

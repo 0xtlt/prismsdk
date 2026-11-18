@@ -593,7 +593,8 @@ pub struct VNode {
     pub style: Style,
     /// Text content: a label, a button title, a field's value, a screen title, a picture source.
     pub text: String,
-    /// Placeholder of a text input.
+    /// Placeholder of a text input; a timer's text once it has ended
+    /// ([`Timer::after`]).
     pub placeholder: String,
     /// Icon name (SF Symbol on Apple platforms), used by tabs.
     pub icon: String,
@@ -2146,6 +2147,31 @@ pub fn timer(until: std::time::SystemTime) -> Timer {
     n.value = Some(secs);
     n.text = format_remaining(secs);
     Timer(n)
+}
+
+impl Timer {
+    /// What the timer shows once its end has passed, instead of `0:00`
+    /// (`"Departed"`, `"—"`). Every backend and static surface (widgets,
+    /// Live Activities) switches to it on its own when the countdown ends.
+    pub fn after(mut self, text: impl Into<String>) -> Self {
+        self.0.placeholder = text.into();
+        if let Some(end) = self.0.value {
+            self.0.text = timer_text(end, &self.0.placeholder);
+        }
+        self
+    }
+}
+
+/// A timer's text: the time left until the Unix time `end`
+/// ([`format_remaining`]), or `after` once it shows `0:00` (when `after` is
+/// not empty, see [`Timer::after`]).
+pub fn timer_text(end: f64, after: &str) -> String {
+    let text = format_remaining(end);
+    if !after.is_empty() && text == "0:00" {
+        after.to_string()
+    } else {
+        text
+    }
 }
 
 /// `m:ss` (or `h:mm:ss`) until the Unix time `end`.

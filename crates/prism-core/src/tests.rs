@@ -1042,6 +1042,47 @@ fn snapshots_carry_shapes_compactly_with_margins() {
     assert!(compact.len() < sh.text.len());
 }
 
+/// #281: an ended timer says what the app means instead of 0:00.
+#[test]
+fn an_ended_timer_shows_its_after_text() {
+    use crate::{timer, timer_text};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64();
+    assert_eq!(timer_text(now - 10., "Departed"), "Departed");
+    assert_eq!(timer_text(now - 10., ""), "0:00");
+    assert_eq!(timer_text(now + 125.2, "Departed"), "2:05");
+
+    let mut app = App::new();
+    let past = SystemTime::now() - Duration::from_secs(10);
+    let soon = SystemTime::now() + Duration::from_secs(90);
+    let node = snapshot_one(
+        &mut app,
+        div()
+            .child(timer(past).after("Departed"))
+            .child(timer(soon).after("Departed"))
+            .child(timer(past)),
+    );
+    let [ended, counting, plain] = &node.children[..] else {
+        panic!("three timers");
+    };
+    // The text the snapshot carries already says it.
+    assert_eq!(ended.text, "Departed");
+    assert!(ended.to_json().contains(r#""s":"Departed","v":"#));
+    assert!(ended.to_json().contains(r#","ph":"Departed""#));
+    // Still counting: the time left, and the text for later.
+    assert!(counting.text.starts_with("1:"), "{}", counting.text);
+    assert!(counting.to_json().contains(r#","ph":"Departed""#));
+    // Without one: 0:00 and no key.
+    assert_eq!(plain.text, "0:00");
+    assert!(!plain.to_json().contains(r#""ph""#));
+    // `placeholder` is a timer's only.
+    let input = snapshot_one(&mut app, crate::text_input().placeholder("Name"));
+    assert!(input.placeholder.is_empty());
+}
+
 #[test]
 fn components_know_when_they_render_a_snapshot() {
     let mut app = App::new();

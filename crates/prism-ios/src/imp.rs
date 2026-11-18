@@ -1354,6 +1354,7 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
         icons: HashMap::new(),
         selected: HashMap::new(),
         timers: HashMap::new(),
+        timer_after: HashMap::new(),
         menus: HashMap::new(),
         presented: Vec::new(),
         pictures: HashMap::new(),
@@ -1547,6 +1548,8 @@ pub struct UiKit {
     selected: HashMap<NodeId, usize>,
     /// Countdown labels and their end time (Unix seconds).
     timers: HashMap<NodeId, (Retained<UILabel>, f64)>,
+    /// What each countdown shows once ended (`timer(..).after`, #281).
+    timer_after: HashMap<NodeId, String>,
     /// Context menus by view id (read by the interaction delegate).
     menus: HashMap<NodeId, prism_core::menu::MenuSpec>,
     /// Pictures waiting for their image, by source.
@@ -1842,8 +1845,9 @@ impl UiKit {
 
 impl UiKit {
     fn tick(&self) {
-        for (label, end) in self.timers.values() {
-            let text = NSString::from_str(&prism_core::format_remaining(*end));
+        for (id, (label, end)) in &self.timers {
+            let after = self.timer_after.get(id).map_or("", String::as_str);
+            let text = NSString::from_str(&prism_core::timer_text(*end, after));
             if label.text().as_deref() != Some(&*text) {
                 label.setText(Some(&text));
             }
@@ -2415,6 +2419,14 @@ impl Widgets for UiKit {
             View::DatePicker(p) => crate::dates::set_placeholder(p, text),
             #[cfg(target_os = "tvos")]
             View::DatePicker(p) => p.set_placeholder(text),
+            View::Timer(l) => {
+                self.timer_after.insert(view.id(), text.to_string());
+                if let Some((_, end)) = self.timers.get(&view.id()) {
+                    l.setText(Some(&NSString::from_str(&prism_core::timer_text(
+                        *end, text,
+                    ))));
+                }
+            }
             _ => {}
         }
     }
@@ -2690,6 +2702,7 @@ impl Widgets for UiKit {
         self.icons.remove(&id);
         self.selected.remove(&id);
         self.timers.remove(&id);
+        self.timer_after.remove(&id);
         self.pickers.remove(&id);
         self.date_pickers.remove(&id);
         #[cfg(not(target_os = "tvos"))]
@@ -2712,6 +2725,19 @@ impl Widgets for UiKit {
     }
 
     fn measure(&mut self, view: &View, max_width: Option<f32>) -> (f32, f32) {
+        // A countdown with an `after` text is as large as the larger of the
+        // two, so the text fits once it ends (#281).
+        if let View::Timer(l) = view
+            && let Some(after) = self.timer_after.remove(&view.id())
+        {
+            let shown = l.text();
+            l.setText(Some(&NSString::from_str(&after)));
+            let ended = self.measure(view, max_width);
+            l.setText(shown.as_deref());
+            let counting = self.measure(view, max_width);
+            self.timer_after.insert(view.id(), after);
+            return (ended.0.max(counting.0), ended.1.max(counting.1));
+        }
         let limit = CGSize::new(max_width.map_or(f64::MAX / 4., |w| w as f64), f64::MAX / 4.);
         let size = match view {
             View::Toggle(t) => t.sizeThatFits(limit),
@@ -3035,8 +3061,9 @@ impl Widgets for UiKit {
             View::Timer(l) => {
                 self.timers
                     .insert(view.id(), (Retained::into_super(l.clone()), value));
-                l.setText(Some(&NSString::from_str(&prism_core::format_remaining(
-                    value,
+                let after = self.timer_after.get(&view.id()).map_or("", String::as_str);
+                l.setText(Some(&NSString::from_str(&prism_core::timer_text(
+                    value, after,
                 ))));
             }
             #[cfg(not(target_os = "tvos"))]

@@ -1884,3 +1884,25 @@ test("the app badge uses the Badging API where there is one (#239)", async () =>
   page.ws.deliver({ t: "badge", n: null });
   assert.deepEqual(calls, [["set", 4], ["clear"]]);
 });
+
+test("an ended timer shows its after text, in the page and a live activity (#281)", () => {
+  const now = Date.now() / 1000;
+  // The placeholder comes before the end, as the reconciler sends them.
+  const page = live([
+    create(1, "view"),
+    create(2, "timer"), { op: "placeholder", id: 2, text: "Departed" }, { op: "value", id: 2, value: now - 5 },
+    create(3, "timer"), { op: "placeholder", id: 3, text: "Departed" }, { op: "value", id: 3, value: now + 125 },
+    create(4, "timer"), { op: "value", id: 4, value: now - 5 },
+    children(1, [2, 3, 4]), root(1),
+  ]);
+  assert.equal(page.node(2).textContent, "Departed");
+  assert.match(page.node(3).textContent, /^2:0[45]$/);
+  assert.equal(page.node(4).textContent, "0:00");
+  // The text changes on a live timer too.
+  page.ws.deliver({ t: "patch", p: [{ op: "placeholder", id: 4, text: "—" }] });
+  assert.equal(page.node(4).textContent, "—");
+
+  page.ws.deliver({ t: "activity", id: "1", c: { cl: { k: "m", v: now - 1, ph: "Gone" }, ct: { k: "m", v: now - 1 } } });
+  const island = page.document.getElementById("prism-island");
+  assert.deepEqual(island.querySelectorAll("[data-end]").map((e) => e.textContent), ["Gone", "0:00"]);
+});

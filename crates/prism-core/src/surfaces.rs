@@ -202,6 +202,8 @@ pub struct SNode {
     pub icon: String,
     /// Progress fraction, or a timer's end as a Unix timestamp.
     pub value: Option<f64>,
+    /// A timer's text once it has ended ([`Timer::after`](crate::Timer::after)).
+    pub placeholder: String,
     /// Accessibility label.
     pub label: Option<String>,
     /// Hidden from assistive technologies.
@@ -297,6 +299,11 @@ impl SNode {
             text: v.text,
             icon: v.icon,
             value: v.value,
+            placeholder: if v.kind == NodeKind::Timer {
+                v.placeholder
+            } else {
+                String::new()
+            },
             link: v.link,
             action: v.widget_action.map(|(action, payload)| WidgetAction {
                 kind: String::new(),
@@ -325,7 +332,8 @@ impl SNode {
     /// `["#light","#dark"]`), `r` radius, `bw` border, `fs`/`fw`/`ta` font (`fw` 1-3
     /// medium/semibold/bold, else a CSS weight; typography keys
     /// `ff`/`it`/`ul`/`st`/`tn`/`tt`/`ls`/`lh`/`ml`/`nw`, see `write_typography`),
-    /// `o` opacity, `s` text, symbol or drawing, `v` value, `l` link,
+    /// `o` opacity, `s` text, symbol or drawing, `v` value, `ph` a timer's
+    /// text once ended, `l` link,
     /// `wa` widget action (`{"k":kind,"a":action,"p":payload}`),
     /// `al` accessibility label, `ah` hidden, `hd` heading, `c` children.
     ///
@@ -500,6 +508,9 @@ impl SNode {
         }
         if let Some(v) = self.value {
             let _ = write!(o, r#","v":{}"#, num(v as f32).max_precision(v));
+        }
+        if !self.placeholder.is_empty() {
+            let _ = write!(o, r#","ph":{}"#, json_str(&self.placeholder));
         }
         if let Some(l) = &self.link {
             let _ = write!(o, r#","l":{}"#, json_str(l));

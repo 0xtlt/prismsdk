@@ -140,7 +140,8 @@ fn a_timer_follows_the_text_alignment() {
         .nth(1)
         .and_then(|s| s.split("case \"p\":").next())
         .expect("the timer case");
-    assert!(timer.contains("Text(timerInterval:"), "{timer}");
+    assert!(timer.contains("PrismTimerText(end: end"), "{timer}");
+    assert!(renderer.contains("Text(timerInterval: now...end, countsDown: true)"));
     assert!(
         timer.contains(".multilineTextAlignment(prismTextAlign(n))"),
         "{timer}"
@@ -156,11 +157,53 @@ fn a_timer_follows_the_text_alignment() {
         .find(|s| s.trim_start().starts_with("// Aligned like a text"))
         .and_then(|s| s.split("case \"picture\":").next())
         .expect("the watch timer case");
-    assert!(timer.contains("style: .timer"), "{timer}");
+    assert!(timer.contains("PrismWatchTimer(end:"), "{timer}");
+    assert!(watch.contains("Text(end, style: .timer)"));
     assert!(
         timer.contains(".multilineTextAlignment(textAlign(n.str(\"talign\")))")
             && timer
                 .contains(".frame(maxWidth: .infinity, alignment: frameAlign(n.str(\"talign\")))"),
         "{timer}"
     );
+}
+
+/// #281: an ended timer shows its `after` text (`"ph"`). A widget is drawn
+/// again when such a timer ends (an entry at its end), and its timers compare
+/// their end with the entry's instant, not with the moment WidgetKit draws it
+/// (ahead of time). The watch host draws a timer again at its end.
+#[test]
+fn an_ended_timer_shows_its_after_text() {
+    let apple = Path::new(env!("CARGO_MANIFEST_DIR")).join("apple");
+    let renderer = std::fs::read_to_string(apple.join("Extension/PrismRenderer.swift")).unwrap();
+    assert!(renderer.contains(r#"PrismTimerText(end: end, after: n["ph"] as? String)"#));
+    let view = renderer
+        .split("struct PrismTimerText: View {")
+        .nth(1)
+        .and_then(|s| s.split("\n}\n").next())
+        .expect("PrismTimerText");
+    assert!(view.contains("let now = entryDate ?? .now"), "{view}");
+    assert!(view.contains("if end > now {"), "{view}");
+    assert!(
+        view.contains(r#"Text(after.flatMap { $0.isEmpty ? nil : $0 } ?? "0:00")"#),
+        "{view}"
+    );
+
+    let kit = std::fs::read_to_string(apple.join("Extension/PrismWidgetKit.swift")).unwrap();
+    assert!(kit.contains(".environment(\\.prismEntryDate, entry.date)"));
+    // Both providers build their timeline from the snapshot's timer ends.
+    assert_eq!(kit.matches("prismTimeline(").count(), 3, "{kit}");
+    assert!(kit.contains("let dates = [now] + prismTimerEnds(doc, after: now)"));
+    assert!(kit.contains(
+        r#"if n["k"] as? String == "m", let after = n["ph"] as? String, !after.isEmpty,"#
+    ));
+    assert!(
+        !kit.contains("Timeline(entries: [PrismEntry(date: .now"),
+        "one entry only"
+    );
+
+    let watch = std::fs::read_to_string(apple.join("Watch/PrismWatch.swift")).unwrap();
+    assert!(watch.contains(
+        "PrismWatchTimer(end: Date(timeIntervalSince1970: n.value), after: n.placeholder)"
+    ));
+    assert!(watch.contains("TimelineView(.explicit([end]))"));
 }

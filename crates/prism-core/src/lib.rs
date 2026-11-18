@@ -87,7 +87,7 @@ pub use element::{
     Spinner, Stack, SwipeDirection, Tab, Tabs, Text, TextArea, TextInput, Timer, Toggle, VNode,
     button, date_picker, date_picker_opt, div, format_remaining, image, lazy, modal, picker,
     picture, progress, rich_text, screen, scroll, shape, slider, spinner, stack, tab, tabs, text,
-    text_area, text_input, timer, toggle, unix_seconds, unix_time,
+    text_area, text_input, timer, timer_text, toggle, unix_seconds, unix_time,
 };
 pub use element::{
     Checkbox, Overlay, RadioGroup, checkbox, dialog, keyboard_toolbar, popover, radio_group, sheet,
