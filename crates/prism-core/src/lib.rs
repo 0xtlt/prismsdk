@@ -141,8 +141,8 @@ pub use style::*;
 pub use surfaces::WidgetAction;
 pub use surfaces::{
     Activity, ActivityId, Capabilities, Notification, NotificationAction, NotificationResponse,
-    PlatformRequest, PlatformServices, SNode, Widget, WidgetConfig, WidgetFamily, WidgetOption,
-    WidgetParameter,
+    PlatformRequest, PlatformServices, SNode, Widget, WidgetConfig, WidgetEntry, WidgetFamily,
+    WidgetOption, WidgetParameter,
 };
 pub use task::{AsyncApp, Background, Sleep, TaskHandle, WakeUi};
 pub use task::{DEFAULT_BACKGROUND_THREADS, background_threads, set_background_threads};

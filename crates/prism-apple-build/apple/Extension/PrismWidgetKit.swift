@@ -11,6 +11,8 @@ import WidgetKit
 import ActivityKit
 #endif
 
+/// A drawing of a widget and the instant it is shown from: its `families`
+/// are the ones drawn for that instant.
 struct PrismEntry: TimelineEntry {
     let date: Date
     let doc: PNode?
@@ -98,14 +100,15 @@ func prismChosen(_ doc: PNode?, _ values: [String: String]) -> [String: String] 
     return chosen
 }
 
-/// The snapshot document with the families drawn for `chosen`: the default
-/// ones, another rendered configuration's, or none (the view then asks to
-/// open the app, which renders it).
+/// The snapshot document with the families drawn for `chosen`, and its
+/// drawings ahead: the default ones, another rendered configuration's, or
+/// none (the view then asks to open the app, which renders it).
 func prismConfigured(_ doc: PNode?, _ chosen: [String: String]) -> PNode? {
     guard var doc else { return nil }
     if chosen == doc["default"] as? [String: String] ?? [:] { return doc }
     let config = (doc["configs"] as? [PNode])?.first { $0["values"] as? [String: String] == chosen }
     doc["families"] = config?["families"]
+    doc["ahead"] = config?["ahead"]
     return doc
 }
 
@@ -127,11 +130,11 @@ func prismRecordConfigurations(_ kind: String, _ configs: [[String: String]]) {
 
 struct PrismIntentProvider<Intent: PrismConfigurationIntent>: AppIntentTimelineProvider {
     func placeholder(in context: Context) -> PrismEntry {
-        PrismEntry(date: .now, doc: prismLoadWidget(Intent.prismKind))
+        prismEntryNow(prismLoadWidget(Intent.prismKind))
     }
     func snapshot(for configuration: Intent, in context: Context) async -> PrismEntry {
         let doc = prismLoadWidget(Intent.prismKind)
-        return PrismEntry(date: .now, doc: prismConfigured(doc, prismChosen(doc, configuration.prismValues)))
+        return prismEntryNow(prismConfigured(doc, prismChosen(doc, configuration.prismValues)))
     }
     func timeline(for configuration: Intent, in context: Context) async -> Timeline<PrismEntry> {
         let doc = prismLoadWidget(Intent.prismKind)
@@ -155,7 +158,7 @@ struct PrismIntentProvider<Intent: PrismConfigurationIntent>: AppIntentTimelineP
 
 struct PrismProvider: TimelineProvider {
     let kind: String
-    func placeholder(in context: Context) -> PrismEntry { PrismEntry(date: .now, doc: prismLoadWidget(kind)) }
+    func placeholder(in context: Context) -> PrismEntry { prismEntryNow(prismLoadWidget(kind)) }
     func getSnapshot(in context: Context, completion: @escaping (PrismEntry) -> Void) {
         completion(placeholder(in: context))
     }
@@ -164,16 +167,59 @@ struct PrismProvider: TimelineProvider {
     }
 }
 
-/// The most entries of a timeline: the snapshot now, then the instants a
-/// timer ends (#281).
-let prismMaxEntries = 16
+/// The most entries of a timeline: the drawing now, the drawings ahead (the
+/// app writes at most 16, `Widget::MAX_AHEAD`) and the ends of timers with
+/// an `after` text. Past it, WidgetKit asks for the rest at the last one.
+let prismMaxEntries = 64
 
-/// The timeline of a snapshot document. The app reloads timelines whenever
-/// its state changes; until then the widget is also drawn again when a timer
-/// with an `after` text ends, so the text replaces 0:00 without the app.
+/// The timeline of a snapshot document (#281): its drawing now, each drawing
+/// ahead (`"ahead"`, `Widget::ahead`) from its instant, and the same drawing
+/// again when a timer with an `after` text ends, so the text replaces 0:00.
+/// WidgetKit switches between them without the app. `.atEnd` while drawings
+/// are left after the last entry (WidgetKit then asks again and the last one
+/// stays), `.never` otherwise: the app reloads timelines whenever its state
+/// changes.
 func prismTimeline(_ doc: PNode?, now: Date = .now) -> Timeline<PrismEntry> {
-    let dates = [now] + prismTimerEnds(doc, after: now).prefix(prismMaxEntries - 1)
-    return Timeline(entries: dates.map { PrismEntry(date: $0, doc: doc) }, policy: .never)
+    let drawings = prismDrawings(doc, now: now)
+    var entries: [PrismEntry] = []
+    for (i, drawing) in drawings.enumerated() {
+        entries.append(PrismEntry(date: drawing.from, doc: drawing.doc))
+        let next = i + 1 < drawings.count ? drawings[i + 1].from : .distantFuture
+        for end in prismTimerEnds(drawing.doc, after: drawing.from) where end < next {
+            entries.append(PrismEntry(date: end, doc: drawing.doc))
+        }
+    }
+    let more = entries.count > prismMaxEntries
+    entries = Array(entries.prefix(prismMaxEntries))
+    let ahead = drawings.count > 1 || more
+    return Timeline(entries: entries, policy: ahead ? .atEnd : .never)
+}
+
+/// The drawing shown now (the system's placeholder and snapshot).
+func prismEntryNow(_ doc: PNode?, now: Date = .now) -> PrismEntry {
+    let drawing = prismDrawings(doc, now: now)[0]
+    return PrismEntry(date: drawing.from, doc: drawing.doc)
+}
+
+/// The drawings of a document from now on, soonest first: the latest whose
+/// instant has come (the families written, or a drawing ahead), from `now`,
+/// then each one ahead from its instant. Always one at least.
+func prismDrawings(_ doc: PNode?, now: Date) -> [(from: Date, doc: PNode?)] {
+    guard var doc, let ahead = doc["ahead"] as? [PNode], !ahead.isEmpty else { return [(now, doc)] }
+    doc["ahead"] = nil
+    var drawings: [(from: Date, doc: PNode?)] = [(now, doc)]
+    for e in ahead {
+        guard let at = (e["at"] as? NSNumber)?.doubleValue, let families = e["families"] else { continue }
+        var drawn = doc
+        drawn["families"] = families
+        let from = Date(timeIntervalSince1970: at)
+        if from <= now {
+            drawings[0] = (now, drawn)
+        } else {
+            drawings.append((from, drawn))
+        }
+    }
+    return drawings
 }
 
 /// The ends after `now` of the timers that show an `after` text (`"ph"`), in

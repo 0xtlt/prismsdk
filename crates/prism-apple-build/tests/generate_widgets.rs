@@ -192,7 +192,9 @@ fn an_ended_timer_shows_its_after_text() {
     assert!(kit.contains(".environment(\\.prismEntryDate, entry.date)"));
     // Both providers build their timeline from the snapshot's timer ends.
     assert_eq!(kit.matches("prismTimeline(").count(), 3, "{kit}");
-    assert!(kit.contains("let dates = [now] + prismTimerEnds(doc, after: now)"));
+    assert!(kit.contains(
+        "for end in prismTimerEnds(drawing.doc, after: drawing.from) where end < next {"
+    ));
     assert!(kit.contains(
         r#"if n["k"] as? String == "m", let after = n["ph"] as? String, !after.isEmpty,"#
     ));
@@ -206,4 +208,56 @@ fn an_ended_timer_shows_its_after_text() {
         "PrismWatchTimer(end: Date(timeIntervalSince1970: n.value), after: n.placeholder)"
     ));
     assert!(watch.contains("TimelineView(.explicit([end]))"));
+}
+
+/// #281: a widget drawn ahead (`"ahead"`) gets one timeline entry per
+/// drawing, from its instant, so WidgetKit switches drawings without the
+/// app. `.atEnd` while drawings are left, `.never` for a single one; a
+/// configuration's own drawings ahead replace the default's.
+#[test]
+fn drawings_ahead_become_timeline_entries() {
+    let apple = Path::new(env!("CARGO_MANIFEST_DIR")).join("apple");
+    let kit = std::fs::read_to_string(apple.join("Extension/PrismWidgetKit.swift")).unwrap();
+    let body = |name: &str| {
+        kit.split(&format!("func {name}("))
+            .nth(1)
+            .and_then(|s| s.split("\n}\n").next())
+            .unwrap_or_else(|| panic!("{name}"))
+            .to_string()
+    };
+    let timeline = body("prismTimeline");
+    assert!(
+        timeline.contains("let drawings = prismDrawings(doc, now: now)"),
+        "{timeline}"
+    );
+    assert!(timeline.contains("entries.append(PrismEntry(date: drawing.from, doc: drawing.doc))"));
+    assert!(
+        timeline.contains("let ahead = drawings.count > 1 || more"),
+        "{timeline}"
+    );
+    assert!(
+        timeline.contains("policy: ahead ? .atEnd : .never"),
+        "{timeline}"
+    );
+
+    let drawings = body("prismDrawings");
+    assert!(drawings.contains(r#"guard var doc, let ahead = doc["ahead"] as? [PNode], !ahead.isEmpty else { return [(now, doc)] }"#));
+    assert!(drawings.contains(r#"guard let at = (e["at"] as? NSNumber)?.doubleValue, let families = e["families"] else { continue }"#));
+    // One whose instant has come replaces the drawing written.
+    assert!(
+        drawings.contains("if from <= now {\n            drawings[0] = (now, drawn)"),
+        "{drawings}"
+    );
+
+    let configured = body("prismConfigured");
+    assert!(
+        configured.contains(r#"doc["ahead"] = config?["ahead"]"#),
+        "{configured}"
+    );
+    // The system's placeholder and snapshot show the drawing of now too.
+    assert_eq!(kit.matches("prismEntryNow(").count(), 4, "{kit}");
+    assert!(
+        !kit.contains("PrismEntry(date: .now, doc: prismLoadWidget"),
+        "{kit}"
+    );
 }

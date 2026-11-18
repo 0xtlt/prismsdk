@@ -49,6 +49,39 @@ cx.set_badge(Some(unread));   // the app icon's number, without a notification (
 
 How it works: Prism resolves the elements into a static snapshot (compact JSON, under ActivityKit's 4 KB limit). A **generic SwiftUI renderer** shipped with Prism (`crates/prism-apple-build/apple/Extension`) draws it in a WidgetKit extension. `crates/prism-cli/platform/scripts/ios-run.sh` generates that extension from the app's registered widgets, then builds and signs it with the App Group. Apps that register no widget and declare no Live Activity (`cx.enable_live_activities()` at startup, or a push-to-start handler `cx.on_activity_push_token`) are bundled without the extension, its provisioning profile and the App Group: on iOS, `start_activity` then fails with a log line saying so. macOS draws Live Activities in the app (a menu bar item), so there only widgets need the extension. Android adds one widget receiver per registered widget. The Rust app talks to WidgetKit/ActivityKit/UserNotifications through a small Swift bridge linked automatically (`crates/prism-apple-build`). Platforms implement `PlatformServices`; apps query `cx.capabilities()` instead of checking the OS.
 
+## Drawing a widget ahead
+
+A widget is drawn when the app reloads it, and the system keeps that drawing until the next reload. A widget whose content changes at known instants (the next bus, the next meeting) can be **drawn ahead** for them: the system switches to each drawing at its instant on its own, while the app sleeps.
+
+```rust
+cx.register_widget(
+    Widget::new("next", "Next departure")
+        .families(&[WidgetFamily::Small])
+        // Called once per instant, with `cx.now()` returning it.
+        .render(move |cx, _| {
+            let now = cx.now();
+            match buses.read(cx).departures.iter().find(|t| **t > now) {
+                Some(t) => timer(*t).after("Departed").into_element(),
+                None => text("No more buses today").into_element(),
+            }
+        })
+        // The instants at which the drawing changes: each departure.
+        .ahead(move |cx, _config| buses.read(cx).departures.clone()),
+);
+```
+
+- `ahead(|cx, config| instants)` is called on every reload, once per configuration (an empty `WidgetConfig` for a widget without parameters, `render_configured` for one with). Instants already past are dropped and the 16 soonest are kept (`Widget::MAX_AHEAD`).
+- The render closure is called again for each instant. **`cx.now()`** returns the instant being drawn (the reload's time for the first drawing, the clock outside widgets), so a drawing for 15:40 leaves out what has gone by then. Read it instead of `SystemTime::now()` in what a widget shows.
+- Each reload draws `1 + instants` times per family and configuration: keep the render closure quick.
+
+| | How the drawings ahead are shown |
+|---|---|
+| iOS, iPadOS, macOS, visionOS | one timeline entry per drawing (`Timeline(entries:policy: .atEnd)`, `.never` when nothing is ahead), so WidgetKit switches drawings by itself; after the last one, it asks again and the last drawing stays |
+| Android | the latest drawing whose instant has come, each time the widget is drawn, and an inexact alarm draws it again at the next instant |
+| Web, Linux, watchOS, tvOS | no home-screen widgets |
+
+The snapshot keeps its format for widgets that don't draw ahead: the drawings come in an `"ahead": [{"at": …, "families": …}]` list next to `"families"` (per configuration for configurable widgets), only when there are some. `WidgetSnapshot::ahead_for(config)` lists them, as `WidgetEntry { at, families }`.
+
 ## A timer that has ended
 
 `timer(end)` counts down by itself, then stops at `0:00`. `.after(text)` says what the app means once the end has passed:
@@ -64,7 +97,8 @@ The text replaces the countdown when it reaches `0:00`, wherever the timer is dr
 | In the app (web, macOS, iOS, iPadOS, tvOS, visionOS, Android, Linux, watchOS) | the text, on the next tick (watchOS: drawn again at the end) |
 | Widgets on iOS and macOS | the text, without the app: the widget's timeline gets an entry at the timer's end, and the timer compares its end with the entry's instant (WidgetKit draws entries ahead of time) |
 | Live Activities on iOS | the text once ActivityKit draws the activity again: an update, or its `stale_after(end)` |
-| Android widgets and Live Updates | the text when the widget or notification is drawn after the end |
+| Android widgets | the text, without the app: an alarm draws the widget again at the timer's end (inexact: Doze may delay it a little) |
+| Android Live Updates | the text when the notification is drawn after the end |
 | macOS menu bar, the web's live banner | the text, on the next tick |
 
 ## Configurable widgets
