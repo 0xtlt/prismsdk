@@ -600,6 +600,11 @@ pub enum UiEvent {
     /// The web client took a copy (or cut, `true`) of the selection across
     /// group `.0`'s fields, already writing its plain text.
     CopyAcross(NodeId, bool),
+    /// Text typed into field `.0` over a selection across its group's
+    /// fields (#231) by an input method or a soft keyboard, that the field
+    /// did not insert because [`Runtime::takes_text_across`](crate::Runtime::takes_text_across)
+    /// said the group takes it: `""` for a deletion, `"\n"` for Return.
+    TypeAcross(NodeId, String),
 }
 
 /// A selection across the fields of a group (#231), as drawn.
@@ -616,6 +621,7 @@ struct Across {
 
 /// What a key did to a selection group (#231), for the runtime to finish:
 /// the patches to send and the handlers to call.
+#[derive(Default)]
 pub(crate) struct AcrossOutcome {
     pub patches: Vec<Patch>,
     /// The group's selection handler and the selection to report.
@@ -2797,13 +2803,7 @@ impl Reconciler {
         action: crate::selection_across::KeyAction,
     ) -> AcrossOutcome {
         use crate::selection_across::KeyAction as K;
-        let mut out = AcrossOutcome {
-            patches: Vec::new(),
-            report: None,
-            edit: None,
-            copy: None,
-            paste: None,
-        };
+        let mut out = AcrossOutcome::default();
         let handlers = self.groups.get(&group).cloned().unwrap_or_default();
         match action {
             K::Select(a, h) => {
@@ -2903,13 +2903,7 @@ impl Reconciler {
     /// Text field `id` reported `start..end` (#231): unless it echoes the
     /// selection Prism gave it, a selection across its group ends there.
     pub(crate) fn across_select(&mut self, id: NodeId, start: usize, end: usize) -> AcrossOutcome {
-        let mut out = AcrossOutcome {
-            patches: Vec::new(),
-            report: None,
-            edit: None,
-            copy: None,
-            paste: None,
-        };
+        let mut out = AcrossOutcome::default();
         let Some(a) = &self.across else { return out };
         let group = a.group;
         if (a.anchor.0 == id && a.selected == (start, end)) || self.group_of(id) != Some(group) {
@@ -2924,6 +2918,32 @@ impl Reconciler {
             out.report = Some((hd, self.across_event(&fields, (i, start), (i, end))));
         }
         out
+    }
+
+    /// What `text`, typed into field `field` by an input method (#231,
+    /// `UiEvent::TypeAcross`), does: an edit of the selection across its
+    /// group's fields, when there is one and the group has
+    /// `on_edit_across`. `None`: the field inserts it.
+    pub(crate) fn across_text(
+        &self,
+        field: NodeId,
+        text: &str,
+    ) -> Option<(NodeId, Vec<Field>, crate::selection_across::KeyAction)> {
+        use crate::EditCause as C;
+        let group = self.group_of(field)?;
+        self.groups.get(&group)?.on_edit.as_ref()?;
+        let fields = self.group_fields(group);
+        self.across_range(group, &fields)?;
+        let (cause, text) = match text {
+            "" => (C::Backspace, String::new()),
+            "\n" | "\r" | "\r\n" => (C::Enter, "\n".to_string()),
+            t => (C::Typing, t.to_string()),
+        };
+        Some((
+            group,
+            fields,
+            crate::selection_across::KeyAction::Edit(cause, text),
+        ))
     }
 
     /// A backend extended the selection across group `group` to `range`
@@ -2946,9 +2966,7 @@ impl Reconciler {
         AcrossOutcome {
             patches,
             report,
-            edit: None,
-            copy: None,
-            paste: None,
+            ..Default::default()
         }
     }
 
@@ -2961,13 +2979,7 @@ impl Reconciler {
         copy: Option<bool>,
     ) -> AcrossOutcome {
         let fields = self.group_fields(group);
-        let mut out = AcrossOutcome {
-            patches: Vec::new(),
-            report: None,
-            edit: None,
-            copy: None,
-            paste: None,
-        };
+        let mut out = AcrossOutcome::default();
         let Some((a, h)) = self.across_range(group, &fields) else {
             return out;
         };

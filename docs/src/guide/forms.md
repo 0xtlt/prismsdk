@@ -295,24 +295,24 @@ text_flow()
     }))
 ```
 
-- **Extending**: ⇧↓ or ⇧→ at the end of a field, ⇧↑ or ⇧← at its start (on its first or last line, wrapping included) carry the selection into the next or the previous field. Then ⇧→ and ⇧← move it a character at a time (the step between two fields counts as one, like a line break), ⇧↓ and ⇧↑ a field at a time (to the end of the next one, the start of the previous one). On the web and macOS, a mouse drag from one field into another does it too (#264): natively the backend reports where the drag is and the runtime draws the selection and the highlights.
+- **Extending**: ⇧↓ or ⇧→ at the end of a field, ⇧↑ or ⇧← at its start (on its first or last line, wrapping included) carry the selection into the next or the previous field. Then ⇧→ and ⇧← move it a character at a time (the step between two fields counts as one, like a line break), ⇧↓ and ⇧↑ a field at a time (to the end of the next one, the start of the previous one). A mouse drag from one field into another does it too (#264; a pen on the web and Android, an iPad's pointer): natively the backend reports where the drag is (`UiEvent::SelectionAcross`) and the runtime draws the selection and the highlights; back over the first field, the drag selects there again.
 - **Drawing**: the field where it started keeps its own, focused selection; the other fields draw their part highlighted, the fields in between whole.
 - **`on_selection_across`** hears every change: `SelectionAcross { anchor, head, fields }`, each end a `SelectionPoint { field, offset }`, `fields` every field's part (`field`, `start`, `end`, `text`) in order, `text()` all of it joined by line breaks, `start()` / `end()` the ends in document order. It is called once more when the selection comes back inside one field (`is_across()` false).
 - **Ending it**: an arrow without ⇧ puts the caret at that end of the range, Escape at the moving end; a click or a new selection in a field ends it there.
 - **Copy and cut**: ⌘C / ⌘X (Ctrl elsewhere) go to the `on_copy` / `on_cut` of the field where it started, with `CopyEvent::across` set and `text` the whole range's, so the app writes its own content for all the blocks. Without a handler, the fields' texts joined by line breaks are copied.
-- **Editing**: typing, Backspace, Delete, Return, a cut or a paste over the range is applied by no field: `on_edit_across` hears `EditAcross { selection, text, cause }` (`text` the typed or pasted text, `"\n"` for Return, empty otherwise) and the app rewrites its blocks, then places the caret (`cx.set_selection_across(("p2", 4), ("p2", 4))` or `.selection(…)` and `cx.focus(…)`). Without `on_edit_across`, such a key first brings the selection back into the field where it started, which then acts on its own part.
+- **Editing**: typing (a hardware keyboard, the on-screen keyboard, an input method), Backspace, Delete, Return, a cut or a paste over the range is applied by no field: `on_edit_across` hears `EditAcross { selection, text, cause }` (`text` the typed or pasted text, `"\n"` for Return, empty otherwise) and the app rewrites its blocks, then places the caret (`cx.set_selection_across(("p2", 4), ("p2", 4))` or `.selection(…)` and `cx.focus(…)`). Without `on_edit_across`, such a key first brings the selection back into the field where it started, which then acts on its own part.
 - **From the app**: `cx.set_selection_across(("p1", 4), ("p3", 2))` selects across fields (the anchor's field takes the focus), `cx.clear_selection_across()` ends it.
 
-| | Extends with | Draws the other fields' parts |
-|---|---|---|
-| Web | ⇧+arrows, mouse and pen drags, in the page (the server hears the result) | rich inputs: the CSS Custom Highlight API; a text area or input only when it is covered whole |
-| macOS | ⇧+arrows, mouse drags from a text area or rich input (a plain press; ⇧-, ⌘- and double-clicks keep AppKit's own behaviour) | text areas and rich inputs: a temporary attribute of the layout manager in the selection colour; a one-line input draws none |
-| iOS, iPadOS, visionOS | ⇧+arrows on a hardware keyboard (key commands: arrows, Escape, Return, Backspace, ⌘C, ⌘X, ⌘V); letters typed there still go to the focused field | text areas and rich inputs: tinted boxes from `selectionRects` |
-| Linux | ⇧+arrows | text areas and rich inputs: a text tag |
-| Android | **not yet**: `set_selection_across` selects the anchor's part only | none |
-| tvOS, watchOS | none | none |
+| | Extends with | Draws the other fields' parts | Typing over it |
+|---|---|---|---|
+| Web | ⇧+arrows, mouse and pen drags, in the page (the server hears the result) | rich inputs: the CSS Custom Highlight API; a text area or input only when it is covered whole | in the page |
+| macOS | ⇧+arrows; mouse drags starting in a text area or rich input (a plain press; Prism tracks the drag instead of AppKit, with the scroll views around following it; ⇧-, ⌘- and double-clicks keep AppKit's own behaviour) | text areas and rich inputs: a temporary attribute of the layout manager in the selection colour; one-line inputs: a box blended over their text | the key-down monitor |
+| iOS, iPadOS, visionOS | ⇧+arrows on a hardware keyboard (key commands: arrows, Escape, Return, Backspace, ⌘C, ⌘X, ⌘V); an iPad pointer's drags (a pan recognizer on the group, for the pointer only) | tinted boxes from `selectionRects` (behind the text of text areas and rich inputs, over one-line inputs') | `textView:shouldChangeTextInRange:` / `textField:shouldChangeCharactersInRange:`: hardware and on-screen keyboards |
+| Linux | ⇧+arrows; mouse drags starting in a text area or rich input (a capture-phase drag gesture takes over from the view's) | text areas and rich inputs: a text tag; one-line inputs: a Pango background attribute | the window's key controller |
+| Android | ⇧+arrows on a hardware keyboard (the Java host asks the runtime as the key is pressed); mouse and stylus drags starting in any text field | a drawable in the field's overlay, from its own layout | hardware keys; an input filter for the on-screen keyboard and input methods |
+| tvOS, watchOS | none | none | none |
 
-Touch selection handles stay inside one field on every platform.
+Touch selection handles stay inside one field on every platform: the system draws and drives them for one text view (UIKit's text interaction, Android's editor, the browser's) and cannot hand them to another. On a touch screen, extend from the app instead: the counter's Blocks demo has a "Select all blocks" button (`cx.set_selection_across` from the first block's start to the last one's end); typing, the on-screen keyboard's delete key and copy then act on the whole range.
 
 **Sheets, popovers, dialogs** that a screen opens without a route: see [Dialogs, menus, tray](dialogs-menus.md#sheets-popovers-and-dialogs-without-a-route).
 

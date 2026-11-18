@@ -686,6 +686,10 @@ final class PrismInput {
             int[] sel = selection((EditText) focused);
             if (sel != null) put(ev, "sel", new JSONArray().put(sel[0]).put(sel[1]));
             if (edges != null) put(ev, "edges", edges);
+            // A selection group's keys (#231): ⇧+arrows at the field's
+            // edge, and arrows, edits and copies of a selection across its
+            // fields. Asked with the key as it is sent, before it is.
+            if (target != null && PrismHost.nativeConsumesKey(ev.toString())) consumed = true;
         }
         PrismHost.send(ev);
         HELD.put(name, target != null ? target.id : 0);
@@ -1592,6 +1596,211 @@ final class PrismInput {
         @Override public void setAlpha(int alpha) {}
         @Override public void setColorFilter(android.graphics.ColorFilter filter) {}
         @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+    }
+
+    // --- One selection across several fields (#231) ------------------------------------
+
+    /**
+     * Op `selhl`: the field's part of a selection across several fields,
+     * drawn like a selection (the field's highlight colour) in its overlay
+     * with its own layout, one-line inputs included; its text and its own
+     * selection are left alone. `start == end` removes it.
+     */
+    static void highlight(PrismHost.Node n, int start, int end) {
+        if (!(n.view instanceof EditText)) return;
+        EditText e = (EditText) n.view;
+        Highlight d = HIGHLIGHTS.get(e);
+        if (start >= end) {
+            if (d != null) { e.getOverlay().remove(d); HIGHLIGHTS.remove(e); e.invalidate(); }
+            return;
+        }
+        if (d == null) {
+            d = new Highlight(e);
+            HIGHLIGHTS.put(e, d);
+            e.getOverlay().add(d);
+        }
+        d.start = start;
+        d.end = end;
+        e.invalidate();
+    }
+
+    private static final Map<EditText, Highlight> HIGHLIGHTS = new WeakHashMap<>();
+
+    static final class Highlight extends android.graphics.drawable.Drawable {
+        private final java.lang.ref.WeakReference<EditText> field;
+        private final android.graphics.Paint paint = new android.graphics.Paint();
+        int start, end;
+
+        Highlight(EditText e) {
+            field = new java.lang.ref.WeakReference<>(e);
+            setBounds(0, 0, Integer.MAX_VALUE / 2, Integer.MAX_VALUE / 2);
+        }
+
+        @Override public void draw(android.graphics.Canvas c) {
+            EditText e = field.get();
+            android.text.Layout layout = e != null ? e.getLayout() : null;
+            if (layout == null) return;
+            CharSequence t = e.getText();
+            int s = units(t, start), en = units(t, end);
+            if (s >= en) return;
+            // The overlay draws in the field's scrolled coordinates.
+            float dx = e.getCompoundPaddingLeft(), dy = e.getExtendedPaddingTop();
+            float sx = e.getScrollX(), sy = e.getScrollY();
+            float left = sx + e.getCompoundPaddingLeft(), right = sx + e.getWidth() - e.getCompoundPaddingRight();
+            float top = sy + e.getExtendedPaddingTop(), bottom = sy + e.getHeight() - e.getExtendedPaddingBottom();
+            paint.setColor(e.getHighlightColor());
+            for (int line = layout.getLineForOffset(s); line <= layout.getLineForOffset(en); line++) {
+                int ls = Math.max(s, layout.getLineStart(line)), le = Math.min(en, layout.getLineEnd(line));
+                if (ls > le) continue;
+                float x1 = layout.getPrimaryHorizontal(ls) + dx;
+                // A line selected to its end reaches the line's edge.
+                float x2 = (le == layout.getLineEnd(line) && le < en ? layout.getLineRight(line) : layout.getPrimaryHorizontal(le)) + dx;
+                float y1 = layout.getLineTop(line) + dy, y2 = layout.getLineBottom(line) + dy;
+                float l = Math.max(Math.min(x1, x2), left), r = Math.min(Math.max(x1, x2), right);
+                float tp = Math.max(y1, top), bt = Math.min(y2, bottom);
+                if (r > l && bt > tp) c.drawRect(l, tp, r, bt, paint);
+            }
+        }
+
+        @Override public void setAlpha(int alpha) {}
+        @Override public void setColorFilter(android.graphics.ColorFilter filter) {}
+        @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+    }
+
+    /**
+     * A field's input filters: text an input method types over a selection
+     * across fields goes to the group (#231), then `max_length` (-1: none).
+     */
+    static void filters(EditText e, PrismHost.Node n, int max) {
+        android.text.InputFilter across = new AcrossFilter(n);
+        e.setFilters(max >= 0 ? new android.text.InputFilter[]{across, new android.text.InputFilter.LengthFilter(max)}
+                : new android.text.InputFilter[]{across});
+    }
+
+    /**
+     * Keeps what a soft keyboard or an input method types out of a field
+     * while its group's selection spans several fields and the app takes
+     * those edits (`on_edit_across`): sent as `typeacross` once the field's
+     * callback returned, then the input method starts over (its
+     * composition was never applied). Hardware keys go through `key`.
+     */
+    static final class AcrossFilter implements android.text.InputFilter {
+        private final PrismHost.Node n;
+
+        AcrossFilter(PrismHost.Node n) { this.n = n; }
+
+        @Override public CharSequence filter(CharSequence source, int start, int end, android.text.Spanned dest, int dstart, int dend) {
+            if (PrismHost.updating || !PrismHost.nativeTakesText(n.id)) return null;
+            String text = source.subSequence(start, end).toString();
+            View v = n.view;
+            v.post(() -> {
+                JSONObject ev = PrismHost.event("typeacross", n.id);
+                put(ev, "text", text);
+                PrismHost.send(ev);
+                InputMethodManager imm = (InputMethodManager) v.getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+                if (imm != null) imm.restartInput(v);
+            });
+            // The field keeps its text.
+            return dest.subSequence(dstart, dend);
+        }
+    }
+
+    /** A mouse drag from a field of a selection group (#231). */
+    private static final class AcrossDrag {
+        PrismHost.Node anchor, group;
+        /** Where it started, in characters. */
+        int at;
+        /** The group's text fields. */
+        java.util.List<PrismHost.Node> fields;
+        /** It left the field for another of the group: the field's own drag was cancelled. */
+        boolean across;
+    }
+
+    private static AcrossDrag drag;
+
+    /** The selection group `n` is in, or null. */
+    static PrismHost.Node groupOf(PrismHost.Node n) {
+        for (PrismHost.Node a = PrismHost.parentOf(n); a != null; a = PrismHost.parentOf(a)) {
+            if (a.selGroup) return a;
+        }
+        return null;
+    }
+
+    /**
+     * A mouse (or stylus) drag in a text field of a selection group (#231):
+     * the field's own while it stays there; once it is over another field
+     * of the group, the field's drag is cancelled and every move is sent
+     * as `across` (back over the first field too), the runtime selecting
+     * and highlighting the range. Finger drags scroll and use the field's
+     * own selection handles. Returns whether the event was taken.
+     */
+    static boolean acrossTouch(EditText e, MotionEvent ev) {
+        boolean pointer = ev.isFromSource(android.view.InputDevice.SOURCE_MOUSE)
+            || ev.getToolType(0) == MotionEvent.TOOL_TYPE_STYLUS;
+        switch (ev.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN: {
+                drag = null;
+                PrismHost.Node n = byView.get(e);
+                PrismHost.Node group = n == null || !pointer ? null : groupOf(n);
+                if (group == null) return false;
+                AcrossDrag d = new AcrossDrag();
+                d.anchor = n;
+                d.group = group;
+                d.at = chars(e.getText(), e.getOffsetForPosition(ev.getX(), ev.getY()));
+                d.fields = new java.util.ArrayList<>();
+                for (PrismHost.Node f : PrismHost.nodes.values()) {
+                    if (f.view instanceof EditText && groupOf(f) == group) d.fields.add(f);
+                }
+                drag = d;
+                // A pointer drag selects: the scroll views around keep out.
+                if (e.getParent() != null) e.getParent().requestDisallowInterceptTouchEvent(true);
+                return false;
+            }
+            case MotionEvent.ACTION_MOVE: {
+                AcrossDrag d = drag;
+                if (d == null || d.anchor.view != e) return false;
+                PrismHost.Node over = null;
+                int[] at = new int[2];
+                for (PrismHost.Node f : d.fields) {
+                    View v = f.view;
+                    if (!v.isShown()) continue;
+                    v.getLocationOnScreen(at);
+                    if (ev.getRawX() >= at[0] && ev.getRawX() < at[0] + v.getWidth()
+                            && ev.getRawY() >= at[1] && ev.getRawY() < at[1] + v.getHeight()) {
+                        over = f;
+                        break;
+                    }
+                }
+                if (!d.across) {
+                    if (over == null || over == d.anchor) return false;
+                    d.across = true;
+                    // The field where it started has the keys (⌃C, typing),
+                    // which it would only take on the release it won't see.
+                    if (!e.isFocused()) e.requestFocus();
+                    // The field's own drag selection ends here.
+                    MotionEvent cancel = MotionEvent.obtain(ev);
+                    cancel.setAction(MotionEvent.ACTION_CANCEL);
+                    e.onTouchEvent(cancel);
+                    cancel.recycle();
+                }
+                // Between two fields: the range stays as it was.
+                if (over == null) return true;
+                EditText o = (EditText) over.view;
+                o.getLocationOnScreen(at);
+                int offset = o.getOffsetForPosition(ev.getRawX() - at[0], ev.getRawY() - at[1]);
+                JSONObject msg = PrismHost.event("across", d.group.id);
+                put(msg, "a", new JSONArray().put(d.anchor.id).put(d.at));
+                put(msg, "h", new JSONArray().put(over.id).put(chars(o.getText(), Math.max(0, offset))));
+                PrismHost.send(msg);
+                return true;
+            }
+            case MotionEvent.ACTION_UP: case MotionEvent.ACTION_CANCEL: {
+                AcrossDrag d = drag;
+                drag = null;
+                return d != null && d.across && d.anchor.view == e;
+            }
+        }
+        return false;
     }
 
     static void detach(View v) {

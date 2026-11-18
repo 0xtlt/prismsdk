@@ -445,6 +445,8 @@ pub fn text_area(id: NodeId) -> Rc<TextArea> {
     let root = gtk::Overlay::new();
     root.set_child(Some(&scroll));
     root.add_overlay(&placeholder);
+    // A mouse drag into the other fields of a selection group (#231).
+    crate::across::attach_drag(id, &view);
     let label = placeholder.clone();
     let weak = view.downgrade();
     view.buffer().connect_changed(move |b| {

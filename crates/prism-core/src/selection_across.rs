@@ -11,8 +11,10 @@
 //!   start, carry the selection into the next or previous field; then ⇧→
 //!   and ⇧← move it a character at a time (the step between two fields is
 //!   one character, like a line break), ⇧↓ and ⇧↑ a field at a time (to the
-//!   end of the next one, the start of the previous one). On the web a
-//!   pointer drag from one field into another does it too.
+//!   end of the next one, the start of the previous one). A mouse drag
+//!   from one field into another does it too: the web client follows it,
+//!   native backends report it (`UiEvent::SelectionAcross`). Touch selection
+//!   handles stay inside one field (the system's, per text view).
 //! - **Drawing**: the field where the selection started keeps its own
 //!   selection; the others draw their part highlighted (whole for the
 //!   fields in between).
@@ -24,7 +26,9 @@
 //!   the selection started, with [`CopyEvent::across`](crate::CopyEvent::across)
 //!   set: the app writes its own content for the whole range. Without a
 //!   handler, the fields' texts joined by line breaks are copied.
-//! - **Editing**: typing, Backspace, Delete, Enter, a cut or a paste over a
+//! - **Editing**: typing (keys, an on-screen keyboard or an input method:
+//!   [`Runtime::takes_text_across`](crate::Runtime::takes_text_across)),
+//!   Backspace, Delete, Enter, a cut or a paste over a
 //!   selection across fields is not applied by any field: it goes to
 //!   [`on_edit_across`](crate::Div::on_edit_across) ([`EditAcross`]), and
 //!   the app rewrites its blocks (merge the first and last, drop those in

@@ -1003,16 +1003,21 @@ fn point(p: CGPoint) -> prism_core::Point {
     prism_core::Point::new(p.x as f32, p.y as f32)
 }
 
-/// Gesture delegate: hover and touch-move recognizers never block others;
-/// a pinch and a drag of the same view both run (one finger drags, two
-/// pinch while the drag follows their center).
+/// Gesture delegate: hover and touch-move recognizers, and a selection
+/// group's pointer recognizer (#231), never block others; a pinch and a
+/// drag of the same view both run (one finger drags, two pinch while the
+/// drag follows their center).
 pub fn simultaneous(g: &UIGestureRecognizer, other: &UIGestureRecognizer) -> bool {
+    #[cfg(not(target_os = "tvos"))]
+    let across = |r: &UIGestureRecognizer| crate::across::is_across(r);
+    #[cfg(target_os = "tvos")]
+    let across = |_: &UIGestureRecognizer| false;
     let pair = |a: &UIGestureRecognizer, b: &UIGestureRecognizer| {
         has_name(a, MAGNIFY) && (has_name(b, DRAG) || has_name(b, HOLD) || has_name(b, WHEEL))
     };
     [g, other]
         .iter()
-        .any(|r| has_name(r, HOVER) || has_name(r, MOVE))
+        .any(|r| has_name(r, HOVER) || has_name(r, MOVE) || across(r))
         || pair(g, other)
         || pair(other, g)
 }

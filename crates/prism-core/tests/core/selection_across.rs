@@ -338,7 +338,7 @@ fn on_the_web_the_client_extends_it() {
 fn a_key_the_backend_left_to_the_field_does_not_act() {
     let (mut h, f) = doc(true);
     press(&mut h, f[0], shift_down(2, 5));
-    // iOS lets typed letters reach the field without asking: not the group's.
+    // A key dispatched without being asked about first: the field's.
     h.dispatch(UiEvent::Key(Some(f[0]), KeyEvent::new("y")));
     let d = h.root::<Doc>();
     assert!(h.rt.app.read(&d).edits.is_empty());
@@ -406,4 +406,92 @@ fn a_native_drag_across_fields_is_drawn_by_the_runtime() {
     ));
     assert_eq!(h.host.get(f[1]).highlight, None);
     assert_eq!(h.host.get(f[2]).highlight, None);
+}
+
+#[test]
+fn text_typed_by_an_input_method_over_it_is_the_apps() {
+    let (mut h, f) = doc(true);
+    // Nothing across: the field types.
+    assert!(!h.rt.takes_text_across(f[0]));
+    assert_eq!(h.rt.selection_group(f[0]), h.rt.selection_group(f[2]));
+    assert!(h.rt.selection_group(f[0]).is_some());
+    press(&mut h, f[0], shift_down(2, 5));
+    assert!(h.rt.takes_text_across(f[0]));
+    h.dispatch(UiEvent::TypeAcross(f[0], "é".into()));
+    let d = h.root::<Doc>();
+    let e = h.rt.app.read(&d).edits[0].clone();
+    assert_eq!((e.cause, e.text.as_str()), (EditCause::Typing, "é"));
+    assert_eq!(e.selection.fields.len(), 2);
+    assert_eq!(h.host.across, None);
+    assert!(!h.rt.takes_text_across(f[0]));
+
+    // A deletion and Return.
+    press(&mut h, f[0], shift_down(2, 5));
+    h.dispatch(UiEvent::TypeAcross(f[0], String::new()));
+    press(&mut h, f[0], shift_down(2, 5));
+    h.dispatch(UiEvent::TypeAcross(f[0], "\n".into()));
+    let causes: Vec<EditCause> = h.rt.app.read(&d).edits.iter().map(|e| e.cause).collect();
+    assert_eq!(
+        causes,
+        [EditCause::Typing, EditCause::Backspace, EditCause::Enter]
+    );
+}
+
+#[test]
+fn without_on_edit_across_the_field_types() {
+    let (mut h, f) = doc(false);
+    press(&mut h, f[0], shift_down(2, 5));
+    assert!(!h.rt.takes_text_across(f[0]));
+    // Sent anyway: nothing happens.
+    h.dispatch(UiEvent::TypeAcross(f[0], "x".into()));
+    assert!(h.host.across.is_some());
+}
+
+#[derive(Default)]
+struct Inputs;
+
+impl Render for Inputs {
+    fn render(&mut self, _cx: &mut Context<Self>) -> impl IntoElement {
+        text_flow()
+            .child(text_input().value("one").id("a"))
+            .child(text_input().value("two").id("b"))
+    }
+}
+
+#[test]
+fn one_line_inputs_take_part_and_highlight() {
+    let mut h = Harness::with_runtime(
+        |init| {
+            Runtime::with_options(
+                init,
+                RuntimeOptions {
+                    platform: Some(Platform::Android),
+                    ..Default::default()
+                },
+            )
+        },
+        |cx| {
+            let root = cx.new_entity(|_| Inputs);
+            mount(cx, root);
+        },
+    );
+    let mut f: Vec<NodeId> = h
+        .host
+        .nodes
+        .iter()
+        .filter(|(_, n)| n.kind == NodeKind::TextInput)
+        .map(|(id, _)| *id)
+        .collect();
+    f.sort_unstable();
+    let right = key("ArrowRight", true).with_selection(SelectionEvent::new(1, 3));
+    assert!(h.rt.consumes_key_event(Some(f[0]), &right));
+    h.dispatch(UiEvent::Key(Some(f[0]), right));
+    assert_eq!(h.host.across, Some(((f[0], 1), (f[1], 0))));
+    // A drag reported from the first into the second.
+    let group = h.rt.selection_group(f[0]).unwrap();
+    h.dispatch(UiEvent::SelectionAcross(
+        group,
+        Some(((f[0], 1), (f[1], 2))),
+    ));
+    assert_eq!(h.host.get(f[1]).highlight, Some((0, 2)));
 }

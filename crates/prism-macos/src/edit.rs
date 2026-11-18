@@ -193,29 +193,6 @@ fn group_of(view: &NSView) -> Option<NodeId> {
     None
 }
 
-/// The text field of `group` under `at` (window coordinates), and the
-/// character under it.
-fn field_at(
-    window: &objc2_app_kit::NSWindow,
-    event: &NSEvent,
-    group: NodeId,
-) -> Option<(Retained<PrismTextView>, NodeId, usize)> {
-    let content = window.contentView()?;
-    let mut v = content.hitTest(event.locationInWindow());
-    while let Some(view) = v {
-        if let Ok(tv) = view.clone().downcast::<PrismTextView>() {
-            if group_of(&tv) != Some(group) {
-                return None;
-            }
-            let id = crate::interact::text_node(&tv)?;
-            let at = char_at(&tv, event)?;
-            return Some((tv, id, at));
-        }
-        v = unsafe { view.superview() };
-    }
-    None
-}
-
 /// A drag from a field of a selection group (#264): the field follows the
 /// mouse inside itself; over another field of the group, the selection
 /// across them is reported (`UiEvent::SelectionAcross`), which the runtime
@@ -228,6 +205,9 @@ fn track_across(tv: &PrismTextView, event: &NSEvent, group: NodeId) -> bool {
     ) else {
         return false;
     };
+    // The group's fields, their whole boxes: padding and one-line inputs
+    // included.
+    let fields = crate::imp::group_fields(field).unwrap_or_default();
     window.makeFirstResponder(Some(tv));
     crate::interact::select_text(tv, anchor, anchor);
     let mut across = false;
@@ -237,14 +217,18 @@ fn track_across(tv: &PrismTextView, event: &NSEvent, group: NodeId) -> bool {
         if e.r#type() == objc2_app_kit::NSEventType::LeftMouseUp {
             break;
         }
-        match field_at(&window, &e, group) {
-            Some((_, other, at)) if other != field => {
+        // The scroll views around follow the pointer.
+        tv.autoscroll(&e);
+        match crate::across::field_at(&fields, e.locationInWindow()) {
+            Some((other, at)) if other != field => {
                 crate::imp::dispatch(UiEvent::SelectionAcross(
                     group,
                     Some(((field, anchor), (other, at))),
                 ));
                 across = true;
             }
+            // Between two fields: the range stays.
+            None if across => {}
             // Inside the field (or outside every field): within it.
             _ => {
                 let at = char_at(tv, &e).unwrap_or(anchor);

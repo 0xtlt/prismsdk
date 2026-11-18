@@ -306,7 +306,26 @@ const HIGHLIGHT_TAG: isize = 0x231_0000;
 /// selecting it (#231): tinted boxes behind its text, from its own layout
 /// (`selectionRectsForRange:`). `start == end` removes them.
 pub fn highlight(tv: &UITextView, start: usize, end: usize) {
-    for sub in tv.subviews().to_vec() {
+    let text = tv.text().to_string();
+    draw_highlight(tv, tv, &text, start, end, true);
+}
+
+/// The same for a one-line input (#231), from its own layout too: over its
+/// text, which a field draws above any view behind it.
+pub fn highlight_field(field: &objc2_ui_kit::UITextField, start: usize, end: usize) {
+    let text = field.text().map(|t| t.to_string()).unwrap_or_default();
+    draw_highlight(field, field, &text, start, end, false);
+}
+
+fn draw_highlight<T: UITextInput + objc2::Message>(
+    host: &UIView,
+    input: &T,
+    text: &str,
+    start: usize,
+    end: usize,
+    behind: bool,
+) {
+    for sub in host.subviews().to_vec() {
         if sub.tag() == HIGHLIGHT_TAG {
             sub.removeFromSuperview();
         }
@@ -314,24 +333,24 @@ pub fn highlight(tv: &UITextView, start: usize, end: usize) {
     if start >= end {
         return;
     }
-    let text = tv.text().to_string();
-    let at = |c: usize| prism_native::fields::chars_to_utf16(&text, c) as isize;
-    let begin = tv.beginningOfDocument();
+    let at = |c: usize| prism_native::fields::chars_to_utf16(text, c) as isize;
+    let begin = input.beginningOfDocument();
     let (Some(from), Some(to)) = (
-        tv.positionFromPosition_offset(&begin, at(start)),
-        tv.positionFromPosition_offset(&begin, at(end)),
+        input.positionFromPosition_offset(&begin, at(start)),
+        input.positionFromPosition_offset(&begin, at(end)),
     ) else {
         return;
     };
-    let Some(range) = tv.textRangeFromPosition_toPosition(&from, &to) else {
+    let Some(range) = input.textRangeFromPosition_toPosition(&from, &to) else {
         return;
     };
-    let mtm = tv.mtm();
-    let color = tv
+    let mtm = host.mtm();
+    let color = host
         .tintColor()
         .unwrap_or_else(objc2_ui_kit::UIColor::systemBlueColor)
         .colorWithAlphaComponent(0.25);
-    for s in tv.selectionRectsForRange(&range).to_vec() {
+    for s in input.selectionRectsForRange(&range).to_vec() {
+        // In the input's coordinates: a field's text view moves inside it.
         let r = s.rect();
         if r.size.width <= 0. || r.size.height <= 0. {
             continue;
@@ -340,7 +359,10 @@ pub fn highlight(tv: &UITextView, start: usize, end: usize) {
         v.setBackgroundColor(Some(&color));
         v.setUserInteractionEnabled(false);
         v.setTag(HIGHLIGHT_TAG);
-        // Behind the text.
-        tv.insertSubview_atIndex(&v, 0);
+        if behind {
+            host.insertSubview_atIndex(&v, 0);
+        } else {
+            host.addSubview(&v);
+        }
     }
 }
