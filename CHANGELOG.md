@@ -346,6 +346,7 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- Linux: `prism-linux` builds again (a rich input is created as a text area, as `prism-native` already asks), and screen-reader states no longer log GTK criticals: the checked and selected states are passed as the ints GTK reads (GTK 4.8 and later). `cargo doc` with `-D warnings` passes again (two `scene3d` links).
 - macOS, iOS, iPadOS, visionOS: a child drawn outside its parent (absolutely positioned with a negative offset) gets clicks, hovers and drags in the part outside it, unless the parent clips (#213). AppKit and UIKit only hit-tested inside the parent's bounds; before macOS 14, hover tracking stopped there too.
 - Native backends: a `picture` given only a width (`w(px(…))`, `w_full()`, a percentage) takes its height from the image's own ratio at that width, wider than the image included (#208). It used to keep the image's natural height, or the height of the image narrowed to the width. The web already did this.
 - macOS, iOS, Linux: a `scroll()` the app moves (`cx.scroll_by`, `scroll_to`, `scroll_into_view`) reports its new offset (#204). `on_scroll` runs and `cx.scroll_offset(id)` follows. The platform's scroll callback came while Prism was applying the patches that moved it, so the event was dropped; it is now dispatched right after.

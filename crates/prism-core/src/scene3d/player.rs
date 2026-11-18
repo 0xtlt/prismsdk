@@ -14,7 +14,7 @@
 //!    [`apply`](ScenePlayer::apply)`(update, now)` on every
 //!    [`SceneUpdate`] (the first one is full). Blobs an update refers to
 //!    (meshes, instances, clips, skins, the environment, `p3d:` textures)
-//!    are fetched by id (see [`blobs`](super::blobs)); a node draws once its
+//!    are fetched by id (see [`blobs`]); a node draws once its
 //!    mesh has arrived, and the frame after a blob arrives is redrawn;
 //! 2. forwards gestures: [`pointer_down`](ScenePlayer::pointer_down),
 //!    [`drag`](ScenePlayer::drag) (points moved since the last call),

@@ -1244,7 +1244,7 @@ impl Environment {
     pub fn from_hdr(bytes: &[u8]) -> Option<Self> {
         env::from_hdr(bytes).map(|m| Self::from_map(&m))
     }
-    /// A prefiltered environment ([`env`]).
+    /// A prefiltered environment ([`env`](mod@env)).
     pub fn from_map(map: &env::EnvMap) -> Self {
         Environment {
             blob: blobs::put(
