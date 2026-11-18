@@ -346,7 +346,7 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
     if matches!(
         kind,
         NodeKind::TextInput | NodeKind::TextArea | NodeKind::RichInput
-    ) && own_field_look(s)
+    ) && s.own_field_look()
     {
         w.push_str("outline:none;");
     }
@@ -474,19 +474,7 @@ pub fn run_css(r: &prism_core::TextRun) -> String {
     w
 }
 
-/// Whether a text field draws Prism's box instead of the browser's (the
-/// Layout chapter) or refines its focused look.
-fn own_field_look(s: &Style) -> bool {
-    use prism_core::Interaction;
-    s.has_padding()
-        || s.background.is_some()
-        || has_border(s)
-        || s.border_none
-        || s.states
-            .resolved()
-            .any(|(i, _)| matches!(i, Interaction::Focus | Interaction::FocusWithin))
-}
-
+/// Whether some side has a border.
 fn has_border(s: &Style) -> bool {
     s.borders().iter().any(|b| b.width > 0.)
 }

@@ -228,3 +228,19 @@ fn reconciling_states_patches_only_real_changes() {
     assert_eq!(style.opacity, 0.5);
     assert!(style.states.is_empty(), "no hover while disabled");
 }
+
+/// #274: a field styled by the app draws no platform focus ring; an
+/// unstyled one keeps it.
+#[test]
+fn fields_with_their_own_look_skip_the_platform_focus_ring() {
+    let look = |s: Style| resolved(s).own_field_look();
+    assert!(!look(Style::default()), "unstyled: the platform's ring");
+    assert!(!look(Style::default().text_color(rgba(0, 1.))));
+    assert!(look(Style::default().border(0.)));
+    assert!(look(Style::default().bg(rgba(0, 0.)).border(0.).p(0.)));
+    assert!(look(Style::default().p(0.)));
+    assert!(look(Style::default().border_bottom(1., rgba(0, 1.))));
+    assert!(look(Style::default().focus(|s| s.bg(rgba(0, 0.1)))));
+    assert!(look(Style::default().focus_within(|s| s.border(2.))));
+    assert!(!look(Style::default().hover(|s| s.bg(rgba(0, 0.1)))));
+}
