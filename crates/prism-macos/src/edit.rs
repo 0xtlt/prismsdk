@@ -159,6 +159,109 @@ fn char_at(tv: &PrismTextView, event: &NSEvent) -> Option<usize> {
     Some(prism_native::fields::utf16_to_chars(&text, index))
 }
 
+thread_local! {
+    /// The selection groups (#231): containers whose fields share one
+    /// selection.
+    static GROUPS: RefCell<HashSet<NodeId>> = RefCell::new(HashSet::new());
+}
+
+/// Node `id` is (`on`) a selection group or not.
+pub(crate) fn set_group(id: NodeId, on: bool) {
+    GROUPS.with(|g| {
+        let mut g = g.borrow_mut();
+        if on {
+            g.insert(id);
+        } else {
+            g.remove(&id);
+        }
+    });
+}
+
+/// The selection group `view` is in, if any: its nearest ancestor marked
+/// as one.
+fn group_of(view: &NSView) -> Option<NodeId> {
+    let mut v = unsafe { view.superview() };
+    while let Some(view) = v {
+        if let Some(p) = view.downcast_ref::<crate::imp::PrismView>() {
+            let id = p.ivars().id.get();
+            if GROUPS.with(|g| g.borrow().contains(&id)) {
+                return Some(id);
+            }
+        }
+        v = unsafe { view.superview() };
+    }
+    None
+}
+
+/// The text field of `group` under `at` (window coordinates), and the
+/// character under it.
+fn field_at(
+    window: &objc2_app_kit::NSWindow,
+    event: &NSEvent,
+    group: NodeId,
+) -> Option<(Retained<PrismTextView>, NodeId, usize)> {
+    let content = window.contentView()?;
+    let mut v = content.hitTest(event.locationInWindow());
+    while let Some(view) = v {
+        if let Ok(tv) = view.clone().downcast::<PrismTextView>() {
+            if group_of(&tv) != Some(group) {
+                return None;
+            }
+            let id = crate::interact::text_node(&tv)?;
+            let at = char_at(&tv, event)?;
+            return Some((tv, id, at));
+        }
+        v = unsafe { view.superview() };
+    }
+    None
+}
+
+/// A drag from a field of a selection group (#264): the field follows the
+/// mouse inside itself; over another field of the group, the selection
+/// across them is reported (`UiEvent::SelectionAcross`), which the runtime
+/// answers with the selection and the highlights to draw.
+fn track_across(tv: &PrismTextView, event: &NSEvent, group: NodeId) -> bool {
+    let (Some(window), Some(field), Some(anchor)) = (
+        tv.window(),
+        crate::interact::text_node(tv),
+        char_at(tv, event),
+    ) else {
+        return false;
+    };
+    window.makeFirstResponder(Some(tv));
+    crate::interact::select_text(tv, anchor, anchor);
+    let mut across = false;
+    let mask =
+        objc2_app_kit::NSEventMask::LeftMouseDragged | objc2_app_kit::NSEventMask::LeftMouseUp;
+    while let Some(e) = window.nextEventMatchingMask(mask) {
+        if e.r#type() == objc2_app_kit::NSEventType::LeftMouseUp {
+            break;
+        }
+        match field_at(&window, &e, group) {
+            Some((_, other, at)) if other != field => {
+                crate::imp::dispatch(UiEvent::SelectionAcross(
+                    group,
+                    Some(((field, anchor), (other, at))),
+                ));
+                across = true;
+            }
+            // Inside the field (or outside every field): within it.
+            _ => {
+                let at = char_at(tv, &e).unwrap_or(anchor);
+                if across {
+                    crate::imp::dispatch(UiEvent::SelectionAcross(
+                        group,
+                        Some(((field, anchor), (field, at))),
+                    ));
+                    across = false;
+                }
+                crate::interact::select_text(tv, anchor.min(at), anchor.max(at));
+            }
+        }
+    }
+    true
+}
+
 /// A click in the field. With `on_click` (#266), reported with the
 /// character under it, the field still placing its caret. With ⌘ or ⌥
 /// (#217): reported as a click on the character under it instead of
@@ -169,6 +272,17 @@ pub(crate) fn mouse_down(tv: &PrismTextView, event: &NSEvent) -> bool {
     let Some(id) = crate::interact::text_node(tv) else {
         return false;
     };
+    // A plain press in a field of a selection group: a drag may cross into
+    // the next fields (#264).
+    let plain = !flags.intersects(
+        NSEventModifierFlags::Command
+            | NSEventModifierFlags::Option
+            | NSEventModifierFlags::Control
+            | NSEventModifierFlags::Shift,
+    );
+    let group = (plain && event.clickCount() == 1)
+        .then(|| group_of(tv))
+        .flatten();
     if mask(tv) & CLICK != 0
         && let Some(at) = char_at(tv, event)
     {
@@ -183,6 +297,9 @@ pub(crate) fn mouse_down(tv: &PrismTextView, event: &NSEvent) -> bool {
                 text_offset: Some(at),
             },
         ));
+    }
+    if let Some(group) = group {
+        return track_across(tv, event, group);
     }
     if mask(tv) & SPAN_CLICK == 0
         || !flags.intersects(NSEventModifierFlags::Command | NSEventModifierFlags::Option)

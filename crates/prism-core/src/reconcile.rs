@@ -589,9 +589,10 @@ pub enum UiEvent {
     /// [`on_click`](crate::RichInput::on_click).
     FieldClick(NodeId, crate::element::ClickEvent),
     // --- One selection across several fields (#231) ---
-    /// The web client extended (or ended, `None`) the selection across the
-    /// fields of group `.0`: from (field, offset) to (field, offset). It
-    /// already draws it.
+    /// A backend extended (or ended, `None`) the selection across the
+    /// fields of group `.0`: from (field, offset) to (field, offset). The
+    /// web client already draws it; native backends (a mouse drag, #264)
+    /// get `SetSelection` and `SetSelectionHighlight` back.
     SelectionAcross(NodeId, Option<((NodeId, usize), (NodeId, usize))>),
     /// The web client took an edit over the selection across group `.0`'s
     /// fields: what made it and the text replacing the range.
@@ -2925,22 +2926,25 @@ impl Reconciler {
         out
     }
 
-    /// The web client drew `range` in group `group` (#231).
+    /// A backend extended the selection across group `group` to `range`
+    /// (#231): the web client draws it itself; native backends (a mouse
+    /// drag, #264) get the selection and the highlights to draw (`draw`).
     pub(crate) fn across_reported(
         &mut self,
         group: NodeId,
         range: Option<((NodeId, usize), (NodeId, usize))>,
+        draw: bool,
     ) -> AcrossOutcome {
         let fields = self.group_fields(group);
         let pos =
             range.and_then(|(a, h)| Some((Self::pos_of(&fields, a)?, Self::pos_of(&fields, h)?)));
-        self.set_across(group, pos, &fields, false);
+        let patches = self.set_across(group, pos, &fields, draw);
         let report = pos.and_then(|(a, h)| {
             let hd = self.groups.get(&group)?.on_selection.clone()?;
             Some((hd, self.across_event(&fields, a, h)))
         });
         AcrossOutcome {
-            patches: Vec::new(),
+            patches,
             report,
             edit: None,
             copy: None,

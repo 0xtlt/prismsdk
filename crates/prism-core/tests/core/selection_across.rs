@@ -371,3 +371,39 @@ fn answers_skip_the_fields_an_edit_destroyed() {
     }
     assert_eq!(h.rt.app.read(&d).blocks.len(), 1);
 }
+
+/// #264: a native backend reports a mouse drag across fields; the runtime
+/// selects the anchor field's part, highlights the others and tells the app.
+#[test]
+fn a_native_drag_across_fields_is_drawn_by_the_runtime() {
+    let (mut h, f) = doc(true);
+    let group = h
+        .host
+        .nodes
+        .iter()
+        .find(|(_, n)| n.children.contains(&f[0]))
+        .map(|(id, _)| *id)
+        .unwrap();
+    let patches = h
+        .dispatch(UiEvent::SelectionAcross(
+            group,
+            Some(((f[0], 2), (f[2], 3))),
+        ))
+        .to_vec();
+    assert!(patches.contains(&Patch::SetSelection {
+        id: f[0],
+        start: 2,
+        end: 5
+    }));
+    assert_eq!(h.host.get(f[1]).highlight, Some((0, 3)));
+    assert_eq!(h.host.get(f[2]).highlight, Some((0, 3)));
+    let e = seen(&h).pop().unwrap();
+    assert_eq!(e.fields.len(), 3);
+    // Back inside the first field: one field again, highlights gone.
+    h.dispatch(UiEvent::SelectionAcross(
+        group,
+        Some(((f[0], 2), (f[0], 4))),
+    ));
+    assert_eq!(h.host.get(f[1]).highlight, None);
+    assert_eq!(h.host.get(f[2]).highlight, None);
+}

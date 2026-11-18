@@ -4878,6 +4878,10 @@ impl Widgets for AppKit {
         }
     }
 
+    fn set_selection_group(&mut self, view: &View, on: bool) {
+        crate::edit::set_group(view.id(), on);
+    }
+
     fn set_selection_highlight(&mut self, view: &View, start: usize, end: usize) {
         // Text areas and rich inputs (#231); a one-line input has no text
         // of its own to draw on while another field has the focus.

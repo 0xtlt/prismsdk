@@ -295,7 +295,7 @@ text_flow()
     }))
 ```
 
-- **Extending**: ⇧↓ or ⇧→ at the end of a field, ⇧↑ or ⇧← at its start (on its first or last line, wrapping included) carry the selection into the next or the previous field. Then ⇧→ and ⇧← move it a character at a time (the step between two fields counts as one, like a line break), ⇧↓ and ⇧↑ a field at a time (to the end of the next one, the start of the previous one). On the web, a mouse or pen drag from one field into another does it too.
+- **Extending**: ⇧↓ or ⇧→ at the end of a field, ⇧↑ or ⇧← at its start (on its first or last line, wrapping included) carry the selection into the next or the previous field. Then ⇧→ and ⇧← move it a character at a time (the step between two fields counts as one, like a line break), ⇧↓ and ⇧↑ a field at a time (to the end of the next one, the start of the previous one). On the web and macOS, a mouse drag from one field into another does it too (#264): natively the backend reports where the drag is and the runtime draws the selection and the highlights.
 - **Drawing**: the field where it started keeps its own, focused selection; the other fields draw their part highlighted, the fields in between whole.
 - **`on_selection_across`** hears every change: `SelectionAcross { anchor, head, fields }`, each end a `SelectionPoint { field, offset }`, `fields` every field's part (`field`, `start`, `end`, `text`) in order, `text()` all of it joined by line breaks, `start()` / `end()` the ends in document order. It is called once more when the selection comes back inside one field (`is_across()` false).
 - **Ending it**: an arrow without ⇧ puts the caret at that end of the range, Escape at the moving end; a click or a new selection in a field ends it there.
@@ -306,7 +306,7 @@ text_flow()
 | | Extends with | Draws the other fields' parts |
 |---|---|---|
 | Web | ⇧+arrows, mouse and pen drags, in the page (the server hears the result) | rich inputs: the CSS Custom Highlight API; a text area or input only when it is covered whole |
-| macOS | ⇧+arrows | text areas and rich inputs: a temporary attribute of the layout manager in the selection colour; a one-line input draws none |
+| macOS | ⇧+arrows, mouse drags from a text area or rich input (a plain press; ⇧-, ⌘- and double-clicks keep AppKit's own behaviour) | text areas and rich inputs: a temporary attribute of the layout manager in the selection colour; a one-line input draws none |
 | iOS, iPadOS, visionOS | ⇧+arrows on a hardware keyboard (key commands: arrows, Escape, Return, Backspace, ⌘C, ⌘X, ⌘V); letters typed there still go to the focused field | text areas and rich inputs: tinted boxes from `selectionRects` |
 | Linux | ⇧+arrows | text areas and rich inputs: a text tag |
 | Android | **not yet**: `set_selection_across` selects the anchor's part only | none |
