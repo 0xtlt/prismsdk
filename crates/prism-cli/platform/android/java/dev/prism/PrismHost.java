@@ -223,6 +223,11 @@ public final class PrismHost {
         // The button the current press started with (#136).
         String dragButton = "primary";
         int dragMods;
+        // A drag after a long press (#243): the hold (ms, 0: on movement),
+        // whether the current press waits for it, and the pending lift.
+        int dragDelay;
+        boolean holdPress;
+        Runnable lift;
         // The last tap (#159): when and where (raw pixels), and its number
         // in a quick series.
         long tapTime;
@@ -551,6 +556,7 @@ public final class PrismHost {
                 setClickable(n);
                 PrismInput.hover(n);
                 break;
+            case "dragdelay": n.dragDelay = p.optInt("ms"); break;
             case "keys": PrismInput.keys(n, p.optBoolean("local"), p.optBoolean("global")); break;
             case "consume": PrismInput.consume(n, p.optJSONArray("keys")); break;
             case "sel": PrismInput.select(n, p.optInt("start"), p.optInt("end")); break;

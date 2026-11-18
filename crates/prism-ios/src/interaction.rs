@@ -10,7 +10,10 @@
 //!   gaze). Moves while touching: a zero-duration long press that never
 //!   blocks other gestures. Drags: `UIPanGestureRecognizer`, which a scroll
 //!   view's pan waits for. Pinches: `UIPinchGestureRecognizer` (fingers and
-//!   an iPad trackpad), alongside a drag. Wheel: a scroll-only
+//!   an iPad trackpad), alongside a drag. A drag after a long press
+//!   (#243): a `UILongPressGestureRecognizer` for fingers and pens (the pan
+//!   keeps the iPad pointer), which lifts with an impact haptic and cancels
+//!   the scroll views around it. Wheel: a scroll-only
 //!   `UIPanGestureRecognizer` (an iPad trackpad or mouse, #172). tvOS has no
 //!   pointer on views: none of these.
 //! - Keys: `pressesBegan:` with `UIKey` (hardware keyboards) and the remote's
@@ -545,6 +548,8 @@ const MOVE: &str = "prism.move";
 const DRAG: &str = "prism.drag";
 const MAGNIFY: &str = "prism.magnify";
 const WHEEL: &str = "prism.wheel";
+/// A drag after a long press (#243), for fingers and pens.
+const HOLD: &str = "prism.hold";
 
 fn has_name(g: &UIGestureRecognizer, name: &str) -> bool {
     g.name().is_some_and(|n| n.to_string() == name)
@@ -636,6 +641,157 @@ pub fn set_pointer_events(view: &UIView, mask: u8, target: &AnyObject) {
             }
             _ => {}
         }
+    }
+    apply_hold(view, target);
+}
+
+/// How long a finger or a pen must be held still before the view's drag
+/// starts (`drag_after_long_press`, #243), in milliseconds; 0: on movement.
+#[cfg(not(target_os = "tvos"))]
+pub fn set_drag_delay(view: &UIView, ms: u32, target: &AnyObject) {
+    DELAYS.with(|d| {
+        let mut d = d.borrow_mut();
+        if ms == 0 {
+            d.remove(&(view.tag() as NodeId))
+        } else {
+            d.insert(view.tag() as NodeId, ms)
+        }
+    });
+    apply_hold(view, target);
+}
+
+/// With a hold, the pan only follows an iPad's pointer and a long press
+/// takes fingers and pens; without one, the pan takes them all again.
+#[cfg(not(target_os = "tvos"))]
+fn apply_hold(view: &UIView, target: &AnyObject) {
+    use objc2_foundation::{NSArray, NSNumber};
+    use objc2_ui_kit::{UILongPressGestureRecognizer, UITouchType};
+    let ms = DELAYS.with(|d| d.borrow().get(&(view.tag() as NodeId)).copied());
+    let recognizers: Vec<Retained<UIGestureRecognizer>> = view
+        .gestureRecognizers()
+        .map(|a| a.to_vec())
+        .unwrap_or_default();
+    let pan = recognizers.iter().find(|g| has_name(g, DRAG));
+    let hold = recognizers.iter().find(|g| has_name(g, HOLD));
+    let types = |list: &[UITouchType]| {
+        let numbers: Vec<Retained<NSNumber>> =
+            list.iter().map(|t| NSNumber::new_isize(t.0)).collect();
+        NSArray::from_retained_slice(&numbers)
+    };
+    match (pan, ms) {
+        (Some(pan), Some(ms)) => {
+            pan.setAllowedTouchTypes(&types(&[UITouchType::IndirectPointer]));
+            let hold: Retained<UIGestureRecognizer> = match hold {
+                Some(h) => h.clone(),
+                None => {
+                    let g = unsafe {
+                        UILongPressGestureRecognizer::initWithTarget_action(
+                            UILongPressGestureRecognizer::alloc(view.mtm()),
+                            Some(target),
+                            Some(sel!(onHoldDrag:)),
+                        )
+                    };
+                    g.setName(Some(&NSString::from_str(HOLD)));
+                    // Once lifted, the drag is not also a tap.
+                    g.setCancelsTouchesInView(true);
+                    g.setDelaysTouchesEnded(false);
+                    g.setAllowedTouchTypes(&types(&[UITouchType::Direct, UITouchType::Pencil]));
+                    let delegate: &AnyObject = target;
+                    let _: () = unsafe { msg_send![&*g, setDelegate: delegate] };
+                    view.addGestureRecognizer(&g);
+                    Retained::into_super(g)
+                }
+            };
+            if let Ok(lp) = hold.downcast::<UILongPressGestureRecognizer>() {
+                lp.setMinimumPressDuration(ms as f64 / 1000.);
+            }
+        }
+        (pan, _) => {
+            if let Some(hold) = hold {
+                view.removeGestureRecognizer(hold);
+            }
+            if let Some(pan) = pan {
+                pan.setAllowedTouchTypes(&types(&[
+                    UITouchType::Direct,
+                    UITouchType::Indirect,
+                    UITouchType::Pencil,
+                    UITouchType::IndirectPointer,
+                ]));
+            }
+        }
+    }
+}
+
+/// A long press that drags (#243): it lifts (an impact haptic, the scroll
+/// views around it stop), then reports like a pan.
+#[cfg(not(target_os = "tvos"))]
+pub fn on_hold(g: &UIGestureRecognizer) {
+    use prism_core::{DragEvent, DragPhase, Point, PointerButton};
+    let Some(view) = g.view() else { return };
+    let id = view.tag() as NodeId;
+    let phase = match g.state() {
+        UIGestureRecognizerState::Began => DragPhase::Start,
+        UIGestureRecognizerState::Changed => DragPhase::Move,
+        UIGestureRecognizerState::Ended => DragPhase::End,
+        UIGestureRecognizerState::Cancelled | UIGestureRecognizerState::Failed => DragPhase::Cancel,
+        _ => return,
+    };
+    // In the window: the view may move while it is dragged (reordering).
+    let window = g.locationInView(None);
+    if phase == DragPhase::Start {
+        let at = point(g.locationInView(Some(&view)));
+        let mods = modifiers(g.modifierFlags());
+        START.with(|s| {
+            s.borrow_mut()
+                .insert(id, (at, PointerButton::Primary, mods))
+        });
+        HOLD_AT.with(|h| h.borrow_mut().insert(id, window));
+        lift(&view);
+    }
+    let (start, button, mods) = START.with(|s| s.borrow().get(&id).copied().unwrap_or_default());
+    let from = HOLD_AT
+        .with(|h| h.borrow().get(&id).copied())
+        .unwrap_or(window);
+    if matches!(phase, DragPhase::End | DragPhase::Cancel) {
+        START.with(|s| s.borrow_mut().remove(&id));
+        HOLD_AT.with(|h| h.borrow_mut().remove(&id));
+    }
+    crate::imp::dispatch(UiEvent::Drag(
+        id,
+        DragEvent {
+            phase,
+            start,
+            translation: Point::new((window.x - from.x) as f32, (window.y - from.y) as f32),
+            button,
+            modifiers: mods,
+        },
+    ));
+}
+
+/// The pick-up (#243): the platform's impact haptic (none on visionOS), and
+/// the scroll views around the view let go of the touch.
+#[cfg(not(target_os = "tvos"))]
+fn lift(view: &UIView) {
+    if let Some(class) = objc2::runtime::AnyClass::get(c"UIImpactFeedbackGenerator") {
+        unsafe {
+            let generator: objc2::rc::Allocated<AnyObject> = msg_send![class, alloc];
+            // UIImpactFeedbackStyleMedium.
+            let generator: Option<Retained<AnyObject>> =
+                msg_send![generator, initWithStyle: 1isize];
+            if let Some(generator) = generator {
+                let _: () = msg_send![&*generator, impactOccurred];
+            }
+        }
+    }
+    let mut next = view.superview();
+    while let Some(v) = next {
+        if let Ok(scroll) = v.clone().downcast::<objc2_ui_kit::UIScrollView>() {
+            // Disabling a recognizer cancels it; the touch stays the drag's.
+            let pan = scroll.panGestureRecognizer();
+            pan.setEnabled(false);
+            pan.setEnabled(true);
+        }
+        next = v.superview();
     }
 }
 
@@ -740,7 +896,7 @@ fn drag_button(g: &UIGestureRecognizer) -> prism_core::PointerButton {
 /// Gesture delegate: a drag starts only with a button the element drags
 /// with (`drag_buttons`, #136); other recognizers start as usual.
 pub fn should_begin(g: &UIGestureRecognizer) -> bool {
-    if cfg!(target_os = "tvos") || !has_name(g, DRAG) {
+    if cfg!(target_os = "tvos") || !(has_name(g, DRAG) || has_name(g, HOLD)) {
         return true;
     }
     let Some(view) = g.view() else { return true };
@@ -832,6 +988,11 @@ thread_local! {
     static START: RefCell<HashMap<NodeId, DragStart>> = RefCell::new(HashMap::new());
     /// The pointer events each node listens to.
     static MASKS: RefCell<HashMap<NodeId, u8>> = RefCell::new(HashMap::new());
+    /// The touch hold before each node's drag, in ms (#243).
+    static DELAYS: RefCell<HashMap<NodeId, u32>> = RefCell::new(HashMap::new());
+    /// Where a long-press drag lifted, in the window (#243).
+    #[cfg_attr(target_os = "tvos", allow(dead_code))]
+    static HOLD_AT: RefCell<HashMap<NodeId, CGPoint>> = RefCell::new(HashMap::new());
 }
 
 /// Where a drag started, with which button and keys.
@@ -847,7 +1008,7 @@ fn point(p: CGPoint) -> prism_core::Point {
 /// pinch while the drag follows their center).
 pub fn simultaneous(g: &UIGestureRecognizer, other: &UIGestureRecognizer) -> bool {
     let pair = |a: &UIGestureRecognizer, b: &UIGestureRecognizer| {
-        has_name(a, MAGNIFY) && (has_name(b, DRAG) || has_name(b, WHEEL))
+        has_name(a, MAGNIFY) && (has_name(b, DRAG) || has_name(b, HOLD) || has_name(b, WHEEL))
     };
     [g, other]
         .iter()

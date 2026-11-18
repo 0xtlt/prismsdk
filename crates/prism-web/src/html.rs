@@ -195,6 +195,7 @@ impl Backend for HtmlBackend {
                 }
                 // Applied by the client once it runs.
                 Patch::SetPointerEvents { .. }
+                | Patch::SetDragDelay { .. }
                 | Patch::SetDropTarget { .. }
                 | Patch::SetKeyEvents { .. }
                 | Patch::SetConsumedKeys { .. }

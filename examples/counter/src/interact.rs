@@ -1,8 +1,8 @@
 //! The Interaction card of the Components tab: checkbox, radio group, a time
 //! of day, a search field with an icon and suggestions, a file input, a
 //! drawn level bar (drag and tap position), a pointer read-out, an
-//! arrow-key pad, and a sheet, a popover and a dialog opened without a
-//! route. Its own entity, so dragging the level only re-renders this card.
+//! arrow-key pad, a row of cards that move after a long press (#243), and
+//! a sheet, a popover and a dialog opened without a route. Its own entity, so dragging the level only re-renders this card.
 
 use prism::Div;
 use prism::prelude::*;
@@ -34,6 +34,10 @@ pub struct Interact {
     moved: bool,
     /// The tile was tapped: a stronger color.
     lit: bool,
+    /// The cards of the sideways row, in order (#243).
+    cards: Vec<u32>,
+    /// The card being dragged, by its number.
+    lifted: Option<u32>,
 }
 
 impl Default for Interact {
@@ -55,12 +59,17 @@ impl Default for Interact {
             confirmed: 0,
             moved: false,
             lit: false,
+            cards: (1..=8).collect(),
+            lifted: None,
         }
     }
 }
 
 /// Width of the level bar, in points.
 const BAR: f32 = 240.;
+/// A card of the sideways row and the gap after it, in points.
+const CARD: f32 = 88.;
+const CARD_GAP: f32 = 8.;
 
 impl Interact {
     fn set_level(&mut self, x: f32) {
@@ -120,6 +129,60 @@ impl Interact {
                     .text_color(t.on_accent)
                     .hit_test(false)
                     .accessibility_hidden(),
+            )
+    }
+
+    /// Cards in a row that scrolls sideways (#243): on a touch screen a
+    /// swipe scrolls it, a long press picks a card up to move it.
+    fn card_row(&self, cx: &mut Context<Self>) -> Div {
+        let t = Theme::of(cx);
+        let row = scroll_x()
+            .gap(CARD_GAP)
+            .py(4.)
+            .children(self.cards.iter().map(|&n| {
+                let lifted = self.lifted == Some(n);
+                div()
+                    .w(px(CARD))
+                    .h(px(64.))
+                    .flex_shrink_0()
+                    .rounded(t.radius)
+                    .border(if lifted { 2. } else { 1. })
+                    .border_color(if lifted { t.accent } else { t.border })
+                    .bg(t.surface)
+                    .items_center()
+                    .justify_center()
+                    .accessibility_label(strings::interact_card(cx, n as i64))
+                    .on_drag(cx.listener(move |this, e: &DragEvent, _| match e.phase {
+                        DragPhase::Start | DragPhase::Move => this.lifted = Some(n),
+                        DragPhase::End => {
+                            this.lifted = None;
+                            // Dropped where the finger went: whole cards away.
+                            let Some(from) = this.cards.iter().position(|&c| c == n) else {
+                                return;
+                            };
+                            let steps = (e.translation.x / (CARD + CARD_GAP)).round() as i64;
+                            let to = (from as i64 + steps).clamp(0, this.cards.len() as i64 - 1);
+                            let card = this.cards.remove(from);
+                            this.cards.insert(to as usize, card);
+                        }
+                        DragPhase::Cancel => this.lifted = None,
+                    }))
+                    .drag_after_long_press(std::time::Duration::from_millis(400))
+                    .child(
+                        text(n.to_string())
+                            .text_size(22.)
+                            .semibold()
+                            .text_color(t.text),
+                    )
+            }));
+        div()
+            .gap(4.)
+            .child(text(strings::interact_cards(cx)).semibold())
+            .child(row)
+            .child(
+                text(strings::interact_cards_hint(cx))
+                    .text_size(13.)
+                    .text_color(t.muted),
             )
     }
 
@@ -331,6 +394,7 @@ impl Render for Interact {
         let alarm = format!("{:02}:{:02}", self.alarm / 60, self.alarm % 60);
         let level_bar = self.level_bar(cx);
         let pointer_area = self.pointer_area(cx);
+        let card_row = self.card_row(cx);
         let key_pad = self.key_pad(cx);
         let overlays = self.overlays(cx);
         let moving_tile = self.moving_tile(cx);
@@ -399,6 +463,7 @@ impl Render for Interact {
             .child(text(strings::interact_level(cx)).semibold())
             .child(level_bar)
             .child(pointer_area)
+            .child(card_row)
             .child(
                 div()
                     .flex_row()

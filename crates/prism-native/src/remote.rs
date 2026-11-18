@@ -1088,6 +1088,11 @@ impl Widgets for RemoteWidgets {
             .push(json!({ "op": "pointer", "id": id, "mask": mask }));
     }
 
+    fn set_drag_delay(&mut self, id: &NodeId, ms: u32) {
+        self.ops
+            .push(json!({ "op": "dragdelay", "id": id, "ms": ms }));
+    }
+
     fn set_drop_target(&mut self, id: &NodeId, types: Option<&[String]>) {
         self.ops
             .push(json!({ "op": "drop", "id": id, "types": types }));

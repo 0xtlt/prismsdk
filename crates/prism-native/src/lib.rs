@@ -175,6 +175,11 @@ pub trait Widgets {
     /// Which pointer events a view reports (`prism_core::events::pointer_mask`
     /// bits): `UiEvent::Pointer` for hover / move, `UiEvent::Drag`.
     fn set_pointer_events(&mut self, _view: &Self::View, _mask: u8) {}
+    /// How long a touch must be held still before the view's drag starts
+    /// (`drag_after_long_press`, #243), in milliseconds; 0 on movement as
+    /// usual. Mice and trackpads still drag on movement. Backends without
+    /// touch screens ignore it.
+    fn set_drag_delay(&mut self, _view: &Self::View, _ms: u32) {}
     /// Whether files can be dropped on the view (#111): the types it
     /// accepts (MIME types or extensions, empty for any file), `None` for
     /// none. Report `UiEvent::DropFiles` with copies the app can read, and
@@ -1883,6 +1888,11 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                 Patch::SetPointerEvents { id, mask } => {
                     if let Some(e) = self.nodes.get(id) {
                         self.widgets.set_pointer_events(&e.view, *mask);
+                    }
+                }
+                Patch::SetDragDelay { id, ms } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.set_drag_delay(&e.view, *ms);
                     }
                 }
                 Patch::SetDropTarget { id, types } => {

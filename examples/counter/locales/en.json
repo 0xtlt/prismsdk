@@ -451,7 +451,10 @@
     "jump_button": "Jump to the search field",
     "tile": "Animated tile",
     "tile_beside": "Moves to its own line without fading in.",
-    "tile_move": "Move the tile"
+    "tile_move": "Move the tile",
+    "cards": "Cards",
+    "cards_hint": "On a touch screen, swipe to scroll, or hold a card to move it.",
+    "card": "Card {n}"
   },
   "islands": {
     "title": "Islands",

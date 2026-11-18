@@ -132,6 +132,54 @@ test("drags start past the slop, move once per frame, and do not click", () => {
   assert.equal(lastSent(page).t, "click");
 });
 
+test("a touch drag starts after a long press; a swipe before scrolls, a mouse drags at once (#243)", () => {
+  const page = live([
+    { op: "create", id: 2, kind: "view" }, { op: "pointer", id: 2, mask: 4 }, { op: "dragdelay", id: 2, ms: 400 },
+    ...root([2]),
+  ]);
+  const el = placed(page.node(2));
+  assert.equal(el.hasAttribute("data-prism-hold"), true, "swipes may pan around it");
+  const drags = () => sent(page).filter((m) => m.t === "drag");
+  const p = (type, x, y, pointerType = "touch") => el.dispatchEvent({ type, pointerId: 3, pointerType, button: 0, clientX: x, clientY: y });
+  const hold = () => page.timers.splice(0).filter((t) => t.ms === 400).forEach((t) => t.fn());
+  // A swipe before the hold: no drag, even once the delay passes.
+  p("pointerdown", 60, 30);
+  p("pointermove", 90, 30);
+  hold();
+  assert.equal(drags().length, 0, "a swipe scrolls");
+  p("pointerup", 90, 30);
+  // Held still (within the slop): it lifts, then follows the finger.
+  p("pointerdown", 60, 30);
+  p("pointermove", 62, 31);
+  assert.equal(drags().length, 0, "not before the delay");
+  hold();
+  assert.deepEqual(drags().at(-1), { t: "drag", id: 2, x: 10, y: 10, dx: 2, dy: 1, phase: "start" });
+  const move = { type: "touchmove", cancelable: true };
+  el.dispatchEvent(move);
+  assert.equal(move.defaultPrevented, true, "lifted: the page no longer scrolls");
+  p("pointermove", 120, 40);
+  flushFrames(page);
+  assert.deepEqual(drags().at(-1), { t: "drag", id: 2, x: 10, y: 10, dx: 60, dy: 10, phase: "move" });
+  p("pointerup", 120, 40);
+  assert.equal(drags().at(-1).phase, "end");
+  const after = { type: "touchmove", cancelable: true };
+  el.dispatchEvent(after);
+  assert.equal(after.defaultPrevented, false, "released: scrolling again");
+  // A mouse drags on movement, as before.
+  page.timers.splice(0).forEach((t) => t.fn());
+  p("pointerdown", 60, 30, "mouse");
+  p("pointermove", 70, 30, "mouse");
+  assert.deepEqual(drags().at(-1), { t: "drag", id: 2, x: 10, y: 10, dx: 10, dy: 0, phase: "start" });
+  p("pointerup", 70, 30, "mouse");
+  // Without the delay, touches drag on movement again.
+  page.ws.deliver({ t: "patch", p: [{ op: "dragdelay", id: 2, ms: 0 }] });
+  assert.equal(el.hasAttribute("data-prism-hold"), false);
+  page.timers.splice(0).forEach((t) => t.fn());
+  p("pointerdown", 60, 30);
+  p("pointermove", 75, 30);
+  assert.deepEqual(drags().at(-1), { t: "drag", id: 2, x: 10, y: 10, dx: 15, dy: 0, phase: "start" });
+});
+
 test("the middle and secondary buttons drag where allowed, with their keys (#136)", () => {
   const page = live([
     // Middle-button panning; the primary button does not drag here.

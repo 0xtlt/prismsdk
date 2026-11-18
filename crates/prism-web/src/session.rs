@@ -1350,6 +1350,8 @@ impl Encoder {
             Patch::SetPointerEvents { id, mask } => {
                 json!({ "op": "pointer", "id": id, "mask": mask })
             }
+            // A touch drag after a long press (#243).
+            Patch::SetDragDelay { id, ms } => json!({ "op": "dragdelay", "id": id, "ms": ms }),
             Patch::SetKeyEvents { id, local, global } => {
                 json!({ "op": "keys", "id": id, "local": local, "global": global })
             }
