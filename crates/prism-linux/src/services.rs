@@ -669,6 +669,7 @@ pub(crate) fn menu_model(app: &gtk::Application, spec: &MenuSpec) -> gio::Menu {
                 id,
                 title,
                 shortcut,
+                shortcut_hint,
                 role,
                 checked,
                 enabled,
@@ -676,14 +677,23 @@ pub(crate) fn menu_model(app: &gtk::Application, spec: &MenuSpec) -> gio::Menu {
             } => {
                 let name = format!("m{id}");
                 action(app, &name, *id, *enabled);
-                if let Some(keys) = shortcut {
-                    app.set_accels_for_action(&format!("app.{name}"), &[&accelerator(keys)]);
-                }
                 let label = match (checked, role) {
                     (Some(true), _) => format!("✓ {title}"),
                     _ => title.clone(),
                 };
-                section.append(Some(&label), Some(&format!("app.{name}")));
+                let entry = gio::MenuItem::new(Some(&label), Some(&format!("app.{name}")));
+                match shortcut {
+                    // A hint (#247): shown by the menu, not an accelerator,
+                    // so the key stays the focused widget's.
+                    Some(keys) if *shortcut_hint => {
+                        entry.set_attribute_value("accel", Some(&accelerator(keys).to_variant()));
+                    }
+                    Some(keys) => {
+                        app.set_accels_for_action(&format!("app.{name}"), &[&accelerator(keys)]);
+                    }
+                    None => {}
+                }
+                section.append_item(&entry);
             }
             MenuItemSpec::Separator => {
                 menu.append_section(None, &section);

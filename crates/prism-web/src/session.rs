@@ -1379,6 +1379,13 @@ impl Encoder {
             Patch::SetSelectEvents { id, on } => json!({ "op": "selev", "id": id, "on": on }),
             Patch::ScrollIntoView { id } => json!({ "op": "reveal", "id": id }),
             Patch::DismissKeyboard => json!({ "op": "blur" }),
+            // A pop-up menu (#247): over the node (`id` null: the page), at
+            // `at` in it or below it.
+            Patch::ShowMenu { id, menu, at } => json!({
+                "op": "popup", "id": id,
+                "menu": serde_json::from_str::<Value>(&menu.to_json()).unwrap_or(Value::Null),
+                "at": at.map(|p| [p.x, p.y]),
+            }),
             Patch::SetLayers { ids } => json!({ "op": "layers", "ids": ids }),
             // Islands: `client.js` swaps in the custom element, imports its
             // module once, forwards its events and updates its props.
@@ -1418,15 +1425,18 @@ impl Encoder {
     }
 }
 
-/// The shortcuts of the app menus' enabled items, as `[keys, id]` (#161).
+/// The shortcuts of the app menus' enabled items, as `[keys, id]` (#161),
+/// hints left out (#247).
 fn menu_shortcuts(menus: &[prism_core::menu::MenuSpec]) -> Vec<Value> {
     use prism_core::menu::MenuItemSpec;
     fn walk(items: &[MenuItemSpec], out: &mut Vec<Value>) {
         for item in items {
             match item {
+                // A hint (#247) is only shown: the key stays the page's.
                 MenuItemSpec::Action {
                     id,
                     shortcut: Some(keys),
+                    shortcut_hint: false,
                     enabled: true,
                     ..
                 } => out.push(json!([keys.to_ascii_lowercase(), id])),

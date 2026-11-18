@@ -2586,6 +2586,9 @@
       case "selev": return el && setSelectEvents(el, p.on);
       case "focus": if (el) { focusAsked = el; focusNode(el); } return;
       case "reveal": return el && reveal(el);
+      // A pop-up menu (#247): at a point in the node (the page when it has
+      // no id), or below it.
+      case "popup": return popupMenu(p.id == null ? null : el, p.menu, p.at);
       // `cx.scroll_by` / `cx.scroll_to` (#193): the browser keeps it within the content.
       case "scrollto": {
         if (!el) return;
@@ -5615,7 +5618,7 @@ void main() {
   }
   document.addEventListener("pointerdown", (e) => { if (openMenu && !openMenu.el.contains(e.target)) closeMenu(false); }, true);
 
-  function showMenu(owner, spec, x, y) {
+  function showMenu(owner, spec, x, y, alignEnd) {
     closeMenu(false);
     const menu = document.createElement("div");
     menu.className = "prism-menu";
@@ -5643,6 +5646,14 @@ void main() {
         b.innerHTML = '<span aria-hidden="true"></span><span></span>';
         b.firstChild.textContent = it.icon ? glyphs[it.icon] || "" : it.checked ? "✓" : "";
         b.lastChild.textContent = it.title;
+        // Its shortcut, bound or only a hint (#247).
+        if (it.shortcut) {
+          const k = document.createElement("span");
+          k.className = "prism-menu-key";
+          k.textContent = shortcutLabel(it.shortcut);
+          b.setAttribute("aria-keyshortcuts", ariaShortcut(it.shortcut));
+          b.appendChild(k);
+        }
         if (depth) b.style.paddingLeft = 10 + depth * 12 + "px";
         b.addEventListener("click", () => { closeMenu(true); send({ t: "menu", id: it.id }); });
         menu.appendChild(b);
@@ -5659,10 +5670,49 @@ void main() {
     });
     document.body.appendChild(menu);
     const r = menu.getBoundingClientRect();
+    // Below an element in a right-to-left page: its right edges aligned.
+    if (alignEnd != null) x = alignEnd - r.width;
     menu.style.left = Math.max(8, Math.min(x, innerWidth - r.width - 8)) + "px";
     menu.style.top = Math.max(8, Math.min(y, innerHeight - r.height - 8)) + "px";
     openMenu = { el: menu, owner };
     menu.querySelector("[role^=menuitem]:not(:disabled)")?.focus();
+  }
+
+  // `"cmd+shift+b"` as the platform writes it: ⇧⌘B on Apple systems,
+  // Ctrl+Shift+B elsewhere (#247).
+  function shortcutLabel(keys) {
+    const parts = keys.toLowerCase().split("+").map((k) => k.trim());
+    const key = parts.pop() || "";
+    const name = { space: "Space", enter: "↩", return: "↩", escape: "Esc", backspace: "⌫", delete: "⌦", tab: "⇥",
+      arrowup: "↑", arrowdown: "↓", arrowleft: "←", arrowright: "→" }[key] || capitalized(key);
+    const has = (...names) => parts.some((p) => names.includes(p));
+    if (applePlatform) {
+      return (has("ctrl", "control") ? "⌃" : "") + (has("alt", "option", "opt") ? "⌥" : "") + (has("shift") ? "⇧" : "") +
+        (has("cmd", "command", "meta", "super") ? "⌘" : "") + name;
+    }
+    return [has("cmd", "command", "meta", "ctrl", "control") && "Ctrl", has("super") && "Super", has("alt", "option", "opt") && "Alt",
+      has("shift") && "Shift", name].filter(Boolean).join("+");
+  }
+  // The same for `aria-keyshortcuts` ("Meta+Shift+B").
+  function ariaShortcut(keys) {
+    const parts = keys.toLowerCase().split("+").map((k) => k.trim());
+    const key = parts.pop() || "";
+    const mods = parts.map((p) => ({ cmd: applePlatform ? "Meta" : "Control", command: applePlatform ? "Meta" : "Control", meta: "Meta", super: "Meta",
+      ctrl: "Control", control: "Control", alt: "Alt", option: "Alt", opt: "Alt", shift: "Shift" })[p]).filter(Boolean);
+    return [...mods, capitalized(key)].join("+");
+  }
+  const capitalized = (k) => k.length === 1 ? k.toUpperCase() : k ? k[0].toUpperCase() + k.slice(1) : "";
+
+  // A pop-up menu (#247): at `at` in `el` (the viewport without one), or
+  // below `el`, aligned with its start edge.
+  function popupMenu(el, spec, at) {
+    if (!spec) return;
+    const owner = el || document.activeElement || document.body;
+    if (!el) return showMenu(owner, spec, at ? at[0] : 0, at ? at[1] : 0);
+    const r = el.getBoundingClientRect();
+    if (at) return showMenu(owner, spec, r.left + at[0], r.top + at[1]);
+    const rtl = (el.closest?.("[dir]")?.getAttribute("dir") || document.documentElement.dir) === "rtl";
+    showMenu(owner, spec, r.left, r.bottom + 4, rtl ? r.right : null);
   }
 
   function setMenu(el, id, spec) {

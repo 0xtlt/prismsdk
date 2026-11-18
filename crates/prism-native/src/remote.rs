@@ -1121,6 +1121,21 @@ impl Widgets for RemoteWidgets {
         self.ops.push(json!({ "op": "reveal", "id": id }));
     }
 
+    /// `{"op":"popup","id","menu","at"}` (#247): a pop-up menu over the
+    /// node (`id` null: the window), at `at` in pixels from its top-left
+    /// corner, or below it when `at` is null.
+    fn show_menu(
+        &mut self,
+        id: Option<&NodeId>,
+        menu: &prism_core::menu::MenuSpec,
+        at: Option<(f32, f32)>,
+    ) {
+        let menu = serde_json::from_str::<Value>(&menu.to_json()).unwrap_or(Value::Null);
+        self.ops.push(json!({
+            "op": "popup", "id": id, "menu": menu, "at": at.map(|(x, y)| [x, y]),
+        }));
+    }
+
     /// `{"op":"scrollto","id","x","y","rel","anim"}` (#193): `x`, `y` in
     /// points (by them from the offset when `rel`), the host keeps them
     /// within the content.

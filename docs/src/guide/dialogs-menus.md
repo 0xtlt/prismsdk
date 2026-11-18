@@ -45,6 +45,54 @@ cx.set_menu_bar(vec![
 - An app item with a shortcut takes it from everything, focused text fields included: an `Annuler` item on ⌘Z runs the app's undo, not the field's. Use `MenuItem::system(SystemAction::Undo)` instead to keep the fields' own.
 - Web: no menu bar, but the shortcuts of the app's menus (`set_app_menu` or `set_menu_bar`) are the app's: the page takes them before the browser (⌘Z in a field, ⌘S, ⌘K; `cmd` is ⌘ on Apple devices and Ctrl elsewhere) and runs the item. Linux: `set_menu_bar` is the GTK menu bar, without the system items (GTK fields have their own). Phones, tablets and watches show no menu bar.
 
+## Shortcuts a menu only shows
+
+`.shortcut(keys)` both shows a key in the menu and binds it: an app item takes
+it from everything. A shortcut the focused view handles itself (⌘B in a text
+field, ⌘D on a canvas, ⌘= for a zoom the view does) is documented with
+`.shortcut_hint(keys)` instead (#247): the menu lists it, the key keeps going
+to the focused view, and choosing the item runs its handler as usual.
+
+```rust
+Menu::titled("Format")
+    .item(MenuItem::new("Bold").shortcut_hint("cmd+b").on_select(bold))   // the field's ⌘B
+    .item(MenuItem::new("Find").shortcut("cmd+f").on_select(find))        // the app's ⌘F
+```
+
+| | Shortcut hint |
+|---|---|
+| macOS | the item's key equivalent only while its menu is open (an `NSMenuDelegate`), so a closed menu never takes the key |
+| Linux | the item's `accel` attribute: shown by the `GtkPopoverMenu`, no accelerator |
+| Web | left out of the shortcuts the page takes; the page's menus write it (⌘B on Apple devices, Ctrl+B elsewhere, `aria-keyshortcuts`) |
+| iOS, iPadOS, Android, watchOS | menus show no shortcuts there: nothing to show |
+
+## Pop-up menus: from a button, at the pointer
+
+The platform's own menu, opened by the app rather than by a right-click (#247):
+
+```rust
+button("+").on_click_menu(Menu::new()                     // below the button when pressed
+    .item(MenuItem::new("Note").on_select(add_note))
+    .item(MenuItem::new("Folder").on_select(add_folder)))
+div().id("canvas").on_click(cx.listener(|this, e: &ClickEvent, cx| {
+    cx.show_menu_on("canvas", this.menu(), e.position)   // at the pointer, in the canvas
+}))
+cx.show_menu(menu, Point::new(120., 80.))                // in the window's content
+```
+
+- `div().on_click_menu(menu)` (and `button(…).on_click_menu(menu)`) opens the menu below the element when it is clicked, tapped or activated from the keyboard, in place of `on_click`.
+- `cx.show_menu_on(id, menu, at)` opens it over the element with that `.id(…)`: at `at` in the element's coordinates (a `ClickEvent::position`), or below it with `None`. `cx.show_menu(menu, at)` opens it at a point of the window's content. They open after the next render; showing another pop-up menu replaces this one's items.
+- Items run their handlers like a context menu's.
+
+| | Pop-up menu |
+|---|---|
+| macOS | `NSMenu.popUp(positioning:at:in:)` |
+| iOS, iPadOS, visionOS | a `UIMenu` from a transparent one-point `UIButton` at that place (`showsMenuAsPrimaryAction`, `performPrimaryAction`): iOS 17.4 and later, nothing before |
+| Android | `PopupMenu` anchored to a transparent view laid over that place |
+| Linux | `GtkPopoverMenu` pointing at the place (or the element) |
+| Web | the page's menu (the one context menus use), placed at the point or below the element |
+| tvOS, watchOS | nothing |
+
 ## Sheets, popovers and dialogs without a route
 
 A screen can show its own content over itself, without a route (`cx.present` needs one):

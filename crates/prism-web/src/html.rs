@@ -205,6 +205,7 @@ impl Backend for HtmlBackend {
                 | Patch::Focus { .. }
                 | Patch::DismissKeyboard
                 | Patch::ScrollIntoView { .. }
+                | Patch::ShowMenu { .. }
                 | Patch::PostWebMessage { .. }
                 | Patch::ReloadWebView { .. } => {}
                 Patch::SetLayers { ids } => self.layers.clone_from(ids),

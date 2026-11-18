@@ -403,6 +403,7 @@ public final class PrismHost {
             case "appearance": appearance = p.optString("mode", "system"); restyle(); return;
             case "layers": PrismInput.setLayers(p.optJSONArray("ids")); return;
             case "blur": PrismInput.dismissKeyboard(); return;
+            case "popup": popup(n, p); return;
         }
         if (n == null) return;
         switch (op) {
@@ -1426,14 +1427,47 @@ public final class PrismHost {
 
     /** The context menu (press and hold), submenus flattened. */
     static void showMenu(Node n) {
-        PopupMenu popup = new PopupMenu(themed(), n.view);
+        menu(n.view, n.menu).show();
+    }
+
+    /** A `PopupMenu` for a Prism menu, anchored to `anchor`. */
+    static PopupMenu menu(View anchor, JSONObject spec) {
+        PopupMenu popup = new PopupMenu(themed(), anchor);
         List<Long> ids = new ArrayList<>();
-        addItems(popup.getMenu(), n.menu.optJSONArray("items"), ids);
+        addItems(popup.getMenu(), spec.optJSONArray("items"), ids);
         popup.setOnMenuItemClickListener(item -> {
             send(event("menu", ids.get(item.getItemId())));
             return true;
         });
-        popup.show();
+        return popup;
+    }
+
+    /**
+     * A pop-up menu (#247) over a node (the window's content when null): at
+     * `at`, in pixels from its top-left corner, or below it. A transparent
+     * anchor view is laid over that place in the window while it is open.
+     */
+    static void popup(Node n, JSONObject p) {
+        View over = n != null ? n.view : root;
+        JSONObject spec = p.optJSONObject("menu");
+        if (activity == null || over == null || spec == null || !over.isAttachedToWindow()) return;
+        ViewGroup decor = (ViewGroup) activity.getWindow().getDecorView();
+        int[] o = new int[2], d = new int[2];
+        over.getLocationInWindow(o);
+        decor.getLocationInWindow(d);
+        JSONArray at = p.optJSONArray("at");
+        FrameLayout.LayoutParams lp = at != null
+                ? new FrameLayout.LayoutParams(1, 1)
+                : new FrameLayout.LayoutParams(Math.max(1, over.getWidth()), Math.max(1, over.getHeight()));
+        lp.leftMargin = o[0] - d[0] + (at != null ? Math.round((float) at.optDouble(0)) : 0);
+        lp.topMargin = o[1] - d[1] + (at != null ? Math.round((float) at.optDouble(1)) : 0);
+        View anchor = new View(activity);
+        anchor.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        decor.addView(anchor, lp);
+        PopupMenu popup = menu(anchor, spec);
+        popup.setOnDismissListener(m -> decor.removeView(anchor));
+        // Once the anchor is laid out.
+        anchor.post(popup::show);
     }
 
     /** Android item ids are ints: they index `ids`, Prism's (u64) item ids. */

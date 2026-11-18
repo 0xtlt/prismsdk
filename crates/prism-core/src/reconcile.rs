@@ -250,6 +250,17 @@ pub enum Patch {
     /// Take the keyboard focus away from whatever has it and hide the
     /// on-screen keyboard (`cx.dismiss_keyboard`).
     DismissKeyboard,
+    /// Open a pop-up menu (#247): over the node (the window's content when
+    /// `None`), at `at` in its coordinates, or below it when `at` is `None`.
+    /// Items report `UiEvent::MenuSelect(id)`.
+    ShowMenu {
+        /// The node it opens over; `None`: the window.
+        id: Option<NodeId>,
+        /// The menu.
+        menu: crate::menu::MenuSpec,
+        /// Where, in points in the node; `None`: below it.
+        at: Option<crate::events::Point>,
+    },
     /// Scroll the scroll views around the node so it is visible
     /// (`cx.scroll_into_view`).
     ScrollIntoView {
@@ -1051,6 +1062,23 @@ impl Reconciler {
         for command in std::mem::take(&mut app.ui_commands) {
             use crate::app::UiCommand as C;
             let name = match &command {
+                C::ShowMenu(..) => {
+                    let C::ShowMenu(target, menu, at) = command else {
+                        unreachable!()
+                    };
+                    use crate::app::MenuTarget as T;
+                    let id = match target {
+                        T::Window => None,
+                        T::Named(name) => match self.node_named(&name) {
+                            Some(id) => Some(id),
+                            None => continue,
+                        },
+                        T::Node(id) if self.nodes.contains_key(&id) => Some(id),
+                        T::Node(_) => continue,
+                    };
+                    patches.push(Patch::ShowMenu { id, menu, at });
+                    continue;
+                }
                 C::Focus(n) | C::ScrollIntoView(n) | C::ReloadWebView(n) => n,
                 C::Scroll(n, ..) => n,
                 C::PostWebMessage(n, _) => n,
@@ -1247,6 +1275,7 @@ impl Reconciler {
             on_change,
             link,
             context_menu,
+            click_menu,
             on_scroll,
             on_swipe_left,
             on_swipe_right,
@@ -1399,6 +1428,17 @@ impl Reconciler {
         };
         // A link navigates when activated in the app.
         let on_click = on_click.or_else(|| link.clone().map(link_handler));
+        // A click menu (#247) opens below the node, in place of `on_click`.
+        let on_click = match click_menu {
+            Some(menu) => {
+                let h: Handler<ClickEvent> =
+                    std::rc::Rc::new(move |_: &ClickEvent, app: &mut App| {
+                        app.show_menu_below(id, &menu)
+                    });
+                Some(h)
+            }
+            None => on_click,
+        };
         let a11y = {
             let mut a = a11y;
             if a.label.is_none() {

@@ -2604,6 +2604,46 @@ fn the_menu_bar_mixes_system_and_app_items() {
     );
 }
 
+/// #247: a shortcut hint is shown, not bound; `shortcut` binds again.
+#[test]
+fn shortcut_hints_are_marked_for_backends() {
+    use crate::menu::{Menu, MenuItem, MenuItemSpec};
+    let h: Handler<ClickEvent> = std::rc::Rc::new(|_, _| {});
+    let menu = Menu::new()
+        .item(
+            MenuItem::new("Bold")
+                .shortcut_hint("cmd+b")
+                .on_select(h.clone()),
+        )
+        .item(
+            MenuItem::new("Find")
+                .shortcut_hint("cmd+f")
+                .shortcut("cmd+f")
+                .on_select(h),
+        )
+        .item(MenuItem::new("Plain").shortcut_hint("cmd+p"));
+    let spec = menu.compile(0, &mut Vec::new());
+    let hints: Vec<bool> = spec
+        .items
+        .iter()
+        .map(|i| {
+            matches!(
+                i,
+                MenuItemSpec::Action {
+                    shortcut_hint: true,
+                    ..
+                }
+            )
+        })
+        .collect();
+    assert_eq!(hints, [true, false, true]);
+    assert!(spec.to_json().contains(r#""shortcut":"cmd+b","hint":true"#));
+    assert!(
+        spec.to_json()
+            .contains(r#""shortcut":"cmd+f","hint":false"#)
+    );
+}
+
 /// #159: clicks carry their keys and count; key releases reach on_key_up
 /// and on_global_key_up.
 #[test]

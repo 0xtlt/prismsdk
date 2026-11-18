@@ -213,6 +213,24 @@ pub(crate) enum UiCommand {
     PostWebMessage(String, String),
     /// `reload_web_view` (#62).
     ReloadWebView(String),
+    /// `show_menu`, `show_menu_on`, `on_click_menu` (#247): where, the
+    /// menu, and the point there (`None`: below the element).
+    ShowMenu(
+        MenuTarget,
+        crate::menu::MenuSpec,
+        Option<crate::events::Point>,
+    ),
+}
+
+/// The element a pop-up menu opens over (#247).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum MenuTarget {
+    /// The window's content.
+    Window,
+    /// The element with this `.id(…)`.
+    Named(String),
+    /// This node (`on_click_menu`).
+    Node(crate::reconcile::NodeId),
 }
 
 impl Default for App {

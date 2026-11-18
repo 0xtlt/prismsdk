@@ -75,6 +75,12 @@ pub struct Host {
     pub web_messages: Vec<(NodeId, String)>,
     /// Web views reloaded, in order (`Patch::ReloadWebView`).
     pub web_reloads: Vec<NodeId>,
+    /// Pop-up menus opened, in order: (node, menu, point) (`Patch::ShowMenu`, #247).
+    pub popups: Vec<(
+        Option<NodeId>,
+        prism_core::menu::MenuSpec,
+        Option<prism_core::Point>,
+    )>,
 }
 
 impl Host {
@@ -290,6 +296,12 @@ impl Backend for Host {
                     self.scrolled_to.push(*id);
                 }
                 Patch::DismissKeyboard => self.keyboard_dismissals += 1,
+                Patch::ShowMenu { id, menu, at } => {
+                    if let Some(id) = id {
+                        self.node(*id, "ShowMenu");
+                    }
+                    self.popups.push((*id, menu.clone(), *at));
+                }
                 Patch::SetLayers { ids } => {
                     for id in ids {
                         self.node(*id, "SetLayers");
