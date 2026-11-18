@@ -13,6 +13,7 @@
 //! or diffed at all: its mounted subtree is moved over as-is.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use crate::a11y::{Accessibility, Role};
 use crate::app::{AnyEntity, App, Appearance, EntityId};
@@ -420,6 +421,41 @@ pub enum Patch {
         /// The text to insert.
         text: String,
     },
+    // --- One selection across several fields (#231) ---
+    /// Whether a node is a selection group: its named text fields share
+    /// one selection. The web client extends it across them itself.
+    SetSelectionGroup {
+        /// The container.
+        id: NodeId,
+        /// It is a group.
+        on: bool,
+        /// It has `on_edit_across`: edits over a selection across its
+        /// fields are reported, not left to the field where it started.
+        edits: bool,
+    },
+    /// Draw `start..end` (characters) of a text field highlighted like a
+    /// selection, without selecting it: its part of a selection that spans
+    /// several fields of a group while another field has the focus.
+    /// `start == end` removes the highlight.
+    SetSelectionHighlight {
+        /// The text field.
+        id: NodeId,
+        /// First highlighted character.
+        start: usize,
+        /// End of the highlight (excluded).
+        end: usize,
+    },
+    /// The selection across the fields of group `group` changed from the
+    /// app or the runtime (not from the backend's own report): from
+    /// `anchor` to `head` (field, character), `None` when it ended. The
+    /// web client keeps extending it from there; native backends draw it
+    /// from `SetSelection` and `SetSelectionHighlight` alone.
+    SetSelectionAcross {
+        /// The selection group.
+        group: NodeId,
+        /// Where it starts (field, offset) and where it was extended to.
+        range: Option<((NodeId, usize), (NodeId, usize))>,
+    },
 }
 
 /// An event reported by a backend.
@@ -523,6 +559,44 @@ pub enum UiEvent {
     /// A click with ⌘, Ctrl or ⌥ on character `offset` of a rich input
     /// being edited: (id, offset, the keys held).
     SpanClick(NodeId, usize, crate::events::Modifiers),
+    // --- One selection across several fields (#231) ---
+    /// The web client extended (or ended, `None`) the selection across the
+    /// fields of group `.0`: from (field, offset) to (field, offset). It
+    /// already draws it.
+    SelectionAcross(NodeId, Option<((NodeId, usize), (NodeId, usize))>),
+    /// The web client took an edit over the selection across group `.0`'s
+    /// fields: what made it and the text replacing the range.
+    EditAcross(NodeId, crate::EditCause, String),
+    /// The web client took a copy (or cut, `true`) of the selection across
+    /// group `.0`'s fields, already writing its plain text.
+    CopyAcross(NodeId, bool),
+}
+
+/// A selection across the fields of a group (#231), as drawn.
+#[derive(Clone, Debug, Default)]
+struct Across {
+    group: NodeId,
+    anchor: (NodeId, usize),
+    head: (NodeId, usize),
+    /// The highlights sent, by field.
+    painted: HashMap<NodeId, (usize, usize)>,
+    /// The selection set in the anchor field (to tell its echo).
+    selected: (usize, usize),
+}
+
+/// What a key did to a selection group (#231), for the runtime to finish:
+/// the patches to send and the handlers to call.
+pub(crate) struct AcrossOutcome {
+    pub patches: Vec<Patch>,
+    /// The group's selection handler and the selection to report.
+    pub report: Option<(Handler<crate::SelectionAcross>, crate::SelectionAcross)>,
+    /// An edit for `on_edit_across`.
+    pub edit: Option<(Handler<crate::EditAcross>, crate::EditAcross)>,
+    /// A copy (or cut) to answer: the field it came from, its handler,
+    /// the event.
+    pub copy: Option<(NodeId, Option<Handler<crate::CopyEvent>>, crate::CopyEvent)>,
+    /// A paste to read: the edit handler and the selection it replaces.
+    pub paste: Option<(Handler<crate::EditAcross>, crate::SelectionAcross)>,
 }
 
 /// A mounted host node.
@@ -558,6 +632,8 @@ struct MNode {
     layout_events: bool,
     /// The editing events it reports (#217, `edit_events` bits).
     edit_mask: u8,
+    /// It is a selection group (#231), and has `on_edit_across`.
+    selection_group: (bool, bool),
     /// The selection the app last rendered (`.selection`, #86).
     selection: Option<SelectionEvent>,
     /// The selection the field shows, as far as Prism knows: the last one
@@ -660,6 +736,10 @@ pub struct Reconciler {
     focus_change: HashMap<NodeId, Handler<crate::element::FocusEvent>>,
     /// Rich inputs' editing hooks (#217).
     edit: HashMap<NodeId, crate::text_edit::EditHandlers>,
+    /// Selection groups (#231) and their handlers.
+    groups: HashMap<NodeId, crate::selection_across::GroupHandlers>,
+    /// The selection across fields shown now (#231).
+    across: Option<Across>,
     layout: HashMap<NodeId, Handler<crate::events::LayoutEvent>>,
     drop_progress: HashMap<NodeId, Handler<crate::events::DropProgress>>,
     ended: HashMap<NodeId, Handler<crate::video::EndedEvent>>,
@@ -1168,6 +1248,10 @@ impl Reconciler {
                 C::Focus(n) | C::ScrollIntoView(n) | C::ReloadWebView(n) => n,
                 C::Scroll(n, ..) => n,
                 C::PostWebMessage(n, _) => n,
+                C::SelectionAcross(range) => {
+                    patches.extend(self.command_across(range.clone()));
+                    continue;
+                }
                 C::DismissKeyboard => {
                     patches.push(Patch::DismissKeyboard);
                     continue;
@@ -1417,6 +1501,8 @@ impl Reconciler {
             on_layout,
             track_layout,
             edit,
+            selection_group,
+            across,
             ..
         } = *vnode;
         app.window.watch_widths(&style);
@@ -1478,6 +1564,27 @@ impl Reconciler {
         } else {
             self.edit.insert(id, edit);
         }
+        // A selection group (#231) hears its fields' keys: the runtime
+        // extends the selection across them.
+        {
+            let m = self.nodes.get_mut(&id).expect("node exists");
+            let flags = (selection_group, selection_group && across.on_edit.is_some());
+            if m.selection_group != flags {
+                m.selection_group = flags;
+                self.patches.push(Patch::SetSelectionGroup {
+                    id,
+                    on: flags.0,
+                    edits: flags.1,
+                });
+            }
+        }
+        let on_key_down = if selection_group {
+            self.groups.insert(id, across);
+            on_key_down.or_else(|| Some(Rc::new(|_: &crate::events::KeyEvent, _: &mut App| {})))
+        } else {
+            self.groups.remove(&id);
+            on_key_down
+        };
         self.diff_events(
             id,
             name,
@@ -2218,6 +2325,7 @@ impl Reconciler {
                 consume_keys: Vec::new(),
                 layout_events: false,
                 edit_mask: 0,
+                selection_group: (false, false),
                 selection: None,
                 shown_selection: None,
                 remote_carets: Vec::new(),
@@ -2284,6 +2392,14 @@ impl Reconciler {
         self.aux_click.remove(&id);
         self.focus_change.remove(&id);
         self.edit.remove(&id);
+        self.groups.remove(&id);
+        if self
+            .across
+            .as_ref()
+            .is_some_and(|a| a.group == id || a.anchor.0 == id || a.head.0 == id)
+        {
+            self.across = None;
+        }
         self.layout.remove(&id);
         self.key_down.remove(&id);
         self.global_key.remove(&id);
@@ -2345,4 +2461,452 @@ fn own_keyboard_bar(field: &VNode, bar: Element) -> Element {
         n.key = field.key.as_ref().map(|k| format!("{k}\u{1}keyboard"));
     }
     o
+}
+
+// --- One selection across several fields (#231) ----------------------------
+
+type Field = crate::selection_across::Field<NodeId>;
+type Pos = crate::selection_across::Pos;
+
+impl Reconciler {
+    /// The selection group text field `field` belongs to, if any.
+    pub(crate) fn group_of(&self, field: NodeId) -> Option<NodeId> {
+        let n = self.nodes.get(&field)?;
+        if !matches!(
+            n.kind,
+            NodeKind::RichInput | NodeKind::TextArea | NodeKind::TextInput
+        ) {
+            return None;
+        }
+        let mut next = n.parent;
+        while let Some(id) = next {
+            if self.groups.contains_key(&id) {
+                return Some(id);
+            }
+            next = self.nodes.get(&id)?.parent;
+        }
+        None
+    }
+
+    /// The value of text field `id`, as last rendered.
+    fn field_value(&self, id: NodeId) -> String {
+        match self.rich.get(&id) {
+            Some(r) => r.spans.iter().map(|(_, s)| s.text()).collect(),
+            None => self
+                .nodes
+                .get(&id)
+                .map(|n| n.text.clone())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Characters `start..end` of field `id` as copied text (a chip as its
+    /// label).
+    fn field_part(&self, id: NodeId, start: usize, end: usize) -> String {
+        if self.rich.contains_key(&id) {
+            let spans = self.rich_spans(id);
+            let (_, rest) = crate::spans::split_spans(&spans, start);
+            let (mid, _) = crate::spans::split_spans(&rest, end.saturating_sub(start));
+            mid.iter()
+                .map(|s| s.chip_label().unwrap_or(s.text()))
+                .collect()
+        } else {
+            self.field_value(id)
+                .chars()
+                .skip(start)
+                .take(end.saturating_sub(start))
+                .collect()
+        }
+    }
+
+    /// The text fields of group `group`, in document order.
+    pub(crate) fn group_fields(&self, group: NodeId) -> Vec<Field> {
+        fn walk(r: &Reconciler, id: NodeId, out: &mut Vec<Field>) {
+            let Some(n) = r.nodes.get(&id) else { return };
+            if matches!(
+                n.kind,
+                NodeKind::RichInput | NodeKind::TextArea | NodeKind::TextInput
+            ) {
+                // Every text field takes part (the web client cannot tell
+                // the named ones); an unnamed one is `""` to the app.
+                out.push(Field {
+                    id,
+                    name: n.name.clone().unwrap_or_default(),
+                    len: r.field_value(id).chars().count(),
+                });
+                return;
+            }
+            for c in &n.children {
+                walk(r, *c, out);
+            }
+        }
+        let mut out = Vec::new();
+        if let Some(n) = self.nodes.get(&group) {
+            for c in &n.children {
+                walk(self, *c, &mut out);
+            }
+        }
+        out
+    }
+
+    fn pos_of(fields: &[Field], (id, offset): (NodeId, usize)) -> Option<Pos> {
+        let i = fields.iter().position(|f| f.id == id)?;
+        Some((i, offset.min(fields[i].len)))
+    }
+
+    /// The selection `anchor`..`head` as the app sees it.
+    fn across_event(&self, fields: &[Field], anchor: Pos, head: Pos) -> crate::SelectionAcross {
+        use crate::selection_across::{FieldSelection, SelectionPoint, parts};
+        let point = |(i, o): Pos| SelectionPoint::new(fields[i].name.clone(), o);
+        let mut e = crate::SelectionAcross::new(point(anchor), point(head));
+        e.fields = parts(fields, anchor, head)
+            .into_iter()
+            .map(|(i, start, end)| FieldSelection {
+                field: fields[i].name.clone(),
+                start,
+                end,
+                text: self.field_part(fields[i].id, start, end),
+            })
+            .collect();
+        e
+    }
+
+    /// The selection across group `group`'s fields now, as positions.
+    fn across_range(&self, group: NodeId, fields: &[Field]) -> Option<(Pos, Pos)> {
+        let a = self.across.as_ref().filter(|a| a.group == group)?;
+        Some((
+            Self::pos_of(fields, a.anchor)?,
+            Self::pos_of(fields, a.head)?,
+        ))
+    }
+
+    /// Shows `range` as the selection of group `group` (`None`: ends it;
+    /// both ends in one field: a selection given back to that field).
+    /// With `emit`, returns the patches that draw it; without, the backend
+    /// drew it itself (the web client).
+    fn set_across(
+        &mut self,
+        group: NodeId,
+        range: Option<(Pos, Pos)>,
+        fields: &[Field],
+        emit: bool,
+    ) -> Vec<Patch> {
+        let mut patches = Vec::new();
+        let old = self.across.take().map(|a| a.painted).unwrap_or_default();
+        let mut painted = HashMap::new();
+        let mut shown = None;
+        match range {
+            Some((a, h)) if a.0 != h.0 => {
+                let mut selected = (0, 0);
+                for (i, start, end) in crate::selection_across::parts(fields, a, h) {
+                    if i == a.0 {
+                        selected = (start, end);
+                    } else {
+                        painted.insert(fields[i].id, (start, end));
+                    }
+                }
+                shown = Some(((fields[a.0].id, a.1), (fields[h.0].id, h.1)));
+                self.across = Some(Across {
+                    group,
+                    anchor: (fields[a.0].id, a.1),
+                    head: (fields[h.0].id, h.1),
+                    painted: painted.clone(),
+                    selected,
+                });
+                if emit {
+                    patches.push(Patch::SetSelection {
+                        id: fields[a.0].id,
+                        start: selected.0,
+                        end: selected.1,
+                    });
+                }
+            }
+            Some((a, h)) if emit => {
+                let (start, end) = (a.1.min(h.1), a.1.max(h.1));
+                patches.push(Patch::SetSelection {
+                    id: fields[a.0].id,
+                    start,
+                    end,
+                });
+            }
+            _ => {}
+        }
+        if emit {
+            let mut ids: Vec<NodeId> = old.keys().chain(painted.keys()).copied().collect();
+            ids.sort_unstable();
+            ids.dedup();
+            for id in ids {
+                let now = painted.get(&id).copied();
+                if old.get(&id).copied() != now {
+                    let (start, end) = now.unwrap_or((0, 0));
+                    patches.push(Patch::SetSelectionHighlight { id, start, end });
+                }
+            }
+            patches.push(Patch::SetSelectionAcross {
+                group,
+                range: shown,
+            });
+        }
+        patches
+    }
+
+    /// What `key`, pressed in text field `focused`, does to its selection
+    /// group (#231), if anything: the key is then the group's.
+    pub(crate) fn across_key(
+        &self,
+        focused: Option<NodeId>,
+        key: &crate::events::KeyEvent,
+    ) -> Option<(NodeId, Vec<Field>, crate::selection_across::KeyAction)> {
+        let f = focused?;
+        let group = self.group_of(f)?;
+        let fields = self.group_fields(group);
+        let idx = fields.iter().position(|x| x.id == f)?;
+        let across = self.across_range(group, &fields);
+        let edits = self.groups.get(&group)?.on_edit.is_some();
+        let action = crate::selection_across::key_action(&fields, across, idx, key, edits)?;
+        Some((group, fields, action))
+    }
+
+    /// Carries out `action` (from [`across_key`](Self::across_key)) in
+    /// group `group`, pressed in field `focused`.
+    pub(crate) fn apply_across(
+        &mut self,
+        group: NodeId,
+        fields: &[Field],
+        focused: NodeId,
+        action: crate::selection_across::KeyAction,
+    ) -> AcrossOutcome {
+        use crate::selection_across::KeyAction as K;
+        let mut out = AcrossOutcome {
+            patches: Vec::new(),
+            report: None,
+            edit: None,
+            copy: None,
+            paste: None,
+        };
+        let handlers = self.groups.get(&group).cloned().unwrap_or_default();
+        match action {
+            K::Select(a, h) => {
+                out.patches = self.set_across(group, Some((a, h)), fields, true);
+                out.report = handlers
+                    .on_selection
+                    .map(|hd| (hd, self.across_event(fields, a, h)));
+            }
+            K::Caret(p) => {
+                let id = fields[p.0].id;
+                if id != focused {
+                    out.patches.push(Patch::Focus { id });
+                }
+                out.patches
+                    .extend(self.set_across(group, Some((p, p)), fields, true));
+                out.report = handlers
+                    .on_selection
+                    .map(|hd| (hd, self.across_event(fields, p, p)));
+            }
+            K::Copy { cut } => {
+                let Some((a, h)) = self.across_range(group, fields) else {
+                    return out;
+                };
+                out.copy = Some(self.copy_across(fields, a, h, cut));
+                if cut {
+                    out.edit = handlers.on_edit.map(|hd| {
+                        let e = crate::EditAcross::new(
+                            self.across_event(fields, a, h),
+                            "",
+                            crate::EditCause::Cut,
+                        );
+                        (hd, e)
+                    });
+                    if out.edit.is_some() {
+                        out.patches = self.set_across(group, None, fields, true);
+                    }
+                }
+            }
+            K::Paste => {
+                let Some((a, h)) = self.across_range(group, fields) else {
+                    return out;
+                };
+                out.paste = handlers
+                    .on_edit
+                    .map(|hd| (hd, self.across_event(fields, a, h)));
+                out.patches = self.set_across(group, None, fields, true);
+            }
+            K::Edit(cause, text) => {
+                let Some((a, h)) = self.across_range(group, fields) else {
+                    return out;
+                };
+                out.edit = handlers.on_edit.map(|hd| {
+                    (
+                        hd,
+                        crate::EditAcross::new(self.across_event(fields, a, h), text, cause),
+                    )
+                });
+                out.patches = self.set_across(group, None, fields, true);
+            }
+        }
+        out
+    }
+
+    /// The copy of `anchor`..`head`, for the field where it started.
+    fn copy_across(
+        &self,
+        fields: &[Field],
+        anchor: Pos,
+        head: Pos,
+        cut: bool,
+    ) -> (NodeId, Option<Handler<crate::CopyEvent>>, crate::CopyEvent) {
+        let event = self.across_event(fields, anchor, head);
+        let id = fields[anchor.0].id;
+        let (start, end) = event
+            .fields
+            .iter()
+            .find(|f| f.field == fields[anchor.0].name)
+            .map_or((anchor.1, anchor.1), |f| (f.start, f.end));
+        let part = self.field_part(id, start, end);
+        let copy = crate::CopyEvent::new(
+            SelectionEvent::new(start, end),
+            part,
+            &self.rich_spans(id),
+            cut,
+        )
+        .with_across(event);
+        let handler = self.edit.get(&id).and_then(|h| {
+            if cut {
+                h.on_cut.clone()
+            } else {
+                h.on_copy.clone()
+            }
+        });
+        (id, handler, copy)
+    }
+
+    /// Text field `id` reported `start..end` (#231): unless it echoes the
+    /// selection Prism gave it, a selection across its group ends there.
+    pub(crate) fn across_select(&mut self, id: NodeId, start: usize, end: usize) -> AcrossOutcome {
+        let mut out = AcrossOutcome {
+            patches: Vec::new(),
+            report: None,
+            edit: None,
+            copy: None,
+            paste: None,
+        };
+        let Some(a) = &self.across else { return out };
+        let group = a.group;
+        if (a.anchor.0 == id && a.selected == (start, end)) || self.group_of(id) != Some(group) {
+            return out;
+        }
+        let fields = self.group_fields(group);
+        out.patches = self.set_across(group, None, &fields, true);
+        if let (Some(hd), Some(i)) = (
+            self.groups.get(&group).and_then(|g| g.on_selection.clone()),
+            fields.iter().position(|f| f.id == id),
+        ) {
+            out.report = Some((hd, self.across_event(&fields, (i, start), (i, end))));
+        }
+        out
+    }
+
+    /// The web client drew `range` in group `group` (#231).
+    pub(crate) fn across_reported(
+        &mut self,
+        group: NodeId,
+        range: Option<((NodeId, usize), (NodeId, usize))>,
+    ) -> AcrossOutcome {
+        let fields = self.group_fields(group);
+        let pos =
+            range.and_then(|(a, h)| Some((Self::pos_of(&fields, a)?, Self::pos_of(&fields, h)?)));
+        self.set_across(group, pos, &fields, false);
+        let report = pos.and_then(|(a, h)| {
+            let hd = self.groups.get(&group)?.on_selection.clone()?;
+            Some((hd, self.across_event(&fields, a, h)))
+        });
+        AcrossOutcome {
+            patches: Vec::new(),
+            report,
+            edit: None,
+            copy: None,
+            paste: None,
+        }
+    }
+
+    /// The web client took an edit (or a copy, `copy = Some(cut)`) over the
+    /// selection across group `group` (#231).
+    pub(crate) fn across_client_edit(
+        &mut self,
+        group: NodeId,
+        edit: Option<(crate::EditCause, String)>,
+        copy: Option<bool>,
+    ) -> AcrossOutcome {
+        let fields = self.group_fields(group);
+        let mut out = AcrossOutcome {
+            patches: Vec::new(),
+            report: None,
+            edit: None,
+            copy: None,
+            paste: None,
+        };
+        let Some((a, h)) = self.across_range(group, &fields) else {
+            return out;
+        };
+        let on_edit = self.groups.get(&group).and_then(|g| g.on_edit.clone());
+        if let Some(cut) = copy {
+            out.copy = Some(self.copy_across(&fields, a, h, cut));
+            if cut {
+                out.edit = on_edit.map(|hd| {
+                    let e = crate::EditAcross::new(
+                        self.across_event(&fields, a, h),
+                        "",
+                        crate::EditCause::Cut,
+                    );
+                    (hd, e)
+                });
+                self.set_across(group, None, &fields, false);
+            }
+        } else if let Some((cause, text)) = edit {
+            out.edit = on_edit.map(|hd| {
+                (
+                    hd,
+                    crate::EditAcross::new(self.across_event(&fields, a, h), text, cause),
+                )
+            });
+            self.set_across(group, None, &fields, false);
+        }
+        out
+    }
+
+    /// `cx.set_selection_across` / `clear_selection_across` (#231).
+    fn command_across(
+        &mut self,
+        range: Option<(crate::SelectionPoint, crate::SelectionPoint)>,
+    ) -> Vec<Patch> {
+        match range {
+            None => {
+                let Some(group) = self.across.as_ref().map(|a| a.group) else {
+                    return Vec::new();
+                };
+                let fields = self.group_fields(group);
+                self.set_across(group, None, &fields, true)
+            }
+            Some((anchor, head)) => {
+                let (Some(a), Some(h)) =
+                    (self.node_named(&anchor.field), self.node_named(&head.field))
+                else {
+                    return Vec::new();
+                };
+                let Some(group) = self.group_of(a).filter(|g| self.group_of(h) == Some(*g)) else {
+                    return Vec::new();
+                };
+                let fields = self.group_fields(group);
+                let (Some(pa), Some(ph)) = (
+                    Self::pos_of(&fields, (a, anchor.offset)),
+                    Self::pos_of(&fields, (h, head.offset)),
+                ) else {
+                    return Vec::new();
+                };
+                let mut patches = vec![Patch::Focus { id: a }];
+                patches.extend(self.set_across(group, Some((pa, ph)), &fields, true));
+                patches
+            }
+        }
+    }
 }

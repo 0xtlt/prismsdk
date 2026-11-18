@@ -4537,3 +4537,66 @@ fn rich_input_editing_hooks_have_a_json_encoding_and_events() {
     };
     assert!(m.meta);
 }
+
+// --- One selection across several fields (#231) ----------------------------------
+
+#[test]
+fn a_selection_across_fields_has_a_json_encoding_and_events() {
+    use crate::session::parse_event;
+    let mut e = Encoder::default();
+    let out = e.encode(&[
+        create(1, NodeKind::View),
+        Patch::SetSelectionGroup {
+            id: 1,
+            on: true,
+            edits: true,
+        },
+        Patch::SetSelectionHighlight {
+            id: 3,
+            start: 0,
+            end: 4,
+        },
+        Patch::SetSelectionAcross {
+            group: 1,
+            range: Some(((2, 1), (3, 4))),
+        },
+        Patch::SetSelectionAcross {
+            group: 1,
+            range: None,
+        },
+    ]);
+    assert_eq!(
+        Value::Array(out[1..].to_vec()),
+        json!([
+            { "op": "selgroup", "id": 1, "on": true, "edits": true },
+            { "op": "selhl", "id": 3, "start": 0, "end": 4 },
+            { "op": "across", "id": 1, "a": [2, 1], "h": [3, 4] },
+            { "op": "across", "id": 1 },
+        ])
+    );
+    let ev = |v: Value| parse_event(&v);
+    assert_eq!(
+        ev(json!({"t": "across", "id": 1, "a": [2, 1], "h": [3, 4]})),
+        Some(UiEvent::SelectionAcross(1, Some(((2, 1), (3, 4)))))
+    );
+    assert_eq!(
+        ev(json!({"t": "across", "id": 1})),
+        Some(UiEvent::SelectionAcross(1, None))
+    );
+    assert_eq!(
+        ev(json!({"t": "acrossedit", "id": 1, "cause": "enter", "text": "\n"})),
+        Some(UiEvent::EditAcross(
+            1,
+            prism_core::EditCause::Enter,
+            "\n".into()
+        ))
+    );
+    assert_eq!(
+        ev(json!({"t": "acrossedit", "id": 1, "cause": "nonsense"})),
+        None
+    );
+    assert_eq!(
+        ev(json!({"t": "acrosscopy", "id": 1, "cut": true})),
+        Some(UiEvent::CopyAcross(1, true))
+    );
+}

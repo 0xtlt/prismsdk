@@ -212,7 +212,10 @@ impl Backend for HtmlBackend {
                 | Patch::ReloadWebView { .. }
                 | Patch::SetEditEvents { .. }
                 | Patch::WriteClipboard { .. }
-                | Patch::InsertText { .. } => {}
+                | Patch::InsertText { .. }
+                | Patch::SetSelectionGroup { .. }
+                | Patch::SetSelectionHighlight { .. }
+                | Patch::SetSelectionAcross { .. } => {}
                 Patch::SetLayers { ids } => self.layers.clone_from(ids),
                 Patch::SetIsland {
                     id, tag, source, ..

@@ -236,6 +236,12 @@ pub trait Widgets {
     /// Inserts `text` over the field's selection like a plain-text paste
     /// (#217), then reports the edit as usual.
     fn insert_text(&mut self, _view: &Self::View, _text: &str) {}
+    /// Draws `start..end` (characters) of a text field highlighted like a
+    /// selection, without selecting it (#231): its part of a selection
+    /// across several fields while another field has the focus.
+    /// `start == end` removes it. Leaves the text, the caret and the
+    /// field's own selection alone.
+    fn set_selection_highlight(&mut self, _view: &Self::View, _start: usize, _end: usize) {}
     /// Gives the view the keyboard focus (first responder, `grab_focus`).
     fn focus(&mut self, _view: &Self::View) {}
     /// Scrolls the scroll views around the view so it is visible.
@@ -1806,6 +1812,14 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                         self.widgets.insert_text(&e.view, text);
                     }
                 }
+                Patch::SetSelectionHighlight { id, start, end } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.set_selection_highlight(&e.view, *start, *end);
+                    }
+                }
+                // The runtime extends a selection across fields natively
+                // from the fields' keys (#231): nothing to set up.
+                Patch::SetSelectionGroup { .. } | Patch::SetSelectionAcross { .. } => {}
                 Patch::SetPlaceholder { id, text } => {
                     if let Some(e) = self.nodes.get(id) {
                         self.widgets.set_placeholder(&e.view, text);

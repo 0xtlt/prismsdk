@@ -60,6 +60,9 @@ pub struct HNode {
     pub runs: String,
     /// The editing events it reports (`Patch::SetEditEvents`, #217).
     pub edit_events: u8,
+    /// Its highlighted part of a selection across fields
+    /// (`Patch::SetSelectionHighlight`, #231).
+    pub highlight: Option<(usize, usize)>,
 }
 
 #[derive(Default)]
@@ -91,6 +94,9 @@ pub struct Host {
     pub clipboard: Vec<(NodeId, prism_core::ClipboardContent)>,
     /// Texts inserted in fields, in order (`Patch::InsertText`, #217).
     pub inserted: Vec<(NodeId, String)>,
+    /// The selection across fields last sent (`Patch::SetSelectionAcross`,
+    /// #231).
+    pub across: Option<((NodeId, usize), (NodeId, usize))>,
 }
 
 impl Host {
@@ -218,6 +224,7 @@ impl Backend for Host {
                             pointer_mask: 0,
                             drag_delay_ms: 0,
                             drop_types: None,
+                            highlight: None,
                             keys: (false, false),
                             consumed_keys: Vec::new(),
                             reports_layout: false,
@@ -365,6 +372,14 @@ impl Backend for Host {
                     self.clipboard.push((*id, content.clone()))
                 }
                 Patch::InsertText { id, text } => self.inserted.push((*id, text.clone())),
+                Patch::SetSelectionHighlight { id, start, end } => {
+                    self.node(*id, "SetSelectionHighlight").highlight =
+                        (start != end).then_some((*start, *end))
+                }
+                Patch::SetSelectionAcross { range, .. } => self.across = *range,
+                Patch::SetSelectionGroup { id, .. } => {
+                    self.node(*id, "SetSelectionGroup");
+                }
             }
         }
         // Destroyed nodes are gone from the mounted tree once a frame is applied.

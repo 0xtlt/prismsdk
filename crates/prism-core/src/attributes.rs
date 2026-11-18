@@ -23,6 +23,7 @@ pub const SAFE_ATTRIBUTES: &[&str] = &[
 /// `data-*` attributes the web backend sets itself (`data-<name>`):
 /// refused, like every name starting with `data-prism`.
 pub const RESERVED_DATA_ATTRIBUTES: &[&str] = &[
+    "across",
     "base",
     "bar",
     "clickable",
@@ -48,6 +49,7 @@ pub const RESERVED_DATA_ATTRIBUTES: &[&str] = &[
     "row",
     "scene",
     "selected",
+    "selgroup",
     "side",
     "size",
     "src",

@@ -146,6 +146,10 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 .prism-chip[data-link] { cursor: pointer; }
 .prism-chip .prism-symbol { display: inline; line-height: inherit; }
 .prism-chip[data-selected] { background: Highlight; color: HighlightText; }
+/* A selection across several fields (#231): the parts of the fields that
+   don't have the focus. */
+::highlight(prism-across) { background: Highlight; color: HighlightText; }
+[data-across] { background: Highlight; color: HighlightText; }
 .prism-spinner { display: inline-block; width: 20px; min-width: 20px; height: 20px; flex-shrink: 0; border-radius: 50%; border: 2.5px solid currentColor; border-top-color: transparent; opacity: .85; animation: prism-spin .8s linear infinite; }
 .prism-spinner[data-size=large] { width: 36px; min-width: 36px; height: 36px; border-width: 3.5px; }
 @keyframes prism-spin { to { transform: rotate(360deg); } }

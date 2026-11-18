@@ -485,6 +485,26 @@ impl TextArea {
         b.text(&b.start_iter(), &b.end_iter(), false).to_string()
     }
 
+    /// Draws `start..end` (characters) like a selection without selecting
+    /// it (#231): a tag of the buffer, `start == end` removing it.
+    pub fn highlight(&self, start: usize, end: usize) {
+        let b = self.view.buffer();
+        let table = b.tag_table();
+        let tag = table.lookup("prism-across").unwrap_or_else(|| {
+            let t = gtk::TextTag::new(Some("prism-across"));
+            // The theme's selection colour, as GTK 4 draws it.
+            t.set_background(Some("rgba(53, 132, 228, 0.35)"));
+            table.add(&t);
+            t
+        });
+        b.remove_tag(&tag, &b.start_iter(), &b.end_iter());
+        let len = b.char_count().max(0) as usize;
+        if start < end.min(len) {
+            let at = |c: usize| b.iter_at_offset(c.min(len) as i32);
+            b.apply_tag(&tag, &at(start), &at(end));
+        }
+    }
+
     /// Selects `start..end` (characters, clamped), the caret at `end` (#86).
     pub fn select(&self, start: usize, end: usize) {
         let b = self.view.buffer();

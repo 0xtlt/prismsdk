@@ -833,6 +833,29 @@ fn parse_input_event(v: &Value) -> Option<UiEvent> {
                 .to_string(),
         )),
         "paste" => Some(UiEvent::Paste(id?, prism_core::PasteEvent::from_json(v)?)),
+        // One selection across several fields (#231): `{"t":"across","id":
+        // group,"a":[field, offset],"h":[field, offset]}` (without `a` and
+        // `h`: it ended); `{"t":"acrossedit","id","cause","text"}`;
+        // `{"t":"acrosscopy","id","cut"}`.
+        "across" => {
+            let point = |k: &str| -> Option<(u64, usize)> {
+                let a = v.get(k)?.as_array()?;
+                Some((a.first()?.as_u64()?, a.get(1)?.as_u64()? as usize))
+            };
+            Some(UiEvent::SelectionAcross(id?, point("a").zip(point("h"))))
+        }
+        "acrossedit" => Some(UiEvent::EditAcross(
+            id?,
+            prism_core::EditCause::from_name(v.get("cause")?.as_str()?)?,
+            v.get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+        )),
+        "acrosscopy" => Some(UiEvent::CopyAcross(
+            id?,
+            v.get("cut").and_then(Value::as_bool).unwrap_or(false),
+        )),
         "spanclick" => Some(UiEvent::SpanClick(
             id?,
             v.get("at")?.as_u64()? as usize,
@@ -1465,6 +1488,20 @@ impl Encoder {
                 "items": content.entries().into_iter().map(|(m, d)| json!([m, d])).collect::<Vec<_>>(),
             }),
             Patch::InsertText { id, text } => json!({ "op": "instext", "id": id, "text": text }),
+            // One selection across several fields (#231): a group, a
+            // field's highlighted part, the selection the runtime set.
+            Patch::SetSelectionGroup { id, on, edits } => {
+                json!({ "op": "selgroup", "id": id, "on": on, "edits": edits })
+            }
+            Patch::SetSelectionHighlight { id, start, end } => {
+                json!({ "op": "selhl", "id": id, "start": start, "end": end })
+            }
+            Patch::SetSelectionAcross { group, range } => match range {
+                Some(((a, ao), (h, ho))) => {
+                    json!({ "op": "across", "id": group, "a": [a, ao], "h": [h, ho] })
+                }
+                None => json!({ "op": "across", "id": group }),
+            },
         }
     }
 }

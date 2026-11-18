@@ -278,6 +278,40 @@ div() // laid out at the field's origin: no padding
 | Android | the `Layout`'s line bounds | the field's copy / cut actions: plain text and HTML | the paste action: text, HTML, types | none (touch) |
 | tvOS, watchOS | none | none: no clipboard | none | none |
 
+### One selection across several fields
+
+A document made of blocks (one `rich_input` or `text_area` per paragraph) can be selected like one text (#231). `text_flow()` (a column; or any container with `.selection_group()`) groups the text fields inside it, in the order they appear, into one selection; name each with `.id(…)`, the name the app hears:
+
+```rust
+text_flow()
+    .children(self.blocks.iter().map(|b| rich_input(b.spans()).id(b.id.clone())))
+    .on_selection_across(cx.listener(|this, e: &SelectionAcross, _| this.range = e.clone()))
+    .on_edit_across(cx.listener(|this, e: &EditAcross, cx| {
+        // Keep the first field's start and the last one's end, drop the
+        // blocks in between, insert `e.text` (a line break: split there).
+        this.replace(&e.selection, &e.text, e.cause, cx);
+    }))
+```
+
+- **Extending**: ⇧↓ or ⇧→ at the end of a field, ⇧↑ or ⇧← at its start (on its first or last line, wrapping included) carry the selection into the next or the previous field. Then ⇧→ and ⇧← move it a character at a time (the step between two fields counts as one, like a line break), ⇧↓ and ⇧↑ a field at a time (to the end of the next one, the start of the previous one). On the web, a mouse or pen drag from one field into another does it too.
+- **Drawing**: the field where it started keeps its own, focused selection; the other fields draw their part highlighted, the fields in between whole.
+- **`on_selection_across`** hears every change: `SelectionAcross { anchor, head, fields }`, each end a `SelectionPoint { field, offset }`, `fields` every field's part (`field`, `start`, `end`, `text`) in order, `text()` all of it joined by line breaks, `start()` / `end()` the ends in document order. It is called once more when the selection comes back inside one field (`is_across()` false).
+- **Ending it**: an arrow without ⇧ puts the caret at that end of the range, Escape at the moving end; a click or a new selection in a field ends it there.
+- **Copy and cut**: ⌘C / ⌘X (Ctrl elsewhere) go to the `on_copy` / `on_cut` of the field where it started, with `CopyEvent::across` set and `text` the whole range's, so the app writes its own content for all the blocks. Without a handler, the fields' texts joined by line breaks are copied.
+- **Editing**: typing, Backspace, Delete, Return, a cut or a paste over the range is applied by no field: `on_edit_across` hears `EditAcross { selection, text, cause }` (`text` the typed or pasted text, `"\n"` for Return, empty otherwise) and the app rewrites its blocks, then places the caret (`cx.set_selection_across(("p2", 4), ("p2", 4))` or `.selection(…)` and `cx.focus(…)`). Without `on_edit_across`, such a key first brings the selection back into the field where it started, which then acts on its own part.
+- **From the app**: `cx.set_selection_across(("p1", 4), ("p3", 2))` selects across fields (the anchor's field takes the focus), `cx.clear_selection_across()` ends it.
+
+| | Extends with | Draws the other fields' parts |
+|---|---|---|
+| Web | ⇧+arrows, mouse and pen drags, in the page (the server hears the result) | rich inputs: the CSS Custom Highlight API; a text area or input only when it is covered whole |
+| macOS | ⇧+arrows | text areas and rich inputs: a temporary attribute of the layout manager in the selection colour; a one-line input draws none |
+| iOS, iPadOS, visionOS | ⇧+arrows on a hardware keyboard (key commands: arrows, Escape, Return, Backspace, ⌘C, ⌘X, ⌘V); letters typed there still go to the focused field | text areas and rich inputs: tinted boxes from `selectionRects` |
+| Linux | ⇧+arrows | text areas and rich inputs: a text tag |
+| Android | **not yet**: `set_selection_across` selects the anchor's part only | none |
+| tvOS, watchOS | none | none |
+
+Touch selection handles stay inside one field on every platform.
+
 **Sheets, popovers, dialogs** that a screen opens without a route: see [Dialogs, menus, tray](dialogs-menus.md#sheets-popovers-and-dialogs-without-a-route).
 
 **Absolute positioning**: `div().absolute().bottom(16.).left(16.).right(16.)` takes an element out of the flex flow and places it at its insets from the parent (`.top()`, `.inset(0.)`…), like CSS `position: absolute` (taffy on native). Later siblings draw on top; `left`/`right` are the leading and trailing edges.

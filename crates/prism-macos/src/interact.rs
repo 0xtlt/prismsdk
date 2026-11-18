@@ -1590,6 +1590,27 @@ pub(crate) fn select_text(tv: &objc2_app_kit::NSTextView, start: usize, end: usi
     tv.setSelectedRange(objc2_foundation::NSRange::new(s, e - s));
 }
 
+/// Draws `start..end` (characters) of `tv` like a selection without
+/// selecting it (#231), `start == end` removing it: a temporary attribute
+/// of its layout manager, so the text and its own selection are left alone.
+pub(crate) fn highlight_text(tv: &objc2_app_kit::NSTextView, start: usize, end: usize) {
+    use objc2_foundation::NSRange;
+    let Some(lm) = (unsafe { tv.layoutManager() }) else {
+        return;
+    };
+    let text = tv.string().to_string();
+    let at = |c: usize| prism_native::fields::chars_to_utf16(&text, c);
+    let key = unsafe { objc2_app_kit::NSBackgroundColorAttributeName };
+    lm.removeTemporaryAttribute_forCharacterRange(key, NSRange::new(0, at(usize::MAX)));
+    if start < end {
+        let (s, e) = (at(start), at(end));
+        let color = objc2_app_kit::NSColor::selectedTextBackgroundColor();
+        unsafe {
+            lm.addTemporaryAttribute_value_forCharacterRange(key, &color, NSRange::new(s, e - s))
+        };
+    }
+}
+
 /// The text field node `tv` edits: a text area, or the field editor of a
 /// text input (its delegate).
 pub(crate) fn text_node(tv: &objc2_app_kit::NSTextView) -> Option<NodeId> {

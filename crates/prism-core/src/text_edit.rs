@@ -175,6 +175,15 @@ pub struct CopyEvent {
     pub spans: Vec<Span>,
     /// A cut (⌘X) rather than a copy.
     pub cut: bool,
+    /// The selection spans several fields of a
+    /// [`selection_group`](crate::Div::selection_group) (#231): every
+    /// field's part, in order. [`selection`](Self::selection) and
+    /// [`spans`](Self::spans) are then the part of the field this handler
+    /// belongs to (where the selection started), and [`text`](Self::text)
+    /// the whole range's text, its fields joined by line breaks. A cut
+    /// deletes nothing itself: the app does it in
+    /// [`on_edit_across`](crate::Div::on_edit_across).
+    pub across: Option<crate::selection_across::SelectionAcross>,
     content: RefCell<Option<ClipboardContent>>,
 }
 
@@ -203,8 +212,17 @@ impl CopyEvent {
             text,
             spans: mid,
             cut,
+            across: None,
             content: RefCell::new(None),
         }
+    }
+
+    /// The same event for a selection across fields (#231): `text` becomes
+    /// the whole range's.
+    pub fn with_across(mut self, across: crate::selection_across::SelectionAcross) -> Self {
+        self.text = across.text();
+        self.across = Some(across);
+        self
     }
 
     /// Writes `content` to the clipboard instead of the selection's plain

@@ -719,6 +719,11 @@ pub struct VNode {
     /// A rich input's editing hooks (#217): its selection's rectangle,
     /// copy, cut and paste, modifier-clicks on its spans.
     pub edit: crate::text_edit::EditHandlers,
+    /// Its text fields share one selection (#231,
+    /// [`selection_group`](crate::Div::selection_group)).
+    pub selection_group: bool,
+    /// A selection group's handlers (#231).
+    pub across: crate::selection_across::GroupHandlers,
     /// A video's playback reached the end (#207).
     pub on_ended: Option<Handler<crate::video::EndedEvent>>,
     /// A text field's own bar above the on-screen keyboard (#242): placed
@@ -784,6 +789,8 @@ impl VNode {
             on_drop_files: None,
             on_drop_progress: None,
             edit: Default::default(),
+            selection_group: false,
+            across: Default::default(),
             on_ended: None,
             keyboard_toolbar: None,
         }
@@ -1186,6 +1193,41 @@ impl ParentElement for Div {
 }
 
 impl Div {
+    /// Groups the named text fields inside (`.id(…)`: rich inputs, text
+    /// areas, text inputs) into one selection (#231): ⇧+arrows at a
+    /// field's edge (and pointer drags, on the web) extend the selection
+    /// into the next or previous field. See
+    /// [`selection_across`](crate::selection_across) and [`text_flow`](crate::text_flow).
+    pub fn selection_group(mut self) -> Self {
+        self.0.selection_group = true;
+        self
+    }
+
+    /// Called when the selection of this group changes while it spans
+    /// several fields (#231), and once more when it comes back inside one
+    /// field ([`SelectionAcross::is_across`](crate::SelectionAcross::is_across)
+    /// then `false`). Makes the container a
+    /// [`selection_group`](Self::selection_group).
+    pub fn on_selection_across(
+        mut self,
+        handler: Handler<crate::selection_across::SelectionAcross>,
+    ) -> Self {
+        self.0.selection_group = true;
+        self.0.across.on_selection = Some(handler);
+        self
+    }
+
+    /// Typing, Backspace, Delete, Enter, a cut or a paste over a selection
+    /// that spans several fields of this group (#231): no field applies
+    /// it, the app replaces the range in its model. Without it, such a key
+    /// first brings the selection back into the field where it started.
+    /// Makes the container a [`selection_group`](Self::selection_group).
+    pub fn on_edit_across(mut self, handler: Handler<crate::selection_across::EditAcross>) -> Self {
+        self.0.selection_group = true;
+        self.0.across.on_edit = Some(handler);
+        self
+    }
+
     /// Makes the container a link to an app path. Works everywhere: in the app
     /// (navigates), in widgets and Live Activities (opens the app there).
     pub fn link(mut self, path: impl Into<String>) -> Self {
