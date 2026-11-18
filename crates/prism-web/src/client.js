@@ -588,8 +588,112 @@
       overlayDismissed(el, "outside");
     }
   }, true);
+  // --- Keyboard bars (#242): above the on-screen keyboard ---------------------
+  // A keyboard overlay shows while a text field it serves has the focus, on
+  // touch screens only (desktop browsers have no on-screen keyboard): its
+  // own field (the node just before it, `field`), else any field in its
+  // parent, the nearest bar winning. It sits on the bottom edge of the
+  // visual viewport, which the keyboard shrinks, and presses on it keep the
+  // focus in the field.
+  const keyboardBars = new Set();
+  const touchScreen = () => !!(window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
+  function keyboardBarOf(field) {
+    let child = field, own = true;
+    while (child && child.parentElement) {
+      const parent = child.parentElement;
+      if (own) {
+        own = false;
+        const next = child.nextElementSibling;
+        if (next && next._boxKind === "keyboard" && next._kbField) return next;
+      }
+      for (const c of parent.children) if (c._boxKind === "keyboard" && !c._kbField) return c;
+      child = parent;
+    }
+    return null;
+  }
+  function focusedField() {
+    const a = document.activeElement;
+    if (!a || !a.matches || !a.matches("input, textarea, [contenteditable]") || a.getAttribute("contenteditable") === "false") return null;
+    return a.closest("[data-pid]") || a;
+  }
+  function syncKeyboardBars() {
+    const a = document.activeElement;
+    let bar = null;
+    if (touchScreen()) {
+      // Focus inside a bar (one of its own fields) keeps it.
+      bar = [...keyboardBars].find((el) => el._box && a && el._box.contains(a)) || null;
+      const field = bar ? null : focusedField();
+      if (field) bar = keyboardBarOf(field);
+    }
+    for (const el of [...keyboardBars]) {
+      if (el.isConnected) showKeyboardBar(el, el === bar && el._open);
+    }
+  }
+  function showKeyboardBar(el, on) {
+    const box = el._box;
+    if (!box) return;
+    const popover = typeof box.showPopover === "function";
+    try {
+      if (popover) {
+        const open = box.matches(":popover-open");
+        if (on && !open) box.showPopover();
+        if (!on && open) box.hidePopover();
+      } else box.style.display = on ? "" : "none";
+    } catch {}
+    if (on) placeKeyboardBar(box);
+  }
+  function placeKeyboardBar(box) {
+    const vv = window.visualViewport;
+    const left = vv ? vv.offsetLeft : 0;
+    const width = vv ? vv.width : innerWidth;
+    const bottom = vv ? vv.offsetTop + vv.height : innerHeight;
+    box.style.left = left + "px";
+    box.style.width = width + "px";
+    box.style.top = Math.max(0, bottom - box.offsetHeight) + "px";
+  }
+  function placeKeyboardBars() {
+    for (const el of keyboardBars) {
+      const box = el._box;
+      const shown = typeof box?.showPopover === "function" ? box.matches(":popover-open") : box && box.style.display !== "none";
+      if (shown) placeKeyboardBar(box);
+    }
+  }
+  document.addEventListener("focusin", syncKeyboardBars);
+  // After the focus has moved on (to nothing, or another field).
+  document.addEventListener("focusout", () => setTimeout(syncKeyboardBars, 0));
+  if (window.visualViewport) {
+    visualViewport.addEventListener("resize", placeKeyboardBars);
+    visualViewport.addEventListener("scroll", placeKeyboardBars);
+  }
+  function keyboardBox(el, t) {
+    el._kbField = t.includes("field");
+    let box = el._box;
+    if (!box || el._boxKind !== "keyboard") {
+      const old = box;
+      box = document.createElement("div");
+      box.className = "prism-overlay-box prism-ov-keyboard";
+      box.setAttribute("popover", "manual");
+      if (typeof box.showPopover !== "function") box.style.display = "none";
+      // Presses on the bar keep the focus (and the keyboard) in the field,
+      // unless they land in a field of the bar.
+      const keep = (e) => {
+        const t = e.target;
+        if (t && t.closest && t.closest("input, textarea, select, [contenteditable]")) return;
+        e.preventDefault();
+      };
+      box.addEventListener("pointerdown", keep);
+      box.addEventListener("mousedown", keep);
+      if (old) { box.append(...old.childNodes); old.remove(); }
+      el.appendChild(box);
+      el._box = box;
+      el._boxKind = "keyboard";
+    }
+    keyboardBars.add(el);
+    syncKeyboardBars();
+  }
   function overlayBox(el, config) {
     const t = config.split(" ");
+    if (t[0] === "keyboard") return keyboardBox(el, t);
     const kind = ["popover", "dialog"].includes(t[0]) ? t[0] : "sheet";
     el._fixed = t.includes("fixed");
     // A popover a click outside does not close; one that leaves the focus
@@ -667,6 +771,7 @@
   function showOverlay(el) {
     const box = el._box;
     if (!box) return;
+    if (el._boxKind === "keyboard") return syncKeyboardBars();
     // Not in the document yet (inserted open with its parent): shown once
     // the batch has placed it (`flushOverlays`).
     if (!box.isConnected) { pendingOverlays.add(el); return; }
@@ -701,6 +806,7 @@
     pendingOverlays.delete(el);
     const box = el._box;
     if (!box) return;
+    if (el._boxKind === "keyboard") return syncKeyboardBars();
     el._closing = true;
     try {
       placedOverlays.delete(el);
@@ -2623,6 +2729,7 @@
           if (el._list) el._list.remove();
           placedOverlays.delete(el);
           pendingOverlays.delete(el);
+          if (keyboardBars.delete(el)) el._box?.remove();
         }
         nodes.delete(p.id);
         setStates(p.id, null);

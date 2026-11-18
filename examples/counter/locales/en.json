@@ -350,6 +350,8 @@
     "notes_placeholder": "Grows as you type, then scrolls",
     "notes_helper": "{count} characters",
     "syncing": "Syncing…",
+    "keyboard_clear": "Clear",
+    "keyboard_done": "Done",
     "show_toast": "Show a toast",
     "toast_saved": "Changes saved",
     "toast_undone": "Changes undone",

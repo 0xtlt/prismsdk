@@ -1086,8 +1086,10 @@ pub fn refresh_suggestions(field: &objc2_ui_kit::UITextField, target: &AnyObject
         .take(12)
         .collect();
     if matches.is_empty() {
-        if field.inputAccessoryView().is_some() {
-            field.setInputAccessoryView(None);
+        // Back to the field's keyboard bar (#242), if it has one.
+        let bar = keyboard_bar(id);
+        if field.inputAccessoryView() != bar {
+            field.setInputAccessoryView(bar.as_deref());
             field.reloadInputViews();
         }
         return;
@@ -1151,6 +1153,69 @@ pub fn suggestion_chosen(button: &objc2_ui_kit::UIButton, target: &AnyObject) {
     crate::imp::dispatch(UiEvent::Input(field.tag() as NodeId, title));
     refresh_suggestions(&field, target);
 }
+
+// ---------------------------------------------------------------------------
+// Keyboard bars (#242): a keyboard overlay's input view, the
+// `inputAccessoryView` of the fields it serves (iOS, iPadOS)
+// ---------------------------------------------------------------------------
+
+/// A field (weakly held) and its keyboard bar's view.
+#[cfg(target_os = "ios")]
+type KeyboardBar = (objc2::rc::Weak<UIView>, Retained<UIView>);
+
+#[cfg(target_os = "ios")]
+thread_local! {
+    /// Each field with a keyboard bar, by node id.
+    static KEYBOARD_BARS: RefCell<HashMap<NodeId, KeyboardBar>> = RefCell::new(HashMap::new());
+}
+
+/// The keyboard bar of field `id`, if it has one.
+#[cfg(target_os = "ios")]
+fn keyboard_bar(id: NodeId) -> Option<Retained<UIView>> {
+    KEYBOARD_BARS.with(|m| m.borrow().get(&id).map(|(_, bar)| bar.clone()))
+}
+
+/// Gives text field `field` (its `UITextField` or `UITextView`) the
+/// keyboard bar `bar`, or takes it away; a focused field shows the change
+/// at once. A suggestion bar showing keeps its place until it goes.
+#[cfg(target_os = "ios")]
+pub fn set_keyboard_bar(id: NodeId, field: &UIView, bar: Option<&UIView>) {
+    let previous = KEYBOARD_BARS.with(|m| {
+        let mut m = m.borrow_mut();
+        let previous = m.remove(&id).map(|(_, b)| b);
+        if let Some(bar) = bar {
+            m.insert(id, (objc2::rc::Weak::from(field), bar.retain()));
+        }
+        previous
+    });
+    let current: Option<Retained<UIView>> = unsafe { msg_send![field, inputAccessoryView] };
+    if current.is_some() && current != previous {
+        return;
+    }
+    let _: () = unsafe { msg_send![field, setInputAccessoryView: bar] };
+    if field.isFirstResponder() {
+        field.reloadInputViews();
+    }
+}
+
+/// A keyboard bar changed size: the focused field it serves shows it again
+/// (UIKit reads an accessory's height when it shows it).
+#[cfg(target_os = "ios")]
+pub fn keyboard_bar_resized(bar: &UIView) {
+    let focused = KEYBOARD_BARS.with(|m| {
+        m.borrow()
+            .values()
+            .filter(|(_, b)| &**b == bar)
+            .filter_map(|(f, _)| f.load())
+            .find(|f| f.isFirstResponder())
+    });
+    if let Some(f) = focused {
+        f.reloadInputViews();
+    }
+}
+
+#[cfg(not(target_os = "ios"))]
+pub fn keyboard_bar_resized(_bar: &UIView) {}
 
 #[cfg(not(target_os = "ios"))]
 pub fn refresh_suggestions(_field: &objc2_ui_kit::UITextField, _target: &AnyObject) {}

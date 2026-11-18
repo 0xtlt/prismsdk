@@ -4348,6 +4348,40 @@ fn text_areas_start_at_their_rows() {
     );
 }
 
+/// #242: a keyboard bar is not in the first paint: the client shows it
+/// above the on-screen keyboard while a field it serves has the focus.
+#[test]
+fn keyboard_bars_wait_for_the_client() {
+    let mut b = HtmlBackend::default();
+    b.apply(&[
+        create(1, NodeKind::View),
+        create(2, NodeKind::TextInput),
+        create(3, NodeKind::Overlay),
+        Patch::SetConfig {
+            id: 3,
+            config: "keyboard field".into(),
+        },
+        Patch::SetValue { id: 3, value: 1. },
+        create(4, NodeKind::Text),
+        Patch::SetText {
+            id: 4,
+            text: "Bold".into(),
+        },
+        Patch::SetChildren {
+            id: 3,
+            children: vec![4],
+        },
+        Patch::SetChildren {
+            id: 1,
+            children: vec![2, 3],
+        },
+        Patch::SetRoot { id: 1 },
+    ]);
+    let html = b.to_html();
+    assert!(html.contains("prism-overlay"), "{html}");
+    assert!(!html.contains("Bold"), "{html}");
+}
+
 /// #232: `z_index` is CSS `z-index`, after a sticky node's own.
 #[test]
 fn z_index_is_css_z_index() {

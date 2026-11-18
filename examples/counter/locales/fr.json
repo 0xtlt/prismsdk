@@ -350,6 +350,8 @@
     "notes_placeholder": "S’agrandit pendant la saisie, puis défile",
     "notes_helper": "{count} caractères",
     "syncing": "Synchronisation…",
+    "keyboard_clear": "Effacer",
+    "keyboard_done": "OK",
     "show_toast": "Afficher un toast",
     "toast_saved": "Modifications enregistrées",
     "toast_undone": "Modifications annulées",

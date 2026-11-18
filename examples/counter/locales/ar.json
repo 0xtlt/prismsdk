@@ -374,6 +374,8 @@
     "notes_placeholder": "يكبر أثناء الكتابة ثم يمرَّر",
     "notes_helper": "{count} حرفًا",
     "syncing": "جارٍ المزامنة…",
+    "keyboard_clear": "مسح",
+    "keyboard_done": "تم",
     "show_toast": "عرض إشعار",
     "toast_saved": "تم حفظ التغييرات",
     "toast_undone": "تم التراجع عن التغييرات",

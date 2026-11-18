@@ -88,8 +88,8 @@ pub use element::{
     text_area, text_input, timer, toggle, unix_seconds, unix_time,
 };
 pub use element::{
-    Checkbox, Overlay, RadioGroup, checkbox, dialog, popover, radio_group, sheet, time_picker,
-    time_picker_opt,
+    Checkbox, Overlay, RadioGroup, checkbox, dialog, keyboard_toolbar, popover, radio_group, sheet,
+    time_picker, time_picker_opt,
 };
 pub use element::{RichInput, RichInputEvent, rich_input};
 pub use element::{STACK_CLOSABLE, STACK_NO_HEADER};
@@ -871,8 +871,8 @@ pub mod prelude {
     pub use crate::{
         DragEvent, DragPhase, DropProgress, FileDropEvent, GesturePhase, HoverEvent, KeyEvent,
         LayoutEvent, MagnifyEvent, Modifiers, PickFiles, Point, PointerButton, PointerEvent,
-        PointerPhase, PopoverAlign, PopoverSide, Rect, WheelEvent, checkbox, dialog, popover,
-        radio_group, sheet, time_picker, time_picker_opt,
+        PointerPhase, PopoverAlign, PopoverSide, Rect, WheelEvent, checkbox, dialog,
+        keyboard_toolbar, popover, radio_group, sheet, time_picker, time_picker_opt,
     };
     // Anchored overlays without a dim (#79).
     pub use crate::Backdrop;

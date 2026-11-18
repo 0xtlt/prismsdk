@@ -3129,6 +3129,95 @@ fn platform_specific_elements_and_styles() {
 }
 
 #[test]
+fn keyboard_toolbars_follow_their_fields_on_touch_platforms() {
+    // #242: a field's own bar comes right after it ("keyboard field"); a
+    // container's bar serves every field inside; desktops leave both out.
+    use crate::Platform;
+    struct Page;
+    impl Render for Page {
+        fn render(&mut self, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .child(text_input().key("title").keyboard_toolbar(button("Bold")))
+                .child(text_area())
+                .keyboard_toolbar(button("Done"))
+        }
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Page);
+        cx.set_root(root);
+    });
+    let render = |platform| {
+        let mut rt = Runtime::with_options(
+            &init,
+            crate::RuntimeOptions {
+                path: "/".into(),
+                platform: Some(platform),
+                ..Default::default()
+            },
+        );
+        rt.render()
+    };
+    let bars = |patches: &[Patch]| -> Vec<(crate::NodeId, String)> {
+        patches
+            .iter()
+            .filter_map(|p| match p {
+                Patch::SetConfig { id, config } if config.starts_with("keyboard") => {
+                    Some((*id, config.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    for platform in [Platform::Ios, Platform::Android, Platform::Web] {
+        let patches = render(platform);
+        let found = bars(&patches);
+        assert_eq!(found.len(), 2, "{platform:?}");
+        assert_eq!(found[0].1, "keyboard field");
+        assert_eq!(found[1].1, "keyboard");
+        let c = crate::controls::OverlayConfig::decode(&found[0].1);
+        assert_eq!(c.kind, crate::OverlayKind::Keyboard);
+        assert!(c.field_only);
+        // Always open: the platform shows it with the field's focus.
+        assert!(patches.iter().any(
+            |p| matches!(p, Patch::SetValue { id, value } if *id == found[0].0 && *value == 1.)
+        ));
+        // The field, its own bar, the text area, the shared bar.
+        let order = patches
+            .iter()
+            .rev()
+            .find_map(|p| match p {
+                Patch::SetChildren { children, .. } if children.len() == 4 => {
+                    Some(children.clone())
+                }
+                _ => None,
+            })
+            .expect("the row's children");
+        assert_eq!(order[1], found[0].0);
+        assert_eq!(order[3], found[1].0);
+        assert!(
+            patches
+                .iter()
+                .any(|p| matches!(p, Patch::SetText { text, .. } if text == "Bold"))
+        );
+    }
+    for platform in [
+        Platform::Macos,
+        Platform::Linux,
+        Platform::Tvos,
+        Platform::Watchos,
+        Platform::Visionos,
+    ] {
+        let patches = render(platform);
+        assert!(bars(&patches).is_empty(), "{platform:?}");
+        assert!(
+            !patches.iter().any(
+                |p| matches!(p, Patch::SetText { text, .. } if text == "Bold" || text == "Done")
+            )
+        );
+    }
+}
+
+#[test]
 fn device_info_drives_rendering_and_styles() {
     use crate::style::FlexDirection;
     use crate::{DeviceInfo, DeviceKind, Fold, Orientation, Posture};

@@ -787,6 +787,8 @@ impl MacOverlay {
         match self.config.get().kind {
             _ if Self::panel_kind(self.config.get()) => self.show_panel(size),
             _ if Self::popover_kind(self.config.get()) => self.show_popover(size, delegate),
+            // No on-screen keyboard: never in the tree (#242).
+            OverlayKind::Keyboard => {}
             OverlayKind::Sheet | OverlayKind::Dialog | OverlayKind::Popover => {
                 let mtm = main.mtm();
                 let window = self.window.borrow_mut().take().unwrap_or_else(|| {
@@ -1270,6 +1272,8 @@ pub(crate) fn overlay_area(config: OverlayConfig, window: NSSize) -> (f32, f32) 
         OverlayKind::Sheet => (560., h - 48.),
         OverlayKind::Dialog => (480., h - 80.),
         OverlayKind::Popover => (420., h - 40.),
+        // Left out of macOS trees (#242).
+        OverlayKind::Keyboard => (w, 0.),
     };
     ((w - 40.).clamp(200., max_w), height.max(120.))
 }

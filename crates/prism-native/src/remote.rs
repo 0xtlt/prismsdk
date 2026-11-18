@@ -29,6 +29,7 @@
 //! | `layers` | `ids`: runtime layers above everything, bottom first (no `id`) |
 //! | `webpost` | `data`: a message (JSON text) for a `web_view`'s page (#62) |
 //! | `webreload` | reload a `web_view`'s page |
+//! | `kbar` | `bar`: the keyboard overlay shown above the IME while this text field has the focus (null: none, #242) |
 //!
 //! Hosts report the new input events as `{"t":"click","id","x","y","mods","n"}`
 //! (position, keys and click count optional, #159), `{"t":"pointer","id","phase","x","y"}`,
@@ -1162,6 +1163,11 @@ impl Widgets for RemoteWidgets {
 
     fn reload_web_view(&mut self, id: &NodeId) {
         self.ops.push(json!({ "op": "webreload", "id": id }));
+    }
+
+    fn set_keyboard_bar(&mut self, field: &NodeId, bar: Option<&NodeId>) {
+        self.ops
+            .push(json!({ "op": "kbar", "id": field, "bar": bar }));
     }
 
     /// The area the host reported for the overlay (its sheet, dialog or

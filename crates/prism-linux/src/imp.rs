@@ -3433,6 +3433,8 @@ impl Widgets for Gtk {
             OverlayKind::Dialog => ((w - 48.).clamp(200., 480.), (h - 80.).max(160.)),
             OverlayKind::Sheet if config.medium => (w.min(560.), (h * 0.5).max(200.)),
             OverlayKind::Sheet => (w.min(560.), (h - 48.).max(200.)),
+            // No on-screen keyboard: left out of Linux trees (#242).
+            OverlayKind::Keyboard => (w, 0.),
         };
         Viewport {
             x: 0.,

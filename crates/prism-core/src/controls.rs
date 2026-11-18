@@ -443,6 +443,12 @@ pub enum OverlayKind {
     /// A centered modal dialog (`<dialog>`, a centered window or panel, a
     /// form sheet, `Dialog`).
     Dialog,
+    /// A bar above the on-screen keyboard while a text field it serves has
+    /// the focus (#242): see [`keyboard_toolbar`](crate::keyboard_toolbar).
+    /// The field's `inputAccessoryView` on iOS and iPadOS, a bar above the
+    /// IME on Android, a bar on the visual viewport's bottom edge in mobile
+    /// browsers. Other platforms leave it out of their tree.
+    Keyboard,
 }
 
 /// The side of its anchor a popover opens on (#113). It flips to the
@@ -672,18 +678,24 @@ pub struct OverlayConfig {
     /// corners, shadow or entry animation; its content is the panel. See
     /// [`Overlay::bare`](crate::Overlay::bare).
     pub bare: bool,
+    /// A keyboard bar that serves only the text field just before it (a
+    /// field's own [`keyboard_toolbar`](crate::TextInput::keyboard_toolbar)),
+    /// not every field in its parent (#242).
+    pub field_only: bool,
 }
 
 impl OverlayConfig {
     /// `sheet` / `popover` / `dialog`, then `fixed`, `medium`, `manual`,
     /// `keepfocus`, `side=…` and `align=…` (left out when they are the
     /// defaults), `placed`, `backdrop=<clear|dim|blur>`,
-    /// `size=<width>x<height>`, `bare`.
+    /// `size=<width>x<height>`, `bare`, `field`. A keyboard bar is
+    /// `keyboard`, with `field` when it serves only the field before it.
     pub fn encode(&self) -> String {
         let mut out = String::from(match self.kind {
             OverlayKind::Sheet => "sheet",
             OverlayKind::Popover => "popover",
             OverlayKind::Dialog => "dialog",
+            OverlayKind::Keyboard => "keyboard",
         });
         if self.fixed {
             out.push_str(" fixed");
@@ -721,6 +733,9 @@ impl OverlayConfig {
         if self.bare {
             out.push_str(" bare");
         }
+        if self.field_only {
+            out.push_str(" field");
+        }
         out
     }
 
@@ -731,7 +746,7 @@ impl OverlayConfig {
         match self.kind {
             OverlayKind::Popover => Some(self.side),
             OverlayKind::Dialog if self.placed => Some(self.side),
-            OverlayKind::Dialog | OverlayKind::Sheet => None,
+            OverlayKind::Dialog | OverlayKind::Sheet | OverlayKind::Keyboard => None,
         }
     }
 
@@ -742,6 +757,8 @@ impl OverlayConfig {
             match t {
                 "popover" => c.kind = OverlayKind::Popover,
                 "dialog" => c.kind = OverlayKind::Dialog,
+                "keyboard" => c.kind = OverlayKind::Keyboard,
+                "field" => c.field_only = true,
                 "fixed" => c.fixed = true,
                 "medium" => c.medium = true,
                 "manual" => c.manual = true,
