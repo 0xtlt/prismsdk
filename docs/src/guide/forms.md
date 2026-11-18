@@ -190,6 +190,7 @@ rich_input(self.spans.clone())
 ```
 
 - **Offsets** are characters, like [`SelectionEvent`](#selection-and-caret) (a chip or an icon of a rich input counts as one). The app moves them when the text changes under them (its collaboration engine already does: CRDT or OT positions mapped to characters); offsets past the end are clamped. An empty list removes them.
+- **Label text**: white by default; `.label_text_color(color)` sets it, for a light person color that needs dark text (#267), on every backend.
 - **Idle**: `idle(true)` fades the name out and keeps the caret and the selection. The app decides when, from its presence data (a few seconds without an update is usual), so every backend agrees.
 - **Secure fields** show no one's caret.
 - **Backends**: the web draws a layer next to the field (ranges of a rich input's DOM, a hidden copy of a textarea or input for the others), redrawn after updates, typing, scrolling and resizing. macOS lays a view over the field from its layout manager (the field editor's while a text input is edited); iOS, iPadOS and visionOS use the field's `UITextInput` geometry (`caretRectForPosition:`, `selectionRectsForRange:`); Android draws in the `EditText`'s overlay from its `Layout`; Linux draws over the `GtkTextView` of text areas and rich inputs. The name sits above the caret's line, under it on the first line of a text area that clips its content. It fades on the web, macOS, iOS and Android, and disappears at once on Linux.

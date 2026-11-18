@@ -1190,6 +1190,8 @@ impl Widgets for RemoteWidgets {
                     "head": c.head,
                     "color": color(Some(c.color)),
                     "label": c.label,
+                    // The label's text (#267); white by default.
+                    "text": color(c.label_text_color),
                     "idle": c.idle,
                 })
             })

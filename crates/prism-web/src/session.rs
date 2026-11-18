@@ -1541,6 +1541,8 @@ fn remote_caret_json(c: &prism_core::RemoteCaret) -> Value {
         "head": c.head,
         "color": c.color.to_css(),
         "label": c.label,
+        // The label's text (#267); white by default.
+        "text": c.label_text_color.map(|t| t.to_css()),
         "idle": c.idle,
     })
 }

@@ -459,7 +459,11 @@ impl PrismCarets {
             let Some(label) = c.label.as_deref().filter(|_| alpha > 0.) else {
                 continue;
             };
-            let white = NSColor::whiteColor().colorWithAlphaComponent(alpha);
+            // White, or the app's (#267).
+            let white = c
+                .label_text_color
+                .map_or_else(NSColor::whiteColor, ns_color)
+                .colorWithAlphaComponent(alpha);
             let attrs = {
                 let (f, w): (&AnyObject, &AnyObject) = (&tag_font, &white);
                 unsafe {

@@ -318,6 +318,8 @@ pub struct RemoteCaret {
     pub color: Color,
     /// A name shown at the caret, if any.
     pub label: Option<String>,
+    /// The label's text color (#267); `None`: white, as before.
+    pub label_text_color: Option<Color>,
     /// The person stopped typing: the label fades out (the caret and the
     /// selection stay). The app decides when, from its own presence data,
     /// such as a few seconds without an update.
@@ -332,6 +334,7 @@ impl RemoteCaret {
             head,
             color,
             label: None,
+            label_text_color: None,
             idle: false,
         }
     }
@@ -344,6 +347,13 @@ impl RemoteCaret {
     /// Shows `name` in a tag at the caret.
     pub fn label(mut self, name: impl Into<String>) -> Self {
         self.label = Some(name.into());
+        self
+    }
+
+    /// The label's text color (#267), for a light person color that needs
+    /// dark text (white by default).
+    pub fn label_text_color(mut self, color: Color) -> Self {
+        self.label_text_color = Some(color);
         self
     }
 
