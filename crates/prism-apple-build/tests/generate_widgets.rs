@@ -126,3 +126,41 @@ fn the_widget_action_intent_is_shared_by_the_app_and_the_extension() {
     let bridge = std::fs::read_to_string(apple.join("Bridge/PrismBridge.swift")).unwrap();
     assert!(bridge.contains("@_silgen_name(\"prism_widget_action\")"));
 }
+
+/// #279: a timer is aligned like a text. `Text(timerInterval:)` takes the
+/// width it is offered and lays its digits out by its own alignment, so
+/// `"ta"` must reach it; frames wider than a text or a timer place it by
+/// `"ta"` too, not at the leading edge.
+#[test]
+fn a_timer_follows_the_text_alignment() {
+    let apple = Path::new(env!("CARGO_MANIFEST_DIR")).join("apple");
+    let renderer = std::fs::read_to_string(apple.join("Extension/PrismRenderer.swift")).unwrap();
+    let timer = renderer
+        .split(r#"case "m":"#)
+        .nth(1)
+        .and_then(|s| s.split("case \"p\":").next())
+        .expect("the timer case");
+    assert!(timer.contains("Text(timerInterval:"), "{timer}");
+    assert!(
+        timer.contains(".multilineTextAlignment(prismTextAlign(n))"),
+        "{timer}"
+    );
+    // Stretched by a column, filling the width, cut on one line.
+    assert!(!renderer.contains("alignment: .leading)"), "{renderer}");
+    assert_eq!(renderer.matches("alignment: prismFrameAlign(").count(), 3);
+    assert!(renderer.contains(r#"guard kind == "t" || kind == "m" else { return .leading }"#));
+
+    let watch = std::fs::read_to_string(apple.join("Watch/PrismWatch.swift")).unwrap();
+    let timer = watch
+        .split(r#"case "timer":"#)
+        .find(|s| s.trim_start().starts_with("// Aligned like a text"))
+        .and_then(|s| s.split("case \"picture\":").next())
+        .expect("the watch timer case");
+    assert!(timer.contains("style: .timer"), "{timer}");
+    assert!(
+        timer.contains(".multilineTextAlignment(textAlign(n.str(\"talign\")))")
+            && timer
+                .contains(".frame(maxWidth: .infinity, alignment: frameAlign(n.str(\"talign\")))"),
+        "{timer}"
+    );
+}

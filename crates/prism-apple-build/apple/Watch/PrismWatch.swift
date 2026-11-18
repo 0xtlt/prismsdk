@@ -970,7 +970,11 @@ struct NodeView: View {
         case "image":
             Image(systemName: n.icon.isEmpty ? "circle" : n.icon).font(font(n)).foregroundStyle(fg)
         case "timer":
+            // Aligned like a text (#279): a timer lays its digits out by its
+            // own alignment in the width it is offered.
             Text(Date(timeIntervalSince1970: n.value), style: .timer).font(font(n).monospacedDigit()).foregroundStyle(fg)
+                .multilineTextAlignment(textAlign(n.str("talign")))
+                .frame(maxWidth: .infinity, alignment: frameAlign(n.str("talign")))
         case "picture":
             Picture(source: n.text, fit: n.value == 1)
         case "scene3d":

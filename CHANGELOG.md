@@ -361,6 +361,7 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- Widgets (iOS, iPadOS, macOS, visionOS) and watchOS: a `timer(..)` follows `.text_center()` and `.text_right()` (#279). A timer takes the width it is offered and lays its digits out by its own alignment, so it sat left-aligned, most visibly in an `AccessoryCircular` widget. In widgets, a centered or right-aligned text or timer also keeps its alignment when it is stretched by its column, fills the width (`w_full()`, `flex_1()`) or is cut on one line (`nowrap()`); it was pushed to the leading edge.
 - iOS, iPadOS, macOS, visionOS: a configurable widget whose saved option no longer exists (an option gone since, or the empty placeholder of an instance added before the app wrote its options) draws the default configuration instead of staying a grey placeholder (#277). The generated `EntityQuery.entities(for:)` answers every id it is asked, an unknown one with an entity titled like the default option; it used to leave it out, so the required parameter was missing and WidgetKit never asked for a timeline.
 - macOS: a `text_input` with its own look (`.border(0.)`, a padding, a background, a border, a `focus` refinement) no longer draws AppKit's blue focus ring inside the app's own outline (#274); Linux drops the GTK theme's outline on such fields too, as the web already did. An unstyled field keeps the platform's ring. `Style::own_field_look` is the shared rule.
 ### Fixed
