@@ -359,6 +359,9 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+### Fixed
+
+- `group_hover`, `group_active` and `group_focus_within` follow the nearest `group()` ancestor only, as documented (#273): with nested groups, hovering one inner cell no longer lights up the refinements of every cell because the outer group is hovered too. Native backends (prism-native), the web (CSS) and Linux (now resolved by prism-native instead of GTK CSS). Named groups (#212) are unchanged.
 - `Runtime::dispatch` no longer returns answers (a selection, a highlight, a clipboard write) aimed at nodes its own re-render destroyed (#265): an `on_edit_across` handler that merges fields can be tested through `dispatch` with `prism-testing`, which panicked on them.
 - Linux: `prism-linux` builds again (a rich input is created as a text area, as `prism-native` already asks), and screen-reader states no longer log GTK criticals: the checked and selected states are passed as the ints GTK reads (GTK 4.8 and later). `cargo doc` with `-D warnings` passes again (two `scene3d` links).
 - macOS, iOS, iPadOS, visionOS: a child drawn outside its parent (absolutely positioned with a negative offset) gets clicks, hovers and drags in the part outside it, unless the parent clips (#213). AppKit and UIKit only hit-tested inside the parent's bounds; before macOS 14, hover tracking stopped there too.

@@ -3287,7 +3287,7 @@ fn interaction_states_become_pseudo_class_rules() {
     assert!(!rules.contains("[data-group]"));
     let t = css::states_css(NodeKind::Text, 8, &s);
     assert!(
-        t.contains(r#"@media (hover:hover){[data-group]:hover [data-pid="8"]{color:rgba(255,0,0,1) !important;}}"#),
+        t.contains(r#"@media (hover:hover){[data-group]:hover [data-pid="8"]:not(:where([data-group]:not(:hover) *)){color:rgba(255,0,0,1) !important;}}"#),
         "{t}"
     );
     // Hidden until a state shows it: a plain `display:none` the rule beats.
@@ -3302,7 +3302,7 @@ fn interaction_states_become_pseudo_class_rules() {
     );
     assert_eq!(
         css::states_css(NodeKind::View, 9, &clear),
-        r#"[data-group]:focus-within [data-pid="9"]{display:flex !important;}"#
+        r#"[data-group]:focus-within [data-pid="9"]:not(:where([data-group]:not(:focus-within) *)){display:flex !important;}"#
     );
     // Precedence: rules come in the order states apply (active after hover).
     assert!(rules.find(":hover").unwrap() < rules.find(":active").unwrap());
@@ -4345,7 +4345,9 @@ fn named_groups_have_their_own_rules() {
     );
     // The unnamed group's rule stays, before the named one's (same state).
     assert!(
-        rules.contains(r#"[data-group]:hover [data-pid="7"]{opacity:0.5 !important;}"#),
+        rules.contains(
+            r#"[data-group]:hover [data-pid="7"]:not(:where([data-group]:not(:hover) *)){opacity:0.5 !important;}"#
+        ),
         "{rules}"
     );
     // Names are CSS strings: no way out of the selector or a `<style>`.
