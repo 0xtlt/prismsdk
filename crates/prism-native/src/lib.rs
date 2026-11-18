@@ -282,6 +282,11 @@ pub trait Widgets {
     /// `start == end` removes it. Leaves the text, the caret and the
     /// field's own selection alone.
     fn set_selection_highlight(&mut self, _view: &Self::View, _start: usize, _end: usize) {}
+    /// Whether the view is a selection group (#231): a mouse drag that
+    /// starts in one of its text fields extends the selection over the
+    /// others, reported as `UiEvent::SelectionAcross` (#264); the runtime
+    /// answers with the selection and the highlights to draw.
+    fn set_selection_group(&mut self, _view: &Self::View, _on: bool) {}
     /// Gives the view the keyboard focus (first responder, `grab_focus`).
     fn focus(&mut self, _view: &Self::View) {}
     /// Scrolls the scroll views around the view so it is visible.
@@ -1862,7 +1867,12 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                 }
                 // The runtime extends a selection across fields natively
                 // from the fields' keys (#231): nothing to set up.
-                Patch::SetSelectionGroup { .. } | Patch::SetSelectionAcross { .. } => {}
+                Patch::SetSelectionGroup { id, on, .. } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.set_selection_group(&e.view, *on);
+                    }
+                }
+                Patch::SetSelectionAcross { .. } => {}
                 Patch::SetPlaceholder { id, text } => {
                     if let Some(e) = self.nodes.get(id) {
                         self.widgets.set_placeholder(&e.view, text);

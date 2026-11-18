@@ -620,7 +620,10 @@ impl Runtime {
                 }
             }
             UiEvent::SelectionAcross(group, range) => {
-                let out = self.reconciler.across_reported(group, range);
+                // Native backends report it from a mouse drag (#264): the
+                // runtime draws it there.
+                let draw = self.app.platform() != Platform::Web;
+                let out = self.reconciler.across_reported(group, range, draw);
                 self.finish_across(out, &mut answers);
             }
             UiEvent::EditAcross(group, cause, text) => {
