@@ -1719,7 +1719,9 @@ impl Widgets for Gtk {
                 self.date_pickers.insert(id, p.clone());
                 View::DatePicker(id, p)
             }
-            NodeKind::TextArea => View::TextArea(id, controls::text_area(id)),
+            // GTK edits a rich input as plain text (#115): prism-native
+            // creates a text area for it, never this kind.
+            NodeKind::TextArea | NodeKind::RichInput => View::TextArea(id, controls::text_area(id)),
             NodeKind::Spinner => {
                 let s = gtk::Spinner::new();
                 s.set_spinning(true);
@@ -3505,14 +3507,16 @@ pub(crate) fn set_accessible_hidden(w: &impl IsA<gtk::Widget>, hidden: bool) {
 /// `GTK_ACCESSIBLE_STATE_CHECKED` (gtkenums.h): a radio, checkbox or switch
 /// drawn by the app is on (a `GtkAccessibleTristate`).
 fn set_accessible_checked(w: &impl IsA<gtk::Widget>, checked: bool) {
-    use gtk::glib::translate::{ToGlibPtr, ToGlibPtrMut};
+    use gtk::glib::translate::{IntoGlib, ToGlibPtr, ToGlibPtrMut};
     const CHECKED: i32 = 1;
     let state = if checked {
         gtk::AccessibleTristate::True
     } else {
         gtk::AccessibleTristate::False
     };
-    let mut value = state.to_value();
+    // GTK reads the tristate as an int: an enum value makes it log a
+    // critical.
+    let mut value = state.into_glib().to_value();
     let widget: *mut gtk::ffi::GtkWidget = w.as_ref().to_glib_none().0;
     // SAFETY: every GtkWidget implements GtkAccessible; one tristate state.
     unsafe {
@@ -3524,9 +3528,11 @@ fn set_accessible_checked(w: &impl IsA<gtk::Widget>, checked: bool) {
 pub(crate) fn set_accessible_selected(w: &impl IsA<gtk::Widget>, selected: bool) {
     use gtk::glib::translate::{ToGlibPtr, ToGlibPtrMut};
     const SELECTED: i32 = 7;
-    let mut value = selected.to_value();
+    // A « boolean or undefined » state is read as an int (-1 being
+    // undefined): a boolean value makes GTK log a critical.
+    let mut value = i32::from(selected).to_value();
     let widget: *mut gtk::ffi::GtkWidget = w.as_ref().to_glib_none().0;
-    // SAFETY: every GtkWidget implements GtkAccessible; one boolean state.
+    // SAFETY: every GtkWidget implements GtkAccessible; one int state.
     unsafe {
         gtk_accessible_update_state_value(widget.cast(), 1, &SELECTED, value.to_glib_none_mut().0);
     }
