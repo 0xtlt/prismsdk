@@ -103,10 +103,25 @@ private func transformed(_ s: String, _ n: PNode) -> String {
     }
 }
 
+/// A text's or a timer's `ta`: its lines' alignment.
+private func prismTextAlign(_ n: PNode) -> TextAlignment {
+    (n["ta"] as? String) == "c" ? .center : (n["ta"] as? String) == "r" ? .trailing : .leading
+}
+
+/// Where a node sits in a frame wider than itself: a text or a timer follows
+/// its `ta`, so a centered one stays centered when stretched, filling or cut
+/// (#279); anything else sits leading.
+private func prismFrameAlign(_ n: PNode) -> Alignment {
+    let kind = n["k"] as? String
+    guard kind == "t" || kind == "m" else { return .leading }
+    let ta = n["ta"] as? String
+    return ta == "c" ? .center : ta == "r" ? .trailing : .leading
+}
+
 /// A text node: typography keys `ff` `it` `ul` `st` `tn` `tt` `ls` `lh` `ml`
 /// `nw` (see prism-core `write_typography`).
 private func prismText(_ n: PNode, _ fg: Color?) -> AnyView {
-    let align: TextAlignment = (n["ta"] as? String) == "c" ? .center : (n["ta"] as? String) == "r" ? .trailing : .leading
+    let align = prismTextAlign(n)
     var t = Text(transformed(n["s"] as? String ?? "", n)).font(font(n))
     if let ls = num(n["ls"]) { t = t.tracking(ls) }
     if num(n["ul"]) == 1 { t = t.underline() }
@@ -118,7 +133,7 @@ private func prismText(_ n: PNode, _ fg: Color?) -> AnyView {
     if let ml = num(n["ml"]), ml > 0 {
         v = AnyView(v.lineLimit(Int(ml)).truncationMode(.tail))
     } else if num(n["nw"]) == 1 {
-        v = AnyView(v.fixedSize(horizontal: true, vertical: false).frame(maxWidth: .infinity, alignment: .leading).clipped())
+        v = AnyView(v.fixedSize(horizontal: true, vertical: false).frame(maxWidth: .infinity, alignment: prismFrameAlign(n)).clipped())
     }
     return v
 }
@@ -146,7 +161,10 @@ func prismBuild(_ node: PNode) -> AnyView {
         let text = end > .now
             ? Text(timerInterval: Date.now...end, countsDown: true)
             : Text("0:00")
-        view = AnyView(text.font(font(n)).monospacedDigit().foregroundStyle(fg ?? .primary))
+        // A timer takes the width it is offered and lays its digits out by
+        // its own alignment: centering it from outside does nothing (#279).
+        view = AnyView(text.font(font(n)).monospacedDigit().foregroundStyle(fg ?? .primary)
+            .multilineTextAlignment(prismTextAlign(n)))
     case "p":
         view = AnyView(ProgressView(value: min(max(num(n["v"]) ?? 0, 0), 1)).tint(fg))
     case "sh":
@@ -167,7 +185,7 @@ private func prismContainer(_ n: PNode) -> AnyView {
         var v = prismBuild(child)
         // Flexbox `align-items: stretch` (the default) in a column.
         if !row && ai == nil {
-            v = AnyView(v.frame(maxWidth: .infinity, alignment: .leading))
+            v = AnyView(v.frame(maxWidth: .infinity, alignment: prismFrameAlign(child)))
         }
         return v
     }
@@ -205,7 +223,7 @@ private func prismModifiers(_ base: AnyView, _ n: PNode) -> AnyView {
     let fill = { (key: String) -> Bool in (n[key] as? String) == "f" }
     if let w = num(n["w"]) { v = AnyView(v.frame(width: w)) }
     if let h = num(n["h"]) { v = AnyView(v.frame(height: h)) }
-    if fill("w") || (num(n["f"]) ?? 0) > 0 { v = AnyView(v.frame(maxWidth: .infinity, alignment: .leading)) }
+    if fill("w") || (num(n["f"]) ?? 0) > 0 { v = AnyView(v.frame(maxWidth: .infinity, alignment: prismFrameAlign(n))) }
     if fill("h") { v = AnyView(v.frame(maxHeight: .infinity)) }
     let radius = num(n["r"]) ?? 0
     // Rounded corners: all, or the `rc` bits (1 top leading, 2 top trailing,
