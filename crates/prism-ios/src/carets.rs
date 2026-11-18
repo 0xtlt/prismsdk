@@ -83,6 +83,11 @@ pub(crate) fn set(mtm: MainThreadMarker, id: NodeId, field: &UIView, carets: &[R
             let tag = &overlay.tags[i];
             tag.setText(c.label.as_deref().map(NSString::from_str).as_deref());
             tag.setBackgroundColor(Some(&ui_color(c.color)));
+            // White, or the app's (#267).
+            let text = c
+                .label_text_color
+                .map_or_else(UIColor::whiteColor, ui_color);
+            unsafe { tag.setTextColor(Some(&text)) };
             let was_idle = overlay.carets.get(i).is_some_and(|o| o.idle);
             if c.idle && !was_idle {
                 let fading = tag.retain();

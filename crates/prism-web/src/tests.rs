@@ -2715,7 +2715,9 @@ fn remote_carets_go_to_the_client() {
     use prism_core::{RemoteCaret, rgb};
     let carets = vec![
         RemoteCaret::caret(4, rgb(0xFF0000)).label("Camille"),
-        RemoteCaret::new(0, 2, rgb(0x0000FF)).idle(true),
+        RemoteCaret::new(0, 2, rgb(0x0000FF))
+            .idle(true)
+            .label_text_color(rgb(0x000000)),
     ];
     let mut e = Encoder::default();
     let out = e.encode(&[Patch::SetRemoteCarets {
@@ -2725,8 +2727,8 @@ fn remote_carets_go_to_the_client() {
     assert_eq!(
         out,
         [json!({ "op": "carets", "id": 3, "carets": [
-            { "anchor": 4, "head": 4, "color": "rgba(255,0,0,1)", "label": "Camille", "idle": false },
-            { "anchor": 0, "head": 2, "color": "rgba(0,0,255,1)", "label": null, "idle": true },
+            { "anchor": 4, "head": 4, "color": "rgba(255,0,0,1)", "label": "Camille", "idle": false, "text": null },
+            { "anchor": 0, "head": 2, "color": "rgba(0,0,255,1)", "label": null, "idle": true, "text": "rgba(0,0,0,1)" },
         ]})]
     );
     let page = html(&[

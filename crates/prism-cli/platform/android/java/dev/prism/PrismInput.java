@@ -1581,7 +1581,10 @@ final class PrismInput {
                 float tx = Math.max(sx, Math.min(x - d, sx + e.getWidth() - w));
                 paint.setAlpha(Math.round(android.graphics.Color.alpha(color) * alpha));
                 c.drawRoundRect(tx, ty, tx + w, ty + th, 3 * d, 3 * d, paint);
-                text.setAlpha(Math.round(255 * alpha));
+                // White, or the app's (#267).
+                Integer ink = PrismHost.color(o.optJSONArray("text"));
+                text.setColor(ink != null ? ink : android.graphics.Color.WHITE);
+                text.setAlpha(Math.round(android.graphics.Color.alpha(text.getColor()) * alpha));
                 c.drawText(label, tx + 4 * d, ty + th - 4 * d, text);
             }
         }

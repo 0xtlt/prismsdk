@@ -192,7 +192,11 @@ fn draw(
         source(cr, c.color, 1.);
         cr.rectangle(tx, ty, w, th);
         let _ = cr.fill();
-        cr.set_source_rgba(1., 1., 1., 1.);
+        // White, or the app's (#267).
+        match c.label_text_color {
+            Some(t) => source(cr, t, 1.),
+            None => cr.set_source_rgba(1., 1., 1., 1.),
+        }
         cr.move_to(tx + 4., ty + 10.5);
         let _ = cr.show_text(label);
     }

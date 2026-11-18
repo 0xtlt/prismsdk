@@ -72,3 +72,15 @@ test("the layer follows its field when it moves and goes with it (#240)", () => 
   patch({ op: "children", id: 3, children: [] }, { op: "destroy", id: 2 });
   assert.equal(layer.parentNode, null, "destroyed with the field");
 });
+
+
+test("a label's text takes the app's color, white by default (#267)", () => {
+  const { page, el, patch } = field("text_area", [camille]);
+  page.frames.splice(0).forEach((f) => f());
+  const label = () => el.nextSibling.children[0].querySelector(".prism-rlabel");
+  assert.equal(label().style.color, "", "the stylesheet's white");
+  patch({ op: "carets", id: 2, carets: [{ ...camille, text: "rgba(0,0,0,1)" }] });
+  assert.equal(label().style.color, "rgba(0,0,0,1)");
+  patch({ op: "carets", id: 2, carets: [{ ...camille, text: null }] });
+  assert.equal(label().style.color, "");
+});

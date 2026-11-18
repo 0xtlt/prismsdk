@@ -1301,14 +1301,16 @@ fn remote_caret_ops() {
         &4,
         &[
             prism_core::RemoteCaret::caret(12, rgb(0xFF0000)).label("Camille"),
-            prism_core::RemoteCaret::new(3, 9, rgb(0x0000FF)).idle(true),
+            prism_core::RemoteCaret::new(3, 9, rgb(0x0000FF))
+                .idle(true)
+                .label_text_color(rgb(0x000000)),
         ],
     );
     assert_eq!(
         last(&w),
         json!({"op": "carets", "id": 4, "carets": [
-            {"anchor": 12, "head": 12, "color": [1., 0., 0., 1., 1., 0., 0., 1.], "label": "Camille", "idle": false},
-            {"anchor": 3, "head": 9, "color": [0., 0., 1., 1., 0., 0., 1., 1.], "label": null, "idle": true},
+            {"anchor": 12, "head": 12, "color": [1., 0., 0., 1., 1., 0., 0., 1.], "label": "Camille", "idle": false, "text": null},
+            {"anchor": 3, "head": 9, "color": [0., 0., 1., 1., 0., 0., 1., 1.], "label": null, "idle": true, "text": [0., 0., 0., 1., 0., 0., 0., 1.]},
         ]})
     );
     w.set_remote_carets(&4, &[]);

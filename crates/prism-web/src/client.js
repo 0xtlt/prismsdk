@@ -2008,6 +2008,8 @@
       g.style.setProperty("--prism-rc", c.color);
       const label = g.lastChild.firstChild;
       label.textContent = c.label || "";
+      // The label's text (#267): white unless the app says.
+      label.style.color = c.text || "";
       label.hidden = !c.label;
       if (c.idle) g.dataset.idle = ""; else delete g.dataset.idle;
     });
