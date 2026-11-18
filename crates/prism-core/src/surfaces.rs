@@ -82,6 +82,9 @@ pub struct Capabilities {
     pub web_view: bool,
     /// Files can be dropped on a drop target (`on_drop_files`, #111).
     pub drop_files: bool,
+    /// Elements can be dragged onto drop targets inside the app
+    /// (`draggable`, `on_drop_payload`, #251).
+    pub drag_and_drop: bool,
     /// Passkeys of the app's own relying party (`webauthn_create`,
     /// `webauthn_get`, #94).
     pub passkeys: bool,

@@ -465,7 +465,11 @@
     "tile_move": "Déplacer la tuile",
     "cards": "Cartes",
     "cards_hint": "Sur un écran tactile, balayez pour faire défiler, ou maintenez une carte pour la déplacer.",
-    "card": "Carte {n}"
+    "card": "Carte {n}",
+    "board": "Faites glisser une carte vers l’autre colonne",
+    "board_todo": "À faire",
+    "board_done": "Fait",
+    "board_cards": "Écrire la spec,Dessiner les icônes,Corriger la connexion,Publier la bêta,Répondre au courrier,Préparer le lancement"
   },
   "islands": {
     "title": "Îlots",

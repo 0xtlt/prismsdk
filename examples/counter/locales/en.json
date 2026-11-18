@@ -465,7 +465,11 @@
     "tile_move": "Move the tile",
     "cards": "Cards",
     "cards_hint": "On a touch screen, swipe to scroll, or hold a card to move it.",
-    "card": "Card {n}"
+    "card": "Card {n}",
+    "board": "Drag a card to the other column",
+    "board_todo": "To do",
+    "board_done": "Done",
+    "board_cards": "Write the spec,Draw the icons,Fix the login,Ship the beta,Answer the mail,Plan the launch"
   },
   "islands": {
     "title": "Islands",

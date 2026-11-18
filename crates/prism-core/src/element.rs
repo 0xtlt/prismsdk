@@ -724,6 +724,14 @@ pub struct VNode {
     pub selection_group: bool,
     /// A selection group's handlers (#231).
     pub across: crate::selection_across::GroupHandlers,
+
+    // --- Drag and drop between elements (#251) ---
+    /// What the node carries when dragged.
+    pub drag_payload: Option<crate::events::DragPayload>,
+    /// Payloads dropped on the node, by kind.
+    pub on_drop_payload: Vec<(String, Handler<crate::events::DropEvent>)>,
+    /// Payloads dragged over the node, by kind.
+    pub on_drag_over: Vec<(String, Handler<crate::events::DragOverEvent>)>,
     /// A video's playback reached the end (#207).
     pub on_ended: Option<Handler<crate::video::EndedEvent>>,
     /// A text field's own bar above the on-screen keyboard (#242): placed
@@ -791,6 +799,9 @@ impl VNode {
             edit: Default::default(),
             selection_group: false,
             across: Default::default(),
+            drag_payload: None,
+            on_drop_payload: Vec::new(),
+            on_drag_over: Vec::new(),
             on_ended: None,
             keyboard_toolbar: None,
         }
@@ -1977,6 +1988,27 @@ impl Scroll {
         self
     }
 
+    /// A drop target for dragged payloads of `kind` (#251), like
+    /// [`Div::on_drop_payload`]: the position is in the content, scrolling
+    /// included (a column of cards finds the slot from it).
+    pub fn on_drop_payload(
+        self,
+        kind: impl Into<String>,
+        handler: Handler<crate::events::DropEvent>,
+    ) -> Self {
+        Scroll(Div(self.0).on_drop_payload(kind, handler).0)
+    }
+
+    /// Hears payloads of `kind` dragged over it (#251), like
+    /// [`Div::on_drag_over`], the position in the content.
+    pub fn on_drag_over(
+        self,
+        kind: impl Into<String>,
+        handler: Handler<crate::events::DragOverEvent>,
+    ) -> Self {
+        Scroll(Div(self.0).on_drag_over(kind, handler).0)
+    }
+
     /// Pull to refresh (iOS refresh control; pull gesture and a Refresh
     /// button on the web). Show progress with [`Scroll::refreshing`].
     pub fn on_refresh(mut self, handler: Handler<ClickEvent>) -> Self {
@@ -2542,6 +2574,58 @@ impl Div {
     /// device already: it is not called.
     pub fn on_drop_progress(mut self, handler: Handler<crate::events::DropProgress>) -> Self {
         self.0.on_drop_progress = Some(handler);
+        self
+    }
+
+    /// Lets the container be dragged onto drop targets inside the app
+    /// (#251): a card into another column, a library item onto a canvas, a
+    /// row into a tree. While it is dragged a snapshot follows the pointer
+    /// (unless [`DragPreview::None`](crate::DragPreview::None)), the target
+    /// under it that accepts `payload.kind` gets its
+    /// [`on_drag_over`](Div::on_drag_over) and
+    /// [`drop_hover`](crate::Styled::drop_hover) style, a scroll view
+    /// scrolls when the pointer stays near its edge, and the release calls
+    /// the target's [`on_drop_payload`](Div::on_drop_payload). Positions
+    /// come in the target's coordinates, scrolling included: no geometry on
+    /// the app's side. It starts like [`on_drag`](Div::on_drag) (past the
+    /// platform's slop, with the buttons of
+    /// [`drag_buttons`](Div::drag_buttons)), which still runs alongside.
+    /// Also offer the move another way (a menu, keys): not every user can
+    /// drag.
+    pub fn draggable(mut self, payload: crate::events::DragPayload) -> Self {
+        self.0.drag_payload = Some(payload);
+        self
+    }
+
+    /// Called when a [`draggable`](Div::draggable) payload of `kind` is
+    /// released over the container (#251), with where, in the container
+    /// (in its content for a scroll view). The innermost target under the
+    /// pointer that accepts the kind takes it. Call it again for other
+    /// kinds.
+    pub fn on_drop_payload(
+        mut self,
+        kind: impl Into<String>,
+        handler: Handler<crate::events::DropEvent>,
+    ) -> Self {
+        let kind = kind.into();
+        self.0.on_drop_payload.retain(|(k, _)| *k != kind);
+        self.0.on_drop_payload.push((kind, handler));
+        self
+    }
+
+    /// Called as a [`draggable`](Div::draggable) payload of `kind` comes
+    /// over the container, moves over it and leaves it (#251): the live
+    /// position for an insertion line, in the container (in its content
+    /// for a scroll view). A container with this handler is a drop target
+    /// for `kind` even without [`on_drop_payload`](Div::on_drop_payload).
+    pub fn on_drag_over(
+        mut self,
+        kind: impl Into<String>,
+        handler: Handler<crate::events::DragOverEvent>,
+    ) -> Self {
+        let kind = kind.into();
+        self.0.on_drag_over.retain(|(k, _)| *k != kind);
+        self.0.on_drag_over.push((kind, handler));
         self
     }
 }

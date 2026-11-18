@@ -1337,3 +1337,153 @@ fn fields_hear_focus_changes() {
     h.dispatch(UiEvent::FocusChange(field, false));
     assert_eq!(h.root::<Rename>().read(&h.rt.app).log, [true, false]);
 }
+
+// --- Drag and drop between elements (#251) -------------------------------------
+
+struct Board {
+    log: Log,
+    cards: Vec<&'static str>,
+}
+
+impl Render for Board {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let column = |name: &'static str, log: &Log| {
+            let (over, dropped) = (log.clone(), log.clone());
+            div()
+                .id(name)
+                .on_drag_over(
+                    "card",
+                    Rc::new(move |e: &DragOverEvent, _: &mut App| {
+                        over.borrow_mut().push(format!(
+                            "{name} {:?} {} {}",
+                            e.phase, e.payload.data, e.position.y
+                        ))
+                    }),
+                )
+                .on_drop_payload(
+                    "card",
+                    Rc::new(move |e: &DropEvent, _: &mut App| {
+                        dropped.borrow_mut().push(format!(
+                            "drop {name} {} {} {}",
+                            e.payload.data, e.position.y, e.modifiers.alt
+                        ))
+                    }),
+                )
+        };
+        let entity = cx.entity();
+        div()
+            .child(
+                column("todo", &self.log).children(self.cards.iter().map(|c| {
+                    div()
+                        .id(*c)
+                        .child(text(*c))
+                        .draggable(DragPayload::new("card", *c))
+                })),
+            )
+            .child(column("done", &self.log))
+            // Takes other kinds only.
+            .child(div().id("trash").on_drop_payload(
+                "file",
+                Rc::new(move |_: &DropEvent, app: &mut App| {
+                    entity.update(app, |b, _| b.cards.clear())
+                }),
+            ))
+    }
+}
+
+fn board() -> (Harness, Log) {
+    let h = Harness::new(move |cx| {
+        let log: Log = Rc::default();
+        cx.set_global(log.clone());
+        let root = cx.new_entity(|_| Board {
+            log,
+            cards: vec!["a", "b"],
+        });
+        mount(cx, root);
+    });
+    let log = h.rt.app.global::<Log>().clone();
+    (h, log)
+}
+
+fn payload_drag(phase: DragPhase, alt: bool) -> DragEvent {
+    DragEvent {
+        phase,
+        start: Point::new(5., 5.),
+        translation: Point::new(0., 30.),
+        button: prism_core::PointerButton::Primary,
+        modifiers: Modifiers {
+            alt,
+            ..Modifiers::NONE
+        },
+    }
+}
+
+#[test]
+fn a_draggable_payload_enters_moves_over_leaves_and_drops_on_targets_of_its_kind() {
+    let (mut h, log) = board();
+    let card = h.by_name("a");
+    let todo = h.by_name("todo");
+    let done = h.by_name("done");
+    let trash = h.by_name("trash");
+    assert_eq!(h.host.get(card).dnd, (Some("card".into()), vec![]));
+    assert_ne!(h.host.get(card).pointer_mask & 4, 0, "it reports its drags");
+    assert_eq!(h.host.get(todo).dnd, (None, vec!["card".into()]));
+    assert_eq!(h.host.get(trash).dnd, (None, vec!["file".into()]));
+    let at = |target, y| {
+        Some(prism_core::DropPoint {
+            target,
+            position: Point::new(0., y),
+        })
+    };
+    let ev = |phase, over| UiEvent::PayloadDrag(card, payload_drag(phase, false), over);
+    h.dispatch(ev(DragPhase::Start, at(todo, 10.)));
+    h.dispatch(ev(DragPhase::Move, at(todo, 20.)));
+    // Over its own element, or a target of other kinds: over nothing.
+    h.dispatch(ev(DragPhase::Move, at(card, 2.)));
+    h.dispatch(ev(DragPhase::Move, at(trash, 2.)));
+    h.dispatch(ev(DragPhase::Move, at(done, 40.)));
+    h.dispatch(UiEvent::PayloadDrag(
+        card,
+        payload_drag(DragPhase::End, true),
+        at(done, 44.),
+    ));
+    assert_eq!(
+        *log.borrow(),
+        [
+            "todo Enter a 10",
+            "todo Move a 20",
+            "todo Leave a 20",
+            "done Enter a 40",
+            "drop done a 44 true",
+            "done Leave a 44",
+        ]
+    );
+    // A cancelled drag drops nothing; released over nothing, nothing either.
+    log.borrow_mut().clear();
+    h.dispatch(ev(DragPhase::Start, at(done, 1.)));
+    h.dispatch(ev(DragPhase::Cancel, at(done, 1.)));
+    h.dispatch(ev(DragPhase::Start, at(done, 1.)));
+    h.dispatch(ev(DragPhase::End, None));
+    assert_eq!(
+        *log.borrow(),
+        [
+            "done Enter a 1",
+            "done Leave a 1",
+            "done Enter a 1",
+            "done Leave a 1",
+        ]
+    );
+    // A plain drag report (a backend that finds no target) is over nothing;
+    // the test harness drags like a backend that does.
+    log.borrow_mut().clear();
+    h.dispatch(UiEvent::Drag(card, payload_drag(DragPhase::Start, false)));
+    h.dispatch(UiEvent::Drag(card, payload_drag(DragPhase::End, false)));
+    assert!(log.borrow().is_empty());
+    let b = h.by_name("b");
+    h.drag_payload_to(b, todo, Point::new(3., 7.));
+    assert_eq!(
+        log.borrow().last().map(String::as_str),
+        Some("todo Leave b 7")
+    );
+    assert!(log.borrow().contains(&"drop todo b 7 false".to_string()));
+}

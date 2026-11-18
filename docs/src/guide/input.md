@@ -221,6 +221,71 @@ have no drags on views. A long touch can only be one thing: don't give the
 same element a context menu (on the web the drag wins and the menu opens
 with the mouse or the keyboard only).
 
+## Drag and drop between elements
+
+```rust
+// A card carries its id; columns take cards.
+card.draggable(DragPayload::new("card", task.id.to_string()))
+
+scroll()                                       // a column, scrolling
+    .children(cards)
+    .drop_hover(|s| s.bg(theme.accent.with_alpha(0.12)))
+    .on_drag_over("card", cx.listener(|this, e: &DragOverEvent, cx| {
+        // The insertion line: `e.position` is in the column's content.
+        this.slot = match e.phase {
+            DragOverPhase::Leave => None,
+            _ => Some(slot_at(e.position.y)),
+        };
+    }))
+    .on_drop_payload("card", cx.listener(move |this, e: &DropEvent, cx| {
+        this.move_card(&e.payload.data, column, slot_at(e.position.y));
+    }))
+```
+
+`.draggable(payload)` lets an element be dragged onto drop targets inside
+the app (#251): a card into another column, a library item onto a canvas, a
+row into a tree. A `DragPayload` has a `kind` (which targets take it) and the
+app's `data` (an id, JSON); nothing goes through the system's pasteboard.
+While it is dragged:
+
+- a see-through snapshot of the element follows the pointer, held where it
+  was grabbed (`.preview(DragPreview::None)` when the app moves the element
+  itself with `on_drag`, which still runs alongside);
+- the innermost element under the pointer that takes the kind (with
+  `.on_drop_payload(kind, …)` or `.on_drag_over(kind, …)`, the dragged
+  element and what is inside it left out) is the target: it gets the
+  `drop_hover` style and `on_drag_over` with `Enter`, `Move` and `Leave`;
+- positions (`DragOverEvent::position`, `DropEvent::position`) are in the
+  target's coordinates, in its content for a scroll view: scrolling is
+  included, the app does no geometry;
+- a scroll view whose edge the pointer stays near (44 pt) scrolls, faster
+  nearer the edge, and the drag is reported again over what moved under it;
+- the release over a target calls its `on_drop_payload` (with the keys held:
+  ⌥ to copy), then `on_drag_over` hears `Leave`. A release over nothing, or
+  a cancelled drag, drops nothing.
+
+It starts like `on_drag`: past the platform's slop, with the buttons of
+`drag_buttons`. The platform's own hit-testing finds what is under the
+pointer, so clipping, scrolling and what is drawn above what are the
+platform's. Offer the move another way too (a menu, keys): not every user
+can drag. `cx.capabilities().drag_and_drop` is `false` on tvOS and watchOS,
+which have no pointer drags. `prism_testing::Harness::drag_payload_to`
+drags one in tests.
+
+| | Hit-testing | Preview | Autoscroll |
+|---|---|---|---|
+| Web | `elementFromPoint` during the pointer events of the drag (not HTML5 drag and drop: the same drag as `on_drag`, touch included, keys live, no click after it) | a copy of the element (`.prism-drag-preview`), `pointer-events: none` | the nearest scrollable ancestor, every animation frame |
+| macOS | `hitTest:` in the window | a cached image of the view (`cacheDisplayInRect:`) | `NSClipView`, every 16 ms |
+| iOS, iPadOS, visionOS | `hitTest:withEvent:` | `snapshotViewAfterScreenUpdates:` | `UIScrollView.contentOffset` |
+| Linux (GTK) | `gtk_widget_pick` | a `GtkWidgetPaintable` of the widget | the `ScrolledWindow`'s adjustments |
+| Android | the view tree, children drawn last first | a bitmap of the view in the window's decor | `ScrollView` / `HorizontalScrollView.scrollBy` |
+
+Native backends share the work in `prism_native::dnd`: they report the drag
+as any drag and the renderer finds the target, sets its state and the
+preview. Targets in sheets and popovers shown in their own window (macOS)
+are not reached from the main window. A drag inside a scroll view on a touch
+screen may be taken by the scroll view: see the long-press drags of #243.
+
 ## Wheel and pinch
 
 ```rust

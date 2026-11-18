@@ -54,18 +54,172 @@ final class PrismInput {
     }
 
     static void drag(PrismHost.Node n, String phase, MotionEvent e) {
+        float[] c = e == null ? null : center(e, -1);
+        JSONObject ev = dragEvent(n, phase, c);
+        // A draggable's drag (#251): with the drop target under the finger.
+        if (n.dragKind != null) payload(n, phase, c, ev);
+        PrismHost.send(ev);
+    }
+
+    /** A drag report of `n`, the pointers' raw center at `c` (null: none). */
+    static JSONObject dragEvent(PrismHost.Node n, String phase, float[] c) {
         JSONObject ev = PrismHost.event("drag", n.id);
         put(ev, "phase", phase);
         put(ev, "x", dp(n.down[0]));
         put(ev, "y", dp(n.down[1]));
         // Raw coordinates: the view may move while it is dragged (reordering).
         // The fingers' center: a second finger (a pinch) moves it too.
-        float[] c = e == null ? null : center(e, -1);
         put(ev, "dx", c == null ? 0 : dp(c[0] - n.down[2]));
         put(ev, "dy", c == null ? 0 : dp(c[1] - n.down[3]));
         // The button and keys it started with (#136).
         put(ev, "button", n.dragButton);
         put(ev, "mods", n.dragMods);
+        return ev;
+    }
+
+    // --- Drag and drop between elements (#251) ------------------------------------------
+
+    /** The payload being dragged: its node, preview, target, scroll view to scroll. */
+    private static PrismHost.Node payloadNode, payloadOver;
+    private static android.widget.ImageView payloadPreview;
+    private static float[] payloadAt, payloadGrab;
+    private static View payloadScroller;
+    private static int payloadStepX, payloadStepY;
+    private static boolean payloadTicking;
+    static final float PAYLOAD_EDGE = 44, PAYLOAD_STEP = 14;
+
+    /** Locates the drop target under `c` (raw pixels), moves the preview, adds `over` to `ev`. */
+    static void payload(PrismHost.Node n, String phase, float[] c, JSONObject ev) {
+        boolean ending = phase.equals("end") || phase.equals("cancel");
+        if (phase.equals("start") || payloadNode != n) payloadStart(n);
+        if (c == null) c = payloadAt;
+        if (c == null) { if (ending) payloadEnd(); return; }
+        payloadAt = c;
+        if (payloadPreview != null) {
+            int[] decor = new int[2];
+            ((View) payloadPreview.getParent()).getLocationOnScreen(decor);
+            payloadPreview.setTranslationX(c[0] - payloadGrab[0] - decor[0]);
+            payloadPreview.setTranslationY(c[1] - payloadGrab[1] - decor[1]);
+        }
+        View hit = PrismHost.root == null ? null : viewAt(PrismHost.root, c[0], c[1]);
+        PrismHost.Node target = phase.equals("cancel") ? null : targetAt(n, hit);
+        if (target != payloadOver && !ending) {
+            if (payloadOver != null) PrismHost.state(payloadOver, "drop_hover", false);
+            if (target != null) PrismHost.state(target, "drop_hover", true);
+            payloadOver = target;
+        }
+        if (target != null) {
+            int[] at = new int[2];
+            target.view.getLocationOnScreen(at);
+            put(ev, "over", target.id);
+            put(ev, "ox", dp(c[0] - at[0] + target.view.getScrollX()));
+            put(ev, "oy", dp(c[1] - at[1] + target.view.getScrollY()));
+        }
+        if (ending) { payloadEnd(); return; }
+        autoscroll(n, hit, c);
+    }
+
+    private static void payloadStart(PrismHost.Node n) {
+        payloadEnd();
+        payloadNode = n;
+        int[] at = new int[2];
+        n.view.getLocationOnScreen(at);
+        payloadGrab = new float[]{n.down[2] - at[0], n.down[3] - at[1]};
+        int w = n.view.getWidth(), h = n.view.getHeight();
+        if (!n.dragPreview || w <= 0 || h <= 0 || PrismHost.activity == null) return;
+        // A see-through picture of the element, above everything, not touchable.
+        android.graphics.Bitmap bitmap = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888);
+        n.view.draw(new android.graphics.Canvas(bitmap));
+        android.widget.ImageView preview = new android.widget.ImageView(n.view.getContext());
+        preview.setImageBitmap(bitmap);
+        preview.setAlpha(0.85f);
+        preview.setElevation(12 * PrismHost.density);
+        preview.setClickable(false);
+        preview.setFocusable(false);
+        preview.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+        ViewGroup decor = (ViewGroup) PrismHost.activity.getWindow().getDecorView();
+        decor.addView(preview, new FrameLayout.LayoutParams(w, h));
+        payloadPreview = preview;
+    }
+
+    private static void payloadEnd() {
+        if (payloadOver != null) PrismHost.state(payloadOver, "drop_hover", false);
+        if (payloadPreview != null && payloadPreview.getParent() != null) {
+            ((ViewGroup) payloadPreview.getParent()).removeView(payloadPreview);
+        }
+        payloadNode = null;
+        payloadOver = null;
+        payloadPreview = null;
+        payloadAt = null;
+        payloadScroller = null;
+    }
+
+    /** The innermost visible Prism view under raw (`x`, `y`), children drawn last first. */
+    private static View viewAt(View v, float x, float y) {
+        if (v.getVisibility() != View.VISIBLE || v == payloadPreview) return null;
+        android.graphics.Rect r = new android.graphics.Rect();
+        if (!v.getGlobalVisibleRect(r) || !r.contains((int) x, (int) y)) return null;
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = g.getChildCount() - 1; i >= 0; i--) {
+                View hit = viewAt(g.getChildAt(i), x, y);
+                if (hit != null) return hit;
+            }
+        }
+        return v;
+    }
+
+    /** The innermost node around `hit` taking `n`'s kind, leaving out `n` and what is in it. */
+    private static PrismHost.Node targetAt(PrismHost.Node n, View hit) {
+        java.util.List<PrismHost.Node> chain = new java.util.ArrayList<>();
+        for (View v = hit; v != null; v = v.getParent() instanceof View ? (View) v.getParent() : null) {
+            PrismHost.Node node = byView.get(v);
+            if (node != null && (chain.isEmpty() || chain.get(chain.size() - 1) != node)) chain.add(node);
+        }
+        int from = chain.indexOf(n) + 1;
+        for (int i = from; i < chain.size(); i++) {
+            PrismHost.Node t = chain.get(i);
+            if (t.accepts != null && t.accepts.contains(n.dragKind)) return t;
+        }
+        return null;
+    }
+
+    /** Scrolls the scroll view whose edge the finger stays near, every frame. */
+    private static void autoscroll(PrismHost.Node n, View hit, float[] c) {
+        payloadScroller = null;
+        float edge = PAYLOAD_EDGE * PrismHost.density, step = PAYLOAD_STEP * PrismHost.density;
+        for (View v = hit; v != null; v = v.getParent() instanceof View ? (View) v.getParent() : null) {
+            boolean vertical = v instanceof android.widget.ScrollView, horizontal = v instanceof android.widget.HorizontalScrollView;
+            if (!vertical && !horizontal) continue;
+            int[] at = new int[2];
+            v.getLocationOnScreen(at);
+            float from = vertical ? c[1] - at[1] : c[0] - at[0];
+            float length = vertical ? v.getHeight() : v.getWidth();
+            float e = Math.min(edge, length / 3);
+            float speed = from < e ? -step * (1 - Math.max(0, from) / e)
+                    : from > length - e ? step * (1 - Math.max(0, length - from) / e) : 0;
+            if (speed == 0) continue;
+            payloadScroller = v;
+            payloadStepX = vertical ? 0 : Math.round(speed);
+            payloadStepY = vertical ? Math.round(speed) : 0;
+            break;
+        }
+        if (payloadScroller != null && !payloadTicking) {
+            payloadTicking = true;
+            PrismHost.main.postDelayed(() -> tick(n), 16);
+        }
+    }
+
+    private static void tick(PrismHost.Node n) {
+        payloadTicking = false;
+        View s = payloadScroller;
+        if (payloadNode != n || s == null || payloadAt == null) return;
+        int x = s.getScrollX(), y = s.getScrollY();
+        s.scrollBy(payloadStepX, payloadStepY);
+        if (s.getScrollX() == x && s.getScrollY() == y) { payloadScroller = null; return; }
+        // The content moved under the finger: where it is now.
+        JSONObject ev = dragEvent(n, "move", payloadAt);
+        payload(n, "move", payloadAt, ev);
         PrismHost.send(ev);
     }
 

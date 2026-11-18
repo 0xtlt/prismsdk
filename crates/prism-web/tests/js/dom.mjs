@@ -100,6 +100,11 @@ export class Element extends Node {
     this.clientWidth = 0;
     this.clientHeight = 0;
     this.scrollTop = 0;
+    this.scrollLeft = 0;
+    this.scrollWidth = 0;
+    this.scrollHeight = 0;
+    this.clientLeft = 0;
+    this.clientTop = 0;
     const el = this;
     this.dataset = new Proxy({}, {
       get: (_, k) => (typeof k === "string" ? el.getAttribute("data-" + kebab(k)) ?? undefined : undefined),
@@ -276,6 +281,11 @@ export class Element extends Node {
   }
   setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
   click() { this.dispatchEvent({ type: "click" }); }
+  /** Scrolls within the content (`scrollWidth`, `scrollHeight`). */
+  scrollBy(x, y) {
+    this.scrollLeft = Math.max(0, Math.min(this.scrollLeft + x, this.scrollWidth - this.clientWidth));
+    this.scrollTop = Math.max(0, Math.min(this.scrollTop + y, this.scrollHeight - this.clientHeight));
+  }
   focus() { this.ownerDocument.activeElement = this; }
   blur() { if (this.ownerDocument.activeElement === this) this.ownerDocument.activeElement = this.ownerDocument.body; }
   getBoundingClientRect() { return { left: 0, top: 0, width: this.clientWidth, height: this.clientHeight, right: this.clientWidth, bottom: this.clientHeight }; }
@@ -574,8 +584,9 @@ export function boot({ ssr = "", layers = null, path = "/", base = "", glyphs = 
     ResizeObserver: class { constructor(cb) { this.cb = cb; win.resizeObservers.push(this); this.targets = []; } observe(t) { this.targets.push(t); } unobserve(t) { this.targets = this.targets.filter((x) => x !== t); } },
     resizeObservers: [],
     matchMedia: () => ({ matches: false, addEventListener() {} }),
-    getComputedStyle: (el) => ({ position: el.style.position || "static" }),
+    getComputedStyle: (el) => ({ position: el.style.position || "static", overflowX: el.style.overflowX || "visible", overflowY: el.style.overflowY || "visible" }),
     requestAnimationFrame: (fn) => frames.push(fn),
+    cancelAnimationFrame: () => {},
     setTimeout: (fn, ms) => timers.push({ fn, ms }) ,
     clearTimeout: () => {},
     setInterval: () => 0,

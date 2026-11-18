@@ -2322,7 +2322,9 @@ pub trait Styled: Sized {
     }
     /// Style changes while files are dragged over a drop target that
     /// accepts them ([`Div::on_drop_files`](crate::Div::on_drop_files),
-    /// #111): the highlight of an upload zone.
+    /// #111): the highlight of an upload zone. Also while an app payload it
+    /// accepts is dragged over it ([`Div::on_drop_payload`](crate::Div::on_drop_payload),
+    /// #251): the column a card would land in.
     fn drop_hover(self, f: impl Fn(Style) -> Style + 'static) -> Self {
         self.with_style(|s| {
             s.states.push(

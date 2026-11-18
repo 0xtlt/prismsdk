@@ -1604,6 +1604,84 @@ fn op_with_text(patches: &Value, text: &str) -> u64 {
         .unwrap_or_else(|| panic!("no text {text:?} in {patches}"))
 }
 
+/// #251: a draggable's drag over a target (`over`, `ox`, `oy`) reaches the
+/// target's `on_drag_over` and, released, its `on_drop_payload`.
+#[test]
+fn a_dragged_payload_reaches_the_target_the_page_found() {
+    struct Board {
+        log: String,
+    }
+    impl Render for Board {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .child(
+                    div()
+                        .child(text("card"))
+                        .draggable(DragPayload::new("card", "c1")),
+                )
+                .child(
+                    div()
+                        .on_drag_over(
+                            "card",
+                            cx.listener(|this, e: &DragOverEvent, _| {
+                                this.log = format!("{:?} {}", e.phase, e.position.y);
+                            }),
+                        )
+                        .on_drop_payload(
+                            "card",
+                            cx.listener(|this, e: &DropEvent, _| {
+                                this.log = format!("dropped {} {}", e.payload.data, e.position.y);
+                            }),
+                        )
+                        .drop_hover(|s| s.bg(rgb(0xeeeeff)))
+                        .child(text(self.log.clone())),
+                )
+        }
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Board { log: "-".into() });
+        cx.set_root(root);
+    });
+    let (app, dir) = web_app(init, "dnd");
+    let page = Page::open(&app, "/ws?path=%2F&w=1280&h=800");
+    let reset = page.next();
+    let ops = reset["p"].as_array().unwrap();
+    let dnd: Vec<&Value> = ops.iter().filter(|p| p["op"] == "dnd").collect();
+    let card = dnd.iter().find(|p| p["kind"] == "card").expect("the card");
+    assert_eq!(card["preview"], json!(true));
+    let column = dnd
+        .iter()
+        .find(|p| p["accepts"] == json!(["card"]))
+        .expect("the column");
+    let (card, column) = (card["id"].as_u64().unwrap(), column["id"].as_u64().unwrap());
+    let log = op_with_text(&reset["p"], "-");
+    let drag = |phase: &str, oy: f64| {
+        json!({ "t": "drag", "id": card, "phase": phase, "x": 1, "y": 1, "dx": 0, "dy": oy,
+            "over": column, "ox": 5, "oy": oy })
+    };
+    page.send(drag("start", 12.));
+    assert_eq!(
+        page.next(),
+        json!({ "t": "patch", "p": [{ "op": "text", "id": log, "text": "Enter 12" }] })
+    );
+    page.send(drag("end", 30.));
+    assert_eq!(
+        page.next(),
+        json!({ "t": "patch", "p": [{ "op": "text", "id": log, "text": "Leave 30" }] })
+    );
+    // Over nothing (no `over`): no drop.
+    page.send(
+        json!({ "t": "drag", "id": card, "phase": "start", "x": 1, "y": 1, "dx": 0, "dy": 0 }),
+    );
+    page.send(json!({ "t": "drag", "id": card, "phase": "end", "x": 1, "y": 1, "dx": 0, "dy": 0 }));
+    page.send(drag("start", 1.));
+    assert_eq!(
+        page.next(),
+        json!({ "t": "patch", "p": [{ "op": "text", "id": log, "text": "Enter 1" }] })
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// #111: files dropped on a drop target reach its handler, checked by the
 /// server (the target exists, accepts them, at most their size).
 #[test]

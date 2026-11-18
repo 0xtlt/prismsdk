@@ -75,6 +75,39 @@ pub struct Fake {
     /// Web views (#62): messages posted, reloads.
     pub web_messages: Vec<(NodeId, String)>,
     pub web_reloads: Vec<NodeId>,
+    /// Drag and drop (#251): scroll offsets, the preview's corner, the
+    /// views a payload hovers.
+    pub scroll_offsets: HashMap<NodeId, (f32, f32)>,
+    pub preview: Option<(NodeId, (f32, f32))>,
+    pub drop_hover: Vec<NodeId>,
+}
+
+impl Fake {
+    fn parent(&self, id: NodeId) -> Option<NodeId> {
+        self.children
+            .iter()
+            .find(|(_, kids)| kids.contains(&id))
+            .map(|(p, _)| *p)
+    }
+
+    /// The innermost view at (`x`, `y`) in `id`'s box (its frame's
+    /// origin), last children first, inside scrolled content.
+    fn hit(&self, id: NodeId, x: f32, y: f32) -> Option<NodeId> {
+        let (_, _, w, h) = *self.frames.get(&id)?;
+        if x < 0. || y < 0. || x >= w || y >= h {
+            return None;
+        }
+        let (sx, sy) = self.scroll_offsets.get(&id).copied().unwrap_or_default();
+        for kid in self.children.get(&id).into_iter().flatten().rev() {
+            let Some((kx, ky, _, _)) = self.frames.get(kid) else {
+                continue;
+            };
+            if let Some(hit) = self.hit(*kid, x + sx - kx, y + sy - ky) {
+                return Some(hit);
+            }
+        }
+        Some(id)
+    }
 }
 
 impl Fake {
@@ -299,6 +332,43 @@ impl Widgets for Fake {
     }
     fn reload_web_view(&mut self, v: &NodeId) {
         self.web_reloads.push(*v);
+    }
+    fn window_origin(&mut self, v: &NodeId) -> Option<(f32, f32)> {
+        let (mut x, mut y, _, _) = *self.frames.get(v)?;
+        let mut node = self.parent(*v);
+        while let Some(n) = node {
+            let (fx, fy, _, _) = self.frames.get(&n).copied().unwrap_or_default();
+            let (sx, sy) = self.scroll_offsets.get(&n).copied().unwrap_or_default();
+            x += fx - sx;
+            y += fy - sy;
+            node = self.parent(n);
+        }
+        Some((x, y))
+    }
+    fn node_at(&mut self, x: f32, y: f32) -> Option<NodeId> {
+        let root = self.root?;
+        let (rx, ry, _, _) = self.frames.get(&root).copied().unwrap_or_default();
+        self.hit(root, x - rx, y - ry)
+    }
+    fn scroll_offset(&mut self, v: &NodeId) -> (f32, f32) {
+        self.scroll_offsets.get(v).copied().unwrap_or_default()
+    }
+    fn scroll_to(&mut self, v: &NodeId, x: f32, y: f32, relative: bool, _animated: bool) {
+        let (_, _, w, h) = self.frames.get(v).copied().unwrap_or_default();
+        let (cw, ch) = self.content.get(v).copied().unwrap_or((w, h));
+        let (ox, oy) = self.scroll_offsets.get(v).copied().unwrap_or_default();
+        let (x, y) = if relative { (ox + x, oy + y) } else { (x, y) };
+        let clamped = (x.clamp(0., (cw - w).max(0.)), y.clamp(0., (ch - h).max(0.)));
+        self.scroll_offsets.insert(*v, clamped);
+    }
+    fn set_drag_preview(&mut self, v: &NodeId, at: Option<(f32, f32)>) {
+        self.preview = at.map(|at| (*v, at));
+    }
+    fn set_drop_hover(&mut self, v: &NodeId, on: bool) {
+        self.drop_hover.retain(|n| n != v);
+        if on {
+            self.drop_hover.push(*v);
+        }
     }
     /// Overlays get a 300 x 400 area at (10, 20).
     fn overlay_viewport(&mut self, _: &NodeId, _: &NodeId) -> Viewport {

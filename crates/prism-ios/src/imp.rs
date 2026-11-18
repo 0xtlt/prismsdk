@@ -144,8 +144,46 @@ pub(crate) fn relayout_all() {
 
 pub(crate) fn dispatch(event: UiEvent) {
     with_state(|s| {
+        // A draggable's drag, with the drop target under the finger (#251).
+        let (event, relayout) = s.renderer.locate_drag(event);
+        if relayout {
+            s.relayout();
+        }
         let patches = s.runtime.dispatch(event);
         s.commit(patches);
+        if s.renderer.autoscroll_due() {
+            schedule_autoscroll();
+        }
+    });
+}
+
+thread_local! {
+    /// An autoscroll step is scheduled (#251).
+    static AUTOSCROLL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// While a dragged payload stays near a scroll view's edge (#251): a step
+/// every frame, the drag reported again over what moved under it.
+fn schedule_autoscroll() {
+    if AUTOSCROLL.replace(true) {
+        return;
+    }
+    let when = dispatch2::DispatchTime::try_from(prism_native::dnd::AUTOSCROLL_INTERVAL)
+        .unwrap_or(dispatch2::DispatchTime::NOW);
+    let _ = dispatch2::DispatchQueue::main().after(when, || {
+        AUTOSCROLL.set(false);
+        let mut step = None;
+        with_state(|s| {
+            if let Some((event, relayout)) = s.renderer.autoscroll() {
+                if relayout {
+                    s.relayout();
+                }
+                step = Some(event);
+            }
+        });
+        if let Some(event) = step {
+            dispatch(event);
+        }
     });
 }
 
@@ -1275,6 +1313,7 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
         layers: Vec::new(),
         layer_window: None,
         root_tabs: None,
+        drag_preview: None,
     });
     #[cfg(target_os = "tvos")]
     renderer.set_zoom(crate::tv::zoom());
@@ -1482,6 +1521,8 @@ pub struct UiKit {
     layer_window: Option<(Retained<UIWindow>, Retained<UIView>)>,
     /// The root tab bar, which layers (toasts) keep clear of.
     root_tabs: Option<Retained<UITabBarController>>,
+    /// The snapshot following a dragged payload (#251).
+    drag_preview: Option<Retained<UIView>>,
 }
 
 // --- Content area (#28) ---
@@ -3296,6 +3337,65 @@ impl Widgets for UiKit {
         crate::interaction::set_drag_delay(view.ui(), ms, &self.target);
         #[cfg(target_os = "tvos")]
         let _ = (view, ms);
+    }
+
+    // --- Drag and drop between elements (#251) ---
+
+    fn window_origin(&mut self, view: &View) -> Option<(f32, f32)> {
+        let v = view.ui();
+        v.window()?;
+        let r = v.convertRect_toView(v.bounds(), Some(&self.root));
+        Some((r.origin.x as f32, r.origin.y as f32))
+    }
+
+    fn node_at(&mut self, x: f32, y: f32) -> Option<NodeId> {
+        let p = objc2_core_foundation::CGPoint::new(x as f64, y as f64);
+        let mut view = self.root.hitTest_withEvent(p, None);
+        while let Some(v) = view {
+            if v.tag() != 0 {
+                return Some(v.tag() as NodeId);
+            }
+            view = v.superview();
+        }
+        None
+    }
+
+    fn scroll_offset(&mut self, view: &View) -> (f32, f32) {
+        match view {
+            View::Scroll(s) => {
+                let o = s.contentOffset();
+                (o.x as f32, o.y as f32)
+            }
+            _ => (0., 0.),
+        }
+    }
+
+    fn set_drag_preview(&mut self, view: &View, at: Option<(f32, f32)>) {
+        let Some((x, y)) = at else {
+            if let Some(p) = self.drag_preview.take() {
+                p.removeFromSuperview();
+            }
+            return;
+        };
+        if self.drag_preview.is_none() {
+            let Some(snapshot) = view.ui().snapshotViewAfterScreenUpdates(false) else {
+                return;
+            };
+            // Never what is under the finger: hit-testing skips it.
+            snapshot.setUserInteractionEnabled(false);
+            snapshot.setAlpha(0.85);
+            let layer = snapshot.layer();
+            layer.setShadowOpacity(0.25);
+            layer.setShadowRadius(10.);
+            layer.setShadowOffset(objc2_core_foundation::CGSize::new(0., 4.));
+            self.root.addSubview(&snapshot);
+            self.drag_preview = Some(snapshot);
+        }
+        if let Some(p) = &self.drag_preview {
+            let mut frame = p.frame();
+            frame.origin = objc2_core_foundation::CGPoint::new(x as f64, y as f64);
+            p.setFrame(frame);
+        }
     }
 
     fn set_drop_target(&mut self, view: &View, types: Option<&[String]>) {

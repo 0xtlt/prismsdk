@@ -64,6 +64,7 @@ impl AndroidServices {
                 web_view: true,
                 // View.OnDragListener (#111): files from another app.
                 drop_files: true,
+                drag_and_drop: true,
                 ..Default::default()
             },
             ops: Vec::new(),

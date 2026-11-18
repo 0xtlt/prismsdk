@@ -99,8 +99,9 @@ pub use element::{STACK_CLOSABLE, STACK_NO_HEADER};
 pub use element::{cover_crop, picture_position, picture_source};
 pub use element::{picture_data, svg};
 pub use events::{
-    CaretEdge, CaretEdges, DragEvent, DragPhase, DropProgress, FileDropEvent, GesturePhase,
-    HoverEvent, KeyEvent, LayoutEvent, MagnifyEvent, Modifiers, Point, PointerButton, PointerEvent,
+    CaretEdge, CaretEdges, DragEvent, DragOverEvent, DragOverPhase, DragPayload, DragPhase,
+    DragPreview, DropEvent, DropPoint, DropProgress, FileDropEvent, GesturePhase, HoverEvent,
+    KeyEvent, LayoutEvent, MagnifyEvent, Modifiers, Point, PointerButton, PointerEvent,
     PointerPhase, Rect, WheelEvent,
 };
 pub use fonts::{FontFace, FontSource, Stylesheet};
@@ -241,6 +242,16 @@ pub struct Runtime {
     /// (`consumes_key_event`, #231): its press acts on the group when
     /// dispatched. A key the backend let the field have does not.
     across_key: Option<(String, u8)>,
+    /// The payload being dragged (#251).
+    drag_session: Option<DragSession>,
+}
+
+/// A [`DragPayload`] being dragged (#251): from which node, and the target
+/// it is over with the last position there.
+struct DragSession {
+    source: NodeId,
+    payload: DragPayload,
+    over: Option<(NodeId, Point)>,
 }
 
 impl Runtime {
@@ -301,6 +312,7 @@ impl Runtime {
             reconciler: Reconciler::new(),
             dev_state: std::env::var_os("PRISM_DEV_STATE").map(|p| (p.into(), String::new())),
             across_key: None,
+            drag_session: None,
         }
     }
 
@@ -470,10 +482,13 @@ impl Runtime {
             }
             UiEvent::Pointer(id, e) => self.dispatch_pointer(id, e),
             UiEvent::Drag(id, e) => {
-                if let Some(h) = self.reconciler.drag_handler(id) {
+                if self.reconciler.drag_payload(id).is_some() {
+                    self.payload_drag(id, e, None);
+                } else if let Some(h) = self.reconciler.drag_handler(id) {
                     h(&e, &mut self.app);
                 }
             }
+            UiEvent::PayloadDrag(id, e, over) => self.payload_drag(id, e, over),
             UiEvent::Wheel(id, e) => {
                 if let Some(h) = self.reconciler.wheel_handler(id) {
                     h(&e, &mut self.app);
@@ -656,6 +671,96 @@ impl Runtime {
         }
     }
 
+    /// A drag of a draggable node (#251): its own `on_drag`, then the drop
+    /// targets' `on_drag_over` and, at the release, `on_drop_payload`.
+    fn payload_drag(&mut self, id: NodeId, e: DragEvent, over: Option<events::DropPoint>) {
+        if let Some(h) = self.reconciler.drag_handler(id) {
+            h(&e, &mut self.app);
+        }
+        // What is carried is the payload the drag started with.
+        let session = match self.drag_session.take() {
+            Some(s) if s.source == id && e.phase != DragPhase::Start => Some(s),
+            previous => {
+                if let Some(old) = previous {
+                    self.leave_target(&old);
+                }
+                self.reconciler
+                    .drag_payload(id)
+                    .cloned()
+                    .map(|payload| DragSession {
+                        source: id,
+                        payload,
+                        over: None,
+                    })
+            }
+        };
+        let Some(mut session) = session else { return };
+        let kind = session.payload.kind.clone();
+        let over =
+            over.filter(|p| p.target != id && self.reconciler.accepts_payload(p.target, &kind));
+        let modifiers = e.modifiers;
+        match e.phase {
+            DragPhase::Start | DragPhase::Move => {
+                let phase = match (session.over, over) {
+                    (Some((old, _)), Some(p)) if old == p.target => DragOverPhase::Move,
+                    _ => {
+                        self.leave_target(&session);
+                        DragOverPhase::Enter
+                    }
+                };
+                session.over = over.map(|p| (p.target, p.position));
+                if let Some(p) = over
+                    && let Some(h) = self.reconciler.drag_over_handler(p.target, &kind)
+                {
+                    let event = DragOverEvent {
+                        phase,
+                        payload: session.payload.clone(),
+                        position: p.position,
+                        modifiers,
+                    };
+                    h(&event, &mut self.app);
+                }
+                self.drag_session = Some(session);
+            }
+            DragPhase::End => {
+                if let Some(p) = over
+                    && let Some(h) = self.reconciler.drop_payload_handler(p.target, &kind)
+                {
+                    let event = DropEvent {
+                        payload: session.payload.clone(),
+                        position: p.position,
+                        modifiers,
+                    };
+                    h(&event, &mut self.app);
+                }
+                if let Some(p) = over {
+                    session.over = Some((p.target, p.position));
+                }
+                self.leave_target(&session);
+            }
+            DragPhase::Cancel => self.leave_target(&session),
+        }
+    }
+
+    /// The payload left the target it was over (#251), if any.
+    fn leave_target(&mut self, session: &DragSession) {
+        let Some((target, position)) = session.over else {
+            return;
+        };
+        if let Some(h) = self
+            .reconciler
+            .drag_over_handler(target, &session.payload.kind)
+        {
+            let event = DragOverEvent {
+                phase: DragOverPhase::Leave,
+                payload: session.payload.clone(),
+                position,
+                modifiers: Modifiers::NONE,
+            };
+            h(&event, &mut self.app);
+        }
+    }
+
     /// Runs ready async tasks and due timers, then re-renders what changed.
     /// Backends call it when woken (see `RuntimeOptions::wake_ui`) and at
     /// [`next_timer`](Runtime::next_timer).
@@ -667,6 +772,11 @@ impl Runtime {
         } else {
             Vec::new()
         }
+    }
+
+    /// The mounted node named `name` (`.id(name)`), if any.
+    pub fn node_named(&self, name: &str) -> Option<NodeId> {
+        self.reconciler.node_named(name)
     }
 
     /// When the earliest pending timer is due, if any.
@@ -1036,10 +1146,11 @@ pub mod prelude {
     pub use crate::bar_button;
     // Pointer, keys, choice controls, overlays (#17, #18, #19).
     pub use crate::{
-        DragEvent, DragPhase, DropProgress, FileDropEvent, GesturePhase, HoverEvent, KeyEvent,
-        LayoutEvent, MagnifyEvent, Modifiers, PickFiles, Point, PointerButton, PointerEvent,
-        PointerPhase, PopoverAlign, PopoverSide, Rect, WheelEvent, checkbox, dialog,
-        keyboard_toolbar, popover, radio_group, sheet, time_picker, time_picker_opt,
+        DragEvent, DragOverEvent, DragOverPhase, DragPayload, DragPhase, DragPreview, DropEvent,
+        DropProgress, FileDropEvent, GesturePhase, HoverEvent, KeyEvent, LayoutEvent, MagnifyEvent,
+        Modifiers, PickFiles, Point, PointerButton, PointerEvent, PointerPhase, PopoverAlign,
+        PopoverSide, Rect, WheelEvent, checkbox, dialog, keyboard_toolbar, popover, radio_group,
+        sheet, time_picker, time_picker_opt,
     };
     // Anchored overlays without a dim (#79).
     pub use crate::Backdrop;

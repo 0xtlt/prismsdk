@@ -115,6 +115,7 @@ impl MacServices {
                 // ASAuthorizationPlatformPublicKeyCredentialProvider (#94).
                 passkeys: prism_native::apple::passkeys_available(),
                 drop_files: true,
+                drag_and_drop: true,
             },
             activities: HashMap::new(),
         }
