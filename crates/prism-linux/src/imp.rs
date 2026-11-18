@@ -2366,6 +2366,7 @@ impl Widgets for Gtk {
         let id = view.id();
         TYPED.with(|t| t.borrow_mut().remove(&id));
         forget_selection(id);
+        crate::carets::forget(id);
         crate::navbar::forget(id);
         self.shapes.remove(&id);
         self.scenes.remove(&id);
@@ -3341,6 +3342,14 @@ impl Widgets for Gtk {
             }
             View::TextArea(_, t) => t.select(start, end),
             _ => {}
+        }
+    }
+
+    /// Other people's carets (#240): text areas and rich inputs (a GTK
+    /// entry has no layout to draw them with).
+    fn set_remote_carets(&mut self, view: &View, carets: &[prism_core::RemoteCaret]) {
+        if let View::TextArea(id, t) = view {
+            crate::carets::set(*id, t, carets);
         }
     }
 

@@ -203,6 +203,7 @@ impl Backend for HtmlBackend {
                 | Patch::ScrollTo { .. }
                 | Patch::SetSelection { .. }
                 | Patch::SetSelectEvents { .. }
+                | Patch::SetRemoteCarets { .. }
                 | Patch::Focus { .. }
                 | Patch::DismissKeyboard
                 | Patch::ScrollIntoView { .. }

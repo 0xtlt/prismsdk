@@ -14,6 +14,7 @@ mod motion;
 mod navbar;
 mod pictures;
 mod reconcile;
+mod remote_carets;
 mod request;
 mod rich_input;
 mod router;

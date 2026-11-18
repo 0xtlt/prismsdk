@@ -20,6 +20,8 @@ pub struct Forms {
     phone: String,
     website: String,
     notes: String,
+    /// A paragraph edited with others: their carets are drawn in it (#240).
+    shared: Option<String>,
 }
 
 impl Default for Forms {
@@ -36,6 +38,7 @@ impl Default for Forms {
             phone: String::new(),
             website: String::new(),
             notes: String::new(),
+            shared: None,
         }
     }
 }
@@ -178,6 +181,7 @@ impl Render for Forms {
                             ),
                     ),
             )
+            .child(self.shared_draft(cx))
             .child(ui::spinner().label(strings::forms_syncing(cx)))
             .child(
                 div()
@@ -205,6 +209,43 @@ impl Render for Forms {
                                     .tone(ui::Variant::Danger);
                                 ui::show_toast(cx, toast)
                             })),
+                    ),
+            )
+    }
+}
+
+impl Forms {
+    /// A paragraph other people edit too (#240): Camille's caret with her
+    /// name, Noor's selection (idle, her name faded). Their offsets would
+    /// come from the collaboration server; here they follow the text.
+    fn shared_draft(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = Theme::of(cx);
+        let draft = self
+            .shared
+            .get_or_insert_with(|| strings::forms_shared_text(cx))
+            .clone();
+        let len = draft.chars().count();
+        let carets = vec![
+            RemoteCaret::caret(len.min(7), rgb(0xE8590C)).label("Camille"),
+            RemoteCaret::new(len.min(34), len.min(48), rgb(0x1C7ED6))
+                .label("Noor")
+                .idle(true),
+        ];
+        div()
+            .flex_col()
+            .gap(4.)
+            .child(
+                text(strings::forms_shared(cx))
+                    .text_size(13.)
+                    .text_color(t.muted),
+            )
+            .child(
+                text_area()
+                    .value(draft)
+                    .rows(2)
+                    .remote_carets(carets)
+                    .on_input(
+                        cx.listener(|this, e: &InputEvent, _| this.shared = Some(e.value.clone())),
                     ),
             )
     }

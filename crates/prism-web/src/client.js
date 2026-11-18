@@ -1835,6 +1835,179 @@
     if (el._selCheck) el._selCheck();
   }
 
+  // --- Other people's carets (#240) --------------------------------------------
+  //
+  // A layer next to the field (a sibling: an input holds no children, and a
+  // rich input's children are its text), laid over it, never hit nor read
+  // by assistive technologies. Each caret is a thin bar in its color with
+  // a name tag, its selection tinted boxes. Offsets are characters, placed
+  // with the field's own layout: ranges of a rich input's DOM, a hidden
+  // copy of a textarea or input. Redrawn after patches, typing, scrolling
+  // and resizing; the field's value, caret, selection and composition are
+  // never touched.
+  const caretFields = new Set();
+  let caretsQueued = false;
+  const caretObserver = typeof ResizeObserver === "function" ? new ResizeObserver(() => queueCarets()) : null;
+  function queueCarets() {
+    if (caretsQueued || !caretFields.size) return;
+    caretsQueued = true;
+    // Twice: an input scrolls to its caret after the frame that typed.
+    requestAnimationFrame(() => {
+      caretsQueued = false;
+      caretFields.forEach(drawCarets);
+      requestAnimationFrame(() => caretFields.forEach(drawCarets));
+    });
+  }
+  addEventListener("resize", queueCarets);
+  function dropCarets(el) {
+    caretFields.delete(el);
+    caretObserver?.unobserve(el);
+    el._caretLayer?.remove();
+    el._caretLayer = null;
+  }
+  function setRemoteCarets(el, carets) {
+    el._carets = carets && carets.length ? carets : null;
+    if (!el._carets) return dropCarets(el);
+    if (!caretFields.has(el)) {
+      caretFields.add(el);
+      caretObserver?.observe(el);
+    }
+    if (!el._caretBound) {
+      el._caretBound = true;
+      for (const t of ["input", "beforeinput", "scroll", "compositionupdate", "keyup", "pointerup", "blur"]) el.addEventListener(t, queueCarets);
+    }
+    drawCarets(el);
+  }
+  function drawCarets(el) {
+    if (nodes.get(Number(el.dataset.pid)) !== el) return dropCarets(el);
+    let layer = el._caretLayer;
+    if (!layer) {
+      layer = el._caretLayer = document.createElement("div");
+      layer.className = "prism-carets";
+      layer.setAttribute("aria-hidden", "true");
+    }
+    // Right after the field, wherever it moved.
+    if (el.parentNode && (layer.parentNode !== el.parentNode || layer.previousSibling !== el)) {
+      el.parentNode.insertBefore(layer, el.nextSibling);
+    }
+    // One group per caret, kept across updates: a label fades, it doesn't blink.
+    while (layer.childNodes.length > el._carets.length) layer.lastChild.remove();
+    el._carets.forEach((c, i) => {
+      let g = layer.childNodes[i];
+      if (!g) {
+        g = document.createElement("div");
+        g.className = "prism-rcaret";
+        g.innerHTML = '<div class="prism-rsel"></div><div class="prism-rbar"><span class="prism-rlabel"></span></div>';
+        layer.appendChild(g);
+      }
+      g.style.setProperty("--prism-rc", c.color);
+      const label = g.lastChild.firstChild;
+      label.textContent = c.label || "";
+      label.hidden = !c.label;
+      if (c.idle) g.dataset.idle = ""; else delete g.dataset.idle;
+    });
+    placeCarets(el, layer);
+  }
+  /** Lays the layer over the field and its carets over its text. */
+  function placeCarets(el, layer) {
+    try {
+      const op = layer.offsetParent;
+      if (!op || !el.offsetWidth) return;
+      const r = el.getBoundingClientRect(), o = op.getBoundingClientRect();
+      Object.assign(layer.style, {
+        left: `${r.left - o.left - op.clientLeft + op.scrollLeft}px`,
+        top: `${r.top - o.top - op.clientTop + op.scrollTop}px`,
+        width: `${r.width}px`, height: `${r.height}px`,
+      });
+      // What shows of the text: the padding box.
+      const clip = { x: el.clientLeft, y: el.clientTop, w: el.clientWidth, h: el.clientHeight };
+      const geo = el._rich ? richGeometry(el, r) : mirrorGeometry(el, r);
+      el._carets.forEach((c, i) => {
+        const g = layer.childNodes[i];
+        if (!g) return;
+        const { bar, boxes } = geo(Math.min(c.anchor, c.head), Math.max(c.anchor, c.head), c.head);
+        const [sel, barEl] = [g.firstChild, g.lastChild];
+        const shown = boxes.map((b) => {
+          const x = Math.max(b.x, clip.x), y = Math.max(b.y, clip.y);
+          return { x, y, w: Math.min(b.x + b.w, clip.x + clip.w) - x, h: Math.min(b.y + b.h, clip.y + clip.h) - y };
+        }).filter((b) => b.w > 0 && b.h > 0);
+        while (sel.childNodes.length > shown.length) sel.lastChild.remove();
+        shown.forEach((b, j) => {
+          const d = sel.childNodes[j] || sel.appendChild(document.createElement("div"));
+          Object.assign(d.style, { left: `${b.x}px`, top: `${b.y}px`, width: `${b.w}px`, height: `${b.h}px` });
+        });
+        const visible = bar && bar.x >= clip.x - 1 && bar.x <= clip.x + clip.w + 1
+          && bar.y + bar.h > clip.y && bar.y < clip.y + clip.h;
+        barEl.style.display = visible ? "" : "none";
+        if (visible) Object.assign(barEl.style, { left: `${bar.x}px`, top: `${bar.y}px`, height: `${bar.h}px` });
+      });
+    } catch { /* no layout yet */ }
+  }
+  const relBox = (b, r) => ({ x: b.left - r.left, y: b.top - r.top, w: b.width, h: b.height });
+  /** A rich input's carets from ranges of its DOM, relative to its box `r`. */
+  function richGeometry(el, r) {
+    const len = clen(richText(el._model));
+    const range = (a, b) => {
+      const g = document.createRange();
+      const [sn, so] = richPoint(el, Math.min(a, len), true);
+      g.setStart(sn, so);
+      if (b > a) { const [en, eo] = richPoint(el, Math.min(b, len), true); g.setEnd(en, eo); } else g.collapse(true);
+      return g;
+    };
+    const rects = (g) => [...g.getClientRects()].filter((b) => b.height > 0);
+    return (start, end, head) => {
+      const boxes = end > start ? rects(range(start, end)).filter((b) => b.width > 0).map((b) => relBox(b, r)) : [];
+      head = Math.min(head, len);
+      let b = rects(range(head, head))[0], x = b && b.left;
+      // At an edge the browser has no box for: beside the next or the previous character.
+      if (!b && head < len) { b = rects(range(head, head + 1))[0]; x = b && b.left; }
+      if (!b && head > 0) { const all = rects(range(head - 1, head)); b = all[all.length - 1]; x = b && b.right; }
+      if (!b) {
+        const cs = getComputedStyle(el);
+        const h = parseFloat(cs.lineHeight) || (parseFloat(cs.fontSize) || 16) * 1.2;
+        return { bar: { x: el.clientLeft + (parseFloat(cs.paddingLeft) || 0), y: el.clientTop + (parseFloat(cs.paddingTop) || 0), h }, boxes };
+      }
+      return { bar: { x: x - r.left, y: b.top - r.top, h: b.height }, boxes };
+    };
+  }
+  /**
+   * A textarea's or input's carets from a hidden copy laid out like it, over
+   * it (its box `r`), with the field's scrolling taken off.
+   */
+  function mirrorGeometry(el, r) {
+    const cs = getComputedStyle(el);
+    const input = el.tagName === "INPUT";
+    const chars = [...(el.value || "")];
+    return (start, end, head) => {
+      const m = document.createElement("div");
+      for (const p of ["fontFamily", "fontSize", "fontWeight", "fontStyle", "letterSpacing", "wordSpacing", "lineHeight",
+        "textIndent", "textTransform", "tabSize", "paddingLeft", "paddingRight", "paddingTop", "paddingBottom",
+        "borderLeftWidth", "borderRightWidth", "borderTopWidth", "borderBottomWidth", "direction", "textAlign"]) m.style[p] = cs[p];
+      Object.assign(m.style, {
+        position: "fixed", visibility: "hidden", pointerEvents: "none", left: `${r.left}px`, top: `${r.top}px`,
+        width: `${el.clientWidth + el.clientLeft * 2}px`, boxSizing: "border-box", borderStyle: "solid", borderColor: "transparent",
+        whiteSpace: input ? "pre" : "pre-wrap", overflowWrap: input ? "normal" : "break-word",
+      });
+      const mark = document.createElement("span");
+      mark.textContent = "​";
+      const sel = document.createElement("span");
+      sel.textContent = chars.slice(start, end).join("");
+      const before = chars.slice(0, start).join(""), after = chars.slice(end).join("");
+      if (head <= start) m.append(before, mark, sel, after, "​"); else m.append(before, sel, mark, after, "​");
+      document.body.appendChild(m);
+      const mr = m.getBoundingClientRect();
+      const k = mark.getBoundingClientRect();
+      const boxes = end > start ? [...sel.getClientRects()].filter((b) => b.width > 0 && b.height > 0) : [];
+      m.remove();
+      // An input centers its line; both scroll their text.
+      const pad = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+      const dy = input ? Math.max(0, (el.clientHeight - pad - k.height) / 2) : 0;
+      const at = (b) => ({ x: b.left - mr.left - el.scrollLeft, y: b.top - mr.top - el.scrollTop + dy, w: b.width, h: b.height });
+      const bar = at(k);
+      return { bar: { x: bar.x, y: bar.y, h: bar.h }, boxes: boxes.map(at) };
+    };
+  }
+
   // --- Rich inputs (#115): an editable paragraph of runs and chips --------------
   //
   // A `contenteditable` drawn from a model the client owns: runs
@@ -2240,19 +2413,22 @@
    * at the edge of two, in the one typing there continues (the run before,
    * unless a chip or a link, then the one after), else between them.
    */
-  function richPoint(el, at) {
+  function richPoint(el, at, readOnly) {
     const kids = [...el.childNodes].filter((c) => !c._tail);
     const cont = (c) => !!c && !c._chip && (c.nodeType === 3 || !c._run || continues(c._run));
+    // Read only (other people's carets, #240): never adds a text node, even
+    // during a composition; a run without one is pointed at as an element.
+    const text = (c) => (!readOnly ? textIn(c) : c.nodeType === 3 ? c : c.firstChild && c.firstChild.nodeType === 3 ? c.firstChild : null);
     const edge = (left, right, i) => {
-      if (cont(left)) { const t = textIn(left); return [t, t.data.length]; }
-      if (cont(right)) return [textIn(right), 0];
+      if (cont(left)) { const t = text(left); if (t) return [t, t.data.length]; }
+      if (cont(right)) { const t = text(right); if (t) return [t, 0]; }
       return [el, i];
     };
     let n = 0;
     for (let i = 0; i < kids.length; i++) {
       const c = kids[i], len = richLen(c);
       if (at === n) return edge(kids[i - 1] || null, c, i);
-      if (at < n + len && !c._chip) { const t = textIn(c); return [t, toUnits(t.data, at - n)]; }
+      if (at < n + len && !c._chip) { const t = text(c); if (t) return [t, toUnits(t.data, at - n)]; }
       n += len;
     }
     return edge(kids[kids.length - 1] || null, null, kids.length);
@@ -2729,6 +2905,8 @@
       // A rich input's runs (#115).
       case "rich": return el && el._rich && setRichValue(el, p.runs);
       case "selev": return el && setSelectEvents(el, p.on);
+      // Other people's carets and selections (#240).
+      case "carets": return el && setRemoteCarets(el, p.carets);
       case "focus": if (el) { focusAsked = el; focusNode(el); } return;
       case "reveal": return el && reveal(el);
       // A pop-up menu (#247): at a point in the node (the page when it has
@@ -2769,6 +2947,7 @@
           placedOverlays.delete(el);
           pendingOverlays.delete(el);
           if (keyboardBars.delete(el)) el._box?.remove();
+          if (el._carets) dropCarets(el);
         }
         nodes.delete(p.id);
         setStates(p.id, null);
@@ -6960,6 +7139,8 @@ void main() {
     focusAsked = null;
     flushStates();
     reportLayouts();
+    // Other people's carets follow the layout this batch changed (#240).
+    queueCarets();
     if (msg.t === "reset") sceneResetEnd();
     quiet = false;
     // The live tree replaced the first paint: its style rules can go, and

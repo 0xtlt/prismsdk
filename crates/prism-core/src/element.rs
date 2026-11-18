@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use crate::a11y::{Accessibility, Accessible, Role};
 use crate::app::{AnyEntity, App, Entity, Render};
-use crate::style::{Style, Styled};
+use crate::style::{Color, Style, Styled};
 
 /// The kinds of host nodes every backend must implement.
 ///
@@ -290,6 +290,80 @@ impl From<std::ops::Range<usize>> for SelectionEvent {
     }
 }
 
+/// Another person's caret or selection in a text field (#240), for
+/// collaborative editing: [`remote_carets`](TextInput::remote_carets).
+/// The field draws it inside its own text (wrapping and scrolling
+/// included), above the text: a thin caret in `color` at `head`, the
+/// characters between `anchor` and `head` tinted with it, and `label`
+/// (a name) in a small tag at the caret. It is never editable nor hit:
+/// the local caret, selection and IME composition are left alone.
+///
+/// Offsets are in characters, like [`SelectionEvent`]; a chip or an
+/// icon of a rich input counts as one.
+///
+/// ```
+/// # use prism_core::{RemoteCaret, rgb};
+/// let camille = RemoteCaret::caret(12, rgb(0xE8590C)).label("Camille");
+/// let selection = RemoteCaret::new(3, 9, rgb(0x1C7ED6));
+/// assert!(camille.is_caret() && !selection.is_caret());
+/// ```
+#[derive(Clone, Debug, PartialEq)]
+pub struct RemoteCaret {
+    /// Where the selection started, in characters.
+    pub anchor: usize,
+    /// Where the caret is, in characters (`anchor` for a caret alone).
+    pub head: usize,
+    /// The person's color: the caret, the label's background, and the
+    /// selection's tint (drawn at a low opacity).
+    pub color: Color,
+    /// A name shown at the caret, if any.
+    pub label: Option<String>,
+    /// The person stopped typing: the label fades out (the caret and the
+    /// selection stay). The app decides when, from its own presence data,
+    /// such as a few seconds without an update.
+    pub idle: bool,
+}
+
+impl RemoteCaret {
+    /// A selection from `anchor` to `head` (the caret's side) in `color`.
+    pub fn new(anchor: usize, head: usize, color: Color) -> Self {
+        RemoteCaret {
+            anchor,
+            head,
+            color,
+            label: None,
+            idle: false,
+        }
+    }
+
+    /// A caret alone at character `at`.
+    pub fn caret(at: usize, color: Color) -> Self {
+        RemoteCaret::new(at, at, color)
+    }
+
+    /// Shows `name` in a tag at the caret.
+    pub fn label(mut self, name: impl Into<String>) -> Self {
+        self.label = Some(name.into());
+        self
+    }
+
+    /// Fades the label out (`true`) or shows it (`false`).
+    pub fn idle(mut self, idle: bool) -> Self {
+        self.idle = idle;
+        self
+    }
+
+    /// Whether nothing is selected: a caret alone.
+    pub fn is_caret(&self) -> bool {
+        self.anchor == self.head
+    }
+
+    /// The selected characters, in order (`head..head` for a caret).
+    pub fn range(&self) -> std::ops::Range<usize> {
+        self.anchor.min(self.head)..self.anchor.max(self.head)
+    }
+}
+
 /// The UTF-8 byte offset of character `chars` in `text` (clamped to its
 /// length): turns a [`SelectionEvent`] offset into one `str` methods take.
 pub fn char_to_byte(text: &str, chars: usize) -> usize {
@@ -537,6 +611,8 @@ pub struct VNode {
     /// The selection the app sets on a text input or area, in characters
     /// (applied when it changes, #86).
     pub selection: Option<SelectionEvent>,
+    /// Other people's carets and selections drawn in a text field (#240).
+    pub remote_carets: Vec<RemoteCaret>,
     /// The user went back natively on a stack.
     pub on_back: Option<Handler<BackEvent>>,
     /// The host asked a stack for a path.
@@ -668,6 +744,7 @@ impl VNode {
             on_rich_input: None,
             on_select: None,
             selection: None,
+            remote_carets: Vec::new(),
             on_back: None,
             on_navigate: None,
             on_change: None,
@@ -1290,6 +1367,20 @@ macro_rules! text_entry {
             /// bar ([`Div::keyboard_toolbar`]).
             pub fn keyboard_toolbar(mut self, bar: impl IntoElement) -> Self {
                 self.0.keyboard_toolbar = Some(Box::new(bar.into_element()));
+                self
+            }
+
+            /// Draws other people's carets and selections in the field
+            /// (#240), for collaborative editing: each [`RemoteCaret`] is a
+            /// thin caret in its color with an optional name, and a tinted
+            /// selection, laid out with the field's own text (wrapping and
+            /// scrolling included) and above it. They are never editable
+            /// and updating them leaves the user's caret, selection and IME
+            /// composition alone. An empty list removes them. Native
+            /// backends, the web, iOS and iPadOS, Android and Linux; tvOS
+            /// and watchOS fields show none.
+            pub fn remote_carets(mut self, carets: impl IntoIterator<Item = RemoteCaret>) -> Self {
+                self.0.remote_carets = carets.into_iter().collect();
                 self
             }
         }

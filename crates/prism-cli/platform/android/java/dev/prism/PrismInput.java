@@ -1188,6 +1188,130 @@ final class PrismInput {
         PrismHost.root.setLayoutParams(lp);
     }
 
+    // --- Other people's carets (#240) ---------------------------------------------------
+
+    /**
+     * Other people's carets and selections in a field: a drawable in its
+     * overlay, drawn after its text with its own layout (wrapping and
+     * scrolling included), never hit. Its text, selection and composition
+     * are left alone. An idle caret's name fades out.
+     */
+    static void carets(PrismHost.Node n, JSONArray list) {
+        if (!(n.view instanceof EditText)) return;
+        EditText e = (EditText) n.view;
+        RemoteCarets d = CARETS.get(e);
+        if (list == null || list.length() == 0) {
+            if (d != null) { e.getOverlay().remove(d); CARETS.remove(e); }
+            return;
+        }
+        if (d == null) {
+            d = new RemoteCarets(e);
+            CARETS.put(e, d);
+            e.getOverlay().add(d);
+        }
+        d.set(list);
+        e.invalidate();
+    }
+
+    private static final Map<EditText, RemoteCarets> CARETS = new WeakHashMap<>();
+
+    static final class RemoteCarets extends android.graphics.drawable.Drawable {
+        private final java.lang.ref.WeakReference<EditText> field;
+        private final java.util.ArrayList<JSONObject> list = new java.util.ArrayList<>();
+        /** Each caret's tag opacity (0…1). */
+        private final java.util.ArrayList<float[]> tags = new java.util.ArrayList<>();
+        private final android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        private final android.graphics.Paint text = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+
+        RemoteCarets(EditText e) {
+            field = new java.lang.ref.WeakReference<>(e);
+            text.setColor(android.graphics.Color.WHITE);
+            text.setTextSize(11 * PrismHost.density);
+            text.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            setBounds(0, 0, Integer.MAX_VALUE / 2, Integer.MAX_VALUE / 2);
+        }
+
+        void set(JSONArray a) {
+            boolean[] wasIdle = new boolean[list.size()];
+            for (int i = 0; i < list.size(); i++) wasIdle[i] = list.get(i).optBoolean("idle");
+            list.clear();
+            for (int i = 0; i < a.length(); i++) list.add(a.optJSONObject(i));
+            while (tags.size() > list.size()) tags.remove(tags.size() - 1);
+            while (tags.size() < list.size()) tags.add(new float[]{1});
+            for (int i = 0; i < list.size(); i++) {
+                boolean idle = list.get(i).optBoolean("idle");
+                float[] tag = tags.get(i);
+                if (!idle) tag[0] = 1;
+                else if (i >= wasIdle.length || !wasIdle[i]) fade(tag);
+            }
+        }
+
+        private void fade(float[] tag) {
+            android.animation.ValueAnimator anim = android.animation.ValueAnimator.ofFloat(tag[0], 0);
+            anim.setDuration(300);
+            anim.addUpdateListener(v -> {
+                tag[0] = (float) v.getAnimatedValue();
+                EditText e = field.get();
+                if (e != null) e.invalidate();
+            });
+            anim.start();
+        }
+
+        @Override public void draw(android.graphics.Canvas c) {
+            EditText e = field.get();
+            android.text.Layout layout = e != null ? e.getLayout() : null;
+            if (layout == null) return;
+            CharSequence t = e.getText();
+            // The overlay draws in the field's scrolled coordinates.
+            float dx = e.getCompoundPaddingLeft(), dy = e.getExtendedPaddingTop();
+            float sx = e.getScrollX(), sy = e.getScrollY();
+            float left = sx + e.getCompoundPaddingLeft(), right = sx + e.getWidth() - e.getCompoundPaddingRight();
+            float top = sy + e.getExtendedPaddingTop(), bottom = sy + e.getHeight() - e.getExtendedPaddingBottom();
+            float d = PrismHost.density;
+            for (int i = 0; i < list.size(); i++) {
+                JSONObject o = list.get(i);
+                Integer color = PrismHost.color(o.optJSONArray("color"));
+                if (color == null) continue;
+                int a = units(t, o.optInt("anchor")), h = units(t, o.optInt("head"));
+                int s = Math.min(a, h), en = Math.max(a, h);
+                // The selection: one box per line.
+                paint.setColor(color);
+                paint.setAlpha(Math.round(android.graphics.Color.alpha(color) * 0.25f));
+                for (int line = layout.getLineForOffset(s); s < en && line <= layout.getLineForOffset(en); line++) {
+                    int ls = Math.max(s, layout.getLineStart(line)), le = Math.min(en, layout.getLineEnd(line));
+                    float x1 = layout.getPrimaryHorizontal(ls) + dx;
+                    float x2 = (le == layout.getLineEnd(line) && le < en ? layout.getLineRight(line) : layout.getPrimaryHorizontal(le)) + dx;
+                    float y1 = layout.getLineTop(line) + dy, y2 = layout.getLineBottom(line) + dy;
+                    float l = Math.max(Math.min(x1, x2), left), r = Math.min(Math.max(x1, x2), right);
+                    float tp = Math.max(y1, top), bt = Math.min(y2, bottom);
+                    if (r > l && bt > tp) c.drawRect(l, tp, r, bt, paint);
+                }
+                // The caret.
+                int line = layout.getLineForOffset(h);
+                float x = layout.getPrimaryHorizontal(h) + dx;
+                float y1 = layout.getLineTop(line) + dy, y2 = layout.getLineBottom(line) + dy;
+                if (x < left - d || x > right + d || y2 <= top || y1 >= bottom) continue;
+                paint.setColor(color);
+                c.drawRect(x - d, Math.max(y1, top), x + d, Math.min(y2, bottom), paint);
+                // Its name: above the line, or under it at the top.
+                String label = o.isNull("label") ? null : o.optString("label", null);
+                float alpha = tags.get(i)[0];
+                if (label == null || alpha <= 0) continue;
+                float w = text.measureText(label) + 8 * d, th = 15 * d;
+                float ty = y1 - th >= sy ? y1 - th : y2;
+                float tx = Math.max(sx, Math.min(x - d, sx + e.getWidth() - w));
+                paint.setAlpha(Math.round(android.graphics.Color.alpha(color) * alpha));
+                c.drawRoundRect(tx, ty, tx + w, ty + th, 3 * d, 3 * d, paint);
+                text.setAlpha(Math.round(255 * alpha));
+                c.drawText(label, tx + 4 * d, ty + th - 4 * d, text);
+            }
+        }
+
+        @Override public void setAlpha(int alpha) {}
+        @Override public void setColorFilter(android.graphics.ColorFilter filter) {}
+        @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+    }
+
     static void detach(View v) {
         if (v.getParent() instanceof ViewGroup) ((ViewGroup) v.getParent()).removeView(v);
     }

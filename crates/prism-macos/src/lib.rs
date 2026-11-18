@@ -6,6 +6,8 @@
 #[cfg(target_os = "macos")]
 mod a11y_dump;
 #[cfg(target_os = "macos")]
+mod carets;
+#[cfg(target_os = "macos")]
 mod chrome;
 #[cfg(target_os = "macos")]
 mod dates;

@@ -8,6 +8,8 @@
 //! Tested in Docker (`docker/linux-dev.Dockerfile`, Xvfb).
 
 #[cfg(target_os = "linux")]
+mod carets;
+#[cfg(target_os = "linux")]
 mod controls;
 #[cfg(target_os = "linux")]
 mod decor;

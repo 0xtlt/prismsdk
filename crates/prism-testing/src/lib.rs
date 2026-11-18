@@ -46,6 +46,8 @@ pub struct HNode {
     pub selection: Option<(usize, usize)>,
     /// Selection changes reported (`Patch::SetSelectEvents`).
     pub select_events: bool,
+    /// Other people's carets drawn in it (`Patch::SetRemoteCarets`, #240).
+    pub remote_carets: Vec<prism_core::RemoteCaret>,
     /// An island's tag (`Patch::SetIsland`).
     pub island: Option<String>,
     /// An island's props, as JSON (`Patch::SetIslandProps`).
@@ -215,6 +217,7 @@ impl Backend for Host {
                             reports_layout: false,
                             selection: None,
                             select_events: false,
+                            remote_carets: Vec::new(),
                             island: None,
                             island_props: Default::default(),
                             link: None,
@@ -292,6 +295,9 @@ impl Backend for Host {
                 }
                 Patch::SetSelectEvents { id, on } => {
                     self.node(*id, "SetSelectEvents").select_events = *on
+                }
+                Patch::SetRemoteCarets { id, carets } => {
+                    self.node(*id, "SetRemoteCarets").remote_carets = carets.clone()
                 }
                 Patch::Focus { id } => {
                     self.node(*id, "Focus");

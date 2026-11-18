@@ -175,6 +175,26 @@ text_input()
 - **`.selection(range)`** is applied when the app's value changes, after the field's text, focused or not. A selection the user made and the app renders back is an echo and leaves the field alone, and a value that did not change is not applied again, so keeping it in sync with `on_select` never fights the user. On the web, a selection computed while the user has typed further (values not yet echoed) is dropped, like a stale text echo; during an IME composition it waits for the composition to end. Offsets past the end are clamped.
 - **Backends**: web (`selectionchange`, `select`, keys, pointer), AppKit (the field editor's and text view's `NSTextViewDidChangeSelectionNotification`), UIKit (`textFieldDidChangeSelection:`, `textViewDidChangeSelection:`), GTK (`notify::cursor-position` / `selection-bound`, the text buffer's marks), Android (`onSelectionChanged`). On macOS and iOS, a single-line input that is not being edited takes the app's selection when the app focuses it (`cx.focus`); a click or tap places the caret where the user put it. watchOS has no selection API (`on_select` never runs, `KeyEvent::selection` is `None`, `.selection` is ignored).
 
+## Other people's carets
+
+In a collaborative document, `.remote_carets(..)` draws the carets and selections of the other people editing a text input, a text area or a rich input, inside the field being edited: a thin caret in each person's color with their name in a small tag, and their selection tinted with that color. The field lays them out with its own text (wrapping and scrolling included) and draws them above it; they are never editable and take no clicks, and updating them leaves the user's caret, selection and IME composition alone.
+
+```rust
+rich_input(self.spans.clone())
+    .on_input(cx.listener(|this, e: &RichInputEvent, _| this.spans = e.spans.clone()))
+    .remote_carets(self.peers.iter().map(|p| {
+        RemoteCaret::new(p.anchor, p.head, p.color)   // a selection; `RemoteCaret::caret(at, color)` for a caret alone
+            .label(p.name.clone())
+            .idle(p.last_seen.elapsed() > Duration::from_secs(3))
+    }))
+```
+
+- **Offsets** are characters, like [`SelectionEvent`](#selection-and-caret) (a chip or an icon of a rich input counts as one). The app moves them when the text changes under them (its collaboration engine already does: CRDT or OT positions mapped to characters); offsets past the end are clamped. An empty list removes them.
+- **Idle**: `idle(true)` fades the name out and keeps the caret and the selection. The app decides when, from its presence data (a few seconds without an update is usual), so every backend agrees.
+- **Secure fields** show no one's caret.
+- **Backends**: the web draws a layer next to the field (ranges of a rich input's DOM, a hidden copy of a textarea or input for the others), redrawn after updates, typing, scrolling and resizing. macOS lays a view over the field from its layout manager (the field editor's while a text input is edited); iOS, iPadOS and visionOS use the field's `UITextInput` geometry (`caretRectForPosition:`, `selectionRectsForRange:`); Android draws in the `EditText`'s overlay from its `Layout`; Linux draws over the `GtkTextView` of text areas and rich inputs. The name sits above the caret's line, under it on the first line of a text area that clips its content. It fades on the web, macOS, iOS and Android, and disappears at once on Linux.
+- **Limits**: a one-line text input on Linux (`GtkEntry`) shows none, and neither do tvOS (it edits text in its full-screen keyboard) and watchOS.
+
 ## Rich text input
 
 `rich_input(spans)` edits the runs of a [`rich_text`](typography.md#rich-text) in place: bold, italic, underline, strikethrough, inline code (`font_mono()` with a `bg`) and links stay styled while the user types, and a `chip(key, label)` (a mention of a page, a person, a date: an optional `chip_icon`, then its label) is one character the caret jumps over and one Backspace deletes. So is an `icon(name)` (#221): one character, drawn as its symbol. Underline colors and styles (`underline_color`, `underline_style`) are drawn too. It is controlled like `text_input`: render the spans you store, store the spans `on_input` gives back.

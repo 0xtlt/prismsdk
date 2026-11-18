@@ -215,6 +215,9 @@ pub fn forget_selection(id: NodeId) {
 /// `UiEvent::Input`), at most once per turn and only when it moved.
 pub fn selection_changed(view: &objc2_ui_kit::UIView) {
     let id = view.tag() as NodeId;
+    // Typing and moving the caret move other people's carets too (#240).
+    #[cfg(not(target_os = "tvos"))]
+    crate::carets::refresh(id);
     if !SELECT_EVENTS.with(|s| s.borrow().contains(&id)) {
         return;
     }

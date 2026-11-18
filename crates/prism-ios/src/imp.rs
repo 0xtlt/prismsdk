@@ -409,6 +409,8 @@ define_class!(
             let text = sender.text().map(|t| t.to_string()).unwrap_or_default();
             dispatch(UiEvent::Input(sender.tag() as NodeId, text));
             crate::interaction::refresh_suggestions(sender, self);
+            #[cfg(not(target_os = "tvos"))]
+            crate::carets::refresh(sender.tag() as NodeId);
         }
 
         /// Text size, reduce motion or language changed in Settings.
@@ -2228,6 +2230,12 @@ impl Widgets for UiKit {
 
     fn set_text(&mut self, view: &View, text: &str) {
         let s = NSString::from_str(text);
+        // Other people's carets follow the new text (#240), once it is in.
+        #[cfg(not(target_os = "tvos"))]
+        if let View::Input(_) | View::TextArea(_) = view {
+            let id = view.id();
+            dispatch2::DispatchQueue::main().exec_async(move || crate::carets::refresh(id));
+        }
         match view {
             View::Label(l) => crate::label::set_text(l, text),
             View::Timer(l) => l.setText(Some(&s)),
@@ -2551,6 +2559,8 @@ impl Widgets for UiKit {
     fn destroy(&mut self, view: &View) {
         let id = view.id();
         crate::forms::forget_selection(id);
+        #[cfg(not(target_os = "tvos"))]
+        crate::carets::forget(id);
         crate::decor::destroy(id);
         crate::navbar::forget(id);
         crate::padding::forget(id);
@@ -2705,6 +2715,8 @@ impl Widgets for UiKit {
         }
         place(view.ui(), x, y, w, h);
         crate::layout::framed(view.id());
+        #[cfg(not(target_os = "tvos"))]
+        crate::carets::refresh(view.id());
         if let View::Picture(v) = view {
             refocus(v);
         }
@@ -3303,6 +3315,16 @@ impl Widgets for UiKit {
 
     fn set_select_events(&mut self, view: &View, on: bool) {
         crate::forms::set_select_events(view.id(), on);
+    }
+
+    /// Other people's carets (#240); tvOS edits in its full-screen keyboard.
+    #[cfg(not(target_os = "tvos"))]
+    fn set_remote_carets(&mut self, view: &View, carets: &[prism_core::RemoteCaret]) {
+        match view {
+            View::Input(f) => crate::carets::set(self.mtm, view.id(), f, carets),
+            View::TextArea(t) => crate::carets::set(self.mtm, view.id(), &t.view, carets),
+            _ => {}
+        }
     }
 
     fn focus(&mut self, view: &View) {

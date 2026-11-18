@@ -216,6 +216,12 @@ pub trait Widgets {
     /// Whether a text input or area reports its selection and caret
     /// (`UiEvent::Select`, in characters) when they move, typing included.
     fn set_select_events(&mut self, _view: &Self::View, _on: bool) {}
+
+    /// Draws other people's carets and selections in a text input, area
+    /// or rich input (#240), above its text, offsets in characters; an
+    /// empty list removes them. Never touches the field's own caret,
+    /// selection or composition. Default: none drawn.
+    fn set_remote_carets(&mut self, _view: &Self::View, _carets: &[prism_core::RemoteCaret]) {}
     /// Gives the view the keyboard focus (first responder, `grab_focus`).
     fn focus(&mut self, _view: &Self::View) {}
     /// Scrolls the scroll views around the view so it is visible.
@@ -1764,6 +1770,11 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                 Patch::SetSelectEvents { id, on } => {
                     if let Some(e) = self.nodes.get(id) {
                         self.widgets.set_select_events(&e.view, *on);
+                    }
+                }
+                Patch::SetRemoteCarets { id, carets } => {
+                    if let Some(e) = self.nodes.get(id) {
+                        self.widgets.set_remote_carets(&e.view, carets);
                     }
                 }
                 Patch::SetPlaceholder { id, text } => {

@@ -1123,6 +1123,24 @@ impl Widgets for RemoteWidgets {
         self.ops.push(json!({ "op": "selev", "id": id, "on": on }));
     }
 
+    /// Other people's carets (#240): drawn in the field's overlay.
+    fn set_remote_carets(&mut self, id: &NodeId, carets: &[prism_core::RemoteCaret]) {
+        let carets: Vec<Value> = carets
+            .iter()
+            .map(|c| {
+                json!({
+                    "anchor": c.anchor,
+                    "head": c.head,
+                    "color": color(Some(c.color)),
+                    "label": c.label,
+                    "idle": c.idle,
+                })
+            })
+            .collect();
+        self.ops
+            .push(json!({ "op": "carets", "id": id, "carets": carets }));
+    }
+
     fn scroll_into_view(&mut self, id: &NodeId) {
         self.ops.push(json!({ "op": "reveal", "id": id }));
     }
