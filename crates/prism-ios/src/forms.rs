@@ -474,7 +474,8 @@ mod text_area {
             mtm: MainThreadMarker,
             delegate: &objc2::runtime::ProtocolObject<dyn UITextViewDelegate>,
         ) -> TextArea {
-            let view = UITextView::new(mtm);
+            // Copy, cut and paste can go to the app (#217).
+            let view = crate::edit::PrismTextView::text_view(mtm);
             unsafe { view.setDelegate(Some(delegate)) };
             view.setBackgroundColor(Some(&UIColor::clearColor()));
             let placeholder = UILabel::new(mtm);

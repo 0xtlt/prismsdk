@@ -235,6 +235,49 @@ self.sel = SelectionEvent::caret(at - 2);
 | macOS | `NSTextView` with the runs as attributes and each chip an `NSTextAttachment` (its icon and label drawn in a rounded box), each icon an attachment of its SF Symbol; undo is AppKit's |
 | iOS, iPadOS, visionOS, GTK, Android, watchOS | **not yet**: a plain multi-line field of `value` (no styles drawn, a chip or an icon shows as U+FFFC). Edits still come back as spans that keep the styles around them, a deleted U+FFFC removes its chip, and Enter (a line break typed alone) calls `on_submit` when the input has one; tvOS shows one line |
 
+### Toolbars, the clipboard and modifier-clicks
+
+A document editor places UI at the selection, owns copy and paste, and opens links with ⌘-click (#217):
+
+```rust
+div() // laid out at the field's origin: no padding
+    .child(
+        rich_input(self.spans.clone())
+            .on_selection_rect(cx.listener(|this, e: &SelectionRectEvent, _| {
+                this.toolbar = (!e.selection.is_caret()).then_some(e.rect)
+            }))
+            .on_copy(cx.listener(|_, e: &CopyEvent, _| {
+                e.write(ClipboardContent::text(&e.text).markdown(to_markdown(&e.spans)))
+            }))
+            .on_paste(cx.listener(|this, e: &PasteEvent, _| {
+                if e.text.contains('\n') {
+                    e.prevent_default();
+                    this.insert_blocks(e.selection, &e.text);
+                }
+            }))
+            .on_span_click(cx.listener(|this, e: &SpanClickEvent, cx| this.open_link(e.span, cx))),
+    )
+    .children(self.toolbar.map(|r| {
+        div().absolute().left(r.x).top(r.y).w(r.width).h(r.height).child(
+            popover(toolbar).open(true).side(PopoverSide::Top).take_focus(false),
+        )
+    }))
+```
+
+- **The selection's rectangle**: `on_selection_rect` hears `SelectionRectEvent { selection, rect, frame }` whenever the caret or the selection moves or the text under it changes. `rect` is in the field's own coordinates (the caret one point wide; a selection on several lines, the box around them), so an absolutely positioned element at `rect`, in a container laid out at the field's origin, anchors a popover above the selected words. `frame` is the same rectangle in the window's layout coordinates (like `cx.frame_of`), once the field has been laid out. `.track_selection_rect()` keeps it for `cx.selection_rect(id)` without a handler.
+- **Copy and cut**: `on_copy` / `on_cut` hear ⌘C / ⌘X (the keyboard, the Edit menu, the context menu) with text selected: `CopyEvent { selection, text, spans, cut }`, `spans` being the selected runs. `e.write(ClipboardContent)` puts the app's content on the clipboard as one item: plain text plus `html`, `markdown` and types of its own (`custom("application/x-blocks", json)`), which the app reads back on paste. Without `write`, the plain text is copied. A cut then deletes the selection (`on_input` reports it).
+- **Paste**: `on_paste` hears ⌘V with `PasteEvent { selection, text, html, types, data }` (`data`: Markdown and the apps' own text types, where the platform hands them over; `e.get(mime)`, `e.has(mime)`). `e.prevent_default()` takes it over (split lines into blocks, upload an image the clipboard holds); otherwise the plain text lands over the selection.
+- **Modifier-clicks**: with `on_span_click`, a click with a modifier key on the field while it is edited is the app's: `SpanClickEvent { span, offset, modifiers }`, `span` indexing the spans you rendered. A plain click still places the caret.
+
+| | Selection rectangle | Copy, cut | Paste | Modifier-click |
+|---|---|---|---|---|
+| Web | the selection's client rectangles | the `copy` / `cut` event: plain text at once, the app's content then through the async Clipboard API (custom types as `web …` formats where the browser has them; Safari may refuse the late write and keep the plain text) | the `paste` event's `clipboardData` (text, HTML, every text type, file types) | ⌘, Ctrl or ⌥ |
+| macOS | the layout manager's glyph box, the caret's rectangle | `copy:` / `cut:`: `NSPasteboard`, every type (Markdown as `net.daringfireball.markdown`) | `paste:`: text, HTML and every type's text from the general pasteboard | ⌘ or ⌥ (⌃-click stays the context menu) |
+| iOS, iPadOS, visionOS | `caretRect` and `selectionRects` | `copy:` / `cut:`: `UIPasteboard`, every type | `paste:`: text, HTML, types from `UIPasteboard` | none (touch) |
+| Linux | the text view's iter locations | `copy-clipboard` / `cut-clipboard`: every type | `paste-clipboard`: plain text and the clipboard's types (no HTML) | Ctrl or Alt |
+| Android | the `Layout`'s line bounds | the field's copy / cut actions: plain text and HTML | the paste action: text, HTML, types | none (touch) |
+| tvOS, watchOS | none | none: no clipboard | none | none |
+
 **Sheets, popovers, dialogs** that a screen opens without a route: see [Dialogs, menus, tray](dialogs-menus.md#sheets-popovers-and-dialogs-without-a-route).
 
 **Absolute positioning**: `div().absolute().bottom(16.).left(16.).right(16.)` takes an element out of the flex flow and places it at its insets from the parent (`.top()`, `.inset(0.)`…), like CSS `position: absolute` (taffy on native). Later siblings draw on top; `left`/`right` are the leading and trailing edges.

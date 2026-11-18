@@ -48,6 +48,7 @@ mod style;
 pub mod surfaces;
 pub mod svg;
 mod task;
+pub mod text_edit;
 pub mod video;
 pub mod web_view;
 mod window;
@@ -140,6 +141,9 @@ pub use surfaces::{
 };
 pub use task::{AsyncApp, Background, Sleep, TaskHandle, WakeUi};
 pub use task::{DEFAULT_BACKGROUND_THREADS, background_threads, set_background_threads};
+pub use text_edit::{
+    ClipboardContent, CopyEvent, PasteEvent, SelectionRectEvent, SpanClickEvent, edit_events,
+};
 pub use video::{EndedEvent, Video, VideoConfig, video};
 pub use web_view::{WebLoadEvent, WebMessageEvent, WebSandbox, WebView, web_view};
 
@@ -319,6 +323,9 @@ impl Runtime {
 
     /// Runs the handler for `event`, then re-renders the entities it touched.
     pub fn dispatch(&mut self, event: UiEvent) -> Vec<Patch> {
+        // Answers to the field that reported the event (#217), after the
+        // render.
+        let mut answers = Vec::new();
         match event {
             UiEvent::Click(id) => {
                 if let Some(h) = self.reconciler.click_handler(id) {
@@ -525,15 +532,74 @@ impl Runtime {
                 }
                 self.app.stop_propagation = false;
             }
+            UiEvent::SelectionRect(id, start, end, rect) => {
+                let mut e = SelectionRectEvent::new(SelectionEvent::new(start, end), rect);
+                e.frame = self.app.frames.get(&id).map(|f| {
+                    events::Rect::new(f.x + rect.x, f.y + rect.y, rect.width, rect.height)
+                });
+                let handler = self.reconciler.edit_handlers(id).and_then(|h| {
+                    self.app.selection_rects.insert(id, e);
+                    h.on_selection_rect.clone()
+                });
+                if let Some(name) = self.reconciler.name_of(id) {
+                    self.app.selection_names.insert(name.to_string(), id);
+                }
+                if let Some(h) = handler {
+                    h(&e, &mut self.app);
+                }
+            }
+            UiEvent::Copy(id, cut, start, end, text) => {
+                let spans = self.reconciler.rich_spans(id);
+                let e =
+                    text_edit::CopyEvent::new(SelectionEvent::new(start, end), text, &spans, cut);
+                let handler = self.reconciler.edit_handlers(id).and_then(|h| {
+                    if cut {
+                        h.on_cut.clone()
+                    } else {
+                        h.on_copy.clone()
+                    }
+                });
+                if let Some(h) = handler {
+                    h(&e, &mut self.app);
+                }
+                let content = e
+                    .written()
+                    .unwrap_or_else(|| ClipboardContent::text(e.text.clone()));
+                answers.push(Patch::WriteClipboard { id, content });
+            }
+            UiEvent::Paste(id, e) => {
+                let handler = self
+                    .reconciler
+                    .edit_handlers(id)
+                    .and_then(|h| h.on_paste.clone());
+                if let Some(h) = handler {
+                    h(&e, &mut self.app);
+                }
+                if !e.is_default_prevented() && !e.text.is_empty() {
+                    answers.push(Patch::InsertText { id, text: e.text });
+                }
+            }
+            UiEvent::SpanClick(id, offset, modifiers) => {
+                let spans = self.reconciler.rich_spans(id);
+                let handler = self
+                    .reconciler
+                    .edit_handlers(id)
+                    .and_then(|h| h.on_span_click.clone());
+                if let (Some(h), Some(span)) = (handler, text_edit::span_at(&spans, offset)) {
+                    h(&SpanClickEvent::new(span, offset, modifiers), &mut self.app);
+                }
+            }
         }
         // Tasks spawned by the handler start right away.
         task::poll_tasks(&mut self.app);
         self.app.flush_effects();
-        if self.app.has_dirty() {
+        let mut patches = if self.app.has_dirty() {
             self.render_dirty()
         } else {
             Vec::new()
-        }
+        };
+        patches.extend(answers);
+        patches
     }
 
     /// Hover (enter / leave) and move handlers of a pointer event.
@@ -717,6 +783,18 @@ impl Runtime {
             let frames = &self.app.frames;
             self.app.frame_names.retain(|_, id| frames.contains_key(id));
         }
+        // Rectangles of rich inputs no longer reporting them (#217).
+        if !self.app.selection_rects.is_empty() {
+            let r = &self.reconciler;
+            self.app.selection_rects.retain(|id, _| {
+                r.edit_handlers(*id)
+                    .is_some_and(|h| h.mask() & edit_events::SELECTION_RECT != 0)
+            });
+            let rects = &self.app.selection_rects;
+            self.app
+                .selection_names
+                .retain(|_, id| rects.contains_key(id));
+        }
         if let Some((file, saved)) = &mut self.dev_state
             && let Some(path) = self.app.current_path()
             && path != saved
@@ -862,6 +940,8 @@ pub mod prelude {
         FontFace, FontFamily, FontWeight, RichInputEvent, Span, Stylesheet, TextTransform,
         TextWrap, UnderlineStyle, chip, icon, link, rich_input, rich_text, span,
     };
+    // Rich input editing hooks (#217).
+    pub use crate::{ClipboardContent, CopyEvent, PasteEvent, SelectionRectEvent, SpanClickEvent};
     // Box decorations and interaction states.
     pub use crate::decoration::{shadow_lg, shadow_md, shadow_sm};
     pub use crate::{Color, Cursor, Gradient, Shadow};

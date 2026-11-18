@@ -446,18 +446,29 @@ pub fn text_area(id: NodeId) -> Rc<TextArea> {
     root.set_child(Some(&scroll));
     root.add_overlay(&placeholder);
     let label = placeholder.clone();
+    let weak = view.downgrade();
     view.buffer().connect_changed(move |b| {
         let text = b.text(&b.start_iter(), &b.end_iter(), false).to_string();
         label.set_visible(text.is_empty());
         crate::imp::dispatch_typed(id, text);
         crate::imp::report_selection(id, crate::imp::buffer_selection(b));
+        // The text under the selection moved (#217).
+        if let Some(view) = weak.upgrade() {
+            crate::edit::rect_changed(id, &view);
+        }
     });
     // The caret and the selection's other end moved (#86).
+    let weak = view.downgrade();
     view.buffer().connect_mark_set(move |b, _, mark| {
         if matches!(mark.name().as_deref(), Some("insert" | "selection_bound")) {
             crate::imp::report_selection(id, crate::imp::buffer_selection(b));
+            if let Some(view) = weak.upgrade() {
+                crate::edit::rect_changed(id, &view);
+            }
         }
     });
+    // A rich input's copy, cut, paste and modifier-clicks (#217).
+    crate::edit::connect(id, &view);
     Rc::new(TextArea {
         root,
         scroll,

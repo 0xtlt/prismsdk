@@ -4477,3 +4477,63 @@ fn the_app_locale_wins_over_the_browser() {
     let _ = std::fs::remove_dir_all(dir);
     let _ = std::fs::remove_dir_all(dir2);
 }
+
+// --- A rich input's editing hooks (#217) ----------------------------------------
+
+#[test]
+fn rich_input_editing_hooks_have_a_json_encoding_and_events() {
+    use crate::session::parse_event;
+    let mut e = Encoder::default();
+    let out = e.encode(&[
+        create(1, NodeKind::RichInput),
+        Patch::SetEditEvents { id: 1, mask: 9 },
+        Patch::WriteClipboard {
+            id: 1,
+            content: prism_core::ClipboardContent::text("a").markdown("**a**"),
+        },
+        Patch::InsertText {
+            id: 1,
+            text: "x\ny".into(),
+        },
+    ]);
+    assert_eq!(
+        Value::Array(out[1..].to_vec()),
+        json!([
+            { "op": "editev", "id": 1, "mask": 9 },
+            { "op": "clip", "id": 1, "items": [["text/plain", "a"], ["text/markdown", "**a**"]] },
+            { "op": "instext", "id": 1, "text": "x\ny" },
+        ])
+    );
+    let ev = |v: Value| parse_event(&v);
+    assert_eq!(
+        ev(
+            json!({"t": "selrect", "id": 1, "start": 2, "end": 5, "x": 10, "y": 2.5, "w": 30, "h": 18})
+        ),
+        Some(UiEvent::SelectionRect(
+            1,
+            2,
+            5,
+            prism_core::Rect::new(10., 2.5, 30., 18.)
+        ))
+    );
+    assert_eq!(
+        ev(json!({"t": "copy", "id": 1, "cut": true, "start": 0, "end": 3, "text": "abc"})),
+        Some(UiEvent::Copy(1, true, 0, 3, "abc".into()))
+    );
+    let Some(UiEvent::Paste(1, p)) = ev(json!({"t": "paste", "id": 1, "start": 4, "end": 4,
+        "text": "t", "html": "<b>t</b>", "types": ["text/plain", "text/html", "image/png"],
+        "data": [["application/x-blocks", "[1]"]]}))
+    else {
+        panic!("paste")
+    };
+    assert_eq!(p.selection, prism_core::SelectionEvent::caret(4));
+    assert_eq!(p.html.as_deref(), Some("<b>t</b>"));
+    assert!(p.has("image/png"));
+    assert_eq!(p.get("application/x-blocks"), Some("[1]"));
+    let Some(UiEvent::SpanClick(1, 7, m)) =
+        ev(json!({"t": "spanclick", "id": 1, "at": 7, "mods": 8}))
+    else {
+        panic!("span click")
+    };
+    assert!(m.meta);
+}

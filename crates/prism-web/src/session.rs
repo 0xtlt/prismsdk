@@ -811,6 +811,33 @@ fn parse_input_event(v: &Value) -> Option<UiEvent> {
             v.get("start")?.as_u64()? as usize,
             v.get("end")?.as_u64()? as usize,
         )),
+        // A rich input's editing hooks (#217): `{"t":"selrect","id","start",
+        // "end","x","y","w","h"}` in the field's coordinates; `{"t":"copy",
+        // "id","cut","start","end","text"}`; `{"t":"paste","id","start","end",
+        // "text","html","types","data":[[type, text]…]}`; `{"t":"spanclick",
+        // "id","at","mods"}`.
+        "selrect" => Some(UiEvent::SelectionRect(
+            id?,
+            v.get("start")?.as_u64()? as usize,
+            v.get("end")?.as_u64()? as usize,
+            prism_core::Rect::new(num("x")?, num("y")?, num("w")?.max(0.), num("h")?.max(0.)),
+        )),
+        "copy" => Some(UiEvent::Copy(
+            id?,
+            v.get("cut").and_then(Value::as_bool).unwrap_or(false),
+            v.get("start")?.as_u64()? as usize,
+            v.get("end")?.as_u64()? as usize,
+            v.get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+        )),
+        "paste" => Some(UiEvent::Paste(id?, prism_core::PasteEvent::from_json(v)?)),
+        "spanclick" => Some(UiEvent::SpanClick(
+            id?,
+            v.get("at")?.as_u64()? as usize,
+            Modifiers::from_bits(v.get("mods").and_then(Value::as_u64).unwrap_or(0) as u8),
+        )),
         _ => None,
     }
 }
@@ -1429,6 +1456,15 @@ impl Encoder {
             Patch::ReloadWebView { id } => json!({ "op": "webreload", "id": id }),
             // A rich input's runs (#115).
             Patch::SetRichValue { id, runs } => json!({ "op": "rich", "id": id, "runs": runs }),
+            // A rich input's editing hooks (#217): which events it reports,
+            // what a copy writes, a paste the app left to the field.
+            Patch::SetEditEvents { id, mask } => json!({ "op": "editev", "id": id, "mask": mask }),
+            Patch::WriteClipboard { id, content } => json!({
+                "op": "clip",
+                "id": id,
+                "items": content.entries().into_iter().map(|(m, d)| json!([m, d])).collect::<Vec<_>>(),
+            }),
+            Patch::InsertText { id, text } => json!({ "op": "instext", "id": id, "text": text }),
         }
     }
 }

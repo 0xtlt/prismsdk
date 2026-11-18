@@ -16,6 +16,8 @@ mod decor;
 #[cfg(target_os = "macos")]
 mod device_info;
 #[cfg(target_os = "macos")]
+mod edit;
+#[cfg(target_os = "macos")]
 mod imp;
 #[cfg(target_os = "macos")]
 mod interact;

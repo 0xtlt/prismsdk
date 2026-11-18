@@ -183,6 +183,10 @@ pub struct App {
     /// the `.id()` of those that have one (#192).
     pub(crate) frames: HashMap<crate::NodeId, crate::events::Rect>,
     pub(crate) frame_names: HashMap<String, crate::NodeId>,
+    /// The last selection rectangles of rich inputs that report them, and
+    /// the `.id()` of those that have one (#217).
+    pub(crate) selection_rects: HashMap<crate::NodeId, crate::SelectionRectEvent>,
+    pub(crate) selection_names: HashMap<String, crate::NodeId>,
     /// The last offsets scroll views reported, and their `.id()` (#193).
     pub(crate) scroll_offsets: HashMap<crate::NodeId, f32>,
     pub(crate) scroll_names: HashMap<String, crate::NodeId>,
@@ -269,6 +273,8 @@ impl Default for App {
             stop_propagation: false,
             frames: HashMap::new(),
             frame_names: HashMap::new(),
+            selection_rects: HashMap::new(),
+            selection_names: HashMap::new(),
             scroll_offsets: HashMap::new(),
             scroll_names: HashMap::new(),
             title: None,
@@ -702,6 +708,17 @@ impl App {
     /// `None` until it has been laid out, or when it is not mounted.
     pub fn frame_of(&self, id: &str) -> Option<crate::events::Rect> {
         self.frames.get(self.frame_names.get(id)?).copied()
+    }
+
+    /// Where the caret or the selection of the rich input named `id`
+    /// (`.id(id)`) last was (#217): it needs
+    /// [`on_selection_rect`](crate::RichInput::on_selection_rect) or
+    /// [`track_selection_rect`](crate::RichInput::track_selection_rect).
+    /// `None` before the field reported one, or when it is not mounted.
+    pub fn selection_rect(&self, id: &str) -> Option<crate::SelectionRectEvent> {
+        self.selection_rects
+            .get(self.selection_names.get(id)?)
+            .copied()
     }
 
     /// Scrolls the scroll views around the element named `id` (`.id(id)`)

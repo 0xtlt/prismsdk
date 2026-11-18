@@ -1631,6 +1631,8 @@ pub struct TextViewIvars {
     pub(crate) runs: RefCell<String>,
     /// Its style (font, color), once set.
     pub(crate) style: RefCell<Option<Style>>,
+    /// The editing events it reports (#217, `edit_events` bits).
+    pub(crate) edit_mask: Cell<u8>,
 }
 
 define_class!(
@@ -1647,9 +1649,39 @@ define_class!(
             self.draw_placeholder();
         }
 
-        /// A rich input pastes plain text, in the style where it lands (#115).
+        /// The app's copy (#217); AppKit's otherwise.
+        #[unsafe(method(copy:))]
+        fn copy(&self, sender: Option<&AnyObject>) {
+            if !crate::edit::copy(self, false) {
+                let _: () = unsafe { msg_send![super(self), copy: sender] };
+            }
+        }
+
+        /// The app's cut (#217), then the selection deleted; AppKit's otherwise.
+        #[unsafe(method(cut:))]
+        fn cut(&self, sender: Option<&AnyObject>) {
+            if crate::edit::copy(self, true) {
+                let _: () = unsafe { msg_send![self, delete: sender] };
+            } else {
+                let _: () = unsafe { msg_send![super(self), cut: sender] };
+            }
+        }
+
+        /// ⌘- / ⌥-clicks on a rich input's runs (#217).
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, event: &NSEvent) {
+            if !crate::edit::mouse_down(self, event) {
+                let _: () = unsafe { msg_send![super(self), mouseDown: event] };
+            }
+        }
+
+        /// A rich input pastes plain text, in the style where it lands
+        /// (#115), or gives the paste to the app (#217).
         #[unsafe(method(paste:))]
         fn paste(&self, sender: Option<&AnyObject>) {
+            if crate::edit::paste(self) {
+                return;
+            }
             if self.ivars().rich.get() {
                 unsafe { self.pasteAsPlainText(sender) };
             } else {
@@ -1870,6 +1902,8 @@ define_class!(
             if on {
                 crate::interact::selection_changed(&tv, id);
             }
+            // Its rectangle (#217).
+            crate::edit::rect_changed(&tv, id);
         }
 
         /// A clip view scrolled: other people's carets in the text it
@@ -2105,6 +2139,8 @@ define_class!(
             };
             tv.setNeedsDisplay(true);
             dispatch(UiEvent::Input(tv.ivars().id.get(), tv.string().to_string()));
+            // The text under the selection moved (#217).
+            crate::edit::rect_changed(&tv, tv.ivars().id.get());
         }
     }
 
@@ -3900,6 +3936,7 @@ impl Widgets for AppKit {
         self.ix.select_events.remove(&view.id());
         self.ix.pending_selection.remove(&view.id());
         crate::interact::forget_selection(view.id());
+        crate::edit::forget(view.id());
         crate::sticky::forget(view.id());
         crate::dates::forget(view.id());
         crate::navbar::forget(view.id());
@@ -4662,6 +4699,28 @@ impl Widgets for AppKit {
         }
     }
 
+    /// A rich input's editing hooks (#217, `crate::edit`).
+    fn set_edit_events(&mut self, view: &View, mask: u8) {
+        if let View::TextArea(t) = view {
+            t.text.ivars().edit_mask.set(mask);
+            if mask & prism_core::edit_events::SELECTION_RECT == 0 {
+                crate::edit::forget(view.id());
+            } else {
+                crate::edit::rect_changed(&t.text, view.id());
+            }
+        }
+    }
+
+    fn write_clipboard(&mut self, _view: &View, content: &prism_core::ClipboardContent) {
+        crate::edit::write_clipboard(content);
+    }
+
+    fn insert_text(&mut self, view: &View, text: &str) {
+        if let View::TextArea(t) = view {
+            crate::edit::insert_text(&t.text, text);
+        }
+    }
+
     fn set_selection(&mut self, view: &View, start: usize, end: usize) {
         match view {
             View::Input(i) => {
@@ -5393,10 +5452,17 @@ fn post_typing(window: &NSWindow, text: &str) {
     }
 }
 
-/// Posts key presses (`PRISM_KEYS`) by name, one every 100 ms.
+/// Posts key presses (`PRISM_KEYS`) by name, one every 100 ms; `cmd+c`,
+/// `shift+ArrowRight` hold modifiers.
 fn post_keys(window: &NSWindow, keys: &str) {
-    use objc2_app_kit::{NSEventModifierFlags, NSEventType};
-    for (i, name) in keys.split('|').filter(|k| !k.is_empty()).enumerate() {
+    use objc2_app_kit::NSEventType;
+    for (i, combo) in keys.split('|').filter(|k| !k.is_empty()).enumerate() {
+        // `cmd+c`, `shift+ArrowRight`: modifiers, then the key.
+        let (mods, name) = match combo.rsplit_once('+') {
+            Some((m, k)) if !k.is_empty() => (m, k),
+            _ => ("", combo),
+        };
+        let (_, flags) = crate::menus::parse_shortcut(&format!("{mods}+x"));
         let (code, chars) = match name {
             "Escape" => (53, "\u{1b}"),
             "Enter" => (36, "\r"),
@@ -5405,6 +5471,10 @@ fn post_keys(window: &NSWindow, keys: &str) {
             "ArrowRight" => (124, "\u{F703}"),
             "ArrowDown" => (125, "\u{F701}"),
             "ArrowUp" => (126, "\u{F700}"),
+            "a" => (0, "a"),
+            "x" => (7, "x"),
+            "c" => (8, "c"),
+            "v" => (9, "v"),
             other => (0, other),
         };
         let window = objc2::Message::retain(window);
@@ -5417,7 +5487,7 @@ fn post_keys(window: &NSWindow, keys: &str) {
                 let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
                 NSEventType::KeyDown,
                 NSPoint::ZERO,
-                NSEventModifierFlags::empty(),
+                flags,
                 now,
                 window.windowNumber(),
                 None,
@@ -5678,7 +5748,7 @@ fn run_automation(mtm: MainThreadMarker) {
         if let Ok(text) = std::env::var("PRISM_TYPE") {
             post_typing(&window, &text.replace("\\n", "\n"));
         }
-        // `PRISM_KEYS="ArrowRight|ArrowDown|Escape"`: key presses, as the
+        // `PRISM_KEYS="ArrowRight|ArrowDown|cmd+c"`: key presses, as the
         // keyboard sends them (through the app's event monitors).
         if let Ok(keys) = std::env::var("PRISM_KEYS") {
             post_keys(&window, &keys);

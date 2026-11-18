@@ -788,7 +788,7 @@ fn drag_button(button: u32) -> prism_core::PointerButton {
 }
 
 /// GDK's modifier state as Prism's.
-fn modifiers(mods: gdk::ModifierType) -> prism_core::Modifiers {
+pub(crate) fn modifiers(mods: gdk::ModifierType) -> prism_core::Modifiers {
     prism_core::Modifiers {
         shift: mods.contains(gdk::ModifierType::SHIFT_MASK),
         control: mods.contains(gdk::ModifierType::CONTROL_MASK),
@@ -2365,6 +2365,7 @@ impl Widgets for Gtk {
         }
         let id = view.id();
         TYPED.with(|t| t.borrow_mut().remove(&id));
+        crate::edit::forget(id);
         forget_selection(id);
         crate::carets::forget(id);
         crate::navbar::forget(id);
@@ -3359,6 +3360,25 @@ impl Widgets for Gtk {
             SELECT_EVENTS.with(|s| s.borrow_mut().insert(id));
         } else {
             forget_selection(id);
+        }
+    }
+
+    /// A rich input's editing hooks (#217, `crate::edit`): its text area.
+    fn set_edit_events(&mut self, view: &View, mask: u8) {
+        if let View::TextArea(id, t) = view {
+            crate::edit::set_mask(*id, t, mask);
+        }
+    }
+
+    fn write_clipboard(&mut self, view: &View, content: &prism_core::ClipboardContent) {
+        if let View::TextArea(_, t) = view {
+            crate::edit::write_clipboard(&t.view, content);
+        }
+    }
+
+    fn insert_text(&mut self, view: &View, text: &str) {
+        if let View::TextArea(_, t) = view {
+            crate::edit::insert_text(&t.view, text);
         }
     }
 

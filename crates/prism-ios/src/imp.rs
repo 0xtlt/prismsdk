@@ -733,7 +733,11 @@ define_class!(
         #[unsafe(method(textViewDidChange:))]
         fn text_view_did_change(&self, view: &objc2_ui_kit::UITextView) {
             #[cfg(not(target_os = "tvos"))]
-            crate::forms::text_area_changed(view);
+            {
+                crate::forms::text_area_changed(view);
+                // The text under the selection moved (#217).
+                crate::edit::rect_changed(view);
+            }
             #[cfg(target_os = "tvos")]
             let _ = view;
         }
@@ -742,6 +746,8 @@ define_class!(
         #[unsafe(method(textViewDidChangeSelection:))]
         fn text_view_did_change_selection(&self, view: &objc2_ui_kit::UITextView) {
             crate::forms::selection_changed(view);
+            #[cfg(not(target_os = "tvos"))]
+            crate::edit::rect_changed(view);
         }
 
         #[unsafe(method(textViewDidBeginEditing:))]
@@ -2561,6 +2567,8 @@ impl Widgets for UiKit {
         crate::forms::forget_selection(id);
         #[cfg(not(target_os = "tvos"))]
         crate::carets::forget(id);
+        #[cfg(not(target_os = "tvos"))]
+        crate::edit::forget(id);
         crate::decor::destroy(id);
         crate::navbar::forget(id);
         crate::padding::forget(id);
@@ -3324,6 +3332,27 @@ impl Widgets for UiKit {
             View::Input(f) => crate::carets::set(self.mtm, view.id(), f, carets),
             View::TextArea(t) => crate::carets::set(self.mtm, view.id(), &t.view, carets),
             _ => {}
+        }
+    }
+
+    /// A rich input's editing hooks (#217, `crate::edit`): its text area.
+    /// tvOS has neither text areas nor a pasteboard.
+    #[cfg(not(target_os = "tvos"))]
+    fn set_edit_events(&mut self, view: &View, mask: u8) {
+        if let View::TextArea(t) = view {
+            crate::edit::set_mask(&t.view, mask);
+        }
+    }
+
+    #[cfg(not(target_os = "tvos"))]
+    fn write_clipboard(&mut self, _view: &View, content: &prism_core::ClipboardContent) {
+        crate::edit::write_clipboard(content);
+    }
+
+    #[cfg(not(target_os = "tvos"))]
+    fn insert_text(&mut self, view: &View, text: &str) {
+        if let View::TextArea(t) = view {
+            crate::edit::insert_text(&t.view, text);
         }
     }
 
