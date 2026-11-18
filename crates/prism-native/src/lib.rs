@@ -1561,14 +1561,16 @@ impl<W: Widgets> NativeRenderer<W> {
         if let Some(group_state) = state.for_group() {
             let group = e.states.declared.group;
             let name = e.states.declared.group_name.clone();
-            if group || name.is_some() {
+            // An anonymous group only reaches the nodes it is the nearest
+            // group of (#273): not past a nested `group()`.
+            if group {
+                for d in self.group_members(id) {
+                    changed |= self.set_state_bit(d, group_state, on);
+                }
+            }
+            if let Some(name) = &name {
                 for d in self.descendants(id) {
-                    if group {
-                        changed |= self.set_state_bit(d, group_state, on);
-                    }
-                    if let Some(name) = &name {
-                        changed |= self.set_group_bit(d, name, group_state, on);
-                    }
+                    changed |= self.set_group_bit(d, name, group_state, on);
                 }
             }
         }
@@ -1656,6 +1658,17 @@ impl<W: Widgets> NativeRenderer<W> {
 
     /// Every node under `id` (screens of stacks included).
     fn descendants(&self, id: NodeId) -> Vec<NodeId> {
+        self.nodes_under(id, false)
+    }
+
+    /// The nodes whose nearest anonymous [`group`](prism_core::Styled::group)
+    /// ancestor is `id` (#273): its descendants, a nested group included but
+    /// not what is under it.
+    fn group_members(&self, id: NodeId) -> Vec<NodeId> {
+        self.nodes_under(id, true)
+    }
+
+    fn nodes_under(&self, id: NodeId, stop_at_groups: bool) -> Vec<NodeId> {
         let mut out = Vec::new();
         let mut todo = vec![id];
         while let Some(n) = todo.pop() {
@@ -1673,7 +1686,9 @@ impl<W: Widgets> NativeRenderer<W> {
                 kids.extend(screens.iter().copied());
             }
             out.extend(kids.iter().copied());
-            todo.extend(kids);
+            todo.extend(kids.into_iter().filter(|k| {
+                !stop_at_groups || !self.nodes.get(k).is_some_and(|e| e.states.declared.group)
+            }));
         }
         out
     }

@@ -204,8 +204,8 @@ pub(crate) fn state_rules(
     let base = paint(s, dark, text);
     let node = format!(".p{id}");
     let mut out = String::new();
-    // Refinements that follow a named group ancestor (#212), with the
-    // unnamed group ones (they apply first).
+    // Refinements that follow a named group ancestor (#212): they apply
+    // first, the node's own after (later rules win).
     let named = s.states.resolved_named().filter_map(|(state, name, st)| {
         let group = format!(".{}", group_class(name));
         Some((
@@ -225,9 +225,11 @@ pub(crate) fn state_rules(
             Interaction::Focus if focus_within_is_focus => format!("{node}:focus-within"),
             Interaction::Focus => format!("{node}:focus-visible"),
             Interaction::FocusWithin => format!("{node}:focus-within"),
-            Interaction::GroupHover => format!(".prism-group:hover {node}"),
-            Interaction::GroupFocusWithin => format!(".prism-group:focus-within {node}"),
-            Interaction::GroupActive => format!(".prism-group:active {node}"),
+            // Anonymous group states follow the nearest group only (#273),
+            // which GTK CSS cannot select: prism-native resolves them.
+            Interaction::GroupHover | Interaction::GroupFocusWithin | Interaction::GroupActive => {
+                return None;
+            }
             // Set by GtkDropTarget while accepted files are over it (#111).
             Interaction::DropHover => format!("{node}:drop(active)"),
             // Applied by prism-core before the backend sees the style.
@@ -235,9 +237,7 @@ pub(crate) fn state_rules(
         };
         Some((selector, st))
     });
-    let (groups, own): (Vec<_>, Vec<_>) =
-        unnamed.partition(|(sel, _)| sel.starts_with(".prism-group:"));
-    for (selector, st) in groups.into_iter().chain(named).chain(own) {
+    for (selector, st) in named.chain(unnamed) {
         let now = paint(st, dark, text);
         let mut body = String::new();
         for (p, v) in &now {
@@ -363,9 +363,8 @@ mod tests {
         );
         assert!(rules.contains(".p7:active{box-shadow:unset;}"));
         assert!(rules.contains(".p7:focus-within{border:2px solid rgba(0,0,255,1);}"));
-        assert!(rules.contains(".prism-group:hover .p7{color:rgba(255,0,0,1);}"));
-        // Group states first, the node's own after: later rules win.
-        assert!(rules.find(".prism-group").unwrap() < rules.find(":hover{").unwrap());
+        // The nearest group's states come from prism-native (#273).
+        assert!(!rules.contains("prism-group"), "{rules}");
         assert!(!needs_engine(&s), "colors, borders and shadows are CSS");
         // An entry's focus is on its inner text: `:focus-within`.
         let input = resolved(Style::default().focus(|s| s.bg(rgb(0xFFFF00))));

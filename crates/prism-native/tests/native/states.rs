@@ -167,6 +167,45 @@ fn named_groups_drive_only_their_refinements() {
     assert_eq!(h.layout(400., 300.).frame(grip).2, 8.);
 }
 
+/// #273: a `group_hover` follows the nearest group ancestor only, not an
+/// outer group that is hovered too.
+#[test]
+fn group_states_stop_at_the_nearest_group() {
+    let mut h = tree(|| {
+        div()
+            .group()
+            .child(div().w(2.).h(2.).group_hover(|s| s.opacity(0.5)))
+            .children((0..2).map(|_| {
+                div()
+                    .group()
+                    .group_hover(|s| s.bg(rgb(RED)))
+                    .child(div().w(2.).h(2.).opacity(0.).group_hover(|s| s.opacity(1.)))
+            }))
+    });
+    let [outer, own, cell_a, line_a, cell_b, line_b] = views(&h)[..] else {
+        panic!("six views")
+    };
+    // The pointer over cell A: the outer group is hovered too.
+    h.r.set_interaction(outer, Interaction::Hover, true);
+    h.r.set_interaction(cell_a, Interaction::Hover, true);
+    assert_eq!(h.w().styles[&line_a].opacity, 1.);
+    assert_eq!(
+        h.w().styles[&line_b].opacity,
+        0.,
+        "B's own group is not hovered"
+    );
+    // The outer group's members: its direct child and the nested groups.
+    assert_eq!(h.w().styles[&own].opacity, 0.5);
+    assert_eq!(h.w().styles[&cell_a].background, Some(rgb(RED)));
+    assert_eq!(h.w().styles[&cell_b].background, Some(rgb(RED)));
+
+    h.r.set_interaction(cell_a, Interaction::Hover, false);
+    assert_eq!(h.w().styles[&line_a].opacity, 0.);
+    h.r.set_interaction(outer, Interaction::Hover, false);
+    assert_eq!(h.w().styles[&own].opacity, 1.);
+    assert_eq!(h.w().styles[&cell_b].background, None);
+}
+
 #[test]
 fn disabled_nodes_get_their_refinement_and_no_others() {
     let mut h = tree(|| {

@@ -540,6 +540,12 @@ fn decorations(w: &mut String, kind: NodeKind, s: &Style) {
     }
 }
 
+/// The selector of `node` while its nearest `group()` ancestor is in
+/// `state` (#273), with the specificity of `[data-group]:state node`.
+fn nearest_group(node: &str, state: &str) -> String {
+    format!("[data-group]:{state} {node}:not(:where([data-group]:not(:{state}) *))")
+}
+
 /// The interaction refinements of node `id` as CSS rules (pseudo-classes
 /// on `[data-pid]`): for each state, the declarations its style changes,
 /// `!important` to win over the inline style. Empty when it has none.
@@ -581,9 +587,12 @@ pub fn states_css(kind: NodeKind, id: prism_core::NodeId, s: &Style) -> String {
             Interaction::FocusWithin => (format!("{node}:focus-within"), false),
             Interaction::Focus => (format!("{node}:focus-visible"), false),
             Interaction::Active => (format!("{node}:active"), false),
-            Interaction::GroupHover => (format!("[data-group]:hover {node}"), true),
-            Interaction::GroupFocusWithin => (format!("[data-group]:focus-within {node}"), false),
-            Interaction::GroupActive => (format!("[data-group]:active {node}"), false),
+            // The nearest group only (#273): these states reach every
+            // ancestor of the element in them, so the nearest group is in
+            // one exactly when no group ancestor is out of it.
+            Interaction::GroupHover => (nearest_group(&node, "hover"), true),
+            Interaction::GroupFocusWithin => (nearest_group(&node, "focus-within"), false),
+            Interaction::GroupActive => (nearest_group(&node, "active"), false),
             // Set by the client while accepted files are over it (#111).
             Interaction::DropHover => (format!("{node}[data-prism-drop]"), false),
             // Resolved by the server (the disabled refinement is applied).
