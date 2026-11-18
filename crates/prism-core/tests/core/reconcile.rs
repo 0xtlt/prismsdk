@@ -677,6 +677,65 @@ fn menu_ids(spec: &prism_core::menu::MenuSpec) -> Vec<u64> {
         .collect()
 }
 
+/// A "+" button with a click menu, and a canvas (#247).
+struct Popups {
+    picked: Vec<&'static str>,
+}
+
+impl Render for Popups {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let note = MenuItem::new("Note").on_select(cx.listener(|t, _, _| t.picked.push("note")));
+        div()
+            .child(button("+").on_click_menu(Menu::new().item(note)))
+            .child(div().id("canvas").child(text("canvas")))
+    }
+}
+
+#[test]
+fn pop_up_menus_open_below_a_node_at_a_point_or_in_the_window() {
+    let mut h = Harness::new(|cx| {
+        let root = cx.new_entity(|_| Popups { picked: vec![] });
+        mount(cx, root);
+    });
+    // The button's menu opens below it when it is pressed (#247).
+    let p = h.click("+").to_vec();
+    assert_eq!(count(&p, |p| matches!(p, Patch::ShowMenu { .. })), 1);
+    let (node, spec, at) = h.host.popups[0].clone();
+    let button = h.host.by_text("+");
+    assert_eq!((node, at), (Some(button), None));
+    let note = menu_ids(&spec);
+    h.dispatch(UiEvent::MenuSelect(note[0]));
+    assert_eq!(h.root::<Popups>().read(&h.rt.app).picked, vec!["note"]);
+    // Over a named element, at a point in it, with a shortcut only shown.
+    h.rt.app.show_menu_on(
+        "canvas",
+        Menu::new().item(
+            MenuItem::new("Paste")
+                .shortcut_hint("cmd+v")
+                .on_select(std::rc::Rc::new(|_, _| {})),
+        ),
+        Some(Point::new(5., 6.)),
+    );
+    h.render();
+    let (node, spec, at) = h.host.popups[1].clone();
+    assert!(node.is_some() && node != Some(button));
+    assert_eq!(at, Some(Point::new(5., 6.)));
+    assert!(matches!(
+        &spec.items[0],
+        prism_core::menu::MenuItemSpec::Action { shortcut: Some(k), shortcut_hint: true, .. } if k == "cmd+v"
+    ));
+    // The previous pop-up's items are gone with it.
+    h.dispatch(UiEvent::MenuSelect(note[0]));
+    assert_eq!(h.root::<Popups>().read(&h.rt.app).picked.len(), 1);
+    // In the window; nothing for an unknown element.
+    h.rt.app.show_menu(Menu::new(), Point::new(1., 2.));
+    h.rt.app.show_menu_on("missing", Menu::new(), None);
+    h.render();
+    assert_eq!(h.host.popups.len(), 3);
+    assert_eq!(h.host.popups[2].0, None);
+    assert_eq!(h.host.popups[2].2, Some(Point::new(1., 2.)));
+}
+
 thread_local! {
     static APP_MENU_PICKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }

@@ -2889,6 +2889,37 @@ impl Widgets for Gtk {
         }
     }
 
+    /// A pop-up `GtkPopoverMenu` (#247) over the view (the window's
+    /// content), pointing at `at` or at the whole view (below it), removed
+    /// once closed.
+    fn show_menu(
+        &mut self,
+        view: Option<&View>,
+        menu: &prism_core::menu::MenuSpec,
+        at: Option<(f32, f32)>,
+    ) {
+        let parent = match view {
+            Some(v) => v.widget(),
+            None => self.root.clone().upcast(),
+        };
+        let model = crate::services::menu_model(&self.app, menu);
+        let popover = gtk::PopoverMenu::from_model(Some(&model));
+        popover.set_has_arrow(false);
+        popover.set_parent(&parent);
+        let rect = match at {
+            Some((x, y)) => gdk::Rectangle::new(x as i32, y as i32, 1, 1),
+            None => gdk::Rectangle::new(0, 0, parent.width(), parent.height()),
+        };
+        popover.set_pointing_to(Some(&rect));
+        popover.set_position(gtk::PositionType::Bottom);
+        popover.connect_closed(|p| {
+            let p = p.clone();
+            // After the chosen item's action.
+            glib::idle_add_local_once(move || p.unparent());
+        });
+        glib::idle_add_local_once(move || popover.popup());
+    }
+
     fn set_swipe(&mut self, view: &View, left: bool, right: bool) {
         self.swipes.borrow_mut().insert(view.id(), (left, right));
     }

@@ -4541,6 +4541,26 @@ impl Widgets for AppKit {
         }
     }
 
+    /// A pop-up `NSMenu` (#247), after the patches (it tracks the pointer
+    /// in a loop of its own).
+    fn show_menu(
+        &mut self,
+        view: Option<&View>,
+        menu: &prism_core::menu::MenuSpec,
+        at: Option<(f32, f32)>,
+    ) {
+        let v: Retained<NSView> = match view {
+            Some(view) => objc2::Message::retain(view.ns()),
+            None => objc2::Message::retain(&**self.root),
+        };
+        let target: Retained<AnyObject> =
+            Retained::into_super(Retained::into_super(self.target.clone()));
+        let (mtm, spec) = (self.mtm, menu.clone());
+        on_main_after(std::time::Duration::ZERO, move || {
+            crate::menus::pop_up(mtm, &spec, &target, &v, at);
+        });
+    }
+
     fn set_content_size(&mut self, view: &View, width: f32, height: f32) {
         if let View::Scroll(sc) = view {
             sc.document

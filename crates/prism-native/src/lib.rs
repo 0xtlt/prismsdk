@@ -91,6 +91,17 @@ pub trait Widgets {
     /// Context menu of a view (`None` removes it). Items report
     /// `UiEvent::MenuSelect(id)`.
     fn set_menu(&mut self, _view: &Self::View, _menu: Option<&prism_core::menu::MenuSpec>) {}
+    /// Opens a pop-up menu (#247) over `view` (the window's content when
+    /// `None`): at `at`, in the platform's units from the view's top-left
+    /// corner, or below the view when `at` is `None`. Items report
+    /// `UiEvent::MenuSelect(id)`. Default: nothing (tvOS, watchOS).
+    fn show_menu(
+        &mut self,
+        _view: Option<&Self::View>,
+        _menu: &prism_core::menu::MenuSpec,
+        _at: Option<(f32, f32)>,
+    ) {
+    }
     /// Which horizontal swipes a view reports (`UiEvent::Swipe`).
     fn set_swipe(&mut self, _view: &Self::View, _left: bool, _right: bool) {}
     /// Whether a scroll view reports `UiEvent::Scroll`.
@@ -1896,6 +1907,18 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                 Patch::ScrollIntoView { id } => {
                     if let Some(e) = self.nodes.get(id) {
                         self.widgets.scroll_into_view(&e.view);
+                    }
+                }
+                Patch::ShowMenu { id, menu, at } => {
+                    let z = self.zoom;
+                    let at = at.map(|p| (p.x * z, p.y * z));
+                    match id {
+                        Some(id) => {
+                            if let Some(e) = self.nodes.get(id) {
+                                self.widgets.show_menu(Some(&e.view), menu, at);
+                            }
+                        }
+                        None => self.widgets.show_menu(None, menu, at),
                     }
                 }
                 Patch::ScrollTo {

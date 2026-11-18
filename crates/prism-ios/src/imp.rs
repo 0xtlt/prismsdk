@@ -3054,6 +3054,26 @@ impl Widgets for UiKit {
         }
     }
 
+    /// A pop-up menu (#247) over the view (the window's content): see
+    /// [`crate::menus::pop_up`]. After the patches, once laid out.
+    fn show_menu(
+        &mut self,
+        view: Option<&View>,
+        menu: &prism_core::menu::MenuSpec,
+        at: Option<(f32, f32)>,
+    ) {
+        let parent: Retained<UIView> = match view {
+            Some(v) => objc2::Message::retain(v.ui()),
+            None => self.root.clone(),
+        };
+        let parent = dispatch2::MainThreadBound::new(parent, self.mtm);
+        let spec = menu.clone();
+        dispatch2::DispatchQueue::main().exec_async(move || {
+            let mtm = MainThreadMarker::new().expect("the main queue");
+            crate::menus::pop_up(mtm, parent.get(mtm), &spec, at, dispatch);
+        });
+    }
+
     fn set_content_size(&mut self, view: &View, width: f32, height: f32) {
         if let View::Overlay(o) = view {
             o.set_size(width as f64, height as f64);

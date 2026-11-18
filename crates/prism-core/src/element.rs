@@ -519,6 +519,9 @@ pub struct VNode {
     pub link: Option<String>,
     /// Long press (iOS), right-click (macOS, web) menu.
     pub context_menu: Option<crate::menu::Menu>,
+    /// A menu opened below the element when it is clicked (#247), in
+    /// place of `on_click`.
+    pub click_menu: Option<crate::menu::Menu>,
     /// Identity among siblings, so reordered children are moved rather than rebuilt.
     pub key: Option<String>,
     /// Child elements.
@@ -650,6 +653,7 @@ impl VNode {
             a11y: Accessibility::default(),
             link: None,
             context_menu: None,
+            click_menu: None,
             key: None,
             children: Vec::new(),
             on_click: None,
@@ -1106,6 +1110,16 @@ impl Div {
         self
     }
 
+    /// Opens `menu`, the platform's own pop-up menu, below the element when
+    /// it is clicked or tapped (#247): a "+" button, a "…" button. It takes
+    /// the place of [`on_click`](Self::on_click). See
+    /// [`App::show_menu_on`](crate::App::show_menu_on) to open one from a
+    /// handler, at a point.
+    pub fn on_click_menu(mut self, menu: crate::menu::Menu) -> Self {
+        self.0.click_menu = Some(menu);
+        self
+    }
+
     /// A horizontal swipe (touch, trackpad). Not reachable by every user:
     /// also offer the action elsewhere (context menu, button).
     pub fn on_swipe(mut self, direction: SwipeDirection, handler: Handler<ClickEvent>) -> Self {
@@ -1138,6 +1152,14 @@ impl Button {
     /// navigation in the app.
     pub fn link(mut self, path: impl Into<String>) -> Self {
         self.0.link = Some(path.into());
+        self
+    }
+
+    /// Opens `menu` below the button when it is pressed (#247), in place of
+    /// [`on_click`](Self::on_click): a "+" or "…" button with the
+    /// platform's own pop-up menu. See [`Div::on_click_menu`].
+    pub fn on_click_menu(mut self, menu: crate::menu::Menu) -> Self {
+        self.0.click_menu = Some(menu);
         self
     }
 }

@@ -1,13 +1,15 @@
 //! AppKit menus and alerts from Prism's platform-neutral specs.
 
+use std::cell::OnceCell;
+
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, Sel};
-use objc2::{MainThreadMarker, MainThreadOnly, sel};
+use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject, Sel};
+use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAlert, NSAlertStyle, NSApplication, NSControlStateValueOff, NSControlStateValueOn,
-    NSEventModifierFlags, NSImage, NSMenu, NSMenuItem, NSWindow,
+    NSEventModifierFlags, NSImage, NSMenu, NSMenuDelegate, NSMenuItem, NSWindow,
 };
-use objc2_foundation::NSString;
+use objc2_foundation::{NSObject, NSString};
 use prism_core::UiEvent;
 use prism_core::menu::{ActionRole, AlertSpec, MenuItemSpec, MenuSpec, SystemAction};
 
@@ -25,6 +27,67 @@ pub fn parse_shortcut(s: &str) -> (String, NSEventModifierFlags) {
         }
     }
     (key, mask)
+}
+
+/// Marks an item's shortcut hint (#247) in its `representedObject`.
+const HINT: &str = "prism-hint:";
+
+define_class!(
+    /// Shows the shortcut hints of a menu's items (#247) only while it is
+    /// open: a closed menu has no key equivalent for them, so the keys go
+    /// to the focused view, yet the open menu lists them.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PrismMenuHints"]
+    struct MenuHints;
+
+    unsafe impl NSObjectProtocol for MenuHints {}
+
+    unsafe impl NSMenuDelegate for MenuHints {
+        #[unsafe(method(menuWillOpen:))]
+        fn menu_will_open(&self, menu: &NSMenu) {
+            show_hints(menu, true);
+        }
+
+        #[unsafe(method(menuDidClose:))]
+        fn menu_did_close(&self, menu: &NSMenu) {
+            show_hints(menu, false);
+        }
+    }
+);
+
+thread_local! {
+    /// The one delegate of menus with hints (`NSMenu.delegate` is weak).
+    static HINTS: OnceCell<Retained<MenuHints>> = const { OnceCell::new() };
+}
+
+fn show_hints(menu: &NSMenu, on: bool) {
+    for entry in menu.itemArray().iter() {
+        let Some(keys) = entry
+            .representedObject()
+            .and_then(|o| o.downcast::<NSString>().ok())
+            .map(|s| s.to_string())
+        else {
+            continue;
+        };
+        let Some(keys) = keys.strip_prefix(HINT) else {
+            continue;
+        };
+        let (key, mask) = if on {
+            parse_shortcut(keys)
+        } else {
+            (String::new(), NSEventModifierFlags::empty())
+        };
+        entry.setKeyEquivalent(&NSString::from_str(&key));
+        entry.setKeyEquivalentModifierMask(mask);
+    }
+}
+
+fn hint_delegate(mtm: MainThreadMarker, menu: &NSMenu) {
+    HINTS.with(|h| {
+        let delegate = h.get_or_init(|| unsafe { msg_send![MenuHints::alloc(mtm), init] });
+        menu.setDelegate(Some(ProtocolObject::from_ref(&**delegate)));
+    });
 }
 
 fn item(
@@ -48,6 +111,7 @@ pub fn build_menu(mtm: MainThreadMarker, spec: &MenuSpec, target: &AnyObject) ->
     let menu = NSMenu::new(mtm);
     menu.setTitle(&NSString::from_str(&spec.title));
     menu.setAutoenablesItems(false);
+    let mut hints = false;
     for it in &spec.items {
         match it {
             MenuItemSpec::Separator => menu.addItem(&NSMenuItem::separatorItem(mtm)),
@@ -77,17 +141,26 @@ pub fn build_menu(mtm: MainThreadMarker, spec: &MenuSpec, target: &AnyObject) ->
                 title,
                 icon,
                 shortcut,
+                shortcut_hint,
                 role,
                 checked,
                 enabled,
             } => {
                 let (key, mask) = shortcut
                     .as_deref()
+                    .filter(|_| !shortcut_hint)
                     .map(parse_shortcut)
                     .unwrap_or((String::new(), NSEventModifierFlags::empty()));
                 let entry = item(mtm, title, Some(sel!(onMenuItem:)), &key);
                 if !key.is_empty() {
                     entry.setKeyEquivalentModifierMask(mask);
+                }
+                // A hint (#247): the key equivalent only while the menu is
+                // open (`MenuHints`).
+                if let (Some(keys), true) = (shortcut, shortcut_hint) {
+                    let marker = NSString::from_str(&format!("{HINT}{keys}"));
+                    unsafe { entry.setRepresentedObject(Some(&marker)) };
+                    hints = true;
                 }
                 entry.setTag(*id as isize);
                 unsafe { entry.setTarget(Some(target)) };
@@ -108,7 +181,39 @@ pub fn build_menu(mtm: MainThreadMarker, spec: &MenuSpec, target: &AnyObject) ->
             }
         }
     }
+    if hints {
+        hint_delegate(mtm, &menu);
+    }
     menu
+}
+
+/// Opens `spec` as a pop-up menu over `view` (#247): at `at` from its
+/// top-left corner, or below it. Later on the main thread: AppKit tracks
+/// the menu in a loop of its own, and the chosen item dispatches.
+pub fn pop_up(
+    mtm: MainThreadMarker,
+    spec: &MenuSpec,
+    target: &AnyObject,
+    view: &objc2_app_kit::NSView,
+    at: Option<(f32, f32)>,
+) {
+    let menu = build_menu(mtm, spec, target);
+    let bounds = view.bounds();
+    let (x, top) = match at {
+        Some((x, y)) => (x as f64, y as f64),
+        None => (0., bounds.size.height),
+    };
+    // Points from the top; AppKit's views count from the bottom unless flipped.
+    let y = if view.isFlipped() {
+        top
+    } else {
+        bounds.size.height - top
+    };
+    menu.popUpMenuPositioningItem_atLocation_inView(
+        None,
+        objc2_foundation::NSPoint::new(x, y),
+        Some(view),
+    );
 }
 
 /// A system item (#161): the action AppKit sends along the responder chain

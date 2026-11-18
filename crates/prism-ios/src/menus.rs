@@ -107,6 +107,51 @@ pub fn build_menu(mtm: MainThreadMarker, spec: &MenuSpec, report: fn(UiEvent)) -
     )
 }
 
+thread_local! {
+    /// The button presenting the last pop-up menu (#247).
+    static POP_UP: std::cell::RefCell<Option<Retained<objc2_ui_kit::UIButton>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Opens `spec` as a pop-up menu over `parent` (#247): at `at` from its
+/// top-left corner, or below it. UIKit presents menus from controls only: a
+/// transparent one-point `UIButton` at that place shows the menu as its
+/// primary action, pressed with `performPrimaryAction` (iOS 17.4 and
+/// later; nothing before). Nothing on tvOS.
+pub fn pop_up(
+    mtm: MainThreadMarker,
+    parent: &objc2_ui_kit::UIView,
+    spec: &MenuSpec,
+    at: Option<(f32, f32)>,
+    report: fn(UiEvent),
+) {
+    if cfg!(target_os = "tvos") {
+        return;
+    }
+    use objc2::sel;
+    use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+    use objc2_foundation::NSObjectProtocol;
+    use objc2_ui_kit::{NSObjectUIAccessibility, UIButton, UIButtonType};
+    let button = UIButton::buttonWithType(UIButtonType::Custom, mtm);
+    if !button.respondsToSelector(sel!(performPrimaryAction)) {
+        return;
+    }
+    if let Some(old) = POP_UP.with(|p| p.borrow_mut().take()) {
+        old.removeFromSuperview();
+    }
+    let (x, y) = match at {
+        Some((x, y)) => (x as f64, y as f64),
+        None => (0., parent.bounds().size.height),
+    };
+    button.setFrame(CGRect::new(CGPoint::new(x, y), CGSize::new(1., 1.)));
+    button.setIsAccessibilityElement(false, mtm);
+    button.setMenu(Some(&build_menu(mtm, spec, report)));
+    button.setShowsMenuAsPrimaryAction(true);
+    parent.addSubview(&button);
+    button.performPrimaryAction();
+    POP_UP.with(|p| *p.borrow_mut() = Some(button));
+}
+
 /// The view controller currently on top (presented sheets included).
 pub fn top_controller(root: &UIViewController) -> Retained<UIViewController> {
     let mut top = root.retain();

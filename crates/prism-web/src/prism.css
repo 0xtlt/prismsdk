@@ -77,6 +77,7 @@ progress { width: 100%; accent-color: currentColor; }
 .prism-menu [role^=menuitem]:hover, .prism-menu [role^=menuitem]:focus { background: rgba(128,128,128,.15); outline: none; }
 .prism-menu [data-role=destructive] { color: #d93636; }
 .prism-menu [role=separator] { height: 1px; margin: 4px 6px; background: rgba(128,128,128,.25); }
+.prism-menu .prism-menu-key { margin-inline-start: auto; padding-inline-start: 24px; opacity: .55; font-variant-numeric: tabular-nums; }
 .prism-menu .prism-menu-group { padding: 6px 10px 2px; font-size: 12px; opacity: .6; }
 dialog.prism-alert { border: 0; border-radius: 16px; padding: 20px; width: min(340px, 90vw); background: Canvas; color: CanvasText; box-shadow: 0 20px 50px rgba(0,0,0,.3); }
 dialog.prism-alert h2 { margin: 0 0 6px; font-size: 17px; }

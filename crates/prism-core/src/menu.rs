@@ -10,6 +10,9 @@
 //!   `capabilities().tray == false`.
 //! - **App menu** (`cx.set_app_menu(...)`): the macOS menu bar (and Windows
 //!   menu bars later), with keyboard shortcuts.
+//! - **Pop-up menus** (`cx.show_menu(...)`, `cx.show_menu_on(...)`,
+//!   `div().on_click_menu(menu)`, #247): the platform's menu at a point or
+//!   below an element (a "+" button, a right-click on a canvas).
 
 use crate::app::App;
 use crate::element::{ClickEvent, Handler};
@@ -128,6 +131,9 @@ pub enum MenuItem {
         icon: Option<String>,
         /// `"cmd+shift+n"` style shortcut (menu bar menus).
         shortcut: Option<String>,
+        /// The shortcut is only shown, never bound (#247): see
+        /// [`MenuItem::shortcut_hint`].
+        shortcut_hint: bool,
         /// How it is drawn (normal, destructive, cancel).
         role: ActionRole,
         /// `Some` shows a check mark (on) or none (off); `None` is not checkable.
@@ -187,6 +193,7 @@ impl MenuItem {
             title: title.into(),
             icon: None,
             shortcut: None,
+            shortcut_hint: false,
             role: ActionRole::Normal,
             checked: None,
             enabled: true,
@@ -206,8 +213,35 @@ impl MenuItem {
     }
     /// Sets a keyboard shortcut such as `"cmd+shift+n"` (menu bar menus).
     pub fn shortcut(mut self, keys: impl Into<String>) -> Self {
-        if let MenuItem::Action { shortcut, .. } | MenuItem::System { shortcut, .. } = &mut self {
+        match &mut self {
+            MenuItem::System { shortcut, .. } => *shortcut = Some(keys.into()),
+            MenuItem::Action {
+                shortcut,
+                shortcut_hint,
+                ..
+            } => {
+                *shortcut = Some(keys.into());
+                *shortcut_hint = false;
+            }
+            MenuItem::Separator | MenuItem::Submenu { .. } => {}
+        }
+        self
+    }
+
+    /// Shows `keys` (`"cmd+b"`) next to the item without binding them
+    /// (#247): the key keeps going to the focused view, which handles it
+    /// itself (⌘B in a text field, ⌘D on a canvas, ⌘= for a zoom the view
+    /// does), and the menu still documents it. Choosing the item runs its
+    /// handler as usual. Written like [`shortcut`](Self::shortcut).
+    pub fn shortcut_hint(mut self, keys: impl Into<String>) -> Self {
+        if let MenuItem::Action {
+            shortcut,
+            shortcut_hint,
+            ..
+        } = &mut self
+        {
             *shortcut = Some(keys.into());
+            *shortcut_hint = true;
         }
         self
     }
@@ -333,6 +367,7 @@ fn compile_items(
                 title,
                 icon,
                 shortcut,
+                shortcut_hint,
                 role,
                 checked,
                 enabled,
@@ -347,6 +382,7 @@ fn compile_items(
                     title: title.clone(),
                     icon: icon.clone(),
                     shortcut: shortcut.clone(),
+                    shortcut_hint: *shortcut_hint && shortcut.is_some(),
                     role: *role,
                     checked: *checked,
                     enabled: *enabled && handler.is_some(),
@@ -383,6 +419,9 @@ pub enum MenuItemSpec {
         icon: Option<String>,
         /// `"cmd+shift+n"` style shortcut.
         shortcut: Option<String>,
+        /// The shortcut is only shown next to the title, never bound
+        /// (#247): backends leave the key to the focused view.
+        shortcut_hint: bool,
         /// How it is drawn.
         role: ActionRole,
         /// `Some` for checkable items: whether the check mark shows.
@@ -452,11 +491,12 @@ impl MenuItemSpec {
                 title,
                 icon,
                 shortcut,
+                shortcut_hint,
                 role,
                 checked,
                 enabled,
             } => format!(
-                r#"{{"t":"act","id":{id},"title":{},"icon":{},"shortcut":{},"role":"{}","checked":{},"enabled":{enabled}}}"#,
+                r#"{{"t":"act","id":{id},"title":{},"icon":{},"shortcut":{},"hint":{shortcut_hint},"role":"{}","checked":{},"enabled":{enabled}}}"#,
                 json_str(title),
                 opt(icon),
                 opt(shortcut),
@@ -772,6 +812,51 @@ impl App {
         self.surfaces
             .requests
             .push(crate::PlatformRequest::SetAppMenu(specs));
+    }
+
+    /// Opens `menu` as the platform's pop-up menu at `at`, in points from
+    /// the top-left corner of the window's content (#247), after the next
+    /// render: `NSMenu` on macOS, `UIMenu` on iOS, iPadOS and visionOS
+    /// (17.4+), a `PopupMenu` on Android, a `GtkPopoverMenu` on Linux, the
+    /// page's own menu on the web. Nothing on tvOS and watchOS. Its items
+    /// run their handlers like a context menu's; showing another pop-up
+    /// menu replaces this one's.
+    pub fn show_menu(&mut self, menu: Menu, at: crate::events::Point) {
+        let spec = self.menus.compile("popup", &menu);
+        self.ui_commands.push(crate::app::UiCommand::ShowMenu(
+            crate::app::MenuTarget::Window,
+            spec,
+            Some(at),
+        ));
+    }
+
+    /// Opens `menu` over the element named `id` (`.id(id)`, #247): at `at`
+    /// in the element's coordinates (a [`ClickEvent::position`], a right
+    /// click on a canvas), or below it when `None` (a "+" button), as the
+    /// platform places menus under their control. See
+    /// [`show_menu`](Self::show_menu); nothing when no element has this id.
+    pub fn show_menu_on(
+        &mut self,
+        id: impl Into<String>,
+        menu: Menu,
+        at: Option<crate::events::Point>,
+    ) {
+        let spec = self.menus.compile("popup", &menu);
+        self.ui_commands.push(crate::app::UiCommand::ShowMenu(
+            crate::app::MenuTarget::Named(id.into()),
+            spec,
+            at,
+        ));
+    }
+
+    /// `Div::on_click_menu`: the menu below the clicked node.
+    pub(crate) fn show_menu_below(&mut self, node: crate::reconcile::NodeId, menu: &Menu) {
+        let spec = self.menus.compile("popup", menu);
+        self.ui_commands.push(crate::app::UiCommand::ShowMenu(
+            crate::app::MenuTarget::Node(node),
+            spec,
+            None,
+        ));
     }
 
     /// Runs the handler of an app-level menu item; `false` if unknown.

@@ -754,6 +754,32 @@ test("context menus open on right-click and report the chosen item", () => {
   assert.equal(el.getAttribute("aria-haspopup"), null);
 });
 
+test("pop-up menus open below a node or at a point, and show shortcuts (#247)", () => {
+  const menu = { title: "", items: [
+    { t: "act", id: 4503599627370497, title: "Bold", icon: null, shortcut: "cmd+b", hint: true, role: "normal", checked: null, enabled: true },
+    { t: "act", id: 4503599627370498, title: "Find", icon: null, shortcut: "cmd+shift+f", hint: false, role: "normal", checked: null, enabled: true },
+  ] };
+  const page = live([create(1, "view"), root(1)]);
+  const el = page.node(1);
+  el.clientWidth = 40;
+  el.clientHeight = 30;
+  page.ws.deliver({ t: "patch", p: [{ op: "popup", id: 1, menu, at: null }] });
+  let shown = page.document.body.querySelector(".prism-menu");
+  assert.equal(shown.style.top, "34px", "below the node");
+  const items = shown.querySelectorAll("[role^=menuitem]");
+  // Not an Apple platform here: `cmd` is Ctrl.
+  assert.deepEqual(items.map((b) => b.querySelector(".prism-menu-key").textContent), ["Ctrl+B", "Ctrl+Shift+F"]);
+  assert.equal(items[0].getAttribute("aria-keyshortcuts"), "Control+B");
+  items[0].click();
+  assert.deepEqual(lastSent(page), { t: "menu", id: 4503599627370497 });
+  assert.equal(shown.isConnected, false);
+  // At a point in the page.
+  page.ws.deliver({ t: "patch", p: [{ op: "popup", id: null, menu, at: [20, 50] }] });
+  shown = page.document.body.querySelector(".prism-menu");
+  assert.equal(shown.style.top, "50px");
+  assert.equal(shown.style.left, "20px");
+});
+
 test("alerts are dialogs; Escape picks Cancel", () => {
   const page = live([create(1, "view"), root(1)]);
   page.ws.deliver({ t: "alert", a: { id: 9, title: "Delete?", message: "Gone for good", actions: [{ title: "Delete", role: "destructive" }, { title: "Cancel", role: "cancel" }] } });

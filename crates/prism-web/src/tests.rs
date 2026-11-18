@@ -1146,6 +1146,7 @@ fn every_patch_has_a_stable_json_encoding() {
             title: "Delete".into(),
             icon: None,
             shortcut: None,
+            shortcut_hint: false,
             role: prism_core::ActionRole::Destructive,
             checked: None,
             enabled: true,
@@ -1190,6 +1191,14 @@ fn every_patch_has_a_stable_json_encoding() {
             menu: Some(menu),
         },
         Patch::SetMenu { id: 8, menu: None },
+        Patch::ShowMenu {
+            id: Some(8),
+            menu: prism_core::menu::MenuSpec {
+                title: String::new(),
+                items: vec![prism_core::menu::MenuItemSpec::Separator],
+            },
+            at: Some(prism_core::Point::new(3., 4.)),
+        },
         a11y(
             8,
             Accessibility {
@@ -1231,9 +1240,10 @@ fn every_patch_has_a_stable_json_encoding() {
         { "op": "scrollev", "id": 8, "on": true },
         { "op": "menu", "id": 7, "menu": { "title": "", "items": [
             { "t": "act", "id": (7u64 << 16), "title": "Delete", "icon": null, "shortcut": null,
-              "role": "destructive", "checked": null, "enabled": true }
+              "hint": false, "role": "destructive", "checked": null, "enabled": true }
         ]}},
         { "op": "menu", "id": 8, "menu": null },
+        { "op": "popup", "id": 8, "menu": { "title": "", "items": [{ "t": "sep" }] }, "at": [3.0, 4.0] },
         { "op": "a11y", "id": 8, "a11y": {
             "role": "heading", "level": 3, "label": "L", "hint": null, "value": null,
             "checked": true, "disabled": false, "hidden": false,
@@ -2193,6 +2203,36 @@ fn app_menu_shortcut_ids_are_exact_in_the_page() {
         crate::session::parse_event(&json!({"t": "menu", "id": 4503599627370497u64})),
         Some(UiEvent::MenuSelect(id))
     );
+}
+
+#[test]
+fn shortcut_hints_stay_the_pages_keys() {
+    use crate::session::WebServices;
+    use prism_core::PlatformServices;
+    // ⌘B is only shown (#247): the page never takes it from a field.
+    let init: prism_core::AppInit = Arc::new(|cx: &mut App| {
+        let h: prism_core::Handler<prism_core::ClickEvent> = std::rc::Rc::new(|_, _| {});
+        cx.set_menu_bar(vec![
+            Menu::titled("Format")
+                .item(
+                    MenuItem::new("Bold")
+                        .shortcut_hint("cmd+b")
+                        .on_select(h.clone()),
+                )
+                .item(MenuItem::new("Find").shortcut("cmd+f").on_select(h)),
+        ]);
+    });
+    let mut rt = prism_core::Runtime::new(&init);
+    let _ = rt.render();
+    let mut s = WebServices::default();
+    for r in rt.take_requests() {
+        s.handle(r);
+    }
+    let out = s.take_outbox();
+    let msg = out.iter().find(|m| m["t"] == "shortcuts").unwrap();
+    let list = msg["list"].as_array().unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0][0], "cmd+f");
 }
 
 // --- Static files and mount points ------------------------------------------------------
