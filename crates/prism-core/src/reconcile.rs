@@ -585,6 +585,9 @@ pub enum UiEvent {
     /// A click with ⌘, Ctrl or ⌥ on character `offset` of a rich input
     /// being edited: (id, offset, the keys held).
     SpanClick(NodeId, usize, crate::events::Modifiers),
+    /// A click in a rich input (#266), its `text_offset` set: for its
+    /// [`on_click`](crate::RichInput::on_click).
+    FieldClick(NodeId, crate::element::ClickEvent),
     // --- One selection across several fields (#231) ---
     /// The web client extended (or ended, `None`) the selection across the
     /// fields of group `.0`: from (field, offset) to (field, offset). It

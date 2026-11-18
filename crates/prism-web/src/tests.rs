@@ -4616,6 +4616,16 @@ fn rich_input_editing_hooks_have_a_json_encoding_and_events() {
         panic!("span click")
     };
     assert!(m.meta);
+    // Any click in the field, with its character (#266).
+    let Some(UiEvent::FieldClick(1, c)) =
+        ev(json!({"t": "fieldclick", "id": 1, "at": 5, "mods": 1, "n": 1, "x": 3, "y": 4}))
+    else {
+        panic!("field click")
+    };
+    assert_eq!(
+        (c.text_offset, c.modifiers.shift, c.count),
+        (Some(5), true, 1)
+    );
 }
 
 // --- One selection across several fields (#231) ----------------------------------

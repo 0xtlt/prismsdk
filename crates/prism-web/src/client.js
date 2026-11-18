@@ -2267,6 +2267,12 @@
     // With the app's `on_span_click` (#217), a click with ⌘, Ctrl or ⌥ on
     // any run is the app's instead.
     el.addEventListener("click", (e) => {
+      // Every click, with the character under it (#266); the field still
+      // places its caret.
+      if ((el._editMask || 0) & EDIT_CLICK) {
+        const at = richClickOffset(el, e);
+        if (at !== null) send({ t: "fieldclick", id, at, mods: modsOf(e), n: Math.max(1, e.detail || 1), ...local(el, e) });
+      }
       if (((el._editMask || 0) & EDIT_SPAN_CLICK) && (e.metaKey || e.ctrlKey || e.altKey)) {
         const at = richClickOffset(el, e);
         if (at !== null) {
@@ -2290,7 +2296,7 @@
   // --- A rich input's editing hooks (#217) ------------------------------------
   // `editev` op bits: the selection's rectangle, copy, cut, paste,
   // modifier-clicks (prism_core::edit_events).
-  const EDIT_RECT = 1, EDIT_COPY = 2, EDIT_CUT = 4, EDIT_PASTE = 8, EDIT_SPAN_CLICK = 16;
+  const EDIT_RECT = 1, EDIT_COPY = 2, EDIT_CUT = 4, EDIT_PASTE = 8, EDIT_SPAN_CLICK = 16, EDIT_CLICK = 32;
   /** What a `paste` event's clipboard holds: text, HTML, types, other text data. */
   function pasteData(data, text) {
     const types = [], extra = [];

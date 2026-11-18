@@ -583,6 +583,7 @@ fn click_event(
                 modifiers,
                 count,
                 button: prism_core::PointerButton::Primary,
+                text_offset: None,
             },
         ),
         Some(p) => UiEvent::ClickAt(id, p),
@@ -3354,6 +3355,7 @@ impl Widgets for Gtk {
                         modifiers: modifiers(g.current_event_state()),
                         count: n.max(1) as u32,
                         button,
+                        text_offset: None,
                     },
                 ));
             });

@@ -198,6 +198,10 @@ pub struct ClickEvent {
     /// `on_click` (and from the keyboard), the middle, back or forward
     /// button for [`on_aux_click`](Div::on_aux_click).
     pub button: crate::events::PointerButton,
+    /// In a text field (#266): the character under the pointer, so ⇧-click
+    /// can extend a selection to it from elsewhere (another field of a
+    /// [`text_flow`](crate::text_flow)). `None` elsewhere.
+    pub text_offset: Option<usize>,
 }
 
 impl Default for ClickEvent {
@@ -221,6 +225,7 @@ pub const ClickEvent: ClickEvent = ClickEvent {
     modifiers: crate::events::Modifiers::NONE,
     count: 1,
     button: crate::events::PointerButton::Primary,
+    text_offset: None,
 };
 
 /// Fired on every edit of a text input, with its new content.
@@ -1656,6 +1661,17 @@ impl RichInput {
     /// watchOS report none.
     pub fn on_span_click(mut self, handler: Handler<crate::SpanClickEvent>) -> Self {
         self.0.edit.on_span_click = Some(handler);
+        self
+    }
+
+    /// Called for each click in the field (#266), with the character under
+    /// the pointer (`e.text_offset`), the keys held and the click count;
+    /// the field still places its caret. A ⇧-click on a field that is not
+    /// focused can extend a selection to that point from another field of a
+    /// [`text_flow`](crate::text_flow). The web, macOS and Linux; touch
+    /// screens report none.
+    pub fn on_click(mut self, handler: Handler<ClickEvent>) -> Self {
+        self.0.edit.on_click = Some(handler);
         self
     }
 }
