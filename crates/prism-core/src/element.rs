@@ -638,6 +638,9 @@ pub struct VNode {
     pub on_drop_progress: Option<Handler<crate::events::DropProgress>>,
     /// A video's playback reached the end (#207).
     pub on_ended: Option<Handler<crate::video::EndedEvent>>,
+    /// A text field's own bar above the on-screen keyboard (#242): placed
+    /// right after the field, as a [`keyboard_toolbar`] serving only it.
+    pub keyboard_toolbar: Option<Box<Element>>,
 }
 
 impl VNode {
@@ -696,6 +699,7 @@ impl VNode {
             on_drop_files: None,
             on_drop_progress: None,
             on_ended: None,
+            keyboard_toolbar: None,
         }
     }
 }
@@ -1103,6 +1107,15 @@ impl Div {
         self
     }
 
+    /// A bar above the on-screen keyboard shared by every text field
+    /// inside the container (#242): it shows while any of them has the
+    /// focus (a field's own [`keyboard_toolbar`](TextInput::keyboard_toolbar)
+    /// and a nearer container's bar win). Shorthand for
+    /// `.child(keyboard_toolbar(bar))`.
+    pub fn keyboard_toolbar(self, bar: impl IntoElement) -> Self {
+        self.child(crate::keyboard_toolbar(bar))
+    }
+
     /// A context menu: long press on iOS, right-click on macOS and the web
     /// (plus the Menu key / Shift+F10). Exposed to assistive technologies.
     pub fn context_menu(mut self, menu: crate::menu::Menu) -> Self {
@@ -1261,6 +1274,17 @@ macro_rules! text_entry {
             /// Offsets past the end are clamped to the text.
             pub fn selection(mut self, range: impl Into<SelectionEvent>) -> Self {
                 self.0.selection = Some(range.into());
+                self
+            }
+
+            /// A bar above the on-screen keyboard while this field has the
+            /// focus (#242): formatting buttons, « Done ». See
+            /// [`keyboard_toolbar`](crate::keyboard_toolbar) for where it
+            /// shows; tapping its buttons keeps the field focused and the
+            /// keyboard up. It takes precedence over a container's shared
+            /// bar ([`Div::keyboard_toolbar`]).
+            pub fn keyboard_toolbar(mut self, bar: impl IntoElement) -> Self {
+                self.0.keyboard_toolbar = Some(Box::new(bar.into_element()));
                 self
             }
         }
@@ -2446,6 +2470,38 @@ pub fn popover(content: impl IntoElement) -> Overlay {
 /// `content` in a centered modal dialog over a dimmed window.
 pub fn dialog(content: impl IntoElement) -> Overlay {
     overlay(crate::controls::OverlayKind::Dialog, content.into_element())
+}
+
+/// `content` in a bar above the on-screen keyboard, shown while a text
+/// field in the element containing it has the focus (#242):
+/// `div().child(editor).child(keyboard_toolbar(format_bar))`, or
+/// [`Div::keyboard_toolbar`]. A field's own bar
+/// ([`TextInput::keyboard_toolbar`]) wins over its container's, and a
+/// nearer container's over a farther one's.
+///
+/// The bar is laid out at the window's width; give it its own height,
+/// padding and background. Taps on its buttons keep the field focused and
+/// the keyboard up.
+///
+/// - iOS, iPadOS: the field's `inputAccessoryView` (above a hardware
+///   keyboard's shortcut bar too).
+/// - Android: a bar docked above the IME (window insets), while the field
+///   has the focus.
+/// - Web: on touch screens (`pointer: coarse`), a bar fixed to the bottom
+///   of the visual viewport, which the on-screen keyboard shrinks
+///   (`VisualViewport`); presses on it do not take the focus.
+/// - macOS, Linux, tvOS, watchOS, visionOS, desktop browsers: no
+///   on-screen keyboard bar; it is left out (its content is not built on
+///   native desktops).
+pub fn keyboard_toolbar(content: impl IntoElement) -> Overlay {
+    let mut o = overlay(
+        crate::controls::OverlayKind::Keyboard,
+        content.into_element(),
+    );
+    o.0.value = Some(1.);
+    o.0.style.platforms =
+        Some(crate::Platform::Ios | crate::Platform::Android | crate::Platform::Web);
+    o
 }
 
 impl Overlay {

@@ -1215,3 +1215,78 @@ fn screens_send_their_bar_buttons_with_glyphs_and_bars_their_tint() {
         json!([1., 0., 0., 1., 1., 0., 0., 1.])
     );
 }
+
+/// Keyboard bars (#242): each text field learns its bar (`kbar`), its own
+/// before its container's, and the bar's content is laid out at the
+/// overlay's width.
+#[test]
+fn text_fields_learn_their_keyboard_bar() {
+    use prism_core::{
+        AppInit, Context, IntoElement, ParentElement, Platform, Render, Runtime, RuntimeOptions,
+        Styled, button, div, text_area, text_input,
+    };
+    struct App;
+    impl Render for App {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .child(text_input().keyboard_toolbar(button("B").h(40.)))
+                .child(div().child(text_area()))
+                .keyboard_toolbar(div().h(44.).child(button("Done")))
+        }
+    }
+    let init: AppInit = std::sync::Arc::new(|cx: &mut prism_core::App| {
+        let e = cx.new_entity(|_| App);
+        cx.set_root(e);
+    });
+    let mut rt = Runtime::with_options(
+        &init,
+        RuntimeOptions {
+            path: "/".into(),
+            platform: Some(Platform::Android),
+            ..Default::default()
+        },
+    );
+    let mut r = NativeRenderer::new(RemoteWidgets::new(measure));
+    r.apply(&rt.render());
+    r.layout(320., 600., Default::default());
+    let ops = &r.widgets.ops;
+    let created = |kind: &str| -> Vec<Value> {
+        ops.iter()
+            .filter(|o| o["op"] == "create" && o["kind"] == kind)
+            .map(|o| o["id"].clone())
+            .collect()
+    };
+    let (input, area) = (
+        created("text_input")[0].clone(),
+        created("text_area")[0].clone(),
+    );
+    let overlays = created("overlay");
+    let configs: Vec<Value> = overlays
+        .iter()
+        .map(|id| {
+            ops.iter()
+                .find(|o| o["op"] == "config" && o["id"] == *id)
+                .map(|o| o["config"].clone())
+                .unwrap()
+        })
+        .collect();
+    let own = overlays[configs.iter().position(|c| c == "keyboard field").unwrap()].clone();
+    let shared = overlays[configs.iter().position(|c| c == "keyboard").unwrap()].clone();
+    let bar_of = |field: &Value| {
+        ops.iter()
+            .rev()
+            .find(|o| o["op"] == "kbar" && o["id"] == *field)
+            .map(|o| o["bar"].clone())
+    };
+    assert_eq!(bar_of(&input), Some(own));
+    assert_eq!(
+        bar_of(&area),
+        Some(shared.clone()),
+        "a nested field gets its container's bar"
+    );
+    // The shared bar's content: 44 high, at the root's width.
+    assert!(
+        ops.iter()
+            .any(|o| o["op"] == "content" && o["id"] == shared && o["size"] == json!([320., 44.]))
+    );
+}

@@ -249,6 +249,11 @@ pub trait Widgets {
     /// Takes the focus away from whatever has it and hides the on-screen
     /// keyboard (`cx.dismiss_keyboard()`, #29).
     fn dismiss_keyboard(&mut self) {}
+    /// The bar shown above the on-screen keyboard while text field `field`
+    /// has the focus (#242): the keyboard `Overlay` that serves it (its
+    /// content is laid out like an overlay's, in `overlay_viewport`), or
+    /// `None`. Called when it changes, after a batch of patches.
+    fn set_keyboard_bar(&mut self, _field: &Self::View, _bar: Option<&Self::View>) {}
 
     // --- Web views (#62) ---
 
@@ -504,6 +509,8 @@ pub struct NativeRenderer<W: Widgets> {
     under_bars: HashMap<NodeId, UnderBars>,
     /// Nodes that report their frame (#192), and the frame last reported.
     layout_reports: HashMap<NodeId, Option<prism_core::Rect>>,
+    /// The keyboard bar serving each text field that has one (#242).
+    keyboard_bars: HashMap<NodeId, NodeId>,
 }
 
 /// What the platform insets a scroll view's content by, at the top and the
@@ -546,6 +553,7 @@ impl<W: Widgets> NativeRenderer<W> {
             settling: false,
             under_bars: HashMap::new(),
             layout_reports: HashMap::new(),
+            keyboard_bars: HashMap::new(),
         }
     }
 
@@ -1975,6 +1983,82 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
         if self.extras.rehoist {
             self.rehoist();
         }
+        self.sync_keyboard_bars();
+    }
+}
+
+impl<W: Widgets> NativeRenderer<W> {
+    /// The keyboard bar serving text field `field` (#242): its own (the
+    /// keyboard overlay right after it, `field_only`), else the nearest
+    /// container's shared one.
+    pub fn keyboard_bar_of(&self, field: NodeId) -> Option<NodeId> {
+        let keyboard = |id: &NodeId| {
+            self.overlays
+                .get(id)
+                .filter(|c| c.kind == prism_core::OverlayKind::Keyboard)
+        };
+        let mut child = field;
+        let mut own = true;
+        while let Some(&parent) = self.extras.parents.get(&child) {
+            let siblings = self.extras.children.get(&parent)?;
+            if std::mem::take(&mut own)
+                && let Some(next) = siblings
+                    .iter()
+                    .position(|c| *c == child)
+                    .and_then(|i| siblings.get(i + 1))
+                && keyboard(next).is_some_and(|c| c.field_only)
+            {
+                return Some(*next);
+            }
+            if let Some(bar) = siblings
+                .iter()
+                .find(|c| keyboard(c).is_some_and(|c| !c.field_only))
+            {
+                return Some(*bar);
+            }
+            child = parent;
+        }
+        None
+    }
+
+    /// Tells the platform which keyboard bar each text field has (#242),
+    /// where it changed.
+    fn sync_keyboard_bars(&mut self) {
+        let any = self
+            .overlays
+            .values()
+            .any(|c| c.kind == prism_core::OverlayKind::Keyboard);
+        if !any && self.keyboard_bars.is_empty() {
+            return;
+        }
+        let mut next = HashMap::new();
+        if any {
+            for (id, e) in &self.nodes {
+                if matches!(
+                    e.kind,
+                    NodeKind::TextInput | NodeKind::TextArea | NodeKind::RichInput
+                ) && let Some(bar) = self.keyboard_bar_of(*id)
+                {
+                    next.insert(*id, bar);
+                }
+            }
+        }
+        let previous = std::mem::take(&mut self.keyboard_bars);
+        for (field, bar) in &next {
+            if previous.get(field) != Some(bar)
+                && let (Some(f), Some(b)) = (self.nodes.get(field), self.nodes.get(bar))
+            {
+                self.widgets.set_keyboard_bar(&f.view, Some(&b.view));
+            }
+        }
+        for field in previous.keys() {
+            if !next.contains_key(field)
+                && let Some(f) = self.nodes.get(field)
+            {
+                self.widgets.set_keyboard_bar(&f.view, None);
+            }
+        }
+        self.keyboard_bars = next;
     }
 }
 

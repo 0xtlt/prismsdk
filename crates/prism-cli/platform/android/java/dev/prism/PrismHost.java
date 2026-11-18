@@ -253,6 +253,9 @@ public final class PrismHost {
         boolean bare;
         android.graphics.drawable.Drawable baseBackground;
         int[] contentSize = {0, 0};
+        /** A text field's keyboard bar (#242): the keyboard overlay shown
+         *  above the IME while it has the focus, -1 for none. */
+        long keyboardBar = -1;
     }
 
     static void send(JSONObject event) {
@@ -558,6 +561,8 @@ public final class PrismHost {
             // Web views (#62).
             case "webpost": if (n.kind.equals("web_view")) PrismWeb.post(n, p.optString("data")); break;
             case "webreload": if (n.kind.equals("web_view")) PrismWeb.reload(n); break;
+            // A text field's bar above the keyboard (#242).
+            case "kbar": n.keyboardBar = p.isNull("bar") ? -1 : p.optLong("bar", -1); PrismInput.syncKeyboardBar(); break;
         }
     }
 
@@ -1371,6 +1376,7 @@ public final class PrismHost {
         n.view.setOnFocusChangeListener((view, focused) -> {
             if (n.focusRing) focusEffect(n, focused);
             if (field || n.states.contains("focus")) state(n, "focus", focused);
+            if (field) PrismInput.syncKeyboardBar();
         });
     }
 

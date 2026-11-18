@@ -35,6 +35,11 @@
 //! `permittedArrowDirections`, the opposite one when the window has no room
 //! there, and a `sourceRect` on the part of the anchor it lines up with
 //! (`PopoverAlign::arrow_span`).
+//!
+//! A keyboard bar (#242) is never presented: its content lives in an input
+//! view (`UIInputView`, keyboard style) that the text fields it serves take
+//! as their `inputAccessoryView` (`Widgets::set_keyboard_bar`), laid out at
+//! the window's width.
 
 use std::cell::Cell;
 
@@ -299,6 +304,8 @@ pub struct Overlay {
     pub size: Cell<(f64, f64)>,
     /// The content view.
     content: std::cell::RefCell<Option<Retained<UIView>>>,
+    /// A keyboard bar's host (#242): the fields' `inputAccessoryView`.
+    pub keyboard: Retained<UIView>,
     /// A blurred backdrop under the card (#79).
     blur: std::cell::RefCell<Option<Retained<objc2_ui_kit::UIVisualEffectView>>>,
 }
@@ -312,6 +319,16 @@ impl Overlay {
         vc.ivars().id.set(id);
         let delegate = OverlayDelegate::alloc(mtm).set_ivars(Cell::new(id));
         let delegate: Retained<OverlayDelegate> = unsafe { msg_send![super(delegate), init] };
+        #[cfg(target_os = "ios")]
+        let keyboard =
+            Retained::into_super(objc2_ui_kit::UIInputView::initWithFrame_inputViewStyle(
+                objc2_ui_kit::UIInputView::alloc(mtm),
+                CGRect::new(CGPoint::ZERO, CGSize::new(320., 44.)),
+                objc2_ui_kit::UIInputViewStyle::Keyboard,
+            ));
+        #[cfg(not(target_os = "ios"))]
+        let keyboard = UIView::new(mtm);
+        keyboard.setAutoresizingMask(objc2_ui_kit::UIViewAutoresizing::FlexibleWidth);
         Overlay {
             anchor,
             vc,
@@ -321,7 +338,13 @@ impl Overlay {
             size: Cell::new((0., 0.)),
             content: Default::default(),
             blur: Default::default(),
+            keyboard,
         }
+    }
+
+    /// A bar above the on-screen keyboard (#242).
+    fn is_keyboard(&self) -> bool {
+        self.config.get().kind == OverlayKind::Keyboard
     }
 
     /// Dialogs everywhere, and every overlay on tvOS, are drawn cards.
@@ -330,7 +353,9 @@ impl Overlay {
     }
 
     fn host(&self) -> Retained<UIView> {
-        if self.custom() {
+        if self.is_keyboard() {
+            self.keyboard.clone()
+        } else if self.custom() {
             self.vc.ivars().card.clone()
         } else {
             self.vc.view().expect("view controller has a view")
@@ -358,6 +383,13 @@ impl Overlay {
         self.config.set(c);
         self.vc.ivars().fixed.set(c.fixed);
         self.vc.setModalInPresentation(c.fixed);
+        // Content added before the kind was known moves to its host.
+        let host = self.host();
+        if let Some(content) = self.content.borrow().as_ref()
+            && content.superview().as_deref() != Some(&*host)
+        {
+            host.addSubview(content);
+        }
     }
 
     fn presented(&self) -> bool {
@@ -367,6 +399,10 @@ impl Overlay {
     /// Shows or closes the overlay, over the topmost presented controller.
     pub fn set_open(&self, open: bool, root: &UIViewController) {
         self.open.set(open);
+        if self.is_keyboard() {
+            // Shown by UIKit above the keyboard of the fields it serves.
+            return;
+        }
         if !open {
             self.close();
             return;
@@ -673,7 +709,11 @@ impl Overlay {
             return;
         }
         self.size.set((w, h));
-        if self.custom() {
+        if self.is_keyboard() {
+            self.keyboard
+                .setFrame(CGRect::new(CGPoint::ZERO, CGSize::new(w, h)));
+            crate::interaction::keyboard_bar_resized(&self.keyboard);
+        } else if self.custom() {
             self.place_card();
         } else if self.config.get().kind == OverlayKind::Popover {
             self.vc.setPreferredContentSize(CGSize::new(w, h));
@@ -685,6 +725,17 @@ impl Overlay {
     /// popover or card at most 340 points wide inside the window.
     pub fn viewport(&self, window: CGSize) -> Viewport {
         let kind = self.config.get().kind;
+        if kind == OverlayKind::Keyboard {
+            // The window's width; the bar's own height, at most half the
+            // window.
+            return Viewport {
+                x: 0.,
+                y: 0.,
+                width: window.width as f32,
+                height: (window.height / 2.) as f32,
+                insets: prism_native::Insets::default(),
+            };
+        }
         let view = self.vc.viewIfLoaded();
         if !self.custom() && kind == OverlayKind::Sheet {
             let (size, i) = match view.filter(|v| v.window().is_some()) {

@@ -795,7 +795,7 @@ final class PrismInput {
         n.align = "start";
         for (String t : config.trim().split("\\s+")) {
             switch (t) {
-                case "popover": case "dialog": n.overlay = t; break;
+                case "popover": case "dialog": case "keyboard": n.overlay = t; break;
                 case "fixed": n.fixed = true; break;
                 case "medium": n.medium = true; break;
                 case "manual": n.manual = true; break;
@@ -889,6 +889,8 @@ final class PrismInput {
         switch (n.overlay) {
             case "popover": aw = Math.round(Math.min(w - 16 * d, 320 * d)); ah = Math.round(h * 0.6f); break;
             case "dialog": aw = Math.round(Math.min(w - 48 * d, 560 * d)); ah = Math.round(h - 96 * d); break;
+            // Above the IME (#242): the window's width, at most half its height.
+            case "keyboard": aw = w; ah = Math.round(h * 0.5f); break;
             default: aw = Math.round(Math.min(w, 640 * d)); ah = Math.round(h * (n.medium ? 0.5f : 0.92f));
         }
         if (aw == n.viewport[0] && ah == n.viewport[1]) return;
@@ -919,6 +921,7 @@ final class PrismInput {
             } else n.popup.update(w, h);
         }
         if (n.dialog != null && n.dialog.getWindow() != null) size(n, n.dialog.getWindow());
+        if (n == shownBar) placeKeyboardBar(n);
         // Opened in the update that inserted it: its anchor is placed now.
         if (n.pendingOpen) open(n, true);
     }
@@ -970,6 +973,13 @@ final class PrismInput {
     }
 
     static void open(PrismHost.Node n, boolean open) {
+        if (n.overlay.equals("keyboard")) {
+            // Shown while a field it serves has the focus (#242).
+            n.pendingOpen = false;
+            reportArea(n);
+            syncKeyboardBar();
+            return;
+        }
         if (!open) {
             close(n);
             return;
@@ -1072,11 +1082,78 @@ final class PrismInput {
     }
 
     static void close(PrismHost.Node n) {
+        if (n == shownBar) showKeyboardBar(null);
         n.pendingOpen = false;
         n.closing = true;
         if (n.popup != null) { n.popup.dismiss(); n.popup = null; }
         if (n.dialog != null) { n.dialog.dismiss(); n.dialog = null; }
         n.closing = false;
+    }
+
+    // --- Keyboard bars (#242) ------------------------------------------------------------
+
+    /** The keyboard bar on screen: docked to the bottom of the content area,
+     *  which the window insets keep above the IME. */
+    static PrismHost.Node shownBar;
+
+    /** Shows the bar of the focused field, once the focus has settled. */
+    static void syncKeyboardBar() {
+        PrismHost.main.post(PrismInput::applyKeyboardBar);
+    }
+
+    static void applyKeyboardBar() {
+        View f = PrismHost.activity == null ? null : PrismHost.activity.getCurrentFocus();
+        PrismHost.Node want = null;
+        if (f != null) {
+            for (PrismHost.Node n : PrismHost.nodes.values()) {
+                if (n.keyboardBar >= 0 && (n.view == f || inside(f, n.view))) {
+                    want = PrismHost.nodes.get(n.keyboardBar);
+                    break;
+                }
+            }
+            // A field of the bar itself keeps it.
+            if (want == null && shownBar != null && inside(f, shownBar.host)) want = shownBar;
+        }
+        if (want != null && (!want.overlay.equals("keyboard") || want.host == null)) want = null;
+        showKeyboardBar(want);
+    }
+
+    static boolean inside(View v, View ancestor) {
+        for (android.view.ViewParent p = v.getParent(); p != null; p = p.getParent()) if (p == ancestor) return true;
+        return false;
+    }
+
+    static void showKeyboardBar(PrismHost.Node bar) {
+        if (bar == shownBar) return;
+        if (shownBar != null) {
+            detach(shownBar.host);
+            setRootBottom(0);
+        }
+        shownBar = bar;
+        if (bar == null || PrismHost.root == null || !(PrismHost.root.getParent() instanceof ViewGroup)) return;
+        detach(bar.host);
+        ((ViewGroup) PrismHost.root.getParent()).addView(bar.host,
+                new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, bar.contentSize[1]), Gravity.BOTTOM));
+        placeKeyboardBar(bar);
+    }
+
+    /** The bar's height, and the app's content above it. */
+    static void placeKeyboardBar(PrismHost.Node bar) {
+        ViewGroup.LayoutParams lp = bar.host.getLayoutParams();
+        int h = Math.max(1, bar.contentSize[1]);
+        if (lp != null && lp.height != h) {
+            lp.height = h;
+            bar.host.setLayoutParams(lp);
+        }
+        setRootBottom(h);
+    }
+
+    static void setRootBottom(int px) {
+        if (PrismHost.root == null || !(PrismHost.root.getLayoutParams() instanceof ViewGroup.MarginLayoutParams)) return;
+        ViewGroup.MarginLayoutParams lp = (ViewGroup.MarginLayoutParams) PrismHost.root.getLayoutParams();
+        if (lp.bottomMargin == px) return;
+        lp.bottomMargin = px;
+        PrismHost.root.setLayoutParams(lp);
     }
 
     static void detach(View v) {

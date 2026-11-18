@@ -1082,3 +1082,51 @@ test("drags report the keys held now, and their release makes no click (#223)", 
   shape.dispatchEvent({ type: "click", detail: 1, clientX: 60, clientY: 30 });
   assert.equal(sent(page).filter((m) => m.t === "click").length, before + 1);
 });
+
+test("keyboard bars show above the on-screen keyboard for the fields they serve (#242)", () => {
+  // A row with a field that has its own bar (3 after 2), another field (4),
+  // and the row's shared bar (5).
+  const page = live([
+    { op: "create", id: 2, kind: "text_input" },
+    { op: "create", id: 3, kind: "overlay" }, { op: "config", id: 3, config: "keyboard field" }, { op: "value", id: 3, value: 1 },
+    { op: "create", id: 4, kind: "text_input" },
+    { op: "create", id: 5, kind: "overlay" }, { op: "config", id: 5, config: "keyboard" }, { op: "value", id: 5, value: 1 },
+    { op: "create", id: 6, kind: "button" }, { op: "children", id: 3, children: [6] },
+    { op: "create", id: 7, kind: "view" }, { op: "children", id: 5, children: [7] },
+    ...root([2, 3, 4, 5]),
+  ]);
+  page.window.matchMedia = (q) => ({ matches: q === "(pointer: coarse)", addEventListener() {} });
+  const own = page.node(3).firstChild, shared = page.node(5).firstChild;
+  assert.ok(own.className.includes("prism-ov-keyboard"));
+  assert.equal(own.getAttribute("popover"), "manual");
+  assert.ok(own.contains(page.node(6)), "the bar's content is in its box");
+  assert.ok(!own._popoverOpen && !shared._popoverOpen, "hidden until a field has the focus");
+  own.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1280, height: 44, right: 1280, bottom: 44 });
+  Object.defineProperty(own, "offsetHeight", { value: 44 });
+  // The field with its own bar: that one, on the viewport's bottom edge.
+  page.node(2).focus();
+  page.node(2).dispatchEvent({ type: "focusin" });
+  assert.equal(own._popoverOpen, true);
+  assert.ok(!shared._popoverOpen);
+  assert.equal(own.style.top, "756px");
+  assert.equal(own.style.width, "1280px");
+  // A press on the bar keeps the focus in the field.
+  const down = { type: "pointerdown", target: page.node(6) };
+  page.node(6).dispatchEvent(down);
+  assert.equal(down.defaultPrevented, true);
+  // The other field: the row's shared bar.
+  page.node(4).focus();
+  page.node(4).dispatchEvent({ type: "focusin" });
+  assert.ok(!own._popoverOpen);
+  assert.equal(shared._popoverOpen, true);
+  // No field focused: no bar.
+  page.node(4).blur();
+  page.node(4).dispatchEvent({ type: "focusout" });
+  page.timers.splice(0).forEach((t) => t.fn());
+  assert.ok(!own._popoverOpen && !shared._popoverOpen);
+  // A desktop browser: never.
+  page.window.matchMedia = () => ({ matches: false, addEventListener() {} });
+  page.node(2).focus();
+  page.node(2).dispatchEvent({ type: "focusin" });
+  assert.ok(!own._popoverOpen);
+});

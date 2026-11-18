@@ -177,6 +177,10 @@ dialog.prism-overlay-box[data-prism-backdrop="clear"]::backdrop { background: tr
 dialog.prism-overlay-box[data-prism-backdrop="dim"]::backdrop { backdrop-filter: none; -webkit-backdrop-filter: none; }
 /* A bare dialog (#166): no box of its own, the content is the panel. */
 dialog.prism-overlay-box[data-prism-bare="1"] { background: transparent; color: inherit; border: 0; border-radius: 0; box-shadow: none; overflow: visible; animation: none; }
+/* A keyboard bar (#242): on the visual viewport's bottom edge (the client
+   places it), the page's width, no box of its own. */
+.prism-ov-keyboard { position: fixed; inset: auto; right: auto; bottom: auto; margin: 0; padding: 0; border: 0; max-width: none; max-height: 50dvh; overflow: hidden; background: Canvas; color: CanvasText; display: flex; flex-direction: column; box-sizing: border-box; }
+.prism-ov-keyboard[popover]:not(:popover-open) { display: none; }
 .prism-overlay-box[data-prism-w="1"] { width: var(--prism-ov-w); }
 .prism-overlay-box[data-prism-h="1"] { height: var(--prism-ov-h); }
 @media (max-width: 599px) { dialog.prism-ov-sheet[data-prism-w="1"] { width: 100vw; } }

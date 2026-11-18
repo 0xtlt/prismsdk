@@ -145,14 +145,38 @@ impl Render for Forms {
                     ),
             )
             .child(
-                ui::text_area(strings::forms_notes(cx), self.notes.clone())
-                    .placeholder(strings::forms_notes_placeholder(cx))
-                    .helper(strings::forms_notes_helper(
-                        cx,
-                        self.notes.chars().count() as i64,
-                    ))
-                    .max_lines(5)
-                    .on_input(cx.listener(|this, e: &InputEvent, _| this.notes = e.value.clone())),
+                // A bar above the on-screen keyboard while the notes are
+                // edited (#242): iOS, Android, phones' browsers.
+                div()
+                    .child(
+                        ui::text_area(strings::forms_notes(cx), self.notes.clone())
+                            .placeholder(strings::forms_notes_placeholder(cx))
+                            .helper(strings::forms_notes_helper(
+                                cx,
+                                self.notes.chars().count() as i64,
+                            ))
+                            .max_lines(5)
+                            .on_input(
+                                cx.listener(|this, e: &InputEvent, _| this.notes = e.value.clone()),
+                            ),
+                    )
+                    .keyboard_toolbar(
+                        div()
+                            .flex_row()
+                            .justify_end()
+                            .gap(8.)
+                            .px(12.)
+                            .py(6.)
+                            .bg(t.surface_alt)
+                            .child(
+                                ui::button(strings::forms_keyboard_clear(cx))
+                                    .on_click(cx.listener(|this, _, _| this.notes.clear())),
+                            )
+                            .child(
+                                ui::button(strings::forms_keyboard_done(cx))
+                                    .on_click(cx.listener(|_, _, cx| cx.dismiss_keyboard())),
+                            ),
+                    ),
             )
             .child(ui::spinner().label(strings::forms_syncing(cx)))
             .child(

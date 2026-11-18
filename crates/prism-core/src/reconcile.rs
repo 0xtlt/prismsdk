@@ -1153,6 +1153,18 @@ impl Reconciler {
             element = build(app);
         }
         match element {
+            // A component whose root is a field with its own keyboard bar
+            // (#242): the bar needs a sibling's place, in a wrapper.
+            Element::Node(mut vnode) if vnode.keyboard_toolbar.is_some() => {
+                let bar = vnode
+                    .keyboard_toolbar
+                    .take()
+                    .map(|bar| own_keyboard_bar(&vnode, *bar));
+                let mut wrapper = VNode::new(NodeKind::View);
+                wrapper.children.push(Element::Node(vnode));
+                wrapper.children.extend(bar);
+                Box::new(wrapper)
+            }
             Element::Node(vnode) => vnode,
             other => {
                 let mut wrapper = VNode::new(NodeKind::View);
@@ -1167,7 +1179,17 @@ impl Reconciler {
             Element::Empty => {}
             // `.only(…)` / `.except(…)`: absent from other platforms' trees.
             Element::Node(vnode) if !vnode.style.exists_on(app.platform()) => {}
-            Element::Node(vnode) => out.push(Item::Node(vnode, None)),
+            Element::Node(mut vnode) => {
+                // A field's own keyboard bar (#242) goes right after it.
+                let bar = vnode
+                    .keyboard_toolbar
+                    .take()
+                    .map(|bar| own_keyboard_bar(&vnode, *bar));
+                out.push(Item::Node(vnode, None));
+                if let Some(bar) = bar {
+                    self.flatten(app, bar, out);
+                }
+            }
             Element::Lazy(build) => {
                 let element = build(app);
                 self.flatten(app, element, out);
@@ -2167,4 +2189,18 @@ fn is_line_break_typed(before: &str, after: &str) -> bool {
     }
     let p = b.iter().zip(&a).take_while(|(x, y)| x == y).count();
     a[p] == '\n' && a[p + 1..] == b[p..]
+}
+
+/// A field's own keyboard bar (#242): a [`keyboard_toolbar`](crate::keyboard_toolbar)
+/// serving only the field it follows, keyed after it.
+fn own_keyboard_bar(field: &VNode, bar: Element) -> Element {
+    use crate::IntoElement;
+    let mut o = crate::keyboard_toolbar(bar).into_element();
+    if let Element::Node(n) = &mut o {
+        let mut c = crate::controls::OverlayConfig::decode(&n.config);
+        c.field_only = true;
+        n.config = c.encode();
+        n.key = field.key.as_ref().map(|k| format!("{k}\u{1}keyboard"));
+    }
+    o
 }

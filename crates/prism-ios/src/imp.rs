@@ -3372,6 +3372,26 @@ impl Widgets for UiKit {
         };
     }
 
+    /// The field's `inputAccessoryView` (#242); visionOS and tvOS have no
+    /// keyboard bar (left out of their trees).
+    fn set_keyboard_bar(&mut self, field: &View, bar: Option<&View>) {
+        #[cfg(target_os = "ios")]
+        {
+            let bar = match bar {
+                Some(View::Overlay(o)) => Some(o.keyboard.clone()),
+                _ => None,
+            };
+            let view: Retained<UIView> = match field {
+                View::Input(f) => Retained::into_super(Retained::into_super(f.clone())),
+                View::TextArea(t) => Retained::into_super(Retained::into_super(t.view.clone())),
+                _ => return,
+            };
+            crate::interaction::set_keyboard_bar(field.id(), &view, bar.as_deref());
+        }
+        #[cfg(not(target_os = "ios"))]
+        let _ = (field, bar);
+    }
+
     fn set_layers(&mut self, layers: &[View]) {
         self.layers = layers.iter().map(|l| l.ui().retain()).collect();
         for l in &self.layers {

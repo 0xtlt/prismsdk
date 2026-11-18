@@ -117,6 +117,26 @@ text_input().value(self.draft.clone())
 
 It is the node's own focus (for a group, style with `focus_within`). Every backend reports it: the web from `focusin` / `focusout` (switching to another window or tab counts as leaving), macOS from the window's first responder, iOS, Linux and Android from their focus states, all through the same focus tracking as `.focus(|s| …)`. Natively, switching to another app keeps the field focused.
 
+## A bar above the keyboard
+
+`.keyboard_toolbar(bar)` puts a bar of the app's own (bold, link, insert a block, Done) right above the on-screen keyboard while a field has the focus (#242). On a text input, rich input or text area it serves that field; on a container (`div().keyboard_toolbar(bar)`, or a `keyboard_toolbar(bar)` child) it serves every field inside. A field's own bar wins over its container's, and a nearer container's over a farther one's.
+
+```rust
+rich_input(self.runs())
+    .keyboard_toolbar(
+        div().flex_row().gap(8.).px(12.).py(6.).bg(theme.surface_alt)
+            .child(ui::button("B").on_click(cx.listener(|this, _, cx| this.toggle_bold(cx))))
+            .child(ui::button("Done").on_click(cx.listener(|_, _, cx| cx.dismiss_keyboard()))),
+    )
+```
+
+The bar is an ordinary element: its handlers run like any other, and tapping its buttons keeps the field focused and the keyboard up. It is laid out at the window's width (at most half its height); give it its height, padding and background.
+
+- **iOS, iPadOS**: the field's `inputAccessoryView`, an input view in the keyboard's style (above a hardware keyboard's shortcut bar too). A field's suggestion bar (`suggestions`) takes its place while it shows.
+- **Android**: docked to the bottom of the window above the IME (the window insets), while a field it serves has the focus; the app's content is laid out above it.
+- **Web**: on touch screens (`pointer: coarse`), fixed to the bottom of the visual viewport (`VisualViewport`), which the keyboard shrinks; presses on it do not move the focus. It is not in the first paint.
+- **macOS, Linux, tvOS, watchOS, visionOS, desktop browsers**: no on-screen keyboard bar. Native desktops leave it out of the tree (its content is not built); desktop browsers keep it hidden.
+
 ## Selection and caret
 
 A text input or area reports where its selection is with `on_select`, and takes one from the app with `.selection(range)`. Offsets are **characters** (Rust `char`s), not UTF-8 bytes nor UTF-16 units, on every backend; `start == end` is a caret. `e.byte_range(&text)` (and `prism::char_to_byte` / `byte_to_char`) converts them to slice a `&str`. Key presses in a focused field carry its selection in `KeyEvent::selection`, read before the key acts, so `on_key_down` can split or merge blocks:
