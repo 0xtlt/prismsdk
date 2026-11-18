@@ -24,6 +24,7 @@ pub const SAFE_ATTRIBUTES: &[&str] = &[
 /// refused, like every name starting with `data-prism`.
 pub const RESERVED_DATA_ATTRIBUTES: &[&str] = &[
     "across",
+    "after",
     "base",
     "bar",
     "clickable",

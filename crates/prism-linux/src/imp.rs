@@ -1280,6 +1280,8 @@ pub struct Gtk {
     css_dirty: bool,
     clickable: Rc<RefCell<HashSet<NodeId>>>,
     timers: HashMap<NodeId, (gtk::Label, f64)>,
+    /// What each countdown shows once ended (`timer(..).after`, #281).
+    timer_after: HashMap<NodeId, String>,
     assets: Option<std::path::PathBuf>,
     /// Assets compiled into the binary, found before the directory's.
     embedded: prism_core::EmbeddedAssets,
@@ -2308,6 +2310,12 @@ impl Widgets for Gtk {
             }
             View::Picker(_, p) => p.set_placeholder(text),
             View::DatePicker(_, p) => p.set_placeholder(text),
+            View::Timer(id, l) => {
+                self.timer_after.insert(*id, text.to_string());
+                if let Some((_, end)) = self.timers.get(id) {
+                    l.set_text(&prism_core::timer_text(*end, text));
+                }
+            }
             _ => {}
         }
     }
@@ -2476,6 +2484,7 @@ impl Widgets for Gtk {
         self.watched.remove(&id);
         self.cursors.remove(&id);
         self.timers.remove(&id);
+        self.timer_after.remove(&id);
         if let Some(p) = self.menus.borrow_mut().remove(&id) {
             p.unparent();
         }
@@ -2522,6 +2531,19 @@ impl Widgets for Gtk {
     }
 
     fn measure(&mut self, view: &View, max_width: Option<f32>) -> (f32, f32) {
+        // A countdown with an `after` text is as large as the larger of the
+        // two, so the text fits once it ends (#281).
+        if let View::Timer(id, l) = view
+            && let Some(after) = self.timer_after.remove(id)
+        {
+            let shown = l.text();
+            l.set_text(&after);
+            let ended = self.measure(view, max_width);
+            l.set_text(&shown);
+            let counting = self.measure(view, max_width);
+            self.timer_after.insert(*id, after);
+            return (ended.0.max(counting.0), ended.1.max(counting.1));
+        }
         let w = view.widget();
         // GTK measures with the CSS padding: the content is without it
         // (the layout adds it, #14).
@@ -2840,7 +2862,8 @@ impl Widgets for Gtk {
             View::Progress(_, p) => p.set_fraction(value.clamp(0., 1.)),
             View::Picture(id, p) => crate::focal::set_fit(*id, p, value == 1.),
             View::Timer(id, l) => {
-                l.set_text(&prism_core::format_remaining(value));
+                let after = self.timer_after.get(id).map_or("", String::as_str);
+                l.set_text(&prism_core::timer_text(value, after));
                 self.timers.insert(*id, (l.clone(), value));
             }
             View::Tabs(_, t) => {
@@ -4116,6 +4139,7 @@ fn activate(app: &gtk::Application) {
         css_dirty: false,
         clickable: Rc::new(RefCell::new(HashSet::new())),
         timers: HashMap::new(),
+        timer_after: HashMap::new(),
         assets: std::env::var("PRISM_ASSETS_DIR")
             .ok()
             .or_else(|| config.assets.clone())
@@ -4174,8 +4198,10 @@ fn activate(app: &gtk::Application) {
     // is open.
     glib::timeout_add_seconds_local(1, || {
         with_state(|s| {
-            for (l, end) in s.renderer.widgets.timers.values() {
-                l.set_text(&prism_core::format_remaining(*end));
+            let w = &s.renderer.widgets;
+            for (id, (l, end)) in &w.timers {
+                let after = w.timer_after.get(id).map_or("", String::as_str);
+                l.set_text(&prism_core::timer_text(*end, after));
             }
             let due = s.services.due_background();
             for id in &due {

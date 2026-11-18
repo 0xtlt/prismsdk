@@ -161,8 +161,15 @@ final class PrismSurface {
                 text(v, n, k.equals("i") ? n.optString("gl", "•") : n.optString("s"));
                 break;
             case "m": {
-                v = inflate("chrono", size);
                 long remaining = Math.max(0, Math.round(n.optDouble("v", 0) * 1000) - System.currentTimeMillis());
+                // Ended: its `after` text, when it has one (#281).
+                String after = n.optString("ph");
+                if (remaining <= 500 && !after.isEmpty()) {
+                    v = inflate("text", size);
+                    text(v, n, after);
+                    break;
+                }
+                v = inflate("chrono", size);
                 v.setChronometer(node, SystemClock.elapsedRealtime() + remaining, null, remaining > 0);
                 v.setChronometerCountDown(node, true);
                 text(v, n, null);
@@ -332,7 +339,10 @@ final class PrismSurface {
                 p.setLetterSpacing(fs > 0 ? (float) n.optDouble("ls", 0) / fs : 0);
                 String s = k.equals("t") ? PrismText.transform(n.optString("s"), transform(n.optString("tt")))
                         : k.equals("i") ? n.optString("gl", "•") : "00:00";
-                return p.measureText(s) / density + pad;
+                // A timer is as wide as its digits or its `after` text (#281).
+                float width = p.measureText(s);
+                if (k.equals("m")) width = Math.max(width, p.measureText(n.optString("ph")));
+                return width / density + pad;
             }
             case "p":
             case "sh":

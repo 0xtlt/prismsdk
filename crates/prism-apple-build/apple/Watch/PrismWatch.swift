@@ -972,7 +972,8 @@ struct NodeView: View {
         case "timer":
             // Aligned like a text (#279): a timer lays its digits out by its
             // own alignment in the width it is offered.
-            Text(Date(timeIntervalSince1970: n.value), style: .timer).font(font(n).monospacedDigit()).foregroundStyle(fg)
+            PrismWatchTimer(end: Date(timeIntervalSince1970: n.value), after: n.placeholder)
+                .font(font(n).monospacedDigit()).foregroundStyle(fg)
                 .multilineTextAlignment(textAlign(n.str("talign")))
                 .frame(maxWidth: .infinity, alignment: frameAlign(n.str("talign")))
         case "picture":
@@ -1211,6 +1212,27 @@ struct PrismSlider: View {
 
 /// SwiftUI's picker as a navigation row (MenuPickerStyle is
 /// `@available(watchOS, unavailable)`): the row opens the list of options.
+/// A countdown (`timer`). With an `after` text (#281), the view is drawn
+/// again when the countdown ends and shows that text instead.
+struct PrismWatchTimer: View {
+    let end: Date
+    let after: String
+
+    var body: some View {
+        if after.isEmpty {
+            Text(end, style: .timer)
+        } else {
+            TimelineView(.explicit([end])) { context in
+                if context.date < end {
+                    Text(end, style: .timer)
+                } else {
+                    Text(after)
+                }
+            }
+        }
+    }
+}
+
 /// Index -1 shows the placeholder.
 struct PrismPicker: View {
     let id: UInt64

@@ -149,8 +149,7 @@ struct PrismIntentProvider<Intent: PrismConfigurationIntent>: AppIntentTimelineP
             }
         }
         if doc != nil { prismRecordConfigurations(Intent.prismKind, shown) }
-        // The app reloads timelines whenever its state changes.
-        return Timeline(entries: [PrismEntry(date: .now, doc: prismConfigured(doc, chosen))], policy: .never)
+        return prismTimeline(prismConfigured(doc, chosen))
     }
 }
 
@@ -161,9 +160,36 @@ struct PrismProvider: TimelineProvider {
         completion(placeholder(in: context))
     }
     func getTimeline(in context: Context, completion: @escaping (Timeline<PrismEntry>) -> Void) {
-        // The app reloads timelines whenever its state changes.
-        completion(Timeline(entries: [placeholder(in: context)], policy: .never))
+        completion(prismTimeline(prismLoadWidget(kind)))
     }
+}
+
+/// The most entries of a timeline: the snapshot now, then the instants a
+/// timer ends (#281).
+let prismMaxEntries = 16
+
+/// The timeline of a snapshot document. The app reloads timelines whenever
+/// its state changes; until then the widget is also drawn again when a timer
+/// with an `after` text ends, so the text replaces 0:00 without the app.
+func prismTimeline(_ doc: PNode?, now: Date = .now) -> Timeline<PrismEntry> {
+    let dates = [now] + prismTimerEnds(doc, after: now).prefix(prismMaxEntries - 1)
+    return Timeline(entries: dates.map { PrismEntry(date: $0, doc: doc) }, policy: .never)
+}
+
+/// The ends after `now` of the timers that show an `after` text (`"ph"`), in
+/// every family of `doc`, sorted.
+func prismTimerEnds(_ doc: PNode?, after now: Date) -> [Date] {
+    var ends = Set<Date>()
+    func walk(_ n: PNode) {
+        if n["k"] as? String == "m", let after = n["ph"] as? String, !after.isEmpty,
+           let v = (n["v"] as? NSNumber)?.doubleValue {
+            let end = Date(timeIntervalSince1970: v)
+            if end > now { ends.insert(end) }
+        }
+        (n["c"] as? [PNode])?.forEach(walk)
+    }
+    (doc?["families"] as? PNode)?.values.compactMap { $0 as? PNode }.forEach(walk)
+    return ends.sorted()
 }
 
 func prismFamilyName(_ f: WidgetFamily) -> String {
@@ -197,6 +223,8 @@ struct PrismWidgetView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .containerBackground(tile.map { AnyShapeStyle($0) } ?? AnyShapeStyle(.background), for: .widget)
         .widgetURL(prismURL(entry.doc?["link"]))
+        // Timers compare their end with the entry's instant (#281).
+        .environment(\.prismEntryDate, entry.date)
     }
 
     /// The family's root node, and its `bg` taken out: it fills the whole

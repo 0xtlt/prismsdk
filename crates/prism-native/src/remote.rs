@@ -132,6 +132,8 @@ pub struct RemoteWidgets {
     icons: HashMap<NodeId, String>,
     /// Control configs (a picker measures its options).
     configs: HashMap<NodeId, String>,
+    /// What each countdown shows once ended (`timer(..).after`, #281).
+    timer_after: HashMap<NodeId, String>,
     styles: HashMap<NodeId, Style>,
     /// Content size of each stack or tab container, reported by the host.
     pub viewports: HashMap<NodeId, (f32, f32)>,
@@ -151,6 +153,7 @@ impl RemoteWidgets {
             texts: HashMap::new(),
             icons: HashMap::new(),
             configs: HashMap::new(),
+            timer_after: HashMap::new(),
             styles: HashMap::new(),
             viewports: HashMap::new(),
             video_sizes: HashMap::new(),
@@ -803,9 +806,16 @@ impl Widgets for RemoteWidgets {
     }
 
     fn set_placeholder(&mut self, id: &NodeId, text: &str) {
-        // What an optional date picker measures while empty (#89).
-        if self.kinds.get(id) == Some(&NodeKind::DatePicker) {
-            self.texts.insert(*id, text.to_string());
+        // What an optional date picker measures while empty (#89), and a
+        // countdown once it ends (#281).
+        match self.kinds.get(id) {
+            Some(NodeKind::DatePicker) => {
+                self.texts.insert(*id, text.to_string());
+            }
+            Some(NodeKind::Timer) => {
+                self.timer_after.insert(*id, text.to_string());
+            }
+            _ => {}
         }
         self.ops
             .push(json!({ "op": "placeholder", "id": id, "text": text }));
@@ -831,6 +841,7 @@ impl Widgets for RemoteWidgets {
         self.texts.remove(id);
         self.icons.remove(id);
         self.configs.remove(id);
+        self.timer_after.remove(id);
         self.styles.remove(id);
         self.viewports.remove(id);
         self.frames.remove(id);
@@ -857,7 +868,11 @@ impl Widgets for RemoteWidgets {
             return self.measure_padded(id, kind, &style, max_width);
         }
         let text = match kind {
-            NodeKind::Timer => "00:00".to_string(),
+            // As wide as its digits, or its `after` text when wider (#281).
+            NodeKind::Timer => match self.timer_after.get(id) {
+                Some(after) if after.chars().count() > 5 => after.clone(),
+                _ => "00:00".to_string(),
+            },
             NodeKind::Image => self.icons.get(id).cloned().unwrap_or_default(),
             // The widest option decides the width; the host adds its chrome.
             NodeKind::Picker => self

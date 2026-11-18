@@ -2711,6 +2711,8 @@ pub struct AppKit {
     icons: HashMap<NodeId, String>,
     /// Countdown labels and their end time (Unix seconds).
     timers: HashMap<NodeId, (Retained<NSTextField>, f64)>,
+    /// What each countdown shows once ended (`timer(..).after`, #281).
+    timer_after: HashMap<NodeId, String>,
     /// Presented sheets.
     sheets: Vec<Rc<MacSheet>>,
     /// Pictures waiting for their image, by source.
@@ -2842,8 +2844,9 @@ impl AppKit {
     }
 
     fn tick(&self) {
-        for (label, end) in self.timers.values() {
-            let text = prism_core::format_remaining(*end);
+        for (id, (label, end)) in &self.timers {
+            let after = self.timer_after.get(id).map_or("", String::as_str);
+            let text = prism_core::timer_text(*end, after);
             if label.stringValue().to_string() != text {
                 label.setStringValue(&NSString::from_str(&text));
             }
@@ -3872,6 +3875,12 @@ impl Widgets for AppKit {
                 p.rebuild();
             }
             View::DatePicker(d) => crate::dates::set_placeholder(d, text),
+            View::Timer(l) => {
+                self.timer_after.insert(view.id(), text.to_string());
+                if let Some((_, end)) = self.timers.get(&view.id()) {
+                    l.setStringValue(&NSString::from_str(&prism_core::timer_text(*end, text)));
+                }
+            }
             _ => {}
         }
     }
@@ -4039,6 +4048,7 @@ impl Widgets for AppKit {
             }
             View::Timer(_) => {
                 self.timers.remove(&view.id());
+                self.timer_after.remove(&view.id());
             }
             View::Picture(_) => {
                 let id = view.id();
@@ -4064,6 +4074,19 @@ impl Widgets for AppKit {
     }
 
     fn measure(&mut self, view: &View, max_width: Option<f32>) -> (f32, f32) {
+        // A countdown with an `after` text is as large as the larger of the
+        // two, so the text fits once it ends (#281).
+        if let View::Timer(l) = view
+            && let Some(after) = self.timer_after.remove(&view.id())
+        {
+            let shown = l.stringValue();
+            l.setStringValue(&NSString::from_str(&after));
+            let ended = self.measure(view, max_width);
+            l.setStringValue(&shown);
+            let counting = self.measure(view, max_width);
+            self.timer_after.insert(view.id(), after);
+            return (ended.0.max(counting.0), ended.1.max(counting.1));
+        }
         let size = match view {
             View::Label(l) => {
                 let w = max_width.map_or(f64::MAX / 4., |w| w as f64);
@@ -4309,7 +4332,8 @@ impl Widgets for AppKit {
             }
             View::Timer(l) => {
                 self.timers.insert(view.id(), (l.clone(), value));
-                l.setStringValue(&NSString::from_str(&prism_core::format_remaining(value)));
+                let after = self.timer_after.get(&view.id()).map_or("", String::as_str);
+                l.setStringValue(&NSString::from_str(&prism_core::timer_text(value, after)));
             }
             View::Toggle(t) => t.setState(if value != 0. {
                 NSControlStateValueOn
@@ -5270,6 +5294,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         window_title: config.title.clone(),
         icons: HashMap::new(),
         timers: HashMap::new(),
+        timer_after: HashMap::new(),
         sheets: Vec::new(),
         pictures: HashMap::new(),
         image_cache: HashMap::new(),

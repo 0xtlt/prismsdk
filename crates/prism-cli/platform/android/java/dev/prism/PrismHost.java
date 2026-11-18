@@ -191,7 +191,7 @@ public final class PrismHost {
         int[] viewport = {0, 0};
         // Form controls (PrismForms): the config string, accessibility.
         String config = "";
-        /** An optional date picker's text while it is empty (#89). */
+        /** An optional date picker's text while it is empty (#89); a timer's once ended (#281). */
         String placeholder = "";
         /** A rich text's runs (PrismText), null when plain. */
         JSONArray runs;
@@ -475,6 +475,11 @@ public final class PrismHost {
                 break;
             }
             case "placeholder":
+                if (n.kind.equals("timer")) {
+                    n.placeholder = p.optString("text");
+                    if (timers.containsKey(n.id)) ((TextView) n.view).setText(timerText(n.value, n.placeholder));
+                    break;
+                }
                 if (!PrismForms.placeholder(n, p.optString("text")) && n.view instanceof EditText) ((EditText) n.view).setHint(p.optString("text"));
                 break;
             case "config":
@@ -1031,14 +1036,20 @@ public final class PrismHost {
     static final Map<Long, Node> timers = new HashMap<>();
     static boolean ticking;
 
+    /** `m:ss` (or `h:mm:ss`) until `end` (Unix seconds), or `after` once that is `0:00` (#281). */
+    static String timerText(double end, String after) {
+        long left = Math.max(0, Math.round(end - System.currentTimeMillis() / 1000.0));
+        if (left == 0 && after != null && !after.isEmpty()) return after;
+        return left >= 3600
+                ? String.format(Locale.ROOT, "%d:%02d:%02d", left / 3600, left / 60 % 60, left % 60)
+                : String.format(Locale.ROOT, "%d:%02d", left / 60, left % 60);
+    }
+
     static void tick() {
-        long now = System.currentTimeMillis();
         for (Node t : timers.values()) {
-            long left = Math.max(0, Math.round(t.value - now / 1000.0));
-            String s = left >= 3600
-                    ? String.format(Locale.ROOT, "%d:%02d:%02d", left / 3600, left / 60 % 60, left % 60)
-                    : String.format(Locale.ROOT, "%d:%02d", left / 60, left % 60);
-            ((TextView) t.view).setText(s);
+            String s = timerText(t.value, t.placeholder);
+            TextView v = (TextView) t.view;
+            if (!s.contentEquals(v.getText())) v.setText(s);
         }
         if (!timers.isEmpty()) main.postDelayed(PrismHost::tick, 1000);
         else ticking = false;

@@ -49,6 +49,24 @@ cx.set_badge(Some(unread));   // the app icon's number, without a notification (
 
 How it works: Prism resolves the elements into a static snapshot (compact JSON, under ActivityKit's 4 KB limit). A **generic SwiftUI renderer** shipped with Prism (`crates/prism-apple-build/apple/Extension`) draws it in a WidgetKit extension. `crates/prism-cli/platform/scripts/ios-run.sh` generates that extension from the app's registered widgets, then builds and signs it with the App Group. Apps that register no widget and declare no Live Activity (`cx.enable_live_activities()` at startup, or a push-to-start handler `cx.on_activity_push_token`) are bundled without the extension, its provisioning profile and the App Group: on iOS, `start_activity` then fails with a log line saying so. macOS draws Live Activities in the app (a menu bar item), so there only widgets need the extension. Android adds one widget receiver per registered widget. The Rust app talks to WidgetKit/ActivityKit/UserNotifications through a small Swift bridge linked automatically (`crates/prism-apple-build`). Platforms implement `PlatformServices`; apps query `cx.capabilities()` instead of checking the OS.
 
+## A timer that has ended
+
+`timer(end)` counts down by itself, then stops at `0:00`. `.after(text)` says what the app means once the end has passed:
+
+```rust
+timer(departure).after("Departed")
+```
+
+The text replaces the countdown when it reaches `0:00`, wherever the timer is drawn, and the timer is laid out wide enough for it:
+
+| | Once the end has passed |
+|---|---|
+| In the app (web, macOS, iOS, iPadOS, tvOS, visionOS, Android, Linux, watchOS) | the text, on the next tick (watchOS: drawn again at the end) |
+| Widgets on iOS and macOS | the text, without the app: the widget's timeline gets an entry at the timer's end, and the timer compares its end with the entry's instant (WidgetKit draws entries ahead of time) |
+| Live Activities on iOS | the text once ActivityKit draws the activity again: an update, or its `stale_after(end)` |
+| Android widgets and Live Updates | the text when the widget or notification is drawn after the end |
+| macOS menu bar, the web's live banner | the text, on the next tick |
+
 ## Configurable widgets
 
 A widget can have **parameters** the user picks per instance in the system's « Edit widget » sheet (long-press the widget), like the city of a weather widget. Several instances of one kind then show different things:

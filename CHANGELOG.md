@@ -11,6 +11,7 @@ The first version, not yet on crates.io.
 
 ### Added
 
+- `timer(end).after(text)` (#281): what a countdown shows once its end has passed, instead of `0:00` (`"Departed"`, `"—"`). In the app on every backend, in iOS and macOS widgets without the app (an entry at the timer's end; timers compare their end with the entry's instant), in Live Activities once they are drawn again, on Android widgets and Live Updates drawn after the end, the macOS menu bar and the web's live banner. Timers are laid out wide enough for the text. `prism_core::timer_text` and `SNode::placeholder` (`"ph"`) are new.
 - macOS: a mouse drag from a text area or rich input of a `text_flow` into another of its fields extends the selection across them (#264), like on the web. Native backends report it with `UiEvent::SelectionAcross` and the runtime answers with the selection and highlights to draw; `Widgets::set_selection_group` tells them which containers are groups.
 - `rich_input(..).on_click(..)` and `ClickEvent::text_offset` (#266): every click in a rich input with the character under the pointer, its keys and count, the field still placing its caret, so ⇧-click on an unfocused field can extend a selection from another field of a `text_flow`. The web, macOS and Linux (`edit_events::CLICK`, `UiEvent::FieldClick`).
 - `RemoteCaret::label_text_color(color)` (#267): the color of the name tag's text, for a light person color that needs dark text. White by default, as before; every backend.
