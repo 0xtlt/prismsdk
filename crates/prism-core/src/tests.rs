@@ -4657,3 +4657,174 @@ fn clipboard_items_are_read_and_written() {
         [PlatformRequest::Device { call: DeviceCall::WriteClipboard(i), .. }] if i.types() == ["text/plain", "text/html"]
     ));
 }
+
+// --- Widgets drawn ahead (#281) ----------------------------------------------
+
+/// Departures every five minutes from now, the next one drawn as a countdown.
+fn departures_widget(departures: Vec<std::time::SystemTime>) -> Widget {
+    let mut shown = departures.clone();
+    shown.sort();
+    shown.dedup();
+    Widget::new("next", "Next departure")
+        .families(&[WidgetFamily::Small])
+        .render(move |cx, _| {
+            let now = cx.now();
+            let left = shown.iter().filter(|t| **t > now).count();
+            match shown.iter().find(|t| **t > now) {
+                Some(t) => div()
+                    .child(text(format!("{left} left")))
+                    .child(timer(*t).after("Departed"))
+                    .into_element(),
+                None => text("No more departures").into_element(),
+            }
+        })
+        .ahead(move |_, _| departures.clone())
+}
+
+#[test]
+fn a_widget_is_drawn_ahead_for_each_instant_with_that_now() {
+    use crate::element::unix_seconds;
+    use std::time::{Duration, SystemTime};
+    let now = SystemTime::now();
+    let at = |mins: u64| now + Duration::from_secs(mins * 60);
+    // Unsorted, a duplicate, one already gone.
+    let departures = vec![at(10), at(5), at(15), at(10), now - Duration::from_secs(60)];
+    let mut app = App::new();
+    app.register_widget(departures_widget(departures));
+    let snaps = widget_snapshots(&mut app);
+    let snap = &snaps[0];
+    // Now: three departures to come, the next in five minutes.
+    assert!(
+        snap.families[0].1.contains("3 left"),
+        "{}",
+        snap.families[0].1
+    );
+    let entries = snap.ahead_for(&WidgetConfig::new());
+    let instants: Vec<_> = entries.iter().map(|e| e.at).collect();
+    assert_eq!(
+        instants,
+        [at(5), at(10), at(15)],
+        "sorted, once, past ones dropped"
+    );
+    // Each is drawn with `cx.now()` at its instant: what has gone is left out.
+    assert!(entries[0].families[0].1.contains("2 left"));
+    assert!(entries[1].families[0].1.contains("1 left"));
+    assert!(entries[2].families[0].1.contains("No more departures"));
+    let next = format!(r#""v":{}"#, unix_seconds(at(10)).round() as i64);
+    assert!(
+        entries[0].families[0].1.contains(&next),
+        "the countdown moves on"
+    );
+    // Outside a drawing, `now` is the clock again.
+    assert!(app.now() >= now && app.now() < now + Duration::from_secs(60));
+
+    let json = snap.to_json();
+    let first = format!(
+        r#","ahead":[{{"at":{},"families":{{"systemSmall":"#,
+        (unix_seconds(at(5)) * 1000.).round() / 1000.
+    );
+    assert!(json.contains(&first), "{json}");
+    assert_eq!(json.matches(r#"{"at":"#).count(), 3);
+}
+
+#[test]
+fn widgets_drawn_ahead_keep_the_soonest_instants() {
+    use std::time::{Duration, SystemTime};
+    let now = SystemTime::now();
+    let many: Vec<_> = (1..=40)
+        .rev()
+        .map(|m| now + Duration::from_secs(m * 60))
+        .collect();
+    let mut app = App::new();
+    app.register_widget(departures_widget(many));
+    let snaps = widget_snapshots(&mut app);
+    let entries = snaps[0].ahead_for(&WidgetConfig::new());
+    assert_eq!(entries.len(), Widget::MAX_AHEAD);
+    assert_eq!(entries[0].at, now + Duration::from_secs(60));
+    assert_eq!(entries[15].at, now + Duration::from_secs(16 * 60));
+}
+
+/// Apps that don't draw ahead write the same snapshot as before.
+#[test]
+fn a_widget_not_drawn_ahead_has_no_entries() {
+    let mut app = App::new();
+    app.register_widget(
+        Widget::new("plain", "Plain")
+            .families(&[WidgetFamily::Small])
+            .render(|_, _| text("hi")),
+    );
+    // Instants all gone: nothing ahead either.
+    app.register_widget(departures_widget(vec![
+        std::time::SystemTime::now() - std::time::Duration::from_secs(1),
+    ]));
+    for snap in widget_snapshots(&mut app) {
+        assert!(snap.ahead.is_empty());
+        assert!(!snap.to_json().contains("ahead"), "{}", snap.to_json());
+    }
+}
+
+/// Each configuration is drawn ahead for its own instants, with its values.
+#[test]
+fn configurations_are_drawn_ahead_each_for_their_own_instants() {
+    use std::time::{Duration, SystemTime};
+    let now = SystemTime::now();
+    let mut app = App::new();
+    app.register_widget(
+        Widget::new("line", "Line")
+            .families(&[WidgetFamily::Small])
+            .parameter(
+                WidgetParameter::new("line", "Line")
+                    .options(|_| vec![WidgetOption::new("a", "A"), WidgetOption::new("b", "B")]),
+            )
+            .render_configured(|cx, _, config| {
+                let mins = cx
+                    .now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    / 60;
+                text(format!("{}@{}", config.get("line").unwrap_or("-"), mins))
+            })
+            .ahead(move |_, config| {
+                let gap = if config.get("line") == Some("a") {
+                    2
+                } else {
+                    3
+                };
+                vec![now + Duration::from_secs(gap * 60)]
+            }),
+    );
+    let snaps = widget_snapshots(&mut app);
+    let snap = &snaps[0];
+    let mins = |m: u64| {
+        (now + Duration::from_secs(m * 60))
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            / 60
+    };
+    let a = WidgetConfig::new().with("line", "a");
+    let b = WidgetConfig::new().with("line", "b");
+    assert_eq!(snap.default, a);
+    assert!(
+        snap.ahead_for(&a)[0].families[0]
+            .1
+            .contains(&format!("a@{}", mins(2)))
+    );
+    assert!(
+        snap.ahead_for(&b)[0].families[0]
+            .1
+            .contains(&format!("b@{}", mins(3)))
+    );
+    assert!(
+        snap.ahead_for(&WidgetConfig::new().with("line", "z"))
+            .is_empty()
+    );
+    // The default's at the top, the others' with their configuration.
+    let json = snap.to_json();
+    let (top, configs) = json.split_once(r#""configs":"#).unwrap();
+    assert_eq!(top.matches(r#"{"at":"#).count(), 1, "{json}");
+    assert!(configs.contains(r#"{"values":{"line":"b"},"families":{"systemSmall":"#));
+    assert_eq!(configs.matches(r#"{"at":"#).count(), 1, "{json}");
+    assert!(configs.contains(&format!("b@{}", mins(3))));
+}

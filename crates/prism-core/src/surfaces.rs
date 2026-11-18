@@ -747,6 +747,7 @@ impl WidgetFamily {
 
 type WidgetRender = Rc<dyn Fn(&mut App, WidgetFamily, &WidgetConfig) -> Element>;
 type WidgetOptions = Rc<dyn Fn(&mut App) -> Vec<WidgetOption>>;
+type WidgetAhead = Rc<dyn Fn(&mut App, &WidgetConfig) -> Vec<SystemTime>>;
 
 /// A home-screen / desktop widget, rendered from app state.
 #[derive(Clone)]
@@ -765,6 +766,7 @@ pub struct Widget {
     /// sheet ([`Widget::parameter`]); none for a static widget.
     pub parameters: Vec<WidgetParameter>,
     render: WidgetRender,
+    ahead: Option<WidgetAhead>,
 }
 
 impl Widget {
@@ -772,6 +774,10 @@ impl Widget {
     /// default one included). WidgetKit reads every snapshot of a kind from
     /// one file: this keeps it small and the reload quick.
     pub const MAX_CONFIGURATIONS: usize = 16;
+
+    /// The most instants a configuration is drawn ahead for
+    /// ([`Widget::ahead`]): the soonest are kept.
+    pub const MAX_AHEAD: usize = 16;
 
     /// `kind` is a stable identifier (`"todos"`), `name` is shown in the gallery.
     pub fn new(kind: impl Into<String>, name: impl Into<String>) -> Self {
@@ -783,6 +789,7 @@ impl Widget {
             link: None,
             parameters: Vec::new(),
             render: Rc::new(|_, _, _| Element::Empty),
+            ahead: None,
         }
     }
 
@@ -831,6 +838,44 @@ impl Widget {
         f: impl Fn(&mut App, WidgetFamily, &WidgetConfig) -> E + 'static,
     ) -> Self {
         self.render = Rc::new(move |app, family, config| f(app, family, config).into_element());
+        self
+    }
+
+    /// The instants at which the widget's drawing changes, such as each
+    /// departure of a « next bus » widget: the widget is drawn ahead for
+    /// each of them, and the system switches to that drawing at that instant
+    /// without the app (a countdown then moves on to the next departure
+    /// instead of stopping at 0:00).
+    ///
+    /// Called on every reload, once per configuration (an empty one for a
+    /// widget without parameters). The render closure is then called again
+    /// for each instant, with [`App::now`] returning it, so a drawing for
+    /// 15:40 can leave out what has gone by then. Instants already past are
+    /// dropped and the [`MAX_AHEAD`](Self::MAX_AHEAD) soonest are kept.
+    ///
+    /// ```
+    /// # use prism_core::prelude::*;
+    /// # use prism_core::{Widget, timer};
+    /// # use std::time::{Duration, SystemTime};
+    /// # let departures: Vec<SystemTime> = vec![SystemTime::now() + Duration::from_secs(300)];
+    /// # let d = departures.clone();
+    /// Widget::new("next", "Next departure")
+    ///     .render(move |cx, _| {
+    ///         let next = d.iter().find(|t| **t > cx.now()).copied();
+    ///         match next {
+    ///             Some(t) => timer(t).after("Departed").into_element(),
+    ///             None => text("No more departures").into_element(),
+    ///         }
+    ///     })
+    ///     .ahead(move |_, _| departures.clone());
+    /// ```
+    pub fn ahead<I: IntoIterator<Item = SystemTime>>(
+        mut self,
+        f: impl Fn(&mut App, &WidgetConfig) -> I + 'static,
+    ) -> Self {
+        self.ahead = Some(Rc::new(move |app, config| {
+            f(app, config).into_iter().collect()
+        }));
         self
     }
 
@@ -905,19 +950,23 @@ impl Widget {
                 break;
             }
         }
+        let now = SystemTime::now();
+        let mut ahead = Vec::new();
         let mut rendered = configs
             .into_iter()
             .map(|config| {
-                let families = self
-                    .families
-                    .iter()
-                    .map(|f| {
-                        let element = (self.render)(app, *f, &config);
-                        let mut node = snapshot_one(app, element);
-                        node.tag_actions(&self.kind);
-                        (*f, node.to_json())
-                    })
-                    .collect();
+                let families = self.draw(app, &config, now);
+                let entries = self.instants(app, &config, now);
+                if !entries.is_empty() {
+                    let entries = entries
+                        .into_iter()
+                        .map(|at| WidgetEntry {
+                            at,
+                            families: self.draw(app, &config, at),
+                        })
+                        .collect();
+                    ahead.push((config.clone(), entries));
+                }
                 (config, families)
             })
             .collect::<Vec<_>>();
@@ -932,7 +981,46 @@ impl Widget {
                 .collect(),
             default,
             configs: rendered,
+            ahead,
         }
+    }
+
+    /// Every family drawn for `config` at the instant `at` ([`App::now`]).
+    fn draw(
+        &self,
+        app: &mut App,
+        config: &WidgetConfig,
+        at: SystemTime,
+    ) -> Vec<(WidgetFamily, String)> {
+        let outer = app.surfaces.drawing_at.replace(at);
+        let families = self
+            .families
+            .iter()
+            .map(|f| {
+                let element = (self.render)(app, *f, config);
+                let mut node = snapshot_one(app, element);
+                node.tag_actions(&self.kind);
+                (*f, node.to_json())
+            })
+            .collect();
+        app.surfaces.drawing_at = outer;
+        families
+    }
+
+    /// The instants `config` is drawn ahead for: after `now`, sorted, at
+    /// most [`MAX_AHEAD`](Self::MAX_AHEAD).
+    fn instants(&self, app: &mut App, config: &WidgetConfig, now: SystemTime) -> Vec<SystemTime> {
+        let Some(ahead) = &self.ahead else {
+            return Vec::new();
+        };
+        let mut at: Vec<SystemTime> = ahead(app, config)
+            .into_iter()
+            .filter(|t| *t > now)
+            .collect();
+        at.sort();
+        at.dedup();
+        at.truncate(Self::MAX_AHEAD);
+        at
     }
 
     /// Static metadata (used to generate the platform widget extension).
@@ -1146,12 +1234,27 @@ pub struct WidgetSnapshot {
     pub default: WidgetConfig,
     /// The other configurations rendered, each with its families.
     pub configs: Vec<(WidgetConfig, Vec<(WidgetFamily, String)>)>,
+    /// The drawings ahead ([`Widget::ahead`]) of each configuration that has
+    /// some, the default one included, soonest first.
+    pub ahead: Vec<(WidgetConfig, Vec<WidgetEntry>)>,
+}
+
+/// A widget drawn ahead for an instant ([`Widget::ahead`]): the system shows
+/// it from `at` on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WidgetEntry {
+    /// From when this drawing is shown.
+    pub at: SystemTime,
+    /// Each family with its [`SNode`] JSON, drawn for `at`.
+    pub families: Vec<(WidgetFamily, String)>,
 }
 
 impl WidgetSnapshot {
     /// JSON for the widget extension: kind, link, update time and families;
-    /// for a configurable widget, its parameters (with their options) and
-    /// the other configurations rendered.
+    /// the drawings ahead (`"ahead":[{"at":…,"families":…}]`, only when there
+    /// are some); for a configurable widget, its parameters (with their
+    /// options) and the other configurations rendered, each with its own
+    /// drawings ahead.
     pub fn to_json(&self) -> String {
         fn families(families: &[(WidgetFamily, String)]) -> String {
             let fams: Vec<String> = families
@@ -1160,12 +1263,31 @@ impl WidgetSnapshot {
                 .collect();
             format!("{{{}}}", fams.join(","))
         }
+        let ahead = |config: &WidgetConfig| -> String {
+            let entries = self.ahead_for(config);
+            if entries.is_empty() {
+                return String::new();
+            }
+            let entries: Vec<String> = entries
+                .iter()
+                .map(|e| {
+                    let at = crate::element::unix_seconds(e.at);
+                    format!(
+                        r#"{{"at":{},"families":{}}}"#,
+                        (at * 1000.).round() / 1000.,
+                        families(&e.families)
+                    )
+                })
+                .collect();
+            format!(r#","ahead":[{}]"#, entries.join(","))
+        };
         let mut out = format!(
-            r#"{{"kind":{},"link":{},"updated":{},"families":{}"#,
+            r#"{{"kind":{},"link":{},"updated":{},"families":{}{}"#,
             json_str(&self.kind),
             self.link.as_deref().map_or("null".into(), json_str),
             unix_now(),
-            families(&self.families)
+            families(&self.families),
+            ahead(&self.default)
         );
         if !self.parameters.is_empty() {
             let params: Vec<String> = self
@@ -1195,9 +1317,10 @@ impl WidgetSnapshot {
                 .iter()
                 .map(|(config, fams)| {
                     format!(
-                        r#"{{"values":{},"families":{}}}"#,
+                        r#"{{"values":{},"families":{}{}}}"#,
                         config.to_json(),
-                        families(fams)
+                        families(fams),
+                        ahead(config)
                     )
                 })
                 .collect();
@@ -1220,6 +1343,15 @@ impl WidgetSnapshot {
             .iter()
             .find(|(c, _)| c == config)
             .map_or(&self.families, |(_, f)| f)
+    }
+
+    /// The drawings ahead of `config` (none for an unknown one, or one the
+    /// widget does not draw ahead).
+    pub fn ahead_for(&self, config: &WidgetConfig) -> &[WidgetEntry] {
+        self.ahead
+            .iter()
+            .find(|(c, _)| c == config)
+            .map_or(&[], |(_, e)| e)
     }
 }
 
@@ -1862,6 +1994,8 @@ pub(crate) struct Surfaces {
     pub notification_handler: Option<NotificationHandler>,
     /// Inside [`snapshot`] (nested for snapshots taken while rendering one).
     pub snapshot_depth: u32,
+    /// The instant a widget is being drawn for ([`App::now`]).
+    pub drawing_at: Option<SystemTime>,
     // --- Bundling: what the app declares (`PRISM_DESCRIBE`) ---
     /// [`App::enable_live_activities`] was called.
     pub live_activities: bool,
@@ -1891,6 +2025,14 @@ impl App {
     /// draw a static variant (charts draw their bars as one shape).
     pub fn in_snapshot(&self) -> bool {
         self.surfaces.snapshot_depth > 0
+    }
+
+    /// The current time, or, while a widget is drawn, the instant it is drawn
+    /// for: the reload's time, then each instant of [`Widget::ahead`]. Read
+    /// it instead of `SystemTime::now()` in what a widget shows, so a drawing
+    /// ahead leaves out what has gone by then.
+    pub fn now(&self) -> SystemTime {
+        self.surfaces.drawing_at.unwrap_or_else(SystemTime::now)
     }
 
     /// Registers a widget and schedules its first render.

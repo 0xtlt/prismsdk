@@ -1,5 +1,7 @@
 package dev.prism;
 
+import android.app.AlarmManager;
+import android.app.PendingIntent;
 import android.appwidget.AppWidgetManager;
 import android.appwidget.AppWidgetProvider;
 import android.content.ComponentName;
@@ -22,7 +24,9 @@ import java.util.Map;
  * subclass per widget kind (`dev.prism.widgets.Widget_<kind>`), declared in the
  * manifest with its size. The app sends snapshots whenever its widgets change
  * (`ReloadWidgets`); they are kept here, so the launcher can redraw them while
- * the app is closed.
+ * the app is closed. A snapshot drawn ahead (`Widget::ahead`, #281) shows the
+ * latest drawing whose instant has come, and an alarm draws the widget again
+ * at the next one, or when a timer with an `after` text ends.
  */
 public class PrismWidget extends AppWidgetProvider {
     static final String PREFS = "prism.widgets";
@@ -41,7 +45,7 @@ public class PrismWidget extends AppWidgetProvider {
         return "dev.prism.widgets.Widget_" + kind.replaceAll("[^A-Za-z0-9_]", "_");
     }
 
-    /** From the app: `[{kind, link, families: {systemSmall: node, …}}]`. */
+    /** From the app: `[{kind, link, families: {systemSmall: node, …}, ahead: [{at, families}]}]`. */
     static void reload(Context c, JSONArray snapshots) {
         SharedPreferences.Editor prefs = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit();
         for (int i = 0; i < snapshots.length(); i++) {
@@ -54,15 +58,81 @@ public class PrismWidget extends AppWidgetProvider {
             JSONObject snap = snapshots.optJSONObject(i);
             if (snap == null) continue;
             ComponentName provider = new ComponentName(c, className(snap.optString("kind")));
-            for (int id : mgr.getAppWidgetIds(provider)) {
+            int[] ids = mgr.getAppWidgetIds(provider);
+            for (int id : ids) {
                 mgr.updateAppWidget(id, views(c, snap, mgr.getAppWidgetOptions(id)));
             }
+            schedule(c, provider, snap, ids);
         }
     }
 
     @Override
     public void onUpdate(Context c, AppWidgetManager mgr, int[] ids) {
-        for (int id : ids) mgr.updateAppWidget(id, views(c, saved(c), mgr.getAppWidgetOptions(id)));
+        JSONObject snap = saved(c);
+        for (int id : ids) mgr.updateAppWidget(id, views(c, snap, mgr.getAppWidgetOptions(id)));
+        ComponentName provider = new ComponentName(c, getClass());
+        schedule(c, provider, snap, mgr.getAppWidgetIds(provider));
+    }
+
+    /** The families shown at `now` (ms): the latest drawing ahead whose instant has come, else the ones written. */
+    static JSONObject current(JSONObject snap, long now) {
+        JSONObject families = snap.optJSONObject("families");
+        JSONArray ahead = snap.optJSONArray("ahead");
+        for (int i = 0; ahead != null && i < ahead.length(); i++) {
+            JSONObject e = ahead.optJSONObject(i);
+            if (e == null) continue;
+            if (Math.round(e.optDouble("at", 0) * 1000) > now) break;
+            JSONObject f = e.optJSONObject("families");
+            if (f != null) families = f;
+        }
+        return families;
+    }
+
+    /** When the drawing changes after `now` (ms): the next drawing ahead, or the end of a timer with an `after` text; 0 for never. */
+    static long nextChange(JSONObject snap, long now) {
+        long next = Long.MAX_VALUE;
+        JSONArray ahead = snap.optJSONArray("ahead");
+        for (int i = 0; ahead != null && i < ahead.length(); i++) {
+            JSONObject e = ahead.optJSONObject(i);
+            long at = e == null ? 0 : Math.round(e.optDouble("at", 0) * 1000);
+            if (at > now) { next = at; break; }
+        }
+        JSONObject families = current(snap, now);
+        for (Iterator<String> it = families == null ? null : families.keys(); it != null && it.hasNext(); ) {
+            next = Math.min(next, timerEnd(families.optJSONObject(it.next()), now));
+        }
+        return next == Long.MAX_VALUE ? 0 : next;
+    }
+
+    /** The first end after `now` (ms) of a timer with an `after` text in `n`, or Long.MAX_VALUE. */
+    private static long timerEnd(JSONObject n, long now) {
+        if (n == null) return Long.MAX_VALUE;
+        long next = Long.MAX_VALUE;
+        if ("m".equals(n.optString("k")) && !n.optString("ph").isEmpty()) {
+            long end = Math.round(n.optDouble("v", 0) * 1000);
+            if (end > now) next = end;
+        }
+        JSONArray kids = n.optJSONArray("c");
+        for (int i = 0; kids != null && i < kids.length(); i++) next = Math.min(next, timerEnd(kids.optJSONObject(i), now));
+        return next;
+    }
+
+    /**
+     * Draws the widgets of `provider` again when their drawing changes, with an
+     * inexact alarm (no permission needed; Doze may delay it a little): an
+     * update broadcast to the provider, which picks the drawing of that time.
+     */
+    static void schedule(Context c, ComponentName provider, JSONObject snap, int[] ids) {
+        AlarmManager alarms = c.getSystemService(AlarmManager.class);
+        if (alarms == null) return;
+        android.content.Intent i = new android.content.Intent(AppWidgetManager.ACTION_APPWIDGET_UPDATE)
+                .setComponent(provider)
+                .putExtra(AppWidgetManager.EXTRA_APPWIDGET_IDS, ids);
+        PendingIntent pending = PendingIntent.getBroadcast(c, provider.getClassName().hashCode(), i,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        long next = snap == null || ids.length == 0 ? 0 : nextChange(snap, System.currentTimeMillis());
+        if (next == 0) alarms.cancel(pending);
+        else alarms.set(AlarmManager.RTC, next, pending);
     }
 
     @Override
@@ -82,7 +152,7 @@ public class PrismWidget extends AppWidgetProvider {
     /** One layout per family: Android 12+ picks by size; before, by the widget's width. */
     static RemoteViews views(Context c, JSONObject snap, Bundle options) {
         if (snap == null) return placeholder(c);
-        JSONObject families = snap.optJSONObject("families");
+        JSONObject families = current(snap, System.currentTimeMillis());
         if (families == null || families.length() == 0) return placeholder(c);
         String link = snap.optString("link", "/");
         // One bitmap budget for every size: the RemoteViews carries them all.
