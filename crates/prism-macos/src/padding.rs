@@ -173,13 +173,27 @@ pub fn field_border(style: &Style) -> Option<(f32, Option<prism_core::Color>)> {
 }
 
 /// The field itself: bezeled when unstyled, bare inside Prism's box
-/// otherwise.
+/// otherwise. A field with its own look draws no system focus ring
+/// (#274): the caret, or the app's focus style, shows the focus.
 pub fn style_field(f: &NSTextField, style: &Style) {
     let bezeled = !custom_field(style);
     if f.isBezeled() != bezeled {
         f.setBezeled(bezeled);
         f.setDrawsBackground(bezeled);
         f.setBordered(false);
+    }
+    let ring = focus_ring(style);
+    if f.focusRingType() != ring {
+        f.setFocusRingType(ring);
+    }
+}
+
+/// The focus ring a text field draws: none when it has its own look.
+pub fn focus_ring(style: &Style) -> objc2_app_kit::NSFocusRingType {
+    if style.own_field_look() {
+        objc2_app_kit::NSFocusRingType::None
+    } else {
+        objc2_app_kit::NSFocusRingType::Default
     }
 }
 
@@ -212,4 +226,21 @@ pub fn field_content(style: &Style, fitting: NSSize) -> NSSize {
     let extra_y = (inset.top + inset.bottom - p.top - p.bottom) as f64;
     let min = (120. - (p.left + p.right) as f64).max(0.);
     NSSize::new((fitting.width + extra_x).max(min), fitting.height + extra_y)
+}
+
+#[cfg(test)]
+mod tests {
+    use objc2_app_kit::NSFocusRingType;
+    use prism_core::{Style, Styled};
+
+    /// #274: `.border(0.)` or any look of its own, no AppKit focus ring.
+    #[test]
+    fn styled_fields_draw_no_focus_ring() {
+        assert_eq!(
+            super::focus_ring(&Style::default()),
+            NSFocusRingType::Default
+        );
+        let bare = Style::default().border(0.).p(0.);
+        assert_eq!(super::focus_ring(&bare), NSFocusRingType::None);
+    }
 }

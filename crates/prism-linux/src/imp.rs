@@ -2100,6 +2100,11 @@ impl Widgets for Gtk {
                 _ => {}
             }
         }
+        // A field with its own look: no theme focus ring (#274), the caret
+        // or the app's focus style shows the focus.
+        if matches!(view, View::Input(..) | View::TextArea(..)) && s.own_field_look() {
+            css += "outline:none;";
+        }
         // Hover, press and focus refinements: GTK's own pseudo-classes.
         let text_on_self = !matches!(
             view,

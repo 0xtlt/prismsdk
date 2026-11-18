@@ -139,9 +139,12 @@ What padding means per kind:
   border rounded 6, and a default 6 × 8 inset when it sets no padding (as on
   the web). A leading icon keeps at least 32 points before the text.
   A field taller than its line (`.h(36.)`) centers its text vertically,
-  on macOS too. Such a field, or one with a `.focus(…)` refinement, does
-  not get the web page's default `:focus-visible` outline: its own look
-  (and the caret) shows the focus, as natively.
+  on macOS too. Such a field, or one with a `.focus(…)` or
+  `.focus_within(…)` refinement, gets no platform focus ring: not the web
+  page's default `:focus-visible` outline, not AppKit's blue ring on macOS,
+  not the GTK theme's outline on Linux (#274). Its own look (and the
+  caret) shows the focus, so an app can draw its own outline around it; an
+  unstyled field keeps the platform's ring (`Style::own_field_look`).
 - **Other controls** (pickers, date pickers, switches, sliders, progress
   bars, spinners, checkboxes, radio groups, images, pictures, shapes):
   natively they are placed inside their padding, keeping their own inset;

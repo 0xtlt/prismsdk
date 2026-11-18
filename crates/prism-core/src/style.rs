@@ -889,6 +889,23 @@ impl Style {
     pub fn has_padding(&self) -> bool {
         self.padding_set || !self.padding.is_zero()
     }
+
+    /// Whether a text field draws its own look, so it gets no platform
+    /// focus ring (#52, #274): a padding (an explicit zero included), a
+    /// background, a border, `.border(0.)`, or a `focus` / `focus_within`
+    /// refinement. The caret, or the app's own focus style, shows the
+    /// focus; an unstyled field keeps the platform's ring.
+    pub fn own_field_look(&self) -> bool {
+        use crate::interaction::Interaction;
+        self.has_padding()
+            || self.background.is_some()
+            || self.borders().iter().any(|b| b.width > 0.)
+            || self.border_none
+            || self
+                .states
+                .resolved()
+                .any(|(i, _)| matches!(i, Interaction::Focus | Interaction::FocusWithin))
+    }
 }
 
 /// Window size classes, by width in points (CSS pixels on the web).

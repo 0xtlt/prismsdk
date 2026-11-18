@@ -361,6 +361,9 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- macOS: a `text_input` with its own look (`.border(0.)`, a padding, a background, a border, a `focus` refinement) no longer draws AppKit's blue focus ring inside the app's own outline (#274); Linux drops the GTK theme's outline on such fields too, as the web already did. An unstyled field keeps the platform's ring. `Style::own_field_look` is the shared rule.
+### Fixed
+
 - `group_hover`, `group_active` and `group_focus_within` follow the nearest `group()` ancestor only, as documented (#273): with nested groups, hovering one inner cell no longer lights up the refinements of every cell because the outer group is hovered too. Native backends (prism-native), the web (CSS) and Linux (now resolved by prism-native instead of GTK CSS). Named groups (#212) are unchanged.
 - `Runtime::dispatch` no longer returns answers (a selection, a highlight, a clipboard write) aimed at nodes its own re-render destroyed (#265): an `on_edit_across` handler that merges fields can be tested through `dispatch` with `prism-testing`, which panicked on them.
 - Linux: `prism-linux` builds again (a rich input is created as a text area, as `prism-native` already asks), and screen-reader states no longer log GTK criticals: the checked and selected states are passed as the ints GTK reads (GTK 4.8 and later). `cargo doc` with `-D warnings` passes again (two `scene3d` links).
