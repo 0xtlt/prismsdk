@@ -1437,30 +1437,6 @@ fn overflow_hit(
     None
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn hid_usages_have_web_names() {
-        assert_eq!(named_key(0x29).as_deref(), Some("Escape"));
-        assert_eq!(named_key(0x52).as_deref(), Some("ArrowUp"));
-        assert_eq!(named_key(0x3A).as_deref(), Some("F1"));
-        assert_eq!(named_key(0x45).as_deref(), Some("F12"));
-        assert_eq!(named_key(0x04), None);
-    }
-
-    #[test]
-    fn max_length_lets_deletions_through() {
-        set_max_length(9, Some(3));
-        assert!(edit_fits(9, 2, 3));
-        assert!(!edit_fits(9, 3, 4));
-        assert!(edit_fits(9, 5, 4));
-        forget(9);
-        assert!(edit_fits(9, 3, 40));
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Consumed keys (#181): taken before a focused text field acts on them
 // ---------------------------------------------------------------------------
@@ -1596,4 +1572,28 @@ pub fn consumed_key(responder: &UIResponder, command: &objc2_ui_kit::UIKeyComman
         key.edges = crate::forms::current_edges(&field);
     }
     crate::imp::dispatch(UiEvent::Key(focused, key));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hid_usages_have_web_names() {
+        assert_eq!(named_key(0x29).as_deref(), Some("Escape"));
+        assert_eq!(named_key(0x52).as_deref(), Some("ArrowUp"));
+        assert_eq!(named_key(0x3A).as_deref(), Some("F1"));
+        assert_eq!(named_key(0x45).as_deref(), Some("F12"));
+        assert_eq!(named_key(0x04), None);
+    }
+
+    #[test]
+    fn max_length_lets_deletions_through() {
+        set_max_length(9, Some(3));
+        assert!(edit_fits(9, 2, 3));
+        assert!(!edit_fits(9, 3, 4));
+        assert!(edit_fits(9, 5, 4));
+        forget(9);
+        assert!(edit_fits(9, 3, 40));
+    }
 }

@@ -138,6 +138,11 @@ impl MacServices {
             .collect()
     }
 
+    /// Whether a menu bar activity shows a countdown (ticked every second).
+    pub fn has_countdown(&self) -> bool {
+        self.activities.values().any(|a| a.countdown.is_some())
+    }
+
     pub fn tick(&self) {
         for a in self.activities.values() {
             if let (Some(end), Some(button)) = (&a.countdown, a.item.button(self.mtm)) {

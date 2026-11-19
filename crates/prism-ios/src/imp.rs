@@ -275,6 +275,29 @@ impl State {
             prism_core::PlatformServices::handle(&mut self.services, request);
         }
         schedule_timer(self.runtime.next_timer());
+        self.sync_ticker();
+    }
+
+    /// Ticks countdowns every second, only while one is shown: otherwise
+    /// the app never wakes up for them.
+    fn sync_ticker(&self) {
+        let needed = !self.renderer.widgets.timers.is_empty();
+        TICKER.with(|t| {
+            let mut t = t.borrow_mut();
+            if needed && t.is_none() {
+                *t = Some(unsafe {
+                    objc2_foundation::NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                        1.0,
+                        &self.renderer.widgets.target,
+                        sel!(onTick:),
+                        None,
+                        true,
+                    )
+                });
+            } else if !needed && let Some(timer) = t.take() {
+                timer.invalidate();
+            }
+        });
     }
 
     /// Registers a run-time font (`cx.load_font`) with Core Text and draws
@@ -329,6 +352,8 @@ impl State {
         if RELAYOUT_MISSED.take() {
             self.layout_root(self.renderer.widgets.root.bounds().size);
         }
+        // A new window size can show or hide a countdown.
+        self.sync_ticker();
     }
 
     /// Tells the app its window and what the system covers of it
@@ -379,6 +404,12 @@ impl State {
             self.commit(more);
         }
     }
+}
+
+thread_local! {
+    /// The countdowns' ticker (`State::sync_ticker`).
+    static TICKER: std::cell::RefCell<Option<Retained<objc2_foundation::NSTimer>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Lays everything out again (UIKit laid out a controller's views, an
@@ -1400,7 +1431,6 @@ fn connect(mtm: MainThreadMarker, scene: &UIWindowScene) -> Retained<UIWindow> {
     if let Ok(id) = std::env::var("PRISM_RUN_BACKGROUND") {
         run_background(&id, Completion::None);
     }
-    start_ticker(mtm);
     observe_system(mtm);
 
     window.setRootViewController(Some(&controller));
@@ -1853,20 +1883,6 @@ impl UiKit {
             }
         }
     }
-}
-
-/// Ticks countdowns every second.
-fn start_ticker(mtm: MainThreadMarker) {
-    let target = Target::new(mtm);
-    let _timer = unsafe {
-        objc2_foundation::NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
-            1.0,
-            &target,
-            sel!(onTick:),
-            None,
-            true,
-        )
-    };
 }
 
 impl UiKit {

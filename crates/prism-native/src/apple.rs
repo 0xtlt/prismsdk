@@ -18,16 +18,32 @@ fn ns_locale(locale: &Locale) -> Retained<NSLocale> {
     NSLocale::initWithLocaleIdentifier(NSLocale::alloc(), &NSString::from_str(locale.tag()))
 }
 
+thread_local! {
+    /// Number formatters by locale and decimals: making one costs far more
+    /// than formatting with it (a list of numbers being scrolled).
+    static NUMBER_FORMATTERS: std::cell::RefCell<
+        std::collections::HashMap<(String, usize), Retained<NSNumberFormatter>>,
+    > = Default::default();
+}
+
 impl Formatter for FoundationFormatter {
     fn number(&self, locale: &Locale, value: f64, decimals: usize) -> String {
-        let f = NSNumberFormatter::new();
-        f.setLocale(Some(&ns_locale(locale)));
-        f.setNumberStyle(NSNumberFormatterStyle::DecimalStyle);
-        f.setMinimumFractionDigits(decimals);
-        f.setMaximumFractionDigits(decimals);
-        f.stringFromNumber(&NSNumber::new_f64(value))
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| format!("{value:.decimals$}"))
+        NUMBER_FORMATTERS.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            let f = cache
+                .entry((locale.tag().to_string(), decimals))
+                .or_insert_with(|| {
+                    let f = NSNumberFormatter::new();
+                    f.setLocale(Some(&ns_locale(locale)));
+                    f.setNumberStyle(NSNumberFormatterStyle::DecimalStyle);
+                    f.setMinimumFractionDigits(decimals);
+                    f.setMaximumFractionDigits(decimals);
+                    f
+                });
+            f.stringFromNumber(&NSNumber::new_f64(value))
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("{value:.decimals$}"))
+        })
     }
 
     fn date(&self, locale: &Locale, unix: f64, style: DateStyle) -> String {
