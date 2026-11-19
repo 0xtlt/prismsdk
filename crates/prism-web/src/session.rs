@@ -1275,9 +1275,17 @@ impl PlatformServices for WebServices {
 
 /// Encodes patches to the JSON wire format. Styles are pre-rendered to CSS on
 /// the server, which needs each node's kind, so the encoder remembers them.
+///
+/// A style op whose CSS another node of the same message got first says
+/// `"like": <that node>` instead of repeating it: the rows of a list share
+/// a few styles, which were half of a first tree's bytes.
 #[derive(Default)]
 pub struct Encoder {
     kinds: HashMap<NodeId, NodeKind>,
+    /// While one message is encoded: each CSS sent so far → the node that
+    /// carries it, and back (to forget a carrier restyled or destroyed).
+    sent: HashMap<String, NodeId>,
+    carriers: HashMap<NodeId, String>,
     /// The page's drop targets and the types they accept (#111): files
     /// dropped elsewhere are refused.
     pub drop_targets: HashMap<NodeId, prism_core::PickFiles>,
@@ -1288,8 +1296,32 @@ pub struct Encoder {
 }
 
 impl Encoder {
+    /// The ops of one message, in order (the client applies them in order).
     pub fn encode(&mut self, patches: &[Patch]) -> Vec<Value> {
-        patches.iter().map(|p| self.encode_one(p)).collect()
+        let ops = patches.iter().map(|p| self.encode_one(p)).collect();
+        // References stay inside their message.
+        self.sent = HashMap::new();
+        self.carriers = HashMap::new();
+        ops
+    }
+
+    /// The node that carries `css` earlier in this message, if any; else
+    /// `id` becomes its carrier. `id` stops carrying its previous style.
+    fn carrier(&mut self, id: NodeId, css: &str) -> Option<NodeId> {
+        self.forget(id);
+        if let Some(&node) = self.sent.get(css) {
+            return Some(node);
+        }
+        self.sent.insert(css.to_string(), id);
+        self.carriers.insert(id, css.to_string());
+        None
+    }
+
+    /// `id` no longer carries the style it had in this message.
+    fn forget(&mut self, id: NodeId) {
+        if let Some(css) = self.carriers.remove(&id) {
+            self.sent.remove(&css);
+        }
     }
 
     fn encode_one(&mut self, p: &Patch) -> Value {
@@ -1300,12 +1332,15 @@ impl Encoder {
             }
             Patch::SetStyle { id, style } => {
                 let kind = self.kinds.get(id).copied().unwrap_or(NodeKind::View);
-                let motion = crate::css::motion(style);
-                let mut op = if motion.is_null() {
-                    json!({ "op": "style", "id": id, "css": css(kind, style) })
-                } else {
-                    json!({ "op": "style", "id": id, "css": css(kind, style), "motion": motion })
+                let css = css(kind, style);
+                let mut op = match self.carrier(*id, &css) {
+                    Some(like) => json!({ "op": "style", "id": id, "like": like }),
+                    None => json!({ "op": "style", "id": id, "css": css }),
                 };
+                let motion = crate::css::motion(style);
+                if !motion.is_null() {
+                    op["motion"] = motion;
+                }
                 crate::css::layout_op_fields(kind, style, &mut op);
                 // Hover, press and focus refinements: pseudo-class rules.
                 let states = crate::css::states_css(kind, *id, style);
@@ -1435,6 +1470,7 @@ impl Encoder {
             Patch::Destroy { id } => {
                 self.kinds.remove(id);
                 self.drop_targets.remove(id);
+                self.forget(*id);
                 json!({ "op": "destroy", "id": id })
             }
             // Drop targets (#111): `types: null` is none.
