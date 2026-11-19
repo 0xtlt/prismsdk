@@ -48,7 +48,8 @@ pub trait Component: Sized + 'static {
 
 /// Renders `component`, honouring a theme override.
 pub fn render<C: Component>(component: C, cx: &mut App) -> Element {
-    match Theme::of(cx).override_for::<C>() {
+    // The installed theme's override, read in place (the default theme has none).
+    match cx.try_global::<Theme>().and_then(Theme::override_for::<C>) {
         Some(custom) => custom(component, cx),
         None => component.render(cx),
     }
@@ -291,7 +292,7 @@ impl Component for Button {
             Variant::Primary => (Some(t.accent), t.on_accent, None),
             Variant::Secondary => (Some(t.surface_alt), t.text, Some(t.border)),
             Variant::Ghost => (None, t.accent, None),
-            Variant::Danger => (Some(t.danger), rgb_white(), None),
+            Variant::Danger => (Some(t.danger), prism_core::Color::WHITE, None),
         };
         let (px_, py_, font) = match self.size {
             Size::Small => (10., 5., t.font_size - 2.),
@@ -348,10 +349,6 @@ impl Component for Button {
 }
 
 component!(Button);
-
-fn rgb_white() -> prism_core::Color {
-    prism_core::Color::WHITE
-}
 
 // --- Switch ---------------------------------------------------------------------
 
