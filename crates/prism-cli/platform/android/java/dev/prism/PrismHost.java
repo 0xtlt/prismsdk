@@ -508,7 +508,8 @@ public final class PrismHost {
                 n.glyph = p.optString("glyph");
                 if (n.kind.equals("image")) ((TextView) n.view).setText(n.glyph);
                 if (n.kind.equals("text_input")) PrismForms.leadingIcon(n);
-                refreshTabs(parentOf(n));
+                // A tab's icon is in its bar.
+                if (n.kind.equals("tab")) refreshTabs(parentOf(n));
                 break;
             case "value": setValue(n, p.optDouble("value")); break;
             case "clickable": n.clickable = p.optBoolean("on"); setClickable(n); applyCursor(n); break;
