@@ -2149,7 +2149,15 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
         if self.extras.rehoist {
             self.rehoist();
         }
-        self.sync_keyboard_bars();
+        // Which bar serves each field changes with the tree and the bars.
+        if patches.iter().any(|p| {
+            matches!(
+                p,
+                Patch::SetChildren { .. } | Patch::Destroy { .. } | Patch::SetConfig { .. }
+            )
+        }) {
+            self.sync_keyboard_bars();
+        }
     }
 }
 
@@ -2204,13 +2212,40 @@ impl<W: Widgets> NativeRenderer<W> {
         }
         let mut next = IdMap::default();
         if any {
-            for (id, e) in &self.nodes {
-                if matches!(
-                    e.kind,
-                    NodeKind::TextInput | NodeKind::TextArea | NodeKind::RichInput
-                ) && let Some(bar) = self.keyboard_bar_of(*id)
-                {
-                    next.insert(*id, bar);
+            // What `keyboard_bar_of` answers for every field, in one walk
+            // down from the roots with the nearest container's shared bar.
+            let bar = |id: NodeId, field_only: bool| {
+                self.overlays.get(&id).is_some_and(|c| {
+                    c.kind == prism_core::OverlayKind::Keyboard && c.field_only == field_only
+                })
+            };
+            let is_field = |id: NodeId| {
+                self.nodes.get(&id).is_some_and(|e| {
+                    matches!(
+                        e.kind,
+                        NodeKind::TextInput | NodeKind::TextArea | NodeKind::RichInput
+                    )
+                })
+            };
+            let mut todo: Vec<(NodeId, Option<NodeId>)> = self
+                .nodes
+                .keys()
+                .filter(|id| !self.extras.parents.contains_key(id))
+                .map(|id| (*id, None))
+                .collect();
+            while let Some((id, outer)) = todo.pop() {
+                let Some(children) = self.extras.children.get(&id) else {
+                    continue;
+                };
+                let shared = children.iter().copied().find(|c| bar(*c, false)).or(outer);
+                for (i, &child) in children.iter().enumerate() {
+                    if is_field(child) {
+                        let own = children.get(i + 1).copied().filter(|n| bar(*n, true));
+                        if let Some(b) = own.or(shared) {
+                            next.insert(child, b);
+                        }
+                    }
+                    todo.push((child, shared));
                 }
             }
         }
