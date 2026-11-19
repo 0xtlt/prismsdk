@@ -1261,6 +1261,44 @@ fn every_patch_has_a_stable_json_encoding() {
 }
 
 #[test]
+fn a_style_sent_earlier_in_the_message_is_named_by_its_node() {
+    let mut e = Encoder::default();
+    let row = Style {
+        gap: 8.,
+        ..Default::default()
+    };
+    let other = Style {
+        gap: 4.,
+        ..Default::default()
+    };
+    let style = |id, style: &Style| Patch::SetStyle {
+        id,
+        style: style.clone(),
+    };
+    let out = e.encode(&[
+        create(1, NodeKind::View),
+        create(2, NodeKind::View),
+        create(3, NodeKind::View),
+        style(1, &row),
+        style(2, &row),
+        // The carrier changes style: later rows can't point at it.
+        style(1, &other),
+        style(3, &row),
+    ]);
+    let css = css(NodeKind::View, &row);
+    assert_eq!(out[3]["css"], json!(css));
+    assert_eq!(out[4], json!({ "op": "style", "id": 2, "like": 1 }));
+    assert_eq!(out[5]["css"], json!(crate::css(NodeKind::View, &other)));
+    assert_eq!(out[6]["css"], json!(css), "node 1 lost it");
+    // A destroyed carrier is not named either.
+    let out = e.encode(&[style(2, &row), Patch::Destroy { id: 2 }, style(3, &row)]);
+    assert_eq!(out[2]["css"], json!(css));
+    // References never cross messages.
+    let out = e.encode(&[style(3, &row)]);
+    assert_eq!(out[0]["css"], json!(css));
+}
+
+#[test]
 fn styles_are_encoded_as_css_for_the_node_kind() {
     let mut e = Encoder::default();
     let style = Style {

@@ -3269,14 +3269,16 @@
       case "create": return create(p.id, p.kind);
       case "style": {
         const hidden = hiddenBy(el._css);
-        el._css = p.css;
-        setCss(el, p.css);
+        // `like`: the style of a node styled earlier in this message.
+        const css = p.like === undefined ? p.css : nodes.get(p.like)._css;
+        el._css = css;
+        setCss(el, css);
         if (el.dataset.kind === "scroll") {
           toggleClass(el, "prism-scroll-x", !!p.hx);
           // Overlay or hidden scroll bars (#132), styled by prism.css.
           if (p.sb) el.setAttribute("data-prism-scrollbar", p.sb); else el.removeAttribute("data-prism-scrollbar");
         }
-        ownWidth(el, p.css, p.cq);
+        ownWidth(el, css, p.cq);
         setStates(p.id, p.states);
         if (p.group) el.dataset.group = ""; else delete el.dataset.group;
         // A named group (#212): `[data-gn="row"]:hover …` rules follow it.

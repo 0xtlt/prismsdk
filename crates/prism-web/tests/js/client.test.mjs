@@ -505,6 +505,19 @@ test("node styles: one shared rule per distinct style, no style attribute, unuse
   assert.equal(cssOf(page.node(601)), "width:2601px;");
 });
 
+test("a style op with `like` takes the style of a node styled earlier in the message", () => {
+  const page = live([
+    create(1, "view"), create(2, "view"), create(3, "view"), children(1, [2, 3]), root(1),
+    { op: "style", id: 2, css: "gap:4px;" }, { op: "style", id: 3, like: 2 },
+  ]);
+  assert.equal(page.node(3).className, page.node(2).className);
+  assert.equal(cssOf(page.node(3)), "gap:4px;");
+  // The node it came from changes later: the other one keeps it.
+  page.ws.deliver({ t: "patch", p: [{ op: "style", id: 2, css: "gap:8px;" }] });
+  assert.equal(cssOf(page.node(3)), "gap:4px;");
+  assert.equal(cssOf(page.node(2)), "gap:8px;");
+});
+
 test("loops swing back and forth, or start over (spinners), with non-uniform scale", () => {
   const page = live([create(1, "view"), root(1)]);
   const t = { d: 0.9, delay: 0, ease: "linear" };

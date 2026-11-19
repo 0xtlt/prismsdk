@@ -302,6 +302,74 @@ impl Assets {
     }
 }
 
+/// `client.js` as served: without its comment lines, blank lines and
+/// indentation (a quarter of its size, gzipped too). Lines of code are kept
+/// whole, so strings and trailing comments are never cut, and so are the
+/// lines of a multi-line template literal (the WebGL shaders).
+pub(crate) fn compact_js(src: &str) -> String {
+    compact(src, true)
+}
+
+/// `prism.css` as served: without its comments, blank lines and indentation.
+pub(crate) fn compact_css(src: &str) -> String {
+    compact(src, false)
+}
+
+fn compact(src: &str, js: bool) -> String {
+    let mut out = String::with_capacity(src.len());
+    // Inside a `/* … */` comment, or (JS) a multi-line template literal.
+    let (mut comment, mut template) = (false, false);
+    for line in src.lines() {
+        if template {
+            out.push_str(line);
+            out.push('\n');
+            template = !opens_or_closes(line);
+            continue;
+        }
+        let mut code = line.trim();
+        if comment {
+            let Some((_, rest)) = code.split_once("*/") else {
+                continue;
+            };
+            comment = false;
+            code = rest.trim_start();
+        }
+        if code.is_empty() || (js && code.starts_with("//")) {
+            continue;
+        }
+        if let Some(rest) = code.strip_prefix("/*") {
+            match rest.split_once("*/") {
+                None => {
+                    comment = true;
+                    continue;
+                }
+                Some((_, after)) if after.trim().is_empty() => continue,
+                // Code after the comment: the line stays.
+                Some(_) => {}
+            }
+        }
+        out.push_str(code);
+        out.push('\n');
+        template = js && opens_or_closes(code);
+    }
+    out
+}
+
+/// Whether a line of JavaScript has an odd number of unescaped backticks:
+/// it opens a template literal it does not close, or closes one.
+fn opens_or_closes(line: &str) -> bool {
+    let mut escaped = false;
+    let ticks = line
+        .chars()
+        .filter(|&c| {
+            let tick = c == '`' && !escaped;
+            escaped = c == '\\' && !escaped;
+            tick
+        })
+        .count();
+    ticks % 2 == 1
+}
+
 /// A relative path that stays inside its directory.
 pub(crate) fn safe(path: &str) -> bool {
     !path.is_empty()
@@ -346,6 +414,55 @@ mod tests {
         assert_eq!(hashed_name("LICENSE", "abc"), "LICENSE.abc");
         assert_eq!(content_hash(b"x").len(), 12);
         assert!(!safe("../secret") && !safe("/etc/passwd") && safe("img/a.png"));
+    }
+
+    #[test]
+    fn comment_lines_go_and_code_stays_whole() {
+        let js = "// a comment\n  const a = 1; // kept\n\n  /** doc\n   * more\n   */\n  /* x */ b();\n  const s = `one\n  // in the template\n  two`;\n  c(`\\``);\n";
+        assert_eq!(
+            compact_js(js),
+            "const a = 1; // kept\n/* x */ b();\nconst s = `one\n  // in the template\n  two`;\nc(`\\``);\n"
+        );
+        let css = "/* rule\n   on two lines */\n.a {\n  color: red; /* kept */\n}\n";
+        assert_eq!(compact_css(css), ".a {\ncolor: red; /* kept */\n}\n");
+    }
+
+    #[test]
+    fn the_served_client_is_compact_and_keeps_its_shaders() {
+        let served = compact_js(crate::CLIENT_JS);
+        assert!(
+            served.len() * 4 < crate::CLIENT_JS.len() * 3,
+            "{} of {} bytes",
+            served.len(),
+            crate::CLIENT_JS.len()
+        );
+        // The shaders, byte for byte (`scene3d.test.mjs` compares them with
+        // prism-core's).
+        for name in ["VERTEX", "FRAGMENT", "SKY_VERTEX", "SKY_FRAGMENT"] {
+            let body = |s: &str| {
+                let open = format!("const {name} = `");
+                let start = s.find(&open).unwrap() + open.len();
+                s[start..][..s[start..].find('`').unwrap()].to_string()
+            };
+            assert_eq!(body(&served), body(crate::CLIENT_JS), "{name}");
+        }
+        // Still a script (checked when `node` is installed).
+        let file = std::env::temp_dir().join(format!("prism-client-{}.js", std::process::id()));
+        std::fs::write(&file, &served).unwrap();
+        if let Ok(out) = std::process::Command::new("node")
+            .arg("--check")
+            .arg(&file)
+            .output()
+        {
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        let _ = std::fs::remove_file(file);
+        // The stylesheet too.
+        assert!(compact_css(crate::PRISM_CSS).len() < crate::PRISM_CSS.len() * 9 / 10);
     }
 
     #[test]

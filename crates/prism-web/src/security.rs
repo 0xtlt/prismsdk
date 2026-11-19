@@ -343,7 +343,7 @@ pub(crate) fn forget_redirect(id: u64) {
 
 /// `GET <base>/_prism/auth/callback?…`: hands the URL to its session.
 pub(crate) fn redirect_page(query: &str, nonce: Option<&crate::CspNonce>) -> String {
-    let state = prism_core_query(query).remove("state").unwrap_or_default();
+    let state = query_map(query).remove("state").unwrap_or_default();
     let found = waiting().lock().unwrap().remove(&state);
     let delivered = found.is_some_and(|(tx, id)| {
         tx.send(crate::session::Inbound::AuthRedirect(
@@ -367,7 +367,8 @@ pub(crate) fn redirect_page(query: &str, nonce: Option<&crate::CspNonce>) -> Str
     )
 }
 
-fn prism_core_query(q: &str) -> HashMap<String, String> {
+/// A query string's parameters, decoded (`+` is a space).
+fn query_map(q: &str) -> HashMap<String, String> {
     q.split('&')
         .filter_map(|kv| {
             let (k, v) = kv.split_once('=')?;
@@ -381,7 +382,7 @@ fn prism_core_query(q: &str) -> HashMap<String, String> {
 
 /// `state` of an authorization URL.
 pub(crate) fn state_of(url: &str) -> Option<String> {
-    prism_core_query(url.split_once('?')?.1.split('#').next()?).remove("state")
+    query_map(url.split_once('?')?.1.split('#').next()?).remove("state")
 }
 
 // --- Encoding helpers -----------------------------------------------------------------------

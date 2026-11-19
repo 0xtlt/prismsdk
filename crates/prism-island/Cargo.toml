@@ -9,6 +9,7 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation = "https://docs.rs/prismsdk-island"
+readme = "README.md"
 keywords = ["wasm", "web-components", "islands", "ui"]
 categories = ["wasm", "web-programming", "gui"]
 
