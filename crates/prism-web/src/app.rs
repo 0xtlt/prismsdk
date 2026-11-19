@@ -655,12 +655,7 @@ impl WebApp {
         uri: &Uri,
         headers: &HeaderMap,
     ) -> (String, String, VisitorOwned) {
-        let query = uri.query().unwrap_or("");
-        let param = |k: &str| {
-            query
-                .split('&')
-                .find_map(|kv| kv.strip_prefix(k).and_then(|v| v.strip_prefix('=')))
-        };
+        let param = |k: &str| query_param(uri, k);
         let num = |k: &str| param(k).and_then(|v| v.parse::<f32>().ok());
         let cookies = cookie_header(headers);
         let header = |name: header::HeaderName| headers.get(name).and_then(|v| v.to_str().ok());
@@ -1042,6 +1037,13 @@ fn environment(language: Option<prism_core::Locale>, tz: Option<i32>) -> prism_c
         utc_offset: tz.unwrap_or(0),
         ..Default::default()
     }
+}
+
+/// The value of `key` in `uri`'s query, still escaped (`path=%2F` → `%2F`).
+pub(crate) fn query_param<'a>(uri: &'a Uri, key: &str) -> Option<&'a str> {
+    uri.query()?
+        .split('&')
+        .find_map(|kv| kv.strip_prefix(key)?.strip_prefix('='))
 }
 
 /// Decodes `%XX` escapes (URL paths and query values).

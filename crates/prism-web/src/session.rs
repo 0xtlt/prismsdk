@@ -113,19 +113,10 @@ impl WebApp {
         }
         let (sid, path, visitor) = self.socket_visitor(uri, headers);
         let origin = crate::host::page_origin(headers, Some(uri));
-        let search = uri
-            .query()
-            .unwrap_or("")
-            .split('&')
-            .find_map(|kv| kv.strip_prefix("search="))
-            .map(crate::app::percent_decode);
+        let search = crate::app::query_param(uri, "search").map(crate::app::percent_decode);
         // The page's first handshake takes its request over (`cx.page_request()`).
-        let page_request = uri
-            .query()
-            .unwrap_or("")
-            .split('&')
-            .find_map(|kv| kv.strip_prefix("page="))
-            .and_then(|id| self.inner.handoffs.take(id, &sid));
+        let page_request =
+            crate::app::query_param(uri, "page").and_then(|id| self.inner.handoffs.take(id, &sid));
         let request = crate::host::web_request(
             prism_core::RequestKind::Socket,
             self.page_url(&origin, &path, search.as_deref()),
