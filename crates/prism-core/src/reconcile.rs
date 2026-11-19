@@ -1310,6 +1310,18 @@ impl Reconciler {
         let Some(root_entity) = app.root() else {
             return Vec::new();
         };
+        // The environment comes before any node patch (text is created at
+        // the right scale and direction). The first render, the biggest,
+        // keeps it a place now, so its patches need not move to make room.
+        let first = self.environment.is_none();
+        if first {
+            self.patches.insert(
+                0,
+                Patch::SetEnvironment {
+                    env: RenderEnvironment::default(),
+                },
+            );
+        }
 
         let root_owner = self
             .root
@@ -1369,8 +1381,12 @@ impl Reconciler {
             clear: app.chrome_text("clear"),
         };
         if self.environment.as_ref() != Some(&env) {
-            // Before any node patch: text is created at the right scale/direction.
-            patches.insert(0, Patch::SetEnvironment { env: env.clone() });
+            let patch = Patch::SetEnvironment { env: env.clone() };
+            if first {
+                patches[0] = patch;
+            } else {
+                patches.insert(0, patch);
+            }
             self.environment = Some(env);
         }
         if app.appearance() != self.appearance {
