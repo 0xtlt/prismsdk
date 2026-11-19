@@ -451,6 +451,29 @@ impl State {
             prism_core::PlatformServices::handle(&mut self.services, request);
         }
         schedule_timer(self.runtime.next_timer());
+        self.sync_ticker();
+    }
+
+    /// Ticks countdowns (timer labels, menu bar countdowns) every second,
+    /// only while one is shown: otherwise the app never wakes up for them.
+    fn sync_ticker(&self) {
+        let needed = !self.renderer.widgets.timers.is_empty() || self.services.has_countdown();
+        TICKER.with(|t| {
+            let mut t = t.borrow_mut();
+            if needed && t.is_none() {
+                *t = Some(unsafe {
+                    objc2_foundation::NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                        1.0,
+                        &self.renderer.widgets.target,
+                        sel!(onTick:),
+                        None,
+                        true,
+                    )
+                });
+            } else if !needed && let Some(timer) = t.take() {
+                timer.invalidate();
+            }
+        });
     }
 
     /// Registers a run-time font (`cx.load_font`) with Core Text and draws
@@ -541,7 +564,14 @@ impl State {
         if !more.is_empty() {
             self.commit(more);
         }
+        // A new window size can show or hide a countdown.
+        self.sync_ticker();
     }
+}
+
+thread_local! {
+    /// The countdowns' ticker (`State::sync_ticker`).
+    static TICKER: RefCell<Option<Retained<objc2_foundation::NSTimer>>> = const { RefCell::new(None) };
 }
 
 // ---------------------------------------------------------------------------
@@ -5374,15 +5404,6 @@ pub fn run(config: AppConfig, init: AppInit) {
     };
     state.commit(first);
     state.relayout();
-    let _ticker = unsafe {
-        objc2_foundation::NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
-            1.0,
-            &target,
-            sel!(onTick:),
-            None,
-            true,
-        )
-    };
     STATE.with(|cell| *cell.borrow_mut() = Some(state));
     prism_native::apple::set_device_sink(on_device);
     flush_responses();
