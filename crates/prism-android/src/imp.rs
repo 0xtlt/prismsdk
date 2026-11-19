@@ -1,6 +1,7 @@
 //! The app's runtime on Android's main thread, driven by the Java host.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use jni_sys::{JNIEnv, jboolean, jbyteArray, jclass, jfloat, jlong, jsize, jstring};
@@ -65,6 +66,8 @@ thread_local! {
     static HEADLESS: RefCell<Option<Headless>> = const { RefCell::new(None) };
     /// Background jobs in progress.
     static JOBS: RefCell<Vec<Job>> = const { RefCell::new(Vec::new()) };
+    /// Sizes the host measured, by request (see [`measure`]).
+    static MEASURED: RefCell<HashMap<MeasureKey, (f32, f32)>> = RefCell::new(HashMap::new());
 }
 
 /// Called from the app's `main` (through `prism::android_main!`): the Java
@@ -73,13 +76,58 @@ pub fn run(config: AppConfig, init: AppInit) {
     let _ = APP.set((config, init));
 }
 
+/// A measure request, owned (floats by their bits).
+#[derive(PartialEq, Eq, Hash)]
+struct MeasureKey {
+    kind: String,
+    text: String,
+    font_size: u32,
+    weight: i32,
+    max_width: Option<u32>,
+    spec: String,
+}
+
+/// Past this many sizes the cache starts over (long lists measure new rows
+/// as they scroll in).
+const MEASURED_MAX: usize = 4096;
+
+/// A leaf's size from the host, remembered: layout asks the same leaf
+/// several times (min-content, max-content, its final width) and again
+/// when a sibling changes, and each answer is a JNI call that builds a
+/// view in Java. The answers depend only on the request, until a font
+/// loads or the language changes ([`forget_measures`]).
 fn measure(r: &MeasureRequest) -> (f32, f32) {
+    let key = MeasureKey {
+        kind: r.kind.to_string(),
+        text: r.text.to_string(),
+        font_size: r.font_size.to_bits(),
+        weight: r.weight,
+        max_width: r.max_width.map(f32::to_bits),
+        spec: r.spec.to_string(),
+    };
+    if let Some(size) = MEASURED.with(|m| m.borrow().get(&key).copied()) {
+        return size;
+    }
     // Images are drawn as their glyph (SF Symbol names do not exist here).
     let text = match r.kind {
         "image" => prism_core::glyphs::glyph(r.text),
         _ => r.text,
     };
-    jni::measure(r.kind, text, r.font_size, r.weight, r.max_width, r.spec)
+    let size = jni::measure(r.kind, text, r.font_size, r.weight, r.max_width, r.spec);
+    MEASURED.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.len() >= MEASURED_MAX {
+            m.clear();
+        }
+        m.insert(key, size);
+    });
+    size
+}
+
+/// Measures again from now on: fonts, the language (dates) or the screen
+/// changed.
+fn forget_measures() {
+    MEASURED.with(|m| m.borrow_mut().clear());
 }
 
 /// What the host tells about the device (JSON from `PrismHost.deviceInfo`).
@@ -156,6 +204,8 @@ pub extern "system" fn Java_dev_prism_PrismHost_nativeReady(
         return;
     };
     let density = density.max(0.5);
+    // A new Activity: the density or the text size may have changed.
+    forget_measures();
     let services = crate::services::AndroidServices::new(&info);
     let runtime = make_runtime(
         init,
@@ -306,6 +356,7 @@ fn load_font(s: &mut State, face: prism_core::FontFace) {
         "alias": font.face.family,
     }]);
     jni::apply(&op.to_string());
+    forget_measures();
     s.renderer.restyle_all();
 }
 
@@ -327,6 +378,10 @@ fn relayout(s: &mut State) {
         if !patches.is_empty() {
             s.renderer.apply(&patches);
         }
+    }
+    // A new language: dates (and line breaks) measure differently.
+    if s.renderer.widgets.ops.iter().any(|op| op["op"] == "env") {
+        forget_measures();
     }
     s.renderer.layout(w, h, Insets::default());
     let ops = std::mem::take(&mut s.renderer.widgets.ops);

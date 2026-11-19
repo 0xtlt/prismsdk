@@ -333,6 +333,8 @@ final class PrismText {
 
     private static String lastSpec;
     private static JSONObject lastParsed;
+    /** The view texts are measured with: `configure` sets everything a style may change. */
+    private static TextView measurer;
 
     /** A text's natural size in pixels, styled like `render` draws it. */
     static float[] measure(String text, float size, int weight, float maxWidth, String spec) {
@@ -349,9 +351,12 @@ final class PrismText {
             }
             s = lastParsed;
         }
-        TextView v = new TextView(PrismHost.activity);
-        v.setPadding(0, 0, 0, 0);
-        v.setIncludeFontPadding(true);
+        TextView v = measurer;
+        if (v == null || v.getContext() != PrismHost.activity) {
+            v = measurer = new TextView(PrismHost.activity);
+            v.setPadding(0, 0, 0, 0);
+            v.setIncludeFontPadding(true);
+        }
         configure(v, s, size, weight);
         v.setText(build(text, s, s.optJSONArray("runs"), size, -1));
         int widthSpec = maxWidth >= 0
