@@ -13,7 +13,7 @@ WebSocket stack. Hashed static files can be exported for a CDN.
 
 Apps use it through the `prism` facade's `web` feature.
 
-Part of [Prism](https://github.com/0xtlt/prism). Guide: [https://0xtlt.github.io/prism/](https://0xtlt.github.io/prism/) · API: [docs.rs/prism-web](https://docs.rs/prism-web)
+Part of [Prism](https://github.com/0xtlt/prismsdk). Guide: [https://0xtlt.github.io/prismsdk/](https://0xtlt.github.io/prismsdk/) · API: [docs.rs/prismsdk-web](https://docs.rs/prismsdk-web)
 
 ## License
 

@@ -1,5 +1,5 @@
 [package]
-name = "prism-ios"
+name = "prismsdk-ios"
 description = "Prism backend for iOS (UIKit native views)."
 version.workspace = true
 edition.workspace = true
@@ -8,10 +8,14 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation = "https://docs.rs/prism-ios"
+documentation = "https://docs.rs/prismsdk-ios"
 readme = "README.md"
 keywords = ["ios", "uikit", "tvos", "visionos", "gui"]
 categories = ["gui"]
+
+[lib]
+# The crate is `prismsdk-ios` on crates.io; code still writes `prism_ios`.
+name = "prism_ios"
 
 [target.'cfg(any(target_os = "ios", target_os = "tvos", target_os = "visionos"))'.dependencies]
 prism-core.workspace = true

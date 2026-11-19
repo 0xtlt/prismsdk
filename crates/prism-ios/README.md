@@ -10,7 +10,7 @@ through a Swift bridge compiled by `prism-apple-build` (Xcode required).
 Apps get it through the `prism` facade on Apple mobile targets; the `prism`
 command (`prism-cli`) bundles, signs and installs the app.
 
-Part of [Prism](https://github.com/0xtlt/prism). Guide: [https://0xtlt.github.io/prism/](https://0xtlt.github.io/prism/) · API: [docs.rs/prism-ios](https://docs.rs/prism-ios)
+Part of [Prism](https://github.com/0xtlt/prismsdk). Guide: [https://0xtlt.github.io/prismsdk/](https://0xtlt.github.io/prismsdk/) · API: [docs.rs/prismsdk-ios](https://docs.rs/prismsdk-ios)
 
 ## License
 

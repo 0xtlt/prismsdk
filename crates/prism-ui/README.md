@@ -13,7 +13,7 @@ native widget with `.native()`.
 
 Apps use it as `prism::ui`.
 
-Part of [Prism](https://github.com/0xtlt/prism). Guide: [https://0xtlt.github.io/prism/](https://0xtlt.github.io/prism/) · API: [docs.rs/prism-ui](https://docs.rs/prism-ui)
+Part of [Prism](https://github.com/0xtlt/prismsdk). Guide: [https://0xtlt.github.io/prismsdk/](https://0xtlt.github.io/prismsdk/) · API: [docs.rs/prismsdk-ui](https://docs.rs/prismsdk-ui)
 
 ## License
 

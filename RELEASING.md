@@ -81,9 +81,10 @@ crate by crate instead, in the order above, and wait when crates.io asks to
 (the error says until when):
 
 ```sh
-for c in prism-core prism-push prism-apple-build prism-build prism-http prism-ui \
-         prism-native prism-web prism-db prism-macos prism-ios prism-watchos \
-         prism-linux prism-android prism prism-cli prism-island; do
+for c in prismsdk-core prismsdk-push prismsdk-apple-build prismsdk-build \
+         prismsdk-http prismsdk-ui prismsdk-native prismsdk-web prismsdk-db \
+         prismsdk-macos prismsdk-ios prismsdk-watchos prismsdk-linux \
+         prismsdk-android prismsdk prismsdk-cli prismsdk-island; do
   cargo publish -p "$c" || break
 done
 ```
@@ -93,13 +94,15 @@ the list first (publishing a version twice is an error). The ten crates after
 the first five take about 100 minutes. Alternatively, ask help@crates.io for a
 temporary higher limit before the release.
 
-The names `prism`, `prism-core` and `prism-cli` are already taken on
-crates.io by other projects: they have to be renamed (or transferred by their
-owners) before a first release.
+On crates.io every crate is named `prismsdk*` (`prism`, `prism-core` and
+`prism-cli` belong to other projects). The folders, the dependency keys and the
+library names stay `prism*`: `crates/prism-core` publishes `prismsdk-core`,
+which code imports as `prism_core`. The publish order above uses the
+crates.io names.
 
 ## After publishing
 
-- docs.rs builds every crate within minutes (<https://docs.rs/crate/prism/latest/builds>).
+- docs.rs builds every crate within minutes (<https://docs.rs/crate/prismsdk/latest/builds>).
   The Apple and Android backends are documented on docs.rs' Linux target (see
   their `[package.metadata.docs.rs]`).
 - The book and the `main` API docs are deployed by `.github/workflows/docs.yml`

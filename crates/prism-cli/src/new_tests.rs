@@ -26,6 +26,8 @@ fn creates_a_project_named_after_the_directory() {
     let cargo = read(&dir, "Cargo.toml");
     assert!(cargo.contains("name = \"my_cool_app\""), "{cargo}");
     assert!(cargo.contains(&format!("path = \"{}/crates/prism\"", repo().display())));
+    assert!(cargo.contains("prism = { package = \"prismsdk\""));
+    assert!(cargo.contains("prism-build = { package = \"prismsdk-build\""));
     let prism = read(&dir, "Prism.toml");
     assert!(prism.contains("name = \"My Cool App\""));
     assert!(prism.contains("bundle_id = \"dev.prism.my-cool-app\""));
@@ -89,7 +91,7 @@ fn rejects_names_that_are_not_crate_names() {
 }
 
 /// Builds the generated project against this checkout, in the workspace's
-/// target directory (no extra build cache): `cargo test -p prism-cli --
+/// target directory (no extra build cache): `cargo test -p prismsdk-cli --
 /// --ignored generated_project`.
 #[test]
 #[ignore = "slow: compiles the generated app"]

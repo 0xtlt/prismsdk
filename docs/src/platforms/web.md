@@ -146,7 +146,7 @@ backends ignore `.attr`.
 
 ## Embedding in an existing server
 
-`crates/prism-web/examples/embed.rs` is a complete host: its own sign-in, a strict CSP, Prism nested at `/app` (`cargo run -p prism-web --example embed`). `crates/prism-web/tests/axum_host.rs` tests the same setup over real sockets.
+`crates/prism-web/examples/embed.rs` is a complete host: its own sign-in, a strict CSP, Prism nested at `/app` (`cargo run -p prismsdk-web --example embed`). `crates/prism-web/tests/axum_host.rs` tests the same setup over real sockets.
 
 **Your middleware runs first.** It can refuse a request, and attach two request extensions that Prism reads from the page request and from every socket handshake. A reconnect is a new handshake, so the middleware runs again and the session gets a fresh context.
 

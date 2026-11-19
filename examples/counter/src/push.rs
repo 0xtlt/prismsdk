@@ -8,7 +8,7 @@
 //! xcrun simctl push booted dev.prism.counter examples/counter/push/silent.apns
 //! ```
 //!
-//! With a server: `cargo run -p prism-push --example push -- send '<subscription>' '{"title":"Hi","link":"/push"}'`.
+//! With a server: `cargo run -p prismsdk-push --example push -- send '<subscription>' '{"title":"Hi","link":"/push"}'`.
 
 use std::time::Duration;
 

@@ -41,17 +41,22 @@ pub fn create(name: &str, prism: Option<PathBuf>) -> Result<(), String> {
                 .map_err(|e| format!("{}: {e}", prism.display()))?;
             (
                 format!(
-                    "{{ path = \"{}/crates/prism\", default-features = false }}",
+                    "{{ package = \"prismsdk\", path = \"{}/crates/prism\", default-features = false }}",
                     prism.display()
                 ),
-                format!("{{ path = \"{}/crates/prism-build\" }}", prism.display()),
+                format!(
+                    "{{ package = \"prismsdk-build\", path = \"{}/crates/prism-build\" }}",
+                    prism.display()
+                ),
             )
         }
         None => {
             let version = env!("CARGO_PKG_VERSION");
             (
-                format!("{{ version = \"{version}\", default-features = false }}"),
-                format!("\"{version}\""),
+                format!(
+                    "{{ package = \"prismsdk\", version = \"{version}\", default-features = false }}"
+                ),
+                format!("{{ package = \"prismsdk-build\", version = \"{version}\" }}"),
             )
         }
     };

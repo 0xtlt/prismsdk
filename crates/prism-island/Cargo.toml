@@ -1,5 +1,5 @@
 [package]
-name = "prism-island"
+name = "prismsdk-island"
 description = "Write client-side islands for Prism web apps in Rust: small WASM Web Components with props from the server and events back."
 version.workspace = true
 edition.workspace = true
@@ -8,9 +8,13 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation = "https://docs.rs/prism-island"
+documentation = "https://docs.rs/prismsdk-island"
 keywords = ["wasm", "web-components", "islands", "ui"]
 categories = ["wasm", "web-programming", "gui"]
+
+[lib]
+# The crate is `prismsdk-island` on crates.io; code still writes `prism_island`.
+name = "prism_island"
 
 [features]
 # Typed props and event details through serde (about +25 KB gzip per island).

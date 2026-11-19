@@ -5,7 +5,7 @@
 //!
 //! ```sh
 //! dbus-run-session -- sh -c '
-//!   cargo run -p prism-linux --example fake_distributor -- ~/.local/share/Prism/prism-push-keys &
+//!   cargo run -p prismsdk-linux --example fake_distributor -- ~/.local/share/Prism/prism-push-keys &
 //!   PRISM_PATH=/settings PRISM_CLICK="Enable push" PRISM_AFTER=4 PRISM_SNAPSHOT=/tmp/push.png xvfb-run -a counter'
 //! ```
 //!

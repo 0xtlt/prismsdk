@@ -5,14 +5,21 @@
 From crates.io:
 
 ```sh
-cargo install prism-cli      # installs `prism`
+cargo install prismsdk-cli   # installs `prism`
+```
+
+On crates.io Prism's crates are named `prismsdk*`; code still imports them as
+`prism` (`use prism::prelude::*`), and `prism new` writes the dependency:
+
+```toml
+prism = { package = "prismsdk", version = "0.1" }
 ```
 
 Or from a checkout of the repository (this also makes `prism new` point new
 projects at the checkout instead of crates.io):
 
 ```sh
-git clone https://github.com/0xtlt/prism && cd prism
+git clone https://github.com/0xtlt/prismsdk && cd prismsdk
 mise install                 # Rust 1.99 and the platform targets
 mise run cli                 # cargo install --path crates/prism-cli --locked
 ```

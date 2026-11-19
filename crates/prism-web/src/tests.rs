@@ -2604,7 +2604,7 @@ fn client_fixture_is_up_to_date() {
     let saved = std::fs::read_to_string(&file).unwrap_or_default();
     assert!(
         saved == text,
-        "{} is out of date: run `PRISM_UPDATE_FIXTURES=1 cargo test -p prism-web client_fixture` and commit it",
+        "{} is out of date: run `PRISM_UPDATE_FIXTURES=1 cargo test -p prismsdk-web client_fixture` and commit it",
         file.display()
     );
 }

@@ -9,7 +9,7 @@ a menu bar. Requires the GTK 4 development files (`libgtk-4-dev`).
 
 Apps get it through the `prism` facade on Linux.
 
-Part of [Prism](https://github.com/0xtlt/prism). Guide: [https://0xtlt.github.io/prism/](https://0xtlt.github.io/prism/) · API: [docs.rs/prism-linux](https://docs.rs/prism-linux)
+Part of [Prism](https://github.com/0xtlt/prismsdk). Guide: [https://0xtlt.github.io/prismsdk/](https://0xtlt.github.io/prismsdk/) · API: [docs.rs/prismsdk-linux](https://docs.rs/prismsdk-linux)
 
 ## License
 

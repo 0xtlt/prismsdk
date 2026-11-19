@@ -11,12 +11,12 @@ Write a UI once in Rust (GPUI-style API), ship it as:
 
 Also tvOS, watchOS, visionOS, Linux (GTK 4), Wear OS, Android TV and car screens.
 
-**Documentation: the [Prism book](https://0xtlt.github.io/prism/)** (sources in [`docs/`](docs/src/SUMMARY.md)), and the API reference on docs.rs. Each section below is a summary of a chapter.
+**Documentation: the [Prism book](https://0xtlt.github.io/prismsdk/)** (sources in [`docs/`](docs/src/SUMMARY.md)), and the API reference on docs.rs. Each section below is a summary of a chapter.
 
 ## Quick start
 
 ```sh
-cargo install prism-cli      # or, in this repository: mise run cli
+cargo install prismsdk-cli   # or, in this repository: mise run cli
 prism new my-app && cd my-app
 prism dev web                # rebuilds and restarts on every save, on the same screen
 prism dev ios                # same, in the iOS simulator

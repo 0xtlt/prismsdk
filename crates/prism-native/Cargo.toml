@@ -1,5 +1,5 @@
 [package]
-name = "prism-native"
+name = "prismsdk-native"
 description = "Shared machinery for native Prism backends: patch handling and flexbox layout (taffy)."
 version.workspace = true
 edition.workspace = true
@@ -8,10 +8,14 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation = "https://docs.rs/prism-native"
+documentation = "https://docs.rs/prismsdk-native"
 readme = "README.md"
 keywords = ["ui", "gui", "flexbox", "layout", "native"]
 categories = ["gui"]
+
+[lib]
+# The crate is `prismsdk-native` on crates.io; code still writes `prism_native`.
+name = "prism_native"
 
 [dependencies]
 prism-core.workspace = true

@@ -46,7 +46,7 @@ if [[ -n "${PRISM_SMOKE_APK:-}" ]]; then
   adb install -r "$PRISM_SMOKE_APK" >/dev/null
 else
   # Through the prism CLI, which writes out the build script and Java host.
-  (cd "$ROOT/examples/counter" && cargo run -q -p prism-cli -- run android --device "$SERIAL")
+  (cd "$ROOT/examples/counter" && cargo run -q -p prismsdk-cli -- run android --device "$SERIAL")
 fi
 
 # The resumed activity, from the activity manager.

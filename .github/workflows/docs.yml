@@ -1,7 +1,7 @@
 name: Docs
 
 # The book (docs/, mdBook) and the API docs of `main`, on GitHub Pages:
-# https://0xtlt.github.io/prism/ (API under /api/). Pull requests build both
+# https://0xtlt.github.io/prismsdk/ (API under /api/). Pull requests build both
 # and check that every crate still packages for crates.io; only `main` deploys.
 
 on:

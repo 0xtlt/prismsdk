@@ -1,5 +1,5 @@
 [package]
-name = "prism"
+name = "prismsdk"
 description = "Write a UI once in Rust; ship it as a web server (HTML/CSS/JS) or a native app."
 version.workspace = true
 edition.workspace = true
@@ -8,10 +8,14 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation = "https://docs.rs/prism"
+documentation = "https://docs.rs/prismsdk"
 readme = "README.md"
 keywords = ["ui", "gui", "cross-platform", "native", "web"]
 categories = ["gui", "web-programming", "os::macos-apis", "os::android-apis", "accessibility"]
+
+[lib]
+# The crate is `prismsdk` on crates.io; code still writes `prism`.
+name = "prism"
 
 [features]
 default = ["native"]

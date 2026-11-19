@@ -1,5 +1,5 @@
 [package]
-name = "prism-macos"
+name = "prismsdk-macos"
 description = "Prism backend for macOS (AppKit native views)."
 version.workspace = true
 edition.workspace = true
@@ -8,10 +8,14 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation = "https://docs.rs/prism-macos"
+documentation = "https://docs.rs/prismsdk-macos"
 readme = "README.md"
 keywords = ["macos", "appkit", "ui", "gui", "native"]
 categories = ["gui", "os::macos-apis"]
+
+[lib]
+# The crate is `prismsdk-macos` on crates.io; code still writes `prism_macos`.
+name = "prism_macos"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 prism-core.workspace = true

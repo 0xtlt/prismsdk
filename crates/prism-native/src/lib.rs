@@ -2763,7 +2763,7 @@ mod tests {
     }
 }
 
-/// `cargo test -p prism-native --release -- --ignored --nocapture bench`
+/// `cargo test -p prismsdk-native --release -- --ignored --nocapture bench`
 #[cfg(test)]
 mod bench {
     use super::*;

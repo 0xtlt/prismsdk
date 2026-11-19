@@ -15,8 +15,8 @@ create-missing = false
 
 [output.html]
 site-url = "/prism/"
-git-repository-url = "https://github.com/0xtlt/prism"
-edit-url-template = "https://github.com/0xtlt/prism/edit/main/docs/{path}"
+git-repository-url = "https://github.com/0xtlt/prismsdk"
+edit-url-template = "https://github.com/0xtlt/prismsdk/edit/main/docs/{path}"
 default-theme = "light"
 preferred-dark-theme = "ayu"
 smart-punctuation = true

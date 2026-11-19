@@ -1,7 +1,7 @@
 # The `prism` command
 
 `prism` creates, runs, bundles and live-restarts Prism apps. Install it with
-`cargo install prism-cli` (or `mise run cli` in a checkout).
+`cargo install prismsdk-cli` (or `mise run cli` in a checkout).
 
 ```text
 prism new <name> [--prism <path>]       Create a project
@@ -129,10 +129,10 @@ target and turns `native` on per target:
 
 ```toml
 [dependencies]
-prism = { version = "0.1", default-features = false }
+prism = { package = "prismsdk", version = "0.1", default-features = false }
 
 [target.'cfg(target_os = "ios")'.dependencies]
-prism = { version = "0.1", features = ["native"] }
+prism = { package = "prismsdk", version = "0.1", features = ["native"] }
 ```
 
 Its Mac build then compiles without AppKit and answers the bundler from the

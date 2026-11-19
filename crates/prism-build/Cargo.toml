@@ -1,5 +1,5 @@
 [package]
-name = "prism-build"
+name = "prismsdk-build"
 description = "Build-time helpers for Prism apps: checked, typed translations from locales/*.json, and the app binary's link settings."
 version.workspace = true
 edition.workspace = true
@@ -8,10 +8,14 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation = "https://docs.rs/prism-build"
+documentation = "https://docs.rs/prismsdk-build"
 readme = "README.md"
 keywords = ["i18n", "translations", "localization", "plurals", "build-script"]
 categories = ["internationalization", "development-tools::build-utils"]
+
+[lib]
+# The crate is `prismsdk-build` on crates.io; code still writes `prism_build`.
+name = "prism_build"
 
 [dependencies]
 serde_json.workspace = true

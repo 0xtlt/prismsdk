@@ -696,7 +696,7 @@ fn wait_for_redirect(listener: &std::net::TcpListener, timeout: std::time::Durat
 
 /// The ignored ones run against a real session bus (`dbus-run-session`, an
 /// unlocked gnome-keyring, `scripts/mock-fprintd.py` with
-/// `PRISM_FPRINTD_BUS=session`): `cargo test -p prism-linux -- --ignored`.
+/// `PRISM_FPRINTD_BUS=session`): `cargo test -p prismsdk-linux -- --ignored`.
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,5 +1,5 @@
 [package]
-name = "prism-http"
+name = "prismsdk-http"
 description = "HTTP for Prism apps: `cx.fetch(Request::get(url)).await`, off the UI thread, same code on every platform."
 version.workspace = true
 edition.workspace = true
@@ -8,10 +8,14 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation = "https://docs.rs/prism-http"
+documentation = "https://docs.rs/prismsdk-http"
 readme = "README.md"
 keywords = ["http", "client", "ui", "rustls", "async"]
 categories = ["web-programming::http-client", "gui"]
+
+[lib]
+# The crate is `prismsdk-http` on crates.io; code still writes `prism_http`.
+name = "prism_http"
 
 [dependencies]
 prism-core.workspace = true

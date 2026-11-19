@@ -35,10 +35,10 @@ styles, entities), `prism-ui` as `prism::ui` and `prism-http` as
 | `web` | the web backend (`prism-web`), as a server or inside Axum |
 | `db` | SQL with sqlx (`prism-db`) |
 
-Install the `prism` command (`cargo install prism-cli`) to create, run and
+Install the `prism` command (`cargo install prismsdk-cli`) to create, run and
 bundle apps: `prism new my-app`, `prism dev web`, `prism dev ios`.
 
-Part of [Prism](https://github.com/0xtlt/prism). Guide: [https://0xtlt.github.io/prism/](https://0xtlt.github.io/prism/) · API: [docs.rs/prism](https://docs.rs/prism)
+Part of [Prism](https://github.com/0xtlt/prismsdk). Guide: [https://0xtlt.github.io/prismsdk/](https://0xtlt.github.io/prismsdk/) · API: [docs.rs/prismsdk](https://docs.rs/prismsdk)
 
 ## License
 

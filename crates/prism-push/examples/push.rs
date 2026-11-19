@@ -1,13 +1,13 @@
 //! A small command line around prism-push:
 //!
 //! ```sh
-//! cargo run -p prism-push --example push -- vapid
+//! cargo run -p prismsdk-push --example push -- vapid
 //!     # a new VAPID key pair (PRISM_VAPID_PUBLIC_KEY for the web app, the private one for the server)
-//! cargo run -p prism-push --example push -- apns-payload '{"title":"Hi","link":"/"}' > hi.apns
+//! cargo run -p prismsdk-push --example push -- apns-payload '{"title":"Hi","link":"/"}' > hi.apns
 //!     # an .apns file for `xcrun simctl push <device> <bundle id> hi.apns`
-//! cargo run -p prism-push --example push -- encrypt '<subscription json>' '{"title":"Hi"}'
+//! cargo run -p prismsdk-push --example push -- encrypt '<subscription json>' '{"title":"Hi"}'
 //!     # the encrypted Web Push / UnifiedPush body, base64url (for tests)
-//! cargo run -p prism-push --example push -- send '<subscription json>' '{"title":"Hi"}'
+//! cargo run -p prismsdk-push --example push -- send '<subscription json>' '{"title":"Hi"}'
 //!     # sends it; keys from PRISM_APNS_P8 (+ _KEY_ID, _TEAM_ID), PRISM_FCM_SERVICE_ACCOUNT,
 //!     # PRISM_VAPID_PRIVATE_KEY (+ PRISM_VAPID_SUBJECT)
 //! ```

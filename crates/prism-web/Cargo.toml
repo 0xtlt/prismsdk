@@ -1,5 +1,5 @@
 [package]
-name = "prism-web"
+name = "prismsdk-web"
 description = "Prism web backend: server-side rendering + DOM patches over a WebSocket. No WASM. Embeddable in Axum or any HTTP server."
 version.workspace = true
 edition.workspace = true
@@ -8,10 +8,14 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation = "https://docs.rs/prism-web"
+documentation = "https://docs.rs/prismsdk-web"
 readme = "README.md"
 keywords = ["ui", "liveview", "ssr", "websocket", "axum"]
 categories = ["web-programming", "web-programming::http-server", "web-programming::websocket", "gui"]
+
+[lib]
+# The crate is `prismsdk-web` on crates.io; code still writes `prism_web`.
+name = "prism_web"
 
 [features]
 default = ["server"]

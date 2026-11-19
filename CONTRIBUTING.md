@@ -1,7 +1,7 @@
 # Contributing to Prism
 
 Thanks for helping. Bug reports, platform gaps and pull requests are welcome
-on [GitHub](https://github.com/0xtlt/prism/issues).
+on [GitHub](https://github.com/0xtlt/prismsdk/issues).
 
 ## Setup
 
@@ -56,7 +56,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 - A feature that users see gets a section in the matching chapter of `docs/`,
   and a line in `CHANGELOG.md` under `Unreleased`.
 
-Releases are described in [RELEASING.md](https://github.com/0xtlt/prism/blob/main/RELEASING.md).
+Releases are described in [RELEASING.md](https://github.com/0xtlt/prismsdk/blob/main/RELEASING.md).
 
 ## License
 

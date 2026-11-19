@@ -1,5 +1,5 @@
 [package]
-name = "prism-watchos"
+name = "prismsdk-watchos"
 description = "Prism backend for watchOS: the app runs in Rust, a SwiftUI host draws it."
 version.workspace = true
 edition.workspace = true
@@ -8,10 +8,14 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation = "https://docs.rs/prism-watchos"
+documentation = "https://docs.rs/prismsdk-watchos"
 readme = "README.md"
 keywords = ["watchos", "swiftui", "apple-watch", "ui", "gui"]
 categories = ["gui"]
+
+[lib]
+# The crate is `prismsdk-watchos` on crates.io; code still writes `prism_watchos`.
+name = "prism_watchos"
 
 [target.'cfg(target_os = "watchos")'.dependencies]
 prism-core.workspace = true

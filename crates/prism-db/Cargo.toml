@@ -1,5 +1,5 @@
 [package]
-name = "prism-db"
+name = "prismsdk-db"
 description = "SQL for Prism apps (sqlx): SQLite on the device, the server's database on the web."
 version.workspace = true
 edition.workspace = true
@@ -8,10 +8,14 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation = "https://docs.rs/prism-db"
+documentation = "https://docs.rs/prismsdk-db"
 readme = "README.md"
 keywords = ["sqlx", "sqlite", "database", "ui", "offline"]
 categories = ["database", "gui"]
+
+[lib]
+# The crate is `prismsdk-db` on crates.io; code still writes `prism_db`.
+name = "prism_db"
 
 [dependencies]
 prism-core.workspace = true

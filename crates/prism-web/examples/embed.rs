@@ -1,7 +1,7 @@
 //! Prism inside an existing Axum server that signs people in itself.
 //!
 //! ```sh
-//! cargo run -p prism-web --example embed     # then open http://127.0.0.1:4000
+//! cargo run -p prismsdk-web --example embed     # then open http://127.0.0.1:4000
 //! ```
 //!
 //! The host owns `/`, `/signin`, `/signout` and its middleware: it refuses

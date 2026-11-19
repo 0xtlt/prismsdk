@@ -1,5 +1,5 @@
 [package]
-name = "prism-apple-build"
+name = "prismsdk-apple-build"
 description = "Build-script helper: compiles Prism's Swift bridge (WidgetKit, ActivityKit, UserNotifications) and links it."
 version.workspace = true
 edition.workspace = true
@@ -8,10 +8,14 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation = "https://docs.rs/prism-apple-build"
+documentation = "https://docs.rs/prismsdk-apple-build"
 readme = "README.md"
 keywords = ["swift", "xcode", "build-script", "widgetkit", "ios"]
 categories = ["development-tools::build-utils", "development-tools::ffi"]
+
+[lib]
+# The crate is `prismsdk-apple-build` on crates.io; code still writes `prism_apple_build`.
+name = "prism_apple_build"
 
 [dependencies]
 

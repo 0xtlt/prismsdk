@@ -23,8 +23,8 @@
 //! a platform (Windows…) means adding a crate that implements
 //! `prism_native::Widgets`, plus one line in [`Application::run`].
 //!
-//! The guide is at <https://0xtlt.github.io/prism/>; the `prism` command
-//! (`cargo install prism-cli`) creates, runs and bundles apps.
+//! The guide is at <https://0xtlt.github.io/prismsdk/>; the `prism` command
+//! (`cargo install prismsdk-cli`) creates, runs and bundles apps.
 //!
 //! ```no_run
 //! use prism::prelude::*;

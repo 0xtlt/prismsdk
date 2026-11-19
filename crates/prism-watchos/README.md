@@ -8,9 +8,9 @@ tree at the frames `prism-native` computes.
 
 Apps get it through the `prism` facade on watchOS; `prism run watchos` builds
 and bundles the watch app (see the
-[watchOS chapter](https://0xtlt.github.io/prism/platforms/watchos.html)).
+[watchOS chapter](https://0xtlt.github.io/prismsdk/platforms/watchos.html)).
 
-Part of [Prism](https://github.com/0xtlt/prism). Guide: [https://0xtlt.github.io/prism/](https://0xtlt.github.io/prism/) · API: [docs.rs/prism-watchos](https://docs.rs/prism-watchos)
+Part of [Prism](https://github.com/0xtlt/prismsdk). Guide: [https://0xtlt.github.io/prismsdk/](https://0xtlt.github.io/prismsdk/) · API: [docs.rs/prismsdk-watchos](https://docs.rs/prismsdk-watchos)
 
 ## License
 

@@ -1,5 +1,5 @@
 [package]
-name = "prism-linux"
+name = "prismsdk-linux"
 description = "Prism backend for Linux desktops (GTK 4 native widgets)."
 version.workspace = true
 edition.workspace = true
@@ -8,10 +8,14 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation = "https://docs.rs/prism-linux"
+documentation = "https://docs.rs/prismsdk-linux"
 readme = "README.md"
 keywords = ["linux", "gtk", "gtk4", "ui", "gui"]
 categories = ["gui", "os::linux-apis"]
+
+[lib]
+# The crate is `prismsdk-linux` on crates.io; code still writes `prism_linux`.
+name = "prism_linux"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 prism-core.workspace = true

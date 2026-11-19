@@ -20,7 +20,7 @@ enabled = true
 apns_environment = "development"
 # Android FCM (opt-in): Firebase's google-services.json for this package.
 # google_services = "google-services.json"
-# Web Push: the public half of `cargo run -p prism-push --example push -- vapid`
+# Web Push: the public half of `cargo run -p prismsdk-push --example push -- vapid`
 # (or PRISM_VAPID_PUBLIC_KEY).
 # vapid_public_key = "B…"
 

@@ -47,29 +47,29 @@ run = "cargo install --path crates/prism-cli --locked"
 [tasks.web]
 description = "Serve the example as a web app (HTML/CSS/JS, no WASM) on http://localhost:3000, restarting on save"
 dir = "examples/counter"
-run = "cargo run -q -p prism-cli -- dev web"
+run = "cargo run -q -p prismsdk-cli -- dev web"
 
 [tasks.macos]
 description = "Run the example as a native macOS (AppKit) app, restarting on save"
 dir = "examples/counter"
-run = "cargo run -q -p prism-cli -- dev macos"
+run = "cargo run -q -p prismsdk-cli -- dev macos"
 
 [tasks.ios]
 description = "Run the example in the iOS simulator, restarting on save (PRISM_SIM=<name|udid>)"
 dir = "examples/counter"
-run = "cargo run -q -p prism-cli -- dev ios"
+run = "cargo run -q -p prismsdk-cli -- dev ios"
 
 [tasks.android]
 description = "Run the example on the running Android emulator or phone, reinstalling on save (start one: emulator -avd Pixel_9)"
 dir = "examples/counter"
-run = "cargo run -q -p prism-cli -- dev android"
+run = "cargo run -q -p prismsdk-cli -- dev android"
 
 [tasks.macos-app]
 description = "Bundle the example as a macOS .app (widgets, notifications, deep links, icon) and open it"
 dir = "examples/counter"
-run = "cargo run -q -p prism-cli -- run macos --bundle"
+run = "cargo run -q -p prismsdk-cli -- run macos --bundle"
 
 [tasks.device]
 description = "Run the example on a paired iPhone: mise run device -- \"My iPhone\""
 dir = "examples/counter"
-run = "cargo run -q -p prism-cli -- run ios --device"
+run = "cargo run -q -p prismsdk-cli -- run ios --device"

@@ -55,7 +55,7 @@ impl Default for Forms {
                 span("Select "),
                 span("these words").bold(),
                 span(", or ⌘-click "),
-                link("a link", "https://github.com/0xtlt/prism"),
+                link("a link", "https://github.com/0xtlt/prismsdk"),
                 span("."),
             ],
             note_sel: SelectionEvent::default(),

@@ -33,7 +33,7 @@ xcrun simctl bootstatus "$udid" -b >/dev/null
 if [ "${PRISM_SMOKE_SKIP_BUILD:-}" != 1 ]; then
   # Through the prism CLI: it writes out the bundling scripts and the Apple
   # sources (they live in prism-cli and prism-apple-build).
-  (cd "$root/examples/counter" && PRISM_SIM="$udid" cargo run -q -p prism-cli -- run ios)
+  (cd "$root/examples/counter" && PRISM_SIM="$udid" cargo run -q -p prismsdk-cli -- run ios)
 fi
 
 # Launches the app and waits (90 s at most) for it to quit after its snapshot.

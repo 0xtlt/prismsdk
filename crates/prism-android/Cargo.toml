@@ -1,5 +1,5 @@
 [package]
-name = "prism-android"
+name = "prismsdk-android"
 description = "Prism backend for Android: the app runs in Rust, a small Java host shows native Android views."
 version.workspace = true
 edition.workspace = true
@@ -8,10 +8,14 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation = "https://docs.rs/prism-android"
+documentation = "https://docs.rs/prismsdk-android"
 readme = "README.md"
 keywords = ["android", "jni", "wear-os", "ui", "gui"]
 categories = ["gui", "os::android-apis"]
+
+[lib]
+# The crate is `prismsdk-android` on crates.io; code still writes `prism_android`.
+name = "prism_android"
 
 [target.'cfg(target_os = "android")'.dependencies]
 prism-core.workspace = true

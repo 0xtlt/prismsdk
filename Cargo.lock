@@ -295,7 +295,7 @@ name = "axum-server"
 version = "0.1.0"
 dependencies = [
  "axum",
- "prism",
+ "prismsdk",
  "serde_json",
  "tokio",
 ]
@@ -498,15 +498,15 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 name = "counter"
 version = "0.1.0"
 dependencies = [
- "prism",
- "prism-build",
+ "prismsdk",
+ "prismsdk-build",
 ]
 
 [[package]]
 name = "counter-chart-island"
 version = "0.1.0"
 dependencies = [
- "prism-island",
+ "prismsdk-island",
  "web-sys",
 ]
 
@@ -2301,54 +2301,54 @@ dependencies = [
 ]
 
 [[package]]
-name = "prism"
+name = "prismsdk"
 version = "0.1.0"
 dependencies = [
- "prism-android",
- "prism-core",
- "prism-db",
- "prism-http",
- "prism-ios",
- "prism-linux",
- "prism-macos",
- "prism-ui",
- "prism-watchos",
- "prism-web",
+ "prismsdk-android",
+ "prismsdk-core",
+ "prismsdk-db",
+ "prismsdk-http",
+ "prismsdk-ios",
+ "prismsdk-linux",
+ "prismsdk-macos",
+ "prismsdk-ui",
+ "prismsdk-watchos",
+ "prismsdk-web",
  "serde_json",
 ]
 
 [[package]]
-name = "prism-android"
+name = "prismsdk-android"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "jni-sys",
- "prism-core",
- "prism-native",
- "prism-push",
+ "prismsdk-core",
+ "prismsdk-native",
+ "prismsdk-push",
  "serde_json",
 ]
 
 [[package]]
-name = "prism-apple-build"
+name = "prismsdk-apple-build"
 version = "0.1.0"
 
 [[package]]
-name = "prism-build"
+name = "prismsdk-build"
 version = "0.1.0"
 dependencies = [
- "prism-apple-build",
+ "prismsdk-apple-build",
  "serde_json",
 ]
 
 [[package]]
-name = "prism-cli"
+name = "prismsdk-cli"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "brotli",
  "flate2",
- "prism-apple-build",
+ "prismsdk-apple-build",
  "ring",
  "serde_json",
  "ureq",
@@ -2356,37 +2356,37 @@ dependencies = [
 ]
 
 [[package]]
-name = "prism-core"
+name = "prismsdk-core"
 version = "0.1.0"
 dependencies = [
  "gltf-json",
- "prism-testing",
+ "prismsdk-testing",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "prism-db"
+name = "prismsdk-db"
 version = "0.1.0"
 dependencies = [
- "prism-core",
+ "prismsdk-core",
  "sqlx",
  "tokio",
 ]
 
 [[package]]
-name = "prism-http"
+name = "prismsdk-http"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.3.4",
- "prism-core",
+ "prismsdk-core",
  "serde_json",
  "sha2",
  "ureq",
 ]
 
 [[package]]
-name = "prism-ios"
+name = "prismsdk-ios"
 version = "0.1.0"
 dependencies = [
  "block2",
@@ -2397,13 +2397,13 @@ dependencies = [
  "objc2-foundation",
  "objc2-quartz-core",
  "objc2-ui-kit",
- "prism-apple-build",
- "prism-core",
- "prism-native",
+ "prismsdk-apple-build",
+ "prismsdk-core",
+ "prismsdk-native",
 ]
 
 [[package]]
-name = "prism-island"
+name = "prismsdk-island"
 version = "0.1.0"
 dependencies = [
  "js-sys",
@@ -2414,19 +2414,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "prism-linux"
+name = "prismsdk-linux"
 version = "0.1.0"
 dependencies = [
  "glow",
  "gtk4",
  "ksni",
- "prism-core",
- "prism-native",
- "prism-push",
+ "prismsdk-core",
+ "prismsdk-native",
+ "prismsdk-push",
 ]
 
 [[package]]
-name = "prism-macos"
+name = "prismsdk-macos"
 version = "0.1.0"
 dependencies = [
  "block2",
@@ -2436,27 +2436,27 @@ dependencies = [
  "objc2-core-graphics",
  "objc2-foundation",
  "objc2-quartz-core",
- "prism-apple-build",
- "prism-core",
- "prism-native",
+ "prismsdk-apple-build",
+ "prismsdk-core",
+ "prismsdk-native",
 ]
 
 [[package]]
-name = "prism-native"
+name = "prismsdk-native"
 version = "0.1.0"
 dependencies = [
  "objc2",
  "objc2-core-foundation",
  "objc2-foundation",
  "objc2-quartz-core",
- "prism-core",
- "prism-http",
+ "prismsdk-core",
+ "prismsdk-http",
  "serde_json",
  "taffy",
 ]
 
 [[package]]
-name = "prism-push"
+name = "prismsdk-push"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
@@ -2474,43 +2474,43 @@ dependencies = [
 ]
 
 [[package]]
-name = "prism-testing"
+name = "prismsdk-testing"
 version = "0.1.0"
 dependencies = [
- "prism-core",
+ "prismsdk-core",
 ]
 
 [[package]]
-name = "prism-ui"
+name = "prismsdk-ui"
 version = "0.1.0"
 dependencies = [
- "prism-core",
- "prism-testing",
+ "prismsdk-core",
+ "prismsdk-testing",
  "qrcode",
  "rqrr",
 ]
 
 [[package]]
-name = "prism-watchos"
+name = "prismsdk-watchos"
 version = "0.1.0"
 dependencies = [
  "dispatch2",
- "prism-apple-build",
- "prism-core",
- "prism-native",
+ "prismsdk-apple-build",
+ "prismsdk-core",
+ "prismsdk-native",
  "serde_json",
 ]
 
 [[package]]
-name = "prism-web"
+name = "prismsdk-web"
 version = "0.1.0"
 dependencies = [
  "axum",
  "flate2",
  "futures-util",
  "http",
- "prism-core",
- "prism-http",
+ "prismsdk-core",
+ "prismsdk-http",
  "ring",
  "serde_json",
  "sha2",

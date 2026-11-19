@@ -1,5 +1,5 @@
 [package]
-name = "prism-core"
+name = "prismsdk-core"
 description = "Platform-agnostic core of Prism: elements, styles, entities and the reconciler."
 version.workspace = true
 edition.workspace = true
@@ -8,10 +8,14 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation = "https://docs.rs/prism-core"
+documentation = "https://docs.rs/prismsdk-core"
 readme = "README.md"
 keywords = ["ui", "gui", "declarative", "reconciler", "cross-platform"]
 categories = ["gui"]
+
+[lib]
+# The crate is `prismsdk-core` on crates.io; code still writes `prism_core`.
+name = "prism_core"
 
 [features]
 default = ["gltf"]
@@ -32,4 +36,4 @@ gltf-json = { version = "1.4", default-features = false, features = ["names", "e
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dev-dependencies]
-prism-testing = { path = "../prism-testing" }
+prism-testing = { package = "prismsdk-testing", path = "../prism-testing" }

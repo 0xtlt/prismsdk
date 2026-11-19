@@ -9,7 +9,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-prism-island = { path = "../../../../crates/prism-island" }
+prism-island = { package = "prismsdk-island", path = "../../../../crates/prism-island" }
 # Only what the chart touches: every feature adds glue to the bundle.
 web-sys = { version = "0.3.107", features = [
   "CanvasRenderingContext2d",

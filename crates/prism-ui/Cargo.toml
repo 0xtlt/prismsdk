@@ -1,5 +1,5 @@
 [package]
-name = "prism-ui"
+name = "prismsdk-ui"
 description = "Prism's customizable component library: themed, accessible, overridable, with a native escape hatch."
 version.workspace = true
 edition.workspace = true
@@ -8,10 +8,14 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation = "https://docs.rs/prism-ui"
+documentation = "https://docs.rs/prismsdk-ui"
 readme = "README.md"
 keywords = ["ui", "components", "theme", "gui", "accessibility"]
 categories = ["gui", "accessibility"]
+
+[lib]
+# The crate is `prismsdk-ui` on crates.io; code still writes `prism_ui`.
+name = "prism_ui"
 
 [dependencies]
 prism-core.workspace = true
@@ -20,6 +24,6 @@ prism-core.workspace = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dev-dependencies]
-prism-testing = { path = "../prism-testing" }
+prism-testing = { package = "prismsdk-testing", path = "../prism-testing" }
 rqrr = { version = "0.11", default-features = false }
 qrcode = { version = "0.14", default-features = false }
