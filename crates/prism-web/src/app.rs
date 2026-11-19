@@ -74,7 +74,9 @@ fn build_assets(
     islands: &crate::islands::Islands,
 ) -> Assets {
     let client = crate::CLIENT_JS.replace("__GLYPHS__", &prism_core::glyphs::js_table());
-    let mut assets = Assets::new(client, crate::PRISM_CSS.into(), dir, embedded);
+    let client = crate::assets::compact_js(&client);
+    let css = crate::assets::compact_css(crate::PRISM_CSS);
+    let mut assets = Assets::new(client, css, dir, embedded);
     assets.add_islands(islands);
     assets
 }
