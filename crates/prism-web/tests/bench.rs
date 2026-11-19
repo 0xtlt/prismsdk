@@ -35,40 +35,60 @@ impl Render for Row {
     }
 }
 
+/// A button that bumps the middle row, or every row. Its own entity, so a
+/// click re-renders it and the rows it changes, not the whole list.
+struct Bump {
+    rows: Vec<Entity<Row>>,
+    all: bool,
+}
+
+impl Render for Bump {
+    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        button(if self.all { "All" } else { "One" }).on_click(cx.listener(
+            |this: &mut Bump, _, cx| {
+                let rows = if this.all {
+                    &this.rows[..]
+                } else {
+                    &this.rows[this.rows.len() / 2..][..1]
+                };
+                for row in rows {
+                    row.update(cx, |r, cx| {
+                        r.hits += 1;
+                        cx.notify();
+                    });
+                }
+            },
+        ))
+    }
+}
+
 struct List {
+    bumps: [Entity<Bump>; 2],
     rows: Vec<Entity<Row>>,
 }
 
-fn hit(row: &Entity<Row>, cx: &mut App) {
-    row.update(cx, |r, cx| {
-        r.hits += 1;
-        cx.notify();
-    });
-}
-
 impl Render for List {
-    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
         scroll()
             .p(16.)
             .gap(4.)
-            .child(button("One").on_click(
-                cx.listener(|this: &mut List, _, cx| hit(&this.rows[this.rows.len() / 2], cx)),
-            ))
-            .child(
-                button("All").on_click(cx.listener(|this: &mut List, _, cx| {
-                    for row in &this.rows {
-                        hit(row, cx);
-                    }
-                })),
-            )
+            .children(self.bumps)
             .children(self.rows.iter().copied())
     }
 }
 
 fn init(n: usize) -> AppInit {
     Arc::new(move |cx: &mut App| {
-        let list = cx.new_entity(|cx: &mut Context<List>| List {
-            rows: (0..n).map(|n| cx.new(|_| Row { n, hits: 0 })).collect(),
+        let list = cx.new_entity(|cx: &mut Context<List>| {
+            let rows: Vec<_> = (0..n).map(|n| cx.new(|_| Row { n, hits: 0 })).collect();
+            let bump = |all| {
+                let rows = rows.clone();
+                move |_: &mut Context<Bump>| Bump { rows, all }
+            };
+            List {
+                bumps: [cx.new(bump(false)), cx.new(bump(true))],
+                rows,
+            }
         });
         cx.set_root(list);
     })
