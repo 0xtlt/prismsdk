@@ -29,6 +29,7 @@ use prism_core::{
     Length, NodeId, NodeKind, Patch, Pose, RenderEnvironment, Style, TextAlign, Transition,
     animation::{DEFAULT_ENTER, DEFAULT_EXIT},
 };
+use taffy::TraversePartialTree;
 use taffy::prelude::{
     AvailableSpace, Dimension, LengthPercentage, LengthPercentageAuto, Rect, Size, TaffyTree,
 };
@@ -589,6 +590,8 @@ pub struct NativeRenderer<W: Widgets> {
     keyboard_bars: IdMap<NodeId, NodeId>,
     /// Drag and drop between elements (#251).
     dnd: dnd::Dnd,
+    /// Lists `place_children` reuses.
+    child_lists: Vec<Vec<NodeId>>,
 }
 
 /// What the platform insets a scroll view's content by, at the top and the
@@ -633,6 +636,7 @@ impl<W: Widgets> NativeRenderer<W> {
             layout_reports: IdMap::default(),
             keyboard_bars: IdMap::default(),
             dnd: dnd::Dnd::default(),
+            child_lists: Vec::new(),
         }
     }
 
@@ -1401,18 +1405,23 @@ impl<W: Widgets> NativeRenderer<W> {
         let Some(entry) = self.nodes.get(&id) else {
             return;
         };
-        let width = self.taffy.layout(entry.layout).map_or(0., |l| l.size.width);
+        let layout = entry.layout;
+        let width = self.taffy.layout(layout).map_or(0., |l| l.size.width);
         // Right to left, a row that scrolls mirrors across its content.
         let width = self.content_width(id).unwrap_or(width);
-        let children = self.taffy.children(entry.layout).unwrap_or_default();
-        let ids: Vec<NodeId> = children
-            .iter()
-            .filter_map(|c| self.by_layout.get(c).copied())
-            .collect();
+        // A spare list (placing recurses through every node of the tree).
+        let mut ids = self.child_lists.pop().unwrap_or_default();
+        ids.extend(
+            self.taffy
+                .child_ids(layout)
+                .filter_map(|c| self.by_layout.get(&c).copied()),
+        );
         let shift = self.content_shift(id).0;
-        for child in ids {
+        for &child in &ids {
             self.place(child, width, shift);
         }
+        ids.clear();
+        self.child_lists.push(ids);
     }
 }
 
