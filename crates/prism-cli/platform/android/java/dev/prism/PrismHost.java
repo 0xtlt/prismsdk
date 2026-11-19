@@ -1298,6 +1298,11 @@ public final class PrismHost {
         s.setImportantForAccessibility(old.getImportantForAccessibility());
         s.setVisibility(old.getVisibility());
         n.view = s;
+        // The weak maps keyed by view would keep the old one (their values hold
+        // it) and miss the new one; the style applied next adds its backdrop.
+        PrismInput.byView.remove(old);
+        PrismInput.byView.put(s, n);
+        PrismDecor.Backdrops.boxes.remove(old);
         setClickable(n);
     }
 
