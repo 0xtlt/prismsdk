@@ -3,8 +3,8 @@
 //! Everything native backends have in common. A platform only implements the
 //! small [`Widgets`] trait (create a view, set its text, measure it, place it);
 //! [`NativeRenderer`] turns reconciler patches into those calls and runs the
-//! flexbox layout with taffy, so AppKit, UIKit (and later Android, Win32, GTK)
-//! all lay out exactly like the web backend's CSS flexbox.
+//! flexbox layout with taffy, so AppKit, UIKit, GTK and Android views all lay
+//! out exactly like the web backend's CSS flexbox.
 
 #[cfg(target_vendor = "apple")]
 pub mod apple;
@@ -682,10 +682,6 @@ impl<W: Widgets> NativeRenderer<W> {
 
     fn effective_one(&self, style: &Style, kind: NodeKind) -> Style {
         let mut s = style.scaled(self.zoom).with_current_color(label_color());
-        if self.env.direction == Direction::Rtl {
-            // Leading/trailing borders, like margins.
-            s.border_sides = s.border_sides.mirrored();
-        }
         if kind != NodeKind::View && self.env.text_scale != 1. {
             s.font_size = (s.font_size * self.env.text_scale).round();
             // Spacing in points grows with the text (fractions follow the size).
@@ -695,18 +691,17 @@ impl<W: Widgets> NativeRenderer<W> {
             s.letter_spacing *= self.env.text_scale;
         }
         if self.env.direction == Direction::Rtl {
+            // Borders, offsets and corners are leading/trailing, like
+            // margins: backends get leading = left.
+            s.border_sides = s.border_sides.mirrored();
+            s.transform.x = -s.transform.x;
+            s.rounded_corners = s.rounded_corners.mirrored();
+            s.animations = s.animations.scaled(1., true);
             s.text_align = match s.text_align {
                 TextAlign::Left => TextAlign::Right,
                 TextAlign::Right => TextAlign::Left,
                 TextAlign::Center => TextAlign::Center,
             };
-        }
-        if self.env.direction == Direction::Rtl {
-            // Offsets are leading/trailing, like margins.
-            s.transform.x = -s.transform.x;
-            // So are corners: backends get leading = left.
-            s.rounded_corners = s.rounded_corners.mirrored();
-            s.animations = s.animations.scaled(1., true);
         }
         if self.env.reduce_motion {
             s.transition = None;
