@@ -228,6 +228,9 @@ fn build_swift(dirs: &[&str], module: &str) {
             "-swift-version",
             "5",
             "-O",
+            // Optimized as one module, like Xcode's release builds: about a
+            // quarter faster to compile than file by file.
+            "-wmo",
         ])
         .args([
             "-parse-as-library",
