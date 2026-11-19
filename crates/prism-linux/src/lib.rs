@@ -37,6 +37,8 @@ mod scene3d;
 mod security;
 #[cfg(target_os = "linux")]
 mod services;
+// The nodes' shared CSS rules: no GTK, tested everywhere.
+mod sheet;
 #[cfg(target_os = "linux")]
 mod text;
 #[cfg(target_os = "linux")]
