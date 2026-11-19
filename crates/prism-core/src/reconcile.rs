@@ -1212,13 +1212,22 @@ impl Reconciler {
 
         // Re-render the remaining dirty entities in place, shallowest first, so
         // an ancestor's re-render handles its dirty descendants in one pass.
-        loop {
-            let next = self
-                .dirty
-                .iter()
-                .filter_map(|e| self.entity_roots.get(e).map(|n| (self.depth(*n), *e, *n)))
-                .min();
-            let Some((_, _, node)) = next else { break };
+        // Sorted once: a re-render only moves the nodes under it, and renders
+        // the dirty entities there.
+        let mut order: Vec<(usize, EntityId)> = self
+            .dirty
+            .iter()
+            .filter_map(|e| self.entity_roots.get(e).map(|n| (self.depth(*n), *e)))
+            .collect();
+        order.sort_unstable();
+        for (_, e) in order {
+            // Rendered with an ancestor, or unmounted by it.
+            if !self.dirty.contains(&e) {
+                continue;
+            }
+            let Some(&node) = self.entity_roots.get(&e) else {
+                continue;
+            };
             let entity = self.nodes[&node].entity.expect("entity root is tagged");
             let parent = self.nodes[&node].parent;
             let vnode = self.render_entity(app, entity);
