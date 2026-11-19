@@ -7,8 +7,8 @@
 
 use super::*;
 use prism_core::{
-    App, AppInit, Context, Entity, IntoElement, ParentElement, Render, Runtime, Styled, div, rgb,
-    scroll, text,
+    App, AppInit, Context, Entity, IntoElement, ParentElement, Platform, Render, Runtime,
+    RuntimeOptions, Styled, div, rgb, scroll, text, text_input,
 };
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -115,6 +115,25 @@ impl Render for List {
     }
 }
 
+/// Rows with a text field each, sharing a keyboard bar (#242).
+struct Fields {
+    rows: Vec<Entity<Row>>,
+}
+
+impl Render for Fields {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .child(
+                scroll().children(
+                    self.rows
+                        .iter()
+                        .map(|row| div().flex_row().child(*row).child(text_input())),
+                ),
+            )
+            .keyboard_toolbar(div().h(44.).child(text("Done")))
+    }
+}
+
 /// A list of plain keyed rows (no entities), in `order`.
 struct Keyed {
     order: Vec<usize>,
@@ -157,6 +176,14 @@ struct Fixture<T: 'static> {
 impl<T: Render> Fixture<T> {
     /// The app's first render, applied but not laid out.
     fn new(build: impl Fn(&mut Context<T>) -> T + Send + Sync + 'static) -> Self {
+        Self::on(None, build)
+    }
+
+    /// The same, on `platform` (the host's by default).
+    fn on(
+        platform: Option<Platform>,
+        build: impl Fn(&mut Context<T>) -> T + Send + Sync + 'static,
+    ) -> Self {
         let root: Arc<std::sync::Mutex<Option<Entity<T>>>> = Default::default();
         let out = root.clone();
         let init: AppInit = Arc::new(move |cx: &mut App| {
@@ -164,7 +191,14 @@ impl<T: Render> Fixture<T> {
             *out.lock().unwrap() = Some(e);
             cx.set_root(e);
         });
-        let mut rt = Runtime::new(&init);
+        let mut rt = Runtime::with_options(
+            &init,
+            RuntimeOptions {
+                path: "/".into(),
+                platform,
+                ..Default::default()
+            },
+        );
         let patches = rt.render();
         let mut r = NativeRenderer::new(Null::default());
         r.apply(&patches);
@@ -414,6 +448,35 @@ fn rows(n: usize) {
         "patches",
         best(
             || list(n, true),
+            |f| {
+                let row = f.root.read(&f.rt.app).rows[n / 2];
+                bump(&mut f.rt, row);
+                f.commit()
+            },
+        ),
+    );
+    report(
+        "rows with a field + keyboard bar: 1 row changed",
+        "patches",
+        best(
+            || {
+                let mut f =
+                    Fixture::on(Some(Platform::Android), move |cx: &mut Context<Fields>| {
+                        Fields {
+                            rows: (0..n)
+                                .map(|n| {
+                                    cx.new(|_| Row {
+                                        n,
+                                        hits: 0,
+                                        rich: false,
+                                    })
+                                })
+                                .collect(),
+                        }
+                    });
+                f.layout();
+                f
+            },
             |f| {
                 let row = f.root.read(&f.rt.app).rows[n / 2];
                 bump(&mut f.rt, row);
