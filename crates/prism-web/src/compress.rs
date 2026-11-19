@@ -20,10 +20,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use flate2::Compression;
 use http::{HeaderMap, HeaderValue, Response, Uri, header};
 
-/// Socket messages. On the counter's 387 KB first tree (release build):
-/// level 1 → 56 KB in 0.4 ms, 3 → 35 KB in 0.9 ms, 6 → 33 KB in 2.1 ms.
+/// Socket messages. On a 5,000-row list's 3.1 MB first tree (release
+/// build): level 1 → 406 KB in 3 ms, 3 → 241 KB in 6 ms, 6 → 217 KB in 16 ms.
 const SOCKET_LEVEL: u32 = 3;
-/// Pages, rendered per request (156 KB → 21 KB in about 1 ms).
+/// Pages, rendered per request (that list's 991 KB → 59 KB in about 4 ms).
 const PAGE_LEVEL: u32 = 6;
 /// Static files, compressed once.
 const STATIC_LEVEL: u32 = 9;

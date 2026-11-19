@@ -85,7 +85,7 @@ A page loads in two steps. First the server sends HTML that works without JavaSc
 - A browser with `DecompressionStream("deflate-raw")` adds `&compress=deflate-raw` to the socket URL.
 - For such a page, every message of at least 1 KB (`Frame::MIN_COMPRESSED`) goes out as a **binary frame** of raw DEFLATE, but only when compression makes it smaller.
 - Smaller messages, such as most patches, stay text frames.
-- Compression runs on the session's thread, at level 3. On the counter's 387 KB first tree, a release build takes about 0.9 ms and sends 35 KB.
+- Compression runs on the session's thread, at level 3. A release build sends the counter's 19 KB first tree as 2.8 KB, and a 5,000-row list's 3.1 MB as 241 KB in about 6 ms.
 - The client inflates binary frames as they arrive and applies messages strictly in arrival order. A text patch that arrives while an earlier frame is still inflating waits in a queue behind it.
 - If a frame cannot be inflated, the client closes the socket and reconnects for a fresh tree.
 - Browsers without `DecompressionStream` do not ask for compressed frames, and get text only.
@@ -104,14 +104,14 @@ Plain `send(text)` still works: the client reads text frames whether or not it a
 
 **HTTP.** `WebApp::handle` gzips its answers when `Accept-Encoding` allows it (q-values are respected, so `gzip;q=0` gets no gzip):
 
-- Pages are gzipped per request (level 6, about 1 ms for 156 KB).
+- Pages are gzipped per request (level 6: the counter's 17 KB page becomes 2.7 KB; a 991 KB page takes about 4 ms).
 - `client.js`, `prism.css`, island JS and WASM, and app assets are gzipped once and cached by content hash. Unhashed assets are gzipped on each request.
 - Only text, JSON, JavaScript, SVG, WASM and `ttf`/`otf` fonts of 1 KB or more are gzipped. PNG, JPEG, WebP, `woff2`, video and PDF are sent as they are.
 - Each answer that can be gzipped carries `Vary: Accept-Encoding`.
 - The gzipped form of a static file has its own ETag, `"<hash>-gzip"`. `If-None-Match` matches either form, and a weak `W/` match also counts, so revalidation still ends in `304`.
 - A response that already has `Content-Encoding` is left alone.
 
-On the counter, a cold load of `/` goes from 283 KB to 63 KB over HTTP, and from 390 KB to 37 KB over the socket. There is no brotli yet. A CDN in front can re-encode static files in brotli.
+On the counter, a cold load of `/` (the page, `client.js` and `prism.css`) goes from 296 KB to 83 KB over HTTP, and its first tree from 19 KB to 2.8 KB over the socket. The server sends `client.js` and `prism.css` without their comment lines and indentation. There is no brotli yet. A CDN in front can re-encode static files in brotli.
 
 ## HTML attributes
 
