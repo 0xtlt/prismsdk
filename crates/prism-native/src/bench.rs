@@ -134,6 +134,21 @@ impl Render for Fields {
     }
 }
 
+/// Rows whose badge is drawn above the next row (`z_index`, #232).
+struct Badges {
+    rows: Vec<Entity<Row>>,
+}
+
+impl Render for Badges {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        scroll().children(
+            self.rows
+                .iter()
+                .map(|row| div().child(*row).child(text("new").z_index(1))),
+        )
+    }
+}
+
 /// A list of plain keyed rows (no entities), in `order`.
 struct Keyed {
     order: Vec<usize>,
@@ -483,6 +498,35 @@ fn rows(n: usize) {
                 f.commit()
             },
         ),
+    );
+    let badges = move || {
+        let mut f = Fixture::new(move |cx: &mut Context<Badges>| Badges {
+            rows: (0..n)
+                .map(|n| {
+                    cx.new(|_| Row {
+                        n,
+                        hits: 0,
+                        rich: false,
+                    })
+                })
+                .collect(),
+        });
+        f.layout();
+        f
+    };
+    report(
+        "rows with a z_index badge: first render + apply",
+        "patches",
+        best(|| (), |_| badges().r.nodes.len()),
+    );
+    report(
+        "rows with a z_index badge: 1 row changed",
+        "patches",
+        best(badges, |f| {
+            let row = f.root.read(&f.rt.app).rows[n / 2];
+            bump(&mut f.rt, row);
+            f.commit()
+        }),
     );
     report(
         "rows with menu + hover: all removed",
