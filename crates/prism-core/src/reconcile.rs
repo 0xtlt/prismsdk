@@ -865,8 +865,9 @@ pub struct Reconciler {
     scroll: HashMap<NodeId, Handler<ScrollEvent>>,
     swipe: HashMap<(NodeId, SwipeDirection), Handler<ClickEvent>>,
     submit: HashMap<NodeId, Handler<ClickEvent>>,
-    /// Context menu items: (node id << 16 | n) → handler.
-    menu_items: HashMap<u64, Handler<ClickEvent>>,
+    /// Context menu items and clickable runs of each node, by item id
+    /// (node id << 16 | n).
+    menu_items: HashMap<NodeId, Vec<(u64, Handler<ClickEvent>)>>,
     // Per-frame scratch state.
     dirty: HashSet<EntityId>,
     patches: Vec<Patch>,
@@ -1023,7 +1024,11 @@ impl Reconciler {
 
     /// The handler of context menu item `item`, if any.
     pub fn menu_handler(&self, item: u64) -> Option<Handler<ClickEvent>> {
-        self.menu_items.get(&item).cloned()
+        self.menu_items
+            .get(&(item >> 16))?
+            .iter()
+            .find(|(k, _)| *k == item)
+            .map(|(_, h)| h.clone())
     }
 
     /// The change handler of node `id`, if any.
@@ -1889,16 +1894,15 @@ impl Reconciler {
             };
         }
         // Context menu: ids derived from the node id stay stable across renders.
+        self.menu_items.remove(&id);
         let menu_spec = context_menu.map(|m| {
             let mut handlers = Vec::new();
             let spec = m.compile(id << 16, &mut handlers);
-            self.menu_items.retain(|k, _| k >> 16 != id);
-            self.menu_items.extend(handlers);
+            if !handlers.is_empty() {
+                self.menu_items.insert(id, handlers);
+            }
             spec
         });
-        if menu_spec.is_none() {
-            self.menu_items.retain(|k, _| k >> 16 != id);
-        }
         {
             let m = self.nodes.get_mut(&id).expect("node exists");
             if m.menu != menu_spec {
@@ -2465,7 +2469,7 @@ impl Reconciler {
             let handler = span.on_click.or_else(|| run.href.clone().map(link_handler));
             if let Some(h) = handler {
                 let item = crate::spans::link_id(id, i);
-                self.menu_items.insert(item, h);
+                self.menu_items.entry(id).or_default().push((item, h));
                 run.link = Some(item);
             }
             match (&span.label, &run.icon) {
@@ -2502,7 +2506,7 @@ impl Reconciler {
                 .or_else(|| run.href.clone().map(link_handler));
             if let Some(h) = handler {
                 let item = crate::spans::link_id(id, i);
-                self.menu_items.insert(item, h);
+                self.menu_items.entry(id).or_default().push((item, h));
                 run.link = Some(item);
             }
             keyed.push((crate::spans::run_key(&run), span));
@@ -2613,9 +2617,10 @@ impl Reconciler {
         self.drop_payload.remove(&id);
         self.drag_over.remove(&id);
         self.ended.remove(&id);
-        self.menu_items.retain(|k, _| k >> 16 != id);
+        self.menu_items.remove(&id);
         self.scroll.remove(&id);
-        self.swipe.retain(|(n, _), _| *n != id);
+        self.swipe.remove(&(id, SwipeDirection::Left));
+        self.swipe.remove(&(id, SwipeDirection::Right));
         self.hover.remove(&id);
         self.pointer_move.remove(&id);
         self.drag.remove(&id);
