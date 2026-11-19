@@ -11,6 +11,7 @@ use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
 use crate::element::{Element, Handler, IntoElement};
+use crate::reconcile::{IdMap, IdSet};
 use crate::router::{NavOp, Router};
 
 /// A stateful view. `render` runs on first mount and whenever the entity is
@@ -144,12 +145,12 @@ impl Default for Environment {
 
 /// Owns every entity and tracks which ones must be re-rendered.
 pub struct App {
-    entities: HashMap<EntityId, Option<Box<dyn Any>>>,
+    entities: IdMap<EntityId, Option<Box<dyn Any>>>,
     next_entity: u64,
-    dirty: HashSet<EntityId>,
+    dirty: IdSet<EntityId>,
     /// Notifications not yet delivered to observers.
     pending: Vec<EntityId>,
-    observers: HashMap<EntityId, Vec<Observer>>,
+    observers: IdMap<EntityId, Vec<Observer>>,
     root: Option<AnyEntity>,
     initial_path: String,
     navigator: Option<Entity<Router>>,
@@ -197,10 +198,10 @@ pub struct App {
     // --- Releasing what an entity made (#31) ---
     /// Entities created with `cx.new` in an entity's context, by creator:
     /// released with it.
-    children: HashMap<EntityId, Vec<EntityId>>,
+    children: IdMap<EntityId, Vec<EntityId>>,
     /// Observers an entity registered (`cx.observe`), by that entity:
     /// `(observed, observer)`, dropped when it is released.
-    observing: HashMap<EntityId, Vec<(EntityId, Observer)>>,
+    observing: IdMap<EntityId, Vec<(EntityId, Observer)>>,
 }
 
 /// A request for the UI, applied after the next render.
@@ -242,11 +243,11 @@ pub(crate) enum MenuTarget {
 impl Default for App {
     fn default() -> Self {
         App {
-            entities: HashMap::new(),
+            entities: IdMap::default(),
             next_entity: 0,
-            dirty: HashSet::new(),
+            dirty: IdSet::default(),
             pending: Vec::new(),
-            observers: HashMap::new(),
+            observers: IdMap::default(),
             root: None,
             initial_path: "/".into(),
             navigator: None,
@@ -281,8 +282,8 @@ impl Default for App {
             scroll_names: HashMap::new(),
             title: None,
             unsaved: false,
-            children: HashMap::new(),
-            observing: HashMap::new(),
+            children: IdMap::default(),
+            observing: IdMap::default(),
         }
     }
 }
@@ -860,7 +861,7 @@ impl App {
         }
     }
 
-    pub(crate) fn take_dirty(&mut self) -> HashSet<EntityId> {
+    pub(crate) fn take_dirty(&mut self) -> IdSet<EntityId> {
         std::mem::take(&mut self.dirty)
     }
 

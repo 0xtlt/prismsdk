@@ -3,10 +3,8 @@
 //! Everything native backends have in common. A platform only implements the
 //! small [`Widgets`] trait (create a view, set its text, measure it, place it);
 //! [`NativeRenderer`] turns reconciler patches into those calls and runs the
-//! flexbox layout with taffy, so AppKit, UIKit (and later Android, Win32, GTK)
-//! all lay out exactly like the web backend's CSS flexbox.
-
-use std::collections::{HashMap, HashSet};
+//! flexbox layout with taffy, so AppKit, UIKit, GTK and Android views all lay
+//! out exactly like the web backend's CSS flexbox.
 
 #[cfg(target_vendor = "apple")]
 pub mod apple;
@@ -22,13 +20,16 @@ pub mod text;
 pub use extras::Sticky;
 
 #[cfg(test)]
+mod bench;
+#[cfg(test)]
 mod padding_tests;
 
 use prism_core::{
-    Accessibility, Align, Appearance, Backend, Direction, FlexDirection, Justify, Length, NodeId,
-    NodeKind, Patch, Pose, RenderEnvironment, Style, TextAlign, Transition,
+    Accessibility, Align, Appearance, Backend, Direction, FlexDirection, IdMap, IdSet, Justify,
+    Length, NodeId, NodeKind, Patch, Pose, RenderEnvironment, Style, TextAlign, Transition,
     animation::{DEFAULT_ENTER, DEFAULT_EXIT},
 };
+use taffy::TraversePartialTree;
 use taffy::prelude::{
     AvailableSpace, Dimension, LengthPercentage, LengthPercentageAuto, Rect, Size, TaffyTree,
 };
@@ -548,14 +549,14 @@ pub fn report_layout<W: Widgets>(
 pub struct NativeRenderer<W: Widgets> {
     pub widgets: W,
     taffy: TaffyTree<W::View>,
-    nodes: HashMap<NodeId, Entry<W::View>>,
-    by_layout: HashMap<taffy::NodeId, NodeId>,
+    nodes: IdMap<NodeId, Entry<W::View>>,
+    by_layout: IdMap<taffy::NodeId, NodeId>,
     viewport: taffy::NodeId,
     root: Option<NodeId>,
     insets: Insets,
     /// Screens of each stack. Screens are separate layout roots: their size
     /// comes from the platform's navigation container, not from flexbox.
-    stack_screens: HashMap<NodeId, Vec<NodeId>>,
+    stack_screens: IdMap<NodeId, Vec<NodeId>>,
     env: RenderEnvironment,
     /// Every length is multiplied by this (TVs: bigger than phone sizes).
     zoom: f32,
@@ -568,13 +569,13 @@ pub struct NativeRenderer<W: Widgets> {
     /// Runtime-mounted layers (separate layout roots covering the window).
     layers: Vec<NodeId>,
     /// Overlay presentations (sheets fill their area, others fit content).
-    overlays: HashMap<NodeId, prism_core::controls::OverlayConfig>,
+    overlays: IdMap<NodeId, prism_core::controls::OverlayConfig>,
     /// Size of the last layout, for the layers.
     window: (f32, f32),
     /// What layers keep clear of (`Widgets::layer_insets`).
     layer_insets: Insets,
     /// The area each screen and overlay content was last laid out in.
-    areas: HashMap<NodeId, Viewport>,
+    areas: IdMap<NodeId, Viewport>,
     /// Set while laying out what the platform resized (the window, its safe
     /// area, a screen shown for the first time): frames are placed, not
     /// animated, as `transition` animates what the app changes (#41).
@@ -582,13 +583,15 @@ pub struct NativeRenderer<W: Widgets> {
     /// Scroll views that run under a screen's bars, by node id: the platform
     /// insets their content by the bars, so it is laid out in what is
     /// visible between them (#76).
-    under_bars: HashMap<NodeId, UnderBars>,
+    under_bars: IdMap<NodeId, UnderBars>,
     /// Nodes that report their frame (#192), and the frame last reported.
-    layout_reports: HashMap<NodeId, Option<prism_core::Rect>>,
+    layout_reports: IdMap<NodeId, Option<prism_core::Rect>>,
     /// The keyboard bar serving each text field that has one (#242).
-    keyboard_bars: HashMap<NodeId, NodeId>,
+    keyboard_bars: IdMap<NodeId, NodeId>,
     /// Drag and drop between elements (#251).
     dnd: dnd::Dnd,
+    /// Lists `place_children` reuses.
+    child_lists: Vec<Vec<NodeId>>,
 }
 
 /// What the platform insets a scroll view's content by, at the top and the
@@ -609,12 +612,12 @@ impl<W: Widgets> NativeRenderer<W> {
         NativeRenderer {
             widgets,
             taffy,
-            nodes: HashMap::new(),
-            by_layout: HashMap::new(),
+            nodes: IdMap::default(),
+            by_layout: IdMap::default(),
             viewport,
             root: None,
             insets: Insets::default(),
-            stack_screens: HashMap::new(),
+            stack_screens: IdMap::default(),
             env: RenderEnvironment {
                 text_scale: 1.,
                 ..Default::default()
@@ -624,15 +627,16 @@ impl<W: Widgets> NativeRenderer<W> {
             focused: None,
             focus_changes: Vec::new(),
             layers: Vec::new(),
-            overlays: HashMap::new(),
+            overlays: IdMap::default(),
             window: (0., 0.),
             layer_insets: Insets::default(),
-            areas: HashMap::new(),
+            areas: IdMap::default(),
             settling: false,
-            under_bars: HashMap::new(),
-            layout_reports: HashMap::new(),
-            keyboard_bars: HashMap::new(),
+            under_bars: IdMap::default(),
+            layout_reports: IdMap::default(),
+            keyboard_bars: IdMap::default(),
             dnd: dnd::Dnd::default(),
+            child_lists: Vec::new(),
         }
     }
 
@@ -678,10 +682,6 @@ impl<W: Widgets> NativeRenderer<W> {
 
     fn effective_one(&self, style: &Style, kind: NodeKind) -> Style {
         let mut s = style.scaled(self.zoom).with_current_color(label_color());
-        if self.env.direction == Direction::Rtl {
-            // Leading/trailing borders, like margins.
-            s.border_sides = s.border_sides.mirrored();
-        }
         if kind != NodeKind::View && self.env.text_scale != 1. {
             s.font_size = (s.font_size * self.env.text_scale).round();
             // Spacing in points grows with the text (fractions follow the size).
@@ -691,18 +691,17 @@ impl<W: Widgets> NativeRenderer<W> {
             s.letter_spacing *= self.env.text_scale;
         }
         if self.env.direction == Direction::Rtl {
+            // Borders, offsets and corners are leading/trailing, like
+            // margins: backends get leading = left.
+            s.border_sides = s.border_sides.mirrored();
+            s.transform.x = -s.transform.x;
+            s.rounded_corners = s.rounded_corners.mirrored();
+            s.animations = s.animations.scaled(1., true);
             s.text_align = match s.text_align {
                 TextAlign::Left => TextAlign::Right,
                 TextAlign::Right => TextAlign::Left,
                 TextAlign::Center => TextAlign::Center,
             };
-        }
-        if self.env.direction == Direction::Rtl {
-            // Offsets are leading/trailing, like margins.
-            s.transform.x = -s.transform.x;
-            // So are corners: backends get leading = left.
-            s.rounded_corners = s.rounded_corners.mirrored();
-            s.animations = s.animations.scaled(1., true);
         }
         if self.env.reduce_motion {
             s.transition = None;
@@ -804,7 +803,7 @@ impl<W: Widgets> NativeRenderer<W> {
 
     /// Children of `parent` removed by `children` and destroyed in this
     /// batch, with an exit pose: they animate out before going away.
-    fn play_exits(&mut self, parent: NodeId, children: &[NodeId], destroyed: &HashSet<NodeId>) {
+    fn play_exits(&mut self, parent: NodeId, children: &[NodeId], destroyed: &IdSet<NodeId>) {
         if self.env.reduce_motion {
             return;
         }
@@ -980,6 +979,11 @@ impl<W: Widgets> NativeRenderer<W> {
         let (by_layout, nodes) = (&self.by_layout, &self.nodes);
         let font = self.zoom * self.env.text_scale;
         let zoom = self.zoom;
+        // Taffy asks for a leaf's size under several constraints that come
+        // down to the same width limit: within one pass a leaf's content
+        // does not change, so each native measure runs once.
+        let mut sizes: IdMap<(taffy::NodeId, Option<u32>), (f32, f32)> = IdMap::default();
+        let mut min_widths: IdMap<taffy::NodeId, f32> = IdMap::default();
         let result = self.taffy.compute_layout_with_measure(
             node,
             Size {
@@ -1019,12 +1023,16 @@ impl<W: Widgets> NativeRenderer<W> {
                                 .or(match available.width {
                                     _ if single_line => None,
                                     AvailableSpace::Definite(w) => Some(w),
-                                    AvailableSpace::MinContent => {
-                                        Some(widgets.measure_min_content(view))
-                                    }
+                                    AvailableSpace::MinContent => Some(
+                                        *min_widths
+                                            .entry(node)
+                                            .or_insert_with(|| widgets.measure_min_content(view)),
+                                    ),
                                     AvailableSpace::MaxContent => None,
                                 });
-                        let (w, h) = widgets.measure(view, max_width);
+                        let (w, h) = *sizes
+                            .entry((node, max_width.map(f32::to_bits)))
+                            .or_insert_with(|| widgets.measure(view, max_width));
                         // A picture given a width and no height: its height
                         // follows the image's own ratio at that width, wider
                         // than the image included (#208).
@@ -1392,18 +1400,23 @@ impl<W: Widgets> NativeRenderer<W> {
         let Some(entry) = self.nodes.get(&id) else {
             return;
         };
-        let width = self.taffy.layout(entry.layout).map_or(0., |l| l.size.width);
+        let layout = entry.layout;
+        let width = self.taffy.layout(layout).map_or(0., |l| l.size.width);
         // Right to left, a row that scrolls mirrors across its content.
         let width = self.content_width(id).unwrap_or(width);
-        let children = self.taffy.children(entry.layout).unwrap_or_default();
-        let ids: Vec<NodeId> = children
-            .iter()
-            .filter_map(|c| self.by_layout.get(c).copied())
-            .collect();
+        // A spare list (placing recurses through every node of the tree).
+        let mut ids = self.child_lists.pop().unwrap_or_default();
+        ids.extend(
+            self.taffy
+                .child_ids(layout)
+                .filter_map(|c| self.by_layout.get(&c).copied()),
+        );
         let shift = self.content_shift(id).0;
-        for child in ids {
+        for &child in &ids {
             self.place(child, width, shift);
         }
+        ids.clear();
+        self.child_lists.push(ids);
     }
 }
 
@@ -1446,7 +1459,9 @@ impl<W: Widgets> NativeRenderer<W> {
     ) -> bool {
         use prism_core::Interaction;
         if state != Interaction::Focus {
-            return self.set_state_bit(id, state, on);
+            let changed = self.set_state_bit(id, state, on);
+            self.flush_restack();
+            return changed;
         }
         let mut changed = false;
         if on {
@@ -1467,6 +1482,7 @@ impl<W: Widgets> NativeRenderer<W> {
         }
         changed |= self.set_state_bit(id, Interaction::Focus, on);
         changed |= self.set_focus_within(id, on);
+        self.flush_restack();
         changed
     }
 
@@ -1696,13 +1712,21 @@ impl<W: Widgets> NativeRenderer<W> {
 
 impl<W: Widgets> Backend for NativeRenderer<W> {
     fn apply(&mut self, patches: &[Patch]) {
-        let destroyed: HashSet<NodeId> = patches
-            .iter()
-            .filter_map(|p| match p {
-                Patch::Destroy { id } => Some(*id),
-                _ => None,
-            })
-            .collect();
+        let mut destroyed = IdSet::default();
+        let mut creates = 0;
+        for patch in patches {
+            match patch {
+                Patch::Destroy { id } => {
+                    destroyed.insert(*id);
+                }
+                Patch::Create { .. } => creates += 1,
+                _ => {}
+            }
+        }
+        // Room for the new nodes at once: entries are large to move when
+        // the map grows (a first render creates the whole tree).
+        self.nodes.reserve(creates);
+        self.by_layout.reserve(creates);
         for patch in patches {
             match patch {
                 Patch::Create { id, kind } => {
@@ -1748,9 +1772,9 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                     let style = own.as_ref().unwrap_or(style);
                     self.note_style(*id, style);
                     // The style in the node's current interaction states.
-                    let style = &self.declare(*id, style);
+                    let style = self.declare(*id, style);
                     if let Some(e) = self.nodes.get(id) {
-                        let s = self.effective_style(style, e.kind);
+                        let s = self.effective_style(&style, e.kind);
                         let was_hidden = e.style.display_none;
                         if e.style.display_none != s.display_none || s.display_none {
                             self.widgets.set_hidden(&e.view, s.display_none);
@@ -1760,24 +1784,30 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                             .animations
                             .enter
                             .filter(|_| was_hidden && !s.display_none && e.frame.is_some());
-                        let old = self.effective_style(&e.style, e.kind);
+                        // The previous style as drawn, for a loop (now or
+                        // before) only.
+                        let loops = |a: &prism_core::Animations| a.repeat.is_some() || a.restart;
+                        let old = (loops(&e.style.animations) || loops(&s.animations))
+                            .then(|| self.effective_style(&e.style, e.kind));
                         match (enter, s.transition) {
                             // Shown again: enters like a new element.
-                            (Some(pose), _) => self.play_enter(&view, kind, style, pose),
+                            (Some(pose), _) => self.play_enter(&view, kind, &style, pose),
                             (None, Some(t)) if e.frame.is_some() => {
                                 self.widgets.set_style_animated(&view, &s, t)
                             }
                             _ => self.widgets.set_style(&view, &s),
                         }
                         // A loop restarts when it, or what it loops from, changes.
-                        if old.animations.repeat != s.animations.repeat
-                            || old.animations.restart != s.animations.restart
-                            || (s.animations.repeat.is_some()
-                                && (old.opacity != s.opacity || old.transform != s.transform))
+                        if let Some(old) = old
+                            && (old.animations.repeat != s.animations.repeat
+                                || old.animations.restart != s.animations.restart
+                                || (s.animations.repeat.is_some()
+                                    && (old.opacity != s.opacity || old.transform != s.transform)))
                         {
                             self.widgets.set_repeat(&view, &s, s.animations.repeat);
                         }
                     }
+                    let z = style.z_index;
                     let mut repaint = false;
                     let z_before = self.nodes.get(id).map(|e| e.style.z_index);
                     if let Some(e) = self.nodes.get_mut(id) {
@@ -1786,16 +1816,16 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                         repaint = e.kind == NodeKind::Shape
                             && e.style.text_color != style.text_color
                             && e.drawing.as_ref().is_some_and(|d| d.uses_current_color());
-                        e.style = style.clone();
+                        e.style = style;
                     }
                     if repaint {
                         self.redraw(*id);
                     }
                     // Paint order (#232).
-                    if z_before.is_some_and(|z| z != style.z_index)
-                        || (style.z_index != 0 && !self.extras.z_nodes.contains(id))
+                    if z_before.is_some_and(|before| before != z)
+                        || (z != 0 && !self.extras.z_nodes.contains(id))
                     {
-                        self.z_changed(*id, style.z_index);
+                        self.z_changed(*id, z);
                     }
                     self.sync_layout_style(*id);
                     self.style_changed(*id);
@@ -2122,7 +2152,16 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
         if self.extras.rehoist {
             self.rehoist();
         }
-        self.sync_keyboard_bars();
+        self.flush_restack();
+        // Which bar serves each field changes with the tree and the bars.
+        if patches.iter().any(|p| {
+            matches!(
+                p,
+                Patch::SetChildren { .. } | Patch::Destroy { .. } | Patch::SetConfig { .. }
+            )
+        }) {
+            self.sync_keyboard_bars();
+        }
     }
 }
 
@@ -2175,15 +2214,42 @@ impl<W: Widgets> NativeRenderer<W> {
         if !any && self.keyboard_bars.is_empty() {
             return;
         }
-        let mut next = HashMap::new();
+        let mut next = IdMap::default();
         if any {
-            for (id, e) in &self.nodes {
-                if matches!(
-                    e.kind,
-                    NodeKind::TextInput | NodeKind::TextArea | NodeKind::RichInput
-                ) && let Some(bar) = self.keyboard_bar_of(*id)
-                {
-                    next.insert(*id, bar);
+            // What `keyboard_bar_of` answers for every field, in one walk
+            // down from the roots with the nearest container's shared bar.
+            let bar = |id: NodeId, field_only: bool| {
+                self.overlays.get(&id).is_some_and(|c| {
+                    c.kind == prism_core::OverlayKind::Keyboard && c.field_only == field_only
+                })
+            };
+            let is_field = |id: NodeId| {
+                self.nodes.get(&id).is_some_and(|e| {
+                    matches!(
+                        e.kind,
+                        NodeKind::TextInput | NodeKind::TextArea | NodeKind::RichInput
+                    )
+                })
+            };
+            let mut todo: Vec<(NodeId, Option<NodeId>)> = self
+                .nodes
+                .keys()
+                .filter(|id| !self.extras.parents.contains_key(id))
+                .map(|id| (*id, None))
+                .collect();
+            while let Some((id, outer)) = todo.pop() {
+                let Some(children) = self.extras.children.get(&id) else {
+                    continue;
+                };
+                let shared = children.iter().copied().find(|c| bar(*c, false)).or(outer);
+                for (i, &child) in children.iter().enumerate() {
+                    if is_field(child) {
+                        let own = children.get(i + 1).copied().filter(|n| bar(*n, true));
+                        if let Some(b) = own.or(shared) {
+                            next.insert(child, b);
+                        }
+                    }
+                    todo.push((child, shared));
                 }
             }
         }
@@ -2372,6 +2438,7 @@ mod tests {
         AppInit, IntoElement, ParentElement, Render, Router, Runtime, Styled, div, screen, scroll,
         text,
     };
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     /// Records frames; screens get the stack's area minus a 44pt header.
@@ -2760,120 +2827,5 @@ mod tests {
         // tab (viewport below a fake 44pt bar) → stack fills it → screen.
         assert_eq!(f[&2], (0., 44., 400., 756.), "tab");
         assert_eq!(f[&3], (0., 0., 400., 756.), "stack inside tab");
-    }
-}
-
-/// `cargo test -p prismsdk-native --release -- --ignored --nocapture bench`
-#[cfg(test)]
-mod bench {
-    use super::*;
-    use prism_core::{
-        App, AppInit, Context, Entity, IntoElement, ParentElement, Render, Runtime, Styled, div,
-        scroll, text,
-    };
-    use std::sync::Arc;
-    use std::time::Instant;
-
-    #[derive(Default)]
-    struct Null {
-        frames: usize,
-    }
-    impl Widgets for Null {
-        type View = NodeId;
-        fn create(&mut self, id: NodeId, _: NodeKind) -> NodeId {
-            id
-        }
-        fn set_style(&mut self, _: &NodeId, _: &Style) {}
-        fn set_text(&mut self, _: &NodeId, _: &str) {}
-        fn set_placeholder(&mut self, _: &NodeId, _: &str) {}
-        fn set_clickable(&mut self, _: &NodeId, _: bool) {}
-        fn set_children(&mut self, _: &NodeId, _: &[NodeId]) {}
-        fn set_root(&mut self, _: &NodeId) {}
-        fn destroy(&mut self, _: &NodeId) {}
-        fn measure(&mut self, _: &NodeId, w: Option<f32>) -> (f32, f32) {
-            (w.unwrap_or(200.).min(200.), 20.)
-        }
-        fn set_frame(&mut self, _: &NodeId, _: f32, _: f32, _: f32, _: f32) {
-            self.frames += 1;
-        }
-        fn set_accessibility(&mut self, _: &NodeId, _: &Accessibility) {}
-        fn set_value(&mut self, _: &NodeId, _: f64) {}
-        fn screen_viewport(&mut self, _: &NodeId, _: &NodeId) -> Viewport {
-            Viewport::default()
-        }
-    }
-
-    struct Row {
-        n: usize,
-        hits: u32,
-    }
-    impl Render for Row {
-        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .flex_row()
-                .gap(8.)
-                .p(8.)
-                .child(text(format!("Row {}", self.n)))
-                .child(text(format!("{} hits", self.hits)))
-        }
-    }
-    struct List {
-        rows: Vec<Entity<Row>>,
-    }
-    impl Render for List {
-        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
-            scroll().p(16.).gap(4.).children(self.rows.iter().copied())
-        }
-    }
-
-    fn run(n: usize) {
-        let rows: Arc<std::sync::Mutex<Vec<Entity<Row>>>> = Default::default();
-        let out = rows.clone();
-        let init: AppInit = Arc::new(move |cx: &mut App| {
-            let list = cx.new_entity(|cx: &mut Context<List>| List {
-                rows: (0..n).map(|n| cx.new(|_| Row { n, hits: 0 })).collect(),
-            });
-            *out.lock().unwrap() = list.read(cx).rows.clone();
-            cx.set_root(list);
-        });
-        let t = Instant::now();
-        let mut rt = Runtime::new(&init);
-        let patches = rt.render();
-        let render = t.elapsed();
-        let mut r = NativeRenderer::new(Null::default());
-        let t = Instant::now();
-        r.apply(&patches);
-        let apply = t.elapsed();
-        let t = Instant::now();
-        r.layout(400., 800., Insets::default());
-        let layout = t.elapsed();
-        // One row changes.
-        let row = rows.lock().unwrap()[n / 2];
-        let t = Instant::now();
-        row.update(&mut rt.app, |r, cx| {
-            r.hits += 1;
-            cx.notify();
-        });
-        let patches = rt.poll();
-        r.apply(&patches);
-        let t_update = t.elapsed();
-        let before = r.widgets.frames;
-        let t = Instant::now();
-        r.layout(400., 800., Insets::default());
-        let relayout = t.elapsed();
-        let moved = r.widgets.frames - before;
-        println!(
-            "{n:>5} rows ({} nodes): render {render:?} · apply {apply:?} · layout {layout:?} | 1 row changed: render+apply {t_update:?} ({} patches) · relayout {relayout:?} ({moved} native frame updates)",
-            r.nodes.len(),
-            patches.len()
-        );
-    }
-
-    #[test]
-    #[ignore]
-    fn bench() {
-        for n in [100, 1000, 5000] {
-            run(n);
-        }
     }
 }

@@ -182,7 +182,8 @@ enum Segment {
 }
 
 struct Route {
-    /// The pattern as declared, for messages.
+    /// The pattern as declared, for the debug builds' warnings.
+    #[cfg(debug_assertions)]
     pattern: String,
     segments: Vec<Segment>,
     build: Build,
@@ -214,6 +215,7 @@ impl Route {
     /// Whether every path this route matches is matched by `earlier` too
     /// (same shape: the same static segments, parameters and rest at the
     /// same places), so `earlier`, ranked first, always wins.
+    #[cfg(debug_assertions)]
     fn shadowed_by(&self, earlier: &Route) -> bool {
         self.segments.len() == earlier.segments.len()
             && self
@@ -722,6 +724,7 @@ impl RouterBuilder {
             })
             .collect();
         self.routes.push(Route {
+            #[cfg(debug_assertions)]
             pattern: pattern.into(),
             segments,
             build: Rc::new(move |app, params| build(app, params).into_any()),

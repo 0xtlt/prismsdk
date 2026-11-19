@@ -2,11 +2,11 @@
 //! horizontal scroll views, sticky and fixed nodes, and rules on a node's
 //! own width. Kept apart from `lib.rs` so the flexbox core stays readable.
 
-use std::collections::{HashMap, HashSet};
-
 use prism_core::{
-    Align, GridTrack, Length, NodeId, NodeKind, Position, Repetition, ScrollAxis, Style,
+    Align, GridTrack, IdMap, IdSet, Length, NodeId, NodeKind, Position, Repetition, ScrollAxis,
+    Style,
 };
+use taffy::TraversePartialTree;
 use taffy::prelude::{LengthPercentage, Size};
 use taffy::style::{
     GridPlacement, GridTemplateComponent, GridTemplateRepetition, MaxTrackSizingFunction,
@@ -39,27 +39,29 @@ impl Sticky {
 #[derive(Default)]
 pub(crate) struct Extras {
     /// Children as the app declared them (before fixed nodes are hoisted).
-    pub children: HashMap<NodeId, Vec<NodeId>>,
-    pub parents: HashMap<NodeId, NodeId>,
+    pub children: IdMap<NodeId, Vec<NodeId>>,
+    pub parents: IdMap<NodeId, NodeId>,
     /// `.fixed()` nodes: shown as children of their screen (or the root).
-    pub fixed: HashSet<NodeId>,
+    pub fixed: IdSet<NodeId>,
     /// Fixed nodes hoisted into each anchor, last time.
-    pub hoisted: HashMap<NodeId, Vec<NodeId>>,
+    pub hoisted: IdMap<NodeId, Vec<NodeId>>,
     /// Children lists to set again at the end of the batch.
     pub rehoist: bool,
     /// `.sticky()` nodes and what their backend was last told.
-    pub sticky: HashMap<NodeId, Option<Sticky>>,
+    pub sticky: IdMap<NodeId, Option<Sticky>>,
     /// Nodes with rules on their own width: the unresolved style and the
     /// number of thresholds the node's width passed last time.
-    pub own_width: HashMap<NodeId, (Style, usize)>,
+    pub own_width: IdMap<NodeId, (Style, usize)>,
     /// Restyling from `own_width` (keeps the unresolved styles).
     pub in_width_pass: bool,
     /// Some node aligns on baselines: leaves report theirs.
     pub baselines: bool,
     /// Nodes with a `z_index` (#232), and the paint order last given to
     /// each parent that has one.
-    pub z_nodes: HashSet<NodeId>,
-    pub painted: HashMap<NodeId, Vec<NodeId>>,
+    pub z_nodes: IdSet<NodeId>,
+    pub painted: IdMap<NodeId, Vec<NodeId>>,
+    /// Nodes whose ancestors are painted in order again (`restack`).
+    pub restack: IdSet<NodeId>,
 }
 
 /// Containers that fixed nodes are positioned against.
@@ -424,14 +426,14 @@ impl<W: crate::Widgets> crate::NativeRenderer<W> {
         self.extras.rehoist = false;
         let mut fixed: Vec<NodeId> = self.extras.fixed.iter().copied().collect();
         fixed.sort_unstable();
-        let mut hoisted: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        let mut hoisted: IdMap<NodeId, Vec<NodeId>> = IdMap::default();
         for f in fixed {
             if let Some(anchor) = self.anchor_of(f) {
                 hoisted.entry(anchor).or_default().push(f);
             }
         }
         let old = std::mem::replace(&mut self.extras.hoisted, hoisted);
-        let mut touched: HashSet<NodeId> = HashSet::new();
+        let mut touched: IdSet<NodeId> = IdSet::default();
         for (anchor, nodes) in old.iter().chain(self.extras.hoisted.iter()) {
             touched.insert(*anchor);
             touched.extend(nodes.iter().filter_map(|n| self.extras.parents.get(n)));
@@ -478,32 +480,64 @@ impl<W: crate::Widgets> crate::NativeRenderer<W> {
         if self.extras.z_nodes.is_empty() {
             return children.to_vec();
         }
-        // What each node shows: its own value, or the highest one it holds.
-        let mut shown: HashMap<NodeId, i32> = HashMap::new();
-        for &n in &self.extras.z_nodes {
-            let z = self.nodes.get(&n).map_or(0, |e| e.style.z_index);
-            let own = shown.entry(n).or_insert(z);
-            *own = z;
-            let mut cur = self.extras.parents.get(&n).copied();
-            while let Some(a) = cur {
-                if self.extras.z_nodes.contains(&a) {
-                    break;
-                }
-                let v = shown.entry(a).or_insert(0);
-                *v = (*v).max(z);
-                cur = self.extras.parents.get(&a).copied();
+        let z = |n: NodeId| self.nodes.get(&n).map_or(0, |e| e.style.z_index);
+        // What a child shows: its own value, or the highest one (at least 0)
+        // of the nodes inside it that set theirs, not looking inside those.
+        let mut todo = Vec::new();
+        let mut shown = |c: NodeId| {
+            if self.extras.z_nodes.contains(&c) {
+                return z(c);
             }
-        }
+            let mut highest = 0;
+            todo.push(c);
+            while let Some(n) = todo.pop() {
+                for &d in self.extras.children.get(&n).into_iter().flatten() {
+                    if self.extras.z_nodes.contains(&d) {
+                        highest = highest.max(z(d));
+                    } else {
+                        todo.push(d);
+                    }
+                }
+            }
+            highest
+        };
         let mut order = children.to_vec();
-        order.sort_by_key(|c| shown.get(c).copied().unwrap_or(0));
+        // Stable: the tree order among equals.
+        order.sort_by_cached_key(|c| shown(*c));
         order
     }
 
     /// Paints the children of `id` and of its ancestors in their order
-    /// again (#232): a `z_index` changed under them.
+    /// again (#232), once the batch is applied (`flush_restack`): a
+    /// `z_index` changed under them.
     pub(crate) fn restack(&mut self, id: NodeId) {
+        self.extras.restack.insert(id);
+    }
+
+    /// Paints the children of the nodes `restack` was given and of their
+    /// ancestors again, each node once.
+    pub(crate) fn flush_restack(&mut self) {
+        if self.extras.restack.is_empty() {
+            return;
+        }
+        let mut from: Vec<NodeId> = std::mem::take(&mut self.extras.restack)
+            .into_iter()
+            .collect();
+        from.sort_unstable();
+        let mut done = IdSet::default();
+        for id in from {
+            self.restack_now(id, &mut done);
+        }
+    }
+
+    /// Paints the children of `id` and of its ancestors in their order,
+    /// up to an ancestor already in `done`.
+    fn restack_now(&mut self, id: NodeId, done: &mut IdSet<NodeId>) {
         let mut cur = Some(id);
         while let Some(p) = cur {
+            if !done.insert(p) {
+                break;
+            }
             cur = self.extras.parents.get(&p).copied();
             let Some(parent) = self.nodes.get(&p) else {
                 continue;
@@ -612,8 +646,10 @@ impl<W: crate::Widgets> crate::NativeRenderer<W> {
             return;
         }
         let ids: Vec<NodeId> = self.extras.sticky.keys().copied().collect();
+        // Where each scroll view's content ends, found once.
+        let mut ends = IdMap::default();
         for id in ids {
-            let info = self.sticky_info(id);
+            let info = self.sticky_info(id, &mut ends);
             let known = self.extras.sticky.get(&id).copied().flatten();
             if known == info.map(|i| i.1) {
                 continue;
@@ -628,8 +664,9 @@ impl<W: crate::Widgets> crate::NativeRenderer<W> {
         }
     }
 
-    /// The vertical scroll view around a sticky node and its range there.
-    fn sticky_info(&self, id: NodeId) -> Option<(NodeId, Sticky)> {
+    /// The vertical scroll view around a sticky node and its range there
+    /// (`ends`: where the content of scroll views ends, as found so far).
+    fn sticky_info(&self, id: NodeId, ends: &mut IdMap<NodeId, f32>) -> Option<(NodeId, Sticky)> {
         let node = self.nodes.get(&id)?;
         if node.style.display_none {
             return None;
@@ -658,12 +695,12 @@ impl<W: crate::Widgets> crate::NativeRenderer<W> {
         let limit = if parent == scroll {
             // Its parent is the content: it sticks until the end.
             let s = self.nodes.get(&scroll)?;
-            let mut end: f32 = 0.;
-            for child in self.taffy.children(s.layout).unwrap_or_default() {
-                if let Ok(l) = self.taffy.layout(child) {
-                    end = end.max(l.location.y + l.size.height);
-                }
-            }
+            let end = *ends.entry(scroll).or_insert_with(|| {
+                self.taffy
+                    .child_ids(s.layout)
+                    .filter_map(|c| self.taffy.layout(c).ok())
+                    .fold(0., |end: f32, l| end.max(l.location.y + l.size.height))
+            });
             end - shift + s.style.padding.bottom * self.zoom
         } else {
             let p = self.nodes.get(&parent)?;

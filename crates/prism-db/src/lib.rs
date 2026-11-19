@@ -6,6 +6,7 @@
 //! |---|---|
 //! | iOS | the app's container (App Group: widgets can read it too) |
 //! | macOS | Application Support |
+//! | Android | the app's files |
 //! | Web | **the server**: the app runs there, so this is your backend, shared by every user |
 //!
 //! ```ignore

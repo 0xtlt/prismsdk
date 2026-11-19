@@ -26,6 +26,45 @@ use crate::style::Style;
 /// Identifies a host node in patches and events.
 pub type NodeId = u64;
 
+/// For backends: hashes the integer ids that key a tree's maps (node,
+/// entity and layout ids) with one multiplication, where the standard
+/// hasher runs SipHash's rounds. The ids are counters, not input: there
+/// is no flooding to resist.
+#[doc(hidden)]
+#[derive(Clone, Copy, Default)]
+pub struct IdHasher(u64);
+
+impl std::hash::Hasher for IdHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut word = [0; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.write_u64(u64::from_le_bytes(word));
+        }
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        // FxHash's step.
+        self.0 = (self.0.rotate_left(5) ^ n).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+
+    fn write_usize(&mut self, n: usize) {
+        self.write_u64(n as u64);
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// For backends: a map keyed by ids, hashed with [`IdHasher`].
+#[doc(hidden)]
+pub type IdMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<IdHasher>>;
+
+/// For backends: a set of ids, hashed with [`IdHasher`].
+#[doc(hidden)]
+pub type IdSet<K> = HashSet<K, std::hash::BuildHasherDefault<IdHasher>>;
+
 /// What backends need to know about the environment to render.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct RenderEnvironment {
@@ -614,7 +653,7 @@ struct Across {
     anchor: (NodeId, usize),
     head: (NodeId, usize),
     /// The highlights sent, by field.
-    painted: HashMap<NodeId, (usize, usize)>,
+    painted: IdMap<NodeId, (usize, usize)>,
     /// The selection set in the anchor field (to tell its echo).
     selected: (usize, usize),
 }
@@ -734,29 +773,142 @@ enum Item {
     Cached(AnyEntity),
 }
 
+/// What says a new child is a mounted one: its key, or its entity.
+enum Ident<'a> {
+    Key(&'a str),
+    Entity(EntityId),
+}
+
+impl Ident<'_> {
+    fn matches(&self, m: &MNode) -> bool {
+        match self {
+            Ident::Key(key) => m.key.as_deref() == Some(*key),
+            Ident::Entity(e) => m.entity.is_some_and(|o| o.id() == *e),
+        }
+    }
+}
+
+/// A node's children before its re-render, taken one by one by the new
+/// children: the first free one with the same [`Ident`], else the one at
+/// the same place.
+struct Slots {
+    slots: Vec<Option<NodeId>>,
+    /// The first free slot: the next match while the order holds.
+    first: usize,
+    /// The first slot of each key (by hash) and of each entity, built on
+    /// the first lookup in a long list that `first` does not answer.
+    index: Option<(IdMap<u64, usize>, IdMap<EntityId, usize>)>,
+}
+
+impl Slots {
+    /// Up to this many children, a scan is as fast as an index.
+    const SCAN: usize = 16;
+
+    fn new(children: &[NodeId]) -> Self {
+        Slots {
+            slots: children.iter().copied().map(Some).collect(),
+            first: 0,
+            index: None,
+        }
+    }
+
+    /// Takes the first free slot whose node is `ident`.
+    fn take(&mut self, nodes: &IdMap<NodeId, MNode>, ident: &Ident) -> Option<NodeId> {
+        let is = |n: NodeId| nodes.get(&n).is_some_and(|m| ident.matches(m));
+        if self
+            .slots
+            .get(self.first)
+            .copied()
+            .flatten()
+            .is_some_and(is)
+        {
+            return self.take_at(self.first, |_| true);
+        }
+        if self.slots.len() > Self::SCAN {
+            let (keys, entities) = self
+                .index
+                .get_or_insert_with(|| Self::index(&self.slots, nodes));
+            // Not indexed: no free slot had it.
+            let j = match ident {
+                Ident::Key(key) => *keys.get(&key_hash(key))?,
+                Ident::Entity(e) => *entities.get(e)?,
+            };
+            if self.slots[j].is_some_and(is) {
+                return self.take_at(j, |_| true);
+            }
+            // Taken already (a duplicate key or entity), or another key
+            // with the same hash: look through the rest.
+        }
+        let j = (self.first..self.slots.len()).find(|&j| self.slots[j].is_some_and(is))?;
+        self.take_at(j, |_| true)
+    }
+
+    /// Takes slot `j` if it is free and its node passes `test`.
+    fn take_at(&mut self, j: usize, test: impl FnOnce(NodeId) -> bool) -> Option<NodeId> {
+        let n = self.slots.get(j).copied().flatten().filter(|n| test(*n))?;
+        self.slots[j] = None;
+        while self.slots.get(self.first).is_some_and(Option::is_none) {
+            self.first += 1;
+        }
+        Some(n)
+    }
+
+    /// The nodes no new child took.
+    fn into_rest(self) -> impl Iterator<Item = NodeId> {
+        self.slots.into_iter().flatten()
+    }
+
+    fn index(
+        slots: &[Option<NodeId>],
+        nodes: &IdMap<NodeId, MNode>,
+    ) -> (IdMap<u64, usize>, IdMap<EntityId, usize>) {
+        let (mut keys, mut entities) = (IdMap::default(), IdMap::default());
+        for (j, n) in slots.iter().enumerate() {
+            let Some(m) = n.and_then(|n| nodes.get(&n)) else {
+                continue;
+            };
+            if let Some(key) = &m.key {
+                keys.entry(key_hash(key)).or_insert(j);
+            }
+            if let Some(e) = m.entity {
+                entities.entry(e.id()).or_insert(j);
+            }
+        }
+        (keys, entities)
+    }
+}
+
+fn key_hash(key: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::hash::DefaultHasher::new();
+    key.hash(&mut h);
+    h.finish()
+}
+
 #[derive(Default)]
 /// Diffs entity renders against the mounted tree and keeps the event handlers of mounted nodes.
 pub struct Reconciler {
-    nodes: HashMap<NodeId, MNode>,
+    nodes: IdMap<NodeId, MNode>,
     root: Option<NodeId>,
-    entity_roots: HashMap<EntityId, NodeId>,
+    entity_roots: IdMap<EntityId, NodeId>,
     next_id: NodeId,
-    click: HashMap<NodeId, Handler<ClickEvent>>,
-    input: HashMap<NodeId, Handler<InputEvent>>,
-    rich_input: HashMap<NodeId, Handler<RichInputEvent>>,
-    rich: HashMap<NodeId, RichState>,
-    select: HashMap<NodeId, Handler<SelectionEvent>>,
-    back: HashMap<NodeId, Handler<BackEvent>>,
-    navigate: HashMap<NodeId, Handler<NavigateEvent>>,
-    change: HashMap<NodeId, Handler<ChangeEvent>>,
-    scene_tap: HashMap<NodeId, Handler<crate::scene3d::SceneTapEvent>>,
-    scroll: HashMap<NodeId, Handler<ScrollEvent>>,
-    swipe: HashMap<(NodeId, SwipeDirection), Handler<ClickEvent>>,
-    submit: HashMap<NodeId, Handler<ClickEvent>>,
-    /// Context menu items: (node id << 16 | n) → handler.
-    menu_items: HashMap<u64, Handler<ClickEvent>>,
+    click: IdMap<NodeId, Handler<ClickEvent>>,
+    input: IdMap<NodeId, Handler<InputEvent>>,
+    rich_input: IdMap<NodeId, Handler<RichInputEvent>>,
+    rich: IdMap<NodeId, RichState>,
+    select: IdMap<NodeId, Handler<SelectionEvent>>,
+    back: IdMap<NodeId, Handler<BackEvent>>,
+    navigate: IdMap<NodeId, Handler<NavigateEvent>>,
+    change: IdMap<NodeId, Handler<ChangeEvent>>,
+    scene_tap: IdMap<NodeId, Handler<crate::scene3d::SceneTapEvent>>,
+    scroll: IdMap<NodeId, Handler<ScrollEvent>>,
+    swipe: IdMap<(NodeId, SwipeDirection), Handler<ClickEvent>>,
+    submit: IdMap<NodeId, Handler<ClickEvent>>,
+    /// Context menu items and clickable runs of each node, by item id
+    /// (node id << 16 | n).
+    menu_items: IdMap<NodeId, Vec<(u64, Handler<ClickEvent>)>>,
     // Per-frame scratch state.
-    dirty: HashSet<EntityId>,
+    dirty: IdSet<EntityId>,
     patches: Vec<Patch>,
     destroyed: Vec<NodeId>,
     rendered: usize,
@@ -767,26 +919,26 @@ pub struct Reconciler {
     /// Nodes that got it, reset on the next render.
     animated: Vec<NodeId>,
     // Pointer, keys, focus, layers (#17, #25).
-    hover: HashMap<NodeId, Handler<crate::events::HoverEvent>>,
-    pointer_move: HashMap<NodeId, Handler<crate::events::PointerEvent>>,
-    drag: HashMap<NodeId, Handler<crate::events::DragEvent>>,
-    wheel: HashMap<NodeId, Handler<crate::events::WheelEvent>>,
-    aux_click: HashMap<NodeId, Handler<crate::element::ClickEvent>>,
-    focus_change: HashMap<NodeId, Handler<crate::element::FocusEvent>>,
+    hover: IdMap<NodeId, Handler<crate::events::HoverEvent>>,
+    pointer_move: IdMap<NodeId, Handler<crate::events::PointerEvent>>,
+    drag: IdMap<NodeId, Handler<crate::events::DragEvent>>,
+    wheel: IdMap<NodeId, Handler<crate::events::WheelEvent>>,
+    aux_click: IdMap<NodeId, Handler<crate::element::ClickEvent>>,
+    focus_change: IdMap<NodeId, Handler<crate::element::FocusEvent>>,
     /// Rich inputs' editing hooks (#217).
-    edit: HashMap<NodeId, crate::text_edit::EditHandlers>,
+    edit: IdMap<NodeId, crate::text_edit::EditHandlers>,
     /// Selection groups (#231) and their handlers.
-    groups: HashMap<NodeId, crate::selection_across::GroupHandlers>,
+    groups: IdMap<NodeId, crate::selection_across::GroupHandlers>,
     /// The selection across fields shown now (#231).
     across: Option<Across>,
-    layout: HashMap<NodeId, Handler<crate::events::LayoutEvent>>,
-    drop_progress: HashMap<NodeId, Handler<crate::events::DropProgress>>,
-    ended: HashMap<NodeId, Handler<crate::video::EndedEvent>>,
-    magnify: HashMap<NodeId, Handler<crate::events::MagnifyEvent>>,
-    key_down: HashMap<NodeId, Handler<crate::events::KeyEvent>>,
-    global_key: HashMap<NodeId, Handler<crate::events::KeyEvent>>,
-    key_up: HashMap<NodeId, Handler<crate::events::KeyEvent>>,
-    global_key_up: HashMap<NodeId, Handler<crate::events::KeyEvent>>,
+    layout: IdMap<NodeId, Handler<crate::events::LayoutEvent>>,
+    drop_progress: IdMap<NodeId, Handler<crate::events::DropProgress>>,
+    ended: IdMap<NodeId, Handler<crate::video::EndedEvent>>,
+    magnify: IdMap<NodeId, Handler<crate::events::MagnifyEvent>>,
+    key_down: IdMap<NodeId, Handler<crate::events::KeyEvent>>,
+    global_key: IdMap<NodeId, Handler<crate::events::KeyEvent>>,
+    key_up: IdMap<NodeId, Handler<crate::events::KeyEvent>>,
+    global_key_up: IdMap<NodeId, Handler<crate::events::KeyEvent>>,
     /// `.id(…)` names of mounted nodes.
     names: HashMap<String, NodeId>,
     /// Nodes created with `.autofocus()` in this render.
@@ -798,15 +950,15 @@ pub struct Reconciler {
     /// Islands' event handlers: (node, event name) → handler.
     island_events: HashMap<(NodeId, String), Handler<crate::island::IslandEvent>>,
     /// Web views' handlers (#62).
-    web_message: HashMap<NodeId, Handler<crate::web_view::WebMessageEvent>>,
-    web_load: HashMap<NodeId, Handler<crate::web_view::WebLoadEvent>>,
+    web_message: IdMap<NodeId, Handler<crate::web_view::WebMessageEvent>>,
+    web_load: IdMap<NodeId, Handler<crate::web_view::WebLoadEvent>>,
     /// What draggable nodes carry (#251).
-    drag_payloads: HashMap<NodeId, crate::events::DragPayload>,
+    drag_payloads: IdMap<NodeId, crate::events::DragPayload>,
     /// Payload drop targets' handlers, by kind (#251).
-    drop_payload: HashMap<NodeId, Vec<(String, Handler<crate::events::DropEvent>)>>,
-    drag_over: HashMap<NodeId, Vec<(String, Handler<crate::events::DragOverEvent>)>>,
+    drop_payload: IdMap<NodeId, Vec<(String, Handler<crate::events::DropEvent>)>>,
+    drag_over: IdMap<NodeId, Vec<(String, Handler<crate::events::DragOverEvent>)>>,
     /// Drop targets' accepted types and handlers (#111).
-    drop_files: HashMap<
+    drop_files: IdMap<
         NodeId,
         (
             crate::device::PickFiles,
@@ -911,7 +1063,11 @@ impl Reconciler {
 
     /// The handler of context menu item `item`, if any.
     pub fn menu_handler(&self, item: u64) -> Option<Handler<ClickEvent>> {
-        self.menu_items.get(&item).cloned()
+        self.menu_items
+            .get(&(item >> 16))?
+            .iter()
+            .find(|(k, _)| *k == item)
+            .map(|(_, h)| h.clone())
     }
 
     /// The change handler of node `id`, if any.
@@ -1105,8 +1261,8 @@ impl Reconciler {
     fn key_handlers_of(
         &self,
         focused: Option<NodeId>,
-        local: &HashMap<NodeId, Handler<crate::events::KeyEvent>>,
-        global: &HashMap<NodeId, Handler<crate::events::KeyEvent>>,
+        local: &IdMap<NodeId, Handler<crate::events::KeyEvent>>,
+        global: &IdMap<NodeId, Handler<crate::events::KeyEvent>>,
     ) -> Vec<Handler<crate::events::KeyEvent>> {
         let mut out = Vec::new();
         let mut next = focused;
@@ -1193,6 +1349,18 @@ impl Reconciler {
         let Some(root_entity) = app.root() else {
             return Vec::new();
         };
+        // The environment comes before any node patch (text is created at
+        // the right scale and direction). The first render, the biggest,
+        // keeps it a place now, so its patches need not move to make room.
+        let first = self.environment.is_none();
+        if first {
+            self.patches.insert(
+                0,
+                Patch::SetEnvironment {
+                    env: RenderEnvironment::default(),
+                },
+            );
+        }
 
         let root_owner = self
             .root
@@ -1212,13 +1380,22 @@ impl Reconciler {
 
         // Re-render the remaining dirty entities in place, shallowest first, so
         // an ancestor's re-render handles its dirty descendants in one pass.
-        loop {
-            let next = self
-                .dirty
-                .iter()
-                .filter_map(|e| self.entity_roots.get(e).map(|n| (self.depth(*n), *e, *n)))
-                .min();
-            let Some((_, _, node)) = next else { break };
+        // Sorted once: a re-render only moves the nodes under it, and renders
+        // the dirty entities there.
+        let mut order: Vec<(usize, EntityId)> = self
+            .dirty
+            .iter()
+            .filter_map(|e| self.entity_roots.get(e).map(|n| (self.depth(*n), *e)))
+            .collect();
+        order.sort_unstable();
+        for (_, e) in order {
+            // Rendered with an ancestor, or unmounted by it.
+            if !self.dirty.contains(&e) {
+                continue;
+            }
+            let Some(&node) = self.entity_roots.get(&e) else {
+                continue;
+            };
             let entity = self.nodes[&node].entity.expect("entity root is tagged");
             let parent = self.nodes[&node].parent;
             let vnode = self.render_entity(app, entity);
@@ -1243,8 +1420,12 @@ impl Reconciler {
             clear: app.chrome_text("clear"),
         };
         if self.environment.as_ref() != Some(&env) {
-            // Before any node patch: text is created at the right scale/direction.
-            patches.insert(0, Patch::SetEnvironment { env: env.clone() });
+            let patch = Patch::SetEnvironment { env: env.clone() };
+            if first {
+                patches[0] = patch;
+            } else {
+                patches.insert(0, patch);
+            }
             self.environment = Some(env);
         }
         if app.appearance() != self.appearance {
@@ -1768,16 +1949,15 @@ impl Reconciler {
             };
         }
         // Context menu: ids derived from the node id stay stable across renders.
+        self.menu_items.remove(&id);
         let menu_spec = context_menu.map(|m| {
             let mut handlers = Vec::new();
             let spec = m.compile(id << 16, &mut handlers);
-            self.menu_items.retain(|k, _| k >> 16 != id);
-            self.menu_items.extend(handlers);
+            if !handlers.is_empty() {
+                self.menu_items.insert(id, handlers);
+            }
             spec
         });
-        if menu_spec.is_none() {
-            self.menu_items.retain(|k, _| k >> 16 != id);
-        }
         {
             let m = self.nodes.get_mut(&id).expect("node exists");
             if m.menu != menu_spec {
@@ -2017,52 +2197,37 @@ impl Reconciler {
             self.flatten(app, child, &mut items);
         }
         let old_children = std::mem::take(&mut self.nodes.get_mut(&id).unwrap().children);
-        let mut slots: Vec<Option<NodeId>> = old_children.iter().copied().map(Some).collect();
+        let mut slots = Slots::new(&old_children);
         let mut new_children = Vec::with_capacity(items.len());
         for (i, item) in items.into_iter().enumerate() {
             let child = match item {
-                Item::Cached(e) => {
-                    let found = slots
-                        .iter()
-                        .position(|s| s.is_some_and(|n| self.owner(n) == Some(e.id())));
-                    match found {
-                        Some(j) => slots[j].take().unwrap(),
-                        None => {
-                            // Moved to another parent: render it fresh here.
-                            let v = self.render_entity(app, e);
-                            self.diff(app, None, Some(id), v, Some(e))
-                        }
+                Item::Cached(e) => match slots.take(&self.nodes, &Ident::Entity(e.id())) {
+                    Some(n) => n,
+                    None => {
+                        // Moved to another parent: render it fresh here.
+                        let v = self.render_entity(app, e);
+                        self.diff(app, None, Some(id), v, Some(e))
                     }
-                }
+                },
                 Item::Node(v, e) => {
                     let found = match (&v.key, e) {
-                        (Some(key), _) => slots.iter().position(|s| {
-                            s.is_some_and(|n| self.nodes[&n].key.as_ref() == Some(key))
-                        }),
-                        (None, Some(e)) => slots
-                            .iter()
-                            .position(|s| s.is_some_and(|n| self.owner(n) == Some(e.id()))),
+                        (Some(key), _) => slots.take(&self.nodes, &Ident::Key(key)),
+                        (None, Some(e)) => slots.take(&self.nodes, &Ident::Entity(e.id())),
                         (None, None) => None,
                     }
                     .or_else(|| {
                         // Positional match among unkeyed, unowned nodes.
-                        slots
-                            .get(i)
-                            .copied()
-                            .flatten()
-                            .filter(|n| {
-                                let m = &self.nodes[n];
-                                m.key.is_none() && m.entity.is_none()
-                            })
-                            .map(|_| i)
+                        slots.take_at(i, |n| {
+                            let m = &self.nodes[&n];
+                            m.key.is_none() && m.entity.is_none()
+                        })
                     });
-                    let previous = found.and_then(|j| slots[j].take());
-                    self.diff(app, previous, Some(id), v, e)
+                    self.diff(app, found, Some(id), v, e)
                 }
             };
             new_children.push(child);
         }
-        for leftover in slots.into_iter().flatten() {
+        for leftover in slots.into_rest() {
             self.destroy(leftover);
         }
         if new_children != old_children {
@@ -2211,7 +2376,7 @@ impl Reconciler {
                 global: flags.1,
             });
         }
-        fn set<E>(map: &mut HashMap<NodeId, Handler<E>>, id: NodeId, h: Option<Handler<E>>) {
+        fn set<E>(map: &mut IdMap<NodeId, Handler<E>>, id: NodeId, h: Option<Handler<E>>) {
             match h {
                 Some(h) => map.insert(id, h),
                 None => map.remove(&id),
@@ -2359,7 +2524,7 @@ impl Reconciler {
             let handler = span.on_click.or_else(|| run.href.clone().map(link_handler));
             if let Some(h) = handler {
                 let item = crate::spans::link_id(id, i);
-                self.menu_items.insert(item, h);
+                self.menu_items.entry(id).or_default().push((item, h));
                 run.link = Some(item);
             }
             match (&span.label, &run.icon) {
@@ -2396,7 +2561,7 @@ impl Reconciler {
                 .or_else(|| run.href.clone().map(link_handler));
             if let Some(h) = handler {
                 let item = crate::spans::link_id(id, i);
-                self.menu_items.insert(item, h);
+                self.menu_items.entry(id).or_default().push((item, h));
                 run.link = Some(item);
             }
             keyed.push((crate::spans::run_key(&run), span));
@@ -2507,9 +2672,10 @@ impl Reconciler {
         self.drop_payload.remove(&id);
         self.drag_over.remove(&id);
         self.ended.remove(&id);
-        self.menu_items.retain(|k, _| k >> 16 != id);
+        self.menu_items.remove(&id);
         self.scroll.remove(&id);
-        self.swipe.retain(|(n, _), _| *n != id);
+        self.swipe.remove(&(id, SwipeDirection::Left));
+        self.swipe.remove(&(id, SwipeDirection::Right));
         self.hover.remove(&id);
         self.pointer_move.remove(&id);
         self.drag.remove(&id);
@@ -2719,7 +2885,7 @@ impl Reconciler {
     ) -> Vec<Patch> {
         let mut patches = Vec::new();
         let old = self.across.take().map(|a| a.painted).unwrap_or_default();
-        let mut painted = HashMap::new();
+        let mut painted = IdMap::default();
         let mut shown = None;
         match range {
             Some((a, h)) if a.0 != h.0 => {

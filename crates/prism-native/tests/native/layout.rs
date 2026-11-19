@@ -1151,6 +1151,44 @@ fn z_index_sets_the_paint_order_not_the_layout() {
     );
 }
 
+/// #232: a child shows its own `z_index`, else the highest (at least 0) of
+/// the nodes inside it that set one, not looking inside those.
+#[test]
+fn z_index_shown_by_a_child_is_its_own_or_the_highest_inside() {
+    let mut h = tree(|| {
+        div()
+            .flex_row()
+            .child(div().child(div().z_index(-1)))
+            .child(div().z_index(-2))
+            .child(div().child(div().z_index(5).child(div().z_index(9))))
+            .child(div().child(div().z_index(3)))
+    });
+    let f = h.layout(400., 300.);
+    let v = f.of_kind(NodeKind::View);
+    let (row, a, b, c, d) = (v[0], v[1], v[3], v[4], v[7]);
+    assert_eq!(h.w().children[&row], [b, a, d, c]);
+}
+
+/// #232: a refinement's `z_index` (hover) paints its node above, then back.
+#[test]
+fn z_index_follows_interaction_states() {
+    use prism_core::Interaction;
+    let mut h = tree(|| {
+        div()
+            .flex_row()
+            .child(div().w(50.).h(10.).hover(|s| s.z_index(2)))
+            .child(div().w(50.).h(10.).z_index(1))
+    });
+    h.layout(400., 300.);
+    let v = h.w().of_kind(NodeKind::View);
+    let (row, first, second) = (v[0], v[1], v[2]);
+    assert_eq!(h.w().children[&row], [first, second]);
+    h.r.set_interaction(first, Interaction::Hover, true);
+    assert_eq!(h.w().children[&row], [second, first], "hovered: on top");
+    h.r.set_interaction(first, Interaction::Hover, false);
+    assert_eq!(h.w().children[&row], [first, second]);
+}
+
 /// #232: tabs and stacks keep their order whatever their screens hold.
 #[test]
 fn z_index_leaves_tabs_in_their_order() {

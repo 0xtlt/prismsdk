@@ -118,7 +118,9 @@ pub use platform::{Platform, Platforms};
 pub use push::{
     ActivityPushToken, PushEvent, PushFuture, PushMessage, PushService, PushSubscription,
 };
-pub use reconcile::{NodeId, Patch, Reconciler, RenderEnvironment, RichEdit, UiEvent};
+pub use reconcile::{
+    IdHasher, IdMap, IdSet, NodeId, Patch, Reconciler, RenderEnvironment, RichEdit, UiEvent,
+};
 pub use reorder::{ReorderList, ReorderOptions};
 pub use request::{Cookie, RequestKind, SameSite, UrlTarget, WebRequest};
 pub use router::{Params, Router, RouterBuilder, go_back, navigate_to, normalize_path};

@@ -130,13 +130,90 @@ fn duplicate_keys_still_render_every_child() {
     assert_eq!(h.describe(), r#"view[text"b" text"a" text"a" text"a"]"#);
 }
 
+/// Children of the root, in order.
+fn child_ids(h: &Harness) -> Vec<NodeId> {
+    h.host.get(h.host.root.unwrap()).children.clone()
+}
+
+#[test]
+fn duplicate_keys_keep_their_nodes_in_order_in_long_lists() {
+    let mut keys: Vec<String> = (0..28).map(|n| format!("k{n}")).collect();
+    keys.extend(["a".to_string(), "a".to_string()]);
+    let init: Vec<&str> = keys.iter().map(String::as_str).collect();
+    let mut h = list(&init, true);
+    let before = child_ids(&h);
+    // The two "a" first: the first takes the first "a", the second the next.
+    keys.rotate_right(2);
+    let now: Vec<&str> = keys.iter().map(String::as_str).collect();
+    let p = set_items(&mut h, &now);
+    assert_eq!(creates(&p), 0);
+    let after = child_ids(&h);
+    assert_eq!(&after[..2], &before[28..]);
+    assert_eq!(&after[2..], &before[..28]);
+}
+
+struct BadgeList {
+    rows: Vec<Entity<Badge>>,
+}
+
+impl Render for BadgeList {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        div().children(self.rows.iter().copied())
+    }
+}
+
+#[test]
+fn reordered_entities_keep_their_nodes_in_long_lists() {
+    let mut h = Harness::new(|cx| {
+        let rows = (0..40)
+            .map(|count| cx.new_entity(|_| Badge { count }))
+            .collect();
+        let root = cx.new_entity(|_| BadgeList { rows });
+        mount(cx, root);
+    });
+    let before = child_ids(&h);
+    let p = h.update::<BadgeList>(|r| r.rows.reverse()).to_vec();
+    assert_eq!(creates(&p), 0);
+    assert!(destroys(&p).is_empty());
+    let mut after = child_ids(&h);
+    after.reverse();
+    assert_eq!(after, before);
+    // A row dropped, then one added at the top: no other row is touched.
+    let p = h
+        .update::<BadgeList>(|r| {
+            r.rows.pop();
+        })
+        .to_vec();
+    assert_eq!(destroys(&p).len(), 1);
+    let root = h.root::<BadgeList>();
+    let row = h.rt.app.new_entity(|_| Badge { count: 99 });
+    h.rt.app.update(&root, |r, cx| {
+        r.rows.insert(0, row);
+        cx.notify();
+    });
+    let p = h.render().to_vec();
+    assert_eq!(creates(&p), 1);
+    assert!(destroys(&p).is_empty());
+    assert_eq!(h.host.child_texts(h.host.root.unwrap())[0], "99 new");
+}
+
 /// Random edits of a keyed list: the tree always matches, and every key that
 /// survives an edit keeps its native node.
 #[test]
 fn random_keyed_edits_preserve_identity() {
+    random_keyed_edits(8);
+}
+
+/// The same in lists long enough for the reconciler to index their keys.
+#[test]
+fn random_keyed_edits_preserve_identity_in_long_lists() {
+    random_keyed_edits(40);
+}
+
+fn random_keyed_edits(start: usize) {
     let mut rng = Lcg(7);
     let mut next_key = 0;
-    let mut items: Vec<String> = (0..8)
+    let mut items: Vec<String> = (0..start)
         .map(|_| {
             next_key += 1;
             format!("k{next_key}")
