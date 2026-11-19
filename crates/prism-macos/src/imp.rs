@@ -2405,7 +2405,8 @@ impl Target {
 const HEADER_HEIGHT: f64 = 44.;
 
 /// A navigation stack: a native header bar (Back button + title) above the
-/// top screen. Other screens stay alive, detached, keeping their state.
+/// top screen. The screens below stay in the window, hidden, keeping their
+/// state (see `AppKit::show_only`).
 pub struct MacStack {
     id: NodeId,
     container: Retained<PrismView>,
@@ -2431,7 +2432,8 @@ pub struct MacSheet {
     presented: Cell<bool>,
 }
 
-/// A tab bar: a segmented control above the selected tab.
+/// A tab bar: a segmented control above the selected tab. The other tabs
+/// stay in the window, hidden (see `AppKit::show_only`).
 pub struct MacTabs {
     id: NodeId,
     container: Retained<PrismView>,
@@ -2735,6 +2737,9 @@ pub struct AppKit {
     // --- Hidden header (#8) ---
     /// Screens that hide their stack's header while on top (`.bare()`).
     bare: std::collections::HashSet<NodeId>,
+    /// Tabs and stacked screens the app hides (`display_none`), even when
+    /// selected or on top.
+    hidden_by_app: std::collections::HashSet<NodeId>,
     /// Hover tracking areas, by node (`set_interactions`).
     hover_areas: HashMap<NodeId, Retained<objc2_app_kit::NSTrackingArea>>,
     /// Keys, overlays, layers, suggestions (#17, #19, #25).
@@ -3162,11 +3167,37 @@ impl AppKit {
         // The selected tab's symbol in the tint (#30).
         let icon = tabs.get(selected).and_then(|t| self.icons.get(&t.id()));
         crate::navbar::tint_selected_segment(bar.id, &bar.segments, selected, icon);
-        let mut subviews: Vec<&NSView> = vec![&bar.bar, &bar.separator];
-        if let Some(t) = tabs.get(selected) {
-            subviews.push(t.ns());
+        self.show_only(&bar.container, &[&bar.bar, &bar.separator], &tabs, selected);
+    }
+
+    /// Puts `fixed` then `views` in `container` and shows only `views[shown]`
+    /// (unless the app hides it): the others stay in the window, hidden.
+    /// Detaching a tree of hundreds of views and attaching it again (a tab
+    /// switch, Back) made AppKit draw every layer of it again.
+    fn show_only(&self, container: &NSView, fixed: &[&NSView], views: &[View], shown: usize) {
+        let mut subviews = fixed.to_vec();
+        subviews.extend(views.iter().map(View::ns));
+        let current = container.subviews();
+        if current.len() != subviews.len() || current.iter().zip(&subviews).any(|(a, b)| &*a != *b)
+        {
+            container.setSubviews(&NSArray::from_slice(&subviews));
         }
-        bar.container.setSubviews(&NSArray::from_slice(&subviews));
+        let window = container.window();
+        for (i, view) in views.iter().enumerate() {
+            let hidden = i != shown || self.hidden_by_app.contains(&view.id());
+            let v = view.ns();
+            // Like a detached view, a hidden one gives up the focus.
+            if hidden
+                && !v.isHidden()
+                && let Some(w) = &window
+                && w.firstResponder()
+                    .and_then(|r| r.downcast::<NSView>().ok())
+                    .is_some_and(|r| r.isDescendantOf(v))
+            {
+                w.makeFirstResponder(None);
+            }
+            v.setHidden(hidden);
+        }
     }
 
     fn present_sheets(&mut self, sheets: &[View]) {
@@ -3219,15 +3250,13 @@ impl AppKit {
     fn refresh_stack(&self, stack: &MacStack) {
         let hidden = self.header_hidden(stack);
         let screens = stack.screens.borrow();
-        let mut subviews: Vec<&NSView> = if hidden {
-            Vec::new()
+        let header: &[&NSView] = if hidden {
+            &[]
         } else {
-            vec![&stack.header, &stack.separator]
+            &[&stack.header, &stack.separator]
         };
-        if let Some(top) = screens.last() {
-            subviews.push(top.ns());
-        }
-        stack.container.setSubviews(&NSArray::from_slice(&subviews));
+        let top = screens.len().saturating_sub(1);
+        self.show_only(&stack.container, header, &screens, top);
         let close = stack.closable.get() && screens.len() <= 1;
         stack.back.setHidden(screens.len() <= 1 && !close);
         let label = if close {
@@ -3587,7 +3616,29 @@ impl Widgets for AppKit {
     }
 
     fn set_hidden(&mut self, view: &View, hidden: bool) {
-        view.ns().setHidden(hidden);
+        if let View::Tab(_) | View::Screen(_) = view {
+            let id = view.id();
+            let changed = if hidden {
+                self.hidden_by_app.insert(id)
+            } else {
+                self.hidden_by_app.remove(&id)
+            };
+            let has = |views: &RefCell<Vec<View>>| views.borrow().iter().any(|v| v.id() == id);
+            // Tabs and stacked screens show only while selected or on top.
+            if let Some(bar) = self.tab_bars.iter().find(|b| has(&b.tabs)) {
+                if changed {
+                    self.refresh_tabs(bar);
+                }
+            } else if let Some(stack) = self.stacks.iter().find(|st| has(&st.screens)) {
+                if changed {
+                    self.refresh_stack(stack);
+                }
+            } else {
+                view.ns().setHidden(hidden);
+            }
+        } else {
+            view.ns().setHidden(hidden);
+        }
         if let Some(v) = view.prism_view() {
             crate::decor::sync_shadow_host(v, &v.ivars().decor.borrow());
         }
@@ -4060,9 +4111,12 @@ impl Widgets for AppKit {
             View::Tab(_) => {
                 self.titles.remove(&view.id());
                 self.icons.remove(&view.id());
+                self.hidden_by_app.remove(&view.id());
             }
             View::Screen(_) => {
                 self.titles.remove(&view.id());
+                self.bare.remove(&view.id());
+                self.hidden_by_app.remove(&view.id());
             }
             _ => {}
         }
@@ -5306,6 +5360,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         announced: HashMap::new(),
         lang: String::new(),
         bare: Default::default(),
+        hidden_by_app: Default::default(),
         hover_areas: HashMap::new(),
         ix: Default::default(),
         drag_preview: None,
