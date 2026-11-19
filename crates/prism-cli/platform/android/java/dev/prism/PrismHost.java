@@ -313,6 +313,7 @@ public final class PrismHost {
             updating = false;
             // What blurred backdrops show may have changed.
             PrismDecor.Backdrops.changed();
+            PrismMotion.resumeShown();
         }
     }
 

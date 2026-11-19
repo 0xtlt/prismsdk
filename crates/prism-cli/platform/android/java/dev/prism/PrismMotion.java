@@ -26,6 +26,8 @@ final class PrismMotion {
 
     /** Running loops, by node. */
     static final Map<Long, ValueAnimator> loops = new HashMap<>();
+    /** The view each loop moves. */
+    private static final Map<Long, View> looping = new HashMap<>();
     /** Running frame animations, by node. */
     static final Map<Long, ValueAnimator> frames = new HashMap<>();
 
@@ -160,6 +162,7 @@ final class PrismMotion {
      */
     static void repeat(long id, View v, JSONObject from, JSONObject to, JSONObject anim, boolean restart) {
         ValueAnimator old = loops.remove(id);
+        looping.remove(id);
         if (old != null) old.cancel();
         if (to == null || from == null || anim == null) {
             if (from != null) set(v, pose(from));
@@ -177,17 +180,33 @@ final class PrismMotion {
         loop.setRepeatMode(restart ? ValueAnimator.RESTART : ValueAnimator.REVERSE);
         loop.setRepeatCount(ValueAnimator.INFINITE);
         loop.addUpdateListener(x -> {
+            // Hidden (a screen below, another tab): paused rather than woken
+            // on every frame for nothing, until an update shows it again.
+            if (!v.isShown()) {
+                loop.pause();
+                return;
+            }
             float t = (Float) x.getAnimatedValue();
             float[] p = new float[a.length];
             for (int i = 0; i < a.length; i++) p[i] = a[i] + (b[i] - a[i]) * t;
             set(v, p);
         });
         loops.put(id, loop);
+        looping.put(id, v);
         loop.start();
+    }
+
+    /** After an update: the paused loops whose view shows again go on. */
+    static void resumeShown() {
+        for (Map.Entry<Long, ValueAnimator> e : loops.entrySet()) {
+            ValueAnimator loop = e.getValue();
+            if (loop.isPaused() && looping.get(e.getKey()).isShown()) loop.resume();
+        }
     }
 
     /** A view is gone: its animations stop. */
     static void forget(long id) {
+        looping.remove(id);
         ValueAnimator a = loops.remove(id);
         if (a != null) a.cancel();
         a = frames.remove(id);
