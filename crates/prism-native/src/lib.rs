@@ -1707,13 +1707,21 @@ impl<W: Widgets> NativeRenderer<W> {
 
 impl<W: Widgets> Backend for NativeRenderer<W> {
     fn apply(&mut self, patches: &[Patch]) {
-        let destroyed: HashSet<NodeId> = patches
-            .iter()
-            .filter_map(|p| match p {
-                Patch::Destroy { id } => Some(*id),
-                _ => None,
-            })
-            .collect();
+        let mut destroyed = HashSet::new();
+        let mut creates = 0;
+        for patch in patches {
+            match patch {
+                Patch::Destroy { id } => {
+                    destroyed.insert(*id);
+                }
+                Patch::Create { .. } => creates += 1,
+                _ => {}
+            }
+        }
+        // Room for the new nodes at once: entries are large to move when
+        // the map grows (a first render creates the whole tree).
+        self.nodes.reserve(creates);
+        self.by_layout.reserve(creates);
         for patch in patches {
             match patch {
                 Patch::Create { id, kind } => {
@@ -1759,9 +1767,9 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                     let style = own.as_ref().unwrap_or(style);
                     self.note_style(*id, style);
                     // The style in the node's current interaction states.
-                    let style = &self.declare(*id, style);
+                    let style = self.declare(*id, style);
                     if let Some(e) = self.nodes.get(id) {
-                        let s = self.effective_style(style, e.kind);
+                        let s = self.effective_style(&style, e.kind);
                         let was_hidden = e.style.display_none;
                         if e.style.display_none != s.display_none || s.display_none {
                             self.widgets.set_hidden(&e.view, s.display_none);
@@ -1771,24 +1779,30 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                             .animations
                             .enter
                             .filter(|_| was_hidden && !s.display_none && e.frame.is_some());
-                        let old = self.effective_style(&e.style, e.kind);
+                        // The previous style as drawn, for a loop (now or
+                        // before) only.
+                        let loops = |a: &prism_core::Animations| a.repeat.is_some() || a.restart;
+                        let old = (loops(&e.style.animations) || loops(&s.animations))
+                            .then(|| self.effective_style(&e.style, e.kind));
                         match (enter, s.transition) {
                             // Shown again: enters like a new element.
-                            (Some(pose), _) => self.play_enter(&view, kind, style, pose),
+                            (Some(pose), _) => self.play_enter(&view, kind, &style, pose),
                             (None, Some(t)) if e.frame.is_some() => {
                                 self.widgets.set_style_animated(&view, &s, t)
                             }
                             _ => self.widgets.set_style(&view, &s),
                         }
                         // A loop restarts when it, or what it loops from, changes.
-                        if old.animations.repeat != s.animations.repeat
-                            || old.animations.restart != s.animations.restart
-                            || (s.animations.repeat.is_some()
-                                && (old.opacity != s.opacity || old.transform != s.transform))
+                        if let Some(old) = old
+                            && (old.animations.repeat != s.animations.repeat
+                                || old.animations.restart != s.animations.restart
+                                || (s.animations.repeat.is_some()
+                                    && (old.opacity != s.opacity || old.transform != s.transform)))
                         {
                             self.widgets.set_repeat(&view, &s, s.animations.repeat);
                         }
                     }
+                    let z = style.z_index;
                     let mut repaint = false;
                     let z_before = self.nodes.get(id).map(|e| e.style.z_index);
                     if let Some(e) = self.nodes.get_mut(id) {
@@ -1797,16 +1811,16 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                         repaint = e.kind == NodeKind::Shape
                             && e.style.text_color != style.text_color
                             && e.drawing.as_ref().is_some_and(|d| d.uses_current_color());
-                        e.style = style.clone();
+                        e.style = style;
                     }
                     if repaint {
                         self.redraw(*id);
                     }
                     // Paint order (#232).
-                    if z_before.is_some_and(|z| z != style.z_index)
-                        || (style.z_index != 0 && !self.extras.z_nodes.contains(id))
+                    if z_before.is_some_and(|before| before != z)
+                        || (z != 0 && !self.extras.z_nodes.contains(id))
                     {
-                        self.z_changed(*id, style.z_index);
+                        self.z_changed(*id, z);
                     }
                     self.sync_layout_style(*id);
                     self.style_changed(*id);
