@@ -370,15 +370,11 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
-### Fixed
-
 - Android: scroll events report points, as `ScrollEvent` documents, not pixels. A `VirtualList` rendered the rows 2.6 times further down than shown on a typical phone, so a long list went blank after a few flings; `on_scroll` handlers and `cx.scroll_offset` read points like on the other backends.
 - Android: views are released when their node is destroyed. Two weak maps of the Java host (views to nodes, blurred backdrops) held each view through their own value, so every view ever created stayed in memory: the example used 174 MB after scrolling its long list, 53 MB now.
 - Widgets (iOS, iPadOS, macOS, visionOS) and watchOS: a `timer(..)` follows `.text_center()` and `.text_right()` (#279). A timer takes the width it is offered and lays its digits out by its own alignment, so it sat left-aligned, most visibly in an `AccessoryCircular` widget. In widgets, a centered or right-aligned text or timer also keeps its alignment when it is stretched by its column, fills the width (`w_full()`, `flex_1()`) or is cut on one line (`nowrap()`); it was pushed to the leading edge.
 - iOS, iPadOS, macOS, visionOS: a configurable widget whose saved option no longer exists (an option gone since, or the empty placeholder of an instance added before the app wrote its options) draws the default configuration instead of staying a grey placeholder (#277). The generated `EntityQuery.entities(for:)` answers every id it is asked, an unknown one with an entity titled like the default option; it used to leave it out, so the required parameter was missing and WidgetKit never asked for a timeline.
 - macOS: a `text_input` with its own look (`.border(0.)`, a padding, a background, a border, a `focus` refinement) no longer draws AppKit's blue focus ring inside the app's own outline (#274); Linux drops the GTK theme's outline on such fields too, as the web already did. An unstyled field keeps the platform's ring. `Style::own_field_look` is the shared rule.
-### Fixed
-
 - `group_hover`, `group_active` and `group_focus_within` follow the nearest `group()` ancestor only, as documented (#273): with nested groups, hovering one inner cell no longer lights up the refinements of every cell because the outer group is hovered too. Native backends (prism-native), the web (CSS) and Linux (now resolved by prism-native instead of GTK CSS). Named groups (#212) are unchanged.
 - `Runtime::dispatch` no longer returns answers (a selection, a highlight, a clipboard write) aimed at nodes its own re-render destroyed (#265): an `on_edit_across` handler that merges fields can be tested through `dispatch` with `prism-testing`, which panicked on them.
 - Linux: `prism-linux` builds again (a rich input is created as a text area, as `prism-native` already asks), and screen-reader states no longer log GTK criticals: the checked and selected states are passed as the ints GTK reads (GTK 4.8 and later). `cargo doc` with `-D warnings` passes again (two `scene3d` links).
