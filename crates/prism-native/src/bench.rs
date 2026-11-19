@@ -149,6 +149,26 @@ impl Render for Badges {
     }
 }
 
+/// Rows under a sticky header every 50 rows.
+struct Sections {
+    rows: Vec<Entity<Row>>,
+}
+
+impl Render for Sections {
+    fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+        scroll().children(self.rows.iter().enumerate().flat_map(|(i, row)| {
+            let header = (i % 50 == 0).then(|| {
+                div()
+                    .sticky()
+                    .h(20.)
+                    .child(text(format!("Section {}", i / 50)))
+                    .into_element()
+            });
+            header.into_iter().chain([row.into_element()])
+        }))
+    }
+}
+
 /// A list of plain keyed rows (no entities), in `order`.
 struct Keyed {
     order: Vec<usize>,
@@ -527,6 +547,35 @@ fn rows(n: usize) {
             bump(&mut f.rt, row);
             f.commit()
         }),
+    );
+    report(
+        "rows under sticky headers: 1 row changed + relayout",
+        "frames",
+        best(
+            move || {
+                let mut f = Fixture::new(move |cx: &mut Context<Sections>| Sections {
+                    rows: (0..n)
+                        .map(|n| {
+                            cx.new(|_| Row {
+                                n,
+                                hits: 0,
+                                rich: false,
+                            })
+                        })
+                        .collect(),
+                });
+                f.layout();
+                f
+            },
+            |f| {
+                let row = f.root.read(&f.rt.app).rows[n / 2];
+                bump(&mut f.rt, row);
+                f.commit();
+                f.r.widgets.frames = 0;
+                f.layout();
+                f.r.widgets.frames
+            },
+        ),
     );
     report(
         "rows with menu + hover: all removed",

@@ -6,6 +6,7 @@ use prism_core::{
     Align, GridTrack, IdMap, IdSet, Length, NodeId, NodeKind, Position, Repetition, ScrollAxis,
     Style,
 };
+use taffy::TraversePartialTree;
 use taffy::prelude::{LengthPercentage, Size};
 use taffy::style::{
     GridPlacement, GridTemplateComponent, GridTemplateRepetition, MaxTrackSizingFunction,
@@ -645,8 +646,10 @@ impl<W: crate::Widgets> crate::NativeRenderer<W> {
             return;
         }
         let ids: Vec<NodeId> = self.extras.sticky.keys().copied().collect();
+        // Where each scroll view's content ends, found once.
+        let mut ends = IdMap::default();
         for id in ids {
-            let info = self.sticky_info(id);
+            let info = self.sticky_info(id, &mut ends);
             let known = self.extras.sticky.get(&id).copied().flatten();
             if known == info.map(|i| i.1) {
                 continue;
@@ -661,8 +664,9 @@ impl<W: crate::Widgets> crate::NativeRenderer<W> {
         }
     }
 
-    /// The vertical scroll view around a sticky node and its range there.
-    fn sticky_info(&self, id: NodeId) -> Option<(NodeId, Sticky)> {
+    /// The vertical scroll view around a sticky node and its range there
+    /// (`ends`: where the content of scroll views ends, as found so far).
+    fn sticky_info(&self, id: NodeId, ends: &mut IdMap<NodeId, f32>) -> Option<(NodeId, Sticky)> {
         let node = self.nodes.get(&id)?;
         if node.style.display_none {
             return None;
@@ -691,12 +695,12 @@ impl<W: crate::Widgets> crate::NativeRenderer<W> {
         let limit = if parent == scroll {
             // Its parent is the content: it sticks until the end.
             let s = self.nodes.get(&scroll)?;
-            let mut end: f32 = 0.;
-            for child in self.taffy.children(s.layout).unwrap_or_default() {
-                if let Ok(l) = self.taffy.layout(child) {
-                    end = end.max(l.location.y + l.size.height);
-                }
-            }
+            let end = *ends.entry(scroll).or_insert_with(|| {
+                self.taffy
+                    .child_ids(s.layout)
+                    .filter_map(|c| self.taffy.layout(c).ok())
+                    .fold(0., |end: f32, l| end.max(l.location.y + l.size.height))
+            });
             end - shift + s.style.padding.bottom * self.zoom
         } else {
             let p = self.nodes.get(&parent)?;
