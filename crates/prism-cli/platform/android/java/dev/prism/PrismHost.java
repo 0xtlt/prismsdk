@@ -1266,7 +1266,8 @@ public final class PrismHost {
             for (Node c : nodes.values()) if (c.stickyScroll == id) applySticky(c);
             if (!n.scrollEvents) return;
             JSONObject ev = event("scroll", id);
-            try { ev.put("o", y); ev.put("v", v.getHeight()); } catch (JSONException ignored) {}
+            // In points, like `ScrollEvent` (and the `scrollto` op).
+            try { ev.put("o", y / density); ev.put("v", v.getHeight() / density); } catch (JSONException ignored) {}
             send(ev);
         });
         return s;
