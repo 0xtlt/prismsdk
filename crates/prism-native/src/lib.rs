@@ -982,6 +982,11 @@ impl<W: Widgets> NativeRenderer<W> {
         let (by_layout, nodes) = (&self.by_layout, &self.nodes);
         let font = self.zoom * self.env.text_scale;
         let zoom = self.zoom;
+        // Taffy asks for a leaf's size under several constraints that come
+        // down to the same width limit: within one pass a leaf's content
+        // does not change, so each native measure runs once.
+        let mut sizes: HashMap<(taffy::NodeId, Option<u32>), (f32, f32)> = HashMap::new();
+        let mut min_widths: HashMap<taffy::NodeId, f32> = HashMap::new();
         let result = self.taffy.compute_layout_with_measure(
             node,
             Size {
@@ -1021,12 +1026,16 @@ impl<W: Widgets> NativeRenderer<W> {
                                 .or(match available.width {
                                     _ if single_line => None,
                                     AvailableSpace::Definite(w) => Some(w),
-                                    AvailableSpace::MinContent => {
-                                        Some(widgets.measure_min_content(view))
-                                    }
+                                    AvailableSpace::MinContent => Some(
+                                        *min_widths
+                                            .entry(node)
+                                            .or_insert_with(|| widgets.measure_min_content(view)),
+                                    ),
                                     AvailableSpace::MaxContent => None,
                                 });
-                        let (w, h) = widgets.measure(view, max_width);
+                        let (w, h) = *sizes
+                            .entry((node, max_width.map(f32::to_bits)))
+                            .or_insert_with(|| widgets.measure(view, max_width));
                         // A picture given a width and no height: its height
                         // follows the image's own ratio at that width, wider
                         // than the image included (#208).
