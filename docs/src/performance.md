@@ -89,3 +89,20 @@ The example's `/` (release build, served on localhost; 100 sessions opened on a 
 - **Lean messages**: within a message, a node whose style another node got first names that node instead of repeating the CSS, and messages of 1 KB or more are deflated for browsers that can inflate them ([Web](platforms/web.md#transport-and-compression)).
 - **Lean client**: `client.js` and `prism.css` are served without their comment lines and indentation, gzipped once and cached `immutable`.
 - **A 5,000-row list** (`cargo test -p prismsdk-web --release --test bench -- --ignored --nocapture`): a 991 KB page (59 KB gzipped) and a 3.1 MB first tree (243 KB deflated), each built in 60–90 ms, about half of it the core's render; changing one row sends a 60-byte patch, about 20 µs after the click reaches the session.
+
+## Android and Linux
+
+Measured on the example app, release builds: Android on the `Pixel_9`
+emulator (Android 16, arm64, Apple silicon host), Linux in the dev image
+(`docker/linux-dev.Dockerfile`: GTK 4 under Xvfb, Cairo renderer).
+
+| | Idle CPU | Memory (PSS) |
+|---|---|---|
+| Android, first screen / 10,000-row list after 12 flings | ~0 % / ~0 % | 33 MB / 53 MB |
+| Linux, first screen / 10,000-row list | ~0 % / ~0 % | 79 MB / 101 MB |
+
+- **Android measures each text once**: layout asks the same leaf several times, and each answer is a JNI call that styles a view in Java; Rust keeps the answers by request (until a font loads or the language changes), and Java measures with one reused view. Launch: 35 measure calls instead of 254, the first screen drawn ~165 ms after the process starts instead of ~800 ms. A `+1` tap: 2 measure calls and one `apply`, ~0.6 ms.
+- **Android long lists**: scrolling the 10,000-row `VirtualList` costs ~0.7 ms of the UI thread per scroll event (2 measures, 17 ops), and 2 % of frames miss their deadline during flings (`dumpsys gfxinfo`).
+- **Android animations**: an endless `repeat` (a pulse, a spinner) pauses while its view is hidden (a screen below, another tab) instead of waking the app on every frame.
+- **GTK stylesheet**: nodes with the same style share one CSS rule (class `s<n>`), and the sheet is reloaded (which restyles every widget) only when a new rule appears. A `+1` click: ~0.5 ms instead of ~2 ms; a 3,000 px scroll of the long list (441 patches): ~21 ms instead of ~40–49 ms, half of which was reloading a 68 KB sheet.
+- **Size**: the example's APK is 12.3 MB (`libcounter.so` 9.0 MB, `classes.dex` 6.6 MB with the car library); the Linux binary is 12.9 MB. A cold release build of the example takes about a minute in the Linux image (14 cores).

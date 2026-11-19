@@ -1275,8 +1275,9 @@ pub struct Gtk {
     /// Each node's size from the last layout (GTK's own lags behind).
     sizes: HashMap<NodeId, (f32, f32)>,
     css: gtk::CssProvider,
-    /// Per-node CSS rules, rebuilt into one stylesheet after each change.
-    rules: HashMap<NodeId, String>,
+    /// The nodes' CSS rules, one per distinct style (`sheet.rs`), loaded
+    /// again only when a new one appears.
+    sheet: crate::sheet::Sheet,
     css_dirty: bool,
     clickable: Rc<RefCell<HashSet<NodeId>>>,
     timers: HashMap<NodeId, (gtk::Label, f64)>,
@@ -1399,9 +1400,8 @@ impl Gtk {
             return;
         }
         self.css_dirty = false;
-        let sheet: String = self.rules.values().map(String::as_str).collect();
         #[allow(deprecated)]
-        self.css.load_from_data(&sheet);
+        self.css.load_from_data(&self.sheet.css());
     }
 
     /// Whether `stack` shows no header bar: none at all, or a bare screen on top.
@@ -2119,9 +2119,17 @@ impl Widgets for Gtk {
             let tabs = matches!(view, View::Tabs(..));
             extra += &crate::navbar::tint_rules(id, tabs, s.tint, self.dark);
         }
-        self.rules.insert(id, format!(".p{id}{{{css}}}\n{extra}"));
-        self.css_dirty = true;
+        // Nodes with the same rule share its class; reloading the sheet
+        // restyles every widget, so only a new rule does.
+        let change = self.sheet.set(id, &format!(".p{id}{{{css}}}\n{extra}"));
+        self.css_dirty |= change.added;
         let w = view.widget();
+        if change.old != Some(change.new) {
+            if let Some(old) = change.old {
+                w.remove_css_class(&format!("s{old}"));
+            }
+            w.add_css_class(&format!("s{}", change.new));
+        }
         if s.group {
             w.add_css_class("prism-group");
         } else {
@@ -2476,9 +2484,9 @@ impl Widgets for Gtk {
         self.date_pickers.remove(&id);
         self.statuses.remove(&id);
         self.labels.remove(&id);
-        self.rules.remove(&id);
+        // No reload just for it (see `Sheet::remove`).
+        self.sheet.remove(id);
         self.adaptive.remove(&id);
-        self.css_dirty = true;
         self.clickable.borrow_mut().remove(&id);
         self.reports.borrow_mut().remove(&id);
         self.watched.remove(&id);
@@ -4135,7 +4143,7 @@ fn activate(app: &gtk::Application) {
         refreshable: Rc::new(RefCell::new(HashSet::new())),
         sizes: HashMap::new(),
         css,
-        rules: HashMap::new(),
+        sheet: Default::default(),
         css_dirty: false,
         clickable: Rc::new(RefCell::new(HashSet::new())),
         timers: HashMap::new(),

@@ -313,6 +313,7 @@ public final class PrismHost {
             updating = false;
             // What blurred backdrops show may have changed.
             PrismDecor.Backdrops.changed();
+            PrismMotion.resumeShown();
         }
     }
 
@@ -507,7 +508,8 @@ public final class PrismHost {
                 n.glyph = p.optString("glyph");
                 if (n.kind.equals("image")) ((TextView) n.view).setText(n.glyph);
                 if (n.kind.equals("text_input")) PrismForms.leadingIcon(n);
-                refreshTabs(parentOf(n));
+                // A tab's icon is in its bar.
+                if (n.kind.equals("tab")) refreshTabs(parentOf(n));
                 break;
             case "value": setValue(n, p.optDouble("value")); break;
             case "clickable": n.clickable = p.optBoolean("on"); setClickable(n); applyCursor(n); break;
@@ -809,6 +811,10 @@ public final class PrismHost {
     static void destroy(Node n) {
         if (n == null) return;
         nodes.remove(n.id);
+        // Weak maps whose values hold the view itself keep it forever.
+        PrismInput.byView.remove(n.view);
+        PrismDecor.Backdrops.boxes.remove(n.view);
+        PrismNavbar.forget(n.id);
         PrismMotion.forget(n.id);
         if (n.dialog != null || n.popup != null) PrismInput.close(n);
         ViewGroup parent = (ViewGroup) n.view.getParent();
@@ -1266,7 +1272,8 @@ public final class PrismHost {
             for (Node c : nodes.values()) if (c.stickyScroll == id) applySticky(c);
             if (!n.scrollEvents) return;
             JSONObject ev = event("scroll", id);
-            try { ev.put("o", y); ev.put("v", v.getHeight()); } catch (JSONException ignored) {}
+            // In points, like `ScrollEvent` (and the `scrollto` op).
+            try { ev.put("o", y / density); ev.put("v", v.getHeight() / density); } catch (JSONException ignored) {}
             send(ev);
         });
         return s;

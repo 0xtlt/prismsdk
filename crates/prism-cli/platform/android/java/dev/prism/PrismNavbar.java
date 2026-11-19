@@ -35,6 +35,11 @@ final class PrismNavbar {
         }
     }
 
+    /** A screen is gone. */
+    static void forget(long screen) {
+        GLYPHS.remove(screen);
+    }
+
     /** The tint of a stack or tab bar, else {@code fallback}. */
     static int tint(PrismHost.Node n, int fallback) {
         Integer t = PrismHost.color(n.style.optJSONArray("tint"));
