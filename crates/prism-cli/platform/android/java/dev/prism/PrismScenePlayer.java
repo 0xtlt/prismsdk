@@ -713,11 +713,6 @@ final class PrismScenePlayer {
         }
     }
 
-    /** True for images (no `P3D` header): PNG, JPEG or WebP bytes. */
-    static boolean isImage(byte[] bytes) {
-        return bytes != null && !(bytes.length >= 3 && bytes[0] == 'P' && bytes[1] == '3' && bytes[2] == 'D');
-    }
-
     private static float[] f32s(ByteBuffer b, long n) {
         if (n < 0 || n * 4 > b.remaining()) throw new IndexOutOfBoundsException();
         float[] v = new float[(int) n];

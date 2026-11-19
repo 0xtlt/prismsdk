@@ -6,7 +6,7 @@
 # In the dev image (see docker/linux-dev.Dockerfile), from the repository:
 #   docker run --rm -v "$PWD":/src -w /src -e CARGO_TARGET_DIR=/src/target/linux \
 #     prism-linux-dev scripts/linux-smoke.sh target/linux-smoke
-# The PNG checks need python3; without it (the image has none) run them on
+# The PNG checks need python3 (the dev image has it); elsewhere run them on
 # the host afterwards: scripts/linux-smoke.sh --check target/linux-smoke
 set -eu
 
