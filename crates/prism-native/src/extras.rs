@@ -2,10 +2,9 @@
 //! horizontal scroll views, sticky and fixed nodes, and rules on a node's
 //! own width. Kept apart from `lib.rs` so the flexbox core stays readable.
 
-use std::collections::{HashMap, HashSet};
-
 use prism_core::{
-    Align, GridTrack, Length, NodeId, NodeKind, Position, Repetition, ScrollAxis, Style,
+    Align, GridTrack, IdMap, IdSet, Length, NodeId, NodeKind, Position, Repetition, ScrollAxis,
+    Style,
 };
 use taffy::prelude::{LengthPercentage, Size};
 use taffy::style::{
@@ -39,27 +38,27 @@ impl Sticky {
 #[derive(Default)]
 pub(crate) struct Extras {
     /// Children as the app declared them (before fixed nodes are hoisted).
-    pub children: HashMap<NodeId, Vec<NodeId>>,
-    pub parents: HashMap<NodeId, NodeId>,
+    pub children: IdMap<NodeId, Vec<NodeId>>,
+    pub parents: IdMap<NodeId, NodeId>,
     /// `.fixed()` nodes: shown as children of their screen (or the root).
-    pub fixed: HashSet<NodeId>,
+    pub fixed: IdSet<NodeId>,
     /// Fixed nodes hoisted into each anchor, last time.
-    pub hoisted: HashMap<NodeId, Vec<NodeId>>,
+    pub hoisted: IdMap<NodeId, Vec<NodeId>>,
     /// Children lists to set again at the end of the batch.
     pub rehoist: bool,
     /// `.sticky()` nodes and what their backend was last told.
-    pub sticky: HashMap<NodeId, Option<Sticky>>,
+    pub sticky: IdMap<NodeId, Option<Sticky>>,
     /// Nodes with rules on their own width: the unresolved style and the
     /// number of thresholds the node's width passed last time.
-    pub own_width: HashMap<NodeId, (Style, usize)>,
+    pub own_width: IdMap<NodeId, (Style, usize)>,
     /// Restyling from `own_width` (keeps the unresolved styles).
     pub in_width_pass: bool,
     /// Some node aligns on baselines: leaves report theirs.
     pub baselines: bool,
     /// Nodes with a `z_index` (#232), and the paint order last given to
     /// each parent that has one.
-    pub z_nodes: HashSet<NodeId>,
-    pub painted: HashMap<NodeId, Vec<NodeId>>,
+    pub z_nodes: IdSet<NodeId>,
+    pub painted: IdMap<NodeId, Vec<NodeId>>,
 }
 
 /// Containers that fixed nodes are positioned against.
@@ -424,14 +423,14 @@ impl<W: crate::Widgets> crate::NativeRenderer<W> {
         self.extras.rehoist = false;
         let mut fixed: Vec<NodeId> = self.extras.fixed.iter().copied().collect();
         fixed.sort_unstable();
-        let mut hoisted: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        let mut hoisted: IdMap<NodeId, Vec<NodeId>> = IdMap::default();
         for f in fixed {
             if let Some(anchor) = self.anchor_of(f) {
                 hoisted.entry(anchor).or_default().push(f);
             }
         }
         let old = std::mem::replace(&mut self.extras.hoisted, hoisted);
-        let mut touched: HashSet<NodeId> = HashSet::new();
+        let mut touched: IdSet<NodeId> = IdSet::default();
         for (anchor, nodes) in old.iter().chain(self.extras.hoisted.iter()) {
             touched.insert(*anchor);
             touched.extend(nodes.iter().filter_map(|n| self.extras.parents.get(n)));
@@ -479,7 +478,7 @@ impl<W: crate::Widgets> crate::NativeRenderer<W> {
             return children.to_vec();
         }
         // What each node shows: its own value, or the highest one it holds.
-        let mut shown: HashMap<NodeId, i32> = HashMap::new();
+        let mut shown: IdMap<NodeId, i32> = IdMap::default();
         for &n in &self.extras.z_nodes {
             let z = self.nodes.get(&n).map_or(0, |e| e.style.z_index);
             let own = shown.entry(n).or_insert(z);

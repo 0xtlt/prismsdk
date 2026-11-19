@@ -6,8 +6,6 @@
 //! flexbox layout with taffy, so AppKit, UIKit (and later Android, Win32, GTK)
 //! all lay out exactly like the web backend's CSS flexbox.
 
-use std::collections::{HashMap, HashSet};
-
 #[cfg(target_vendor = "apple")]
 pub mod apple;
 pub mod dnd;
@@ -27,8 +25,8 @@ mod bench;
 mod padding_tests;
 
 use prism_core::{
-    Accessibility, Align, Appearance, Backend, Direction, FlexDirection, Justify, Length, NodeId,
-    NodeKind, Patch, Pose, RenderEnvironment, Style, TextAlign, Transition,
+    Accessibility, Align, Appearance, Backend, Direction, FlexDirection, IdMap, IdSet, Justify,
+    Length, NodeId, NodeKind, Patch, Pose, RenderEnvironment, Style, TextAlign, Transition,
     animation::{DEFAULT_ENTER, DEFAULT_EXIT},
 };
 use taffy::prelude::{
@@ -550,14 +548,14 @@ pub fn report_layout<W: Widgets>(
 pub struct NativeRenderer<W: Widgets> {
     pub widgets: W,
     taffy: TaffyTree<W::View>,
-    nodes: HashMap<NodeId, Entry<W::View>>,
-    by_layout: HashMap<taffy::NodeId, NodeId>,
+    nodes: IdMap<NodeId, Entry<W::View>>,
+    by_layout: IdMap<taffy::NodeId, NodeId>,
     viewport: taffy::NodeId,
     root: Option<NodeId>,
     insets: Insets,
     /// Screens of each stack. Screens are separate layout roots: their size
     /// comes from the platform's navigation container, not from flexbox.
-    stack_screens: HashMap<NodeId, Vec<NodeId>>,
+    stack_screens: IdMap<NodeId, Vec<NodeId>>,
     env: RenderEnvironment,
     /// Every length is multiplied by this (TVs: bigger than phone sizes).
     zoom: f32,
@@ -570,13 +568,13 @@ pub struct NativeRenderer<W: Widgets> {
     /// Runtime-mounted layers (separate layout roots covering the window).
     layers: Vec<NodeId>,
     /// Overlay presentations (sheets fill their area, others fit content).
-    overlays: HashMap<NodeId, prism_core::controls::OverlayConfig>,
+    overlays: IdMap<NodeId, prism_core::controls::OverlayConfig>,
     /// Size of the last layout, for the layers.
     window: (f32, f32),
     /// What layers keep clear of (`Widgets::layer_insets`).
     layer_insets: Insets,
     /// The area each screen and overlay content was last laid out in.
-    areas: HashMap<NodeId, Viewport>,
+    areas: IdMap<NodeId, Viewport>,
     /// Set while laying out what the platform resized (the window, its safe
     /// area, a screen shown for the first time): frames are placed, not
     /// animated, as `transition` animates what the app changes (#41).
@@ -584,11 +582,11 @@ pub struct NativeRenderer<W: Widgets> {
     /// Scroll views that run under a screen's bars, by node id: the platform
     /// insets their content by the bars, so it is laid out in what is
     /// visible between them (#76).
-    under_bars: HashMap<NodeId, UnderBars>,
+    under_bars: IdMap<NodeId, UnderBars>,
     /// Nodes that report their frame (#192), and the frame last reported.
-    layout_reports: HashMap<NodeId, Option<prism_core::Rect>>,
+    layout_reports: IdMap<NodeId, Option<prism_core::Rect>>,
     /// The keyboard bar serving each text field that has one (#242).
-    keyboard_bars: HashMap<NodeId, NodeId>,
+    keyboard_bars: IdMap<NodeId, NodeId>,
     /// Drag and drop between elements (#251).
     dnd: dnd::Dnd,
 }
@@ -611,12 +609,12 @@ impl<W: Widgets> NativeRenderer<W> {
         NativeRenderer {
             widgets,
             taffy,
-            nodes: HashMap::new(),
-            by_layout: HashMap::new(),
+            nodes: IdMap::default(),
+            by_layout: IdMap::default(),
             viewport,
             root: None,
             insets: Insets::default(),
-            stack_screens: HashMap::new(),
+            stack_screens: IdMap::default(),
             env: RenderEnvironment {
                 text_scale: 1.,
                 ..Default::default()
@@ -626,14 +624,14 @@ impl<W: Widgets> NativeRenderer<W> {
             focused: None,
             focus_changes: Vec::new(),
             layers: Vec::new(),
-            overlays: HashMap::new(),
+            overlays: IdMap::default(),
             window: (0., 0.),
             layer_insets: Insets::default(),
-            areas: HashMap::new(),
+            areas: IdMap::default(),
             settling: false,
-            under_bars: HashMap::new(),
-            layout_reports: HashMap::new(),
-            keyboard_bars: HashMap::new(),
+            under_bars: IdMap::default(),
+            layout_reports: IdMap::default(),
+            keyboard_bars: IdMap::default(),
             dnd: dnd::Dnd::default(),
         }
     }
@@ -806,7 +804,7 @@ impl<W: Widgets> NativeRenderer<W> {
 
     /// Children of `parent` removed by `children` and destroyed in this
     /// batch, with an exit pose: they animate out before going away.
-    fn play_exits(&mut self, parent: NodeId, children: &[NodeId], destroyed: &HashSet<NodeId>) {
+    fn play_exits(&mut self, parent: NodeId, children: &[NodeId], destroyed: &IdSet<NodeId>) {
         if self.env.reduce_motion {
             return;
         }
@@ -985,8 +983,8 @@ impl<W: Widgets> NativeRenderer<W> {
         // Taffy asks for a leaf's size under several constraints that come
         // down to the same width limit: within one pass a leaf's content
         // does not change, so each native measure runs once.
-        let mut sizes: HashMap<(taffy::NodeId, Option<u32>), (f32, f32)> = HashMap::new();
-        let mut min_widths: HashMap<taffy::NodeId, f32> = HashMap::new();
+        let mut sizes: IdMap<(taffy::NodeId, Option<u32>), (f32, f32)> = IdMap::default();
+        let mut min_widths: IdMap<taffy::NodeId, f32> = IdMap::default();
         let result = self.taffy.compute_layout_with_measure(
             node,
             Size {
@@ -1707,7 +1705,7 @@ impl<W: Widgets> NativeRenderer<W> {
 
 impl<W: Widgets> Backend for NativeRenderer<W> {
     fn apply(&mut self, patches: &[Patch]) {
-        let mut destroyed = HashSet::new();
+        let mut destroyed = IdSet::default();
         let mut creates = 0;
         for patch in patches {
             match patch {
@@ -2200,7 +2198,7 @@ impl<W: Widgets> NativeRenderer<W> {
         if !any && self.keyboard_bars.is_empty() {
             return;
         }
-        let mut next = HashMap::new();
+        let mut next = IdMap::default();
         if any {
             for (id, e) in &self.nodes {
                 if matches!(
@@ -2397,6 +2395,7 @@ mod tests {
         AppInit, IntoElement, ParentElement, Render, Router, Runtime, Styled, div, screen, scroll,
         text,
     };
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     /// Records frames; screens get the stack's area minus a 44pt header.

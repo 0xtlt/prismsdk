@@ -26,6 +26,45 @@ use crate::style::Style;
 /// Identifies a host node in patches and events.
 pub type NodeId = u64;
 
+/// For backends: hashes the integer ids that key a tree's maps (node,
+/// entity and layout ids) with one multiplication, where the standard
+/// hasher runs SipHash's rounds. The ids are counters, not input: there
+/// is no flooding to resist.
+#[doc(hidden)]
+#[derive(Clone, Copy, Default)]
+pub struct IdHasher(u64);
+
+impl std::hash::Hasher for IdHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut word = [0; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.write_u64(u64::from_le_bytes(word));
+        }
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        // FxHash's step.
+        self.0 = (self.0.rotate_left(5) ^ n).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+
+    fn write_usize(&mut self, n: usize) {
+        self.write_u64(n as u64);
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// For backends: a map keyed by ids, hashed with [`IdHasher`].
+#[doc(hidden)]
+pub type IdMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<IdHasher>>;
+
+/// For backends: a set of ids, hashed with [`IdHasher`].
+#[doc(hidden)]
+pub type IdSet<K> = HashSet<K, std::hash::BuildHasherDefault<IdHasher>>;
+
 /// What backends need to know about the environment to render.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct RenderEnvironment {
@@ -614,7 +653,7 @@ struct Across {
     anchor: (NodeId, usize),
     head: (NodeId, usize),
     /// The highlights sent, by field.
-    painted: HashMap<NodeId, (usize, usize)>,
+    painted: IdMap<NodeId, (usize, usize)>,
     /// The selection set in the anchor field (to tell its echo).
     selected: (usize, usize),
 }
@@ -758,7 +797,7 @@ struct Slots {
     first: usize,
     /// The first slot of each key (by hash) and of each entity, built on
     /// the first lookup in a long list that `first` does not answer.
-    index: Option<(HashMap<u64, usize>, HashMap<EntityId, usize>)>,
+    index: Option<(IdMap<u64, usize>, IdMap<EntityId, usize>)>,
 }
 
 impl Slots {
@@ -774,7 +813,7 @@ impl Slots {
     }
 
     /// Takes the first free slot whose node is `ident`.
-    fn take(&mut self, nodes: &HashMap<NodeId, MNode>, ident: &Ident) -> Option<NodeId> {
+    fn take(&mut self, nodes: &IdMap<NodeId, MNode>, ident: &Ident) -> Option<NodeId> {
         let is = |n: NodeId| nodes.get(&n).is_some_and(|m| ident.matches(m));
         if self
             .slots
@@ -821,9 +860,9 @@ impl Slots {
 
     fn index(
         slots: &[Option<NodeId>],
-        nodes: &HashMap<NodeId, MNode>,
-    ) -> (HashMap<u64, usize>, HashMap<EntityId, usize>) {
-        let (mut keys, mut entities) = (HashMap::new(), HashMap::new());
+        nodes: &IdMap<NodeId, MNode>,
+    ) -> (IdMap<u64, usize>, IdMap<EntityId, usize>) {
+        let (mut keys, mut entities) = (IdMap::default(), IdMap::default());
         for (j, n) in slots.iter().enumerate() {
             let Some(m) = n.and_then(|n| nodes.get(&n)) else {
                 continue;
@@ -849,27 +888,27 @@ fn key_hash(key: &str) -> u64 {
 #[derive(Default)]
 /// Diffs entity renders against the mounted tree and keeps the event handlers of mounted nodes.
 pub struct Reconciler {
-    nodes: HashMap<NodeId, MNode>,
+    nodes: IdMap<NodeId, MNode>,
     root: Option<NodeId>,
-    entity_roots: HashMap<EntityId, NodeId>,
+    entity_roots: IdMap<EntityId, NodeId>,
     next_id: NodeId,
-    click: HashMap<NodeId, Handler<ClickEvent>>,
-    input: HashMap<NodeId, Handler<InputEvent>>,
-    rich_input: HashMap<NodeId, Handler<RichInputEvent>>,
-    rich: HashMap<NodeId, RichState>,
-    select: HashMap<NodeId, Handler<SelectionEvent>>,
-    back: HashMap<NodeId, Handler<BackEvent>>,
-    navigate: HashMap<NodeId, Handler<NavigateEvent>>,
-    change: HashMap<NodeId, Handler<ChangeEvent>>,
-    scene_tap: HashMap<NodeId, Handler<crate::scene3d::SceneTapEvent>>,
-    scroll: HashMap<NodeId, Handler<ScrollEvent>>,
-    swipe: HashMap<(NodeId, SwipeDirection), Handler<ClickEvent>>,
-    submit: HashMap<NodeId, Handler<ClickEvent>>,
+    click: IdMap<NodeId, Handler<ClickEvent>>,
+    input: IdMap<NodeId, Handler<InputEvent>>,
+    rich_input: IdMap<NodeId, Handler<RichInputEvent>>,
+    rich: IdMap<NodeId, RichState>,
+    select: IdMap<NodeId, Handler<SelectionEvent>>,
+    back: IdMap<NodeId, Handler<BackEvent>>,
+    navigate: IdMap<NodeId, Handler<NavigateEvent>>,
+    change: IdMap<NodeId, Handler<ChangeEvent>>,
+    scene_tap: IdMap<NodeId, Handler<crate::scene3d::SceneTapEvent>>,
+    scroll: IdMap<NodeId, Handler<ScrollEvent>>,
+    swipe: IdMap<(NodeId, SwipeDirection), Handler<ClickEvent>>,
+    submit: IdMap<NodeId, Handler<ClickEvent>>,
     /// Context menu items and clickable runs of each node, by item id
     /// (node id << 16 | n).
-    menu_items: HashMap<NodeId, Vec<(u64, Handler<ClickEvent>)>>,
+    menu_items: IdMap<NodeId, Vec<(u64, Handler<ClickEvent>)>>,
     // Per-frame scratch state.
-    dirty: HashSet<EntityId>,
+    dirty: IdSet<EntityId>,
     patches: Vec<Patch>,
     destroyed: Vec<NodeId>,
     rendered: usize,
@@ -880,26 +919,26 @@ pub struct Reconciler {
     /// Nodes that got it, reset on the next render.
     animated: Vec<NodeId>,
     // Pointer, keys, focus, layers (#17, #25).
-    hover: HashMap<NodeId, Handler<crate::events::HoverEvent>>,
-    pointer_move: HashMap<NodeId, Handler<crate::events::PointerEvent>>,
-    drag: HashMap<NodeId, Handler<crate::events::DragEvent>>,
-    wheel: HashMap<NodeId, Handler<crate::events::WheelEvent>>,
-    aux_click: HashMap<NodeId, Handler<crate::element::ClickEvent>>,
-    focus_change: HashMap<NodeId, Handler<crate::element::FocusEvent>>,
+    hover: IdMap<NodeId, Handler<crate::events::HoverEvent>>,
+    pointer_move: IdMap<NodeId, Handler<crate::events::PointerEvent>>,
+    drag: IdMap<NodeId, Handler<crate::events::DragEvent>>,
+    wheel: IdMap<NodeId, Handler<crate::events::WheelEvent>>,
+    aux_click: IdMap<NodeId, Handler<crate::element::ClickEvent>>,
+    focus_change: IdMap<NodeId, Handler<crate::element::FocusEvent>>,
     /// Rich inputs' editing hooks (#217).
-    edit: HashMap<NodeId, crate::text_edit::EditHandlers>,
+    edit: IdMap<NodeId, crate::text_edit::EditHandlers>,
     /// Selection groups (#231) and their handlers.
-    groups: HashMap<NodeId, crate::selection_across::GroupHandlers>,
+    groups: IdMap<NodeId, crate::selection_across::GroupHandlers>,
     /// The selection across fields shown now (#231).
     across: Option<Across>,
-    layout: HashMap<NodeId, Handler<crate::events::LayoutEvent>>,
-    drop_progress: HashMap<NodeId, Handler<crate::events::DropProgress>>,
-    ended: HashMap<NodeId, Handler<crate::video::EndedEvent>>,
-    magnify: HashMap<NodeId, Handler<crate::events::MagnifyEvent>>,
-    key_down: HashMap<NodeId, Handler<crate::events::KeyEvent>>,
-    global_key: HashMap<NodeId, Handler<crate::events::KeyEvent>>,
-    key_up: HashMap<NodeId, Handler<crate::events::KeyEvent>>,
-    global_key_up: HashMap<NodeId, Handler<crate::events::KeyEvent>>,
+    layout: IdMap<NodeId, Handler<crate::events::LayoutEvent>>,
+    drop_progress: IdMap<NodeId, Handler<crate::events::DropProgress>>,
+    ended: IdMap<NodeId, Handler<crate::video::EndedEvent>>,
+    magnify: IdMap<NodeId, Handler<crate::events::MagnifyEvent>>,
+    key_down: IdMap<NodeId, Handler<crate::events::KeyEvent>>,
+    global_key: IdMap<NodeId, Handler<crate::events::KeyEvent>>,
+    key_up: IdMap<NodeId, Handler<crate::events::KeyEvent>>,
+    global_key_up: IdMap<NodeId, Handler<crate::events::KeyEvent>>,
     /// `.id(…)` names of mounted nodes.
     names: HashMap<String, NodeId>,
     /// Nodes created with `.autofocus()` in this render.
@@ -911,15 +950,15 @@ pub struct Reconciler {
     /// Islands' event handlers: (node, event name) → handler.
     island_events: HashMap<(NodeId, String), Handler<crate::island::IslandEvent>>,
     /// Web views' handlers (#62).
-    web_message: HashMap<NodeId, Handler<crate::web_view::WebMessageEvent>>,
-    web_load: HashMap<NodeId, Handler<crate::web_view::WebLoadEvent>>,
+    web_message: IdMap<NodeId, Handler<crate::web_view::WebMessageEvent>>,
+    web_load: IdMap<NodeId, Handler<crate::web_view::WebLoadEvent>>,
     /// What draggable nodes carry (#251).
-    drag_payloads: HashMap<NodeId, crate::events::DragPayload>,
+    drag_payloads: IdMap<NodeId, crate::events::DragPayload>,
     /// Payload drop targets' handlers, by kind (#251).
-    drop_payload: HashMap<NodeId, Vec<(String, Handler<crate::events::DropEvent>)>>,
-    drag_over: HashMap<NodeId, Vec<(String, Handler<crate::events::DragOverEvent>)>>,
+    drop_payload: IdMap<NodeId, Vec<(String, Handler<crate::events::DropEvent>)>>,
+    drag_over: IdMap<NodeId, Vec<(String, Handler<crate::events::DragOverEvent>)>>,
     /// Drop targets' accepted types and handlers (#111).
-    drop_files: HashMap<
+    drop_files: IdMap<
         NodeId,
         (
             crate::device::PickFiles,
@@ -1222,8 +1261,8 @@ impl Reconciler {
     fn key_handlers_of(
         &self,
         focused: Option<NodeId>,
-        local: &HashMap<NodeId, Handler<crate::events::KeyEvent>>,
-        global: &HashMap<NodeId, Handler<crate::events::KeyEvent>>,
+        local: &IdMap<NodeId, Handler<crate::events::KeyEvent>>,
+        global: &IdMap<NodeId, Handler<crate::events::KeyEvent>>,
     ) -> Vec<Handler<crate::events::KeyEvent>> {
         let mut out = Vec::new();
         let mut next = focused;
@@ -2337,7 +2376,7 @@ impl Reconciler {
                 global: flags.1,
             });
         }
-        fn set<E>(map: &mut HashMap<NodeId, Handler<E>>, id: NodeId, h: Option<Handler<E>>) {
+        fn set<E>(map: &mut IdMap<NodeId, Handler<E>>, id: NodeId, h: Option<Handler<E>>) {
             match h {
                 Some(h) => map.insert(id, h),
                 None => map.remove(&id),
@@ -2846,7 +2885,7 @@ impl Reconciler {
     ) -> Vec<Patch> {
         let mut patches = Vec::new();
         let old = self.across.take().map(|a| a.painted).unwrap_or_default();
-        let mut painted = HashMap::new();
+        let mut painted = IdMap::default();
         let mut shown = None;
         match range {
             Some((a, h)) if a.0 != h.0 => {
