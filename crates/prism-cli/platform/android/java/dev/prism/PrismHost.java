@@ -809,6 +809,10 @@ public final class PrismHost {
     static void destroy(Node n) {
         if (n == null) return;
         nodes.remove(n.id);
+        // Weak maps whose values hold the view itself keep it forever.
+        PrismInput.byView.remove(n.view);
+        PrismDecor.Backdrops.boxes.remove(n.view);
+        PrismNavbar.forget(n.id);
         PrismMotion.forget(n.id);
         if (n.dialog != null || n.popup != null) PrismInput.close(n);
         ViewGroup parent = (ViewGroup) n.view.getParent();
