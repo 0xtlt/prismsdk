@@ -734,6 +734,118 @@ enum Item {
     Cached(AnyEntity),
 }
 
+/// What says a new child is a mounted one: its key, or its entity.
+enum Ident<'a> {
+    Key(&'a str),
+    Entity(EntityId),
+}
+
+impl Ident<'_> {
+    fn matches(&self, m: &MNode) -> bool {
+        match self {
+            Ident::Key(key) => m.key.as_deref() == Some(*key),
+            Ident::Entity(e) => m.entity.is_some_and(|o| o.id() == *e),
+        }
+    }
+}
+
+/// A node's children before its re-render, taken one by one by the new
+/// children: the first free one with the same [`Ident`], else the one at
+/// the same place.
+struct Slots {
+    slots: Vec<Option<NodeId>>,
+    /// The first free slot: the next match while the order holds.
+    first: usize,
+    /// The first slot of each key (by hash) and of each entity, built on
+    /// the first lookup in a long list that `first` does not answer.
+    index: Option<(HashMap<u64, usize>, HashMap<EntityId, usize>)>,
+}
+
+impl Slots {
+    /// Up to this many children, a scan is as fast as an index.
+    const SCAN: usize = 16;
+
+    fn new(children: &[NodeId]) -> Self {
+        Slots {
+            slots: children.iter().copied().map(Some).collect(),
+            first: 0,
+            index: None,
+        }
+    }
+
+    /// Takes the first free slot whose node is `ident`.
+    fn take(&mut self, nodes: &HashMap<NodeId, MNode>, ident: &Ident) -> Option<NodeId> {
+        let is = |n: NodeId| nodes.get(&n).is_some_and(|m| ident.matches(m));
+        if self
+            .slots
+            .get(self.first)
+            .copied()
+            .flatten()
+            .is_some_and(is)
+        {
+            return self.take_at(self.first, |_| true);
+        }
+        if self.slots.len() > Self::SCAN {
+            let (keys, entities) = self
+                .index
+                .get_or_insert_with(|| Self::index(&self.slots, nodes));
+            // Not indexed: no free slot had it.
+            let j = match ident {
+                Ident::Key(key) => *keys.get(&key_hash(key))?,
+                Ident::Entity(e) => *entities.get(e)?,
+            };
+            if self.slots[j].is_some_and(is) {
+                return self.take_at(j, |_| true);
+            }
+            // Taken already (a duplicate key or entity), or another key
+            // with the same hash: look through the rest.
+        }
+        let j = (self.first..self.slots.len()).find(|&j| self.slots[j].is_some_and(is))?;
+        self.take_at(j, |_| true)
+    }
+
+    /// Takes slot `j` if it is free and its node passes `test`.
+    fn take_at(&mut self, j: usize, test: impl FnOnce(NodeId) -> bool) -> Option<NodeId> {
+        let n = self.slots.get(j).copied().flatten().filter(|n| test(*n))?;
+        self.slots[j] = None;
+        while self.slots.get(self.first).is_some_and(Option::is_none) {
+            self.first += 1;
+        }
+        Some(n)
+    }
+
+    /// The nodes no new child took.
+    fn into_rest(self) -> impl Iterator<Item = NodeId> {
+        self.slots.into_iter().flatten()
+    }
+
+    fn index(
+        slots: &[Option<NodeId>],
+        nodes: &HashMap<NodeId, MNode>,
+    ) -> (HashMap<u64, usize>, HashMap<EntityId, usize>) {
+        let (mut keys, mut entities) = (HashMap::new(), HashMap::new());
+        for (j, n) in slots.iter().enumerate() {
+            let Some(m) = n.and_then(|n| nodes.get(&n)) else {
+                continue;
+            };
+            if let Some(key) = &m.key {
+                keys.entry(key_hash(key)).or_insert(j);
+            }
+            if let Some(e) = m.entity {
+                entities.entry(e.id()).or_insert(j);
+            }
+        }
+        (keys, entities)
+    }
+}
+
+fn key_hash(key: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::hash::DefaultHasher::new();
+    key.hash(&mut h);
+    h.finish()
+}
+
 #[derive(Default)]
 /// Diffs entity renders against the mounted tree and keeps the event handlers of mounted nodes.
 pub struct Reconciler {
@@ -2026,52 +2138,37 @@ impl Reconciler {
             self.flatten(app, child, &mut items);
         }
         let old_children = std::mem::take(&mut self.nodes.get_mut(&id).unwrap().children);
-        let mut slots: Vec<Option<NodeId>> = old_children.iter().copied().map(Some).collect();
+        let mut slots = Slots::new(&old_children);
         let mut new_children = Vec::with_capacity(items.len());
         for (i, item) in items.into_iter().enumerate() {
             let child = match item {
-                Item::Cached(e) => {
-                    let found = slots
-                        .iter()
-                        .position(|s| s.is_some_and(|n| self.owner(n) == Some(e.id())));
-                    match found {
-                        Some(j) => slots[j].take().unwrap(),
-                        None => {
-                            // Moved to another parent: render it fresh here.
-                            let v = self.render_entity(app, e);
-                            self.diff(app, None, Some(id), v, Some(e))
-                        }
+                Item::Cached(e) => match slots.take(&self.nodes, &Ident::Entity(e.id())) {
+                    Some(n) => n,
+                    None => {
+                        // Moved to another parent: render it fresh here.
+                        let v = self.render_entity(app, e);
+                        self.diff(app, None, Some(id), v, Some(e))
                     }
-                }
+                },
                 Item::Node(v, e) => {
                     let found = match (&v.key, e) {
-                        (Some(key), _) => slots.iter().position(|s| {
-                            s.is_some_and(|n| self.nodes[&n].key.as_ref() == Some(key))
-                        }),
-                        (None, Some(e)) => slots
-                            .iter()
-                            .position(|s| s.is_some_and(|n| self.owner(n) == Some(e.id()))),
+                        (Some(key), _) => slots.take(&self.nodes, &Ident::Key(key)),
+                        (None, Some(e)) => slots.take(&self.nodes, &Ident::Entity(e.id())),
                         (None, None) => None,
                     }
                     .or_else(|| {
                         // Positional match among unkeyed, unowned nodes.
-                        slots
-                            .get(i)
-                            .copied()
-                            .flatten()
-                            .filter(|n| {
-                                let m = &self.nodes[n];
-                                m.key.is_none() && m.entity.is_none()
-                            })
-                            .map(|_| i)
+                        slots.take_at(i, |n| {
+                            let m = &self.nodes[&n];
+                            m.key.is_none() && m.entity.is_none()
+                        })
                     });
-                    let previous = found.and_then(|j| slots[j].take());
-                    self.diff(app, previous, Some(id), v, e)
+                    self.diff(app, found, Some(id), v, e)
                 }
             };
             new_children.push(child);
         }
-        for leftover in slots.into_iter().flatten() {
+        for leftover in slots.into_rest() {
             self.destroy(leftover);
         }
         if new_children != old_children {
