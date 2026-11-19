@@ -1459,7 +1459,9 @@ impl<W: Widgets> NativeRenderer<W> {
     ) -> bool {
         use prism_core::Interaction;
         if state != Interaction::Focus {
-            return self.set_state_bit(id, state, on);
+            let changed = self.set_state_bit(id, state, on);
+            self.flush_restack();
+            return changed;
         }
         let mut changed = false;
         if on {
@@ -1480,6 +1482,7 @@ impl<W: Widgets> NativeRenderer<W> {
         }
         changed |= self.set_state_bit(id, Interaction::Focus, on);
         changed |= self.set_focus_within(id, on);
+        self.flush_restack();
         changed
     }
 
@@ -2149,6 +2152,7 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
         if self.extras.rehoist {
             self.rehoist();
         }
+        self.flush_restack();
         // Which bar serves each field changes with the tree and the bars.
         if patches.iter().any(|p| {
             matches!(

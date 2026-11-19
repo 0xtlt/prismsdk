@@ -59,6 +59,8 @@ pub(crate) struct Extras {
     /// each parent that has one.
     pub z_nodes: IdSet<NodeId>,
     pub painted: IdMap<NodeId, Vec<NodeId>>,
+    /// Nodes whose ancestors are painted in order again (`restack`).
+    pub restack: IdSet<NodeId>,
 }
 
 /// Containers that fixed nodes are positioned against.
@@ -477,32 +479,64 @@ impl<W: crate::Widgets> crate::NativeRenderer<W> {
         if self.extras.z_nodes.is_empty() {
             return children.to_vec();
         }
-        // What each node shows: its own value, or the highest one it holds.
-        let mut shown: IdMap<NodeId, i32> = IdMap::default();
-        for &n in &self.extras.z_nodes {
-            let z = self.nodes.get(&n).map_or(0, |e| e.style.z_index);
-            let own = shown.entry(n).or_insert(z);
-            *own = z;
-            let mut cur = self.extras.parents.get(&n).copied();
-            while let Some(a) = cur {
-                if self.extras.z_nodes.contains(&a) {
-                    break;
-                }
-                let v = shown.entry(a).or_insert(0);
-                *v = (*v).max(z);
-                cur = self.extras.parents.get(&a).copied();
+        let z = |n: NodeId| self.nodes.get(&n).map_or(0, |e| e.style.z_index);
+        // What a child shows: its own value, or the highest one (at least 0)
+        // of the nodes inside it that set theirs, not looking inside those.
+        let mut todo = Vec::new();
+        let mut shown = |c: NodeId| {
+            if self.extras.z_nodes.contains(&c) {
+                return z(c);
             }
-        }
+            let mut highest = 0;
+            todo.push(c);
+            while let Some(n) = todo.pop() {
+                for &d in self.extras.children.get(&n).into_iter().flatten() {
+                    if self.extras.z_nodes.contains(&d) {
+                        highest = highest.max(z(d));
+                    } else {
+                        todo.push(d);
+                    }
+                }
+            }
+            highest
+        };
         let mut order = children.to_vec();
-        order.sort_by_key(|c| shown.get(c).copied().unwrap_or(0));
+        // Stable: the tree order among equals.
+        order.sort_by_cached_key(|c| shown(*c));
         order
     }
 
     /// Paints the children of `id` and of its ancestors in their order
-    /// again (#232): a `z_index` changed under them.
+    /// again (#232), once the batch is applied (`flush_restack`): a
+    /// `z_index` changed under them.
     pub(crate) fn restack(&mut self, id: NodeId) {
+        self.extras.restack.insert(id);
+    }
+
+    /// Paints the children of the nodes `restack` was given and of their
+    /// ancestors again, each node once.
+    pub(crate) fn flush_restack(&mut self) {
+        if self.extras.restack.is_empty() {
+            return;
+        }
+        let mut from: Vec<NodeId> = std::mem::take(&mut self.extras.restack)
+            .into_iter()
+            .collect();
+        from.sort_unstable();
+        let mut done = IdSet::default();
+        for id in from {
+            self.restack_now(id, &mut done);
+        }
+    }
+
+    /// Paints the children of `id` and of its ancestors in their order,
+    /// up to an ancestor already in `done`.
+    fn restack_now(&mut self, id: NodeId, done: &mut IdSet<NodeId>) {
         let mut cur = Some(id);
         while let Some(p) = cur {
+            if !done.insert(p) {
+                break;
+            }
             cur = self.extras.parents.get(&p).copied();
             let Some(parent) = self.nodes.get(&p) else {
                 continue;
