@@ -217,23 +217,8 @@ impl Drop for SessionCount {
 impl Live {
     /// Serves the page until it closes.
     fn run(mut self, rx: mpsc::Receiver<Inbound>) {
-        // The tree that replaces the first paint waits for its data as the
-        // first paint did, or the page would flash its loading state.
-        let first = self.runtime.render_settled(self.app.inner.first_paint_wait);
-        // The page learns its stylesheets with the first tree (none: the
-        // field is left out), so a reconnected page drops those of its
-        // previous session and keeps the first paint's.
-        let sheets = self.runtime.app.stylesheets();
-        let mut reset = json!({ "t": "reset", "p": self.encoder.encode(&first) });
-        if !sheets.is_empty() {
-            reset["sheets"] = json!(sheets);
-        }
-        // Its title too (#154): a reconnected page drops a stale one.
-        reset["title"] = json!(self.runtime.app.title());
-        // And whether leaving should ask (#158).
-        reset["unsaved"] = json!(self.runtime.app.has_unsaved_changes());
-        self.services.sheets = sheets.into_iter().collect();
-        if !(self.send)(reset.to_string()) {
+        let reset = self.reset();
+        if !(self.send)(reset) {
             return;
         }
         loop {
@@ -255,7 +240,7 @@ impl Live {
                 for (id, result) in std::mem::take(&mut self.services.local) {
                     patches.extend(self.runtime.device_reply(id, result));
                 }
-                if !self.patches("patch", &patches) {
+                if !self.patches(&patches) {
                     return;
                 }
                 continue;
@@ -301,10 +286,36 @@ impl Live {
                 Ok(Inbound::Wake) | Err(mpsc::RecvTimeoutError::Timeout) => self.tick(),
                 Ok(Inbound::Close) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
             };
-            if !self.patches("patch", &patches) {
+            if !self.patches(&patches) {
                 return;
             }
         }
+    }
+
+    /// The page's first message: the whole tree, its stylesheets, title
+    /// and unsaved state. The tree's patches and JSON are freed once it is
+    /// written, not kept for the session's life.
+    fn reset(&mut self) -> String {
+        // The tree that replaces the first paint waits for its data as the
+        // first paint did, or the page would flash its loading state.
+        let first = self.runtime.render_settled(self.app.inner.first_paint_wait);
+        let mut reset = message("reset", self.encoder.encode(&first));
+        // The page learns its stylesheets with the first tree (none: the
+        // field is left out), so a reconnected page drops those of its
+        // previous session and keeps the first paint's.
+        let sheets = self.runtime.app.stylesheets();
+        if !sheets.is_empty() {
+            reset.insert("sheets".into(), json!(sheets));
+        }
+        // Its title too (#154): a reconnected page drops a stale one.
+        reset.insert("title".into(), json!(self.runtime.app.title()));
+        // And whether leaving should ask (#158).
+        reset.insert(
+            "unsaved".into(),
+            self.runtime.app.has_unsaved_changes().into(),
+        );
+        self.services.sheets = sheets.into_iter().collect();
+        Value::Object(reset).to_string()
     }
 
     /// Runs due background tasks, timers and ready async work.
@@ -315,9 +326,12 @@ impl Live {
         self.runtime.poll()
     }
 
-    fn patches(&mut self, kind: &str, patches: &[Patch]) -> bool {
+    /// Sends `patches` to the page (none: nothing). `false` once it is gone.
+    fn patches(&mut self, patches: &[Patch]) -> bool {
         patches.is_empty()
-            || (self.send)(json!({ "t": kind, "p": self.encoder.encode(patches) }).to_string())
+            || (self.send)(
+                Value::Object(message("patch", self.encoder.encode(patches))).to_string(),
+            )
     }
 
     /// Hands platform requests to the page (notifications, device calls…).
@@ -572,6 +586,15 @@ impl Live {
             },
         }
     }
+}
+
+/// A message for the page, `{"p": ops, "t": t}`. The ops are moved in:
+/// `json!` would copy every one of them.
+fn message(t: &str, ops: Vec<Value>) -> serde_json::Map<String, Value> {
+    let mut m = serde_json::Map::new();
+    m.insert("p".into(), Value::Array(ops));
+    m.insert("t".into(), t.into());
+    m
 }
 
 /// A `change` event's value: a number, or `null` for an optional date
