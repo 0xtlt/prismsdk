@@ -65,7 +65,7 @@ fn mode(c: OverlayConfig) -> Option<Mode> {
 
 /// Whether the overlay's own animations run (« Animation effects » on).
 fn animates(w: &Win) -> bool {
-    !w.env.reduce_motion && std::env::var_os("PRISM_NO_ANIMATION").is_none()
+    !w.env.reduce_motion
 }
 
 /// The dialog's colors: the smoke, the panel, its edge.
@@ -120,6 +120,8 @@ pub struct Overlay {
     shadows: Shadows,
     closing: Option<Instant>,
     focus_before: Option<UIElement>,
+    /// The content that left as it closed: shown until it has animated out.
+    leaving: Vec<UIElement>,
     // Flyout.
     flyout: Option<Flyout>,
     host: Canvas,
@@ -182,6 +184,7 @@ impl Overlay {
             shadows,
             closing: None,
             focus_before: None,
+            leaving: Vec::new(),
             flyout: None,
             host: Canvas::new()?,
             state,
@@ -262,6 +265,13 @@ impl Overlay {
         {
             self.state.by_app.set(true);
             let _ = f.Hide();
+        }
+    }
+
+    /// The content that left goes for good.
+    fn drop_leaving(&mut self) {
+        for e in self.leaving.drain(..) {
+            let _ = crate::view::detach(&e);
         }
     }
 
@@ -389,6 +399,43 @@ impl Win {
         }
     }
 
+    /// `Widgets::set_children` on overlay `id`: the content leaves as it
+    /// closes (Prism drops a closed overlay's content); shown in a panel, it
+    /// stays there, still, until the panel has animated out.
+    pub fn overlay_children(&mut self, id: NodeId, children: &[NodeId]) {
+        let shown = self
+            .layers
+            .get(&id)
+            .is_some_and(|o| o.shown == Some(Mode::Panel) && animates(self));
+        if !shown {
+            return;
+        }
+        let leaving: Vec<NodeId> = self.views.get(&id).map_or_else(Vec::new, |v| {
+            v.children
+                .iter()
+                .filter(|c| !children.contains(c))
+                .copied()
+                .collect()
+        });
+        for c in leaving {
+            let Some(e) = self.outer(c) else { continue };
+            self.keep_tree(c);
+            let (Some(v), Some(o)) = (self.views.get_mut(&id), self.layers.get_mut(&id)) else {
+                continue;
+            };
+            // Out of the children `View::set_children` sees, at the end of
+            // the canvas.
+            if let Some(i) = v.children.iter().position(|x| *x == c) {
+                v.children.remove(i);
+                if let Ok(coll) = v.kids.Children() {
+                    let _ = coll.RemoveAt(i as u32);
+                    let _ = coll.Append(&e);
+                }
+            }
+            o.leaving.push(e);
+        }
+    }
+
     /// Overlay `id` is gone (`Widgets::destroy`).
     pub fn drop_overlay(&mut self, id: NodeId) {
         if let Some(o) = self.layers.remove(&id) {
@@ -440,6 +487,9 @@ impl Win {
             Mode::Panel => {
                 o.home(&o.card.clone())?;
                 let opening = o.shown != Some(Mode::Panel) || o.closing.is_some();
+                if opening {
+                    o.drop_leaving();
+                }
                 o.closing = None;
                 o.shown = Some(Mode::Panel);
                 style_panel(o, &n, &c, config, size, &pal)?;
@@ -624,6 +674,7 @@ fn close_panel(o: &mut Overlay, animate: bool) -> Result<()> {
     let bare = !o.panel.Visibility().is_ok_and(|v| v == Visibility::Visible);
     if !animate || bare {
         o.panel_visible(false)?;
+        o.drop_leaving();
         return Ok(());
     }
     let card: UIElement = o.card.cast()?;
@@ -664,6 +715,7 @@ fn close_panel(o: &mut Overlay, animate: bool) -> Result<()> {
                 }
                 o.closing = None;
                 let _ = o.panel_visible(false);
+                o.drop_leaving();
             });
         }),
     );

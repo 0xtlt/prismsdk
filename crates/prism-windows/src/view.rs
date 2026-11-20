@@ -5,13 +5,14 @@
 //! outer: Canvas              Canvas.Left/Top, size, opacity, transform, visibility
 //! ├─ shadows (Canvas)        Composition drop shadows, under the box
 //! ├─ box: Border             background, border, corner radii
+//! ├─ decor                   inset shadows, sides of several colors (`decor.rs`)
 //! ├─ kids: Canvas            the children (a ScrollViewer's content for a scroll view)
 //! ├─ content                 TextBlock, Button, TextBox, ToggleSwitch… (leaves, bars)
 //! ├─ bar                     a stack's header, a tab bar
 //! └─ dash: Rectangle         a dashed or dotted border
 //! ```
 //!
-//! The box, shadows and dash exist only once a style needs them.
+//! The box, shadows, decor and dash exist only once a style needs them.
 
 use prism_core::{NodeId, NodeKind};
 use windows_core::{Interface, Result};

@@ -520,6 +520,8 @@ impl Widgets for Win {
 
     fn set_children(&mut self, parent: &NodeId, children: &[NodeId]) {
         let id = *parent;
+        // A closing panel keeps its content while it animates out.
+        self.overlay_children(id, children);
         self.scene.set_children(id, children);
         let list: Vec<(NodeId, UIElement)> = children
             .iter()

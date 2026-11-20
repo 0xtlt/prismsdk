@@ -8,7 +8,9 @@
 //! `Slider`, `ComboBox`, `CalendarDatePicker`, `SelectorBar`…) and text
 //! (`TextBlock`), laid out with prism-native's flexbox like the other
 //! native backends and placed in `Canvas`es; boxes, gradients, borders,
-//! shadows and transforms map to XAML brushes, `Border`s and Composition.
+//! shadows and transforms map to XAML brushes, `Border`s and Composition,
+//! animations to Composition keyframe animations; dialogs and sheets have
+//! `ContentDialog`'s look, popovers are `Flyout`s, alerts `ContentDialog`s.
 //! WinUI's own UI Automation peers expose the tree to screen readers.
 //!
 //! WinUI renders through DWM, so only in a desktop session: over SSH
@@ -25,6 +27,10 @@
 //! | `widgets` | `prism_native::Widgets` over XAML |
 //! | `view` | one node's XAML elements: box, children, content, bars |
 //! | `style` | backgrounds, gradients, borders, radii, shadows, transforms |
+//! | `decor` | inset shadows, conic gradients, sides of several colors, rounded clips |
+//! | `motion` | transitions, enter and exit poses, loops, moving frames |
+//! | `overlay` | sheets and dialogs (`ContentDialog`'s look), popovers (`Flyout`) |
+//! | `alert` | `cx.show_alert` as a `ContentDialog` |
 //! | `text` | `TextBlock`s from `StyledText`; measuring |
 //! | `controls` | Prism's controls as WinUI controls, their events and sizes |
 //! | `bars` | a stack's header, a tab bar |
@@ -35,7 +41,7 @@
 //! | `images` | decoding pictures |
 //! | `services` | `PlatformServices` |
 //! | `system` | theme, accent, locale, DPI |
-//! | `scene`, `keys`, `fluent` | pure helpers, tested on every host |
+//! | `scene`, `keys`, `fluent`, `paint` | pure helpers, tested on every host |
 
 // `cx.show_alert` as a ContentDialog.
 #[cfg(target_os = "windows")]

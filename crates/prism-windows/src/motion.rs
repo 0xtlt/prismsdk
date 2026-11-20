@@ -536,6 +536,21 @@ pub fn take_ghost(id: NodeId) -> bool {
 }
 
 impl crate::widgets::Win {
+    /// Node `id` and its descendants keep their elements when destroyed
+    /// (a still copy that animates out holds them).
+    pub fn keep_tree(&self, id: NodeId) {
+        let mut stack = vec![id];
+        GHOSTS.with(|g| {
+            let mut g = g.borrow_mut();
+            while let Some(c) = stack.pop() {
+                g.insert(c);
+                if let Some(cn) = self.scene.get(c) {
+                    stack.extend(cn.children.iter().copied());
+                }
+            }
+        });
+    }
+
     fn visual(&self, id: NodeId) -> Option<Visual> {
         let n = self.scene.get(id)?;
         let sticky = self.scene.sticky_offset(n);
@@ -606,16 +621,7 @@ impl crate::widgets::Win {
             return;
         }
         // Its descendants stay in it while it leaves.
-        let mut stack = vec![id];
-        GHOSTS.with(|g| {
-            let mut g = g.borrow_mut();
-            while let Some(c) = stack.pop() {
-                g.insert(c);
-                if let Some(cn) = self.scene.get(c) {
-                    stack.extend(cn.children.iter().copied());
-                }
-            }
-        });
+        self.keep_tree(id);
         settle(id);
         let from = current(id, from);
         let to = Visual::of(to, w, h, sticky);
