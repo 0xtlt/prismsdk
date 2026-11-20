@@ -43,7 +43,11 @@ pub fn family_name(family: &FontFamily, size: f32) -> String {
         }
         FontFamily::Monospace => "Cascadia Mono, Consolas, Courier New".into(),
         FontFamily::Serif => "Georgia, Cambria, Times New Roman".into(),
-        FontFamily::Named(name) => format!("{name}, Segoe UI"),
+        // A run-time font by its file (`fonts.rs`).
+        FontFamily::Named(name) => match crate::fonts::source(&name) {
+            Some(file) => format!("{file}, Segoe UI"),
+            None => format!("{name}, Segoe UI"),
+        },
     }
 }
 

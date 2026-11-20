@@ -1,0 +1,471 @@
+//! Secrets, Windows Hello and browser sign-in:
+//!
+//! - **secure storage**: Credential Manager (`CredWriteW`, `CredReadW`),
+//!   generic credentials of this user named `Prism/<app>/<key>` (Control
+//!   Panel › Credential Manager › Windows Credentials lists them). A value
+//!   longer than one credential holds (2,560 bytes) is split over several;
+//! - **biometrics**: Windows Hello (`UserConsentVerifier`, its prompt owned
+//!   by the app's window), which also accepts the Hello PIN; the sensor
+//!   comes from the Windows Biometric Framework. Without Hello set up,
+//!   `authenticate` answers "unavailable";
+//! - **sign-in**: the default browser and a loopback redirect
+//!   (`http://127.0.0.1:<port>/callback`, RFC 8252 §7.3), like on Linux.
+
+use std::collections::{BTreeMap, HashMap};
+
+use prism_core::{BiometryKind, DeviceError, DeviceValue};
+use windows::Security::Credentials::UI::{
+    UserConsentVerificationResult, UserConsentVerifier, UserConsentVerifierAvailability,
+};
+use windows::Win32::Foundation::{ERROR_NO_SUCH_LOGON_SESSION, ERROR_NOT_FOUND, HWND};
+use windows::Win32::Security::Credentials::{
+    CRED_MAX_CREDENTIAL_BLOB_SIZE, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC, CREDENTIALW,
+    CredDeleteW, CredFree, CredReadW, CredWriteW,
+};
+use windows::Win32::System::WinRT::IUserConsentVerifierInterop;
+use windows::core::{HRESULT, HSTRING, PWSTR, factory};
+
+use crate::win::{log, wide};
+
+pub type Answer = Result<DeviceValue, DeviceError>;
+
+fn failed(e: impl std::fmt::Display) -> DeviceError {
+    DeviceError::Failed(e.to_string())
+}
+
+/// Credential Manager's error as Prism's: a logon without the user's
+/// password (an SSH key, a service) has no credential store.
+fn store_error(e: windows::core::Error) -> DeviceError {
+    if e.code() == HRESULT::from_win32(ERROR_NO_SUCH_LOGON_SESSION.0) {
+        log!("secure storage: this logon session has no credential store");
+        DeviceError::Unavailable
+    } else {
+        failed(e.message())
+    }
+}
+
+// --- Credential Manager ----------------------------------------------------------------
+
+/// The first credential of a long value: how many parts follow.
+const PARTS: &str = "\u{2}prism-parts\u{2}";
+
+fn target(app: &str, key: &str) -> String {
+    format!("Prism/{app}/{key}")
+}
+
+fn read_blob(target: &str) -> Result<Option<Vec<u8>>, DeviceError> {
+    let name = wide(target);
+    let mut cred: *mut CREDENTIALW = std::ptr::null_mut();
+    unsafe {
+        match CredReadW(
+            windows::core::PCWSTR(name.as_ptr()),
+            CRED_TYPE_GENERIC,
+            None,
+            &mut cred,
+        ) {
+            Ok(()) => {
+                let c = &*cred;
+                let bytes =
+                    std::slice::from_raw_parts(c.CredentialBlob, c.CredentialBlobSize as usize)
+                        .to_vec();
+                CredFree(cred as *const _);
+                Ok(Some(bytes))
+            }
+            Err(e) if e.code() == HRESULT::from_win32(ERROR_NOT_FOUND.0) => Ok(None),
+            Err(e) => Err(store_error(e)),
+        }
+    }
+}
+
+fn write_blob(target: &str, user: &str, bytes: &[u8]) -> Result<(), DeviceError> {
+    let mut name = wide(target);
+    let mut user = wide(user);
+    let cred = CREDENTIALW {
+        Type: CRED_TYPE_GENERIC,
+        TargetName: PWSTR(name.as_mut_ptr()),
+        UserName: PWSTR(user.as_mut_ptr()),
+        CredentialBlobSize: bytes.len() as u32,
+        CredentialBlob: bytes.as_ptr() as *mut u8,
+        Persist: CRED_PERSIST_LOCAL_MACHINE,
+        ..Default::default()
+    };
+    unsafe { CredWriteW(&cred, 0).map_err(store_error) }
+}
+
+fn delete_blob(target: &str) -> Result<(), DeviceError> {
+    let name = wide(target);
+    match unsafe {
+        CredDeleteW(
+            windows::core::PCWSTR(name.as_ptr()),
+            CRED_TYPE_GENERIC,
+            None,
+        )
+    } {
+        Ok(()) => Ok(()),
+        Err(e) if e.code() == HRESULT::from_win32(ERROR_NOT_FOUND.0) => Ok(()),
+        Err(e) => Err(store_error(e)),
+    }
+}
+
+/// How many parts a stored value has (`None`: it fits in one).
+fn parts(first: &[u8]) -> Option<usize> {
+    std::str::from_utf8(first)
+        .ok()?
+        .strip_prefix(PARTS)?
+        .parse()
+        .ok()
+}
+
+/// The secret stored under `key`, or `None`.
+pub fn secret_get(app: &str, key: &str) -> Result<Option<String>, DeviceError> {
+    let t = target(app, key);
+    let Some(first) = read_blob(&t)? else {
+        return Ok(None);
+    };
+    let bytes = match parts(&first) {
+        None => first,
+        Some(n) => {
+            let mut all = Vec::new();
+            for i in 0..n {
+                match read_blob(&format!("{t}#{i}"))? {
+                    Some(b) => all.extend(b),
+                    None => return Err(failed("a part of the secret is missing")),
+                }
+            }
+            all
+        }
+    };
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| failed("the stored secret is not UTF-8"))
+}
+
+/// Stores `value` under `key`, replacing what was there.
+pub fn secret_set(app: &str, key: &str, value: &str) -> Result<(), DeviceError> {
+    secret_delete(app, key)?;
+    let t = target(app, key);
+    let bytes = value.as_bytes();
+    let max = CRED_MAX_CREDENTIAL_BLOB_SIZE as usize;
+    if bytes.len() <= max {
+        return write_blob(&t, key, bytes);
+    }
+    let chunks: Vec<&[u8]> = bytes.chunks(max).collect();
+    for (i, c) in chunks.iter().enumerate() {
+        write_blob(&format!("{t}#{i}"), key, c)?;
+    }
+    write_blob(&t, key, format!("{PARTS}{}", chunks.len()).as_bytes())
+}
+
+pub fn secret_delete(app: &str, key: &str) -> Result<(), DeviceError> {
+    let t = target(app, key);
+    if let Some(first) = read_blob(&t)?
+        && let Some(n) = parts(&first)
+    {
+        for i in 0..n {
+            delete_blob(&format!("{t}#{i}"))?;
+        }
+    }
+    delete_blob(&t)
+}
+
+// --- Windows Hello ---------------------------------------------------------------------
+
+/// What the machine has: the sensor, and whether Hello (a sensor or the
+/// Hello PIN) can verify the user now.
+#[derive(Clone, Copy, Debug)]
+pub struct Hello {
+    pub kind: BiometryKind,
+    pub availability: Option<UserConsentVerifierAvailability>,
+}
+
+impl Hello {
+    pub fn usable(&self) -> bool {
+        self.availability == Some(UserConsentVerifierAvailability::Available)
+    }
+
+    /// `cx.biometry()`'s fields: `kind`, `enrolled` (Hello can verify
+    /// with the sensor), `passcode` (Hello can verify: the Hello PIN or a
+    /// sensor is set up), `locked_out`.
+    pub fn fields(&self) -> BTreeMap<String, String> {
+        let flag = |b: bool| (if b { "1" } else { "0" }).to_string();
+        let mut f = BTreeMap::new();
+        f.insert("kind".into(), self.kind.name().into());
+        f.insert(
+            "enrolled".into(),
+            flag(self.usable() && self.kind != BiometryKind::None),
+        );
+        f.insert("passcode".into(), flag(self.usable()));
+        // Hello says nothing of lockouts before a prompt.
+        f.insert("locked_out".into(), flag(false));
+        f
+    }
+}
+
+/// The biometric sensors this machine has (Windows Biometric Framework):
+/// a face camera first, then a fingerprint reader.
+fn sensor() -> BiometryKind {
+    use windows::Win32::Devices::BiometricFramework::{
+        WINBIO_UNIT_SCHEMA, WinBioEnumBiometricUnits, WinBioFree,
+    };
+    // winbio_types.h: WINBIO_TYPE_FACIAL_FEATURES, _FINGERPRINT, _IRIS.
+    for (factor, kind) in [
+        (0x2u32, BiometryKind::Face),
+        (0x8, BiometryKind::Fingerprint),
+        (0x10, BiometryKind::Iris),
+    ] {
+        let mut units: *mut WINBIO_UNIT_SCHEMA = std::ptr::null_mut();
+        let mut count = 0usize;
+        let found = unsafe {
+            let r = WinBioEnumBiometricUnits(factor, &mut units, &mut count);
+            if !units.is_null() {
+                let _ = WinBioFree(units as *const _);
+            }
+            r.is_ok() && count > 0
+        };
+        if found {
+            return kind;
+        }
+    }
+    BiometryKind::None
+}
+
+/// Checks Hello (`CheckAvailabilityAsync`) and the sensors; blocks, so
+/// called off the UI thread, or at startup with a time limit.
+pub fn hello() -> Hello {
+    let availability = UserConsentVerifier::CheckAvailabilityAsync()
+        .and_then(|op| op.join())
+        .map_err(|e| log!("Windows Hello: {e}"))
+        .ok();
+    Hello {
+        kind: sensor(),
+        availability,
+    }
+}
+
+static PREFETCH: std::sync::Mutex<Option<std::sync::mpsc::Receiver<Hello>>> =
+    std::sync::Mutex::new(None);
+
+/// Starts checking Hello on a thread, at the very start of `run`: it takes
+/// 100 ms or more (seconds when cold), done meanwhile WinUI starts.
+pub fn prefetch_hello() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(hello());
+    });
+    *PREFETCH.lock().unwrap_or_else(|e| e.into_inner()) = Some(rx);
+}
+
+/// Startup's view of Hello, waiting at most 1.5 s more for the check.
+pub fn hello_at_start() -> Hello {
+    let rx = PREFETCH.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let rx = rx.unwrap_or_else(|| {
+        prefetch_hello();
+        PREFETCH
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .expect("prefetch")
+    });
+    rx.recv_timeout(std::time::Duration::from_millis(1500))
+        .unwrap_or(Hello {
+            kind: BiometryKind::None,
+            availability: None,
+        })
+}
+
+/// Why Hello cannot verify, as Prism's error.
+fn unavailable(a: Option<UserConsentVerifierAvailability>) -> DeviceError {
+    let why = match a {
+        Some(UserConsentVerifierAvailability::DeviceNotPresent) => "no Windows Hello device",
+        Some(UserConsentVerifierAvailability::NotConfiguredForUser) => {
+            "Windows Hello is not set up for this user"
+        }
+        Some(UserConsentVerifierAvailability::DisabledByPolicy) => {
+            "Windows Hello is turned off by policy"
+        }
+        Some(UserConsentVerifierAvailability::DeviceBusy) => "the Hello device is busy",
+        _ => "Windows Hello is not available",
+    };
+    log!("authenticate: {why}");
+    DeviceError::Unavailable
+}
+
+/// Asks the user to verify with Windows Hello, the prompt owned by
+/// `owner`. `done` runs on the UI thread.
+pub fn authenticate(owner: HWND, reason: &str, done: impl FnOnce(Answer) + Send + 'static) {
+    let message = HSTRING::from(reason);
+    // HWNDs cross threads as integers.
+    let owner = crate::win::hwnd_value(owner);
+    std::thread::spawn(move || {
+        let state = hello();
+        if !state.usable() {
+            let e = unavailable(state.availability);
+            return crate::shell::on_ui(move || done(Err(e)));
+        }
+        // The prompt belongs to the window: ask from the UI thread.
+        crate::shell::on_ui(move || {
+            let op = factory::<UserConsentVerifier, IUserConsentVerifierInterop>().and_then(
+                |interop| unsafe {
+                    interop.RequestVerificationForWindowAsync::<
+                        windows_future::IAsyncOperation<UserConsentVerificationResult>,
+                    >(crate::win::hwnd(owner), &message)
+                },
+            );
+            let op = match op {
+                Ok(op) => op,
+                Err(e) => return done(Err(failed(e.message()))),
+            };
+            let r = op.when(move |r| {
+                let answer = match r {
+                    Ok(UserConsentVerificationResult::Verified) => Ok(DeviceValue::Done),
+                    Ok(UserConsentVerificationResult::Canceled) => Err(DeviceError::Cancelled),
+                    Ok(UserConsentVerificationResult::RetriesExhausted) => Err(DeviceError::Denied),
+                    Ok(
+                        UserConsentVerificationResult::DeviceNotPresent
+                        | UserConsentVerificationResult::NotConfiguredForUser
+                        | UserConsentVerificationResult::DisabledByPolicy,
+                    ) => Err(DeviceError::Unavailable),
+                    Ok(other) => Err(failed(format!("Windows Hello: {other:?}"))),
+                    Err(e) => Err(failed(e.message())),
+                };
+                crate::shell::on_ui(move || done(answer));
+            });
+            if let Err(e) = r {
+                log!("Windows Hello: {e}");
+            }
+        });
+    });
+}
+
+// --- Loopback redirect (RFC 8252 §7.3) -------------------------------------------------
+
+/// Listeners waiting for a sign-in, by redirect URI.
+#[derive(Default)]
+pub struct Loopback {
+    listeners: HashMap<String, std::net::TcpListener>,
+}
+
+impl Loopback {
+    /// `http://127.0.0.1:<port>/callback`, served by a fresh listener.
+    pub fn redirect(&mut self) -> Answer {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(failed)?;
+        let port = listener.local_addr().map_err(failed)?.port();
+        let uri = format!("http://127.0.0.1:{port}/callback");
+        self.listeners.insert(uri.clone(), listener);
+        Ok(DeviceValue::Text(Some(uri)))
+    }
+
+    /// Opens `url` in the default browser and waits (on a thread) for the
+    /// redirect to `redirect`; `done` runs on the UI thread.
+    pub fn start(&mut self, url: &str, redirect: &str, done: impl FnOnce(Answer) + Send + 'static) {
+        let Some(listener) = self.listeners.remove(redirect) else {
+            return done(Err(failed(
+                "unknown redirect URI (ask auth_redirect first)",
+            )));
+        };
+        if let Err(e) = crate::services::open(url) {
+            return done(Err(e));
+        }
+        std::thread::spawn(move || {
+            let r = wait_for_redirect(&listener, std::time::Duration::from_secs(600));
+            crate::shell::on_ui(move || done(r));
+        });
+    }
+}
+
+fn wait_for_redirect(listener: &std::net::TcpListener, timeout: std::time::Duration) -> Answer {
+    use std::io::{Read, Write};
+    let _ = listener.set_nonblocking(true);
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        let Ok((mut stream, _)) = listener.accept() else {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            continue;
+        };
+        let _ = stream.set_nonblocking(false);
+        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+        let mut buf = [0u8; 8192];
+        let n = stream.read(&mut buf).unwrap_or(0);
+        let request = String::from_utf8_lossy(&buf[..n]);
+        let target = request
+            .lines()
+            .next()
+            .and_then(|l| l.strip_prefix("GET "))
+            .and_then(|l| l.split(' ').next())
+            .unwrap_or("");
+        if !target.starts_with("/callback") {
+            let _ = stream.write_all(
+                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+            continue;
+        }
+        let page = "<!doctype html><meta charset=utf-8><title>Signed in</title><p style=\"font:16px system-ui;margin:40px;text-align:center\">Signed in. You can close this tab and return to the app.</p>";
+        let _ = stream.write_all(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{page}",
+                page.len()
+            )
+            .as_bytes(),
+        );
+        return Ok(DeviceValue::Text(Some(format!("http://127.0.0.1{target}"))));
+    }
+    Err(DeviceError::Cancelled)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A secret round trip through Credential Manager, a long one split in
+    /// parts; everything is deleted after.
+    #[test]
+    fn credential_round_trip() {
+        let app = format!("prism-test-{}", std::process::id());
+        if secret_set(&app, "token", "probe") == Err(DeviceError::Unavailable) {
+            eprintln!("skipped: no credential store in this logon session (SSH key logon)");
+            return;
+        }
+        let long: String = "0123456789abcdef✓".repeat(400);
+        for value in ["s3cret ✓", long.as_str()] {
+            secret_set(&app, "token", value).unwrap();
+            assert_eq!(secret_get(&app, "token").unwrap().as_deref(), Some(value));
+        }
+        secret_set(&app, "token", "short").unwrap();
+        assert_eq!(secret_get(&app, "token").unwrap().as_deref(), Some("short"));
+        // The parts of the long one are gone.
+        assert_eq!(
+            read_blob(&format!("{}#0", target(&app, "token"))).unwrap(),
+            None
+        );
+        secret_delete(&app, "token").unwrap();
+        assert_eq!(secret_get(&app, "token").unwrap(), None);
+        secret_delete(&app, "token").unwrap();
+    }
+
+    #[test]
+    fn loopback_catches_the_redirect() {
+        let mut lb = Loopback::default();
+        let Ok(DeviceValue::Text(Some(uri))) = lb.redirect() else {
+            panic!()
+        };
+        let listener = lb.listeners.remove(&uri).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            s.write_all(b"GET /callback?code=abc&state=xyz HTTP/1.1\r\nHost: x\r\n\r\n")
+                .unwrap();
+            let mut page = String::new();
+            let _ = s.read_to_string(&mut page);
+            page
+        });
+        let r = wait_for_redirect(&listener, std::time::Duration::from_secs(10));
+        assert_eq!(
+            r,
+            Ok(DeviceValue::Text(Some(
+                "http://127.0.0.1/callback?code=abc&state=xyz".into()
+            )))
+        );
+        assert!(client.join().unwrap().contains("200 OK"));
+    }
+}

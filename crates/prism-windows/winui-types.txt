@@ -234,3 +234,18 @@ Microsoft.UI.Composition.CompositionVisualSurface
 Microsoft.UI.Composition.CompositionSurfaceBrush
 Microsoft.UI.Composition.ICompositionSurface
 Microsoft.UI.Xaml.DependencyPropertyChangedCallback
+# Services (services.rs): app notifications, launch activation, push,
+# the menu bar and its keyboard accelerators
+Microsoft.Windows.AppNotifications.AppNotificationManager
+Microsoft.Windows.AppNotifications.AppNotification
+Microsoft.Windows.AppNotifications.AppNotificationActivatedEventArgs
+Microsoft.Windows.AppNotifications.AppNotificationSetting
+Microsoft.Windows.AppLifecycle.AppInstance
+Microsoft.Windows.AppLifecycle.AppActivationArguments
+Microsoft.Windows.AppLifecycle.ExtendedActivationKind
+Microsoft.Windows.PushNotifications.PushNotificationManager
+Microsoft.UI.Xaml.Controls.MenuBar
+Microsoft.UI.Xaml.Controls.MenuBarItem
+Microsoft.UI.Xaml.Input.KeyboardAccelerator
+Microsoft.UI.Xaml.Input.KeyboardAcceleratorInvokedEventArgs
+Microsoft.UI.Xaml.Input.KeyboardAcceleratorPlacementMode

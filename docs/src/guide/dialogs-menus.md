@@ -63,6 +63,7 @@ Menu::titled("Format")
 |---|---|
 | macOS | the item's key equivalent only while its menu is open (an `NSMenuDelegate`), so a closed menu never takes the key |
 | Linux | the item's `accel` attribute: shown by the `GtkPopoverMenu`, no accelerator |
+| Windows | the item's `KeyboardAcceleratorTextOverride`: shown, no `KeyboardAccelerator` |
 | Web | left out of the shortcuts the page takes; the page's menus write it (⌘B on Apple devices, Ctrl+B elsewhere, `aria-keyshortcuts`) |
 | iOS, iPadOS, Android, watchOS | menus show no shortcuts there: nothing to show |
 

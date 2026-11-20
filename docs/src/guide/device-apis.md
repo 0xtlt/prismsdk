@@ -66,6 +66,7 @@ Types are MIME types. A type set twice keeps its last data; `as_image()` gives t
 | Web | `navigator.clipboard.read()`, uploaded to the server like picked files; else the text | `text/plain`, `text/html`, `image/png` (other images converted), other types as the browser's `web …` custom formats where it has them; the text alone when it refuses |
 | Android | the primary clip: text, HTML, an image behind a content URI | text, HTML and one image (through Prism's file provider) |
 | Linux | GDK formats: text, the image as PNG, other MIME types | every type, the image also as a texture |
+| Windows | `CF_UNICODETEXT`, `HTML Format`, `Rich Text Format`, `PNG` else a DIB (as PNG), `CF_HDROP` (as `text/uri-list`), formats named like MIME types | every type, the image also as `CF_DIBV5`, file URIs also as `CF_HDROP` |
 | tvOS, watchOS | `None` (no clipboard) | nothing |
 
 On macOS and iOS custom types travel as dynamic UTIs that keep the MIME type, so they come back under their name. Browsers read clipboards only after a user gesture and may prompt.
@@ -89,6 +90,7 @@ cx.spawn(async move |this, cx| {
 |---|---|---|---|
 | macOS | `NSSavePanel` (a sheet on the key window): the user picks the name and folder | the saved path | the Finder, file selected |
 | Linux | `GtkFileChooserNative` in save mode (the desktop portal) | the saved path | `org.freedesktop.FileManager1.ShowItems`, else the folder opens |
+| Windows | `IFileSaveDialog` over the window (Windows asks before replacing) | the saved path | Explorer, file selected (`SHOpenFolderAndSelectItems`) |
 | iOS, iPadOS, visionOS | "Save to Files" (`UIDocumentPickerViewController` exporting a copy) | the exported copy's path | nothing |
 | Android | the storage picker (`ACTION_CREATE_DOCUMENT`), then the file is copied into the document | the name, no path (a provider's document) | nothing |
 | Web | a download (`<a download>`) of `<base>/_prism/download/<id>` | the name, once the download starts | nothing |

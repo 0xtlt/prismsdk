@@ -76,12 +76,44 @@ kinds and services come next (see [Not yet](#not-yet)).
 - **Windows and DPI:** per-monitor DPI v2 (XAML scales by itself),
   resizing, a minimum size, the title (`cx.set_title`), a confirmation on
   close with unsaved changes.
-- **Services:** the clipboard (text), links opened with the default app
-  (`cx.open_url`); every other device call answers « unavailable ».
+- **Services:** see [Services](#services) below.
 - Storage goes to `%LOCALAPPDATA%\<title>`; the language comes from the
   user's locale, the text size from Settings › Accessibility › Text size
   (Prism scales the text itself: XAML's own text scaling is off), reduced
   motion from « Animation effects ».
+
+## Services
+
+| | |
+|---|---|
+| Files, folders, photos | the shell's common item dialogs (`IFileOpenDialog`, folders with `FOS_PICKFOLDERS`, pictures from the Pictures folder with an image filter), modal to the window; picked files are copied under the app's data directory, a folder's files are read in place |
+| Saving a file | `IFileSaveDialog` (Windows asks before replacing); `reveal_path` selects the file in Explorer (`SHOpenFolderAndSelectItems`) |
+| Notifications | Windows App SDK app notifications (`AppNotificationManager`), unpackaged and self-contained: title, subtitle, body, buttons (destructive ones in the critical style), reply fields, sound or silent, replace and withdraw by id (the tag), threads (the group); delays are timers in the app |
+| Clicks on notifications | `on_notification_response` with the button and a reply's text, while the app runs or after Windows starts it for the click; the window comes forward unless the button is a background one |
+| Badges | an overlay on the taskbar button: the number on an accent-colored disc (`ITaskbarList3::SetOverlayIcon`), from `cx.set_badge` or a notification's badge |
+| Secure storage | Credential Manager (`CredWriteW`): generic credentials of the user named `Prism/<app>/<key>`, values longer than 2,560 bytes split over several; `biometric` values need Windows Hello when read |
+| Biometrics | Windows Hello (`UserConsentVerifier`, its prompt owned by the window), which also takes the Hello PIN; `capabilities().biometry` is the face camera, fingerprint or iris reader the Windows Biometric Framework sees. Without Hello set up, `authenticate` answers `Unavailable` |
+| Sign-in (`prism::oauth`) | the default browser and a loopback redirect, `http://127.0.0.1:<port>/callback` (RFC 8252), like on Linux |
+| Tray | `Shell_NotifyIcon`: the SF Symbol's Segoe Fluent Icons glyph in the taskbar's color (else the app's icon), the tooltip, and a Win32 popup menu on a click (dark when apps are); it comes back when Explorer restarts and goes when the app quits |
+| Menu bar | `cx.set_app_menu` / `set_menu_bar` put a WinUI `MenuBar` across the top of the window (the app's view starts under it): access keys (Alt+F), `KeyboardAccelerator`s that work with the menus closed, shortcut hints shown only, checkable items, submenus; platform actions do Windows' own (Cut, Copy, Paste, Select All, Undo, Redo in the focused field; Minimize, Zoom, Close, Quit with Alt+F4) |
+| Alerts | `ContentDialog`: the first action is the accent button unless it is destructive, Cancel is the close button (Escape), more than three actions are listed under the message |
+| Clipboard | text, HTML (`HTML Format`), RTF, pictures (`PNG` and `CF_DIBV5`, read back from either or from a plain DIB), files (`CF_HDROP` as `text/uri-list`), other MIME types as formats of their name |
+| Run-time fonts | written to `prism-fonts\` next to the executable and named by `ms-appx:///prism-fonts/…#Family`: XAML loads font files from the app's folder only (not absolute paths, `file:` URIs or `AddFontResourceEx`), so an app installed in a read-only folder cannot load fonts at run time |
+| Background tasks | timers while the app runs, like on Linux (`PRISM_BACKGROUND_INTERVAL` shortens them) |
+| Push | « unavailable »: Windows push notifications (WNS) need package identity (an MSIX or a sparse package), so an unpackaged app gets no channel |
+
+**Notification registration.** `AppNotificationManager::Register` gives the
+unpackaged app an identity for notifications, per user: its display name and
+the COM server a click starts (the executable), under
+`HKCU\Software\Classes\AppUserModelId` and `\CLSID`. It runs the first time
+the app notifies or asks about notifications, then at every startup (a
+marker in the app's data directory), so a click on an earlier notification
+reaches the running app rather than starting a second one. When the app quits it unregisters its COM server
+(`Unregister`), so a later click starts it again; an uninstaller removes the
+rest (`UnregisterAll`). With `PRISM_NOTIFICATIONS_CLEANUP=1` the app does that
+itself on quit and also clears its notifications: tests leave nothing
+behind. Windows keeps its own settings for the app under
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings`.
 
 ## The Windows App SDK
 
@@ -135,7 +167,10 @@ The same as the other backends, in a desktop session:
 | `PRISM_DELAY`, `PRISM_AFTER` | seconds before the clicks (1) and between them and the snapshot (0.7) |
 | `PRISM_WINDOW` | the window's size, `460x720` |
 | `PRISM_APPEARANCE` | `light` or `dark` in place of the system's appearance |
-| `PRISM_TRACE` | logs the startup phases |
+| `PRISM_TRACE` | logs the startup phases, and each notification shown |
+| `PRISM_TRAY_MENU` | `<id>`: that tray item's menu opens by itself, as after a click |
+| `PRISM_NOTIFICATIONS_CLEANUP` | `1`: on quit, the app removes its notification registration and its notifications |
+| `PRISM_BACKGROUND_INTERVAL` | seconds between background task runs |
 
 Every run logs when WinUI is ready, the first layout and the first frame
 (from the process's creation), and the memory at the first frame and at
@@ -159,9 +194,12 @@ the session, presses the counter's button through UI Automation.
   links in text are colored, not `Hyperlink`s; drags and drops between
   views (`locate_drag` gets no pointer input), pointer and wheel events for
   `on_pointer` / `on_wheel`, swipes; Escape does not close an overlay yet.
-- **Services:** notifications, alerts (`ContentDialog`), the tray, the menu
-  bar, badges, pickers of photos, files and folders, secure storage,
-  biometrics, sign-in, background tasks, push and run-time fonts.
+- **Services:** push (WNS needs package identity), location, motion, the
+  camera, the share sheet (`DataTransferManager`), haptics and passkeys
+  answer « unavailable »; run-time fonts need a writable app folder;
+  notification banners and the Hello prompt are untested on screen (the test
+  PC shows no banners from any app and has no Hello device: delivery, clicks
+  and the « unavailable » answer are tested).
 - **Packaging:** `prism build windows` (the runtime and `resources.pri`
   next to the exe in a zip, icon and version info in the manifest; or an
   MSIX with the Windows App Runtime as a framework dependency instead of

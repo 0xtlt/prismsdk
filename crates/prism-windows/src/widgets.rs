@@ -150,9 +150,11 @@ impl Win {
 
     /// The window's size changed (DIPs).
     pub fn resize(&mut self, w: f32, h: f32) {
-        self.size = (w, h);
+        // The menu bar (`menubar.rs`) takes the top of the window.
+        self.size = (w, (h - crate::menubar::height()).max(0.));
         let _ = self.root.SetWidth(w as f64);
         let _ = self.root.SetHeight(h as f64);
+        crate::menubar::resize(w);
     }
 
     /// The theme changed (system, app, accent): every color again.
