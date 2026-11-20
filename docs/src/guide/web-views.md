@@ -81,11 +81,11 @@ Changes to the sandbox apply from the next page the view loads (on Apple platfor
 
 ## Platforms
 
-| | Web | macOS, iOS, iPadOS, visionOS | Android | tvOS, watchOS, Linux |
-|---|---|---|---|---|
-| View | `<iframe>` | `WKWebView` | `android.webkit.WebView` | an empty box |
-| Page → app | `parent.postMessage` | `prismHost.postMessage` (script message handler) | `prismHost.postMessage` (`@JavascriptInterface`) | – |
-| App → page | `postMessage` to the frame's origin | `message` event (`evaluateJavaScript`) | `message` event (`evaluateJavascript`) | – |
+| | Web | macOS, iOS, iPadOS, visionOS | Android | Windows | tvOS, watchOS, Linux |
+|---|---|---|---|---|---|
+| View | `<iframe>` | `WKWebView` | `android.webkit.WebView` | WinUI `WebView2` (Edge WebView2 Runtime) | an empty box |
+| Page → app | `parent.postMessage` | `prismHost.postMessage` (script message handler) | `prismHost.postMessage` (`@JavascriptInterface`) | `prismHost.postMessage` (`chrome.webview`) | – |
+| App → page | `postMessage` to the frame's origin | `message` event (`evaluateJavaScript`) | `message` event (`evaluateJavascript`) | `message` event (`ExecuteScriptAsync`) | – |
 
 `cx.capabilities().web_view` says whether the platform shows the page. tvOS and watchOS have no WebKit, and Linux has no web view yet (WebKitGTK would add a system dependency): the node is an empty box sized by its style, so show something else there:
 
