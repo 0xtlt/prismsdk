@@ -157,13 +157,7 @@ pub fn commit(s: &mut State, patches: Vec<Patch>) {
                 }
             }
             prism_core::PlatformRequest::SetUnsavedChanges(on) => UNSAVED.set(on),
-            prism_core::PlatformRequest::LoadFont(face) => {
-                // Phase 3: XAML fonts from files (ms-appdata / a font set).
-                log!(
-                    "load_font({:?}): run-time fonts are not loaded on Windows yet",
-                    face.family
-                );
-            }
+            prism_core::PlatformRequest::LoadFont(face) => crate::fonts::load(s, face),
             other => prism_core::PlatformServices::handle(&mut s.services, other),
         }
     }
@@ -618,6 +612,8 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
 /// Opens the app's window and runs its message loop until it closes.
 pub fn run(config: AppConfig, init: AppInit) {
     START.set(Some(std::time::Instant::now()));
+    // Windows Hello answers slowly: asked while WinUI starts.
+    crate::security::prefetch_hello();
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         if let Err(e) = OleInitialize(None) {
@@ -698,7 +694,7 @@ pub fn run(config: AppConfig, init: AppInit) {
             asset_dirs: assets.into_iter().collect(),
             cache_dir: Some(data.join("images")),
         });
-        let services = WinServices::new(main);
+        let services = WinServices::new(main, &data);
         let target = hwnd_value(main);
         let runtime = Runtime::with_options(
             &init,

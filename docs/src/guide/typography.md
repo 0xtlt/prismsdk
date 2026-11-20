@@ -104,6 +104,7 @@ Asking for the same face again does nothing, so it can be called from
 | macOS, iOS, iPadOS, tvOS, visionOS, watchOS | `CTFontManagerRegisterFontsForURL` of a cached copy (process scope; a variable font keeps its weights) | TTF, OTF | loaded in the background, like pictures (`https://`, `file://`, assets: embedded ones on macOS, iOS and Linux) |
 | Android | `Typeface.Builder(File)` / `createFromFile` | TTF, OTF, TTC | same |
 | Linux | fontconfig (`FcConfigAppFontAddFile`), then Pango's font map reloads | TTF, OTF, TTC | same |
+| Windows | a copy in `prism-fonts\` next to the executable, named by `ms-appx:///…#Family` (XAML reads font files from the app's folder only) | TTF, OTF, TTC | same |
 
 - **The family name**: on the web the face is registered under the name you
   give. Natively the platform knows a font by the family its file declares,

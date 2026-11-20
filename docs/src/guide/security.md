@@ -41,6 +41,7 @@ cx.spawn(async move |this, cx| {
 | tvOS | Keychain | — (the SDK marks `LAContext` unavailable) | AuthenticationServices | `ASWebAuthenticationSession` (tvOS 16+) |
 | Android | Keystore: AES-256-GCM key in `AndroidKeyStore`, ciphertext in `files/secure` (`biometric`: an RSA key needing the owner wraps the value's key) | `BiometricPrompt` (framework, no androidx), then the PIN (Android 11+ with keys) | — | Custom Tab (protocol extra, no androidx) or the browser → deep link |
 | Linux | Secret Service over D-Bus (GNOME Keyring, KWallet) | fprintd (fingerprint readers) | — | default browser → loopback `http://127.0.0.1:<port>/callback` |
+| Windows | Credential Manager (generic credentials `Prism/<app>/<key>`; `biometric`: Windows Hello when read) | Windows Hello (`UserConsentVerifier`): face, fingerprint or the Hello PIN | — | default browser → loopback `http://127.0.0.1:<port>/callback` |
 | Web | on the server, per browser (the `HttpOnly` session cookie), AES-256-GCM at rest | WebAuthn platform authenticator with user verification, checked on the server | — | popup → `<base>/_prism/auth/callback` |
 
 - **Biometric secrets** need the owner every time they are read; new fingers or faces make them unreadable (Apple, Android: store them again). Setting one never prompts.

@@ -57,6 +57,7 @@ Prism registers the activities it did not start in this run: ones started by a p
 | Android | FCM (opt-in) or UnifiedPush | `FirebaseMessagingService` / UnifiedPush connector (AND_3) | data messages | Firebase bundled without Gradle and initialized on the emulator; UnifiedPush built (its decryption is Linux's, verified) |
 | Web | Web Push | service worker `<base>/prism-sw.js`, `pushManager.subscribe` with VAPID | – (browsers always show one) | service worker, session events, click → focus/open |
 | Linux | UnifiedPush over D-Bus | `org.unifiedpush.Connector2` on the session bus | yes, while the app runs | end to end with a local distributor |
+| Windows | — (WNS needs package identity: an MSIX or a sparse package) | `register_for_push` fails with `Unavailable` | — | — |
 
 `cx.capabilities().push` says which service `register_for_push` will use (`None`: unavailable, and the call fails with `Unavailable`).
 

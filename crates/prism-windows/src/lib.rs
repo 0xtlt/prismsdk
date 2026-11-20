@@ -40,11 +40,21 @@
 //! | `capture`, `wic` | `PrintWindow` and WIC: snapshots, pictures |
 //! | `images` | decoding pictures |
 //! | `package` | what a shipped app brings: its icon, its assets |
-//! | `services` | `PlatformServices` |
+//! | `services` | `PlatformServices`, routing to the modules below |
+//! | `pickers` | file, folder and photo pickers, the save dialog |
+//! | `notify`, `toast` | app notifications (Windows App SDK) |
+//! | `taskbar` | the badge on the taskbar button |
+//! | `security` | Credential Manager, Windows Hello, loopback sign-in |
+//! | `tray`, `icons` | notification area icons and their menus |
+//! | `menubar`, `accel` | the window's menu bar, keyboard accelerators |
+//! | `clipboard` | the clipboard in all its types |
+//! | `fonts` | run-time fonts |
+//! | `shell` | the services' hidden window: modal UI, timers, threads |
 //! | `system` | theme, accent, locale, DPI |
-//! | `scene`, `keys`, `fluent`, `paint` | pure helpers, tested on every host |
+//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel` | pure helpers, tested on every host |
 
-// `cx.show_alert` as a ContentDialog.
+// Menu shortcuts as accelerators: no Win32, tested everywhere.
+mod accel;
 #[cfg(target_os = "windows")]
 mod alert;
 #[cfg(target_os = "windows")]
@@ -52,40 +62,53 @@ mod bars;
 #[cfg(target_os = "windows")]
 mod capture;
 #[cfg(target_os = "windows")]
+mod clipboard;
+#[cfg(target_os = "windows")]
 mod controls;
+#[cfg(target_os = "windows")]
+mod decor;
 #[cfg(target_os = "windows")]
 mod events;
 // Theme colors and control metrics: no Win32, tested everywhere.
 mod fluent;
 #[cfg(target_os = "windows")]
+mod fonts;
+#[cfg(target_os = "windows")]
 mod host;
+#[cfg(target_os = "windows")]
+mod icons;
 #[cfg(target_os = "windows")]
 mod images;
 #[cfg(target_os = "windows")]
 mod imp;
 #[cfg(target_os = "windows")]
 mod keyboard;
-// Animations: Composition on the elements, frames per rendered frame.
-#[cfg(target_os = "windows")]
-mod motion;
 // Key names and icon glyphs: no Win32, tested everywhere.
 mod keys;
-// Sheets and dialogs as ContentDialog-like panels, popovers as flyouts.
+#[cfg(target_os = "windows")]
+mod menubar;
+#[cfg(target_os = "windows")]
+mod motion;
+#[cfg(target_os = "windows")]
+mod notify;
 #[cfg(target_os = "windows")]
 mod outer;
 #[cfg(target_os = "windows")]
 mod overlay;
-// Inset shadows, borders of several colors, conic gradients, rounded clips.
-#[cfg(target_os = "windows")]
-mod decor;
-// Conic gradient pixels, per-side border outlines: no Win32, tested everywhere.
-mod paint;
-// The tree's model: no Win32, tested everywhere.
 #[cfg(target_os = "windows")]
 mod package;
+// Conic gradient pixels, per-side border outlines: no Win32, tested everywhere.
+mod paint;
+#[cfg(target_os = "windows")]
+mod pickers;
+// The tree's model: no Win32, tested everywhere.
 mod scene;
 #[cfg(target_os = "windows")]
+mod security;
+#[cfg(target_os = "windows")]
 mod services;
+#[cfg(target_os = "windows")]
+mod shell;
 #[cfg(target_os = "windows")]
 mod smoke;
 #[cfg(target_os = "windows")]
@@ -93,7 +116,13 @@ mod style;
 #[cfg(target_os = "windows")]
 mod system;
 #[cfg(target_os = "windows")]
+mod taskbar;
+#[cfg(target_os = "windows")]
 mod text;
+// Notifications as toast XML: no Win32, tested everywhere.
+mod toast;
+#[cfg(target_os = "windows")]
+mod tray;
 #[cfg(target_os = "windows")]
 mod view;
 #[cfg(target_os = "windows")]
