@@ -56,6 +56,7 @@ video("https://cdn.example.com/talk.mp4")
 | iOS, iPadOS, tvOS, visionOS | `AVPlayerViewController` | `AVURLAsset` HTTP header fields |
 | Android | `VideoView` with a `MediaController` | `setVideoURI(uri, headers)` |
 | Linux | `GtkVideo` (GStreamer) | not sent |
+| Windows | `MediaPlayerElement` (transport controls) | not sent |
 | Web | `<video playsinline preload="metadata">` | the server, as `<base>/_prism/media/<id>` |
 | watchOS | nothing is drawn | |
 

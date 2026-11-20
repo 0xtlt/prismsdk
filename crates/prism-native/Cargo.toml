@@ -22,6 +22,8 @@ prism-core.workspace = true
 taffy.workspace = true
 prism-http.workspace = true
 serde_json.workspace = true
+# The OpenGL renderer of 3D scenes (`gl3d`): GTK and Windows.
+glow = { workspace = true, optional = true }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 objc2.workspace = true
@@ -37,6 +39,8 @@ objc2-core-foundation.workspace = true
 [features]
 # The Swift bridge (prism-apple-build: apple/Bridge) is linked: device APIs available.
 apple-bridge = []
+# The OpenGL renderer of 3D scenes (`gl3d`), for backends drawing with GL.
+gl3d = ["dep:glow"]
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]

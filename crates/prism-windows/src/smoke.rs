@@ -8,7 +8,9 @@
 //!   types into the text field with that placeholder; `submit:Placeholder`
 //!   presses Enter in it; `menu:Title` opens the context menu of the view
 //!   showing Title; `scroll:600` scrolls the visible scroll views before
-//!   the next steps; `key:Escape` (`Tab`, `Enter`) presses a key.
+//!   the next steps; `key:Escape` (`Tab`, `Enter`) presses a key; `hover:`,
+//!   `drag:`, `swipe:` and `wheel:` move the real mouse over a view
+//!   (`inject.rs`).
 //! - `PRISM_SCROLL=600` scrolls the visible scroll views.
 //! - `PRISM_SNAPSHOT=out.png` then saves the window's XAML, rendered by
 //!   `RenderTargetBitmap`, and what DWM shows of the window
@@ -114,6 +116,10 @@ fn run_step(step: &str) -> bool {
     {
         scroll(y);
         return true;
+    }
+    // `hover:`, `drag:`, `swipe:`, `wheel:`: real mouse input.
+    if let Some(found) = crate::inject::step(step) {
+        return found;
     }
     if let Some(title) = step.strip_prefix("menu:") {
         let found = with_state(|s| {

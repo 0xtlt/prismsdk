@@ -61,6 +61,11 @@ pub enum Content {
     Icon(FontIcon),
     Picture(Image),
     Shape(Canvas),
+    /// Embedded content (`web.rs`, `media.rs`, `rich.rs`).
+    Web(crate::web::Web),
+    Video(crate::media::Video),
+    Rich(crate::rich::Rich),
+    Scene(crate::scene3d::SceneView),
 }
 
 impl Content {
@@ -84,6 +89,10 @@ impl Content {
             Content::Icon(i) => i.cast(),
             Content::Picture(i) => i.cast(),
             Content::Shape(c) => c.cast(),
+            Content::Web(w) => w.element.cast(),
+            Content::Video(v) => v.element.cast(),
+            Content::Rich(r) => r.element.cast(),
+            Content::Scene(s) => s.element.cast(),
         };
         e.ok()
     }
@@ -101,6 +110,8 @@ impl Content {
             Content::Combo(c) => c.cast(),
             Content::Date(d) => d.cast(),
             Content::Time(t) => t.cast(),
+            Content::Rich(r) => r.element.cast(),
+            Content::Web(w) => w.element.cast(),
             _ => return None,
         };
         c.ok()
@@ -149,6 +160,10 @@ pub fn create(id: NodeId, kind: NodeKind) -> Result<Content> {
             }))?;
             Content::Button(b, t)
         }
+        NodeKind::RichInput => Content::Rich(crate::rich::Rich::new(id)?),
+        NodeKind::WebView => Content::Web(crate::web::Web::new(id)?),
+        NodeKind::Video => Content::Video(crate::media::Video::new(id)?),
+        NodeKind::Scene3d => Content::Scene(crate::scene3d::SceneView::new(id)?),
         k if is_field(k) => field(id, k == NodeKind::TextInput)?,
         NodeKind::Toggle => {
             let t = ToggleSwitch::new()?;
@@ -422,6 +437,8 @@ pub fn style(c: &Content, n: &Node, pal: &Palette) -> Result<()> {
         Content::Text(t) => {
             let st = StyledText::new(&n.text, &n.config, s);
             apply(t, &st, pal, color)?;
+            // A text takes pointer input only for its links.
+            t.SetIsHitTestVisible(st.has_links())?;
         }
         Content::Button(b, t) => {
             let st = label(&n.text, s);
@@ -494,7 +511,16 @@ pub fn style(c: &Content, n: &Node, pal: &Palette) -> Result<()> {
                 r.SetForeground(&brush(pal.resolve(c))?)?;
             }
         }
-        Content::Picture(_) | Content::Shape(_) | Content::None => {}
+        Content::Rich(r) => {
+            field_look(r.element.cast()?, n, color)?;
+            r.element.SetPlaceholderText(&h(&n.placeholder))?;
+        }
+        Content::Picture(_)
+        | Content::Shape(_)
+        | Content::Web(_)
+        | Content::Video(_)
+        | Content::Scene(_)
+        | Content::None => {}
     }
     Ok(())
 }
@@ -618,6 +644,8 @@ pub fn configure(c: &mut Content, id: NodeId, kind: NodeKind, config: &str) -> R
                 radios.push(r);
             }
         }
+        Content::Web(w) => w.configure(config)?,
+        Content::Video(v) => v.configure(config)?,
         Content::Date(_) | Content::Time(_) if kind == NodeKind::DatePicker => {
             let cfg = DateConfig::decode(config);
             let time = matches!(cfg.mode, DateMode::Time | DateMode::TimeOfDay);
@@ -828,6 +856,7 @@ pub fn field_text(c: &Content) -> Option<String> {
     match c {
         Content::Field(t) => t.Text().ok().map(|s| s.to_string()),
         Content::Secure(p) => p.Password().ok().map(|s| s.to_string()),
+        Content::Rich(r) => r.text(),
         _ => None,
     }
 }
@@ -842,6 +871,8 @@ pub fn set_field_text(c: &Content, text: &str) -> Result<()> {
             t.SetSelectionStart(caret.min(len))?;
         }
         Content::Secure(p) => p.SetPassword(&h(text))?,
+        // Shown with its runs (`set_rich_value`).
+        Content::Rich(r) => r.set_text(text),
         _ => {}
     }
     Ok(())
@@ -960,6 +991,7 @@ pub fn measure(
             (d, d)
         }
         NodeKind::Picture => images.size_of(&n.text).unwrap_or((0., 0.)),
+        NodeKind::Video => crate::media::measure(id, max_width),
         _ => (0., 0.),
     }
 }

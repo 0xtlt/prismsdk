@@ -124,6 +124,8 @@ fn deliver(s: &mut State, event: UiEvent) {
     }
     let patches = s.runtime.dispatch(event);
     commit(s, patches);
+    // A dragged payload near a scroll view's edge scrolls it (#251).
+    crate::pointer::autoscroll(s);
     // A control the app did not follow shows the app's value again.
     if let Some(id) = control {
         let was = UPDATING.replace(true);

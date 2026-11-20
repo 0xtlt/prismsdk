@@ -1,6 +1,7 @@
 //! 3D scenes: meshes, materials, lights and a camera, described in Rust and
 //! drawn by the GPU on every backend (SceneKit on Apple platforms, WebGL 2
-//! on the web, OpenGL ES 3 on Android, OpenGL in a `GtkGLArea` on Linux).
+//! on the web, OpenGL ES 3 on Android, OpenGL in a `GtkGLArea` on Linux and
+//! in a WGL context on Windows).
 //!
 //! ```ignore
 //! use prism::scene3d::*;

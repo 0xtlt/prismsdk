@@ -35,8 +35,11 @@
 //! | `controls` | Prism's controls as WinUI controls, their events and sizes |
 //! | `bars` | a stack's header, a tab bar |
 //! | `events` | clicks, hover and press, focus, scrolling, menus |
+//! | `pointer` | pointer, drags, swipes, wheel, files from Explorer |
+//! | `web`, `media`, `rich` | web views (WebView2), videos, rich inputs |
+//! | `scene3d` | 3D scenes: prism-native's OpenGL renderer, in WGL |
 //! | `keyboard` | key presses for Prism's key listeners |
-//! | `smoke` | `PRISM_CLICK`, `PRISM_SNAPSHOT`… |
+//! | `smoke`, `inject` | `PRISM_CLICK` (real mouse input too), `PRISM_SNAPSHOT`… |
 //! | `capture`, `wic` | `PrintWindow` and WIC: snapshots, pictures |
 //! | `images` | decoding pictures |
 //! | `package` | what a shipped app brings: its icon, its assets |
@@ -82,9 +85,13 @@ mod images;
 #[cfg(target_os = "windows")]
 mod imp;
 #[cfg(target_os = "windows")]
+mod inject;
+#[cfg(target_os = "windows")]
 mod keyboard;
 // Key names and icon glyphs: no Win32, tested everywhere.
 mod keys;
+#[cfg(target_os = "windows")]
+mod media;
 #[cfg(target_os = "windows")]
 mod menubar;
 #[cfg(target_os = "windows")]
@@ -101,8 +108,14 @@ mod package;
 mod paint;
 #[cfg(target_os = "windows")]
 mod pickers;
+#[cfg(target_os = "windows")]
+mod pointer;
+#[cfg(target_os = "windows")]
+mod rich;
 // The tree's model: no Win32, tested everywhere.
 mod scene;
+#[cfg(target_os = "windows")]
+mod scene3d;
 #[cfg(target_os = "windows")]
 mod security;
 #[cfg(target_os = "windows")]
@@ -125,6 +138,8 @@ mod toast;
 mod tray;
 #[cfg(target_os = "windows")]
 mod view;
+#[cfg(target_os = "windows")]
+mod web;
 #[cfg(target_os = "windows")]
 mod wic;
 #[cfg(target_os = "windows")]

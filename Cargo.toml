@@ -35,6 +35,8 @@ prism-push = { package = "prismsdk-push", path = "crates/prism-push", version = 
 taffy = { version = "0.14", default-features = false, features = ["std", "flexbox", "grid", "taffy_tree"] }
 tungstenite = "0.30"
 serde_json = "1"
+# OpenGL bindings: the 3D scene renderer (prism-native `gl3d`).
+glow = "0.17"
 objc2 = "0.6"
 block2 = "0.6"
 dispatch2 = "0.3"

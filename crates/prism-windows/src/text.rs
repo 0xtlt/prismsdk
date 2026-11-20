@@ -2,7 +2,8 @@
 //! TextBlock's properties and `Run` inlines (fonts and weights per run,
 //! colors, underline and strikethrough, inline Segoe Fluent Icons, CSS line
 //! heights, letter spacing, wrapping, line clamps with an ellipsis,
-//! alignment).
+//! alignment). Links are `Hyperlink`s: Tab reaches them, Enter or a click
+//! reports the link (`UiEvent::MenuSelect`), UI Automation sees links.
 //!
 //! Measuring uses the same code on a scratch TextBlock outside the tree
 //! (`Measurer`): XAML lays text out with DirectWrite itself, so what is
@@ -20,7 +21,7 @@ use windows_core::Result;
 
 use crate::fluent::Palette;
 use crate::winui::xaml::Controls::TextBlock;
-use crate::winui::xaml::Documents::Run;
+use crate::winui::xaml::Documents::{Hyperlink, HyperlinkClickEventArgs, Run, UnderlineStyle};
 use crate::winui::xaml::Media::FontFamily as XamlFont;
 use crate::winui::xaml::{LineStackingStrategy, TextAlignment, TextTrimming, TextWrapping};
 use crate::winui::{brush, h};
@@ -174,6 +175,7 @@ fn plain(st: &StyledText) -> bool {
         && !first.underline
         && !first.strikethrough
         && first.color.is_none()
+        && first.link.is_none()
 }
 
 /// The text itself: one string, or `Run`s (`pal`: their colors, unless
@@ -190,6 +192,8 @@ fn set_runs(tb: &TextBlock, st: &StyledText, pal: Option<&Palette>) -> Result<()
     inlines.Clear()?;
     for r in &st.runs {
         let run = Run::new()?;
+        // Measuring lays a link out as its run: the same metrics.
+        let link = r.link.filter(|_| pal.is_some());
         let (text, icon) = run_text(r);
         run.SetText(&h(&text))?;
         let size = r.font.size.max(1.);
@@ -214,10 +218,44 @@ fn set_runs(tb: &TextBlock, st: &StyledText, pal: Option<&Palette>) -> Result<()
         if r.strikethrough {
             deco |= TextDecorations::Strikethrough;
         }
-        run.SetTextDecorations(deco)?;
-        inlines.Append(&run)?;
+        match link {
+            Some(link) => {
+                let a = hyperlink(link, r, pal)?;
+                // Its underline is the run's (Prism styles links itself).
+                run.SetTextDecorations(deco & !TextDecorations::Underline)?;
+                a.Inlines()?.Append(&run)?;
+                inlines.Append(&a)?;
+            }
+            None => {
+                run.SetTextDecorations(deco)?;
+                inlines.Append(&run)?;
+            }
+        }
     }
     Ok(())
+}
+
+/// A link run as a `Hyperlink`: focusable with Tab, activated with Enter
+/// or a click (`UiEvent::MenuSelect(link)`), a link for UI Automation. It
+/// keeps the run's own color and underline instead of the accent's.
+fn hyperlink(link: u64, r: &StyledRun, pal: Option<&Palette>) -> Result<Hyperlink> {
+    let a = Hyperlink::new()?;
+    a.SetUnderlineStyle(if r.underline {
+        UnderlineStyle::Single
+    } else {
+        UnderlineStyle::None
+    })?;
+    if let (Some(c), Some(pal)) = (r.color, pal) {
+        a.SetForeground(&brush(pal.resolve(c))?)?;
+    }
+    a.Click(&windows::Foundation::TypedEventHandler::<
+        Hyperlink,
+        HyperlinkClickEventArgs,
+    >::new(move |_, _| {
+        crate::imp::dispatch(prism_core::UiEvent::MenuSelect(link));
+        Ok(())
+    }))?;
+    Ok(a)
 }
 
 /// Sets `tb` up to show `st` in `color` (the text's own color, resolved,

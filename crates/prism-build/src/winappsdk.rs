@@ -20,6 +20,14 @@
 //!
 //! `prismsdk-windows`' build script uses the same cache for its WinUI
 //! bindings.
+//!
+//! Web views (WinUI's `WebView2`) also need the WinRT projection of
+//! WebView2 (`Microsoft.Web.WebView2.Core.dll`, the loader linked in) from
+//! the `Microsoft.Web.WebView2` package the WinUI package depends on: its
+//! metadata for the bindings and its DLL next to the app (the WinUI
+//! package's fragment already registers its classes). The browser engine
+//! itself is the Evergreen WebView2 Runtime, part of Windows 11 (and
+//! installed with Edge on Windows 10).
 
 use std::fmt::Write as _;
 use std::fs;
@@ -33,6 +41,10 @@ pub const VERSION: &str = "2.7.0";
 
 /// Its component packages the backend needs: metadata and runtime.
 pub const PACKAGES: [&str; 3] = ["foundation", "interactiveexperiences", "winui"];
+
+/// The `Microsoft.Web.WebView2` release the WinUI package depends on
+/// (its `.nuspec`), cached as `<sdk>/webview2`.
+pub const WEBVIEW2_VERSION: &str = "1.0.3719.77";
 
 /// The build profile's directory (`<target>[/<triple>]/<profile>`), from a
 /// build script's `OUT_DIR`: where the executables go.
@@ -68,8 +80,21 @@ pub fn sdk_dir_for(profile_dir: &Path) -> PathBuf {
 /// The packages in `sdk`, fetched if missing.
 pub fn ensure(sdk: &Path) {
     for p in PACKAGES {
-        fetch(sdk, p);
+        fetch(
+            sdk,
+            p,
+            &format!("microsoft.windowsappsdk.{p}"),
+            VERSION,
+            "runtimes-framework",
+        );
     }
+    fetch(
+        sdk,
+        "webview2",
+        "microsoft.web.webview2",
+        WEBVIEW2_VERSION,
+        "lib/Microsoft.Web.WebView2.Core.winmd",
+    );
 }
 
 /// `runtimes-framework/<arch>` for the target.
@@ -87,19 +112,19 @@ pub fn arch_of(rust_arch: &str) -> &'static str {
     }
 }
 
-/// Downloads and unpacks one package into `<sdk>/<name>` unless it is there.
-fn fetch(sdk: &Path, name: &str) {
+/// Downloads and unpacks package `id` (`version`) into `<sdk>/<name>`
+/// unless it is there (`marker` exists in it).
+fn fetch(sdk: &Path, name: &str, id: &str, version: &str, marker: &str) {
     let dest = sdk.join(name);
-    if dest.join("runtimes-framework").is_dir() {
+    if dest.join(marker).exists() {
         return;
     }
     fs::create_dir_all(sdk).expect("Windows App SDK cache directory");
-    let id = format!("microsoft.windowsappsdk.{name}");
-    let url = format!("https://api.nuget.org/v3-flatcontainer/{id}/{VERSION}/{id}.{VERSION}.nupkg");
+    let url = format!("https://api.nuget.org/v3-flatcontainer/{id}/{version}/{id}.{version}.nupkg");
     // Named after this process: the backend's build script and the app's
     // (`link_app`) may fetch at the same time on a first build.
     let tag = std::process::id();
-    let pkg = sdk.join(format!("{id}.{VERSION}.{tag}.zip"));
+    let pkg = sdk.join(format!("{id}.{version}.{tag}.zip"));
     println!(
         "cargo:warning=fetching {url} (once, into {})",
         sdk.display()
@@ -113,8 +138,8 @@ fn fetch(sdk: &Path, name: &str) {
     assert!(
         ok,
         "prism: could not download {url} with curl. Download the Windows App SDK packages \
-         ({}) version {VERSION} from nuget.org, unpack each into <dir>/<name>, and set \
-         PRISM_WINAPPSDK_DIR=<dir>.",
+         ({}) version {VERSION} and Microsoft.Web.WebView2 {WEBVIEW2_VERSION} (as webview2) \
+         from nuget.org, unpack each into <dir>/<name>, and set PRISM_WINAPPSDK_DIR=<dir>.",
         PACKAGES.join(", ")
     );
     // Unpacked beside, then renamed: an interrupted build leaves no half
@@ -138,7 +163,7 @@ fn fetch(sdk: &Path, name: &str) {
             .is_ok_and(|s| s.success());
     assert!(unpacked, "prism: could not unpack {}", pkg.display());
     let _ = fs::remove_file(&pkg);
-    let complete = |d: &Path| d.join("runtimes-framework").is_dir();
+    let complete = |d: &Path| d.join(marker).exists();
     if !complete(&dest) {
         let _ = fs::remove_dir_all(&dest);
         // Another build script may have renamed its copy in between.
@@ -376,6 +401,13 @@ pub fn runtime_files(sdk: &Path, arch: &str) -> Vec<(PathBuf, PathBuf)> {
             .join("native");
         list_tree(&root, Path::new(""), &mut files);
     }
+    // WebView2's WinRT projection (its loader linked in).
+    let webview2 = sdk
+        .join("webview2")
+        .join("runtimes")
+        .join(arch)
+        .join("native_uap");
+    list_tree(&webview2, Path::new(""), &mut files);
     let controls = files
         .iter()
         .find(|(rel, _)| rel.as_os_str() == "Microsoft.UI.Xaml.Controls.pri")

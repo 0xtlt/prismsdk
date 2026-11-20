@@ -1,6 +1,6 @@
 # 3D scenes
 
-`scene3d()` draws meshes, glTF models, lights and a camera with the GPU on every backend: SceneKit (iOS, iPadOS, tvOS, visionOS, macOS, watchOS), WebGL 2 (web), OpenGL ES 3 (Android, Wear OS, Android TV) and OpenGL in a `GtkGLArea` (Linux). The scene is described in Rust like the rest of the UI; turning the camera, spinning, transitions and animation clips run on the device, without re-rendering the app.
+`scene3d()` draws meshes, glTF models, lights and a camera with the GPU on every backend: SceneKit (iOS, iPadOS, tvOS, visionOS, macOS, watchOS), WebGL 2 (web), OpenGL ES 3 (Android, Wear OS, Android TV), OpenGL in a `GtkGLArea` (Linux) and the same OpenGL renderer in a WGL context (Windows, `prism_native::gl3d`). The scene is described in Rust like the rest of the UI; turning the camera, spinning, transitions and animation clips run on the device, without re-rendering the app.
 
 ```rust
 use prism::prelude::*;

@@ -5,8 +5,9 @@
 //!    (`prism_build::winappsdk`: `PRISM_WINAPPSDK_DIR`, else
 //!    `<target dir>/winappsdk/<version>`);
 //! 2. `windows-bindgen` writes `$OUT_DIR/winui.rs` (included by
-//!    `src/winui.rs`): only the types in `winui-types.txt`, against the
-//!    `windows` crate.
+//!    `src/winui.rs`): only the types in `winui-types.txt` and
+//!    `winui-types-embedded.txt` (web views, videos, rich text, input),
+//!    against the `windows` crate.
 //!
 //! The runtime next to the app and the manifest in it come from the app's
 //! own build script (`prism_build::link_app()`): Cargo applies link
@@ -23,6 +24,7 @@ use prism_build::winappsdk;
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=winui-types.txt");
+    println!("cargo:rerun-if-changed=winui-types-embedded.txt");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
@@ -38,7 +40,11 @@ fn main() {
 
 /// The WinUI projection, from the packages' metadata.
 fn bindings(sdk: &Path, out: &Path) {
-    let types = include_str!("winui-types.txt");
+    let types = [
+        include_str!("winui-types.txt"),
+        include_str!("winui-types-embedded.txt"),
+    ]
+    .join("\n");
     let mut args: Vec<String> = vec!["--in".into(), "default".into()];
     for p in [
         "winui/metadata/Microsoft.UI.Xaml.winmd",
@@ -46,6 +52,8 @@ fn bindings(sdk: &Path, out: &Path) {
         "interactiveexperiences/metadata/10.0.18362.0/Microsoft.UI.winmd",
         "interactiveexperiences/metadata/10.0.18362.0/Microsoft.Foundation.winmd",
         "interactiveexperiences/metadata/10.0.18362.0/Microsoft.Graphics.winmd",
+        // WinUI's WebView2 control speaks CoreWebView2.
+        "webview2/lib/Microsoft.Web.WebView2.Core.winmd",
     ] {
         args.push(sdk.join(p).display().to_string());
     }
@@ -71,8 +79,10 @@ fn bindings(sdk: &Path, out: &Path) {
     // (system XAML, not in it), whose few types WinUI still uses
     // (`TypeName`) are generated here.
     for ns in [
+        "Windows.ApplicationModel",
         "Windows.Foundation",
         "Windows.Graphics",
+        "Windows.Media",
         "Windows.Storage",
         "Windows.System",
         "Windows.UI.Color",

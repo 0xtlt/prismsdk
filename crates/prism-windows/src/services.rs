@@ -102,6 +102,11 @@ impl WinServices {
                 biometry: hello.kind,
                 device_auth: hello.usable(),
                 web_auth: true,
+                // WebView2 (`web.rs`), Explorer drops and drags between
+                // views (`pointer.rs`).
+                web_view: true,
+                drop_files: true,
+                drag_and_drop: true,
                 ..Default::default()
             },
             app: data

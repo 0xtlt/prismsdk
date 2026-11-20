@@ -295,7 +295,8 @@ impl Win {
         let Some(n) = self.scene.get(id) else { return };
         let hover = n.reports.contains(prism_core::Interaction::Hover)
             || n.reports.contains(prism_core::Interaction::Active);
-        let wants = n.clickable || hover || n.menu.is_some() || n.pointer_mask != 0;
+        let pointer = crate::pointer::wants(id);
+        let wants = n.clickable || hover || n.menu.is_some() || n.pointer_mask != 0 || pointer;
         let clickable = n.clickable;
         let Some(v) = self.views.get_mut(&id) else {
             return;
@@ -321,6 +322,9 @@ impl Win {
         }
         if hover && self.hovers.insert(id) {
             let _ = events::hover(&v.outer, id);
+        }
+        if pointer && let Err(e) = crate::pointer::wire(&v.outer, &v.kids, v.button.is_some(), id) {
+            log!("pointer input of node {id}: {e}");
         }
     }
 
@@ -484,6 +488,8 @@ impl Widgets for Win {
                 self.images.request(&wic, text, self.hwnd);
                 self.show_picture(id);
             }
+            NodeKind::WebView => self.show_web(id),
+            NodeKind::Video => self.show_video(id),
             // A screen's title is its stack's header; a tab's, the bar's.
             NodeKind::Screen | NodeKind::Tab => {
                 if let Some(p) = self.scene.get(id).and_then(|n| n.parent) {
@@ -597,6 +603,9 @@ impl Widgets for Win {
             p.children.retain(|c| *c != id);
         }
         self.measurer.forget(id);
+        crate::pointer::forget(id);
+        crate::media::forget(id);
+        crate::web::forget(id);
         self.typed.remove(&id);
         self.select_events.remove(&id);
         self.clicks.remove(&id);
@@ -659,6 +668,9 @@ impl Widgets for Win {
         }
         if resized && matches!(kind, NodeKind::Stack | NodeKind::Tabs) {
             self.bars.insert(id);
+        }
+        if resized && kind == NodeKind::Scene3d {
+            crate::scene3d::queue(id);
         }
     }
 
@@ -811,6 +823,12 @@ impl Widgets for Win {
         }
     }
 
+    fn set_scene(&mut self, view: &NodeId, update: &prism_core::scene3d::SceneUpdate, _json: &str) {
+        if let Some(Content::Scene(scene)) = self.views.get(view).map(|v| &v.content) {
+            scene.set_scene(update, &self.images.sources);
+        }
+    }
+
     fn set_drawing(&mut self, view: &NodeId, paths: &[prism_core::Path]) {
         if let Some(n) = self.scene.get_mut(*view) {
             n.paths = paths.to_vec();
@@ -862,6 +880,10 @@ impl Widgets for Win {
                 }
                 self.remount_content(id);
             }
+        }
+        if kind == NodeKind::Video {
+            // The poster.
+            self.show_video(id);
         }
         let value = self.scene.get(id).map_or(0., |n| n.value);
         if let (Some(n), Some(v)) = (self.scene.get(id), self.views.get(&id)) {
@@ -1001,7 +1023,55 @@ impl Widgets for Win {
         if let Some(n) = self.scene.get_mut(*view) {
             n.pointer_mask = mask;
         }
+        crate::pointer::set_mask(*view, mask);
         self.update_hit(*view);
+    }
+
+    fn set_swipe(&mut self, view: &NodeId, left: bool, right: bool) {
+        crate::pointer::set_swipe(*view, left, right);
+        self.update_hit(*view);
+    }
+
+    fn set_drag_delay(&mut self, view: &NodeId, ms: u32) {
+        crate::pointer::set_delay(*view, ms);
+    }
+
+    fn set_drop_target(&mut self, view: &NodeId, types: Option<&[String]>) {
+        if let Some(v) = self.views.get(view)
+            && let Err(e) = crate::pointer::set_drop_target(&v.outer, *view, types)
+        {
+            log!("drop target {view}: {e}");
+        }
+        self.update_hit(*view);
+    }
+
+    fn set_drag_preview(&mut self, view: &NodeId, at: Option<(f32, f32)>) {
+        self.drag_preview(*view, at);
+    }
+
+    fn rich_input(&self) -> bool {
+        true
+    }
+
+    fn set_rich_value(&mut self, view: &NodeId, runs: &str) {
+        if let (Some(n), Some(v)) = (self.scene.get(*view), self.views.get(view))
+            && let Content::Rich(r) = &v.content
+            && let Err(e) = r.set_runs(runs, &n.style, &self.palette)
+        {
+            log!("rich input {view}: {e}");
+        }
+    }
+
+    fn post_web_message(&mut self, view: &NodeId, data: &str) {
+        if let Some(Content::Web(w)) = self.views.get(view).map(|v| &v.content) {
+            crate::web::post(w, data);
+        }
+    }
+
+    fn reload_web_view(&mut self, view: &NodeId) {
+        if let Some(Content::Web(w)) = self.views.get(view).map(|v| &v.content) {
+            crate::web::reload(w);
+        }
     }
 
     fn set_key_events(&mut self, view: &NodeId, local: bool, global: bool) {
@@ -1012,11 +1082,20 @@ impl Widgets for Win {
     }
 
     fn set_selection(&mut self, view: &NodeId, start: usize, end: usize) {
-        if let Some(Content::Field(t)) = self.views.get(view).map(|v| &v.content) {
-            let text = t.Text().map(|s| s.to_string()).unwrap_or_default();
-            let a = prism_native::fields::chars_to_utf16(&text, start);
-            let b = prism_native::fields::chars_to_utf16(&text, end);
-            let _ = t.Select(a as i32, b.saturating_sub(a) as i32);
+        match self.views.get(view).map(|v| &v.content) {
+            Some(Content::Field(t)) => {
+                let text = t.Text().map(|s| s.to_string()).unwrap_or_default();
+                let a = prism_native::fields::chars_to_utf16(&text, start);
+                let b = prism_native::fields::chars_to_utf16(&text, end);
+                let _ = t.Select(a as i32, b.saturating_sub(a) as i32);
+            }
+            Some(Content::Rich(r)) => {
+                let text = r.text().unwrap_or_default();
+                let a = prism_native::fields::chars_to_utf16(&text, start);
+                let b = prism_native::fields::chars_to_utf16(&text, end);
+                let _ = r.select(a, b);
+            }
+            _ => {}
         }
     }
 

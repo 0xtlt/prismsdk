@@ -114,7 +114,7 @@ jobs:
           "{0}: {1:N1} MB" -f $zip.Name, ($zip.Length / 1MB)
           Expand-Archive $zip.FullName $env:RUNNER_TEMP/counter-zip
           $app = "$env:RUNNER_TEMP/counter-zip/Counter"
-          foreach ($f in 'counter.exe', 'resources.pri', 'Microsoft.UI.Xaml.dll', 'Microsoft.WindowsAppRuntime.dll', 'assets/prism.png') {
+          foreach ($f in 'counter.exe', 'resources.pri', 'Microsoft.UI.Xaml.dll', 'Microsoft.WindowsAppRuntime.dll', 'Microsoft.Web.WebView2.Core.dll', 'assets/prism.png') {
             if (-not (Test-Path "$app/$f")) { throw "missing $f" }
           }
           if (Get-ChildItem $app -Recurse -Include *.pdb, *.d, *.rlib) { throw "build files in the zip" }

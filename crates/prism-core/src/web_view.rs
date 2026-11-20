@@ -32,6 +32,7 @@
 //! | Web | `<iframe>` | `postMessage` to the frame | `parent.postMessage(value, "*")` |
 //! | macOS, iOS, iPadOS, visionOS | `WKWebView` | a `message` event on `window` | `prismHost.postMessage(JSON.stringify(value))` |
 //! | Android | `android.webkit.WebView` | a `message` event on `window` | `prismHost.postMessage(JSON.stringify(value))` |
+//! | Windows | `WebView2` (WinUI, the Edge WebView2 Runtime) | a `message` event on `window` | `prismHost.postMessage(JSON.stringify(value))` |
 //! | tvOS, watchOS, Linux | none (`capabilities().web_view` is false): an empty box | – | – |
 //!
 //! A page that runs in both kinds of hosts sends with:
