@@ -758,6 +758,9 @@ impl Widgets for Win {
         if resized && matches!(kind, NodeKind::Stack | NodeKind::Tabs) {
             self.bars.insert(id);
         }
+        if resized && kind == NodeKind::Scene3d {
+            crate::scene3d::queue(id);
+        }
     }
 
     fn screen_viewport(&mut self, container: &NodeId, child: &NodeId) -> Viewport {
@@ -905,6 +908,12 @@ impl Widgets for Win {
                     log!("value of node {id}: {e}");
                 }
             }
+        }
+    }
+
+    fn set_scene(&mut self, view: &NodeId, update: &prism_core::scene3d::SceneUpdate, _json: &str) {
+        if let Some(Content::Scene(scene)) = self.views.get(view).map(|v| &v.content) {
+            scene.set_scene(update, &self.images.sources);
         }
     }
 

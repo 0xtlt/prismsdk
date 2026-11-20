@@ -65,6 +65,7 @@ pub enum Content {
     Web(crate::web::Web),
     Video(crate::media::Video),
     Rich(crate::rich::Rich),
+    Scene(crate::scene3d::SceneView),
 }
 
 impl Content {
@@ -91,6 +92,7 @@ impl Content {
             Content::Web(w) => w.element.cast(),
             Content::Video(v) => v.element.cast(),
             Content::Rich(r) => r.element.cast(),
+            Content::Scene(s) => s.element.cast(),
         };
         e.ok()
     }
@@ -161,6 +163,7 @@ pub fn create(id: NodeId, kind: NodeKind) -> Result<Content> {
         NodeKind::RichInput => Content::Rich(crate::rich::Rich::new(id)?),
         NodeKind::WebView => Content::Web(crate::web::Web::new(id)?),
         NodeKind::Video => Content::Video(crate::media::Video::new(id)?),
+        NodeKind::Scene3d => Content::Scene(crate::scene3d::SceneView::new(id)?),
         k if is_field(k) => field(id, k == NodeKind::TextInput)?,
         NodeKind::Toggle => {
             let t = ToggleSwitch::new()?;
@@ -516,6 +519,7 @@ pub fn style(c: &Content, n: &Node, pal: &Palette) -> Result<()> {
         | Content::Shape(_)
         | Content::Web(_)
         | Content::Video(_)
+        | Content::Scene(_)
         | Content::None => {}
     }
     Ok(())

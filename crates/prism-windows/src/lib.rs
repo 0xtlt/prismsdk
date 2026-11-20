@@ -31,6 +31,7 @@
 //! | `events` | clicks, hover and press, focus, scrolling, menus |
 //! | `pointer` | pointer, drags, swipes, wheel, files from Explorer |
 //! | `web`, `media`, `rich` | web views (WebView2), videos, rich inputs |
+//! | `scene3d` | 3D scenes: prism-native's OpenGL renderer, in WGL |
 //! | `keyboard` | key presses for Prism's key listeners |
 //! | `smoke`, `inject` | `PRISM_CLICK` (real mouse input too), `PRISM_SNAPSHOT`… |
 //! | `capture`, `wic` | `PrintWindow` and WIC: snapshots, pictures |
@@ -71,6 +72,8 @@ mod pointer;
 mod rich;
 // The tree's model: no Win32, tested everywhere.
 mod scene;
+#[cfg(target_os = "windows")]
+mod scene3d;
 #[cfg(target_os = "windows")]
 mod services;
 #[cfg(target_os = "windows")]
