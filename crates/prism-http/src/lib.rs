@@ -415,8 +415,36 @@ impl FetchStream for AsyncApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::net::TcpListener;
+
+    /// Reads one whole request: the headers, then a `Content-Length` body. A
+    /// server that closes the connection with bytes left unread resets it,
+    /// and on Windows the client then loses the response it was reading.
+    fn read_request(s: &mut impl Read) -> String {
+        let mut req = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let text = String::from_utf8_lossy(&req);
+            if let Some(end) = text.find("\r\n\r\n") {
+                let length = text[..end]
+                    .lines()
+                    .find_map(|line| {
+                        let line = line.to_ascii_lowercase();
+                        line.strip_prefix("content-length:")?.trim().parse().ok()
+                    })
+                    .unwrap_or(0);
+                if req.len() >= end + 4 + length {
+                    break;
+                }
+            }
+            match s.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => req.extend_from_slice(&buf[..n]),
+            }
+        }
+        String::from_utf8_lossy(&req).into_owned()
+    }
 
     #[test]
     fn fetches_from_a_local_server() {
@@ -424,8 +452,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
             let (mut s, _) = listener.accept().unwrap();
-            let mut buf = [0u8; 1024];
-            let _ = std::io::Read::read(&mut s, &mut buf);
+            read_request(&mut s);
             let _ = s.write_all(
                 b"HTTP/1.1 201 Created\r\nX-Test: yes\r\nContent-Length: 5\r\n\r\nhello",
             );
@@ -453,9 +480,7 @@ mod tests {
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut s) = stream else { break };
-                let mut buf = vec![0u8; 8192];
-                let n = std::io::Read::read(&mut s, &mut buf).unwrap_or(0);
-                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let req = read_request(&mut s);
                 let reply = answer(&req);
                 log.lock().unwrap().push(req);
                 let _ = s.write_all(reply.as_bytes());
