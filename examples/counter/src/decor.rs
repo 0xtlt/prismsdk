@@ -114,6 +114,29 @@ impl Render for Decor {
                     ),
             )
             .child(
+                // A conic gradient, and a border of a different color on
+                // each side, split at the corners.
+                div()
+                    .flex_row()
+                    .gap(12.)
+                    .items_center()
+                    .child(
+                        div()
+                            .size(64.)
+                            .rounded(32.)
+                            .bg_gradient(Gradient::conic(0., stripes.map(rgb)))
+                            .accessibility_label(strings::decor_conic(cx)),
+                    )
+                    .child(
+                        tile(strings::decor_sides(cx))
+                            .h(64.)
+                            .border_top(4., rgb(0xFF453A))
+                            .border_right(4., rgb(0xFFD60A))
+                            .border_bottom(4., rgb(0x30D158))
+                            .border_left(4., rgb(0x0A84FF)),
+                    ),
+            )
+            .child(
                 // Square stripes clipped to the rounded corners, under a
                 // frosted bar.
                 div()

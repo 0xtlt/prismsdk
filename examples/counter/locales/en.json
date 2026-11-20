@@ -426,6 +426,8 @@
     "row": "Row {n}",
     "gradient": "Linear gradient",
     "radial": "Radial",
+    "conic": "Conic",
+    "sides": "Four sides",
     "clip": "Clipped to the corners",
     "frosted": "Frosted bar",
     "search": "Search",

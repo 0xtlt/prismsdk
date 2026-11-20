@@ -426,6 +426,8 @@
     "row": "Ligne {n}",
     "gradient": "Dégradé linéaire",
     "radial": "Radial",
+    "conic": "Conique",
+    "sides": "Quatre côtés",
     "clip": "Rogné aux coins",
     "frosted": "Barre givrée",
     "search": "Rechercher",
