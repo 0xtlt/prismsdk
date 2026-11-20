@@ -5395,15 +5395,30 @@ pub fn run(config: AppConfig, init: AppInit) {
         ix: Default::default(),
         drag_preview: None,
     });
+    crate::trace::log("app runtime");
+    let t = std::time::Instant::now();
     let first = runtime.render();
+    crate::trace::log(&format!(
+        "the app's tree ({:.0} ms, {} patches)",
+        crate::trace::ms(t),
+        first.len()
+    ));
     let mut state = State {
         runtime,
         renderer,
         services,
         device_size: None,
     };
+    let t = std::time::Instant::now();
     state.commit(first);
     state.relayout();
+    if crate::trace::on() {
+        eprintln!(
+            "prism-macos: AppKit views: patches and layout {:.1} ms",
+            crate::trace::ms(t)
+        );
+        crate::trace::log("first layout");
+    }
     STATE.with(|cell| *cell.borrow_mut() = Some(state));
     prism_native::apple::set_device_sink(on_device);
     flush_responses();
@@ -5417,6 +5432,17 @@ pub fn run(config: AppConfig, init: AppInit) {
     install_flags_monitor();
     window.makeKeyAndOrderFront(None);
     app.activate();
+    if crate::trace::on() {
+        // What AppKit would do at the end of this turn of the run loop:
+        // draw, and commit the layers to the render server.
+        window.displayIfNeeded();
+        objc2_quartz_core::CATransaction::flush();
+        eprintln!(
+            "prism-macos: first frame after {:.0} ms; {}",
+            crate::trace::since_start(),
+            crate::trace::memory()
+        );
+    }
     if std::env::var_os("PRISM_SNAPSHOT").is_some()
         || std::env::var_os("PRISM_CLICK").is_some()
         || std::env::var_os("PRISM_A11Y_DUMP").is_some()
@@ -6149,7 +6175,10 @@ fn run_automation(mtm: MainThreadMarker) {
             };
             match png {
                 Some(data) => match std::fs::write(&path, data.to_vec()) {
-                    Ok(()) => println!("prism-macos: snapshot written to {path}"),
+                    Ok(()) => println!(
+                        "prism-macos: snapshot written to {path}; {}",
+                        crate::trace::memory()
+                    ),
                     Err(e) => eprintln!("prism-macos: cannot write {path}: {e}"),
                 },
                 None => eprintln!("prism-macos: PNG encoding failed"),
