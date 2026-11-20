@@ -9,6 +9,7 @@
 //!   presses Enter in it; `menu:Title` opens the context menu of the view
 //!   showing Title; `scroll:600` scrolls the visible scroll views before
 //!   the next steps; `wait:500` waits before them (milliseconds);
+//!   `dpi:144` moves the window to a simulated monitor at that DPI;
 //!   `key:Escape` (`Tab`, `Enter`) presses a key; `hover:`,
 //!   `drag:`, `swipe:` and `wheel:` move the real mouse over a view
 //!   (`inject.rs`).
@@ -93,7 +94,10 @@ fn steps_then_snapshot(main: HWND, mut steps: Vec<String>) {
             crate::perf::committed(&name, started);
         }
         let wait = step.strip_prefix("wait:").and_then(|ms| ms.parse().ok());
-        let waits = step.starts_with("scroll:") || step.starts_with("key:") || wait.is_some();
+        let waits = step.starts_with("scroll:")
+            || step.starts_with("key:")
+            || step.starts_with("dpi:")
+            || wait.is_some();
         if waits && !steps.is_empty() {
             crate::motion::after(
                 std::time::Duration::from_millis(wait.unwrap_or(400)),
@@ -116,6 +120,11 @@ fn steps_then_snapshot(main: HWND, mut steps: Vec<String>) {
 fn run_step(step: &str) -> bool {
     // `wait:500`: the next steps wait that many milliseconds (frames run).
     if step.starts_with("wait:") {
+        return true;
+    }
+    // `dpi:144`: the window moves to a (simulated) monitor at 144 DPI.
+    if let Some(dpi) = step.strip_prefix("dpi:").and_then(|d| d.parse().ok()) {
+        crate::system::simulate_dpi(crate::imp::main_hwnd(), dpi);
         return true;
     }
     // `key:Escape`, `key:Tab`, `key:Enter`: the key, as the keyboard sends

@@ -20,7 +20,7 @@ use windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowA
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Ole::{OleInitialize, OleUninitialize};
 use windows::Win32::UI::HiDpi::{
-    AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow,
+    AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
     SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -535,7 +535,16 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             WM_DPICHANGED => {
                 let dpi = loword(wp.0) as u32;
                 let r = &*(lp.0 as *const RECT);
-                with_state(|s| s.renderer.widgets.dpi = dpi);
+                system::dpi_changed(dpi);
+                with_state(|s| {
+                    let w = &mut s.renderer.widgets;
+                    w.dpi = dpi;
+                    if let (Some(k), Some(i)) = (system::scale_override(), &w.island) {
+                        i.set_scale(k);
+                    }
+                    // Its pixels change: 3D scenes draw again.
+                    crate::scene3d::redraw_all();
+                });
                 let _ = SetWindowPos(
                     h,
                     None,
@@ -549,7 +558,7 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             }
             WM_GETMINMAXINFO => {
                 let info = &mut *(lp.0 as *mut MINMAXINFO);
-                let dpi = GetDpiForWindow(h).max(96);
+                let dpi = system::window_dpi(h);
                 let mut r = RECT {
                     left: 0,
                     top: 0,
@@ -726,9 +735,9 @@ pub fn run(config: AppConfig, init: AppInit) {
         )
         .expect("prism-windows: CreateWindowExW");
         MAIN.set(hwnd_value(main));
-        // The client area at the window's DPI.
-        let dpi = GetDpiForWindow(main).max(96);
         trace("window");
+        // The client area at the window's DPI (or the app's own scale).
+        let dpi = system::window_dpi(main);
         let k = dpi as f32 / 96.;
         let mut r = RECT {
             left: 0,

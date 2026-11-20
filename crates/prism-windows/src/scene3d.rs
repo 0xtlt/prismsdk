@@ -441,6 +441,15 @@ pub fn queue(id: NodeId) {
     }
 }
 
+/// The window's scale changed: every scene draws again at its new size
+/// in pixels.
+pub fn redraw_all() {
+    let ids: Vec<NodeId> = SCENES.with(|s| s.borrow().keys().copied().collect());
+    for id in ids {
+        queue(id);
+    }
+}
+
 /// The window showed its first frame: the scenes waiting for it draw.
 pub fn first_frame() {
     if TIMER.get() == 0 && DIRTY.with(|d| !d.borrow().is_empty()) {

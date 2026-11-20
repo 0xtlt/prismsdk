@@ -189,3 +189,86 @@ pub fn device_info(width: f32, height: f32, scale: f32) -> prism_core::DeviceInf
     };
     info
 }
+
+thread_local! {
+    /// `PRISM_SCALE`, or the last simulated DPI change (`dpi:` step).
+    static SCALE: std::cell::Cell<Option<f32>> = std::cell::Cell::new(scale_from_env());
+}
+
+/// `PRISM_SCALE=1.5` (or `150%`): the app's scale in place of its
+/// monitor's, to check 125, 150 or 200 % on any screen without changing
+/// the PC's settings.
+fn scale_from_env() -> Option<f32> {
+    let v = std::env::var("PRISM_SCALE").ok()?;
+    let v = v.trim();
+    let k = match v.strip_suffix('%') {
+        Some(p) => p.trim().parse::<f32>().ok()? / 100.,
+        None => v.parse::<f32>().ok()?,
+    };
+    (0.5..=4.).contains(&k).then_some(k)
+}
+
+/// The app's own scale (`PRISM_SCALE`, a simulated DPI change), if any:
+/// XAML draws at it (the island's `OverrideScale`) and Prism counts its
+/// pixels per DIP with it.
+pub fn scale_override() -> Option<f32> {
+    SCALE.get()
+}
+
+/// The window's DPI: the app's own scale's, else its monitor's.
+pub fn window_dpi(hwnd: windows::Win32::Foundation::HWND) -> u32 {
+    match scale_override() {
+        Some(k) => (k * 96.).round() as u32,
+        None => unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd) }.max(96),
+    }
+}
+
+/// `WM_DPICHANGED`: an app with its own scale takes the new one (a
+/// simulated move to another monitor sends the message itself).
+pub fn dpi_changed(dpi: u32) {
+    if SCALE.get().is_some() {
+        SCALE.set(Some(dpi as f32 / 96.));
+    }
+}
+
+/// Simulates moving the window to a monitor at `dpi`: the app takes that
+/// scale, and the window gets `WM_DPICHANGED` with the rectangle Windows
+/// would suggest (the same client size in DIPs), as on a real move.
+pub fn simulate_dpi(hwnd: windows::Win32::Foundation::HWND, dpi: u32) {
+    use windows::Win32::Foundation::{LPARAM, RECT, WPARAM};
+    use windows::Win32::UI::HiDpi::AdjustWindowRectExForDpi;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GWL_EXSTYLE, GWL_STYLE, GetClientRect, GetWindowLongW, GetWindowRect, SendMessageW,
+        WINDOW_EX_STYLE, WINDOW_STYLE, WM_DPICHANGED,
+    };
+    let old = window_dpi(hwnd) as f32;
+    SCALE.set(Some(old / 96.));
+    unsafe {
+        let (mut client, mut window) = (RECT::default(), RECT::default());
+        let _ = GetClientRect(hwnd, &mut client);
+        let _ = GetWindowRect(hwnd, &mut window);
+        let k = dpi as f32 / old;
+        let mut r = RECT {
+            left: 0,
+            top: 0,
+            right: (client.right as f32 * k).round() as i32,
+            bottom: (client.bottom as f32 * k).round() as i32,
+        };
+        let style = WINDOW_STYLE(GetWindowLongW(hwnd, GWL_STYLE) as u32);
+        let ex = WINDOW_EX_STYLE(GetWindowLongW(hwnd, GWL_EXSTYLE) as u32);
+        let _ = AdjustWindowRectExForDpi(&mut r, style, false, ex, dpi);
+        let suggested = RECT {
+            left: window.left,
+            top: window.top,
+            right: window.left + r.right - r.left,
+            bottom: window.top + r.bottom - r.top,
+        };
+        let packed = (dpi & 0xffff) | ((dpi & 0xffff) << 16);
+        SendMessageW(
+            hwnd,
+            WM_DPICHANGED,
+            Some(WPARAM(packed as usize)),
+            Some(LPARAM(&suggested as *const RECT as isize)),
+        );
+    }
+}
