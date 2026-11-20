@@ -143,6 +143,9 @@ pub fn patches<R>(f: impl FnOnce() -> R) -> R {
     }
     let t = Instant::now();
     let was = APPLYING.replace(true);
+    if !was {
+        crate::profile::phase("patches");
+    }
     let r = f();
     APPLYING.set(was);
     if !was {
@@ -158,6 +161,7 @@ pub fn layout<R>(f: impl FnOnce() -> R) -> R {
         return f();
     }
     let t = Instant::now();
+    crate::profile::phase("layout");
     let before = STAGES.get().0;
     let r = f();
     let (a, l) = STAGES.get();

@@ -41,7 +41,7 @@
 //! | `scene3d`, `dxgl` | 3D scenes: prism-native's OpenGL renderer, in WGL, to a swap chain |
 //! | `keyboard` | key presses for Prism's key listeners |
 //! | `smoke`, `inject` | `PRISM_CLICK` (real mouse input too), `PRISM_SNAPSHOT`… |
-//! | `perf` | `PRISM_TRACE`: where startup and update time goes |
+//! | `perf`, `profile` | `PRISM_TRACE`: where startup and update time goes; `PRISM_PROFILE`: the UI thread's stacks |
 //! | `capture`, `wic` | `PrintWindow` and WIC: snapshots, pictures |
 //! | `images` | decoding pictures |
 //! | `package` | what a shipped app brings: its icon, its assets |
@@ -118,6 +118,8 @@ mod perf;
 mod pickers;
 #[cfg(target_os = "windows")]
 mod pointer;
+#[cfg(target_os = "windows")]
+mod profile;
 #[cfg(target_os = "windows")]
 mod rich;
 // The tree's model: no Win32, tested everywhere.

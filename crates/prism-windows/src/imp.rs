@@ -419,6 +419,7 @@ fn tick() {
 
 /// Startup phases, with `PRISM_TRACE=1`.
 pub fn trace(what: &str) {
+    crate::profile::phase(what);
     if crate::perf::on() {
         log!(
             "{what} after {:.0} ms (UI thread CPU {:.0} ms)",
@@ -441,6 +442,7 @@ fn first_frame() {
     use windows::Foundation::EventHandler;
     let handler = EventHandler::<RenderedEventArgs>::new(|_, _| {
         if !FRAMED.replace(true) {
+            crate::profile::first_frame(since_start());
             log!(
                 "first frame after {:.0} ms (UI thread CPU {:.0} ms); {}",
                 since_start(),
@@ -681,6 +683,7 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
 /// Opens the app's window and runs its message loop until it closes.
 pub fn run(config: AppConfig, init: AppInit) {
     START.set(Some(std::time::Instant::now()));
+    crate::profile::start();
     // Windows Hello answers slowly: asked while WinUI starts.
     crate::security::prefetch_hello();
     unsafe {
@@ -808,6 +811,7 @@ pub fn run(config: AppConfig, init: AppInit) {
                 .root
                 .Loaded(&crate::winui::xaml::RoutedEventHandler::new(|_, _| {
                     trace("XAML layout (Loaded)");
+                    crate::profile::phase("render");
                     Ok(())
                 }));
             first_frame();
@@ -837,6 +841,7 @@ pub fn run(config: AppConfig, init: AppInit) {
             }
             w.resize(client.right as f32 / k, client.bottom as f32 / k);
             let t = std::time::Instant::now();
+            crate::profile::phase("tree");
             let first = s.runtime.render();
             trace(&format!(
                 "the app's tree ({:.0} ms, {} patches)",
@@ -844,6 +849,7 @@ pub fn run(config: AppConfig, init: AppInit) {
                 first.len()
             ));
             commit(s, first);
+            crate::profile::phase("XAML layout");
             if crate::perf::on() {
                 log!("XAML elements: {}", crate::perf::take());
             }
