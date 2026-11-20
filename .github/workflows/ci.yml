@@ -79,6 +79,24 @@ jobs:
       - name: Production web image
         run: docker build -f docker/web.Dockerfile --build-arg PACKAGE=counter -t counter-web .
 
+  # Windows (MSVC): no native backend yet (`Application::run` panics without
+  # the `web` feature there), but the whole workspace must build, lint and
+  # pass its tests. The repository's symbolic links (LICENSE-*, docker) may
+  # be checked out as small text files on Windows: nothing here reads them.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99"
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --workspace
+
   bundles:
     runs-on: macos-15
     needs: check
