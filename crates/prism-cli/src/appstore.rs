@@ -545,12 +545,7 @@ mod tests {
 
     #[test]
     fn checks_api_keys() {
-        let pem = crate::jwt::tests::openssl_key(&[
-            "-algorithm",
-            "EC",
-            "-pkeyopt",
-            "ec_paramgen_curve:P-256",
-        ]);
+        let pem = crate::jwt::tests::ec_key();
         let path = std::env::temp_dir().join(format!("prism-asc-{}.p8", std::process::id()));
         std::fs::write(&path, pem).unwrap();
         let mut key = AscKey {
@@ -562,14 +557,10 @@ mod tests {
         key.issuer = "nope".into();
         assert!(key.check().unwrap_err().contains("UUID"));
         key.issuer = "57246542-96fe-1a63-e053-0824d011072a".into();
-        let rsa = crate::jwt::tests::openssl_key(&[
-            "-algorithm",
-            "RSA",
-            "-pkeyopt",
-            "rsa_keygen_bits:2048",
-        ]);
-        std::fs::write(&path, rsa).unwrap();
-        assert!(key.check().unwrap_err().contains("P-256"));
+        if let Some(rsa) = crate::jwt::tests::rsa_key() {
+            std::fs::write(&path, rsa).unwrap();
+            assert!(key.check().unwrap_err().contains("P-256"));
+        }
         let _ = std::fs::remove_file(&path);
     }
 

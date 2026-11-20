@@ -396,22 +396,18 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
 
-    fn account_json() -> String {
-        let pem = crate::jwt::tests::openssl_key(&[
-            "-algorithm",
-            "RSA",
-            "-pkeyopt",
-            "rsa_keygen_bits:2048",
-        ]);
-        serde_json::json!({
+    /// `None` where there is no openssl to make the RSA key: the test skips.
+    fn account_json() -> Option<String> {
+        let pem = crate::jwt::tests::rsa_key()?;
+        let json = serde_json::json!({
             "type": "service_account",
             "project_id": "p",
             "private_key_id": "k1",
             "private_key": pem,
             "client_email": "publisher@p.iam.gserviceaccount.com",
             "token_uri": "https://oauth2.googleapis.com/token",
-        })
-        .to_string()
+        });
+        Some(json.to_string())
     }
 
     fn release() -> Release {
@@ -428,7 +424,8 @@ mod tests {
 
     #[test]
     fn parses_service_accounts() {
-        let account = ServiceAccount::parse(&account_json()).unwrap();
+        let Some(json) = account_json() else { return };
+        let account = ServiceAccount::parse(&json).unwrap();
         assert_eq!(account.client_email, "publisher@p.iam.gserviceaccount.com");
         let jwt = account.assertion(1000, TOKEN_URL).unwrap();
         let claims = jwt.split('.').nth(1).unwrap();
@@ -595,7 +592,8 @@ mod tests {
 
     #[test]
     fn publishes_through_an_edit() {
-        let account = ServiceAccount::parse(&account_json()).unwrap();
+        let Some(json) = account_json() else { return };
+        let account = ServiceAccount::parse(&json).unwrap();
         let aab = std::env::temp_dir().join(format!("prism-play-{}.aab", std::process::id()));
         std::fs::write(&aab, b"AAB!").unwrap();
 

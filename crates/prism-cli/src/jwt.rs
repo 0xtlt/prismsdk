@@ -77,19 +77,51 @@ pub mod tests {
     use super::*;
     use ring::signature::{ECDSA_P256_SHA256_FIXED, KeyPair, RSA_PKCS1_2048_8192_SHA256};
 
-    /// A fresh key as a PEM string, made by openssl like the stores' keys.
-    pub fn openssl_key(args: &[&str]) -> String {
-        let out = std::process::Command::new("openssl")
-            .arg("genpkey")
-            .args(args)
+    /// A fresh P-256 key as a PKCS#8 PEM string, like an App Store Connect
+    /// `.p8` key.
+    pub fn ec_key() -> String {
+        let der =
+            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+                .unwrap();
+        let b64 = STANDARD.encode(der.as_ref());
+        let lines: Vec<&str> = b64
+            .as_bytes()
+            .chunks(64)
+            .map(|l| std::str::from_utf8(l).unwrap())
+            .collect();
+        format!(
+            "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
+            lines.join("\n")
+        )
+    }
+
+    /// A fresh 2048-bit RSA key as a PEM string, made by openssl like a
+    /// Google service account's (ring cannot make RSA keys). `None` where
+    /// there is no openssl (stock Windows): the test is then skipped.
+    pub fn rsa_key() -> Option<String> {
+        let out = match std::process::Command::new("openssl")
+            .args([
+                "genpkey",
+                "-algorithm",
+                "RSA",
+                "-pkeyopt",
+                "rsa_keygen_bits:2048",
+            ])
             .output()
-            .expect("openssl");
+        {
+            Ok(out) => out,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("skipped: no openssl to make an RSA key");
+                return None;
+            }
+            Err(e) => panic!("openssl: {e}"),
+        };
         assert!(
             out.status.success(),
             "{}",
             String::from_utf8_lossy(&out.stderr)
         );
-        String::from_utf8(out.stdout).unwrap()
+        Some(String::from_utf8(out.stdout).unwrap())
     }
 
     fn split(token: &str) -> (String, Vec<u8>) {
@@ -99,7 +131,7 @@ pub mod tests {
 
     #[test]
     fn rs256_verifies() {
-        let pem = openssl_key(&["-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048"]);
+        let Some(pem) = rsa_key() else { return };
         let der = pkcs8_der(&pem).unwrap();
         let token = rs256(
             &der,
@@ -120,7 +152,7 @@ pub mod tests {
 
     #[test]
     fn es256_verifies() {
-        let pem = openssl_key(&["-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256"]);
+        let pem = ec_key();
         let der = pkcs8_der(&pem).unwrap();
         let token = es256(
             &der,

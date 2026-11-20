@@ -44,7 +44,14 @@ fn in_container(root: &Path, path: &Path) -> Result<String, String> {
             root.display()
         )
     })?;
-    Ok(Path::new("/src").join(rel).display().to_string())
+    // `/` whatever the host: the container is Linux, and `Path::join` on a
+    // Windows host would give `/src\examples\app`.
+    let mut out = String::from("/src");
+    for part in rel.components() {
+        out.push('/');
+        out.push_str(&part.as_os_str().to_string_lossy());
+    }
+    Ok(out)
 }
 
 /// The `docker run` arguments that package the app in the dev image.

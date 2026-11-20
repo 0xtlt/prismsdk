@@ -122,10 +122,7 @@ pub fn load(src: &str, sources: &ImageSources) -> Option<Vec<u8>> {
         return Some(res.body);
     }
     // A file on disk (a picked photo, a download…).
-    if let Some(path) = src
-        .strip_prefix("file://")
-        .or(src.starts_with('/').then_some(src))
-    {
+    if let Some(path) = file_url_path(src).or(src.starts_with('/').then_some(src)) {
         return std::fs::read(path).ok();
     }
     if src.split('/').any(|s| s == "..") {
@@ -164,7 +161,7 @@ pub fn media_url(src: &str, sources: &ImageSources) -> Option<String> {
         .map(|d| d.join(url))
         .find(|p| p.exists())
     {
-        return Some(format!("file://{}", path.display()));
+        return Some(file_url(&path));
     }
     let bytes = sources.embedded.get(url)?;
     let dir = sources.cache_dir.as_ref()?.join("media");
@@ -174,7 +171,25 @@ pub fn media_url(src: &str, sources: &ImageSources) -> Option<String> {
     if !path.exists() {
         std::fs::write(&path, bytes).ok()?;
     }
-    Some(format!("file://{}", path.display()))
+    Some(file_url(&path))
+}
+
+/// `path` as a `file://` URL, with `/` separators: `file:///C:/…` for a
+/// Windows path.
+fn file_url(path: &Path) -> String {
+    let path = path.display().to_string();
+    if cfg!(windows) {
+        format!("file:///{}", path.replace('\\', "/"))
+    } else {
+        format!("file://{path}")
+    }
+}
+
+/// The path a `file://` URL names (`file:///C:/…` is `C:/…` on Windows).
+fn file_url_path(url: &str) -> Option<&str> {
+    let path = url.strip_prefix("file://")?;
+    let drive = cfg!(windows) && path.starts_with('/') && path.as_bytes().get(2) == Some(&b':');
+    Some(if drive { &path[1..] } else { path })
 }
 
 #[cfg(test)]
@@ -255,11 +270,11 @@ mod tests {
             media_url("/tmp/a.mp4", &sources).as_deref(),
             Some("file:///tmp/a.mp4")
         );
-        let asset = format!("file://{}", assets.join("intro.mp4").display());
+        let asset = file_url(&assets.join("intro.mp4"));
         assert_eq!(media_url("intro.mp4", &sources), Some(asset));
         let copy = media_url("clips/outro.mp4", &sources).unwrap();
         assert!(copy.ends_with("media/clips_outro.mp4"));
-        assert!(std::path::Path::new(copy.trim_start_matches("file://")).exists());
+        assert!(Path::new(file_url_path(&copy).unwrap()).exists());
         assert_eq!(media_url("../secret.mp4", &sources), None);
         let _ = std::fs::remove_dir_all(dir);
     }
