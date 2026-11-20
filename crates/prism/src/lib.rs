@@ -124,6 +124,8 @@ pub const BACKEND: &str = if cfg!(feature = "web") {
     "linux"
 } else if cfg!(all(feature = "native", target_os = "android")) {
     "android"
+} else if cfg!(all(feature = "native", target_os = "windows")) {
+    "windows"
 } else {
     "none"
 };
@@ -391,6 +393,10 @@ impl Application {
         {
             prism_android::run(config, init);
         }
+        #[cfg(all(not(feature = "web"), feature = "native", target_os = "windows"))]
+        {
+            prism_windows::run(config, init);
+        }
         #[cfg(not(any(
             feature = "web",
             all(
@@ -402,7 +408,8 @@ impl Application {
                     target_os = "visionos",
                     target_os = "watchos",
                     target_os = "linux",
-                    target_os = "android"
+                    target_os = "android",
+                    target_os = "windows"
                 )
             )
         )))]
@@ -410,16 +417,14 @@ impl Application {
             let _ = (config, init);
             let reason = if cfg!(not(feature = "native")) {
                 "neither the `native` nor the `web` feature is enabled".to_string()
-            } else if cfg!(target_os = "windows") {
-                "the native Windows backend is not available yet".to_string()
             } else {
                 format!("no native backend for {}", std::env::consts::OS)
             };
             panic!(
                 "prism: {reason}. Native backends: macOS, iOS/iPadOS/tvOS/visionOS, watchOS, \
-                 Linux and Android. The `web` feature works on every platform, Windows \
-                 included: build with `--no-default-features --features web` and open the \
-                 app in a browser."
+                 Linux, Android and Windows. The `web` feature works on every platform: \
+                 build with `--no-default-features --features web` and open the app in a \
+                 browser."
             );
         }
     }

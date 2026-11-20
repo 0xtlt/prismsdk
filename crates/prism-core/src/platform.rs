@@ -23,7 +23,7 @@ pub enum Platform {
     Android,
     /// macOS.
     Macos,
-    /// Windows (no backend yet).
+    /// Windows.
     Windows,
     /// Linux desktops (GTK 4).
     Linux,
