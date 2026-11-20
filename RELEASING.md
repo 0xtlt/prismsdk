@@ -42,23 +42,24 @@ the table is the same order for publishing crate by crate.
 
 | # | Crate | Depends on (Prism crates) |
 |---|---|---|
-| 1 | `prism-core` | – |
-| 2 | `prism-push` | – |
-| 3 | `prism-apple-build` | – |
-| 4 | `prism-build` | – |
-| 5 | `prism-http` | core |
-| 6 | `prism-ui` | core |
-| 7 | `prism-native` | core, http |
-| 8 | `prism-web` | core |
-| 9 | `prism-db` | core |
-| 10 | `prism-macos` | core, native, apple-build |
-| 11 | `prism-ios` | core, native, apple-build |
-| 12 | `prism-watchos` | core, native, apple-build |
-| 13 | `prism-linux` | core, native, push |
-| 14 | `prism-android` | core, native, push |
-| 15 | `prism` | core, ui, http, web, db and the five backends |
-| 16 | `prism-cli` | apple-build |
-| 17 | `prism-island` | – (islands' WASM side; built for `wasm32-unknown-unknown`) |
+| 1 | `prismsdk-core` | – |
+| 2 | `prismsdk-push` | – |
+| 3 | `prismsdk-apple-build` | – |
+| 4 | `prismsdk-build` | – |
+| 5 | `prismsdk-http` | core |
+| 6 | `prismsdk-ui` | core |
+| 7 | `prismsdk-native` | core, http |
+| 8 | `prismsdk-web` | core |
+| 9 | `prismsdk-db` | core |
+| 10 | `prismsdk-macos` | core, native, apple-build |
+| 11 | `prismsdk-ios` | core, native, apple-build |
+| 12 | `prismsdk-watchos` | core, native, apple-build |
+| 13 | `prismsdk-linux` | core, native, push |
+| 14 | `prismsdk-android` | core, native, push |
+| 15 | `prismsdk-windows` | core, native, build (build script) |
+| 16 | `prismsdk` | core, ui, http, web, db and the six backends |
+| 17 | `prismsdk-cli` | apple-build |
+| 18 | `prismsdk-island` | – (islands' WASM side; built for `wasm32-unknown-unknown`) |
 
 Publishing must happen from macOS with Xcode: verifying `prism-macos`,
 `prism-ios` and `prism-watchos` compiles the Swift bridge.
@@ -84,14 +85,15 @@ crate by crate instead, in the order above, and wait when crates.io asks to
 for c in prismsdk-core prismsdk-push prismsdk-apple-build prismsdk-build \
          prismsdk-http prismsdk-ui prismsdk-native prismsdk-web prismsdk-db \
          prismsdk-macos prismsdk-ios prismsdk-watchos prismsdk-linux \
-         prismsdk-android prismsdk prismsdk-cli prismsdk-island; do
+         prismsdk-android prismsdk-windows prismsdk prismsdk-cli \
+         prismsdk-island; do
   cargo publish -p "$c" || break
 done
 ```
 
 Run the loop again after the wait: remove the crates already published from
-the list first (publishing a version twice is an error). The ten crates after
-the first five take about 100 minutes. Alternatively, ask help@crates.io for a
+the list first (publishing a version twice is an error). The thirteen crates
+after the first five take about 130 minutes. Alternatively, ask help@crates.io for a
 temporary higher limit before the release.
 
 On crates.io every crate is named `prismsdk*` (`prism`, `prism-core` and
