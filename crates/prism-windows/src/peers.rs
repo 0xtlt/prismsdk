@@ -338,8 +338,8 @@ unsafe extern "system" fn release<const K: usize>(this: *mut c_void) -> u32 {
         let left = o.refs.fetch_sub(1, Ordering::Release) - 1;
         if left == 0 {
             std::sync::atomic::fence(Ordering::Acquire);
-            // Kept alive while the base class goes (it may call back).
-            o.refs.store(1, Ordering::Relaxed);
+            // Never freed twice while the base class goes (it may call back).
+            o.refs.store(1 << 30, Ordering::Relaxed);
             let p = o.identity() as *mut Outer;
             drop((*(*p).inner.get()).take());
             drop(Box::from_raw(p));

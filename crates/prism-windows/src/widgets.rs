@@ -139,10 +139,15 @@ impl Win {
 
     fn theme_root(&mut self) -> Result<()> {
         // A contrast theme's window color, not Mica (`a11y::palette`).
-        let solid = self.palette.forced.map(|f| crate::winui::brush(f.sys.window));
+        let solid = self
+            .palette
+            .forced
+            .map(|f| crate::winui::brush(f.sys.window));
         match solid {
             Some(b) => self.root.SetBackground(&b?)?,
-            None => self.root.SetBackground(None::<&crate::winui::xaml::Media::Brush>)?,
+            None => self
+                .root
+                .SetBackground(None::<&crate::winui::xaml::Media::Brush>)?,
         }
         self.root.SetRequestedTheme(if self.dark() {
             ElementTheme::Dark
