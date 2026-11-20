@@ -41,8 +41,21 @@ struct Run {
     entitlements: String,
 }
 
+/// A working `python3`. On Windows, the Microsoft Store's `python3.exe`
+/// alias only says that Python is missing, and fails.
+fn has_python3() -> bool {
+    Command::new("python3")
+        .args(["-c", ""])
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
 /// Runs the script for one bundle; `None` without python3.
 fn run(dir: &Path, profile: &Path, bundle: &str, role: &str, env: &[(&str, &str)]) -> Option<Run> {
+    if !has_python3() {
+        eprintln!("python3 not found: skipped");
+        return None;
+    }
     let out = dir.join(format!("{bundle}.{role}.entitlements.plist"));
     let script =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("platform/scripts/profile-entitlements.py");
@@ -172,20 +185,21 @@ fn entitlements_for_the_bundle() {
 
 #[test]
 fn unknown_role_fails() {
+    if !has_python3() {
+        return eprintln!("python3 not found: skipped");
+    }
     let dir = temp("role");
     let app = profile(&dir, "app.plist", BUNDLE, "");
     let script =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("platform/scripts/profile-entitlements.py");
-    let Ok(out) = Command::new("python3")
+    let out = Command::new("python3")
         .arg(script)
         .arg(&app)
         .arg(dir.join("out.plist"))
         .arg(BUNDLE)
         .arg("widgets")
         .output()
-    else {
-        return eprintln!("python3 not found: skipped");
-    };
+        .unwrap();
     assert!(!out.status.success());
     std::fs::remove_dir_all(&dir).ok();
 }

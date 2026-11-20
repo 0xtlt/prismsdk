@@ -1,5 +1,6 @@
 //! `apple/generate_widgets.py`: the WidgetKit entry point generated from an
-//! app's `PRISM_DESCRIBE=widgets`. Skipped where `python3` is missing.
+//! app's `PRISM_DESCRIBE=widgets`. Skipped where `python3` is missing (or
+//! is only Windows' Microsoft Store alias).
 
 use std::path::Path;
 use std::process::Command;
@@ -8,6 +9,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// Runs the script on `widgets`, in a directory of its own: the tests run in
 /// parallel, and two calls for the same platform must not share a file (#123).
 fn generate(widgets: &str, platform: &str) -> Option<String> {
+    if !has_python3() {
+        eprintln!("python3 not found: skipped");
+        return None;
+    }
     static CALLS: AtomicUsize = AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
         "prism-generate-widgets-{}-{}",
@@ -31,6 +36,15 @@ fn generate(widgets: &str, platform: &str) -> Option<String> {
         String::from_utf8_lossy(&out.stderr)
     );
     Some(String::from_utf8(out.stdout).unwrap())
+}
+
+/// A working `python3`. On Windows, the Microsoft Store's `python3.exe`
+/// alias only says that Python is missing, and fails.
+fn has_python3() -> bool {
+    Command::new("python3")
+        .args(["-c", ""])
+        .output()
+        .is_ok_and(|o| o.status.success())
 }
 
 const CONFIGURABLE: &str = r#"[{"kind":"reading","name":"Reading","description":"A room",
