@@ -3,7 +3,8 @@
 //! - `web_view`: natively a local page (written next to the app's
 //!   temporary files) that talks to the app both ways: it posts "ready"
 //!   once loaded and a message per tap on its button; "Send a message"
-//!   posts to it. On the web, a public page in a frame.
+//!   posts to it, and it answers `got "hello 1"`. On the web, a public
+//!   page in a frame.
 //! - `video`: a short film with the platform's controls, playing muted.
 //! - `on_drop_files`: files dropped from the file manager, listed.
 
@@ -33,6 +34,8 @@ const PAGE: &str = r#"<!doctype html>
   document.getElementById("send").onclick = function () { n++; postToApp("tap " + n); };
   window.addEventListener("message", function (e) {
     document.getElementById("log").textContent = "From the app: " + JSON.stringify(e.data);
+    // Answers, so the app shows that its message arrived.
+    postToApp("got " + JSON.stringify(e.data));
   });
   var ua = navigator.userAgent;
   document.getElementById("engine").textContent =
