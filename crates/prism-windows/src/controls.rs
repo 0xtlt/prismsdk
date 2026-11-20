@@ -276,9 +276,14 @@ fn field(id: NodeId, single: bool) -> Result<Content> {
     t.TextChanged(&TextChangedEventHandler::new(move |s, _| {
         if let Some(t) = s.as_ref().and_then(|s| s.cast::<TextBox>().ok()) {
             typed(id, t.Text()?.to_string());
+            crate::carets::changed(id);
         }
         Ok(())
     }))?;
+    // Drags across a selection group's fields (#264).
+    if let Err(e) = crate::across::connect(id, &t.cast()?) {
+        crate::win::log!("text field {id}: drags across fields: {e}");
+    }
     t.SelectionChanged(&RoutedEventHandler::new(move |s, _| {
         if let Some(t) = s.as_ref().and_then(|s| s.cast::<TextBox>().ok()) {
             let text = t.Text()?.to_string();

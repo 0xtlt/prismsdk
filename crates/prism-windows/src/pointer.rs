@@ -4,8 +4,9 @@
 //! node that drags after a long press waits for it), horizontal swipes
 //! (`on_swipe_*`: a quick flick with any pointer), wheel and touchpad
 //! scrolling (`on_wheel`), middle, back and forward clicks
-//! (`on_aux_click`), and the see-through preview of a dragged payload.
-//! Files dropped from Explorer are `drops`'.
+//! (`on_aux_click`), pinches (`on_magnify`: two touches, or Ctrl + wheel,
+//! as precision touchpads send their pinches), and the see-through preview
+//! of a dragged payload. Files dropped from Explorer are `drops`'.
 //!
 //! A clickable view's `Button` takes the press (it marks it handled): in
 //! such a view the press is heard on its children's canvas, inside the
@@ -21,10 +22,10 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use prism_core::events::pointer_mask::{AUX_CLICK, HOVER, MOVE, WHEEL};
+use prism_core::events::pointer_mask::{AUX_CLICK, HOVER, MAGNIFY, MOVE, WHEEL};
 use prism_core::{
-    ClickEvent, DragEvent, DragPhase, GesturePhase, Modifiers, NodeId, Point, PointerButton,
-    PointerEvent, PointerPhase, SwipeDirection, UiEvent, WheelEvent,
+    ClickEvent, DragEvent, DragPhase, GesturePhase, MagnifyEvent, Modifiers, NodeId, Point,
+    PointerButton, PointerEvent, PointerPhase, SwipeDirection, UiEvent, WheelEvent,
 };
 use windows::System::VirtualKeyModifiers;
 use windows::Win32::Foundation::HWND;
@@ -66,6 +67,8 @@ struct Listener {
     wired: bool,
     kids_wired: bool,
     press: Option<Press>,
+    /// The touches on it, for pinches.
+    pinch: crate::pinch::Pinch,
 }
 
 #[derive(Clone, Copy)]
@@ -212,7 +215,7 @@ fn point(x: f32, y: f32) -> Point {
     Point { x, y }
 }
 
-fn modifiers(a: &PointerRoutedEventArgs) -> Modifiers {
+pub(crate) fn modifiers(a: &PointerRoutedEventArgs) -> Modifiers {
     let m = a.KeyModifiers().unwrap_or(VirtualKeyModifiers::None);
     Modifiers {
         shift: m.contains(VirtualKeyModifiers::Shift),
@@ -281,9 +284,143 @@ fn drag_event(id: NodeId, p: &Press, phase: DragPhase, now: (f32, f32)) -> UiEve
     )
 }
 
+/// Reports a pinch's step on node `id`.
+fn magnify(id: NodeId, step: crate::pinch::Step) {
+    use crate::pinch::Step;
+    let (phase, scale, (x, y)) = match step {
+        Step::Start(c) => (GesturePhase::Start, 1., c),
+        Step::Move(k, c) => (GesturePhase::Move, k, c),
+        Step::End(c) => (GesturePhase::End, 1., c),
+    };
+    report(UiEvent::Magnify(
+        id,
+        MagnifyEvent {
+            scale,
+            position: point(x, y),
+            phase,
+        },
+    ));
+}
+
+/// A pinch's step on node `id`, its point from the window to the element
+/// (`offset`: the element's origin in the window, negated).
+fn magnify_at(id: NodeId, step: crate::pinch::Step, offset: (f32, f32)) {
+    use crate::pinch::Step;
+    let local = |(x, y): (f32, f32)| (x + offset.0, y + offset.1);
+    magnify(
+        id,
+        match step {
+            Step::Start(c) => Step::Start(local(c)),
+            Step::Move(k, c) => Step::Move(k, local(c)),
+            Step::End(c) => Step::End(local(c)),
+        },
+    );
+}
+
+/// The window → element offset of the event's point.
+fn offset(local: &PointerPoint, window: &PointerPoint) -> (f32, f32) {
+    let (l, w) = (xy(local), xy(window));
+    (l.0 - w.0, l.1 - w.1)
+}
+
+/// A touch went down on node `id`, which reports pinches: a second finger
+/// starts one (`true`), the fingers then the node's alone. A drag going on
+/// follows the fingers' middle from there (#172), without a jump.
+fn pinch_down(
+    e: &UIElement,
+    id: NodeId,
+    a: &PointerRoutedEventArgs,
+    local: &PointerPoint,
+    window: &PointerPoint,
+) -> Result<bool> {
+    let pointer = local.PointerId()?;
+    if let Ok(ptr) = a.Pointer() {
+        POINTERS.with(|m| m.borrow_mut().insert(pointer, ptr));
+    }
+    let Some(step) = with(id, |l| l.pinch.down(pointer, xy(window))) else {
+        return Ok(false);
+    };
+    // The scroll view around stops.
+    let _ = e.CancelDirectManipulations();
+    let touches: Vec<u32> = POINTERS.with(|m| m.borrow().keys().copied().collect());
+    for t in touches {
+        if with(id, |l| l.pinch.has(t)) {
+            let _ = capture_now(e, t);
+        }
+    }
+    rebase(id);
+    magnify_at(id, step, offset(local, window));
+    a.SetHandled(true)?;
+    Ok(true)
+}
+
+/// The fingers of node `id`'s press changed (one came or lifted): its
+/// drag now follows their middle (or the finger left), from where it is.
+fn rebase(id: NodeId) {
+    with(id, |l| {
+        let Some(p) = l.press.as_mut() else { return };
+        let last = p.samples[(p.count.max(1) - 1) % p.samples.len()];
+        let now = match l.pinch.center() {
+            Some(c) => c,
+            None => match l.pinch.first() {
+                Some((finger, at)) => {
+                    p.pointer = finger;
+                    at
+                }
+                None => return,
+            },
+        };
+        p.window_at.0 += now.0 - last.0;
+        p.window_at.1 += now.1 - last.1;
+        p.sample(now.0, now.1, last.2);
+    });
+}
+
+/// A touch of node `id` lifted or was cancelled: the end of its pinch; a
+/// drag goes on with the finger left.
+fn pinch_up(e: &UIElement, id: NodeId, pointer: u32, offset: (f32, f32)) {
+    if let Some(step) = with(id, |l| l.pinch.up(pointer)) {
+        if with(id, |l| l.pinch.first().is_none()) {
+            let _ = e.ReleasePointerCaptures();
+        }
+        rebase(id);
+        magnify_at(id, step, offset);
+    }
+}
+
+/// During a pinch, node `id`'s drag follows the fingers' middle (#172).
+fn pinch_drag(id: NodeId, local: &PointerPoint) -> Result<()> {
+    let Some(w) = with(id, |l| l.pinch.center()) else {
+        return Ok(());
+    };
+    let mask = with(id, |l| l.mask);
+    let Some(mut p) = with(id, |l| l.press) else {
+        return Ok(());
+    };
+    p.sample(w.0, w.1, local.Timestamp()?);
+    let far = (w.0 - p.window_at.0).hypot(w.1 - p.window_at.1) >= slop(true);
+    let phase = if p.started {
+        Some(DragPhase::Move)
+    } else if far && mask & p.button.drag_bit() != 0 {
+        p.started = true;
+        p.captured = true;
+        Some(DragPhase::Start)
+    } else {
+        None
+    };
+    with(id, |l| l.press = Some(p));
+    if let Some(phase) = phase {
+        report(drag_event(id, &p, phase, w));
+    }
+    Ok(())
+}
+
 fn pressed(e: &UIElement, id: NodeId, a: &PointerRoutedEventArgs) -> Result<()> {
     let (local, window) = points(e, a)?;
     let touch = local.PointerDeviceType()? == PointerDeviceType::Touch;
+    if touch && with(id, |l| l.mask) & MAGNIFY != 0 && pinch_down(e, id, a, &local, &window)? {
+        return Ok(());
+    }
     let button = if touch {
         PointerButton::Primary
     } else {
@@ -442,6 +579,16 @@ fn moved(e: &UIElement, id: NodeId, a: &PointerRoutedEventArgs) -> Result<()> {
     let (local, window) = points(e, a)?;
     let (x, y) = xy(&local);
     let mask = with(id, |l| l.mask);
+    if mask & MAGNIFY != 0 {
+        let pointer = local.PointerId()?;
+        let pinching = with(id, |l| l.pinch.pinching() && l.pinch.has(pointer));
+        if let Some(step) = with(id, |l| l.pinch.moved(pointer, xy(&window))) {
+            magnify_at(id, step, offset(&local, &window));
+        }
+        if pinching {
+            return pinch_drag(id, &local);
+        }
+    }
     if mask & MOVE != 0 && !a.Handled().unwrap_or(false) {
         report(UiEvent::Pointer(
             id,
@@ -510,6 +657,7 @@ fn released(e: &UIElement, id: NodeId, a: &PointerRoutedEventArgs) -> Result<()>
     let (local, window) = points(e, a)?;
     let pointer = local.PointerId()?;
     let mask = with(id, |l| l.mask);
+    pinch_up(e, id, pointer, offset(&local, &window));
     // Middle, back and forward clicks (#215).
     if mask & AUX_CLICK != 0
         && local.PointerDeviceType()? == PointerDeviceType::Mouse
@@ -595,8 +743,10 @@ fn capture_lost(e: &UIElement, id: NodeId, a: &PointerRoutedEventArgs) -> Result
 
 /// The system took the pointer (a scroll view panned, the window lost
 /// it): a drag in progress is cancelled.
-fn canceled(_: &UIElement, id: NodeId, a: &PointerRoutedEventArgs) -> Result<()> {
+fn canceled(e: &UIElement, id: NodeId, a: &PointerRoutedEventArgs) -> Result<()> {
     let pointer = a.Pointer().and_then(|p| p.PointerId()).unwrap_or(u32::MAX);
+    let off = points(e, a).map_or((0., 0.), |(l, w)| offset(&l, &w));
+    pinch_up(e, id, pointer, off);
     let Some(p) = with(id, |l| {
         l.press
             .filter(|p| p.pointer == pointer)
@@ -651,13 +801,32 @@ const NOTCH: f32 = 120.;
 const POINTS_PER_NOTCH: f32 = 100.;
 
 fn wheel(e: &UIElement, id: NodeId, a: &PointerRoutedEventArgs) -> Result<()> {
-    if with(id, |l| l.mask) & WHEEL == 0 || a.Handled()? {
+    let mask = with(id, |l| l.mask);
+    if mask & (WHEEL | MAGNIFY) == 0 || a.Handled()? {
         return Ok(());
     }
     let p = a.GetCurrentPoint(e)?;
     let props = p.Properties()?;
     let raw = props.MouseWheelDelta()? as f32;
     let horizontal = props.IsHorizontalMouseWheel()?;
+    // Ctrl + wheel zooms, as everywhere on Windows: precision touchpads
+    // send their pinches so.
+    if mask & MAGNIFY != 0 && !horizontal && modifiers(a).control {
+        let (x, y) = xy(&p);
+        report(UiEvent::Magnify(
+            id,
+            MagnifyEvent {
+                scale: crate::pinch::wheel_scale(raw),
+                position: point(x, y),
+                phase: GesturePhase::None,
+            },
+        ));
+        a.SetHandled(true)?;
+        return Ok(());
+    }
+    if mask & WHEEL == 0 {
+        return Ok(());
+    }
     let precise = raw % NOTCH != 0.;
     let amount = raw / NOTCH * POINTS_PER_NOTCH;
     // Windows: positive turns the wheel away (scrolls up) or tilts it

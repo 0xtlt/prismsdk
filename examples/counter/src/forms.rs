@@ -56,6 +56,8 @@ impl Default for Forms {
                 span("these words").bold(),
                 span(", or ⌘-click "),
                 link("a link", "https://github.com/0xtlt/prismsdk"),
+                span(". See "),
+                chip("page:roadmap", "Roadmap").chip_icon("doc.text"),
                 span("."),
             ],
             note_sel: SelectionEvent::default(),
@@ -244,11 +246,13 @@ impl Render for Forms {
     }
 }
 
-/// The selection's runs as Markdown: bold and links (what the note copies).
+/// The selection's runs as Markdown: bold, links and chips (what the
+/// note copies).
 fn markdown(spans: &[Span]) -> String {
     spans
         .iter()
         .map(|s| match (s.href(), s.is_bold()) {
+            _ if s.is_chip() => format!("[{}]", s.chip_label().unwrap_or_default()),
             (Some(href), _) => format!("[{}]({href})", s.text()),
             (None, true) => format!("**{}**", s.text()),
             (None, false) => s.text().to_string(),

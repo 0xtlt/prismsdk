@@ -56,7 +56,7 @@ video("https://cdn.example.com/talk.mp4")
 | iOS, iPadOS, tvOS, visionOS | `AVPlayerViewController` | `AVURLAsset` HTTP header fields |
 | Android | `VideoView` with a `MediaController` | `setVideoURI(uri, headers)` |
 | Linux | `GtkVideo` (GStreamer) | not sent |
-| Windows | `MediaPlayerElement` (transport controls) | not sent |
+| Windows | `MediaPlayerElement` (transport controls) | HTTP range requests with the headers (`MediaSource::CreateFromStream`); HLS and DASH through an `AdaptiveMediaSource` whose `HttpClient` sends them |
 | Web | `<video playsinline preload="metadata">` | the server, as `<base>/_prism/media/<id>` |
 | watchOS | nothing is drawn | |
 

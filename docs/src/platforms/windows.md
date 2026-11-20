@@ -89,14 +89,29 @@ kinds and services come next (see [Not yet](#not-yet)).
   spell checking, selection, undo and the clipboard are WinUI's. The
   backend reports edits (`Typed` tells the app's echo from the user's
   typing), Enter (`on_submit`), the selection (`on_select`) and focus
-  changes.
+  changes. Other people's carets and selections (`remote_carets`) and a
+  selection group's highlighted parts are drawn on a canvas over the
+  field, from its own geometry (`GetRectFromCharacterIndex`), measured
+  again after typing, resizing and scrolling.
 - **Rich inputs** (`rich_input`) are `RichEditBox`es: each run's weight,
   italic, underline (single, thick, double, dotted, dashed),
   strikethrough, colors, background, font and size are RichEdit character
   formats, applied in place when the app's runs hold the text shown (the
   echo of typing: caret and undo untouched). Edits reach the app as plain
   text, like on macOS; Return submits, Shift+Return breaks the line,
-  pastes are plain text; a chip is its object character, highlighted.
+  pastes are plain text. A chip is a picture embedded in the text
+  (`InsertImage`: its Segoe Fluent icon and label in a rounded box, drawn
+  with Direct2D at the window's scale, on the baseline), one character the
+  caret jumps over and Backspace deletes whole, like macOS's
+  `NSTextAttachment`. The editing hooks (#217) are RichEdit's events:
+  copies and cuts (`CopyingToClipboard`, `CuttingToClipboard`) and pastes
+  go to the app with the clipboard's text, HTML and types; Ctrl- and
+  Alt-clicks report the character under the pointer, every click too with
+  `on_click` (presses are heard with `handledEventsToo`); the selection's
+  rectangle comes from `ITextRange::GetRect`. Remote carets and the
+  group's highlights are drawn over it like over a text box. A mouse drag
+  from one field of a `text_flow` into another selects across them
+  (#264).
 - **Links in text** are `Hyperlink`s in the `TextBlock`: Tab reaches them,
   Enter or a click reports the link, UI Automation sees links; they keep
   the run's own color and underline.
@@ -109,16 +124,28 @@ kinds and services come next (see [Not yet](#not-yet)).
   origins are heard and posted to; a link to another origin, and a new
   window when the sandbox allows popups, open in the default browser. A
   sandbox without `scripts` turns JavaScript off; one without
-  `same-origin` browses InPrivate. `on_load` hears each loaded page.
+  `same-origin` browses InPrivate; one without `forms` submits no form,
+  as WebKit cancels `formSubmitted` navigations: WebView2 does not tell
+  them apart, so a script at document creation in every frame stops
+  `submit` events, `form.submit()` and `requestSubmit()`, and every POST
+  of a document (a frame's too) is answered 403 before it leaves
+  (`WebResourceRequested`), scripts on or off. `on_load` hears each
+  loaded page.
 - **Videos** are `MediaPlayerElement`s with the transport controls
   (play, scrubber, volume, full window), a poster, autoplay, looping and
   muted; their height follows the video's ratio once it opens;
-  `on_ended` hears the end.
+  `on_ended` hears the end. Request headers (`Video::header`) go with
+  every request: Media Foundation's HTTP source takes none, so the player
+  reads a stream of the backend's (`MediaSource::CreateFromStream`) whose
+  reads are HTTP range requests with the headers, a megabyte at a time
+  (redirects to another origin drop them); HLS and DASH go through an
+  `AdaptiveMediaSource` whose `HttpClient` sends them.
 - **3D scenes** are drawn by prism-native's OpenGL renderer (the GTK
   backend's: `prism_native::gl3d`) in a WGL OpenGL 3.3 core context of the
   app's, shared by every scene, and shown by an `Image`: WinUI composes
   with DirectX, so each frame is read back into a `WriteableBitmap`. Drag
-  to turn (right or Shift drag: pan), the wheel zooms, a click taps
+  to turn (right or Shift drag: pan), two fingers or the wheel zoom, a
+  click taps
   (`SceneTapEvent`); frames are drawn while something moves, none at
   rest. Textures decode with WIC off the UI thread.
 - **Input:** XAML's: pointer, touch, pen, wheel and touchpads (with
@@ -130,10 +157,14 @@ kinds and services come next (see [Not yet](#not-yet)).
   the system's drag distance (a touch on a node that drags after a long
   press waits for it; the view captures the pointer, so a clickable view
   does not click and a scroll view stops panning), the wheel and
-  precision touchpads (`on_wheel`), middle, back and forward clicks
-  (`on_aux_click`), quick horizontal flicks (`on_swipe_*`, any pointer:
-  `SwipeControl` reveals items under touch only and has no place for
-  Prism's direction-only swipes). Drags between views (`draggable`,
+  precision touchpads (`on_wheel`), pinches (`on_magnify`: two touches on
+  the element, the scroll views around stopping, a drag following the
+  fingers' middle as on iOS; and Ctrl + wheel, how precision touchpads
+  send their pinches), middle, back and forward clicks (`on_aux_click`),
+  quick horizontal flicks (`on_swipe_*`, any pointer, like iOS's
+  `UISwipeGestureRecognizer`, Android's fling and GTK's `GestureSwipe`:
+  WinUI's `SwipeControl` reveals swipe items, which Prism's
+  direction-only swipes have none of). Drags between views (`draggable`,
   `on_drop_payload`) find their target with prism-native's `locate_drag`,
   with a see-through preview and autoscroll. Files dragged from Explorer
   land on `on_drop_files` targets (copies in `%TEMP%\prism-dropped`): as
@@ -404,14 +435,13 @@ the session, presses the counter's button through UI Automation.
 - **Controls:** a rounded clip with only some corners rounded rounds them
   all but those on one side; dialogs and sheets have no UI Automation
   dialog role yet.
-- **Embedded content and input:** a video's request headers
-  (`Video::header`) are not sent; a web view does not block form
-  submissions in a sandbox without `forms` (WebView2 does not tell them
-  apart, as on Android); rich inputs have no remote carets, selection
-  highlights across fields, or copy / paste / span-click hooks
-  (`edit_events`) yet, and draw a chip as its object character; pinches
-  (`on_magnify`, a 3D scene's pinch zoom) are not reported; 3D frames go
-  through the CPU (a read-back per frame, fine at a scene's size).
+- **Embedded content and input:** 3D frames go through the CPU (a
+  read-back per frame, fine at a scene's size); a precision touchpad's
+  pinch is only handled as the Ctrl + wheel Windows sends apps (touchpads
+  cannot be injected). Not yet run on a PC, only type-checked for Windows:
+  chips as pictures, the rich input's editing hooks, remote carets and a
+  group's highlights, drags across fields, video request headers, form
+  blocking in a sandbox, pinches and touch swipes.
 - **Services:** push (WNS needs package identity), location, motion, the
   camera, the share sheet (`DataTransferManager`), haptics and passkeys
   answer « unavailable »; run-time fonts need a writable app folder;

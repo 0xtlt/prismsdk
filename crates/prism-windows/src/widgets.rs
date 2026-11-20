@@ -605,6 +605,8 @@ impl Widgets for Win {
         self.measurer.forget(id);
         crate::pointer::forget(id);
         crate::drops::forget(id);
+        crate::edit::forget(id);
+        crate::carets::forget(id);
         crate::media::forget(id);
         crate::web::forget(id);
         self.typed.remove(&id);
@@ -1057,9 +1059,41 @@ impl Widgets for Win {
     fn set_rich_value(&mut self, view: &NodeId, runs: &str) {
         if let (Some(n), Some(v)) = (self.scene.get(*view), self.views.get(view))
             && let Content::Rich(r) = &v.content
-            && let Err(e) = r.set_runs(runs, &n.style, &self.palette)
+            && let Err(e) = r.set_runs(runs, &n.style, &self.palette, self.scale())
         {
             log!("rich input {view}: {e}");
+        }
+    }
+
+    fn set_edit_events(&mut self, view: &NodeId, mask: u8) {
+        if let Some(Content::Rich(r)) = self.views.get(view).map(|v| &v.content) {
+            crate::edit::set_mask(*view, &r.element, mask);
+        }
+    }
+
+    fn write_clipboard(&mut self, _view: &NodeId, content: &prism_core::ClipboardContent) {
+        crate::edit::write_clipboard(content);
+    }
+
+    fn insert_text(&mut self, view: &NodeId, text: &str) {
+        if let Some(Content::Rich(r)) = self.views.get(view).map(|v| &v.content) {
+            crate::edit::insert_text(&r.element, text);
+        }
+    }
+
+    fn set_remote_carets(&mut self, view: &NodeId, carets: &[prism_core::RemoteCaret]) {
+        if let Some(v) = self.views.get(view)
+            && let Some(f) = crate::carets::Field::of(&v.content)
+        {
+            crate::carets::set_carets(*view, &v.outer, f, carets, &self.palette);
+        }
+    }
+
+    fn set_selection_highlight(&mut self, view: &NodeId, start: usize, end: usize) {
+        if let Some(v) = self.views.get(view)
+            && let Some(f) = crate::carets::Field::of(&v.content)
+        {
+            crate::carets::set_highlight(*view, &v.outer, f, start, end, &self.palette);
         }
     }
 

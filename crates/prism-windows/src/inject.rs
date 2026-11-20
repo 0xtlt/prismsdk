@@ -10,7 +10,15 @@
 //!   `text` (Unicode keystrokes);
 //! - `swipe:Label=dx` flicks horizontally (a fast drag of `dx` DIPs);
 //! - `wheel:Label=dy` turns the wheel over it: `dy` points toward the end
-//!   (100 a notch), `wheel:Label=dy,h` sideways.
+//!   (100 a notch), `wheel:Label=dy,h` sideways; `zoom:Label=dy` the same
+//!   with Ctrl held (a precision touchpad's pinch comes so);
+//! - `ctrlclick:Label` (`@x,y`) clicks with Ctrl held;
+//! - `chord:ctrl+c` presses keys together (`ctrl`, `shift`, `alt`, a
+//!   letter or a digit, `home`, `end`, `left`, `right`);
+//! - touches, from a synthetic touch device (`touch.rs`): `pinch:Label=k`
+//!   spreads two fingers around its middle to `k` times their distance
+//!   (below 1: pinches in), `tswipe:Label=dx` flicks a finger, and
+//!   `tdrag:Label=dx,dy` drags one slowly (a pan).
 //!
 //! The steps play one after the other, after the other clicks and
 //! `PRISM_SCROLL`; each first scrolls its view into sight. The window
@@ -54,6 +62,8 @@ enum Act {
     Key(u16, bool),
     /// A UTF-16 unit typed.
     Char(u16),
+    /// A frame of touches (screen pixels).
+    Touch(Vec<crate::touch::Contact>),
 }
 
 thread_local! {
@@ -66,16 +76,43 @@ pub fn step(step: &str) -> Option<bool> {
     let (kind, rest) = step.split_once(':')?;
     if !matches!(
         kind,
-        "hover" | "click" | "type" | "drag" | "swipe" | "wheel"
+        "hover"
+            | "click"
+            | "type"
+            | "drag"
+            | "swipe"
+            | "wheel"
+            | "zoom"
+            | "ctrlclick"
+            | "chord"
+            | "pinch"
+            | "tswipe"
+            | "tdrag"
     ) {
         return None;
     }
-    let (target, _) = rest.split_once('=').unwrap_or((rest, ""));
-    let label = target.split_once('@').map_or(target, |(l, _)| l);
-    if find(label).is_none() {
-        return Some(false);
+    if kind == "chord" {
+        let Some(keys) = chord(rest) else {
+            return Some(false);
+        };
+        QUEUE.with(|q| {
+            let mut q = q.borrow_mut();
+            for vk in &keys {
+                q.push_back((Act::Key(*vk, false), 30));
+            }
+            for vk in keys.iter().rev() {
+                q.push_back((Act::Key(*vk, true), 30));
+            }
+            q.push_back((Act::Key(0, true), 150));
+        });
+    } else {
+        let (target, _) = rest.split_once('=').unwrap_or((rest, ""));
+        let label = target.split_once('@').map_or(target, |(l, _)| l);
+        if find(label).is_none() {
+            return Some(false);
+        }
+        QUEUE.with(|q| q.borrow_mut().push_back((Act::Aim(step.to_string()), 0)));
     }
-    QUEUE.with(|q| q.borrow_mut().push_back((Act::Aim(step.to_string()), 0)));
     if !PLAYING.replace(true) {
         unsafe {
             let h = main_hwnd();
@@ -153,6 +190,37 @@ fn aim(step: &str) -> Vec<(Act, u32)> {
                 acts = vec![(Act::Move(x + px(dx), y + px(dy)), 60)];
             }
         }
+        "ctrlclick" => {
+            acts.push((Act::Key(0x11, false), 40));
+            acts.push((Act::Down, 60));
+            acts.push((Act::Up, 60));
+            acts.push((Act::Key(0x11, true), 120));
+        }
+        "pinch" | "tswipe" | "tdrag" => {
+            use crate::touch::glide;
+            let n = |i: usize, or: f32| nums.get(i).copied().unwrap_or(or);
+            let (frames, pause) = match kind {
+                "pinch" => {
+                    // Two fingers 80 DIPs apart, to k times that.
+                    let (d0, d1) = (px(40.), px(40. * n(0, 2.)));
+                    (
+                        glide(
+                            &[((x - d0, y), (x - d1, y)), ((x + d0, y), (x + d1, y))],
+                            16,
+                        ),
+                        16,
+                    )
+                }
+                // A flick: 80 ms.
+                "tswipe" => (glide(&[((x, y), (x + px(n(0, -160.)), y))], 5), 16),
+                _ => (
+                    glide(&[((x, y), (x + px(n(0, 0.)), y + px(n(1, 0.))))], 24),
+                    16,
+                ),
+            };
+            acts = frames.into_iter().map(|f| (Act::Touch(f), pause)).collect();
+            acts.push((Act::Touch(Vec::new()), 200));
+        }
         "drag" | "swipe" => {
             let (dx, dy) = (
                 px(nums.first().copied().unwrap_or(0.)),
@@ -168,6 +236,10 @@ fn aim(step: &str) -> Vec<(Act, u32)> {
         }
         _ => {
             let horizontal = args.ends_with(",h");
+            let ctrl = kind == "zoom";
+            if ctrl {
+                acts.push((Act::Key(0x11, false), 40));
+            }
             let amount = nums.first().copied().unwrap_or(100.);
             // A notch is 120 and scrolls 100 points; positive turns the
             // wheel away (up), or tilts it right.
@@ -176,9 +248,36 @@ fn aim(step: &str) -> Vec<(Act, u32)> {
                 Act::Wheel(if horizontal { delta } else { -delta }, horizontal),
                 120,
             ));
+            if ctrl {
+                acts.push((Act::Key(0x11, true), 120));
+            }
         }
     }
     acts
+}
+
+/// The virtual keys of `ctrl+shift+c`.
+fn chord(keys: &str) -> Option<Vec<u16>> {
+    keys.split('+')
+        .map(|k| {
+            Some(match k.trim().to_ascii_lowercase().as_str() {
+                "ctrl" | "control" => 0x11,
+                "shift" => 0x10,
+                "alt" => 0x12,
+                "home" => 0x24,
+                "end" => 0x23,
+                "left" => 0x25,
+                "right" => 0x27,
+                "up" => 0x26,
+                "down" => 0x28,
+                "enter" => 0x0D,
+                k if k.len() == 1 && k.chars().all(|c| c.is_ascii_alphanumeric()) => {
+                    k.to_ascii_uppercase().as_bytes()[0] as u16
+                }
+                _ => return None,
+            })
+        })
+        .collect()
 }
 
 fn pair(s: &str) -> Option<(f32, f32)> {
@@ -280,6 +379,8 @@ fn send(act: &Act) {
         Act::Up => (MOUSEEVENTF_LEFTUP, 0, None),
         Act::Wheel(d, false) => (MOUSEEVENTF_WHEEL, d, None),
         Act::Wheel(d, true) => (MOUSEEVENTF_HWHEEL, d, None),
+        // A pause (the end of a chord).
+        Act::Key(0, _) => return,
         Act::Key(vk, up) => {
             return key(
                 vk,
@@ -294,6 +395,12 @@ fn send(act: &Act) {
         Act::Char(c) => {
             key(0, c, KEYEVENTF_UNICODE);
             return key(0, c, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP);
+        }
+        Act::Touch(ref contacts) => {
+            if !contacts.is_empty() {
+                crate::touch::frame(contacts);
+            }
+            return;
         }
         Act::Aim(_) | Act::Settle(..) => return,
     };

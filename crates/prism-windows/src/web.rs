@@ -16,7 +16,12 @@
 //!   browser, so do new windows (`target="_blank"`, `window.open`) when
 //!   the sandbox allows popups;
 //! - a sandbox without `scripts` turns JavaScript off; one without
-//!   `same-origin` browses InPrivate (no cookies or storage kept);
+//!   `same-origin` browses InPrivate (no cookies or storage kept); one
+//!   without `forms` submits no form, in any frame, as WebKit cancels
+//!   `formSubmitted` navigations: WebView2 does not tell them apart, so a
+//!   script at document creation stops `submit` events, `form.submit()`
+//!   and `requestSubmit()`, and every POST of a document (a frame's too)
+//!   is answered 403 before it leaves, scripts on or off;
 //! - `on_load` hears each page that finished loading.
 //!
 //! One `CoreWebView2Environment` serves every web view of the app, its
@@ -46,7 +51,8 @@ use crate::winui::bindings::Microsoft::Web::WebView2::Core::{
     CoreWebView2, CoreWebView2Environment, CoreWebView2EnvironmentOptions,
     CoreWebView2NavigationCompletedEventArgs, CoreWebView2NavigationStartingEventArgs,
     CoreWebView2NewWindowRequestedEventArgs, CoreWebView2ProcessFailedEventArgs,
-    CoreWebView2WebMessageReceivedEventArgs,
+    CoreWebView2WebMessageReceivedEventArgs, CoreWebView2WebResourceContext,
+    CoreWebView2WebResourceRequestSourceKinds, CoreWebView2WebResourceRequestedEventArgs,
 };
 use crate::winui::h;
 use crate::winui::xaml::Controls::{CoreWebView2InitializedEventArgs, WebView2};
@@ -60,6 +66,17 @@ const BRIDGE: &str = r#"(function () {
   Object.defineProperty(window, "prismHost", {
     value: Object.freeze({ postMessage: function (json) { w.postMessage(String(json)); } }),
   });
+})();"#;
+
+/// In every frame of a sandbox without `forms`: no form is submitted.
+const NO_FORMS: &str = r#"(function () {
+  var stop = function (e) { e.preventDefault(); e.stopImmediatePropagation(); };
+  window.addEventListener("submit", stop, true);
+  var none = function () {};
+  try {
+    Object.defineProperty(HTMLFormElement.prototype, "submit", { value: none });
+    Object.defineProperty(HTMLFormElement.prototype, "requestSubmit", { value: none });
+  } catch (e) {}
 })();"#;
 
 /// A web view node: its control and what it shows.
@@ -79,6 +96,8 @@ struct State {
     core: Option<CoreWebView2>,
     /// The bridge script's id, while installed.
     bridge: Option<HSTRING>,
+    /// The script stopping forms, while installed.
+    no_forms: Option<HSTRING>,
     /// The page finished loading (messages go now).
     loaded: bool,
     /// Messages posted before the page loaded.
@@ -88,6 +107,11 @@ struct State {
 }
 
 impl State {
+    /// A sandbox without `forms`.
+    fn blocks_forms(&self) -> bool {
+        self.config.sandbox.is_some_and(|s| !s.forms)
+    }
+
     fn allows(&self, origin: Option<&str>) -> bool {
         let Some(origin) = origin else {
             return self
@@ -142,10 +166,11 @@ impl Web {
                 );
             }
             settings(&core, &st.config)?;
+            drop(st);
             if messages_changed {
-                drop(st);
                 bridge(&self.state, &core)?;
             }
+            forms(&self.state, &core)?;
         }
         Ok(())
     }
@@ -289,6 +314,45 @@ fn initialized(id: NodeId, element: &WebView2) -> Result<()> {
     let core = element.CoreWebView2()?;
     settings(&core, &state.borrow().config)?;
     bridge(&state, &core)?;
+    forms(&state, &core)?;
+    // A sandbox without `forms` posts no document (a frame's included).
+    let frames = core.AddWebResourceRequestedFilter2(
+        &h("*"),
+        CoreWebView2WebResourceContext::Document,
+        CoreWebView2WebResourceRequestSourceKinds::All,
+    );
+    if frames.is_err() {
+        // An older runtime: the main frame's documents.
+        core.AddWebResourceRequestedFilter(&h("*"), CoreWebView2WebResourceContext::Document)?;
+    }
+    core.WebResourceRequested(&TypedEventHandler::<
+        CoreWebView2,
+        CoreWebView2WebResourceRequestedEventArgs,
+    >::new(move |_, a| {
+        let (Some(a), Some(state)) = (a.as_ref(), state_of(id)) else {
+            return Ok(());
+        };
+        if !state.borrow().blocks_forms()
+            || !a
+                .Request()?
+                .Method()?
+                .to_string()
+                .eq_ignore_ascii_case("POST")
+        {
+            return Ok(());
+        }
+        let uri = a.Request()?.Uri()?.to_string();
+        log!("web view {id}: a form posting to {uri} held back (sandbox without forms)");
+        if let Some(env) = ENV.with(|e| e.borrow().clone()) {
+            a.SetResponse(&env.CreateWebResourceResponse(
+                None::<&windows::Storage::Streams::IRandomAccessStream>,
+                403,
+                &h("Forbidden"),
+                &h(""),
+            )?)?;
+        }
+        Ok(())
+    }))?;
     // The main frame stays on the allowed origins: a link elsewhere opens
     // in the browser.
     core.NavigationStarting(&TypedEventHandler::<
@@ -407,6 +471,30 @@ fn settings(core: &CoreWebView2, c: &WebViewConfig) -> Result<()> {
     let s = core.Settings()?;
     s.SetIsScriptEnabled(c.scripts())?;
     s.SetIsWebMessageEnabled(c.messages)?;
+    Ok(())
+}
+
+/// Installs the script stopping forms (or takes it away) as the sandbox
+/// says.
+fn forms(state: &Rc<RefCell<State>>, core: &CoreWebView2) -> Result<()> {
+    let block = state.borrow().blocks_forms();
+    let installed = state.borrow().no_forms.is_some();
+    if block == installed {
+        return Ok(());
+    }
+    if let Some(old) = state.borrow_mut().no_forms.take() {
+        core.RemoveScriptToExecuteOnDocumentCreated(&old)?;
+        return Ok(());
+    }
+    let op = core.AddScriptToExecuteOnDocumentCreatedAsync(&h(NO_FORMS))?;
+    // Installed from now; the page shown is told now too.
+    let _ = core.ExecuteScriptAsync(&h(NO_FORMS));
+    let weak = Rc::downgrade(state);
+    when_done(op, move |id| {
+        if let (Ok(id), Some(state)) = (id, weak.upgrade()) {
+            state.borrow_mut().no_forms = Some(id);
+        }
+    });
     Ok(())
 }
 

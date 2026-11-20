@@ -29,6 +29,8 @@ prism-native = { workspace = true, features = ["gl3d"] }
 [target.'cfg(target_os = "windows")'.dependencies]
 # Web view messages are checked to be JSON.
 serde_json.workspace = true
+# Videos with request headers: HTTP range requests (`stream.rs`).
+prism-http.workspace = true
 # 3D scenes: the GL context of prism-native's renderer.
 glow.workspace = true
 windows-core = "0.62"
@@ -49,6 +51,7 @@ windows = { version = "0.62", features = [
   "Media_Casting",
   "Media_Core",
   "Media_Playback",
+  "Media_Streaming_Adaptive",
   "Security_Credentials_UI",
   "Storage",
   "Storage_Streams",
@@ -56,10 +59,16 @@ windows = { version = "0.62", features = [
   "UI",
   "UI_Core",
   "UI_Text",
+  "Web_Http",
+  "Web_Http_Headers",
   "Win32_Devices_BiometricFramework",
   "Win32_Foundation",
   "Win32_Globalization",
+  "Win32_Graphics_Direct2D",
+  "Win32_Graphics_Direct2D_Common",
+  "Win32_Graphics_DirectWrite",
   "Win32_Graphics_Dwm",
+  "Win32_Graphics_Dxgi_Common",
   "Win32_Graphics_Gdi",
   "Win32_Graphics_Imaging",
   "Win32_Graphics_OpenGL",
@@ -80,8 +89,10 @@ windows = { version = "0.62", features = [
   "Win32_System_Threading",
   "Win32_System_Time",
   "Win32_System_WinRT",
+  "Win32_UI_Controls",
   "Win32_UI_HiDpi",
   "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Input_Pointer",
   "Win32_UI_Shell",
   "Win32_UI_Shell_Common",
   "Win32_UI_WindowsAndMessaging",
