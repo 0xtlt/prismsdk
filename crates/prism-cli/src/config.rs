@@ -19,6 +19,9 @@
 //! [linux]
 //! maintainer = "Jane <jane@example.com>"  # .deb Maintainer
 //!
+//! [windows]
+//! publisher = "Example Ltd"     # the executable's CompanyName
+//!
 //! [permissions]               # why the app asks (shown by the system)
 //! location = "Shows todos near you."
 //! camera = "Takes a photo for a todo."
@@ -78,6 +81,8 @@ pub struct Project {
     pub description: Option<String>,
     /// `[linux] maintainer`: the .deb Maintainer field.
     pub maintainer: Option<String>,
+    /// `[windows] publisher`: the executable's `CompanyName`.
+    pub publisher: Option<String>,
     /// `[permissions]`: why the app asks (Info.plist usage descriptions).
     pub permissions: Vec<(String, String)>,
     /// Languages with a catalog in `locales/` (`[app] locales` to move it).
@@ -266,6 +271,7 @@ impl Project {
             uses_encryption: get("app.uses_encryption").map(|v| v == "true"),
             description: get("app.description"),
             maintainer: get("linux.maintainer"),
+            publisher: get("windows.publisher"),
             permissions: {
                 let mut p: Vec<(String, String)> = config
                     .iter()

@@ -12,6 +12,10 @@ category = "public.app-category.productivity"
 uses_encryption = false
 description = "Todos, a counter and every Prism component."
 
+[windows]
+# The executable's CompanyName (Explorer › Properties › Details).
+publisher = "Prism contributors"
+
 [push]
 # Remote push: aps-environment + background pushes (Apple), the UnifiedPush
 # receiver (Android). Real devices need the Push Notifications capability on

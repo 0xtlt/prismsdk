@@ -1,6 +1,6 @@
 [package]
 name = "prismsdk-build"
-description = "Build-time helpers for Prism apps: checked, typed translations from locales/*.json, and the app binary's link settings (Apple SDK settings, the Windows App SDK runtime)."
+description = "Build-time helpers for Prism apps: checked, typed translations from locales/*.json, and the app binary's link settings (Apple SDK settings; on Windows the Windows App SDK runtime, manifest, icon and version information)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -21,6 +21,8 @@ name = "prism_build"
 serde_json.workspace = true
 # link_app: the Apple link settings (Swift rpath, deployment targets).
 prism-apple-build.workspace = true
+# link_app on Windows: the app icon, from Prism.toml's PNG.
+png = "0.18"
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]

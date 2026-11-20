@@ -72,6 +72,12 @@ pub fn package_path(p: &Project, target: Target, direct: bool) -> PathBuf {
 }
 
 pub fn publish(p: &Project, target: Target, o: &PublishOptions) -> Result<(), String> {
+    if matches!(target, Target::Web | Target::Linux | Target::Windows) {
+        return Err(format!(
+            "nothing to publish for {}: prism build {0} makes the package, ship it yourself (see the docs)",
+            crate::os_name(target)
+        ));
+    }
     if o.direct && target != Target::Macos {
         return Err("--direct is for macOS (Developer ID, notarization)".into());
     }
@@ -95,10 +101,6 @@ pub fn publish(p: &Project, target: Target, o: &PublishOptions) -> Result<(), St
     match target {
         Target::Android => android(p, &package, o),
         Target::Macos if o.direct => notarize(p, &package, o),
-        Target::Web | Target::Linux => Err(format!(
-            "nothing to publish for {}: deploy the build yourself (see the README)",
-            crate::os_name(target)
-        )),
         _ => app_store(p, target, &package, o),
     }
 }

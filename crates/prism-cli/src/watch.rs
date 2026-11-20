@@ -80,7 +80,14 @@ fn restart(
             .map_err(|e| e.to_string())?;
         return status.success().then_some(()).ok_or("build failed".into());
     }
-    // Keep the old version running until the new one is built.
+    // Windows locks a running program's executable (and its DLLs): stop
+    // it first. Elsewhere, keep it running until the new one is built.
+    if cfg!(windows)
+        && let Some(mut old) = child.take()
+    {
+        let _ = old.kill();
+        let _ = old.wait();
+    }
     crate::build(p, target, o)?;
     if let Some(mut old) = child.take() {
         let _ = old.kill();

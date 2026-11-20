@@ -2,9 +2,11 @@
 //!
 //! ```text
 //! prism new my-app                 create a project
-//! prism run <target>               build and run (web, macos, ios, tvos, watchos, android)
+//! prism run <target>               build and run (web, macos, ios, tvos, watchos, android,
+//!                                  linux, windows)
 //! prism dev <target>               run, then rebuild and restart on every save
-//! prism build <target>             release artifacts (.app bundles, APK, server binary)
+//! prism build <target>             release artifacts (.app bundles, APK, .deb, Windows zip,
+//!                                  server binary)
 //! prism publish <target>           store builds, uploaded (Google Play, App Store
 //!                                  Connect) or notarized (macOS Developer ID)
 //! prism devices                    simulators, emulators and devices
@@ -26,6 +28,8 @@ mod publish;
 #[cfg(test)]
 mod signing_tests;
 mod watch;
+mod windows;
+mod zip;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
@@ -33,7 +37,7 @@ use std::process::{Child, Command, ExitCode, Stdio};
 use config::Project;
 
 const USAGE: &str = "\
-prism — Rust UI for the web, Apple platforms, Linux and Android
+prism — Rust UI for the web, Apple platforms, Linux, Windows and Android
 
 USAGE:
     prism new <name> [--prism <path>]       Create a project
@@ -44,7 +48,7 @@ USAGE:
     prism devices                           List simulators, emulators and devices
 
 TARGETS:
-    web, macos, ios, tvos, watchos, visionos, android, linux
+    web, macos, ios, tvos, watchos, visionos, android, linux, windows
 
 OPTIONS:
     --device <name|udid>    iOS: a real iPhone/iPad (signed with your team);
@@ -59,6 +63,8 @@ OPTIONS:
     --store                 Apple: an App Store build (.ipa; macOS: a .pkg)
     --direct                macOS: Developer ID, hardened runtime, a .dmg
     --docker                Web: the production Docker image
+    --target <triple>       Windows: the Rust target (default: this PC's; elsewhere
+                            x86_64-pc-windows-gnu, with MinGW-w64 or in Docker)
 
 PUBLISH OPTIONS:
     --dry-run               Build and check everything, send nothing
@@ -83,6 +89,7 @@ enum Target {
     Visionos,
     Android,
     Linux,
+    Windows,
 }
 
 #[derive(Default, Debug)]
@@ -103,6 +110,8 @@ struct Options {
     docker: bool,
     /// `prism build`: islands above their size budget fail the build.
     strict_budget: bool,
+    /// Windows: the Rust target triple.
+    target: Option<String>,
 }
 
 /// The target's name in commands and output directories.
@@ -116,6 +125,7 @@ fn os_name(target: Target) -> &'static str {
         Target::Visionos => "visionos",
         Target::Android => "android",
         Target::Linux => "linux",
+        Target::Windows => "windows",
     }
 }
 
@@ -129,6 +139,7 @@ fn parse_target(name: Option<&str>) -> Option<Target> {
         "visionos" | "vision" => Target::Visionos,
         "android" => Target::Android,
         "linux" => Target::Linux,
+        "windows" | "win" => Target::Windows,
         _ => return None,
     })
 }
@@ -149,6 +160,9 @@ fn check_flags(target: Target, o: &Options) -> Result<(), String> {
     }
     if o.store && o.direct {
         return Err("--store (Mac App Store) or --direct (Developer ID), not both".into());
+    }
+    if o.target.is_some() && target != Target::Windows {
+        return wrong("--target", "windows");
     }
     if o.docker && target != Target::Web {
         return wrong(
@@ -191,7 +205,9 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         "run" | "dev" | "build" => {
             let target = parse_target(args.get(1).map(String::as_str)).ok_or_else(|| {
-                format!("usage: prism {cmd} <web|macos|ios|tvos|watchos|visionos|android|linux>")
+                format!(
+                    "usage: prism {cmd} <web|macos|ios|tvos|watchos|visionos|android|linux|windows>"
+                )
             })?;
             let has = |f: &str| args.iter().any(|a| a == f);
             let opts = Options {
@@ -206,6 +222,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 direct: has("--direct"),
                 docker: has("--docker"),
                 strict_budget: cmd == "build",
+                target: flag(args, "--target"),
             };
             check_flags(target, &opts)?;
             if cmd != "build" && (opts.store || opts.direct || opts.docker) {
@@ -216,6 +233,15 @@ fn run(args: &[String]) -> Result<(), String> {
                     "run Linux apps on Linux (or in the dev image: see the README); prism build linux packages them from here"
                         .into(),
                 );
+            }
+            if target == Target::Windows && cmd != "build" && !cfg!(windows) {
+                return Err(
+                    "run Windows apps on Windows; prism build windows packages them from here"
+                        .into(),
+                );
+            }
+            if target == Target::Windows && cmd != "build" && opts.target.is_some() {
+                return Err("--target is for prism build windows".into());
             }
             let project = Project::find()?;
             match cmd.as_str() {
@@ -276,6 +302,7 @@ fn build_target(p: &Project, target: Target, o: &Options) -> Result<(), String> 
             Ok(())
         }
         Target::Linux => linux::build(p),
+        Target::Windows => windows::build(p, o).map(|_| ()),
         Target::Web => {
             build(p, target, o)?;
             let bin = binary(p, target, o);
@@ -315,7 +342,8 @@ fn build_target(p: &Project, target: Target, o: &Options) -> Result<(), String> 
     }
 }
 
-/// `cargo build` for the web server or the macOS binary.
+/// `cargo build` for the web server or the native binary (macOS, Linux,
+/// Windows).
 fn build(p: &Project, target: Target, o: &Options) -> Result<(), String> {
     if target == Target::Web {
         // The islands first: their sizes print with every build.
@@ -326,6 +354,12 @@ fn build(p: &Project, target: Target, o: &Options) -> Result<(), String> {
     p.deployment_env(&mut cmd);
     if o.release {
         cmd.arg("--release");
+    }
+    if target == Target::Windows {
+        // The icon, name and version in the executable, as `prism build`.
+        for (k, v) in windows::app_env(p) {
+            cmd.env(k, v);
+        }
     }
     if target == Target::Web {
         // A separate target dir: switching web ↔ native doesn't rebuild everything.
@@ -346,10 +380,10 @@ fn binary(p: &Project, target: Target, o: &Options) -> PathBuf {
         p.target_dir.clone()
     };
     base.join(if o.release { "release" } else { "debug" })
-        .join(&p.package)
+        .join(format!("{}{}", p.package, std::env::consts::EXE_SUFFIX))
 }
 
-/// Starts the built web server or macOS app.
+/// Starts the built web server or native app.
 fn spawn(
     p: &Project,
     target: Target,

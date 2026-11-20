@@ -36,7 +36,7 @@ fn package_env(p: &Project) -> Vec<(&'static str, String)> {
 }
 
 /// `path` inside the container, where `root` is mounted at `/src`.
-fn in_container(root: &Path, path: &Path) -> Result<String, String> {
+pub(crate) fn in_container(root: &Path, path: &Path) -> Result<String, String> {
     let rel = path.strip_prefix(root).map_err(|_| {
         format!(
             "{} is outside the workspace {} (the container only sees the workspace)",
@@ -202,10 +202,10 @@ pub fn web_docker(p: &Project) -> Result<String, String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn project() -> Project {
+    pub(crate) fn project() -> Project {
         Project {
             root: "/w/examples/app".into(),
             package: "my_app".into(),
@@ -220,6 +220,7 @@ mod tests {
             uses_encryption: None,
             description: Some("Counts".into()),
             maintainer: None,
+            publisher: None,
             permissions: vec![],
             languages: vec![],
             team: None,

@@ -25,7 +25,10 @@ fn creates_a_project_named_after_the_directory() {
     create(dir.to_str().unwrap(), Some(repo())).unwrap();
     let cargo = read(&dir, "Cargo.toml");
     assert!(cargo.contains("name = \"my_cool_app\""), "{cargo}");
-    assert!(cargo.contains(&format!("path = \"{}/crates/prism\"", repo().display())));
+    assert!(cargo.contains(&format!(
+        "path = \"{}/crates/prism\"",
+        super::toml_path(&repo())
+    )));
     assert!(cargo.contains("prism = { package = \"prismsdk\""));
     assert!(cargo.contains("prism-build = { package = \"prismsdk-build\""));
     let prism = read(&dir, "Prism.toml");
@@ -35,8 +38,13 @@ fn creates_a_project_named_after_the_directory() {
     let lib = read(&dir, "src/lib.rs");
     assert!(lib.contains(".title(\"My Cool App\")") && !lib.contains("{title}"));
     assert!(lib.contains("prism::android_main!(run);"));
-    // The app's own binary gets the Apple link settings (Swift rpath).
-    assert!(read(&dir, "build.rs").contains("prism_build::link_app();"));
+    // The app's own binary gets its link settings (Apple: Swift rpath;
+    // Windows: the WinUI runtime, manifest, icon, version, no console).
+    let build = read(&dir, "build.rs");
+    assert!(build.contains("prism_build::link_app();"));
+    assert!(build.contains("Windows"));
+    assert!(read(&dir, "mise.toml").contains("windows = \"prism dev windows\""));
+    assert!(prism.contains("# [windows]"));
     // Every deployment target is documented, with Prism's defaults.
     for (section, version) in [
         ("[ios]", "17.0"),
@@ -72,6 +80,18 @@ fn creates_a_project_named_after_the_directory() {
     // Never overwrites.
     let err = create(dir.to_str().unwrap(), Some(repo())).unwrap_err();
     assert!(err.contains("already exists"), "{err}");
+}
+
+#[test]
+fn toml_paths_have_no_escapes() {
+    assert_eq!(
+        super::toml_path(Path::new(r"\\?\C:\Users\me\prism")),
+        "C:/Users/me/prism"
+    );
+    assert_eq!(
+        super::toml_path(Path::new("/home/me/prism")),
+        "/home/me/prism"
+    );
 }
 
 #[test]

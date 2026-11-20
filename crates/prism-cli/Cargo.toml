@@ -28,6 +28,8 @@ ring = "0.17"
 base64 = "0.22"
 # The Apple sources it writes out for bundling (widget extension, icons).
 prism-apple-build.workspace = true
+# `prism build windows`: the Windows App SDK runtime's files.
+prism-build.workspace = true
 # WASM islands: wasm-bindgen as a library (the version prism-island pins,
 # so users install no CLI), and their gzip / brotli sizes.
 wasm-bindgen-cli-support = "=0.2.130"

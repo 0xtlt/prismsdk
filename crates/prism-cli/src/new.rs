@@ -1,4 +1,5 @@
-//! `prism new <name>`: a ready-to-run project (web, macOS, iOS).
+//! `prism new <name>`: a ready-to-run project (web, macOS, iOS, Android,
+//! Linux, Windows).
 
 use std::path::{Path, PathBuf};
 
@@ -9,6 +10,15 @@ fn default_prism() -> Option<PathBuf> {
         .exists()
         .then(|| repo.canonicalize().ok())
         .flatten()
+}
+
+/// A path for a TOML string: `/` separators (Windows takes them), without
+/// the `\\?\` prefix `canonicalize` gives on Windows, whose `\` would be
+/// escapes.
+pub(crate) fn toml_path(path: &Path) -> String {
+    let s = path.display().to_string();
+    let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
+    s.replace('\\', "/")
 }
 
 pub fn create(name: &str, prism: Option<PathBuf>) -> Result<(), String> {
@@ -39,14 +49,13 @@ pub fn create(name: &str, prism: Option<PathBuf>) -> Result<(), String> {
             let prism = prism
                 .canonicalize()
                 .map_err(|e| format!("{}: {e}", prism.display()))?;
+            let prism = toml_path(&prism);
             (
                 format!(
-                    "{{ package = \"prismsdk\", path = \"{}/crates/prism\", default-features = false }}",
-                    prism.display()
+                    "{{ package = \"prismsdk\", path = \"{prism}/crates/prism\", default-features = false }}"
                 ),
                 format!(
-                    "{{ package = \"prismsdk-build\", path = \"{}/crates/prism-build\" }}",
-                    prism.display()
+                    "{{ package = \"prismsdk-build\", path = \"{prism}/crates/prism-build\" }}"
                 ),
             )
         }
@@ -75,7 +84,7 @@ pub fn create(name: &str, prism: Option<PathBuf>) -> Result<(), String> {
     let files: [(&str, String); 10] = [
         (
             "build.rs",
-            "fn main() {\n    // The app binary's link settings (Apple: Swift's rpath, deployment target).\n    prism_build::link_app();\n    // locales/*.json → typed `strings::…` functions, checked at build time.\n    prism_build::translations(\"locales\").fallback(\"en\").generate();\n}\n"
+            "fn main() {\n    // The app binary's link settings (Apple: Swift's rpath, deployment target;\n    // Windows: the WinUI runtime next to it, its manifest, icon and version, no console).\n    prism_build::link_app();\n    // locales/*.json → typed `strings::…` functions, checked at build time.\n    prism_build::translations(\"locales\").fallback(\"en\").generate();\n}\n"
                 .to_string(),
         ),
         (
@@ -128,6 +137,10 @@ name = "{title}"
 bundle_id = "dev.prism.{slug}"
 version = "0.1.0"
 # icon = "icon.png"   # 1024×1024 PNG
+# description = "What the app does"
+
+# [windows]
+# publisher = "Example Ltd"  # the executable's CompanyName
 
 [ios]
 # team = "ABCDE12345"        # Apple team for real devices
@@ -167,6 +180,7 @@ web = "prism dev web"
 macos = "prism dev macos"
 ios = "prism dev ios"
 android = "prism dev android"
+windows = "prism dev windows"
 "#
             .to_string(),
         ),
@@ -184,6 +198,7 @@ android = "prism dev android"
     println!("  prism dev macos    # native window");
     println!("  prism dev ios      # iOS simulator (--device <name> for an iPhone)");
     println!("  prism dev android  # the running Android emulator or phone");
+    println!("  prism dev windows  # native window (on Windows)");
     Ok(())
 }
 

@@ -49,7 +49,11 @@ use std::path::{Path, PathBuf};
 /// Link settings the app's own executable needs: on Apple targets, the Swift
 /// runtime's search path (`-rpath /usr/lib/swift`) and, when the environment
 /// sets none, Prism's deployment target (iOS 17, tvOS 17, watchOS 10,
-/// visionOS 26, macOS 13) for the final link. No-op on other targets.
+/// visionOS 26, macOS 13) for the final link. On Windows, the Windows App
+/// SDK runtime next to the executable, and in it the manifest, the icon and
+/// the version information (`PRISM_ICON`, `PRISM_APP_NAME`…, which `prism`
+/// sets from `Prism.toml`), with the GUI subsystem for release builds (no
+/// console window): see [`winappsdk::link_app`]. No-op on other targets.
 ///
 /// Prism's backends cannot add these themselves: Cargo applies a build
 /// script's `rustc-link-arg` only to the package that printed it. Without
@@ -64,6 +68,7 @@ pub fn link_app() {
 }
 
 pub mod winappsdk;
+pub mod winres;
 
 /// Starts the translations build step for the `*.json` files in `dir`
 /// (relative to the package).

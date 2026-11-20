@@ -11,6 +11,8 @@ prism dev web            # http://localhost:3000, restarts on save
 prism dev ios            # iOS simulator
 prism dev android        # the running emulator or a USB phone
 prism build macos        # release .app with widgets and icon
+prism dev windows        # on Windows: a WinUI window
+prism build windows      # a zip: the app and its WinUI runtime (from any OS)
 prism devices            # simulators, paired iPhones, Android devices
 ```
 
