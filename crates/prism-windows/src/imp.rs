@@ -497,6 +497,17 @@ pub fn since_start() -> f64 {
 
 /// The process's memory: working set and private bytes (MB).
 pub fn memory() -> String {
+    let m = memory_counters();
+    format!(
+        "working set {:.1} MB, private {:.1} MB, peak working set {:.1} MB",
+        m.WorkingSetSize as f64 / 1048576.,
+        m.PrivateUsage as f64 / 1048576.,
+        m.PeakWorkingSetSize as f64 / 1048576.
+    )
+}
+
+/// The process's memory counters.
+pub fn memory_counters() -> windows::Win32::System::ProcessStatus::PROCESS_MEMORY_COUNTERS_EX {
     use windows::Win32::System::ProcessStatus::{
         GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
     };
@@ -509,12 +520,7 @@ pub fn memory() -> String {
             size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
         );
     }
-    format!(
-        "working set {:.1} MB, private {:.1} MB, peak working set {:.1} MB",
-        m.WorkingSetSize as f64 / 1048576.,
-        m.PrivateUsage as f64 / 1048576.,
-        m.PeakWorkingSetSize as f64 / 1048576.
-    )
+    m
 }
 
 unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {

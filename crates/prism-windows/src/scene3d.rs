@@ -149,6 +149,7 @@ unsafe extern "system" fn window_proc(
 /// it (`WGL_ARB_create_context`).
 unsafe fn create() -> std::result::Result<Context, String> {
     let started = std::time::Instant::now();
+    let before = crate::imp::memory_counters();
     unsafe {
         let instance = GetModuleHandleW(None).map_err(|e| e.to_string())?;
         let class = w!("PrismGL");
@@ -219,11 +220,16 @@ unsafe fn create() -> std::result::Result<Context, String> {
             gl.get_parameter_i32(glow::MINOR_VERSION),
         );
         gl3d::check_version(major, minor, false, false)?;
+        let after = crate::imp::memory_counters();
+        let mb = |a: usize, b: usize| (a as f64 - b as f64) / 1048576.;
         log!(
-            "3D scenes: {} {} (OpenGL started in {:.0} ms)",
+            "3D scenes: {} {} (OpenGL started in {:.0} ms, +{:.1} MB working set, +{:.1} MB \
+             private)",
             gl.get_parameter_string(glow::RENDERER),
             gl.get_parameter_string(glow::VERSION),
-            started.elapsed().as_secs_f64() * 1000.
+            started.elapsed().as_secs_f64() * 1000.,
+            mb(after.WorkingSetSize, before.WorkingSetSize),
+            mb(after.PrivateUsage, before.PrivateUsage)
         );
         GL.with(|g| *g.borrow_mut() = Some(Rc::new(gl)));
         let interop = if crate::win::env("PRISM_3D_READBACK").is_some() {
