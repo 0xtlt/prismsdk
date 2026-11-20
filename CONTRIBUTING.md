@@ -32,8 +32,18 @@ The whole workspace builds, passes clippy and its tests on Windows (the
 - MSVC (`x86_64-pc-windows-msvc`, rustup's default), with the Visual Studio
   Build Tools ("Desktop development with C++", installed by an administrator);
 - GNU (`x86_64-pc-windows-gnu`), with a MinGW-w64 GCC on `PATH` (WinLibs, for
-  example): no administrator needed. Its `windres` embeds the app's manifest
-  (`prism_build::link_app()`).
+  example): no administrator needed. Its `windres` turns the app's
+  resources (manifest, icon, version information, written by
+  `prism_build::link_app()`) into an object.
+
+From macOS or Linux, `prism build windows` cross-compiles for
+`x86_64-pc-windows-gnu` with MinGW-w64 (`brew install mingw-w64`, `apt
+install gcc-mingw-w64-x86-64`, then `rustup target add
+x86_64-pc-windows-gnu`), or in the `prism-windows-cross` Docker image
+without it. arm64 (`aarch64-pc-windows-gnullvm`, a user-level `rustup
+target add`) needs llvm-mingw's clang for `ring`'s C, even to check: see
+[Windows › Architectures and
+MSVC](docs/src/platforms/windows.md#architectures-and-msvc).
 
 **Symbolic links.** Each crate's `LICENSE-APACHE` and `LICENSE-MIT`, and the
 `docker` directory at the root, are symbolic links (so `cargo package` puts

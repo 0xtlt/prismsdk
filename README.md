@@ -24,6 +24,7 @@ prism run ios --device "My iPhone"
 prism build macos            # release .app with widgets and icon
 prism publish ios --dry-run  # App Store build, checked (see Shipping to stores)
 prism dev android            # the running emulator or a USB phone
+prism build windows          # a zip: the app and its WinUI runtime (from any OS)
 prism devices                # simulators, paired iPhones, Android devices
 ```
 

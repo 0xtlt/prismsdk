@@ -55,6 +55,7 @@ The crates are published to crates.io in dependency order; see
 | macOS (Mac App Store) | `.pkg` | `prism build macos --store` | App Store Connect (`prism publish macos`) |
 | macOS (direct download) | notarized `.dmg` | `prism build macos --direct` | Apple's notary service (`prism publish macos --direct`) |
 | Linux | `.deb` | `prism build linux` | your repository or download page |
+| Windows | `.zip` (the app's folder) | `prism build windows` | your download page |
 | Web | Docker image | `prism build web --docker` | your registry or server |
 
 Versions come from `Prism.toml`. `[app] version` is the version people see. `[app] build` is the build number: `CFBundleVersion` on Apple platforms, `versionCode` on Android (or `[android] version_code`), and the Debian revision on Linux. Each upload needs a higher build number.
@@ -98,6 +99,19 @@ maintainer = "Jane Doe <jane@example.com>"
 ### Linux
 
 `prism build linux` makes a `.deb`: the release binary and its assets in `/usr/lib/<name>`, a launcher in `/usr/bin`, a desktop entry and icon named after the bundle id (the window uses it as its GTK application id, so desktops match it to its launcher), and AppStream metadata. Dependencies come from `dpkg-shlibdeps`. On Linux it builds directly. Elsewhere it builds inside the `docker/linux-dev.Dockerfile` image, which it builds if needed, with its own target dir under `target/linux`. Install the package with `sudo apt install ./<name>_<version>-<build>_<arch>.deb`.
+
+### Windows
+
+`prism build windows` makes `target/windows/<name>-<version>-windows-x64.zip`:
+one folder with the release executable (its icon, version information and
+manifest inside, no console window), the Windows App SDK runtime (54 MB:
+the app is self-contained, nothing to install) and the app's assets. People
+unzip it and run the executable. It builds on Windows, and from macOS or
+Linux with MinGW-w64 or in Docker. Not yet: an MSIX that leaves the
+runtime to the Windows App Runtime framework package, an installer, and
+code signing (an unsigned downloaded executable gets a SmartScreen warning
+on its first run). See [Windows › Running and
+shipping](platforms/windows.md#running-and-shipping).
 
 ### Web
 

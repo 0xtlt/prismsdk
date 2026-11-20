@@ -79,11 +79,16 @@ jobs:
       - name: Production web image
         run: docker build -f docker/web.Dockerfile --build-arg PACKAGE=counter -t counter-web .
 
-  # Windows (MSVC): the whole workspace must build, lint and pass its tests.
-  # The WinUI backend's build script fetches the Windows App SDK packages
-  # from nuget.org (into target/winappsdk, cached with the target). The
-  # repository's symbolic links (LICENSE-*, docker) may be checked out as
-  # small text files on Windows: nothing here reads them.
+  # Windows (MSVC): the whole workspace must build, lint and pass its tests,
+  # and `prism build windows` must package the counter with its WinUI
+  # backend (the release executable with its icon, version information and
+  # manifest from link.exe, the Windows App SDK runtime, the assets) as a
+  # zip. The runner has no desktop session, so nothing renders here
+  # (scripts/windows-smoke.sh does, on a Windows PC). The WinUI backend's
+  # build script fetches the Windows App SDK packages from nuget.org (into
+  # target/winappsdk, cached with the target). The repository's symbolic
+  # links (LICENSE-*, docker) may be checked out as small text files on
+  # Windows: nothing here reads them.
   windows:
     runs-on: windows-latest
     steps:
@@ -97,6 +102,31 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Tests
         run: cargo test --workspace
+      - name: Install the prism CLI
+        run: cargo install --path crates/prism-cli --locked
+      - name: Windows zip of the counter (WinUI)
+        working-directory: examples/counter
+        run: prism build windows
+      - name: Check the zip
+        shell: pwsh
+        run: |
+          $zip = Get-Item target/windows/counter-*-windows-x64.zip
+          "{0}: {1:N1} MB" -f $zip.Name, ($zip.Length / 1MB)
+          Expand-Archive $zip.FullName $env:RUNNER_TEMP/counter-zip
+          $app = "$env:RUNNER_TEMP/counter-zip/Counter"
+          foreach ($f in 'counter.exe', 'resources.pri', 'Microsoft.UI.Xaml.dll', 'Microsoft.WindowsAppRuntime.dll', 'assets/prism.png') {
+            if (-not (Test-Path "$app/$f")) { throw "missing $f" }
+          }
+          if (Get-ChildItem $app -Recurse -Include *.pdb, *.d, *.rlib) { throw "build files in the zip" }
+          $v = (Get-Item "$app/counter.exe").VersionInfo
+          $v | Format-List ProductName, FileDescription, ProductVersion, CompanyName
+          if ($v.ProductName -ne 'Counter' -or $v.FileDescription -ne 'Counter') { throw "version information" }
+          # The PE header's subsystem: 2 is a Windows (GUI) program.
+          $b = [IO.File]::ReadAllBytes("$app/counter.exe")
+          $sub = [BitConverter]::ToUInt16($b, [BitConverter]::ToInt32($b, 0x3C) + 92)
+          if ($sub -ne 2) { throw "subsystem $sub, expected 2 (no console)" }
+          # The manifest registers the WinUI runtime (reg-free WinRT).
+          if (-not (Select-String -Path "$app/counter.exe" -Pattern 'Microsoft.UI.Xaml.Controls.XamlControlsResources' -Quiet)) { throw "no runtime manifest" }
 
   bundles:
     runs-on: macos-15

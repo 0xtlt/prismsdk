@@ -38,6 +38,8 @@ prism run ios --device "My iPhone"
 prism build macos            # release .app with widgets and icon
 prism publish ios --dry-run  # App Store build, checked (see Shipping to stores)
 prism dev android            # the running emulator or a USB phone
+prism dev windows            # on Windows: a WinUI window
+prism build windows          # a zip: the app and its WinUI runtime (from any OS)
 prism devices                # simulators, paired iPhones, Android devices
 ```
 
@@ -66,13 +68,13 @@ fn main() {
 | File | |
 |---|---|
 | `Cargo.toml` | depends on `prism` (features `native`, default, and `web`) and `prism-build` |
-| `Prism.toml` | name, bundle id, version, icon, Apple team ([the `prism` command](cli.md#prismtoml)) |
+| `Prism.toml` | name, bundle id, version, icon, Apple team, Windows publisher ([the `prism` command](cli.md#prismtoml)) |
 | `src/lib.rs` | the app: a `run()` function, plus `prism::android_main!(run)` for Android |
 | `src/main.rs` | calls `run()` on every other platform |
-| `build.rs` | the app binary's link settings (`prism_build::link_app()`: Swift's rpath and deployment target on Apple platforms, see [iOS](platforms/ios.md#deployment-target)); turns `locales/*.json` into typed `strings::…` functions ([Languages](guide/i18n.md)) |
+| `build.rs` | the app binary's link settings (`prism_build::link_app()`: Swift's rpath and deployment target on Apple platforms, see [iOS](platforms/ios.md#deployment-target); on Windows the WinUI runtime next to the executable, its manifest, icon and version information, and no console for release builds, see [Windows](platforms/windows.md#running-and-shipping)); turns `locales/*.json` into typed `strings::…` functions ([Languages](guide/i18n.md)) |
 | `locales/en.json`, `fr.json` | the strings |
 | `assets/` | pictures shown with `picture("logo.png")` |
-| `mise.toml` | `mise run web` / `macos` / `ios` / `android` |
+| `mise.toml` | `mise run web` / `macos` / `ios` / `android` / `windows` |
 
 The app lives in its library because Android loads it as a shared library.
 Next: [Updating state](guide/state.md).

@@ -11,7 +11,8 @@ prism build <target> [options]          Build release artifacts
 prism devices                           List simulators, emulators and devices
 ```
 
-Targets: `web`, `macos`, `ios`, `tvos`, `watchos`, `visionos`, `android`.
+Targets: `web`, `macos`, `ios`, `tvos`, `watchos`, `visionos`, `android`,
+`linux`, `windows`.
 
 | Option | |
 |---|---|
@@ -21,10 +22,20 @@ Targets: `web`, `macos`, `ios`, `tvos`, `watchos`, `visionos`, `android`.
 | `--path </route>` | start on this screen |
 | `--bundle` | macOS: run as a full `.app` (widgets, notifications) |
 | `--port <port>` | web: listen on this port |
+| `--target <triple>` | Windows: the Rust target of `prism build windows` (default: this PC's toolchain; off Windows `x86_64-pc-windows-gnu`) |
 
 `prism new` uses path dependencies when it finds a Prism checkout (`--prism`,
 or the one the command was installed from), and the crates.io release of the
 same version otherwise.
+
+On Windows, `prism run windows` and `prism dev windows` build and start the
+app (`prism dev` stops it before each rebuild: Windows locks a running
+program). `prism build windows` makes a zip of one folder: the release
+executable (icon, version information and manifest inside, no console
+window), the Windows App SDK runtime and the app's assets. It builds on
+Windows, and from macOS or Linux it cross-compiles with MinGW-w64, or in
+Docker without it ([Windows › Running and
+shipping](platforms/windows.md#running-and-shipping)).
 
 The bundling scripts and the platform sources (the Swift bridge and widget
 extension, the Android Java host) are embedded in the binary and written under
@@ -57,6 +68,9 @@ deployment_target = "17.0"    # oldest iOS/iPadOS (the default)
 
 [macos]                       # likewise [tvos] (17.0), [watchos] (10.0), [visionos] (26.0)
 deployment_target = "13.0"
+
+[windows]
+publisher = "Example Ltd"     # the executable's CompanyName (default: Cargo.toml's first author)
 
 [network]
 allow_http = ["preview.localhost"]  # plain-HTTP hosts and their subdomains, on one line
@@ -97,6 +111,13 @@ island's raw / gzip / brotli size, and passes them to the server
 defaults; a variable already set in the environment wins. The app's
 `build.rs` calls `prism_build::link_app()` (`prism new` writes it), so builds
 without `prism` link the same way ([iOS](platforms/ios.md#deployment-target)).
+On Windows it also embeds the app's icon, version information and manifest
+and links release builds without a console; `prism` passes it `Prism.toml`'s
+name, version, build, bundle id, publisher, description and icon
+(`PRISM_APP_NAME`, `PRISM_VERSION`, `PRISM_BUILD`, `PRISM_BUNDLE_ID`,
+`PRISM_PUBLISHER`, `PRISM_DESCRIPTION`, `PRISM_ICON`), and a plain `cargo
+build` takes the `Cargo.toml`'s ([Windows › What the executable
+says](platforms/windows.md#what-the-executable-says)).
 
 The widget extension (iOS, iPadOS, visionOS, macOS) is built, signed and
 embedded, with its provisioning profile and App Group, only when the app
@@ -150,6 +171,7 @@ target ». Dependencies the app takes only on the device go under the same
 | `PRISM_PATH` | start screen (`/todos/1`) |
 | `PRISM_LOCALE`, `PRISM_TEXT_SCALE` | language and text size, for testing |
 | `PRISM_RELEASE=1` | release build |
+| `PRISM_WINDOWS_SUBSYSTEM` | Windows: `windows` (no console) or `console`, whatever the profile (default: `windows` for release builds) |
 | `PRISM_ANDROID_AUTOMOTIVE=1` | build for a car running Android |
 | `PRISM_ANDROID_KEYSTORE`, `PRISM_ANDROID_KEYSTORE_PASS`, `PRISM_ANDROID_KEY_ALIAS` | Android release signing |
 

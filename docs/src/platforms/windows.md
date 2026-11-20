@@ -11,8 +11,11 @@ flexbox like on the other platforms.
 The Windows App SDK is **self-contained**: nothing is installed on the
 user's machine. The build fetches it from nuget.org once and puts its
 runtime next to the executable (about 54 MB, x64); `prism_build::link_app()`
-embeds the manifest that registers it. Builds with the GNU (MinGW) and the
-MSVC toolchains.
+embeds the manifest that registers it, with the app's icon and version.
+Builds with the GNU (MinGW) and the MSVC toolchains, and cross-compiles
+from macOS and Linux. `prism run windows` and `prism dev windows` run the
+app; `prism build windows` ships it as a zip ([Running and
+shipping](#running-and-shipping)).
 
 The milestone: the `counter` example runs on every tab, its smoke test
 passes in a desktop session, and UI Automation presses its buttons. Some
@@ -96,14 +99,29 @@ kinds and services come next (see [Not yet](#not-yet)).
    against the `windows` crate).
 
 The app's own build script calls `prism_build::link_app()` (`prism new`
-writes it): on Windows it copies the runtime (`runtimes-framework/<arch>`,
-`resources.pri`) next to the executable and embeds the app manifest
-(Windows 10/11 compatibility, per-monitor DPI v2, UTF-8, common controls
-v6, and the `activatableClass` registrations of the runtime: reg-free
-WinRT, what the SDK's MSBuild targets generate). GNU builds compile it with
-`windres` (MinGW's binutils, or `WINDRES`); MSVC builds pass it to the
-linker (`/MANIFESTINPUT`). A manifest activated at run time is not enough:
-WinRT only reads the executable's own.
+writes it). On Windows it:
+
+- copies the runtime (`runtimes-framework/<arch>`, `resources.pri`) next to
+  the executable;
+- embeds the app's resources, written by `prism_build::winres` as one
+  `.res` file, without a resource compiler:
+  - the manifest: the app's identity (its bundle id and version), Windows
+    10/11 compatibility, `asInvoker`, per-monitor DPI v2, UTF-8, common
+    controls v6, and the `activatableClass` registrations of the runtime
+    (reg-free WinRT, what the SDK's MSBuild targets generate);
+  - the icon and the version information (see [What the executable
+    says](#what-the-executable-says));
+- links release builds as Windows programs, which open no console (see
+  [No console](#no-console)).
+
+Each toolchain links the `.res` its own way. GNU (MinGW): `windres` (its
+binutils: `x86_64-w64-mingw32-windres`, else `windres`, or `WINDRES`) turns
+it into an object named like MinGW's default manifest, found first with
+`-B`, so the executable gets one manifest, not two (GNU `ld` cannot read a
+`.res`). MSVC: `link.exe` takes the `.res` itself (it runs `cvtres`), with
+`/MANIFEST:NO` so it adds no manifest of its own. GNU with LLVM
+(`*-gnullvm`): `lld` takes the `.res` itself. A manifest activated at run
+time is not enough: WinRT only reads the executable's own.
 
 The application object is created by hand (COM aggregation in `outer.rs`)
 so the Windows 11 control styles (`XamlControlsResources`) load without a
@@ -113,6 +131,128 @@ Footprint (counter, x64): the release executable is about 10 MB like with
 any backend; the runtime next to it is 205 files, 54 MB (3.4 MB of them
 translations). A debug executable carries the bindings' debug information
 (about 375 MB). The package cache takes 270 MB once per target directory.
+
+## Running and shipping
+
+On a Windows PC, `prism run windows` builds the app (debug) and starts it;
+`prism dev windows` also rebuilds and restarts it on every save, on the
+same screen. Windows locks a running program's executable, so `prism dev`
+stops the old version before it builds the new one. Both pass `Prism.toml`'s
+name, version, publisher and icon to the build, like `prism build`. Off
+Windows they stop with a message: build the zip there instead.
+
+### No console
+
+Release builds are Windows programs (the GUI subsystem): no console window
+opens with the app. `prism_build::link_app()` links them so
+(`-Wl,--subsystem,windows` for GNU, `/SUBSYSTEM:WINDOWS
+/ENTRY:mainCRTStartup` for MSVC, what Rust's `#![windows_subsystem =
+"windows"]` passes), so apps need no attribute. Debug builds stay console
+programs, so `cargo run` and `prism run windows` print the app's logs in the
+terminal; a double-clicked debug build opens a console beside its window.
+`PRISM_WINDOWS_SUBSYSTEM=windows` or `console` chooses for any profile. A
+Windows program started from a terminal (`prism run windows --release`)
+still writes its logs there: it inherits the terminal's handles.
+
+### `prism build windows`
+
+1. Builds the app in release, its executable carrying its icon, version
+   information and manifest.
+2. Writes the folder `target/windows/<Name>/`: `<package>.exe`, the Windows
+   App SDK runtime (207 files, `resources.pri` among them) and the app's
+   `assets/` (the folder the app declares, `PRISM_DESCRIBE=assets`), and
+   nothing else: no debug symbols, no build files.
+3. Zips it: `target/windows/<package>-<version>-windows-<arch>.zip`. The
+   counter's is 26.6 MB, 67.5 MB unzipped (its 10.4 MB executable, the
+   runtime and two assets), built on Windows or cross-compiled from a Mac.
+
+People unzip it anywhere and run the executable: nothing to install, no
+administrator, on Windows 10 (1809 and later) and 11. The app finds its
+pictures in the `assets` folder next to it (`PRISM_ASSETS_DIR` wins) and
+keeps its data in `%LOCALAPPDATA%\<title>`.
+
+### What the executable says
+
+| | From | Shown by |
+|---|---|---|
+| Icon | `[app] icon`: the 1024×1024 PNG, scaled to 16, 20, 24, 32, 40, 48, 64 (32-bit images with alpha) and 256 pixels (PNG), or an `.ico` as it is | Explorer, the taskbar, Alt+Tab, the title bar |
+| `FileDescription`, `ProductName` | `[app] name` | Task Manager, the taskbar's menus, Properties › Details |
+| `ProductVersion`, `FileVersion` | `[app] version`; the binary version is its three numbers and `[app] build` | Properties › Details |
+| `CompanyName` | `[windows] publisher`, else the first author of the `Cargo.toml` | Properties › Details, Task Manager's details |
+| `Comments` | `[app] description` | Properties › Details |
+| `InternalName`, `OriginalFilename` | the package (`counter`, `counter.exe`) | Properties › Details |
+| Manifest identity | `[app] bundle_id` and the binary version; the name as its description | side-by-side activation |
+
+`prism` passes them to cargo as `PRISM_APP_NAME`, `PRISM_VERSION`,
+`PRISM_BUILD`, `PRISM_BUNDLE_ID`, `PRISM_PUBLISHER`, `PRISM_DESCRIPTION` and
+`PRISM_ICON`; a plain `cargo build` uses the package's own name, version,
+authors and description, without an icon. The window takes the icon from
+the executable (`LoadImageW` of icon group 1).
+
+### Toolchains and cross-compiling
+
+| Builds on | How | Needs |
+|---|---|---|
+| Windows | `cargo build` with the default toolchain; `--target <triple>` for another | MSVC Build Tools, or MinGW-w64 on `PATH` |
+| macOS or Linux with MinGW-w64 | cross-compiles for `x86_64-pc-windows-gnu` (`--target` for another) | `brew install mingw-w64` or `apt install gcc-mingw-w64-x86-64`, then `rustup target add x86_64-pc-windows-gnu` |
+| macOS or Linux without | in the `prism-windows-cross` Docker image (Rust and MinGW-w64, built once from `docker/windows-cross.Dockerfile`), with its own target directory, `target/windows-cross` | Docker |
+
+A cross-compiled app cannot be asked for its assets (it does not run
+there): the project's `assets/` folder goes in the zip. MSVC targets build
+only on Windows.
+
+### Architectures and MSVC
+
+- **x64:** built, run and shipped with the GNU toolchain (WinLibs GCC) on a
+  Windows 11 PC.
+- **arm64:** built and zipped on the x64 PC with `prism build windows
+  --target aarch64-pc-windows-gnullvm` (a user-level `rustup target add`):
+  an arm64 executable with its resources, linked by `lld`, the runtime from
+  `runtimes-framework/win-arm64`, a `-arm64` zip (24 MB for `prism new`'s
+  app). Every app needs a C compiler for the target, even for `cargo
+  check`: `ring` (rustls, under `prism-http`) has C and assembly. With
+  [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) unpacked anywhere,
+  set `CARGO_TARGET_AARCH64_PC_WINDOWS_GNULLVM_LINKER` and
+  `CC_aarch64_pc_windows_gnullvm` to its `aarch64-w64-mingw32-clang.exe`
+  and `AR_aarch64_pc_windows_gnullvm` to its `llvm-ar.exe`; do not put it on
+  `PATH` beside another MinGW, whose x64 build scripts its
+  `x86_64-w64-mingw32-gcc` would then link. `aarch64-pc-windows-msvc` needs
+  MSVC's ARM64 tools. Not run on an arm64 PC yet; x86 is untested.
+- **MSVC:** the same `.res`, `/MANIFEST:NO`, `/SUBSYSTEM:WINDOWS` and
+  `/ENTRY:mainCRTStartup`, as documented for `link.exe`; the CI's `windows`
+  job (MSVC) builds the counter with WinUI and runs `prism build windows`,
+  but no PC has run an MSVC build yet.
+
+### MSIX
+
+`prism build windows` makes no MSIX yet. A package that depends on the
+Windows App Runtime framework package, instead of carrying the 54 MB
+runtime, needs:
+
+1. an `AppxManifest.xml`: the identity (the bundle id, the signing
+   certificate's subject as publisher, the four-part version), a
+   `PackageDependency` on the Windows App Runtime framework package of the
+   SDK's release, a desktop `Application` with `runFullTrust`, and logos
+   (44 and 150 pixels, from the icon);
+2. an executable without the runtime's class registrations in its manifest,
+   and no runtime next to it (`PRISM_WINAPPSDK_NO_COPY=1`): the framework
+   package registers the classes;
+3. the package's own `resources.pri` (`makepri.exe`);
+4. packing: `makeappx.exe pack` from the Windows SDK, or `makemsix` (the
+   open-source MSIX SDK, also on macOS and Linux), which writes the zip, its
+   `[Content_Types].xml` and its `AppxBlockMap.xml` (SHA-256 of each 64 KB
+   block);
+5. signing: `signtool.exe sign` with a certificate whose subject is the
+   manifest's publisher and that the user's PC trusts (the Microsoft Store
+   signs the packages it distributes);
+6. on the user's PC, the Windows App Runtime installed (its redistributable
+   installer; the Store installs it with a Store app).
+
+Packing could be done in plain Rust; signing (an Authenticode PKCS #7
+signature over the package's digest) needs `signtool` or a signing service.
+The zip needs none of it, nor code signing, but a downloaded unsigned
+executable gets a SmartScreen warning on its first run; sign it with
+`signtool` and a code-signing certificate before zipping to avoid it.
 
 ## Desktop session
 
@@ -162,11 +302,11 @@ the session, presses the counter's button through UI Automation.
 - **Services:** notifications, alerts (`ContentDialog`), the tray, the menu
   bar, badges, pickers of photos, files and folders, secure storage,
   biometrics, sign-in, background tasks, push and run-time fonts.
-- **Packaging:** `prism build windows` (the runtime and `resources.pri`
-  next to the exe in a zip, icon and version info in the manifest; or an
-  MSIX with the Windows App Runtime as a framework dependency instead of
-  the 54 MB); MSVC's `/MANIFESTINPUT` path is untested; arm64 and x86
-  untested.
+- **Packaging:** an MSIX with the Windows App Runtime as a framework
+  dependency ([MSIX](#msix)); an installer (Start menu shortcut, file
+  associations, uninstall entry): the zip is a portable app; code signing;
+  MSVC, arm64 and x86 builds not run on a PC yet ([Architectures and
+  MSVC](#architectures-and-msvc)).
 - **Accessibility:** clickable views are buttons for UI Automation (their
   own role, a link or a tab, is not mapped yet: that needs custom automation
   peers); high contrast and Narrator testing.
