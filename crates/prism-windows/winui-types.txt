@@ -210,6 +210,32 @@ Microsoft.UI.Composition.CompositionGeometry
 Microsoft.UI.Composition.CompositionRoundedRectangleGeometry
 Microsoft.UI.Composition.CompositionBrush
 Microsoft.UI.Composition.CompositionColorBrush
+# Animations, clips, overlays, conic gradients (motion.rs, decor.rs, overlay.rs)
+Microsoft.UI.Composition.CompositionAnimation
+Microsoft.UI.Composition.KeyFrameAnimation
+Microsoft.UI.Composition.ScalarKeyFrameAnimation
+Microsoft.UI.Composition.Vector3KeyFrameAnimation
+Microsoft.UI.Composition.CompositionEasingFunction
+Microsoft.UI.Composition.CubicBezierEasingFunction
+Microsoft.UI.Composition.LinearEasingFunction
+Microsoft.UI.Composition.ICompositionAnimationBase
+Microsoft.UI.Composition.AnimationIterationBehavior
+Microsoft.UI.Composition.AnimationDirection
+Microsoft.UI.Composition.AnimationDelayBehavior
+Microsoft.UI.Composition.AnimationStopBehavior
+Microsoft.UI.Composition.CompositionClip
+Microsoft.UI.Composition.CompositionGeometricClip
+Microsoft.UI.Xaml.Media.CompositionTarget
+Microsoft.UI.Xaml.Media.ImageBrush
+Microsoft.UI.Xaml.Media.TileBrush
+Microsoft.UI.Xaml.Controls.Flyout
+Microsoft.UI.Xaml.Controls.FlyoutPresenter
+Microsoft.UI.Xaml.Controls.LightDismissOverlayMode
+Microsoft.UI.Xaml.Controls.Primitives.FlyoutBaseClosingEventArgs
+Microsoft.UI.Xaml.Controls.Primitives.Popup
+Microsoft.UI.Xaml.Setter
+Microsoft.UI.Xaml.SetterBase
+Microsoft.UI.Xaml.SetterBaseCollection
 # Tabs, styles, tooltips
 Microsoft.UI.Xaml.Controls.SelectorBar
 Microsoft.UI.Xaml.Controls.SelectorBarItem

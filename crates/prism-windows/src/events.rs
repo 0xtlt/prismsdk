@@ -32,28 +32,6 @@ pub fn clickable(outer: &Canvas, id: NodeId) -> Result<()> {
     Ok(())
 }
 
-/// The backdrop of a sheet or a dialog: a tap there closes it
-/// (`UiEvent::Back(overlay, 0)`) unless it is fixed.
-pub fn scrim(overlay: NodeId) -> Result<xaml::Controls::Border> {
-    let b = xaml::Controls::Border::new()?;
-    b.SetVisibility(xaml::Visibility::Collapsed)?;
-    b.Tapped(&TappedEventHandler::new(move |_, _| {
-        defer(Box::new(move |s| {
-            let fixed = s
-                .renderer
-                .widgets
-                .scene
-                .get(overlay)
-                .is_some_and(|n| prism_core::controls::OverlayConfig::decode(&n.config).fixed);
-            if !fixed {
-                dispatch(UiEvent::Back(overlay, 0));
-            }
-        }));
-        Ok(())
-    }))?;
-    Ok(b)
-}
-
 /// The pointer over and pressing the view, reported to prism-native
 /// (hover and pressed style refinements).
 pub fn hover(outer: &Canvas, id: NodeId) -> Result<()> {

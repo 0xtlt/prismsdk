@@ -21,8 +21,8 @@ use crate::winui::bindings::Microsoft::UI::Composition::{
 use crate::winui::xaml::Controls::{Border, Canvas};
 use crate::winui::xaml::Hosting::ElementCompositionPreview;
 use crate::winui::xaml::Media::{
-    AcrylicBrush, Brush, BrushMappingMode, CompositeTransform, DoubleCollection, GradientStop,
-    GradientStopCollection, LinearGradientBrush, RadialGradientBrush,
+    AcrylicBrush, Brush, BrushMappingMode, DoubleCollection, GradientStop, GradientStopCollection,
+    LinearGradientBrush, RadialGradientBrush,
 };
 use crate::winui::xaml::Shapes::Rectangle;
 use crate::winui::xaml::{CornerRadius, UIElement};
@@ -110,9 +110,8 @@ pub fn gradient(g: &Gradient, pal: &Palette, w: f32, h: f32) -> Result<Brush> {
             }
             b.cast()
         }
-        // XAML has no conic gradient: the colors go around as a linear
-        // sweep from `from` (phase 3: a Composition surface).
-        GradientKind::Conic { from } => linear(g, pal, w, h, from + 90.),
+        // XAML has no conic gradient: its pixels, in a bitmap.
+        GradientKind::Conic { .. } => crate::decor::conic(g, pal, w, h),
     }
 }
 
@@ -138,8 +137,7 @@ fn linear(g: &Gradient, pal: &Palette, w: f32, h: f32, angle: f32) -> Result<Bru
 }
 
 /// The border's color and widths (top, right, bottom, left); `None`
-/// when there is none. Sides of different colors take the first drawn
-/// side's (phase 3: one strip per side).
+/// when there is none (sides of different colors are `decor.rs` paths).
 pub fn border(s: &Style, pal: &Palette, text: Color) -> Option<(Color, [f32; 4])> {
     if s.border_none {
         return None;
@@ -159,7 +157,9 @@ pub fn apply_box(b: &Border, s: &Style, pal: &Palette, text: Color, r: Rect) -> 
     }
     b.SetCornerRadius(corner_radius(s, r.w, r.h))?;
     let solid = s.border_style == BorderStyle::Solid;
-    match border(s, pal, text).filter(|_| solid) {
+    // Sides of different colors are paths (`decor.rs`).
+    let one = solid && !crate::decor::split_sides(s);
+    match border(s, pal, text).filter(|_| one) {
         Some((color, [t, rt, bt, l])) => {
             b.SetBorderBrush(&brush(color)?)?;
             b.SetBorderThickness(thickness(l, t, rt, bt))?;
@@ -198,43 +198,12 @@ pub fn apply_dash(rect: &Rectangle, s: &Style, pal: &Palette, text: Color, r: Re
     Ok(())
 }
 
-/// Opacity and transform of a node's outer element.
+/// Opacity and transform of a node's outer element: the element's
+/// Composition facades (`Opacity`, `Translation`, `Rotation`, `Scale`
+/// around `CenterPoint`), which `motion.rs` animates.
 pub fn apply_transform(outer: &Canvas, s: &Style, r: Rect, sticky: f32) -> Result<()> {
-    outer.SetOpacity(s.opacity.clamp(0., 1.) as f64)?;
-    let t = s.transform;
-    let (px, py) = s.translate_percent;
-    let dx = t.x + px * r.w / 100.;
-    let dy = t.y + py * r.h / 100. + sticky;
-    let identity = t.sx() == 1. && t.sy() == 1. && t.rotate == 0. && dx == 0. && dy == 0.;
-    if identity {
-        if outer
-            .RenderTransform()
-            .is_ok_and(|t| t.cast::<CompositeTransform>().is_ok())
-        {
-            outer.SetRenderTransform(None::<&crate::winui::xaml::Media::Transform>)?;
-        }
-        return Ok(());
-    }
-    let ct = match outer
-        .RenderTransform()
-        .ok()
-        .and_then(|t| t.cast::<CompositeTransform>().ok())
-    {
-        Some(ct) => ct,
-        None => {
-            let ct = CompositeTransform::new()?;
-            outer.SetRenderTransform(&ct)?;
-            ct
-        }
-    };
-    ct.SetCenterX((r.w / 2.) as f64)?;
-    ct.SetCenterY((r.h / 2.) as f64)?;
-    ct.SetScaleX(t.sx() as f64)?;
-    ct.SetScaleY(t.sy() as f64)?;
-    ct.SetRotation(t.rotate as f64)?;
-    ct.SetTranslateX(dx as f64)?;
-    ct.SetTranslateY(dy as f64)?;
-    Ok(())
+    let v = crate::motion::Visual::of(s, r.w, r.h, sticky);
+    crate::motion::set_visual(&outer.cast()?, v, r.w, r.h)
 }
 
 /// The drop shadows of a box, drawn under it: per shadow, an invisible

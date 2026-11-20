@@ -24,7 +24,7 @@ use crate::style::{self, Shadows};
 use crate::winui::xaml::Controls::{
     Border, Button, Canvas, ScrollBarVisibility, ScrollMode, ScrollViewer, UIElementCollection,
 };
-use crate::winui::xaml::Media::{Brush, RectangleGeometry};
+use crate::winui::xaml::Media::Brush;
 use crate::winui::xaml::Shapes::Rectangle;
 use crate::winui::xaml::{FrameworkElement, UIElement, Visibility};
 use crate::winui::{transparent, ui};
@@ -46,6 +46,8 @@ pub struct View {
     pub content: Content,
     pub bar: Bar,
     pub dash: Option<Rectangle>,
+    /// Inset shadows and borders of several colors (`decor.rs`).
+    pub decor: crate::decor::Decor,
     /// The children in `kids`, in order (what `set_children` diffs).
     pub children: Vec<NodeId>,
     /// Whether the outer element takes pointer input (clickable, hover…).
@@ -103,6 +105,7 @@ impl View {
             content,
             bar,
             dash: None,
+            decor: Default::default(),
             children: Vec::new(),
             hit: false,
             button: None,
@@ -172,28 +175,23 @@ impl View {
                 d.SetVisibility(Visibility::Collapsed)?;
             }
         }
+        let under = match (&self.boxed, &self.shadows) {
+            (Some(b), _) => Some(ui(b)?),
+            (None, Some(sh)) => Some(ui(&sh.host)?),
+            _ => None,
+        };
+        self.decor.apply(&self.outer, under, n, pal, text)?;
         controls::style(&self.content, n, pal)?;
         style::apply_transform(&self.outer, s, r, sticky)?;
         self.clip(n)?;
         Ok(())
     }
 
-    /// Children are clipped to the box (`overflow: hidden`, stacks, tabs).
-    fn clip(&self, n: &Node) -> Result<()> {
+    /// Children are clipped to the box (`overflow: hidden`, stacks, tabs),
+    /// to its rounded corners if it has some.
+    fn clip(&mut self, n: &Node) -> Result<()> {
         let clips = n.clips() && n.kind != NodeKind::Scroll;
-        if clips {
-            let g = RectangleGeometry::new()?;
-            g.SetRect(windows::Foundation::Rect {
-                X: 0.,
-                Y: 0.,
-                Width: n.frame.w.max(0.),
-                Height: n.frame.h.max(0.),
-            })?;
-            self.kids.SetClip(&g)?;
-        } else if self.kids.Clip().is_ok_and(|_| true) {
-            self.kids.SetClip(None::<&RectangleGeometry>)?;
-        }
-        Ok(())
+        self.decor.clip_children(&self.kids, n, clips)
     }
 
     /// The node's frame (in its parent's coordinates) and size.

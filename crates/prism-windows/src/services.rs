@@ -91,7 +91,9 @@ impl PlatformServices for WinServices {
                 self.later("notifications")
             }
             PlatformRequest::RequestNotificationPermission => {}
-            PlatformRequest::ShowAlert(_) => self.later("alerts"),
+            PlatformRequest::ShowAlert(spec) => crate::imp::defer(Box::new(move |s| {
+                crate::alert::show(&s.renderer.widgets, spec)
+            })),
             PlatformRequest::SetTray(_) | PlatformRequest::RemoveTray(_) => {
                 self.later("tray icons")
             }

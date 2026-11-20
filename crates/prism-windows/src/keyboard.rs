@@ -45,6 +45,14 @@ pub fn typed_char(vk: u32) -> Option<char> {
 /// Returns whether XAML must not see it (a listener consumed or claimed
 /// it).
 pub fn key_event(s: &mut State, vk: u16, typed: Option<char>, repeat: bool, up: bool) -> bool {
+    // Escape closes the topmost sheet or dialog (`overlay.rs`).
+    if vk == windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0
+        && !up
+        && !repeat
+        && crate::overlay::escape(&s.renderer.widgets)
+    {
+        return true;
+    }
     let Some(name) = crate::keys::key_name(vk, typed) else {
         return false;
     };

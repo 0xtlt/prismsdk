@@ -37,6 +37,9 @@
 //! | `system` | theme, accent, locale, DPI |
 //! | `scene`, `keys`, `fluent` | pure helpers, tested on every host |
 
+// `cx.show_alert` as a ContentDialog.
+#[cfg(target_os = "windows")]
+mod alert;
 #[cfg(target_os = "windows")]
 mod bars;
 #[cfg(target_os = "windows")]
@@ -55,10 +58,21 @@ mod images;
 mod imp;
 #[cfg(target_os = "windows")]
 mod keyboard;
+// Animations: Composition on the elements, frames per rendered frame.
+#[cfg(target_os = "windows")]
+mod motion;
 // Key names and icon glyphs: no Win32, tested everywhere.
 mod keys;
+// Sheets and dialogs as ContentDialog-like panels, popovers as flyouts.
 #[cfg(target_os = "windows")]
 mod outer;
+#[cfg(target_os = "windows")]
+mod overlay;
+// Inset shadows, borders of several colors, conic gradients, rounded clips.
+#[cfg(target_os = "windows")]
+mod decor;
+// Conic gradient pixels, per-side border outlines: no Win32, tested everywhere.
+mod paint;
 // The tree's model: no Win32, tested everywhere.
 mod scene;
 #[cfg(target_os = "windows")]
