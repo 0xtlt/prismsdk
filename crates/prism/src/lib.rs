@@ -408,8 +408,18 @@ impl Application {
         )))]
         {
             let _ = (config, init);
+            let reason = if cfg!(not(feature = "native")) {
+                "neither the `native` nor the `web` feature is enabled".to_string()
+            } else if cfg!(target_os = "windows") {
+                "the native Windows backend is not available yet".to_string()
+            } else {
+                format!("no native backend for {}", std::env::consts::OS)
+            };
             panic!(
-                "prism: no backend for this target. Enable `web`, or build `native` for macOS/iOS."
+                "prism: {reason}. Native backends: macOS, iOS/iPadOS/tvOS/visionOS, watchOS, \
+                 Linux and Android. The `web` feature works on every platform, Windows \
+                 included: build with `--no-default-features --features web` and open the \
+                 app in a browser."
             );
         }
     }
