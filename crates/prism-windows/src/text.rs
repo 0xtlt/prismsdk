@@ -1,444 +1,347 @@
-//! DirectWrite text layouts of prism-native's `StyledText`: fonts and
-//! weights per run, CSS line heights, letter spacing, tabular figures,
-//! wrapping, line clamps with an ellipsis, alignment, inline icons (Segoe
-//! Fluent Icons), underline and strikethrough. Emoji come from the system
-//! font fallback and draw in color (`D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT`).
+//! Text as XAML `TextBlock`s: prism-native's `StyledText` becomes a
+//! TextBlock's properties and `Run` inlines (fonts and weights per run,
+//! colors, underline and strikethrough, inline Segoe Fluent Icons, CSS line
+//! heights, letter spacing, wrapping, line clamps with an ellipsis,
+//! alignment).
 //!
-//! Layouts are device independent: cached per node and width; colors
-//! (device-dependent brushes) are set right before drawing.
+//! Measuring uses the same code on a scratch TextBlock outside the tree
+//! (`Measurer`): XAML lays text out with DirectWrite itself, so what is
+//! measured is what is drawn, wrapping included. Sizes are cached per
+//! node and width until its text or style changes.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use prism_core::{FontFamily, NodeId, TextAlign};
+use prism_core::{Color, FontFamily, NodeId, TextAlign};
 use prism_native::text::{StyledRun, StyledText};
-use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
-use windows::Win32::Graphics::Direct2D::{
-    D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, ID2D1DeviceContext,
-};
-use windows::Win32::Graphics::DirectWrite::*;
-use windows::core::{BOOL, Interface, PCWSTR, Result};
-use windows_numerics::Vector2;
+use windows::Foundation::Size;
+use windows::UI::Text::{FontStyle, FontWeight, TextDecorations};
+use windows_core::Result;
 
-use crate::gfx::{Gfx, color_f};
-use crate::win::wide;
+use crate::fluent::Palette;
+use crate::winui::xaml::Controls::TextBlock;
+use crate::winui::xaml::Documents::Run;
+use crate::winui::xaml::Media::FontFamily as XamlFont;
+use crate::winui::xaml::{LineStackingStrategy, TextAlignment, TextTrimming, TextWrapping};
+use crate::winui::{brush, h};
 
-/// A run's text as laid out: its icon's Fluent glyph when it has one.
-struct Piece {
-    start: u32,
-    len: u32,
-    icon: bool,
-}
+/// The fonts of Windows 11, with Windows 10's as fallbacks (XAML takes a
+/// comma-separated list).
+pub const TEXT_FONT: &str = "Segoe UI Variable Text, Segoe UI";
+pub const DISPLAY_FONT: &str = "Segoe UI Variable Display, Segoe UI";
+pub const ICON_FONT: &str = "Segoe Fluent Icons, Segoe MDL2 Assets";
 
-/// A text laid out, with what it was made from.
-pub struct Laid {
-    pub layout: IDWriteTextLayout,
-    pub text: StyledText,
-    pieces: Vec<Piece>,
-}
-
-/// The font metrics a CSS line box needs, per family, weight, style.
-#[derive(Clone, Copy)]
-struct FontMetrics {
-    ascent: f32,
-    descent: f32,
-}
-
-#[derive(Default)]
-pub struct TextCache {
-    /// A node's layouts by width limit (a few: taffy measures under
-    /// several), dropped when its text or style changes.
-    nodes: HashMap<NodeId, Vec<Layout>>,
-    metrics: MetricsCache,
-}
-
-/// A layout by its width limit (quarter DIPs).
-type Layout = (Option<u32>, std::rc::Rc<Laid>);
-
-/// Font metrics by family, weight and italic.
-type MetricsCache = RefCell<HashMap<(String, u16, bool), FontMetrics>>;
-
-impl TextCache {
-    pub fn forget(&mut self, id: NodeId) {
-        self.nodes.remove(&id);
-    }
-
-    /// The layout of node `id`'s `text` at `max_width` (`None`: one line
-    /// per paragraph unless it wraps itself).
-    pub fn get(
-        &mut self,
-        gfx: &Gfx,
-        id: NodeId,
-        text: &StyledText,
-        max_width: Option<f32>,
-    ) -> Option<std::rc::Rc<Laid>> {
-        let key = max_width.map(|w| (w * 4.).round() as u32);
-        let entries = self.nodes.entry(id).or_default();
-        if entries.first().is_some_and(|(_, l)| l.text != *text) {
-            entries.clear();
-        }
-        if let Some((_, l)) = entries.iter().find(|(k, _)| *k == key) {
-            return Some(l.clone());
-        }
-        let laid = std::rc::Rc::new(build(gfx, &self.metrics, text, max_width).ok()?);
-        if entries.len() >= 4 {
-            entries.remove(0);
-        }
-        entries.push((key, laid.clone()));
-        Some(laid)
-    }
-
-    /// A one-off layout (header titles, tab labels, placeholders).
-    pub fn plain(&self, gfx: &Gfx, text: &StyledText, max_width: Option<f32>) -> Option<Laid> {
-        build(gfx, &self.metrics, text, max_width).ok()
-    }
-}
-
-/// The family DirectWrite gets for a Prism family.
-pub fn family_name(gfx: &Gfx, family: &FontFamily, size: f32) -> String {
+/// The XAML font family for a Prism family at `size`.
+pub fn family_name(family: &FontFamily, size: f32) -> String {
     match prism_native::fonts::resolve(family) {
         FontFamily::System | FontFamily::Rounded => {
             if size >= 20. {
-                gfx.fonts.display.clone()
+                DISPLAY_FONT.into()
             } else {
-                gfx.fonts.text.clone()
+                TEXT_FONT.into()
             }
         }
-        FontFamily::Monospace => {
-            first_installed(gfx, &["Cascadia Mono", "Consolas"], "Courier New")
-        }
-        FontFamily::Serif => first_installed(gfx, &["Georgia", "Cambria"], "Times New Roman"),
-        FontFamily::Named(name) => name,
+        FontFamily::Monospace => "Cascadia Mono, Consolas, Courier New".into(),
+        FontFamily::Serif => "Georgia, Cambria, Times New Roman".into(),
+        FontFamily::Named(name) => format!("{name}, Segoe UI"),
     }
 }
 
-fn first_installed(gfx: &Gfx, names: &[&str], fallback: &str) -> String {
-    for n in names {
-        let (mut index, mut exists) = (0u32, BOOL(0));
-        let w = wide(n);
-        let found = unsafe {
-            gfx.system_fonts
-                .FindFamilyName(PCWSTR(w.as_ptr()), &mut index, &mut exists)
-                .is_ok()
-        };
-        if found && exists.as_bool() {
-            return n.to_string();
+thread_local! {
+    /// XAML font families by name (they are immutable: shared).
+    static FAMILIES: RefCell<HashMap<String, XamlFont>> = RefCell::new(HashMap::new());
+}
+
+pub fn font(name: &str) -> Result<XamlFont> {
+    FAMILIES.with(|f| {
+        if let Some(font) = f.borrow().get(name) {
+            return Ok(font.clone());
         }
-    }
-    fallback.to_string()
+        let font = XamlFont::CreateInstanceWithName(&h(name))?;
+        f.borrow_mut().insert(name.to_string(), font.clone());
+        Ok(font)
+    })
 }
 
-fn weight(w: prism_core::FontWeight) -> DWRITE_FONT_WEIGHT {
-    DWRITE_FONT_WEIGHT(w.css() as i32)
+pub fn weight(w: prism_core::FontWeight) -> FontWeight {
+    FontWeight { Weight: w.css() }
 }
 
-fn style(italic: bool) -> DWRITE_FONT_STYLE {
+pub fn style(italic: bool) -> FontStyle {
     if italic {
-        DWRITE_FONT_STYLE_ITALIC
+        FontStyle::Italic
     } else {
-        DWRITE_FONT_STYLE_NORMAL
+        FontStyle::Normal
     }
 }
 
-fn font_metrics(
-    gfx: &Gfx,
-    cache: &MetricsCache,
-    family: &str,
-    w: prism_core::FontWeight,
+fn alignment(a: TextAlign) -> TextAlignment {
+    match a {
+        TextAlign::Center => TextAlignment::Center,
+        TextAlign::Right => TextAlignment::Right,
+        _ => TextAlignment::Left,
+    }
+}
+
+/// A run's text as drawn: its icon's Fluent glyph when it has one.
+fn run_text(r: &StyledRun) -> (String, bool) {
+    if let Some(icon) = &r.icon
+        && let Some(c) = crate::keys::fluent_icon(icon)
+    {
+        return (c.to_string(), true);
+    }
+    (r.text.clone(), false)
+}
+
+/// A TextBlock's paragraph settings (fonts of the first run, wrapping,
+/// clamping, line height, spacing, alignment).
+#[derive(Clone, Debug, PartialEq)]
+struct Paragraph {
+    size: f32,
+    family: String,
+    weight: u16,
     italic: bool,
-) -> FontMetrics {
-    let key = (family.to_string(), w.css(), italic);
-    if let Some(m) = cache.borrow().get(&key) {
-        return *m;
-    }
-    // Segoe UI's: what most fallbacks look like.
-    let mut m = FontMetrics {
-        ascent: 1.079,
-        descent: 0.251,
-    };
-    unsafe {
-        let (mut index, mut exists) = (0u32, BOOL(0));
-        let name = wide(family);
-        if gfx
-            .system_fonts
-            .FindFamilyName(PCWSTR(name.as_ptr()), &mut index, &mut exists)
-            .is_ok()
-            && exists.as_bool()
-            && let Ok(fam) = gfx.system_fonts.GetFontFamily(index)
-            && let Ok(font) =
-                fam.GetFirstMatchingFont(weight(w), DWRITE_FONT_STRETCH_NORMAL, style(italic))
-        {
-            let mut fm = DWRITE_FONT_METRICS::default();
-            font.GetMetrics(&mut fm);
-            let em = fm.designUnitsPerEm.max(1) as f32;
-            m = FontMetrics {
-                ascent: fm.ascent as f32 / em,
-                descent: fm.descent as f32 / em,
-            };
-        }
-    }
-    cache.borrow_mut().insert(key, m);
-    m
+    align: TextAlign,
+    no_wrap: bool,
+    max_lines: Option<u32>,
+    line_height: Option<f32>,
+    spacing: i32,
 }
 
-fn range(start: u32, len: u32) -> DWRITE_TEXT_RANGE {
-    DWRITE_TEXT_RANGE {
-        startPosition: start,
-        length: len,
-    }
-}
-
-fn build(
-    gfx: &Gfx,
-    metrics: &MetricsCache,
-    st: &StyledText,
-    max_width: Option<f32>,
-) -> Result<Laid> {
-    // The text as laid out: icons become their Fluent glyph.
-    let mut utf16: Vec<u16> = Vec::new();
-    let mut pieces = Vec::with_capacity(st.runs.len());
-    for r in &st.runs {
-        let start = utf16.len() as u32;
-        let icon = r.icon.as_deref().and_then(crate::keys::fluent_icon);
-        match icon {
-            Some(c) => utf16.extend(c.encode_utf16(&mut [0; 2]).iter()),
-            None => utf16.extend(r.text.encode_utf16()),
-        }
-        pieces.push(Piece {
-            start,
-            len: utf16.len() as u32 - start,
-            icon: icon.is_some(),
-        });
-    }
-    let base: &StyledRun = &st.runs[0];
-    let base_family = family_name(gfx, &base.font.family, base.font.size);
-    let size = base.font.size.max(1.);
-    unsafe {
-        let family = wide(&base_family);
-        let format = gfx.dw.CreateTextFormat(
-            PCWSTR(family.as_ptr()),
-            None,
-            weight(base.font.weight),
-            style(base.font.italic),
-            DWRITE_FONT_STRETCH_NORMAL,
+impl Paragraph {
+    fn of(st: &StyledText) -> Paragraph {
+        let first = &st.runs[0];
+        let size = first.font.size.max(1.);
+        Paragraph {
             size,
-            PCWSTR(wide("").as_ptr()),
-        )?;
-        format.SetTextAlignment(match st.align {
-            TextAlign::Left => DWRITE_TEXT_ALIGNMENT_LEADING,
-            TextAlign::Center => DWRITE_TEXT_ALIGNMENT_CENTER,
-            TextAlign::Right => DWRITE_TEXT_ALIGNMENT_TRAILING,
+            family: family_name(&first.font.family, size),
+            weight: first.font.weight.css(),
+            italic: first.font.italic,
+            align: st.align,
+            no_wrap: st.no_wrap,
+            max_lines: st.max_lines,
+            line_height: st.line_height,
+            // XAML spaces characters in thousandths of an em.
+            spacing: (st.letter_spacing / size * 1000.).round() as i32,
+        }
+    }
+
+    fn set(&self, tb: &TextBlock) -> Result<()> {
+        tb.SetFontSize(self.size as f64)?;
+        tb.SetFontFamily(&font(&self.family)?)?;
+        tb.SetFontWeight(FontWeight {
+            Weight: self.weight,
         })?;
-        let one_line = st.no_wrap || st.max_lines == Some(1);
-        format.SetWordWrapping(if one_line || max_width.is_none() {
-            DWRITE_WORD_WRAPPING_NO_WRAP
+        tb.SetFontStyle(style(self.italic))?;
+        tb.SetTextAlignment(alignment(self.align))?;
+        // Prism scales text itself (`RenderEnvironment::text_scale`).
+        tb.SetIsTextScaleFactorEnabled(false)?;
+        tb.SetTextWrapping(if self.no_wrap {
+            TextWrapping::NoWrap
         } else {
-            DWRITE_WORD_WRAPPING_WRAP
+            TextWrapping::Wrap
         })?;
-        // CSS line boxes: the extra space split above and below.
-        if let Some(lh) = st.line_height {
-            let m = font_metrics(
-                gfx,
-                metrics,
-                &base_family,
-                base.font.weight,
-                base.font.italic,
-            );
-            let content = (m.ascent + m.descent) * size;
-            let baseline = (lh - content) / 2. + m.ascent * size;
-            format.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, lh.max(1.), baseline)?;
-        }
-        let width = max_width.unwrap_or(1e6).max(1.);
-        let layout = gfx.dw.CreateTextLayout(&utf16, &format, width, 1e6)?;
-        let total = utf16.len() as u32;
-        // Per-run fonts and decorations.
-        for (r, p) in st.runs.iter().zip(&pieces) {
-            if p.len == 0 {
-                continue;
+        tb.SetMaxLines(self.max_lines.unwrap_or(0) as i32)?;
+        tb.SetTextTrimming(if self.max_lines.is_some() {
+            TextTrimming::CharacterEllipsis
+        } else if self.no_wrap {
+            TextTrimming::Clip
+        } else {
+            TextTrimming::None
+        })?;
+        match self.line_height {
+            Some(lh) => {
+                tb.SetLineHeight(lh as f64)?;
+                tb.SetLineStackingStrategy(LineStackingStrategy::BlockLineHeight)?;
             }
-            let rr = range(p.start, p.len);
-            let fam = if p.icon {
-                gfx.fonts.icons.clone()
-            } else {
-                family_name(gfx, &r.font.family, r.font.size)
-            };
-            if fam != base_family {
-                let w = wide(&fam);
-                layout.SetFontFamilyName(PCWSTR(w.as_ptr()), rr)?;
-            }
-            if r.font.size != base.font.size {
-                layout.SetFontSize(r.font.size.max(1.), rr)?;
-            }
-            if r.font.weight != base.font.weight {
-                layout.SetFontWeight(weight(r.font.weight), rr)?;
-            }
-            if r.font.italic != base.font.italic {
-                layout.SetFontStyle(style(r.font.italic), rr)?;
-            }
-            if r.underline {
-                layout.SetUnderline(true, rr)?;
-            }
-            if r.strikethrough {
-                layout.SetStrikethrough(true, rr)?;
-            }
-            if r.font.tabular {
-                let t = gfx.dw.CreateTypography()?;
-                t.AddFontFeature(DWRITE_FONT_FEATURE {
-                    nameTag: DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES,
-                    parameter: 1,
-                })?;
-                layout.SetTypography(&t, rr)?;
+            None => {
+                tb.SetLineHeight(0.)?;
+                tb.SetLineStackingStrategy(LineStackingStrategy::MaxHeight)?;
             }
         }
-        if st.letter_spacing != 0.
-            && let Ok(l1) = layout.cast::<IDWriteTextLayout1>()
-        {
-            l1.SetCharacterSpacing(0., st.letter_spacing, 0., range(0, total))?;
+        tb.SetCharacterSpacing(self.spacing)
+    }
+}
+
+fn plain(st: &StyledText) -> bool {
+    let first = &st.runs[0];
+    st.runs.len() == 1
+        && first.icon.is_none()
+        && !first.underline
+        && !first.strikethrough
+        && first.color.is_none()
+}
+
+/// The text itself: one string, or `Run`s (`pal`: their colors, unless
+/// only measuring).
+fn set_runs(tb: &TextBlock, st: &StyledText, pal: Option<&Palette>) -> Result<()> {
+    let first = &st.runs[0];
+    if plain(st) {
+        tb.SetTextDecorations(TextDecorations::None)?;
+        tb.SetText(&h(&first.text))?;
+        return Ok(());
+    }
+    tb.SetText(&h(""))?;
+    let inlines = tb.Inlines()?;
+    inlines.Clear()?;
+    for r in &st.runs {
+        let run = Run::new()?;
+        let (text, icon) = run_text(r);
+        run.SetText(&h(&text))?;
+        let size = r.font.size.max(1.);
+        if (size - first.font.size).abs() > 0.01 {
+            run.SetFontSize(size as f64)?;
         }
-        // Line clamps: an ellipsis at the end of the last line shown.
-        if one_line || st.max_lines.is_some() {
-            let sign = gfx.dw.CreateEllipsisTrimmingSign(&layout)?;
-            layout.SetTrimming(
-                &DWRITE_TRIMMING {
-                    granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
-                    delimiter: 0,
-                    delimiterCount: 0,
-                },
-                &sign,
-            )?;
-            if let Some(n) = st.max_lines.filter(|n| *n > 1) {
-                let lines = line_metrics(&layout);
-                if lines.len() > n as usize {
-                    let h: f32 = lines[..n as usize].iter().map(|l| l.height).sum();
-                    layout.SetMaxHeight(h)?;
-                }
-            }
+        let name = if icon {
+            ICON_FONT.to_string()
+        } else {
+            family_name(&r.font.family, size)
+        };
+        run.SetFontFamily(&font(&name)?)?;
+        run.SetFontWeight(weight(r.font.weight))?;
+        run.SetFontStyle(style(r.font.italic))?;
+        if let (Some(c), Some(pal)) = (r.color, pal) {
+            run.SetForeground(&brush(pal.resolve(c))?)?;
         }
-        Ok(Laid {
-            layout,
-            text: st.clone(),
-            pieces,
+        let mut deco = TextDecorations::None;
+        if r.underline {
+            deco |= TextDecorations::Underline;
+        }
+        if r.strikethrough {
+            deco |= TextDecorations::Strikethrough;
+        }
+        run.SetTextDecorations(deco)?;
+        inlines.Append(&run)?;
+    }
+    Ok(())
+}
+
+/// Sets `tb` up to show `st` in `color` (the text's own color, resolved,
+/// for runs without one).
+pub fn apply(tb: &TextBlock, st: &StyledText, pal: &Palette, color: Color) -> Result<()> {
+    Paragraph::of(st).set(tb)?;
+    tb.SetForeground(&brush(color)?)?;
+    set_runs(tb, st, Some(pal))
+}
+
+/// Natural sizes of text, from a scratch TextBlock.
+pub struct Measurer {
+    tb: TextBlock,
+    /// The paragraph settings the scratch TextBlock has now: set again
+    /// only when they change (each is a call into XAML).
+    paragraph: RefCell<Option<Paragraph>>,
+    /// Sizes by text and width limit (labels of buttons, pickers…).
+    sizes: RefCell<HashMap<String, (f32, f32)>>,
+    /// A node's sizes by width limit (quarter DIPs), dropped when its text
+    /// or style changes.
+    cache: HashMap<NodeId, (StyledText, Vec<Sized>)>,
+}
+
+/// A size measured within a width limit (quarter DIPs).
+type Sized = (Option<u32>, (f32, f32));
+
+impl Measurer {
+    pub fn new() -> Result<Measurer> {
+        Ok(Measurer {
+            tb: TextBlock::new()?,
+            paragraph: RefCell::new(None),
+            sizes: RefCell::new(HashMap::new()),
+            cache: HashMap::new(),
         })
     }
-}
 
-fn line_metrics(layout: &IDWriteTextLayout) -> Vec<DWRITE_LINE_METRICS> {
-    unsafe {
-        let mut n = 0u32;
-        let _ = layout.GetLineMetrics(None, &mut n);
-        let mut lines = vec![DWRITE_LINE_METRICS::default(); n as usize];
-        if layout.GetLineMetrics(Some(&mut lines), &mut n).is_err() {
-            return Vec::new();
+    pub fn forget(&mut self, id: NodeId) {
+        self.cache.remove(&id);
+    }
+
+    /// The size of node `id`'s text `st` within `max_width`.
+    pub fn node(&mut self, id: NodeId, st: &StyledText, max_width: Option<f32>) -> (f32, f32) {
+        let key = max_width.map(|w| (w * 4.).round().max(0.) as u32);
+        if let Some((text, sizes)) = self.cache.get(&id)
+            && text == st
+            && let Some((_, size)) = sizes.iter().find(|(k, _)| *k == key)
+        {
+            return *size;
         }
-        lines.truncate(n as usize);
-        lines
-    }
-}
-
-impl Laid {
-    /// Width and height, rounded up (laying it out again at that width
-    /// keeps its lines).
-    pub fn size(&self) -> (f32, f32) {
-        let mut m = DWRITE_TEXT_METRICS::default();
-        unsafe {
-            let _ = self.layout.GetMetrics(&mut m);
+        let size = self.measure(st, max_width);
+        let entry = self
+            .cache
+            .entry(id)
+            .or_insert_with(|| (st.clone(), Vec::new()));
+        if entry.0 != *st {
+            *entry = (st.clone(), Vec::new());
         }
-        // Lines cut by a clamp: the height of those shown.
-        let max_h = unsafe { self.layout.GetMaxHeight() };
-        let h = if max_h < 1e5 {
-            m.height.min(max_h)
-        } else {
-            m.height
-        };
-        ((m.width + 0.01).ceil(), h.ceil())
-    }
-
-    /// The longest unbreakable piece (CSS min-content).
-    pub fn min_width(&self) -> f32 {
-        unsafe { self.layout.DetermineMinWidth().unwrap_or(0.).ceil() }
-    }
-
-    /// Distance from the top to the first line's baseline.
-    pub fn baseline(&self) -> Option<f32> {
-        line_metrics(&self.layout).first().map(|l| l.baseline)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    /// Draws the text at `(x, y)` (in `dc`'s current transform), in `color`
-    /// where its runs have none; `clip` cuts it at its box.
-    pub fn draw(
-        &self,
-        dc: &ID2D1DeviceContext,
-        x: f32,
-        y: f32,
-        width: f32,
-        color: prism_core::Color,
-        resolve: &dyn Fn(prism_core::Color) -> prism_core::Color,
-        clip: bool,
-    ) -> Result<()> {
-        unsafe {
-            let layout = &self.layout;
-            // Laid out unbounded (measuring): give it its box now, so
-            // alignment and wrapping use it.
-            let max = layout.GetMaxWidth();
-            if width > 0. && (max > 1e5 || (max - width).abs() > 0.5) {
-                layout.SetMaxWidth(width.max(1.))?;
-            }
-            // Run backgrounds (highlights) under the text.
-            for (r, p) in self.text.runs.iter().zip(&self.pieces) {
-                let Some(bg) = r.background else { continue };
-                let brush = dc.CreateSolidColorBrush(&color_f(resolve(bg)), None)?;
-                let mut n = 0u32;
-                let _ = layout.HitTestTextRange(p.start, p.len, x, y, None, &mut n);
-                let mut hits = vec![DWRITE_HIT_TEST_METRICS::default(); n as usize];
-                if layout
-                    .HitTestTextRange(p.start, p.len, x, y, Some(&mut hits), &mut n)
-                    .is_ok()
-                {
-                    for h in &hits[..n as usize] {
-                        dc.FillRectangle(
-                            &D2D_RECT_F {
-                                left: h.left,
-                                top: h.top,
-                                right: h.left + h.width,
-                                bottom: h.top + h.height,
-                            },
-                            &brush,
-                        );
-                    }
-                }
-            }
-            let base = dc.CreateSolidColorBrush(&color_f(resolve(color)), None)?;
-            for (r, p) in self.text.runs.iter().zip(&self.pieces) {
-                if p.len == 0 {
-                    continue;
-                }
-                let c = r.color.map(resolve);
-                let effect: Option<windows::core::IUnknown> = match c {
-                    Some(c) => Some(dc.CreateSolidColorBrush(&color_f(c), None)?.cast()?),
-                    None => None,
-                };
-                layout.SetDrawingEffect(effect.as_ref(), range(p.start, p.len))?;
-            }
-            let mut options = D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT;
-            if clip {
-                options |= D2D1_DRAW_TEXT_OPTIONS_CLIP;
-            }
-            dc.DrawTextLayout(Vector2 { X: x, Y: y }, layout, &base, options);
+        if entry.1.len() >= 4 {
+            entry.1.remove(0);
         }
-        Ok(())
+        entry.1.push((key, size));
+        size
+    }
+
+    /// The scratch TextBlock showing `st` (no colors: not drawn).
+    fn load(&self, st: &StyledText) -> Result<()> {
+        let p = Paragraph::of(st);
+        if self.paragraph.borrow().as_ref() != Some(&p) {
+            p.set(&self.tb)?;
+            *self.paragraph.borrow_mut() = Some(p);
+        }
+        set_runs(&self.tb, st, None)
+    }
+
+    /// The size of `st` within `max_width` (`None`: unbounded).
+    pub fn measure(&self, st: &StyledText, max_width: Option<f32>) -> (f32, f32) {
+        let key = format!("{:?}|{st:?}", max_width.map(|w| (w * 4.).round() as i64));
+        if let Some(size) = self.sizes.borrow().get(&key) {
+            return *size;
+        }
+        if self.load(st).is_err() {
+            return (0., 0.);
+        }
+        let size = self.desired(max_width.unwrap_or(f32::INFINITY));
+        let mut sizes = self.sizes.borrow_mut();
+        if sizes.len() > 4096 {
+            sizes.clear();
+        }
+        sizes.insert(key, size);
+        size
+    }
+
+    fn desired(&self, width: f32) -> (f32, f32) {
+        let _ = self.tb.Measure(Size {
+            Width: width.max(0.),
+            Height: f32::INFINITY,
+        });
+        self.tb
+            .DesiredSize()
+            .map_or((0., 0.), |s| (s.Width, s.Height))
+    }
+
+    /// The narrowest the text can be: its longest word.
+    pub fn min_width(&self, st: &StyledText) -> f32 {
+        if self.load(st).is_err() {
+            return 0.;
+        }
+        let _ = self.tb.SetTextWrapping(TextWrapping::WrapWholeWords);
+        // The wrapping changed behind the cached settings.
+        *self.paragraph.borrow_mut() = None;
+        self.desired(0.).0
+    }
+
+    /// Distance from the top to the first baseline of `st` at `width`.
+    pub fn baseline(&self, st: &StyledText, width: f32) -> Option<f32> {
+        self.load(st).ok()?;
+        self.desired(width);
+        let b = self.tb.BaselineOffset().ok()? as f32;
+        (b > 0.).then_some(b)
     }
 }
 
-/// A plain run of `text` in the UI font: headers, tab labels, control
-/// titles, placeholders.
-pub fn plain(text: &str, size: f32, w: prism_core::FontWeight, align: TextAlign) -> StyledText {
-    let style = prism_core::Style {
-        font_size: size,
-        font_weight: w,
-        text_align: align,
-        no_wrap: true,
-        ..Default::default()
-    };
-    StyledText::from_runs(text, &[], &style)
+/// A one-run text in a control's font: a button's title, a picker's
+/// option, a tab's label.
+pub fn label(text: &str, s: &prism_core::Style) -> StyledText {
+    let mut st = StyledText::new(text, "", s);
+    st.align = TextAlign::Left;
+    st.no_wrap = true;
+    st.max_lines = None;
+    st
 }

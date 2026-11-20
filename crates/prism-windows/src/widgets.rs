@@ -1,52 +1,51 @@
-//! `prism_native::Widgets` over the scene: prism-native's calls create,
-//! style and place scene nodes; what changed is repainted (only that:
-//! the window region each touched node was drawn in and the one it is
-//! drawn in now), text fields are moved over their node.
-
-use std::rc::Rc;
+//! `prism_native::Widgets` over WinUI 3: each Prism node is a set of XAML
+//! elements (`view.rs`) placed at the frame prism-native's layout gives
+//! it, styled from its `Style`. A pure model of the tree (`scene.rs`) is
+//! kept alongside: which page a stack or tab bar shows, label search for
+//! the smoke hooks, window origins for drags.
 
 use prism_core::{
-    Accessibility, Appearance, IdMap, Interactions, NodeId, NodeKind, RenderEnvironment, Style,
+    Accessibility, Appearance, IdMap, IdSet, Interactions, NodeId, NodeKind, RenderEnvironment,
+    Role, Style,
 };
 use prism_native::{Insets, Viewport, Widgets};
-use windows::Win32::Foundation::{HWND, POINT, RECT};
-use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
-use windows::Win32::Graphics::Direct2D::ID2D1DeviceContext;
-use windows::Win32::Graphics::Gdi::{
-    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS,
-    DeleteDC, DeleteObject, GetDC, HGDIOBJ, MapWindowPoints, ReleaseDC, SelectObject,
-};
-use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, GetWindowRect};
-use windows::core::{Interface, Result};
+use windows::Win32::Foundation::HWND;
+use windows::Win32::Graphics::Imaging::IWICImagingFactory;
+use windows_core::{Interface, Result};
 
-use crate::controls::{self, content_inset, is_field};
+use crate::controls::{self, Content};
 use crate::fluent::{Accent, Palette};
-use crate::gfx::{Gfx, Surface};
+use crate::host::Island;
 use crate::images::Images;
-use crate::paint::{self, Ctx, Part, TargetCache};
 use crate::scene::{HEADER, Rect, Scene, TAB_BAR};
-use crate::text::TextCache;
-use crate::win::{hwnd, invalidate, px_rect};
-use crate::{fields, system};
+use crate::text::Measurer;
+use crate::view::{Bar, View, scroll_axis};
+use crate::win::log;
+use crate::winui::xaml::Automation::AutomationProperties;
+use crate::winui::xaml::Automation::Peers::{
+    AccessibilityView, AutomationHeadingLevel, AutomationLiveSetting,
+};
+use crate::winui::xaml::Controls::{Border, Canvas, ToolTipService};
+use crate::winui::xaml::{ElementTheme, FocusState, UIElement, Visibility};
+use crate::winui::{boxed, h, ui};
+use crate::{events, system};
 
-/// The window and everything drawn in it.
+/// The window and its XAML.
 pub struct Win {
     pub hwnd: HWND,
-    pub gfx: Rc<Gfx>,
     pub scene: Scene,
-    pub texts: TextCache,
+    pub views: IdMap<NodeId, View>,
+    /// The island's content: the app (root view and layers), then the
+    /// open overlays above it.
+    pub root: Canvas,
+    pub app: Canvas,
+    pub overlays: Canvas,
+    pub island: Option<Island>,
+    pub measurer: Measurer,
     pub images: Images,
-    pub surface: Surface,
-    pub cache: TargetCache,
-    /// Where each node was last drawn (window, view units).
-    pub painted: IdMap<NodeId, Rect>,
-    /// Nodes changed since the last repaint request.
-    dirty: Vec<NodeId>,
-    dirty_all: bool,
-    /// Frames or scroll offsets changed: text fields move.
-    pub moved: bool,
+    pub wic: IWICImagingFactory,
     pub dpi: u32,
-    /// Client area, view units.
+    /// Client area, view units (DIPs).
     pub size: (f32, f32),
     pub system_dark: bool,
     pub appearance: Appearance,
@@ -54,39 +53,53 @@ pub struct Win {
     pub palette: Palette,
     pub env: RenderEnvironment,
     pub locale: prism_core::Locale,
-    /// The node with the keyboard focus (a field's own window has the
-    /// Win32 focus then).
+    /// The node with the keyboard focus.
     pub focus: Option<NodeId>,
-    /// Focus moved with the keyboard: its ring shows.
+    /// Focus moved with the keyboard.
     pub focus_visible: bool,
-    pub hover: Option<(NodeId, Part)>,
-    pub pressed: Option<(NodeId, Part)>,
     /// `cx.focus(…)` and `dismiss_keyboard` while patches apply: carried
     /// out after (they report to prism-native).
     pub focus_requests: Vec<Option<NodeId>>,
     pub app_title: String,
     /// Fields reporting their selection (`on_select`).
-    pub select_events: prism_core::IdSet<NodeId>,
+    pub select_events: IdSet<NodeId>,
     /// What each field sent and the app has not rendered back yet (#73).
     pub typed: IdMap<NodeId, prism_native::fields::Typed>,
+    /// Stacks and tab bars whose bar or shown page changed.
+    bars: IdSet<NodeId>,
+    /// Which view's children canvas holds each node's element.
+    parents: IdMap<NodeId, NodeId>,
+    /// Where each overlay was when its content was laid out (the content's
+    /// frames are relative to it).
+    overlay_origins: IdMap<NodeId, (f32, f32)>,
+    /// The backdrop behind each sheet or dialog (dimmed, closes on a tap)
+    /// and the panel under its content.
+    scrims: IdMap<NodeId, (Border, Border)>,
+    /// Nodes with events already wired: clicks, hover and press.
+    clicks: IdSet<NodeId>,
+    hovers: IdSet<NodeId>,
 }
 
 impl Win {
-    pub fn new(hwnd: HWND, gfx: Rc<Gfx>, images: Images, title: String, dpi: u32) -> Win {
+    pub fn new(hwnd: HWND, images: Images, title: String, dpi: u32) -> Result<Win> {
         let system_dark = system::dark_mode();
         let accent = system::accent();
-        Win {
+        let root = Canvas::new()?;
+        let app = Canvas::new()?;
+        let overlays = Canvas::new()?;
+        root.Children()?.Append(&app)?;
+        root.Children()?.Append(&overlays)?;
+        let mut w = Win {
             hwnd,
-            gfx,
             scene: Scene::default(),
-            texts: TextCache::default(),
+            views: IdMap::default(),
+            root,
+            app,
+            overlays,
+            island: None,
+            measurer: Measurer::new()?,
             images,
-            surface: Surface::new(hwnd),
-            cache: TargetCache::default(),
-            painted: IdMap::default(),
-            dirty: Vec::new(),
-            dirty_all: true,
-            moved: true,
+            wic: crate::wic::factory()?,
             dpi,
             size: (0., 0.),
             system_dark,
@@ -100,13 +113,19 @@ impl Win {
             locale: system::locale(),
             focus: None,
             focus_visible: false,
-            hover: None,
-            pressed: None,
             focus_requests: Vec::new(),
             app_title: title,
-            select_events: Default::default(),
+            select_events: IdSet::default(),
             typed: IdMap::default(),
-        }
+            bars: IdSet::default(),
+            parents: IdMap::default(),
+            overlay_origins: IdMap::default(),
+            scrims: IdMap::default(),
+            clicks: IdSet::default(),
+            hovers: IdSet::default(),
+        };
+        w.theme_root()?;
+        Ok(w)
     }
 
     pub fn scale(&self) -> f32 {
@@ -121,390 +140,355 @@ impl Win {
         }
     }
 
+    fn theme_root(&mut self) -> Result<()> {
+        self.root.SetRequestedTheme(if self.dark() {
+            ElementTheme::Dark
+        } else {
+            ElementTheme::Light
+        })
+    }
+
+    /// The window's size changed (DIPs).
+    pub fn resize(&mut self, w: f32, h: f32) {
+        self.size = (w, h);
+        let _ = self.root.SetWidth(w as f64);
+        let _ = self.root.SetHeight(h as f64);
+    }
+
     /// The theme changed (system, app, accent): every color again.
     pub fn retheme(&mut self) {
         self.palette = Palette::new(self.dark(), self.accent);
         crate::imp::set_dark_title_bar(self.hwnd, self.dark());
-        let ids: Vec<NodeId> = self
-            .scene
-            .nodes
-            .iter()
-            .filter(|(_, n)| n.field.is_some())
-            .map(|(id, _)| *id)
-            .collect();
+        let _ = self.theme_root();
+        let ids: Vec<NodeId> = self.views.keys().copied().collect();
         for id in ids {
-            self.style_field(id);
-        }
-        self.repaint_all();
-    }
-
-    /// A node needs repainting where it was and where it is.
-    pub fn mark(&mut self, id: NodeId) {
-        if !self.dirty_all {
-            self.dirty.push(id);
-            if self.dirty.len() > 400 {
-                self.dirty_all = true;
-                self.dirty.clear();
+            self.restyle(id);
+            if let Some(n) = self.scene.get(id)
+                && matches!(n.kind, NodeKind::Stack | NodeKind::Tabs)
+            {
+                self.bars.insert(id);
+            }
+            if let (Some(n), Some(v)) = (self.scene.get(id), self.views.get(&id))
+                && n.kind == NodeKind::Shape
+            {
+                let _ = controls::set_paths(&v.content, &n.paths, &self.palette);
             }
         }
     }
 
-    pub fn repaint_all(&mut self) {
-        self.dirty_all = true;
-        self.dirty.clear();
-    }
-
-    /// Turns what changed into invalidated window regions.
-    pub fn flush(&mut self) {
-        let scale = self.scale();
-        if self.dirty_all {
-            self.dirty_all = false;
-            self.dirty.clear();
-            invalidate(self.hwnd, None, scale);
-        } else {
-            let mut ids = std::mem::take(&mut self.dirty);
-            ids.sort_unstable();
-            ids.dedup();
-            for id in ids {
-                let mut r = self.painted.get(&id).copied().unwrap_or_default();
-                if let Some(now) = self.visual_rect(id) {
-                    r = r.union(&now);
-                }
-                if !r.is_empty() {
-                    invalidate(self.hwnd, Some(r), scale);
-                }
-            }
-        }
-        if self.moved {
-            self.moved = false;
-            self.place_fields();
-        }
-    }
-
-    /// Where a node draws now (window, view units), transforms and
-    /// shadows included.
-    fn visual_rect(&self, id: NodeId) -> Option<Rect> {
-        let n = self.scene.get(id)?;
-        if !self.scene.is_shown(id) {
-            return None;
-        }
-        let mut m = windows_numerics::Matrix3x2::identity();
-        let mut chain = self.scene.chain(id);
-        chain.reverse();
-        for (i, a) in chain.iter().enumerate() {
-            m = paint::local_matrix(&self.scene, *a) * m;
-            let an = self.scene.get(*a)?;
-            if an.kind == NodeKind::Scroll && i + 1 < chain.len() {
-                m = windows_numerics::Matrix3x2::translation(-an.scroll.0, -an.scroll.1) * m;
-            }
-        }
-        let local = Rect::new(0., 0., n.frame.w, n.frame.h).inflate(paint::overhang(&n.style));
-        Some(paint::bounds(&m, local))
-    }
-
-    /// A node and everything in it changed place.
-    fn mark_subtree(&mut self, id: NodeId) {
-        let mut stack = vec![id];
-        while let Some(n) = stack.pop() {
-            self.mark(n);
-            if self.dirty_all {
-                return;
-            }
-            if let Some(node) = self.scene.get(n) {
-                stack.extend(node.children.iter().copied());
-            }
-        }
-    }
-
-    // --- Painting -------------------------------------------------------------
-
-    /// `WM_PAINT`: repaints `update` (client pixels) and presents it.
-    pub fn paint(&mut self, hdc: windows::Win32::Graphics::Gdi::HDC, update: Option<RECT>) {
-        let mut client = RECT::default();
-        unsafe {
-            let _ = GetClientRect(self.hwnd, &mut client);
-        }
-        let size = (client.right.max(0) as u32, client.bottom.max(0) as u32);
-        let dpi = self.dpi as f32;
-        if self.cache.generation != self.surface.generation {
-            self.cache = TargetCache::new(self.surface.generation);
-        }
-        let Win {
-            surface,
-            gfx,
-            scene,
-            texts,
-            images,
-            cache,
-            painted,
-            palette,
-            focus_visible,
-            hover,
-            pressed,
-            locale,
-            ..
-        } = self;
-        let gfx: &Gfx = gfx;
-        let mut draw = |dc: &ID2D1DeviceContext, clip: Option<Rect>| -> Result<()> {
-            let brush = unsafe { dc.CreateSolidColorBrush(&D2D1_COLOR_F::default(), None)? };
-            let mut ctx = Ctx {
-                dc,
-                gfx,
-                scene,
-                pal: palette,
-                texts,
-                images,
-                cache,
-                painted,
-                clip,
-                dpi,
-                focus_visible: *focus_visible,
-                hover: *hover,
-                pressed: *pressed,
-                brush,
-                locale,
-            };
-            paint::draw(&mut ctx)
+    /// Applies a node's style to its elements again.
+    pub fn restyle(&mut self, id: NodeId) {
+        let sticky = self.sticky(id);
+        let (Some(n), Some(v)) = (self.scene.get(id), self.views.get_mut(&id)) else {
+            return;
         };
-        surface.paint(gfx, hdc, size, dpi, update, &mut draw);
-    }
-
-    /// Paints the whole window now, through its DC (outside `WM_PAINT`).
-    pub fn paint_now(&mut self) {
-        unsafe {
-            let hdc = GetDC(Some(self.hwnd));
-            self.paint(hdc, None);
-            ReleaseDC(Some(self.hwnd), hdc);
+        if let Err(e) = v.apply_style(n, &self.palette, sticky) {
+            log!("style of node {id}: {e}");
         }
     }
 
-    /// The window as drawn, text fields included, as a PNG (smoke tests,
-    /// over SSH too: no desktop compositor needed).
-    pub fn snapshot(&mut self, path: &str) -> Result<()> {
-        let mut client = RECT::default();
-        unsafe {
-            let _ = GetClientRect(self.hwnd, &mut client);
-        }
-        let (w, h) = (client.right.max(1) as u32, client.bottom.max(1) as u32);
-        let dpi = self.dpi as f32;
-        let mut cache = TargetCache::default();
-        let mut painted = IdMap::default();
-        let Win {
-            gfx,
-            scene,
-            texts,
-            images,
-            palette,
-            focus_visible,
-            hover,
-            pressed,
-            locale,
-            ..
-        } = self;
-        let gfx: &Gfx = gfx;
-        let bmp = gfx.offscreen(w, h, dpi, |dc| {
-            let brush = unsafe { dc.CreateSolidColorBrush(&D2D1_COLOR_F::default(), None)? };
-            let mut ctx = Ctx {
-                dc,
-                gfx,
-                scene,
-                pal: palette,
-                texts,
-                images,
-                cache: &mut cache,
-                painted: &mut painted,
-                clip: None,
-                dpi,
-                focus_visible: *focus_visible,
-                hover: *hover,
-                pressed: *pressed,
-                brush,
-                locale,
-            };
-            paint::draw(&mut ctx)
-        })?;
-        // The native editors, painted by themselves, where they show
-        // (`WM_PRINT` ignores their window region).
-        let scale = self.scale();
-        for (&id, n) in self.scene.nodes.iter() {
-            let Some(f) = n.field.map(hwnd) else { continue };
-            if !fields::shown(f) {
-                continue;
-            }
-            let Some(visible) = self.scene.visible_rect(id) else {
-                continue;
-            };
-            let visible = px_rect(visible, scale);
-            let holes: Vec<RECT> = self
-                .scene
-                .covering(id)
-                .into_iter()
-                .map(|r| px_rect(r, scale))
-                .collect();
-            let inside =
-                |r: &RECT, x: i32, y: i32| x >= r.left && x < r.right && y >= r.top && y < r.bottom;
-            if let Some((x, y, cw, ch, px)) = capture_child(self.hwnd, f) {
-                self.gfx.blit(&bmp, (x, y), (cw, ch), &px, &|wx, wy| {
-                    inside(&visible, wx, wy) && !holes.iter().any(|h| inside(h, wx, wy))
-                })?;
-            }
-        }
-        self.gfx.save_png(path, &bmp.cast()?)
+    fn sticky(&self, id: NodeId) -> f32 {
+        self.scene
+            .get(id)
+            .map_or(0., |n| self.scene.sticky_offset(n))
     }
 
-    // --- Text fields ----------------------------------------------------------
-
-    /// Font and colors of a field's editor from its node.
-    pub fn style_field(&mut self, id: NodeId) {
-        let Some(n) = self.scene.get(id) else { return };
-        let Some(f) = n.field.map(hwnd) else { return };
-        let s = &n.style;
-        let pal = self.palette;
-        let family = crate::text::family_name(&self.gfx, &s.font_family, s.font_size);
-        let text = s.text_color.map_or(pal.text, |c| pal.resolve(c));
-        let mut under = controls::backdrop_color(&self.scene, &pal, id);
-        if !s.own_field_look() {
-            let fill = if n.focused {
-                pal.input_active
-            } else {
-                pal.control
-            };
-            under = crate::fluent::over(fill, under);
-        }
-        let config = prism_core::controls::InputConfig::decode(&n.config);
-        fields::set_look(
-            f,
-            &family,
-            s.font_size * self.scale(),
-            s.font_weight.css(),
-            s.italic,
-            crate::fluent::over(text, under),
-            under,
-            crate::fluent::over(pal.text_secondary, under),
-            config.secure,
-            config.max_length,
-        );
+    /// The outer element of a node.
+    pub fn outer(&self, id: NodeId) -> Option<UIElement> {
+        self.views.get(&id).map(View::outer)
     }
 
-    /// Moves every editor over its node (after a layout, a scroll, a
-    /// navigation), clipped to what is visible of it.
-    pub fn place_fields(&mut self) {
-        let scale = self.scale();
-        let overlay = self
-            .scene
-            .open_overlays()
-            .last()
-            .and_then(|o| self.scene.get(*o))
-            .and_then(|o| o.children.first().copied());
-        let ids: Vec<NodeId> = self
-            .scene
-            .nodes
-            .iter()
-            .filter(|(_, n)| n.field.is_some())
-            .map(|(id, _)| *id)
-            .collect();
-        for id in ids {
-            let n = &self.scene.nodes[&id];
-            let f = hwnd(n.field.expect("field"));
-            // Under an open overlay: hidden (drawn overlays cannot cover
-            // child windows).
-            let covered =
-                overlay.is_some_and(|o| id != o && !self.scene.ancestors(id).any(|a| a == o));
-            let visible = if covered {
-                None
-            } else {
-                self.scene.visible_rect(id)
-            };
-            let Some(visible) = visible else {
-                fields::place(f, None, None, &[]);
-                continue;
-            };
-            let r = self.scene.window_rect(id);
-            let (l, t, rr, b) = content_inset(n);
-            let mut inner = Rect::new(
-                r.x + l,
-                r.y + t,
-                (r.w - l - rr).max(1.),
-                (r.h - t - b).max(1.),
-            );
-            if n.kind == NodeKind::TextInput {
-                // One line, centered like the drawn text would be.
-                let lh = (n.style.font_size * 1.36).ceil() + 2.;
-                inner.y = r.y + t + ((r.h - t - b) - lh) / 2.;
-                inner.h = lh;
-            }
-            let px = px_rect(inner, scale);
-            let vis = px_rect(visible, scale);
-            let holes: Vec<RECT> = self
-                .scene
-                .covering(id)
-                .into_iter()
-                .map(|r| px_rect(r, scale))
-                .collect();
-            fields::place(f, Some(px), Some(vis), &holes);
-        }
-    }
-
-    pub fn field_of(&self, id: NodeId) -> Option<HWND> {
-        self.scene.get(id).and_then(|n| n.field).map(hwnd)
-    }
-
-    // --- Scrolling ------------------------------------------------------------
-
-    /// Scrolls a scroll view by `(dx, dy)`; repaints and moves fields.
-    pub fn scroll_by(&mut self, id: NodeId, dx: f32, dy: f32) -> bool {
-        if !self.scene.scroll_by(id, dx, dy) {
+    /// Whether node `id` is drawn where it is: not hidden, and the page a
+    /// stack or tab bar shows.
+    fn shown_in_parent(&self, id: NodeId) -> bool {
+        let Some(n) = self.scene.get(id) else {
+            return false;
+        };
+        if n.hidden {
             return false;
         }
-        if let Some(v) = self.scene.visible_rect(id) {
-            invalidate(self.hwnd, Some(v.inflate(2.)), self.scale());
-        } else {
-            self.repaint_all();
+        match n
+            .parent
+            .and_then(|p| self.scene.get(p).map(|pn| (p, pn.kind)))
+        {
+            Some((p, NodeKind::Stack | NodeKind::Tabs)) => {
+                self.scene.shown_children(p).contains(&id)
+            }
+            _ => true,
         }
-        self.moved = true;
-        true
     }
-}
 
-/// Paints a child window (a field) with `WM_PRINT` into memory: what
-/// works in session 0, where `PrintWindow` and `BitBlt` do not.
-fn capture_child(parent: HWND, child: HWND) -> Option<(i32, i32, i32, i32, Vec<u8>)> {
-    unsafe {
-        let mut wr = RECT::default();
-        GetWindowRect(child, &mut wr).ok()?;
-        let (w, h) = (wr.right - wr.left, wr.bottom - wr.top);
-        if w <= 0 || h <= 0 {
-            return None;
+    fn update_visibility(&self, id: NodeId) {
+        if let Some(v) = self.views.get(&id) {
+            let _ = v.set_visible(self.shown_in_parent(id));
         }
-        let mut pts = [POINT {
-            x: wr.left,
-            y: wr.top,
-        }];
-        MapWindowPoints(None, Some(parent), &mut pts);
-        let screen = GetDC(None);
-        let mem = CreateCompatibleDC(Some(screen));
-        let bi = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: w,
-                biHeight: -h,
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB.0,
-                ..Default::default()
-            },
-            ..Default::default()
+    }
+
+    /// After a commit: bars, the pages shown, overlays, sticky views.
+    pub fn flush(&mut self) {
+        let bars: Vec<NodeId> = self.bars.drain().collect();
+        for id in bars {
+            let (Some(n), Some(v)) = (self.scene.get(id), self.views.get_mut(&id)) else {
+                continue;
+            };
+            let width = n.frame.w;
+            let r = match &mut v.bar {
+                Bar::Header(hd) => {
+                    let shown = self.scene.header_shown(id);
+                    let _ = hd.root.SetVisibility(if shown {
+                        Visibility::Visible
+                    } else {
+                        Visibility::Collapsed
+                    });
+                    hd.update(&self.scene, id, &self.palette, width)
+                }
+                Bar::Tabs(t) => t.update(&self.scene, id, &self.palette, width),
+                Bar::None => Ok(()),
+            };
+            if let Err(e) = r {
+                log!("bar of node {id}: {e}");
+            }
+            for c in self
+                .scene
+                .get(id)
+                .map(|n| n.children.clone())
+                .unwrap_or_default()
+            {
+                self.update_visibility(c);
+            }
+        }
+        self.place_overlays();
+        let sticky: Vec<NodeId> = self
+            .scene
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.sticky.is_some())
+            .map(|(id, _)| *id)
+            .collect();
+        for id in sticky {
+            let s = self.sticky(id);
+            if let (Some(n), Some(v)) = (self.scene.get(id), self.views.get(&id)) {
+                let r = Rect::new(0., 0., n.frame.w, n.frame.h);
+                let _ = crate::style::apply_transform(&v.outer, &n.style, r, s);
+            }
+        }
+    }
+
+    /// Open overlays' content above the window, at their window position.
+    fn place_overlays(&self) {
+        let open = self.scene.open_overlays();
+        for (id, n) in self.scene.nodes.iter() {
+            if n.kind != NodeKind::Overlay {
+                continue;
+            }
+            let Some(v) = self.views.get(id) else {
+                continue;
+            };
+            let on = open.contains(id);
+            let shown = |on: bool| {
+                if on {
+                    Visibility::Visible
+                } else {
+                    Visibility::Collapsed
+                }
+            };
+            let _ = v.kids.SetVisibility(shown(on));
+            if let Some((scrim, panel)) = self.scrims.get(id) {
+                // Sheets and dialogs dim the window (unless the backdrop is
+                // clear) and close on a tap outside; popovers do neither.
+                let config = prism_core::controls::OverlayConfig::decode(&n.config);
+                let modal = !matches!(config.kind, prism_core::OverlayKind::Popover);
+                let _ = scrim.SetVisibility(shown(on && modal));
+                if on && modal {
+                    let clear =
+                        matches!(config.backdrop, Some(prism_core::controls::Backdrop::Clear));
+                    let a = match (clear, self.palette.dark) {
+                        (true, _) => 0.,
+                        (false, true) => 0.45,
+                        (false, false) => 0.3,
+                    };
+                    let _ = crate::winui::brush(prism_core::Color::BLACK.with_alpha(a))
+                        .and_then(|b| scrim.SetBackground(&b));
+                    let _ = scrim.SetWidth(self.size.0 as f64);
+                    let _ = scrim.SetHeight(self.size.1 as f64);
+                }
+                // The panel the content sits on (a bare dialog has none).
+                let content = n.children.first().and_then(|c| self.scene.get(*c));
+                let panel_on = on && !config.bare && content.is_some();
+                let _ = panel.SetVisibility(shown(panel_on));
+                if let (true, Some(c)) = (panel_on, content) {
+                    let (ox, oy) = self.overlay_origins.get(id).copied().unwrap_or_default();
+                    let pal = &self.palette;
+                    let f = c.frame;
+                    let r = 8.;
+                    let sheet = config.kind == prism_core::OverlayKind::Sheet;
+                    let _ = (|| -> Result<()> {
+                        let e = ui(panel)?;
+                        Canvas::SetLeft(&e, (ox + f.x) as f64)?;
+                        Canvas::SetTop(&e, (oy + f.y) as f64)?;
+                        panel.SetWidth(f.w.max(0.) as f64)?;
+                        panel.SetHeight(f.h.max(0.) as f64)?;
+                        panel.SetBackground(&crate::winui::brush(pal.layer)?)?;
+                        panel.SetBorderBrush(&crate::winui::brush(pal.stroke_secondary)?)?;
+                        panel.SetBorderThickness(crate::winui::uniform(1.))?;
+                        panel.SetCornerRadius(if sheet {
+                            crate::winui::radius(r, r, 0., 0.)
+                        } else {
+                            crate::winui::radius(r, r, r, r)
+                        })
+                    })();
+                }
+            }
+            if on {
+                let (x, y) = self
+                    .overlay_origins
+                    .get(id)
+                    .copied()
+                    .unwrap_or_else(|| self.scene.origin(*id));
+                if let Ok(e) = ui(&v.kids) {
+                    let _ = Canvas::SetLeft(&e, x as f64);
+                    let _ = Canvas::SetTop(&e, y as f64);
+                }
+            }
+        }
+    }
+
+    /// The app's root and layers in the window.
+    fn mount(&mut self) {
+        let Ok(coll) = self.app.Children() else {
+            return;
         };
-        let mut bits = std::ptr::null_mut();
-        let dib = CreateDIBSection(Some(mem), &bi, DIB_RGB_COLORS, &mut bits, None, 0).ok()?;
-        let old = SelectObject(mem, HGDIOBJ(dib.0));
-        fields::print(child, mem);
-        let px = std::slice::from_raw_parts(bits as *const u8, (w * h * 4) as usize).to_vec();
-        SelectObject(mem, old);
-        let _ = DeleteObject(HGDIOBJ(dib.0));
-        let _ = DeleteDC(mem);
-        ReleaseDC(None, screen);
-        Some((pts[0].x, pts[0].y, w, h, px))
+        let _ = coll.Clear();
+        for id in self.scene.roots().collect::<Vec<_>>() {
+            if let Some(e) = self.outer(id) {
+                let _ = crate::view::detach(&e);
+                let _ = coll.Append(&e);
+            }
+        }
+    }
+
+    /// Wires clicks, hover and press once a node needs them; makes the
+    /// node hit-testable.
+    fn update_hit(&mut self, id: NodeId) {
+        let Some(n) = self.scene.get(id) else { return };
+        let hover = n.reports.contains(prism_core::Interaction::Hover)
+            || n.reports.contains(prism_core::Interaction::Active);
+        let wants = n.clickable || hover || n.menu.is_some() || n.pointer_mask != 0;
+        let clickable = n.clickable;
+        let Some(v) = self.views.get_mut(&id) else {
+            return;
+        };
+        let _ = v.set_hit(wants);
+        if clickable && self.clicks.insert(id) {
+            match v.make_button(id) {
+                Ok(Some(b)) => {
+                    if let Ok(e) = ui(&b) {
+                        let _ = events::focus(&e, id);
+                    }
+                    let _ = events::pressed(&b, id);
+                    // The name and help text go on the button.
+                    if let Some(n) = self.scene.get(id) {
+                        let _ = accessibility(v, &n.a11y);
+                    }
+                }
+                // Scroll views and leaves: clicked where nothing else is.
+                _ => {
+                    let _ = events::clickable(&v.outer, id);
+                }
+            }
+        }
+        if hover && self.hovers.insert(id) {
+            let _ = events::hover(&v.outer, id);
+        }
+    }
+
+    /// A field's text from the app, unless it is the echo of typing.
+    fn set_field_text(&mut self, id: NodeId, text: &str) {
+        let Some(v) = self.views.get(&id) else { return };
+        let current = controls::field_text(&v.content).unwrap_or_default();
+        let takes = self
+            .typed
+            .entry(id)
+            .or_default()
+            .should_apply(text, &current);
+        if takes {
+            crate::imp::programmatic_text(id, text);
+            if let Err(e) = controls::set_field_text(&v.content, text) {
+                log!("text of field {id}: {e}");
+            }
+        }
+    }
+
+    /// A picture's bitmap, once decoded.
+    pub fn show_picture(&mut self, id: NodeId) {
+        let (Some(n), Some(v)) = (self.scene.get(id), self.views.get(&id)) else {
+            return;
+        };
+        let bitmap = self.images.bitmap(&n.text).map(|(_, b)| b);
+        if let Err(e) = controls::set_picture(&v.content, bitmap.as_ref()) {
+            log!("picture {:?}: {e}", n.text);
+        }
+    }
+
+    /// Gives node `id` the keyboard focus (`None`: away from fields).
+    pub fn focus_node(&mut self, id: Option<NodeId>) {
+        let control = id
+            .and_then(|i| self.views.get(&i))
+            .and_then(|v| v.content.control());
+        match control {
+            Some(c) => {
+                let state = if self.focus_visible {
+                    FocusState::Keyboard
+                } else {
+                    FocusState::Programmatic
+                };
+                let _ = c.Focus(state);
+            }
+            None if id.is_none() => {
+                // Out of the field: the root takes the focus.
+                if let Some(v) = self.scene.root.and_then(|r| self.views.get(&r)) {
+                    let _ = v.outer.Focus(FocusState::Programmatic);
+                }
+            }
+            None => {}
+        }
+    }
+
+    /// The control showing `value` again (the app kept its own).
+    pub fn sync_value(&mut self, id: NodeId) {
+        if let (Some(n), Some(v)) = (self.scene.get(id), self.views.get(&id)) {
+            let _ = controls::set_value(&v.content, n, n.value);
+        }
+        if self.scene.get(id).is_some_and(|n| n.kind == NodeKind::Tabs) {
+            self.bars.insert(id);
+        }
+    }
+
+    /// Scrolls a scroll view to `(x, y)`.
+    pub fn scroll_view_to(&mut self, id: NodeId, x: f32, y: f32, animated: bool) -> bool {
+        let Some(sv) = self.views.get(&id).and_then(|v| v.scroll.clone()) else {
+            return false;
+        };
+        let h = windows::Foundation::PropertyValue::CreateDouble(x.max(0.) as f64)
+            .and_then(|v| v.cast::<windows::Foundation::IReference<f64>>());
+        let vv = windows::Foundation::PropertyValue::CreateDouble(y.max(0.) as f64)
+            .and_then(|v| v.cast::<windows::Foundation::IReference<f64>>());
+        let (Ok(h), Ok(vv)) = (h, vv) else {
+            return false;
+        };
+        let moved = sv
+            .ChangeViewWithOptionalAnimation(
+                &h,
+                &vv,
+                None::<&windows::Foundation::IReference<f32>>,
+                !animated,
+            )
+            .unwrap_or(false);
+        if let Some(n) = self.scene.get_mut(id) {
+            let (mx, my) = n.max_scroll();
+            n.scroll = (x.clamp(0., mx), y.clamp(0., my));
+        }
+        moved
     }
 }
 
@@ -513,36 +497,54 @@ impl Widgets for Win {
 
     fn create(&mut self, id: NodeId, kind: NodeKind) -> NodeId {
         self.scene.create(id, kind);
-        if is_field(kind)
-            && let Some(f) = fields::create(self.hwnd, id, kind != NodeKind::TextInput)
-        {
-            self.scene.get_mut(id).expect("node").field = Some(f.0 as isize);
-        }
         if kind == NodeKind::DatePicker
             && let Some(n) = self.scene.get_mut(id)
         {
             n.value = f64::NAN;
+        }
+        match View::new(id, kind) {
+            Ok(v) => {
+                if let Some(c) = v.content.control()
+                    && let Ok(e) = ui(&c)
+                {
+                    let _ = events::focus(&e, id);
+                }
+                if kind == NodeKind::Overlay {
+                    let _ = v.kids.SetVisibility(Visibility::Collapsed);
+                    if let Ok(coll) = self.overlays.Children() {
+                        if let (Ok(scrim), Ok(panel)) = (events::scrim(id), Border::new()) {
+                            let _ = panel.SetVisibility(Visibility::Collapsed);
+                            let _ = coll.Append(&scrim);
+                            let _ = coll.Append(&panel);
+                            self.scrims.insert(id, (scrim, panel));
+                        }
+                        let _ = coll.Append(&v.kids);
+                    }
+                }
+                if matches!(kind, NodeKind::Scroll | NodeKind::Stack | NodeKind::Tabs) {
+                    self.bars.insert(id);
+                }
+                self.views.insert(id, v);
+            }
+            Err(e) => log!("node {id} ({kind:?}): {e}"),
         }
         id
     }
 
     fn set_style(&mut self, view: &NodeId, style: &Style) {
         let id = *view;
-        self.mark(id);
         let Some(n) = self.scene.get_mut(id) else {
             return;
         };
-        let moved = n.style.transform != style.transform
-            || n.style.translate_percent != style.translate_percent;
+        let axis = n.style.scroll_axis != style.scroll_axis;
         n.style = style.clone();
-        self.texts.forget(id);
-        if moved {
-            self.mark_subtree(id);
-            self.moved = true;
-        } else {
-            self.mark(id);
+        self.measurer.forget(id);
+        if (axis || n.kind == NodeKind::Scroll)
+            && let Some(sv) = self.views.get(&id).and_then(|v| v.scroll.as_ref())
+        {
+            let _ = scroll_axis(sv, style.scroll_axis == prism_core::ScrollAxis::Vertical);
         }
-        self.style_field(id);
+        self.restyle(id);
     }
 
     fn set_text(&mut self, view: &NodeId, text: &str) {
@@ -551,107 +553,159 @@ impl Widgets for Win {
             return;
         };
         let kind = n.kind;
-        if let Some(f) = n.field.map(hwnd) {
+        if n.is_text_field() {
             n.text = text.to_string();
-            let current = fields::text(f);
-            let takes = self
-                .typed
-                .entry(id)
-                .or_default()
-                .should_apply(text, &current);
-            if takes {
-                fields::set_text(f, text);
-            }
+            self.set_field_text(id, text);
             return;
         }
         if n.text == text {
             return;
         }
         n.text = text.to_string();
-        self.texts.forget(id);
+        self.measurer.forget(id);
         match kind {
             NodeKind::Picture => {
-                let wic = self.gfx.wic.clone();
+                let wic = self.wic.clone();
                 self.images.request(&wic, text, self.hwnd);
-                self.cache.forget(id);
+                self.show_picture(id);
             }
             // A screen's title is its stack's header; a tab's, the bar's.
             NodeKind::Screen | NodeKind::Tab => {
                 if let Some(p) = self.scene.get(id).and_then(|n| n.parent) {
-                    self.mark(p);
+                    self.bars.insert(p);
                 }
             }
-            _ => {}
+            _ => self.restyle(id),
         }
-        self.mark(id);
     }
 
     fn set_placeholder(&mut self, view: &NodeId, text: &str) {
-        let Some(n) = self.scene.get_mut(*view) else {
+        let id = *view;
+        let Some(n) = self.scene.get_mut(id) else {
             return;
         };
         n.placeholder = text.to_string();
-        if let Some(f) = n.field.map(hwnd) {
-            fields::set_placeholder(f, text);
-        }
         if n.kind == NodeKind::Timer {
             n.text = prism_core::timer_text(n.value, text);
-            self.texts.forget(*view);
+            self.measurer.forget(id);
         }
-        self.mark(*view);
+        let value = n.value;
+        self.restyle(id);
+        if let (Some(n), Some(v)) = (self.scene.get(id), self.views.get(&id))
+            && matches!(n.kind, NodeKind::Picker | NodeKind::DatePicker)
+        {
+            let _ = controls::set_value(&v.content, n, value);
+        }
     }
 
     fn set_clickable(&mut self, view: &NodeId, clickable: bool) {
         if let Some(n) = self.scene.get_mut(*view) {
             n.clickable = clickable;
         }
+        self.update_hit(*view);
     }
 
     fn set_children(&mut self, parent: &NodeId, children: &[NodeId]) {
-        // Where the old children were and where the new ones go.
-        self.mark_subtree(*parent);
-        self.scene.set_children(*parent, children);
-        self.mark_subtree(*parent);
-        self.moved = true;
+        let id = *parent;
+        self.scene.set_children(id, children);
+        let list: Vec<(NodeId, UIElement)> = children
+            .iter()
+            .filter_map(|c| self.outer(*c).map(|e| (*c, e)))
+            .collect();
+        // Children moving here from another parent (a fixed node hoisted to
+        // its screen) leave it first; those leaving go nowhere yet.
+        for (c, e) in &list {
+            if let Some(old) = self.parents.insert(*c, id)
+                && old != id
+                && let Some(v) = self.views.get_mut(&old)
+            {
+                let _ = v.remove_child(*c, e);
+            }
+        }
+        let gone: Vec<NodeId> = self
+            .views
+            .get(&id)
+            .map(|v| {
+                v.children
+                    .iter()
+                    .filter(|c| !children.contains(c))
+                    .copied()
+                    .collect()
+            })
+            .unwrap_or_default();
+        for c in gone {
+            if self.parents.get(&c) == Some(&id) {
+                self.parents.remove(&c);
+            }
+        }
+        if let Some(v) = self.views.get_mut(&id)
+            && let Err(e) = v.set_children(&list)
+        {
+            log!("children of node {id}: {e}");
+        }
+        for c in children {
+            self.update_visibility(*c);
+        }
+        if self
+            .scene
+            .get(id)
+            .is_some_and(|n| matches!(n.kind, NodeKind::Stack | NodeKind::Tabs))
+        {
+            self.bars.insert(id);
+        }
     }
 
     fn set_root(&mut self, view: &NodeId) {
         self.scene.root = Some(*view);
-        self.repaint_all();
-        self.moved = true;
+        self.mount();
     }
 
     fn destroy(&mut self, view: &NodeId) {
         let id = *view;
-        if let Some(r) = self.painted.remove(&id) {
-            invalidate(self.hwnd, Some(r), self.scale());
+        let parent = self.scene.get(id).and_then(|n| n.parent);
+        self.scene.remove(id);
+        if let Some((scrim, panel)) = self.scrims.remove(&id) {
+            for b in [scrim, panel] {
+                if let Ok(e) = ui(&b) {
+                    let _ = crate::view::detach(&e);
+                }
+            }
         }
-        if let Some(n) = self.scene.remove(id)
-            && let Some(f) = n.field
+        if let Some(v) = self.views.remove(&id) {
+            let _ = crate::view::detach(&v.outer());
+            if v.kind == NodeKind::Overlay
+                && let Ok(e) = ui(&v.kids)
+            {
+                let _ = crate::view::detach(&e);
+            }
+        }
+        if let Some(p) = self
+            .parents
+            .remove(&id)
+            .or(parent)
+            .and_then(|p| self.views.get_mut(&p))
         {
-            fields::destroy(hwnd(f));
+            p.children.retain(|c| *c != id);
         }
-        self.texts.forget(id);
-        self.cache.forget(id);
+        self.measurer.forget(id);
         self.typed.remove(&id);
         self.select_events.remove(&id);
+        self.clicks.remove(&id);
+        self.hovers.remove(&id);
+        self.overlay_origins.remove(&id);
         if self.focus == Some(id) {
             self.focus = None;
-        }
-        if self.hover.is_some_and(|(h, _)| h == id) {
-            self.hover = None;
-        }
-        if self.pressed.is_some_and(|(p, _)| p == id) {
-            self.pressed = None;
         }
     }
 
     fn measure(&mut self, view: &NodeId, max_width: Option<f32>) -> (f32, f32) {
+        let Some(n) = self.scene.get(*view) else {
+            return (0., 0.);
+        };
         controls::measure(
-            &self.gfx,
-            &mut self.texts,
+            &mut self.measurer,
             &self.images,
-            &self.scene,
+            n,
             *view,
             max_width,
             &self.locale,
@@ -663,42 +717,38 @@ impl Widgets for Win {
         if let Some(n) = self.scene.get(id)
             && matches!(n.kind, NodeKind::Text | NodeKind::Timer)
         {
-            let st = controls::styled(n);
+            let st = prism_native::text::StyledText::new(&n.text, &n.config, &n.style);
             if st.no_wrap || st.max_lines.is_some() {
                 return 0.;
             }
-            return self
-                .texts
-                .get(&self.gfx, id, &st, Some(1e5))
-                .map_or(0., |l| l.min_width());
+            return self.measurer.min_width(&st);
         }
         self.measure(view, None).0
     }
 
     fn set_frame(&mut self, view: &NodeId, x: f32, y: f32, w: f32, h: f32) {
         let id = *view;
-        let Some(n) = self.scene.get(id) else { return };
         let frame = Rect::new(x, y, w, h);
+        let Some(n) = self.scene.get_mut(id) else {
+            return;
+        };
         if n.frame == frame {
             return;
         }
-        let has_children = !n.children.is_empty();
-        if has_children {
-            self.mark_subtree(id);
-        } else {
-            self.mark(id);
+        let resized = (n.frame.w, n.frame.h) != (w, h);
+        n.frame = frame;
+        let (mx, my) = n.max_scroll();
+        n.scroll = (n.scroll.0.min(mx), n.scroll.1.min(my));
+        let kind = n.kind;
+        let sticky = self.sticky(id);
+        if let (Some(n), Some(v)) = (self.scene.get(id), self.views.get_mut(&id))
+            && let Err(e) = v.place(n, &self.palette, sticky)
+        {
+            log!("frame of node {id}: {e}");
         }
-        if let Some(n) = self.scene.get_mut(id) {
-            n.frame = frame;
-            let (mx, my) = n.max_scroll();
-            n.scroll = (n.scroll.0.min(mx), n.scroll.1.min(my));
+        if resized && matches!(kind, NodeKind::Stack | NodeKind::Tabs) {
+            self.bars.insert(id);
         }
-        if has_children {
-            self.mark_subtree(id);
-        } else {
-            self.mark(id);
-        }
-        self.moved = true;
     }
 
     fn screen_viewport(&mut self, container: &NodeId, child: &NodeId) -> Viewport {
@@ -745,7 +795,6 @@ impl Widgets for Win {
             .get(*overlay)
             .map(|n| prism_core::controls::OverlayConfig::decode(&n.config))
             .unwrap_or_default();
-        let (ox, oy) = self.scene.origin(*overlay);
         let (width, height, x, y) = match config.kind {
             OverlayKind::Popover => {
                 // Below its anchor (the overlay's parent).
@@ -774,6 +823,10 @@ impl Widgets for Win {
             }
             OverlayKind::Keyboard => (w, 0., 0., h),
         };
+        // The overlay's content canvas sits at the overlay's window origin
+        // as it is now (`place_overlays`).
+        let (ox, oy) = self.scene.origin(*overlay);
+        self.overlay_origins.insert(*overlay, (ox, oy));
         Viewport {
             x: x - ox,
             y: y - oy,
@@ -796,15 +849,20 @@ impl Widgets for Win {
     }
 
     fn set_accessibility(&mut self, view: &NodeId, a11y: &Accessibility) {
-        if let Some(n) = self.scene.get_mut(*view) {
-            if n.a11y.disabled != a11y.disabled {
-                self.mark(*view);
-            }
-            if let Some(n) = self.scene.get_mut(*view) {
-                n.a11y = a11y.clone();
-            }
+        let id = *view;
+        let Some(n) = self.scene.get_mut(id) else {
+            return;
+        };
+        let enabled_changed = n.a11y.disabled != a11y.disabled;
+        n.a11y = a11y.clone();
+        if let Some(v) = self.views.get(&id)
+            && let Err(e) = accessibility(v, a11y)
+        {
+            log!("accessibility of node {id}: {e}");
         }
-        crate::uia::changed(self.hwnd, *view);
+        if enabled_changed {
+            self.restyle(id);
+        }
     }
 
     fn set_value(&mut self, view: &NodeId, value: f64) {
@@ -819,20 +877,25 @@ impl Widgets for Win {
         n.value = value;
         if kind == NodeKind::Timer {
             n.text = prism_core::timer_text(value, &n.placeholder);
-            self.texts.forget(id);
+            self.measurer.forget(id);
+            self.restyle(id);
         }
         match kind {
-            // What is shown changes: the tab, the header, a sheet.
-            NodeKind::Tabs | NodeKind::Stack | NodeKind::Overlay => {
-                self.repaint_all();
-                self.moved = true;
+            NodeKind::Tabs | NodeKind::Stack => {
+                self.bars.insert(id);
             }
             NodeKind::Screen => {
                 if let Some(p) = self.scene.get(id).and_then(|n| n.parent) {
-                    self.mark(p);
+                    self.bars.insert(p);
                 }
             }
-            _ => self.mark(id),
+            _ => {
+                if let (Some(n), Some(v)) = (self.scene.get(id), self.views.get(&id))
+                    && let Err(e) = controls::set_value(&v.content, n, value)
+                {
+                    log!("value of node {id}: {e}");
+                }
+            }
         }
     }
 
@@ -840,48 +903,104 @@ impl Widgets for Win {
         if let Some(n) = self.scene.get_mut(*view) {
             n.paths = paths.to_vec();
         }
-        self.mark(*view);
+        if let Some(v) = self.views.get(view)
+            && let Err(e) = controls::set_paths(&v.content, paths, &self.palette)
+        {
+            log!("drawing of node {view}: {e}");
+        }
     }
 
-    fn set_config(&mut self, view: &NodeId, _kind: NodeKind, config: &str) {
-        let Some(n) = self.scene.get_mut(*view) else {
+    fn set_config(&mut self, view: &NodeId, kind: NodeKind, config: &str) {
+        let id = *view;
+        let Some(n) = self.scene.get_mut(id) else {
             return;
         };
         if n.config == config {
             return;
         }
         n.config = config.to_string();
-        let field = n.field.is_some();
-        self.texts.forget(*view);
+        let field = n.is_text_field();
+        self.measurer.forget(id);
         if field {
-            self.style_field(*view);
+            let swap = self.views.get(&id).and_then(|v| {
+                controls::configure_field(&v.content, id, config)
+                    .ok()
+                    .flatten()
+            });
+            if let Some(content) = swap {
+                self.replace_content(id, content);
+            }
+        } else if let Some(v) = self.views.get_mut(&id) {
+            let was_time = matches!(v.content, Content::Time(_));
+            let old = v.content.element();
+            if let Err(e) = controls::configure(&mut v.content, id, kind, config) {
+                log!("config of node {id}: {e}");
+            }
+            let is_time = matches!(v.content, Content::Time(_));
+            if was_time != is_time && kind == NodeKind::DatePicker {
+                // A time picker in place of the date picker.
+                if let Some(old) = old {
+                    let _ = crate::view::detach(&old);
+                    if let Ok(coll) = v.outer.Children() {
+                        let mut at = 0u32;
+                        if coll.IndexOf(&old, &mut at).unwrap_or(false) {
+                            let _ = coll.RemoveAt(at);
+                        }
+                    }
+                }
+                self.remount_content(id);
+            }
         }
-        self.mark(*view);
+        let value = self.scene.get(id).map_or(0., |n| n.value);
+        if let (Some(n), Some(v)) = (self.scene.get(id), self.views.get(&id)) {
+            let _ = controls::set_value(&v.content, n, value);
+        }
         if self
             .scene
-            .get(*view)
+            .get(id)
             .is_some_and(|n| n.kind == NodeKind::Screen)
-            && let Some(p) = self.scene.get(*view).and_then(|n| n.parent)
+            && let Some(p) = self.scene.get(id).and_then(|n| n.parent)
         {
-            self.mark(p);
+            self.bars.insert(p);
         }
+        self.restyle(id);
     }
 
     fn set_icon(&mut self, view: &NodeId, icon: &str) {
-        if let Some(n) = self.scene.get_mut(*view) {
-            n.icon = icon.to_string();
-            let parent = n.parent;
-            self.mark(*view);
-            if let Some(p) = parent {
-                self.mark(p);
-            }
+        let id = *view;
+        let Some(n) = self.scene.get_mut(id) else {
+            return;
+        };
+        n.icon = icon.to_string();
+        let parent = n.parent;
+        let kind = n.kind;
+        if let Some(v) = self.views.get(&id) {
+            let _ = controls::set_icon(&v.content, icon);
+        }
+        if kind == NodeKind::Tab
+            && let Some(p) = parent
+        {
+            self.bars.insert(p);
         }
     }
 
     fn set_menu(&mut self, view: &NodeId, menu: Option<&prism_core::menu::MenuSpec>) {
-        if let Some(n) = self.scene.get_mut(*view) {
+        let id = *view;
+        if let Some(n) = self.scene.get_mut(id) {
             n.menu = menu.cloned();
         }
+        if let Some(v) = self.views.get(&id) {
+            let r = match menu {
+                Some(spec) => events::menu(spec).and_then(|m| v.outer.SetContextFlyout(&m)),
+                None => v.outer.SetContextFlyout(
+                    None::<&crate::winui::xaml::Controls::Primitives::FlyoutBase>,
+                ),
+            };
+            if let Err(e) = r {
+                log!("menu of node {id}: {e}");
+            }
+        }
+        self.update_hit(id);
     }
 
     fn show_menu(
@@ -890,19 +1009,22 @@ impl Widgets for Win {
         menu: &prism_core::menu::MenuSpec,
         at: Option<(f32, f32)>,
     ) {
-        let (x, y) = match (view, at) {
-            (Some(v), Some((x, y))) => {
-                let (ox, oy) = self.scene.origin(*v);
-                (ox + x, oy + y)
+        let (target, x, y) = match view.and_then(|v| self.outer(*v).map(|e| (*v, e))) {
+            Some((v, e)) => {
+                let (x, y) = at.unwrap_or_else(|| {
+                    let h = self.scene.get(v).map_or(0., |n| n.frame.h);
+                    (0., h)
+                });
+                (e, x, y)
             }
-            (Some(v), None) => {
-                let r = self.scene.window_rect(*v);
-                (r.x, r.bottom())
+            None => {
+                let (x, y) = at.unwrap_or((self.size.0 / 2., self.size.1 / 2.));
+                (ui(&self.root).expect("root"), x, y)
             }
-            (None, Some(p)) => p,
-            (None, None) => (self.size.0 / 2., self.size.1 / 2.),
         };
-        crate::input::post_menu(menu.clone(), x, y);
+        if let Err(e) = events::show_menu(&target, menu, x, y) {
+            log!("menu: {e}");
+        }
     }
 
     fn set_scroll_events(&mut self, view: &NodeId, on: bool) {
@@ -926,8 +1048,7 @@ impl Widgets for Win {
             return;
         }
         n.hidden = hidden;
-        self.mark_subtree(*view);
-        self.moved = true;
+        self.update_visibility(*view);
     }
 
     fn set_content_size(&mut self, view: &NodeId, width: f32, height: f32) {
@@ -935,7 +1056,9 @@ impl Widgets for Win {
             n.content = (width, height);
             let (mx, my) = n.max_scroll();
             n.scroll = (n.scroll.0.min(mx), n.scroll.1.min(my));
-            self.mark(*view);
+        }
+        if let (Some(n), Some(v)) = (self.scene.get(*view), self.views.get(view)) {
+            let _ = v.content_size(n);
         }
     }
 
@@ -944,33 +1067,29 @@ impl Widgets for Win {
     }
 
     fn baseline(&mut self, view: &NodeId, width: f32, height: f32) -> Option<f32> {
-        controls::baseline(
-            &self.gfx,
-            &mut self.texts,
-            &self.scene,
-            *view,
-            width,
-            height,
-        )
+        let n = self.scene.get(*view)?;
+        controls::baseline(&self.measurer, n, width, height)
     }
 
     fn set_sticky(&mut self, view: &NodeId, sticky: Option<(&NodeId, prism_native::Sticky)>) {
         if let Some(n) = self.scene.get_mut(*view) {
             n.sticky = sticky.map(|(s, st)| (*s, st));
         }
-        self.mark(*view);
+        self.restyle(*view);
     }
 
     fn set_interactions(&mut self, view: &NodeId, states: Interactions) {
         if let Some(n) = self.scene.get_mut(*view) {
             n.reports = states;
         }
+        self.update_hit(*view);
     }
 
     fn set_pointer_events(&mut self, view: &NodeId, mask: u8) {
         if let Some(n) = self.scene.get_mut(*view) {
             n.pointer_mask = mask;
         }
+        self.update_hit(*view);
     }
 
     fn set_key_events(&mut self, view: &NodeId, local: bool, global: bool) {
@@ -981,11 +1100,11 @@ impl Widgets for Win {
     }
 
     fn set_selection(&mut self, view: &NodeId, start: usize, end: usize) {
-        if let Some(f) = self.field_of(*view) {
-            let text = fields::text(f);
+        if let Some(Content::Field(t)) = self.views.get(view).map(|v| &v.content) {
+            let text = t.Text().map(|s| s.to_string()).unwrap_or_default();
             let a = prism_native::fields::chars_to_utf16(&text, start);
             let b = prism_native::fields::chars_to_utf16(&text, end);
-            fields::set_selection(f, a, b);
+            let _ = t.Select(a as i32, b.saturating_sub(a) as i32);
         }
     }
 
@@ -1006,38 +1125,21 @@ impl Widgets for Win {
     }
 
     fn scroll_into_view(&mut self, view: &NodeId) {
-        let id = *view;
-        for s in self
-            .scene
-            .scrollers(id, true)
-            .into_iter()
-            .filter(|s| *s != id)
-        {
-            let r = self.scene.window_rect(id);
-            let v = self.scene.window_rect(s);
-            let dy = if r.y < v.y {
-                r.y - v.y
-            } else if r.bottom() > v.bottom() {
-                (r.bottom() - v.bottom()).min(r.y - v.y)
-            } else {
-                0.
-            };
-            if dy != 0. {
-                self.scroll_by(s, 0., dy);
-            }
+        if let Some(e) = self.outer(*view) {
+            let _ = e.StartBringIntoView();
         }
     }
 
-    fn scroll_to(&mut self, view: &NodeId, x: f32, y: f32, relative: bool, _animated: bool) {
+    fn scroll_to(&mut self, view: &NodeId, x: f32, y: f32, relative: bool, animated: bool) {
         let Some(n) = self.scene.get(*view) else {
             return;
         };
-        let (dx, dy) = if relative {
-            (x, y)
+        let (tx, ty) = if relative {
+            (n.scroll.0 + x, n.scroll.1 + y)
         } else {
-            (x - n.scroll.0, y - n.scroll.1)
+            (x, y)
         };
-        self.scroll_by(*view, dx, dy);
+        self.scroll_view_to(*view, tx, ty, animated);
     }
 
     fn scroll_offset(&mut self, view: &NodeId) -> (f32, f32) {
@@ -1054,6 +1156,87 @@ impl Widgets for Win {
 
     fn set_layers(&mut self, layers: &[NodeId]) {
         self.scene.layers = layers.to_vec();
-        self.repaint_all();
+        self.mount();
     }
+}
+
+impl Win {
+    /// A field's content became another control (secure ↔ plain).
+    fn replace_content(&mut self, id: NodeId, content: Content) {
+        let Some(v) = self.views.get_mut(&id) else {
+            return;
+        };
+        if let Some(old) = v.content.element() {
+            let _ = crate::view::detach(&old);
+        }
+        v.content = content;
+        if let Some(c) = v.content.control()
+            && let Ok(e) = ui(&c)
+        {
+            let _ = events::focus(&e, id);
+        }
+        self.remount_content(id);
+    }
+
+    /// Puts a node's content element back in its outer canvas (after it
+    /// was replaced).
+    fn remount_content(&mut self, id: NodeId) {
+        let sticky = self.sticky(id);
+        let (Some(n), Some(v)) = (self.scene.get(id), self.views.get_mut(&id)) else {
+            return;
+        };
+        if let Some(e) = v.content.element() {
+            let _ = crate::view::detach(&e);
+            if let Ok(coll) = v.outer.Children() {
+                let _ = coll.Append(&e);
+            }
+            if let Some(c) = v.content.control()
+                && let Ok(ce) = ui(&c)
+            {
+                let _ = events::focus(&ce, id);
+            }
+        }
+        v.frame = Rect::default();
+        let _ = v.place(n, &self.palette, sticky);
+    }
+}
+
+/// Prism's accessibility on the node's element: name, help text, heading
+/// level, live region, hidden; WinUI's own automation peers do the rest.
+fn accessibility(v: &View, a: &Accessibility) -> Result<()> {
+    let target: UIElement = match (&v.button, v.content.element()) {
+        (Some(b), _) => b.cast()?,
+        (None, Some(e)) => e,
+        (None, None) => v.outer(),
+    };
+    let name = a.label.clone().unwrap_or_default();
+    AutomationProperties::SetName(&target, &h(&name))?;
+    AutomationProperties::SetHelpText(&target, &h(a.hint.as_deref().unwrap_or("")))?;
+    AutomationProperties::SetHeadingLevel(
+        &target,
+        match a.role {
+            Some(Role::Heading(l)) => AutomationHeadingLevel(l.clamp(1, 9) as i32),
+            _ => AutomationHeadingLevel::None,
+        },
+    )?;
+    AutomationProperties::SetLiveSetting(
+        &target,
+        match a.role {
+            Some(Role::Alert) => AutomationLiveSetting::Assertive,
+            Some(Role::Status) => AutomationLiveSetting::Polite,
+            _ => AutomationLiveSetting::Off,
+        },
+    )?;
+    AutomationProperties::SetAccessibilityView(
+        &target,
+        if a.hidden {
+            AccessibilityView::Raw
+        } else {
+            AccessibilityView::Content
+        },
+    )?;
+    if let Some(prism_core::Tooltip::Text(t)) = &a.tooltip {
+        ToolTipService::SetToolTip(&target, &boxed(t)?)?;
+    }
+    Ok(())
 }

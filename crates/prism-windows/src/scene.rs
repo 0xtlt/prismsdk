@@ -1,14 +1,15 @@
-//! The retained scene of a window: one node per Prism view, drawn by the
-//! backend (Direct2D) instead of being a child window. `widgets.rs` drives
-//! it from prism-native's `Widgets` calls; `paint.rs` draws it; input, UI
-//! Automation and the smoke hooks search it.
+//! The model of a window's tree, kept beside its XAML: one node per Prism
+//! view with its kind, frame, style and state. `widgets.rs` drives it from
+//! prism-native's `Widgets` calls; it tells which page a stack or tab bar
+//! shows, where a node is in the window (drags, overlays), and finds nodes
+//! by label for the smoke hooks.
 //!
-//! No Win32 types: hit testing, focus order and the label search are tested
-//! on every host.
+//! No Win32 types: the pages shown, hit testing and the label search are
+//! tested on every host.
 
 #![cfg_attr(not(target_os = "windows"), allow(dead_code))]
 
-use prism_core::{Accessibility, IdMap, Interaction, Interactions, NodeId, NodeKind, Style};
+use prism_core::{Accessibility, IdMap, Interactions, NodeId, NodeKind, Style};
 
 /// Height of a navigation stack's header bar, view units (DIPs).
 pub const HEADER: f32 = 48.;
@@ -37,41 +38,8 @@ impl Rect {
         self.y + self.h
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.w <= 0. || self.h <= 0.
-    }
-
     pub fn contains(&self, x: f32, y: f32) -> bool {
         x >= self.x && y >= self.y && x < self.right() && y < self.bottom()
-    }
-
-    /// The overlap of both, `None` if they do not overlap.
-    pub fn intersect(&self, o: &Rect) -> Option<Rect> {
-        let (x0, y0) = (self.x.max(o.x), self.y.max(o.y));
-        let (x1, y1) = (self.right().min(o.right()), self.bottom().min(o.bottom()));
-        (x1 > x0 && y1 > y0).then(|| Rect::new(x0, y0, x1 - x0, y1 - y0))
-    }
-
-    /// The smallest rectangle around both (an empty one is ignored).
-    pub fn union(&self, o: &Rect) -> Rect {
-        if self.is_empty() {
-            return *o;
-        }
-        if o.is_empty() {
-            return *self;
-        }
-        let (x0, y0) = (self.x.min(o.x), self.y.min(o.y));
-        let (x1, y1) = (self.right().max(o.right()), self.bottom().max(o.bottom()));
-        Rect::new(x0, y0, x1 - x0, y1 - y0)
-    }
-
-    /// Grown by `d` on every side.
-    pub fn inflate(&self, d: f32) -> Rect {
-        Rect::new(self.x - d, self.y - d, self.w + 2. * d, self.h + 2. * d)
-    }
-
-    pub fn offset(&self, dx: f32, dy: f32) -> Rect {
-        Rect::new(self.x + dx, self.y + dy, self.w, self.h)
     }
 }
 
@@ -104,13 +72,8 @@ pub struct Node {
     pub sticky: Option<(NodeId, prism_native::Sticky)>,
     /// States prism-native wants reported (`Widgets::set_interactions`).
     pub reports: Interactions,
-    /// The backend's own look of controls: pointer over it, pressed,
-    /// keyboard focus (with its ring).
-    pub hover: bool,
-    pub pressed: bool,
+    /// Has the keyboard focus.
     pub focused: bool,
-    /// The native editor of a text field (an `HWND` as an integer).
-    pub field: Option<isize>,
     /// `UiEvent::Key` while focused (`local`) or always (`global`).
     pub keys_local: bool,
     pub keys_global: bool,
@@ -142,10 +105,7 @@ impl Node {
             scroll: (0., 0.),
             sticky: None,
             reports: Interactions::NONE,
-            hover: false,
-            pressed: false,
             focused: false,
-            field: None,
             keys_local: false,
             keys_global: false,
             pointer_mask: 0,
@@ -160,32 +120,6 @@ impl Node {
             self.kind,
             NodeKind::TextInput | NodeKind::TextArea | NodeKind::RichInput
         )
-    }
-
-    /// Activated by a click, Enter or Space.
-    pub fn is_pressable(&self) -> bool {
-        self.clickable
-            || matches!(
-                self.kind,
-                NodeKind::Button
-                    | NodeKind::Toggle
-                    | NodeKind::Checkbox
-                    | NodeKind::Picker
-                    | NodeKind::DatePicker
-            )
-    }
-
-    /// Reached with Tab.
-    pub fn is_focusable(&self) -> bool {
-        !self.a11y.disabled
-            && !self.style.inert
-            && (self.is_pressable()
-                || self.is_text_field()
-                || self.keys_local
-                || matches!(
-                    self.kind,
-                    NodeKind::Slider | NodeKind::RadioGroup | NodeKind::Tabs
-                ))
     }
 
     /// Whether the scroll view scrolls this way.
@@ -209,11 +143,6 @@ impl Node {
             (self.content.0 - self.frame.w).max(0.),
             (self.content.1 - self.frame.h).max(0.),
         )
-    }
-
-    /// Whether prism-native wants `state` reported for this node.
-    pub fn reports(&self, state: Interaction) -> bool {
-        self.reports.contains(state)
     }
 
     /// The tab bar's selected index (a `Tabs` node's value).
@@ -412,11 +341,6 @@ impl Scene {
         })
     }
 
-    /// The node and its ancestors, innermost first.
-    pub fn chain(&self, id: NodeId) -> Vec<NodeId> {
-        std::iter::once(id).chain(self.ancestors(id)).collect()
-    }
-
     /// How far a sticky node is moved down now (#see `Widgets::set_sticky`).
     pub fn sticky_offset(&self, n: &Node) -> f32 {
         match n.sticky {
@@ -449,54 +373,6 @@ impl Scene {
         let (x, y) = self.origin(id);
         let f = self.nodes.get(&id).map(|n| n.frame).unwrap_or_default();
         Rect::new(x, y, f.w, f.h)
-    }
-
-    /// Whether the node is in the part of the tree that is drawn: not
-    /// hidden, on the top screen of its stacks, the selected tab, an open
-    /// overlay; attached to a root.
-    pub fn is_shown(&self, id: NodeId) -> bool {
-        let mut child = id;
-        loop {
-            let Some(n) = self.nodes.get(&child) else {
-                return false;
-            };
-            if n.hidden {
-                return false;
-            }
-            match n.parent {
-                None => return self.roots().any(|r| r == child),
-                Some(p) => {
-                    let Some(pn) = self.nodes.get(&p) else {
-                        return false;
-                    };
-                    let open_overlay = pn.kind == NodeKind::Overlay && pn.value == 1.;
-                    if !open_overlay && !self.shown_children(p).contains(&child) {
-                        return false;
-                    }
-                    child = p;
-                }
-            }
-        }
-    }
-
-    /// What is visible of the node through its clipping ancestors, in the
-    /// window; `None` when nothing is (or it is not shown).
-    pub fn visible_rect(&self, id: NodeId) -> Option<Rect> {
-        if !self.is_shown(id) {
-            return None;
-        }
-        let mut r = self.window_rect(id);
-        for a in self.ancestors(id) {
-            let n = &self.nodes[&a];
-            if n.kind == NodeKind::Overlay {
-                // Overlay content is drawn above, unclipped.
-                break;
-            }
-            if n.clips() {
-                r = r.intersect(&self.window_rect(a))?;
-            }
-        }
-        (!r.is_empty()).then_some(r)
     }
 
     /// The innermost node under a window point that takes pointer input.
@@ -593,40 +469,6 @@ impl Scene {
         out
     }
 
-    /// The Tab order: focusable nodes that are shown, in tree order. With
-    /// an open dialog or sheet, only its content.
-    pub fn focus_order(&self) -> Vec<NodeId> {
-        let order = self.shown_in_order();
-        let modal = self
-            .open_overlays()
-            .into_iter()
-            .last()
-            .and_then(|o| self.nodes[&o].children.first().copied());
-        order
-            .into_iter()
-            .filter(|&id| {
-                self.nodes[&id].is_focusable()
-                    && modal.is_none_or(|m| id == m || self.ancestors(id).any(|a| a == m))
-            })
-            .collect()
-    }
-
-    /// The next (or previous) node in the Tab order after `from`.
-    pub fn next_focus(&self, from: Option<NodeId>, back: bool) -> Option<NodeId> {
-        let order = self.focus_order();
-        if order.is_empty() {
-            return None;
-        }
-        let i = from.and_then(|f| order.iter().position(|&o| o == f));
-        let n = order.len();
-        Some(match (i, back) {
-            (None, false) => order[0],
-            (None, true) => order[n - 1],
-            (Some(i), false) => order[(i + 1) % n],
-            (Some(i), true) => order[(i + n - 1) % n],
-        })
-    }
-
     /// The text a node shows itself (a text's, a button's title).
     pub fn own_text(&self, id: NodeId) -> Option<String> {
         let n = self.nodes.get(&id)?;
@@ -719,62 +561,6 @@ impl Scene {
                 && (n.placeholder == placeholder || n.a11y.label.as_deref() == Some(placeholder))
         })
     }
-
-    /// What is drawn over node `id` from elsewhere in the tree: floating
-    /// nodes (absolutely positioned, fixed, raised by `z_index`, layers)
-    /// that come after it, visible parts within its own. Child windows
-    /// (text fields) cut them out, being above the drawn scene.
-    pub fn covering(&self, id: NodeId) -> Vec<Rect> {
-        let Some(mine) = self.visible_rect(id) else {
-            return Vec::new();
-        };
-        let order = self.shown_in_order();
-        let Some(at) = order.iter().position(|&o| o == id) else {
-            return Vec::new();
-        };
-        let floating = |n: &Node| {
-            !matches!(
-                n.style.position,
-                prism_core::Position::Relative | prism_core::Position::Sticky
-            ) || n.style.z_index > 0
-        };
-        order[at + 1..]
-            .iter()
-            .copied()
-            .filter(|&o| {
-                self.nodes
-                    .get(&o)
-                    .is_some_and(|n| floating(n) || self.layers.contains(&o))
-                    && !self.ancestors(o).any(|a| a == id)
-            })
-            .filter_map(|o| self.visible_rect(o)?.intersect(&mine))
-            .collect()
-    }
-
-    /// The scroll views around a node that scroll this way, innermost
-    /// first.
-    pub fn scrollers(&self, id: NodeId, vertical: bool) -> Vec<NodeId> {
-        std::iter::once(id)
-            .chain(self.ancestors(id))
-            .filter(|a| self.nodes.get(a).is_some_and(|n| n.scrolls(vertical)))
-            .collect()
-    }
-
-    /// Scrolls `id` by `(dx, dy)`, kept within its content. Returns
-    /// whether it moved.
-    pub fn scroll_by(&mut self, id: NodeId, dx: f32, dy: f32) -> bool {
-        let Some(n) = self.nodes.get_mut(&id) else {
-            return false;
-        };
-        let (mx, my) = n.max_scroll();
-        let to = (
-            (n.scroll.0 + dx).clamp(0., mx),
-            (n.scroll.1 + dy).clamp(0., my),
-        );
-        let moved = to != n.scroll;
-        n.scroll = to;
-        moved
-    }
 }
 
 #[cfg(test)]
@@ -807,12 +593,10 @@ mod tests {
     fn origins_follow_scrolling() {
         let mut s = sample();
         assert_eq!(s.origin(3), (10., 250.));
-        assert!(s.scroll_by(2, 0., 100.));
+        s.nodes.get_mut(&2).unwrap().scroll = (0., 100.);
         assert_eq!(s.origin(3), (10., 150.));
-        // Kept within the content.
-        s.scroll_by(2, 0., 5000.);
-        assert_eq!(s.nodes[&2].scroll, (0., 800.));
-        assert!(!s.scroll_by(2, 0., 1.));
+        // At most the content's overflow.
+        assert_eq!(s.nodes[&2].max_scroll(), (0., 800.));
     }
 
     #[test]
@@ -822,11 +606,10 @@ mod tests {
         assert_eq!(s.hit_test(20., 15.), Some(4));
         assert_eq!(s.hit_test(300., 500.), Some(1));
         // Scrolled out of the scroll view: clipped.
-        s.scroll_by(2, 0., 200.);
-        assert_eq!(s.visible_rect(3), None);
+        s.nodes.get_mut(&2).unwrap().scroll = (0., 200.);
         assert_eq!(s.hit_test(20., 60.), Some(1));
         // pointer-events: none.
-        s.scroll_by(2, 0., -200.);
+        s.nodes.get_mut(&2).unwrap().scroll = (0., 0.);
         s.nodes.get_mut(&3).unwrap().style.hit_test = false;
         assert_eq!(s.hit_test(20., 260.), Some(2));
     }
@@ -860,14 +643,14 @@ mod tests {
         s.root = Some(1);
         s.nodes.get_mut(&2).unwrap().text = "Todos".into();
         s.nodes.get_mut(&3).unwrap().text = "Settings".into();
-        assert!(s.is_shown(6) && s.is_shown(8));
-        assert!(!s.is_shown(5) && !s.is_shown(7));
+        assert_eq!(s.shown_children(4).as_ref(), &[6]);
+        assert_eq!(s.shown_children(1).as_ref(), &[2]);
         assert_eq!(s.origin(8), (0., TAB_BAR + HEADER));
-        assert_eq!(s.focus_order(), vec![1, 8]);
+        assert_eq!(s.hit_test(10., TAB_BAR + HEADER + 10.), Some(8));
         assert_eq!(s.find_by_label("Settings"), Some(Target::Tab(1, 1)));
         assert_eq!(s.find_by_label("Back"), Some(Target::Back(4)));
         s.nodes.get_mut(&1).unwrap().value = 1.;
-        assert!(!s.is_shown(8));
+        assert_eq!(s.shown_children(1).as_ref(), &[3]);
     }
 
     #[test]
@@ -881,21 +664,6 @@ mod tests {
     }
 
     #[test]
-    fn focus_order_wraps_and_skips_hidden() {
-        let mut s = sample();
-        node(&mut s, 5, NodeKind::TextInput, Rect::new(0., 0., 100., 30.));
-        let mut kids = s.nodes[&1].children.clone();
-        kids.push(5);
-        s.set_children(1, &kids);
-        assert_eq!(s.focus_order(), vec![3, 5]);
-        assert_eq!(s.next_focus(Some(5), false), Some(3));
-        assert_eq!(s.next_focus(Some(3), true), Some(5));
-        assert_eq!(s.next_focus(None, false), Some(3));
-        s.nodes.get_mut(&2).unwrap().hidden = true;
-        assert_eq!(s.focus_order(), vec![5]);
-    }
-
-    #[test]
     fn reparenting_and_removal_keep_links_consistent() {
         let mut s = sample();
         s.set_children(1, &[3, 4]);
@@ -905,35 +673,5 @@ mod tests {
         s.remove(1);
         assert_eq!(s.nodes[&3].parent, None);
         assert_eq!(s.root, None);
-    }
-
-    #[test]
-    fn floating_nodes_after_a_field_cover_it() {
-        let mut s = sample();
-        node(
-            &mut s,
-            5,
-            NodeKind::TextInput,
-            Rect::new(0., 400., 300., 40.),
-        );
-        node(&mut s, 6, NodeKind::Button, Rect::new(250., 380., 60., 60.));
-        s.nodes.get_mut(&6).unwrap().style.position = prism_core::Position::Absolute;
-        let mut kids = s.nodes[&1].children.clone();
-        kids.extend([5, 6]);
-        s.set_children(1, &kids);
-        assert_eq!(s.covering(5), vec![Rect::new(250., 400., 50., 40.)]);
-        // Before it in the tree: under it.
-        s.set_children(1, &[2, 4, 6, 5]);
-        assert!(s.covering(5).is_empty());
-    }
-
-    #[test]
-    fn rect_math() {
-        let a = Rect::new(0., 0., 10., 10.);
-        let b = Rect::new(5., 5., 10., 10.);
-        assert_eq!(a.intersect(&b), Some(Rect::new(5., 5., 5., 5.)));
-        assert_eq!(a.union(&b), Rect::new(0., 0., 15., 15.));
-        assert_eq!(a.intersect(&Rect::new(20., 0., 1., 1.)), None);
-        assert_eq!(Rect::default().union(&b), b);
     }
 }

@@ -1,6 +1,7 @@
-//! The Windows 11 (Fluent) look of what the backend draws itself: the
-//! theme colors of WinUI 3 (`*FillColor*`, `*StrokeColor*` resources) for
-//! light and dark, the system accent, and control metrics. No Win32 types.
+//! The Windows 11 (Fluent) colors Prism's own views and bars use beside
+//! the WinUI controls: WinUI 3's theme colors (`*FillColor*`,
+//! `*StrokeColor*` resources) for light and dark, the system accent, and
+//! the controls' metrics (for measuring them). No Win32 types.
 
 #![cfg_attr(not(target_os = "windows"), allow(dead_code))]
 
@@ -199,8 +200,6 @@ impl Palette {
 
 /// Control metrics, view units (DIPs), from WinUI 3's styles.
 pub mod metrics {
-    /// Corner radius of buttons, text boxes, combo boxes.
-    pub const CONTROL_RADIUS: f32 = 4.;
     /// A button's padding: left, top, right, bottom (`ButtonPadding`).
     pub const BUTTON_PADDING: (f32, f32, f32, f32) = (11., 5., 11., 6.);
     pub const CONTROL_HEIGHT: f32 = 32.;
@@ -208,18 +207,12 @@ pub mod metrics {
     pub const FIELD_PADDING: (f32, f32, f32, f32) = (10., 5., 6., 6.);
     pub const TOGGLE: (f32, f32) = (40., 20.);
     pub const CHECKBOX: f32 = 20.;
-    pub const SLIDER_THUMB: f32 = 20.;
-    pub const SLIDER_RAIL: f32 = 4.;
-    pub const PROGRESS: f32 = 3.;
     pub const SPINNER: f32 = 32.;
-    /// Overlay scroll bars: thin while idle, wider when hovered.
-    pub const SCROLLBAR_THIN: f32 = 2.;
-    pub const SCROLLBAR: f32 = 6.;
-    pub const SCROLLBAR_INSET: f32 = 3.;
 }
 
 /// `a` over `b`, straight alpha.
-pub fn over(a: Color, b: Color) -> Color {
+#[cfg(test)]
+fn over(a: Color, b: Color) -> Color {
     let out_a = a.a + b.a * (1. - a.a);
     if out_a <= 0. {
         return Color::TRANSPARENT;
