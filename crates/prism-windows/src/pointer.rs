@@ -4,8 +4,8 @@
 //! node that drags after a long press waits for it), horizontal swipes
 //! (`on_swipe_*`: a quick flick with any pointer), wheel and touchpad
 //! scrolling (`on_wheel`), middle, back and forward clicks
-//! (`on_aux_click`), files dropped from Explorer (`on_drop_files`), and
-//! the see-through preview of a dragged payload.
+//! (`on_aux_click`), and the see-through preview of a dragged payload.
+//! Files dropped from Explorer are `drops`'.
 //!
 //! A clickable view's `Button` takes the press (it marks it handled): in
 //! such a view the press is heard on its children's canvas, inside the
@@ -23,12 +23,9 @@ use std::collections::HashMap;
 
 use prism_core::events::pointer_mask::{AUX_CLICK, HOVER, MOVE, WHEEL};
 use prism_core::{
-    ClickEvent, DragEvent, DragPhase, GesturePhase, Interaction, Modifiers, NodeId, PickFiles,
-    PickedFile, Point, PointerButton, PointerEvent, PointerPhase, SwipeDirection, UiEvent,
-    WheelEvent,
+    ClickEvent, DragEvent, DragPhase, GesturePhase, Modifiers, NodeId, Point, PointerButton,
+    PointerEvent, PointerPhase, SwipeDirection, UiEvent, WheelEvent,
 };
-use windows::ApplicationModel::DataTransfer::{DataPackageOperation, StandardDataFormats};
-use windows::Storage::IStorageItem;
 use windows::System::VirtualKeyModifiers;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, KillTimer, SM_CXDRAG, SetTimer};
@@ -37,7 +34,6 @@ use windows_core::{Interface, Result};
 use crate::imp::{defer, dispatch};
 use crate::widgets::Win;
 use crate::win::{env, log};
-use crate::winui::bindings::Microsoft::UI::Dispatching::{DispatcherQueue, DispatcherQueueHandler};
 use crate::winui::bindings::Microsoft::UI::Input::{
     PointerDeviceType, PointerPoint, PointerUpdateKind,
 };
@@ -45,7 +41,7 @@ use crate::winui::ui;
 use crate::winui::xaml::Controls::{Canvas, Image};
 use crate::winui::xaml::Input::{PointerEventHandler, PointerRoutedEventArgs};
 use crate::winui::xaml::Media::Imaging::RenderTargetBitmap;
-use crate::winui::xaml::{DragEventArgs, DragEventHandler, UIElement};
+use crate::winui::xaml::UIElement;
 
 /// A quick flick: at least this fast (DIPs per second), mostly
 /// horizontal, and this far (DIPs), like GTK's swipe gesture.
@@ -70,9 +66,6 @@ struct Listener {
     wired: bool,
     kids_wired: bool,
     press: Option<Press>,
-    /// Files it takes from Explorer, and whether they are over it.
-    drop: Option<PickFiles>,
-    drop_wired: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -170,8 +163,8 @@ pub fn wants(id: NodeId) -> bool {
     NODES.with(|n| {
         n.borrow()
             .get(&id)
-            .is_some_and(|l| l.mask != 0 || l.swipe != (false, false) || l.drop.is_some())
-    })
+            .is_some_and(|l| l.mask != 0 || l.swipe != (false, false))
+    }) || crate::drops::accepts(id)
 }
 
 /// The node is gone.
@@ -688,126 +681,6 @@ fn wheel(e: &UIElement, id: NodeId, a: &PointerRoutedEventArgs) -> Result<()> {
     // The node takes the scrolling: the scroll view around stays.
     a.SetHandled(true)?;
     Ok(())
-}
-
-// --- Files from Explorer (#111) ---------------------------------------------------------
-
-/// Node `id` takes files of `types` dropped from Explorer (`None`: none).
-pub fn set_drop_target(outer: &Canvas, id: NodeId, types: Option<&[String]>) -> Result<()> {
-    let accept = types.map(|t| PickFiles::new().types(t.to_vec()));
-    let wire = with(id, |l| {
-        l.drop = accept.clone();
-        !std::mem::replace(&mut l.drop_wired, true)
-    });
-    outer.SetAllowDrop(accept.is_some())?;
-    if !wire {
-        return Ok(());
-    }
-    let has_files = |a: &DragEventArgs| -> bool {
-        a.DataView()
-            .and_then(|v| v.Contains(&StandardDataFormats::StorageItems()?))
-            .unwrap_or(false)
-    };
-    outer.DragEnter(&DragEventHandler::new(move |_, a| {
-        if let Some(a) = a.as_ref()
-            && with(id, |l| l.drop.is_some())
-            && has_files(a)
-        {
-            a.SetAcceptedOperation(DataPackageOperation::Copy)?;
-            hover(id, true);
-        }
-        Ok(())
-    }))?;
-    outer.DragOver(&DragEventHandler::new(move |_, a| {
-        if let Some(a) = a.as_ref()
-            && with(id, |l| l.drop.is_some())
-            && has_files(a)
-        {
-            a.SetAcceptedOperation(DataPackageOperation::Copy)?;
-        }
-        Ok(())
-    }))?;
-    outer.DragLeave(&DragEventHandler::new(move |_, _| {
-        hover(id, false);
-        Ok(())
-    }))?;
-    outer.Drop(&DragEventHandler::new(move |_, a| {
-        hover(id, false);
-        let Some(a) = a.as_ref() else { return Ok(()) };
-        let Some(accept) = with(id, |l| l.drop.clone()) else {
-            return Ok(());
-        };
-        if !has_files(a) {
-            return Ok(());
-        }
-        a.SetHandled(true)?;
-        let op = a.DataView()?.GetStorageItemsAsync()?;
-        // Back on the UI thread once the list is there; the files are
-        // copied off it.
-        let queue = DispatcherQueue::GetForCurrentThread()?;
-        op.SetCompleted(&windows_future::AsyncOperationCompletedHandler::<
-            windows_collections::IVectorView<IStorageItem>,
-        >::new(move |op, _| {
-            let Some(op) = op.as_ref() else { return Ok(()) };
-            let items = op.GetResults()?;
-            let mut paths = Vec::new();
-            for i in 0..items.Size()? {
-                let item: IStorageItem = items.GetAt(i)?;
-                paths.push(item.Path()?.to_string());
-            }
-            let accept = accept.clone();
-            let queue = queue.clone();
-            std::thread::spawn(move || {
-                let files: Vec<PickedFile> = paths
-                    .into_iter()
-                    .filter_map(|p| copy_dropped(std::path::Path::new(&p)))
-                    .filter(|f| accept.accepts(&f.name, &f.mime))
-                    .collect();
-                if files.is_empty() {
-                    return;
-                }
-                let _ = queue.TryEnqueue(&DispatcherQueueHandler::new(move || {
-                    report(UiEvent::DropFiles(id, files.clone()));
-                    Ok(())
-                }));
-            });
-            Ok(())
-        }))?;
-        Ok(())
-    }))?;
-    Ok(())
-}
-
-/// Accepted files are over node `id` (or not anymore): `DropHover`.
-fn hover(id: NodeId, on: bool) {
-    defer(Box::new(move |s| {
-        if s.renderer.set_interaction(id, Interaction::DropHover, on) {
-            crate::imp::relayout(s);
-        }
-    }));
-}
-
-/// A copy of a dropped file the app may keep (`%LOCALAPPDATA%\Temp`):
-/// the original stays where the user has it.
-fn copy_dropped(src: &std::path::Path) -> Option<PickedFile> {
-    if !src.is_file() {
-        return None;
-    }
-    let dir = std::env::temp_dir().join("prism-dropped");
-    std::fs::create_dir_all(&dir).ok()?;
-    let name = src.file_name()?.to_string_lossy().to_string();
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    let dest = dir.join(format!("{unique}-{name}"));
-    let size = std::fs::copy(src, &dest).ok()?;
-    let mime = prism_core::SaveFile::path(src).mime_type();
-    Some(PickedFile {
-        path: dest.to_string_lossy().to_string(),
-        name,
-        mime,
-        size,
-    })
 }
 
 // --- The dragged payload's preview (#251) -----------------------------------------------

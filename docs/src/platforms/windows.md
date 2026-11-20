@@ -135,8 +135,11 @@ kinds and services come next (see [Not yet](#not-yet)).
   `SwipeControl` reveals items under touch only and has no place for
   Prism's direction-only swipes). Drags between views (`draggable`,
   `on_drop_payload`) find their target with prism-native's `locate_drag`,
-  with a see-through preview and autoscroll; files dragged from Explorer
-  land on `on_drop_files` targets (copies in `%TEMP%\prism-dropped`).
+  with a see-through preview and autoscroll. Files dragged from Explorer
+  land on `on_drop_files` targets (copies in `%TEMP%\prism-dropped`): as
+  on macOS, the drag's files are read when it enters, and only a target
+  that accepts one of them (MIME type or extension) shows the copy cursor
+  and its `drop_hover` style; folders are left out.
 - **Accessibility:** WinUI's own UI Automation peers (Button, Edit,
   CheckBox, Slider, ComboBox, the tab bar's list items…), with Prism's
   label, hint, heading level, live region (alerts, status) and tooltip as
@@ -408,9 +411,7 @@ the session, presses the counter's button through UI Automation.
   highlights across fields, or copy / paste / span-click hooks
   (`edit_events`) yet, and draw a chip as its object character; pinches
   (`on_magnify`, a 3D scene's pinch zoom) are not reported; 3D frames go
-  through the CPU (a read-back per frame, fine at a scene's size);
-  `drop_hover` styles follow Explorer drags but not their file types; file
-  drops from Explorer are untested on screen.
+  through the CPU (a read-back per frame, fine at a scene's size).
 - **Services:** push (WNS needs package identity), location, motion, the
   camera, the share sheet (`DataTransferManager`), haptics and passkeys
   answer « unavailable »; run-time fonts need a writable app folder;

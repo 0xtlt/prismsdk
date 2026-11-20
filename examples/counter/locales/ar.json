@@ -540,6 +540,7 @@
     "ended": "انتهى الفيديو.",
     "drop_heading": "ملفات من مدير الملفات",
     "drop_hint": "أفلت الملفات هنا",
+    "drop_images_hint": "الصور فقط",
     "dropped": "أُفلتت: {names}"
   },
   "scene3d": {

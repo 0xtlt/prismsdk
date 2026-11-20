@@ -508,6 +508,7 @@
     "ended": "The video ended.",
     "drop_heading": "Files from the file manager",
     "drop_hint": "Drop files here",
+    "drop_images_hint": "Pictures only",
     "dropped": "Dropped: {names}"
   },
   "scene3d": {

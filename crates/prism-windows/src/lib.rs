@@ -35,7 +35,8 @@
 //! | `controls` | Prism's controls as WinUI controls, their events and sizes |
 //! | `bars` | a stack's header, a tab bar |
 //! | `events` | clicks, hover and press, focus, scrolling, menus |
-//! | `pointer` | pointer, drags, swipes, wheel, files from Explorer |
+//! | `pointer` | pointer, drags, swipes, wheel |
+//! | `drops` | files dragged from Explorer onto `on_drop_files` targets |
 //! | `web`, `media`, `rich` | web views (WebView2), videos, rich inputs |
 //! | `scene3d` | 3D scenes: prism-native's OpenGL renderer, in WGL |
 //! | `keyboard` | key presses for Prism's key listeners |
@@ -70,6 +71,8 @@ mod clipboard;
 mod controls;
 #[cfg(target_os = "windows")]
 mod decor;
+#[cfg(target_os = "windows")]
+mod drops;
 #[cfg(target_os = "windows")]
 mod events;
 // Theme colors and control metrics: no Win32, tested everywhere.

@@ -604,6 +604,7 @@ impl Widgets for Win {
         }
         self.measurer.forget(id);
         crate::pointer::forget(id);
+        crate::drops::forget(id);
         crate::media::forget(id);
         crate::web::forget(id);
         self.typed.remove(&id);
@@ -1038,7 +1039,7 @@ impl Widgets for Win {
 
     fn set_drop_target(&mut self, view: &NodeId, types: Option<&[String]>) {
         if let Some(v) = self.views.get(view)
-            && let Err(e) = crate::pointer::set_drop_target(&v.outer, *view, types)
+            && let Err(e) = crate::drops::set_target(&v.outer, *view, types)
         {
             log!("drop target {view}: {e}");
         }

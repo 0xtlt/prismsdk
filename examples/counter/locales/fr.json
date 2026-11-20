@@ -508,6 +508,7 @@
     "ended": "La vidéo est finie.",
     "drop_heading": "Des fichiers du gestionnaire de fichiers",
     "drop_hint": "Déposez des fichiers ici",
+    "drop_images_hint": "Images uniquement",
     "dropped": "Déposés : {names}"
   },
   "scene3d": {
