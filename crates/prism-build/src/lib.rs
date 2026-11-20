@@ -58,7 +58,12 @@ use std::path::{Path, PathBuf};
 /// the app stops at launch. See [`prism_apple_build::link_app`].
 pub fn link_app() {
     prism_apple_build::link_app();
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        winappsdk::link_app();
+    }
 }
+
+pub mod winappsdk;
 
 /// Starts the translations build step for the `*.json` files in `dir`
 /// (relative to the package).

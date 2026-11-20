@@ -1,6 +1,6 @@
 [package]
 name = "prismsdk-build"
-description = "Build-time helpers for Prism apps: checked, typed translations from locales/*.json, and the app binary's link settings."
+description = "Build-time helpers for Prism apps: checked, typed translations from locales/*.json, and the app binary's link settings (Apple SDK settings, the Windows App SDK runtime)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
