@@ -28,6 +28,7 @@
 //! | `view` | one node's XAML elements: box, children, content, bars |
 //! | `style` | backgrounds, gradients, borders, radii, shadows, transforms |
 //! | `decor` | inset shadows, conic gradients, sides of several colors, rounded clips |
+//! | `defer` | off-screen content joins XAML's layout after the first frame |
 //! | `motion` | transitions, enter and exit poses, loops, moving frames |
 //! | `overlay` | sheets and dialogs (`ContentDialog`'s look), popovers (`Flyout`) |
 //! | `alert` | `cx.show_alert` as a `ContentDialog` |
@@ -71,6 +72,8 @@ mod clipboard;
 mod controls;
 #[cfg(target_os = "windows")]
 mod decor;
+#[cfg(target_os = "windows")]
+mod defer;
 #[cfg(target_os = "windows")]
 mod events;
 // Theme colors and control metrics: no Win32, tested everywhere.

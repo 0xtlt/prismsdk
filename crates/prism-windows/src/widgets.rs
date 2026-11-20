@@ -219,15 +219,18 @@ impl Win {
         }
     }
 
-    fn update_visibility(&self, id: NodeId) {
+    pub fn update_visibility(&self, id: NodeId) {
         if let Some(v) = self.views.get(&id) {
-            let _ = v.set_visible(self.shown_in_parent(id));
+            let _ = v.set_visible(self.shown_in_parent(id) && !crate::defer::deferred(id));
         }
     }
 
     /// After a commit: bars, the pages shown, overlays, sticky views.
     pub fn flush(&mut self) {
         let _t = crate::perf::span(crate::perf::Cost::Flush);
+        // New nodes out of view wait; those scrolled into view show.
+        crate::defer::collapse_fresh(self);
+        crate::defer::scrolled(self);
         let bars: Vec<NodeId> = self.bars.drain().collect();
         for id in bars {
             let (Some(n), Some(v)) = (self.scene.get(id), self.views.get_mut(&id)) else {
@@ -425,6 +428,7 @@ impl Widgets for Win {
     fn create(&mut self, id: NodeId, kind: NodeKind) -> NodeId {
         let _t = crate::perf::span(crate::perf::Cost::Create);
         self.scene.create(id, kind);
+        crate::defer::created(id);
         if kind == NodeKind::DatePicker
             && let Some(n) = self.scene.get_mut(id)
         {
@@ -612,6 +616,7 @@ impl Widgets for Win {
             p.children.retain(|c| *c != id);
         }
         self.measurer.forget(id);
+        crate::defer::forget(id);
         crate::pointer::forget(id);
         crate::media::forget(id);
         crate::web::forget(id);

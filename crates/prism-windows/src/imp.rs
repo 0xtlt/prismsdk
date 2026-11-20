@@ -429,6 +429,11 @@ pub fn trace(what: &str) {
 }
 
 /// Whether the window showed its first frame.
+pub fn framed() -> bool {
+    FRAMED.get()
+}
+
+/// Logs the first frame (`CompositionTarget::Rendered`) with the memory
 /// then; with `PRISM_TRACE`, the XAML elements in the tree, and when each
 /// update reaches the screen.
 fn first_frame() {
