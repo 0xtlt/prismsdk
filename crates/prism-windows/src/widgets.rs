@@ -227,6 +227,7 @@ impl Win {
 
     /// After a commit: bars, the pages shown, overlays, sticky views.
     pub fn flush(&mut self) {
+        let _t = crate::perf::span(crate::perf::Cost::Flush);
         let bars: Vec<NodeId> = self.bars.drain().collect();
         for id in bars {
             let (Some(n), Some(v)) = (self.scene.get(id), self.views.get_mut(&id)) else {
@@ -422,6 +423,7 @@ impl Widgets for Win {
     type View = NodeId;
 
     fn create(&mut self, id: NodeId, kind: NodeKind) -> NodeId {
+        let _t = crate::perf::span(crate::perf::Cost::Create);
         self.scene.create(id, kind);
         if kind == NodeKind::DatePicker
             && let Some(n) = self.scene.get_mut(id)
@@ -449,6 +451,7 @@ impl Widgets for Win {
     }
 
     fn set_style(&mut self, view: &NodeId, style: &Style) {
+        let _t = crate::perf::span(crate::perf::Cost::Style);
         let id = *view;
         // Shown at once: a running animation stops.
         crate::motion::settle(id);
@@ -467,6 +470,7 @@ impl Widgets for Win {
     }
 
     fn set_text(&mut self, view: &NodeId, text: &str) {
+        let _t = crate::perf::span(crate::perf::Cost::Style);
         let id = *view;
         let Some(n) = self.scene.get_mut(id) else {
             return;
@@ -501,6 +505,7 @@ impl Widgets for Win {
     }
 
     fn set_placeholder(&mut self, view: &NodeId, text: &str) {
+        let _t = crate::perf::span(crate::perf::Cost::Style);
         let id = *view;
         let Some(n) = self.scene.get_mut(id) else {
             return;
@@ -527,6 +532,7 @@ impl Widgets for Win {
     }
 
     fn set_children(&mut self, parent: &NodeId, children: &[NodeId]) {
+        let _t = crate::perf::span(crate::perf::Cost::Children);
         let id = *parent;
         // A closing panel keeps its content while it animates out.
         self.overlay_children(id, children);
@@ -618,6 +624,7 @@ impl Widgets for Win {
     }
 
     fn measure(&mut self, view: &NodeId, max_width: Option<f32>) -> (f32, f32) {
+        let _t = crate::perf::span(crate::perf::Cost::Measure);
         let Some(n) = self.scene.get(*view) else {
             return (0., 0.);
         };
@@ -632,6 +639,7 @@ impl Widgets for Win {
     }
 
     fn measure_min_content(&mut self, view: &NodeId) -> f32 {
+        let _t = crate::perf::span(crate::perf::Cost::Measure);
         let id = *view;
         if let Some(n) = self.scene.get(id)
             && matches!(n.kind, NodeKind::Text | NodeKind::Timer)
@@ -646,6 +654,7 @@ impl Widgets for Win {
     }
 
     fn set_frame(&mut self, view: &NodeId, x: f32, y: f32, w: f32, h: f32) {
+        let _t = crate::perf::span(crate::perf::Cost::Place);
         let id = *view;
         let frame = Rect::new(x, y, w, h);
         let Some(n) = self.scene.get_mut(id) else {
@@ -773,6 +782,7 @@ impl Widgets for Win {
     }
 
     fn set_accessibility(&mut self, view: &NodeId, a11y: &Accessibility) {
+        let _t = crate::perf::span(crate::perf::Cost::Style);
         let id = *view;
         let Some(n) = self.scene.get_mut(id) else {
             return;
@@ -790,6 +800,7 @@ impl Widgets for Win {
     }
 
     fn set_value(&mut self, view: &NodeId, value: f64) {
+        let _t = crate::perf::span(crate::perf::Cost::Style);
         let id = *view;
         let Some(n) = self.scene.get_mut(id) else {
             return;
@@ -841,6 +852,7 @@ impl Widgets for Win {
     }
 
     fn set_config(&mut self, view: &NodeId, kind: NodeKind, config: &str) {
+        let _t = crate::perf::span(crate::perf::Cost::Style);
         let id = *view;
         let Some(n) = self.scene.get_mut(id) else {
             return;
@@ -1001,6 +1013,7 @@ impl Widgets for Win {
     }
 
     fn baseline(&mut self, view: &NodeId, width: f32, height: f32) -> Option<f32> {
+        let _t = crate::perf::span(crate::perf::Cost::Measure);
         let n = self.scene.get(*view)?;
         controls::baseline(&self.measurer, n, width, height)
     }

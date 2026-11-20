@@ -40,6 +40,7 @@
 //! | `scene3d` | 3D scenes: prism-native's OpenGL renderer, in WGL |
 //! | `keyboard` | key presses for Prism's key listeners |
 //! | `smoke`, `inject` | `PRISM_CLICK` (real mouse input too), `PRISM_SNAPSHOT`… |
+//! | `perf` | `PRISM_TRACE`: where startup and update time goes |
 //! | `capture`, `wic` | `PrintWindow` and WIC: snapshots, pictures |
 //! | `images` | decoding pictures |
 //! | `package` | what a shipped app brings: its icon, its assets |
@@ -106,6 +107,8 @@ mod overlay;
 mod package;
 // Conic gradient pixels, per-side border outlines: no Win32, tested everywhere.
 mod paint;
+#[cfg(target_os = "windows")]
+mod perf;
 #[cfg(target_os = "windows")]
 mod pickers;
 #[cfg(target_os = "windows")]

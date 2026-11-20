@@ -226,6 +226,7 @@ Microsoft.UI.Composition.AnimationStopBehavior
 Microsoft.UI.Composition.CompositionClip
 Microsoft.UI.Composition.CompositionGeometricClip
 Microsoft.UI.Xaml.Media.CompositionTarget
+Microsoft.UI.Xaml.Media.RenderedEventArgs
 Microsoft.UI.Xaml.Media.ImageBrush
 Microsoft.UI.Xaml.Media.TileBrush
 Microsoft.UI.Xaml.Controls.Flyout

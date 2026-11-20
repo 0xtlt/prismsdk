@@ -8,7 +8,8 @@
 //!   types into the text field with that placeholder; `submit:Placeholder`
 //!   presses Enter in it; `menu:Title` opens the context menu of the view
 //!   showing Title; `scroll:600` scrolls the visible scroll views before
-//!   the next steps; `key:Escape` (`Tab`, `Enter`) presses a key; `hover:`,
+//!   the next steps; `wait:500` waits before them (milliseconds);
+//!   `key:Escape` (`Tab`, `Enter`) presses a key; `hover:`,
 //!   `drag:`, `swipe:` and `wheel:` move the real mouse over a view
 //!   (`inject.rs`).
 //! - `PRISM_SCROLL=600` scrolls the visible scroll views.
@@ -78,15 +79,24 @@ pub fn automation(main: HWND) {
 fn steps_then_snapshot(main: HWND, mut steps: Vec<String>) {
     while !steps.is_empty() {
         let step = steps.remove(0);
+        let started = std::time::Instant::now();
         let found = run_step(&step);
         if !found {
             eprintln!("prism-windows: PRISM_CLICK: nothing labelled {step:?}");
         }
         // Each step sees what the previous one did.
         drain();
-        if (step.starts_with("scroll:") || step.starts_with("key:")) && !steps.is_empty() {
+        if crate::perf::on() && !step.starts_with("wait:") {
+            // The event it caused logged where its time went.
+            let name = format!("step {step}");
+            log!("{name}: {:.1} ms", crate::perf::ms(started));
+            crate::perf::committed(&name, started);
+        }
+        let wait = step.strip_prefix("wait:").and_then(|ms| ms.parse().ok());
+        let waits = step.starts_with("scroll:") || step.starts_with("key:") || wait.is_some();
+        if waits && !steps.is_empty() {
             crate::motion::after(
-                std::time::Duration::from_millis(400),
+                std::time::Duration::from_millis(wait.unwrap_or(400)),
                 Box::new(move || steps_then_snapshot(main, steps)),
             );
             return;
@@ -104,6 +114,10 @@ fn steps_then_snapshot(main: HWND, mut steps: Vec<String>) {
 }
 
 fn run_step(step: &str) -> bool {
+    // `wait:500`: the next steps wait that many milliseconds (frames run).
+    if step.starts_with("wait:") {
+        return true;
+    }
     // `key:Escape`, `key:Tab`, `key:Enter`: the key, as the keyboard sends
     // it (to the window with the keyboard focus, through the message loop).
     if let Some(name) = step.strip_prefix("key:") {

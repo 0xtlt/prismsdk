@@ -349,6 +349,7 @@ impl Measurer {
     }
 
     fn desired(&self, width: f32) -> (f32, f32) {
+        let _t = crate::perf::span(crate::perf::Cost::TextLayout);
         let _ = self.tb.Measure(Size {
             Width: width.max(0.),
             Height: f32::INFINITY,

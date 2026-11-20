@@ -55,6 +55,9 @@ thread_local! {
     /// comes later than the change, and must not report the app's own.
     static FIELD_TEXT: RefCell<HashMap<NodeId, String>> = RefCell::new(HashMap::new());
     static START: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
+    /// The first frame was rendered; the handler that saw it.
+    static FRAMED: Cell<bool> = const { Cell::new(false) };
+    static RENDERED: Cell<Option<i64>> = const { Cell::new(None) };
 }
 
 pub fn main_hwnd() -> HWND {
@@ -118,12 +121,24 @@ fn deliver(s: &mut State, event: UiEvent) {
         UiEvent::Change(id, _) => Some(id),
         _ => None,
     };
+    let started = std::time::Instant::now();
     let (event, restyled) = s.renderer.locate_drag(event);
     if restyled {
         relayout(s);
     }
+    let name = crate::perf::on().then(|| format!("{event:?}"));
     let patches = s.runtime.dispatch(event);
+    let app = crate::perf::ms(started);
     commit(s, patches);
+    if let Some(name) = name {
+        // What took time: a click, a tab switch (not pointer moves).
+        let total = crate::perf::ms(started);
+        let costs = crate::perf::take();
+        if total >= 2. {
+            log!("{name}: {total:.1} ms (app {app:.1} ms; {costs})");
+            crate::perf::committed(&name, started);
+        }
+    }
     // A dragged payload near a scroll view's edge scrolls it (#251).
     crate::pointer::autoscroll(s);
     // A control the app did not follow shows the app's value again.
@@ -140,7 +155,7 @@ fn deliver(s: &mut State, event: UiEvent) {
 pub fn commit(s: &mut State, patches: Vec<Patch>) {
     let was = UPDATING.replace(true);
     if !patches.is_empty() {
-        prism_core::Backend::apply(&mut s.renderer, &patches);
+        crate::perf::patches(|| prism_core::Backend::apply(&mut s.renderer, &patches));
     }
     relayout(s);
     // `cx.focus(…)`, `dismiss_keyboard()`.
@@ -185,13 +200,13 @@ pub fn relayout(s: &mut State) {
                 prism_core::Backend::apply(&mut s.renderer, &patches);
             }
         }
-        s.renderer.layout(w, h, Insets::default());
+        crate::perf::layout(|| s.renderer.layout(w, h, Insets::default()));
         let more = prism_native::report_layout(&mut s.runtime, &mut s.renderer);
         if !more.is_empty() {
             commit(s, more);
         }
     }
-    s.renderer.widgets.flush();
+    crate::perf::layout(|| s.renderer.widgets.flush());
     UPDATING.set(was);
 }
 
@@ -404,8 +419,45 @@ fn tick() {
 
 /// Startup phases, with `PRISM_TRACE=1`.
 pub fn trace(what: &str) {
-    if env("PRISM_TRACE").is_some() {
-        log!("{what} after {:.0} ms", since_start());
+    if crate::perf::on() {
+        log!(
+            "{what} after {:.0} ms (UI thread CPU {:.0} ms)",
+            since_start(),
+            crate::perf::cpu_ms()
+        );
+    }
+}
+
+/// Whether the window showed its first frame.
+/// then; with `PRISM_TRACE`, the XAML elements in the tree, and when each
+/// update reaches the screen.
+fn first_frame() {
+    use crate::winui::xaml::Media::{CompositionTarget, RenderedEventArgs};
+    use windows::Foundation::EventHandler;
+    let handler = EventHandler::<RenderedEventArgs>::new(|_, _| {
+        if !FRAMED.replace(true) {
+            log!(
+                "first frame after {:.0} ms (UI thread CPU {:.0} ms); {}",
+                since_start(),
+                crate::perf::cpu_ms(),
+                memory()
+            );
+            if crate::perf::on() {
+                let root = with_state(|s| s.renderer.widgets.root.clone());
+                if let Some(Ok(root)) = root.map(|r| windows_core::Interface::cast(&r)) {
+                    log!("{} XAML elements", crate::perf::count_elements(&root));
+                }
+            } else if let Some(t) = RENDERED.take() {
+                let _ = CompositionTarget::RemoveRendered(t);
+            }
+        }
+        crate::perf::rendered();
+        Ok(())
+    });
+    match CompositionTarget::Rendered(&handler) {
+        Ok(t) => RENDERED.set(Some(t)),
+        // No frame will say so: what waits for it goes now.
+        Err(_) => FRAMED.set(true),
     }
 }
 
@@ -670,6 +722,7 @@ pub fn run(config: AppConfig, init: AppInit) {
         MAIN.set(hwnd_value(main));
         // The client area at the window's DPI.
         let dpi = GetDpiForWindow(main).max(96);
+        trace("window");
         let k = dpi as f32 / 96.;
         let mut r = RECT {
             left: 0,
@@ -697,7 +750,11 @@ pub fn run(config: AppConfig, init: AppInit) {
             cache_dir: Some(data.join("images")),
         });
         let services = WinServices::new(main, &data);
+        trace("services");
         let target = hwnd_value(main);
+        let environment = system::environment();
+        let device_info = system::device_info(width, height, k);
+        trace("environment");
         let runtime = Runtime::with_options(
             &init,
             prism_core::RuntimeOptions {
@@ -709,10 +766,10 @@ pub fn run(config: AppConfig, init: AppInit) {
                     let _ = PostMessageW(Some(hwnd(target)), WM_PRISM_WAKE, WPARAM(0), LPARAM(0));
                 })),
                 capabilities: prism_core::PlatformServices::capabilities(&services),
-                environment: system::environment(),
+                environment,
                 data_dir: Some(data),
                 viewport: Some((width, height)),
-                device_info: Some(system::device_info(width, height, k)),
+                device_info: Some(device_info),
                 ..Default::default()
             },
         );
@@ -731,14 +788,16 @@ pub fn run(config: AppConfig, init: AppInit) {
                 Ok(i) => win.island = Some(i),
                 Err(e) => log!("XAML island: {e}"),
             }
-            // The first frame: the tree is loaded into the island.
+            // XAML laid the tree out, then the first frame.
             let _ = win
                 .root
                 .Loaded(&crate::winui::xaml::RoutedEventHandler::new(|_, _| {
-                    log!("first frame after {:.0} ms; {}", since_start(), memory());
+                    trace("XAML layout (Loaded)");
                     Ok(())
                 }));
+            first_frame();
         } else {
+            FRAMED.set(true);
             log!(
                 "no desktop session (session 0, e.g. SSH): WinUI cannot render here. The \
                  tree is built and laid out, nothing is shown; run the app in a signed-in \
@@ -762,9 +821,17 @@ pub fn run(config: AppConfig, init: AppInit) {
                 i.resize(client.right, client.bottom);
             }
             w.resize(client.right as f32 / k, client.bottom as f32 / k);
+            let t = std::time::Instant::now();
             let first = s.runtime.render();
-            trace("first render");
+            trace(&format!(
+                "the app's tree ({:.0} ms, {} patches)",
+                crate::perf::ms(t),
+                first.len()
+            ));
             commit(s, first);
+            if crate::perf::on() {
+                log!("XAML elements: {}", crate::perf::take());
+            }
         });
         log!(
             "first layout after {:.0} ms ({} nodes)",
