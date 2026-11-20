@@ -455,6 +455,7 @@ fn first_frame() {
             } else if let Some(t) = RENDERED.take() {
                 let _ = CompositionTarget::RemoveRendered(t);
             }
+            crate::scene3d::first_frame();
         }
         crate::perf::rendered();
         Ok(())

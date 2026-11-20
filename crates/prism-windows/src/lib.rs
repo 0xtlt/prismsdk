@@ -38,7 +38,7 @@
 //! | `events` | clicks, hover and press, focus, scrolling, menus |
 //! | `pointer` | pointer, drags, swipes, wheel, files from Explorer |
 //! | `web`, `media`, `rich` | web views (WebView2), videos, rich inputs |
-//! | `scene3d` | 3D scenes: prism-native's OpenGL renderer, in WGL |
+//! | `scene3d`, `dxgl` | 3D scenes: prism-native's OpenGL renderer, in WGL, to a swap chain |
 //! | `keyboard` | key presses for Prism's key listeners |
 //! | `smoke`, `inject` | `PRISM_CLICK` (real mouse input too), `PRISM_SNAPSHOT`… |
 //! | `perf` | `PRISM_TRACE`: where startup and update time goes |
@@ -74,6 +74,8 @@ mod controls;
 mod decor;
 #[cfg(target_os = "windows")]
 mod defer;
+#[cfg(target_os = "windows")]
+mod dxgl;
 #[cfg(target_os = "windows")]
 mod events;
 // Theme colors and control metrics: no Win32, tested everywhere.
