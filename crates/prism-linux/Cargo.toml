@@ -19,7 +19,7 @@ name = "prism_linux"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 prism-core.workspace = true
-prism-native.workspace = true
+prism-native = { workspace = true, features = ["gl3d"] }
 gtk = { package = "gtk4", version = "0.11", features = ["v4_8"] }
 # Tray icons (StatusNotifierItem), on their own thread.
 # UnifiedPush messages are Web Push messages: decrypted here (pure Rust).
@@ -29,7 +29,7 @@ ksni = { version = "0.3.7", default-features = false, features = ["blocking", "a
 # wgpu, egui and iced), without dependencies of their own on Linux. Function
 # pointers come from libepoxy, which GTK already links (scene3d.rs), so no
 # loader crate (epoxy, libloading) is needed.
-glow = "0.17"
+glow.workspace = true
 
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-linux-gnu"]

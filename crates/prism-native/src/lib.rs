@@ -12,6 +12,9 @@ pub mod dnd;
 mod extras;
 pub mod fields;
 pub mod fonts;
+/// The OpenGL renderer of 3D scenes (GTK, Windows).
+#[cfg(feature = "gl3d")]
+pub mod gl3d;
 pub mod images;
 pub mod remote;
 pub mod save;
