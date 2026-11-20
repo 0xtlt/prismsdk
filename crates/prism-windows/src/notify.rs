@@ -12,8 +12,8 @@
 //! and when a click launched the app. The app unregisters its COM
 //! server when it quits (`Unregister`), so clicks then start it again;
 //! `PRISM_NOTIFICATIONS_CLEANUP=1` removes everything instead
-//! (`UnregisterAll`, and its notifications from the notification center):
-//! tests leave nothing behind.
+//! (`UnregisterAll`, what it leaves in the registry, and the app's
+//! notifications in the notification center): tests leave nothing behind.
 //!
 //! **Clicks** on the notification or a button reach the app while it runs
 //! (`NotificationInvoked`, on a worker thread) or start it
@@ -291,7 +291,51 @@ pub fn quit() {
                 let _ = std::fs::remove_file(path);
             }
         });
+        forget_identity();
     } else if let Err(e) = manager.Unregister() {
         log!("notifications: Unregister: {e}");
+    }
+}
+
+/// What `UnregisterAll` leaves: the key naming the app by its executable's
+/// path (`AppUserModelId\C:.dir.app.exe`, its `NotificationGUID`), and
+/// Windows' own settings for that GUID.
+fn forget_identity() {
+    use windows::Win32::System::Registry::{
+        HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegDeleteTreeW, RegGetValueW,
+    };
+    use windows::core::PCWSTR;
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let by_path = format!(
+        "Software\\Classes\\AppUserModelId\\{}",
+        exe.to_string_lossy().replace('\\', ".")
+    );
+    let key = crate::win::wide(&by_path);
+    let mut buf = [0u16; 64];
+    let mut size = (buf.len() * 2) as u32;
+    let guid = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            PCWSTR(key.as_ptr()),
+            windows::core::w!("NotificationGUID"),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr() as *mut _),
+            Some(&mut size),
+        )
+    }
+    .is_ok()
+    .then(|| String::from_utf16_lossy(&buf[..(size as usize / 2).saturating_sub(1)]));
+    let mut keys = vec![by_path];
+    if let Some(g) = guid.filter(|g| g.starts_with('{')) {
+        keys.push(format!(
+            "Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings\\{g}"
+        ));
+    }
+    for k in keys {
+        let w = crate::win::wide(&k);
+        let _ = unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, PCWSTR(w.as_ptr())) };
     }
 }

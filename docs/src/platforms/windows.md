@@ -110,10 +110,11 @@ the app notifies or asks about notifications, then a second after every
 startup (a marker in the app's data directory), so a click on an earlier notification
 reaches the running app rather than starting a second one. When the app quits it unregisters its COM server
 (`Unregister`), so a later click starts it again; an uninstaller removes the
-rest (`UnregisterAll`). With `PRISM_NOTIFICATIONS_CLEANUP=1` the app does that
-itself on quit and also clears its notifications: tests leave nothing
-behind. Windows keeps its own settings for the app under
-`HKCU\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings`.
+rest (`UnregisterAll`, which leaves the key naming the app by its path,
+`AppUserModelId\C:.…exe`, and Windows' own settings for it under
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings`).
+With `PRISM_NOTIFICATIONS_CLEANUP=1` the app does all of that itself on quit
+and also clears its notifications: tests leave nothing behind.
 
 ## The Windows App SDK
 
