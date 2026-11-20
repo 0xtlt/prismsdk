@@ -144,11 +144,12 @@ fn present(root: &XamlRoot, dark: bool, spec: &AlertSpec) -> Result<()> {
     d.SetPrimaryButtonText(&h(&title(b.primary)))?;
     d.SetSecondaryButtonText(&h(&title(b.secondary)))?;
     // No action at all: an OK button that reports nothing.
-    d.SetCloseButtonText(&h(if spec.actions.is_empty() {
-        "OK"
+    let close = if spec.actions.is_empty() {
+        "OK".to_string()
     } else {
-        &title(b.close)
-    }))?;
+        title(b.close)
+    };
+    d.SetCloseButtonText(&h(&close))?;
     d.SetDefaultButton(if b.accent {
         ContentDialogButton::Primary
     } else {
