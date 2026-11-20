@@ -16,8 +16,10 @@
 # Environment:
 #   PRISM_WINDOWS_REMOTE  the remote helper (default scripts/windows-remote.sh)
 #   PRISM_PERF_PROFILES   cargo profiles, in order (default "release dev")
-#   PRISM_PERF_RUNS       runs per profile (default 5; the first warms the
-#                         disk cache and is left out of the medians)
+#   PRISM_PERF_RUNS       runs per profile (default 5). The first starts
+#                         with no app data (the counter creates its SQLite
+#                         database: hundreds of ms on Windows) and a cold
+#                         disk cache: it is left out of the medians.
 #   PRISM_PERF_PATH       the route (default /components)
 #   PRISM_PERF_CLICKS     PRISM_CLICK steps after the first frame (default:
 #                         to Todos, back, to Settings, back)
@@ -60,13 +62,16 @@ for profile in $profiles; do
     i=$((i + 1))
     name="$profile-$i"
     # Like windows-smoke.sh: a batch file in the session (run-in-session),
-    # fresh storage each run, English labels for the clicks.
+    # English labels for the clicks; the app's data kept after the first
+    # run, as for a user who opens the app again.
+    fresh=
+    [ "$i" -eq 1 ] && fresh="if exist \"%TEMP%\\prism-perf\" rmdir /s /q \"%TEMP%\\prism-perf\""
     {
       printf '%s\r\n' "\$bat = Join-Path (Get-Location).ProviderPath 'target\\windows-perf\\$name.cmd'"
       printf '%s\r\n' "[IO.File]::WriteAllText(\$bat, @'"
       printf '%s\r\n' "@echo off"
       printf '%s\r\n' "set \"LOCALAPPDATA=%TEMP%\\prism-perf\""
-      printf '%s\r\n' "if exist \"%TEMP%\\prism-perf\" rmdir /s /q \"%TEMP%\\prism-perf\""
+      [ -z "$fresh" ] || printf '%s\r\n' "$fresh"
       printf '%s\r\n' "set PRISM_TRACE=1"
       printf '%s\r\n' "set PRISM_LOCALE=en"
       printf '%s\r\n' "set PRISM_APPEARANCE=light"

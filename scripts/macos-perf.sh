@@ -9,7 +9,8 @@
 #
 # Environment:
 #   PRISM_PERF_PROFILES  cargo profiles (default "release dev")
-#   PRISM_PERF_RUNS      runs per profile (default 5; the first is left out)
+#   PRISM_PERF_RUNS      runs per profile (default 5; the first, with no app
+#                        data yet, is left out)
 #   PRISM_PERF_PATH      the route (default /components)
 #   PRISM_PERF_WINDOW    the window's size (default 460x720, as on Windows)
 set -eu
@@ -30,20 +31,21 @@ for profile in $profiles; do
     *) (cd "$root" && cargo build -p counter --profile "$profile") && exe=$profile ;;
   esac
   bin="${CARGO_TARGET_DIR:-$root/target}/$exe/counter"
+  # The app's data, kept from the second run on (as on Windows).
+  data=$(mktemp -d)
   i=0
   while [ "$i" -lt "$runs" ]; do
     i=$((i + 1))
     name="$profile-$i"
-    data=$(mktemp -d)
     (
       cd "$root/examples/counter"
       env PRISM_TRACE=1 PRISM_LOCALE=en PRISM_APPEARANCE=light PRISM_DATA_DIR="$data" \
         PRISM_PATH="$path" PRISM_WINDOW="$size" PRISM_DELAY=1.5 \
         PRISM_SNAPSHOT="$out/$name.png" "$bin"
     ) >"$out/$name.log" 2>&1 || true
-    rm -rf "$data"
     echo "macos-perf: $name done" >&2
   done
+  rm -rf "$data"
 done
 
 python3 "$root/scripts/perf/report.py" "$out"/*.log | tee "$out/report.md"
