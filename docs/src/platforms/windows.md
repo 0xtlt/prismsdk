@@ -26,11 +26,16 @@ kinds and services come next (see [Not yet](#not-yet)).
   (`scene.rs`) tells which page a stack or tab bar shows and finds nodes by
   label for the smoke hooks.
 - **Styles:** a `Border` draws the background (solid, `LinearGradientBrush`,
-  `RadialGradientBrush`, `AcrylicBrush` for a backdrop blur), the border and
-  per-corner radii; dashed and dotted borders are a stroked `Rectangle`;
-  drop shadows are Composition `DropShadow`s masked by the box's rounded
-  rectangle (exact offset, blur, spread and color); opacity and transforms
-  are the element's (`CompositeTransform`); `overflow: hidden` clips.
+  `RadialGradientBrush`, `AcrylicBrush` for a backdrop blur, and a conic
+  gradient's pixels in a `WriteableBitmap` through an `ImageBrush`), the
+  border and per-corner radii; dashed and dotted borders are a stroked
+  `Rectangle`; sides of different colors are one `Path` each, split at the
+  corners like CSS; drop shadows are Composition `DropShadow`s masked by the
+  box's rounded rectangle (exact offset, blur, spread and color), inset
+  shadows a `DropShadow` cast by a frame around the box's inside, clipped to
+  it; opacity and transforms are the element's Composition facades
+  (`Opacity`, `Translation`, `Rotation`, `Scale`); `overflow: hidden`
+  clips, to the rounded corners too (a Composition geometric clip).
 - **Text** is `TextBlock`s: fonts and weights per run (`Run` inlines),
   colors, underline and strikethrough, inline Segoe Fluent Icons, CSS line
   heights, letter spacing, wrapping, line clamps with an ellipsis,
@@ -53,8 +58,30 @@ kinds and services come next (see [Not yet](#not-yet)).
   pressed refinements are Prism's.
 - **Navigation:** a `SelectorBar` (the Windows 11 top tabs) for a tab bar,
   and a header per stack with Back (`NavigationBackButtonNormalStyle`), the
-  title and the screen's bar buttons. Sheets and dialogs open over a dimmed
-  backdrop, on a panel.
+  title and the screen's bar buttons.
+- **Overlays:** dialogs and sheets have `ContentDialog`'s look: the smoke
+  over the window (the page blurred for `Backdrop::Blur`), a centered panel
+  with its edge, 8 px corners and deep shadow, scaling down from 1.05 and
+  fading in (the reverse to close). They take the keyboard focus (Tab
+  cycles inside) and give it back, and close on Escape or a click on the
+  smoke unless `fixed`; a bare dialog has no panel, shadow or animation.
+  Windows has no sheet: a sheet is a larger dialog. Popovers (and dialogs
+  placed beside their anchor) are WinUI `Flyout`s on the anchor: the
+  acrylic presenter, its shadow and entry animation, placement from the
+  side and alignment (flipped without room), light dismiss, Escape and the
+  focus are WinUI's; `fixed` and `manual` ones ignore a click outside,
+  `keep_focus` ones are transient and let the click through.
+  `cx.show_alert` is a `ContentDialog` (Windows 11's style): the first two
+  actions are its primary and secondary buttons, the cancel action its
+  close button (Escape); alerts wait for the one before.
+- **Animations:** transitions of opacity and transforms, enter and exit
+  poses and loops (`repeat`) are Composition keyframe animations on the
+  element's facades (`UIElement::StartAnimation`), with the transition's
+  own curve and delay; an interrupted one goes on from where it is. Frame
+  changes step on each rendered frame (`CompositionTarget::Rendering`). A
+  node with an exit pose stays in place until it has animated out. With
+  « Animation effects » off, nothing animates (WinUI's own controls follow
+  the setting too).
 - **Text fields** (`text_input`, `text_area`) are `TextBox`es: typing, IME,
   spell checking, selection, undo and the clipboard are WinUI's. The
   backend reports edits (`Typed` tells the app's echo from the user's
@@ -129,12 +156,13 @@ The same as the other backends, in a desktop session:
 | Variable | |
 |---|---|
 | `PRISM_PATH` | the first route |
-| `PRISM_CLICK` | `+1\|Save`: presses by label (a control's title, an accessibility label, a tab, `Back`, a bar button, a clickable view showing it; buttons through their UI Automation peer); `fill:Placeholder=text` types into a field; `submit:Placeholder` presses Enter in it; `menu:Title` opens a context menu |
+| `PRISM_CLICK` | `+1\|Save`: presses by label (a control's title, an accessibility label, a tab, `Back`, a bar button, a clickable view showing it; buttons through their UI Automation peer); `fill:Placeholder=text` types into a field; `submit:Placeholder` presses Enter in it; `menu:Title` opens a context menu; `scroll:600` scrolls first (a popover then opens on its anchor in view); `key:Escape` (`Tab`, `Enter`) presses a key |
 | `PRISM_SCROLL` | scrolls the visible scroll views to that offset |
 | `PRISM_SNAPSHOT` | saves the window's XAML (`RenderTargetBitmap`) as PNG, and what DWM shows of the window (`PrintWindow`: Mica, shadows, open flyouts) as `<name>-window.png`, then quits |
 | `PRISM_DELAY`, `PRISM_AFTER` | seconds before the clicks (1) and between them and the snapshot (0.7) |
 | `PRISM_WINDOW` | the window's size, `460x720` |
 | `PRISM_APPEARANCE` | `light` or `dark` in place of the system's appearance |
+| `PRISM_REDUCE_MOTION` | `1` (or `0`) in place of « Animation effects » |
 | `PRISM_TRACE` | logs the startup phases |
 
 Every run logs when WinUI is ready, the first layout and the first frame
@@ -149,17 +177,13 @@ the session, presses the counter's button through UI Automation.
 
 ## Not yet
 
-- **Controls:** inset shadows, conic gradients (drawn as a linear sweep),
-  per-side border colors, rounded clipping of children; overlays (sheets,
-  dialogs, popovers) are Prism views above the window (a dimmed backdrop
-  that closes them on a tap, a panel under their content), not
-  `ContentDialog`s or `Flyout`s, and without their entry animations; no
-  animations (`Transition`, poses); web
-  views, videos and 3D scenes are empty boxes; rich inputs edit plain text;
-  links in text are colored, not `Hyperlink`s; drags and drops between
-  views (`locate_drag` gets no pointer input), pointer and wheel events for
-  `on_pointer` / `on_wheel`, swipes; Escape does not close an overlay yet.
-- **Services:** notifications, alerts (`ContentDialog`), the tray, the menu
+- **Controls:** web views, videos and 3D scenes are empty boxes; rich
+  inputs edit plain text; links in text are colored, not `Hyperlink`s;
+  drags and drops between views (`locate_drag` gets no pointer input),
+  pointer and wheel events for `on_pointer` / `on_wheel`, swipes. A rounded
+  clip with only some corners rounded rounds them all but those on one
+  side; dialogs and sheets have no UI Automation dialog role yet.
+- **Services:** notifications, the tray, the menu
   bar, badges, pickers of photos, files and folders, secure storage,
   biometrics, sign-in, background tasks, push and run-time fonts.
 - **Packaging:** `prism build windows` (the runtime and `resources.pri`
