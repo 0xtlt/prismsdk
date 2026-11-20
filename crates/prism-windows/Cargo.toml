@@ -26,16 +26,26 @@ prism-native.workspace = true
 # the app, see build.rs), hosted in a Win32 window; WIC for pictures and
 # snapshots. Builds with the GNU and the MSVC toolchains.
 [target.'cfg(target_os = "windows")'.dependencies]
+# Web view messages are checked to be JSON.
+serde_json.workspace = true
 windows-core = "0.62"
 windows-numerics = "0.3"
 # The generated WinUI projection refers to these crates by name.
 windows-collections = "0.3"
 windows-future = "0.3"
 windows = { version = "0.62", features = [
+  "ApplicationModel",
+  "ApplicationModel_DataTransfer",
+  "ApplicationModel_DataTransfer_DragDrop",
   "Foundation",
   "Foundation_Collections",
   "Graphics",
   "Graphics_Imaging",
+  "Media",
+  "Media_Casting",
+  "Media_Core",
+  "Media_Playback",
+  "Storage",
   "Storage_Streams",
   "System",
   "UI",
@@ -46,6 +56,7 @@ windows = { version = "0.62", features = [
   "Win32_Graphics_Dwm",
   "Win32_Graphics_Gdi",
   "Win32_Graphics_Imaging",
+  "Win32_Graphics_OpenGL",
   "Win32_Storage_Xps",
   "Win32_System_Com",
   "Win32_System_Com_StructuredStorage",

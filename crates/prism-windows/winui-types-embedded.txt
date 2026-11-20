@@ -1,0 +1,73 @@
+# Embedded content and input (web views, videos, 3D scenes, rich inputs,
+# links, pointer, drag and drop): the types build.rs generates bindings for,
+# besides winui-types.txt. Microsoft.Web.WebView2.Core comes from the
+# Microsoft.Web.WebView2 package's metadata (the WinUI package depends on it).
+# Web views
+Microsoft.UI.Xaml.Controls.WebView2
+Microsoft.UI.Xaml.Controls.CoreWebView2InitializedEventArgs
+Microsoft.Web.WebView2.Core.CoreWebView2
+Microsoft.Web.WebView2.Core.CoreWebView2Settings
+Microsoft.Web.WebView2.Core.CoreWebView2Environment
+Microsoft.Web.WebView2.Core.CoreWebView2EnvironmentOptions
+Microsoft.Web.WebView2.Core.CoreWebView2ControllerOptions
+Microsoft.Web.WebView2.Core.CoreWebView2NavigationStartingEventArgs
+Microsoft.Web.WebView2.Core.CoreWebView2NavigationCompletedEventArgs
+Microsoft.Web.WebView2.Core.CoreWebView2WebMessageReceivedEventArgs
+Microsoft.Web.WebView2.Core.CoreWebView2NewWindowRequestedEventArgs
+Microsoft.Web.WebView2.Core.CoreWebView2ProcessFailedEventArgs
+Microsoft.Web.WebView2.Core.CoreWebView2WebErrorStatus
+Microsoft.Web.WebView2.Core.CoreWebView2Frame
+# Videos
+Microsoft.UI.Xaml.Controls.MediaPlayerElement
+Microsoft.UI.Xaml.Controls.MediaTransportControls
+Microsoft.UI.Xaml.Media.Imaging.BitmapImage
+# Rich inputs
+Microsoft.UI.Xaml.Controls.RichEditBox
+Microsoft.UI.Xaml.Controls.RichEditBoxTextChangingEventArgs
+Microsoft.UI.Xaml.Controls.RichEditClipboardFormat
+Microsoft.UI.Xaml.Controls.TextControlPasteEventArgs
+Microsoft.UI.Xaml.Controls.TextControlPasteEventHandler
+Microsoft.UI.Xaml.Controls.TextControlCopyingToClipboardEventArgs
+Microsoft.UI.Xaml.Controls.TextControlCuttingToClipboardEventArgs
+Microsoft.UI.Text.RichEditTextDocument
+Microsoft.UI.Text.RichEditTextRange
+Microsoft.UI.Text.ITextDocument
+Microsoft.UI.Text.ITextRange
+Microsoft.UI.Text.ITextSelection
+Microsoft.UI.Text.ITextCharacterFormat
+Microsoft.UI.Text.ITextParagraphFormat
+Microsoft.UI.Text.TextSetOptions
+Microsoft.UI.Text.TextGetOptions
+Microsoft.UI.Text.FormatEffect
+Microsoft.UI.Text.UnderlineType
+Microsoft.UI.Text.TextRangeUnit
+Microsoft.UI.Text.ParagraphAlignment
+Microsoft.UI.Text.SelectionOptions
+Microsoft.UI.Text.TextConstants
+# Links in text
+Microsoft.UI.Xaml.Documents.Hyperlink
+Microsoft.UI.Xaml.Documents.HyperlinkClickEventArgs
+Microsoft.UI.Xaml.Documents.Span
+Microsoft.UI.Xaml.Documents.UnderlineStyle
+# Pointer, wheel, manipulations
+Microsoft.UI.Xaml.Input.ManipulationModes
+Microsoft.UI.Xaml.Input.ManipulationStartedEventHandler
+Microsoft.UI.Xaml.Input.ManipulationStartedRoutedEventArgs
+Microsoft.UI.Xaml.Input.ManipulationDeltaEventHandler
+Microsoft.UI.Xaml.Input.ManipulationDeltaRoutedEventArgs
+Microsoft.UI.Xaml.Input.ManipulationCompletedEventHandler
+Microsoft.UI.Xaml.Input.ManipulationCompletedRoutedEventArgs
+Microsoft.UI.Xaml.Input.ManipulationStartingEventHandler
+Microsoft.UI.Xaml.Input.ManipulationStartingRoutedEventArgs
+Microsoft.UI.Input.ManipulationDelta
+Microsoft.UI.Input.ManipulationVelocities
+# Drag and drop (Explorer files)
+Microsoft.UI.Xaml.DragEventHandler
+Microsoft.UI.Xaml.DragEventArgs
+Microsoft.UI.Xaml.DragUIOverride
+Microsoft.UI.Xaml.DragOperationDeferral
+# 3D scenes
+Microsoft.UI.Xaml.Controls.SwapChainPanel
+Microsoft.UI.Input.PointerUpdateKind
+Microsoft.UI.Dispatching.DispatcherQueueHandler
+Microsoft.UI.Dispatching.DispatcherQueuePriority

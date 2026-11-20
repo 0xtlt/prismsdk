@@ -7,7 +7,8 @@
 //!   Automation peer, like a screen reader would. `fill:Placeholder=text`
 //!   types into the text field with that placeholder; `submit:Placeholder`
 //!   presses Enter in it; `menu:Title` opens the context menu of the view
-//!   showing Title.
+//!   showing Title; `hover:`, `drag:`, `swipe:` and `wheel:` move the real
+//!   mouse over a view (`inject.rs`).
 //! - `PRISM_SCROLL=600` scrolls the visible scroll views.
 //! - `PRISM_SNAPSHOT=out.png` then saves the window's XAML, rendered by
 //!   `RenderTargetBitmap`, and what DWM shows of the window
@@ -93,6 +94,10 @@ pub fn automation(main: HWND) {
 }
 
 fn run_step(step: &str) -> bool {
+    // `hover:`, `drag:`, `swipe:`, `wheel:`: real mouse input.
+    if let Some(found) = crate::inject::step(step) {
+        return found;
+    }
     if let Some(title) = step.strip_prefix("menu:") {
         let found = with_state(|s| {
             let w = &s.renderer.widgets;

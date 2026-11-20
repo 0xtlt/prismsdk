@@ -165,7 +165,9 @@
     "storage_used": "{used} used",
     "open_settings": "Open settings",
     "islands": "Islands: code that runs in the browser",
-    "islands_subtitle": "A WASM chart and a JavaScript clock (web)"
+    "islands_subtitle": "A WASM chart and a JavaScript clock (web)",
+    "media": "Web and video",
+    "media_subtitle": "A web page and a film inside the app"
   },
   "menu": {
     "file": "File",
@@ -487,6 +489,21 @@
     "just_now": "just now",
     "native": "Native apps and pages without JavaScript show the chart drawn by Prism.",
     "summary": "{n} values, the last one {last}"
+  },
+  "media": {
+    "title": "Web and video",
+    "web_heading": "A web page",
+    "web_intro": "A web view: the page and the app send each other messages.",
+    "from_page": "From the page: {message}",
+    "no_message": "No message from the page yet",
+    "loaded": "Loaded: {url}",
+    "loading": "Loading…",
+    "send": "Send a message",
+    "reload": "Reload",
+    "video_heading": "A video",
+    "video_alt": "Sintel, an open movie by the Blender Foundation",
+    "playing": "Plays muted, with the platform’s controls.",
+    "ended": "The video ended."
   },
   "scene3d": {
     "title": "3D scene",

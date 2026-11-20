@@ -165,7 +165,9 @@
     "storage_used": "{used} utilisés",
     "open_settings": "Ouvrir les réglages",
     "islands": "Îlots : du code qui tourne dans le navigateur",
-    "islands_subtitle": "Un graphique WASM et une horloge JavaScript (web)"
+    "islands_subtitle": "Un graphique WASM et une horloge JavaScript (web)",
+    "media": "Web et vidéo",
+    "media_subtitle": "Une page web et un film dans l’app"
   },
   "menu": {
     "file": "Fichier",
@@ -487,6 +489,21 @@
     "just_now": "à l’instant",
     "native": "Les apps natives et les pages sans JavaScript affichent le graphique dessiné par Prism.",
     "summary": "{n} valeurs, la dernière : {last}"
+  },
+  "media": {
+    "title": "Web et vidéo",
+    "web_heading": "Une page web",
+    "web_intro": "Une vue web : la page et l’app s’envoient des messages.",
+    "from_page": "De la page : {message}",
+    "no_message": "Pas encore de message de la page",
+    "loaded": "Chargée : {url}",
+    "loading": "Chargement…",
+    "send": "Envoyer un message",
+    "reload": "Recharger",
+    "video_heading": "Une vidéo",
+    "video_alt": "Sintel, un film libre de la Blender Foundation",
+    "playing": "Lue sans le son, avec les commandes de la plateforme.",
+    "ended": "La vidéo est finie."
   },
   "scene3d": {
     "title": "Scène 3D",

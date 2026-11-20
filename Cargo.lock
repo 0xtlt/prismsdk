@@ -2446,6 +2446,7 @@ dependencies = [
 name = "prismsdk-native"
 version = "0.1.0"
 dependencies = [
+ "glow",
  "objc2",
  "objc2-core-foundation",
  "objc2-foundation",
@@ -2525,6 +2526,7 @@ dependencies = [
  "prismsdk-build",
  "prismsdk-core",
  "prismsdk-native",
+ "serde_json",
  "windows",
  "windows-bindgen",
  "windows-collections",

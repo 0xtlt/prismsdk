@@ -22,6 +22,7 @@ mod forms;
 mod interact;
 mod islands;
 mod layout;
+mod media;
 mod menus;
 mod push;
 mod report;
@@ -111,6 +112,9 @@ pub fn run() {
                 })
                 .route("/focus", move |_, _| focus)
                 .route("/components/list", |cx, _| cx.new_entity(LongList::new))
+                .route("/components/media", |cx, _| {
+                    cx.new_entity(media::MediaDemo::new)
+                })
                 .route("/components/islands", |cx, _| {
                     cx.new_entity(islands::IslandsDemo::new)
                 })
@@ -957,6 +961,12 @@ impl Render for Gallery {
                             .subtitle(strings::gallery_islands_subtitle(cx))
                             .leading("◇")
                             .on_click(navigate_to("/components/islands")),
+                    )
+                    .child(
+                        ui::list_row(strings::gallery_media(cx))
+                            .subtitle(strings::gallery_media_subtitle(cx))
+                            .leading("▶")
+                            .on_click(navigate_to("/components/media")),
                     ),
             )
             .child(

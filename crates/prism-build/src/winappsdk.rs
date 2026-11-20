@@ -15,6 +15,14 @@
 //!
 //! `prismsdk-windows`' build script uses the same cache for its WinUI
 //! bindings.
+//!
+//! Web views (WinUI's `WebView2`) also need the WinRT projection of
+//! WebView2 (`Microsoft.Web.WebView2.Core.dll`, the loader linked in) from
+//! the `Microsoft.Web.WebView2` package the WinUI package depends on: its
+//! metadata for the bindings and its DLL next to the app (the WinUI
+//! package's fragment already registers its classes). The browser engine
+//! itself is the Evergreen WebView2 Runtime, part of Windows 11 (and
+//! installed with Edge on Windows 10).
 
 use std::fmt::Write as _;
 use std::fs;
@@ -26,6 +34,10 @@ pub const VERSION: &str = "2.7.0";
 
 /// Its component packages the backend needs: metadata and runtime.
 pub const PACKAGES: [&str; 3] = ["foundation", "interactiveexperiences", "winui"];
+
+/// The `Microsoft.Web.WebView2` release the WinUI package depends on
+/// (its `.nuspec`), cached as `<sdk>/webview2`.
+pub const WEBVIEW2_VERSION: &str = "1.0.3719.77";
 
 /// The build profile's directory (`<target>[/<triple>]/<profile>`), from a
 /// build script's `OUT_DIR`: where the executables go.
@@ -54,8 +66,21 @@ pub fn sdk_dir() -> PathBuf {
 /// The packages in `sdk`, fetched if missing.
 pub fn ensure(sdk: &Path) {
     for p in PACKAGES {
-        fetch(sdk, p);
+        fetch(
+            sdk,
+            p,
+            &format!("microsoft.windowsappsdk.{p}"),
+            VERSION,
+            "runtimes-framework",
+        );
     }
+    fetch(
+        sdk,
+        "webview2",
+        "microsoft.web.webview2",
+        WEBVIEW2_VERSION,
+        "lib/Microsoft.Web.WebView2.Core.winmd",
+    );
 }
 
 /// `runtimes-framework/<arch>` for the target.
@@ -67,16 +92,16 @@ pub fn arch() -> &'static str {
     }
 }
 
-/// Downloads and unpacks one package into `<sdk>/<name>` unless it is there.
-fn fetch(sdk: &Path, name: &str) {
+/// Downloads and unpacks package `id` (`version`) into `<sdk>/<name>`
+/// unless it is there (`marker` exists in it).
+fn fetch(sdk: &Path, name: &str, id: &str, version: &str, marker: &str) {
     let dest = sdk.join(name);
-    if dest.join("runtimes-framework").is_dir() {
+    if dest.join(marker).exists() {
         return;
     }
     fs::create_dir_all(sdk).expect("Windows App SDK cache directory");
-    let id = format!("microsoft.windowsappsdk.{name}");
-    let url = format!("https://api.nuget.org/v3-flatcontainer/{id}/{VERSION}/{id}.{VERSION}.nupkg");
-    let pkg = sdk.join(format!("{id}.{VERSION}.zip"));
+    let url = format!("https://api.nuget.org/v3-flatcontainer/{id}/{version}/{id}.{version}.nupkg");
+    let pkg = sdk.join(format!("{id}.{version}.zip"));
     println!(
         "cargo:warning=fetching {url} (once, into {})",
         sdk.display()
@@ -90,8 +115,8 @@ fn fetch(sdk: &Path, name: &str) {
     assert!(
         ok,
         "prism: could not download {url} with curl. Download the Windows App SDK packages \
-         ({}) version {VERSION} from nuget.org, unpack each into <dir>/<name>, and set \
-         PRISM_WINAPPSDK_DIR=<dir>.",
+         ({}) version {VERSION} and Microsoft.Web.WebView2 {WEBVIEW2_VERSION} (as webview2) \
+         from nuget.org, unpack each into <dir>/<name>, and set PRISM_WINAPPSDK_DIR=<dir>.",
         PACKAGES.join(", ")
     );
     // Unpacked beside, then renamed: an interrupted build leaves no half
@@ -239,6 +264,14 @@ pub fn deploy(sdk: &Path, dir: &Path) {
             dir,
         );
     }
+    // WebView2's WinRT projection (its loader linked in).
+    copy_tree(
+        &sdk.join("webview2")
+            .join("runtimes")
+            .join(arch())
+            .join("native_uap"),
+        dir,
+    );
     // Unpackaged apps resolve ms-appx:/// through `resources.pri` next to
     // the exe. MSBuild merges the components' PRIs into it (makepri); the
     // controls' one alone is enough for XamlControlsResources.
