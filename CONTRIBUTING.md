@@ -21,8 +21,8 @@ then run `cargo` inside it as the CI does (`.github/workflows/ci.yml`).
 
 ## Windows
 
-There is no native Windows backend yet: there `Application::run` panics
-unless the app is built with the `web` feature. The whole workspace builds,
+The native backend is `crates/prism-windows` (Win32 + Direct2D, see
+[Windows](docs/src/platforms/windows.md)). The whole workspace builds,
 passes clippy and its tests on Windows (the `windows` CI job), with either
 Rust toolchain from [rustup](https://rustup.rs) (`rustup toolchain install 1.99`):
 
@@ -71,6 +71,21 @@ Each `cargo` call syncs first: the files git knows, links followed, and
 nothing else but `target` left on the other side. The header of the script
 lists every command.
 
+`scripts/windows-smoke.sh` runs the counter example there on its six routes
+(`PRISM_APPEARANCE=dark` for dark mode) and checks the screenshots on your
+machine:
+
+```sh
+PRISM_WINDOWS_HOST=windows-pc scripts/windows-smoke.sh target/windows-smoke
+```
+
+The backend's Win32 code type-checks from macOS or Linux too, with
+`rustup target add x86_64-pc-windows-gnu` and
+`cargo clippy -p prismsdk-windows --target x86_64-pc-windows-gnu`; the
+`ring` crate under it needs a C compiler for that target (a MinGW-w64 GCC,
+or `CC_x86_64_pc_windows_gnu=clang` with `--target=x86_64-w64-mingw32` in
+`CFLAGS_x86_64_pc_windows_gnu`).
+
 ### Windows GUI from SSH
 
 Programs started over SSH run in session 0, on a desktop that is never
@@ -81,8 +96,10 @@ that provide UI Automation themselves (WPF, Chrome) show their whole tree and
 can be pressed with `-Invoke`, while controls that are child windows (classic
 Win32 controls, WinForms) do not show at all. An app can still draw its own
 window into an image there (a WinForms window did), so the in-process smoke
-hooks (`PRISM_CLICK`, and `PRISM_SNAPSHOT` when the backend draws the snapshot
-itself) can work over SSH as they do in Linux CI.
+hooks work over SSH as they do in Linux CI: Prism's Windows backend draws
+`PRISM_SNAPSHOT` offscreen (its text fields through `WM_PRINT`) and provides
+UI Automation itself, so `uia-dump.ps1 -Id <pid> -Invoke "+1"` presses the
+counter's button there.
 
 To run in the account's real desktop, `scripts/windows/run-in-session.ps1`
 starts a command there through a scheduled task with an interactive logon

@@ -9,7 +9,7 @@ Write a UI once in Rust (GPUI-style API), ship it as:
 | **iOS** | Real UIKit views (`UIView`, `UILabel`, `UIButton`, `UITextField`), widgets + Dynamic Island | `prism dev ios` (simulator) / `prism run ios --device "My iPhone"` |
 | **Android** | Real Android views (`TextView`, `Button`, `EditText`, `Switch`), home-screen widgets, ongoing notifications | `prism dev android` (emulator or phone) |
 
-Also tvOS, watchOS, visionOS, Linux (GTK 4), Wear OS, Android TV and car screens.
+Also tvOS, watchOS, visionOS, Linux (GTK 4), Windows, Wear OS, Android TV and car screens.
 
 **Documentation: the [Prism book](https://0xtlt.github.io/prismsdk/)** (sources in [`docs/`](docs/src/SUMMARY.md)), and the API reference on docs.rs. Each section below is a summary of a chapter.
 
@@ -151,9 +151,9 @@ The web backend is a library: mount it in Axum (or any server), export hashed st
 
 `prism-core` (elements, reconciler) → patches → `prism-web` or `prism-native` and the native backends. → [Architecture](docs/src/architecture.md)
 
-### Adding a platform (Windows…)
+### Adding a platform
 
-A crate implementing `prism_native::Widgets`, an entry point and one `cfg` line. → [Adding a platform](docs/src/architecture.md#adding-a-platform-windows)
+A crate implementing `prism_native::Widgets`, an entry point and one `cfg` line. → [Adding a platform](docs/src/architecture.md#adding-a-platform)
 
 ## Development
 
@@ -191,11 +191,15 @@ Native GTK 4 widgets placed by prism-native's flexbox; notifications, tray, menu
 
 An APK without Gradle; a small Java host shows real Android views. Phones, tablets, Wear OS, Android TV. → [Android](docs/src/platforms/android.md)
 
+## Windows
+
+One Win32 window drawn with Direct2D and DirectWrite in the Windows 11 look, RichEdit text fields, UI Automation; system DLLs only, MSVC or MinGW. Services and packaging come next. → [Windows](docs/src/platforms/windows.md)
+
 ## Status
 
 Primitives: `div`, `text`, `button`, `text_input` (secure, keyboards, submit), `text_area`, `toggle`, `slider`, `picker`, `date_picker`, `spinner`, `scroll`, `picture`, `shape`, `scene3d`, `VirtualList`, `screen`, `Router` (stacks, tabs, sheets). Component library `prism::ui`. Accessibility on all backends. Light/dark appearance.
 Widgets, Live Activities (Dynamic Island), car screens (CarPlay, Android Auto, Automotive), notifications with actions, remote push (APNs, FCM, Web Push, UnifiedPush) with a server-side sender, background tasks, device APIs (location, motion, photos, camera, haptics, clipboard, share), secure storage, biometrics, Sign in with Apple, OAuth/OIDC sign-in, alerts, context menus, tray and app menus, charts (also in widgets), async tasks, HTTP, storage, i18n/RTL, Dynamic Type, animations, `prism` CLI.
-Platforms: web, macOS, iOS/iPadOS, tvOS, watchOS, visionOS, Linux (GTK 4), Android (phones, tablets, Wear OS, Android TV). Not yet: Windows (the `Widgets` trait and `PlatformServices` are the extension points).
+Platforms: web, macOS, iOS/iPadOS, tvOS, watchOS, visionOS, Linux (GTK 4), Android (phones, tablets, Wear OS, Android TV), Windows (first milestone: see [Windows](docs/src/platforms/windows.md#not-yet)).
 
 ## License
 

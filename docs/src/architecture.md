@@ -43,9 +43,11 @@ use them, so the published crates are complete:
 | `crates/prism-cli/platform/scripts` | bundling, signing and installing (`ios-run.sh`, `macos-app.sh`, `android-run.sh`) | `prism` |
 | `crates/prism-cli/platform/android` | the Java host (`PrismActivity`, `PrismHost`…) and the car service | `prism` (compiled into the APK) |
 
-## Adding a platform (Windows…)
+## Adding a platform
 
 1. New crate `prism-<os>` implementing `prism_native::Widgets` (create/style/measure/place native views).
 2. An entry point that builds a `Runtime`, feeds `runtime.render()` / `runtime.dispatch(event)` into a `NativeRenderer`, and calls `layout()` on resize.
 3. One `cfg` line in `crates/prism/src/lib.rs`.
-4. The smoke hooks (`PRISM_PATH`, `PRISM_CLICK`, `PRISM_SNAPSHOT`, `PRISM_DELAY`) and a script that runs the example on each tab with them, like `scripts/linux-smoke.sh`. For Windows, CONTRIBUTING.md (Windows) has the tools to build, run and inspect a GUI on a remote machine.
+4. The smoke hooks (`PRISM_PATH`, `PRISM_CLICK`, `PRISM_SNAPSHOT`, `PRISM_DELAY`) and a script that runs the example on each tab with them, like `scripts/linux-smoke.sh` or `scripts/windows-smoke.sh` (a remote machine over SSH, see CONTRIBUTING.md › Windows).
+
+`crates/prism-windows` is the newest example of a backend that draws its own views: a retained scene (`scene.rs`, no platform types, tested everywhere) that `Widgets` builds and Direct2D draws, with child windows only for text fields.

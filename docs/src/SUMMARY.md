@@ -46,6 +46,7 @@
 - [visionOS](platforms/visionos.md)
 - [Linux (GTK 4)](platforms/linux.md)
 - [Android](platforms/android.md)
+- [Windows](platforms/windows.md)
 
 # Under the hood
 
