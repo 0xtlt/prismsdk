@@ -151,8 +151,10 @@ opens with the app. `prism_build::link_app()` links them so
 programs, so `cargo run` and `prism run windows` print the app's logs in the
 terminal; a double-clicked debug build opens a console beside its window.
 `PRISM_WINDOWS_SUBSYSTEM=windows` or `console` chooses for any profile. A
-Windows program started from a terminal (`prism run windows --release`)
-still writes its logs there: it inherits the terminal's handles.
+release build started by `prism run windows --release` inherits `prism`'s
+output handles, so its logs still arrive when that output is a pipe or a
+file (CI, SSH, `| tee`); for logs in an interactive console window, run a
+debug build or set `PRISM_WINDOWS_SUBSYSTEM=console`.
 
 ### `prism build windows`
 
