@@ -89,21 +89,29 @@ fn bindings(sdk: &Path, out: &Path) {
     let code = fs::read_to_string(out).expect("bindings");
     // Types the small crates (windows-collections, windows-numerics) do not
     // have: the windows crate has the collections, `src/winui.rs` the
-    // quaternion.
-    let code = code
-        .replace(
+    // quaternion. windows-bindgen formats its output with rustfmt when it
+    // is installed; without it (a minimal toolchain, as in Docker images)
+    // paths read `a:: B`.
+    let mut code = code;
+    for (from, to) in [
+        (
             "windows_collections::IPropertySet",
             "windows::Foundation::Collections::IPropertySet",
-        )
-        .replace(
+        ),
+        (
             "windows_collections::IObservableVector",
             "windows::Foundation::Collections::IObservableVector",
-        )
-        .replace(
+        ),
+        (
             "windows_collections::VectorChangedEventHandler",
             "windows::Foundation::Collections::VectorChangedEventHandler",
-        )
-        .replace("windows_numerics::Quaternion", "crate::winui::Quaternion");
+        ),
+        ("windows_numerics::Quaternion", "crate::winui::Quaternion"),
+    ] {
+        code = code
+            .replace(from, to)
+            .replace(&from.replace("::", ":: "), to);
+    }
     // `include!` takes items: the inner `#![allow(…)]` goes (src/winui.rs
     // has its own).
     let code = match code.strip_prefix("#![allow(") {

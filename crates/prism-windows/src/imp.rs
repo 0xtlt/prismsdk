@@ -634,10 +634,13 @@ pub fn run(config: AppConfig, init: AppInit) {
         log!("WinUI ready after {:.0} ms", since_start());
         let instance = GetModuleHandleW(None).expect("module handle");
         let class = w!("PrismWindow");
+        let (icon, icon_small) = crate::package::class_icons(instance.into());
         let wc = WNDCLASSEXW {
             cbSize: size_of::<WNDCLASSEXW>() as u32,
             lpfnWndProc: Some(wndproc),
             hInstance: instance.into(),
+            hIcon: icon,
+            hIconSm: icon_small,
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
             lpszClassName: class,
             ..Default::default()
@@ -687,9 +690,7 @@ pub fn run(config: AppConfig, init: AppInit) {
             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
         );
 
-        let assets: Option<std::path::PathBuf> = env("PRISM_ASSETS_DIR")
-            .or_else(|| config.assets.clone())
-            .map(Into::into);
+        let assets = crate::package::assets_dir(config.assets.as_deref());
         let data = system::data_dir(&config.title);
         let _ = std::fs::create_dir_all(&data);
         let images = Images::new(prism_native::images::ImageSources {

@@ -33,6 +33,7 @@
 //! | `smoke` | `PRISM_CLICK`, `PRISM_SNAPSHOT`… |
 //! | `capture`, `wic` | `PrintWindow` and WIC: snapshots, pictures |
 //! | `images` | decoding pictures |
+//! | `package` | what a shipped app brings: its icon, its assets |
 //! | `services` | `PlatformServices` |
 //! | `system` | theme, accent, locale, DPI |
 //! | `scene`, `keys`, `fluent` | pure helpers, tested on every host |
@@ -60,6 +61,8 @@ mod keys;
 #[cfg(target_os = "windows")]
 mod outer;
 // The tree's model: no Win32, tested everywhere.
+#[cfg(target_os = "windows")]
+mod package;
 mod scene;
 #[cfg(target_os = "windows")]
 mod services;
