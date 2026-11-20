@@ -215,7 +215,11 @@ precision highp int;
 #ifdef DEPTH_ONLY
 void main() {}
 #else
+// ES needs a default precision for shadow samplers; desktop GLSL 3.30
+// allows default precisions for float and int only (AMD refuses others).
+#ifdef GL_ES
 precision highp sampler2DShadow;
+#endif
 #define MAX_LIGHTS 8
 in vec3 v_world;
 in vec3 v_normal;
