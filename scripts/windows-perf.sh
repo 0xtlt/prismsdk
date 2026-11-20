@@ -99,6 +99,7 @@ for profile in $profiles; do
       exit 1
     }
     "$remote" get "target/windows-perf/$name.png" "$out" >/dev/null 2>&1 || true
+    "$remote" get "target/windows-perf/$name-window.png" "$out" >/dev/null 2>&1 || true
     echo "windows-perf: $name done" >&2
   done
 done

@@ -362,6 +362,10 @@ impl Win {
 
     /// Gives node `id` the keyboard focus (`None`: away from fields).
     pub fn focus_node(&mut self, id: Option<NodeId>) {
+        if let Some(i) = id {
+            // A collapsed control cannot take the focus.
+            crate::defer::reveal(self, i);
+        }
         let control = id
             .and_then(|i| self.views.get(&i))
             .and_then(|v| v.content.control());
@@ -1137,6 +1141,7 @@ impl Widgets for Win {
     }
 
     fn scroll_into_view(&mut self, view: &NodeId) {
+        crate::defer::reveal(self, *view);
         if let Some(e) = self.outer(*view) {
             let _ = e.StartBringIntoView();
         }

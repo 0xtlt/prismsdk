@@ -196,6 +196,22 @@ fn size(scene: &Scene, id: NodeId) -> usize {
     n
 }
 
+/// Node `id` is needed now (focused, scrolled to): it and its ancestors
+/// stop waiting.
+pub fn reveal(w: &Win, id: NodeId) {
+    if DEFERRED.with(|d| d.borrow().is_empty()) {
+        return;
+    }
+    let ids: Vec<NodeId> = std::iter::once(id).chain(w.scene.ancestors(id)).collect();
+    let shown: Vec<NodeId> = DEFERRED.with(|d| {
+        let mut d = d.borrow_mut();
+        ids.into_iter().filter(|i| d.remove(i)).collect()
+    });
+    for i in shown {
+        w.update_visibility(i);
+    }
+}
+
 /// A scroll view moved: what it brings in view shows now.
 pub fn scrolled(w: &Win) {
     if DEFERRED.with(|d| !d.borrow().is_empty()) {
