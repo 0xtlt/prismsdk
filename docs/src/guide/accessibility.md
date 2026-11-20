@@ -2,11 +2,11 @@
 
 Accessibility is built in, not opt-in. The core resolves one description per node (role, label, hint, value, checked, selected, current, disabled, hidden) and each backend maps it to the platform API:
 
-| | Web | iOS | macOS |
-|---|---|---|---|
-| API | ARIA + semantic HTML (`<main>`, `<h1>`, `<button>`, `role=switch`, `tablist`) | `UIAccessibility` traits, labels, values | `NSAccessibility` roles, labels, press action |
-| Keyboard | Tab/Enter/Space on custom buttons, arrow keys in tab bars and radio groups, visible focus | — | Full Keyboard Access, Space/Return, focus ring |
-| Navigation | focus moves to the new screen's title; document title follows | native | window title follows |
+| | Web | iOS | macOS | Windows |
+|---|---|---|---|---|
+| API | ARIA + semantic HTML (`<main>`, `<h1>`, `<button>`, `role=switch`, `tablist`) | `UIAccessibility` traits, labels, values | `NSAccessibility` roles, labels, press action | UI Automation: WinUI's peers for its controls, custom automation peers for drawn views (control type, Toggle, SelectionItem and Value patterns, landmarks, dialogs) |
+| Keyboard | Tab/Enter/Space on custom buttons, arrow keys in tab bars and radio groups, visible focus | — | Full Keyboard Access, Space/Return, focus ring | Tab, Space/Enter on clickable views, focus visuals |
+| Navigation | focus moves to the new screen's title; document title follows | native | window title follows | window title follows |
 
 Defaults are automatic: a clickable `div` becomes a button named after its text ("Try Prism on the web, Done"), inputs use their placeholder, toggles expose their state. Refine with:
 
@@ -42,6 +42,7 @@ div()
 | macOS | `NSAccessibilityRadioButtonRole` with its value, in an `NSAccessibilityRadioGroupRole` |
 | Android | `RadioButton` (checkable, checked) in a `RadioGroup` for TalkBack |
 | Linux | `GTK_ACCESSIBLE_ROLE_RADIO` with the checked state, in a `RADIO_GROUP` |
+| Windows | `RadioButton` with the SelectionItem pattern (selected when checked), in a `Group` |
 
 The same works for `Role::Checkbox` and `Role::Switch` (`accessibility_checked` for their state). Prefer [`radio_group`](forms.md) when its look fits: it is the platform's own control.
 
@@ -56,10 +57,10 @@ div()
     .child(text("Settings"))
 ```
 
-| | Web | iOS, tvOS, visionOS | watchOS | macOS | Android | Linux |
-|---|---|---|---|---|---|---|
-| `current` | `aria-current="page"` on a link, `"true"` otherwise | selected trait | `.isSelected` | `accessibilitySelected` | `View.setSelected` | `GTK_ACCESSIBLE_STATE_SELECTED` |
-| `selected` | `aria-selected` | selected trait | `.isSelected` | `accessibilitySelected` | `View.setSelected` | `GTK_ACCESSIBLE_STATE_SELECTED` |
+| | Web | iOS, tvOS, visionOS | watchOS | macOS | Android | Linux | Windows |
+|---|---|---|---|---|---|---|---|
+| `current` | `aria-current="page"` on a link, `"true"` otherwise | selected trait | `.isSelected` | `accessibilitySelected` | `View.setSelected` | `GTK_ACCESSIBLE_STATE_SELECTED` | SelectionItem's `IsSelected` |
+| `selected` | `aria-selected` | selected trait | `.isSelected` | `accessibilitySelected` | `View.setSelected` | `GTK_ACCESSIBLE_STATE_SELECTED` | SelectionItem's `IsSelected` |
 
 Only the web tells « current page » and « selected » apart; the native platforms have one selected state for both. A checked tab, radio or toggle button also reads as selected (`Accessibility::is_selected`).
 
@@ -79,5 +80,22 @@ text(tab.title.clone()).truncate().tooltip_when_truncated()
 | Web | the `title` attribute | `title` set as the pointer comes over it when `scrollWidth` / `scrollHeight` exceed the box |
 | Linux (GTK) | `gtk_widget_set_tooltip_text` | `query-tooltip`, while the label's layout is ellipsized |
 | Android | `setTooltipText` (a long press, or a mouse hover) | set after each layout while the last line is ellipsized |
+| Windows | `ToolTipService.ToolTip` | none yet |
 
 Screen readers read a tooltip as a description where the platform does (the web's `title`). Touch screens without a pointer show none.
+
+## High contrast
+
+Contrast themes replace an app's colors with a few system colors chosen by
+the user. On the web the browser does it (`forced-colors`); on Windows,
+under a contrast theme (Settings › Accessibility › Contrast themes), Prism
+does it for the views it draws, as WinUI does for its controls: fills
+become the window's color (the button face for a clickable view), strong
+fills (an accent, a badge, a knob) and selected items the highlight, text
+the window text (the highlight text on a highlight, the link color in a
+link, the gray text when disabled), borders the text's color; shadows go,
+pictures keep their colors. Nothing to do in the app; give state to
+assistive technologies (`accessibility_selected`, `accessibility_disabled`)
+and it shows in the theme too. `PRISM_HIGH_CONTRAST=night-sky` (or
+`aquatic`, `desert`, `dusk`) tries a theme on one app without changing the
+PC's.

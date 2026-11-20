@@ -61,9 +61,15 @@ pub struct View {
 
 impl View {
     pub fn new(id: NodeId, kind: NodeKind) -> Result<View> {
-        let outer = Canvas::new()?;
-        let kids = Canvas::new()?;
         let content = controls::create(id, kind)?;
+        // A container stands for its node in UI Automation: its custom
+        // peer gives it the node's role (`peers.rs`).
+        let outer = if content.element().is_none() {
+            crate::peers::canvas(crate::peers::Key::Node(id))?
+        } else {
+            Canvas::new()?
+        };
+        let kids = Canvas::new()?;
         let mut scroll = None;
         if kind == NodeKind::Scroll {
             let sv = ScrollViewer::new()?;

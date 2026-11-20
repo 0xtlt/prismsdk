@@ -6,7 +6,7 @@
 
 use prism_core::{
     Accessibility, Appearance, IdMap, IdSet, Interactions, NodeId, NodeKind, RenderEnvironment,
-    Role, Style,
+    Style,
 };
 use prism_native::{Insets, Viewport, Widgets};
 use windows::Win32::Foundation::HWND;
@@ -21,13 +21,9 @@ use crate::scene::{HEADER, Rect, Scene, TAB_BAR};
 use crate::text::Measurer;
 use crate::view::{Bar, View, scroll_axis};
 use crate::win::log;
-use crate::winui::xaml::Automation::AutomationProperties;
-use crate::winui::xaml::Automation::Peers::{
-    AccessibilityView, AutomationHeadingLevel, AutomationLiveSetting,
-};
-use crate::winui::xaml::Controls::{Canvas, ToolTipService};
+use crate::winui::ui;
+use crate::winui::xaml::Controls::Canvas;
 use crate::winui::xaml::{ElementTheme, FocusState, UIElement, Visibility};
-use crate::winui::{boxed, h, ui};
 use crate::{events, system};
 
 /// The window and its XAML.
@@ -84,7 +80,9 @@ impl Win {
         let system_dark = system::dark_mode();
         let accent = system::accent();
         let root = Canvas::new()?;
-        let app = Canvas::new()?;
+        // Its custom automation peer hides it while a modal panel is open.
+        let app = crate::peers::canvas(crate::peers::Key::Content)?;
+        crate::a11y::set_content(&app);
         let overlays = Canvas::new()?;
         root.Children()?.Append(&app)?;
         root.Children()?.Append(&overlays)?;
@@ -104,7 +102,7 @@ impl Win {
             system_dark,
             appearance: Appearance::System,
             accent,
-            palette: Palette::new(system_dark, accent),
+            palette: crate::a11y::palette(system_dark, accent),
             env: RenderEnvironment {
                 text_scale: 1.,
                 ..Default::default()
@@ -140,6 +138,12 @@ impl Win {
     }
 
     fn theme_root(&mut self) -> Result<()> {
+        // A contrast theme's window color, not Mica (`a11y::palette`).
+        let solid = self.palette.forced.map(|f| crate::winui::brush(f.sys.window));
+        match solid {
+            Some(b) => self.root.SetBackground(&b?)?,
+            None => self.root.SetBackground(None::<&crate::winui::xaml::Media::Brush>)?,
+        }
         self.root.SetRequestedTheme(if self.dark() {
             ElementTheme::Dark
         } else {
@@ -158,7 +162,7 @@ impl Win {
 
     /// The theme changed (system, app, accent): every color again.
     pub fn retheme(&mut self) {
-        self.palette = Palette::new(self.dark(), self.accent);
+        self.palette = crate::a11y::palette(self.dark(), self.accent);
         crate::imp::set_dark_title_bar(self.hwnd, self.dark());
         let _ = self.theme_root();
         let ids: Vec<NodeId> = self.views.keys().copied().collect();
@@ -172,7 +176,7 @@ impl Win {
             if let (Some(n), Some(v)) = (self.scene.get(id), self.views.get(&id))
                 && n.kind == NodeKind::Shape
             {
-                let _ = controls::set_paths(&v.content, &n.paths, &self.palette);
+                let _ = controls::set_paths(&v.content, &n.paths, &self.palette_for(id));
             }
         }
     }
@@ -180,10 +184,11 @@ impl Win {
     /// Applies a node's style to its elements again.
     pub fn restyle(&mut self, id: NodeId) {
         let sticky = self.sticky(id);
+        let pal = self.palette_for(id);
         let (Some(n), Some(v)) = (self.scene.get(id), self.views.get_mut(&id)) else {
             return;
         };
-        if let Err(e) = v.apply_style(n, &self.palette, sticky) {
+        if let Err(e) = v.apply_style(n, &pal, sticky) {
             log!("style of node {id}: {e}");
         }
     }
@@ -309,9 +314,9 @@ impl Win {
                         let _ = events::focus(&e, id);
                     }
                     let _ = events::pressed(&b, id);
-                    // The name and help text go on the button.
+                    // The name, role and states go on the button.
                     if let Some(n) = self.scene.get(id) {
-                        let _ = accessibility(v, &n.a11y);
+                        let _ = crate::a11y::apply(v, id, &n.a11y);
                     }
                 }
                 // Scroll views and leaves: clicked where nothing else is.
@@ -463,7 +468,7 @@ impl Widgets for Win {
         {
             let _ = scroll_axis(sv, style.scroll_axis == prism_core::ScrollAxis::Vertical);
         }
-        self.restyle(id);
+        self.restyle_tree(id);
     }
 
     fn set_text(&mut self, view: &NodeId, text: &str) {
@@ -588,6 +593,7 @@ impl Widgets for Win {
         let parent = self.scene.get(id).and_then(|n| n.parent);
         self.scene.remove(id);
         self.drop_overlay(id);
+        crate::a11y::forget(id);
         if let Some(v) = self.views.remove(&id) {
             // A leaving node (or what it holds) stays until its exit animation ends.
             if !crate::motion::take_ghost(id) {
@@ -661,8 +667,9 @@ impl Widgets for Win {
         n.scroll = (n.scroll.0.min(mx), n.scroll.1.min(my));
         let kind = n.kind;
         let sticky = self.sticky(id);
+        let pal = self.palette_for(id);
         if let (Some(n), Some(v)) = (self.scene.get(id), self.views.get_mut(&id))
-            && let Err(e) = v.place(n, &self.palette, sticky)
+            && let Err(e) = v.place(n, &pal, sticky)
         {
             log!("frame of node {id}: {e}");
         }
@@ -777,15 +784,17 @@ impl Widgets for Win {
         let Some(n) = self.scene.get_mut(id) else {
             return;
         };
-        let enabled_changed = n.a11y.disabled != a11y.disabled;
+        // Under a contrast theme, selection changes the colors too.
+        let enabled_changed = n.a11y.disabled != a11y.disabled
+            || (self.palette.forced.is_some() && n.a11y.is_selected() != a11y.is_selected());
         n.a11y = a11y.clone();
         if let Some(v) = self.views.get(&id)
-            && let Err(e) = accessibility(v, a11y)
+            && let Err(e) = crate::a11y::apply(v, id, a11y)
         {
             log!("accessibility of node {id}: {e}");
         }
         if enabled_changed {
-            self.restyle(id);
+            self.restyle_tree(id);
         }
     }
 
@@ -834,7 +843,7 @@ impl Widgets for Win {
             n.paths = paths.to_vec();
         }
         if let Some(v) = self.views.get(view)
-            && let Err(e) = controls::set_paths(&v.content, paths, &self.palette)
+            && let Err(e) = controls::set_paths(&v.content, paths, &self.palette_for(*view))
         {
             log!("drawing of node {view}: {e}");
         }
@@ -1056,7 +1065,7 @@ impl Widgets for Win {
     fn set_rich_value(&mut self, view: &NodeId, runs: &str) {
         if let (Some(n), Some(v)) = (self.scene.get(*view), self.views.get(view))
             && let Content::Rich(r) = &v.content
-            && let Err(e) = r.set_runs(runs, &n.style, &self.palette)
+            && let Err(e) = r.set_runs(runs, &n.style, &self.palette_for(*view))
         {
             log!("rich input {view}: {e}");
         }
@@ -1210,6 +1219,7 @@ impl Win {
     /// was replaced).
     fn remount_content(&mut self, id: NodeId) {
         let sticky = self.sticky(id);
+        let pal = self.palette_for(id);
         let (Some(n), Some(v)) = (self.scene.get(id), self.views.get_mut(&id)) else {
             return;
         };
@@ -1225,46 +1235,6 @@ impl Win {
             }
         }
         v.frame = Rect::default();
-        let _ = v.place(n, &self.palette, sticky);
+        let _ = v.place(n, &pal, sticky);
     }
-}
-
-/// Prism's accessibility on the node's element: name, help text, heading
-/// level, live region, hidden; WinUI's own automation peers do the rest.
-fn accessibility(v: &View, a: &Accessibility) -> Result<()> {
-    let target: UIElement = match (&v.button, v.content.element()) {
-        (Some(b), _) => b.cast()?,
-        (None, Some(e)) => e,
-        (None, None) => v.outer(),
-    };
-    let name = a.label.clone().unwrap_or_default();
-    AutomationProperties::SetName(&target, &h(&name))?;
-    AutomationProperties::SetHelpText(&target, &h(a.hint.as_deref().unwrap_or("")))?;
-    AutomationProperties::SetHeadingLevel(
-        &target,
-        match a.role {
-            Some(Role::Heading(l)) => AutomationHeadingLevel(l.clamp(1, 9) as i32),
-            _ => AutomationHeadingLevel::None,
-        },
-    )?;
-    AutomationProperties::SetLiveSetting(
-        &target,
-        match a.role {
-            Some(Role::Alert) => AutomationLiveSetting::Assertive,
-            Some(Role::Status) => AutomationLiveSetting::Polite,
-            _ => AutomationLiveSetting::Off,
-        },
-    )?;
-    AutomationProperties::SetAccessibilityView(
-        &target,
-        if a.hidden {
-            AccessibilityView::Raw
-        } else {
-            AccessibilityView::Content
-        },
-    )?;
-    if let Some(prism_core::Tooltip::Text(t)) = &a.tooltip {
-        ToolTipService::SetToolTip(&target, &boxed(t)?)?;
-    }
-    Ok(())
 }

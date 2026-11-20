@@ -359,6 +359,19 @@ fn local_offset() -> f64 {
     -(bias as f64) * 60.
 }
 
+/// Tells window `h` the contrast theme changed, as the system does
+/// (`WM_SETTINGCHANGE`, `SPI_SETHIGHCONTRAST`): its colors are read again.
+pub fn post_contrast_changed(h: HWND) {
+    unsafe {
+        let _ = PostMessageW(
+            Some(h),
+            WM_SETTINGCHANGE,
+            WPARAM(SPI_SETHIGHCONTRAST.0 as usize),
+            LPARAM(0),
+        );
+    }
+}
+
 pub fn set_dark_title_bar(h: HWND, dark: bool) {
     let on = BOOL::from(dark);
     unsafe {
@@ -574,7 +587,10 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 } else {
                     String::new()
                 };
-                if what == "ImmersiveColorSet" || what.is_empty() {
+                // Light or dark, the accent; a contrast theme on or off.
+                let contrast =
+                    wp.0 == SPI_SETHIGHCONTRAST.0 as usize || what == "WindowsThemeElement";
+                if what == "ImmersiveColorSet" || what.is_empty() || contrast {
                     with_state(|s| {
                         let w = &mut s.renderer.widgets;
                         w.system_dark = system::dark_mode();
@@ -585,6 +601,11 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                         commit(s, patches);
                     });
                 }
+                LRESULT(0)
+            }
+            // The system colors changed (a contrast theme's).
+            WM_SYSCOLORCHANGE => {
+                post_contrast_changed(h);
                 LRESULT(0)
             }
             WM_CLOSE => {

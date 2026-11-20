@@ -1,0 +1,129 @@
+{
+  "about": "What a screen reader gets from the counter example on Windows: the UI Automation roles, names and states scripts/windows-a11y.sh checks (scripts/windows/a11y-check.py). The app runs in English (PRISM_LOCALE=en-US). Names are Prism's; WinUI's own words (localized types) depend on the machine's language and are left out.",
+  "cases": [
+    {
+      "name": "home",
+      "path": "/",
+      "has": [
+        {"type": "Button", "name": "+1", "invoke": true},
+        {"type": "Button", "name": "-1", "invoke": true},
+        {"type": "Edit", "name": "New todo"},
+        {"type": "Text", "name": "Todos", "heading": 2},
+        {"type": "Button", "name": "~^Try Prism on the web", "invoke": true},
+        {"type": "ListItem", "name": "Todos", "selected": true},
+        {"type": "ListItem", "name": "Settings", "selected": false}
+      ],
+      "order": [
+        {"name": "-1"},
+        {"name": "+1"},
+        {"type": "Edit", "name": "New todo"},
+        {"type": "Button", "name": "Add"}
+      ],
+      "lacks": [
+        {"type": "Window", "dialog": true}
+      ]
+    },
+    {
+      "name": "focus",
+      "path": "/focus",
+      "has": [
+        {"type": "Group", "name": "Duration"},
+        {"type": "Button", "name": "25 min", "within": {"type": "Group", "name": "Duration"}},
+        {"type": "Button", "name": "Start focus", "invoke": true},
+        {"type": "ListItem", "name": "Focus", "selected": true}
+      ]
+    },
+    {
+      "name": "components",
+      "path": "/components",
+      "has": [
+        {"type": "Hyperlink", "name": "Jump to the search field", "invoke": true},
+        {"type": "CheckBox", "name": "I accept the terms", "toggle": "Off", "invoke": false},
+        {"type": "Button", "name": "Wi-Fi (custom)", "toggle": "On", "invoke": false},
+        {"type": "Slider", "name": "Level", "value": "~%"},
+        {"type": "Button", "name": "Disabled", "disabled": true},
+        {"type": "Group", "name": "Frequency"},
+        {"type": "RadioButton", "within": {"type": "Group", "name": "Frequency"}},
+        {"type": "Group", "name": "Arrow-key pad", "value": "~^\\d+, \\d+$"},
+        {"type": "ProgressBar", "name": "Goal"},
+        {"type": "Button", "name": "Open a sheet", "invoke": true},
+        {"type": "Button", "name": "Delete…", "invoke": true}
+      ],
+      "lacks": [
+        {"type": "Window", "dialog": true}
+      ]
+    },
+    {
+      "name": "media",
+      "path": "/components/media",
+      "has": [
+        {"type": "ListItem", "name": "Components", "selected": true}
+      ]
+    },
+    {
+      "name": "settings",
+      "path": "/settings",
+      "has": [
+        {"type": "Group", "name": "Appearance"},
+        {"type": "Group", "name": "Language"},
+        {"type": "Button", "name": "Blue", "toggle": "On"},
+        {"type": "Button", "name": "Purple", "toggle": "Off"},
+        {"type": "ListItem", "name": "Settings", "selected": true}
+      ]
+    },
+    {
+      "name": "new_todo",
+      "path": "/todos/new",
+      "has": [
+        {"type": "Edit"}
+      ]
+    },
+    {
+      "name": "dialog",
+      "path": "/components",
+      "click": "Delete…",
+      "has": [
+        {"type": "Window", "dialog": true, "name": "Delete this draft?", "count": 1},
+        {"type": "Text", "name": "Delete this draft?", "heading": 3, "within": {"type": "Window", "dialog": true}},
+        {"type": "Button", "name": "Cancel", "within": {"type": "Window", "dialog": true}},
+        {"type": "Button", "name": "Delete", "within": {"type": "Window", "dialog": true}}
+      ],
+      "order": [
+        {"name": "Delete this draft?"},
+        {"type": "Button", "name": "Cancel"},
+        {"type": "Button", "name": "Delete"}
+      ],
+      "lacks": [
+        {"name": "Jump to the search field"},
+        {"name": "Open a sheet"},
+        {"type": "ListItem", "name": "Todos"}
+      ]
+    },
+    {
+      "name": "sheet",
+      "path": "/components",
+      "click": "Open a sheet",
+      "has": [
+        {"type": "Window", "dialog": true, "name": "Pick a picture", "count": 1},
+        {"type": "Button", "name": "Close", "within": {"type": "Window", "dialog": true}}
+      ],
+      "lacks": [
+        {"name": "Jump to the search field"},
+        {"name": "Delete…"}
+      ]
+    },
+    {
+      "name": "popover",
+      "path": "/components",
+      "click": "Filters",
+      "has": [
+        {"type": "Pane", "className": "Flyout"},
+        {"type": "CheckBox", "name": "Email me updates", "within": {"type": "Pane", "className": "Flyout"}},
+        {"type": "Group", "name": "Frequency", "within": {"type": "Pane", "className": "Flyout"}}
+      ],
+      "lacks": [
+        {"type": "Window", "dialog": true}
+      ]
+    }
+  ]
+}

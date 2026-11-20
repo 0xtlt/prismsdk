@@ -22,6 +22,8 @@
 #                          when the WinUI runtime is next to the build)
 #   PRISM_SMOKE_PROFILE    cargo profile (default dev; release builds with --release)
 #   PRISM_SMOKE_NO_SYNC=1  run what the remote copy already has
+#   PRISM_SMOKE_A11Y=1     then check the UI Automation trees too
+#                          (scripts/windows-a11y.sh, into <out-dir>/a11y)
 # The PNG checks need python3.
 set -eu
 
@@ -139,4 +141,9 @@ run detail /todos/new ""
 
 if command -v python3 >/dev/null; then
   check "$out"
+fi
+
+# Roles, names and states for screen readers, on the same build.
+if [ "${PRISM_SMOKE_A11Y:-}" = 1 ]; then
+  PRISM_SMOKE_NO_SYNC=1 PRISM_SMOKE_PROFILE=$profile scripts/windows-a11y.sh "$out/a11y"
 fi

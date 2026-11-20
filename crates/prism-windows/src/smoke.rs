@@ -8,7 +8,9 @@
 //!   types into the text field with that placeholder; `submit:Placeholder`
 //!   presses Enter in it; `menu:Title` opens the context menu of the view
 //!   showing Title; `scroll:600` scrolls the visible scroll views before
-//!   the next steps; `key:Escape` (`Tab`, `Enter`) presses a key; `hover:`,
+//!   the next steps; `key:Escape` (`Tab`, `Enter`) presses a key;
+//!   `contrast:night-sky` switches the contrast theme (`PRISM_HIGH_CONTRAST`'s
+//!   values) through the system's settings message; `hover:`,
 //!   `drag:`, `swipe:` and `wheel:` move the real mouse over a view
 //!   (`inject.rs`).
 //! - `PRISM_SCROLL=600` scrolls the visible scroll views.
@@ -104,6 +106,13 @@ fn steps_then_snapshot(main: HWND, mut steps: Vec<String>) {
 }
 
 fn run_step(step: &str) -> bool {
+    // `contrast:night-sky` (`0`, `1`, a theme): the contrast theme changes
+    // as the app runs, through the system's own message.
+    if let Some(value) = step.strip_prefix("contrast:") {
+        crate::system::override_contrast(value);
+        return with_state(|s| crate::imp::post_contrast_changed(s.renderer.widgets.hwnd))
+            .is_some();
+    }
     // `key:Escape`, `key:Tab`, `key:Enter`: the key, as the keyboard sends
     // it (to the window with the keyboard focus, through the message loop).
     if let Some(name) = step.strip_prefix("key:") {

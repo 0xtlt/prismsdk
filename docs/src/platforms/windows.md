@@ -137,10 +137,47 @@ kinds and services come next (see [Not yet](#not-yet)).
   `on_drop_payload`) find their target with prism-native's `locate_drag`,
   with a see-through preview and autoscroll; files dragged from Explorer
   land on `on_drop_files` targets (copies in `%TEMP%\prism-dropped`).
-- **Accessibility:** WinUI's own UI Automation peers (Button, Edit,
-  CheckBox, Slider, ComboBox, the tab bar's list items…), with Prism's
-  label, hint, heading level, live region (alerts, status) and tooltip as
-  `AutomationProperties`.
+- **Accessibility:** WinUI's own UI Automation peers for its controls
+  (Button, Edit, CheckBox, Slider, ComboBox, the tab bar's list items…);
+  the views Prism draws itself have custom automation peers (`peers.rs`:
+  COM aggregation of `Button`, `Canvas` and their peers, as a C++ or C#
+  app derives from them) with their own role, mapped as WinUI maps its
+  controls and Edge the same ARIA roles (`access.rs`):
+
+  | Prism | UI Automation |
+  |---|---|
+  | `Button` (a clickable view) | `Button`, Invoke; pressed (`accessibility_checked`): Toggle |
+  | `Link` | `Hyperlink`, Invoke |
+  | `Checkbox`, `Switch` | `CheckBox`, `Button` read « toggle switch » (WinUI's words for `ToggleSwitch`, in the user's language); Toggle |
+  | `Tab`, `TabList`, `TabPanel` | `TabItem` (SelectionItem), `Tab`, `Pane` |
+  | `List`, `ListItem` | `List`, `ListItem` (SelectionItem when selected or current) |
+  | `Radio`, `RadioGroup` | `RadioButton` (SelectionItem), `Group` |
+  | `Slider`, `ProgressBar`, `ComboBox` | the same control types; their value through the Value pattern |
+  | `Group`, `Navigation`, `Main`, `Alert` | `Group`; landmarks for `Navigation` and `Main` |
+  | `Heading(n)`, `Text`, `Image` | `Text` with its heading level, `Text`, `Image` |
+  | `Dialog`, a sheet or dialog shown | `Window` with `IsDialog` |
+
+  Selected, current, checked, disabled and value are states the reader
+  reads (and hears change: property-changed events); a container with a
+  role is an element even without a name. A sheet or dialog is a dialog
+  window named by its label (else its first heading), and the rest of the
+  app leaves the UI Automation tree while it is open, so a reader stays
+  inside (Tab already cycles inside); popovers are WinUI flyouts, read as
+  WinUI's own. A status's new value is announced (`RaiseNotificationEvent`,
+  after what the reader is saying; an alert's in its place). Prism's label,
+  hint, heading level, live region and tooltip are `AutomationProperties`.
+- **High contrast:** under a contrast theme (Settings › Accessibility ›
+  Contrast themes) the app's colors give way to the theme's system colors,
+  as WinUI's controls do theirs and as Edge forces a page's (`contrast.rs`):
+  fills become the window's color (a clickable view's, the button face),
+  strong fills (accents, badges, a switch's knob) and selected items the
+  highlight; text is the window text (the highlight text on a highlight,
+  the link color in a link, the button text in a clickable view, the gray
+  text when disabled); borders take the text's color, shadows go; pictures,
+  videos, web pages and 3D scenes keep theirs. The theme is read at start
+  (`SPI_GETHIGHCONTRAST`, `GetSysColor`) and again when it changes
+  (`WM_SETTINGCHANGE`, `WM_SYSCOLORCHANGE`). `PRISM_HIGH_CONTRAST` stands
+  in for the system's setting (below).
 - **Appearance:** light and dark follow the system (`AppsUseLightTheme`) or
   the app (`RequestedTheme` on the XAML root, a dark title bar), with the
   system accent color in the controls; Mica behind what the app does not
@@ -381,6 +418,7 @@ The same as the other backends, in a desktop session:
 | `PRISM_WINDOW` | the window's size, `460x720` |
 | `PRISM_APPEARANCE` | `light` or `dark` in place of the system's appearance |
 | `PRISM_REDUCE_MOTION` | `1` (or `0`) in place of « Animation effects » |
+| `PRISM_HIGH_CONTRAST` | in place of the contrast theme, for this app only: `0` (off), `1` (on, with the system colors as they are), or one of Windows 11's themes by name, with its colors: `aquatic`, `desert`, `dusk`, `night-sky`. `PRISM_CLICK=contrast:dusk` changes it while the app runs, through the system's own settings message |
 | `PRISM_TRACE` | logs the startup phases, and each notification shown |
 | `PRISM_TRAY_MENU` | `<id>`: that tray item's menu opens by itself, as after a click |
 | `PRISM_NOTIFICATIONS_CLEANUP` | `1`: on quit, the app removes its notification registration and its notifications |
@@ -394,13 +432,20 @@ the snapshot.
 machine (`scripts/windows-remote.sh`, see Contributing › Windows), through
 `run-in-session.ps1` when the build has the WinUI runtime next to it, and
 checks the PNGs here. `scripts/windows/uia-dump.ps1 -Invoke "+1"`, run in
-the session, presses the counter's button through UI Automation.
+the session, presses the counter's button through UI Automation; with
+`-Json` it writes the tree with what a screen reader reads of each element
+(role, name, states, value, heading level, live region, dialog, landmark).
+`scripts/windows-a11y.sh` (`PRISM_SMOKE_A11Y=1 scripts/windows-smoke.sh`
+runs it too) opens the counter's six routes, a dialog, a sheet, a popover
+and a contrast theme in the session, dumps each tree and checks the roles,
+names and states of `scripts/windows/a11y-expect.json`
+(`scripts/windows/a11y-check.py`). Narrator is never started: it would
+speak aloud.
 
 ## Not yet
 
 - **Controls:** a rounded clip with only some corners rounded rounds them
-  all but those on one side; dialogs and sheets have no UI Automation
-  dialog role yet.
+  all but those on one side.
 - **Embedded content and input:** a video's request headers
   (`Video::header`) are not sent; a web view does not block form
   submissions in a sandbox without `forms` (WebView2 does not tell them
@@ -422,9 +467,12 @@ the session, presses the counter's button through UI Automation.
   associations, uninstall entry): the zip is a portable app; code signing;
   MSVC, arm64 and x86 builds not run on a PC yet ([Architectures and
   MSVC](#architectures-and-msvc)).
-- **Accessibility:** clickable views are buttons for UI Automation (their
-  own role, a link or a tab, is not mapped yet: that needs custom automation
-  peers); high contrast and Narrator testing.
+- **Accessibility:** checked through UI Automation (`windows-a11y.sh`),
+  not with Narrator listening (it speaks aloud); `PRISM_HIGH_CONTRAST`
+  forces Prism's colors only: WinUI's own controls take their contrast
+  theme from the system alone; `tooltip_when_truncated` shows no tooltip;
+  a view lifted with `z_index` comes later in the focus and reading order
+  than its place in the source.
 - **Performance:** a screen of 650 nodes shows its first frame in about
   1 s (Direct2D: 0.55 s): each node is two or three XAML elements, measured
   through XAML.

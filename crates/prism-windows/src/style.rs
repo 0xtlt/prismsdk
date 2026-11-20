@@ -64,7 +64,7 @@ pub fn background(s: &Style, pal: &Palette, w: f32, h: f32) -> Result<Option<Bru
     {
         return gradient(g, pal, w, h).map(Some);
     }
-    let Some(bg) = s.background.map(|c| pal.resolve(c)) else {
+    let Some(bg) = s.background.map(|c| pal.fill(c)) else {
         return Ok(None);
     };
     if s.backdrop_blur > 0. {
@@ -81,7 +81,7 @@ fn stops(g: &Gradient, pal: &Palette) -> Result<GradientStopCollection> {
     let coll = GradientStopCollection::new()?;
     for s in &g.stops {
         let stop = GradientStop::new()?;
-        stop.SetColor(win_color(pal.resolve(s.color)))?;
+        stop.SetColor(win_color(pal.fill(s.color)))?;
         stop.SetOffset(s.at.clamp(0., 1.) as f64)?;
         coll.Append(&stop)?;
     }
@@ -104,7 +104,7 @@ pub fn gradient(g: &Gradient, pal: &Palette, w: f32, h: f32) -> Result<Brush> {
             let coll = b.GradientStops()?;
             for s in &g.stops {
                 let stop = GradientStop::new()?;
-                stop.SetColor(win_color(pal.resolve(s.color)))?;
+                stop.SetColor(win_color(pal.fill(s.color)))?;
                 stop.SetOffset(s.at.clamp(0., 1.) as f64)?;
                 coll.Append(&stop)?;
             }
@@ -145,7 +145,7 @@ pub fn border(s: &Style, pal: &Palette, text: Color) -> Option<(Color, [f32; 4])
     let sides = s.borders();
     let widths = sides.map(|b| b.width.max(0.));
     let first = sides.iter().find(|b| b.width > 0.)?;
-    let color = first.color.map_or(text, |c| pal.resolve(c));
+    let color = pal.edge(first.color.unwrap_or(text));
     Some((color, widths))
 }
 
@@ -175,7 +175,7 @@ pub fn apply_box(b: &Border, s: &Style, pal: &Palette, text: Color, r: Rect) -> 
 /// A dashed or dotted border, as a stroked `Rectangle`.
 pub fn apply_dash(rect: &Rectangle, s: &Style, pal: &Palette, text: Color, r: Rect) -> Result<()> {
     let w = s.border_width.max(1.);
-    let color = s.border_color.map_or(text, |c| pal.resolve(c));
+    let color = pal.edge(s.border_color.unwrap_or(text));
     rect.SetStroke(&brush(color)?)?;
     rect.SetStrokeThickness(w as f64)?;
     let (on, off) = s.border_style.dash(w).unwrap_or((w * 3., w * 3.));
@@ -309,7 +309,7 @@ impl Shadows {
                 Y: sh.y,
                 Z: 0.,
             })?;
-            l.shadow.SetColor(win_color(pal.resolve(sh.color)))?;
+            l.shadow.SetColor(win_color(pal.shadow(sh.color)))?;
         }
         self.host.SetWidth(r.w as f64)?;
         self.host.SetHeight(r.h as f64)?;
