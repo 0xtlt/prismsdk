@@ -6,8 +6,8 @@
 //! **Registration.** `Register()` gives the unpackaged app an identity for
 //! notifications, per user (`HKCU\Software\Classes\AppUserModelId\…`, and
 //! the COM server a click starts: the executable). It runs the first time
-//! the app notifies or asks about notifications, then at every startup (a
-//! marker in the app's data directory says so), so a click on an earlier
+//! the app notifies or asks about notifications, then a second after every
+//! startup (a marker in the app's data directory says so), so a click on an earlier
 //! notification reaches the running app instead of starting another one;
 //! and when a click launched the app. The app unregisters its COM
 //! server when it quits (`Unregister`), so clicks then start it again;
@@ -76,7 +76,16 @@ pub fn start(data: &std::path::Path) {
     let before = marker.exists();
     MARKER.with(|m| *m.borrow_mut() = Some(marker));
     let clicked = launched_by_click();
-    if !(before || clicked) || !register() || !clicked {
+    if !clicked {
+        // Registering takes 100 ms or more: after the first frame.
+        if before {
+            shell::timer(1000, || {
+                register();
+            });
+        }
+        return;
+    }
+    if !register() {
         return;
     }
     let args = AppInstance::GetCurrent().and_then(|i| i.GetActivatedEventArgs());

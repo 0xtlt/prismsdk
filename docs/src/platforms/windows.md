@@ -106,8 +106,8 @@ kinds and services come next (see [Not yet](#not-yet)).
 unpackaged app an identity for notifications, per user: its display name and
 the COM server a click starts (the executable), under
 `HKCU\Software\Classes\AppUserModelId` and `\CLSID`. It runs the first time
-the app notifies or asks about notifications, then at every startup (a
-marker in the app's data directory), so a click on an earlier notification
+the app notifies or asks about notifications, then a second after every
+startup (a marker in the app's data directory), so a click on an earlier notification
 reaches the running app rather than starting a second one. When the app quits it unregisters its COM server
 (`Unregister`), so a later click starts it again; an uninstaller removes the
 rest (`UnregisterAll`). With `PRISM_NOTIFICATIONS_CLEANUP=1` the app does that
