@@ -58,7 +58,7 @@ the table is the same order for publishing crate by crate.
 | 14 | `prismsdk-android` | core, native, push |
 | 15 | `prismsdk-windows` | core, native, build (build script) |
 | 16 | `prismsdk` | core, ui, http, web, db and the six backends |
-| 17 | `prismsdk-cli` | apple-build |
+| 17 | `prismsdk-cli` | apple-build, build |
 | 18 | `prismsdk-island` | – (islands' WASM side; built for `wasm32-unknown-unknown`) |
 
 Publishing must happen from macOS with Xcode: verifying `prism-macos`,
