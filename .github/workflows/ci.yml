@@ -79,10 +79,11 @@ jobs:
       - name: Production web image
         run: docker build -f docker/web.Dockerfile --build-arg PACKAGE=counter -t counter-web .
 
-  # Windows (MSVC): no native backend yet (`Application::run` panics without
-  # the `web` feature there), but the whole workspace must build, lint and
-  # pass its tests. The repository's symbolic links (LICENSE-*, docker) may
-  # be checked out as small text files on Windows: nothing here reads them.
+  # Windows (MSVC): the whole workspace must build, lint and pass its tests.
+  # The WinUI backend's build script fetches the Windows App SDK packages
+  # from nuget.org (into target/winappsdk, cached with the target). The
+  # repository's symbolic links (LICENSE-*, docker) may be checked out as
+  # small text files on Windows: nothing here reads them.
   windows:
     runs-on: windows-latest
     steps:

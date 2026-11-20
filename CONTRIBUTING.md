@@ -21,15 +21,19 @@ then run `cargo` inside it as the CI does (`.github/workflows/ci.yml`).
 
 ## Windows
 
-The native backend is `crates/prism-windows` (Win32 + Direct2D, see
-[Windows](docs/src/platforms/windows.md)). The whole workspace builds,
-passes clippy and its tests on Windows (the `windows` CI job), with either
-Rust toolchain from [rustup](https://rustup.rs) (`rustup toolchain install 1.99`):
+The native backend is `crates/prism-windows` (WinUI 3 from the Windows App
+SDK, self-contained, see [Windows](docs/src/platforms/windows.md)): its
+build script fetches the SDK's packages from nuget.org once (`curl` and
+`tar`, part of Windows), into `target/winappsdk` or `PRISM_WINAPPSDK_DIR`.
+The whole workspace builds, passes clippy and its tests on Windows (the
+`windows` CI job), with either Rust toolchain from
+[rustup](https://rustup.rs) (`rustup toolchain install 1.99`):
 
 - MSVC (`x86_64-pc-windows-msvc`, rustup's default), with the Visual Studio
   Build Tools ("Desktop development with C++", installed by an administrator);
 - GNU (`x86_64-pc-windows-gnu`), with a MinGW-w64 GCC on `PATH` (WinLibs, for
-  example): no administrator needed.
+  example): no administrator needed. Its `windres` embeds the app's manifest
+  (`prism_build::link_app()`).
 
 **Symbolic links.** Each crate's `LICENSE-APACHE` and `LICENSE-MIT`, and the
 `docker` directory at the root, are symbolic links (so `cargo package` puts
@@ -79,11 +83,18 @@ machine:
 PRISM_WINDOWS_HOST=windows-pc scripts/windows-smoke.sh target/windows-smoke
 ```
 
-The backend's Win32 code type-checks from macOS or Linux too, with
+WinUI renders only in a desktop session (see below): when the build has
+the WinUI runtime next to it, the script starts each run in the SSH user's
+signed-in session through `scripts/windows/run-in-session.ps1`, and fails
+with a clear message when there is none. A backend that draws offscreen
+runs over plain SSH; `PRISM_WINDOWS_SESSION=desktop|ssh` forces either.
+
+The backend type-checks from macOS or Linux too, with
 `rustup target add x86_64-pc-windows-gnu` and
-`cargo clippy -p prismsdk-windows --target x86_64-pc-windows-gnu`; the
-`ring` crate under it needs a C compiler for that target (a MinGW-w64 GCC,
-or `CC_x86_64_pc_windows_gnu=clang` with `--target=x86_64-w64-mingw32` in
+`cargo clippy -p prismsdk-windows --target x86_64-pc-windows-gnu` (the
+build script generates the WinUI bindings on any host); the `ring` crate
+under it needs a C compiler for that target (a MinGW-w64 GCC, or
+`CC_x86_64_pc_windows_gnu=clang` with `--target=x86_64-w64-mingw32` in
 `CFLAGS_x86_64_pc_windows_gnu`).
 
 ### Windows GUI from SSH
@@ -95,11 +106,11 @@ window through its handle. `scripts/windows/uia-dump.ps1` does that: apps
 that provide UI Automation themselves (WPF, Chrome) show their whole tree and
 can be pressed with `-Invoke`, while controls that are child windows (classic
 Win32 controls, WinForms) do not show at all. An app can still draw its own
-window into an image there (a WinForms window did), so the in-process smoke
-hooks work over SSH as they do in Linux CI: Prism's Windows backend draws
-`PRISM_SNAPSHOT` offscreen (its text fields through `WM_PRINT`) and provides
-UI Automation itself, so `uia-dump.ps1 -Id <pid> -Invoke "+1"` presses the
-counter's button there.
+window into an image there (a WinForms window did). WinUI cannot: its XAML
+island needs DWM's compositor, which session 0 does not have
+(`DesktopWindowXamlSource` fails with `E_ACCESSDENIED`), so Prism's Windows
+backend only lays its tree out there and its snapshots and UI Automation
+need the desktop session below.
 
 To run in the account's real desktop, `scripts/windows/run-in-session.ps1`
 starts a command there through a scheduled task with an interactive logon

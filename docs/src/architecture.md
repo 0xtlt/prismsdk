@@ -50,4 +50,4 @@ use them, so the published crates are complete:
 3. One `cfg` line in `crates/prism/src/lib.rs`.
 4. The smoke hooks (`PRISM_PATH`, `PRISM_CLICK`, `PRISM_SNAPSHOT`, `PRISM_DELAY`) and a script that runs the example on each tab with them, like `scripts/linux-smoke.sh` or `scripts/windows-smoke.sh` (a remote machine over SSH, see CONTRIBUTING.md › Windows).
 
-`crates/prism-windows` is the newest example of a backend that draws its own views: a retained scene (`scene.rs`, no platform types, tested everywhere) that `Widgets` builds and Direct2D draws, with child windows only for text fields.
+`crates/prism-windows` is the newest example: real WinUI 3 controls placed at prism-native's frames in XAML `Canvas`es, with a pure model of the tree beside them (`scene.rs`, no platform types, tested everywhere) for the pages shown and the smoke hooks' label search.

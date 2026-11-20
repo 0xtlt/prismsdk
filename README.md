@@ -193,7 +193,7 @@ An APK without Gradle; a small Java host shows real Android views. Phones, table
 
 ## Windows
 
-One Win32 window drawn with Direct2D and DirectWrite in the Windows 11 look, RichEdit text fields, UI Automation; system DLLs only, MSVC or MinGW. Services and packaging come next. → [Windows](docs/src/platforms/windows.md)
+Real WinUI 3 controls (Windows App SDK, self-contained: its runtime goes next to the app) in a Win32 window, laid out by prism-native; UI Automation from WinUI; MSVC or MinGW. Services and packaging come next. → [Windows](docs/src/platforms/windows.md)
 
 ## Status
 
