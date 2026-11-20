@@ -25,6 +25,7 @@ prism-ios = { package = "prismsdk-ios", path = "crates/prism-ios", version = "0.
 prism-watchos = { package = "prismsdk-watchos", path = "crates/prism-watchos", version = "0.1.0" }
 prism-linux = { package = "prismsdk-linux", path = "crates/prism-linux", version = "0.1.0" }
 prism-android = { package = "prismsdk-android", path = "crates/prism-android", version = "0.1.0" }
+prism-windows = { package = "prismsdk-windows", path = "crates/prism-windows", version = "0.1.0" }
 prism-ui = { package = "prismsdk-ui", path = "crates/prism-ui", version = "0.1.0" }
 prism-http = { package = "prismsdk-http", path = "crates/prism-http", version = "0.1.0" }
 prism-apple-build = { package = "prismsdk-apple-build", path = "crates/prism-apple-build", version = "0.1.0" }
