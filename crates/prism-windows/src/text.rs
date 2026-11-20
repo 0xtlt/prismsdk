@@ -274,13 +274,19 @@ pub struct Measurer {
     paragraph: RefCell<Option<Paragraph>>,
     /// Sizes by text and width limit (labels of buttons, pickers…).
     sizes: RefCell<HashMap<String, (f32, f32)>>,
-    /// A node's sizes by width limit (quarter DIPs), dropped when its text
-    /// or style changes.
-    cache: HashMap<NodeId, (StyledText, Vec<Sized>)>,
+    /// Each text node's sizes, kept while its text and style stay the
+    /// same (a restyle that changes neither measures nothing).
+    cache: HashMap<NodeId, Measured>,
 }
 
-/// A size measured within a width limit (quarter DIPs).
-type Sized = (Option<u32>, (f32, f32));
+/// What a node's text measured: on one line, at its narrowest, and within
+/// a few width limits (quarter DIPs).
+struct Measured {
+    text: StyledText,
+    natural: Option<(f32, f32)>,
+    min: Option<f32>,
+    within: Vec<(u32, (f32, f32))>,
+}
 
 impl Measurer {
     pub fn new() -> Result<Measurer> {
@@ -296,28 +302,63 @@ impl Measurer {
         self.cache.remove(&id);
     }
 
-    /// The size of node `id`'s text `st` within `max_width`.
+    fn entry(&mut self, id: NodeId, st: &StyledText) -> &mut Measured {
+        let m = self.cache.entry(id).or_insert_with(|| Measured {
+            text: st.clone(),
+            natural: None,
+            min: None,
+            within: Vec::new(),
+        });
+        if m.text != *st {
+            *m = Measured {
+                text: st.clone(),
+                natural: None,
+                min: None,
+                within: Vec::new(),
+            };
+        }
+        m
+    }
+
+    /// The size of node `id`'s text `st` within `max_width`. A text that
+    /// fits on its lines (its natural width is within the limit) is not
+    /// laid out again: it would not wrap.
     pub fn node(&mut self, id: NodeId, st: &StyledText, max_width: Option<f32>) -> (f32, f32) {
-        let key = max_width.map(|w| (w * 4.).round().max(0.) as u32);
-        if let Some((text, sizes)) = self.cache.get(&id)
-            && text == st
-            && let Some((_, size)) = sizes.iter().find(|(k, _)| *k == key)
-        {
+        let natural = match self.entry(id, st).natural {
+            Some(n) => n,
+            None => {
+                let n = self.measure_uncached(st, None);
+                self.entry(id, st).natural = Some(n);
+                n
+            }
+        };
+        let Some(w) = max_width else {
+            return natural;
+        };
+        if w >= natural.0 {
+            return natural;
+        }
+        let key = (w * 4.).round().max(0.) as u32;
+        if let Some((_, size)) = self.entry(id, st).within.iter().find(|(k, _)| *k == key) {
             return *size;
         }
-        let size = self.measure(st, max_width);
-        let entry = self
-            .cache
-            .entry(id)
-            .or_insert_with(|| (st.clone(), Vec::new()));
-        if entry.0 != *st {
-            *entry = (st.clone(), Vec::new());
+        let size = self.measure_uncached(st, Some(w));
+        let m = self.entry(id, st);
+        if m.within.len() >= 4 {
+            m.within.remove(0);
         }
-        if entry.1.len() >= 4 {
-            entry.1.remove(0);
-        }
-        entry.1.push((key, size));
+        m.within.push((key, size));
         size
+    }
+
+    /// The narrowest node `id`'s text `st` can be: its longest word.
+    pub fn node_min(&mut self, id: NodeId, st: &StyledText) -> f32 {
+        if let Some(min) = self.entry(id, st).min {
+            return min;
+        }
+        let min = self.min_width(st);
+        self.entry(id, st).min = Some(min);
+        min
     }
 
     /// The scratch TextBlock showing `st` (no colors: not drawn).
@@ -336,16 +377,21 @@ impl Measurer {
         if let Some(size) = self.sizes.borrow().get(&key) {
             return *size;
         }
-        if self.load(st).is_err() {
-            return (0., 0.);
-        }
-        let size = self.desired(max_width.unwrap_or(f32::INFINITY));
+        let size = self.measure_uncached(st, max_width);
         let mut sizes = self.sizes.borrow_mut();
         if sizes.len() > 4096 {
             sizes.clear();
         }
         sizes.insert(key, size);
         size
+    }
+
+    /// `st` laid out by XAML within `max_width`.
+    fn measure_uncached(&self, st: &StyledText, max_width: Option<f32>) -> (f32, f32) {
+        if self.load(st).is_err() {
+            return (0., 0.);
+        }
+        self.desired(max_width.unwrap_or(f32::INFINITY))
     }
 
     fn desired(&self, width: f32) -> (f32, f32) {
@@ -360,14 +406,21 @@ impl Measurer {
     }
 
     /// The narrowest the text can be: its longest word.
-    pub fn min_width(&self, st: &StyledText) -> f32 {
+    fn min_width(&self, st: &StyledText) -> f32 {
         if self.load(st).is_err() {
             return 0.;
         }
         let _ = self.tb.SetTextWrapping(TextWrapping::WrapWholeWords);
-        // The wrapping changed behind the cached settings.
-        *self.paragraph.borrow_mut() = None;
-        self.desired(0.).0
+        let w = self.desired(0.).0;
+        // Back to the cached settings' wrapping.
+        if let Some(p) = self.paragraph.borrow().as_ref() {
+            let _ = self.tb.SetTextWrapping(if p.no_wrap {
+                TextWrapping::NoWrap
+            } else {
+                TextWrapping::Wrap
+            });
+        }
+        w
     }
 
     /// Distance from the top to the first baseline of `st` at `width`.

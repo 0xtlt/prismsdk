@@ -460,7 +460,10 @@ impl Widgets for Win {
         };
         let axis = n.style.scroll_axis != style.scroll_axis;
         n.style = style.clone();
-        self.measurer.forget(id);
+        if !matches!(n.kind, NodeKind::Text | NodeKind::Timer) {
+            // A text's sizes stay while its text and font do (`Measurer`).
+            self.measurer.forget(id);
+        }
         if (axis || n.kind == NodeKind::Scroll)
             && let Some(sv) = self.views.get(&id).and_then(|v| v.scroll.as_ref())
         {
@@ -648,7 +651,7 @@ impl Widgets for Win {
             if st.no_wrap || st.max_lines.is_some() {
                 return 0.;
             }
-            return self.measurer.min_width(&st);
+            return self.measurer.node_min(id, &st);
         }
         self.measure(view, None).0
     }
