@@ -25,7 +25,7 @@ use crate::winui::xaml::Automation::AutomationProperties;
 use crate::winui::xaml::Automation::Peers::{
     AccessibilityView, AutomationHeadingLevel, AutomationLiveSetting,
 };
-use crate::winui::xaml::Controls::{Border, Canvas, ToolTipService};
+use crate::winui::xaml::Controls::{Canvas, ToolTipService};
 use crate::winui::xaml::{ElementTheme, FocusState, UIElement, Visibility};
 use crate::winui::{boxed, h, ui};
 use crate::{events, system};
@@ -71,10 +71,9 @@ pub struct Win {
     parents: IdMap<NodeId, NodeId>,
     /// Where each overlay was when its content was laid out (the content's
     /// frames are relative to it).
-    overlay_origins: IdMap<NodeId, (f32, f32)>,
-    /// The backdrop behind each sheet or dialog (dimmed, closes on a tap)
-    /// and the panel under its content.
-    scrims: IdMap<NodeId, (Border, Border)>,
+    pub overlay_origins: IdMap<NodeId, (f32, f32)>,
+    /// Each overlay's panel or flyout (`overlay.rs`).
+    pub layers: IdMap<NodeId, crate::overlay::Overlay>,
     /// Nodes with events already wired: clicks, hover and press.
     clicks: IdSet<NodeId>,
     hovers: IdSet<NodeId>,
@@ -120,7 +119,7 @@ impl Win {
             bars: IdSet::default(),
             parents: IdMap::default(),
             overlay_origins: IdMap::default(),
-            scrims: IdMap::default(),
+            layers: IdMap::default(),
             clicks: IdSet::default(),
             hovers: IdSet::default(),
         };
@@ -270,85 +269,6 @@ impl Win {
             if let (Some(n), Some(v)) = (self.scene.get(id), self.views.get(&id)) {
                 let r = Rect::new(0., 0., n.frame.w, n.frame.h);
                 let _ = crate::style::apply_transform(&v.outer, &n.style, r, s);
-            }
-        }
-    }
-
-    /// Open overlays' content above the window, at their window position.
-    fn place_overlays(&self) {
-        let open = self.scene.open_overlays();
-        for (id, n) in self.scene.nodes.iter() {
-            if n.kind != NodeKind::Overlay {
-                continue;
-            }
-            let Some(v) = self.views.get(id) else {
-                continue;
-            };
-            let on = open.contains(id);
-            let shown = |on: bool| {
-                if on {
-                    Visibility::Visible
-                } else {
-                    Visibility::Collapsed
-                }
-            };
-            let _ = v.kids.SetVisibility(shown(on));
-            if let Some((scrim, panel)) = self.scrims.get(id) {
-                // Sheets and dialogs dim the window (unless the backdrop is
-                // clear) and close on a tap outside; popovers do neither.
-                let config = prism_core::controls::OverlayConfig::decode(&n.config);
-                let modal = !matches!(config.kind, prism_core::OverlayKind::Popover);
-                let _ = scrim.SetVisibility(shown(on && modal));
-                if on && modal {
-                    let clear =
-                        matches!(config.backdrop, Some(prism_core::controls::Backdrop::Clear));
-                    let a = match (clear, self.palette.dark) {
-                        (true, _) => 0.,
-                        (false, true) => 0.45,
-                        (false, false) => 0.3,
-                    };
-                    let _ = crate::winui::brush(prism_core::Color::BLACK.with_alpha(a))
-                        .and_then(|b| scrim.SetBackground(&b));
-                    let _ = scrim.SetWidth(self.size.0 as f64);
-                    let _ = scrim.SetHeight(self.size.1 as f64);
-                }
-                // The panel the content sits on (a bare dialog has none).
-                let content = n.children.first().and_then(|c| self.scene.get(*c));
-                let panel_on = on && !config.bare && content.is_some();
-                let _ = panel.SetVisibility(shown(panel_on));
-                if let (true, Some(c)) = (panel_on, content) {
-                    let (ox, oy) = self.overlay_origins.get(id).copied().unwrap_or_default();
-                    let pal = &self.palette;
-                    let f = c.frame;
-                    let r = 8.;
-                    let sheet = config.kind == prism_core::OverlayKind::Sheet;
-                    let _ = (|| -> Result<()> {
-                        let e = ui(panel)?;
-                        Canvas::SetLeft(&e, (ox + f.x) as f64)?;
-                        Canvas::SetTop(&e, (oy + f.y) as f64)?;
-                        panel.SetWidth(f.w.max(0.) as f64)?;
-                        panel.SetHeight(f.h.max(0.) as f64)?;
-                        panel.SetBackground(&crate::winui::brush(pal.layer)?)?;
-                        panel.SetBorderBrush(&crate::winui::brush(pal.stroke_secondary)?)?;
-                        panel.SetBorderThickness(crate::winui::uniform(1.))?;
-                        panel.SetCornerRadius(if sheet {
-                            crate::winui::radius(r, r, 0., 0.)
-                        } else {
-                            crate::winui::radius(r, r, r, r)
-                        })
-                    })();
-                }
-            }
-            if on {
-                let (x, y) = self
-                    .overlay_origins
-                    .get(id)
-                    .copied()
-                    .unwrap_or_else(|| self.scene.origin(*id));
-                if let Ok(e) = ui(&v.kids) {
-                    let _ = Canvas::SetLeft(&e, x as f64);
-                    let _ = Canvas::SetTop(&e, y as f64);
-                }
             }
         }
     }
@@ -509,22 +429,13 @@ impl Widgets for Win {
                 {
                     let _ = events::focus(&e, id);
                 }
-                if kind == NodeKind::Overlay {
-                    let _ = v.kids.SetVisibility(Visibility::Collapsed);
-                    if let Ok(coll) = self.overlays.Children() {
-                        if let (Ok(scrim), Ok(panel)) = (events::scrim(id), Border::new()) {
-                            let _ = panel.SetVisibility(Visibility::Collapsed);
-                            let _ = coll.Append(&scrim);
-                            let _ = coll.Append(&panel);
-                            self.scrims.insert(id, (scrim, panel));
-                        }
-                        let _ = coll.Append(&v.kids);
-                    }
-                }
                 if matches!(kind, NodeKind::Scroll | NodeKind::Stack | NodeKind::Tabs) {
                     self.bars.insert(id);
                 }
                 self.views.insert(id, v);
+                if kind == NodeKind::Overlay {
+                    self.new_overlay(id);
+                }
             }
             Err(e) => log!("node {id} ({kind:?}): {e}"),
         }
@@ -533,6 +444,8 @@ impl Widgets for Win {
 
     fn set_style(&mut self, view: &NodeId, style: &Style) {
         let id = *view;
+        // Shown at once: a running animation stops.
+        crate::motion::settle(id);
         let Some(n) = self.scene.get_mut(id) else {
             return;
         };
@@ -607,6 +520,8 @@ impl Widgets for Win {
 
     fn set_children(&mut self, parent: &NodeId, children: &[NodeId]) {
         let id = *parent;
+        // A closing panel keeps its content while it animates out.
+        self.overlay_children(id, children);
         self.scene.set_children(id, children);
         let list: Vec<(NodeId, UIElement)> = children
             .iter()
@@ -664,19 +579,11 @@ impl Widgets for Win {
         let id = *view;
         let parent = self.scene.get(id).and_then(|n| n.parent);
         self.scene.remove(id);
-        if let Some((scrim, panel)) = self.scrims.remove(&id) {
-            for b in [scrim, panel] {
-                if let Ok(e) = ui(&b) {
-                    let _ = crate::view::detach(&e);
-                }
-            }
-        }
+        self.drop_overlay(id);
         if let Some(v) = self.views.remove(&id) {
-            let _ = crate::view::detach(&v.outer());
-            if v.kind == NodeKind::Overlay
-                && let Ok(e) = ui(&v.kids)
-            {
-                let _ = crate::view::detach(&e);
+            // A leaving node (or what it holds) stays until its exit animation ends.
+            if !crate::motion::take_ghost(id) {
+                let _ = crate::view::detach(&v.outer());
             }
         }
         if let Some(p) = self
@@ -693,6 +600,7 @@ impl Widgets for Win {
         self.clicks.remove(&id);
         self.hovers.remove(&id);
         self.overlay_origins.remove(&id);
+        crate::motion::forget(id);
         if self.focus == Some(id) {
             self.focus = None;
         }
@@ -735,6 +643,7 @@ impl Widgets for Win {
         if n.frame == frame {
             return;
         }
+        crate::motion::stop_frame(id);
         let resized = (n.frame.w, n.frame.h) != (w, h);
         n.frame = frame;
         let (mx, my) = n.max_scroll();
@@ -813,13 +722,14 @@ impl Widgets for Win {
                 (dw, (h - 80.).max(160.), (w - dw) / 2., 40.)
             }
             OverlayKind::Sheet => {
-                let sw = w.min(560.);
+                let sw = (w - 48.).clamp(200., 560.).min(w);
                 let sh = if config.medium {
                     (h * 0.5).max(200.)
                 } else {
                     (h - 48.).max(200.)
                 };
-                (sw, sh, (w - sw) / 2., h - sh)
+                // Windows has no sheet: a large dialog, centered.
+                (sw, sh, (w - sw) / 2., (h - sh) / 2.)
             }
             OverlayKind::Keyboard => (w, 0., 0., h),
         };
@@ -1157,6 +1067,43 @@ impl Widgets for Win {
     fn set_layers(&mut self, layers: &[NodeId]) {
         self.scene.layers = layers.to_vec();
         self.mount();
+    }
+
+    // Animations: `motion.rs`.
+
+    fn set_frame_animated(
+        &mut self,
+        view: &NodeId,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        t: prism_core::Transition,
+    ) {
+        self.frame_animated(*view, Rect::new(x, y, w, h), t);
+    }
+
+    fn set_style_animated(&mut self, view: &NodeId, style: &Style, t: prism_core::Transition) {
+        self.style_animated(*view, style, t);
+    }
+
+    fn animate_exit(
+        &mut self,
+        parent: &NodeId,
+        view: &NodeId,
+        to: &Style,
+        t: prism_core::Transition,
+    ) {
+        self.exit_animated(*parent, *view, to, t);
+    }
+
+    fn set_repeat(
+        &mut self,
+        view: &NodeId,
+        style: &Style,
+        repeat: Option<(prism_core::Pose, prism_core::Transition)>,
+    ) {
+        self.repeat_style(*view, style, repeat);
     }
 }
 

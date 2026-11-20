@@ -69,8 +69,12 @@ pub fn accent() -> Accent {
     }
 }
 
-/// « Animation effects » off in Settings → Accessibility.
+/// « Animation effects » off in Settings → Accessibility (`PRISM_REDUCE_MOTION=1`
+/// or `0` in its place, for this app only).
 pub fn reduce_motion() -> bool {
+    if let Some(v) = crate::win::env("PRISM_REDUCE_MOTION") {
+        return v == "1";
+    }
     let mut on = BOOL(1);
     let ok = unsafe {
         SystemParametersInfoW(

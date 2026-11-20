@@ -7,7 +7,8 @@
 //!   Automation peer, like a screen reader would. `fill:Placeholder=text`
 //!   types into the text field with that placeholder; `submit:Placeholder`
 //!   presses Enter in it; `menu:Title` opens the context menu of the view
-//!   showing Title.
+//!   showing Title; `scroll:600` scrolls the visible scroll views before
+//!   the next steps; `key:Escape` (`Tab`, `Enter`) presses a key.
 //! - `PRISM_SCROLL=600` scrolls the visible scroll views.
 //! - `PRISM_SNAPSHOT=out.png` then saves the window's XAML, rendered by
 //!   `RenderTargetBitmap`, and what DWM shows of the window
@@ -61,28 +62,36 @@ pub fn automation(main: HWND) {
         let _ = KillTimer(Some(main), TIMER_AUTOMATION);
     }
     let clicks = env("PRISM_CLICK").unwrap_or_default();
-    for step in clicks.split('|').filter(|s| !s.is_empty()) {
-        let found = run_step(step);
+    let steps: Vec<String> = clicks
+        .split('|')
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect();
+    steps_then_snapshot(main, steps);
+}
+
+/// Runs `steps`, then `PRISM_SCROLL` and the snapshot's timer. After a
+/// `scroll:` or a `key:` step the next ones wait for XAML to scroll, or
+/// for the key to arrive.
+fn steps_then_snapshot(main: HWND, mut steps: Vec<String>) {
+    while !steps.is_empty() {
+        let step = steps.remove(0);
+        let found = run_step(&step);
         if !found {
             eprintln!("prism-windows: PRISM_CLICK: nothing labelled {step:?}");
         }
         // Each step sees what the previous one did.
         drain();
+        if (step.starts_with("scroll:") || step.starts_with("key:")) && !steps.is_empty() {
+            crate::motion::after(
+                std::time::Duration::from_millis(400),
+                Box::new(move || steps_then_snapshot(main, steps)),
+            );
+            return;
+        }
     }
     if let Some(y) = env("PRISM_SCROLL").and_then(|y| y.parse::<f32>().ok()) {
-        with_state(|s| {
-            let w = &mut s.renderer.widgets;
-            let ids: Vec<_> = w
-                .scene
-                .shown_in_order()
-                .into_iter()
-                .filter(|&id| w.scene.get(id).is_some_and(|n| n.scrolls(true)))
-                .collect();
-            for id in ids {
-                s.renderer.widgets.scroll_view_to(id, 0., y, false);
-            }
-            s.renderer.widgets.flush();
-        });
+        scroll(y);
     }
     if env("PRISM_SNAPSHOT").is_some() {
         let after = env_secs("PRISM_AFTER", 0.7);
@@ -93,6 +102,19 @@ pub fn automation(main: HWND) {
 }
 
 fn run_step(step: &str) -> bool {
+    // `key:Escape`, `key:Tab`, `key:Enter`: the key, as the keyboard sends
+    // it (to the window with the keyboard focus, through the message loop).
+    if let Some(name) = step.strip_prefix("key:") {
+        return press(name);
+    }
+    // `scroll:600`: scrolls first (a popover then opens on its anchor in view).
+    if let Some(y) = step
+        .strip_prefix("scroll:")
+        .and_then(|y| y.parse::<f32>().ok())
+    {
+        scroll(y);
+        return true;
+    }
     if let Some(title) = step.strip_prefix("menu:") {
         let found = with_state(|s| {
             let w = &s.renderer.widgets;
@@ -142,6 +164,62 @@ fn run_step(step: &str) -> bool {
             None => false,
         }
     }) == Some(true)
+}
+
+/// Posts a key press and release to the window with the keyboard focus.
+fn press(name: &str) -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, VK_ESCAPE, VK_RETURN, VK_TAB};
+    use windows::Win32::UI::WindowsAndMessaging::{WM_KEYDOWN, WM_KEYUP};
+    let vk = match name {
+        "Escape" => VK_ESCAPE,
+        "Tab" => VK_TAB,
+        "Enter" => VK_RETURN,
+        _ => return false,
+    };
+    // The window with the keyboard focus, else the island's (the app is
+    // not in the foreground).
+    let mut target = unsafe { GetFocus() };
+    if target.is_invalid() {
+        use windows::Win32::UI::WindowsAndMessaging::{GW_CHILD, GetWindow};
+        target = unsafe { GetWindow(crate::imp::main_hwnd(), GW_CHILD) }.unwrap_or_default();
+    }
+    if target.is_invalid() {
+        return false;
+    }
+    let scan = unsafe {
+        windows::Win32::UI::Input::KeyboardAndMouse::MapVirtualKeyW(
+            vk.0 as u32,
+            windows::Win32::UI::Input::KeyboardAndMouse::MAPVK_VK_TO_VSC,
+        )
+    } as isize;
+    unsafe {
+        let _ = PostMessageW(
+            Some(target),
+            WM_KEYDOWN,
+            WPARAM(vk.0 as usize),
+            LPARAM(1 | (scan << 16)),
+        );
+        let up = 1 | (scan << 16) | (1 << 30) | (1 << 31);
+        let _ = PostMessageW(Some(target), WM_KEYUP, WPARAM(vk.0 as usize), LPARAM(up));
+    }
+    true
+}
+
+/// Scrolls the visible scroll views to `y`.
+fn scroll(y: f32) {
+    with_state(|s| {
+        let w = &mut s.renderer.widgets;
+        let ids: Vec<_> = w
+            .scene
+            .shown_in_order()
+            .into_iter()
+            .filter(|&id| w.scene.get(id).is_some_and(|n| n.scrolls(true)))
+            .collect();
+        for id in ids {
+            s.renderer.widgets.scroll_view_to(id, 0., y, false);
+        }
+        s.renderer.widgets.flush();
+    });
 }
 
 /// Presses what `PRISM_CLICK` found.
