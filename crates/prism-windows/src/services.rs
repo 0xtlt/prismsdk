@@ -80,6 +80,11 @@ impl PlatformServices for WinServices {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             clipboard: true,
+            // WebView2 (`web.rs`), Explorer drops and drags between views
+            // (`pointer.rs`).
+            web_view: true,
+            drop_files: true,
+            drag_and_drop: true,
             ..Default::default()
         }
     }

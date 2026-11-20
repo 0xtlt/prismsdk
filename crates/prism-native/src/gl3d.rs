@@ -800,10 +800,7 @@ impl Gpu {
                 if data.indices.is_empty() {
                     // A blob that does not decode.
                     if self.reported.insert(d.mesh_key.to_string()) {
-                        eprintln!(
-                            "prism: 3D scene: mesh {} has no triangles",
-                            d.mesh_key
-                        );
+                        eprintln!("prism: 3D scene: mesh {} has no triangles", d.mesh_key);
                     }
                     return None;
                 }

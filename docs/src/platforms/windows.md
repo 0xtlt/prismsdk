@@ -60,11 +60,53 @@ kinds and services come next (see [Not yet](#not-yet)).
   backend reports edits (`Typed` tells the app's echo from the user's
   typing), Enter (`on_submit`), the selection (`on_select`) and focus
   changes.
+- **Rich inputs** (`rich_input`) are `RichEditBox`es: each run's weight,
+  italic, underline (single, thick, double, dotted, dashed),
+  strikethrough, colors, background, font and size are RichEdit character
+  formats, applied in place when the app's runs hold the text shown (the
+  echo of typing: caret and undo untouched). Edits reach the app as plain
+  text, like on macOS; Return submits, Shift+Return breaks the line,
+  pastes are plain text; a chip is its object character, highlighted.
+- **Links in text** are `Hyperlink`s in the `TextBlock`: Tab reaches them,
+  Enter or a click reports the link, UI Automation sees links; they keep
+  the run's own color and underline.
+- **Web views** are WinUI's `WebView2`, the Chromium engine of the
+  Evergreen WebView2 Runtime (part of Windows 11; with Edge on Windows 10).
+  The app's environment keeps its data in `%LOCALAPPDATA%\<app>\WebView2`.
+  As on Apple platforms and Android, the page posts with
+  `prismHost.postMessage(JSON.stringify(value))` (main frame only), gets
+  the app's messages as `message` events on `window`, and only the allowed
+  origins are heard and posted to; a link to another origin, and a new
+  window when the sandbox allows popups, open in the default browser. A
+  sandbox without `scripts` turns JavaScript off; one without
+  `same-origin` browses InPrivate. `on_load` hears each loaded page.
+- **Videos** are `MediaPlayerElement`s with the transport controls
+  (play, scrubber, volume, full window), a poster, autoplay, looping and
+  muted; their height follows the video's ratio once it opens;
+  `on_ended` hears the end.
+- **3D scenes** are drawn by prism-native's OpenGL renderer (the GTK
+  backend's: `prism_native::gl3d`) in a WGL OpenGL 3.3 core context of the
+  app's, shared by every scene, and shown by an `Image`: WinUI composes
+  with DirectX, so each frame is read back into a `WriteableBitmap`. Drag
+  to turn (right or Shift drag: pan), the wheel zooms, a click taps
+  (`SceneTapEvent`); frames are drawn while something moves, none at
+  rest. Textures decode with WIC off the UI thread.
 - **Input:** XAML's: pointer, touch, pen, wheel and touchpads (with
   `ScrollViewer`'s inertia), keyboard focus with Tab, access keys. Key
   presses also go to Prism's key listeners first (`on_key_down`,
   `consume_keys`). Context menus (`set_menu`) and pop-up menus
-  (`show_menu`) are `MenuFlyout`s.
+  (`show_menu`) are `MenuFlyout`s. Pointer events reach Prism's
+  listeners: hover and moves (`on_pointer_*`), drags with any button past
+  the system's drag distance (a touch on a node that drags after a long
+  press waits for it; the view captures the pointer, so a clickable view
+  does not click and a scroll view stops panning), the wheel and
+  precision touchpads (`on_wheel`), middle, back and forward clicks
+  (`on_aux_click`), quick horizontal flicks (`on_swipe_*`, any pointer:
+  `SwipeControl` reveals items under touch only and has no place for
+  Prism's direction-only swipes). Drags between views (`draggable`,
+  `on_drop_payload`) find their target with prism-native's `locate_drag`,
+  with a see-through preview and autoscroll; files dragged from Explorer
+  land on `on_drop_files` targets (copies in `%TEMP%\prism-dropped`).
 - **Accessibility:** WinUI's own UI Automation peers (Button, Edit,
   CheckBox, Slider, ComboBox, the tab bar's list items…), with Prism's
   label, hint, heading level, live region (alerts, status) and tooltip as
@@ -129,7 +171,8 @@ The same as the other backends, in a desktop session:
 | Variable | |
 |---|---|
 | `PRISM_PATH` | the first route |
-| `PRISM_CLICK` | `+1\|Save`: presses by label (a control's title, an accessibility label, a tab, `Back`, a bar button, a clickable view showing it; buttons through their UI Automation peer); `fill:Placeholder=text` types into a field; `submit:Placeholder` presses Enter in it; `menu:Title` opens a context menu |
+| `PRISM_CLICK` | `+1\|Save`: presses by label (a control's title, an accessibility label, a tab, `Back`, a bar button, a clickable view showing it; buttons through their UI Automation peer); `fill:Placeholder=text` types into a field; `submit:Placeholder` presses Enter in it; `menu:Title` opens a context menu. Real mouse and keyboard input (`SendInput`, the window kept on top meanwhile; the view scrolled into sight first): `hover:Label`, `click:Label@x,y`, `drag:Label=dx,dy` (`drag:Label@x,y=dx,dy`), `swipe:Label=dx`, `wheel:Label=dy` (`=dx,h` sideways), `type:Label=text` |
+| `PRISM_TRACE_INPUT` | logs the pointer, drag, swipe, wheel and scene tap events sent to the app |
 | `PRISM_SCROLL` | scrolls the visible scroll views to that offset |
 | `PRISM_SNAPSHOT` | saves the window's XAML (`RenderTargetBitmap`) as PNG, and what DWM shows of the window (`PrintWindow`: Mica, shadows, open flyouts) as `<name>-window.png`, then quits |
 | `PRISM_DELAY`, `PRISM_AFTER` | seconds before the clicks (1) and between them and the snapshot (0.7) |
@@ -154,11 +197,16 @@ the session, presses the counter's button through UI Automation.
   dialogs, popovers) are Prism views above the window (a dimmed backdrop
   that closes them on a tap, a panel under their content), not
   `ContentDialog`s or `Flyout`s, and without their entry animations; no
-  animations (`Transition`, poses); web
-  views, videos and 3D scenes are empty boxes; rich inputs edit plain text;
-  links in text are colored, not `Hyperlink`s; drags and drops between
-  views (`locate_drag` gets no pointer input), pointer and wheel events for
-  `on_pointer` / `on_wheel`, swipes; Escape does not close an overlay yet.
+  animations (`Transition`, poses); Escape does not close an overlay yet.
+- **Embedded content and input:** a video's request headers
+  (`Video::header`) are not sent; a web view does not block form
+  submissions in a sandbox without `forms` (WebView2 does not tell them
+  apart, as on Android); rich inputs have no remote carets, selection
+  highlights across fields, or copy / paste / span-click hooks
+  (`edit_events`) yet, and draw a chip as its object character; pinches
+  (`on_magnify`, a 3D scene's pinch zoom) are not reported; 3D frames go
+  through the CPU (a read-back per frame, fine at a scene's size);
+  `drop_hover` styles follow Explorer drags but not their file types.
 - **Services:** notifications, alerts (`ContentDialog`), the tray, the menu
   bar, badges, pickers of photos, files and folders, secure storage,
   biometrics, sign-in, background tasks, push and run-time fonts.

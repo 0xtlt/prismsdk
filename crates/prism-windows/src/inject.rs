@@ -5,6 +5,9 @@
 //!   Label (`hover:Label=x,y`: to that point in it, in DIPs);
 //! - `drag:Label=dx,dy` presses there, moves by (`dx`, `dy`) DIPs in small
 //!   steps and releases (`drag:Label@x,y=dx,dy` starts at that point);
+//! - `click:Label` (`click:Label@x,y`) presses and releases there;
+//! - `type:Label=text` clicks there, goes to the end (End) and types
+//!   `text` (Unicode keystrokes);
 //! - `swipe:Label=dx` flicks horizontally (a fast drag of `dx` DIPs);
 //! - `wheel:Label=dy` turns the wheel over it: `dy` points toward the end
 //!   (100 a notch), `wheel:Label=dy,h` sideways.
@@ -20,9 +23,10 @@ use std::collections::VecDeque;
 use windows::Win32::Foundation::{HWND, POINT};
 use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_MOUSE, MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL,
+    INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP,
+    KEYEVENTF_UNICODE, MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL,
     MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_VIRTUALDESK,
-    MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput,
+    MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput, VIRTUAL_KEY, VK_END,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, HWND_NOTOPMOST, HWND_TOPMOST, KillTimer, SM_CXVIRTUALSCREEN,
@@ -46,6 +50,10 @@ enum Act {
     Down,
     Up,
     Wheel(i32, bool),
+    /// A virtual key, down or up (`true`).
+    Key(u16, bool),
+    /// A UTF-16 unit typed.
+    Char(u16),
 }
 
 thread_local! {
@@ -56,7 +64,10 @@ thread_local! {
 /// Queues `step` if it is one of these; `None` for other steps.
 pub fn step(step: &str) -> Option<bool> {
     let (kind, rest) = step.split_once(':')?;
-    if !matches!(kind, "hover" | "drag" | "swipe" | "wheel") {
+    if !matches!(
+        kind,
+        "hover" | "click" | "type" | "drag" | "swipe" | "wheel"
+    ) {
         return None;
     }
     let (target, _) = rest.split_once('=').unwrap_or((rest, ""));
@@ -89,10 +100,13 @@ fn find(label: &str) -> Option<prism_core::NodeId> {
         let scene = &s.renderer.widgets.scene;
         match scene.find_by_label(label) {
             Some(Target::Node(id)) => Some(id),
-            _ => scene
-                .shown_in_order()
-                .into_iter()
-                .find(|&id| scene.own_text(id).as_deref() == Some(label)),
+            // A text showing it, or any view labelled so (a 3D scene).
+            _ => scene.shown_in_order().into_iter().find(|&id| {
+                scene.own_text(id).as_deref() == Some(label)
+                    || scene
+                        .get(id)
+                        .is_some_and(|n| n.a11y.label.as_deref() == Some(label))
+            }),
         }
     })
     .flatten()
@@ -121,6 +135,19 @@ fn aim(step: &str) -> Vec<(Act, u32)> {
     let px = |v: f32| (v * scale).round() as i32;
     let mut acts = vec![(Act::Move(x, y), 60)];
     match kind {
+        "click" => {
+            acts.push((Act::Down, 60));
+            acts.push((Act::Up, 120));
+        }
+        "type" => {
+            acts.push((Act::Down, 60));
+            acts.push((Act::Up, 150));
+            acts.push((Act::Key(VK_END.0, false), 20));
+            acts.push((Act::Key(VK_END.0, true), 60));
+            for c in args.encode_utf16() {
+                acts.push((Act::Char(c), 30));
+            }
+        }
         "hover" => {
             if let [dx, dy] = nums[..] {
                 acts = vec![(Act::Move(x + px(dx), y + px(dy)), 60)];
@@ -253,6 +280,21 @@ fn send(act: &Act) {
         Act::Up => (MOUSEEVENTF_LEFTUP, 0, None),
         Act::Wheel(d, false) => (MOUSEEVENTF_WHEEL, d, None),
         Act::Wheel(d, true) => (MOUSEEVENTF_HWHEEL, d, None),
+        Act::Key(vk, up) => {
+            return key(
+                vk,
+                0,
+                if up {
+                    KEYEVENTF_KEYUP
+                } else {
+                    Default::default()
+                },
+            );
+        }
+        Act::Char(c) => {
+            key(0, c, KEYEVENTF_UNICODE);
+            return key(0, c, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP);
+        }
         Act::Aim(_) | Act::Settle(..) => return,
     };
     let (mut dx, mut dy, mut flags) = (0, 0, flags);
@@ -286,5 +328,25 @@ fn send(act: &Act) {
     let sent = unsafe { SendInput(&[input], size_of::<INPUT>() as i32) };
     if sent != 1 {
         log!("PRISM_CLICK: the input was not sent ({act:?})");
+    }
+}
+
+/// A key event: virtual key `vk`, or the UTF-16 unit `scan` with
+/// `KEYEVENTF_UNICODE`.
+fn key(vk: u16, scan: u16, flags: KEYBD_EVENT_FLAGS) {
+    let input = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(vk),
+                wScan: scan,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    if unsafe { SendInput(&[input], size_of::<INPUT>() as i32) } != 1 {
+        log!("PRISM_CLICK: the key was not sent");
     }
 }

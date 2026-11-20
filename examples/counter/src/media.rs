@@ -5,6 +5,7 @@
 //!   once loaded and a message per tap on its button; "Send a message"
 //!   posts to it. On the web, a public page in a frame.
 //! - `video`: a short film with the platform's controls, playing muted.
+//! - `on_drop_files`: files dropped from the file manager, listed.
 
 use prism::prelude::*;
 use prism::ui::{self, Theme};
@@ -49,6 +50,7 @@ pub(crate) struct MediaDemo {
     loaded: Option<String>,
     sent: u32,
     ended: bool,
+    dropped: Vec<String>,
 }
 
 impl MediaDemo {
@@ -59,6 +61,7 @@ impl MediaDemo {
             loaded: None,
             sent: 0,
             ended: false,
+            dropped: Vec::new(),
         }
     }
 }
@@ -161,6 +164,36 @@ impl Render for MediaDemo {
                         })
                         .text_size(13.)
                         .text_color(t.muted),
+                    ),
+            )
+            .child(
+                ui::card()
+                    .child(ui::heading(strings::media_drop_heading(cx)))
+                    .child(
+                        div()
+                            .id("drop-zone")
+                            .h(px(80.))
+                            .p(12.)
+                            .rounded(t.radius)
+                            .border(1.)
+                            .border_color(t.border)
+                            .items_center()
+                            .justify_center()
+                            .drop_hover(move |s| s.bg(t.accent.with_alpha(0.12)))
+                            .on_drop_files(
+                                Vec::<String>::new(),
+                                cx.listener(|this, e: &FileDropEvent, _| {
+                                    this.dropped = e.files.iter().map(|f| f.name.clone()).collect();
+                                }),
+                            )
+                            .child(
+                                text(if self.dropped.is_empty() {
+                                    strings::media_drop_hint(cx)
+                                } else {
+                                    strings::media_dropped(cx, self.dropped.join(", "))
+                                })
+                                .text_color(t.muted),
+                            ),
                     ),
             ),
         )

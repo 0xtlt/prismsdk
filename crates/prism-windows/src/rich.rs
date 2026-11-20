@@ -52,7 +52,11 @@ impl Rich {
         r.SetAcceptsReturn(true)?;
         r.TextChanged(&RoutedEventHandler::new(move |s, _| {
             if let Some(r) = s.as_ref().and_then(|s| s.cast::<RichEditBox>().ok()) {
-                crate::imp::typed(id, text(&r.Document()?)?);
+                let text = text(&r.Document()?)?;
+                if crate::win::env("PRISM_TRACE_INPUT").is_some() {
+                    crate::win::log!("input: rich input {id} shows {text:?}");
+                }
+                crate::imp::typed(id, text);
             }
             Ok(())
         }))?;
@@ -173,11 +177,14 @@ fn format(
                 continue;
             }
             let cf = doc.GetRange(start, end)?.CharacterFormat()?;
-            let name = h(&crate::text::family_name(&r.font.family, r.font.size));
+            // RichEdit takes one face (XAML a fallback list) and points
+            // (XAML DIPs: 96 a inch, points 72).
+            let family = crate::text::family_name(&r.font.family, r.font.size);
+            let name = h(family.split(',').next().unwrap_or("").trim());
             if cf.Name()? != name {
                 cf.SetName(&name)?;
             }
-            let size = r.font.size.max(1.);
+            let size = r.font.size.max(1.) * 0.75;
             if (cf.Size()? - size).abs() > 0.01 {
                 cf.SetSize(size)?;
             }

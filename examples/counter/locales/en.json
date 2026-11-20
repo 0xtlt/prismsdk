@@ -503,7 +503,10 @@
     "video_heading": "A video",
     "video_alt": "Sintel, an open movie by the Blender Foundation",
     "playing": "Plays muted, with the platform’s controls.",
-    "ended": "The video ended."
+    "ended": "The video ended.",
+    "drop_heading": "Files from the file manager",
+    "drop_hint": "Drop files here",
+    "dropped": "Dropped: {names}"
   },
   "scene3d": {
     "title": "3D scene",

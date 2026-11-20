@@ -503,7 +503,10 @@
     "video_heading": "Une vidéo",
     "video_alt": "Sintel, un film libre de la Blender Foundation",
     "playing": "Lue sans le son, avec les commandes de la plateforme.",
-    "ended": "La vidéo est finie."
+    "ended": "La vidéo est finie.",
+    "drop_heading": "Des fichiers du gestionnaire de fichiers",
+    "drop_hint": "Déposez des fichiers ici",
+    "dropped": "Déposés : {names}"
   },
   "scene3d": {
     "title": "Scène 3D",
