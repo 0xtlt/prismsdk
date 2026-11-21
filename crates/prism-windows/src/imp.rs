@@ -724,16 +724,11 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 LRESULT(0)
             }
             WM_CLOSE => {
+                // With unsaved changes, asks first (#158): discarding
+                // closes again.
                 if UNSAVED.get() {
-                    let r = MessageBoxW(
-                        Some(h),
-                        w!("Quit without saving your changes?"),
-                        w!("Unsaved changes"),
-                        MB_OKCANCEL | MB_ICONWARNING,
-                    );
-                    if r != IDOK {
-                        return LRESULT(0);
-                    }
+                    crate::alert::ask_leave(hwnd_value(h));
+                    return LRESULT(0);
                 }
                 let _ = DestroyWindow(h);
                 LRESULT(0)
@@ -744,6 +739,15 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             }
             _ => DefWindowProcW(h, msg, wp, lp),
         }
+    }
+}
+
+/// The user discarded the unsaved changes (`alert::ask_leave`): window
+/// `main` closes.
+pub fn discard_and_close(main: isize) {
+    UNSAVED.set(false);
+    unsafe {
+        let _ = PostMessageW(Some(hwnd(main)), WM_CLOSE, WPARAM(0), LPARAM(0));
     }
 }
 
