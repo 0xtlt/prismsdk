@@ -195,6 +195,10 @@ public final class PrismHost {
         String placeholder = "";
         /** A rich text's runs (PrismText), null when plain. */
         JSONArray runs;
+        /** A rich input (#115, PrismRich): its runs and the spans they put in its text. */
+        boolean rich;
+        JSONArray richRuns;
+        List<Object> richSpans = new ArrayList<>();
         String a11yLabel, a11yValue, announced;
         /** The ARIA role name the app gave (`radio`, `checkbox`…), and its checked state. */
         String a11yRole;
@@ -396,6 +400,7 @@ public final class PrismHost {
         switch (op) {
             case "create": {
                 Node created = create(id, p.getString("kind"));
+                created.rich = p.optBoolean("rich");
                 nodes.put(id, created);
                 // Text fields always report focus (for focus-within).
                 installFocus(created);
@@ -449,6 +454,8 @@ public final class PrismHost {
                 // Bar tint (#30).
                 if (n.kind.equals("tabs")) refreshTabs(n);
                 if (n.kind.equals("stack")) { styleChrome(n); PrismNavbar.refresh(n); }
+                // A rich input's runs take the new font (#115).
+                if (n.rich) PrismRich.show(n);
                 break;
             }
             case "sticky": {
@@ -497,6 +504,8 @@ public final class PrismHost {
                 }
                 else PrismForms.config(n, p.optString("config"));
                 break;
+            // A rich input's runs (#115).
+            case "rich": PrismRich.setRuns(n, p.optJSONArray("runs")); break;
             case "runs": {
                 JSONArray runs = p.optJSONArray("runs");
                 n.runs = runs != null && runs.length() > 0 ? runs : null;
