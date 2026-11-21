@@ -576,6 +576,10 @@ final class PrismStore: ObservableObject {
     /// mirror and format dates in it. Layout is already mirrored by Rust.
     @Published var rtl = false
     @Published var lang = ""
+    /// The app's appearance (`cx.set_appearance`, a theme's): light or dark
+    /// text, controls and color variants; `nil` follows the system (dark on
+    /// a watch).
+    @Published var scheme: ColorScheme?
     /// The action emptying an optional date picker (#89), in the app's language.
     @Published var clear = "Clear"
     /// Runtime layers (the toaster), above everything.
@@ -687,6 +691,9 @@ final class PrismStore: ObservableObject {
                 nodes[id]?.tableCells = all
                 nodes[id]?.tablePart = .table
             case "keys": break
+            case "appearance":
+                let mode = p["mode"] as? String
+                scheme = mode == "light" ? .light : mode == "dark" ? .dark : nil
             case "focus": focus = (id, focus.n + 1)
             // `cx.dismiss_keyboard()` (#29): every field lets go.
             case "blur": blur += 1
@@ -739,7 +746,7 @@ extension PrismStore {
     func exit(_ id: UInt64, _ p: [String: Any]) {
         guard let n = nodes[id], n.frame.width > 0, n.frame.height > 0,
               let parent = (p["parent"] as? NSNumber)?.uint64Value else { return }
-        let renderer = ImageRenderer(content: NodeView(id: id).environment(\.colorScheme, .dark))
+        let renderer = ImageRenderer(content: NodeView(id: id).environment(\.colorScheme, scheme ?? .dark))
         renderer.scale = WKInterfaceDevice.current().screenScale
         guard let image = renderer.uiImage else { return }
         let anim = p["anim"] as? [String: Any] ?? [:]
@@ -2345,6 +2352,7 @@ private func frameAlign(_ a: String?) -> Alignment {
 struct PrismRootView: View {
     @ObservedObject var store = PrismStore.shared
     @Environment(\.scenePhase) var phase
+    @Environment(\.colorScheme) var system
 
     var body: some View {
         Color.clear
@@ -2362,6 +2370,9 @@ struct PrismRootView: View {
             }
             .modifier(ReportSize(event: ["t": "resize"]))
             .modifier(Presented())
+            // The app's appearance: a light theme's text and controls are
+            // dark (SwiftUI's own colors are the system's, white on a watch).
+            .environment(\.colorScheme, store.scheme ?? system)
             .onChange(of: phase) { _, p in
                 send(["t": "lifecycle", "state": p == .active ? "active" : p == .inactive ? "inactive" : "background"])
             }
@@ -2439,7 +2450,7 @@ private func snapshotIfAsked(size: CGSize) {
             .frame(width: size.width, height: height, alignment: .topLeading)
             .clipped()
         .background(Color.black)
-        .environment(\.colorScheme, .dark)
+        .environment(\.colorScheme, store.scheme ?? .dark)
         let renderer = ImageRenderer(content: content)
         renderer.scale = WKInterfaceDevice.current().screenScale
         if let image = renderer.uiImage, let png = image.pngData() {
