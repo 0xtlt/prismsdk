@@ -550,8 +550,9 @@ impl Formatter for BasicFormatter {
 /// unsaved changes), built in for common languages. Apps override them with
 /// `prism.back`, `prism.close`, `prism.not_found`, `prism.no_route`,
 /// `prism.clear`, `prism.unsaved_title`, `prism.unsaved_message`,
-/// `prism.discard` and `prism.cancel` keys.
-const CHROME: &[(&str, [&str; 12])] = &[
+/// `prism.discard`, `prism.cancel`, `prism.files`, `prism.images` and
+/// `prism.all_files` keys (the last three name file dialogs' filters).
+const CHROME: &[(&str, [&str; 15])] = &[
     (
         "en",
         [
@@ -567,6 +568,9 @@ const CHROME: &[(&str, [&str; 12])] = &[
             "Reorder",
             "Drag, or use the up and down arrow keys, to move the row.",
             "{n} of {count}",
+            "Files",
+            "Images",
+            "All files",
         ],
     ),
     (
@@ -584,6 +588,9 @@ const CHROME: &[(&str, [&str; 12])] = &[
             "Réordonner",
             "Faites glisser, ou utilisez les flèches haut et bas, pour déplacer la ligne.",
             "{n} sur {count}",
+            "Fichiers",
+            "Images",
+            "Tous les fichiers",
         ],
     ),
     (
@@ -601,6 +608,9 @@ const CHROME: &[(&str, [&str; 12])] = &[
             "Neu anordnen",
             "Ziehen oder die Pfeiltasten nach oben und unten verwenden, um die Zeile zu verschieben.",
             "{n} von {count}",
+            "Dateien",
+            "Bilder",
+            "Alle Dateien",
         ],
     ),
     (
@@ -618,6 +628,9 @@ const CHROME: &[(&str, [&str; 12])] = &[
             "Reordenar",
             "Arrastra, o usa las flechas arriba y abajo, para mover la fila.",
             "{n} de {count}",
+            "Archivos",
+            "Imágenes",
+            "Todos los archivos",
         ],
     ),
     (
@@ -635,6 +648,9 @@ const CHROME: &[(&str, [&str; 12])] = &[
             "Riordina",
             "Trascina, o usa le frecce su e giù, per spostare la riga.",
             "{n} di {count}",
+            "File",
+            "Immagini",
+            "Tutti i file",
         ],
     ),
     (
@@ -652,6 +668,9 @@ const CHROME: &[(&str, [&str; 12])] = &[
             "Reordenar",
             "Arraste, ou use as setas para cima e para baixo, para mover a linha.",
             "{n} de {count}",
+            "Arquivos",
+            "Imagens",
+            "Todos os arquivos",
         ],
     ),
     (
@@ -669,6 +688,9 @@ const CHROME: &[(&str, [&str; 12])] = &[
             "Herschikken",
             "Sleep, of gebruik de pijltjestoetsen omhoog en omlaag, om de rij te verplaatsen.",
             "{n} van {count}",
+            "Bestanden",
+            "Afbeeldingen",
+            "Alle bestanden",
         ],
     ),
     (
@@ -686,6 +708,9 @@ const CHROME: &[(&str, [&str; 12])] = &[
             "إعادة الترتيب",
             "اسحب، أو استخدم مفتاحي السهم لأعلى ولأسفل، لنقل الصف.",
             "{n} من {count}",
+            "الملفات",
+            "الصور",
+            "كل الملفات",
         ],
     ),
     (
@@ -703,6 +728,9 @@ const CHROME: &[(&str, [&str; 12])] = &[
             "סידור מחדש",
             "גררו, או השתמשו במקשי החצים למעלה ולמטה, כדי להזיז את השורה.",
             "{n} מתוך {count}",
+            "קבצים",
+            "תמונות",
+            "כל הקבצים",
         ],
     ),
     (
@@ -720,6 +748,9 @@ const CHROME: &[(&str, [&str; 12])] = &[
             "並べ替え",
             "ドラッグするか、上下の矢印キーで行を移動します。",
             "{count} 件中 {n} 件目",
+            "ファイル",
+            "画像",
+            "すべてのファイル",
         ],
     ),
     (
@@ -737,6 +768,9 @@ const CHROME: &[(&str, [&str; 12])] = &[
             "重新排序",
             "拖动，或使用上下方向键，移动该行。",
             "第 {n} 项，共 {count} 项",
+            "文件",
+            "图片",
+            "所有文件",
         ],
     ),
     (
@@ -754,13 +788,17 @@ const CHROME: &[(&str, [&str; 12])] = &[
             "순서 변경",
             "드래그하거나 위쪽 및 아래쪽 화살표 키를 사용하여 행을 이동합니다.",
             "{count}개 중 {n}번째",
+            "파일",
+            "이미지",
+            "모든 파일",
         ],
     ),
 ];
 
 /// A built-in Prism text: `back`, `close`, `not_found`, `no_route`,
 /// `clear`, `unsaved_title`, `unsaved_message`, `discard`, `cancel`,
-/// `reorder`, `reorder_hint` or `reorder_position` (`{n}` of `{count}`).
+/// `reorder`, `reorder_hint`, `reorder_position` (`{n}` of `{count}`), or a
+/// file dialog's filter: `files`, `images`, `all_files`.
 pub fn chrome_text(translations: Option<&Translations>, locale: &Locale, key: &str) -> String {
     if let Some(t) = translations.and_then(|t| t.lookup(locale, &format!("prism.{key}"))) {
         return t.to_string();
@@ -777,6 +815,9 @@ pub fn chrome_text(translations: Option<&Translations>, locale: &Locale, key: &s
         "reorder" => 9,
         "reorder_hint" => 10,
         "reorder_position" => 11,
+        "files" => 12,
+        "images" => 13,
+        "all_files" => 14,
         _ => 3,
     };
     CHROME
