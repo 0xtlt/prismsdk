@@ -550,6 +550,7 @@ Fixes from a security review before the first release.
 - UnifiedPush receiver keys and the Linux registration token are made once (concurrent first uses share them), private from creation (0600/0700), and a failure to keep them fails `register_for_push` instead of announcing an unusable subscription.
 - Native web views: the app's messages reach a page only if it still shows the origin it showed when they were sent.
 - Browser sign-in ends only with a redirect to exactly its redirect URI carrying its `state` once; other requests and deep links are refused while it waits.
+- Linux and Windows keep one loopback listener for sign-ins: `OAuth::resolve` (and `refresh`, which calls it) no longer leaves a listening socket open until the app quits. The next sign-in takes the waiting listener, and one nobody takes closes after 10 minutes.
 - Debug output of HTTP requests and responses, OAuth tokens and registrations, Apple credentials and push subscriptions hides credentials; HTTP and push errors leave out URL queries, endpoints and control characters.
 - prism-web: pages and the sign-in callback can be framed only by the app's own origin by default (`WebApp::frame_ancestor` adds trusted sites); every response is `nosniff`; the strict CSP is added alongside a response's own policy.
 - Android: installing an App Bundle on a device signs its APKs with the debug key, so the store key's passwords are never written to disk; `prism publish --service-account` takes a path only.

@@ -789,6 +789,112 @@ fn redirect_parts(url: &str) -> Option<RedirectParts<'_>> {
     })
 }
 
+/// The loopback redirect listener of a desktop backend (RFC 8252 §7.3),
+/// for [`DeviceCall::AuthRedirect`] and [`DeviceCall::WebAuth`]. The Linux
+/// and Windows backends use it.
+///
+/// [`redirect`](Self::redirect) gives the URI of the listener that waits,
+/// or binds one: `OAuth::resolve` asks for a redirect it never uses (to
+/// check its registration), and the next sign-in takes that listener
+/// rather than leaving it open. [`take`](Self::take) hands it to the
+/// sign-in that opens the browser. One that no sign-in takes closes after
+/// the idle time. Two sign-ins that both ask before either opens the
+/// browser share the URI: the second one to open it fails.
+#[doc(hidden)]
+pub struct LoopbackListener {
+    waiting: std::sync::Arc<std::sync::Mutex<Option<Waiting>>>,
+    idle: std::time::Duration,
+}
+
+struct Waiting {
+    uri: String,
+    listener: std::net::TcpListener,
+    until: std::time::Instant,
+}
+
+impl Default for LoopbackListener {
+    /// Closes an unused listener after 10 minutes: longer than a sign-in
+    /// takes between asking for its redirect and opening the browser
+    /// (discovery, registration).
+    fn default() -> Self {
+        Self::new(std::time::Duration::from_secs(600))
+    }
+}
+
+impl LoopbackListener {
+    /// A listener nobody takes closes `idle` after it was last asked for.
+    pub fn new(idle: std::time::Duration) -> Self {
+        LoopbackListener {
+            waiting: Default::default(),
+            idle,
+        }
+    }
+
+    /// `http://127.0.0.1:<port>/callback`: the listener that waits (asked
+    /// again, it waits `idle` more), or a new one.
+    pub fn redirect(&self) -> std::io::Result<String> {
+        let until = std::time::Instant::now() + self.idle;
+        let mut waiting = lock(&self.waiting);
+        if let Some(w) = waiting.as_mut() {
+            w.until = until;
+            return Ok(w.uri.clone());
+        }
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let uri = format!(
+            "http://127.0.0.1:{}/callback",
+            listener.local_addr()?.port()
+        );
+        *waiting = Some(Waiting {
+            uri: uri.clone(),
+            listener,
+            until,
+        });
+        // Closes it once unused for `idle`, unless a sign-in took it.
+        let (weak, watched) = (std::sync::Arc::downgrade(&self.waiting), uri.clone());
+        std::thread::Builder::new()
+            .name("prism-loopback".into())
+            .spawn(move || {
+                loop {
+                    let pause = {
+                        let Some(shared) = weak.upgrade() else {
+                            return;
+                        };
+                        let mut waiting = lock(&shared);
+                        let until = match waiting.as_ref() {
+                            Some(w) if w.uri == watched => w.until,
+                            _ => return,
+                        };
+                        let now = std::time::Instant::now();
+                        if until <= now {
+                            *waiting = None;
+                            return;
+                        }
+                        until - now
+                    };
+                    std::thread::sleep(pause);
+                }
+            })?;
+        Ok(uri)
+    }
+
+    /// The listener of `uri` for the sign-in that opens the browser; `None`
+    /// once taken or closed, or for another URI.
+    pub fn take(&self, uri: &str) -> Option<std::net::TcpListener> {
+        let mut waiting = lock(&self.waiting);
+        match waiting.take() {
+            Some(w) if w.uri == uri => Some(w.listener),
+            other => {
+                *waiting = other;
+                None
+            }
+        }
+    }
+}
+
+fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// The values of parameter `name` in `params` (`a=1&b=2`), decoded.
 fn param_values<'a>(params: &'a str, name: &'a str) -> impl Iterator<Item = String> + 'a {
     params.split('&').filter_map(move |kv| {
@@ -824,6 +930,53 @@ fn form_decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn loopback_port(uri: &str) -> u16 {
+        uri.trim_start_matches("http://127.0.0.1:")
+            .trim_end_matches("/callback")
+            .parse()
+            .unwrap()
+    }
+
+    /// `OAuth::resolve` then `sign_in`: both ask for a redirect, one
+    /// listener serves them, and the sign-in takes it once.
+    #[test]
+    fn a_loopback_listener_serves_the_next_sign_in() {
+        let lb = LoopbackListener::default();
+        let uri = lb.redirect().unwrap();
+        assert!(uri.starts_with("http://127.0.0.1:") && uri.ends_with("/callback"));
+        assert_eq!(lb.redirect().unwrap(), uri);
+        assert!(lb.take("http://127.0.0.1:1/callback").is_none());
+        let listener = lb.take(&uri).expect("the sign-in takes it");
+        assert_eq!(listener.local_addr().unwrap().port(), loopback_port(&uri));
+        assert!(lb.take(&uri).is_none(), "once");
+        // The next sign-in gets a listener of its own.
+        assert_ne!(lb.redirect().unwrap(), uri);
+    }
+
+    /// A listener no sign-in takes closes after the idle time.
+    #[test]
+    fn an_unused_loopback_listener_closes() {
+        let lb = LoopbackListener::new(std::time::Duration::from_millis(300));
+        let uri = lb.redirect().unwrap();
+        let port = loopback_port(&uri);
+        assert!(
+            std::net::TcpListener::bind(("127.0.0.1", port)).is_err(),
+            "listening"
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        // Closed: its port is free again.
+        while std::net::TcpListener::bind(("127.0.0.1", port)).is_err() {
+            assert!(std::time::Instant::now() < deadline, "still listening");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(lb.take(&uri).is_none());
+        // Dropped with the backend, the watchdog ends too.
+        let lb = LoopbackListener::new(std::time::Duration::from_secs(600));
+        let uri = lb.redirect().unwrap();
+        drop(lb);
+        assert!(std::net::TcpListener::bind(("127.0.0.1", loopback_port(&uri))).is_ok());
+    }
 
     /// S39: a credential whose `state` is not the request's is refused (it
     /// answers another request); without a `state` sent, none is checked.
