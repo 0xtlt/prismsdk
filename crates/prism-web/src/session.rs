@@ -1880,10 +1880,11 @@ impl WebServices {
                 }
             }
             C::SecureDelete { key, .. } => {
-                if let Some(s) = &self.secure {
-                    s.delete(&key);
-                }
-                self.reply(id, Ok(V::Done));
+                let r = match &self.secure {
+                    Some(s) => s.delete(&key).map(|_| V::Done).map_err(E::Failed),
+                    None => Ok(V::Done),
+                };
+                self.reply(id, r);
                 None
             }
             C::BiometryStatus => {

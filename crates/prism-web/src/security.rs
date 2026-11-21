@@ -28,48 +28,106 @@ use sha2::{Digest, Sha256};
 
 // --- Secure storage ---------------------------------------------------------------------
 
-/// The server's key for secrets at rest.
-pub(crate) fn server_key(data_root: &Path) -> [u8; 32] {
+/// The server's key for secrets at rest: `PRISM_SECRET_KEY`, else the one
+/// in the data directory, made by the first worker that needs it.
+pub(crate) fn server_key(data_root: &Path) -> Result<[u8; 32], String> {
     static KEYS: OnceLock<Mutex<HashMap<PathBuf, [u8; 32]>>> = OnceLock::new();
     let mut keys = KEYS.get_or_init(Default::default).lock().unwrap();
     if let Some(k) = keys.get(data_root) {
-        return *k;
+        return Ok(*k);
     }
-    let key = std::env::var("PRISM_SECRET_KEY")
-        .ok()
-        .and_then(|h| hex_decode(h.trim()))
-        .and_then(|b| <[u8; 32]>::try_from(b).ok())
-        .unwrap_or_else(|| {
-            let path = data_root.join(".secret-key");
-            if let Some(k) = std::fs::read(&path)
-                .ok()
-                .and_then(|b| <[u8; 32]>::try_from(b).ok())
-            {
-                return k;
-            }
-            let mut k = [0u8; 32];
-            SystemRandom::new().fill(&mut k).expect("system random");
-            let _ = std::fs::create_dir_all(data_root);
-            write_private(&path, &k);
-            k
-        });
+    let key = key_from(std::env::var("PRISM_SECRET_KEY").ok(), data_root)?;
     keys.insert(data_root.to_path_buf(), key);
-    key
+    Ok(key)
 }
 
-fn write_private(path: &Path, data: &[u8]) {
-    let tmp = path.with_extension("tmp~");
-    let ok = std::fs::write(&tmp, data).is_ok() && {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-        }
-        std::fs::rename(&tmp, path).is_ok()
-    };
-    if !ok {
-        eprintln!("prism-web: could not write {}", path.display());
+/// The key `configured` (64 hex digits), else the data directory's: read,
+/// or created once for every worker sharing the directory. A configured key
+/// that does not parse, or a key file that does not hold one, is an error:
+/// secrets are never sealed with a key that would be lost.
+fn key_from(configured: Option<String>, data_root: &Path) -> Result<[u8; 32], String> {
+    if let Some(hex) = configured {
+        return hex_decode(hex.trim())
+            .and_then(|b| <[u8; 32]>::try_from(b).ok())
+            .ok_or_else(|| "PRISM_SECRET_KEY must be 64 hex digits".to_string());
     }
+    let path = data_root.join(".secret-key");
+    let read = |path: &Path| -> Result<Option<[u8; 32]>, String> {
+        match std::fs::read(path) {
+            Ok(b) => <[u8; 32]>::try_from(b)
+                .map(Some)
+                .map_err(|_| format!("{}: not a key (32 bytes)", path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("{}: {e}", path.display())),
+        }
+    };
+    if let Some(k) = read(&path)? {
+        return Ok(k);
+    }
+    let mut k = [0u8; 32];
+    SystemRandom::new()
+        .fill(&mut k)
+        .map_err(|_| "no random source")?;
+    private_dir(data_root).map_err(|e| format!("{}: {e}", data_root.display()))?;
+    // Written aside (private from the start), then linked in place: the link
+    // fails if another worker made the key first, and then its key is used.
+    let tmp = write_aside(&path, &k).map_err(|e| format!("{}: {e}", path.display()))?;
+    let linked = std::fs::hard_link(&tmp, &path);
+    let _ = std::fs::remove_file(&tmp);
+    match linked {
+        Ok(()) => Ok(k),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            read(&path)?.ok_or_else(|| format!("{}: vanished", path.display()))
+        }
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+/// Creates `dir` (and its parents) readable by this user only.
+fn private_dir(dir: &Path) -> std::io::Result<()> {
+    let mut b = std::fs::DirBuilder::new();
+    b.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        b.mode(0o700);
+    }
+    b.create(dir)
+}
+
+/// A new file beside `path`, under a name of its own, readable by this user
+/// only from its creation, holding `data`.
+fn write_aside(path: &Path, data: &[u8]) -> std::io::Result<PathBuf> {
+    use std::io::Write;
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = path.with_file_name(format!(".{name}.{}.tmp~", random_id()));
+    let mut open = std::fs::OpenOptions::new();
+    open.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        open.mode(0o600);
+    }
+    let written = open.open(&tmp).and_then(|mut f| {
+        f.write_all(data)?;
+        f.sync_all()
+    });
+    match written {
+        Ok(()) => Ok(tmp),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
+/// Replaces `path` with `data` at once: readers see the old file or the new.
+fn write_private(path: &Path, data: &[u8]) -> Result<(), String> {
+    let tmp = write_aside(path, data).map_err(|e| format!("{}: {e}", path.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("{}: {e}", path.display())
+    })
 }
 
 /// One browser's secrets: `<session>/secure/<sha256(key)>`, each
@@ -77,7 +135,8 @@ fn write_private(path: &Path, data: &[u8]) {
 pub(crate) struct SecureStore {
     dir: PathBuf,
     sid: String,
-    key: LessSafeKey,
+    /// The server key, or why there is none (every operation fails then).
+    key: Result<LessSafeKey, String>,
 }
 
 pub(crate) struct Secret {
@@ -87,12 +146,18 @@ pub(crate) struct Secret {
 }
 
 impl SecureStore {
-    pub fn new(session_dir: &Path, sid: &str, key: [u8; 32]) -> Self {
+    pub fn new(session_dir: &Path, sid: &str, key: Result<[u8; 32], String>) -> Self {
         SecureStore {
             dir: session_dir.join("secure"),
             sid: sid.to_string(),
-            key: LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &key).expect("AES key")),
+            key: key.map(|k| LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &k).expect("AES key"))),
         }
+    }
+
+    fn cipher(&self) -> Result<&LessSafeKey, String> {
+        self.key
+            .as_ref()
+            .map_err(|e| format!("secure storage unavailable: {e}"))
     }
 
     fn path(&self, key: &str) -> PathBuf {
@@ -111,31 +176,32 @@ impl SecureStore {
         let mut data = Vec::with_capacity(value.len() + 1);
         data.push(u8::from(biometric));
         data.extend_from_slice(value.as_bytes());
-        self.key
+        self.cipher()?
             .seal_in_place_append_tag(
                 Nonce::assume_unique_for_key(nonce),
                 Aad::from(self.aad(key)),
                 &mut data,
             )
             .map_err(|_| "encryption failed")?;
-        std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
+        private_dir(&self.dir).map_err(|e| format!("{}: {e}", self.dir.display()))?;
         let mut file = nonce.to_vec();
         file.extend(data);
-        write_private(&self.path(key), &file);
-        Ok(())
+        write_private(&self.path(key), &file)
     }
 
     pub fn get(&self, key: &str) -> Result<Option<Secret>, String> {
-        let Ok(mut file) = std::fs::read(self.path(key)) else {
-            return Ok(None);
+        let cipher = self.cipher()?;
+        let mut file = match std::fs::read(self.path(key)) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("secret unreadable: {e}")),
         };
         if file.len() < 12 + 16 + 1 {
             return Err("corrupt secret".into());
         }
         let mut data = file.split_off(12);
         let nonce = Nonce::try_assume_unique_for_key(&file).map_err(|_| "corrupt secret")?;
-        let plain = self
-            .key
+        let plain = cipher
             .open_in_place(nonce, Aad::from(self.aad(key)), &mut data)
             .map_err(|_| "secret unreadable (PRISM_SECRET_KEY changed?)")?;
         Ok(Some(Secret {
@@ -144,8 +210,13 @@ impl SecureStore {
         }))
     }
 
-    pub fn delete(&self, key: &str) {
-        let _ = std::fs::remove_file(self.path(key));
+    /// Removes a secret; one that is not there is removed already.
+    pub fn delete(&self, key: &str) -> Result<(), String> {
+        match std::fs::remove_file(self.path(key)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("secret not deleted: {e}")),
+        }
     }
 
     fn credential_path(&self) -> PathBuf {
@@ -165,10 +236,9 @@ impl SecureStore {
 
     /// Updates the enrolled credential (its signature counter).
     pub fn save_credential(&self, c: &Credential) -> Result<(), String> {
-        std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
+        private_dir(&self.dir).map_err(|e| format!("{}: {e}", self.dir.display()))?;
         let v = json!({ "id": c.id, "alg": c.alg, "key": base64url(&c.key), "count": c.count });
-        write_private(&self.credential_path(), v.to_string().as_bytes());
-        Ok(())
+        write_private(&self.credential_path(), v.to_string().as_bytes())
     }
 
     /// Enrolls this browser's first credential. Fails when one is already
@@ -177,7 +247,7 @@ impl SecureStore {
     pub fn enroll(&self, c: &Credential) -> Result<(), String> {
         static ENROLLING: Mutex<()> = Mutex::new(());
         let _one_at_a_time = ENROLLING.lock().unwrap_or_else(|e| e.into_inner());
-        std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
+        private_dir(&self.dir).map_err(|e| format!("{}: {e}", self.dir.display()))?;
         let path = self.credential_path();
         if path.exists() {
             return Err("webauthn: a credential is already enrolled".into());
@@ -185,8 +255,7 @@ impl SecureStore {
         let v = json!({ "id": c.id, "alg": c.alg, "key": base64url(&c.key), "count": c.count });
         // Written aside, then linked in place: the link fails if another
         // process enrolled meanwhile, and nobody reads a partial file.
-        let tmp = self.dir.join(format!("webauthn.{}.tmp~", random_id()));
-        std::fs::write(&tmp, v.to_string()).map_err(|e| e.to_string())?;
+        let tmp = write_aside(&path, v.to_string().as_bytes()).map_err(|e| e.to_string())?;
         let linked = std::fs::hard_link(&tmp, &path);
         let _ = std::fs::remove_file(&tmp);
         linked.map_err(|e| match e.kind() {
@@ -580,6 +649,110 @@ mod tests {
     use super::*;
     use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair};
 
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("prism-s25-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// S25: workers sharing a data directory (processes; here threads, past
+    /// the per-process cache) all seal with the one key that is persisted.
+    #[test]
+    fn s25_workers_share_one_persisted_key() {
+        let root = scratch("workers");
+        for round in 0..20 {
+            let dir = root.join(round.to_string());
+            let start = std::sync::Arc::new(std::sync::Barrier::new(8));
+            let keys: Vec<[u8; 32]> = (0..8)
+                .map(|_| {
+                    let (dir, start) = (dir.clone(), start.clone());
+                    std::thread::spawn(move || {
+                        start.wait();
+                        key_from(None, &dir).unwrap()
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|t| t.join().unwrap())
+                .collect();
+            let persisted = std::fs::read(dir.join(".secret-key")).unwrap();
+            assert!(keys.iter().all(|k| k[..] == persisted[..]), "round {round}");
+            let names: Vec<_> = std::fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name())
+                .collect();
+            assert_eq!(names, [".secret-key"], "round {round}");
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn s25_a_key_that_does_not_parse_is_an_error() {
+        let dir = scratch("bad-key");
+        assert!(key_from(Some("not hex".into()), &dir).is_err());
+        assert!(key_from(Some("ab".repeat(31)), &dir).is_err());
+        assert_eq!(key_from(Some("ab".repeat(32)), &dir).unwrap(), [0xab; 32]);
+        assert!(!dir.exists(), "a configured key writes no key file");
+        // A key file that holds no key is left alone, not replaced.
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".secret-key"), "short").unwrap();
+        assert!(key_from(None, &dir).is_err());
+        assert_eq!(std::fs::read(dir.join(".secret-key")).unwrap(), b"short");
+        // Without a key, the store fails instead of sealing with another.
+        let s = SecureStore::new(
+            &dir,
+            "sid",
+            Err("PRISM_SECRET_KEY must be 64 hex digits".into()),
+        );
+        let err = s.set("token", "v", false).unwrap_err();
+        assert!(err.contains("PRISM_SECRET_KEY"), "{err}");
+        assert!(s.get("token").is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn s25_failed_writes_and_deletes_are_errors() {
+        let dir = scratch("failures");
+        let s = SecureStore::new(&dir, "sid", Ok([7; 32]));
+        s.set("token", "old", false).unwrap();
+        // The secret's path becomes a directory with something in it: it can
+        // be neither replaced nor removed.
+        std::fs::remove_file(s.path("token")).unwrap();
+        std::fs::create_dir_all(s.path("token").join("x")).unwrap();
+        assert!(s.set("token", "new", false).is_err(), "reported saved");
+        assert!(s.delete("token").is_err(), "reported deleted");
+        // Nothing left behind by the failed write.
+        let names: Vec<_> = std::fs::read_dir(dir.join("secure"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().all(|n| !n.ends_with("tmp~")), "{names:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn s25_secrets_are_private_from_creation() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = scratch("private");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Created private, not made private after (whatever the umask).
+        let tmp = write_aside(&dir.join("k"), b"x").unwrap();
+        assert_eq!(mode(&tmp), 0o600);
+        let data = dir.join("data");
+        key_from(None, &data).unwrap();
+        assert_eq!(mode(&data), 0o700);
+        assert_eq!(mode(&data.join(".secret-key")), 0o600);
+        let s = SecureStore::new(&data.join("sid"), "sid", Ok([7; 32]));
+        s.set("token", "v", false).unwrap();
+        assert_eq!(mode(&data.join("sid/secure")), 0o700);
+        assert_eq!(mode(&s.path("token")), 0o600);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     fn auth_data(rp: &str, flags: u8, count: u32) -> Vec<u8> {
         let mut a = Sha256::digest(rp.as_bytes()).to_vec();
         a.push(flags);
@@ -597,7 +770,7 @@ mod tests {
     fn secrets_are_encrypted_and_bound_to_the_session() {
         let dir = std::env::temp_dir().join(format!("prism-secure-{}", std::process::id()));
         let key = [7u8; 32];
-        let a = SecureStore::new(&dir.join("a"), "sid-a", key);
+        let a = SecureStore::new(&dir.join("a"), "sid-a", Ok(key));
         a.set("token", "s3cret", false).unwrap();
         a.set("pin", "1234", true).unwrap();
         let raw = std::fs::read(a.path("token")).unwrap();
@@ -607,12 +780,13 @@ mod tests {
         assert!(a.get("pin").unwrap().unwrap().biometric);
         assert!(a.get("missing").unwrap().is_none());
         // Another session (or key) cannot open it.
-        let b = SecureStore::new(&dir.join("a"), "sid-b", key);
+        let b = SecureStore::new(&dir.join("a"), "sid-b", Ok(key));
         assert!(b.get("token").is_err());
-        let c = SecureStore::new(&dir.join("a"), "sid-a", [8u8; 32]);
+        let c = SecureStore::new(&dir.join("a"), "sid-a", Ok([8u8; 32]));
         assert!(c.get("token").is_err());
-        a.delete("token");
+        a.delete("token").unwrap();
         assert!(a.get("token").unwrap().is_none());
+        a.delete("token").unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }
 

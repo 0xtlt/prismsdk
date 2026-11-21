@@ -99,7 +99,7 @@ impl Authenticator {
 /// A browser session with a platform authenticator.
 fn services(dir: &std::path::Path) -> WebServices {
     let mut s = WebServices::new(None);
-    s.secure = Some(SecureStore::new(dir, "sid-1", [7u8; 32]));
+    s.secure = Some(SecureStore::new(dir, "sid-1", Ok([7u8; 32])));
     s.origin = ORIGIN.into();
     s.uvpa = true;
     s
