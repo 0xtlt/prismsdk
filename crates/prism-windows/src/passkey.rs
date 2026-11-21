@@ -466,6 +466,26 @@ pub const NTE_USER_CANCELLED: i32 = 0x8009_0036_u32 as i32;
 /// `HRESULT_FROM_WIN32(ERROR_CANCELLED)`: `WebAuthNCancelCurrentOperation`.
 pub const ERROR_CANCELLED: i32 = 0x8007_04C7_u32 as i32;
 
+/// The HRESULTs `WebAuthNGetErrorName` names, with their names (the web's
+/// `DOMException` names), as `webauthn.h` lists them. `PRISM_DEVICE_REPORT`
+/// asks the DLL for each, and `scripts/windows/device-report-check.py`
+/// expects these names (a test keeps its table equal to this one).
+pub const ERROR_NAMES: &[(i32, &str)] = &[
+    (0x8009_000F_u32 as i32, "InvalidStateError"), // NTE_EXISTS
+    (0x8007_0032_u32 as i32, "ConstraintError"),   // HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED)
+    (0x8009_0029_u32 as i32, "ConstraintError"),   // NTE_NOT_SUPPORTED
+    (0x8009_0023_u32 as i32, "ConstraintError"),   // NTE_TOKEN_KEYSET_STORAGE_FULL
+    (0x8009_0027_u32 as i32, "NotSupportedError"), // NTE_INVALID_PARAMETER
+    (0x8009_0035_u32 as i32, "NotAllowedError"),   // NTE_DEVICE_NOT_FOUND
+    (0x8009_0011_u32 as i32, "NotAllowedError"),   // NTE_NOT_FOUND
+    (ERROR_CANCELLED, "NotAllowedError"),
+    (NTE_USER_CANCELLED, "NotAllowedError"),
+    (0x8007_05B4_u32 as i32, "NotAllowedError"), // HRESULT_FROM_WIN32(ERROR_TIMEOUT)
+];
+/// `E_INVALIDARG`, one HRESULT `webauthn.h` does not name: the DLL calls
+/// it `UnknownError`, like any other.
+pub const UNNAMED: i32 = 0x8007_0057_u32 as i32;
+
 /// A failed ceremony as Prism's error, like the web's (#189): `name` is
 /// what `WebAuthNGetErrorName` calls the HRESULT, the web's `DOMException`
 /// name. `NotAllowedError` (dismissed, timed out, no passkey to use) is
@@ -757,6 +777,39 @@ mod tests {
         assert_eq!(
             error(0x8007_0057_u32 as i32, "UnknownError", ""),
             DeviceError::Failed("passkeys: WebAuthn error 0x80070057 (0x80070057)".into())
+        );
+    }
+
+    /// The report checker's table (`KNOWN`) is `ERROR_NAMES` and what
+    /// `error` makes of each: a wrong name there fails on every PC.
+    #[test]
+    fn the_report_checker_knows_each_error() {
+        let checker = include_str!("../../../scripts/windows/device-report-check.py");
+        let kind = |e: DeviceError| {
+            let debug = format!("{e:?}");
+            debug
+                .split(['(', ' '])
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        };
+        let all = ERROR_NAMES
+            .iter()
+            .copied()
+            .chain([(UNNAMED, "UnknownError")]);
+        for (hr, name) in all {
+            let row = format!(
+                "\"0x{:08X}\": (\"{name}\", \"{}\")",
+                hr as u32,
+                kind(error(hr, name, "m"))
+            );
+            assert!(checker.contains(&row), "device-report-check.py lacks {row}");
+        }
+        let rows = checker.matches("\": (\"").count();
+        assert_eq!(
+            rows,
+            ERROR_NAMES.len() + 1,
+            "device-report-check.py has other rows"
         );
     }
 }

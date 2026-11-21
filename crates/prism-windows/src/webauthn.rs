@@ -156,26 +156,18 @@ pub fn report() -> serde_json::Value {
     let Some(api) = api() else {
         return serde_json::json!({ "dll": false });
     };
-    let errors: serde_json::Map<String, serde_json::Value> = [
-        NTE_USER_CANCELLED.0,
-        passkey::ERROR_CANCELLED,
-        0x8009_000F_u32 as i32, // NTE_EXISTS
-        0x8009_0029_u32 as i32, // NTE_NOT_SUPPORTED
-        0x8009_0027_u32 as i32, // NTE_INVALID_PARAMETER
-        0x8009_0035_u32 as i32, // NTE_DEVICE_NOT_FOUND
-        0x8009_0011_u32 as i32, // NTE_NOT_FOUND
-        0x8007_05B4_u32 as i32, // ERROR_TIMEOUT
-        0x8007_0057_u32 as i32, // E_INVALIDARG
-    ]
-    .into_iter()
-    .map(|hr| {
-        let hr = HRESULT(hr);
-        (
-            format!("0x{:08X}", hr.0 as u32),
-            serde_json::json!([error_name(hr), format!("{:?}", failure(hr))]),
-        )
-    })
-    .collect();
+    let errors: serde_json::Map<String, serde_json::Value> = passkey::ERROR_NAMES
+        .iter()
+        .map(|&(hr, _)| hr)
+        .chain([passkey::UNNAMED])
+        .map(|hr| {
+            let hr = HRESULT(hr);
+            (
+                format!("0x{:08X}", hr.0 as u32),
+                serde_json::json!([error_name(hr), format!("{:?}", failure(hr))]),
+            )
+        })
+        .collect();
     let (make, get) = passkey::option_versions(api.version);
     serde_json::json!({
         "dll": true,

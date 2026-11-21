@@ -13,19 +13,21 @@ API, then "device-report: OK".
 import json
 import sys
 
-# What a WebAuthn error becomes (passkey.rs `error`).
-MAPPED = {
-    "NotAllowedError": "Cancelled",
-    "NotSupportedError": "Unavailable",
-    "InvalidStateError": "Platform",
-    "ConstraintError": "Platform",
-}
-# HRESULTs whose WebAuthn name is known (webauthn.h).
+# What WebAuthNGetErrorName calls each HRESULT (webauthn.h; E_INVALIDARG is
+# one it does not name) and the Prism error passkey.rs `error` makes of it.
+# passkey.rs ERROR_NAMES is the same table: a test there keeps them equal.
 KNOWN = {
-    "0x80090036": ("NotAllowedError", "Cancelled"),  # NTE_USER_CANCELLED
-    "0x800704C7": (None, "Cancelled"),  # ERROR_CANCELLED
     "0x8009000F": ("InvalidStateError", "Platform"),  # NTE_EXISTS
-    "0x80090029": ("NotSupportedError", "Unavailable"),  # NTE_NOT_SUPPORTED
+    "0x80070032": ("ConstraintError", "Platform"),  # ERROR_NOT_SUPPORTED
+    "0x80090029": ("ConstraintError", "Platform"),  # NTE_NOT_SUPPORTED
+    "0x80090023": ("ConstraintError", "Platform"),  # NTE_TOKEN_KEYSET_STORAGE_FULL
+    "0x80090027": ("NotSupportedError", "Unavailable"),  # NTE_INVALID_PARAMETER
+    "0x80090035": ("NotAllowedError", "Cancelled"),  # NTE_DEVICE_NOT_FOUND
+    "0x80090011": ("NotAllowedError", "Cancelled"),  # NTE_NOT_FOUND
+    "0x800704C7": ("NotAllowedError", "Cancelled"),  # ERROR_CANCELLED
+    "0x80090036": ("NotAllowedError", "Cancelled"),  # NTE_USER_CANCELLED
+    "0x800705B4": ("NotAllowedError", "Cancelled"),  # ERROR_TIMEOUT
+    "0x80070057": ("UnknownError", "Failed"),  # E_INVALIDARG
 }
 STATUSES = {"Ready", "Initializing", "NoData", "Disabled", "NotInitialized"}
 PERMISSIONS = {"NotDetermined", "Granted", "Limited", "Denied", "Unavailable"}
@@ -131,11 +133,11 @@ def passkeys(r, caps):
         return
     errors = p["errors"]
     for hr, (name, mapped) in errors.items():
-        want = MAPPED.get(name, "Failed")
-        if hr in KNOWN:
-            known_name, want = KNOWN[hr]
-            if known_name:
-                expect(name == known_name, f"passkeys: {hr} is {name}, expected {known_name}")
+        if hr not in KNOWN:
+            fails.append(f"passkeys: {hr} ({name}) is not in the checker's table")
+            continue
+        known_name, want = KNOWN[hr]
+        expect(name == known_name, f"passkeys: {hr} is {name}, expected {known_name}")
         expect(kind(mapped) == want, f"passkeys: {hr} ({name}) → {mapped}, expected {want}")
     missing = set(KNOWN) - set(errors)
     expect(not missing, f"passkeys: no mapping for {sorted(missing)}")
