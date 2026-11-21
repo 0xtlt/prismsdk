@@ -91,9 +91,11 @@ pub fn report(owner: windows::Win32::Foundation::HWND, data: &std::path::Path, p
         "haptics": haptics,
     });
     let text = serde_json::to_string_pretty(&report).unwrap_or_default();
+    // The file's name only: its folders name the account.
+    let name = crate::device::file_name(&path);
     match std::fs::write(&path, text) {
-        Ok(()) => log!("device report written to {path}"),
-        Err(e) => log!("PRISM_DEVICE_REPORT: {path}: {e}"),
+        Ok(()) => log!("device report written to {name}"),
+        Err(e) => log!("PRISM_DEVICE_REPORT: {name}: {e}"),
     }
 }
 

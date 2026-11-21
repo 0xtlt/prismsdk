@@ -67,7 +67,7 @@ pub fn share(owner: HWND, app: &str, s: Share) {
                 StorageFile::GetFileFromPathAsync(&HSTRING::from(p.as_str()))
                     .and_then(|op| op.join())
                     .and_then(|f| AgileReference::new(&f))
-                    .map_err(|e| log!("share: {p}: {}", e.message()))
+                    .map_err(|e| log!("share: {}: {}", crate::device::file_name(p), e.message()))
                     .ok()
             })
             .collect();

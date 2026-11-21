@@ -1,8 +1,8 @@
 //! The device APIs' pure parts (`location.rs`, `camera.rs`, `haptics.rs`,
 //! `sensors.rs`): accuracy settings, Windows' times and missing values as
 //! Prism's positions, the privacy settings' values as permission states,
-//! haptic patterns as waveforms, sensor readings as motion samples. No
-//! WinRT: tested on every host.
+//! haptic patterns as waveforms, sensor readings as motion samples, the
+//! file names logs give. No WinRT: tested on every host.
 
 #![cfg_attr(not(target_os = "windows"), allow(dead_code))]
 
@@ -242,9 +242,27 @@ impl Fusion {
     }
 }
 
+/// The last part of a Windows path (`C:\Users\<account>\…\report.json`
+/// is `report.json`): what the logs name, never the folders, which say
+/// whose account it is.
+pub fn file_name(path: &str) -> &str {
+    path.rsplit(['\\', '/']).next().unwrap_or(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn logs_name_the_file_only() {
+        assert_eq!(
+            file_name(r"C:\Users\someone\agents\x\device-report.json"),
+            "device-report.json"
+        );
+        assert_eq!(file_name("C:/Users/someone/photo.jpg"), "photo.jpg");
+        assert_eq!(file_name("report.json"), "report.json");
+        assert_eq!(file_name(r"C:\Users\someone\"), "");
+    }
 
     fn near(a: [f64; 3], b: [f64; 3]) -> bool {
         a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-9)

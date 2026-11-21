@@ -42,8 +42,17 @@
 #
 # Environment: PRISM_WINDOWS_REMOTE (default scripts/windows-remote.sh),
 # PRISM_SMOKE_PROFILE and PRISM_SMOKE_NO_SYNC=1 as in scripts/windows-smoke.sh.
-# The checks need python3.
+# The checks need python3. The fetched files name no account: a path under
+# C:\Users\<name> reads C:\Users\<account> before it is printed or kept.
 set -eu
+
+# Replaces the account in the paths of the files fetched into $1.
+redact() {
+  for f in "$1"/*.log "$1"/*.json; do
+    [ -f "$f" ] || continue
+    sed -E 's/([A-Za-z]:[\\/]+[Uu][Ss][Ee][Rr][Ss][\\/]+)[^\\/"]+/\1<account>/g' "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+  done
+}
 
 check() {
   python3 scripts/windows/device-report-check.py "$1/device-report.json"
@@ -105,6 +114,7 @@ run() {
   status=0
   "$remote" ps "$script" || status=$?
   "$remote" get "target/windows-device-apis/$name.log" "$out" >/dev/null 2>&1 || true
+  redact "$out"
   if [ "$status" -eq 125 ]; then
     echo "windows-device-apis: FAIL: no desktop session to run WinUI in: the SSH user must be signed in on the machine" >&2
     exit 1
@@ -128,6 +138,7 @@ run device "PRISM_DEVICE_REPORT=%~dp0device-report.json"
   echo "windows-device-apis: FAIL: no device report" >&2
   exit 1
 }
+redact "$out"
 check "$out"
 
 # Location refused: the app's own calls answer Denied, without a prompt.
