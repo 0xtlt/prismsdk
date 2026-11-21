@@ -7100,10 +7100,12 @@
       if (!c) throw Object.assign(new Error("no credential"), { name: "NotAllowedError" });
       return JSON.stringify(json(c));
     };
-    // Other errors keep their name (#189): `InvalidStateError` is a passkey
-    // already on this device.
+    // Other errors keep their name (#189), as on Android and Windows:
+    // `InvalidStateError` is a passkey already on this device,
+    // `NotSupportedError` a request no authenticator here can do (not « no
+    // passkeys here »).
     const error = (e) => ({ err: e && e.name === "NotAllowedError" ? "cancelled"
-      : e && (e.name === "SecurityError" || e.name === "NotSupportedError") ? "unavailable"
+      : e && e.name === "SecurityError" ? "unavailable"
       : named(e) });
     const started = Date.now();
     try {

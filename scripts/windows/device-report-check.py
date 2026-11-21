@@ -21,7 +21,7 @@ KNOWN = {
     "0x80070032": ("ConstraintError", "Platform"),  # ERROR_NOT_SUPPORTED
     "0x80090029": ("ConstraintError", "Platform"),  # NTE_NOT_SUPPORTED
     "0x80090023": ("ConstraintError", "Platform"),  # NTE_TOKEN_KEYSET_STORAGE_FULL
-    "0x80090027": ("NotSupportedError", "Unavailable"),  # NTE_INVALID_PARAMETER
+    "0x80090027": ("NotSupportedError", "Platform"),  # NTE_INVALID_PARAMETER
     "0x80090035": ("NotAllowedError", "Cancelled"),  # NTE_DEVICE_NOT_FOUND
     "0x80090011": ("NotAllowedError", "Cancelled"),  # NTE_NOT_FOUND
     "0x800704C7": ("NotAllowedError", "Cancelled"),  # ERROR_CANCELLED

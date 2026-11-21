@@ -486,12 +486,16 @@ pub const ERROR_NAMES: &[(i32, &str)] = &[
 /// it `UnknownError`, like any other.
 pub const UNNAMED: i32 = 0x8007_0057_u32 as i32;
 
-/// A failed ceremony as Prism's error, like the web's (#189): `name` is
-/// what `WebAuthNGetErrorName` calls the HRESULT, the web's `DOMException`
-/// name. `NotAllowedError` (dismissed, timed out, no passkey to use) is
-/// `Cancelled`, `NotSupportedError` (no authenticator does what the server
-/// asks) `Unavailable`; `InvalidStateError` (the passkey being registered
-/// is already on this authenticator) and `ConstraintError` keep their name.
+/// A failed ceremony as Prism's error, as on the web and Android (#189):
+/// `name` is what `WebAuthNGetErrorName` calls the HRESULT, the web's
+/// `DOMException` name. `NotAllowedError` (dismissed, timed out, no
+/// passkey to use) is `Cancelled`; the other names stay a
+/// [`DeviceError::Platform`] with that name: `InvalidStateError` (the
+/// passkey being registered is already on this authenticator),
+/// `ConstraintError` (no authenticator does what the server asks) and
+/// `NotSupportedError` (`NTE_INVALID_PARAMETER`: a request Windows refuses).
+/// None is `Unavailable`, which says there are no passkeys here
+/// (`capabilities().passkeys`).
 pub fn error(hr: i32, name: &str, message: &str) -> DeviceError {
     if hr == NTE_USER_CANCELLED || hr == ERROR_CANCELLED {
         return DeviceError::Cancelled;
@@ -503,8 +507,7 @@ pub fn error(hr: i32, name: &str, message: &str) -> DeviceError {
     };
     match name {
         "NotAllowedError" => DeviceError::Cancelled,
-        "NotSupportedError" => DeviceError::Unavailable,
-        "InvalidStateError" | "ConstraintError" => DeviceError::Platform {
+        "InvalidStateError" | "ConstraintError" | "NotSupportedError" => DeviceError::Platform {
             name: name.into(),
             message,
         },
@@ -762,7 +765,21 @@ mod tests {
             error(1, "NotAllowedError", "timed out"),
             DeviceError::Cancelled
         );
-        assert_eq!(error(1, "NotSupportedError", "x"), DeviceError::Unavailable);
+        // A request Windows refuses is not « no passkeys here ».
+        assert_eq!(
+            error(
+                0x8009_0027_u32 as i32,
+                "NotSupportedError",
+                "The parameter is incorrect."
+            ),
+            DeviceError::Platform {
+                name: "NotSupportedError".into(),
+                message: "The parameter is incorrect.".into()
+            }
+        );
+        for (hr, name) in ERROR_NAMES {
+            assert_ne!(error(*hr, name, "m"), DeviceError::Unavailable, "{name}");
+        }
         assert_eq!(
             error(
                 0x8009_000F_u32 as i32,

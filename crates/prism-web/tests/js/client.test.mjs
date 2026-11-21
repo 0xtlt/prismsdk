@@ -1099,6 +1099,16 @@ test("passkeys of the app's relying party run with the server's options (#94)", 
   await new Promise((r) => setImmediate(r));
   assert.deepEqual(page.ws.sent.filter((m) => m.id === 7),
     [{ t: "device_reply", id: 7, err: "InvalidStateError\u001fThe authenticator was previously registered" }]);
+  // No algorithm the authenticator has: a named error, not « no passkeys here ».
+  page.window.navigator.credentials.create = async () => {
+    throw Object.assign(new Error("No supported algorithm"), { name: "NotSupportedError" });
+  };
+  page.ws.deliver({ t: "device", id: 8, call: "webauthn_rp", create: true, options: {
+    challenge: "AQID", rp: { id: "example.com", name: "Example" }, user: { id: "BAU", name: "ada", displayName: "Ada" },
+  } });
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(page.ws.sent.filter((m) => m.id === 8),
+    [{ t: "device_reply", id: 8, err: "NotSupportedError\u001fNo supported algorithm" }]);
   // Without WebAuthn: unavailable.
   delete page.window.PublicKeyCredential;
   page.ws.deliver({ t: "device", id: 6, call: "webauthn_rp", create: false, options: { challenge: "AQID" } });
