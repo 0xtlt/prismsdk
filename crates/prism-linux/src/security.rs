@@ -616,19 +616,17 @@ fn verify_window(
 
 // --- Loopback redirect (RFC 8252 §7.3) --------------------------------------------------------
 
-/// Listeners waiting for a sign-in, by redirect URI.
+/// The listener waiting for the next sign-in (an unused one closes after
+/// 10 minutes: `OAuth::resolve` asks for a redirect it does not use).
 #[derive(Default)]
 pub(crate) struct Loopback {
-    listeners: HashMap<String, std::net::TcpListener>,
+    listener: prism_core::security::LoopbackListener,
 }
 
 impl Loopback {
-    /// `http://127.0.0.1:<port>/callback`, served by a fresh listener.
+    /// `http://127.0.0.1:<port>/callback`.
     pub fn redirect(&mut self) -> Answer {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(failed)?;
-        let port = listener.local_addr().map_err(failed)?.port();
-        let uri = format!("http://127.0.0.1:{port}/callback");
-        self.listeners.insert(uri.clone(), listener);
+        let uri = self.listener.redirect().map_err(failed)?;
         Ok(DeviceValue::Text(Some(uri)))
     }
 
@@ -640,7 +638,7 @@ impl Loopback {
         redirect: &str,
         reply: impl FnOnce(Answer) + Send + 'static,
     ) {
-        let Some(listener) = self.listeners.remove(redirect) else {
+        let Some(listener) = self.listener.take(redirect) else {
             return reply(Err(failed(
                 "unknown redirect URI (ask auth_redirect first)",
             )));
@@ -713,7 +711,7 @@ mod tests {
             panic!()
         };
         assert!(uri.starts_with("http://127.0.0.1:") && uri.ends_with("/callback"));
-        let listener = lb.listeners.remove(&uri).unwrap();
+        let listener = lb.listener.take(&uri).unwrap();
         let port = listener.local_addr().unwrap().port();
         let client = std::thread::spawn(move || {
             use std::io::{Read, Write};

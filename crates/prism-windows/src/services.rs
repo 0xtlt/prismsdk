@@ -188,9 +188,19 @@ impl WinServices {
                 value,
                 options,
             } => {
-                // Credential Manager has no per-item owner check: only
-                // `confirm_owner` secrets, guarded by Hello when they are
-                // read (S22).
+                if options.biometric && !options.confirm_owner {
+                    // Sealed with a key only Windows Hello gives back (S22):
+                    // storing asks the user too. Nothing is stored unless
+                    // it is sealed.
+                    let app = self.app.clone();
+                    std::thread::spawn(move || {
+                        let r = security::sealed_set(&app, &key, &value);
+                        shell::on_ui(move || reply(id, r.map(|_| DeviceValue::Done)));
+                    });
+                    return;
+                }
+                // `confirm_owner`: stored as it is (Credential Manager has
+                // no per-item owner check), Hello asked when it is read.
                 let gated = match options.app_gate(self.caps.device_auth) {
                     Ok(gated) => gated,
                     Err(e) => return reply(id, Err(e)),
@@ -235,6 +245,8 @@ impl WinServices {
                 reply(id, Err(DeviceError::Unavailable));
             }
             DeviceCall::StopWatch | DeviceCall::Reconnect => {}
+            // No browser id natively: nothing to renew.
+            DeviceCall::RenewBrowserId => reply(id, Ok(DeviceValue::Done)),
             // No haptics or share sheet yet; Apple's sign-in and passkeys
             // are other platforms'; cookies are the web's.
             DeviceCall::Haptic(_)
@@ -303,9 +315,19 @@ impl WinServices {
         });
     }
 
-    /// A secret; one stored with `biometric` needs Windows Hello first.
+    /// A secret. A `biometric` one is opened with the app's Hello key, a
+    /// `confirm_owner` one needs Windows Hello's consent first; both ask
+    /// the user.
     fn secret_get(&mut self, id: u64, key: String, prompt: Option<String>) {
         match security::secret_get(&self.app, &key) {
+            Ok(Some(v)) if crate::seal::is_sealed(&v) => {
+                // Hello's key prompt has its own text: `prompt` is unused.
+                let app = self.app.clone();
+                std::thread::spawn(move || {
+                    let r = security::sealed_get(&app, &key, &v);
+                    shell::on_ui(move || reply(id, r.map(|v| DeviceValue::Text(Some(v)))));
+                });
+            }
             Ok(Some(v)) if v.starts_with(GATED) => {
                 let value = v[GATED.len()..].to_string();
                 let reason = prompt.unwrap_or_else(|| self.app.clone());

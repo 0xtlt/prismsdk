@@ -29,6 +29,48 @@ pub(crate) enum Inbound {
     /// The page fetched the cookie of call `id` (`/_prism/cookie`): the
     /// browser has it.
     CookieSet(u64, prism_core::Cookie),
+    /// Another page of the browser renewed its id (S10): the browser has
+    /// the new one, this session still runs on the old one. It reconnects.
+    BrowserRenewed,
+}
+
+/// The live sessions of this process, by browser id: (session key, inbox).
+type LiveSessions = HashMap<String, Vec<(u64, mpsc::Sender<Inbound>)>>;
+
+fn live_sessions() -> std::sync::MutexGuard<'static, LiveSessions> {
+    static L: std::sync::OnceLock<std::sync::Mutex<LiveSessions>> = std::sync::OnceLock::new();
+    L.get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Files session `key` (its `inbox`) under browser `sid`.
+fn live(sid: &str, key: u64, inbox: mpsc::Sender<Inbound>) {
+    live_sessions()
+        .entry(sid.to_string())
+        .or_default()
+        .push((key, inbox));
+}
+
+/// Session `key` no longer runs on browser `sid`; returns its inbox.
+fn unlive(sid: &str, key: u64) -> Option<mpsc::Sender<Inbound>> {
+    let mut all = live_sessions();
+    let list = all.get_mut(sid)?;
+    let at = list.iter().position(|(k, _)| *k == key)?;
+    let (_, inbox) = list.swap_remove(at);
+    if list.is_empty() {
+        all.remove(sid);
+    }
+    Some(inbox)
+}
+
+/// The browser that had the id `sid` has a new one (its ticket was
+/// redeemed): the sessions still on `sid` reconnect. Those of the browser
+/// come back with the new id; others (whoever planted `sid`) find nothing.
+pub(crate) fn browser_renewed(sid: &str) {
+    for (_, inbox) in live_sessions().remove(sid).unwrap_or_default() {
+        let _ = inbox.send(Inbound::BrowserRenewed);
+    }
 }
 
 /// What one waiting message costs besides its text (its queue slot): a
@@ -174,6 +216,7 @@ impl WebApp {
         let app = self.clone();
         let waker = tx.clone();
         let inbox = tx.clone();
+        let registered = tx.clone();
         let queued = session.queued.clone();
         // One wake-up waits at a time, however often async work wakes us.
         let wake_pending = Arc::new(AtomicBool::new(false));
@@ -190,6 +233,8 @@ impl WebApp {
                     }
                 }));
                 let runtime = Runtime::with_options(&app.init_with(request, page_request), options);
+                let sign_ins = crate::security::session_key();
+                live(&sid, sign_ins, registered);
                 Live {
                     device: device.unwrap_or_else(|| runtime.app.device_info()),
                     runtime,
@@ -209,7 +254,7 @@ impl WebApp {
                         base: app.base().to_string(),
                         title: app.config().title.clone(),
                         inbox: Some(inbox),
-                        sign_ins: crate::security::session_key(),
+                        sign_ins,
                         sid: Some(sid.clone()),
                         ..app.services()
                     },
@@ -252,6 +297,7 @@ impl Drop for Live {
     /// The session ended: its sign-ins will not be redeemed.
     fn drop(&mut self) {
         crate::security::forget_session(self.services.sign_ins);
+        unlive(&self.sid, self.services.sign_ins);
     }
 }
 
@@ -345,11 +391,21 @@ impl Live {
                 Ok(Inbound::Message(text)) => self.message(&text),
                 Ok(Inbound::AuthRedirect(id, url)) => {
                     self.services.server_answers.remove(&id);
-                    // Absolute, as the redirect URI (`/_prism/auth/callback?…`
-                    // arrives).
-                    let url = format!("{}{}{url}", self.services.origin, self.services.base);
-                    self.runtime
-                        .device_reply(id, Ok(prism_core::DeviceValue::Text(Some(url))))
+                    // A sign-in completed: the browser gets a new id first
+                    // (S10), or the sign-in fails.
+                    let result = match self.renew_browser_id() {
+                        // Absolute, as the redirect URI
+                        // (`/_prism/auth/callback?…` arrives).
+                        Ok(()) => Ok(prism_core::DeviceValue::Text(Some(format!(
+                            "{}{}{url}",
+                            self.services.origin, self.services.base
+                        )))),
+                        Err(e) => Err(prism_core::DeviceError::Failed(e)),
+                    };
+                    if !self.flush_outbox() {
+                        return;
+                    }
+                    self.runtime.device_reply(id, result)
                 }
                 // The browser has the cookie: so does the session's request.
                 Ok(Inbound::CookieSet(id, cookie)) => {
@@ -361,6 +417,11 @@ impl Live {
                     }
                     self.runtime
                         .device_reply(id, Ok(prism_core::DeviceValue::Done))
+                }
+                // The page reconnects with the browser's new id.
+                Ok(Inbound::BrowserRenewed) => {
+                    (self.send)(json!({ "t": "reconnect" }).to_string());
+                    return;
                 }
                 Ok(Inbound::Wake) | Err(mpsc::RecvTimeoutError::Timeout) => self.tick(),
                 Ok(Inbound::Close) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
@@ -420,15 +481,87 @@ impl Live {
                 (PlatformRequest::LoadFont(font), Some(urls)) => {
                     PlatformRequest::LoadFont(font_at(font, urls.as_ref()))
                 }
+                // `cx.renew_browser_id()`: in order with the other calls (a
+                // cookie set before it is bound to the old id).
+                (
+                    PlatformRequest::Device {
+                        id,
+                        call: prism_core::DeviceCall::RenewBrowserId,
+                    },
+                    _,
+                ) => {
+                    let result = self
+                        .renew_browser_id()
+                        .map(|()| prism_core::DeviceValue::Done)
+                        .map_err(prism_core::DeviceError::Failed);
+                    self.services.local.push((id, result));
+                    continue;
+                }
                 (other, _) => other,
             };
             self.services.handle(request);
         }
         self.services.sync_sheets();
+        self.flush_outbox()
+    }
+
+    /// Sends the messages waiting for the page. `false` once it is gone.
+    fn flush_outbox(&mut self) -> bool {
         self.services
             .outbox
             .drain(..)
             .all(|msg| (self.send)(msg.to_string()))
+    }
+
+    /// Gives the browser a new id (S10): its data moves to the new id's
+    /// directory in one rename, this session follows it, and the page gets
+    /// a ticket bound to the old id that sets the new one (after the
+    /// cookies asked for before, before those asked for after). Once the
+    /// browser redeems it, its other pages still on the old id reconnect.
+    /// Whoever planted the old id is left with an empty session.
+    fn renew_browser_id(&mut self) -> Result<(), String> {
+        let (old, new) = (self.sid.clone(), crate::app::new_session_id());
+        let (from, to) = (self.app.session_dir(&old), self.app.session_dir(&new));
+        crate::security::move_browser(&from, &to, &old)?;
+        crate::pictures::renamed(&old, &new);
+        crate::downloads::renamed(&old, &new);
+        crate::scene_blobs::renamed(&old, &new);
+        prism_core::device::move_local_files(&from, &to);
+        self.services.uploads.moved(&from, &to);
+        // The session's storage, secrets and directories: the new id's.
+        let root = &self.app.inner.data_root;
+        let services = &mut self.services;
+        services.secure = Some(crate::security::SecureStore::new(
+            &to,
+            &new,
+            crate::security::server_key(root),
+        ));
+        services.sid = Some(new.clone());
+        self.encoder.sid = Some(new.clone());
+        self.encoder.asset_urls = Some(self.app.session_asset_urls(&new));
+        let app = &mut self.runtime.app;
+        app.set_storage(Box::new(prism_core::FileStorage::new(&to)));
+        app.set_cloud_storage(Box::new(prism_core::FileStorage::new(to.join("cloud"))));
+        app.set_data_dirs(Some(to), Some(root.clone()));
+        if let Some(mut request) = app.request().cloned() {
+            for name in [crate::app::SECURE_SID, crate::app::PLAIN_SID] {
+                if request.cookie(name) == Some(old.as_str()) {
+                    request.apply_cookie(&prism_core::Cookie::new(name, &new));
+                }
+            }
+            app.set_request(request);
+        }
+        if let Some(inbox) = unlive(&old, self.services.sign_ins) {
+            live(&new, self.services.sign_ins, inbox);
+        }
+        let ticket = crate::cookies::issue_browser_id(&old, &new);
+        self.services.outbox.push(json!({
+            "t": "browser_id",
+            "url": format!("{}/_prism/cookie", self.services.base),
+            "ticket": ticket,
+        }));
+        self.sid = new;
+        Ok(())
     }
 
     /// Applies one message from the page; returns the resulting patches.
@@ -472,6 +605,18 @@ impl Live {
                     crate::security::forget_redirect(self.services.sign_ins, id);
                     crate::cookies::forget(id, &self.sid);
                     rt.device_reply(id, device_result(&v))
+                }
+                // A passkey of the app's relying party: the browser's id
+                // renews before the app signs the user in (S10).
+                Some(id) if self.services.passkeys.remove(&id) => {
+                    let mut result = device_result(&v);
+                    if result.is_ok()
+                        && let Err(e) = self.renew_browser_id()
+                    {
+                        result = Err(prism_core::DeviceError::Failed(e));
+                    }
+                    self.flush_outbox();
+                    self.runtime.device_reply(id, result)
                 }
                 Some(id) => {
                     let result = device_result(&v);
@@ -1121,6 +1266,9 @@ pub(crate) struct WebServices {
     pub reconnect: bool,
     /// WebAuthn ceremonies waiting for the page, by call id.
     pub ceremonies: HashMap<u64, (crate::security::Ceremony, Gate)>,
+    /// Passkey calls of the app's relying party waiting for the page: one
+    /// that succeeds signs the user in, and renews the browser's id (S10).
+    pub passkeys: std::collections::HashSet<u64>,
     /// The browser has a platform authenticator with user verification.
     pub uvpa: bool,
     /// Periodic background tasks: (id, next run, interval). On the web they
@@ -2033,6 +2181,16 @@ impl WebServices {
                 Some(
                     json!({ "t": "device", "id": id, "call": "write_clipboard", "entries": entries }),
                 )
+            }
+            C::WebAuthn(r) => {
+                self.passkeys.insert(id);
+                Some(device_json(id, C::WebAuthn(r)))
+            }
+            // A live session renews it (`Live::flush_requests`); the first
+            // paint has no page to give the new id to.
+            C::RenewBrowserId => {
+                self.reply(id, Err(E::Unavailable));
+                None
             }
             other => Some(device_json(id, other)),
         }

@@ -67,6 +67,20 @@ impl Grants {
         }
     }
 
+    /// Moves the grants of browser `old` to `new`.
+    fn renamed(&mut self, old: u128, new: u128) {
+        let moved: Vec<_> = self
+            .sent
+            .iter()
+            .filter(|((_, sid), _)| *sid == old)
+            .map(|(&(id, _), &grant)| (id, grant))
+            .collect();
+        for (id, grant) in moved {
+            self.sent.remove(&(id, old));
+            self.sent.insert((id, new), grant);
+        }
+    }
+
     fn allows(&self, sid: u128, id: u128, now: Instant) -> bool {
         self.sent
             .get(&(id, sid))
@@ -147,6 +161,14 @@ pub(crate) fn sent(sid: Option<&str>, update: &Value) {
     }
 }
 
+/// The browser `old` now has the id `new` (S10): the blobs it may fetch
+/// follow it.
+pub(crate) fn renamed(old: &str, new: &str) {
+    if let (Some(old), Some(new)) = (hex_id(old), hex_id(new)) {
+        state().grants.renamed(old, new);
+    }
+}
+
 /// A first paint for the browser `sid` showed `scenes`: it may fetch their
 /// blobs, which stay until its live session takes over.
 pub(crate) fn first_paint(sid: &str, scenes: Vec<FlatScene>) {
@@ -219,6 +241,19 @@ mod tests {
 
     const A: &str = "0123456789abcdef0123456789abcdef";
     const B: &str = "fedcba9876543210fedcba9876543210";
+
+    /// S10: the blobs a browser may fetch follow it to its new id.
+    #[test]
+    fn s10_grants_follow_a_renewed_browser_id() {
+        let now = Instant::now();
+        let mut g = Grants::default();
+        g.grant(1, &[10, 11], now);
+        g.grant(2, &[10], now);
+        g.renamed(1, 3);
+        assert!(!g.allows(1, 10, now) && !g.allows(1, 11, now));
+        assert!(g.allows(3, 10, now) && g.allows(3, 11, now));
+        assert!(g.allows(2, 10, now) && !g.allows(2, 11, now));
+    }
 
     /// S29: a blob goes only to the browser it was sent to, never to a
     /// shared cache.

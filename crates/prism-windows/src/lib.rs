@@ -63,13 +63,14 @@
 //! | `notify`, `toast` | app notifications (Windows App SDK) |
 //! | `taskbar` | the badge on the taskbar button |
 //! | `security` | Credential Manager, Windows Hello, loopback sign-in |
+//! | `seal` | biometric secrets: sealed with a key only Windows Hello gives back |
 //! | `tray`, `icons` | notification area icons and their menus |
 //! | `menubar`, `accel` | the window's menu bar, keyboard accelerators |
 //! | `clipboard` | the clipboard in all its types |
 //! | `fonts` | run-time fonts |
 //! | `shell` | the services' hidden window: modal UI, timers, threads |
 //! | `system` | theme, accent, locale, DPI |
-//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access`, `pinch` | pure helpers, tested on every host |
+//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access`, `pinch`, `seal` | pure helpers, tested on every host |
 
 // Roles and states for UI Automation: no Win32, tested everywhere.
 mod access;
@@ -165,6 +166,8 @@ mod rich;
 mod scene;
 #[cfg(target_os = "windows")]
 mod scene3d;
+// Secrets only Windows Hello opens: no Win32, tested everywhere.
+mod seal;
 #[cfg(target_os = "windows")]
 mod security;
 #[cfg(target_os = "windows")]

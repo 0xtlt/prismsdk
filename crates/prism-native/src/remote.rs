@@ -1461,6 +1461,8 @@ pub mod device {
             DeviceCall::SetCookie(_) => json!({ "call": "set_cookie" }),
             // No live session to renew: the host ignores it.
             DeviceCall::Reconnect => json!({ "call": "reconnect" }),
+            // No browser id natively (`renew_browser_id` never sends it).
+            DeviceCall::RenewBrowserId => json!({ "call": "renew_browser_id" }),
         };
         body["op"] = json!("device");
         body["id"] = json!(id);

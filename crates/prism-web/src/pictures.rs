@@ -86,6 +86,16 @@ pub(crate) fn proxied(base: &str, sid: Option<&str>, src: &str) -> Option<String
     Some(format!("{base}/_prism/picture/{id}"))
 }
 
+/// The browser `old` now has the id `new` (S10): its pictures follow it.
+pub(crate) fn renamed(old: &str, new: &str) {
+    let mut r = registry().lock().unwrap_or_else(|e| e.into_inner());
+    for e in r.entries.values_mut() {
+        if e.sid.as_deref() == Some(old) {
+            e.sid = Some(new.to_string());
+        }
+    }
+}
+
 /// `GET <base>/_prism/picture/<id>` from the session `sid` (its cookie):
 /// at most `max` bytes of it.
 pub(crate) fn serve(

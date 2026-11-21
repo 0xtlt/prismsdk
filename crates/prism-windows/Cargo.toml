@@ -22,6 +22,9 @@ name = "prism_windows"
 prism-core.workspace = true
 # `gl3d`: the OpenGL renderer of 3D scenes (drawn with WGL).
 prism-native = { workspace = true, features = ["gl3d"] }
+# Biometric secrets (`seal`): HKDF, AES-256-GCM, checking Hello's RSA
+# signature. Pure Rust and assembly, so `seal` is tested on every host.
+ring = "0.17"
 
 # WinUI 3 from the Windows App SDK (self-contained: its runtime goes next to
 # the app, see build.rs), hosted in a Win32 window; WIC for pictures and
@@ -52,7 +55,10 @@ windows = { version = "0.62", features = [
   "Media_Core",
   "Media_Playback",
   "Media_Streaming_Adaptive",
+  "Security_Credentials",
   "Security_Credentials_UI",
+  "Security_Cryptography",
+  "Security_Cryptography_Core",
   "Storage",
   "Storage_Streams",
   "System",

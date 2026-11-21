@@ -2666,6 +2666,7 @@ dependencies = [
  "prismsdk-core",
  "prismsdk-http",
  "prismsdk-native",
+ "ring",
  "serde_json",
  "windows",
  "windows-bindgen",

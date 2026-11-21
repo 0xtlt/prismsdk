@@ -200,7 +200,11 @@ impl crate::App {
             .or(self.cloud.data_dir.as_deref())
     }
 
-    pub(crate) fn set_data_dirs(&mut self, data: Option<PathBuf>, shared: Option<PathBuf>) {
+    /// Sets [`data_dir`](Self::data_dir) and
+    /// [`shared_data_dir`](Self::shared_data_dir). Backends call it (the web
+    /// backend when a browser's data moves to its new id).
+    #[doc(hidden)]
+    pub fn set_data_dirs(&mut self, data: Option<PathBuf>, shared: Option<PathBuf>) {
         self.cloud.data_dir = data;
         self.cloud.shared_data_dir = shared;
     }

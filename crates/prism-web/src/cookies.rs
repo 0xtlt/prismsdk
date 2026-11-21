@@ -8,6 +8,9 @@
 //! 3. [`redeem`] checks the request comes from the page itself (same origin,
 //!    the same browser), answers `204` with the `Set-Cookie`, and tells the
 //!    session, which answers the app's call and updates its request.
+//!
+//! The browser's own id (`prism_sid`) changes the same way when a sign-in
+//! renews it (S10): its ticket is bound to the old id and sets the new one.
 
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -29,11 +32,19 @@ pub(crate) const TICKET_HEADER: &str = "x-prism-cookie";
 struct Pending {
     /// The browser it was issued to (`prism_sid`).
     sid: String,
-    cookie: Cookie,
+    what: What,
     expires: Instant,
-    /// The session, and its call.
-    session: mpsc::Sender<Inbound>,
-    id: u64,
+}
+
+enum What {
+    /// The app's cookie, for call `id` of `session`.
+    App {
+        cookie: Cookie,
+        session: mpsc::Sender<Inbound>,
+        id: u64,
+    },
+    /// The browser's new id ([`issue_browser_id`]).
+    BrowserId(String),
 }
 
 fn pending() -> &'static Mutex<HashMap<String, Pending>> {
@@ -43,6 +54,22 @@ fn pending() -> &'static Mutex<HashMap<String, Pending>> {
 
 /// A ticket for `cookie`, for browser `sid` and call `id` of `session`.
 pub(crate) fn issue(sid: &str, cookie: Cookie, session: mpsc::Sender<Inbound>, id: u64) -> String {
+    file(
+        sid,
+        What::App {
+            cookie,
+            session,
+            id,
+        },
+    )
+}
+
+/// A ticket that gives browser `sid` the id `new` (its data moved there).
+pub(crate) fn issue_browser_id(sid: &str, new: &str) -> String {
+    file(sid, What::BrowserId(new.to_string()))
+}
+
+fn file(sid: &str, what: What) -> String {
     let ticket = crate::security::random_id();
     let now = Instant::now();
     let mut map = pending()
@@ -53,10 +80,8 @@ pub(crate) fn issue(sid: &str, cookie: Cookie, session: mpsc::Sender<Inbound>, i
         ticket.clone(),
         Pending {
             sid: sid.to_string(),
-            cookie,
+            what,
             expires: now + TICKET_TTL,
-            session,
-            id,
         },
     );
     ticket
@@ -67,7 +92,7 @@ pub(crate) fn forget(id: u64, sid: &str) {
     pending()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .retain(|_, p| !(p.id == id && p.sid == sid));
+        .retain(|_, p| !(matches!(p.what, What::App { id: i, .. } if i == id) && p.sid == sid));
 }
 
 /// Why the app's cookie cannot reach the browser of a page at `origin`
@@ -111,10 +136,12 @@ fn is_local(host: &str) -> bool {
 }
 
 /// `POST <base>/_prism/cookie` with the ticket in `X-Prism-Cookie`.
+/// `browser_cookie` is the `Set-Cookie` that gives the browser an id.
 pub(crate) fn redeem(
     headers: &HeaderMap,
     sid: Option<String>,
     public: Option<&str>,
+    browser_cookie: impl FnOnce(&str) -> String,
 ) -> Response<Vec<u8>> {
     let answer = |code: StatusCode| {
         let mut r = Response::new(Vec::new());
@@ -144,12 +171,27 @@ pub(crate) fn redeem(
     else {
         return answer(StatusCode::FORBIDDEN);
     };
-    let Ok(value) = HeaderValue::from_str(&p.cookie.to_header()) else {
+    let header = match &p.what {
+        What::App { cookie, .. } => cookie.to_header(),
+        What::BrowserId(new) => browser_cookie(new),
+    };
+    let Ok(value) = HeaderValue::from_str(&header) else {
         return answer(StatusCode::INTERNAL_SERVER_ERROR);
     };
     let mut r = answer(StatusCode::NO_CONTENT);
     r.headers_mut().insert(header::SET_COOKIE, value);
-    let _ = p.session.send(Inbound::CookieSet(p.id, p.cookie));
+    match p.what {
+        What::App {
+            cookie,
+            session,
+            id,
+        } => {
+            let _ = session.send(Inbound::CookieSet(id, cookie));
+        }
+        // The browser's other pages still run on the old id: they
+        // reconnect, and come back with the new one.
+        What::BrowserId(_) => crate::session::browser_renewed(&p.sid),
+    }
     r
 }
 

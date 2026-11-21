@@ -347,6 +347,30 @@ pub fn forget_local_file(url: &str) {
     }
 }
 
+/// Files [`register_local_file`] kept under `from` are now under `to`
+/// (the web backend moved a browser's data to its new id).
+#[doc(hidden)]
+pub fn move_local_files(from: &std::path::Path, to: &std::path::Path) {
+    if let Ok(mut m) = LOCAL_FILES.lock()
+        && let Some(m) = m.as_mut()
+    {
+        for path in m.values_mut() {
+            if let Ok(rest) = path.strip_prefix(from) {
+                *path = to.join(rest);
+            }
+        }
+    }
+}
+
+/// Where [`register_local_file`] keeps the bytes behind `url` (tests).
+#[doc(hidden)]
+pub fn local_file(url: &str) -> Option<std::path::PathBuf> {
+    LOCAL_FILES
+        .lock()
+        .ok()
+        .and_then(|m| m.as_ref()?.get(url).cloned())
+}
+
 /// Whether [`register_local_file`] knows `url` (tests).
 #[doc(hidden)]
 pub fn has_local_file(url: &str) -> bool {
@@ -717,6 +741,10 @@ pub enum DeviceCall {
     /// Ends the live session and opens a new one ([`App::reconnect`]); nothing
     /// natively. No answer.
     Reconnect,
+    /// Gives the browser a new id and moves its data to it
+    /// ([`AsyncApp::renew_browser_id`](crate::AsyncApp::renew_browser_id)).
+    /// Answers `Done`; natively there is no browser id: `Done` at once.
+    RenewBrowserId,
 }
 
 /// A backend's answer to a [`DeviceCall`].

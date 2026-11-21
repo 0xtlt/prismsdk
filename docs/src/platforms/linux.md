@@ -10,6 +10,6 @@
 - Location uses GeoClue2 over the system bus, asynchronously; `request_permission` starts a client, so the desktop's agent asks the user. Also available: the file chooser for photos, the clipboard, opening links with the default app.
 - Notifications use `GNotification`, with buttons; the dev image's D-Bus monitor shows them. Alerts are modal windows. Context menus open on right-click or press and hold (`GtkPopoverMenu`). `set_app_menu` becomes the menu bar, with shortcuts.
 - The tray uses StatusNotifierItem through `ksni`, checked against a test watcher. Also supported: swipes (touchpad), scroll events, refresh with F5 / Ctrl+R, lifecycle (focus, minimized) and background tasks while the app runs. Text size follows GNOME's scaling factor; reduced motion follows "animations off".
-- Secrets use the Secret Service (D-Bus), fingerprints fprintd, sign-in the default browser with a loopback redirect (see [Security](#security-secrets-biometrics-sign-in)).
+- Secrets use the Secret Service (D-Bus; `biometric` ones answer `Unavailable`, since no Linux store ties a secret to the user's presence), fingerprints fprintd, sign-in the default browser with a loopback redirect (see [Security](#security-secrets-biometrics-sign-in)).
 - No desktop standard exists for motion, camera, haptics or a share sheet, so `capabilities` reports them as unavailable.
 - No [web views](../guide/web-views.md) yet (WebKitGTK would add a system dependency): `web_view` draws an empty box and `capabilities().web_view` is false.
