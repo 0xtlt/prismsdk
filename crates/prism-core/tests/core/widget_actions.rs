@@ -339,7 +339,11 @@ fn s19_only_links_with_the_apps_token_run_an_action() {
         format!("{plain}&token={}", &token[..16]),
         format!("{plain}&token={}", &token[16..]),
         format!("{plain}&token={}", &token[..46]),
-        format!("{plain}&token={}0", &token[..47]),
+        format!(
+            "{plain}&token={}{}",
+            &token[..47],
+            if token.ends_with('0') { '1' } else { '0' }
+        ),
         format!("{plain}&token={token}00"),
         // The MAC with another drawing's id.
         format!(
