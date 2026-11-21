@@ -541,14 +541,17 @@ impl Scene {
                 _ => {}
             }
         }
-        // Clickable views showing the label: the innermost one.
+        // Clickable views showing the label: the innermost one. A
+        // clickable scroll view refreshes (`refresh.rs`): it is no control,
+        // and would take the label of each field and text in the page.
         order
             .iter()
             .rev()
             .copied()
             .find(|&id| {
                 let n = &self.nodes[&id];
-                (n.clickable || matches!(n.kind, NodeKind::Picker | NodeKind::DatePicker))
+                let control = n.clickable && n.kind != NodeKind::Scroll;
+                (control || matches!(n.kind, NodeKind::Picker | NodeKind::DatePicker))
                     && self.shows_label(id, label)
             })
             .map(Target::Node)
@@ -681,6 +684,18 @@ mod tests {
         s.nodes.get_mut(&1).unwrap().clickable = true;
         assert_eq!(s.find_by_label("Hello"), Some(Target::Node(1)));
         assert_eq!(s.find_by_label("nothing"), None);
+    }
+
+    #[test]
+    fn a_refreshing_scroll_view_takes_no_label() {
+        let mut s = sample();
+        node(&mut s, 5, NodeKind::Text, Rect::new(10., 200., 100., 20.));
+        s.nodes.get_mut(&5).unwrap().text = "Inside".into();
+        s.set_children(2, &[3, 5]);
+        // Clickable: it refreshes on a pull, F5 or Ctrl+R.
+        s.nodes.get_mut(&2).unwrap().clickable = true;
+        assert_eq!(s.find_by_label("Inside"), None);
+        assert_eq!(s.find_by_label("+1"), Some(Target::Node(3)));
     }
 
     #[test]
