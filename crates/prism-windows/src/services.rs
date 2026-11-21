@@ -393,8 +393,20 @@ impl PlatformServices for WinServices {
     }
 }
 
-/// Opens a URL (or a file, a folder) with its default app.
+/// Opens a URL (or a file, a folder) with its default app. `PRISM_BROWSER`
+/// (a development hook) opens web pages with that command instead, for a
+/// test PC whose default browser must not change: a browser's path, or a
+/// command line (`"C:\…\chrome.exe" --user-data-dir=…`), the URL appended.
 pub fn open(url: &str) -> Result<(), DeviceError> {
+    if let Some(browser) = crate::win::env("PRISM_BROWSER")
+        && (url.starts_with("http://") || url.starts_with("https://"))
+    {
+        return browser_command(&browser)
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| DeviceError::Failed(format!("PRISM_BROWSER: {e}")));
+    }
     let target = wide(url);
     let r = unsafe {
         ShellExecuteW(
@@ -417,6 +429,22 @@ pub fn open(url: &str) -> Result<(), DeviceError> {
     }
 }
 
+/// `PRISM_BROWSER`'s program and arguments: an existing file as it is,
+/// else a command line whose program may be quoted.
+fn browser_command(line: &str) -> std::process::Command {
+    let line = line.trim();
+    if std::path::Path::new(line).is_file() {
+        return std::process::Command::new(line);
+    }
+    let (program, args) = match line.strip_prefix('"').and_then(|l| l.split_once('"')) {
+        Some(quoted) => quoted,
+        None => line.split_once(' ').unwrap_or((line, "")),
+    };
+    let mut command = std::process::Command::new(program);
+    command.args(args.split_whitespace());
+    command
+}
+
 /// Shows `path` selected in Explorer (#210); else opens its folder.
 fn reveal(path: &std::path::Path) {
     let p = wide(&path.to_string_lossy());
@@ -432,5 +460,18 @@ fn reveal(path: &std::path::Path) {
     }
     if let Some(folder) = path.parent() {
         let _ = open(&folder.to_string_lossy());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn browser_command_line() {
+        let c = super::browser_command(r#""C:\Program Files\B\b.exe" --a=1  --b"#);
+        assert_eq!(c.get_program(), r"C:\Program Files\B\b.exe");
+        assert_eq!(c.get_args().collect::<Vec<_>>(), ["--a=1", "--b"]);
+        let c = super::browser_command(r"C:\b.exe --x");
+        assert_eq!(c.get_program(), r"C:\b.exe");
+        assert_eq!(c.get_args().collect::<Vec<_>>(), ["--x"]);
     }
 }

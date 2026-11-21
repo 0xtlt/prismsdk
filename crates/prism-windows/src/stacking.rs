@@ -8,10 +8,11 @@
 //! `Scene::hit_test` finds it first), whatever its place.
 //!
 //! `Scene::children` stays in paint order (hit testing); `View::children`
-//! is the elements' order.
+//! is the elements' order. A lazy child (`defer.rs`) joins its parent in
+//! the tree's order when it gets its elements, kept here meanwhile.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use prism_core::NodeId;
 
@@ -21,6 +22,26 @@ use crate::winui::xaml::Controls::Canvas;
 thread_local! {
     /// The elements given a `Canvas.ZIndex` other than 0, and its value.
     static Z: RefCell<HashMap<NodeId, i32>> = RefCell::default();
+    /// A parent's children in the tree's order, where it is not their
+    /// paint order.
+    static READING: RefCell<HashMap<NodeId, Vec<NodeId>>> = RefCell::default();
+}
+
+/// `parent`'s children in the tree's order (`set_reading_order`), or
+/// `None`: in their paint order (`set_children`).
+pub fn read_in(parent: NodeId, order: Option<&[NodeId]>) {
+    READING.with(|r| {
+        let mut r = r.borrow_mut();
+        match order {
+            Some(o) => r.insert(parent, o.to_vec()),
+            None => r.remove(&parent),
+        };
+    });
+}
+
+/// `parent`'s children in the tree's order, if it is not their paint order.
+pub fn reading_order(parent: NodeId) -> Option<Vec<NodeId>> {
+    READING.with(|r| r.borrow().get(&parent).cloned())
 }
 
 /// Each child of `parent` drawn in its paint order, a sticky child above
@@ -31,7 +52,14 @@ pub fn restack(w: &Win, parent: NodeId) {
     };
     let paint = &n.children;
     let sticky = |c: NodeId| w.scene.get(c).is_some_and(|n| n.sticky.is_some());
-    let in_order = *paint == v.children;
+    // The children that have elements (lazy ones may not yet).
+    let in_order = *paint == v.children || {
+        let linked: HashSet<NodeId> = v.children.iter().copied().collect();
+        paint
+            .iter()
+            .filter(|c| linked.contains(c))
+            .eq(v.children.iter())
+    };
     let lifted = paint.iter().any(|c| sticky(*c));
     // Nothing to draw out of order, and no element keeps an older index.
     if in_order && !lifted && Z.with(|z| z.borrow().is_empty()) {
@@ -64,4 +92,5 @@ pub fn restack(w: &Win, parent: NodeId) {
 /// Node `id` is gone.
 pub fn forget(id: NodeId) {
     Z.with(|m| m.borrow_mut().remove(&id));
+    READING.with(|r| r.borrow_mut().remove(&id));
 }

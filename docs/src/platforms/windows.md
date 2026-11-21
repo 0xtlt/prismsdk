@@ -155,7 +155,9 @@ kinds and services come next (see [Not yet](#not-yet)).
   reads a stream of the backend's (`MediaSource::CreateFromStream`) whose
   reads are HTTP range requests with the headers, a megabyte at a time
   (redirects to another origin drop them); HLS and DASH go through an
-  `AdaptiveMediaSource` whose `HttpClient` sends them.
+  `AdaptiveMediaSource` whose `HttpClient` sends them with every
+  playlist, manifest and segment request (checked with HLS and DASH test
+  streams behind a header).
 - **3D scenes** are drawn by prism-native's OpenGL renderer (the GTK
   backend's: `prism_native::gl3d`) in a WGL OpenGL 3.3 core context of the
   app's, shared by every scene, and shown by a `SwapChainPanel`: WinUI
@@ -274,7 +276,7 @@ kinds and services come next (see [Not yet](#not-yet)).
 | Badges | an overlay on the taskbar button: the number on an accent-colored disc (`ITaskbarList3::SetOverlayIcon`), from `cx.set_badge` or a notification's badge |
 | Secure storage | Credential Manager (`CredWriteW`): generic credentials of the user named `Prism/<app>/<key>`, values longer than 2,560 bytes split over several; `biometric` values need Windows Hello when read |
 | Biometrics | Windows Hello (`UserConsentVerifier`, its prompt owned by the window), which also takes the Hello PIN; `capabilities().biometry` is the face camera, fingerprint or iris reader the Windows Biometric Framework sees. Without Hello set up, `authenticate` answers `Unavailable` |
-| Sign-in (`prism::oauth`) | the default browser and a loopback redirect, `http://127.0.0.1:<port>/callback` (RFC 8252), like on Linux |
+| Sign-in (`prism::oauth`) | the default browser and a loopback redirect, `http://127.0.0.1:<port>/callback` (RFC 8252), like on Linux; run end to end on screen against a local OpenID Connect provider (discovery, dynamic registration, consent in the browser, PKCE, a picture behind the access token) |
 | Tray | `Shell_NotifyIcon`: the SF Symbol's Segoe Fluent Icons glyph in the taskbar's color (else the app's icon), the tooltip, and a Win32 popup menu on a click (dark when apps are); it comes back when Explorer restarts and goes when the app quits |
 | Menu bar | `cx.set_app_menu` / `set_menu_bar` put a WinUI `MenuBar` across the top of the window, under the title bar (the app's view starts under it; see [The menu bar](#the-menu-bar)): access keys (Alt+F), `KeyboardAccelerator`s that work with the menus closed, shortcut hints shown only, checkable items, submenus; platform actions do Windows' own (Cut, Copy, Paste, Select All, Undo, Redo in the focused field; Minimize, Zoom, Close, Quit with Alt+F4) |
 | Alerts | `ContentDialog`: the first action is the accent button unless it is destructive, Cancel is the close button (Escape), more than three actions are listed under the message |
@@ -514,7 +516,8 @@ The same as the other backends, in a desktop session:
 | `PRISM_TRACE` | logs the startup phases (with the UI thread's CPU time), where the backend's time went (create, style, measure, place…), XAML's own layout, the first frame, the XAML elements and the memory then, each update (a click, a tab switch) until the frame showing it, 3D frame times, and each notification shown |
 | `PRISM_PROFILE` | `stacks.txt`: samples the UI thread's stacks every millisecond until the first frame (`PRISM_PROFILE_MS` more), tagged by startup phase; `scripts/perf/profile.py` names them (x64) |
 | `PRISM_SCALE` | `1.25`, `1.5`, `200%`: the app's scale in place of its monitor's (XAML's `OverrideScale` on the island, Prism's pixels per DIP) |
-| `PRISM_DEFER` | `0`: off-screen content joins XAML's layout before the first frame |
+| `PRISM_DEFER` | `0`: every XAML element, off-screen ones too, is made and laid out before the first frame |
+| `PRISM_BROWSER` | a browser's path or command line (`"C:\…\chrome.exe" --user-data-dir=…`): web pages, the sign-in's included, open with it instead of the default browser (for a test PC whose default must not change) |
 | `PRISM_3D_READBACK` | `1`: 3D frames through the CPU, as without `WGL_NV_DX_interop2` |
 | `PRISM_TRAY_MENU` | `<id>`: that tray item's menu opens by itself, as after a click |
 | `PRISM_NOTIFICATIONS_CLEANUP` | `1`: on quit, the app removes its notification registration and its notifications |
@@ -544,7 +547,7 @@ aloud.
 ## Performance
 
 The counter's components screen (668 nodes, a 460 × 720 window, release
-build) shows its first frame in about 0.55 s on the test PC (Ryzen, 24
+build) shows its first frame in about 0.46 s on the test PC (Ryzen, 24
 threads, AMD Radeon Pro W5700X, a 100 % display); macOS shows the same
 screen in 0.37 s. Measured with `scripts/windows-perf.sh` (and
 `scripts/macos-perf.sh`): the counter started several times in the desktop
@@ -555,15 +558,23 @@ runs; the UI thread's CPU time, logged with each phase, varies much less.
 
 | `/components`, release | before | now |
 |---|---:|---:|
-| first frame (median of 16; quiet runs) | 1682 ms; 1432 ms | **604 ms; 551 ms** |
-| UI thread CPU until the first frame | 1404 ms | 521 ms |
+| first frame (median of 16) | 1682 ms | **460 ms** |
+| UI thread CPU until the first frame | 1404 ms | 324 ms |
 | the app's tree | 116 ms | 12 ms |
 | text laid out by XAML to measure it | 2675 times, 218 ms | 367 times, 61 ms |
-| XAML elements | 2685 | 1562 |
+| XAML elements at the first frame | 2685 | 460 |
 | XAML's own layout and the first render | 990 ms | 180 ms |
-| memory at the first frame (working set, private) | 174 MB, 192 MB | 105 MB, 58 MB |
+| memory at the first frame (working set, private) | 174 MB, 192 MB | 98 MB, 53 MB |
 | a tab switch, to the screen | 32–85 ms | 49–75 ms |
 | debug build: first frame | 2600 ms | 650 ms |
+
+Making the off-screen elements after the first frame, measured in
+alternating rounds against the build before it (16 runs each, the same
+hour): XAML elements at the first frame 1562 → 460, styling them
+30 → 3 ms, placing them 19 → 6 ms, the UI thread's CPU time until the
+first frame 383 → 324 ms, the first frame's median 472 → 460 ms (the
+clock gains less than the CPU time on the busy PC); everything is shown
+by about 1.2 s.
 
 What the backend does for it:
 
@@ -573,11 +584,23 @@ What the backend does for it:
   stay the same: on one line (with its first baseline, read from the same
   XAML layout), at its narrowest, and within a few widths; a width the text
   fits in is not laid out again.
-- **Off-screen content waits.** New nodes of a scroll view that lie
-  outside the window start `Collapsed`, so XAML applies no templates and
-  lays out and draws nothing of them; after the first frame they show a
-  batch per frame, nearest first, and at once when scrolled to or focused
-  (`PRISM_DEFER=0` turns it off).
+- **Off-screen content waits.** The layout is prism-native's, computed
+  from the scene without XAML, so new nodes of a scroll view that lie
+  outside the window get no XAML elements at all until they show: views,
+  texts, controls, pictures and shapes are made once in view (containers
+  that hold other kinds, such as scroll views, stacks, tabs, overlays, web
+  views, videos, rich inputs and 3D scenes, are made at once). After the
+  first frame the waiting nodes are made in batches of 48 per frame,
+  nearest first (a subtree too big for one batch is split), and at once
+  when scrolled to, focused, used as a popover's anchor, or reached by a
+  `PRISM_CLICK` step. Each node is made with its state replayed from the
+  scene (style, text, value, accessibility, pointer input), joins its
+  parent in the tree's order (a `z_index` sibling keeps its paint order
+  through `Canvas.ZIndex`), and comes with its
+  UI Automation peer: containers and clickable views keep their custom
+  peers, so the UI Automation tree is complete once the batches are done
+  (about 1.2 s after the start on the counter's components screen).
+  `PRISM_DEFER=0` turns it off.
 - **3D after the first frame.** OpenGL (the GPU driver: 200 to 700 ms,
   90 MB) starts once the window has shown itself; built-in environments
   are prefiltered when a renderer first reads them, not while the app's
@@ -587,11 +610,11 @@ Where the remaining time goes (a quiet run, release): WinUI's start
 60 ms; the window, the services and the app's runtime 30 ms (the
 counter's SQLite database opens there: hundreds of milliseconds on its
 first run); the XAML island 30 ms; the app's tree 12 ms; the backend
-creating and styling the XAML elements 120 ms; prism-native's layout with
+creating and styling the visible XAML elements 20 ms; prism-native's layout with
 text measurement 130 ms; XAML's own layout 130 ms; the first render 50 ms.
 `PRISM_PROFILE` samples the UI thread's stacks by phase to dig further.
 
-**Memory.** At the first frame 105 MB of working set, 58 MB private. The
+**Memory.** At the first frame 98 MB of working set, 53 MB private. The
 GPU driver OpenGL loads, after the first frame, adds about 40 MB of
 working set and 90 MB private: a screen with a 3D scene ends at about
 195 MB / 225 MB, one without stays near its first frame's.
@@ -612,8 +635,7 @@ step moves the window to a simulated monitor through `WM_DPICHANGED`
 
 - **Embedded content and input:** a precision touchpad's
   pinch is only handled as the Ctrl + wheel Windows sends apps (touchpads
-  cannot be injected); the request headers of HLS and DASH videos
-  (`AdaptiveMediaSource`) are untested (a plain video's are).
+  cannot be injected).
 - **Services:** push (WNS needs package identity), location, motion, the
   camera, the share sheet (`DataTransferManager`), haptics and passkeys
   answer « unavailable »; notification banners and the Hello prompt are
@@ -630,8 +652,7 @@ step moves the window to a simulated monitor through `WM_DPICHANGED`
   forces Prism's colors and WinUI's light or dark theme, but WinUI's own
   controls take their contrast colors from the system alone (a text box
   stays Fluent's under the override).
-- **Performance:** a long screen's off-screen XAML elements are still
-  made before the first frame (only their layout and drawing wait: about
-  70 ms of the 120 ms the backend spends creating elements on the
-  counter's components screen); a busy machine stretches the first frame
-  (the measurements above come from a PC shared with other agents).
+- **Performance:** a busy machine stretches the first frame (the
+  measurements above come from a PC shared with other agents); a screen
+  reader that starts reading in the first second or two of a long screen
+  finds its off-screen part missing until the batches are done.
