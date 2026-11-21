@@ -1496,10 +1496,6 @@ impl Win {
     }
 }
 
-/// Takes a node's swapped-out content element out of its outer canvas.
-/// `view::detach` alone can leave it there (its `Parent` is not always
-/// set), and a hidden, focusable twin then stays in the tab order and in
-/// UI Automation.
 /// Shows `shape` over a view (`cursors.rs`), or the cursor of what is
 /// around it (`None`): on its canvas and on its button, the element under
 /// the pointer.
@@ -1520,6 +1516,10 @@ fn set_cursor(v: &View, shape: Option<crate::cursors::Shape>) -> Result<()> {
     Ok(())
 }
 
+/// Takes a node's swapped-out content element out of its outer canvas.
+/// `view::detach` alone can leave it there (its `Parent` is not always
+/// set), and a hidden, focusable twin then stays in the tab order and in
+/// UI Automation.
 fn unmount(outer: &Canvas, old: &UIElement) {
     let _ = crate::view::detach(old);
     if let Ok(coll) = outer.Children() {
