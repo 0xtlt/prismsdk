@@ -15,7 +15,7 @@ cx.register_background_task(
 
 | | iOS | macOS | Web | Android | Linux | Windows |
 |---|---|---|---|---|---|---|
-| Lifecycle | active / inactive / background | active / inactive / hidden or minimized | page focus / visibility | active / inactive / background | active / inactive (another window focused) / background (minimized) | not yet |
+| Lifecycle | active / inactive / background | active / inactive / hidden or minimized | page focus / visibility | active / inactive / background | active / inactive (another window focused) / background (minimized) | active / inactive (another window active) / background (minimized, or the window closing) |
 | `finish_in_background` | `beginBackgroundTask` | keeps running | keeps running (server) | runs while the process lives (no extra time is asked) | keeps running | keeps running |
 | Periodic tasks | `BGTaskScheduler`; the app is relaunched without UI if needed | `NSBackgroundActivityScheduler` | timer while a page is open | `JobScheduler`; the app is started without UI if needed | timer while the app runs | timer while the app runs |
 

@@ -23,6 +23,7 @@ use windows::Win32::UI::HiDpi::{
     AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow,
     SetProcessDpiAwarenessContext,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::GetActiveWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{BOOL, PCWSTR, w};
 
@@ -286,6 +287,27 @@ pub fn fill(id: NodeId, text: &str) {
         }
     });
     report_typed(id, text.to_string());
+}
+
+thread_local! {
+    /// The lifecycle phase last reported to the app.
+    static LIFECYCLE: Cell<prism_core::Lifecycle> = const { Cell::new(prism_core::Lifecycle::Active) };
+}
+
+/// The window's phase (`cx.on_lifecycle`): reported when it changes, now,
+/// or once the state is free.
+fn report_lifecycle(phase: prism_core::Lifecycle) {
+    let apply = move |s: &mut State| {
+        if LIFECYCLE.get() == phase {
+            return;
+        }
+        LIFECYCLE.set(phase);
+        let patches = s.runtime.set_lifecycle(phase);
+        commit(s, patches);
+    };
+    if with_state(apply).is_none() {
+        defer(Box::new(apply));
+    }
 }
 
 /// A control took or lost the keyboard focus.
@@ -558,6 +580,20 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         match msg {
             WM_ERASEBKGND => LRESULT(1),
             WM_SIZE => {
+                // Minimized, or back from it: the lifecycle follows. (Sizes
+                // of a shown window leave it: the first comes before the
+                // window is shown, hence active.)
+                let minimized = wp.0 == SIZE_MINIMIZED as usize;
+                let back = matches!(wp.0 as u32, SIZE_RESTORED | SIZE_MAXIMIZED)
+                    && LIFECYCLE.get() == prism_core::Lifecycle::Background;
+                if minimized || back {
+                    let active = GetActiveWindow() == h;
+                    report_lifecycle(crate::lifecycle::phase(minimized, active, false));
+                }
+                if minimized {
+                    // A minimized window is 0 × 0: the layout stays.
+                    return LRESULT(0);
+                }
                 let (pw, ph) = (loword(lp.0 as usize) as i32, hiword(lp.0 as usize) as i32);
                 with_state(|s| {
                     let w = &mut s.renderer.widgets;
@@ -630,11 +666,15 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 LRESULT(0)
             }
             WM_ACTIVATE => {
-                if u32::from(loword(wp.0)) == WA_INACTIVE {
+                let active = u32::from(loword(wp.0)) != WA_INACTIVE;
+                if !active {
                     // The keys still down get their release in the window
                     // active now: released here (#159).
                     crate::keyboard::release_all();
                 }
+                // The high word: minimized.
+                let minimized = hiword(wp.0) != 0 || IsIconic(h).as_bool();
+                report_lifecycle(crate::lifecycle::phase(minimized, active, false));
                 DefWindowProcW(h, msg, wp, lp)
             }
             WM_SETFOCUS => {
@@ -741,6 +781,8 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                         return LRESULT(0);
                     }
                 }
+                // The app's last chance to save (`on_lifecycle`).
+                report_lifecycle(crate::lifecycle::phase(false, false, true));
                 let _ = DestroyWindow(h);
                 LRESULT(0)
             }

@@ -71,7 +71,7 @@
 //! | `fonts` | run-time fonts |
 //! | `shell` | the services' hidden window: modal UI, timers, threads |
 //! | `system` | theme, accent, locale, DPI |
-//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access`, `pinch`, `seal`, `clicks` | pure helpers, tested on every host |
+//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access`, `pinch`, `seal`, `clicks`, `lifecycle` | pure helpers, tested on every host |
 
 // Roles and states for UI Automation: no Win32, tested everywhere.
 mod access;
@@ -137,6 +137,8 @@ mod keyboard;
 mod keyview;
 // Key names and icon glyphs: no Win32, tested everywhere.
 mod keys;
+// The lifecycle phase from the window: no Win32, tested everywhere.
+mod lifecycle;
 #[cfg(target_os = "windows")]
 mod media;
 #[cfg(target_os = "windows")]

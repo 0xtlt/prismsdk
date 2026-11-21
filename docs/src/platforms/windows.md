@@ -269,7 +269,11 @@ kinds and services come next (see [Not yet](#not-yet)).
 - **Windows and DPI:** per-monitor DPI v2 (XAML scales by itself; a move
   to a monitor of another DPI resizes the window to keep its size in
   DIPs), resizing, a minimum size, the title (`cx.set_title`), a
-  confirmation on close with unsaved changes. `PRISM_SCALE=1.5` runs the
+  confirmation on close with unsaved changes. The lifecycle
+  (`cx.on_lifecycle`) follows the window: active while it is the active
+  window, inactive while another is (`WM_ACTIVATE`), background while it is
+  minimized (`WM_SIZE`) and once a close is confirmed, before the window
+  goes. `PRISM_SCALE=1.5` runs the
   app at 150 % on any screen, through the same path as a real DPI (see
   [Development hooks](#development-hooks)).
 - **Services:** see [Services](#services) below.
@@ -650,8 +654,7 @@ step moves the window to a simulated monitor through `WM_DPICHANGED`
 
 ## Not yet
 
-- **Views and input:** no lifecycle phases; `.cursor(..)`,
-  `object_position`, `Scrollbar::Hidden`, `tabular_nums` and underline
+- **Views and input:** `.cursor(..)`, `object_position`, `Scrollbar::Hidden`, `tabular_nums` and underline
   colors are ignored; custom window chrome; the runtime's layers (toasts)
   draw under sheets and dialogs.
 - **Forms and navigation:** keyboard types, capitalization, autocorrect and
