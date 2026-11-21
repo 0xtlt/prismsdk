@@ -262,7 +262,7 @@ impl AppleSignIn {
 
 /// The result of Sign in with Apple. Verify `identity_token` (a JWT signed by
 /// Apple) or exchange `authorization_code` on your server before trusting it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct AppleCredential {
     /// Stable per app and Apple ID.
     pub user: String,
@@ -311,6 +311,50 @@ pub struct WebAuthnRequest {
     /// A sign-in offered in a field's suggestions (#203): conditional
     /// mediation, answered when the user picks a passkey there.
     pub conditional: bool,
+}
+
+/// The token and code show hidden (S34).
+impl std::fmt::Debug for AppleCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppleCredential")
+            .field("user", &self.user)
+            .field(
+                "identity_token",
+                &Hidden::opt(self.identity_token.as_deref()),
+            )
+            .field(
+                "authorization_code",
+                &Hidden::opt(self.authorization_code.as_deref()),
+            )
+            .field("email", &self.email)
+            .field("given_name", &self.given_name)
+            .field("family_name", &self.family_name)
+            .field("state", &self.state)
+            .finish()
+    }
+}
+
+/// How `Debug` shows a secret: whether there is one, not what (S34).
+pub(crate) struct Hidden(&'static str);
+
+impl Hidden {
+    pub(crate) fn text(s: &str) -> Self {
+        Hidden(if s.is_empty() { "\"\"" } else { "<redacted>" })
+    }
+
+    pub(crate) fn opt(s: Option<&str>) -> Self {
+        Hidden(if s.is_some() {
+            "Some(<redacted>)"
+        } else {
+            "None"
+        })
+    }
+}
+
+impl std::fmt::Debug for Hidden {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
 }
 
 /// A browser sign-in session (OAuth 2 / OpenID Connect): see `prism::oauth`.
@@ -745,6 +789,21 @@ fn form_decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S34: Sign in with Apple's token and code do not show when printed.
+    #[test]
+    fn s34_apple_credentials_print_hidden() {
+        let c = AppleCredential {
+            user: "001.abc".into(),
+            identity_token: Some("S34-MARK-IT".into()),
+            authorization_code: Some("S34-MARK-AC".into()),
+            ..Default::default()
+        };
+        for shown in [format!("{c:?}"), format!("{c:#?}")] {
+            assert!(!shown.contains("S34-MARK"), "{shown}");
+        }
+        assert!(format!("{c:?}").contains("001.abc"));
+    }
 
     /// S22: Credential Manager and the Secret Service give any process of
     /// the user the stored value: a prompt before Prism returns it does not

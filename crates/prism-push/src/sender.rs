@@ -165,7 +165,7 @@ impl Sender {
                     404 | 410 => PushError::Gone,
                     _ => PushError::Rejected {
                         status,
-                        reason: String::from_utf8_lossy(body).into_owned(),
+                        reason: reason(body, &sub.token),
                     },
                 })
             }
@@ -184,7 +184,7 @@ impl Sender {
         if status != 200 {
             return Err(PushError::Rejected {
                 status,
-                reason: String::from_utf8_lossy(&body).into_owned(),
+                reason: reason(&body, ""),
             });
         }
         let v: serde_json::Value =
@@ -370,10 +370,59 @@ fn check(
     }
 }
 
+/// What a push service answered, for an error: at most [`MAX_REASON`]
+/// bytes, on one line (control characters as spaces), without the
+/// subscription's `endpoint` nor the long parts of its path (its id, a
+/// capability), should the service repeat them (S34).
+fn reason(body: &[u8], endpoint: &str) -> String {
+    let mut text = String::from_utf8_lossy(body).into_owned();
+    if !endpoint.is_empty() {
+        text = text.replace(endpoint, "<endpoint>");
+        let path = endpoint
+            .split_once("://")
+            .map_or(endpoint, |(_, rest)| rest);
+        for part in path
+            .split(['/', '?', '&', '=', '#'])
+            .filter(|p| p.len() >= 16)
+        {
+            text = text.replace(part, "<redacted>");
+        }
+    }
+    let mut text: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    if text.len() > MAX_REASON {
+        let mut end = MAX_REASON;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+        text.push('…');
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::net::TcpListener;
+
+    /// S34: what a push service answered, in an error, is short, on one
+    /// line, and does not repeat the subscription's endpoint.
+    #[test]
+    fn s34_rejections_do_not_repeat_the_endpoint() {
+        let endpoint = "https://push.example/wpush/v2/gAAAAAS34MARKopaque0123456789?k=S34MARKq";
+        let body = format!(
+            "no subscription at {endpoint} (/wpush/v2/gAAAAAS34MARKopaque0123456789)\r\nX-Injected: 1\x1b[2J{}",
+            "x".repeat(4000)
+        );
+        let reason = super::reason(body.as_bytes(), endpoint);
+        assert!(!reason.contains("S34MARK"), "{reason}");
+        assert!(!reason.contains(['\r', '\n', '\x1b']), "{reason:?}");
+        assert!(reason.len() <= MAX_REASON + 3, "{}", reason.len());
+        assert!(reason.starts_with("no subscription at "), "{reason}");
+    }
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn addr(ip: &str) -> SocketAddr {

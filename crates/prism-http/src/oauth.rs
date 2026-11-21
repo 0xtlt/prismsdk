@@ -48,7 +48,7 @@ use std::collections::HashMap;
 use prism_core::{AsyncApp, DeviceError, WebAuthRequest};
 use sha2::{Digest, Sha256};
 
-use crate::{Redirects, Request};
+use crate::{Hidden, Redirects, Request};
 
 /// The most bytes of a metadata document or of a token, registration or
 /// revocation endpoint's answer.
@@ -61,7 +61,7 @@ const CLOCK_SKEW: u64 = 300;
 const GOOGLE_ISSUER: &str = "https://accounts.google.com";
 
 /// A provider and the client registered with it.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct OAuth {
     /// Shown by the web's "Continue" button when a popup is blocked.
     pub name: String,
@@ -107,7 +107,7 @@ pub struct OAuth {
 }
 
 /// What the provider granted.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Tokens {
     pub access_token: Option<String>,
     pub token_type: Option<String>,
@@ -838,7 +838,7 @@ pub fn parse_revocation_response(status: u16, body: &[u8]) -> Result<(), OAuthEr
 }
 
 /// What a registration endpoint issued (RFC 7591 §3.2.1).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Registration {
     /// The client id to use from now on.
     pub client_id: String,
@@ -1173,10 +1173,87 @@ pub fn parse_callback(url: &str, state: &str) -> Result<String, OAuthError> {
 }
 
 /// A PKCE pair (RFC 7636): a random verifier and its S256 challenge.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Pkce {
     pub verifier: String,
     pub challenge: String,
+}
+
+// Secrets show hidden in `Debug` output (S34): logs keep whether there is
+// one, not what.
+
+impl std::fmt::Debug for Pkce {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pkce")
+            .field("verifier", &Hidden::text(&self.verifier))
+            .field("challenge", &self.challenge)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for OAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuth")
+            .field("name", &self.name)
+            .field("issuer", &self.issuer)
+            .field("authorize_url", &self.authorize_url)
+            .field("token_url", &self.token_url)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &Hidden::opt(self.client_secret.as_deref()))
+            .field("scopes", &self.scopes)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("params", &self.params)
+            .field("ephemeral", &self.ephemeral)
+            .field("code_only", &self.code_only)
+            .field("registration_url", &self.registration_url)
+            .field("client_name", &self.client_name)
+            .field(
+                "registration_token",
+                &Hidden::opt(self.registration_token.as_deref()),
+            )
+            .field(
+                "token_endpoint_auth_method",
+                &self.token_endpoint_auth_method,
+            )
+            .field("revocation_url", &self.revocation_url)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for Tokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Tokens")
+            .field("access_token", &Hidden::opt(self.access_token.as_deref()))
+            .field("token_type", &self.token_type)
+            .field("refresh_token", &Hidden::opt(self.refresh_token.as_deref()))
+            .field("id_token", &Hidden::opt(self.id_token.as_deref()))
+            .field("expires_in", &self.expires_in)
+            .field("scope", &self.scope)
+            .field("code", &Hidden::text(&self.code))
+            .field("code_verifier", &Hidden::text(&self.code_verifier))
+            .field("redirect_uri", &self.redirect_uri)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for Registration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Registration")
+            .field("client_id", &self.client_id)
+            .field("client_secret", &Hidden::opt(self.client_secret.as_deref()))
+            .field("client_secret_expires_at", &self.client_secret_expires_at)
+            .field(
+                "token_endpoint_auth_method",
+                &self.token_endpoint_auth_method,
+            )
+            .field(
+                "registration_access_token",
+                &Hidden::opt(self.registration_access_token.as_deref()),
+            )
+            .field("registration_client_uri", &self.registration_client_uri)
+            .field("redirect_uris", &self.redirect_uris)
+            .finish()
+    }
 }
 
 impl Pkce {
@@ -1310,6 +1387,50 @@ fn decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S34: a provider's client secret, a registration's secrets, tokens and
+    /// the PKCE verifier do not show when printed (`{:?}`).
+    #[test]
+    fn s34_oauth_secrets_print_hidden() {
+        let oauth = OAuth {
+            client_id: "client-1".into(),
+            client_secret: Some("S34-MARK-CS".into()),
+            registration_token: Some("S34-MARK-RT".into()),
+            ..Default::default()
+        };
+        let tokens = Tokens {
+            access_token: Some("S34-MARK-AT".into()),
+            refresh_token: Some("S34-MARK-RF".into()),
+            id_token: Some("S34-MARK-ID".into()),
+            code: "S34-MARK-CODE".into(),
+            code_verifier: "S34-MARK-CV".into(),
+            token_type: Some("Bearer".into()),
+            ..Default::default()
+        };
+        let registration = Registration {
+            client_id: "client-1".into(),
+            client_secret: Some("S34-MARK-RS".into()),
+            registration_access_token: Some("S34-MARK-RAT".into()),
+            ..Default::default()
+        };
+        let pkce = Pkce {
+            verifier: "S34-MARK-PV".into(),
+            challenge: "the-challenge".into(),
+        };
+        for shown in [
+            format!("{oauth:?}"),
+            format!("{oauth:#?}"),
+            format!("{tokens:?}"),
+            format!("{tokens:#?}"),
+            format!("{registration:?}"),
+            format!("{pkce:?}"),
+        ] {
+            assert!(!shown.contains("S34-MARK"), "{shown}");
+        }
+        assert!(format!("{oauth:?}").contains("client-1"));
+        assert!(format!("{tokens:?}").contains("Bearer"));
+        assert!(format!("{pkce:?}").contains("the-challenge"));
+    }
 
     #[test]
     fn pkce_matches_rfc7636_example() {

@@ -79,7 +79,7 @@ impl PushService {
 
 /// Where your server sends pushes for this device: give it
 /// [`to_json`](Self::to_json) (`prism_push::Subscription` reads it).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PushSubscription {
     /// The push service the token belongs to.
     pub service: PushService,
@@ -95,6 +95,32 @@ pub struct PushSubscription {
     pub topic: Option<String>,
     /// APNs: a development token (`api.sandbox.push.apple.com`).
     pub sandbox: bool,
+}
+
+/// The token (an endpoint, for Web Push) and the secret show hidden (S34).
+impl std::fmt::Debug for PushSubscription {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::security::Hidden;
+        f.debug_struct("PushSubscription")
+            .field("service", &self.service)
+            .field("token", &Hidden::text(&self.token))
+            .field("p256dh", &self.p256dh)
+            .field("auth", &Hidden::opt(self.auth.as_deref()))
+            .field("topic", &self.topic)
+            .field("sandbox", &self.sandbox)
+            .finish()
+    }
+}
+
+/// The token shows hidden (S34).
+impl std::fmt::Debug for ActivityPushToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActivityPushToken")
+            .field("activity", &self.activity)
+            .field("kind", &self.kind)
+            .field("token", &crate::security::Hidden::text(&self.token))
+            .finish()
+    }
 }
 
 impl PushSubscription {
@@ -269,7 +295,7 @@ impl PushMessage {
 
 /// A Live Activity's push token (iOS 16.1+), for updating it from your
 /// server (`apns-push-type: liveactivity`, topic `<bundle id>.push-type.liveactivity`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ActivityPushToken {
     /// The activity, or `None` for the push-to-start token (iOS 17.2+): it
     /// lets your server start an activity of `kind`.
@@ -772,6 +798,34 @@ impl Parser<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S34: a subscription's secret and endpoint, and a Live Activity's
+    /// token, do not show when printed (`{:?}`, in a log).
+    #[test]
+    fn s34_push_tokens_print_hidden() {
+        let sub = PushSubscription {
+            service: PushService::WebPush,
+            token: "https://push.example/wpush/S34-MARK-EP".into(),
+            p256dh: Some("BPUBLIC".into()),
+            auth: Some("S34-MARK-AUTH".into()),
+            topic: None,
+            sandbox: false,
+        };
+        let activity = ActivityPushToken {
+            activity: None,
+            kind: "delivery".into(),
+            token: "S34-MARK-ACT".into(),
+        };
+        for shown in [
+            format!("{sub:?}"),
+            format!("{sub:#?}"),
+            format!("{activity:?}"),
+        ] {
+            assert!(!shown.contains("S34-MARK"), "{shown}");
+        }
+        assert!(format!("{sub:?}").contains("WebPush"));
+        assert!(format!("{activity:?}").contains("delivery"));
+    }
 
     /// S2: nesting is bounded before descending; at the limit it reads.
     #[test]

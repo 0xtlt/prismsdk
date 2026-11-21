@@ -44,8 +44,10 @@ impl Default for Redirects {
     }
 }
 
-/// An HTTP request.
-#[derive(Clone, Debug)]
+/// An HTTP request. `Debug` shows no credential: header values only for
+/// harmless headers (`Content-Type`, `Accept`…), the body's size, the URL
+/// without its query (S34).
+#[derive(Clone)]
 pub struct Request {
     pub method: Method,
     pub url: String,
@@ -62,6 +64,149 @@ pub struct Request {
     pub max_body: Option<u64>,
     /// Connect only to publicly routable addresses ([`Request::public_only`]).
     pub public_only: bool,
+}
+
+impl std::fmt::Debug for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Request")
+            .field("method", &self.method)
+            .field("url", &shown_url(&self.url))
+            .field("headers", &ShownHeaders(&self.headers))
+            .field("body", &self.body.as_ref().map(|b| Size(b.len())))
+            .field("timeout", &self.timeout)
+            .field("redirects", &self.redirects)
+            .field("secret_headers", &self.secret_headers)
+            .field("max_body", &self.max_body)
+            .field("public_only", &self.public_only)
+            .finish()
+    }
+}
+
+// --- Debug output without credentials (S34) -----------------------------------------------
+
+/// Headers whose values `Debug` shows: they carry no credential. The
+/// others show as `<redacted>`.
+const SHOWN_HEADERS: &[&str] = &[
+    "accept",
+    "accept-encoding",
+    "accept-language",
+    "accept-ranges",
+    "age",
+    "cache-control",
+    "connection",
+    "content-encoding",
+    "content-language",
+    "content-length",
+    "content-range",
+    "content-type",
+    "date",
+    "etag",
+    "expires",
+    "host",
+    "last-modified",
+    "range",
+    "retry-after",
+    "server",
+    "transfer-encoding",
+    "user-agent",
+    "vary",
+];
+
+/// Headers as `Debug` shows them: every name, the values of
+/// [`SHOWN_HEADERS`].
+struct ShownHeaders<'a>(&'a [(String, String)]);
+
+impl std::fmt::Debug for ShownHeaders<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(self.0.iter().map(|(name, value)| {
+                let shown = SHOWN_HEADERS.iter().any(|h| h.eq_ignore_ascii_case(name));
+                (
+                    name,
+                    shown
+                        .then_some(value.as_str())
+                        .map_or(HeaderValue::Hidden, HeaderValue::Shown),
+                )
+            }))
+            .finish()
+    }
+}
+
+enum HeaderValue<'a> {
+    Shown(&'a str),
+    Hidden,
+}
+
+impl std::fmt::Debug for HeaderValue<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HeaderValue::Shown(v) => v.fmt(f),
+            HeaderValue::Hidden => f.write_str("<redacted>"),
+        }
+    }
+}
+
+/// A body as `Debug` shows it: its size.
+struct Size(usize);
+
+impl std::fmt::Debug for Size {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<{} bytes>", self.0)
+    }
+}
+
+/// How `Debug` shows a secret: whether there is one, not what (S34).
+pub(crate) struct Hidden(&'static str);
+
+impl Hidden {
+    pub(crate) fn text(s: &str) -> Self {
+        Hidden(if s.is_empty() { "\"\"" } else { "<redacted>" })
+    }
+
+    pub(crate) fn opt(s: Option<&str>) -> Self {
+        Hidden(if s.is_some() {
+            "Some(<redacted>)"
+        } else {
+            "None"
+        })
+    }
+}
+
+impl std::fmt::Debug for Hidden {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+/// `url` as `Debug` and error messages show it: without user info, query
+/// or fragment (a signed URL's signature, a token).
+pub(crate) fn shown_url(url: &str) -> String {
+    let end = url.find(['?', '#']).unwrap_or(url.len());
+    let (base, rest) = url.split_at(end);
+    let base = match base.split_once("://") {
+        Some((scheme, after)) => {
+            let authority = after.find('/').unwrap_or(after.len());
+            match after[..authority].rfind('@') {
+                Some(at) => format!("{scheme}://<redacted>@{}", &after[at + 1..]),
+                None => base.to_string(),
+            }
+        }
+        None => base.to_string(),
+    };
+    if rest.is_empty() {
+        base
+    } else {
+        format!("{base}?<redacted>")
+    }
+}
+
+/// An error message about `url`, without the URL's credentials.
+fn scrubbed(message: String, url: &str) -> String {
+    let message = message.replace(url, &shown_url(url));
+    match url.find(['?', '#']) {
+        Some(i) if i + 1 < url.len() => message.replace(&url[i..], "?<redacted>"),
+        _ => message,
+    }
 }
 
 /// Headers a redirect to another origin always drops (#250), like browsers.
@@ -238,7 +383,7 @@ impl Request {
                     with_headers(agent.patch(&url), &headers).send(b.unwrap_or_default())
                 }
             }
-            .map_err(|e| Error(e.to_string()))?;
+            .map_err(|e| Error(scrubbed(e.to_string(), &url)))?;
             let status = res.status().as_u16();
             let list: Vec<(String, String)> = res
                 .headers()
@@ -300,11 +445,21 @@ impl Progress {
     }
 }
 
-/// A response's status and headers, its body streamed (#250).
-#[derive(Clone, Debug)]
+/// A response's status and headers, its body streamed (#250). `Debug`
+/// shows header values only for harmless headers (`Content-Type`…).
+#[derive(Clone)]
 pub struct ResponseHead {
     pub status: u16,
     pub headers: Vec<(String, String)>,
+}
+
+impl std::fmt::Debug for ResponseHead {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResponseHead")
+            .field("status", &self.status)
+            .field("headers", &ShownHeaders(&self.headers))
+            .finish()
+    }
 }
 
 fn too_large(max: u64) -> Error {
@@ -365,12 +520,24 @@ fn with_headers<B>(
     req
 }
 
-/// An HTTP response (any status; check [`Response::ok`]).
-#[derive(Clone, Debug)]
+/// An HTTP response (any status; check [`Response::ok`]). `Debug` shows
+/// header values only for harmless headers (`Content-Type`…), and the
+/// body's size (a token endpoint's answer holds tokens).
+#[derive(Clone)]
 pub struct Response {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+}
+
+impl std::fmt::Debug for Response {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Response")
+            .field("status", &self.status)
+            .field("headers", &ShownHeaders(&self.headers))
+            .field("body", &Size(self.body.len()))
+            .finish()
+    }
 }
 
 impl Response {
@@ -509,6 +676,59 @@ fn is_public(ip: std::net::IpAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S34: printing a request or a response (`{:?}`, in a log) shows no
+    /// credential: header values but harmless ones, bodies, the URL's
+    /// query; nor does a failure's message.
+    #[test]
+    fn s34_requests_and_responses_print_no_credentials() {
+        let request =
+            Request::post("https://api.example/v1/items?sig=S34-MARK-QUERY&x=1#S34-MARK-F")
+                .header("Authorization", "Bearer S34-MARK-AUTH")
+                .header("Cookie", "sid=S34-MARK-COOKIE")
+                .header("X-Api-Key", "S34-MARK-KEY")
+                .secret_header("x-custom", "S34-MARK-SECRET")
+                .json(r#"{"password":"S34-MARK-BODY"}"#);
+        let response = Response {
+            status: 200,
+            headers: vec![
+                ("set-cookie".into(), "sid=S34-MARK-SETCOOKIE".into()),
+                ("content-type".into(), "application/json".into()),
+            ],
+            body: br#"{"access_token":"S34-MARK-TOKEN"}"#.to_vec(),
+        };
+        let head = ResponseHead {
+            status: 200,
+            headers: response.headers.clone(),
+        };
+        for shown in [
+            format!("{request:?}"),
+            format!("{request:#?}"),
+            format!("{response:?}"),
+            format!("{response:#?}"),
+            format!("{head:?}"),
+        ] {
+            assert!(!shown.contains("S34-MARK"), "{shown}");
+        }
+        // What helps to debug stays.
+        let shown = format!("{request:?}");
+        for kept in [
+            "https://api.example/v1/items",
+            "application/json",
+            "Authorization",
+            "Post",
+        ] {
+            assert!(shown.contains(kept), "{kept}: {shown}");
+        }
+        assert!(format!("{response:?}").contains("application/json"));
+        // A URL the client cannot use: the error does not repeat its query
+        // (the client's message names the URL).
+        let err = Request::get("/x?sig=S34-MARK-QUERY")
+            .timeout(Duration::from_secs(2))
+            .send_blocking()
+            .unwrap_err();
+        assert!(!err.0.contains("S34-MARK"), "{}", err.0);
+    }
     use std::io::{Read, Write};
     use std::net::TcpListener;
 

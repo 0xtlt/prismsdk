@@ -93,8 +93,8 @@ pub enum Service {
     UnifiedPush,
 }
 
-/// The Web Push keys of a subscription (base64url).
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+/// The Web Push keys of a subscription (base64url). `Debug` hides `auth`.
+#[derive(Clone, PartialEq, Eq, Deserialize)]
 pub struct Keys {
     pub p256dh: String,
     pub auth: String,
@@ -102,7 +102,9 @@ pub struct Keys {
 
 /// Where to send pushes for one device: the JSON a Prism app reports with
 /// `on_push_token` (`PushSubscription::to_json`).
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+///
+/// `Debug` hides the token (an endpoint is a capability) and the secret.
+#[derive(Clone, PartialEq, Eq, Deserialize)]
 pub struct Subscription {
     pub service: Service,
     /// APNs device token (hex), FCM registration token, or the Web Push /
@@ -117,6 +119,42 @@ pub struct Subscription {
     /// APNs: a development build (sandbox environment).
     #[serde(default)]
     pub sandbox: bool,
+}
+
+impl std::fmt::Debug for Keys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Keys")
+            .field("p256dh", &self.p256dh)
+            .field("auth", &Hidden::text(&self.auth))
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for Subscription {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Subscription")
+            .field("service", &self.service)
+            .field("token", &Hidden::text(&self.token))
+            .field("keys", &self.keys)
+            .field("topic", &self.topic)
+            .field("sandbox", &self.sandbox)
+            .finish()
+    }
+}
+
+/// How `Debug` shows a secret: whether there is one, not what (S34).
+struct Hidden(&'static str);
+
+impl Hidden {
+    fn text(s: &str) -> Self {
+        Hidden(if s.is_empty() { "\"\"" } else { "<redacted>" })
+    }
+}
+
+impl std::fmt::Debug for Hidden {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
 }
 
 impl Subscription {
@@ -312,12 +350,54 @@ impl Push {
     }
 }
 
-/// A request to send with any HTTP client (APNs needs HTTP/2).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A request to send with any HTTP client (APNs needs HTTP/2). `Debug`
+/// shows the URL's origin, the values of harmless headers and the body's
+/// size only: the path holds the device token or endpoint, `Authorization`
+/// a credential.
+#[derive(Clone, PartialEq, Eq)]
 pub struct HttpRequest {
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+}
+
+impl std::fmt::Debug for HttpRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        /// Headers that carry no credential.
+        const SHOWN: [&str; 10] = [
+            "content-type",
+            "content-encoding",
+            "content-length",
+            "ttl",
+            "urgency",
+            "topic",
+            "apns-push-type",
+            "apns-priority",
+            "apns-expiration",
+            "apns-topic",
+        ];
+        let origin = match self.url.split_once("://") {
+            Some((scheme, rest)) => {
+                let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+                let host = host.rsplit('@').next().unwrap_or(host);
+                format!("{scheme}://{host}/<redacted>")
+            }
+            None => "<redacted>".into(),
+        };
+        let headers: Vec<(&str, &str)> = self
+            .headers
+            .iter()
+            .map(|(k, v)| {
+                let shown = SHOWN.iter().any(|h| h.eq_ignore_ascii_case(k));
+                (k.as_str(), if shown { v.as_str() } else { "<redacted>" })
+            })
+            .collect();
+        f.debug_struct("HttpRequest")
+            .field("url", &origin)
+            .field("headers", &headers)
+            .field("body", &format_args!("<{} bytes>", self.body.len()))
+            .finish()
+    }
 }
 
 impl HttpRequest {
@@ -361,6 +441,45 @@ pub(crate) fn unb64(s: &str) -> Result<Vec<u8>, PushError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S34: a subscription's secret and endpoint, and a prepared request's
+    /// credentials and payload, do not show when printed.
+    #[test]
+    fn s34_subscriptions_and_requests_print_hidden() {
+        let sub = Subscription {
+            service: Service::WebPush,
+            token: "https://push.example/wpush/S34-MARK-EP".into(),
+            keys: Some(Keys {
+                p256dh: "BPUBLIC".into(),
+                auth: "S34-MARK-AUTH".into(),
+            }),
+            topic: None,
+            sandbox: false,
+        };
+        let req = HttpRequest {
+            url: "https://push.example/wpush/S34-MARK-EP?x=S34-MARK-Q".into(),
+            headers: vec![
+                (
+                    "Authorization".into(),
+                    "vapid t=S34-MARK-JWT, k=BPUB".into(),
+                ),
+                ("TTL".into(), "60".into()),
+            ],
+            body: b"S34-MARK-BODY".to_vec(),
+        };
+        for shown in [
+            format!("{sub:?}"),
+            format!("{sub:#?}"),
+            format!("{req:?}"),
+            format!("{req:#?}"),
+        ] {
+            assert!(!shown.contains("S34-MARK"), "{shown}");
+        }
+        let shown = format!("{sub:?} {req:?}");
+        for kept in ["WebPush", "BPUBLIC", "https://push.example", "TTL", "60"] {
+            assert!(shown.contains(kept), "{kept}: {shown}");
+        }
+    }
 
     #[test]
     fn reads_app_subscriptions() {
