@@ -3,6 +3,8 @@
 //! keys typed into a text box stay the text box's; keys a listener
 //! consumes never reach XAML.
 
+use std::cell::RefCell;
+
 use prism_core::{KeyEvent, Modifiers, UiEvent};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, GetKeyboardState, MAPVK_VK_TO_VSC, MapVirtualKeyW, ToUnicode, VK_CONTROL, VK_LWIN,
@@ -11,6 +13,21 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 
 use crate::controls::Content;
 use crate::imp::{State, dispatch};
+
+thread_local! {
+    /// The keys whose press was reported, until released (#159).
+    static HELD: RefCell<crate::keys::Held> = RefCell::new(crate::keys::Held::default());
+}
+
+/// The window turned inactive: Windows sends the keys still down their
+/// release in the window that is active then, so they are released now,
+/// to the node their press went to (#159).
+pub fn release_all() {
+    let held = HELD.with(|h| h.borrow_mut().take_all());
+    for (name, target) in held {
+        dispatch(UiEvent::KeyUp(target, KeyEvent::new(name)));
+    }
+}
 
 pub fn modifiers() -> Modifiers {
     let down = |vk: u16| unsafe { GetKeyState(vk as i32) } < 0;
@@ -41,13 +58,31 @@ pub fn typed_char(vk: u32) -> Option<char> {
     }
 }
 
-/// A key went down (or up): reported to the listeners that want it.
-/// Returns whether XAML must not see it (a listener consumed or claimed
-/// it).
-pub fn key_event(s: &mut State, vk: u16, typed: Option<char>, repeat: bool, up: bool) -> bool {
+/// Key `code` (its virtual key `vk` and scan code) went down (or up):
+/// reported to the listeners that want it. A release goes, under the name
+/// it went down with, to the node its press went to, only if that press
+/// was reported. Returns whether XAML must not see it (a listener
+/// consumed or claimed it).
+pub fn key_event(
+    s: &mut State,
+    code: u32,
+    vk: u16,
+    typed: Option<char>,
+    repeat: bool,
+    up: bool,
+) -> bool {
+    if up {
+        if let Some((name, target)) = HELD.with(|h| h.borrow_mut().release(code)) {
+            let key = KeyEvent {
+                modifiers: modifiers(),
+                ..KeyEvent::new(name)
+            };
+            dispatch(UiEvent::KeyUp(target, key));
+        }
+        return false;
+    }
     // Escape closes the topmost sheet or dialog (`overlay.rs`).
     if vk == windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0
-        && !up
         && !repeat
         && crate::overlay::escape(&s.renderer.widgets)
     {
@@ -56,10 +91,8 @@ pub fn key_event(s: &mut State, vk: u16, typed: Option<char>, repeat: bool, up: 
     let Some(name) = crate::keys::key_name(vk, typed) else {
         return false;
     };
-    if !up {
-        // Keyboard input: focus moved now shows the focus visual.
-        s.renderer.widgets.focus_visible = true;
-    }
+    // Keyboard input: focus moved now shows the focus visual.
+    s.renderer.widgets.focus_visible = true;
     let modifiers = modifiers();
     let w = &s.renderer.widgets;
     let focus = w.focus;
@@ -88,10 +121,7 @@ pub fn key_event(s: &mut State, vk: u16, typed: Option<char>, repeat: bool, up: 
         selection,
         edges,
     };
-    if up {
-        dispatch(UiEvent::KeyUp(target, key));
-        return false;
-    }
+    HELD.with(|h| h.borrow_mut().press(code, &name, target));
     let claimed = target.is_some_and(|t| Some(t) == focus && crate::keys::claims(&name));
     let consumed = s.runtime.consumes_key_event(focus, &key);
     dispatch(UiEvent::Key(target, key));

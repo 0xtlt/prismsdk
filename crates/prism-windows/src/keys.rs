@@ -152,6 +152,48 @@ pub fn fluent_icon(symbol: &str) -> Option<char> {
     char::from_u32(code)
 }
 
+/// The keys whose press was reported and that are still down (#159),
+/// each with its name and the node it went to: a release is reported to
+/// that node under that name (the name a key types can change while it is
+/// down, with Shift), only if its press was; the window turning inactive
+/// releases them all (Windows sends their releases to the window that is
+/// active then).
+#[derive(Clone, Debug, Default)]
+pub struct Held {
+    keys: Vec<(u32, String, Option<prism_core::NodeId>)>,
+}
+
+impl Held {
+    /// The press of key `code` (its virtual key and scan code) was
+    /// reported as `name` to `target`.
+    pub fn press(&mut self, code: u32, name: &str, target: Option<prism_core::NodeId>) {
+        if let Some(k) = self.keys.iter().find(|k| k.0 == code)
+            && k.1 == name
+            && k.2 == target
+        {
+            // A repeat: it keeps its place.
+            return;
+        }
+        self.keys.retain(|k| k.0 != code);
+        self.keys.push((code, name.to_string(), target));
+    }
+
+    /// Key `code` went up: its name and node, if its press was reported.
+    pub fn release(&mut self, code: u32) -> Option<(String, Option<prism_core::NodeId>)> {
+        let i = self.keys.iter().position(|k| k.0 == code)?;
+        let (_, name, target) = self.keys.remove(i);
+        Some((name, target))
+    }
+
+    /// Every key still down, in the order they went down.
+    pub fn take_all(&mut self) -> Vec<(String, Option<prism_core::NodeId>)> {
+        std::mem::take(&mut self.keys)
+            .into_iter()
+            .map(|(_, name, target)| (name, target))
+            .collect()
+    }
+}
+
 /// Where a multi-line field's lines are, measured in the field: the
 /// middles of the caret's line, of the first and of the last line, and
 /// the caret's height.
@@ -184,6 +226,27 @@ pub fn caret_edges(caret: usize, len: usize, lines: Option<Lines>) -> prism_core
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn releases_match_their_reported_press() {
+        let mut held = Held::default();
+        held.press(0x41_001E, "A", Some(4));
+        held.press(0x26_0048, "ArrowUp", None);
+        // A repeat keeps the press.
+        held.press(0x41_001E, "A", Some(4));
+        // Released after Shift: still the name and node it went down with.
+        assert_eq!(held.release(0x41_001E), Some(("A".into(), Some(4))));
+        // A release whose press was not reported is not reported.
+        assert_eq!(held.release(0x41_001E), None);
+        assert_eq!(held.release(0x42_0030), None);
+        held.press(0x20_0039, " ", Some(9));
+        // The window turns inactive: the rest go up, in order.
+        assert_eq!(
+            held.take_all(),
+            vec![("ArrowUp".into(), None), (" ".into(), Some(9))]
+        );
+        assert_eq!(held.take_all(), vec![]);
+    }
 
     #[test]
     fn caret_edges_from_the_lines() {

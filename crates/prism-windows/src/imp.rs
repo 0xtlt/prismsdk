@@ -629,6 +629,14 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 };
                 LRESULT(0)
             }
+            WM_ACTIVATE => {
+                if u32::from(loword(wp.0)) == WA_INACTIVE {
+                    // The keys still down get their release in the window
+                    // active now: released here (#159).
+                    crate::keyboard::release_all();
+                }
+                DefWindowProcW(h, msg, wp, lp)
+            }
             WM_SETFOCUS => {
                 // The island takes the keyboard focus.
                 with_state(|s| {
@@ -957,14 +965,18 @@ pub fn run(config: AppConfig, init: AppInit) {
                 let vk = msg.wParam.0 as u32;
                 let up = matches!(msg.message, WM_KEYUP | WM_SYSKEYUP);
                 let repeat = !up && (msg.lParam.0 >> 30) & 1 == 1;
+                // The key itself: its virtual key, scan code and extended
+                // bit (a release matches its press, #159).
+                let code = (vk & 0xFFFF) << 16 | ((msg.lParam.0 >> 16) & 0x1FF) as u32;
                 let typed = if up {
                     None
                 } else {
                     crate::keyboard::typed_char(vk)
                 };
-                let consumed =
-                    with_state(|s| crate::keyboard::key_event(s, vk as u16, typed, repeat, up))
-                        .unwrap_or(false);
+                let consumed = with_state(|s| {
+                    crate::keyboard::key_event(s, code, vk as u16, typed, repeat, up)
+                })
+                .unwrap_or(false);
                 if consumed {
                     continue;
                 }

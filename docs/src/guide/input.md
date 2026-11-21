@@ -153,7 +153,7 @@ never sticks.
 | Linux (GTK) | `GestureClick`'s `n_press` and the event's state | `EventControllerKey` releases, matched to their press by hardware key; the window turning inactive releases held keys |
 | iOS, iPadOS, visionOS | `UITouch.tapCount`, the tap's `modifierFlags` (a hardware keyboard, an iPad pointer) | `pressesEnded:` / `pressesCancelled:`; the app turning inactive releases held keys |
 | Android | taps counted with the system's double-tap timeout and slop; the event's meta state | `KeyEvent.ACTION_UP`; the window losing the focus releases held keys |
-| Windows | the keys held; presses counted with `GetDoubleClickTime` and the double-click rectangle (`SM_CXDOUBLECLK`) | `WM_KEYUP`; held keys are not released yet when the window turns inactive |
+| Windows | the keys held; presses counted with `GetDoubleClickTime` and the double-click rectangle (`SM_CXDOUBLECLK`) | `WM_KEYUP`, matched to its press by virtual key and scan code; the window turning inactive (`WM_ACTIVATE`) releases held keys |
 
 tvOS counts presses of the remote's select button as single clicks; watchOS reports count 1 and no keys.
 
