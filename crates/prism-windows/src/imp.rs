@@ -304,12 +304,20 @@ pub fn fill(id: NodeId, text: &str) {
 thread_local! {
     /// The lifecycle phase last reported to the app.
     static LIFECYCLE: Cell<prism_core::Lifecycle> = const { Cell::new(prism_core::Lifecycle::Active) };
+    /// A close was confirmed: background was the window's last phase.
+    static CLOSING: Cell<bool> = const { Cell::new(false) };
 }
 
 /// The window's phase (`cx.on_lifecycle`): reported when it changes, now,
-/// or once the state is free.
-fn report_lifecycle(phase: prism_core::Lifecycle) {
+/// or once the state is free. After a confirmed close (`closing`) no
+/// phase follows: the window's deactivation as it goes (`DestroyWindow`)
+/// is not reported.
+fn report_lifecycle(phase: prism_core::Lifecycle, closing: bool) {
     let apply = move |s: &mut State| {
+        if CLOSING.get() {
+            return;
+        }
+        CLOSING.set(closing);
         if LIFECYCLE.get() == phase {
             return;
         }
@@ -602,7 +610,7 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     && LIFECYCLE.get() == prism_core::Lifecycle::Background;
                 if minimized || back {
                     let active = GetActiveWindow() == h;
-                    report_lifecycle(crate::lifecycle::phase(minimized, active, false));
+                    report_lifecycle(crate::lifecycle::phase(minimized, active, false), false);
                 }
                 if minimized {
                     // A minimized window is 0 × 0: the layout stays.
@@ -690,7 +698,7 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 }
                 // The high word: minimized.
                 let minimized = hiword(wp.0) != 0 || IsIconic(h).as_bool();
-                report_lifecycle(crate::lifecycle::phase(minimized, active, false));
+                report_lifecycle(crate::lifecycle::phase(minimized, active, false), false);
                 DefWindowProcW(h, msg, wp, lp)
             }
             WM_SETFOCUS => {
@@ -798,7 +806,7 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     }
                 }
                 // The app's last chance to save (`on_lifecycle`).
-                report_lifecycle(crate::lifecycle::phase(false, false, true));
+                report_lifecycle(crate::lifecycle::phase(false, false, true), true);
                 let _ = DestroyWindow(h);
                 LRESULT(0)
             }
