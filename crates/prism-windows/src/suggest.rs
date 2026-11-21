@@ -209,6 +209,19 @@ pub fn hide(id: NodeId) -> Result<()> {
     Ok(())
 }
 
+/// Whether a field's suggestions list is open (Escape closes it first).
+pub fn any_open() -> bool {
+    LISTS.with(|l| {
+        l.borrow().values().any(|x| {
+            x.flyout.as_ref().is_some_and(|(f, _)| {
+                f.cast::<FlyoutBase>()
+                    .and_then(|b| b.IsOpen())
+                    .unwrap_or(false)
+            })
+        })
+    })
+}
+
 /// A key in the field while its list is open: whether the list took it.
 fn key(id: NodeId, t: &TextBox, key: VirtualKey) -> Result<bool> {
     let Some((open, shown, highlight, buttons)) = LISTS.with(|l| {
