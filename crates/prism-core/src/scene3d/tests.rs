@@ -259,6 +259,37 @@ fn blobs_are_content_addressed_and_live_while_referenced() {
 }
 
 #[test]
+fn lazy_blobs_are_made_when_first_read() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static MADE: AtomicUsize = AtomicUsize::new(0);
+    fn make() -> Vec<u8> {
+        MADE.fetch_add(1, Ordering::SeqCst);
+        vec![7, 8, 9]
+    }
+    let a = blobs::put_lazy(BlobKind::Environment, blobs::BINARY_MIME, "test:lazy", make);
+    let b = blobs::put_lazy(BlobKind::Environment, blobs::BINARY_MIME, "test:lazy", make);
+    assert_eq!(a, b, "the same name, the same blob");
+    assert_eq!(MADE.load(Ordering::SeqCst), 0, "not made until read");
+    assert_eq!(a.bytes().as_deref(), Some(&[7u8, 8, 9][..]));
+    let (bytes, mime) = blobs::get(b.id()).unwrap();
+    assert_eq!(
+        (&*bytes, mime.as_str()),
+        (&[7u8, 8, 9][..], blobs::BINARY_MIME)
+    );
+    assert_eq!(MADE.load(Ordering::SeqCst), 1, "made once");
+}
+
+#[test]
+fn builtin_environments_wait_for_a_renderer() {
+    let e = Environment::studio();
+    assert_eq!(e, Environment::studio());
+    // Read like a renderer does: a prefiltered map.
+    let map = env::EnvMap::decode(&e.blob.bytes().unwrap()).unwrap();
+    let up = map.irradiance([0., 1., 0.]);
+    assert!(up.iter().all(|c| *c > 0.), "{up:?}");
+}
+
+#[test]
 fn mesh_blobs_round_trip_with_every_attribute() {
     let mesh = MeshBlob {
         positions: vec![[0., 0., 0.], [1., 0., 0.], [0., 2., 0.]],

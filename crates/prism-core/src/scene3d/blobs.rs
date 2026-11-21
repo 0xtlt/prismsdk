@@ -93,7 +93,25 @@ pub const MESH_COLOR: u32 = 8;
 
 struct Blob {
     mime: String,
-    bytes: Arc<[u8]>,
+    bytes: OnceLock<Arc<[u8]>>,
+    /// Makes the bytes the first time they are read ([`put_lazy`]).
+    make: Option<fn() -> Vec<u8>>,
+}
+
+impl Blob {
+    fn new(mime: &str, bytes: Vec<u8>) -> Blob {
+        Blob {
+            mime: mime.to_string(),
+            bytes: OnceLock::from(Arc::<[u8]>::from(bytes)),
+            make: None,
+        }
+    }
+
+    fn bytes(&self) -> Arc<[u8]> {
+        self.bytes
+            .get_or_init(|| self.make.map_or_else(Vec::new, |make| make()).into())
+            .clone()
+    }
 }
 
 /// A blob: its id, and (in the process that made it) its bytes, kept alive
@@ -115,7 +133,7 @@ impl BlobRef {
     /// The bytes, if this process still has them.
     pub fn bytes(&self) -> Option<Arc<[u8]>> {
         match &self.blob {
-            Some(b) => Some(b.bytes.clone()),
+            Some(b) => Some(b.bytes()),
             None => get(&self.id).map(|(bytes, _)| bytes),
         }
     }
@@ -194,15 +212,31 @@ fn parse_id(id: &str) -> Option<u128> {
 pub fn put(kind: BlobKind, mime: &str, bytes: Vec<u8>) -> BlobRef {
     let key = fnv128(kind, &bytes);
     let id: Arc<str> = format!("{key:032x}").into();
+    insert(key, || Blob::new(mime, bytes))
+}
+
+/// Stores bytes `make` gives the first time they are read (a reader
+/// waits for them), under an id made from `kind` and `name`: what costs
+/// time to make (a built-in environment) is made when a renderer needs
+/// it, not while the app's tree is built. `make` must always give the
+/// same bytes.
+pub fn put_lazy(kind: BlobKind, mime: &str, name: &str, make: fn() -> Vec<u8>) -> BlobRef {
+    let key = fnv128(kind, format!("lazy:{name}").as_bytes());
+    insert(key, || Blob {
+        mime: mime.to_string(),
+        bytes: OnceLock::new(),
+        make: Some(make),
+    })
+}
+
+/// The stored blob under `key`, or `blob()` stored there.
+fn insert(key: u128, blob: impl FnOnce() -> Blob) -> BlobRef {
+    let id: Arc<str> = format!("{key:032x}").into();
     let Ok(mut store) = store().lock() else {
         // A poisoned store: still a usable reference, just not shared.
-        let blob = Arc::new(Blob {
-            mime: mime.to_string(),
-            bytes: bytes.into(),
-        });
         return BlobRef {
             id,
-            blob: Some(blob),
+            blob: Some(Arc::new(blob())),
         };
     };
     if let Some(blob) = store.get(&key).and_then(Weak::upgrade) {
@@ -215,10 +249,7 @@ pub fn put(kind: BlobKind, mime: &str, bytes: Vec<u8>) -> BlobRef {
     if store.len() >= 64 && store.len().is_power_of_two() {
         store.retain(|_, w| w.strong_count() > 0);
     }
-    let blob = Arc::new(Blob {
-        mime: mime.to_string(),
-        bytes: bytes.into(),
-    });
+    let blob = Arc::new(blob());
     store.insert(key, Arc::downgrade(&blob));
     BlobRef {
         id,
@@ -230,7 +261,8 @@ pub fn put(kind: BlobKind, mime: &str, bytes: Vec<u8>) -> BlobRef {
 pub fn get(id: &str) -> Option<(Arc<[u8]>, String)> {
     let key = parse_id(id)?;
     let blob = store().lock().ok()?.get(&key)?.upgrade()?;
-    Some((blob.bytes.clone(), blob.mime.clone()))
+    // Made (if lazy) outside the store's lock.
+    Some((blob.bytes(), blob.mime.clone()))
 }
 
 // --- Writing and reading -----------------------------------------------------------------
