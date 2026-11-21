@@ -20,7 +20,7 @@ use windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowA
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Ole::{OleInitialize, OleUninitialize};
 use windows::Win32::UI::HiDpi::{
-    AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow,
     SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -591,7 +591,7 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     WS_OVERLAPPEDWINDOW,
                     false,
                     WINDOW_EX_STYLE(0),
-                    dpi,
+                    GetDpiForWindow(h).max(96),
                 );
                 info.ptMinTrackSize = POINT {
                     x: r.right - r.left,
@@ -767,7 +767,9 @@ pub fn run(config: AppConfig, init: AppInit) {
             right: (width * k).round() as i32,
             bottom: (height * k).round() as i32,
         };
-        let _ = AdjustWindowRectExForDpi(&mut r, style, false, WINDOW_EX_STYLE(0), dpi);
+        // The frame is the monitor's, at its own DPI.
+        let frame_dpi = GetDpiForWindow(main).max(96);
+        let _ = AdjustWindowRectExForDpi(&mut r, style, false, WINDOW_EX_STYLE(0), frame_dpi);
         let _ = SetWindowPos(
             main,
             None,

@@ -233,13 +233,12 @@ pub fn dpi_changed(dpi: u32) {
 
 /// Simulates moving the window to a monitor at `dpi`: the app takes that
 /// scale, and the window gets `WM_DPICHANGED` with the rectangle Windows
-/// would suggest (the same client size in DIPs), as on a real move.
+/// would suggest (the same client size in DIPs), as on a real move. The
+/// frame keeps its thickness (the monitor stays the same).
 pub fn simulate_dpi(hwnd: windows::Win32::Foundation::HWND, dpi: u32) {
     use windows::Win32::Foundation::{LPARAM, RECT, WPARAM};
-    use windows::Win32::UI::HiDpi::AdjustWindowRectExForDpi;
     use windows::Win32::UI::WindowsAndMessaging::{
-        GWL_EXSTYLE, GWL_STYLE, GetClientRect, GetWindowLongW, GetWindowRect, SendMessageW,
-        WINDOW_EX_STYLE, WINDOW_STYLE, WM_DPICHANGED,
+        GetClientRect, GetWindowRect, SendMessageW, WM_DPICHANGED,
     };
     let old = window_dpi(hwnd) as f32;
     SCALE.set(Some(old / 96.));
@@ -248,20 +247,13 @@ pub fn simulate_dpi(hwnd: windows::Win32::Foundation::HWND, dpi: u32) {
         let _ = GetClientRect(hwnd, &mut client);
         let _ = GetWindowRect(hwnd, &mut window);
         let k = dpi as f32 / old;
-        let mut r = RECT {
-            left: 0,
-            top: 0,
-            right: (client.right as f32 * k).round() as i32,
-            bottom: (client.bottom as f32 * k).round() as i32,
-        };
-        let style = WINDOW_STYLE(GetWindowLongW(hwnd, GWL_STYLE) as u32);
-        let ex = WINDOW_EX_STYLE(GetWindowLongW(hwnd, GWL_EXSTYLE) as u32);
-        let _ = AdjustWindowRectExForDpi(&mut r, style, false, ex, dpi);
+        let frame_w = (window.right - window.left) - client.right;
+        let frame_h = (window.bottom - window.top) - client.bottom;
         let suggested = RECT {
             left: window.left,
             top: window.top,
-            right: window.left + r.right - r.left,
-            bottom: window.top + r.bottom - r.top,
+            right: window.left + (client.right as f32 * k).round() as i32 + frame_w,
+            bottom: window.top + (client.bottom as f32 * k).round() as i32 + frame_h,
         };
         let packed = (dpi & 0xffff) | ((dpi & 0xffff) << 16);
         SendMessageW(
