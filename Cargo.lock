@@ -2388,6 +2388,7 @@ dependencies = [
  "prismsdk-core",
  "ring",
  "serde_json",
+ "tempfile",
  "ureq",
  "wasm-bindgen-cli-support",
 ]

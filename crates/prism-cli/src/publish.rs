@@ -256,7 +256,6 @@ fn asc_key() -> Result<AscKey, String> {
 
 /// A Mac package's app, unpacked into a temporary directory.
 fn expand_pkg(pkg: &Path, dir: &Path) -> Result<PathBuf, String> {
-    let _ = std::fs::remove_dir_all(dir);
     let ok = Command::new("pkgutil")
         .arg("--expand-full")
         .arg(pkg)
@@ -299,7 +298,9 @@ fn app_store(
     let key = asc_key()?;
     println!("  api key  {} (issuer {})", key.id, key.issuer);
     let report = if target == Target::Macos {
-        let dir = std::env::temp_dir().join(format!("prism-pkg-{}", std::process::id()));
+        // Removed on every return.
+        let scratch = appstore::private_dir()?;
+        let dir = scratch.path().join("pkg");
         let app = expand_pkg(package, &dir)?;
         let e = expected(
             p,
@@ -316,7 +317,6 @@ fn app_store(
                 "Mac Installer Distribution",
             ],
         );
-        let _ = std::fs::remove_dir_all(&dir);
         r?
     } else {
         let e = expected(p, &build, &["Apple Distribution", "iPhone Distribution"], o);
@@ -380,7 +380,8 @@ fn notarize(p: &Project, dmg: &Path, o: &PublishOptions) -> Result<(), String> {
             NotaryAuth::Key(key)
         }
     };
-    let mount = std::env::temp_dir().join(format!("prism-dmg-{}", std::process::id()));
+    let scratch = appstore::private_dir()?;
+    let mount = scratch.path().join("mount");
     attach(dmg, &mount)?;
     let report = find_app(&mount, 0)
         .ok_or_else(|| "the disk image holds no app".to_string())
@@ -388,10 +389,16 @@ fn notarize(p: &Project, dmg: &Path, o: &PublishOptions) -> Result<(), String> {
             let e = expected(p, &build, &["Developer ID Application"], o);
             appstore::check_dmg(dmg, &app, &e)
         });
-    let _ = Command::new("hdiutil")
+    let detached = Command::new("hdiutil")
         .args(["detach", "-quiet"])
         .arg(&mount)
-        .status();
+        .status()
+        .is_ok_and(|s| s.success());
+    if !detached {
+        // Still mounted: the directory stays, so the image's files are
+        // never removed with it.
+        let _ = scratch.keep();
+    }
     finish(&report?)?;
     let submit = appstore::notarytool_submit(dmg, &auth);
     let staple: Vec<String> = vec!["stapler".into(), "staple".into(), dmg.display().to_string()];

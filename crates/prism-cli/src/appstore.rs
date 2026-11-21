@@ -324,6 +324,17 @@ pub fn check_profile(r: &mut Report, profile: &serde_json::Value, bundle_id: &st
     );
 }
 
+/// A private directory for one check's files (`0700`, a random name
+/// created exclusively), removed when dropped: a link another user of the
+/// machine plants at a name in the shared temporary directory is never
+/// followed, and two checks at once never share files.
+pub(crate) fn private_dir() -> Result<tempfile::TempDir, String> {
+    tempfile::Builder::new()
+        .prefix("prism-")
+        .tempdir()
+        .map_err(|e| format!("temporary directory: {e}"))
+}
+
 fn run(cmd: &str, args: &[&str]) -> Result<std::process::Output, String> {
     Command::new(cmd)
         .args(args)
@@ -346,13 +357,31 @@ fn plist_json(path: &Path) -> Result<serde_json::Value, String> {
     serde_json::from_slice(&out.stdout).map_err(|_| format!("{p}: unreadable plist"))
 }
 
+/// A plist's bytes as JSON (as [`plist_json`]), through a pipe.
+fn plist_bytes_json(plist: &[u8], what: &str) -> Result<serde_json::Value, String> {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new("python3")
+        .args([
+            "-c",
+            "import json, plistlib, sys; print(json.dumps(plistlib.loads(sys.stdin.buffer.read()), default=str))",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("python3: {e}"))?;
+    // A write error is python's early exit, seen below.
+    let _ = child.stdin.take().map(|mut i| i.write_all(plist));
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("python3: {e}"))?;
+    serde_json::from_slice(&out.stdout).map_err(|_| format!("{what}: unreadable plist"))
+}
+
 fn profile_json(path: &Path) -> Result<serde_json::Value, String> {
     let out = run("security", &["cms", "-D", "-i", &path.to_string_lossy()])?;
-    let tmp = std::env::temp_dir().join(format!("prism-profile-{}.plist", std::process::id()));
-    std::fs::write(&tmp, &out.stdout).map_err(|e| e.to_string())?;
-    let v = plist_json(&tmp);
-    let _ = std::fs::remove_file(&tmp);
-    v
+    plist_bytes_json(&out.stdout, &path.to_string_lossy())
 }
 
 /// `codesign --verify --deep --strict`, then the signing authority.
@@ -381,30 +410,26 @@ fn signature(r: &mut Report, what: &str, path: &Path, e: &Expected) -> String {
     details
 }
 
-/// The bundle's entitlements as JSON.
+/// The bundle's entitlements as JSON (`codesign` writes them to stdout).
 fn entitlements(app: &Path) -> serde_json::Value {
-    let tmp = std::env::temp_dir().join(format!("prism-ent-{}.plist", std::process::id()));
-    let ok = Command::new("codesign")
-        .args(["-d", "--entitlements"])
-        .arg(&tmp)
-        .args(["--xml"])
+    match Command::new("codesign")
+        .args(["-d", "--entitlements", "-", "--xml"])
         .arg(app)
         .output()
-        .is_ok_and(|o| o.status.success());
-    let v = if ok {
-        plist_json(&tmp).unwrap_or_default()
-    } else {
-        serde_json::Value::Null
-    };
-    let _ = std::fs::remove_file(&tmp);
-    v
+    {
+        Ok(o) if o.status.success() && !o.stdout.is_empty() => {
+            plist_bytes_json(&o.stdout, "entitlements").unwrap_or_default()
+        }
+        _ => serde_json::Value::Null,
+    }
 }
 
 /// Checks an .ipa (iOS, iPadOS, tvOS, visionOS, watchOS).
 pub fn check_ipa(ipa: &Path, e: &Expected) -> Result<Report, String> {
     let mut r = Report::default();
-    let dir = std::env::temp_dir().join(format!("prism-ipa-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    // Removed on every return.
+    let scratch = private_dir()?;
+    let dir = scratch.path().join("ipa");
     let out = run(
         "ditto",
         &["-x", "-k", &ipa.to_string_lossy(), &dir.to_string_lossy()],
@@ -445,7 +470,6 @@ pub fn check_ipa(ipa: &Path, e: &Expected) -> Result<Report, String> {
                 .push("the widget extension has no profile".into()),
         }
     }
-    let _ = std::fs::remove_dir_all(&dir);
     Ok(r)
 }
 
@@ -521,6 +545,55 @@ pub fn check_dmg(dmg: &Path, app: &Path, e: &Expected) -> Result<Report, String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S37: the checks write nothing at a name another user of the machine
+    /// can guess: a link planted there (in the shared temporary directory)
+    /// redirects no write, and two checks at once read their own results.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn s37_checks_follow_no_planted_link() {
+        let apps = [
+            Path::new("/System/Applications/Calculator.app"),
+            Path::new("/System/Applications/TextEdit.app"),
+        ];
+        if !apps.iter().all(|a| a.exists()) {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("prism-cli-s37-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let victim = dir.join("victim");
+        std::fs::write(&victim, "MARKER").unwrap();
+        let pid = std::process::id();
+        let planted = [
+            std::env::temp_dir().join(format!("prism-ent-{pid}.plist")),
+            std::env::temp_dir().join(format!("prism-profile-{pid}.plist")),
+        ];
+        for link in &planted {
+            let _ = std::fs::remove_file(link);
+            std::os::unix::fs::symlink(&victim, link).unwrap();
+        }
+        let alone: Vec<serde_json::Value> = apps.iter().map(|a| entitlements(a)).collect();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "MARKER");
+        for e in &alone {
+            assert!(e.as_object().is_some_and(|o| !o.is_empty()), "{e}");
+        }
+        assert_ne!(alone[0], alone[1]);
+        // At once, from two threads of one process.
+        std::thread::scope(|s| {
+            for (app, want) in apps.iter().zip(&alone) {
+                s.spawn(move || {
+                    for _ in 0..4 {
+                        assert_eq!(&entitlements(app), want, "{}", app.display());
+                    }
+                });
+            }
+        });
+        for link in &planted {
+            let _ = std::fs::remove_file(link);
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     fn expected() -> Expected<'static> {
         Expected {
