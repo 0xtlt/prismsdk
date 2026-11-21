@@ -6,7 +6,8 @@
 //!   posts to it, and it answers `got "hello 1"`. On the web, a public
 //!   page in a frame. Tests load their own page under a sandbox:
 //!   `PRISM_WEB_URL`, `PRISM_WEB_SANDBOX` (`scripts,forms,popups,same-origin`,
-//!   empty for none).
+//!   empty for none). Android apps get no environment: there, the values
+//!   set when the app was built.
 //! - `video`: a short film with the platform's controls, playing muted.
 //!   Tests point it at a server that wants a request header:
 //!   `PRISM_VIDEO_URL` and `PRISM_VIDEO_HEADER` (`Name: value`).
@@ -65,8 +66,8 @@ pub(crate) struct MediaDemo {
 impl MediaDemo {
     pub fn new(cx: &mut Context<Self>) -> Self {
         MediaDemo {
-            url: std::env::var("PRISM_WEB_URL")
-                .unwrap_or_else(|_| page_url(cx.platform() == Platform::Web)),
+            url: test_env("PRISM_WEB_URL", option_env!("PRISM_WEB_URL"))
+                .unwrap_or_else(|| page_url(cx.platform() == Platform::Web)),
             from_page: None,
             loaded: None,
             sent: 0,
@@ -253,9 +254,15 @@ fn test_video() -> prism::Video {
     }
 }
 
+/// A test's setting: the environment's, else the one at build time
+/// (`option_env!`: Android starts apps without an environment).
+fn test_env(name: &str, built: Option<&str>) -> Option<String> {
+    std::env::var(name).ok().or(built.map(str::to_string))
+}
+
 /// The sandbox a test asks for (`PRISM_WEB_SANDBOX`).
 fn test_sandbox() -> Option<WebSandbox> {
-    let list = std::env::var("PRISM_WEB_SANDBOX").ok()?;
+    let list = test_env("PRISM_WEB_SANDBOX", option_env!("PRISM_WEB_SANDBOX"))?;
     let mut s = WebSandbox::new();
     for name in list.split(',').map(str::trim) {
         s = match name {
