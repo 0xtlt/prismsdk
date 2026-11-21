@@ -247,11 +247,7 @@ fn island_attrs(n: &HtmlNode, wasm: bool) -> String {
         return out;
     }
     for (name, json) in &n.island_props {
-        let valid = !name.is_empty()
-            && name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-        if !valid {
+        if !reflects_attr(name) {
             continue;
         }
         match serde_json::from_str::<serde_json::Value>(json) {
@@ -268,6 +264,35 @@ fn island_attrs(n: &HtmlNode, wasm: bool) -> String {
         }
     }
     out
+}
+
+/// Whether a web component's prop is reflected as an attribute (S20; the
+/// same rule as `reflectsAttr` in client.js): an ordinary name, and never
+/// an event handler (`on…`), styles, the element's identity or Prism's own
+/// attributes. Props can come from data, and an attribute's escaped value
+/// cannot make a handler safe.
+pub(crate) fn reflects_attr(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && !lower.starts_with("on")
+        && !lower.starts_with("xmlns")
+        && !matches!(
+            lower.as_str(),
+            "style"
+                | "class"
+                | "id"
+                | "is"
+                | "slot"
+                | "part"
+                | "nonce"
+                | "data-pid"
+                | "data-kind"
+                | "data-island"
+        )
 }
 
 /// ARIA attributes for a node (mirrors `applyA11y` in client.js).

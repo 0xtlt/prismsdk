@@ -6285,7 +6285,7 @@ void main() {
       el = fresh;
     }
     el._island = p;
-    el.prismProps ||= {};
+    el.prismProps ||= Object.create(null);
     // The island's CustomEvents go to the server (its own, not bubbled ones).
     el._ibound ||= new Set();
     for (const name of p.events) {
@@ -6305,14 +6305,33 @@ void main() {
       registry().whenDefined(p.tag).then(() => {
         registry().upgrade(el);
         el._idefined = true;
-        for (const [k, v] of Object.entries(el.prismProps)) el[k] = v;
+        for (const [k, v] of Object.entries(el.prismProps)) if (settableProp(el, k)) el[k] = v;
       });
     }
   }
+  // What a web component's props may change (S20: names can come from
+  // data). An attribute needs an ordinary name, never an event handler,
+  // styles, the element's identity or Prism's own (`reflects_attr` in
+  // html.rs). A property is one the component declares (a setter of its
+  // class, a field of the instance) or one the element has no native
+  // member for, never Prism's own (`_…`, `prism…`): not `innerHTML`, an
+  // `on…` handler or `__proto__`.
   const ATTR_NAME = /^[a-zA-Z_][\w-]*$/;
+  const NOT_ATTR = /^(on|xmlns)|^(style|class|id|is|slot|part|nonce|data-pid|data-kind|data-island)$/i;
+  const reflectsAttr = (k) => ATTR_NAME.test(k) && !NOT_ATTR.test(k);
+  function settableProp(el, k) {
+    if (/^(_|prism)/.test(k)) return false;
+    if (Object.prototype.hasOwnProperty.call(el, k)) return true;
+    const native = typeof HTMLElement === "function" ? HTMLElement.prototype : null;
+    for (let p = Object.getPrototypeOf(el); p && p !== native; p = Object.getPrototypeOf(p)) {
+      const d = Object.getOwnPropertyDescriptor(p, k);
+      if (d) return !!d.set;
+    }
+    return native !== null && !(k in el);
+  }
   function setIslandProps(el, props) {
     if (!el) return;
-    const all = (el.prismProps ||= {});
+    const all = (el.prismProps ||= Object.create(null));
     for (const [k, v] of Object.entries(props)) {
       if (v === null) delete all[k]; else all[k] = v;
     }
@@ -6321,12 +6340,12 @@ void main() {
       return;
     }
     for (const [k, v] of Object.entries(props)) {
-      if (ATTR_NAME.test(k)) {
+      if (reflectsAttr(k)) {
         if (typeof v === "string" || typeof v === "number") el.setAttribute(k, String(v));
         else if (v === true) el.setAttribute(k, "");
         else if (v === false || v === null) el.removeAttribute(k);
       }
-      if (el._idefined) el[k] = v === null ? undefined : v;
+      if (el._idefined && settableProp(el, k)) el[k] = v === null ? undefined : v;
     }
   }
 

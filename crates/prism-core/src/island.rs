@@ -119,14 +119,53 @@ pub fn island(name: impl AsRef<str>) -> Island {
 /// [`island`]: props become properties (and attributes, for strings, numbers
 /// and booleans), its `CustomEvent`s reach [`on`](Island::on) handlers. Load
 /// its definition with [`module`](Island::module), or define it in the page.
-/// The tag must contain a `-` (a custom element name).
+///
+/// The tag must be a valid custom element name ([`is_custom_element_name`]:
+/// `time-ago`, a letter first and a `-`). Any other tag is no component:
+/// the page shows the children, the fallback, in a plain container.
+///
+/// Props reach the element as attributes when their names are ordinary
+/// ones (never `on…` handlers, `style`, `class`, `id`, `is`, `slot`,
+/// `part`, `nonce` or Prism's `data-` attributes), and as properties when
+/// the component declares them (a setter of its class, a field) or the
+/// element has no native member of that name: a prop never sets
+/// `innerHTML`, a handler or the element's prototype.
 pub fn web_component(tag: impl Into<String>) -> Island {
     let tag = tag.into().to_ascii_lowercase();
-    debug_assert!(
-        tag.contains('-'),
-        "custom element names contain a `-`: {tag}"
-    );
+    if cfg!(debug_assertions) && !is_custom_element_name(&tag) {
+        eprintln!("prism: {tag:?} is not a custom element name: its fallback shows instead");
+    }
     Island::new(tag, IslandSource::Page)
+}
+
+/// Whether `tag` is a valid custom element name (HTML's grammar): a
+/// lowercase ASCII letter first, a `-`, then letters, digits, `-`, `.`,
+/// `_` or non-ASCII name characters, and not one of the names SVG and
+/// MathML reserve (`font-face`…). Islands with any other tag are not
+/// rendered as elements.
+pub fn is_custom_element_name(tag: &str) -> bool {
+    const RESERVED: [&str; 8] = [
+        "annotation-xml",
+        "color-profile",
+        "font-face",
+        "font-face-src",
+        "font-face-uri",
+        "font-face-format",
+        "font-face-name",
+        "missing-glyph",
+    ];
+    let mut chars = tag.chars();
+    chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && tag.contains('-')
+        && chars.all(|c| {
+            matches!(c,
+                '-' | '.' | '_' | '0'..='9' | 'a'..='z' | '\u{B7}'
+                | '\u{C0}'..='\u{D6}' | '\u{D8}'..='\u{F6}' | '\u{F8}'..='\u{37D}'
+                | '\u{37F}'..='\u{1FFF}' | '\u{200C}'..='\u{200D}' | '\u{203F}'..='\u{2040}'
+                | '\u{2070}'..='\u{218F}' | '\u{2C00}'..='\u{2FEF}' | '\u{3001}'..='\u{D7FF}'
+                | '\u{F900}'..='\u{FDCF}' | '\u{FDF0}'..='\u{FFFD}' | '\u{10000}'..='\u{EFFFF}')
+        })
+        && !RESERVED.contains(&tag)
 }
 
 impl Island {

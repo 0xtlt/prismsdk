@@ -2333,7 +2333,9 @@ impl Reconciler {
 
     /// Island `id`'s element, changed props and event handlers.
     fn diff_island(&mut self, id: NodeId, spec: Option<Box<crate::island::IslandSpec>>) {
-        let Some(spec) = spec else {
+        // A tag that is not a custom element name (it may come from data)
+        // would be markup in a page: the node stays a plain view (S20).
+        let Some(spec) = spec.filter(|s| crate::island::is_custom_element_name(&s.tag)) else {
             return;
         };
         let crate::island::IslandSpec {

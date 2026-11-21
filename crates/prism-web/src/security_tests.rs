@@ -973,6 +973,67 @@ fn s19_a_link_from_the_page_runs_no_widget_action() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// S20: a web component's tag and prop names can come from data (a CMS).
+/// The first paint keeps both out of markup: an invalid tag is a plain
+/// container around the fallback, and props never become event handlers,
+/// styles or Prism's own attributes.
+#[test]
+fn s20_component_tags_and_prop_names_stay_out_of_markup() {
+    use prism_core::prelude::*;
+    use prism_core::{Backend, Runtime};
+
+    struct Page;
+    impl Render for Page {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .child(web_component("x-a><i data-marker=tag></i").child(text("fallback one")))
+                .child(web_component("font-face").child(text("fallback two")))
+                .child(
+                    web_component("x-card")
+                        .prop("label", "ok")
+                        .prop("onclick", "marker()")
+                        .prop("OnFocus", "marker()")
+                        .prop("style", "color: red")
+                        .prop("data-pid", "99")
+                        .prop("class", "x")
+                        .prop("is", "x")
+                        .prop("1st", "x")
+                        .child(text("card")),
+                )
+        }
+    }
+    let init: prism_core::AppInit = std::sync::Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Page);
+        cx.set_root(root);
+    });
+    let mut rt = Runtime::new(&init);
+    let mut html = crate::HtmlBackend::default();
+    html.apply(&rt.render());
+    let out = html.to_html();
+    assert!(!out.contains("marker"), "{out}");
+    assert!(!out.contains("<x-a"), "{out}");
+    assert!(!out.contains("<font-face"), "{out}");
+    assert!(
+        out.contains("fallback one") && out.contains("fallback two"),
+        "{out}"
+    );
+    let card = &out[out.find("<x-card").expect("the valid component")..];
+    let card = &card[..card.find('>').unwrap()];
+    assert!(card.contains(r#" label="ok""#), "{card}");
+    for name in [
+        "onclick",
+        "onfocus",
+        "OnFocus",
+        "color: red",
+        "data-pid=\"99",
+        "class=\"x",
+        " is=",
+        "1st",
+    ] {
+        assert!(!card.contains(name), "{name} in {card}");
+    }
+}
+
 // --- S14, S15: sign-ins and cookies the server completes ------------------------------------
 
 /// S14: two sessions wait for sign-ins under the same call number. One
