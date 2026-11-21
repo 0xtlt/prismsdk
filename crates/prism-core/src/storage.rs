@@ -108,6 +108,8 @@ impl Storage for FileStorage {
         };
         entries
             .flatten()
+            // Folders are not keys (`cloud`, Prism's own, the app's).
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
             .filter_map(|e| e.file_name().into_string().ok())
             .filter(|n| !n.ends_with(".tmp~"))
             .map(|n| percent_decode(&n))

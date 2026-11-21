@@ -141,3 +141,16 @@ fn local_files_follow_a_moved_directory() {
         Some(Path::new("/data/s10-other/files/s10-b.png"))
     );
 }
+
+#[test]
+fn file_storage_keys_leave_out_folders() {
+    // The data directory holds the storage's files and folders that are
+    // not keys: cloud storage, Prism's own (`widget-links`), the app's.
+    let dir = TempDir::new("folders");
+    let mut s = FileStorage::new(&*dir);
+    s.set("a", "1");
+    std::fs::create_dir_all(dir.join("cloud")).unwrap();
+    std::fs::create_dir_all(dir.join("widget-links")).unwrap();
+    std::fs::write(dir.join("widget-links/widget-link-ledger"), "{}").unwrap();
+    assert_eq!(s.keys(), ["a"]);
+}

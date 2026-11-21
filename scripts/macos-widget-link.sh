@@ -30,8 +30,8 @@ id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$app/Contents/Info.
 snap="$HOME/Library/Group Containers/$group/prism-widgets/todo.json"
 data="$HOME/Library/Application Support/$id"
 store="$data/todos"
-key="$data/widget-link-key"
-ledger="$data/widget-link-ledger"
+key="$data/widget-links/widget-link-key"
+ledger="$data/widget-links/widget-link-ledger"
 exe=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$app/Contents/Info.plist")
 running() { pgrep -f "$(basename "$app")/Contents/MacOS/" >/dev/null; }
 quit() {

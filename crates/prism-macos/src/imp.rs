@@ -5403,10 +5403,13 @@ pub fn run(config: AppConfig, init: AppInit) {
         .app
         .set_widget_configurations_source(prism_native::apple::widget_configurations);
     // Widget buttons open the app on links that only its widgets can sign,
-    // each usable once; the key and the ledger of used links stay in the
-    // data directory between runs.
+    // each usable once; the key and the ledger of used links stay between
+    // runs in a folder of their own, out of the app's storage.
     if capabilities.widgets {
-        let dir = data_dir(&config.title);
+        let data = data_dir(&config.title);
+        // Where an earlier version kept the key, among the app's stored keys.
+        let _ = std::fs::remove_file(data.join("widget-link-key"));
+        let dir = data.join(crate::widget_key::DIR);
         runtime.app.set_widget_key(
             crate::widget_key::load(&dir),
             Box::new(prism_core::FileStorage::new(&dir)),
