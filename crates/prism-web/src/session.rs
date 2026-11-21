@@ -1693,6 +1693,8 @@ pub(crate) enum Gate {
     Owner,
     /// A biometric secret's value.
     Secret(String),
+    /// Stores a biometric secret (the owner enrolls first).
+    Store { key: String, value: String },
 }
 
 type Answer = Result<prism_core::DeviceValue, prism_core::DeviceError>;
@@ -1712,6 +1714,17 @@ impl WebServices {
                 value,
                 options,
             } => {
+                // A biometric secret needs an enrolled owner: the first one
+                // enrolls this browser's authenticator, so reading one never
+                // enrolls whoever reads it first.
+                let enrolled = self.secure.as_ref().map(|s| s.credential().is_some());
+                if options.biometric && enrolled == Some(false) {
+                    if !self.uvpa {
+                        self.reply(id, Err(E::Unavailable));
+                        return None;
+                    }
+                    return self.ceremony(id, String::new(), Gate::Store { key, value });
+                }
                 let r = match &self.secure {
                     Some(s) => s.set(&key, &value, options.biometric).map(|_| V::Done),
                     None => Err("no session".into()),
@@ -1731,7 +1744,7 @@ impl WebServices {
                             return None;
                         }
                         let reason = prompt.unwrap_or_default();
-                        Some(self.ceremony(id, reason, Gate::Secret(secret.value)))
+                        self.ceremony(id, reason, Gate::Secret(secret.value))
                     }
                     Ok(secret) => {
                         self.reply(id, Ok(V::Text(secret.map(|s| s.value))));
@@ -1766,7 +1779,7 @@ impl WebServices {
                     self.reply(id, Err(E::Unavailable));
                     return None;
                 }
-                Some(self.ceremony(id, r.reason, Gate::Owner))
+                self.ceremony(id, r.reason, Gate::Owner)
             }
             C::SignInWithApple(_) => {
                 // Apple's web sign-in is OAuth: use prism::oauth with its endpoints.
@@ -1879,27 +1892,47 @@ impl WebServices {
     }
 
     /// Starts a WebAuthn ceremony: an assertion with this browser's
-    /// credential, or its registration the first time.
-    fn ceremony(&mut self, id: u64, reason: String, gate: Gate) -> Value {
-        let c = crate::security::Ceremony::new(&self.origin);
+    /// credential, or its enrollment the first time (`authenticate`, or the
+    /// first biometric secret). A biometric secret is never read through an
+    /// enrollment: without a credential it stays closed.
+    fn ceremony(&mut self, id: u64, reason: String, gate: Gate) -> Option<Value> {
+        use crate::security::Mode;
         let credential = self.secure.as_ref().and_then(|s| s.credential());
-        let msg = match credential {
-            Some(cred) => json!({
+        let mode = match (&credential, &gate) {
+            (Some(cred), _) => Mode::Assert(cred.id.clone()),
+            (None, Gate::Secret(_)) => {
+                self.reply(
+                    id,
+                    Err(prism_core::DeviceError::Failed(
+                        "no authenticator is enrolled in this browser: store the secret again"
+                            .into(),
+                    )),
+                );
+                return None;
+            }
+            (None, _) => Mode::Register,
+        };
+        let c = crate::security::Ceremony::new(&self.origin, mode);
+        let msg = match &c.mode {
+            Mode::Assert(cred) => json!({
                 "t": "device", "id": id, "call": "webauthn", "mode": "get",
-                "challenge": c.challenge, "credential": cred.id, "reason": reason,
+                "challenge": c.challenge, "credential": cred, "reason": reason,
             }),
-            None => json!({
+            Mode::Register => json!({
                 "t": "device", "id": id, "call": "webauthn", "mode": "create",
                 "challenge": c.challenge, "user": crate::security::random_id(),
                 "rp": self.title, "name": self.title, "reason": reason,
             }),
         };
         self.ceremonies.insert(id, (c, gate));
-        msg
+        Some(msg)
     }
 
-    /// Checks the page's WebAuthn answer for call `id`.
+    /// Checks the page's WebAuthn answer for call `id`: the operation the
+    /// server chose (an assertion by the enrolled credential, or the first
+    /// enrollment), whatever the page says it did.
     pub(crate) fn finish_ceremony(&mut self, id: u64, v: &Value) -> Answer {
+        use crate::security::Mode;
         use prism_core::{DeviceError as E, DeviceValue as V};
         let Some((c, gate)) = self.ceremonies.remove(&id) else {
             return Err(E::Failed("no ceremony".into()));
@@ -1910,22 +1943,31 @@ impl WebServices {
         let (Some(r), Some(store)) = (v.get("webauthn"), &self.secure) else {
             return Err(E::Failed("webauthn: no answer".into()));
         };
-        let checked = match r.get("type").and_then(Value::as_str) {
-            Some("create") => {
-                crate::security::verify_registration(&c, r).map(|cred| store.save_credential(&cred))
+        let kind = r.get("type").and_then(Value::as_str);
+        let checked = match (&c.mode, kind) {
+            (Mode::Register, Some("create")) => {
+                crate::security::verify_registration(&c, r).and_then(|cred| store.enroll(&cred))
             }
-            _ => match store.credential() {
-                Some(mut cred) => crate::security::verify_assertion(&c, &mut cred, r)
-                    .map(|_| store.save_credential(&cred)),
-                None => Err("webauthn: no credential".into()),
+            (Mode::Assert(enrolled), Some("get")) => match store.credential() {
+                // Still the credential the ceremony was started for.
+                Some(mut cred) if cred.id == *enrolled => {
+                    crate::security::verify_assertion(&c, &mut cred, r)
+                        .and_then(|_| store.save_credential(&cred))
+                }
+                _ => Err("webauthn: the enrolled credential changed".into()),
             },
+            _ => Err("webauthn: wrong ceremony".into()),
         };
-        match checked {
-            Ok(()) => Ok(match gate {
-                Gate::Owner => V::Done,
-                Gate::Secret(value) => V::Text(Some(value)),
-            }),
-            Err(e) => Err(E::from_message(&e)),
+        if let Err(e) = checked {
+            return Err(E::from_message(&e));
+        }
+        match gate {
+            Gate::Owner => Ok(V::Done),
+            Gate::Secret(value) => Ok(V::Text(Some(value))),
+            Gate::Store { key, value } => store
+                .set(&key, &value, true)
+                .map(|_| V::Done)
+                .map_err(E::Failed),
         }
     }
 }

@@ -49,6 +49,8 @@ mod islands;
 mod navbar;
 mod pictures;
 mod security;
+#[cfg(test)]
+mod security_tests;
 #[cfg(feature = "server")]
 mod server;
 mod session;

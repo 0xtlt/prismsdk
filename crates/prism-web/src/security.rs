@@ -161,10 +161,38 @@ impl SecureStore {
         })
     }
 
-    pub fn save_credential(&self, c: &Credential) {
-        let _ = std::fs::create_dir_all(&self.dir);
+    /// Updates the enrolled credential (its signature counter).
+    pub fn save_credential(&self, c: &Credential) -> Result<(), String> {
+        std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
         let v = json!({ "id": c.id, "alg": c.alg, "key": base64url(&c.key), "count": c.count });
         write_private(&self.credential_path(), v.to_string().as_bytes());
+        Ok(())
+    }
+
+    /// Enrolls this browser's first credential. Fails when one is already
+    /// enrolled, even by a ceremony that finished meanwhile: an enrolled
+    /// credential is never replaced through WebAuthn.
+    pub fn enroll(&self, c: &Credential) -> Result<(), String> {
+        static ENROLLING: Mutex<()> = Mutex::new(());
+        let _one_at_a_time = ENROLLING.lock().unwrap_or_else(|e| e.into_inner());
+        std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
+        let path = self.credential_path();
+        if path.exists() {
+            return Err("webauthn: a credential is already enrolled".into());
+        }
+        let v = json!({ "id": c.id, "alg": c.alg, "key": base64url(&c.key), "count": c.count });
+        // Written aside, then linked in place: the link fails if another
+        // process enrolled meanwhile, and nobody reads a partial file.
+        let tmp = self.dir.join(format!("webauthn.{}.tmp~", random_id()));
+        std::fs::write(&tmp, v.to_string()).map_err(|e| e.to_string())?;
+        let linked = std::fs::hard_link(&tmp, &path);
+        let _ = std::fs::remove_file(&tmp);
+        linked.map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => {
+                "webauthn: a credential is already enrolled".into()
+            }
+            _ => e.to_string(),
+        })
     }
 }
 
@@ -180,21 +208,33 @@ pub(crate) struct Credential {
     pub count: u32,
 }
 
+/// The operation the server chose for a ceremony: the page cannot answer
+/// another one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Mode {
+    /// Enroll this browser's first credential.
+    Register,
+    /// An assertion by the enrolled credential with this id.
+    Assert(String),
+}
+
 /// What the server expects from one ceremony.
 pub(crate) struct Ceremony {
     pub challenge: String,
     pub origin: String,
     pub rp_id: String,
+    pub mode: Mode,
 }
 
 impl Ceremony {
-    pub fn new(origin: &str) -> Self {
+    pub fn new(origin: &str, mode: Mode) -> Self {
         let mut c = [0u8; 32];
         SystemRandom::new().fill(&mut c).expect("system random");
         Ceremony {
             challenge: base64url(&c),
             origin: origin.to_string(),
             rp_id: rp_id(origin),
+            mode,
         }
     }
 }
@@ -239,8 +279,21 @@ fn check_common(c: &Ceremony, kind: &str, client: &[u8], auth: &[u8]) -> Result<
     Ok(u32::from_be_bytes([auth[33], auth[34], auth[35], auth[36]]))
 }
 
+/// The credential id in authenticatorData's attested credential data
+/// (flag AT: AAGUID, id length, id, then the COSE key).
+fn attested_credential_id(auth: &[u8]) -> Option<&[u8]> {
+    if auth.get(32)? & 0x40 == 0 {
+        return None;
+    }
+    let len = u16::from_be_bytes([*auth.get(53)?, *auth.get(54)?]) as usize;
+    auth.get(55..55 + len)
+}
+
 /// A registration (`navigator.credentials.create`): the new credential.
 pub(crate) fn verify_registration(c: &Ceremony, r: &Value) -> Result<Credential, String> {
+    if c.mode != Mode::Register {
+        return Err("webauthn: wrong ceremony".into());
+    }
     let client = b64(r, "client")?;
     let auth = b64(r, "auth")?;
     let count = check_common(c, "webauthn.create", &client, &auth)?;
@@ -256,6 +309,10 @@ pub(crate) fn verify_registration(c: &Ceremony, r: &Value) -> Result<Credential,
         .get("id")
         .and_then(Value::as_str)
         .ok_or("webauthn: missing id")?;
+    // The id the authenticator attested, not another one.
+    if attested_credential_id(&auth) != base64url_decode(id).as_deref() {
+        return Err("webauthn: credential id mismatch".into());
+    }
     Ok(Credential {
         id: id.to_string(),
         alg,
@@ -270,6 +327,9 @@ pub(crate) fn verify_assertion(
     cred: &mut Credential,
     r: &Value,
 ) -> Result<(), String> {
+    if c.mode != Mode::Assert(cred.id.clone()) {
+        return Err("webauthn: wrong ceremony".into());
+    }
     if r.get("id").and_then(Value::as_str) != Some(cred.id.as_str()) {
         return Err("webauthn: unknown credential".into());
     }
@@ -504,16 +564,28 @@ mod tests {
 
         let origin = "http://localhost:3000";
         assert_eq!(rp_id(origin), "localhost");
-        let reg = Ceremony::new(origin);
+        let reg = Ceremony::new(origin, Mode::Register);
+        // Attested credential data: AAGUID, the id's length, the id.
+        let mut attested = auth_data("localhost", 0x45, 0);
+        attested.extend([0u8; 16]);
+        let raw_id = base64url_decode("cred1").unwrap();
+        attested.extend((raw_id.len() as u16).to_be_bytes());
+        attested.extend(&raw_id);
         let response = json!({
             "id": "cred1", "alg": -7, "key": base64url(&spki),
             "client": base64url(&client("webauthn.create", &reg.challenge, origin)),
-            "auth": base64url(&auth_data("localhost", 0x45, 0)),
+            "auth": base64url(&attested),
         });
+        // Another id than the attested one.
+        let mut other = response.clone();
+        other["id"] = json!(base64url(b"other"));
+        assert!(verify_registration(&reg, &other).is_err());
         let mut cred = verify_registration(&reg, &response).unwrap();
         assert_eq!(cred.key, pair.public_key().as_ref());
 
-        let get = Ceremony::new(origin);
+        let get = Ceremony::new(origin, Mode::Assert("cred1".into()));
+        // Each ceremony takes only the operation the server chose.
+        assert!(verify_registration(&get, &response).is_err());
         let sign = |flags: u8, count: u32, challenge: &str, origin: &str| {
             let auth = auth_data("localhost", flags, count);
             let client = client("webauthn.get", challenge, origin);
