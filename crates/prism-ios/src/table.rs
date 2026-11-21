@@ -569,6 +569,17 @@ fn part_dump(part: &AnyObject) -> PartDump {
     }
 }
 
+/// The first table in `view`'s visible tree, depth first (dev hooks).
+pub fn find_table(view: &UIView) -> Option<Retained<UIView>> {
+    if ivars(view).is_some_and(|t| t.at.get().is_none() && !t.rows.borrow().is_empty()) {
+        return Some(view.retain());
+    }
+    view.subviews()
+        .iter()
+        .filter(|v| !v.isHidden())
+        .find_map(|v| find_table(&v))
+}
+
 pub fn dump(mtm: MainThreadMarker, view: &UIView) -> Option<Dump> {
     let t = ivars(view)?;
     if let Some((r, c)) = t.at.get() {
