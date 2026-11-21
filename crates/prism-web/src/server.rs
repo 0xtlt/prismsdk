@@ -166,6 +166,25 @@ pub fn serve(app: WebApp, addr: &str) -> std::io::Result<()> {
         .build()?;
     runtime.block_on(async move {
         let listener = tokio::net::TcpListener::bind(addr).await?;
-        axum::serve(listener, app.router::<()>()).await
+        let mut router = app.router::<()>();
+        // On a loopback address, only local names (or a proxy here): a
+        // page whose name was pointed at 127.0.0.1 is refused.
+        if listener.local_addr()?.ip().is_loopback() {
+            let public = app.public().map(str::to_string);
+            router = router.layer(axum::middleware::from_fn(
+                move |req: Request, next: axum::middleware::Next| {
+                    let allowed =
+                        crate::host::loopback_host_allowed(req.headers(), public.as_deref());
+                    async move {
+                        if allowed {
+                            next.run(req).await
+                        } else {
+                            (http::StatusCode::MISDIRECTED_REQUEST, "Unknown host").into_response()
+                        }
+                    }
+                },
+            ));
+        }
+        axum::serve(listener, router).await
     })
 }

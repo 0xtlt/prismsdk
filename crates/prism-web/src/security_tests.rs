@@ -709,3 +709,151 @@ fn s10_a_planted_cookie_cannot_choose_the_browser_on_https() {
     // Plain HTTP: as before.
     assert_eq!(page_cookie(&app, "/", &[("cookie", &planted)]), None);
 }
+
+fn socket_accepted(app: &crate::WebApp, headers: &[(&str, &str)]) -> bool {
+    let mut h = http::HeaderMap::new();
+    for (k, v) in headers {
+        h.append(
+            http::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+            v.parse().unwrap(),
+        );
+    }
+    app.accept_socket(&h).is_ok()
+}
+
+#[test]
+fn s11_socket_origins_are_compared_whole() {
+    let app = uploads_app("s11-origins", false).0;
+    // Behind a TLS proxy that says so.
+    let https = |origin: &str| {
+        socket_accepted(
+            &app,
+            &[
+                ("host", "app.example.com"),
+                ("x-forwarded-proto", "https"),
+                ("origin", origin),
+            ],
+        )
+    };
+    assert!(https("https://app.example.com"));
+    assert!(https("https://APP.example.com:443"));
+    for origin in [
+        "http://app.example.com",
+        "http://app.example.com:443",
+        "https://app.example.com:8443",
+        "https://app.example.com.evil.example",
+        "https://user@app.example.com",
+        "app.example.com",
+        "ftp://app.example.com",
+        "null",
+    ] {
+        assert!(!https(origin), "{origin}");
+    }
+    // Two Origin fields: refused, whatever the first says.
+    assert!(!socket_accepted(
+        &app,
+        &[
+            ("host", "app.example.com"),
+            ("x-forwarded-proto", "https"),
+            ("origin", "https://app.example.com"),
+            ("origin", "https://evil.example"),
+        ],
+    ));
+    // Plain HTTP (development, or TLS ended in front without saying so).
+    let plain =
+        |origin: &str| socket_accepted(&app, &[("host", "localhost:3000"), ("origin", origin)]);
+    assert!(plain("http://localhost:3000"));
+    assert!(plain("https://localhost:3000"));
+    assert!(!plain("http://localhost:3001"));
+    assert!(!plain("http://localhost"));
+    // No Origin: not a browser (a native client); it carries no page's cookies.
+    assert!(socket_accepted(&app, &[("host", "app.example.com")]));
+}
+
+#[cfg(feature = "server")]
+#[test]
+fn s11_a_loopback_server_refuses_rebound_host_names() {
+    use std::io::{Read, Write};
+    let app = uploads_app("s11-rebinding", false).0;
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let addr = format!("127.0.0.1:{port}");
+    let bind = addr.clone();
+    std::thread::spawn(move || crate::serve(app, &bind));
+    let status = |host: &str, extra: &str| {
+        for _ in 0..100 {
+            if let Ok(mut s) = std::net::TcpStream::connect(&addr) {
+                write!(
+                    s,
+                    "GET / HTTP/1.1\r\nHost: {host}\r\n{extra}Connection: close\r\n\r\n"
+                )
+                .unwrap();
+                let mut out = String::new();
+                let _ = s.read_to_string(&mut out);
+                return out.split(' ').nth(1).unwrap_or("").to_string();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        panic!("the server did not start");
+    };
+    // A page at evil.example whose name now points at 127.0.0.1.
+    assert_eq!(status(&format!("evil.example:{port}"), ""), "421");
+    assert_eq!(status(&format!("127.0.0.1:{port}"), ""), "200");
+    assert_eq!(status(&format!("localhost:{port}"), ""), "200");
+    assert_eq!(status(&format!("[::1]:{port}"), ""), "200");
+    // A reverse proxy on this machine (nginx, Caddy, a tunnel) says so.
+    assert_eq!(
+        status("app.example.com", "X-Forwarded-Proto: https\r\n"),
+        "200"
+    );
+}
+
+#[test]
+fn s11_a_public_origin_ignores_host_and_forwarded_headers() {
+    let app = uploads_app("s11-public", false)
+        .0
+        .public_origin("https://App.example.com:443/")
+        .allow_origins(["https://admin.example.com"]);
+    // A proxy that rewrites `Host` and says nothing of the scheme.
+    let internal = ("host", "10.0.0.5:3000");
+    assert!(socket_accepted(
+        &app,
+        &[internal, ("origin", "https://app.example.com")]
+    ));
+    assert!(socket_accepted(
+        &app,
+        &[internal, ("origin", "https://admin.example.com")]
+    ));
+    // Forwarded headers cannot choose another origin, nor another scheme.
+    assert!(!socket_accepted(
+        &app,
+        &[
+            ("host", "evil.example"),
+            ("x-forwarded-host", "evil.example"),
+            ("x-forwarded-proto", "https"),
+            ("origin", "https://evil.example"),
+        ]
+    ));
+    assert!(!socket_accepted(
+        &app,
+        &[internal, ("origin", "http://app.example.com")]
+    ));
+    // The page is HTTPS: a host-only `Secure` id.
+    let cookie = page_cookie(&app, "/", &[internal]).unwrap();
+    assert!(cookie.starts_with("__Host-prism_sid="), "{cookie}");
+    // Its host passes a loopback server's check.
+    let mut h = http::HeaderMap::new();
+    h.insert("host", "app.example.com".parse().unwrap());
+    assert!(crate::host::loopback_host_allowed(&h, app.public()));
+}
+
+#[test]
+#[should_panic(expected = "is not an origin")]
+fn s11_a_public_origin_must_be_an_origin() {
+    let _ = uploads_app("s11-bad", false)
+        .0
+        .public_origin("app.example.com/path");
+}

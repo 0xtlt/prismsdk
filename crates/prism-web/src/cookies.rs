@@ -111,7 +111,11 @@ fn is_local(host: &str) -> bool {
 }
 
 /// `POST <base>/_prism/cookie` with the ticket in `X-Prism-Cookie`.
-pub(crate) fn redeem(headers: &HeaderMap) -> Response<Vec<u8>> {
+pub(crate) fn redeem(
+    headers: &HeaderMap,
+    sid: Option<String>,
+    public: Option<&str>,
+) -> Response<Vec<u8>> {
     let answer = |code: StatusCode| {
         let mut r = Response::new(Vec::new());
         *r.status_mut() = code;
@@ -124,7 +128,7 @@ pub(crate) fn redeem(headers: &HeaderMap) -> Response<Vec<u8>> {
     // another site (the ticket is not guessable either: this is depth).
     let same_site = text("sec-fetch-site").is_none_or(|s| s == "same-origin");
     let has_origin = text("origin").is_some_and(|o| o != "null");
-    if !same_site || !has_origin || !crate::host::origin_allowed(headers, &[]) {
+    if !same_site || !has_origin || !crate::host::origin_allowed(headers, &[], public) {
         return answer(StatusCode::FORBIDDEN);
     }
     let Some(ticket) = text(TICKET_HEADER) else {
@@ -135,7 +139,7 @@ pub(crate) fn redeem(headers: &HeaderMap) -> Response<Vec<u8>> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .remove(ticket);
-    let sid = crate::app::browser_id(headers);
+    // `sid`: the browser's id (`WebApp::browser`).
     let Some(p) = found.filter(|p| p.expires > Instant::now() && sid.as_ref() == Some(&p.sid))
     else {
         return answer(StatusCode::FORBIDDEN);

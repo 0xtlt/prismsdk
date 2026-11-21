@@ -166,6 +166,7 @@ target ». Dependencies the app takes only on the device go under the same
 | Variable | |
 |---|---|
 | `PRISM_PORT`, `PRISM_HOST` | web server address |
+| `PRISM_PUBLIC_ORIGIN` | the web app's public origin behind a proxy (`https://app.example.com`) |
 | `PRISM_SIM` | simulator (name or UDID); simulators are slimmed with `simslim` when installed |
 | `PRISM_PROFILE` | provisioning profile for real Apple devices (found automatically otherwise) |
 | `PRISM_PATH` | start screen (`/todos/1`) |

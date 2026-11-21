@@ -199,10 +199,13 @@ pub(crate) fn request_scheme(headers: &HeaderMap, uri: Option<&Uri>) -> String {
         .unwrap_or_else(|| "http".into())
 }
 
-/// The page's origin (`https://app.example.com`): the `Origin` header (sent
-/// with every socket handshake), else rebuilt from the forwarded headers and
-/// `Host`.
-pub(crate) fn page_origin(headers: &HeaderMap, uri: Option<&Uri>) -> String {
+/// The page's origin (`https://app.example.com`): the app's public origin
+/// if it has one, else the `Origin` header (sent with every socket
+/// handshake), else rebuilt from the forwarded headers and `Host`.
+pub(crate) fn page_origin(headers: &HeaderMap, uri: Option<&Uri>, public: Option<&str>) -> String {
+    if let Some(public) = public {
+        return public.to_string();
+    }
     if let Some(o) = header(headers, "origin").filter(|o| *o != "null") {
         return o.trim_end_matches('/').to_string();
     }
@@ -213,36 +216,80 @@ pub(crate) fn page_origin(headers: &HeaderMap, uri: Option<&Uri>) -> String {
     )
 }
 
-/// `host[:port]` of an origin or a `Host` value, lower case, without the
-/// scheme's default port.
-fn authority(s: &str) -> String {
-    let (scheme, rest) = match s.split_once("://") {
-        Some((scheme, rest)) => (scheme.to_ascii_lowercase(), rest),
-        None => (String::new(), s),
-    };
-    let host = rest.split('/').next().unwrap_or(rest).to_ascii_lowercase();
+/// An origin as compared: scheme (`http` or `https`), host (lower case),
+/// port (the scheme's default written out). `None` for anything else: a
+/// path, credentials, another scheme, `null`.
+pub(crate) fn origin_parts(origin: &str) -> Option<(String, String, u16)> {
+    let (scheme, rest) = origin.split_once("://")?;
+    let scheme = scheme.to_ascii_lowercase();
     let default = match scheme.as_str() {
-        "https" | "wss" => Some(":443"),
-        "http" | "ws" => Some(":80"),
-        _ => None,
+        "http" => 80,
+        "https" => 443,
+        _ => return None,
     };
-    match default.and_then(|d| host.strip_suffix(d)) {
-        Some(h) => h.to_string(),
-        // A bare host: drop either default port.
-        None if scheme.is_empty() => host
-            .strip_suffix(":443")
-            .or_else(|| host.strip_suffix(":80"))
-            .unwrap_or(&host)
-            .to_string(),
-        None => host,
+    let rest = rest.strip_suffix('/').unwrap_or(rest);
+    let (host, port) = authority_parts(rest, default)?;
+    Some((scheme, host, port))
+}
+
+/// `host[:port]`: the host (lower case, an IPv6 address in brackets) and
+/// the port (`default` if none). `None` if anything else is in it.
+fn authority_parts(a: &str, default: u16) -> Option<(String, u16)> {
+    if a.is_empty()
+        || a.contains(['/', '?', '#', '@', '\\'])
+        || a.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return None;
     }
+    let (host, port) = match a.strip_prefix('[') {
+        Some(v6) => {
+            let (h, after) = v6.split_once(']')?;
+            let port = match after {
+                "" => None,
+                p => Some(p.strip_prefix(':')?),
+            };
+            (format!("[{}]", h.to_ascii_lowercase()), port)
+        }
+        None => match a.rsplit_once(':') {
+            Some((h, p)) => (h.to_ascii_lowercase(), Some(p)),
+            None => (a.to_ascii_lowercase(), None),
+        },
+    };
+    if host.is_empty() || host == "[]" || (host.contains(':') && !host.starts_with('[')) {
+        return None;
+    }
+    let port = match port {
+        None => default,
+        Some(p) if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) => p.parse().ok()?,
+        Some(_) => return None,
+    };
+    Some((host, port))
+}
+
+/// Whether the proxy in front said which scheme the browser used.
+fn forwarded_scheme(headers: &HeaderMap) -> bool {
+    header(headers, "x-forwarded-proto").is_some() || forwarded(headers, "proto").is_some()
 }
 
 /// Whether a socket handshake may open a session: no `Origin` (not a
-/// browser), the page's own host, or an origin of `allowed` (`*`: any).
-pub(crate) fn origin_allowed(headers: &HeaderMap, allowed: &[String]) -> bool {
-    let Some(origin) = header(headers, "origin") else {
+/// browser, so no page's cookies), an origin of `allowed` (`*`: any), or
+/// the page's own origin, compared whole (scheme, host, port): the app's
+/// public origin if it has one, else the request's. One `Origin` field
+/// only.
+pub(crate) fn origin_allowed(
+    headers: &HeaderMap,
+    allowed: &[String],
+    public: Option<&str>,
+) -> bool {
+    let mut fields = headers.get_all("origin").iter();
+    let Some(origin) = fields.next() else {
         return true;
+    };
+    if fields.next().is_some() {
+        return false;
+    }
+    let Ok(origin) = origin.to_str() else {
+        return false;
     };
     let origin = origin.trim_end_matches('/');
     if allowed
@@ -251,10 +298,60 @@ pub(crate) fn origin_allowed(headers: &HeaderMap, allowed: &[String]) -> bool {
     {
         return true;
     }
-    if origin == "null" {
+    let Some(theirs) = origin_parts(origin) else {
         return false;
+    };
+    if let Some(public) = public {
+        return origin_parts(public).is_some_and(|ours| ours == theirs);
     }
-    request_host(headers, None).is_some_and(|host| authority(&host) == authority(origin))
+    let Some(ours) = request_host(headers, None)
+        .and_then(|host| origin_parts(&format!("{}://{host}", request_scheme(headers, None))))
+    else {
+        return false;
+    };
+    theirs == ours
+        // TLS ended in front of the server, which was not told: an HTTPS
+        // page of this host (never an HTTP page of an HTTPS one).
+        || (!forwarded_scheme(headers)
+            && ours.0 == "http"
+            && theirs.0 == "https"
+            && theirs.1 == ours.1
+            && (theirs.2 == ours.2 || (ours.2 == 80 && theirs.2 == 443)))
+}
+
+/// Whether a request may reach a server listening on a loopback address
+/// only: its `Host` is a loopback name or address, or the host of the
+/// app's public origin, or a proxy on this machine forwarded it
+/// (`X-Forwarded-*`, `Forwarded`, `X-Real-IP`). Anything else is a page
+/// whose name was pointed at 127.0.0.1 (DNS rebinding): a navigation or a
+/// WebSocket cannot add those headers.
+pub(crate) fn loopback_host_allowed(headers: &HeaderMap, public: Option<&str>) -> bool {
+    let Some(host) = header(headers, "host") else {
+        return true;
+    };
+    let Some((host, _)) = authority_parts(host, 0) else {
+        return false;
+    };
+    let loopback = host == "localhost"
+        || host.ends_with(".localhost")
+        || host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    loopback
+        || public
+            .and_then(origin_parts)
+            .is_some_and(|(_, public, _)| public == host)
+        || [
+            "x-forwarded-for",
+            "x-forwarded-host",
+            "x-forwarded-proto",
+            "forwarded",
+            "x-real-ip",
+        ]
+        .iter()
+        .any(|h| headers.contains_key(*h))
 }
 
 /// « Reconnecting… » in the app's language (`prism.reconnecting` in its

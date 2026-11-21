@@ -54,6 +54,9 @@ pub(crate) struct Inner {
     pub head: crate::host::Head,
     /// Socket origins accepted besides the page's own (`*`: any).
     pub allowed_origins: Vec<String>,
+    /// Where browsers reach the app (`https://app.example.com`), if set:
+    /// `Host` and forwarded headers are then ignored.
+    pub public_origin: Option<String>,
     /// Origins (`scheme://host:port`) whose pictures and videos with
     /// headers the server may fetch on a private address.
     pub media_origins: Vec<String>,
@@ -128,6 +131,7 @@ impl WebApp {
                 vapid_public_key: env("PRISM_VAPID_PUBLIC_KEY"),
                 head: Default::default(),
                 allowed_origins: Vec::new(),
+                public_origin: None,
                 media_origins: Vec::new(),
                 max_sessions: Some(DEFAULT_MAX_SESSIONS),
                 max_message: DEFAULT_MAX_MESSAGE,
@@ -143,6 +147,10 @@ impl WebApp {
         };
         let app = match env("PRISM_BASE_PATH") {
             Some(base) => app.base_path(&base),
+            None => app,
+        };
+        let app = match env("PRISM_PUBLIC_ORIGIN") {
+            Some(origin) => app.public_origin(origin),
             None => app,
         };
         match env("PRISM_ASSET_URL") {
@@ -329,7 +337,11 @@ impl WebApp {
     ) -> Response<Vec<u8>> {
         // `cx.set_cookie`: the page redeems its ticket (#91).
         if req.method() == Method::POST && self.app_path(req.uri().path()) == "/_prism/cookie" {
-            return crate::cookies::redeem(req.headers());
+            return crate::cookies::redeem(
+                req.headers(),
+                self.browser(req.headers()),
+                self.public(),
+            );
         }
         if req.method() != Method::GET && req.method() != Method::HEAD {
             return status(StatusCode::METHOD_NOT_ALLOWED);
@@ -340,7 +352,7 @@ impl WebApp {
             // A picture with headers, fetched here for its session.
             crate::pictures::serve(
                 id,
-                browser_id(headers).as_deref(),
+                self.browser(headers).as_deref(),
                 &self.inner.media_origins,
             )
         } else if let Some(id) = path.strip_prefix("/_prism/media/") {
@@ -348,13 +360,13 @@ impl WebApp {
             let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
             crate::pictures::serve_media(
                 id,
-                browser_id(headers).as_deref(),
+                self.browser(headers).as_deref(),
                 range,
                 &self.inner.media_origins,
             )
         } else if let Some(id) = path.strip_prefix("/_prism/download/") {
             // A file the app handed to this session (#210).
-            crate::downloads::serve(id, browser_id(headers).as_deref())
+            crate::downloads::serve(id, self.browser(headers).as_deref())
         } else if let Some(id) = path.strip_prefix("/_prism/3d/") {
             scene_blob(id)
         } else if path == "/_prism/auth/callback" {
@@ -411,7 +423,7 @@ impl WebApp {
 
     /// A file this browser uploaded (photos…), private to it.
     fn upload(&self, headers: &HeaderMap, name: &str) -> Response<Vec<u8>> {
-        let Some(sid) = browser_id(headers) else {
+        let Some(sid) = self.browser(headers) else {
             return status(StatusCode::NOT_FOUND);
         };
         if !crate::uploads::stored_name(name) {
@@ -453,7 +465,7 @@ impl WebApp {
         context: Option<crate::RequestContext>,
     ) -> Response<Vec<u8>> {
         let headers = req.headers();
-        let origin = crate::host::page_origin(headers, Some(req.uri()));
+        let origin = crate::host::page_origin(headers, Some(req.uri()), self.public());
         let request = crate::host::web_request(
             prism_core::RequestKind::Page,
             self.page_url(&origin, self.app_path(req.uri().path()), req.uri().query()),
@@ -463,7 +475,7 @@ impl WebApp {
         );
         let nonce = req.extensions().get::<crate::CspNonce>();
         let cookies = cookie_header(headers);
-        let (sid, new) = match browser_id(headers) {
+        let (sid, new) = match self.browser(headers) {
             Some(sid) => (sid, false),
             None => (new_session_id(), true),
         };
@@ -500,7 +512,7 @@ impl WebApp {
                 &self.inner.base
             };
             // HTTPS: host-only and `Secure` (`__Host-` needs `Path=/`).
-            let cookie = if https(headers) {
+            let cookie = if self.https(headers) {
                 format!(
                     "{SECURE_SID}={sid}; Path=/; Max-Age=31536000; Secure; SameSite=Lax; HttpOnly"
                 )
@@ -699,7 +711,7 @@ impl WebApp {
         let num = |k: &str| param(k).and_then(|v| v.parse::<f32>().ok());
         let cookies = cookie_header(headers);
         let header = |name: header::HeaderName| headers.get(name).and_then(|v| v.to_str().ok());
-        let sid = browser_id(headers).unwrap_or_else(new_session_id);
+        let sid = self.browser(headers).unwrap_or_else(new_session_id);
         let path = param("path")
             .map(percent_decode)
             .unwrap_or_else(|| "/".into());
@@ -812,8 +824,7 @@ impl WebApp {
     /// (`https://admin.example.com`; `*` accepts any). By default a
     /// handshake whose `Origin` is not the host it was sent to is refused
     /// (`403`): browsers send cookies with cross-site handshakes. Behind a
-    /// proxy that rewrites `Host` without `X-Forwarded-Host`, list the
-    /// public origin here.
+    /// proxy, set [`public_origin`](Self::public_origin).
     pub fn allow_origins<I, S>(self, origins: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -828,6 +839,34 @@ impl WebApp {
     /// `http://10.0.0.5:8080`) although it is on a private, loopback or
     /// link-local address. Other origins must resolve to public addresses
     /// only; redirects to another origin are never followed.
+    /// The origin browsers reach the app at (`https://app.example.com`),
+    /// for a server behind a proxy (also `PRISM_PUBLIC_ORIGIN`). It is then
+    /// the page's origin (`cx.request()`, sign-in callbacks, whether the
+    /// browser's id cookie is `Secure`) and, with
+    /// [`allow_origins`](Self::allow_origins), the only origin a live
+    /// session accepts: `Host`, `X-Forwarded-Host`, `X-Forwarded-Proto` and
+    /// `Forwarded` are ignored. Without it they are trusted, so a proxy in
+    /// front must set them (and drop the browser's own).
+    ///
+    /// # Panics
+    ///
+    /// If `origin` is not `http(s)://host[:port]`.
+    pub fn public_origin(self, origin: impl AsRef<str>) -> Self {
+        let (scheme, host, port) = crate::host::origin_parts(origin.as_ref())
+            .unwrap_or_else(|| panic!("public_origin: {:?} is not an origin", origin.as_ref()));
+        let default = if scheme == "https" { 443 } else { 80 };
+        let origin = if port == default {
+            format!("{scheme}://{host}")
+        } else {
+            format!("{scheme}://{host}:{port}")
+        };
+        self.configure(|i| i.public_origin = Some(origin))
+    }
+
+    pub(crate) fn public(&self) -> Option<&str> {
+        self.inner.public_origin.as_deref()
+    }
+
     pub fn trust_media_origin(self, origin: impl AsRef<str>) -> Self {
         let origin = crate::pictures::origin(origin.as_ref());
         self.configure(|i| i.media_origins.extend(origin))
@@ -894,7 +933,7 @@ impl WebApp {
     /// other servers should too (a refused [`connect`](WebApp::connect)
     /// ends at once).
     pub fn accept_socket(&self, headers: &HeaderMap) -> Result<(), StatusCode> {
-        if !crate::host::origin_allowed(headers, &self.inner.allowed_origins) {
+        if !crate::host::origin_allowed(headers, &self.inner.allowed_origins, self.public()) {
             return Err(StatusCode::FORBIDDEN);
         }
         if self
@@ -914,7 +953,7 @@ impl WebApp {
         &self,
         headers: &HeaderMap,
     ) -> Result<crate::session::SessionPermit, StatusCode> {
-        if !crate::host::origin_allowed(headers, &self.inner.allowed_origins) {
+        if !crate::host::origin_allowed(headers, &self.inner.allowed_origins, self.public()) {
             return Err(StatusCode::FORBIDDEN);
         }
         crate::session::SessionPermit::take(&self.inner.sessions, self.inner.max_sessions)
@@ -1077,19 +1116,30 @@ const SECURE_SID: &str = "__Host-prism_sid";
 /// Over plain HTTP (local development): `Path` is the mount point.
 const PLAIN_SID: &str = "prism_sid";
 
-/// Whether the browser reached the app over HTTPS (`X-Forwarded-Proto` or
-/// `Forwarded: proto=` from the proxy in front).
-fn https(headers: &HeaderMap) -> bool {
-    crate::host::request_scheme(headers, None) == "https"
+impl WebApp {
+    /// Whether the browser reached the app over HTTPS: its public origin
+    /// says so, else `X-Forwarded-Proto` or `Forwarded: proto=` from the
+    /// proxy in front.
+    fn https(&self, headers: &HeaderMap) -> bool {
+        match self.public() {
+            Some(origin) => origin.starts_with("https://"),
+            None => crate::host::request_scheme(headers, None) == "https",
+        }
+    }
+
+    /// The browser's id ([`browser_id`]).
+    pub(crate) fn browser(&self, headers: &HeaderMap) -> Option<String> {
+        browser_id(headers, self.https(headers))
+    }
 }
 
 /// The browser's id: its `__Host-prism_sid` cookie, or over plain HTTP its
 /// `prism_sid`. Over HTTPS a plain `prism_sid` is ignored: a sibling site
 /// may have set it.
-pub(crate) fn browser_id(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn browser_id(headers: &HeaderMap, https: bool) -> Option<String> {
     let cookies = cookie_header(headers)?;
     cookie_id(cookies, SECURE_SID).or_else(|| {
-        if https(headers) {
+        if https {
             None
         } else {
             cookie_id(cookies, PLAIN_SID)

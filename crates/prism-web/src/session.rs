@@ -156,7 +156,7 @@ impl WebApp {
             }
         };
         let (sid, path, visitor) = self.socket_visitor(uri, headers);
-        let origin = crate::host::page_origin(headers, Some(uri));
+        let origin = crate::host::page_origin(headers, Some(uri), self.public());
         let search = crate::app::query_param(uri, "search").map(crate::app::percent_decode);
         // The page's first handshake takes its request over (`cx.page_request()`).
         let page_request =

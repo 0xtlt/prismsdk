@@ -2498,7 +2498,7 @@ fn cookies_and_urls_are_parsed_strictly() {
     let session_id = |cookie: &str| {
         let mut h = HeaderMap::new();
         h.insert("cookie", cookie.parse().unwrap());
-        browser_id(&h)
+        browser_id(&h, false)
     };
     assert_eq!(percent_decode("/a%20b%2Fc"), "/a b/c");
     assert_eq!(percent_decode("%E2%9C%93"), "✓");
