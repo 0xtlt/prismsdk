@@ -69,7 +69,7 @@ impl ServiceAccount {
 }
 
 /// What a bundle declares (from `bundletool dump manifest`) and who signed it.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct BundleInfo {
     pub package: String,
     pub version_code: u32,
@@ -77,8 +77,9 @@ pub struct BundleInfo {
     pub min_sdk: u32,
     pub target_sdk: u32,
     pub debuggable: bool,
-    /// Subject of the signing certificate (jarsigner).
-    pub signer: Option<String>,
+    /// Subject of the one certificate that signed every entry, or why the
+    /// signature is not one Play takes ([`bundle_signer`]).
+    pub signer: Result<String, String>,
 }
 
 fn attr<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
@@ -100,7 +101,7 @@ impl BundleInfo {
             min_sdk: num("android:minSdkVersion"),
             target_sdk: num("android:targetSdkVersion"),
             debuggable: attr(xml, "android:debuggable") == Some("true"),
-            signer: None,
+            signer: Err(NOT_SIGNED.into()),
         })
     }
 
@@ -123,30 +124,82 @@ impl BundleInfo {
             return Err("the bundle is debuggable: Play rejects it".into());
         }
         match &self.signer {
-            None => Err("the bundle is not signed (jarsigner)".into()),
-            Some(s) if s.contains("CN=Android Debug") => Err(
+            Err(e) => Err(e.clone()),
+            Ok(s) if s.contains("CN=Android Debug") => Err(
                 "the bundle is signed with the debug key: set PRISM_ANDROID_KEYSTORE, PRISM_ANDROID_KEYSTORE_PASS and PRISM_ANDROID_KEY_ALIAS to your upload key"
                     .into(),
             ),
-            Some(_) => Ok(()),
+            Ok(_) => Ok(()),
         }
     }
 }
 
-/// The signer's subject from `jarsigner -verify -verbose -certs` (None when
-/// the jar is unsigned).
-pub fn signer_from_jarsigner(output: &str) -> Option<String> {
-    if !output.contains("jar verified") {
-        return None;
+const NOT_SIGNED: &str = "the bundle is not signed (jarsigner)";
+
+/// The one signer of a bundle (its certificate's subject) from
+/// `jarsigner -verify -strict -verbose -certs`, in English: its exit
+/// `code` (`None`: stopped by a signal) and what it printed. Every entry
+/// must be signed, and by one key. The strict check's "chain not validated"
+/// (4: a self-signed certificate, as upload keys are; or an expired one)
+/// is the only failure taken: Play checks the upload key itself.
+pub fn signer_from_jarsigner(code: Option<i32>, output: &str) -> Result<String, String> {
+    const CHAIN_NOT_VALIDATED: i32 = 4;
+    const UNSIGNED_ENTRIES: i32 = 16;
+    let code = code.ok_or("jarsigner was stopped")?;
+    if code & UNSIGNED_ENTRIES != 0 {
+        return Err(
+            "some of the bundle's entries are not signed (changed after signing?): build and sign it again"
+                .into(),
+        );
     }
-    output
+    if code & !CHAIN_NOT_VALIDATED != 0 {
+        return Err(format!(
+            "the bundle's signature does not verify (jarsigner -verify -strict: exit {code})"
+        ));
+    }
+    if !output.lines().any(|l| l.starts_with("jar verified")) {
+        return Err(NOT_SIGNED.into());
+    }
+    let subject = |l: &str, prefix: &str| {
+        l.trim()
+            .strip_prefix(prefix)
+            .map(|s| s.trim_end_matches('"').to_string())
+    };
+    // One line per signer ...
+    let mut signers: Vec<String> = output
         .lines()
-        .map(str::trim)
-        .find_map(|l| {
-            l.strip_prefix("- Signed by \"")
-                .or_else(|| l.strip_prefix("X.509, "))
-        })
-        .map(|s| s.trim_end_matches('"').to_string())
+        .filter_map(|l| subject(l, "- Signed by \""))
+        .collect();
+    // ... or, from older JDKs, each entry's signer certificates (the
+    // signer's own first).
+    if signers.is_empty() {
+        let mut lines = output.lines();
+        while lines.any(|l| l.trim() == ">>> Signer") {
+            signers.extend(lines.find_map(|l| subject(l, "X.509, ")));
+        }
+    }
+    signers.sort();
+    signers.dedup();
+    match signers.as_slice() {
+        [] => Err(NOT_SIGNED.into()),
+        [one] => Ok(one.clone()),
+        several => Err(format!(
+            "the bundle is signed by several keys ({}): sign it with your upload key only",
+            several.join("; ")
+        )),
+    }
+}
+
+/// Who signed a bundle: one key, every entry ([`signer_from_jarsigner`]).
+pub fn bundle_signer(aab: &Path) -> Result<String, String> {
+    let out = std::process::Command::new("jarsigner")
+        // Its messages in English, whatever the machine's language.
+        .args(["-J-Duser.language=en", "-J-Duser.country=US"])
+        .args(["-verify", "-strict", "-verbose", "-certs"])
+        .arg(aab)
+        .output()
+        .map_err(|e| format!("jarsigner (Java): {e}"))?;
+    signer_from_jarsigner(out.status.code(), &String::from_utf8_lossy(&out.stdout))
 }
 
 /// Reads and checks a bundle with bundletool and jarsigner.
@@ -165,12 +218,7 @@ pub fn inspect(aab: &Path, bundletool: &Path) -> Result<BundleInfo, String> {
         ));
     }
     let mut info = BundleInfo::from_manifest(&String::from_utf8_lossy(&out.stdout))?;
-    let out = std::process::Command::new("jarsigner")
-        .args(["-verify", "-verbose", "-certs"])
-        .arg(aab)
-        .output()
-        .map_err(|e| format!("jarsigner (Java): {e}"))?;
-    info.signer = signer_from_jarsigner(&String::from_utf8_lossy(&out.stdout));
+    info.signer = bundle_signer(aab);
     Ok(info)
 }
 
@@ -459,13 +507,13 @@ mod tests {
                 .unwrap_err()
                 .contains("not signed")
         );
-        info.signer = Some("CN=Android Debug, O=Android, C=US".into());
+        info.signer = Ok("CN=Android Debug, O=Android, C=US".into());
         assert!(
             info.check("dev.prism.counter")
                 .unwrap_err()
                 .contains("debug key")
         );
-        info.signer = Some("CN=Upload".into());
+        info.signer = Ok("CN=Upload".into());
         assert_eq!(info.check("dev.prism.counter"), Ok(()));
         assert!(info.check("dev.prism.other").is_err());
         info.target_sdk = 34;
@@ -480,10 +528,144 @@ mod tests {
     fn reads_jarsigner_output() {
         let out = "s  1384 Sun Nov 15 META-INF/UPLOAD.RSA\n\n      >>> Signer\n      X.509, CN=Prism Test Upload, O=Prism, C=FR\n      [certificate is valid]\n\njar verified.\n";
         assert_eq!(
-            signer_from_jarsigner(out).as_deref(),
-            Some("CN=Prism Test Upload, O=Prism, C=FR")
+            signer_from_jarsigner(Some(0), out).as_deref(),
+            Ok("CN=Prism Test Upload, O=Prism, C=FR")
         );
-        assert_eq!(signer_from_jarsigner("jar is unsigned.\n"), None);
+        // A self-signed upload key: the strict check's 4.
+        let out = "- Signed by \"CN=Upload, O=Prism\"\n    Digest algorithm: SHA-256\njar verified, with signer errors.\n";
+        assert_eq!(
+            signer_from_jarsigner(Some(4), out).as_deref(),
+            Ok("CN=Upload, O=Prism")
+        );
+        let err = |code, out| signer_from_jarsigner(code, out).unwrap_err();
+        assert!(err(Some(0), "jar is unsigned.\n").contains("not signed"));
+        // S40: unsigned entries (16), any other failure, two signers.
+        assert!(err(Some(20), out).contains("entries are not signed"));
+        assert!(err(Some(1), out).contains("does not verify"));
+        assert!(err(Some(4 | 8), out).contains("does not verify"));
+        assert!(err(None, out).contains("stopped"));
+        let two = format!("- Signed by \"CN=Other\"\n{out}");
+        assert!(err(Some(4), &two).contains("several keys"));
+        let two = ">>> Signer\n X.509, CN=A\n X.509, CN=Root CA\n>>> Signer\n X.509, CN=B\njar verified.\n";
+        assert!(err(Some(0), two).contains("several keys"));
+        // A chain's other certificates are not signers.
+        let chain = ">>> Signer\n X.509, CN=A\n X.509, CN=Root CA\n>>> Signer\n X.509, CN=A\njar verified.\n";
+        assert_eq!(signer_from_jarsigner(Some(0), chain).as_deref(), Ok("CN=A"));
+    }
+
+    /// Whether the JDK's tools run (macOS has stubs that fail without one).
+    fn jdk() -> bool {
+        std::process::Command::new("jarsigner")
+            .arg("-help")
+            .output()
+            .is_ok_and(|out| out.status.success())
+    }
+
+    /// S40: the Play preflight takes a bundle signed in full by one key; not
+    /// one with an entry added after signing, nor one signed by two keys.
+    /// Real bundles and test keys, made with the JDK's tools (skipped
+    /// without a JDK).
+    #[test]
+    fn s40_only_a_bundle_signed_in_full_by_one_key_passes() {
+        if !jdk() {
+            eprintln!("no JDK: bundles are not signed");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let run = |tool: &str, args: &[&str]| {
+            let out = std::process::Command::new(tool)
+                .args(args)
+                .current_dir(d)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{tool} {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        for key in ["a", "b"] {
+            let pass = format!("secret-{key}");
+            run(
+                "keytool",
+                &[
+                    "-genkeypair",
+                    "-keystore",
+                    &format!("{key}.p12"),
+                    "-storetype",
+                    "PKCS12",
+                    "-storepass",
+                    &pass,
+                    "-keypass",
+                    &pass,
+                    "-alias",
+                    key,
+                    "-keyalg",
+                    "RSA",
+                    "-keysize",
+                    "2048",
+                    "-validity",
+                    "1000",
+                    "-dname",
+                    &format!("CN=Key {key}, O=Test"),
+                ],
+            );
+        }
+        let sign = |key: &str, from: &str, to: &str| {
+            let pass = format!("secret-{key}");
+            let store = format!("{key}.p12");
+            run(
+                "jarsigner",
+                &[
+                    "-keystore",
+                    &store,
+                    "-storepass",
+                    &pass,
+                    "-signedjar",
+                    to,
+                    from,
+                    key,
+                ],
+            );
+        };
+        for (path, data) in [
+            ("src/base/manifest/AndroidManifest.xml", "manifest"),
+            ("src/base/dex/classes.dex", "dex"),
+            ("extra/base/root/added.txt", "added after signing"),
+        ] {
+            let path = d.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, data).unwrap();
+        }
+        run("jar", &["cfM", "unsigned.aab", "-C", "src", "base"]);
+        sign("a", "unsigned.aab", "signed.aab");
+        // A packaging step adds an entry after signing...
+        std::fs::copy(d.join("signed.aab"), d.join("partial.aab")).unwrap();
+        run(
+            "jar",
+            &["uf", "partial.aab", "-C", "extra", "base/root/added.txt"],
+        );
+        // ... and signs again with another key (which covers the new entry).
+        sign("b", "partial.aab", "mixed.aab");
+        sign("b", "signed.aab", "both.aab");
+
+        assert_eq!(
+            bundle_signer(&d.join("signed.aab")),
+            Ok("CN=Key a, O=Test".into())
+        );
+        for (bundle, why) in [
+            ("unsigned.aab", "not signed"),
+            ("partial.aab", "entries are not signed"),
+            ("mixed.aab", "several keys"),
+            ("both.aab", "several keys"),
+        ] {
+            let r = bundle_signer(&d.join(bundle));
+            assert!(
+                r.as_ref().is_err_and(|e| e.contains(why)),
+                "{bundle}: {r:?}"
+            );
+        }
     }
 
     #[test]

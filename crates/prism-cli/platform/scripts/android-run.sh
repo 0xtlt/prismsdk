@@ -510,7 +510,14 @@ JSON
   PRISM_KS_PASS="$PASS" PRISM_KEY_PASS="$KEY_PASS" jarsigner -keystore "$KEYSTORE" \
     -storepass:env PRISM_KS_PASS -keypass:env PRISM_KEY_PASS \
     -sigalg SHA256withRSA -digestalg SHA-256 -signedjar "$BUNDLE" "$OUT/unsigned.aab" "$ALIAS" >/dev/null
-  jarsigner -verify -strict "$BUNDLE" >/dev/null 2>&1 || jarsigner -verify "$BUNDLE" >/dev/null
+  # Every entry signed: the strict check, whose 4 (a self-signed upload key's
+  # chain, not validated) is the only failure taken.
+  verified=0
+  jarsigner -verify -strict "$BUNDLE" >/dev/null 2>&1 || verified=$?
+  if (( verified & ~4 )); then
+    echo "error: $BUNDLE does not verify (jarsigner -verify -strict: exit $verified)" >&2
+    exit 1
+  fi
   echo "Built $BUNDLE (versionCode $VERSION_CODE)"
   [[ "${PRISM_NO_INSTALL:-}" == 1 ]] && exit 0
 

@@ -154,7 +154,7 @@ fn android(p: &Project, aab: &Path, o: &PublishOptions) -> Result<(), String> {
         info.version_code,
         info.min_sdk,
         info.target_sdk,
-        info.signer.as_deref().unwrap_or("nobody")
+        info.signer.as_deref().unwrap_or("nobody Play takes")
     );
     info.check(&p.bundle_id)?;
     let status = match (o.draft, o.rollout) {
