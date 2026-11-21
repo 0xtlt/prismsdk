@@ -1,6 +1,6 @@
 // 3D scenes in client.js: the port of prism-core's scene3d (geometry, blobs,
 // wire, clips, ScenePlayer) against the Rust test vectors (crates/prism-core/
-// src/scene3d/tests.rs), the GLSL against shaders.rs, then the WebGL 2
+// src/scene3d/tests.rs), the GLSL taken from shaders.rs, then the WebGL 2
 // element against a recording context: first paint, updates, gestures,
 // taps, blobs, textures, instancing, shadows and teardown.
 //
@@ -8,11 +8,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { boot, Element } from "./dom.mjs";
+import { boot, Element, shaderSource, withShaders } from "./dom.mjs";
 
 // --- The port, run on its own ------------------------------------------------------
 
-const source = fs.readFileSync(new URL("../../src/client.js", import.meta.url), "utf8");
+const raw = fs.readFileSync(new URL("../../src/client.js", import.meta.url), "utf8");
+const source = withShaders(raw);
 const core = source.slice(source.indexOf("  function scene3dCore()"), source.indexOf("  // </scene3d-core>"));
 const S = new Function(`${core}\nreturn scene3dCore();`)();
 const { cuboid, sphere, plane, cylinder, torus } = S.geometry;
@@ -761,14 +762,14 @@ test("3D: easing follows CSS cubic-bezier curves", () => {
   assert.equal(S.ease([0.25, 0.1, 0.25, 1], 2), 1);
 });
 
-test("3D: the GLSL is shaders.rs' byte for byte, assembled like program_source", () => {
+test("3D: the GLSL is shaders.rs', put in like the server does, assembled like program_source", () => {
   const rs = fs.readFileSync(new URL("../../../prism-core/src/scene3d/shaders.rs", import.meta.url), "utf8");
-  const glsl = (name) => {
-    const m = new RegExp(`pub const ${name}: &str = r#"([\\s\\S]*?)"#;`).exec(rs);
-    assert.ok(m, `${name} in shaders.rs`);
-    return m[1];
-  };
-  for (const name of ["VERTEX", "FRAGMENT", "SKY_VERTEX", "SKY_FRAGMENT"]) assert.equal(S[name], glsl(name), `${name} drifted from shaders.rs`);
+  // client.js keeps no copy of the GLSL to drift: the server puts shaders.rs' in.
+  assert.ok(!raw.includes("precision highp"), "a copy of the GLSL in client.js");
+  for (const name of ["VERTEX", "FRAGMENT", "SKY_VERTEX", "SKY_FRAGMENT"]) {
+    assert.ok(raw.includes(`const ${name} = __SCENE3D_${name}__;`), `${name}'s placeholder`);
+    assert.equal(S[name], shaderSource(name), name);
+  }
   assert.equal(S.ES_HEADER, /pub const ES_HEADER: &str = "(.*)";/.exec(rs)[1].replace("\\n", "\n"));
   assert.equal(S.MAX_LIGHTS, Number(/pub const MAX_LIGHTS: usize = (\d+);/.exec(rs)[1]));
   const src = S.programSource(S.ES_HEADER, "vertex", { instanced: true, skinned: true, depthOnly: true });

@@ -512,22 +512,27 @@ mod tests {
 
     #[test]
     fn the_served_client_is_compact_and_keeps_its_shaders() {
-        let served = compact_js(crate::CLIENT_JS);
+        let client = crate::app::client_js();
+        let served = compact_js(&client);
         assert!(
-            served.len() * 4 < crate::CLIENT_JS.len() * 3,
+            served.len() * 4 < client.len() * 3,
             "{} of {} bytes",
             served.len(),
-            crate::CLIENT_JS.len()
+            client.len()
         );
-        // The shaders, byte for byte (`scene3d.test.mjs` compares them with
-        // prism-core's).
-        for name in ["VERTEX", "FRAGMENT", "SKY_VERTEX", "SKY_FRAGMENT"] {
-            let body = |s: &str| {
-                let open = format!("const {name} = `");
-                let start = s.find(&open).unwrap() + open.len();
-                s[start..][..s[start..].find('`').unwrap()].to_string()
-            };
-            assert_eq!(body(&served), body(crate::CLIENT_JS), "{name}");
+        // prism-core's shaders, byte for byte (JSON strings in the client).
+        use prism_core::scene3d::shaders;
+        for (name, glsl) in [
+            ("VERTEX", shaders::VERTEX),
+            ("FRAGMENT", shaders::FRAGMENT),
+            ("SKY_VERTEX", shaders::SKY_VERTEX),
+            ("SKY_FRAGMENT", shaders::SKY_FRAGMENT),
+        ] {
+            let open = format!("const {name} = ");
+            let start = served.find(&open).unwrap() + open.len();
+            let mut strings =
+                serde_json::Deserializer::from_str(&served[start..]).into_iter::<String>();
+            assert_eq!(strings.next().unwrap().unwrap(), glsl, "{name}");
         }
         // Still a script (checked when `node` is installed).
         let file = std::env::temp_dir().join(format!("prism-client-{}.js", std::process::id()));
