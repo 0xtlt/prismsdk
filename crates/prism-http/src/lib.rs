@@ -784,6 +784,11 @@ mod tests {
 
     /// A server answering each request with `answer(request text)`; the
     /// requests it got, in order.
+    ///
+    /// It closes each connection after one reply, so the reply says
+    /// `Connection: close`. Without it, HTTP/1.1 lets the client keep the
+    /// connection: a redirect to the same origin was sent on it as the
+    /// server closed it, and the client got a reset (under load).
     fn serve(
         answer: impl Fn(&str) -> String + Send + 'static,
     ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
@@ -795,7 +800,10 @@ mod tests {
             for stream in listener.incoming() {
                 let Ok(mut s) = stream else { break };
                 let req = read_request(&mut s);
-                let reply = answer(&req);
+                let mut reply = answer(&req);
+                if !has(&reply, "connection") {
+                    reply = reply.replacen("\r\n", "\r\nConnection: close\r\n", 1);
+                }
                 log.lock().unwrap().push(req);
                 let _ = s.write_all(reply.as_bytes());
             }
@@ -813,7 +821,9 @@ mod tests {
     #[test]
     fn secrets_do_not_follow_a_redirect_elsewhere() {
         let (other, got) = serve(|_| "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".into());
-        let elsewhere = format!("http://localhost:{other}/landing");
+        // Another origin by its port. Not `localhost`: it names `::1` first,
+        // where nothing listens, and a connection there can meet itself.
+        let elsewhere = format!("http://127.0.0.1:{other}/landing");
         let (port, first) = serve(move |req| {
             if req.starts_with("GET /same ") {
                 "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nsame".into()

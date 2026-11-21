@@ -9,7 +9,7 @@ members = ["crates/*", "examples/*", "examples/counter/islands/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.94"
 license = "MIT OR Apache-2.0"
 authors = ["Prism contributors"]
 repository = "https://github.com/0xtlt/prismsdk"

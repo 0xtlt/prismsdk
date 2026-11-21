@@ -129,14 +129,55 @@ pub(crate) struct Inner {
     pub frame_ancestors: Vec<String>,
 }
 
+/// `client.js` with what it takes from prism-core: the glyph table and the
+/// 3D scenes' GLSL (`scene3d::shaders`, one copy for every backend).
+pub(crate) fn client_js() -> String {
+    use prism_core::scene3d::shaders;
+    let glsl = |source: &str| serde_json::to_string(source).expect("a string is JSON");
+    crate::CLIENT_JS
+        .replace("__GLYPHS__", &prism_core::glyphs::js_table())
+        .replace("__SCENE3D_VERTEX__", &glsl(shaders::VERTEX))
+        .replace("__SCENE3D_FRAGMENT__", &glsl(shaders::FRAGMENT))
+        .replace("__SCENE3D_SKY_VERTEX__", &glsl(shaders::SKY_VERTEX))
+        .replace("__SCENE3D_SKY_FRAGMENT__", &glsl(shaders::SKY_FRAGMENT))
+}
+
+#[cfg(test)]
+mod client_js_tests {
+    /// The client draws 3D scenes with prism-core's GLSL, the same text as
+    /// every OpenGL backend: `client.js` keeps no copy that could drift.
+    #[test]
+    fn the_client_carries_prism_cores_shaders() {
+        use prism_core::scene3d::shaders;
+        let client = super::client_js();
+        for placeholder in ["__GLYPHS__", "__SCENE3D_"] {
+            assert!(
+                !client.contains(placeholder),
+                "{placeholder} left in client.js"
+            );
+        }
+        for glsl in [
+            shaders::VERTEX,
+            shaders::FRAGMENT,
+            shaders::SKY_VERTEX,
+            shaders::SKY_FRAGMENT,
+        ] {
+            assert!(client.contains(&serde_json::to_string(glsl).unwrap()));
+        }
+        assert!(
+            !crate::CLIENT_JS.contains("precision highp"),
+            "a GLSL copy in client.js"
+        );
+    }
+}
+
 /// Prism's client, its base stylesheet, the app's assets and its islands.
 fn build_assets(
     dir: Option<PathBuf>,
     embedded: prism_core::EmbeddedAssets,
     islands: &crate::islands::Islands,
 ) -> Assets {
-    let client = crate::CLIENT_JS.replace("__GLYPHS__", &prism_core::glyphs::js_table());
-    let client = crate::assets::compact_js(&client);
+    let client = crate::assets::compact_js(&client_js());
     let css = crate::assets::compact_css(crate::PRISM_CSS);
     let mut assets = Assets::new(client, css, dir, embedded);
     assets.add_islands(islands);

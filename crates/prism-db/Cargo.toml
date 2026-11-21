@@ -19,7 +19,12 @@ name = "prism_db"
 
 [dependencies]
 prism-core.workspace = true
-sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio", "derive"] }
+sqlx = { version = "0.9.1", default-features = false, features = ["sqlite-bundled", "runtime-tokio", "derive"] }
+# The SQLite that sqlx bundles: at least 3.54.0, which fixes CVE-2026-119375
+# (RUSTSEC-2026-0459, stale memory read through a crafted WAL file). sqlx
+# accepts older releases too, and Cargo keeps a version already in an app's
+# lock file: this floor moves it. Checked at build time in `lib.rs`.
+libsqlite3-sys = { version = ">=0.39.0, <0.41", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [target.'cfg(unix)'.dependencies]

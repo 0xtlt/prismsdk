@@ -511,6 +511,23 @@ class FakeSocket {
 FakeSocket.instances = [];
 
 const CLIENT = new URL("../../src/client.js", import.meta.url);
+const SHADERS = new URL("../../../prism-core/src/scene3d/shaders.rs", import.meta.url);
+
+/** One `pub const NAME: &str = r#"…"#;` of prism-core's shaders.rs. */
+export function shaderSource(name) {
+  const rs = fs.readFileSync(SHADERS, "utf8");
+  const m = new RegExp(`pub const ${name}: &str = r#"([\\s\\S]*?)"#;`).exec(rs);
+  if (!m) throw new Error(`${name} is not in shaders.rs`);
+  return m[1];
+}
+
+/** client.js with shaders.rs' GLSL put in, as the server does (`client_js` in app.rs). */
+export function withShaders(source) {
+  for (const name of ["VERTEX", "FRAGMENT", "SKY_VERTEX", "SKY_FRAGMENT"]) {
+    source = source.replace(`__SCENE3D_${name}__`, () => JSON.stringify(shaderSource(name)));
+  }
+  return source;
+}
 
 /**
  * Runs client.js on a page whose `<main id="prism-root">` holds `ssr` (and,
@@ -639,7 +656,7 @@ export function boot({ ssr = "", layers = null, path = "/", base = "", glyphs = 
   win.window = win;
   win.self = win;
   const context = vm.createContext(win);
-  const source = fs.readFileSync(CLIENT, "utf8").replace("__GLYPHS__", JSON.stringify(glyphs));
+  const source = withShaders(fs.readFileSync(CLIENT, "utf8")).replace("__GLYPHS__", JSON.stringify(glyphs));
   // `import()` of island modules (a vm script cannot import without a Node
   // flag): recorded, then `importModule(url, customElements)`.
   win.__testImport = async (url) => {

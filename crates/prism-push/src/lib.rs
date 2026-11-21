@@ -3,6 +3,7 @@
 //! Sends push notifications to the devices of a Prism app, from your server:
 //!
 //! ```no_run
+//! # #[cfg(feature = "send")]
 //! # async fn demo(json_from_the_app: &str) -> Result<(), prism_push::PushError> {
 //! use prism_push::{Push, Sender, Subscription, apns::ApnsKey, fcm::ServiceAccount, webpush::VapidKey};
 //!

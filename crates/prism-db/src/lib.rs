@@ -38,6 +38,14 @@ use prism_core::{App, AsyncApp, Background};
 pub use sqlx;
 pub use sqlx::SqlitePool;
 
+/// The bundled SQLite is 3.54.0 or later: earlier releases can return stale
+/// process memory when they open a database with a crafted `-wal` file
+/// (CVE-2026-119375, RUSTSEC-2026-0459). Building against one fails here.
+const _: () = assert!(
+    libsqlite3_sys::SQLITE_VERSION_NUMBER >= 3_054_000,
+    "prism-db needs SQLite 3.54.0 or later (CVE-2026-119375)"
+);
+
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
@@ -171,7 +179,6 @@ impl Db {
     }
 }
 
-/// Applies the migrations not applied yet (`PRAGMA user_version` counts them).
 /// One plain file name on every platform: not empty, `.` or `..`, without a
 /// separator (`/`, `\`), a drive or stream (`:`) or a control character.
 fn is_file_name(name: &str) -> bool {
@@ -217,14 +224,21 @@ fn private_dir(base: &Path) -> std::io::Result<PathBuf> {
     }
 }
 
+/// Applies the migrations not applied yet (`PRAGMA user_version` counts them).
+/// They are the app's own SQL, run as written (`AssertSqlSafe`): never build
+/// one from user input.
 async fn migrate(pool: &SqlitePool, migrations: &[String]) -> Result<(), sqlx::Error> {
+    use sqlx::AssertSqlSafe;
     let (done,): (i64,) = sqlx::query_as("PRAGMA user_version")
         .fetch_one(pool)
         .await?;
     for (i, sql) in migrations.iter().enumerate().skip(done.max(0) as usize) {
         let mut tx = pool.begin().await?;
-        sqlx::raw_sql(sql).execute(&mut *tx).await?;
-        sqlx::raw_sql(&format!("PRAGMA user_version = {}", i + 1))
+        sqlx::raw_sql(AssertSqlSafe(sql.as_str()))
+            .execute(&mut *tx)
+            .await?;
+        // A number we count, not input.
+        sqlx::raw_sql(AssertSqlSafe(format!("PRAGMA user_version = {}", i + 1)))
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
@@ -313,6 +327,27 @@ mod tests {
         std::os::unix::fs::symlink(&elsewhere, &dir).unwrap();
         assert!(private_dir(&base).is_err());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// S26: the SQLite that runs queries is 3.54.0 or later, so a database
+    /// opened with a crafted `-wal` file cannot read stale process memory
+    /// (CVE-2026-119375, RUSTSEC-2026-0459). Asked of the engine at run
+    /// time, not of the headers it was built with.
+    #[test]
+    fn s26_sqlite_is_3_54_or_later() {
+        let db = Db::memory(&[]).unwrap();
+        let version: String = db
+            .block_on(|pool| async move {
+                sqlx::query_scalar("SELECT sqlite_version()")
+                    .fetch_one(&pool)
+                    .await
+            })
+            .unwrap();
+        let parts: Vec<u32> = version.split('.').map(|n| n.parse().unwrap()).collect();
+        assert!(
+            parts[..2] >= [3, 54][..],
+            "SQLite {version} has CVE-2026-119375"
+        );
     }
 
     #[test]
