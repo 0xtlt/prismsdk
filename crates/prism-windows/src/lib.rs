@@ -70,7 +70,7 @@
 //! | `fonts` | run-time fonts |
 //! | `shell` | the services' hidden window: modal UI, timers, threads |
 //! | `system` | theme, accent, locale, DPI |
-//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access`, `pinch`, `seal` | pure helpers, tested on every host |
+//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access`, `pinch`, `seal`, `dates` | pure helpers, tested on every host |
 
 // Roles and states for UI Automation: no Win32, tested everywhere.
 mod access;
@@ -101,6 +101,8 @@ mod clipboard;
 #[cfg(target_os = "windows")]
 mod controls;
 #[cfg(target_os = "windows")]
+mod datebox;
+#[cfg(target_os = "windows")]
 mod decor;
 #[cfg(target_os = "windows")]
 mod defer;
@@ -116,6 +118,8 @@ mod events;
 mod fieldicon;
 // Theme colors and control metrics: no Win32, tested everywhere.
 mod fluent;
+// A date picker's arithmetic: no Win32, tested everywhere.
+mod dates;
 #[cfg(target_os = "windows")]
 mod fonts;
 #[cfg(target_os = "windows")]

@@ -1025,6 +1025,18 @@ impl Widgets for Win {
     }
 
     fn set_environment(&mut self, env: &RenderEnvironment) {
+        if env.clear != self.env.clear {
+            crate::datebox::set_clear_label(&env.clear);
+            for v in self.views.values() {
+                if let Content::Date(d) = &v.content {
+                    let _ = d.label_clear(if env.clear.is_empty() {
+                        "Clear"
+                    } else {
+                        &env.clear
+                    });
+                }
+            }
+        }
         self.env = env.clone();
     }
 
@@ -1338,14 +1350,13 @@ impl Win {
                 self.replace_content(id, content);
             }
         } else if let Some(v) = self.views.get_mut(&id) {
-            let was_time = matches!(v.content, Content::Time(_));
+            let was = v.content.date_mode();
             let old = v.content.element();
             if let Err(e) = controls::configure(&mut v.content, id, kind, config) {
                 log!("config of node {id}: {e}");
             }
-            let is_time = matches!(v.content, Content::Time(_));
-            if was_time != is_time && kind == NodeKind::DatePicker {
-                // A time picker in place of the date picker.
+            if was != v.content.date_mode() && kind == NodeKind::DatePicker {
+                // Another date picker (a time, both) in its place.
                 if let Some(old) = old {
                     unmount(&v.outer, &old);
                 }

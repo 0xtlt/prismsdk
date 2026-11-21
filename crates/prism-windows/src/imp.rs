@@ -342,31 +342,15 @@ pub fn scrolled(id: NodeId, x: f32, y: f32) {
     }));
 }
 
-/// Unix seconds for `secs` past midnight (local) on the day the date
-/// picker shows (`TimePicker`).
-pub fn time_of_day(id: NodeId, secs: f64) -> f64 {
-    let day = with_state(|s| s.renderer.widgets.scene.get(id).map(|n| n.value))
-        .flatten()
-        .filter(|v| v.is_finite())
-        .unwrap_or_else(now);
-    let offset = local_offset();
-    let midnight = ((day + offset) / 86_400.).floor() * 86_400. - offset;
-    midnight + secs
-}
-
-/// Seconds past local midnight of a Unix time.
-pub fn seconds_of_day(unix: f64) -> f64 {
-    (unix + local_offset()).rem_euclid(86_400.)
-}
-
-fn now() -> f64 {
+/// Now, Unix seconds.
+pub fn now() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0., |d| d.as_secs_f64())
 }
 
 /// The local time zone's offset from UTC, seconds.
-fn local_offset() -> f64 {
+pub fn local_offset() -> f64 {
     use windows::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION};
     let mut tz = TIME_ZONE_INFORMATION::default();
     let r = unsafe { GetTimeZoneInformation(&mut tz) };

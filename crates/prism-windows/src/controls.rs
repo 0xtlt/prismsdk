@@ -1,7 +1,8 @@
 //! Prism's controls as WinUI 3 controls: `Button`, `TextBox` /
 //! `PasswordBox`, `ToggleSwitch`, `CheckBox`, `RadioButton`s, `Slider`,
-//! `ProgressBar`, `ProgressRing`, `ComboBox`, `CalendarDatePicker` /
-//! `TimePicker`, `FontIcon` (Segoe Fluent Icons), `Image`, vector `Path`s.
+//! `ProgressBar`, `ProgressRing`, `ComboBox`, `CalendarDatePicker` and
+//! `TimePicker` (`datebox.rs`), `FontIcon` (Segoe Fluent Icons), `Image`,
+//! vector `Path`s.
 //! Their events become `UiEvent`s; their natural sizes (`Widgets::measure`)
 //! are WinUI's metrics around the measured text.
 //!
@@ -15,9 +16,9 @@ use prism_core::controls::{
 };
 use prism_core::{Color, NodeId, NodeKind, Style, UiEvent};
 use prism_native::text::StyledText;
-use windows::Foundation::{DateTime, IReference, PropertyValue, TimeSpan, TypedEventHandler};
+use windows::Foundation::{DateTime, IReference, PropertyValue};
 use windows::System::VirtualKey;
-use windows_core::{Interface, Ref, Result};
+use windows_core::{Interface, Result};
 
 use crate::fluent::Palette;
 use crate::fluent::metrics::*;
@@ -26,10 +27,9 @@ use crate::scene::Node;
 use crate::text::{Measurer, apply, font, label, weight};
 use crate::winui::xaml::Controls::Primitives::RangeBaseValueChangedEventHandler;
 use crate::winui::xaml::Controls::{
-    Button, CalendarDatePicker, CalendarDatePickerDateChangedEventArgs, Canvas, CheckBox, ComboBox,
-    Control, FontIcon, Image, Orientation, PasswordBox, ProgressBar, ProgressRing, RadioButton,
-    SelectionChangedEventHandler, Slider, StackPanel, TextBlock, TextBox, TextChangedEventHandler,
-    TimePicker, TimePickerSelectedValueChangedEventArgs, ToggleSwitch,
+    Button, Canvas, CheckBox, ComboBox, Control, FontIcon, Image, Orientation, PasswordBox,
+    ProgressBar, ProgressRing, RadioButton, SelectionChangedEventHandler, Slider, StackPanel,
+    TextBlock, TextBox, TextChangedEventHandler, ToggleSwitch,
 };
 use crate::winui::xaml::Input::KeyEventHandler;
 use crate::winui::xaml::Media::{
@@ -56,8 +56,7 @@ pub enum Content {
     Progress(ProgressBar),
     Ring(ProgressRing),
     Combo(ComboBox),
-    Date(CalendarDatePicker),
-    Time(TimePicker),
+    Date(crate::datebox::DateBox),
     Icon(FontIcon),
     Picture(Image),
     Shape(Canvas),
@@ -84,8 +83,7 @@ impl Content {
             Content::Progress(p) => p.cast(),
             Content::Ring(r) => r.cast(),
             Content::Combo(c) => c.cast(),
-            Content::Date(d) => d.cast(),
-            Content::Time(t) => t.cast(),
+            Content::Date(d) => d.element(),
             Content::Icon(i) => i.cast(),
             Content::Picture(i) => i.cast(),
             Content::Shape(c) => c.cast(),
@@ -108,13 +106,29 @@ impl Content {
             Content::Radios(_, r) => r.first()?.cast(),
             Content::Slider(s) => s.cast(),
             Content::Combo(c) => c.cast(),
-            Content::Date(d) => d.cast(),
-            Content::Time(t) => t.cast(),
+            Content::Date(d) => return d.control(),
             Content::Rich(r) => r.element.cast(),
             Content::Web(w) => w.element.cast(),
             _ => return None,
         };
         c.ok()
+    }
+
+    /// The element that carries the node's accessibility: a date picker's
+    /// day or time control, not its panel.
+    pub fn named(&self) -> Option<crate::winui::xaml::UIElement> {
+        match self {
+            Content::Date(d) => d.control()?.cast().ok(),
+            _ => self.element(),
+        }
+    }
+
+    /// A date picker's mode (what it is made of).
+    pub fn date_mode(&self) -> Option<DateMode> {
+        match self {
+            Content::Date(d) => Some(d.mode),
+            _ => None,
+        }
     }
 }
 
@@ -241,7 +255,7 @@ pub fn create(id: NodeId, kind: NodeKind) -> Result<Content> {
             }))?;
             Content::Combo(c)
         }
-        NodeKind::DatePicker => date_picker(id, DateMode::Date)?,
+        NodeKind::DatePicker => Content::Date(crate::datebox::DateBox::new(id, DateMode::Date)?),
         NodeKind::Image => {
             let i = FontIcon::new()?;
             i.SetFontFamily(&font(crate::text::ICON_FONT)?)?;
@@ -327,56 +341,6 @@ fn secure(id: NodeId) -> Result<Content> {
         Ok(())
     }))?;
     Ok(Content::Secure(p))
-}
-
-/// `CalendarDatePicker` for dates, `TimePicker` for times.
-fn date_picker(id: NodeId, mode: DateMode) -> Result<Content> {
-    if matches!(mode, DateMode::Time | DateMode::TimeOfDay) {
-        let t = TimePicker::new()?;
-        t.SetMinWidth(0.)?;
-        t.SetIsTextScaleFactorEnabled(false)?;
-        t.SelectedTimeChanged(&TypedEventHandler::<
-            TimePicker,
-            TimePickerSelectedValueChangedEventArgs,
-        >::new(
-            move |_, a: Ref<TimePickerSelectedValueChangedEventArgs>| {
-                if let Some(a) = a.as_ref()
-                    && let Ok(v) = a.NewTime()
-                    && let Ok(span) = v.Value()
-                {
-                    let secs = span.Duration as f64 / 1e7;
-                    changed(
-                        id,
-                        if mode == DateMode::TimeOfDay {
-                            secs
-                        } else {
-                            crate::imp::time_of_day(id, secs)
-                        },
-                    );
-                }
-                Ok(())
-            },
-        ))?;
-        return Ok(Content::Time(t));
-    }
-    let d = CalendarDatePicker::new()?;
-    d.SetMinWidth(0.)?;
-    d.SetIsTextScaleFactorEnabled(false)?;
-    d.DateChanged(&TypedEventHandler::<
-        CalendarDatePicker,
-        CalendarDatePickerDateChangedEventArgs,
-    >::new(
-        move |_, a: Ref<CalendarDatePickerDateChangedEventArgs>| {
-            if let Some(a) = a.as_ref()
-                && let Ok(v) = a.NewDate()
-                && let Ok(dt) = v.Value()
-            {
-                changed(id, unix_seconds(dt));
-            }
-            Ok(())
-        },
-    ))?;
-    Ok(Content::Date(d))
 }
 
 /// Windows' `DateTime` (100 ns since 1601) to Unix seconds.
@@ -504,8 +468,7 @@ pub fn style(c: &Content, n: &Node, pal: &Palette) -> Result<()> {
             cb.SetFontSize(s.font_size as f64)?;
             cb.SetIsEnabled(!n.a11y.disabled)?;
         }
-        Content::Date(d) => d.SetIsEnabled(!n.a11y.disabled)?,
-        Content::Time(t) => t.SetIsEnabled(!n.a11y.disabled)?,
+        Content::Date(d) => d.set_enabled(!n.a11y.disabled)?,
         Content::Progress(p) => {
             if let Some(c) = s.text_color {
                 p.SetForeground(&brush(pal.ink(c))?)?;
@@ -654,19 +617,14 @@ pub fn configure(c: &mut Content, id: NodeId, kind: NodeKind, config: &str) -> R
         }
         Content::Web(w) => w.configure(config)?,
         Content::Video(v) => v.configure(config)?,
-        Content::Date(_) | Content::Time(_) if kind == NodeKind::DatePicker => {
+        Content::Date(_) if kind == NodeKind::DatePicker => {
             let cfg = DateConfig::decode(config);
-            let time = matches!(cfg.mode, DateMode::Time | DateMode::TimeOfDay);
-            if time != matches!(c, Content::Time(_)) {
-                *c = date_picker(id, cfg.mode)?;
+            if c.date_mode() != Some(cfg.mode) {
+                // Other parts (a day, a time, both): a new picker.
+                *c = Content::Date(crate::datebox::DateBox::new(id, cfg.mode)?);
             }
             if let Content::Date(d) = c {
-                if let Some(min) = cfg.min {
-                    d.SetMinDate(date_time(min))?;
-                }
-                if let Some(max) = cfg.max {
-                    d.SetMaxDate(date_time(max))?;
-                }
+                d.configure(&cfg)?;
             }
         }
         _ => {}
@@ -727,39 +685,7 @@ pub fn set_value(c: &Content, n: &Node, value: f64) -> Result<()> {
             }
             cb.SetPlaceholderText(&h(&n.placeholder))?;
         }
-        Content::Date(d) => {
-            if value.is_nan() {
-                d.SetDate(None::<&IReference<DateTime>>)?;
-            } else {
-                let dt = date_time(value);
-                let now = d.Date().ok().and_then(|v| v.Value().ok());
-                if now.map(|n| n.UniversalTime / 10_000_000) != Some(dt.UniversalTime / 10_000_000)
-                {
-                    d.SetDate(&PropertyValue::CreateDateTime(dt)?.cast::<IReference<DateTime>>()?)?;
-                }
-            }
-            d.SetPlaceholderText(&h(&n.placeholder))?;
-        }
-        Content::Time(t) => {
-            if value.is_nan() {
-                t.SetSelectedTime(None::<&IReference<TimeSpan>>)?;
-            } else {
-                // A time of day on its own is seconds since midnight (UTC);
-                // a time is the local time of a Unix time.
-                let own = DateConfig::decode(&n.config).mode == DateMode::TimeOfDay;
-                let secs = if own {
-                    value.rem_euclid(86_400.)
-                } else {
-                    crate::imp::seconds_of_day(value)
-                };
-                let span = TimeSpan {
-                    Duration: (secs * 1e7) as i64,
-                };
-                t.SetSelectedTime(
-                    &PropertyValue::CreateTimeSpan(span)?.cast::<IReference<TimeSpan>>()?,
-                )?;
-            }
-        }
+        Content::Date(d) => d.set_value(n, value)?,
         Content::Picture(i) => {
             i.SetStretch(if value == 1. {
                 Stretch::Uniform
@@ -985,29 +911,41 @@ pub fn measure(
             let d = if n.value == 1. { SPINNER } else { 20. };
             (d, d)
         }
-        NodeKind::Picker | NodeKind::DatePicker => {
-            let text = if n.kind == NodeKind::Picker {
-                // As wide as its widest option, so choosing does not move it.
-                let c = PickerConfig::decode(&n.config);
-                c.options
-                    .iter()
-                    .chain(std::iter::once(&n.placeholder))
-                    .max_by_key(|o| o.chars().count())
-                    .cloned()
-                    .unwrap_or_default()
-            } else {
-                date_text(n, locale)
-            };
+        NodeKind::Picker => {
+            // As wide as its widest option, so choosing does not move it.
+            let c = PickerConfig::decode(&n.config);
+            let text = c
+                .options
+                .iter()
+                .chain(std::iter::once(&n.placeholder))
+                .max_by_key(|o| o.chars().count())
+                .cloned()
+                .unwrap_or_default();
             let (w, h) = text_size(m, &text);
-            let time = n.kind == NodeKind::DatePicker
-                && matches!(
-                    DateConfig::decode(&n.config).mode,
-                    DateMode::Time | DateMode::TimeOfDay
-                );
-            // A time picker shows hours and minutes (and AM/PM) in
-            // columns: WinUI's minimum width (`TimePickerThemeMinWidth`).
-            let min = if time { 242. } else { 0. };
-            ((w + 11. + 38.).max(min), (h + 11.).max(CONTROL_HEIGHT))
+            (w + 11. + 38., (h + 11.).max(CONTROL_HEIGHT))
+        }
+        NodeKind::DatePicker => {
+            use crate::datebox::{CLEAR_WIDTH, GAP};
+            let c = DateConfig::decode(&n.config);
+            let (day, time) = crate::dates::parts(c.mode);
+            let mut w = 0.;
+            let mut h: f32 = 0.;
+            if day {
+                let (tw, th) = text_size(m, &date_text(n, locale, false));
+                w += tw + 11. + 38.;
+                h = h.max(th);
+            }
+            if time {
+                let (tw, th) = text_size(m, &date_text(n, locale, true));
+                // Hours and minutes (and AM/PM) in columns: WinUI's
+                // minimum width (`TimePickerThemeMinWidth`).
+                w += if day { GAP } else { 0. } + (tw + 11. + 38.).max(242.);
+                h = h.max(th);
+            }
+            if c.optional {
+                w += GAP + CLEAR_WIDTH;
+            }
+            (w, (h + 11.).max(CONTROL_HEIGHT))
         }
         NodeKind::Image => {
             let d = s.font_size.max(1.) * 1.2;
@@ -1027,21 +965,17 @@ pub fn line_height(m: &Measurer, s: &Style) -> f32 {
     m.measure(&label("Ag", s), None).1
 }
 
-fn date_text(n: &Node, locale: &prism_core::Locale) -> String {
+/// What a date picker's day part (or its time part) shows.
+fn date_text(n: &Node, locale: &prism_core::Locale, time: bool) -> String {
     use prism_core::Formatter;
-    let c = DateConfig::decode(&n.config);
     if n.value.is_nan() {
         return n.placeholder.clone();
     }
     let f = prism_core::BasicFormatter::default();
-    match c.mode {
-        DateMode::Date => f.date(locale, n.value, prism_core::DateStyle::Medium),
-        DateMode::Time | DateMode::TimeOfDay => f.time(locale, n.value),
-        DateMode::DateTime => format!(
-            "{} {}",
-            f.date(locale, n.value, prism_core::DateStyle::Medium),
-            f.time(locale, n.value)
-        ),
+    if time {
+        f.time(locale, n.value)
+    } else {
+        f.date(locale, n.value, prism_core::DateStyle::Medium)
     }
 }
 

@@ -290,3 +290,8 @@ Microsoft.Windows.ApplicationModel.Resources.ResourceContext
 Microsoft.Windows.ApplicationModel.Resources.ResourceCandidate
 Microsoft.Windows.ApplicationModel.Resources.ResourceCandidateKind
 Microsoft.Windows.ApplicationModel.Resources.ResourceNotFoundEventArgs
+# A date picker's date, time and clear button side by side (controls.rs)
+Microsoft.UI.Xaml.Controls.ColumnDefinition
+Microsoft.UI.Xaml.Controls.ColumnDefinitionCollection
+Microsoft.UI.Xaml.GridLength
+Microsoft.UI.Xaml.GridUnitType
