@@ -49,7 +49,7 @@ Next to the project's `Cargo.toml`:
 [app]
 name = "Counter"              # display name
 package = "counter"           # cargo package (default: the Cargo.toml's)
-bundle_id = "com.example.counter"
+bundle_id = "com.example.counter"  # dot-separated words: letters, digits, _ and -
 version = "1.0.0"             # default: the Cargo.toml's
 icon = "icon.png"             # 1024×1024 PNG
 # locales = "locales"         # translations directory

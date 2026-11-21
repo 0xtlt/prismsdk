@@ -248,6 +248,7 @@ impl Project {
         let package = get("app.package")
             .or_else(|| cargo.get("package.name").cloned())
             .ok_or("set [app] package in Prism.toml (no [package] in Cargo.toml)")?;
+        let package = package_name(package)?;
         let name = get("app.name").unwrap_or_else(|| {
             let mut c = package.chars();
             c.next()
@@ -257,8 +258,10 @@ impl Project {
         let (target_dir, workspace_root) = cargo_dirs(root)?;
         let deployment_targets = deployment_targets(get)?;
         Ok(Project {
-            bundle_id: get("app.bundle_id")
-                .unwrap_or_else(|| format!("dev.prism.{}", package.replace('_', "-"))),
+            bundle_id: bundle_id(
+                get("app.bundle_id")
+                    .unwrap_or_else(|| format!("dev.prism.{}", package.replace('_', "-"))),
+            )?,
             version: get("app.version")
                 .or_else(|| cargo.get("package.version").cloned())
                 .filter(|v| !v.contains("workspace"))
@@ -351,6 +354,39 @@ fn http_host(raw: &str) -> Result<String, String> {
     } else {
         Err(format!(
             "Prism.toml [network] allow_http: {raw:?} is not a host name (no scheme, port or path: \"preview.localhost\")"
+        ))
+    }
+}
+
+/// The cargo package: it names the binary, its folders and the launchers
+/// and scripts that run it, so letters, digits, `_` and `-` only (S23).
+fn package_name(raw: String) -> Result<String, String> {
+    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'-';
+    match raw.as_bytes() {
+        [first, rest @ ..] if *first != b'-' && word(*first) && rest.iter().all(|b| word(*b)) => {
+            Ok(raw)
+        }
+        _ => Err(format!(
+            "Prism.toml [app] package: {raw:?} is not a cargo package name (letters, digits, _ and -)"
+        )),
+    }
+}
+
+/// The app's reverse-DNS ID (`com.example.app`): it names files and goes
+/// into launchers, manifests, entitlements and desktop entries on every
+/// platform, so dot-separated words of letters, digits, `_` and `-`, at
+/// most 255 bytes (a D-Bus name) (S23).
+fn bundle_id(raw: String) -> Result<String, String> {
+    let word = |w: &str| {
+        !w.is_empty()
+            && w.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    };
+    if raw.len() <= 255 && raw.contains('.') && raw.split('.').all(word) {
+        Ok(raw)
+    } else {
+        Err(format!(
+            "Prism.toml [app] bundle_id: {raw:?} is not a reverse-DNS ID (dot-separated words of letters, digits, _ and -, like \"com.example.app\")"
         ))
     }
 }

@@ -10,9 +10,26 @@
 # Environment: PRISM_PROJECT, PRISM_BUNDLE_ID, PRISM_APP_NAME, PRISM_VERSION,
 # PRISM_BUILD (Debian revision, default 1), PRISM_ICON, PRISM_DESCRIPTION,
 # PRISM_MAINTAINER, PRISM_LINUX_OUT (default <target>/linux).
+#
+# The package and bundle ID become file names and launcher source, so they
+# are checked against narrow grammars before anything runs; names,
+# descriptions and the maintainer are one line each, escaped per format.
 set -euo pipefail
+# Character classes and ranges in the checks below mean ASCII.
+export LC_ALL=C
+
+fail() { echo "linux-package.sh: $*" >&2; exit 1; }
+matches() { [[ "$1" =~ $2 ]]; }
+# `$2` as one line of text: no line breaks or other control characters.
+one_line() { [[ "$2" != *[[:cntrl:]]* ]] || fail "$1 must be one line, without control characters"; }
+# `$1` as a single-quoted sh word.
+sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+# `$1` as a desktop entry string value (`\` escapes).
+desktop() { printf '%s' "$1" | sed 's/\\/\\\\/g'; }
 
 PKG="${1:?usage: linux-package.sh <package>}"
+matches "$PKG" '^[A-Za-z0-9_][A-Za-z0-9_-]*$' ||
+  fail "package $PKG: letters, digits, _ and - only"
 ROOT="${PRISM_PROJECT:-$(cd "$(dirname "$0")/.." && pwd)}"
 cd "$ROOT"
 TARGET_DIR="$(cargo metadata --format-version 1 --no-deps 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
@@ -23,11 +40,20 @@ APP_ID="${PRISM_BUNDLE_ID:-dev.prism.$SLUG}"
 APP_NAME="${PRISM_APP_NAME:-$(tr '[:lower:]' '[:upper:]' <<< "${PKG:0:1}")${PKG:1}}"
 DESCRIPTION="${PRISM_DESCRIPTION:-$APP_NAME, made with Prism}"
 MAINTAINER="${PRISM_MAINTAINER:-$APP_NAME maintainers <noreply@example.com>}"
+# A reverse-DNS ID (desktop entries, D-Bus): dot-separated words.
+if (( ${#APP_ID} > 255 )) || ! matches "$APP_ID" '^[A-Za-z0-9_-]+([.][A-Za-z0-9_-]+)+$'; then
+  fail "bundle ID $APP_ID: dot-separated words of letters, digits, _ and - (com.example.app)"
+fi
+one_line "app name" "$APP_NAME"
+one_line "description" "$DESCRIPTION"
+one_line "maintainer" "$MAINTAINER"
 # Debian versions: <upstream>-<revision>, upstream starting with a digit.
 UPSTREAM="${PRISM_VERSION:-0.1.0}"
 UPSTREAM="${UPSTREAM//_/\~}"
-[[ "$UPSTREAM" =~ ^[0-9][A-Za-z0-9.+~]*$ ]] || { echo "version $UPSTREAM: Debian versions start with a digit" >&2; exit 1; }
-VERSION="$UPSTREAM-${PRISM_BUILD:-1}"
+matches "$UPSTREAM" '^[0-9][A-Za-z0-9.+~]*$' || fail "version $UPSTREAM: Debian versions start with a digit"
+REVISION="${PRISM_BUILD:-1}"
+matches "$REVISION" '^[A-Za-z0-9.+~]+$' || fail "build $REVISION: letters, digits, ., + and ~ only"
+VERSION="$UPSTREAM-$REVISION"
 ARCH="$(dpkg --print-architecture)"
 
 # 1. The app (release) and what it declares (assets).
@@ -42,13 +68,15 @@ mkdir -p "$STAGE/DEBIAN" "$STAGE/usr/bin" "$STAGE/usr/lib/$SLUG" "$STAGE/usr/sha
   "$STAGE/usr/share/metainfo" "$STAGE/usr/share/pixmaps"
 install -m 755 "$BIN" "$STAGE/usr/lib/$SLUG/$PKG"
 [[ -n "$ASSETS" && -d "$ASSETS" ]] && cp -R "$ASSETS" "$STAGE/usr/lib/$SLUG/assets"
+# The launcher holds identifiers only, each a quoted literal.
 cat > "$STAGE/usr/bin/$SLUG" <<SH
 #!/bin/sh
-# $APP_NAME: the app finds its pictures here, and desktops match its window
-# to $APP_ID.desktop.
-export PRISM_ASSETS_DIR="\${PRISM_ASSETS_DIR:-/usr/lib/$SLUG/assets}"
-export PRISM_APP_ID="$APP_ID"
-exec /usr/lib/$SLUG/$PKG "\$@"
+# Starts the app: it finds its pictures in its assets folder, and desktops
+# match its window to its desktop entry.
+if [ -z "\${PRISM_ASSETS_DIR:-}" ]; then PRISM_ASSETS_DIR=$(sq "/usr/lib/$SLUG/assets"); fi
+export PRISM_ASSETS_DIR
+export PRISM_APP_ID=$(sq "$APP_ID")
+exec $(sq "/usr/lib/$SLUG/$PKG") "\$@"
 SH
 chmod 755 "$STAGE/usr/bin/$SLUG"
 ICON_LINE=""
@@ -59,8 +87,8 @@ fi
 cat > "$STAGE/usr/share/applications/$APP_ID.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
-Name=$APP_NAME
-Comment=$DESCRIPTION
+Name=$(desktop "$APP_NAME")
+Comment=$(desktop "$DESCRIPTION")
 Exec=$SLUG
 $ICON_LINE
 Terminal=false

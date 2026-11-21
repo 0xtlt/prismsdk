@@ -75,6 +75,8 @@ track = "internal"                               # internal, alpha, beta, produc
 maintainer = "Jane Doe <jane@example.com>"
 ```
 
+These values end up in file names, launchers, manifests and package metadata, so `prism` checks them before building. `package` takes letters, digits, `_` and `-`. `bundle_id` takes two or more dot-separated words of those characters, at most 255 bytes (`com.example.app`). On Linux, `name`, `description` and `linux.maintainer` are one line each, and `build` takes letters, digits, `.`, `+` and `~`.
+
 ### Google Play
 
 - **The bundle:** `aapt2 link --proto-format` writes the manifest and resources as protobuf. They go into the base module zip (`manifest/`, `dex/`, `res/`, `resources.pb`, `assets/`, `lib/`, `root/`), and `bundletool build-bundle` assembles it. bundletool 1.18.3 is downloaded once into `~/.cache/prism` and checked against a pinned SHA-256 (`PRISM_BUNDLETOOL` uses another jar). `BundleConfig.json` keeps native libraries uncompressed and 16 KB aligned (`PAGE_ALIGNMENT_16K`), as Android 15+ devices with 16 KB pages need.
