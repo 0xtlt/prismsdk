@@ -61,7 +61,7 @@ def parse(path):
         if m:
             add("app's tree: build (ms)", float(m.group(1)))
             add("app's tree: patches", float(m.group(2)))
-        m = re.search(r"first layout after [0-9.]+ ms.*?\((\d+) nodes\)", line)
+        m = re.search(r"first layout after [0-9.]+ ms.*?\((\d+) nodes", line)
         if m:
             add("nodes", float(m.group(1)))
         m = re.search(r"(?:elements|views): patches (?:and layout )?" + NUM + r" ms(.*)", line)

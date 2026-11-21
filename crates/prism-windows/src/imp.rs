@@ -858,12 +858,16 @@ pub fn run(config: AppConfig, init: AppInit) {
             crate::profile::phase("XAML layout");
             if crate::perf::on() {
                 log!("XAML elements: {}", crate::perf::take());
+                log!("text layouts: {}", crate::text::take_counts());
             }
         });
         log!(
-            "first layout after {:.0} ms ({} nodes)",
+            "first layout after {:.0} ms ({} nodes, {:.0} %: {}x{} pixels)",
             since_start(),
-            with_state(|s| s.renderer.widgets.scene.nodes.len()).unwrap_or(0)
+            with_state(|s| s.renderer.widgets.scene.nodes.len()).unwrap_or(0),
+            k * 100.,
+            client.right,
+            client.bottom
         );
         SetTimer(Some(main), TIMER_SECOND, 1000, None);
         // The first ShowWindow takes the launcher's STARTUPINFO (hidden
