@@ -767,6 +767,57 @@ final class PrismForms {
         }
     }
 
+    // --- Theme changes -----------------------------------------------------------------------
+
+    /**
+     * Gives a native control (a button, a field, a check box, a radio
+     * button, a switch) the looks of the theme in the app's light or dark
+     * mode: its text, placeholder and link colors, its background (a
+     * button's chrome, a field's underline), its check mark, a switch's thumb
+     * and track. A view keeps what the theme gave it when it was made, so
+     * after a theme change while the app runs it showed the old mode's
+     * (black text in a dark field). They come from a control made now; the
+     * app's own style is applied after this.
+     */
+    static void retheme(PrismHost.Node n) {
+        if (n.kind.equals("radio_group")) {
+            ViewGroup g = (ViewGroup) n.view;
+            for (int i = 0; i < g.getChildCount(); i++) retheme(g.getChildAt(i));
+        } else {
+            retheme(n.view);
+        }
+    }
+
+    private static void retheme(View v) {
+        Context c = ctx();
+        TextView fresh;
+        if (v instanceof android.widget.Switch) fresh = new android.widget.Switch(c);
+        else if (v instanceof android.widget.RadioButton) fresh = new android.widget.RadioButton(c);
+        else if (v instanceof android.widget.CheckBox) fresh = new android.widget.CheckBox(c);
+        else if (v instanceof android.widget.AutoCompleteTextView) fresh = new android.widget.AutoCompleteTextView(c);
+        else if (v instanceof EditText) fresh = new EditText(c);
+        else if (v instanceof Button) fresh = new Button(c);
+        else return;
+        TextView t = (TextView) v;
+        t.setTextColor(fresh.getTextColors());
+        t.setHintTextColor(fresh.getHintTextColors());
+        t.setLinkTextColor(fresh.getLinkTextColors());
+        t.setHighlightColor(fresh.getHighlightColor());
+        // A background brings its own padding: keep the view's, which its
+        // layout was measured with.
+        int left = v.getPaddingLeft(), top = v.getPaddingTop(), right = v.getPaddingRight(), bottom = v.getPaddingBottom();
+        v.setBackground(fresh.getBackground());
+        v.setPadding(left, top, right, bottom);
+        if (v instanceof android.widget.CompoundButton) {
+            ((android.widget.CompoundButton) v).setButtonDrawable(((android.widget.CompoundButton) fresh).getButtonDrawable());
+        }
+        if (v instanceof android.widget.Switch) {
+            android.widget.Switch s = (android.widget.Switch) v, f = (android.widget.Switch) fresh;
+            s.setThumbDrawable(f.getThumbDrawable());
+            s.setTrackDrawable(f.getTrackDrawable());
+        }
+    }
+
     // --- Accessibility -----------------------------------------------------------------------
 
     /** The label (content description) and the value read after it. */
