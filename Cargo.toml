@@ -33,7 +33,6 @@ prism-build = { package = "prismsdk-build", path = "crates/prism-build", version
 prism-db = { package = "prismsdk-db", path = "crates/prism-db", version = "0.1.0" }
 prism-push = { package = "prismsdk-push", path = "crates/prism-push", version = "0.1.0", default-features = false }
 taffy = { version = "0.14", default-features = false, features = ["std", "flexbox", "grid", "taffy_tree"] }
-tungstenite = "0.30"
 serde_json = "1"
 # OpenGL bindings: the 3D scene renderer (prism-native `gl3d`).
 glow = "0.17"
