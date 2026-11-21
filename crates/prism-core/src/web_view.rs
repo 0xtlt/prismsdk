@@ -45,6 +45,10 @@
 //! window.addEventListener("message", (e) => { /* e.data: what the app posted */ });
 //! ```
 //!
+//! Natively, `prismHost` is in the page's main frame only (embedded frames
+//! cannot post as the page). On Android it is added as the page starts
+//! loading: a script that runs earlier waits for the `prismhost` event.
+//!
 //! **Allowed origins** ([`allow_origin`](WebView::allow_origin), by default
 //! the URL's own) are the pages the app talks to: messages from other
 //! origins are dropped, and messages to the page are only delivered while it

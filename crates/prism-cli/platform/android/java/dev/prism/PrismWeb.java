@@ -4,8 +4,9 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Message;
-import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
+import android.webkit.WebMessage;
+import android.webkit.WebMessagePort;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -29,15 +30,23 @@ import org.json.JSONTokener;
  * allowed origins (the config's, else the URL's own) are heard and posted to;
  * a link to another origin opens in the browser.
  *
- * Android cannot tell the bridge's frames apart: the main frame's URL decides
- * the origin of a message. Forms are not held back by the sandbox.
+ * The page's messages come through a message port handed to its main frame
+ * only (`postWebMessage` checks the frame's origin when it delivers): an
+ * embedded frame of another origin can neither post as the page nor read
+ * its messages, which `addJavascriptInterface` (injected in every frame)
+ * allowed. `prismHost` is a script (SHIM) the main frame runs when its page
+ * starts; it queues messages until the port arrives, after the page loads.
+ * A navigation closes the port. Forms are not held back by the sandbox.
  */
 final class PrismWeb {
     private PrismWeb() {}
 
     static final class State {
         String url = "";
-        boolean messages, loads, loaded, loadPending, bridged;
+        boolean messages, loads, loaded, loadPending;
+        /** The app's end of the page's port, and the origin it was given to. */
+        WebMessagePort port;
+        String portOrigin;
         /** null: not sandboxed. */
         Set<String> sandbox;
         List<String> origins = new ArrayList<>();
@@ -76,11 +85,20 @@ final class PrismWeb {
             @Override
             public void onPageStarted(WebView view, String url, android.graphics.Bitmap icon) {
                 s.loaded = false;
+                // A new page: the old one's port is dead.
+                close(s);
+                if (s.messages) view.evaluateJavascript(SHIM, null);
+            }
+
+            @Override
+            public void onPageCommitVisible(WebView view, String url) {
+                if (s.messages) view.evaluateJavascript(SHIM, null);
             }
 
             @Override
             public void onPageFinished(WebView view, String url) {
                 s.loaded = true;
+                if (s.messages) connect(id, view, s);
                 List<String> pending = new ArrayList<>(s.queue);
                 s.queue.clear();
                 for (String json : pending) deliver(view, s, json);
@@ -196,36 +214,89 @@ final class PrismWeb {
         WebSettings ws = w.getSettings();
         ws.setJavaScriptEnabled(s.sandbox == null || s.sandbox.contains("scripts"));
         ws.setDomStorageEnabled(s.sandbox == null || s.sandbox.contains("same-origin"));
-        // The bridge: pages loaded from now on see `prismHost`.
-        if (s.messages && !s.bridged) {
-            w.addJavascriptInterface(new Bridge(n.id, w), "prismHost");
-            s.bridged = true;
-        } else if (!s.messages && s.bridged) {
-            w.removeJavascriptInterface("prismHost");
-            s.bridged = false;
-        }
+        // Without messages, no port; turned on, the loaded page gets one.
+        if (!s.messages) close(s);
+        else if (s.loaded && s.port == null) connect(n.id, w, s);
     }
 
-    /** `prismHost` in the page. Called on a background thread. */
-    static final class Bridge {
-        final long id;
-        final WebView view;
+    /**
+     * `prismHost` in the main frame: messages queue (at most 256) until the
+     * port comes, with `source === null` (posted by the app, not a frame)
+     * and the nonce the app just gave. Installed once per page.
+     */
+    static final String SHIM = """
+        (function () {
+          if (window.prismHost && window.prismHost.__prism) return;
+          var port = null, queue = [], expected = null;
+          function deliver(e) {
+            var data;
+            try { data = JSON.parse(e.data); } catch (_) { return; }
+            window.dispatchEvent(new MessageEvent("message", { data: data }));
+          }
+          window.addEventListener("message", function (e) {
+            if (e.source !== null || expected === null || e.data !== "prism-port:" + expected
+                || !e.ports || e.ports.length !== 1) return;
+            e.stopImmediatePropagation();
+            expected = null;
+            if (port) port.close();
+            port = e.ports[0];
+            port.onmessage = deliver;
+            queue.splice(0).forEach(function (m) { port.postMessage(m); });
+          }, true);
+          Object.defineProperty(window, "prismHost", {
+            value: Object.freeze({
+              __prism: true,
+              postMessage: function (json) {
+                var m = String(json);
+                if (port) port.postMessage(m);
+                else if (queue.length < 256) queue.push(m);
+              }
+            })
+          });
+          Object.defineProperty(window, "__prismExpect", { value: function (n) { expected = String(n); } });
+          window.dispatchEvent(new Event("prismhost"));
+        })();
+        """;
 
-        Bridge(long id, WebView view) {
-            this.id = id;
-            this.view = view;
-        }
-
-        @JavascriptInterface
-        public void postMessage(String json) {
-            PrismHost.main.post(() -> received(id, view, json));
-        }
-    }
-
-    static void received(long id, WebView w, String json) {
-        State s = states.get(id);
-        if (s == null || !s.messages || json == null) return;
+    /** Hands the page's main frame a new port, if it shows an allowed origin. */
+    static void connect(long id, WebView w, State s) {
         String origin = origin(w.getUrl());
+        close(s);
+        if (origin == null || !allows(s, origin)) return;
+        WebMessagePort[] ports = w.createWebMessageChannel();
+        WebMessagePort mine = ports[0];
+        s.port = mine;
+        s.portOrigin = origin;
+        mine.setWebMessageCallback(new WebMessagePort.WebMessageCallback() {
+            @Override
+            public void onMessage(WebMessagePort p, WebMessage m) {
+                if (states.get(id) == s && s.port == p) received(id, s, m.getData());
+            }
+        }, PrismHost.main);
+        byte[] bytes = new byte[18];
+        new java.security.SecureRandom().nextBytes(bytes);
+        String nonce = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP | android.util.Base64.URL_SAFE);
+        // The shim (again, if the page started before it was asked), the
+        // nonce, then the port: delivered to the main frame only, and only
+        // while it shows `origin`.
+        w.evaluateJavascript(SHIM + "window.__prismExpect(\"" + nonce + "\");", v -> {
+            if (s.port != mine) {
+                ports[1].close();
+                return;
+            }
+            w.postWebMessage(new WebMessage("prism-port:" + nonce, new WebMessagePort[] {ports[1]}), Uri.parse(origin));
+        });
+    }
+
+    static void close(State s) {
+        if (s.port != null) s.port.close();
+        s.port = null;
+        s.portOrigin = null;
+    }
+
+    static void received(long id, State s, String json) {
+        if (!s.messages || json == null || s.portOrigin == null) return;
+        String origin = s.portOrigin;
         if (!allows(s, origin)) return;
         try {
             new JSONTokener(json).nextValue();
@@ -252,6 +323,12 @@ final class PrismWeb {
     }
 
     private static void deliver(WebView w, State s, String json) {
+        // Through the port when the page has one: it stays with the page
+        // (and origin) it was given to.
+        if (s.port != null) {
+            if (allows(s, s.portOrigin)) s.port.postMessage(new WebMessage(json));
+            return;
+        }
         if (!allows(s, origin(w.getUrl()))) return;
         // `json` is valid JSON (checked by Prism), so a JavaScript literal.
         w.evaluateJavascript("window.dispatchEvent(new MessageEvent(\"message\", { data: " + json + " }));", null);
@@ -267,7 +344,9 @@ final class PrismWeb {
     }
 
     static void destroy(PrismHost.Node n) {
-        if (states.remove(n.id) == null) return;
+        State s = states.remove(n.id);
+        if (s == null) return;
+        close(s);
         WebView w = (WebView) n.view;
         w.stopLoading();
         w.destroy();

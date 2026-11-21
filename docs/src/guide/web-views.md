@@ -37,7 +37,7 @@ cx.reload_web_view("preview");
 
 ## The page's side
 
-The page receives the app's messages as `message` events on `window`, everywhere. To send, it calls `window.parent.postMessage` in a browser frame, and `prismHost.postMessage` in a native web view, which Prism adds to the page before its scripts run (only when the app listens with `on_message`). A page that works in both:
+The page receives the app's messages as `message` events on `window`, everywhere. To send, it calls `window.parent.postMessage` in a browser frame, and `prismHost.postMessage` in a native web view, which Prism adds to the page's main frame (only when the app listens with `on_message`). Embedded frames do not get it: only the main frame speaks for the page. On Apple platforms and Windows, `prismHost` is there before the page's scripts run. On Android it is added as the page starts loading, so a script that runs first may not see it yet: wait for the `prismhost` event on `window` (messages posted before the page finished loading are held until then). A page that works in both:
 
 ```js
 function postToApp(value) {
@@ -84,8 +84,8 @@ Changes to the sandbox apply from the next page the view loads (on Apple platfor
 | | Web | macOS, iOS, iPadOS, visionOS | Android | Windows | tvOS, watchOS, Linux |
 |---|---|---|---|---|---|
 | View | `<iframe>` | `WKWebView` | `android.webkit.WebView` | WinUI `WebView2` (Edge WebView2 Runtime) | an empty box |
-| Page → app | `parent.postMessage` | `prismHost.postMessage` (script message handler) | `prismHost.postMessage` (`@JavascriptInterface`) | `prismHost.postMessage` (`chrome.webview`) | – |
-| App → page | `postMessage` to the frame's origin | `message` event (`evaluateJavaScript`) | `message` event (`evaluateJavascript`) | `message` event (`ExecuteScriptAsync`) | – |
+| Page → app | `parent.postMessage` | `prismHost.postMessage` (script message handler, main frame) | `prismHost.postMessage` (a message port given to the main frame) | `prismHost.postMessage` (`chrome.webview`) | – |
+| App → page | `postMessage` to the frame's origin | `message` event (`evaluateJavaScript`) | `message` event (through the same port) | `message` event (`ExecuteScriptAsync`) | – |
 
 `cx.capabilities().web_view` says whether the platform shows the page. tvOS and watchOS have no WebKit, and Linux has no web view yet (WebKitGTK would add a system dependency): the node is an empty box sized by its style, so show something else there:
 
