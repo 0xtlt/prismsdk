@@ -17,6 +17,12 @@ Microsoft.Web.WebView2.Core.CoreWebView2NewWindowRequestedEventArgs
 Microsoft.Web.WebView2.Core.CoreWebView2ProcessFailedEventArgs
 Microsoft.Web.WebView2.Core.CoreWebView2WebErrorStatus
 Microsoft.Web.WebView2.Core.CoreWebView2Frame
+# Form submissions held back in a sandbox without `forms`
+Microsoft.Web.WebView2.Core.CoreWebView2WebResourceRequestedEventArgs
+Microsoft.Web.WebView2.Core.CoreWebView2WebResourceRequest
+Microsoft.Web.WebView2.Core.CoreWebView2WebResourceResponse
+Microsoft.Web.WebView2.Core.CoreWebView2WebResourceContext
+Microsoft.Web.WebView2.Core.CoreWebView2WebResourceRequestSourceKinds
 # Videos
 Microsoft.UI.Xaml.Controls.MediaPlayerElement
 Microsoft.UI.Xaml.Controls.MediaTransportControls
@@ -43,6 +49,9 @@ Microsoft.UI.Text.TextRangeUnit
 Microsoft.UI.Text.ParagraphAlignment
 Microsoft.UI.Text.SelectionOptions
 Microsoft.UI.Text.TextConstants
+# Text geometry (carets, highlights, clicks) and chips as inline pictures
+Microsoft.UI.Text.PointOptions
+Microsoft.UI.Text.VerticalCharacterAlignment
 # Links in text
 Microsoft.UI.Xaml.Documents.Hyperlink
 Microsoft.UI.Xaml.Documents.HyperlinkClickEventArgs

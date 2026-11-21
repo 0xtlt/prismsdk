@@ -39,11 +39,18 @@
 //! | `controls` | Prism's controls as WinUI controls, their events and sizes |
 //! | `bars` | a stack's header, a tab bar |
 //! | `events` | clicks, hover and press, focus, scrolling, menus |
-//! | `pointer` | pointer, drags, swipes, wheel, files from Explorer |
+//! | `pointer` | pointer, drags, swipes, wheel |
+//! | `edit` | a rich input's editing hooks: copy, cut, paste, clicks, the selection's rectangle |
+//! | `chips` | a rich input's chips as pictures in its text (Direct2D) |
+//! | `across` | a mouse drag across a selection group's fields |
+//! | `carets` | other people's carets, a selection group's highlights, over text fields |
+//! | `boxed` | delegates boxed for `AddHandler` (a control's handled events) |
+//! | `drops` | files dragged from Explorer onto `on_drop_files` targets |
+//! | `stream` | a remote video read by HTTP ranges with the app's headers |
 //! | `web`, `media`, `rich` | web views (WebView2), videos, rich inputs |
 //! | `scene3d` | 3D scenes: prism-native's OpenGL renderer, in WGL |
 //! | `keyboard` | key presses for Prism's key listeners |
-//! | `smoke`, `inject` | `PRISM_CLICK` (real mouse input too), `PRISM_SNAPSHOT`… |
+//! | `smoke`, `inject`, `touch` | `PRISM_CLICK` (real mouse input too), `PRISM_SNAPSHOT`… |
 //! | `capture`, `wic` | `PrintWindow` and WIC: snapshots, pictures |
 //! | `images` | decoding pictures |
 //! | `package` | what a shipped app brings: its icon, its assets |
@@ -58,7 +65,7 @@
 //! | `fonts` | run-time fonts |
 //! | `shell` | the services' hidden window: modal UI, timers, threads |
 //! | `system` | theme, accent, locale, DPI |
-//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access` | pure helpers, tested on every host |
+//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access`, `pinch` | pure helpers, tested on every host |
 
 // Roles and states for UI Automation: no Win32, tested everywhere.
 mod access;
@@ -69,11 +76,19 @@ mod contrast;
 mod a11y;
 mod accel;
 #[cfg(target_os = "windows")]
+mod across;
+#[cfg(target_os = "windows")]
 mod alert;
 #[cfg(target_os = "windows")]
 mod bars;
 #[cfg(target_os = "windows")]
+mod boxed;
+#[cfg(target_os = "windows")]
 mod capture;
+#[cfg(target_os = "windows")]
+mod carets;
+#[cfg(target_os = "windows")]
+mod chips;
 #[cfg(target_os = "windows")]
 mod clip;
 #[cfg(target_os = "windows")]
@@ -82,6 +97,10 @@ mod clipboard;
 mod controls;
 #[cfg(target_os = "windows")]
 mod decor;
+#[cfg(target_os = "windows")]
+mod drops;
+#[cfg(target_os = "windows")]
+mod edit;
 #[cfg(target_os = "windows")]
 mod events;
 #[cfg(target_os = "windows")]
@@ -122,8 +141,10 @@ mod package;
 mod peers;
 // Conic gradient pixels, per-side border outlines: no Win32, tested everywhere.
 mod paint;
+// Two-finger pinches: no Win32, tested everywhere.
 #[cfg(target_os = "windows")]
 mod pickers;
+mod pinch;
 #[cfg(target_os = "windows")]
 mod pointer;
 #[cfg(target_os = "windows")]
@@ -141,6 +162,8 @@ mod shell;
 #[cfg(target_os = "windows")]
 mod smoke;
 #[cfg(target_os = "windows")]
+mod stream;
+#[cfg(target_os = "windows")]
 mod style;
 #[cfg(target_os = "windows")]
 mod system;
@@ -150,6 +173,8 @@ mod taskbar;
 mod text;
 // Notifications as toast XML: no Win32, tested everywhere.
 mod toast;
+#[cfg(target_os = "windows")]
+mod touch;
 #[cfg(target_os = "windows")]
 mod tray;
 #[cfg(target_os = "windows")]

@@ -11,9 +11,9 @@
 //!
 //! Drawn on change only: while the player says something moves, a frame
 //! every 16 ms; none when it stops (idle: no CPU). Input as on the other
-//! backends: drag to turn (right or Shift drag: pan), the wheel zooms, a
-//! click that did not move taps (`UiEvent::SceneTap`). Textures load and
-//! decode (WIC) off the UI thread.
+//! backends: drag to turn (right or Shift drag: pan), two fingers or the
+//! wheel zoom, a click that did not move taps (`UiEvent::SceneTap`).
+//! Textures load and decode (WIC) off the UI thread.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -300,6 +300,8 @@ struct State {
     /// A drag in progress: the pointer, where it was, whether it pans, how
     /// far it went in all.
     drag: Option<(u32, (f32, f32), bool, f32)>,
+    /// The touches on it: two fingers pinch to zoom.
+    pinch: crate::pinch::Pinch,
 }
 
 thread_local! {
@@ -330,6 +332,7 @@ impl SceneView {
             bitmap: None,
             sources: ImageSources::default(),
             drag: None,
+            pinch: Default::default(),
         }));
         SCENES.with(|s| s.borrow_mut().insert(id, Rc::downgrade(&state)));
         attach_input(&element, id)?;
@@ -344,6 +347,20 @@ impl SceneView {
         let t = now();
         let player = st.player.get_or_insert_with(|| ScenePlayer::new(t));
         player.apply(update, t);
+        // A scene the user turns or zooms keeps its touches: the scroll
+        // views around would take two moving fingers for themselves.
+        let orbits = player
+            .settings()
+            .orbit
+            .is_some_and(|o| o.rotate || o.pan || o.zoom);
+        if let Ok(e) = crate::winui::ui(&self.element) {
+            let mask = if orbits {
+                prism_core::events::pointer_mask::MAGNIFY
+            } else {
+                0
+            };
+            crate::pointer::set_touch_mode(&e, mask);
+        }
         let wanted = Wanted::of(player);
         st.images.retain(|src, _| wanted.sources.contains(src));
         let mut load = Vec::new();
@@ -739,6 +756,31 @@ fn attach_input(element: &Image, id: NodeId) -> Result<()> {
 
 fn pressed(e: &UIElement, id: NodeId, a: &PointerRoutedEventArgs) -> Result<()> {
     let p = a.GetCurrentPoint(e)?;
+    // A second finger pinches (when the scene zooms): the first one's
+    // drag ends.
+    if p.PointerDeviceType()? == PointerDeviceType::Touch
+        && orbit(id).is_some_and(|o| o.zoom)
+        && let Some(state) = state_of(id)
+    {
+        let at = p.Position().map(|p| (p.X, p.Y))?;
+        let started = {
+            let mut st = state.borrow_mut();
+            let started = st.pinch.down(p.PointerId()?, at).is_some();
+            if started
+                && st.drag.take().is_some()
+                && let Some(pl) = &mut st.player
+            {
+                pl.pointer_up();
+            }
+            started
+        };
+        if started {
+            let _ = e.CancelDirectManipulations();
+            e.CapturePointer(&a.Pointer()?)?;
+            a.SetHandled(true)?;
+            return Ok(());
+        }
+    }
     let right = p
         .Properties()
         .and_then(|p| p.PointerUpdateKind())
@@ -784,6 +826,18 @@ fn moved(e: &UIElement, id: NodeId, a: &PointerRoutedEventArgs) -> Result<()> {
     let o = orbit(id);
     {
         let mut st = state.borrow_mut();
+        let pinching = st.pinch.pinching() && st.pinch.has(pointer);
+        if let Some(crate::pinch::Step::Move(k, _)) = st.pinch.moved(pointer, (x, y))
+            && let Some(pl) = &mut st.player
+        {
+            pl.zoom(k);
+            drop(st);
+            queue(id);
+            return Ok(());
+        }
+        if pinching {
+            return Ok(());
+        }
         let Some((ptr, last, pan, far)) = st.drag else {
             return Ok(());
         };
@@ -812,6 +866,11 @@ fn released(e: &UIElement, id: NodeId, a: &PointerRoutedEventArgs) -> Result<()>
     let Some(state) = state_of(id) else {
         return Ok(());
     };
+    if state.borrow_mut().pinch.up(p.PointerId()?).is_some() {
+        let _ = e.ReleasePointerCaptures();
+        queue(id);
+        return Ok(());
+    }
     let (x, y) = p.Position().map(|p| (p.X, p.Y))?;
     let fe = e.cast::<crate::winui::xaml::FrameworkElement>()?;
     let (w, h) = (fe.ActualWidth()? as f32, fe.ActualHeight()? as f32);
@@ -843,9 +902,12 @@ fn released(e: &UIElement, id: NodeId, a: &PointerRoutedEventArgs) -> Result<()>
     Ok(())
 }
 
-fn lost(_: &UIElement, id: NodeId, _: &PointerRoutedEventArgs) -> Result<()> {
+fn lost(_: &UIElement, id: NodeId, a: &PointerRoutedEventArgs) -> Result<()> {
     if let Some(state) = state_of(id) {
         let mut st = state.borrow_mut();
+        if let Ok(pointer) = a.Pointer().and_then(|p| p.PointerId()) {
+            st.pinch.up(pointer);
+        }
         if st.drag.take().is_some()
             && let Some(pl) = &mut st.player
         {

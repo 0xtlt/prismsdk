@@ -10,13 +10,24 @@
 //!   `text` (Unicode keystrokes);
 //! - `swipe:Label=dx` flicks horizontally (a fast drag of `dx` DIPs);
 //! - `wheel:Label=dy` turns the wheel over it: `dy` points toward the end
-//!   (100 a notch), `wheel:Label=dy,h` sideways.
+//!   (100 a notch), `wheel:Label=dy,h` sideways; `zoom:Label=dy` the same
+//!   with Ctrl held (a precision touchpad's pinch comes so);
+//! - `ctrlclick:Label` (`@x,y`) clicks with Ctrl held;
+//! - `chord:ctrl+c` presses keys together (`ctrl`, `shift`, `alt`, a
+//!   letter or a digit, `home`, `end`, `left`, `right`);
+//! - touches, from a synthetic touch device (`touch.rs`): `pinch:Label=k`
+//!   spreads two fingers around its middle to `k` times their distance
+//!   (below 1: pinches in), `tswipe:Label=dx` flicks a finger, and
+//!   `tdrag:Label=dx,dy` drags one slowly (a pan).
 //!
 //! The steps play one after the other, each first scrolling its view into
 //! sight; the steps after them (`key:Escape` after a click) and the
 //! snapshot's delay (`PRISM_AFTER`) wait until they have played. The
 //! window stays on top meanwhile, so the input reaches it and no other
-//! window on the desktop.
+//! window on the desktop: before a press, a wheel turn or a touch, the
+//! window under the point must be the app's (it is raised again, then the
+//! input is dropped), and keys go only while it has the keyboard, so a
+//! desktop shared with other apps never gets the input.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -30,9 +41,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput, VIRTUAL_KEY, VK_END,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetSystemMetrics, HWND_NOTOPMOST, HWND_TOPMOST, KillTimer, SM_CXVIRTUALSCREEN,
-    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOMOVE, SWP_NOSIZE,
-    SetForegroundWindow, SetTimer, SetWindowPos,
+    BringWindowToTop, GA_ROOT, GetAncestor, GetCursorPos, GetForegroundWindow, GetSystemMetrics,
+    HWND_NOTOPMOST, HWND_TOPMOST, KillTimer, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOMOVE, SWP_NOSIZE, SetForegroundWindow, SetTimer,
+    SetWindowPos, WindowFromPoint,
 };
 
 use crate::imp::{main_hwnd, with_state};
@@ -55,6 +67,8 @@ enum Act {
     Key(u16, bool),
     /// A UTF-16 unit typed.
     Char(u16),
+    /// A frame of touches (screen pixels).
+    Touch(Vec<crate::touch::Contact>),
 }
 
 thread_local! {
@@ -72,16 +86,43 @@ pub fn step(step: &str) -> Option<bool> {
     let (kind, rest) = step.split_once(':')?;
     if !matches!(
         kind,
-        "hover" | "click" | "type" | "drag" | "swipe" | "wheel"
+        "hover"
+            | "click"
+            | "type"
+            | "drag"
+            | "swipe"
+            | "wheel"
+            | "zoom"
+            | "ctrlclick"
+            | "chord"
+            | "pinch"
+            | "tswipe"
+            | "tdrag"
     ) {
         return None;
     }
-    let (target, _) = rest.split_once('=').unwrap_or((rest, ""));
-    let label = target.split_once('@').map_or(target, |(l, _)| l);
-    if find(label).is_none() {
-        return Some(false);
+    if kind == "chord" {
+        let Some(keys) = chord(rest) else {
+            return Some(false);
+        };
+        QUEUE.with(|q| {
+            let mut q = q.borrow_mut();
+            for vk in &keys {
+                q.push_back((Act::Key(*vk, false), 30));
+            }
+            for vk in keys.iter().rev() {
+                q.push_back((Act::Key(*vk, true), 30));
+            }
+            q.push_back((Act::Key(0, true), 150));
+        });
+    } else {
+        let (target, _) = rest.split_once('=').unwrap_or((rest, ""));
+        let label = target.split_once('@').map_or(target, |(l, _)| l);
+        if find(label).is_none() {
+            return Some(false);
+        }
+        QUEUE.with(|q| q.borrow_mut().push_back((Act::Aim(step.to_string()), 0)));
     }
-    QUEUE.with(|q| q.borrow_mut().push_back((Act::Aim(step.to_string()), 0)));
     if !PLAYING.replace(true) {
         unsafe {
             let h = main_hwnd();
@@ -159,6 +200,37 @@ fn aim(step: &str) -> Vec<(Act, u32)> {
                 acts = vec![(Act::Move(x + px(dx), y + px(dy)), 60)];
             }
         }
+        "ctrlclick" => {
+            acts.push((Act::Key(0x11, false), 40));
+            acts.push((Act::Down, 60));
+            acts.push((Act::Up, 60));
+            acts.push((Act::Key(0x11, true), 120));
+        }
+        "pinch" | "tswipe" | "tdrag" => {
+            use crate::touch::glide;
+            let n = |i: usize, or: f32| nums.get(i).copied().unwrap_or(or);
+            let (frames, pause) = match kind {
+                "pinch" => {
+                    // Two fingers 80 DIPs apart, to k times that.
+                    let (d0, d1) = (px(40.), px(40. * n(0, 2.)));
+                    (
+                        glide(
+                            &[((x - d0, y), (x - d1, y)), ((x + d0, y), (x + d1, y))],
+                            16,
+                        ),
+                        16,
+                    )
+                }
+                // A flick: 80 ms.
+                "tswipe" => (glide(&[((x, y), (x + px(n(0, -160.)), y))], 5), 16),
+                _ => (
+                    glide(&[((x, y), (x + px(n(0, 0.)), y + px(n(1, 0.))))], 24),
+                    16,
+                ),
+            };
+            acts = frames.into_iter().map(|f| (Act::Touch(f), pause)).collect();
+            acts.push((Act::Touch(Vec::new()), 200));
+        }
         "drag" | "swipe" => {
             let (dx, dy) = (
                 px(nums.first().copied().unwrap_or(0.)),
@@ -174,6 +246,10 @@ fn aim(step: &str) -> Vec<(Act, u32)> {
         }
         _ => {
             let horizontal = args.ends_with(",h");
+            let ctrl = kind == "zoom";
+            if ctrl {
+                acts.push((Act::Key(0x11, false), 40));
+            }
             let amount = nums.first().copied().unwrap_or(100.);
             // A notch is 120 and scrolls 100 points; positive turns the
             // wheel away (up), or tilts it right.
@@ -182,9 +258,36 @@ fn aim(step: &str) -> Vec<(Act, u32)> {
                 Act::Wheel(if horizontal { delta } else { -delta }, horizontal),
                 120,
             ));
+            if ctrl {
+                acts.push((Act::Key(0x11, true), 120));
+            }
         }
     }
     acts
+}
+
+/// The virtual keys of `ctrl+shift+c`.
+fn chord(keys: &str) -> Option<Vec<u16>> {
+    keys.split('+')
+        .map(|k| {
+            Some(match k.trim().to_ascii_lowercase().as_str() {
+                "ctrl" | "control" => 0x11,
+                "shift" => 0x10,
+                "alt" => 0x12,
+                "home" => 0x24,
+                "end" => 0x23,
+                "left" => 0x25,
+                "right" => 0x27,
+                "up" => 0x26,
+                "down" => 0x28,
+                "enter" => 0x0D,
+                k if k.len() == 1 && k.chars().all(|c| c.is_ascii_alphanumeric()) => {
+                    k.to_ascii_uppercase().as_bytes()[0] as u16
+                }
+                _ => return None,
+            })
+        })
+        .collect()
 }
 
 fn pair(s: &str) -> Option<(f32, f32)> {
@@ -202,12 +305,12 @@ fn locate(label: &str, at: Option<(f32, f32)>) -> Option<((i32, i32), f32)> {
         let (x, y) = at.map_or((r.x + r.w / 2., r.y + r.h / 2.), |(ax, ay)| {
             (r.x + ax, r.y + ay)
         });
-        // The app's view starts under the menu bar.
-        let y = y + crate::menubar::height();
+        // Layout starts at the app's view, under the window's menu bar.
+        let (ox, oy) = app_origin(&w.app);
         let k = w.scale();
         let mut p = POINT {
-            x: (x * k).round() as i32,
-            y: (y * k).round() as i32,
+            x: ((x + ox) * k).round() as i32,
+            y: ((y + oy) * k).round() as i32,
         };
         unsafe {
             let _ = ClientToScreen(w.hwnd, &mut p);
@@ -219,6 +322,15 @@ fn locate(label: &str, at: Option<(f32, f32)>) -> Option<((i32, i32), f32)> {
         log!("PRISM_CLICK: nothing labelled {label:?} to point at");
         None
     })
+}
+
+/// Where the app's view starts in the window (DIPs): under the menu bar.
+fn app_origin(app: &crate::winui::xaml::Controls::Canvas) -> (f32, f32) {
+    use windows_core::Interface;
+    app.cast::<crate::winui::xaml::UIElement>()
+        .and_then(|e| e.TransformToVisual(None::<&crate::winui::xaml::UIElement>))
+        .and_then(|t| t.TransformPoint(windows::Foundation::Point { X: 0., Y: 0. }))
+        .map_or((0., 0.), |p| (p.X, p.Y))
 }
 
 /// Plays the next input, then waits its pause.
@@ -281,13 +393,110 @@ unsafe extern "system" fn play(_: HWND, _: u32, timer: usize, _: u32) {
     }
 }
 
+thread_local! {
+    /// A press was dropped (another window over the point): so is its
+    /// release.
+    static DROPPED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the app's window is the one at screen point `p` (raised again
+/// once if not).
+fn ours_at(p: POINT) -> bool {
+    let main = main_hwnd();
+    let at = || unsafe { GetAncestor(WindowFromPoint(p), GA_ROOT) };
+    if at() == main {
+        return true;
+    }
+    unsafe {
+        let _ = SetWindowPos(
+            main,
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE,
+        );
+        let _ = BringWindowToTop(main);
+        let _ = SetForegroundWindow(main);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    at() == main
+}
+
+/// Makes the app's window the active one (XAML takes no click on an
+/// inactive window: the click only activates it). Allowed once the app
+/// sent the last input (the pointer's move just before).
+fn active() -> bool {
+    let main = main_hwnd();
+    unsafe {
+        if GetForegroundWindow() != main {
+            let _ = SetForegroundWindow(main);
+            std::thread::sleep(std::time::Duration::from_millis(120));
+        }
+        GetForegroundWindow() == main
+    }
+}
+
+/// The pointer's place now.
+fn cursor() -> POINT {
+    let mut p = POINT::default();
+    unsafe {
+        let _ = GetCursorPos(&mut p);
+    }
+    p
+}
+
+/// Whether `act` may go: the press, wheel or touch on the app's window,
+/// keys while it has the keyboard.
+fn allowed(act: &Act) -> bool {
+    let ok = match act {
+        Act::Down | Act::Wheel(..) => {
+            let ok = ours_at(cursor()) && active();
+            DROPPED.set(!ok);
+            ok
+        }
+        Act::Up => !DROPPED.replace(false),
+        Act::Touch(contacts) => match contacts.first() {
+            Some(c) if c.phase == crate::touch::Phase::Down => {
+                let ok = ours_at(POINT { x: c.x, y: c.y });
+                DROPPED.set(!ok);
+                ok
+            }
+            Some(_) => !DROPPED.get(),
+            None => true,
+        },
+        Act::Key(0, _) => true,
+        Act::Key(..) | Act::Char(_) => {
+            let main = main_hwnd();
+            unsafe {
+                if GetForegroundWindow() != main {
+                    let _ = SetForegroundWindow(main);
+                    std::thread::sleep(std::time::Duration::from_millis(80));
+                }
+                GetForegroundWindow() == main
+            }
+        }
+        _ => true,
+    };
+    if !ok {
+        log!("PRISM_CLICK: another window has the point or the keyboard: {act:?} dropped");
+    }
+    ok
+}
+
 fn send(act: &Act) {
+    if !allowed(act) {
+        return;
+    }
     let (flags, data, at) = match *act {
         Act::Move(x, y) => (MOUSEEVENTF_MOVE, 0, Some((x, y))),
         Act::Down => (MOUSEEVENTF_LEFTDOWN, 0, None),
         Act::Up => (MOUSEEVENTF_LEFTUP, 0, None),
         Act::Wheel(d, false) => (MOUSEEVENTF_WHEEL, d, None),
         Act::Wheel(d, true) => (MOUSEEVENTF_HWHEEL, d, None),
+        // A pause (the end of a chord).
+        Act::Key(0, _) => return,
         Act::Key(vk, up) => {
             return key(
                 vk,
@@ -302,6 +511,12 @@ fn send(act: &Act) {
         Act::Char(c) => {
             key(0, c, KEYEVENTF_UNICODE);
             return key(0, c, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP);
+        }
+        Act::Touch(ref contacts) => {
+            if !contacts.is_empty() {
+                crate::touch::frame(contacts);
+            }
+            return;
         }
         Act::Aim(_) | Act::Settle(..) => return,
     };

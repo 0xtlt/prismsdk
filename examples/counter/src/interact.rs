@@ -1,6 +1,7 @@
 //! The Interaction card of the Components tab: checkbox, radio group, a time
 //! of day, a search field with an icon and suggestions, a file input, a
-//! drawn level bar (drag and tap position), a pointer read-out, an
+//! drawn level bar (drag and tap position), a pointer read-out that also
+//! zooms with a pinch (`on_magnify`), an
 //! arrow-key pad, a row of cards that move after a long press (#243), a
 //! board whose cards are dragged between two columns (#251), and a sheet, a popover and a dialog opened without a route. Its own entity, so dragging the level only re-renders this card.
 
@@ -25,6 +26,8 @@ pub struct Interact {
     /// Where the pointer last was over the read-out area.
     pointer: Option<Point>,
     hovered: bool,
+    /// The read-out's zoom, from pinches.
+    zoom: f32,
     dot: (i32, i32),
     sheet: bool,
     popover: bool,
@@ -56,6 +59,7 @@ impl Default for Interact {
             drag_from: 0.6,
             pointer: None,
             hovered: false,
+            zoom: 1.,
             dot: (2, 2),
             sheet: false,
             popover: false,
@@ -301,6 +305,12 @@ impl Interact {
             }
             _ => strings::interact_pointer_hint(cx),
         };
+        let readout = if (self.zoom - 1.).abs() > 0.005 {
+            let percent = (self.zoom * 100.).round() as i64;
+            format!("{readout} · {}", strings::interact_zoom(cx, percent))
+        } else {
+            readout
+        };
         div()
             .h(px(72.))
             .rounded(t.radius)
@@ -312,6 +322,9 @@ impl Interact {
             .on_pointer_move(cx.listener(|this, e: &PointerEvent, _| {
                 this.hovered = true;
                 this.pointer = Some(e.position);
+            }))
+            .on_magnify(cx.listener(|this, e: &MagnifyEvent, _| {
+                this.zoom = (this.zoom * e.scale).clamp(0.25, 8.);
             }))
             .child(text(readout).text_size(14.).text_color(t.muted))
     }

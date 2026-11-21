@@ -23,7 +23,7 @@
 //! | iOS, iPadOS, tvOS, visionOS | `AVPlayerViewController`'s view | `AVURLAssetHTTPHeaderFieldsKey` |
 //! | Android | `VideoView` with a `MediaController` | `setVideoURI(uri, headers)` |
 //! | Linux | `GtkVideo` (GStreamer) | not sent: use a URL the player can open |
-//! | Windows | `MediaPlayerElement` (transport controls) | not sent: use a URL the player can open |
+//! | Windows | `MediaPlayerElement` (transport controls) | range requests of its own (`MediaSource::CreateFromStream`); HLS and DASH: `AdaptiveMediaSource` with an `HttpClient` |
 //!
 //! Its height follows the video's own ratio once the platform knows it,
 //! like a [`picture`](crate::picture()): give it a width (`w_full()`),

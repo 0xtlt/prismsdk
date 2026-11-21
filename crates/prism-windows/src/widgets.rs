@@ -625,6 +625,9 @@ impl Widgets for Win {
         }
         self.measurer.forget(id);
         crate::pointer::forget(id);
+        crate::drops::forget(id);
+        crate::edit::forget(id);
+        crate::carets::forget(id);
         crate::media::forget(id);
         crate::web::forget(id);
         self.typed.remove(&id);
@@ -1053,11 +1056,20 @@ impl Widgets for Win {
             n.pointer_mask = mask;
         }
         crate::pointer::set_mask(*view, mask);
+        if let Some(v) = self.views.get(view) {
+            // Pinches and touch swipes keep their touches.
+            let _ = crate::pointer::wire_swipes(&v.outer(), *view);
+        }
         self.update_hit(*view);
     }
 
     fn set_swipe(&mut self, view: &NodeId, left: bool, right: bool) {
         crate::pointer::set_swipe(*view, left, right);
+        if let Some(v) = self.views.get(view)
+            && let Err(e) = crate::pointer::wire_swipes(&v.outer(), *view)
+        {
+            log!("swipes of {view}: {e}");
+        }
         self.update_hit(*view);
     }
 
@@ -1067,7 +1079,7 @@ impl Widgets for Win {
 
     fn set_drop_target(&mut self, view: &NodeId, types: Option<&[String]>) {
         if let Some(v) = self.views.get(view)
-            && let Err(e) = crate::pointer::set_drop_target(&v.outer, *view, types)
+            && let Err(e) = crate::drops::set_target(&v.outer, *view, types)
         {
             log!("drop target {view}: {e}");
         }
@@ -1085,9 +1097,41 @@ impl Widgets for Win {
     fn set_rich_value(&mut self, view: &NodeId, runs: &str) {
         if let (Some(n), Some(v)) = (self.scene.get(*view), self.views.get(view))
             && let Content::Rich(r) = &v.content
-            && let Err(e) = r.set_runs(runs, &n.style, &self.palette_for(*view))
+            && let Err(e) = r.set_runs(runs, &n.style, &self.palette_for(*view), self.scale())
         {
             log!("rich input {view}: {e}");
+        }
+    }
+
+    fn set_edit_events(&mut self, view: &NodeId, mask: u8) {
+        if let Some(Content::Rich(r)) = self.views.get(view).map(|v| &v.content) {
+            crate::edit::set_mask(*view, &r.element, mask);
+        }
+    }
+
+    fn write_clipboard(&mut self, _view: &NodeId, content: &prism_core::ClipboardContent) {
+        crate::edit::write_clipboard(content);
+    }
+
+    fn insert_text(&mut self, view: &NodeId, text: &str) {
+        if let Some(Content::Rich(r)) = self.views.get(view).map(|v| &v.content) {
+            crate::edit::insert_text(&r.element, text);
+        }
+    }
+
+    fn set_remote_carets(&mut self, view: &NodeId, carets: &[prism_core::RemoteCaret]) {
+        if let Some(v) = self.views.get(view)
+            && let Some(f) = crate::carets::Field::of(&v.content)
+        {
+            crate::carets::set_carets(*view, &v.outer, f, carets, &self.palette);
+        }
+    }
+
+    fn set_selection_highlight(&mut self, view: &NodeId, start: usize, end: usize) {
+        if let Some(v) = self.views.get(view)
+            && let Some(f) = crate::carets::Field::of(&v.content)
+        {
+            crate::carets::set_highlight(*view, &v.outer, f, start, end, &self.palette);
         }
     }
 
