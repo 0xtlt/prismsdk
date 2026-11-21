@@ -2440,7 +2440,10 @@ impl Widgets for UiKit {
 
     fn set_placeholder(&mut self, view: &View, text: &str) {
         match view {
+            #[cfg(not(target_os = "tvos"))]
             View::Input(f) => f.setPlaceholder(Some(&NSString::from_str(text))),
+            #[cfg(target_os = "tvos")]
+            View::Input(f) => crate::tv::set_placeholder(f, text),
             #[cfg(not(target_os = "tvos"))]
             View::TextArea(t) => {
                 t.placeholder.setText(Some(&NSString::from_str(text)));

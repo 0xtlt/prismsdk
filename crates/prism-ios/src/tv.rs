@@ -374,7 +374,35 @@ define_class!(
 /// A system button (see [`TvButton`]).
 pub fn button(_mtm: MainThreadMarker) -> Retained<UIButton> {
     // `buttonWithType:` makes an instance of the class it is sent to.
-    unsafe { msg_send![TvButton::class(), buttonWithType: UIButtonType::System] }
+    let b: Retained<UIButton> =
+        unsafe { msg_send![TvButton::class(), buttonWithType: UIButtonType::System] };
+    // tvOS's tint is white in both appearances, and an unfocused system
+    // button draws its title and image in it: white on its pale platter in
+    // light mode. The label color reads in both (focused, the system draws
+    // dark on white).
+    unsafe { b.setTintColor(Some(&UIColor::labelColor())) };
+    b
+}
+
+/// A text field's placeholder, in the placeholder color of the field's own
+/// appearance: tvOS draws a plain placeholder in the system's, white on a
+/// light theme's field when the system is dark.
+pub fn set_placeholder(f: &objc2_ui_kit::UITextField, text: &str) {
+    use objc2::AllocAnyThread;
+    use objc2_foundation::{NSMutableAttributedString, NSRange};
+    let s = NSMutableAttributedString::initWithString(
+        NSMutableAttributedString::alloc(),
+        &NSString::from_str(text),
+    );
+    let color = UIColor::placeholderTextColor();
+    unsafe {
+        s.addAttribute_value_range(
+            objc2_ui_kit::NSForegroundColorAttributeName,
+            &color,
+            NSRange::new(0, s.length()),
+        )
+    };
+    f.setAttributedPlaceholder(Some(&s));
 }
 
 /// A toggle: a button showing an empty or checked circle.
