@@ -119,13 +119,21 @@ fn heading(dry_run: bool, what: &str) {
 // --- Google Play ---------------------------------------------------------------------
 
 fn service_account(o: &PublishOptions) -> Result<play::ServiceAccount, String> {
+    // A command line is visible to every user of the machine (`ps`): the
+    // flag takes a path, the environment variable a path or the key.
+    if o.service_account
+        .as_deref()
+        .is_some_and(|s| s.trim_start().starts_with('{'))
+    {
+        return Err("--service-account takes the JSON key's path, not its contents (a command line is visible to other users): pass a file, or set PRISM_PLAY_SERVICE_ACCOUNT to the path or the JSON".into());
+    }
     let source = o
         .service_account
         .clone()
         .or_else(|| std::env::var("PRISM_PLAY_SERVICE_ACCOUNT").ok())
         .filter(|s| !s.is_empty())
         .ok_or(
-            "set PRISM_PLAY_SERVICE_ACCOUNT (or --service-account) to the service account's JSON key, a path or its contents",
+            "set PRISM_PLAY_SERVICE_ACCOUNT to the service account's JSON key (a path or its contents), or pass its path with --service-account",
         )?;
     let json = if source.trim_start().starts_with('{') {
         source
@@ -430,6 +438,26 @@ fn notarize(p: &Project, dmg: &Path, o: &PublishOptions) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S36: a command line is visible to every user of the machine (`ps`),
+    /// so `--service-account` takes the key's path, never the key itself.
+    #[test]
+    fn s36_the_service_account_key_is_never_on_the_command_line() {
+        let inline = r#"{"type":"service_account","private_key":"S36-SECRET"}"#;
+        let o = PublishOptions::parse(&["--service-account".into(), inline.into()]).unwrap();
+        let err = service_account(&o).unwrap_err();
+        assert!(err.contains("path"), "{err}");
+        assert!(!err.contains("S36-SECRET"), "{err}");
+        // A path is read (here: a missing file).
+        let o =
+            PublishOptions::parse(&["--service-account".into(), "/nonexistent/key.json".into()])
+                .unwrap();
+        assert!(
+            service_account(&o)
+                .unwrap_err()
+                .contains("/nonexistent/key.json")
+        );
+    }
 
     #[test]
     fn parses_options() {

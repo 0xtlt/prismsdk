@@ -33,7 +33,8 @@
 #   PRISM_BUILD        versionCode (default 1)
 #   PRISM_ANDROID_AAB=1  an Android App Bundle for Google Play (bundletool,
 #                      signed with jarsigner) instead of an APK; installing it
-#                      goes through `bundletool build-apks --local-testing`
+#                      goes through `bundletool build-apks --local-testing`,
+#                      the device's APKs signed with the debug key
 set -euo pipefail
 
 PKG="${1:?usage: android-run.sh <package> [--no-launch]}"
@@ -445,18 +446,22 @@ javac --release 17 -nowarn -classpath "$ANDROID_JAR$LIB_JARS" -d "$OUT/classes" 
   $(find "$OUT/classes" -name '*.class') ${LIB_JARS//:/ }
 
 # 6. Signing key: the store key, else the SDK's debug key.
+# The SDK's conventional debug key (what Android Studio uses too), made once.
+DEBUG_KEYSTORE="$HOME/.android/debug.keystore"
+debug_keystore() {
+  if [[ ! -f "$DEBUG_KEYSTORE" ]]; then
+    mkdir -p "$(dirname "$DEBUG_KEYSTORE")"
+    keytool -genkeypair -keystore "$DEBUG_KEYSTORE" -storepass android -keypass android -alias androiddebugkey \
+      -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US" >/dev/null
+  fi
+}
 if [[ -n "${PRISM_ANDROID_KEYSTORE:-}" ]]; then
   KEYSTORE="$PRISM_ANDROID_KEYSTORE" PASS="${PRISM_ANDROID_KEYSTORE_PASS:?set PRISM_ANDROID_KEYSTORE_PASS}"
   KEY_PASS="${PRISM_ANDROID_KEY_PASS:-$PASS}"
   ALIAS="${PRISM_ANDROID_KEY_ALIAS:?set PRISM_ANDROID_KEY_ALIAS}"
 else
-  # The SDK's conventional debug key (what Android Studio uses too).
-  KEYSTORE="$HOME/.android/debug.keystore" PASS=android KEY_PASS=android ALIAS=androiddebugkey
-  if [[ ! -f "$KEYSTORE" ]]; then
-    mkdir -p "$HOME/.android"
-    keytool -genkeypair -keystore "$KEYSTORE" -storepass android -keypass android -alias androiddebugkey \
-      -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US" >/dev/null
-  fi
+  KEYSTORE="$DEBUG_KEYSTORE" PASS=android KEY_PASS=android ALIAS=androiddebugkey
+  debug_keystore
   [[ "${PRISM_RELEASE:-}" == 1 ]] && echo "note: signed with the debug key; set PRISM_ANDROID_KEYSTORE for a store build" >&2
 fi
 
@@ -509,16 +514,18 @@ JSON
   echo "Built $BUNDLE (versionCode $VERSION_CODE)"
   [[ "${PRISM_NO_INSTALL:-}" == 1 ]] && exit 0
 
-  # 8. Install like Play would: the device's split APKs from the bundle.
+  # 8. Install like Play would: the device's split APKs from the bundle,
+  #    signed with the debug key, never the store key: bundletool reads
+  #    passwords only from its command line (shown by ps) or from files (left
+  #    on disk if the build is killed). Play signs what it delivers with its
+  #    own key anyway. A copy signed with another key must be uninstalled.
   [[ -n "$SERIAL" ]] || { echo "No Android device or emulator running (start one: emulator -avd <name>)" >&2; exit 1; }
   rm -f "$OUT/local.apks"
-  # bundletool reads passwords from files (pass: would show them in ps).
-  SECRETS="$(mktemp -d)" && trap 'rm -rf "$SECRETS"' EXIT
-  (umask 077 && printf '%s\n' "$PASS" > "$SECRETS/ks" && printf '%s\n' "$KEY_PASS" > "$SECRETS/key")
+  debug_keystore
   "${BUNDLETOOL[@]}" build-apks --bundle="$BUNDLE" \
     --output="$OUT/local.apks" --local-testing --connected-device --device-id="$SERIAL" \
     --adb="$ADB" --aapt2="$BUILD_TOOLS/aapt2" \
-    --ks="$KEYSTORE" --ks-pass="file:$SECRETS/ks" --key-pass="file:$SECRETS/key" --ks-key-alias="$ALIAS"
+    --ks="$DEBUG_KEYSTORE" --ks-pass=pass:android --key-pass=pass:android --ks-key-alias=androiddebugkey
   "${BUNDLETOOL[@]}" install-apks --apks="$OUT/local.apks" --device-id="$SERIAL" --adb="$ADB"
 else
 # 7. APK: add code and native libraries, align (16 KB pages), sign.

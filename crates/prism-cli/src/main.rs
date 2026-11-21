@@ -73,7 +73,7 @@ PUBLISH OPTIONS:
     --rollout <fraction>    Play: staged rollout (0.1 = 10 %)
     --draft                 Play: a draft release
     --notes <text>          Play: release notes (en-US)
-    --service-account <p>   Play: the service account JSON (or PRISM_PLAY_SERVICE_ACCOUNT)
+    --service-account <p>   Play: the service account JSON key's path (or PRISM_PLAY_SERVICE_ACCOUNT)
     --direct                macOS: notarize and staple the Developer ID .dmg
                             App Store Connect: PRISM_ASC_KEY_ID, PRISM_ASC_ISSUER_ID,
                             PRISM_ASC_KEY (.p8); notarization also PRISM_NOTARY_PROFILE
