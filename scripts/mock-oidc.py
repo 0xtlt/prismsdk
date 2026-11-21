@@ -19,13 +19,15 @@ Endpoints (under the issuer, `http://<host>:<port><path>`):
 - `/picture`: a per-user PNG that needs `Authorization: Bearer <access token>`
   (for `picture(url).header(…)`); `--token T` makes `T` a valid one too.
 
-The ID token is unsigned (alg "none"): fine for a local test, never for
-production. Every step is logged, so a test can check that the app sent the
+The ID token is signed (HS256) with a fixed, public test key: fine for a
+local test, never for production (Prism checks its claims, not its signature,
+which arrives over HTTPS from a real provider's token endpoint). Every step is logged, so a test can check that the app sent the
 verifier matching its challenge.
 """
 import argparse
 import base64
 import hashlib
+import hmac
 import html
 import json
 import secrets
@@ -41,6 +43,7 @@ ACCESS = set()
 CLIENTS = {}
 USER = {"sub": "test-user-1", "email": "test.user@example.com", "name": "Test User"}
 OPTS = argparse.Namespace(path="", no_oidc=False, secret=False)
+TEST_KEY = b"prism-mock-oidc"
 
 
 def b64url(data: bytes) -> str:
@@ -52,8 +55,10 @@ def id_token(issuer, client_id, nonce):
     claims = dict(USER, iss=issuer, aud=client_id, iat=now, exp=now + 3600)
     if nonce:
         claims["nonce"] = nonce
-    head = b64url(json.dumps({"alg": "none", "typ": "JWT"}).encode())
-    return f"{head}.{b64url(json.dumps(claims).encode())}."
+    head = b64url(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+    body = b64url(json.dumps(claims).encode())
+    sig = hmac.new(TEST_KEY, f"{head}.{body}".encode(), hashlib.sha256).digest()
+    return f"{head}.{body}.{b64url(sig)}"
 
 
 def without_loopback_port(uri):
@@ -90,7 +95,7 @@ def png(size=96):
 
 class Handler(BaseHTTPRequestHandler):
     def origin(self):
-        # As the client sees it (10.0.2.2 from the Android emulator…).
+        # As the client sees it.
         return f"http://{self.headers.get('Host', 'localhost')}"
 
     def issuer(self):
@@ -108,7 +113,7 @@ class Handler(BaseHTTPRequestHandler):
             "grant_types_supported": ["authorization_code", "refresh_token"],
             "token_endpoint_auth_methods_supported": ["none", "client_secret_post", "client_secret_basic"],
             "code_challenge_methods_supported": ["S256"],
-            "id_token_signing_alg_values_supported": ["none"],
+            "id_token_signing_alg_values_supported": ["HS256"],
         }
 
     def route(self):

@@ -3,8 +3,9 @@
 //! Sign in with Apple and an OpenID Connect sign-in.
 //!
 //! The OpenID provider is a local test one (`scripts/mock-oidc.py`):
-//! `PRISM_OAUTH_ISSUER`, by default `http://127.0.0.1:8765` (the Android
-//! emulator reaches the computer at 10.0.2.2). Real apps use
+//! `PRISM_OAUTH_ISSUER`, by default `http://127.0.0.1:8765` (on the Android
+//! emulator, after `adb reverse tcp:8765 tcp:8765`: plain HTTP only goes to
+//! this machine). Real apps use
 //! `OAuth::google(client_id)` or `OAuth::oidc(issuer, client_id)`.
 //!
 //! The demo has no client id: it registers one (RFC 7591) the first time,
@@ -37,13 +38,7 @@ pub struct SecurityDemo {
 }
 
 fn issuer() -> String {
-    std::env::var("PRISM_OAUTH_ISSUER").unwrap_or_else(|_| {
-        if cfg!(target_os = "android") {
-            "http://10.0.2.2:8765".into()
-        } else {
-            "http://127.0.0.1:8765".into()
-        }
-    })
+    std::env::var("PRISM_OAUTH_ISSUER").unwrap_or_else(|_| "http://127.0.0.1:8765".into())
 }
 
 impl SecurityDemo {
