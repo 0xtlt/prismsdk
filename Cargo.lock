@@ -2373,6 +2373,7 @@ dependencies = [
  "png",
  "prismsdk-apple-build",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

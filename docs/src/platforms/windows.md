@@ -317,7 +317,11 @@ bar alone shows Mica and the menus read as part of the window's chrome.
 1. fetches the component packages `Microsoft.WindowsAppSDK.Foundation`,
    `.InteractiveExperiences` and `.WinUI` (version 2.7.0) from nuget.org
    with `curl` and `tar` (both part of Windows 10 and 11), once, into
-   `PRISM_WINAPPSDK_DIR`, else `<target dir>/winappsdk/2.7.0`;
+   `PRISM_WINAPPSDK_DIR`, else `<target dir>/winappsdk/2.7.0`. Each
+   archive (and `Microsoft.Web.WebView2`'s) must match the SHA-256 pinned
+   in `prism-build`, or the build stops before unpacking it; a cached
+   package is reused only if it was unpacked from that archive. A
+   `PRISM_WINAPPSDK_DIR` you fill yourself is used as it is;
 2. generates the WinUI projection from their `.winmd` metadata with
    `windows-bindgen` (the types in `crates/prism-windows/winui-types.txt`,
    against the `windows` crate).

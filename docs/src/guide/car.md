@@ -20,7 +20,7 @@ cx.register_car(move |cx| {
   - the car can start the app without its phone window;
   - CarPlay only shows apps whose provisioning profile carries an entitlement Apple grants on request (`com.apple.developer.carplay-driving-task`), even in the simulator. Builds declare the scene; the entitlement comes from your profile.
 - **Android Auto and Android Automotive:**
-  - Google's Car App Library (IoT category), fetched from Maven by `crates/prism-cli/platform/scripts/android-deps.py` (no Gradle);
+  - Google's Car App Library (IoT category), fetched from Maven by `crates/prism-cli/platform/scripts/android-deps.py` (no Gradle). Every file it reads is pinned by SHA-256 in `android-deps.lock` next to it, and checked on each build, cached or downloaded;
   - the phone APK serves Android Auto. A build for a car running Android (`PRISM_ANDROID_AUTOMOTIVE=1`, automatic when the device is one) opens the car screens from the car's launcher;
   - tabs show their first tab (`TabTemplate` needs Car API level 6);
   - test on the Automotive emulator (`system-images;android-35-ext15;android-automotive;arm64-v8a`, device `automotive_1408p_landscape_with_google_apis`), or with Android Auto's Desktop Head Unit and a phone signed in to Play.
