@@ -1477,21 +1477,76 @@ fn scene_updates_go_out_with_textures_resolved_like_pictures() {
     );
 }
 
+/// S29: the blobs of a scene a live session sends go to its browser, and
+/// to no other.
+#[test]
+fn s29_blobs_a_session_sends_go_to_its_browser_only() {
+    use prism_core::scene3d::{Instances, SceneData, SceneUpdate, cube};
+    let (app, dir) = web_app(counter_init(), "s29-session");
+    let set = Instances::grid([2, 1, 7], [1., 1., 1.]);
+    let mut scene = SceneData::default();
+    scene.nodes.push(cube(0.5).name("crowd").instances(&set));
+    let update = SceneUpdate::full(&scene);
+    let id = update.to_value()["nodes"][0]["inst"]["id"]
+        .as_str()
+        .expect("an instance blob")
+        .to_string();
+    let fetch = |sid: &str| {
+        app.handle(
+            &Request::get(format!("/_prism/3d/{id}"))
+                .header("cookie", format!("prism_sid={sid}"))
+                .body(())
+                .unwrap(),
+        )
+        .status()
+    };
+    let (mine, other) = ("a1".repeat(16), "b2".repeat(16));
+    assert_eq!(fetch(&mine), StatusCode::NOT_FOUND, "not sent yet");
+    let mut e = Encoder::default();
+    e.sid = Some(mine.clone());
+    e.encode(&[
+        create(1, NodeKind::Scene3d),
+        Patch::SetScene { id: 1, update },
+    ]);
+    assert_eq!(fetch(&mine), StatusCode::OK);
+    assert_eq!(fetch(&other), StatusCode::NOT_FOUND);
+    drop(set);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn scene_blobs_are_served_by_id() {
     use prism_core::scene3d::blobs::{self, BlobKind};
     let (app, dir) = web_app(counter_init(), "scene-blobs");
-    let get = |path: &str| app.handle(&Request::get(path).body(()).unwrap());
     let blob = blobs::put(BlobKind::Image, "image/png", vec![0x89, b'P', b'N', b'G']);
+    let mesh = blobs::put(BlobKind::Mesh, blobs::BINARY_MIME, vec![1, 2, 3, 4]);
+    // A live session sent them to this browser.
+    let sid = "5e".repeat(16);
+    crate::scene_blobs::sent(
+        Some(&sid),
+        &json!({ "v": 2, "full": true, "nodes": [{
+            "key": "0",
+            "mesh": { "type": "blob", "id": mesh.id() },
+            "mat": { "map": format!("p3d:{}", blob.id()) },
+        }] }),
+    );
+    let cookie = format!("prism_sid={sid}");
+    let get = |path: &str| {
+        app.handle(
+            &Request::get(path)
+                .header("cookie", &cookie)
+                .body(())
+                .unwrap(),
+        )
+    };
     let r = get(&format!("/_prism/3d/{}", blob.id()));
     assert_eq!(r.status(), StatusCode::OK);
     assert_eq!(r.body().as_slice(), &[0x89, b'P', b'N', b'G']);
     assert_eq!(r.headers()["content-type"], "image/png");
     assert_eq!(
         r.headers()["cache-control"],
-        "public, max-age=31536000, immutable"
+        "private, max-age=31536000, immutable"
     );
-    let mesh = blobs::put(BlobKind::Mesh, blobs::BINARY_MIME, vec![1, 2, 3, 4]);
     let r = get(&format!("/_prism/3d/{}", mesh.id()));
     assert_eq!(r.headers()["content-type"], "application/octet-stream");
     // Unknown, gone, or not an id at all.

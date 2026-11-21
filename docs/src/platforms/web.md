@@ -31,6 +31,7 @@ Other servers (actix, hyper, …): `prism-web` without default features has no s
 | pages | `private, no-store` | rendered per browser, sets the session cookie |
 | `/_prism/client.<hash>.js`, `/_prism/prism.<hash>.css` | `public, max-age=31536000, immutable` | ETag, `304` |
 | `/assets/logo.<hash>.png` (`picture("logo.png")`) | `public, max-age=31536000, immutable` | unhashed `/assets/logo.png`: revalidated |
+| `/_prism/3d/<id>` (3D scene blobs) | `private, max-age=31536000, immutable` | only to the browsers whose pages were sent the scene, for 10 minutes after; `WebApp::public_scenes(true)`: anyone, `public` |
 | `/files/*` (uploads) | `private` | per browser; sandboxed (`default-src 'none'; sandbox`, `nosniff`), only raster pictures and videos inline, other files download |
 | `/ws` | – | proxy as a WebSocket |
 

@@ -196,6 +196,7 @@ impl WebApp {
                     encoder: Encoder {
                         asset_urls: Some(app.session_asset_urls(&sid)),
                         module_urls: Some(app.module_urls()),
+                        sid: Some(sid.clone()),
                         ..Default::default()
                     },
                     services: WebServices {
@@ -1404,6 +1405,9 @@ pub struct Encoder {
     pub asset_urls: Option<AssetUrls>,
     /// URLs of island modules (none if unset: islands show their fallback).
     pub module_urls: Option<crate::ModuleUrls>,
+    /// The browser's id (its `prism_sid` cookie): the 3D scene blobs sent
+    /// are served to it (`<base>/_prism/3d/<id>`), and to no other.
+    pub sid: Option<String>,
 }
 
 impl Encoder {
@@ -1495,7 +1499,9 @@ impl Encoder {
                     Some(urls) => urls(src),
                     None => crate::html::picture_url(src),
                 });
-                json!({ "op": "scene", "id": id, "u": update.to_value() })
+                let update = update.to_value();
+                crate::scene_blobs::sent(self.sid.as_deref(), &update);
+                json!({ "op": "scene", "id": id, "u": update })
             }
             Patch::SetClickable { id, clickable } => {
                 json!({ "op": "clickable", "id": id, "on": clickable })

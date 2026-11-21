@@ -110,6 +110,9 @@ pub(crate) struct Inner {
     /// How long a first render waits for the background work it started
     /// (`first_paint_wait`).
     pub first_paint_wait: std::time::Duration,
+    /// 3D scene blobs go to anyone, and shared caches keep them
+    /// (`public_scenes`).
+    pub public_scenes: bool,
 
     // --- Islands: client-side Web Components ---
     /// The WASM islands `prism` built (`PRISM_ISLANDS_DIR`).
@@ -184,6 +187,7 @@ impl WebApp {
                 idle_timeout: None,
                 sessions: Default::default(),
                 first_paint_wait: std::time::Duration::ZERO,
+                public_scenes: false,
                 islands,
                 strict_csp: env("PRISM_STRICT_CSP").is_some_and(|v| v != "0"),
                 handoffs: Default::default(),
@@ -414,7 +418,12 @@ impl WebApp {
             // A file the app handed to this session (#210).
             crate::downloads::serve(id, self.browser(headers).as_deref())
         } else if let Some(id) = path.strip_prefix("/_prism/3d/") {
-            scene_blob(id)
+            // A 3D scene's blob, for the browsers it was sent to.
+            crate::scene_blobs::serve(
+                id,
+                self.browser(headers).as_deref(),
+                self.inner.public_scenes,
+            )
         } else if path == "/_prism/auth/callback" {
             // A sign-in provider's redirect: hand it to the session that asked.
             let mut r = Response::new(
@@ -657,7 +666,8 @@ impl WebApp {
         nonce: Option<&crate::CspNonce>,
     ) -> (String, u16) {
         let config = &self.inner.config;
-        let asset_urls = self.session_asset_urls(visitor.sid);
+        let sid = visitor.sid;
+        let asset_urls = self.session_asset_urls(sid);
         let mut runtime = Runtime::with_options(
             &self.init_with(request, None),
             self.options(visitor, path.into()),
@@ -698,7 +708,7 @@ impl WebApp {
             layers,
             css: ssr_css,
         } = html.to_page();
-        pin_first_paint(html.take_scenes());
+        crate::scene_blobs::first_paint(sid, html.take_scenes());
         let head = &self.inner.head;
         let page = format!(
             r#"<!doctype html>
@@ -1037,6 +1047,15 @@ impl WebApp {
         self.configure(|i| i.first_paint_wait = timeout)
     }
 
+    /// Serves the blobs of 3D scenes (meshes, instance sets, clips, embedded
+    /// images: `<base>/_prism/3d/<id>`) to anyone, and lets shared caches
+    /// such as a CDN keep them. Only for an app whose scenes hold nothing
+    /// private. By default (`false`) a blob goes only to the browsers it
+    /// was sent to, with `Cache-Control: private`.
+    pub fn public_scenes(self, public: bool) -> Self {
+        self.configure(|i| i.public_scenes = public)
+    }
+
     /// Live sessions right now.
     pub fn session_count(&self) -> usize {
         self.inner
@@ -1119,50 +1138,6 @@ impl VisitorOwned {
 }
 
 // --- HTTP helpers -------------------------------------------------------------------------
-
-/// A 3D scene blob (`prism_core::scene3d::blobs`): a mesh, clip, skin,
-/// environment or embedded image, by its content hash. Never changes, so
-/// browsers and CDNs keep it; gone (404) once no rendered scene holds it.
-/// How long the blobs of a server-rendered page stay fetchable without a
-/// live session holding them: the time for the browser to load the page
-/// and its socket to take over.
-const FIRST_PAINT_PIN: std::time::Duration = std::time::Duration::from_secs(120);
-
-/// Scenes of recent first paints, kept so the blobs they reference (built
-/// during that render: `Instances`, `Mesh::custom`, clips) answer
-/// `/_prism/3d/<id>` until the page's session renders them again.
-type Pinned = std::collections::VecDeque<(std::time::Instant, Vec<prism_core::scene3d::FlatScene>)>;
-static FIRST_PAINT: std::sync::Mutex<Pinned> = std::sync::Mutex::new(Pinned::new());
-
-fn pin_first_paint(scenes: Vec<prism_core::scene3d::FlatScene>) {
-    let now = std::time::Instant::now();
-    let mut pinned = FIRST_PAINT.lock().unwrap_or_else(|e| e.into_inner());
-    while pinned
-        .front()
-        .is_some_and(|(at, _)| now.duration_since(*at) > FIRST_PAINT_PIN)
-    {
-        pinned.pop_front();
-    }
-    if !scenes.is_empty() {
-        pinned.push_back((now, scenes));
-    }
-}
-
-fn scene_blob(id: &str) -> Response<Vec<u8>> {
-    let Some((bytes, mime)) = prism_core::scene3d::blobs::get(id) else {
-        return status(StatusCode::NOT_FOUND);
-    };
-    let mut r = Response::new(bytes.to_vec());
-    if let Ok(v) = HeaderValue::from_str(&mime) {
-        r.headers_mut().insert(header::CONTENT_TYPE, v);
-    }
-    set(
-        &mut r,
-        header::CACHE_CONTROL,
-        "public, max-age=31536000, immutable",
-    );
-    r
-}
 
 fn status(code: StatusCode) -> Response<Vec<u8>> {
     let mut r = Response::new(Vec::new());
@@ -1602,8 +1577,14 @@ mod tests {
             cx.set_root(root);
         });
         let dir = std::env::temp_dir().join(format!("prism-webapp-3d-{}", std::process::id()));
-        let app = WebApp::new(AppConfig::default(), init).data_dir(dir.join("data"));
-        let page = String::from_utf8(get(&app, "/", &[]).body().clone()).unwrap();
+        let app = WebApp::new(AppConfig::default(), init.clone()).data_dir(dir.join("data"));
+        let page = get(&app, "/", &[]);
+        let cookie = header(&page, "set-cookie")
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
+        let page = String::from_utf8(page.body().clone()).unwrap();
         let scene = page
             .split("data-scene=\"")
             .nth(1)
@@ -1615,9 +1596,33 @@ mod tests {
             .nth(1)
             .and_then(|s| s.get(..32))
             .unwrap_or_else(|| panic!("an instance blob in {scene}"));
-        let blob = get(&app, &format!("/_prism/3d/{id}"), &[]);
+        let path = format!("/_prism/3d/{id}");
+        let blob = get(&app, &path, &[("cookie", &cookie)]);
         assert_eq!(blob.status(), StatusCode::OK);
         assert!(blob.body().starts_with(b"P3DI"));
+        assert_eq!(
+            header(&blob, "cache-control"),
+            "private, max-age=31536000, immutable"
+        );
+        // S29: another browser, or none, gets nothing, even with the id.
+        let other = format!("prism_sid={}", "ab".repeat(16));
+        assert_eq!(
+            get(&app, &path, &[("cookie", &other)]).status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(get(&app, &path, &[]).status(), StatusCode::NOT_FOUND);
+        // An app whose scenes are public serves them to anyone, and caches
+        // may keep them.
+        let public = WebApp::new(AppConfig::default(), init)
+            .data_dir(dir.join("public"))
+            .public_scenes(true);
+        let _ = get(&public, "/", &[]);
+        let blob = get(&public, &path, &[]);
+        assert_eq!(blob.status(), StatusCode::OK);
+        assert_eq!(
+            header(&blob, "cache-control"),
+            "public, max-age=31536000, immutable"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }
