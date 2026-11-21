@@ -550,6 +550,198 @@ impl AsyncApp {
     }
 }
 
+// --- Browser sign-in redirects ----------------------------------------------------------
+
+/// Whether `callback`, a URL the browser came back to, answers the sign-in
+/// that opened the authorization URL `url` with the redirect URI
+/// `redirect` ([`WebAuthRequest`]):
+///
+/// - the same scheme, host, port and path as `redirect` (scheme and host
+///   in any case; the path exactly: `/callback/x` is not `/callback`);
+/// - when `url` carries a `state`, the same `state`, once.
+///
+/// Backends that catch the redirect themselves (a loopback listener, a
+/// deep link) finish the sign-in only with such a callback, and keep
+/// waiting past others: a stray request, or another process's callback,
+/// cannot end it. The app checks the `state` again (`prism::oauth`).
+pub fn is_sign_in_callback(url: &str, redirect: &str, callback: &str) -> bool {
+    if !same_target(redirect, callback) {
+        return false;
+    }
+    let (Some(sent), Some(got)) = (redirect_parts(url), redirect_parts(callback)) else {
+        return false;
+    };
+    let Some(state) = param_values(sent.params, "state").next() else {
+        return true;
+    };
+    let mut states = param_values(got.params, "state");
+    states.next().as_deref() == Some(state.as_str()) && states.next().is_none()
+}
+
+/// Serves a loopback redirect URI (`http://127.0.0.1:<port>/callback`,
+/// RFC 8252 §7.3) on `listener` until the sign-in that opened `url` comes
+/// back to `redirect` ([`is_sign_in_callback`]); its full URL, port
+/// included. Other requests (a favicon, a callback for another attempt)
+/// are answered (`404`, `400`) and the wait goes on.
+/// [`DeviceError::Cancelled`] after `timeout`. The Linux and Windows
+/// backends use it.
+pub fn catch_loopback_redirect(
+    listener: &std::net::TcpListener,
+    url: &str,
+    redirect: &str,
+    timeout: std::time::Duration,
+) -> Result<String, DeviceError> {
+    use std::io::{Read, Write};
+    let origin = redirect_parts(redirect)
+        .and_then(|p| Some(format!("{}://{}", p.scheme, p.authority?)))
+        .ok_or_else(|| DeviceError::Failed(format!("not a loopback redirect: {redirect}")))?;
+    let _ = listener.set_nonblocking(true);
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        let Ok((mut stream, _)) = listener.accept() else {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            continue;
+        };
+        let _ = stream.set_nonblocking(false);
+        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+        // The request line (a request target is short: the rest is not read).
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        while !buf.contains(&b'\n') && buf.len() < 16 * 1024 {
+            match stream.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            }
+        }
+        let request = String::from_utf8_lossy(&buf);
+        let target = request
+            .lines()
+            .next()
+            .and_then(|l| l.strip_prefix("GET "))
+            .and_then(|l| l.split(' ').next())
+            .filter(|t| t.starts_with('/'))
+            .unwrap_or("");
+        let callback = format!("{origin}{target}");
+        if target.is_empty() || !same_target(redirect, &callback) {
+            let _ = stream.write_all(
+                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+            continue;
+        }
+        if !is_sign_in_callback(url, redirect, &callback) {
+            let page = "This link is not for the sign-in in progress.";
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{page}",
+                    page.len()
+                )
+                .as_bytes(),
+            );
+            continue;
+        }
+        let page = "<!doctype html><meta charset=utf-8><title>Signed in</title><p style=\"font:16px system-ui;margin:40px;text-align:center\">Signed in. You can close this tab and return to the app.</p>";
+        let _ = stream.write_all(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{page}",
+                page.len()
+            )
+            .as_bytes(),
+        );
+        return Ok(callback);
+    }
+    Err(DeviceError::Cancelled)
+}
+
+/// Whether `callback` is for the redirect URI `redirect` (its scheme, host,
+/// port and path), whatever its parameters.
+fn same_target(redirect: &str, callback: &str) -> bool {
+    match (redirect_parts(redirect), redirect_parts(callback)) {
+        (Some(want), Some(got)) => {
+            (&want.scheme, &want.authority, want.path) == (&got.scheme, &got.authority, got.path)
+        }
+        _ => false,
+    }
+}
+
+/// A URL as a sign-in redirect is compared.
+struct RedirectParts<'a> {
+    /// Lower-case.
+    scheme: String,
+    /// Host and port, lower-case; `None` without `//` (`app:/oauth`).
+    authority: Option<String>,
+    /// `/` when empty after an authority.
+    path: &'a str,
+    /// The query, or the fragment when there is no query (as
+    /// `prism::oauth` reads the parameters).
+    params: &'a str,
+}
+
+fn redirect_parts(url: &str) -> Option<RedirectParts<'_>> {
+    let (scheme, rest) = url.split_once(':')?;
+    if scheme.is_empty()
+        || !scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    {
+        return None;
+    }
+    let (authority, rest) = match rest.strip_prefix("//") {
+        Some(rest) => {
+            let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+            (Some(rest[..end].to_ascii_lowercase()), &rest[end..])
+        }
+        None => (None, rest),
+    };
+    let end = rest.find(['?', '#']).unwrap_or(rest.len());
+    let path = match &rest[..end] {
+        "" if authority.is_some() => "/",
+        path => path,
+    };
+    let after = &rest[end..];
+    let params = match after.strip_prefix('?') {
+        Some(query) => query.split('#').next().unwrap_or(query),
+        None => after.strip_prefix('#').unwrap_or(""),
+    };
+    Some(RedirectParts {
+        scheme: scheme.to_ascii_lowercase(),
+        authority,
+        path,
+        params,
+    })
+}
+
+/// The values of parameter `name` in `params` (`a=1&b=2`), decoded.
+fn param_values<'a>(params: &'a str, name: &'a str) -> impl Iterator<Item = String> + 'a {
+    params.split('&').filter_map(move |kv| {
+        let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
+        (form_decode(k) == name).then(|| form_decode(v))
+    })
+}
+
+/// A form-encoded value: `%XX` escapes, `+` for a space.
+fn form_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = b
+            .get(i + 1..i + 3)
+            .filter(|h| h.iter().all(u8::is_ascii_hexdigit))
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (b[i], hex) {
+            (b'+', _) => out.push(b' '),
+            (b'%', Some(byte)) => {
+                out.push(byte);
+                i += 2;
+            }
+            (c, _) => out.push(c),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -607,5 +799,151 @@ mod tests {
         assert_eq!(c.user, "001.abc");
         assert_eq!(c.email, None);
         assert_eq!(c.identity_token.as_deref(), Some("eyJ"));
+    }
+
+    /// S33: only the callback of the sign-in in progress finishes it: the
+    /// redirect's exact scheme, host, port and path, and its `state`, once.
+    #[test]
+    fn s33_a_sign_in_ends_only_with_its_own_callback() {
+        let url = "https://idp.example/authorize?client_id=c&state=s%2B1&code_challenge=x";
+        let loopback = "http://127.0.0.1:50123/callback";
+        let ok = |callback: &str| is_sign_in_callback(url, loopback, callback);
+        assert!(ok("http://127.0.0.1:50123/callback?code=abc&state=s%2B1"));
+        assert!(ok("HTTP://127.0.0.1:50123/callback?state=s%2B1&code=abc"));
+        // The provider's refusal is for this attempt too.
+        assert!(ok(
+            "http://127.0.0.1:50123/callback?error=access_denied&state=s%2B1"
+        ));
+        for wrong in [
+            // Another attempt, or none.
+            "http://127.0.0.1:50123/callback?code=abc&state=other",
+            "http://127.0.0.1:50123/callback?code=abc",
+            "http://127.0.0.1:50123/callback?code=abc&state=s+1",
+            // Twice, even if one is right.
+            "http://127.0.0.1:50123/callback?state=other&code=abc&state=s%2B1",
+            "http://127.0.0.1:50123/callback?state=s%2B1&state=s%2B1&code=abc",
+            // Elsewhere.
+            "http://127.0.0.1/callback?code=abc&state=s%2B1",
+            "http://127.0.0.1:50124/callback?code=abc&state=s%2B1",
+            "http://localhost:50123/callback?code=abc&state=s%2B1",
+            "https://127.0.0.1:50123/callback?code=abc&state=s%2B1",
+            "http://127.0.0.1:50123/callbackx?code=abc&state=s%2B1",
+            "http://127.0.0.1:50123/callback/x?code=abc&state=s%2B1",
+            "http://127.0.0.1:50123/?code=abc&state=s%2B1",
+            "/callback?code=abc&state=s%2B1",
+            "",
+        ] {
+            assert!(!ok(wrong), "{wrong}");
+        }
+        // A custom scheme (Android), with or without an authority.
+        let app = "com.example.app:/oauth";
+        assert!(is_sign_in_callback(
+            url,
+            app,
+            "com.example.app:/oauth?code=a&state=s%2B1"
+        ));
+        assert!(is_sign_in_callback(
+            url,
+            app,
+            "com.example.app:/oauth#code=a&state=s%2B1"
+        ));
+        assert!(!is_sign_in_callback(
+            url,
+            app,
+            "com.example.app://evil/oauth?state=s%2B1"
+        ));
+        assert!(!is_sign_in_callback(
+            url,
+            app,
+            "com.example.app:/oauth/x?state=s%2B1"
+        ));
+        assert!(!is_sign_in_callback(
+            url,
+            app,
+            "com.example.app:/oauth?state=x"
+        ));
+        let host = "com.example.app://auth/done";
+        assert!(is_sign_in_callback(
+            url,
+            host,
+            "com.example.app://AUTH/done?state=s%2B1"
+        ));
+        assert!(!is_sign_in_callback(
+            url,
+            host,
+            "com.example.app://other/done?state=s%2B1"
+        ));
+        // An authorization URL without `state`: the redirect alone.
+        let bare = "https://idp.example/authorize?client_id=c";
+        assert!(is_sign_in_callback(
+            bare,
+            loopback,
+            "http://127.0.0.1:50123/callback?code=a"
+        ));
+        assert!(!is_sign_in_callback(
+            bare,
+            loopback,
+            "http://127.0.0.1:50123/x?code=a"
+        ));
+    }
+
+    /// S33: the loopback listener answers stray requests and callbacks of
+    /// other attempts, and keeps waiting for the one in progress, port
+    /// included in the URL it returns.
+    #[test]
+    fn s33_the_loopback_waits_past_other_callbacks() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let redirect = format!("http://127.0.0.1:{port}/callback");
+        let url = "https://idp.example/authorize?state=xyz";
+        let client = std::thread::spawn(move || {
+            let mut answers = Vec::new();
+            for target in [
+                "/favicon.ico",
+                "/callbackx?code=evil&state=xyz",
+                "/callback?code=evil&state=guess",
+                "/callback?code=evil",
+                "/callback?code=abc&state=xyz",
+            ] {
+                let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+                s.write_all(format!("GET {target} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes())
+                    .unwrap();
+                let mut page = String::new();
+                let _ = s.read_to_string(&mut page);
+                answers.push(page.lines().next().unwrap_or_default().to_string());
+            }
+            answers
+        });
+        let r = catch_loopback_redirect(
+            &listener,
+            url,
+            &redirect,
+            std::time::Duration::from_secs(20),
+        );
+        assert_eq!(
+            r,
+            Ok(format!(
+                "http://127.0.0.1:{port}/callback?code=abc&state=xyz"
+            ))
+        );
+        assert_eq!(
+            client.join().unwrap(),
+            [
+                "HTTP/1.1 404 Not Found",
+                "HTTP/1.1 404 Not Found",
+                "HTTP/1.1 400 Bad Request",
+                "HTTP/1.1 400 Bad Request",
+                "HTTP/1.1 200 OK",
+            ]
+        );
+        // Nobody comes back: cancelled when the time is up.
+        let r = catch_loopback_redirect(
+            &listener,
+            url,
+            &redirect,
+            std::time::Duration::from_millis(200),
+        );
+        assert_eq!(r, Err(DeviceError::Cancelled));
     }
 }

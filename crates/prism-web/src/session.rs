@@ -345,6 +345,9 @@ impl Live {
                 Ok(Inbound::Message(text)) => self.message(&text),
                 Ok(Inbound::AuthRedirect(id, url)) => {
                     self.services.server_answers.remove(&id);
+                    // Absolute, as the redirect URI (`/_prism/auth/callback?…`
+                    // arrives).
+                    let url = format!("{}{}{url}", self.services.origin, self.services.base);
                     self.runtime
                         .device_reply(id, Ok(prism_core::DeviceValue::Text(Some(url))))
                 }

@@ -10,6 +10,7 @@ import android.hardware.biometrics.BiometricPrompt;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.os.CancellationSignal;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyPermanentlyInvalidatedException;
@@ -454,7 +455,9 @@ final class PrismSecurity {
     }
 
     static long pending = -1;
-    static String pendingRedirect;
+    static String pendingUrl, pendingRedirect;
+    /** When a deep link to the redirect URI that did not answer the sign-in came (uptime, ms). */
+    static long refusedAt = Long.MIN_VALUE / 2;
     /** The browser was opened (a return without the redirect is a cancel). */
     static boolean away;
 
@@ -479,6 +482,7 @@ final class PrismSecurity {
             if (PrismHost.activity != null) PrismHost.activity.startActivity(i);
             else ctx().startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             pending = id;
+            pendingUrl = url;
             pendingRedirect = redirect;
             away = true;
         } catch (Exception e) {
@@ -486,15 +490,18 @@ final class PrismSecurity {
         }
     }
 
-    /** A deep link arrived: the sign-in's redirect? Then it is answered and not a navigation. */
+    /**
+     * A deep link arrived: the sign-in's redirect? Then it is answered and not a navigation. One to
+     * the redirect URI that does not answer this sign-in (another attempt's state, or none: another
+     * app can send it) is dropped, and the sign-in goes on.
+     */
     static boolean redirected(Intent intent) {
         if (pending < 0 || intent == null || intent.getData() == null) return false;
         String uri = intent.getData().toString();
-        Uri want = Uri.parse(pendingRedirect);
-        Uri got = intent.getData();
-        if (!String.valueOf(want.getScheme()).equalsIgnoreCase(String.valueOf(got.getScheme()))
-                || !String.valueOf(want.getPath()).equals(String.valueOf(got.getPath()))) {
-            return false;
+        if (!PrismSignIn.sameTarget(pendingRedirect, uri)) return false;
+        if (!PrismSignIn.answers(pendingUrl, pendingRedirect, uri)) {
+            refusedAt = SystemClock.uptimeMillis();
+            return true;
         }
         long id = pending;
         pending = -1;
@@ -508,7 +515,9 @@ final class PrismSecurity {
         if (pending < 0 || !away) return;
         long id = pending;
         PrismHost.main.postDelayed(() -> {
-            if (pending == id) {
+            // Brought back by a refused deep link: the browser is still open behind.
+            boolean refused = SystemClock.uptimeMillis() - refusedAt < 3000;
+            if (pending == id && !refused) {
                 pending = -1;
                 away = false;
                 PrismDevice.fail(id, "cancelled", false);

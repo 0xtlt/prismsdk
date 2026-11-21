@@ -1142,13 +1142,18 @@ fn unix_now() -> u64 {
 /// The code from a redirect URL, after checking `state`.
 pub fn parse_callback(url: &str, state: &str) -> Result<String, OAuthError> {
     // Parameters arrive in the query, or the fragment for some providers.
-    let params = url
+    let query = url
         .split_once('?')
         .map(|(_, q)| q.split('#').next().unwrap_or(q))
         .or_else(|| url.split_once('#').map(|(_, f)| f))
-        .map(parse_query)
         .unwrap_or_default();
-    if params.get("state").map(String::as_str) != Some(state) {
+    let params = parse_query(query);
+    // Once: with two, which one the app read would be a guess.
+    let states = query
+        .split('&')
+        .filter(|kv| decode(kv.split_once('=').map_or(*kv, |(k, _)| k)) == "state")
+        .count();
+    if states != 1 || params.get("state").map(String::as_str) != Some(state) {
         return Err(OAuthError::StateMismatch);
     }
     if let Some(error) = params.get("error") {
@@ -1370,6 +1375,15 @@ mod tests {
         );
         assert_eq!(
             parse_callback("http://127.0.0.1:5/callback?code=x&state=evil", "s1"),
+            Err(OAuthError::StateMismatch)
+        );
+        // S33: a second `state` (the first wrong) is not a guess the app makes.
+        assert_eq!(
+            parse_callback("x:/o?state=evil&code=c&state=s1", "s1"),
+            Err(OAuthError::StateMismatch)
+        );
+        assert_eq!(
+            parse_callback("x:/o?state=s1&code=c&state=s1", "s1"),
             Err(OAuthError::StateMismatch)
         );
         assert_eq!(

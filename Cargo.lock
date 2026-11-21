@@ -2385,6 +2385,7 @@ dependencies = [
  "flate2",
  "prismsdk-apple-build",
  "prismsdk-build",
+ "prismsdk-core",
  "ring",
  "serde_json",
  "ureq",
