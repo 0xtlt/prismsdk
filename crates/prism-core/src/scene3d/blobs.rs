@@ -264,6 +264,14 @@ pub fn get(id: &str) -> Option<(Arc<[u8]>, String)> {
     Some((blob.bytes(), blob.mime.clone()))
 }
 
+/// The size of blob `id` while something holds it, without making a lazy
+/// blob's bytes (0 until something reads them).
+pub fn size(id: &str) -> Option<usize> {
+    let key = parse_id(id)?;
+    let blob = store().lock().ok()?.get(&key)?.upgrade()?;
+    Some(blob.bytes.get().map_or(0, |b| b.len()))
+}
+
 // --- Writing and reading -----------------------------------------------------------------
 
 /// Little-endian writer with 4-byte aligned sections.

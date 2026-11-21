@@ -1441,7 +1441,8 @@ pub mod device {
             }
             DeviceCall::SignInWithApple(r) => json!({
                 "call": "apple_sign_in", "email": r.email, "name": r.full_name,
-                "nonce": r.nonce, "state": r.state,
+                // Apple gets the nonce hashed (the token's `nonce` claim).
+                "nonce": r.apple_nonce(), "state": r.state,
             }),
             DeviceCall::AuthRedirect(preferred) => {
                 json!({ "call": "auth_redirect", "preferred": preferred })
@@ -1544,6 +1545,31 @@ pub mod device {
         } else {
             DeviceEvent::Motion(motion(v))
         }
+    }
+}
+
+#[cfg(test)]
+mod apple_tests {
+    /// S39: what Apple gets as the nonce (and puts in the identity token's
+    /// `nonce` claim) is the SHA-256, in hex, of the app's nonce, as
+    /// `AppleSignIn::nonce` documents: the server hashes the nonce it
+    /// handed out and compares.
+    #[test]
+    fn s39_apple_gets_the_nonce_hashed() {
+        let request = prism_core::AppleSignIn::new()
+            .nonce("server-nonce-39")
+            .state("st-39");
+        let sent = super::device::call(7, prism_core::DeviceCall::SignInWithApple(request));
+        assert_eq!(
+            sent["nonce"],
+            "3c0f900191b65765eddb001bcd76dc504a5b1a4cc3a231e1463606a05a69e377"
+        );
+        assert_eq!(sent["state"], "st-39");
+        let none = super::device::call(
+            8,
+            prism_core::DeviceCall::SignInWithApple(Default::default()),
+        );
+        assert!(none["nonce"].is_null());
     }
 }
 

@@ -198,3 +198,31 @@ fn native_apps_can_show_something_else() {
     let mac = on(Platform::Macos);
     assert_eq!(mac.host.child_texts(chart(&mac)), ["native chart"]);
 }
+
+/// S20: only valid custom element names become elements (a tag can come
+/// from data, and the server writes it into the page).
+#[test]
+fn custom_element_names_follow_the_html_grammar() {
+    use prism_core::island::is_custom_element_name;
+    for ok in ["time-ago", "x-1.2_b", "my-élément", "emoji-\u{1F600}", "a-"] {
+        assert!(is_custom_element_name(ok), "{ok}");
+    }
+    for bad in [
+        "",
+        "timeago",
+        "Time-ago",
+        "-x",
+        "1-x",
+        "x-a b",
+        "x-a>",
+        "x-\"a",
+        "x-a/",
+        "x-a=b",
+        "x-a\u{0}",
+        "font-face",
+        "annotation-xml",
+        "missing-glyph",
+    ] {
+        assert!(!is_custom_element_name(bad), "{bad:?}");
+    }
+}

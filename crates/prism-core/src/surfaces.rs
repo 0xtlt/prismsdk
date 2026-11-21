@@ -334,7 +334,8 @@ impl SNode {
     /// `ff`/`it`/`ul`/`st`/`tn`/`tt`/`ls`/`lh`/`ml`/`nw`, see `write_typography`),
     /// `o` opacity, `s` text, symbol or drawing, `v` value, `ph` a timer's
     /// text once ended, `l` link,
-    /// `wa` widget action (`{"k":kind,"a":action,"p":payload}`),
+    /// `wa` widget action (`{"k":kind,"a":action,"p":payload}`, and `t` its
+    /// link token in a widget of an app with a widget key),
     /// `al` accessibility label, `ah` hidden, `hd` heading, `c` children.
     ///
     /// A shape's drawing is [`Drawing::encode`](crate::shape::Drawing) with
@@ -342,7 +343,15 @@ impl SNode {
     /// frame, resolved by the renderer at the size it lays the node out.
     pub fn to_json(&self) -> String {
         let mut out = String::new();
-        self.write_json(&mut out, 3);
+        self.write_json(&mut out, 3, None);
+        out
+    }
+
+    /// [`to_json`](Self::to_json), each widget action with its `t` token
+    /// when the app has a widget key ([`App::set_widget_key`]).
+    pub(crate) fn to_signed_json(&self, key: Option<&WidgetKey>) -> String {
+        let mut out = String::new();
+        self.write_json(&mut out, 3, key);
         out
     }
 
@@ -365,7 +374,7 @@ impl SNode {
         self.children.iter_mut().for_each(SNode::strip_drawings);
     }
 
-    fn write_json(&self, o: &mut String, decimals: usize) {
+    fn write_json(&self, o: &mut String, decimals: usize, key: Option<&WidgetKey>) {
         let s = &self.style;
         let kind = match self.kind {
             NodeKind::Text | NodeKind::Button => "t",
@@ -518,11 +527,15 @@ impl SNode {
         if let Some(a) = &self.action {
             let _ = write!(
                 o,
-                r#","wa":{{"k":{},"a":{},"p":{}}}"#,
+                r#","wa":{{"k":{},"a":{},"p":{}"#,
                 json_str(&a.kind),
                 json_str(&a.action),
                 json_str(&a.payload)
             );
+            if let Some(key) = key {
+                let _ = write!(o, r#","t":"{}""#, key.token(a));
+            }
+            o.push('}');
         }
         if let Some(l) = &self.label {
             let _ = write!(o, r#","al":{}"#, json_str(l));
@@ -539,7 +552,7 @@ impl SNode {
                 if i > 0 {
                     o.push(',');
                 }
-                c.write_json(o, decimals);
+                c.write_json(o, decimals, key);
             }
             o.push(']');
         }
@@ -1000,7 +1013,7 @@ impl Widget {
                 let element = (self.render)(app, *f, config);
                 let mut node = snapshot_one(app, element);
                 node.tag_actions(&self.kind);
-                (*f, node.to_json())
+                (*f, node.to_signed_json(app.surfaces.widget_key.as_ref()))
             })
             .collect();
         app.surfaces.drawing_at = outer;
@@ -1376,7 +1389,8 @@ impl WidgetAction {
     /// The app path that runs an action where a widget cannot run app code
     /// in place: the tap opens the app on it, and
     /// [`Runtime::open_link`](crate::Runtime::open_link) runs the action
-    /// instead of navigating.
+    /// instead of navigating, when the link carries the app's token
+    /// ([`App::widget_action_link`]).
     pub const LINK_PATH: &'static str = "/__prism/widget-action";
 
     /// An action of the widget `kind`.
@@ -1392,8 +1406,11 @@ impl WidgetAction {
         }
     }
 
-    /// The deep link that runs this action when the app opens on it
-    /// (`/__prism/widget-action?kind=…&action=…&payload=…`).
+    /// The deep link of this action
+    /// (`/__prism/widget-action?kind=…&action=…&payload=…`). It runs the
+    /// action only with the app's `token` added
+    /// ([`App::widget_action_link`]): any app or web page can open an app's
+    /// links.
     pub fn to_link(&self) -> String {
         format!(
             "{}?{}",
@@ -1406,8 +1423,9 @@ impl WidgetAction {
         )
     }
 
-    /// The action a [`to_link`](Self::to_link) path runs, `None` for any
-    /// other path.
+    /// The action of a [`to_link`](Self::to_link) path, `None` for any
+    /// other path. Whether the link may run it is the token's business
+    /// ([`Runtime::open_link`](crate::Runtime::open_link)).
     pub fn from_link(path: &str) -> Option<WidgetAction> {
         let (path, query) = crate::router::split_query(path);
         if path != Self::LINK_PATH {
@@ -1423,6 +1441,14 @@ impl WidgetAction {
             }
         }
         (!action.action.is_empty()).then_some(action)
+    }
+
+    /// The `token` of a widget-action link, if it has one.
+    pub(crate) fn link_token(path: &str) -> Option<String> {
+        let (_, query) = crate::router::split_query(path);
+        crate::router::parse_query(query)
+            .into_iter()
+            .find_map(|(k, v)| (k == "token").then_some(v))
     }
 
     /// For backends: actions a widget extension queued for the app (a JSON
@@ -1974,6 +2000,66 @@ fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// The app's secret for widget-action links (macOS widgets open the app on
+/// them): each action in a widget snapshot carries a token, an HMAC-SHA256
+/// of the action under this key, and a link runs its action only with it.
+/// Any app or web page can open an app's links; only the app's own widgets
+/// know the tokens.
+#[derive(Clone)]
+pub(crate) struct WidgetKey([u8; 32]);
+
+impl std::fmt::Debug for WidgetKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WidgetKey(..)")
+    }
+}
+
+impl WidgetKey {
+    /// Bytes of the MAC a token keeps (128 bits).
+    const TOKEN: usize = 16;
+
+    fn mac(&self, a: &WidgetAction) -> hmac::Hmac<sha2::Sha256> {
+        use hmac::Mac;
+        let mut mac = <hmac::Hmac<sha2::Sha256> as Mac>::new_from_slice(&self.0)
+            .expect("HMAC takes any key length");
+        mac.update(b"prism-widget-action");
+        for part in [&a.kind, &a.action, &a.payload] {
+            mac.update(&(part.len() as u64).to_be_bytes());
+            mac.update(part.as_bytes());
+        }
+        mac
+    }
+
+    /// The token of `a` (hex).
+    pub(crate) fn token(&self, a: &WidgetAction) -> String {
+        use hmac::Mac;
+        let tag = self.mac(a).finalize().into_bytes();
+        tag[..Self::TOKEN]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
+    /// Whether `token` is `a`'s (compared in constant time).
+    pub(crate) fn verify(&self, a: &WidgetAction, token: &str) -> bool {
+        use hmac::Mac;
+        let Some(bytes) = hex_bytes(token).filter(|b| b.len() == Self::TOKEN) else {
+            return false;
+        };
+        self.mac(a).verify_truncated_left(&bytes).is_ok()
+    }
+}
+
+fn hex_bytes(s: &str) -> Option<Vec<u8>> {
+    if !s.len().is_multiple_of(2) || !s.is_ascii() {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // App API
 // ---------------------------------------------------------------------------
@@ -2003,6 +2089,8 @@ pub(crate) struct Surfaces {
     // --- Widget actions (#47) ---
     /// [`App::on_widget_action`]'s job.
     pub widget_action: Option<WidgetActionJob>,
+    /// Signs the widget actions' links ([`App::set_widget_key`]).
+    pub widget_key: Option<WidgetKey>,
 }
 
 type NotificationHandler = std::rc::Rc<dyn Fn(&NotificationResponse, &mut App)>;
@@ -2051,6 +2139,34 @@ impl App {
     /// in every configuration known for a configurable one.
     pub fn reload_widgets(&mut self) {
         self.surfaces.widgets_dirty = true;
+    }
+
+    /// For backends whose widgets run actions by opening the app on a link
+    /// (macOS): the app's secret for those links, kept by the backend
+    /// between runs (a widget shows its links long after the app drew it).
+    /// Widget snapshots then carry each action's token, and
+    /// [`Runtime::open_link`](crate::Runtime::open_link) runs an action
+    /// only from a link with it. Without a key, no link runs an action.
+    /// Redraws the widgets.
+    pub fn set_widget_key(&mut self, key: [u8; 32]) {
+        self.surfaces.widget_key = Some(WidgetKey(key));
+        self.surfaces.widgets_dirty = true;
+    }
+
+    /// The link that runs `action` when the app opens on it
+    /// ([`WidgetAction::to_link`] with its `token`), `None` without a
+    /// widget key ([`set_widget_key`](Self::set_widget_key)).
+    pub fn widget_action_link(&self, action: &WidgetAction) -> Option<String> {
+        let key = self.surfaces.widget_key.as_ref()?;
+        Some(format!("{}&token={}", action.to_link(), key.token(action)))
+    }
+
+    /// Whether `token` lets a link run `action`.
+    pub(crate) fn widget_link_allowed(&self, action: &WidgetAction, token: Option<&str>) -> bool {
+        match (&self.surfaces.widget_key, token) {
+            (Some(key), Some(token)) => key.verify(action, token),
+            _ => false,
+        }
     }
 
     /// For backends: reads the configurations the system shows (or asked

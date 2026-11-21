@@ -49,7 +49,7 @@ Next to the project's `Cargo.toml`:
 [app]
 name = "Counter"              # display name
 package = "counter"           # cargo package (default: the Cargo.toml's)
-bundle_id = "com.example.counter"
+bundle_id = "com.example.counter"  # dot-separated words: letters, digits, _ and -
 version = "1.0.0"             # default: the Cargo.toml's
 icon = "icon.png"             # 1024×1024 PNG
 # locales = "locales"         # translations directory
@@ -166,6 +166,7 @@ target ». Dependencies the app takes only on the device go under the same
 | Variable | |
 |---|---|
 | `PRISM_PORT`, `PRISM_HOST` | web server address |
+| `PRISM_PUBLIC_ORIGIN` | the web app's public origin behind a proxy (`https://app.example.com`) |
 | `PRISM_SIM` | simulator (name or UDID); simulators are slimmed with `simslim` when installed |
 | `PRISM_PROFILE` | provisioning profile for real Apple devices (found automatically otherwise) |
 | `PRISM_PATH` | start screen (`/todos/1`) |

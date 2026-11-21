@@ -48,10 +48,20 @@ use std::collections::HashMap;
 use prism_core::{AsyncApp, DeviceError, WebAuthRequest};
 use sha2::{Digest, Sha256};
 
-use crate::Request;
+use crate::{Hidden, Redirects, Request};
+
+/// The most bytes of a metadata document or of a token, registration or
+/// revocation endpoint's answer.
+const MAX_ANSWER: u64 = 1 << 20;
+
+/// How long after its expiry an ID token is still accepted (clocks
+/// differ), in seconds.
+const CLOCK_SKEW: u64 = 300;
+
+const GOOGLE_ISSUER: &str = "https://accounts.google.com";
 
 /// A provider and the client registered with it.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct OAuth {
     /// Shown by the web's "Continue" button when a popup is blocked.
     pub name: String,
@@ -97,11 +107,15 @@ pub struct OAuth {
 }
 
 /// What the provider granted.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Tokens {
     pub access_token: Option<String>,
     pub token_type: Option<String>,
     pub refresh_token: Option<String>,
+    /// The ID token (OpenID Connect). [`OAuth::sign_in`] and the refreshes
+    /// checked its issuer, audience, expiry, subject and nonce; not its
+    /// signature (it came straight from the token endpoint, over HTTPS).
+    /// Verify it with the provider's keys before trusting it on a server.
     pub id_token: Option<String>,
     /// Seconds.
     pub expires_in: Option<u64>,
@@ -136,7 +150,8 @@ pub enum OAuthError {
     },
     /// The redirect did not match this sign-in (CSRF protection).
     StateMismatch,
-    /// The ID token was not issued for this sign-in (nonce, audience).
+    /// The ID token is missing, malformed, or not issued for this sign-in
+    /// (issuer, audience, expiry, subject, nonce).
     InvalidIdToken(String),
     Network(String),
     Failed(String),
@@ -371,10 +386,13 @@ impl OAuth {
         let Some(issuer) = self.issuer.clone() else {
             return Ok(());
         };
+        secure("issuer", &issuer)?;
         let mut last = OAuthError::Failed(format!("discovery: no metadata for {issuer}"));
         for url in discovery_urls(&issuer, self.is_oidc()) {
             let res = match Request::get(&url)
                 .header("accept", "application/json")
+                .redirects(Redirects::SameOrigin)
+                .max_body(MAX_ANSWER)
                 .send_blocking()
             {
                 Ok(res) => res,
@@ -409,26 +427,37 @@ impl OAuth {
         doc: &serde_json::Value,
     ) -> Result<(), OAuthError> {
         let field = |k: &str| doc.get(k).and_then(|v| v.as_str()).map(str::to_string);
-        if let Some(claimed) = field("issuer")
-            && claimed.trim_end_matches('/') != issuer.trim_end_matches('/')
-        {
+        // RFC 8414 §3.3, OpenID Connect Discovery §4.3: the document names
+        // its issuer, and it is this one.
+        let claimed = field("issuer").unwrap_or_default();
+        if !same_issuer(&claimed, issuer) {
             return Err(OAuthError::Failed(format!(
-                "discovery: metadata for {claimed}, not {issuer}"
+                "discovery: metadata for {claimed:?}, not {issuer}"
             )));
         }
-        let authorize = field("authorization_endpoint");
+        // Every endpoint checked before any is taken.
+        let endpoint = |k: &str| -> Result<Option<String>, OAuthError> {
+            match field(k) {
+                Some(url) => secure(k, &url).map(|()| Some(url)),
+                None => Ok(None),
+            }
+        };
+        let authorize = endpoint("authorization_endpoint")?;
+        let token = endpoint("token_endpoint")?;
+        let registration = endpoint("registration_endpoint")?;
+        let revocation = endpoint("revocation_endpoint")?;
         if self.authorize_url.is_empty() {
             self.authorize_url = authorize
                 .ok_or_else(|| OAuthError::Failed("discovery: no authorization_endpoint".into()))?;
         }
         if self.token_url.is_empty() {
-            self.token_url = field("token_endpoint").unwrap_or_default();
+            self.token_url = token.unwrap_or_default();
         }
         if self.registration_url.is_empty() {
-            self.registration_url = field("registration_endpoint").unwrap_or_default();
+            self.registration_url = registration.unwrap_or_default();
         }
         if self.revocation_url.is_empty() {
-            self.revocation_url = field("revocation_endpoint").unwrap_or_default();
+            self.revocation_url = revocation.unwrap_or_default();
         }
         Ok(())
     }
@@ -494,6 +523,7 @@ impl OAuth {
                 "registration: the server has no registration_endpoint".into(),
             ));
         }
+        secure("registration_endpoint", &config.registration_url)?;
         let res = config
             .registration_request(redirect_uri)
             .send_blocking()
@@ -524,6 +554,8 @@ impl OAuth {
         }
         let mut request = Request::post(&self.registration_url)
             .header("accept", "application/json")
+            .redirects(Redirects::None)
+            .max_body(MAX_ANSWER)
             .json(body.to_string());
         if let Some(token) = &self.registration_token {
             request = request.header("authorization", format!("Bearer {token}"));
@@ -547,6 +579,7 @@ impl OAuth {
             Some(r) => r,
             None => cx.auth_redirect(config.redirect_uri.as_deref()).await?,
         };
+        secure("authorization_endpoint", &config.authorize_url)?;
         let pkce = Pkce::new();
         let state = random_token(16);
         let nonce = config.is_oidc().then(|| random_token(16));
@@ -583,9 +616,7 @@ impl OAuth {
             redirect_uri: tokens.redirect_uri,
             ..granted
         };
-        if let Some(claims) = tokens.id_claims() {
-            check_id_token(&claims, &config.client_id, nonce.as_deref())?;
-        }
+        config.check_tokens(&tokens, nonce.as_deref(), unix_now())?;
         Ok(tokens)
     }
 
@@ -620,6 +651,10 @@ impl OAuth {
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token),
         ]))?;
+        // A new ID token, if any, is checked like the first (no nonce).
+        if t.id_token.is_some() {
+            config.check_tokens(&t, None, unix_now())?;
+        }
         t.refresh_token
             .get_or_insert_with(|| refresh_token.to_string());
         Ok(t)
@@ -667,6 +702,7 @@ impl OAuth {
                 "no client id: revoke with the provider resolve() returned".into(),
             ));
         }
+        secure("revocation_endpoint", &config.revocation_url)?;
         let res = config
             .revocation_request(token, hint)
             .send_blocking()
@@ -682,6 +718,24 @@ impl OAuth {
             fields.push(("token_type_hint", hint.as_str()));
         }
         self.client_request(&self.revocation_url, &fields)
+    }
+
+    /// Checks the ID token of a token endpoint's answer: required when
+    /// signing in with OpenID Connect (`openid` scope), checked whenever
+    /// present (see [`check_id_token`]). A plain OAuth answer needs none.
+    fn check_tokens(
+        &self,
+        tokens: &Tokens,
+        nonce: Option<&str>,
+        now: u64,
+    ) -> Result<(), OAuthError> {
+        match tokens.id_token.as_deref() {
+            Some(token) => check_id_token(token, self, nonce, now).map(|_| ()),
+            None if self.is_oidc() && nonce.is_some() => {
+                Err(OAuthError::InvalidIdToken("missing".into()))
+            }
+            None => Ok(()),
+        }
     }
 
     /// A registered client the server no longer knows (`invalid_client`):
@@ -711,9 +765,13 @@ impl OAuth {
     fn client_request(&self, url: &str, fields: &[(&str, &str)]) -> Request {
         let mut body: Vec<(&str, &str)> = fields.to_vec();
         let basic = self.token_endpoint_auth_method.as_deref() == Some("client_secret_basic");
+        // Credentials go to this endpoint and no other (a redirect is
+        // its answer), and only over HTTPS (see `exchange`).
         let mut request = Request::post(url)
             .header("content-type", "application/x-www-form-urlencoded")
-            .header("accept", "application/json");
+            .header("accept", "application/json")
+            .redirects(Redirects::None)
+            .max_body(MAX_ANSWER);
         match &self.client_secret {
             // RFC 6749 §2.3.1: both form-encoded, then base64.
             Some(secret) if basic => {
@@ -780,7 +838,7 @@ pub fn parse_revocation_response(status: u16, body: &[u8]) -> Result<(), OAuthEr
 }
 
 /// What a registration endpoint issued (RFC 7591 §3.2.1).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Registration {
     /// The client id to use from now on.
     pub client_id: String,
@@ -943,6 +1001,7 @@ fn base64(data: &[u8]) -> String {
 }
 
 fn exchange(request: Request) -> Result<Tokens, OAuthError> {
+    secure("token_endpoint", &request.url)?;
     let res = request
         .send_blocking()
         .map_err(|e| OAuthError::Network(e.0))?;
@@ -984,37 +1043,117 @@ pub fn parse_token_response(status: u16, body: &[u8]) -> Result<Tokens, OAuthErr
     })
 }
 
+/// Checks an ID token from the token endpoint (OpenID Connect Core
+/// §3.1.3.7) and returns its claims: a JWT with a signing algorithm (not
+/// `none`), from this provider (`iss`, when the issuer is known), for
+/// this client (`aud`, and `azp` when it has several audiences), not
+/// expired at `now` (Unix seconds, give or take five minutes), about a
+/// subject (`sub`), for this sign-in (`nonce`, when one was sent).
+///
+/// The signature is not verified: the token came straight from the token
+/// endpoint over HTTPS, which §3.1.3.7 step 6 accepts in its place.
 fn check_id_token(
-    claims: &serde_json::Value,
-    client_id: &str,
+    token: &str,
+    config: &OAuth,
     nonce: Option<&str>,
-) -> Result<(), OAuthError> {
-    let aud_ok = match claims.get("aud") {
-        Some(serde_json::Value::String(a)) => a == client_id,
-        Some(serde_json::Value::Array(a)) => a.iter().any(|x| x.as_str() == Some(client_id)),
-        _ => false,
+    now: u64,
+) -> Result<serde_json::Value, OAuthError> {
+    use serde_json::Value;
+    let bad = |what: &str| OAuthError::InvalidIdToken(what.into());
+    let object = |part: &str| {
+        base64url_decode(part)
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .filter(Value::is_object)
     };
-    if !aud_ok {
-        return Err(OAuthError::InvalidIdToken("audience".into()));
+    let parts: Vec<&str> = token.split('.').collect();
+    let [header, payload, _signature] = parts[..] else {
+        return Err(bad("malformed"));
+    };
+    let (Some(header), Some(claims)) = (object(header), object(payload)) else {
+        return Err(bad("malformed"));
+    };
+    let alg = header.get("alg").and_then(Value::as_str).unwrap_or("none");
+    if alg.is_empty() || alg.eq_ignore_ascii_case("none") {
+        return Err(bad("unsigned"));
+    }
+    let text = |k: &str| claims.get(k).and_then(Value::as_str);
+    if let Some(issuer) = config.issuer.as_deref() {
+        let iss = text("iss").unwrap_or_default();
+        // Google also writes its issuer without the scheme.
+        let google = issuer == GOOGLE_ISSUER && iss == "accounts.google.com";
+        if !same_issuer(iss, issuer) && !google {
+            return Err(bad("issuer"));
+        }
+    }
+    let audiences: Vec<&str> = match claims.get("aud") {
+        Some(Value::String(a)) => vec![a.as_str()],
+        Some(Value::Array(a)) => a.iter().filter_map(Value::as_str).collect(),
+        _ => Vec::new(),
+    };
+    if !audiences.contains(&config.client_id.as_str()) {
+        return Err(bad("audience"));
+    }
+    if audiences.len() > 1 && text("azp") != Some(config.client_id.as_str()) {
+        return Err(bad("authorized party"));
+    }
+    let exp = claims.get("exp").and_then(|v| {
+        v.as_u64()
+            .or_else(|| v.as_f64().filter(|f| *f >= 0.).map(|f| f as u64))
+    });
+    if !exp.is_some_and(|exp| now < exp.saturating_add(CLOCK_SKEW)) {
+        return Err(bad("expired"));
+    }
+    if text("sub").is_none_or(str::is_empty) {
+        return Err(bad("subject"));
     }
     if let Some(n) = nonce
-        && claims.get("nonce").and_then(|x| x.as_str()) != Some(n)
+        && text("nonce") != Some(n)
     {
-        return Err(OAuthError::InvalidIdToken("nonce".into()));
+        return Err(bad("nonce"));
     }
-    Ok(())
+    Ok(claims)
+}
+
+/// Whether two issuer identifiers are the same (a trailing `/` aside: the
+/// constructors drop it, some providers keep it).
+fn same_issuer(a: &str, b: &str) -> bool {
+    !a.is_empty() && a.trim_end_matches('/') == b.trim_end_matches('/')
+}
+
+/// `Ok` when `url` may carry credentials: HTTPS, or plain HTTP to this
+/// machine (`localhost`, `127.0.0.1`, `[::1]`: development servers).
+fn secure(what: &str, url: &str) -> Result<(), OAuthError> {
+    let https = url
+        .get(..8)
+        .is_some_and(|s| s.eq_ignore_ascii_case("https://"));
+    if https || is_loopback(url) {
+        Ok(())
+    } else {
+        Err(OAuthError::Failed(format!("{what} must use https: {url}")))
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// The code from a redirect URL, after checking `state`.
 pub fn parse_callback(url: &str, state: &str) -> Result<String, OAuthError> {
     // Parameters arrive in the query, or the fragment for some providers.
-    let params = url
+    let query = url
         .split_once('?')
         .map(|(_, q)| q.split('#').next().unwrap_or(q))
         .or_else(|| url.split_once('#').map(|(_, f)| f))
-        .map(parse_query)
         .unwrap_or_default();
-    if params.get("state").map(String::as_str) != Some(state) {
+    let params = parse_query(query);
+    // Once: with two, which one the app read would be a guess.
+    let states = query
+        .split('&')
+        .filter(|kv| decode(kv.split_once('=').map_or(*kv, |(k, _)| k)) == "state")
+        .count();
+    if states != 1 || params.get("state").map(String::as_str) != Some(state) {
         return Err(OAuthError::StateMismatch);
     }
     if let Some(error) = params.get("error") {
@@ -1034,10 +1173,87 @@ pub fn parse_callback(url: &str, state: &str) -> Result<String, OAuthError> {
 }
 
 /// A PKCE pair (RFC 7636): a random verifier and its S256 challenge.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Pkce {
     pub verifier: String,
     pub challenge: String,
+}
+
+// Secrets show hidden in `Debug` output (S34): logs keep whether there is
+// one, not what.
+
+impl std::fmt::Debug for Pkce {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pkce")
+            .field("verifier", &Hidden::text(&self.verifier))
+            .field("challenge", &self.challenge)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for OAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuth")
+            .field("name", &self.name)
+            .field("issuer", &self.issuer)
+            .field("authorize_url", &self.authorize_url)
+            .field("token_url", &self.token_url)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &Hidden::opt(self.client_secret.as_deref()))
+            .field("scopes", &self.scopes)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("params", &self.params)
+            .field("ephemeral", &self.ephemeral)
+            .field("code_only", &self.code_only)
+            .field("registration_url", &self.registration_url)
+            .field("client_name", &self.client_name)
+            .field(
+                "registration_token",
+                &Hidden::opt(self.registration_token.as_deref()),
+            )
+            .field(
+                "token_endpoint_auth_method",
+                &self.token_endpoint_auth_method,
+            )
+            .field("revocation_url", &self.revocation_url)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for Tokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Tokens")
+            .field("access_token", &Hidden::opt(self.access_token.as_deref()))
+            .field("token_type", &self.token_type)
+            .field("refresh_token", &Hidden::opt(self.refresh_token.as_deref()))
+            .field("id_token", &Hidden::opt(self.id_token.as_deref()))
+            .field("expires_in", &self.expires_in)
+            .field("scope", &self.scope)
+            .field("code", &Hidden::text(&self.code))
+            .field("code_verifier", &Hidden::text(&self.code_verifier))
+            .field("redirect_uri", &self.redirect_uri)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for Registration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Registration")
+            .field("client_id", &self.client_id)
+            .field("client_secret", &Hidden::opt(self.client_secret.as_deref()))
+            .field("client_secret_expires_at", &self.client_secret_expires_at)
+            .field(
+                "token_endpoint_auth_method",
+                &self.token_endpoint_auth_method,
+            )
+            .field(
+                "registration_access_token",
+                &Hidden::opt(self.registration_access_token.as_deref()),
+            )
+            .field("registration_client_uri", &self.registration_client_uri)
+            .field("redirect_uris", &self.redirect_uris)
+            .finish()
+    }
 }
 
 impl Pkce {
@@ -1172,6 +1388,50 @@ fn decode(s: &str) -> String {
 mod tests {
     use super::*;
 
+    /// S34: a provider's client secret, a registration's secrets, tokens and
+    /// the PKCE verifier do not show when printed (`{:?}`).
+    #[test]
+    fn s34_oauth_secrets_print_hidden() {
+        let oauth = OAuth {
+            client_id: "client-1".into(),
+            client_secret: Some("S34-MARK-CS".into()),
+            registration_token: Some("S34-MARK-RT".into()),
+            ..Default::default()
+        };
+        let tokens = Tokens {
+            access_token: Some("S34-MARK-AT".into()),
+            refresh_token: Some("S34-MARK-RF".into()),
+            id_token: Some("S34-MARK-ID".into()),
+            code: "S34-MARK-CODE".into(),
+            code_verifier: "S34-MARK-CV".into(),
+            token_type: Some("Bearer".into()),
+            ..Default::default()
+        };
+        let registration = Registration {
+            client_id: "client-1".into(),
+            client_secret: Some("S34-MARK-RS".into()),
+            registration_access_token: Some("S34-MARK-RAT".into()),
+            ..Default::default()
+        };
+        let pkce = Pkce {
+            verifier: "S34-MARK-PV".into(),
+            challenge: "the-challenge".into(),
+        };
+        for shown in [
+            format!("{oauth:?}"),
+            format!("{oauth:#?}"),
+            format!("{tokens:?}"),
+            format!("{tokens:#?}"),
+            format!("{registration:?}"),
+            format!("{pkce:?}"),
+        ] {
+            assert!(!shown.contains("S34-MARK"), "{shown}");
+        }
+        assert!(format!("{oauth:?}").contains("client-1"));
+        assert!(format!("{tokens:?}").contains("Bearer"));
+        assert!(format!("{pkce:?}").contains("the-challenge"));
+    }
+
     #[test]
     fn pkce_matches_rfc7636_example() {
         // RFC 7636, appendix B.
@@ -1238,6 +1498,15 @@ mod tests {
             parse_callback("http://127.0.0.1:5/callback?code=x&state=evil", "s1"),
             Err(OAuthError::StateMismatch)
         );
+        // S33: a second `state` (the first wrong) is not a guess the app makes.
+        assert_eq!(
+            parse_callback("x:/o?state=evil&code=c&state=s1", "s1"),
+            Err(OAuthError::StateMismatch)
+        );
+        assert_eq!(
+            parse_callback("x:/o?state=s1&code=c&state=s1", "s1"),
+            Err(OAuthError::StateMismatch)
+        );
         assert_eq!(
             parse_callback("x:/o?error=access_denied&state=s1", "s1"),
             Err(OAuthError::Cancelled)
@@ -1259,9 +1528,6 @@ mod tests {
         assert_eq!(t.expires_in, Some(3600));
         let claims = t.id_claims().unwrap();
         assert_eq!(claims["sub"], "1");
-        assert!(check_id_token(&claims, "c", Some("n")).is_ok());
-        assert!(check_id_token(&claims, "other", Some("n")).is_err());
-        assert!(check_id_token(&claims, "c", Some("m")).is_err());
         assert_eq!(
             parse_token_response(400, br#"{"error":"invalid_grant"}"#),
             Err(OAuthError::Provider {
@@ -1290,6 +1556,16 @@ mod tests {
     /// A local server: `answer(method, path, headers, body)` gives
     /// `(status, JSON body)`. Returns its origin.
     fn serve(answer: impl Fn(&str, &str, &str, &str) -> (u16, String) + Send + 'static) -> String {
+        serve_with(move |m, p, h, b| {
+            let (status, json) = answer(m, p, h, b);
+            (status, String::new(), json)
+        })
+    }
+
+    /// [`serve`], with a `Location` for answers that name one.
+    fn serve_with(
+        answer: impl Fn(&str, &str, &str, &str) -> (u16, String, String) + Send + 'static,
+    ) -> String {
         use std::io::{BufRead, BufReader, Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
@@ -1318,11 +1594,16 @@ mod tests {
                 }
                 let mut body = vec![0u8; len];
                 let _ = reader.read_exact(&mut body);
-                let (status, json) =
+                let (status, location, json) =
                     answer(&method, &path, &headers, &String::from_utf8_lossy(&body));
+                let location = if location.is_empty() {
+                    String::new()
+                } else {
+                    format!("Location: {location}\r\n")
+                };
                 let _ = write!(
                     stream,
-                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{json}",
+                    "HTTP/1.1 {status} X\r\n{location}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{json}",
                     json.len()
                 );
             }
@@ -1385,23 +1666,29 @@ mod tests {
     #[test]
     fn falls_back_from_rfc8414_to_openid_connect_and_back() {
         // Only OpenID Connect discovery: a plain OAuth server tries RFC 8414 first.
-        let oidc_only = serve(|_, path, _, _| {
+        let oidc_only = serve(|_, path, headers, _| {
             if path == "/.well-known/openid-configuration" {
-                (
-                    200,
-                    r#"{"authorization_endpoint":"A","token_endpoint":"T"}"#.into(),
-                )
+                let endpoints = [("authorization_endpoint", "A"), ("token_endpoint", "T")];
+                (200, meta(headers, "", &endpoints))
             } else {
                 (404, "{}".into())
             }
         });
         let mut o = OAuth::server(&oidc_only, "c");
         o.discover_blocking().unwrap();
-        assert_eq!((o.authorize_url.as_str(), o.token_url.as_str()), ("A", "T"));
+        assert_eq!(
+            (o.authorize_url, o.token_url),
+            (format!("{oidc_only}/A"), format!("{oidc_only}/T"))
+        );
         // Only RFC 8414, with the issuer's path inserted.
-        let plain = serve(|_, path, _, _| {
+        let plain = serve(|_, path, headers, _| {
             if path == "/.well-known/oauth-authorization-server/realm" {
-                (200, r#"{"authorization_endpoint":"A2","token_endpoint":"T2","registration_endpoint":"R2"}"#.into())
+                let endpoints = [
+                    ("authorization_endpoint", "A2"),
+                    ("token_endpoint", "T2"),
+                    ("registration_endpoint", "R2"),
+                ];
+                (200, meta(headers, "/realm", &endpoints))
             } else {
                 (404, "{}".into())
             }
@@ -1409,8 +1696,8 @@ mod tests {
         let mut o = OAuth::oidc(format!("{plain}/realm"), "c");
         o.discover_blocking().unwrap();
         assert_eq!(
-            (o.authorize_url.as_str(), o.registration_url.as_str()),
-            ("A2", "R2")
+            (o.authorize_url, o.registration_url),
+            (format!("{plain}/A2"), format!("{plain}/R2"))
         );
         // Nothing anywhere: the last error.
         let none = serve(|_, _, _, _| (404, "{}".into()));
@@ -1422,12 +1709,18 @@ mod tests {
 
     #[test]
     fn registers_a_public_client() {
-        let origin = serve(|method, path, headers, body| {
-            match (method, path) {
+        let origin = serve(|method, path, headers, body| match (method, path) {
             ("GET", "/.well-known/oauth-authorization-server") => (
                 200,
-                r#"{"authorization_endpoint":"A","token_endpoint":"T","registration_endpoint":"REG"}"#
-                    .replace("REG", &format!("http://{}/register", host(headers))),
+                meta(
+                    headers,
+                    "",
+                    &[
+                        ("authorization_endpoint", "A"),
+                        ("token_endpoint", "T"),
+                        ("registration_endpoint", "register"),
+                    ],
+                ),
             ),
             ("POST", "/register") => {
                 let req: serde_json::Value = serde_json::from_str(body).unwrap();
@@ -1448,7 +1741,6 @@ mod tests {
                 )
             }
             _ => (404, "{}".into()),
-        }
         });
         let o = OAuth::server(&origin, "")
             .dynamic_registration("My App")
@@ -1477,6 +1769,17 @@ mod tests {
             .unwrap_or("")
             .trim()
             .to_string()
+    }
+
+    /// A metadata document of the server that got `headers`: issuer
+    /// `http://<host><path>`, endpoints `http://<host>/<name>`.
+    fn meta(headers: &str, path: &str, endpoints: &[(&str, &str)]) -> String {
+        let origin = format!("http://{}", host(headers));
+        let mut doc = serde_json::json!({ "issuer": format!("{origin}{path}") });
+        for (k, v) in endpoints {
+            doc[*k] = format!("{origin}/{v}").into();
+        }
+        doc.to_string()
     }
 
     #[test]
@@ -1516,11 +1819,15 @@ mod tests {
 
     #[test]
     fn refreshes_on_this_thread() {
-        let origin = serve(|method, path, _, body| match (method, path) {
+        let origin = serve(|method, path, headers, body| match (method, path) {
             ("GET", "/.well-known/oauth-authorization-server") => (404, "{}".into()),
             ("GET", "/.well-known/openid-configuration") => (
                 200,
-                r#"{"authorization_endpoint":"A","token_endpoint":"TOKEN"}"#.into(),
+                meta(
+                    headers,
+                    "",
+                    &[("authorization_endpoint", "A"), ("token_endpoint", "TOKEN")],
+                ),
             ),
             ("POST", "/token") => {
                 let f = parse_query(body);
@@ -1551,7 +1858,7 @@ mod tests {
         // Endpoints unknown: discovered first (RFC 8414 404, then OpenID).
         let mut o = OAuth::server(&origin, "c");
         o.discover_blocking().unwrap();
-        assert_eq!(o.token_url, "TOKEN");
+        assert_eq!(o.token_url, format!("{origin}/TOKEN"));
         let bad = OAuth::new("A", format!("{origin}/token"), "c");
         assert!(matches!(
             bad.refresh_blocking("wrong"),
@@ -1599,24 +1906,32 @@ mod tests {
     fn revokes_on_this_thread() {
         let origin = serve(|method, path, headers, body| {
             match (method, path) {
-            ("GET", "/.well-known/oauth-authorization-server") => (
-                200,
-                r#"{"authorization_endpoint":"A","token_endpoint":"T","revocation_endpoint":"REV"}"#
-                    .replace("REV", &format!("http://{}/revoke", host(headers))),
-            ),
-            ("POST", "/revoke") => {
-                let f = parse_query(body);
-                if f.get("client_id").map(String::as_str) != Some("c") {
-                    (401, r#"{"error":"invalid_client"}"#.into())
-                } else if f.get("token_type_hint").map(String::as_str) == Some("refresh_token") {
-                    // Known or not, the answer is the same (RFC 7009 §2.2).
-                    (200, String::new())
-                } else {
-                    (400, r#"{"error":"unsupported_token_type"}"#.into())
+                ("GET", "/.well-known/oauth-authorization-server") => (
+                    200,
+                    meta(
+                        headers,
+                        "",
+                        &[
+                            ("authorization_endpoint", "A"),
+                            ("token_endpoint", "T"),
+                            ("revocation_endpoint", "revoke"),
+                        ],
+                    ),
+                ),
+                ("POST", "/revoke") => {
+                    let f = parse_query(body);
+                    if f.get("client_id").map(String::as_str) != Some("c") {
+                        (401, r#"{"error":"invalid_client"}"#.into())
+                    } else if f.get("token_type_hint").map(String::as_str) == Some("refresh_token")
+                    {
+                        // Known or not, the answer is the same (RFC 7009 §2.2).
+                        (200, String::new())
+                    } else {
+                        (400, r#"{"error":"unsupported_token_type"}"#.into())
+                    }
                 }
+                _ => (404, "{}".into()),
             }
-            _ => (404, "{}".into()),
-        }
         });
         // Endpoints already known (as `resolve` leaves them): the revocation
         // endpoint is still read from the metadata.
@@ -1642,15 +1957,219 @@ mod tests {
                 .revoke_blocking("rt", None)
                 .is_err()
         );
-        let none = serve(|_, _, _, _| {
+        let none = serve(|_, _, headers, _| {
             (
                 200,
-                r#"{"authorization_endpoint":"A","token_endpoint":"T"}"#.into(),
+                meta(
+                    headers,
+                    "",
+                    &[("authorization_endpoint", "A"), ("token_endpoint", "T")],
+                ),
             )
         });
         assert!(matches!(
             OAuth::server(&none, "c").revoke_blocking("rt", None),
             Err(OAuthError::Failed(m)) if m == "no revocation endpoint"
         ));
+    }
+
+    // --- Security review ---
+
+    fn id_token(header: serde_json::Value, claims: serde_json::Value) -> String {
+        format!(
+            "{}.{}.c2ln",
+            base64url(header.to_string().as_bytes()),
+            base64url(claims.to_string().as_bytes())
+        )
+    }
+
+    /// S17: an OpenID Connect sign-in needs a well-formed ID token from its
+    /// provider, for this client and sign-in, not expired (fixed clock).
+    #[test]
+    fn s17_id_tokens_are_checked_whole() {
+        const NOW: u64 = 1_700_000_000;
+        let config = OAuth::oidc("https://id.example", "c");
+        let rs256 = serde_json::json!({ "alg": "RS256", "kid": "k1" });
+        let good = serde_json::json!({
+            "iss": "https://id.example", "aud": "c", "sub": "u1",
+            "nonce": "n", "exp": NOW + 600, "iat": NOW,
+        });
+        let with = |patch: serde_json::Value| {
+            let mut c = good.clone();
+            for (k, v) in patch.as_object().unwrap() {
+                if v.is_null() {
+                    c.as_object_mut().unwrap().remove(k);
+                } else {
+                    c[k] = v.clone();
+                }
+            }
+            id_token(rs256.clone(), c)
+        };
+        let check = |token: &str| check_id_token(token, &config, Some("n"), NOW);
+        let why = |token: &str| match check(token) {
+            Err(OAuthError::InvalidIdToken(why)) => why,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(check(&with(serde_json::json!({}))).unwrap()["sub"], "u1");
+        // Within the clock skew; a trailing slash on the issuer.
+        assert!(
+            check(&with(
+                serde_json::json!({ "exp": NOW - 200, "iss": "https://id.example/" })
+            ))
+            .is_ok()
+        );
+        for (token, reason) in [
+            ("abc".to_string(), "malformed"),
+            ("a.b".to_string(), "malformed"),
+            (
+                format!("{}.bm90IGpzb24.c2ln", base64url(b"{}")),
+                "malformed",
+            ),
+            (
+                id_token(serde_json::json!({ "alg": "none" }), good.clone()),
+                "unsigned",
+            ),
+            (
+                with(serde_json::json!({ "iss": "https://evil.example" })),
+                "issuer",
+            ),
+            (with(serde_json::json!({ "iss": null })), "issuer"),
+            (with(serde_json::json!({ "aud": "other" })), "audience"),
+            (
+                with(serde_json::json!({ "aud": ["c", "other"] })),
+                "authorized party",
+            ),
+            (
+                with(serde_json::json!({ "aud": ["c", "other"], "azp": "other" })),
+                "authorized party",
+            ),
+            (with(serde_json::json!({ "exp": NOW - 400 })), "expired"),
+            (with(serde_json::json!({ "exp": null })), "expired"),
+            (with(serde_json::json!({ "sub": null })), "subject"),
+            (with(serde_json::json!({ "sub": "" })), "subject"),
+            (with(serde_json::json!({ "nonce": "replayed" })), "nonce"),
+            (with(serde_json::json!({ "nonce": null })), "nonce"),
+        ] {
+            assert_eq!(why(&token), reason, "{token}");
+        }
+        assert!(
+            check(&with(
+                serde_json::json!({ "aud": ["c", "other"], "azp": "c" })
+            ))
+            .is_ok()
+        );
+        // Google writes its issuer without the scheme too; only Google.
+        let google = OAuth::google("g");
+        let token = id_token(
+            rs256.clone(),
+            serde_json::json!({
+                "iss": "accounts.google.com", "aud": "g", "sub": "1", "exp": NOW + 60,
+            }),
+        );
+        assert!(check_id_token(&token, &google, None, NOW).is_ok());
+        assert!(check(&with(serde_json::json!({ "iss": "id.example" }))).is_err());
+        // Signing in: the ID token is required with OpenID Connect, not
+        // with plain OAuth.
+        let tokens = |id_token: Option<String>| Tokens {
+            access_token: Some("at".into()),
+            id_token,
+            ..Default::default()
+        };
+        assert_eq!(
+            config.check_tokens(&tokens(None), Some("n"), NOW),
+            Err(OAuthError::InvalidIdToken("missing".into()))
+        );
+        assert!(
+            config
+                .check_tokens(&tokens(Some(with(serde_json::json!({})))), Some("n"), NOW)
+                .is_ok()
+        );
+        let plain = OAuth::server("https://as.example", "c");
+        assert!(plain.check_tokens(&tokens(None), None, NOW).is_ok());
+        // Metadata must name its issuer.
+        let mut o = OAuth::oidc("https://id.example", "c");
+        let doc = serde_json::json!({ "authorization_endpoint": "https://id.example/a" });
+        assert!(o.apply_metadata("https://id.example", &doc).is_err());
+    }
+
+    /// S18: the client's credentials and tokens go to the configured
+    /// endpoint and nowhere else: no redirect is followed, plain HTTP only
+    /// to this machine, and answers are bounded.
+    #[test]
+    fn s18_credentials_never_follow_a_redirect() {
+        use std::sync::{Arc, Mutex};
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let log = seen.clone();
+        let elsewhere = serve(move |_, path, _, body| {
+            log.lock().unwrap().push(format!("{path} {body}"));
+            (200, r#"{"access_token":"stolen","client_id":"x"}"#.into())
+        });
+        for status in [307, 308] {
+            let to = elsewhere.clone();
+            let endpoint =
+                serve_with(move |_, path, _, _| (status, format!("{to}{path}"), "{}".into()));
+            let mut o = OAuth::new(
+                format!("{endpoint}/authorize"),
+                format!("{endpoint}/token"),
+                "c",
+            )
+            .client_secret("s3cret");
+            o.revocation_url = format!("{endpoint}/revoke");
+            o.registration_url = format!("{endpoint}/register");
+            assert!(o.refresh_blocking("rt").is_err());
+            assert!(o.revoke_blocking("rt", None).is_err());
+            let mut r = o.clone();
+            r.client_id.clear();
+            assert!(r.register_blocking("http://127.0.0.1/cb").is_err());
+        }
+        assert_eq!(*seen.lock().unwrap(), Vec::<String>::new());
+        // Plain HTTP elsewhere than this machine: refused before sending.
+        for o in [
+            OAuth::new("https://as.example/a", "http://as.example/token", "c"),
+            OAuth::new("https://as.example/a", "HTTP://as.example/token", "c"),
+        ] {
+            assert!(matches!(
+                o.refresh_blocking("rt"),
+                Err(OAuthError::Failed(m)) if m.contains("https")
+            ));
+        }
+        let mut revoke = OAuth::new("https://as.example/a", "https://as.example/t", "c");
+        revoke.revocation_url = "http://as.example/revoke".into();
+        assert!(matches!(
+            revoke.revoke_blocking("rt", None),
+            Err(OAuthError::Failed(m)) if m.contains("https")
+        ));
+        assert!(matches!(
+            OAuth::server("http://as.example", "c").discover_blocking(),
+            Err(OAuthError::Failed(m)) if m.contains("https")
+        ));
+        let mut o = OAuth::server("https://as.example", "c");
+        let doc = serde_json::json!({
+            "issuer": "https://as.example",
+            "authorization_endpoint": "https://as.example/a",
+            "token_endpoint": "http://as.example/t",
+        });
+        assert!(o.apply_metadata("https://as.example", &doc).is_err());
+        assert!(
+            o.authorize_url.is_empty(),
+            "nothing taken from a refused document"
+        );
+        // Answers are bounded.
+        let huge = serve(|_, _, _, _| {
+            (
+                200,
+                format!(r#"{{"access_token":"{}"}}"#, "a".repeat(2 << 20)),
+            )
+        });
+        assert!(matches!(
+            OAuth::new("A", format!("{huge}/token"), "c").refresh_blocking("rt"),
+            Err(OAuthError::Network(_))
+        ));
+        // The endpoint itself still answers.
+        let fine = serve(|_, _, _, _| (200, r#"{"access_token":"ok"}"#.into()));
+        let t = OAuth::new("A", format!("{fine}/token"), "c")
+            .refresh_blocking("rt")
+            .unwrap();
+        assert_eq!(t.access_token.as_deref(), Some("ok"));
     }
 }

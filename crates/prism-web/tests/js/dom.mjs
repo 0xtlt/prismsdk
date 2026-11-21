@@ -604,6 +604,8 @@ export function boot({ ssr = "", layers = null, path = "/", base = "", glyphs = 
     removeEventListener: () => {},
     console,
     customElements,
+    // What web components extend (the test DOM has one element class).
+    HTMLElement: Element,
     Promise,
     JSON,
     Math,

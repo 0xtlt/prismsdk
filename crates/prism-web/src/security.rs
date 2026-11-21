@@ -16,7 +16,9 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock, mpsc};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
+use std::time::{Duration, Instant};
 
 use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
 use ring::rand::{SecureRandom, SystemRandom};
@@ -26,48 +28,106 @@ use sha2::{Digest, Sha256};
 
 // --- Secure storage ---------------------------------------------------------------------
 
-/// The server's key for secrets at rest.
-pub(crate) fn server_key(data_root: &Path) -> [u8; 32] {
+/// The server's key for secrets at rest: `PRISM_SECRET_KEY`, else the one
+/// in the data directory, made by the first worker that needs it.
+pub(crate) fn server_key(data_root: &Path) -> Result<[u8; 32], String> {
     static KEYS: OnceLock<Mutex<HashMap<PathBuf, [u8; 32]>>> = OnceLock::new();
     let mut keys = KEYS.get_or_init(Default::default).lock().unwrap();
     if let Some(k) = keys.get(data_root) {
-        return *k;
+        return Ok(*k);
     }
-    let key = std::env::var("PRISM_SECRET_KEY")
-        .ok()
-        .and_then(|h| hex_decode(h.trim()))
-        .and_then(|b| <[u8; 32]>::try_from(b).ok())
-        .unwrap_or_else(|| {
-            let path = data_root.join(".secret-key");
-            if let Some(k) = std::fs::read(&path)
-                .ok()
-                .and_then(|b| <[u8; 32]>::try_from(b).ok())
-            {
-                return k;
-            }
-            let mut k = [0u8; 32];
-            SystemRandom::new().fill(&mut k).expect("system random");
-            let _ = std::fs::create_dir_all(data_root);
-            write_private(&path, &k);
-            k
-        });
+    let key = key_from(std::env::var("PRISM_SECRET_KEY").ok(), data_root)?;
     keys.insert(data_root.to_path_buf(), key);
-    key
+    Ok(key)
 }
 
-fn write_private(path: &Path, data: &[u8]) {
-    let tmp = path.with_extension("tmp~");
-    let ok = std::fs::write(&tmp, data).is_ok() && {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-        }
-        std::fs::rename(&tmp, path).is_ok()
-    };
-    if !ok {
-        eprintln!("prism-web: could not write {}", path.display());
+/// The key `configured` (64 hex digits), else the data directory's: read,
+/// or created once for every worker sharing the directory. A configured key
+/// that does not parse, or a key file that does not hold one, is an error:
+/// secrets are never sealed with a key that would be lost.
+fn key_from(configured: Option<String>, data_root: &Path) -> Result<[u8; 32], String> {
+    if let Some(hex) = configured {
+        return hex_decode(hex.trim())
+            .and_then(|b| <[u8; 32]>::try_from(b).ok())
+            .ok_or_else(|| "PRISM_SECRET_KEY must be 64 hex digits".to_string());
     }
+    let path = data_root.join(".secret-key");
+    let read = |path: &Path| -> Result<Option<[u8; 32]>, String> {
+        match std::fs::read(path) {
+            Ok(b) => <[u8; 32]>::try_from(b)
+                .map(Some)
+                .map_err(|_| format!("{}: not a key (32 bytes)", path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("{}: {e}", path.display())),
+        }
+    };
+    if let Some(k) = read(&path)? {
+        return Ok(k);
+    }
+    let mut k = [0u8; 32];
+    SystemRandom::new()
+        .fill(&mut k)
+        .map_err(|_| "no random source")?;
+    private_dir(data_root).map_err(|e| format!("{}: {e}", data_root.display()))?;
+    // Written aside (private from the start), then linked in place: the link
+    // fails if another worker made the key first, and then its key is used.
+    let tmp = write_aside(&path, &k).map_err(|e| format!("{}: {e}", path.display()))?;
+    let linked = std::fs::hard_link(&tmp, &path);
+    let _ = std::fs::remove_file(&tmp);
+    match linked {
+        Ok(()) => Ok(k),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            read(&path)?.ok_or_else(|| format!("{}: vanished", path.display()))
+        }
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+/// Creates `dir` (and its parents) readable by this user only.
+fn private_dir(dir: &Path) -> std::io::Result<()> {
+    let mut b = std::fs::DirBuilder::new();
+    b.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        b.mode(0o700);
+    }
+    b.create(dir)
+}
+
+/// A new file beside `path`, under a name of its own, readable by this user
+/// only from its creation, holding `data`.
+fn write_aside(path: &Path, data: &[u8]) -> std::io::Result<PathBuf> {
+    use std::io::Write;
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = path.with_file_name(format!(".{name}.{}.tmp~", random_id()));
+    let mut open = std::fs::OpenOptions::new();
+    open.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        open.mode(0o600);
+    }
+    let written = open.open(&tmp).and_then(|mut f| {
+        f.write_all(data)?;
+        f.sync_all()
+    });
+    match written {
+        Ok(()) => Ok(tmp),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
+/// Replaces `path` with `data` at once: readers see the old file or the new.
+fn write_private(path: &Path, data: &[u8]) -> Result<(), String> {
+    let tmp = write_aside(path, data).map_err(|e| format!("{}: {e}", path.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("{}: {e}", path.display())
+    })
 }
 
 /// One browser's secrets: `<session>/secure/<sha256(key)>`, each
@@ -75,7 +135,8 @@ fn write_private(path: &Path, data: &[u8]) {
 pub(crate) struct SecureStore {
     dir: PathBuf,
     sid: String,
-    key: LessSafeKey,
+    /// The server key, or why there is none (every operation fails then).
+    key: Result<LessSafeKey, String>,
 }
 
 pub(crate) struct Secret {
@@ -85,12 +146,18 @@ pub(crate) struct Secret {
 }
 
 impl SecureStore {
-    pub fn new(session_dir: &Path, sid: &str, key: [u8; 32]) -> Self {
+    pub fn new(session_dir: &Path, sid: &str, key: Result<[u8; 32], String>) -> Self {
         SecureStore {
             dir: session_dir.join("secure"),
             sid: sid.to_string(),
-            key: LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &key).expect("AES key")),
+            key: key.map(|k| LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &k).expect("AES key"))),
         }
+    }
+
+    fn cipher(&self) -> Result<&LessSafeKey, String> {
+        self.key
+            .as_ref()
+            .map_err(|e| format!("secure storage unavailable: {e}"))
     }
 
     fn path(&self, key: &str) -> PathBuf {
@@ -109,31 +176,32 @@ impl SecureStore {
         let mut data = Vec::with_capacity(value.len() + 1);
         data.push(u8::from(biometric));
         data.extend_from_slice(value.as_bytes());
-        self.key
+        self.cipher()?
             .seal_in_place_append_tag(
                 Nonce::assume_unique_for_key(nonce),
                 Aad::from(self.aad(key)),
                 &mut data,
             )
             .map_err(|_| "encryption failed")?;
-        std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
+        private_dir(&self.dir).map_err(|e| format!("{}: {e}", self.dir.display()))?;
         let mut file = nonce.to_vec();
         file.extend(data);
-        write_private(&self.path(key), &file);
-        Ok(())
+        write_private(&self.path(key), &file)
     }
 
     pub fn get(&self, key: &str) -> Result<Option<Secret>, String> {
-        let Ok(mut file) = std::fs::read(self.path(key)) else {
-            return Ok(None);
+        let cipher = self.cipher()?;
+        let mut file = match std::fs::read(self.path(key)) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("secret unreadable: {e}")),
         };
         if file.len() < 12 + 16 + 1 {
             return Err("corrupt secret".into());
         }
         let mut data = file.split_off(12);
         let nonce = Nonce::try_assume_unique_for_key(&file).map_err(|_| "corrupt secret")?;
-        let plain = self
-            .key
+        let plain = cipher
             .open_in_place(nonce, Aad::from(self.aad(key)), &mut data)
             .map_err(|_| "secret unreadable (PRISM_SECRET_KEY changed?)")?;
         Ok(Some(Secret {
@@ -142,8 +210,13 @@ impl SecureStore {
         }))
     }
 
-    pub fn delete(&self, key: &str) {
-        let _ = std::fs::remove_file(self.path(key));
+    /// Removes a secret; one that is not there is removed already.
+    pub fn delete(&self, key: &str) -> Result<(), String> {
+        match std::fs::remove_file(self.path(key)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("secret not deleted: {e}")),
+        }
     }
 
     fn credential_path(&self) -> PathBuf {
@@ -161,10 +234,36 @@ impl SecureStore {
         })
     }
 
-    pub fn save_credential(&self, c: &Credential) {
-        let _ = std::fs::create_dir_all(&self.dir);
+    /// Updates the enrolled credential (its signature counter).
+    pub fn save_credential(&self, c: &Credential) -> Result<(), String> {
+        private_dir(&self.dir).map_err(|e| format!("{}: {e}", self.dir.display()))?;
         let v = json!({ "id": c.id, "alg": c.alg, "key": base64url(&c.key), "count": c.count });
-        write_private(&self.credential_path(), v.to_string().as_bytes());
+        write_private(&self.credential_path(), v.to_string().as_bytes())
+    }
+
+    /// Enrolls this browser's first credential. Fails when one is already
+    /// enrolled, even by a ceremony that finished meanwhile: an enrolled
+    /// credential is never replaced through WebAuthn.
+    pub fn enroll(&self, c: &Credential) -> Result<(), String> {
+        static ENROLLING: Mutex<()> = Mutex::new(());
+        let _one_at_a_time = ENROLLING.lock().unwrap_or_else(|e| e.into_inner());
+        private_dir(&self.dir).map_err(|e| format!("{}: {e}", self.dir.display()))?;
+        let path = self.credential_path();
+        if path.exists() {
+            return Err("webauthn: a credential is already enrolled".into());
+        }
+        let v = json!({ "id": c.id, "alg": c.alg, "key": base64url(&c.key), "count": c.count });
+        // Written aside, then linked in place: the link fails if another
+        // process enrolled meanwhile, and nobody reads a partial file.
+        let tmp = write_aside(&path, v.to_string().as_bytes()).map_err(|e| e.to_string())?;
+        let linked = std::fs::hard_link(&tmp, &path);
+        let _ = std::fs::remove_file(&tmp);
+        linked.map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => {
+                "webauthn: a credential is already enrolled".into()
+            }
+            _ => e.to_string(),
+        })
     }
 }
 
@@ -180,21 +279,33 @@ pub(crate) struct Credential {
     pub count: u32,
 }
 
+/// The operation the server chose for a ceremony: the page cannot answer
+/// another one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Mode {
+    /// Enroll this browser's first credential.
+    Register,
+    /// An assertion by the enrolled credential with this id.
+    Assert(String),
+}
+
 /// What the server expects from one ceremony.
 pub(crate) struct Ceremony {
     pub challenge: String,
     pub origin: String,
     pub rp_id: String,
+    pub mode: Mode,
 }
 
 impl Ceremony {
-    pub fn new(origin: &str) -> Self {
+    pub fn new(origin: &str, mode: Mode) -> Self {
         let mut c = [0u8; 32];
         SystemRandom::new().fill(&mut c).expect("system random");
         Ceremony {
             challenge: base64url(&c),
             origin: origin.to_string(),
             rp_id: rp_id(origin),
+            mode,
         }
     }
 }
@@ -239,8 +350,21 @@ fn check_common(c: &Ceremony, kind: &str, client: &[u8], auth: &[u8]) -> Result<
     Ok(u32::from_be_bytes([auth[33], auth[34], auth[35], auth[36]]))
 }
 
+/// The credential id in authenticatorData's attested credential data
+/// (flag AT: AAGUID, id length, id, then the COSE key).
+fn attested_credential_id(auth: &[u8]) -> Option<&[u8]> {
+    if auth.get(32)? & 0x40 == 0 {
+        return None;
+    }
+    let len = u16::from_be_bytes([*auth.get(53)?, *auth.get(54)?]) as usize;
+    auth.get(55..55 + len)
+}
+
 /// A registration (`navigator.credentials.create`): the new credential.
 pub(crate) fn verify_registration(c: &Ceremony, r: &Value) -> Result<Credential, String> {
+    if c.mode != Mode::Register {
+        return Err("webauthn: wrong ceremony".into());
+    }
     let client = b64(r, "client")?;
     let auth = b64(r, "auth")?;
     let count = check_common(c, "webauthn.create", &client, &auth)?;
@@ -256,6 +380,10 @@ pub(crate) fn verify_registration(c: &Ceremony, r: &Value) -> Result<Credential,
         .get("id")
         .and_then(Value::as_str)
         .ok_or("webauthn: missing id")?;
+    // The id the authenticator attested, not another one.
+    if attested_credential_id(&auth) != base64url_decode(id).as_deref() {
+        return Err("webauthn: credential id mismatch".into());
+    }
     Ok(Credential {
         id: id.to_string(),
         alg,
@@ -270,6 +398,9 @@ pub(crate) fn verify_assertion(
     cred: &mut Credential,
     r: &Value,
 ) -> Result<(), String> {
+    if c.mode != Mode::Assert(cred.id.clone()) {
+        return Err("webauthn: wrong ceremony".into());
+    }
     if r.get("id").and_then(Value::as_str) != Some(cred.id.as_str()) {
         return Err("webauthn: unknown credential".into());
     }
@@ -325,26 +456,91 @@ fn spki_key(der: &[u8]) -> Option<Vec<u8>> {
 
 // --- OAuth popups -------------------------------------------------------------------------
 
-/// Sessions waiting for a provider's redirect, by `state`.
-type Waiting = HashMap<String, (mpsc::Sender<crate::session::Inbound>, u64)>;
+/// How long a sign-in popup has to come back; its `state` is forgotten
+/// after.
+pub(crate) const REDIRECT_TTL: Duration = Duration::from_secs(10 * 60);
+/// Sign-ins one session, and all of them, may have waiting at once.
+const REDIRECTS_PER_SESSION: usize = 8;
+const REDIRECTS: usize = 4096;
 
-fn waiting() -> &'static Mutex<Waiting> {
-    static W: OnceLock<Mutex<Waiting>> = OnceLock::new();
+/// A session's call waiting for a provider's redirect.
+struct Waiting {
+    tx: mpsc::Sender<crate::session::Inbound>,
+    /// The session ([`session_key`]) and its call.
+    session: u64,
+    id: u64,
+    since: Instant,
+}
+
+/// Sign-ins waiting for their redirect, by `state`.
+fn waiting() -> MutexGuard<'static, HashMap<String, Waiting>> {
+    static W: OnceLock<Mutex<HashMap<String, Waiting>>> = OnceLock::new();
     W.get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
 }
 
-pub(crate) fn wait_for_redirect(state: String, tx: mpsc::Sender<crate::session::Inbound>, id: u64) {
-    waiting().lock().unwrap().insert(state, (tx, id));
+/// A number of its own for each live session: its sign-ins are filed under
+/// it, as call numbers start again in each session.
+pub(crate) fn session_key() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-pub(crate) fn forget_redirect(id: u64) {
-    waiting().lock().unwrap().retain(|_, (_, i)| *i != id);
+/// Files call `id` of `session` under `state` until the provider
+/// redirects. `false` when the session has too many sign-ins waiting, or
+/// the server, or another session waits on that `state`.
+pub(crate) fn wait_for_redirect(
+    state: String,
+    tx: mpsc::Sender<crate::session::Inbound>,
+    session: u64,
+    id: u64,
+) -> bool {
+    let now = Instant::now();
+    let mut w = waiting();
+    w.retain(|_, p| now.duration_since(p.since) < REDIRECT_TTL);
+    let mine = w.values().filter(|p| p.session == session).count();
+    let taken = w.get(&state).is_some_and(|p| p.session != session);
+    if taken || mine >= REDIRECTS_PER_SESSION || w.len() >= REDIRECTS {
+        return false;
+    }
+    let since = now;
+    w.insert(
+        state,
+        Waiting {
+            tx,
+            session,
+            id,
+            since,
+        },
+    );
+    true
+}
+
+/// Forgets call `id` of `session` (its page could not open the popup).
+pub(crate) fn forget_redirect(session: u64, id: u64) {
+    waiting().retain(|_, p| !(p.session == session && p.id == id));
+}
+
+/// Forgets every sign-in of `session` (it ended).
+pub(crate) fn forget_session(session: u64) {
+    waiting().retain(|_, p| p.session != session);
+}
+
+/// The sign-in waiting on `state`, once: `None` if there is none or it
+/// waited [`REDIRECT_TTL`] by `now`.
+pub(crate) fn take_redirect(
+    state: &str,
+    now: Instant,
+) -> Option<(mpsc::Sender<crate::session::Inbound>, u64)> {
+    let p = waiting().remove(state)?;
+    (now.duration_since(p.since) < REDIRECT_TTL).then_some((p.tx, p.id))
 }
 
 /// `GET <base>/_prism/auth/callback?…`: hands the URL to its session.
 pub(crate) fn redirect_page(query: &str, nonce: Option<&crate::CspNonce>) -> String {
     let state = query_map(query).remove("state").unwrap_or_default();
-    let found = waiting().lock().unwrap().remove(&state);
+    let found = take_redirect(&state, Instant::now());
     let delivered = found.is_some_and(|(tx, id)| {
         tx.send(crate::session::Inbound::AuthRedirect(
             id,
@@ -453,6 +649,110 @@ mod tests {
     use super::*;
     use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair};
 
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("prism-s25-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// S25: workers sharing a data directory (processes; here threads, past
+    /// the per-process cache) all seal with the one key that is persisted.
+    #[test]
+    fn s25_workers_share_one_persisted_key() {
+        let root = scratch("workers");
+        for round in 0..20 {
+            let dir = root.join(round.to_string());
+            let start = std::sync::Arc::new(std::sync::Barrier::new(8));
+            let keys: Vec<[u8; 32]> = (0..8)
+                .map(|_| {
+                    let (dir, start) = (dir.clone(), start.clone());
+                    std::thread::spawn(move || {
+                        start.wait();
+                        key_from(None, &dir).unwrap()
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|t| t.join().unwrap())
+                .collect();
+            let persisted = std::fs::read(dir.join(".secret-key")).unwrap();
+            assert!(keys.iter().all(|k| k[..] == persisted[..]), "round {round}");
+            let names: Vec<_> = std::fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name())
+                .collect();
+            assert_eq!(names, [".secret-key"], "round {round}");
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn s25_a_key_that_does_not_parse_is_an_error() {
+        let dir = scratch("bad-key");
+        assert!(key_from(Some("not hex".into()), &dir).is_err());
+        assert!(key_from(Some("ab".repeat(31)), &dir).is_err());
+        assert_eq!(key_from(Some("ab".repeat(32)), &dir).unwrap(), [0xab; 32]);
+        assert!(!dir.exists(), "a configured key writes no key file");
+        // A key file that holds no key is left alone, not replaced.
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".secret-key"), "short").unwrap();
+        assert!(key_from(None, &dir).is_err());
+        assert_eq!(std::fs::read(dir.join(".secret-key")).unwrap(), b"short");
+        // Without a key, the store fails instead of sealing with another.
+        let s = SecureStore::new(
+            &dir,
+            "sid",
+            Err("PRISM_SECRET_KEY must be 64 hex digits".into()),
+        );
+        let err = s.set("token", "v", false).unwrap_err();
+        assert!(err.contains("PRISM_SECRET_KEY"), "{err}");
+        assert!(s.get("token").is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn s25_failed_writes_and_deletes_are_errors() {
+        let dir = scratch("failures");
+        let s = SecureStore::new(&dir, "sid", Ok([7; 32]));
+        s.set("token", "old", false).unwrap();
+        // The secret's path becomes a directory with something in it: it can
+        // be neither replaced nor removed.
+        std::fs::remove_file(s.path("token")).unwrap();
+        std::fs::create_dir_all(s.path("token").join("x")).unwrap();
+        assert!(s.set("token", "new", false).is_err(), "reported saved");
+        assert!(s.delete("token").is_err(), "reported deleted");
+        // Nothing left behind by the failed write.
+        let names: Vec<_> = std::fs::read_dir(dir.join("secure"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().all(|n| !n.ends_with("tmp~")), "{names:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn s25_secrets_are_private_from_creation() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = scratch("private");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Created private, not made private after (whatever the umask).
+        let tmp = write_aside(&dir.join("k"), b"x").unwrap();
+        assert_eq!(mode(&tmp), 0o600);
+        let data = dir.join("data");
+        key_from(None, &data).unwrap();
+        assert_eq!(mode(&data), 0o700);
+        assert_eq!(mode(&data.join(".secret-key")), 0o600);
+        let s = SecureStore::new(&data.join("sid"), "sid", Ok([7; 32]));
+        s.set("token", "v", false).unwrap();
+        assert_eq!(mode(&data.join("sid/secure")), 0o700);
+        assert_eq!(mode(&s.path("token")), 0o600);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     fn auth_data(rp: &str, flags: u8, count: u32) -> Vec<u8> {
         let mut a = Sha256::digest(rp.as_bytes()).to_vec();
         a.push(flags);
@@ -470,7 +770,7 @@ mod tests {
     fn secrets_are_encrypted_and_bound_to_the_session() {
         let dir = std::env::temp_dir().join(format!("prism-secure-{}", std::process::id()));
         let key = [7u8; 32];
-        let a = SecureStore::new(&dir.join("a"), "sid-a", key);
+        let a = SecureStore::new(&dir.join("a"), "sid-a", Ok(key));
         a.set("token", "s3cret", false).unwrap();
         a.set("pin", "1234", true).unwrap();
         let raw = std::fs::read(a.path("token")).unwrap();
@@ -480,12 +780,13 @@ mod tests {
         assert!(a.get("pin").unwrap().unwrap().biometric);
         assert!(a.get("missing").unwrap().is_none());
         // Another session (or key) cannot open it.
-        let b = SecureStore::new(&dir.join("a"), "sid-b", key);
+        let b = SecureStore::new(&dir.join("a"), "sid-b", Ok(key));
         assert!(b.get("token").is_err());
-        let c = SecureStore::new(&dir.join("a"), "sid-a", [8u8; 32]);
+        let c = SecureStore::new(&dir.join("a"), "sid-a", Ok([8u8; 32]));
         assert!(c.get("token").is_err());
-        a.delete("token");
+        a.delete("token").unwrap();
         assert!(a.get("token").unwrap().is_none());
+        a.delete("token").unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -504,16 +805,28 @@ mod tests {
 
         let origin = "http://localhost:3000";
         assert_eq!(rp_id(origin), "localhost");
-        let reg = Ceremony::new(origin);
+        let reg = Ceremony::new(origin, Mode::Register);
+        // Attested credential data: AAGUID, the id's length, the id.
+        let mut attested = auth_data("localhost", 0x45, 0);
+        attested.extend([0u8; 16]);
+        let raw_id = base64url_decode("cred1").unwrap();
+        attested.extend((raw_id.len() as u16).to_be_bytes());
+        attested.extend(&raw_id);
         let response = json!({
             "id": "cred1", "alg": -7, "key": base64url(&spki),
             "client": base64url(&client("webauthn.create", &reg.challenge, origin)),
-            "auth": base64url(&auth_data("localhost", 0x45, 0)),
+            "auth": base64url(&attested),
         });
+        // Another id than the attested one.
+        let mut other = response.clone();
+        other["id"] = json!(base64url(b"other"));
+        assert!(verify_registration(&reg, &other).is_err());
         let mut cred = verify_registration(&reg, &response).unwrap();
         assert_eq!(cred.key, pair.public_key().as_ref());
 
-        let get = Ceremony::new(origin);
+        let get = Ceremony::new(origin, Mode::Assert("cred1".into()));
+        // Each ceremony takes only the operation the server chose.
+        assert!(verify_registration(&get, &response).is_err());
         let sign = |flags: u8, count: u32, challenge: &str, origin: &str| {
             let auth = auth_data("localhost", flags, count);
             let client = client("webauthn.get", challenge, origin);

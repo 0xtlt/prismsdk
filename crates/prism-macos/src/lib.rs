@@ -43,6 +43,8 @@ mod sticky;
 mod table;
 #[cfg(target_os = "macos")]
 mod trace;
+#[cfg(target_os = "macos")]
+mod widget_key;
 
 #[cfg(target_os = "macos")]
 pub use imp::run;

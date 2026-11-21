@@ -30,6 +30,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
 # The glTF crate's JSON layer only (typed document; no image decoding, no
 # filesystem): GLB chunks, buffers and accessors are read in `scene3d/gltf.rs`.
+# Widget-action links (macOS widgets open the app on them) carry an
+# HMAC-SHA256 of the action, so only the app's own widgets can run one.
+hmac = "0.12"
+sha2 = "0.10"
 gltf-json = { version = "1.4", default-features = false, features = ["names", "extensions", "KHR_materials_emissive_strength", "KHR_materials_unlit"], optional = true }
 
 [package.metadata.docs.rs]

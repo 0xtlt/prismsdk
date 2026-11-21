@@ -79,7 +79,7 @@ impl PushService {
 
 /// Where your server sends pushes for this device: give it
 /// [`to_json`](Self::to_json) (`prism_push::Subscription` reads it).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PushSubscription {
     /// The push service the token belongs to.
     pub service: PushService,
@@ -95,6 +95,32 @@ pub struct PushSubscription {
     pub topic: Option<String>,
     /// APNs: a development token (`api.sandbox.push.apple.com`).
     pub sandbox: bool,
+}
+
+/// The token (an endpoint, for Web Push) and the secret show hidden (S34).
+impl std::fmt::Debug for PushSubscription {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::security::Hidden;
+        f.debug_struct("PushSubscription")
+            .field("service", &self.service)
+            .field("token", &Hidden::text(&self.token))
+            .field("p256dh", &self.p256dh)
+            .field("auth", &Hidden::opt(self.auth.as_deref()))
+            .field("topic", &self.topic)
+            .field("sandbox", &self.sandbox)
+            .finish()
+    }
+}
+
+/// The token shows hidden (S34).
+impl std::fmt::Debug for ActivityPushToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ActivityPushToken")
+            .field("activity", &self.activity)
+            .field("kind", &self.kind)
+            .field("token", &crate::security::Hidden::text(&self.token))
+            .finish()
+    }
 }
 
 impl PushSubscription {
@@ -269,7 +295,7 @@ impl PushMessage {
 
 /// A Live Activity's push token (iOS 16.1+), for updating it from your
 /// server (`apns-push-type: liveactivity`, topic `<bundle id>.push-type.liveactivity`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ActivityPushToken {
     /// The activity, or `None` for the push-to-start token (iOS 17.2+): it
     /// lets your server start an activity of `kind`.
@@ -529,9 +555,13 @@ impl AsyncApp {
 }
 
 // ---------------------------------------------------------------------------
-// A small JSON reader (payloads, subscriptions): prism-core has no
-// dependencies.
+// A small JSON reader (payloads, subscriptions, widget actions).
 // ---------------------------------------------------------------------------
+
+/// How deep arrays and objects may nest in [`Json::parse`]: payloads come
+/// from the network (a browser reports its pushes), and the reader is
+/// recursive. Real payloads nest a few levels.
+pub(crate) const MAX_JSON_DEPTH: usize = 64;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Json {
@@ -544,10 +574,17 @@ pub(crate) enum Json {
 }
 
 impl Json {
+    /// Reads `s`; `None` when malformed or nested deeper than
+    /// [`MAX_JSON_DEPTH`].
     pub(crate) fn parse(s: &str) -> Option<Json> {
+        Self::parse_with_depth(s, MAX_JSON_DEPTH)
+    }
+
+    pub(crate) fn parse_with_depth(s: &str, max_depth: usize) -> Option<Json> {
         let mut p = Parser {
             s: s.as_bytes(),
             i: 0,
+            depth: max_depth,
         };
         let v = p.value()?;
         p.ws();
@@ -608,6 +645,8 @@ impl Json {
 struct Parser<'a> {
     s: &'a [u8],
     i: usize,
+    /// How many more arrays or objects may open.
+    depth: usize,
 }
 
 impl Parser<'_> {
@@ -628,7 +667,19 @@ impl Parser<'_> {
 
     fn value(&mut self) -> Option<Json> {
         self.ws();
-        match *self.s.get(self.i)? {
+        let c = *self.s.get(self.i)?;
+        if matches!(c, b'{' | b'[') {
+            // Too deep: refused before descending (the stack is bounded).
+            self.depth = self.depth.checked_sub(1)?;
+            let v = self.container(c);
+            self.depth += 1;
+            return v;
+        }
+        self.scalar(c)
+    }
+
+    fn container(&mut self, c: u8) -> Option<Json> {
+        match c {
             b'{' => {
                 self.i += 1;
                 let mut items = Vec::new();
@@ -673,6 +724,12 @@ impl Parser<'_> {
                     }
                 }
             }
+            _ => None,
+        }
+    }
+
+    fn scalar(&mut self, c: u8) -> Option<Json> {
+        match c {
             b'"' => self.string().map(Json::String),
             b't' if self.eat("true") => Some(Json::Bool(true)),
             b'f' if self.eat("false") => Some(Json::Bool(false)),
@@ -741,6 +798,50 @@ impl Parser<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S34: a subscription's secret and endpoint, and a Live Activity's
+    /// token, do not show when printed (`{:?}`, in a log).
+    #[test]
+    fn s34_push_tokens_print_hidden() {
+        let sub = PushSubscription {
+            service: PushService::WebPush,
+            token: "https://push.example/wpush/S34-MARK-EP".into(),
+            p256dh: Some("BPUBLIC".into()),
+            auth: Some("S34-MARK-AUTH".into()),
+            topic: None,
+            sandbox: false,
+        };
+        let activity = ActivityPushToken {
+            activity: None,
+            kind: "delivery".into(),
+            token: "S34-MARK-ACT".into(),
+        };
+        for shown in [
+            format!("{sub:?}"),
+            format!("{sub:#?}"),
+            format!("{activity:?}"),
+        ] {
+            assert!(!shown.contains("S34-MARK"), "{shown}");
+        }
+        assert!(format!("{sub:?}").contains("WebPush"));
+        assert!(format!("{activity:?}").contains("delivery"));
+    }
+
+    /// S2: nesting is bounded before descending; at the limit it reads.
+    #[test]
+    fn nesting_deeper_than_the_limit_is_refused() {
+        let nested = |n: usize| format!("{}{}", "[".repeat(n), "]".repeat(n));
+        assert!(Json::parse_with_depth(&nested(3), 3).is_some());
+        assert!(Json::parse_with_depth(&nested(4), 3).is_none());
+        let obj = r#"{"a":{"b":{"c":1}}}"#;
+        assert!(Json::parse_with_depth(obj, 3).is_some());
+        assert!(Json::parse_with_depth(obj, 2).is_none());
+        // Far deeper than the stack would take: an error, not an abort.
+        assert!(Json::parse(&nested(1_000_000)).is_none());
+        assert!(Json::parse(&nested(MAX_JSON_DEPTH)).is_some());
+        let payload = format!(r#"{{"title":"t","data":{}}}"#, nested(500_000));
+        assert!(PushMessage::from_payload(PushEvent::Received, &payload).is_none());
+    }
 
     #[test]
     fn subscription_round_trips() {

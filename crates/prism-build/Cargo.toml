@@ -23,6 +23,8 @@ serde_json.workspace = true
 prism-apple-build.workspace = true
 # link_app on Windows: the app icon, from Prism.toml's PNG.
 png = "0.18"
+# The Windows App SDK packages, checked against their pinned SHA-256.
+sha2 = "0.10"
 
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]

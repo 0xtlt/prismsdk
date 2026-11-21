@@ -594,7 +594,7 @@ impl Render for Counter {
     }
 }
 
-fn counter_init() -> AppInit {
+pub(crate) fn counter_init() -> AppInit {
     Arc::new(|cx: &mut App| {
         let root = cx.new_entity(|_| Counter {
             count: 0,
@@ -1477,21 +1477,76 @@ fn scene_updates_go_out_with_textures_resolved_like_pictures() {
     );
 }
 
+/// S29: the blobs of a scene a live session sends go to its browser, and
+/// to no other.
+#[test]
+fn s29_blobs_a_session_sends_go_to_its_browser_only() {
+    use prism_core::scene3d::{Instances, SceneData, SceneUpdate, cube};
+    let (app, dir) = web_app(counter_init(), "s29-session");
+    let set = Instances::grid([2, 1, 7], [1., 1., 1.]);
+    let mut scene = SceneData::default();
+    scene.nodes.push(cube(0.5).name("crowd").instances(&set));
+    let update = SceneUpdate::full(&scene);
+    let id = update.to_value()["nodes"][0]["inst"]["id"]
+        .as_str()
+        .expect("an instance blob")
+        .to_string();
+    let fetch = |sid: &str| {
+        app.handle(
+            &Request::get(format!("/_prism/3d/{id}"))
+                .header("cookie", format!("prism_sid={sid}"))
+                .body(())
+                .unwrap(),
+        )
+        .status()
+    };
+    let (mine, other) = ("a1".repeat(16), "b2".repeat(16));
+    assert_eq!(fetch(&mine), StatusCode::NOT_FOUND, "not sent yet");
+    let mut e = Encoder::default();
+    e.sid = Some(mine.clone());
+    e.encode(&[
+        create(1, NodeKind::Scene3d),
+        Patch::SetScene { id: 1, update },
+    ]);
+    assert_eq!(fetch(&mine), StatusCode::OK);
+    assert_eq!(fetch(&other), StatusCode::NOT_FOUND);
+    drop(set);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn scene_blobs_are_served_by_id() {
     use prism_core::scene3d::blobs::{self, BlobKind};
     let (app, dir) = web_app(counter_init(), "scene-blobs");
-    let get = |path: &str| app.handle(&Request::get(path).body(()).unwrap());
     let blob = blobs::put(BlobKind::Image, "image/png", vec![0x89, b'P', b'N', b'G']);
+    let mesh = blobs::put(BlobKind::Mesh, blobs::BINARY_MIME, vec![1, 2, 3, 4]);
+    // A live session sent them to this browser.
+    let sid = "5e".repeat(16);
+    crate::scene_blobs::sent(
+        Some(&sid),
+        &json!({ "v": 2, "full": true, "nodes": [{
+            "key": "0",
+            "mesh": { "type": "blob", "id": mesh.id() },
+            "mat": { "map": format!("p3d:{}", blob.id()) },
+        }] }),
+    );
+    let cookie = format!("prism_sid={sid}");
+    let get = |path: &str| {
+        app.handle(
+            &Request::get(path)
+                .header("cookie", &cookie)
+                .body(())
+                .unwrap(),
+        )
+    };
     let r = get(&format!("/_prism/3d/{}", blob.id()));
     assert_eq!(r.status(), StatusCode::OK);
     assert_eq!(r.body().as_slice(), &[0x89, b'P', b'N', b'G']);
     assert_eq!(r.headers()["content-type"], "image/png");
     assert_eq!(
         r.headers()["cache-control"],
-        "public, max-age=31536000, immutable"
+        "private, max-age=31536000, immutable"
     );
-    let mesh = blobs::put(BlobKind::Mesh, blobs::BINARY_MIME, vec![1, 2, 3, 4]);
     let r = get(&format!("/_prism/3d/{}", mesh.id()));
     assert_eq!(r.headers()["content-type"], "application/octet-stream");
     // Unknown, gone, or not an id at all.
@@ -1593,23 +1648,26 @@ fn uploads_decode_standard_and_url_safe_base64() {
 }
 
 /// A live session over channels: what the page receives, as JSON.
-struct Page {
-    session: crate::Session,
+pub(crate) struct Page {
+    pub(crate) session: crate::Session,
     inbox: mpsc::Receiver<String>,
 }
 
 impl Page {
-    fn open(app: &WebApp, uri: &str) -> Page {
+    pub(crate) fn open(app: &WebApp, uri: &str) -> Page {
+        Page::open_with(app, uri, &HeaderMap::new())
+    }
+
+    /// [`open`](Self::open) with the handshake's `headers` (a cookie…).
+    pub(crate) fn open_with(app: &WebApp, uri: &str, headers: &HeaderMap) -> Page {
         let (tx, inbox) = mpsc::channel();
-        let session = app.connect(
-            &uri.parse::<Uri>().unwrap(),
-            &HeaderMap::new(),
-            move |msg| tx.send(msg).is_ok(),
-        );
+        let session = app.connect(&uri.parse::<Uri>().unwrap(), headers, move |msg| {
+            tx.send(msg).is_ok()
+        });
         Page { session, inbox }
     }
 
-    fn next(&self) -> Value {
+    pub(crate) fn next(&self) -> Value {
         let msg = self
             .inbox
             .recv_timeout(Duration::from_secs(10))
@@ -1617,12 +1675,12 @@ impl Page {
         serde_json::from_str(&msg).unwrap()
     }
 
-    fn send(&self, msg: Value) {
+    pub(crate) fn send(&self, msg: Value) {
         assert!(self.session.receive(msg.to_string()));
     }
 }
 
-fn web_app(init: AppInit, tag: &str) -> (WebApp, std::path::PathBuf) {
+pub(crate) fn web_app(init: AppInit, tag: &str) -> (WebApp, std::path::PathBuf) {
     let dir = std::env::temp_dir().join(format!("prism-web-{tag}-{}", std::process::id()));
     let config = AppConfig {
         title: "Test".into(),
@@ -1632,7 +1690,7 @@ fn web_app(init: AppInit, tag: &str) -> (WebApp, std::path::PathBuf) {
     (WebApp::new(config, init).data_dir(dir.join("data")), dir)
 }
 
-fn op_with_text(patches: &Value, text: &str) -> u64 {
+pub(crate) fn op_with_text(patches: &Value, text: &str) -> u64 {
     patches
         .as_array()
         .unwrap()
@@ -2185,7 +2243,7 @@ fn uploads_arrive_in_chunks_for_pick_calls_only() {
     ];
     // Not a pick call: refused.
     assert_eq!(u.start(&app, sid, Call(7), &two), None);
-    u.expect(7);
+    u.expect(7, None);
     assert!(u.has(Call(7)));
     assert_eq!(u.start(&app, sid, Call(7), &two), Some((0, 5)));
     assert_eq!(u.start(&app, sid, Call(7), &two), None, "once");
@@ -2210,19 +2268,21 @@ fn uploads_arrive_in_chunks_for_pick_calls_only() {
     assert_eq!(count(), 2);
 
     // More than declared: refused, and the upload fails.
-    u.expect(8);
+    u.expect(8, None);
     u.start(&app, sid, Call(8), &[json!({ "name": "a.txt", "size": 2 })]);
+    assert_eq!(count(), 2, "created by its first chunk (S16)");
+    assert_eq!(u.chunk(Call(8), 0, "aA=="), Some((1, 2)));
     assert_eq!(count(), 3);
     assert_eq!(u.chunk(Call(8), 0, "aGVsbG8="), None);
     assert_eq!(u.chunk(Call(8), 0, "aGk="), None, "stays refused");
     assert!(matches!(u.finish(&app, Call(8), false), Some(Err(_))));
     assert_eq!(count(), 2, "deleted");
     // Missing bytes fail too.
-    u.expect(9);
+    u.expect(9, None);
     u.start(&app, sid, Call(9), &[json!({ "name": "a.txt", "size": 2 })]);
     assert!(matches!(u.finish(&app, Call(9), false), Some(Err(_))));
     // Cancelled (an error reply): deleted, and the reply's error is the answer.
-    u.expect(10);
+    u.expect(10, None);
     u.start(
         &app,
         sid,
@@ -2233,16 +2293,17 @@ fn uploads_arrive_in_chunks_for_pick_calls_only() {
     assert!(u.finish(&app, Call(10), true).is_none());
     assert_eq!(count(), 2);
     // The user cancelled the picker: nothing staged, no files.
-    u.expect(11);
+    u.expect(11, None);
     assert!(u.finish(&app, Call(11), true).is_none());
     // An unfinished upload goes with the session.
-    u.expect(12);
+    u.expect(12, None);
     u.start(
         &app,
         sid,
         Call(12),
         &[json!({ "name": "a.txt", "size": 2 })],
     );
+    u.chunk(Call(12), 0, "aA==");
     assert_eq!(count(), 3);
     drop(u);
     assert_eq!(count(), 2);
@@ -2494,7 +2555,12 @@ fn ssr_pages_are_titled_by_the_visible_screen() {
 
 #[test]
 fn cookies_and_urls_are_parsed_strictly() {
-    use crate::app::{percent_decode, session_id, time_zone, viewport_cookie};
+    use crate::app::{browser_id, percent_decode, time_zone, viewport_cookie};
+    let session_id = |cookie: &str| {
+        let mut h = HeaderMap::new();
+        h.insert("cookie", cookie.parse().unwrap());
+        browser_id(&h, false)
+    };
     assert_eq!(percent_decode("/a%20b%2Fc"), "/a b/c");
     assert_eq!(percent_decode("%E2%9C%93"), "✓");
     assert_eq!(percent_decode("100%"), "100%");
@@ -2504,6 +2570,16 @@ fn cookies_and_urls_are_parsed_strictly() {
         Some("ABCDEF0123456789abcdef0123456789".into())
     );
     assert_eq!(session_id("prism_sid=short"), None);
+    assert_eq!(
+        session_id("prism_sid_x=0123456789abcdef0123456789abcdef"),
+        None
+    );
+    assert_eq!(
+        session_id(
+            "prism_sid=0123456789abcdef0123456789abcdef; __Host-prism_sid=ffffffffffffffffffffffffffffffff"
+        ),
+        Some("ffffffffffffffffffffffffffffffff".into())
+    );
     assert_eq!(
         session_id("prism_sid=0123456789abcdef0123456789abcdeg"),
         None

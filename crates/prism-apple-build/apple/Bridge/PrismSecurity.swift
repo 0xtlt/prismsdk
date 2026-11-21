@@ -84,8 +84,10 @@ private func baseQuery(_ key: String, shared: Bool, dataProtection: Bool) -> [St
 /// Marks items that need the owner (kSecAttrGeneric): reading one first shows
 /// the prompt (LAContext.evaluateAccessControl), then hands the keychain the
 /// authenticated context. macOS apps without a provisioning profile cannot use
-/// the data protection keychain (errSecMissingEntitlement): their biometric
-/// items live in the login keychain, and the app checks the owner itself.
+/// the data protection keychain (errSecMissingEntitlement): the login keychain
+/// has no owner check of its own, so a `biometric` secret is refused there
+/// ("unavailable"), and a `confirm_owner` one lives there with this mark, the
+/// app checking the owner itself (S22).
 private let gateMarker = "prism.owner-gate"
 
 private func status(_ s: OSStatus) -> String {
@@ -126,19 +128,40 @@ private func accessControl() -> SecAccessControl? {
 }
 #endif
 
+#if os(macOS)
+/// The app can use the data protection keychain (it has a provisioning
+/// profile): asked without reading or prompting.
+private func dataProtectionKeychain(_ key: String, shared: Bool) -> Bool {
+    var q = baseQuery(key, shared: shared, dataProtection: true)
+    q[kSecMatchLimit as String] = kSecMatchLimitOne
+    return SecItemCopyMatching(q as CFDictionary, nil) != errSecMissingEntitlement
+}
+#endif
+
+/// `biometric`: the keychain checks the owner. `confirmOwner`: the same where
+/// it can, else (macOS without a provisioning profile) the login keychain with
+/// the app's own check (S22). The previous item is removed only once the new
+/// one can be stored as asked.
 @_cdecl("prism_secure_set")
-public func prismSecureSet(_ id: UInt64, _ key: UnsafePointer<CChar>, _ value: UnsafePointer<CChar>, _ biometric: Bool, _ shared: Bool) {
+public func prismSecureSet(_ id: UInt64, _ key: UnsafePointer<CChar>, _ value: UnsafePointer<CChar>, _ biometric: Bool, _ confirmOwner: Bool, _ shared: Bool) {
     let key = String(cString: key)
     let data = Data(String(cString: value).utf8)
     keychainQueue.async {
-        // Access control cannot be updated in place: replace the item.
-        for dp in [false, true] { SecItemDelete(baseQuery(key, shared: shared, dataProtection: dp) as CFDictionary) }
         var add = baseQuery(key, shared: shared, dataProtection: biometric)
         add[kSecValueData as String] = data
         if biometric {
             #if os(tvOS)
             return failure(id, "unavailable") // no LocalAuthentication on tvOS
             #else
+            #if os(macOS)
+            if !dataProtectionKeychain(key, shared: shared) {
+                guard confirmOwner else { return failure(id, "unavailable") }
+                add = baseQuery(key, shared: shared, dataProtection: false)
+                add[kSecValueData as String] = data
+                add[kSecAttrGeneric as String] = Data(gateMarker.utf8)
+                return replace(id, key, shared: shared, add)
+            }
+            #endif
             guard let access = accessControl() else { return failure(id, "unavailable") }
             add[kSecAttrAccessControl as String] = access
             add[kSecAttrGeneric as String] = Data(gateMarker.utf8)
@@ -147,17 +170,16 @@ public func prismSecureSet(_ id: UInt64, _ key: UnsafePointer<CChar>, _ value: U
             // This device only: not in backups, not migrated.
             add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         }
-        var s = SecItemAdd(add as CFDictionary, nil)
-        #if os(macOS)
-        if biometric && s == errSecMissingEntitlement {
-            var legacy = baseQuery(key, shared: shared, dataProtection: false)
-            legacy[kSecValueData as String] = data
-            legacy[kSecAttrGeneric as String] = Data(gateMarker.utf8)
-            s = SecItemAdd(legacy as CFDictionary, nil)
-        }
-        #endif
-        if s == errSecSuccess { done(id) } else { failure(id, status(s)) }
+        replace(id, key, shared: shared, add)
     }
+}
+
+/// Access control cannot be updated in place: removes the item (from either
+/// keychain), then adds `add`.
+private func replace(_ id: UInt64, _ key: String, shared: Bool, _ add: [String: Any]) {
+    for dp in [false, true] { SecItemDelete(baseQuery(key, shared: shared, dataProtection: dp) as CFDictionary) }
+    let s = SecItemAdd(add as CFDictionary, nil)
+    if s == errSecSuccess { done(id) } else { failure(id, status(s)) }
 }
 
 @_cdecl("prism_secure_get")
@@ -274,7 +296,9 @@ private func laError(_ error: Error) -> String {
 private func ownerCheck(reason: String, passcode: Bool, reply: @escaping (String?) -> Void) {
     let context = LAContext()
     #if os(watchOS)
-    let policy: LAPolicy = .deviceOwnerAuthentication // passcode or wrist detection
+    // No biometrics: the passcode or wrist detection, never biometrics only.
+    guard passcode else { return reply("unavailable") }
+    let policy: LAPolicy = .deviceOwnerAuthentication
     #else
     let policy: LAPolicy = passcode ? .deviceOwnerAuthentication : .deviceOwnerAuthenticationWithBiometrics
     #endif
@@ -416,6 +440,7 @@ public func prismAppleSignIn(_ id: UInt64, _ email: Bool, _ name: Bool, _ nonce:
     if email { scopes.append(.email) }
     if name { scopes.append(.fullName) }
     request.requestedScopes = scopes
+    // Already the SHA-256 (hex) of the app's nonce: AppleSignIn::apple_nonce.
     request.nonce = str(nonce)
     request.state = str(state)
     let delegate = PrismAppleSignIn(id: id)

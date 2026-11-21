@@ -648,50 +648,15 @@ impl Loopback {
         if let Err(e) = gio::AppInfo::launch_default_for_uri(url, None::<&gio::AppLaunchContext>) {
             return reply(Err(failed(format!("no browser: {e}"))));
         }
+        let (url, redirect) = (url.to_string(), redirect.to_string());
         std::thread::spawn(move || {
-            let r = wait_for_redirect(&listener, std::time::Duration::from_secs(600));
+            let timeout = std::time::Duration::from_secs(600);
+            let r =
+                prism_core::security::catch_loopback_redirect(&listener, &url, &redirect, timeout)
+                    .map(|callback| DeviceValue::Text(Some(callback)));
             glib::MainContext::default().invoke(move || reply(r));
         });
     }
-}
-
-fn wait_for_redirect(listener: &std::net::TcpListener, timeout: std::time::Duration) -> Answer {
-    use std::io::{Read, Write};
-    let _ = listener.set_nonblocking(true);
-    let deadline = std::time::Instant::now() + timeout;
-    while std::time::Instant::now() < deadline {
-        let Ok((mut stream, _)) = listener.accept() else {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            continue;
-        };
-        let _ = stream.set_nonblocking(false);
-        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
-        let mut buf = [0u8; 8192];
-        let n = stream.read(&mut buf).unwrap_or(0);
-        let request = String::from_utf8_lossy(&buf[..n]);
-        let target = request
-            .lines()
-            .next()
-            .and_then(|l| l.strip_prefix("GET "))
-            .and_then(|l| l.split(' ').next())
-            .unwrap_or("");
-        if !target.starts_with("/callback") {
-            let _ = stream.write_all(
-                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-            );
-            continue;
-        }
-        let page = "<!doctype html><meta charset=utf-8><title>Signed in</title><p style=\"font:16px system-ui;margin:40px;text-align:center\">Signed in. You can close this tab and return to the app.</p>";
-        let _ = stream.write_all(
-            format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{page}",
-                page.len()
-            )
-            .as_bytes(),
-        );
-        return Ok(DeviceValue::Text(Some(format!("http://127.0.0.1{target}"))));
-    }
-    Err(DeviceError::Cancelled)
 }
 
 /// The ignored ones run against a real session bus (`dbus-run-session`, an
@@ -761,12 +726,17 @@ mod tests {
             let _ = s.read_to_string(&mut page);
             page
         });
-        let r = wait_for_redirect(&listener, std::time::Duration::from_secs(10));
+        let r = prism_core::security::catch_loopback_redirect(
+            &listener,
+            "https://idp.example/authorize?state=xyz",
+            &uri,
+            std::time::Duration::from_secs(10),
+        );
         assert_eq!(
             r,
-            Ok(DeviceValue::Text(Some(
-                "http://127.0.0.1/callback?code=abc&state=xyz".into()
-            )))
+            Ok(format!(
+                "http://127.0.0.1:{port}/callback?code=abc&state=xyz"
+            ))
         );
         assert!(client.join().unwrap().contains("200 OK"));
     }

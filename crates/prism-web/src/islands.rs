@@ -138,12 +138,13 @@ impl crate::WebApp {
         } else {
             format!(" frame-src 'self' {};", self.inner.frame_origins.join(" "))
         };
+        let ancestors = self.frame_ancestors();
         let n = &nonce.0;
         format!(
             "default-src 'self'; script-src 'self' 'nonce-{n}'{wasm}{cdn}; \
              style-src 'self' 'nonce-{n}'{cdn}; img-src 'self' data: blob: https:; \
              font-src 'self' data:{cdn}; connect-src 'self'{cdn}; media-src 'self' blob: https:;{frames} \
-             object-src 'none'; base-uri 'none'; frame-ancestors 'self'"
+             object-src 'none'; base-uri 'none'; frame-ancestors {ancestors}"
         )
     }
 
@@ -159,6 +160,38 @@ impl crate::WebApp {
                 i.frame_origins.push(origin);
             }
         })
+    }
+
+    /// A site (`https://portal.example.com`) that may show this app's pages
+    /// in a frame, besides the app's own origin. By default only the app's
+    /// own origin may: pages and the sign-in callback send
+    /// `Content-Security-Policy: frame-ancestors 'self'` and
+    /// `X-Frame-Options: SAMEORIGIN`, so another site cannot overlay them to
+    /// steer a signed-in visitor's clicks. Each call adds one, and
+    /// `X-Frame-Options` is then left out (it cannot name other sites);
+    /// `"*"` lets any site. A value with spaces, quotes, `;` or `,` is not
+    /// an origin and is ignored.
+    pub fn frame_ancestor(self, origin: &str) -> Self {
+        let origin = origin.trim().trim_end_matches('/').to_string();
+        let bad =
+            |c: char| c.is_whitespace() || c.is_control() || matches!(c, ';' | ',' | '\'' | '"');
+        if origin.is_empty() || origin.contains(bad) {
+            eprintln!("prism-web: frame_ancestor({origin:?}) ignored: not an origin");
+            return self;
+        }
+        self.configure(|i| {
+            if !i.frame_ancestors.contains(&origin) {
+                i.frame_ancestors.push(origin);
+            }
+        })
+    }
+
+    /// Who may frame the app's pages, as `frame-ancestors` lists them.
+    pub(crate) fn frame_ancestors(&self) -> String {
+        std::iter::once("'self'")
+            .chain(self.inner.frame_ancestors.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// Sends [`content_security_policy`](Self::content_security_policy) with

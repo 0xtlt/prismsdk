@@ -513,3 +513,47 @@ The first version, not yet on crates.io.
   bars).
 - Tasks spawned by a screen built during navigation (a first load in its
   constructor) start at once instead of at the next event. (#23)
+
+### Security
+
+Fixes from a security review before the first release.
+
+- WebAuthn ceremonies are bound to the operation the server chose; an enrolled credential can no longer be replaced through a protected read.
+- The payload reader refuses JSON nested deeper than 64 levels (stack exhaustion).
+- The web server bounds live sessions (`WebApp::max_sessions`, now 1024 by default), message size (`WebApp::max_message_size`, 8 MiB) and the bytes queued per session (`WebApp::max_queued_bytes`, 32 MiB), and closes sockets that stop answering pings.
+- The web server serves only portable asset names from inside the assets folder (no hidden files, no links out of it, no Windows drive, stream or device names) and stores uploads under generated names.
+- `prism-push` sends Web Push only to public HTTPS endpoints, follows no redirects, ignores proxy environment variables and caps error answers; `Sender::trust_origin` and `Sender::proxy` opt in to others.
+- Pictures and videos with headers are fetched by the web server from public addresses (or origins the app trusts) only, without following redirects to other origins (SSRF).
+- Android web views take messages from the page's main frame only (an embedded frame could post as the page).
+- Links, `open_url` and `web_auth` on the web never use a `javascript:`, `vbscript:`, `data:`, `blob:` or `filesystem:` URL (script injection through link targets).
+- Uploaded files are served sandboxed and with `nosniff`; only raster pictures and videos display inline (active content in an upload). The strict CSP no longer replaces the sandbox of uploads, proxied pictures and downloads.
+- Over HTTPS the browser's id is a host-only `Secure` cookie (`__Host-prism_sid`) from the system CSPRNG (session fixation, cleartext cookie).
+- Socket origins are compared whole (scheme, host, port), duplicate `Origin` fields are refused, and the built-in server on a loopback address refuses unknown host names (DNS rebinding). New `WebApp::public_origin` / `PRISM_PUBLIC_ORIGIN` for servers behind a proxy.
+- Web messages from an origin the web view does not allow are dropped by the app itself, whatever the platform layer reports.
+- Clicks, typing and changes of disabled or unmounted controls, values a control could not produce (an index past its options, a toggle other than 0/1, non-finite numbers) and layout/scroll reports of nodes that do not report them are dropped; slider values are snapped into range and date picker values clamped to their bounds.
+- A web sign-in can be cancelled only by the session that started it; waiting sign-ins expire after 10 minutes, are capped per session and server-wide, and end with their session.
+- The page can no longer complete a `set_cookie` or `web_auth` call itself; they complete only from the server, and a page reply can only report a failure.
+- Web uploads are checked against new limits before anything is stored (files per pick, bytes kept per browser, bytes received server-wide), hold no open files between chunks, bound encoded chunks before decoding, and expire after `keep_uploads` with their path mappings.
+- OpenID Connect sign-ins require an ID token and check its issuer, audience (and `azp`), expiry, subject, nonce and signing algorithm; refreshed ID tokens are checked too, and discovery documents must name their issuer.
+- OAuth token, refresh, revocation and registration requests follow no redirect, issuer and endpoints must use HTTPS (plain HTTP only to localhost), and metadata and token answers are capped at 1 MiB.
+- Widget-action deep links run only with a token signed by the app, so other apps and web pages cannot trigger widget actions.
+- Web components reject invalid tag names, and their props can no longer set event handlers, markup, styles or Prism's own attributes and state.
+- The web server reads pictures and videos with headers within size limits (`WebApp::max_picture_bytes`), checks partial answers against the range it asked for, and keeps their URLs' queries out of its log.
+- Biometric secrets are stored only where the store itself checks the owner; elsewhere `set_with` fails with `Unavailable` and keeps the previous secret, and the new `SecureOptions::confirm_owner` opts into the app's own check.
+- `prism build linux` checks the package, bundle ID, build and one-line display strings before building, and the Linux launcher holds only quoted identifiers (shell injection from package metadata).
+- Build-time downloads (Windows App SDK packages, Android Maven libraries, bundletool) are pinned by SHA-256 and checked before unpacking and on cache reuse (supply-chain integrity).
+- Web `secure_storage` creates its key once for all workers, writes key and secret files private from creation, refuses an invalid `PRISM_SECRET_KEY`, and reports failed writes and deletes (key disclosure, false success).
+- `AuthRequest::biometrics_only()` fails with `Unavailable` where the system check may accept a PIN or password instead (web, Windows Hello, watchOS).
+- The web push service worker tells only the app's own pages (controlled windows under its mount) about pushes and clicks, gives a click to the window it opened, and opens only links inside the app.
+- Web 3D scene blobs (`/_prism/3d/<id>`) go only to the browsers whose pages were sent them, with `Cache-Control: private`, unless the app opts in with `WebApp::public_scenes(true)`; first-paint pins are bounded in count and bytes.
+- UnifiedPush receiver keys and the Linux registration token are made once (concurrent first uses share them), private from creation (0600/0700), and a failure to keep them fails `register_for_push` instead of announcing an unusable subscription.
+- Native web views: the app's messages reach a page only if it still shows the origin it showed when they were sent.
+- Browser sign-in ends only with a redirect to exactly its redirect URI carrying its `state` once; other requests and deep links are refused while it waits.
+- Debug output of HTTP requests and responses, OAuth tokens and registrations, Apple credentials and push subscriptions hides credentials; HTTP and push errors leave out URL queries, endpoints and control characters.
+- prism-web: pages and the sign-in callback can be framed only by the app's own origin by default (`WebApp::frame_ancestor` adds trusted sites); every response is `nosniff`; the strict CSP is added alongside a response's own policy.
+- Android: installing an App Bundle on a device signs its APKs with the debug key, so the store key's passwords are never written to disk; `prism publish --service-account` takes a path only.
+- prism-cli: App Store, notarization and device checks keep their temporary files in a private, randomly named directory.
+- prism-db: `Db::open` takes a file name only (a path is refused; `Db::open_path` takes paths), and without a data directory uses a directory private to the user.
+- Sign in with Apple: the nonce is sent to Apple hashed (SHA-256, hex), as documented, and a credential with another request's `state` is refused.
+- `prism publish` (Google Play) and the Android bundle build refuse a bundle with unsigned entries or several signers.
+- Android and Windows web views open a new window outside the app only after a tap, and Android only for web, mail and phone links.

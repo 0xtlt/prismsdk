@@ -243,11 +243,14 @@ pub(crate) fn push_event(v: &Value, data_dir: &std::path::Path) -> Option<PushEv
             PushEvent::Registered(Ok(PushSubscription::new(PushService::Fcm, s("token")?)))
         }
         "push_endpoint" => {
-            let keys = receiver_keys(data_dir);
-            let mut sub = PushSubscription::new(PushService::UnifiedPush, s("endpoint")?);
-            sub.p256dh = Some(keys.p256dh());
-            sub.auth = Some(keys.auth());
-            PushEvent::Registered(Ok(sub))
+            let endpoint = s("endpoint")?;
+            // Announced only with keys that are kept.
+            PushEvent::Registered(receiver_keys(data_dir).map(|keys| {
+                let mut sub = PushSubscription::new(PushService::UnifiedPush, endpoint);
+                sub.p256dh = Some(keys.p256dh());
+                sub.auth = Some(keys.auth());
+                sub
+            }))
         }
         "push_err" => {
             PushEvent::Registered(Err(DeviceError::from_message(s("err").unwrap_or("failed"))))
@@ -256,7 +259,10 @@ pub(crate) fn push_event(v: &Value, data_dir: &std::path::Path) -> Option<PushEv
             let body = base64::engine::general_purpose::STANDARD
                 .decode(s("body")?)
                 .ok()?;
-            let plain = match receiver_keys(data_dir).decrypt(&body) {
+            let plain = match receiver_keys(data_dir).and_then(|k| {
+                k.decrypt(&body)
+                    .map_err(|e| DeviceError::Failed(e.to_string()))
+            }) {
                 Ok(p) => p,
                 Err(e) => {
                     eprintln!("prism-android: push message not decrypted: {e}");
@@ -287,19 +293,13 @@ pub(crate) fn push_event(v: &Value, data_dir: &std::path::Path) -> Option<PushEv
     })
 }
 
-/// This device's Web Push keys (P-256 + auth secret), made once.
-fn receiver_keys(data_dir: &std::path::Path) -> prism_push::webpush::ReceiverKeys {
-    let path = data_dir.join("prism-push-keys");
-    if let Some(k) = std::fs::read(&path)
-        .ok()
-        .and_then(|b| prism_push::webpush::ReceiverKeys::from_bytes(&b))
-    {
-        return k;
-    }
-    let k = prism_push::webpush::ReceiverKeys::generate();
-    let _ = std::fs::create_dir_all(data_dir);
-    let _ = std::fs::write(&path, k.to_bytes());
-    k
+/// This device's Web Push keys (P-256 + auth secret), made once and kept
+/// private (outside the backed-up `files/cloud`).
+fn receiver_keys(
+    data_dir: &std::path::Path,
+) -> Result<prism_push::webpush::ReceiverKeys, prism_core::DeviceError> {
+    prism_push::webpush::ReceiverKeys::load_or_create(&data_dir.join("prism-push-keys"))
+        .map_err(|e| prism_core::DeviceError::Failed(format!("push keys: {e}")))
 }
 
 /// A surface snapshot (`SNode` JSON) with each icon's glyph (`"gl"`): the host

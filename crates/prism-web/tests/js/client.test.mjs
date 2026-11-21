@@ -1368,6 +1368,34 @@ test("open_url stays in the tab for this origin, opens a new one elsewhere", () 
   assert.equal(page.window.assigned, "https://example.com/sign-out");
 });
 
+// S8 (security review): a link to a URL that would run script in the page,
+// as the browser reads it, gets no href; the page never opens one.
+const scriptUrls = [
+  "javascript:alert(1)", "JaVaScRiPt:alert(1)", " javascript:alert(1)", "\u0001javascript:alert(1)",
+  "java\tscr\nipt:alert(1)", "vbscript:msgbox(1)", "data:text/html,<script>alert(1)</script>",
+  "blob:https://example.com/0f8e",
+];
+
+test("script URLs make no link and open nothing (S8)", () => {
+  for (const url of scriptUrls) {
+    const page = live([
+      create(1, "view"), create(2, "view"), { op: "link", id: 2, href: url },
+      create(3, "text"), textOp(3, "x"), { op: "config", id: 3, config: ["x", "l=42", "h=" + url].join(FS) },
+      children(1, [2, 3]), root(1),
+    ], { base: "/app" });
+    assert.equal(page.node(2).getAttribute("href"), null, JSON.stringify(url));
+    assert.equal(page.node(3).firstChild.getAttribute("href"), null, JSON.stringify(url));
+    for (const target of [undefined, "same", "new"]) {
+      page.ws.deliver({ t: "device", id: 1, call: "open_url", url, target });
+      assert.equal(page.window.assigned, undefined, JSON.stringify(url));
+      assert.equal(page.window.opened, undefined, JSON.stringify(url));
+    }
+  }
+  // Ordinary links keep theirs.
+  const page = live([create(2, "view"), { op: "link", id: 2, href: "mailto:ada@example.com" }, root(2)]);
+  assert.equal(page.node(2).getAttribute("href"), "mailto:ada@example.com");
+});
+
 // --- Shapes ----------------------------------------------------------------------
 
 /** The `d` of each path a drawing resolves to in a `w`×`h` box. */

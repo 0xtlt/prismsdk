@@ -115,7 +115,7 @@ impl VideoConfig {
 /// [module docs](self) for each backend.
 pub fn video(src: impl Into<String>) -> Video {
     let mut node = VNode::new(NodeKind::Video);
-    node.text = src.into();
+    node.text = crate::element::media_url(src.into());
     Video {
         node,
         config: VideoConfig::default(),
@@ -128,16 +128,7 @@ impl Video {
     /// the server fetches it, so the header never reaches the browser.
     /// Ignored for assets and files.
     pub fn header(mut self, name: impl AsRef<str>, value: impl AsRef<str>) -> Self {
-        let clean = |s: &str| s.replace(['\r', '\n'], "");
-        let (name, value) = (clean(name.as_ref()), clean(value.as_ref()));
-        let remote =
-            self.node.text.starts_with("http://") || self.node.text.starts_with("https://");
-        if remote && !name.trim().is_empty() {
-            self.node.text.push('\n');
-            self.node.text.push_str(name.trim());
-            self.node.text.push_str(": ");
-            self.node.text.push_str(value.trim());
-        }
+        crate::element::push_header(&mut self.node.text, name.as_ref(), value.as_ref());
         self
     }
 

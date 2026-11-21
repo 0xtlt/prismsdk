@@ -179,7 +179,7 @@ final class PrismMacAppDelegate: NSObject, NSApplicationDelegate {
 
     /// The app's URL scheme (`prism-counter:/todos/1`): a widget's link, or a
     /// widget button's action link (`/__prism/widget-action?…`, which the
-    /// runtime runs instead of navigating).
+    /// runtime runs instead of navigating when its token is the app's).
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
             let s = url.absoluteString

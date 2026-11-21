@@ -44,8 +44,10 @@ impl Default for Redirects {
     }
 }
 
-/// An HTTP request.
-#[derive(Clone, Debug)]
+/// An HTTP request. `Debug` shows no credential: header values only for
+/// harmless headers (`Content-Type`, `Accept`…), the body's size, the URL
+/// without its query (S34).
+#[derive(Clone)]
 pub struct Request {
     pub method: Method,
     pub url: String,
@@ -60,6 +62,151 @@ pub struct Request {
     pub secret_headers: Vec<String>,
     /// The largest response body accepted, in bytes (#250).
     pub max_body: Option<u64>,
+    /// Connect only to publicly routable addresses ([`Request::public_only`]).
+    pub public_only: bool,
+}
+
+impl std::fmt::Debug for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Request")
+            .field("method", &self.method)
+            .field("url", &shown_url(&self.url))
+            .field("headers", &ShownHeaders(&self.headers))
+            .field("body", &self.body.as_ref().map(|b| Size(b.len())))
+            .field("timeout", &self.timeout)
+            .field("redirects", &self.redirects)
+            .field("secret_headers", &self.secret_headers)
+            .field("max_body", &self.max_body)
+            .field("public_only", &self.public_only)
+            .finish()
+    }
+}
+
+// --- Debug output without credentials (S34) -----------------------------------------------
+
+/// Headers whose values `Debug` shows: they carry no credential. The
+/// others show as `<redacted>`.
+const SHOWN_HEADERS: &[&str] = &[
+    "accept",
+    "accept-encoding",
+    "accept-language",
+    "accept-ranges",
+    "age",
+    "cache-control",
+    "connection",
+    "content-encoding",
+    "content-language",
+    "content-length",
+    "content-range",
+    "content-type",
+    "date",
+    "etag",
+    "expires",
+    "host",
+    "last-modified",
+    "range",
+    "retry-after",
+    "server",
+    "transfer-encoding",
+    "user-agent",
+    "vary",
+];
+
+/// Headers as `Debug` shows them: every name, the values of
+/// [`SHOWN_HEADERS`].
+struct ShownHeaders<'a>(&'a [(String, String)]);
+
+impl std::fmt::Debug for ShownHeaders<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(self.0.iter().map(|(name, value)| {
+                let shown = SHOWN_HEADERS.iter().any(|h| h.eq_ignore_ascii_case(name));
+                (
+                    name,
+                    shown
+                        .then_some(value.as_str())
+                        .map_or(HeaderValue::Hidden, HeaderValue::Shown),
+                )
+            }))
+            .finish()
+    }
+}
+
+enum HeaderValue<'a> {
+    Shown(&'a str),
+    Hidden,
+}
+
+impl std::fmt::Debug for HeaderValue<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HeaderValue::Shown(v) => v.fmt(f),
+            HeaderValue::Hidden => f.write_str("<redacted>"),
+        }
+    }
+}
+
+/// A body as `Debug` shows it: its size.
+struct Size(usize);
+
+impl std::fmt::Debug for Size {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<{} bytes>", self.0)
+    }
+}
+
+/// How `Debug` shows a secret: whether there is one, not what (S34).
+pub(crate) struct Hidden(&'static str);
+
+impl Hidden {
+    pub(crate) fn text(s: &str) -> Self {
+        Hidden(if s.is_empty() { "\"\"" } else { "<redacted>" })
+    }
+
+    pub(crate) fn opt(s: Option<&str>) -> Self {
+        Hidden(if s.is_some() {
+            "Some(<redacted>)"
+        } else {
+            "None"
+        })
+    }
+}
+
+impl std::fmt::Debug for Hidden {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+/// `url` as `Debug` and error messages show it: without user info, query
+/// or fragment (a signed URL's signature, a token).
+pub(crate) fn shown_url(url: &str) -> String {
+    let end = url.find(['?', '#']).unwrap_or(url.len());
+    let (base, rest) = url.split_at(end);
+    let base = match base.split_once("://") {
+        Some((scheme, after)) => {
+            let authority = after.find('/').unwrap_or(after.len());
+            match after[..authority].rfind('@') {
+                Some(at) => format!("{scheme}://<redacted>@{}", &after[at + 1..]),
+                None => base.to_string(),
+            }
+        }
+        None => base.to_string(),
+    };
+    if rest.is_empty() {
+        base
+    } else {
+        format!("{base}?<redacted>")
+    }
+}
+
+/// An error message about `url`, without the URL's credentials.
+fn scrubbed(message: String, url: &str) -> String {
+    let message = message.replace(url, &shown_url(url));
+    match url.find(['?', '#']) {
+        Some(i) if i + 1 < url.len() => message.replace(&url[i..], "?<redacted>"),
+        _ => message,
+    }
 }
 
 /// Headers a redirect to another origin always drops (#250), like browsers.
@@ -76,6 +223,7 @@ impl Request {
             redirects: Redirects::default(),
             secret_headers: Vec::new(),
             max_body: None,
+            public_only: false,
         }
     }
     pub fn get(url: impl Into<String>) -> Self {
@@ -105,6 +253,16 @@ impl Request {
         self.secret_headers.push(name.to_ascii_lowercase());
         self.header(name, value)
     }
+    /// Connects only to publicly routable addresses: every address the host
+    /// resolves to (at each redirect too) must be public, not loopback,
+    /// private, link-local or reserved, IPv4 written as IPv6 included.
+    /// Proxy environment variables are ignored, since the check needs the
+    /// destination's address. For URLs that come from users.
+    pub fn public_only(mut self) -> Self {
+        self.public_only = true;
+        self
+    }
+
     /// Which redirects to follow (#250): [`Redirects::Follow`]`(10)` by
     /// default.
     pub fn redirects(mut self, redirects: Redirects) -> Self {
@@ -189,12 +347,20 @@ impl Request {
     /// none, so secret headers are dropped when one leaves the origin.
     #[allow(clippy::type_complexity)]
     fn open(self) -> Result<(u16, Vec<(String, String)>, ureq::http::Response<ureq::Body>), Error> {
-        let agent: ureq::Agent = ureq::Agent::config_builder()
+        let config = ureq::Agent::config_builder()
             .timeout_global(Some(self.timeout))
             .http_status_as_error(false)
-            .max_redirects(0)
-            .build()
-            .into();
+            .max_redirects(0);
+        let agent: ureq::Agent = if self.public_only {
+            // No proxy: the resolver must see the destination.
+            ureq::Agent::with_parts(
+                config.proxy(None).build(),
+                ureq::unversioned::transport::DefaultConnector::new(),
+                PublicOnly::default(),
+            )
+        } else {
+            config.build().into()
+        };
         let origin = origin_of(&self.url);
         let (mut method, mut url, mut headers, mut body) =
             (self.method, self.url, self.headers, self.body);
@@ -217,7 +383,7 @@ impl Request {
                     with_headers(agent.patch(&url), &headers).send(b.unwrap_or_default())
                 }
             }
-            .map_err(|e| Error(e.to_string()))?;
+            .map_err(|e| Error(scrubbed(e.to_string(), &url)))?;
             let status = res.status().as_u16();
             let list: Vec<(String, String)> = res
                 .headers()
@@ -279,11 +445,21 @@ impl Progress {
     }
 }
 
-/// A response's status and headers, its body streamed (#250).
-#[derive(Clone, Debug)]
+/// A response's status and headers, its body streamed (#250). `Debug`
+/// shows header values only for harmless headers (`Content-Type`…).
+#[derive(Clone)]
 pub struct ResponseHead {
     pub status: u16,
     pub headers: Vec<(String, String)>,
+}
+
+impl std::fmt::Debug for ResponseHead {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResponseHead")
+            .field("status", &self.status)
+            .field("headers", &ShownHeaders(&self.headers))
+            .finish()
+    }
 }
 
 fn too_large(max: u64) -> Error {
@@ -344,12 +520,24 @@ fn with_headers<B>(
     req
 }
 
-/// An HTTP response (any status; check [`Response::ok`]).
-#[derive(Clone, Debug)]
+/// An HTTP response (any status; check [`Response::ok`]). `Debug` shows
+/// header values only for harmless headers (`Content-Type`…), and the
+/// body's size (a token endpoint's answer holds tokens).
+#[derive(Clone)]
 pub struct Response {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+}
+
+impl std::fmt::Debug for Response {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Response")
+            .field("status", &self.status)
+            .field("headers", &ShownHeaders(&self.headers))
+            .field("body", &Size(self.body.len()))
+            .finish()
+    }
 }
 
 impl Response {
@@ -412,9 +600,135 @@ impl FetchStream for AsyncApp {
     }
 }
 
+/// The resolver of [`Request::public_only`]: the system's answer, refused
+/// when any address in it is not public (a name can mix them).
+#[derive(Debug, Default)]
+struct PublicOnly(ureq::unversioned::resolver::DefaultResolver);
+
+impl ureq::unversioned::resolver::Resolver for PublicOnly {
+    fn resolve(
+        &self,
+        uri: &ureq::http::Uri,
+        config: &ureq::config::Config,
+        timeout: ureq::unversioned::transport::NextTimeout,
+    ) -> Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
+        let addrs = self.0.resolve(uri, config, timeout)?;
+        screen(uri.host().unwrap_or(""), &addrs)?;
+        Ok(addrs)
+    }
+}
+
+/// An error unless every address of `host` is public.
+fn screen(host: &str, addrs: &[std::net::SocketAddr]) -> Result<(), ureq::Error> {
+    if addrs.is_empty() || addrs.iter().any(|a| !is_public(a.ip())) {
+        return Err(ureq::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("{host}: not a public address"),
+        )));
+    }
+    Ok(())
+}
+
+/// Whether `ip` is a publicly routable unicast address (the rules of
+/// `prism-push`'s endpoint check): not loopback, private, shared,
+/// link-local, multicast, documentation or reserved, in IPv4 or IPv6,
+/// including IPv4 written as IPv6 (mapped, NAT64, 6to4).
+fn is_public(ip: std::net::IpAddr) -> bool {
+    use std::net::{IpAddr, Ipv4Addr};
+    fn v4(ip: Ipv4Addr) -> bool {
+        let [a, b, c, _] = ip.octets();
+        !(a == 0
+            || a == 10
+            || a == 127
+            || (a == 100 && (64..128).contains(&b))
+            || (a == 169 && b == 254)
+            || (a == 172 && (16..32).contains(&b))
+            || (a == 192 && b == 0 && (c == 0 || c == 2))
+            || (a == 192 && b == 88 && c == 99)
+            || (a == 192 && b == 168)
+            || (a == 198 && (b == 18 || b == 19))
+            || (a == 198 && b == 51 && c == 100)
+            || (a == 203 && b == 0 && c == 113)
+            || a >= 224)
+    }
+    match ip {
+        IpAddr::V4(ip) => v4(ip),
+        IpAddr::V6(ip) => {
+            let s = ip.segments();
+            let embedded = |hi: u16, lo: u16| v4(Ipv4Addr::from(((hi as u32) << 16) | lo as u32));
+            if s[..5] == [0; 5] && s[5] == 0xffff {
+                return embedded(s[6], s[7]);
+            }
+            if s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+                return embedded(s[6], s[7]);
+            }
+            if s[0] == 0x2002 {
+                return embedded(s[1], s[2]);
+            }
+            (s[0] & 0xe000) == 0x2000
+                && !(s[0] == 0x2001 && s[1] < 0x0200)
+                && !(s[0] == 0x2001 && s[1] == 0x0db8)
+                && !(s[0] == 0x3fff && s[1] < 0x1000)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S34: printing a request or a response (`{:?}`, in a log) shows no
+    /// credential: header values but harmless ones, bodies, the URL's
+    /// query; nor does a failure's message.
+    #[test]
+    fn s34_requests_and_responses_print_no_credentials() {
+        let request =
+            Request::post("https://api.example/v1/items?sig=S34-MARK-QUERY&x=1#S34-MARK-F")
+                .header("Authorization", "Bearer S34-MARK-AUTH")
+                .header("Cookie", "sid=S34-MARK-COOKIE")
+                .header("X-Api-Key", "S34-MARK-KEY")
+                .secret_header("x-custom", "S34-MARK-SECRET")
+                .json(r#"{"password":"S34-MARK-BODY"}"#);
+        let response = Response {
+            status: 200,
+            headers: vec![
+                ("set-cookie".into(), "sid=S34-MARK-SETCOOKIE".into()),
+                ("content-type".into(), "application/json".into()),
+            ],
+            body: br#"{"access_token":"S34-MARK-TOKEN"}"#.to_vec(),
+        };
+        let head = ResponseHead {
+            status: 200,
+            headers: response.headers.clone(),
+        };
+        for shown in [
+            format!("{request:?}"),
+            format!("{request:#?}"),
+            format!("{response:?}"),
+            format!("{response:#?}"),
+            format!("{head:?}"),
+        ] {
+            assert!(!shown.contains("S34-MARK"), "{shown}");
+        }
+        // What helps to debug stays.
+        let shown = format!("{request:?}");
+        for kept in [
+            "https://api.example/v1/items",
+            "application/json",
+            "Authorization",
+            "Post",
+        ] {
+            assert!(shown.contains(kept), "{kept}: {shown}");
+        }
+        assert!(format!("{response:?}").contains("application/json"));
+        // A URL the client cannot use: the error does not repeat its query
+        // (the client's message names the URL).
+        let err = Request::get("/x?sig=S34-MARK-QUERY")
+            .timeout(Duration::from_secs(2))
+            .send_blocking()
+            .unwrap_err();
+        assert!(!err.0.contains("S34-MARK"), "{}", err.0);
+    }
     use std::io::{Read, Write};
     use std::net::TcpListener;
 
@@ -643,5 +957,45 @@ mod tests {
         );
         assert_eq!(resolve(base, "http://x.org/e").unwrap(), "http://x.org/e");
         assert_eq!(resolve(base, " "), None);
+    }
+
+    /// S6 (security review): a public-only request never connects to a
+    /// private address, whatever the name or the redirect.
+    #[test]
+    fn s6_public_only_requests_reach_public_addresses_only() {
+        let addr = |s: &str| std::net::SocketAddr::new(s.parse().unwrap(), 443);
+        assert!(screen("p.example", &[addr("8.8.8.8"), addr("2a00:1450::1")]).is_ok());
+        for bad in [
+            vec![addr("127.0.0.1")],
+            vec![addr("10.1.2.3")],
+            vec![addr("169.254.169.254")],
+            vec![addr("::1")],
+            vec![addr("fd00::1")],
+            vec![addr("::ffff:192.168.1.1")],
+            vec![addr("64:ff9b::a00:1")],
+            // A changed answer that adds a private address.
+            vec![addr("8.8.8.8"), addr("192.168.1.1")],
+            vec![],
+        ] {
+            assert!(screen("p.example", &bad).is_err(), "{bad:?}");
+        }
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        for url in [
+            format!("http://127.0.0.1:{port}/"),
+            format!("http://localhost:{port}/"),
+            format!("http://[::ffff:127.0.0.1]:{port}/"),
+        ] {
+            let err = Request::get(&url)
+                .public_only()
+                .send_blocking()
+                .unwrap_err();
+            assert!(err.0.contains("not a public address"), "{url}: {}", err.0);
+        }
+        assert!(
+            listener.accept().is_err(),
+            "a public-only request connected"
+        );
     }
 }

@@ -1,45 +1,131 @@
 #!/usr/bin/env python3
 """Resolves Android libraries from Maven without Gradle (used by android-run.sh).
 
-    android-deps.py <cache dir> group:artifact[:version] ...
+    android-deps.py <cache dir> group:artifact:version ...
+    android-deps.py --lock <cache dir> group:artifact:version ...
 
 Fetches each library and its compile/runtime dependencies (POMs) from Google's
 Maven and Maven Central, the highest version winning, into the cache. AARs are
 unpacked. Prints JSON: [{"id", "jars": [...], "res": dir|null, "package": str|null}].
-A missing version means the latest stable release.
+
+Every file is checked against android-deps.lock (next to this script): the
+SHA-256 of each file the resolution reads, by its path in the repository.
+A file the lock does not list counts as absent, as it was when the lock was
+made, so the same roots always resolve to the same files; a file that differs
+from its digest, downloaded or cached, stops the build. `--lock` resolves from
+the network instead and adds what it read to the lock (review the change).
+
+Environment (explicit overrides):
+  PRISM_MAVEN_LOCK   another lock file
+  PRISM_MAVEN_REPOS  repositories to use instead, space-separated URLs
 """
+import hashlib
 import json
 import os
 import re
-import sys
+import shutil
 import subprocess
+import sys
+import tempfile
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
 
-REPOS = ["https://dl.google.com/android/maven2", "https://repo1.maven.org/maven2"]
+REPOS = os.environ.get("PRISM_MAVEN_REPOS", "").split() or [
+    "https://dl.google.com/android/maven2",
+    "https://repo1.maven.org/maven2",
+]
 NS = {"m": "http://maven.apache.org/POM/4.0.0"}
-cache = sys.argv[1]
-os.makedirs(cache, exist_ok=True)
+LOCK = os.environ.get("PRISM_MAVEN_LOCK") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "android-deps.lock"
+)
+
+args = sys.argv[1:]
+locking = bool(args) and args[0] == "--lock"
+if locking:
+    args = args[1:]
+if not args:
+    sys.exit(__doc__)
+cache, specs = args[0], args[1:]
+
+
+def fail(message):
+    sys.exit(f"android-deps: {message}")
+
+
+def read_lock():
+    """{path: sha256} from the lock (`<sha256>  <path>` lines)."""
+    lock = {}
+    try:
+        lines = open(LOCK, encoding="utf-8").read().splitlines()
+    except FileNotFoundError:
+        if locking:
+            return lock
+        fail(f"no lock file {LOCK}")
+    for line in lines:
+        if line.strip() and not line.startswith("#"):
+            digest, path = line.split(None, 1)
+            lock[path.strip()] = digest
+    return lock
+
+
+lock = read_lock()
+
+
+def sha256(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+# Group, artifact and version: they become cache paths.
+PART = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*")
+
+
+def coordinate(g, a, v):
+    for part in (g, a, v):
+        if not PART.fullmatch(part) or ".." in part:
+            fail(f"invalid Maven coordinate {g}:{a}:{v}")
+    return g, a, v
+
+
+def write_atomic(path, data):
+    """Writes `path` through a private temporary file beside it."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".part-")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
 
 
 def fetch(path):
-    """Bytes of `path` from the first repository that has it (cached), or None."""
+    """Bytes of `path` (cached, else from the first repository that has it), or
+    None when the lock does not list it."""
+    want = lock.get(path)
+    if want is None and not locking:
+        return None
     local = os.path.join(cache, "files", path)
     if os.path.exists(local):
-        return open(local, "rb").read()
-    if os.path.exists(local + ".missing"):
-        return None
-    for repo in REPOS:
-        data = download(f"{repo}/{path}")
-        if data is not None:
-            os.makedirs(os.path.dirname(local), exist_ok=True)
-            open(local, "wb").write(data)
+        data = open(local, "rb").read()
+        if want is None or sha256(data) == want:
+            if locking:
+                lock[path] = sha256(data)
             return data
-    os.makedirs(os.path.dirname(local), exist_ok=True)
-    open(local + ".missing", "w").close()
-    return None
+        fail(f"{local} does not match {os.path.basename(LOCK)} (delete it to download it again)")
+    data = next((d for d in (download(f"{repo}/{path}") for repo in REPOS) if d is not None), None)
+    if data is None:
+        if locking:
+            return None
+        fail(f"{path} is in {os.path.basename(LOCK)} but no repository has it")
+    got = sha256(data)
+    if want is not None and got != want:
+        fail(f"{path}: SHA-256 {got}, {os.path.basename(LOCK)} has {want}")
+    lock[path] = got
+    write_atomic(local, data)
+    return data
 
 
 def download(url):
@@ -51,24 +137,14 @@ def download(url):
     except urllib.error.HTTPError:
         return None
     except Exception:
+        if not url.startswith("https:"):
+            return None  # a local mirror (file:) without the file
         r = subprocess.run(["curl", "-fsSL", "--max-time", "120", url], capture_output=True)
         return r.stdout if r.returncode == 0 else None
 
 
 def key(v):
     return [int(x) if x.isdigit() else -1 for x in re.split(r"[.-]", v)]
-
-
-def stable(v):
-    return not re.search(r"alpha|beta|rc|dev|snapshot|eap|m\d", v, re.I)
-
-
-def latest(group, artifact):
-    data = fetch(f"{group.replace('.', '/')}/{artifact}/maven-metadata.xml")
-    if not data:
-        sys.exit(f"android-deps: {group}:{artifact} not found")
-    versions = [v.text for v in ET.fromstring(data).iter("version")]
-    return max((v for v in versions if stable(v)), key=key, default=versions[-1])
 
 
 def pom_path(g, a, v):
@@ -96,16 +172,20 @@ def deps(g, a, v):
         version = text(d, "version").strip("[]()").split(",")[0]
         if not version or "${" in version:
             continue
-        out.append((text(d, "groupId"), text(d, "artifactId"), version))
+        out.append(coordinate(text(d, "groupId"), text(d, "artifactId"), version))
     return out, packaging
 
 
 # Breadth first; the highest version of each library wins.
 chosen, packaging, queue = {}, {}, []
-for spec in sys.argv[2:]:
+for spec in specs:
     parts = spec.split(":")
-    g, a = parts[0], parts[1]
-    queue.append((g, a, parts[2] if len(parts) > 2 else latest(g, a)))
+    if len(parts) != 3:
+        fail(f"{spec}: group:artifact:version (versions are pinned)")
+    root = coordinate(*parts)
+    if not locking and pom_path(*root) not in lock:
+        fail(f"{spec} is not in {os.path.basename(LOCK)} (add it with --lock)")
+    queue.append(root)
 while queue:
     g, a, v = queue.pop(0)
     current = chosen.get((g, a))
@@ -116,6 +196,7 @@ while queue:
     queue.extend(children)
 
 result = []
+unpacked = os.path.join(cache, "unpacked")
 for (g, a), v in sorted(chosen.items()):
     # Kotlin Multiplatform libraries publish -android and -jvm variants of the
     # same classes; Gradle's module metadata picks Android's: so do we.
@@ -123,19 +204,33 @@ for (g, a), v in sorted(chosen.items()):
         continue
     base = f"{g.replace('.', '/')}/{a}/{v}/{a}-{v}"
     kind = "aar" if packaging[(g, a)] == "aar" else "jar"
-    data = fetch(f"{base}.{kind}") or fetch(f"{base}.{'jar' if kind == 'aar' else 'aar'}")
+    path = f"{base}.{kind}"
+    data = fetch(path)
+    if data is None:
+        path = f"{base}.{'jar' if kind == 'aar' else 'aar'}"
+        data = fetch(path)
     if data is None:
         continue  # POM-only (BOMs, relocations)
-    out_dir = os.path.join(cache, "unpacked", f"{g}_{a}_{v}")
     entry = {"id": f"{g}:{a}:{v}", "jars": [], "res": None, "package": None}
-    if data[:2] == b"PK" and (kind == "aar" or b"AndroidManifest.xml" in data[:4096] or True):
-        archive = os.path.join(cache, "files", f"{base}.{'aar' if b'AndroidManifest.xml' in data else 'jar'}")
-        open(archive, "wb").write(data)
+    if data[:2] == b"PK":
+        # The verified archive, under the name its contents call for.
+        archive = os.path.join(cache, "archives", f"{base}.{'aar' if b'AndroidManifest.xml' in data else 'jar'}")
+        if not os.path.exists(archive) or open(archive, "rb").read() != data:
+            write_atomic(archive, data)
         with zipfile.ZipFile(archive) as z:
             names = z.namelist()
             if "AndroidManifest.xml" in names:  # an AAR
-                if not os.path.isdir(out_dir):
-                    z.extractall(out_dir)
+                # Unpacked again from the verified archive on every run, in a
+                # private directory, then moved in place.
+                out_dir = os.path.join(unpacked, f"{g}_{a}_{v}")
+                os.makedirs(unpacked, exist_ok=True)
+                tmp = tempfile.mkdtemp(dir=unpacked, prefix=".part-")
+                z.extractall(tmp)
+                old = tempfile.mkdtemp(dir=unpacked, prefix=".old-")
+                if os.path.isdir(out_dir):
+                    os.replace(out_dir, os.path.join(old, "x"))
+                os.replace(tmp, out_dir)
+                shutil.rmtree(old, ignore_errors=True)
                 jars = [os.path.join(out_dir, "classes.jar")] if "classes.jar" in names else []
                 jars += [os.path.join(out_dir, n) for n in names if n.startswith("libs/") and n.endswith(".jar")]
                 entry["jars"] = jars
@@ -147,4 +242,13 @@ for (g, a), v in sorted(chosen.items()):
             else:
                 entry["jars"] = [archive]
     result.append(entry)
+
+if locking:
+    lines = [f"{digest}  {path}" for path, digest in sorted(lock.items())]
+    header = (
+        "# SHA-256 of every Maven file android-deps.py may read, by repository path.\n"
+        "# Made by `android-deps.py --lock` for each set of roots android-run.sh uses.\n"
+    )
+    write_atomic(os.path.abspath(LOCK), (header + "\n".join(lines) + "\n").encode())
+    os.chmod(LOCK, 0o644)
 print(json.dumps(result, indent=1))

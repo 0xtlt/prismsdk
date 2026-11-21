@@ -48,7 +48,10 @@ mod html;
 mod islands;
 mod navbar;
 mod pictures;
+mod scene_blobs;
 mod security;
+#[cfg(test)]
+mod security_tests;
 #[cfg(feature = "server")]
 mod server;
 mod session;
@@ -60,7 +63,11 @@ mod tests;
 mod typography_tests;
 mod uploads;
 
-pub use app::WebApp;
+pub use app::{
+    DEFAULT_KEEP_UPLOADS, DEFAULT_MAX_MESSAGE, DEFAULT_MAX_PICTURE, DEFAULT_MAX_QUEUED,
+    DEFAULT_MAX_SESSIONS, DEFAULT_MAX_UPLOAD_BYTES, DEFAULT_MAX_UPLOAD_FILES,
+    DEFAULT_MAX_UPLOADING_BYTES, WebApp,
+};
 pub use assets::{IMMUTABLE, REVALIDATE, StaticFile, content_hash};
 pub use compress::Frame;
 pub use css::css;

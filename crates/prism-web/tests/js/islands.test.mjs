@@ -116,6 +116,56 @@ test("a web component gets attributes now and properties once defined", async ()
   assert.equal(el.hasAttribute("live"), false);
 });
 
+test("a web component's props never become handlers, markup or Prism's own state (S20)", async () => {
+  const set = [];
+  // Props from data (a CMS): names chosen by whoever wrote it.
+  const props = JSON.parse(`{
+    "label": "ok", "onclick": "marker()", "OnFocus": "marker()", "style": "color: red",
+    "data-pid": "99", "class": "x", "innerHTML": "<i data-marker></i>",
+    "__proto__": { "marker": true }, "_island": { "events": ["click"] },
+    "prismProps": 1, "render": "marker", "value": "v", "points": [1]
+  }`);
+  const page = live(
+    [{ op: "create", id: 2, kind: "view" },
+      { op: "island", id: 2, tag: "x-card", module: "/assets/x-card.js", wasm: false, events: [] },
+      { op: "props", id: 2, props },
+      { op: "create", id: 3, kind: "text" }, { op: "text", id: 3, text: "card" },
+      { op: "children", id: 2, children: [3] },
+      ...root([2])],
+    (url, registry) => registry.define("x-card", class extends Element {
+      // A declared property, and a method.
+      set value(v) { set.push(v); }
+      get value() { return set.at(-1); }
+      render() { return "rendered"; }
+    }),
+  );
+  const el = page.node(2);
+  assert.equal(el.getAttribute("label"), "ok");
+  for (const name of ["onclick", "onfocus", "OnFocus"]) {
+    assert.equal(el.getAttribute(name), null, name);
+  }
+  // Prism's own style and classes stay.
+  assert.ok(!String(el.getAttribute("style")).includes("red"));
+  assert.notEqual(el.getAttribute("class"), "x");
+  assert.equal(el.getAttribute("data-pid"), "2");
+  await tick();
+  await tick();
+  // Declared and plain props arrive.
+  assert.deepEqual(set, ["v"]);
+  assert.deepEqual(plain(el.points), [1]);
+  // Native members, Prism's state and the prototype are untouched.
+  assert.equal(el.textContent, "card");
+  assert.equal(el.querySelector("[data-marker]"), null);
+  assert.equal(el.render(), "rendered");
+  assert.equal(el.marker, undefined);
+  assert.equal(Object.getPrototypeOf(el.prismProps), null);
+  assert.equal(el.prismProps.marker, undefined);
+  assert.deepEqual(plain(el._island.events), []);
+  page.ws.deliver({ t: "patch", p: [{ op: "props", id: 2, props: { value: "w", onclick: "marker()" } }] });
+  assert.deepEqual(set, ["v", "w"]);
+  assert.equal(el.getAttribute("onclick"), null);
+});
+
 test("an island that was not built keeps its fallback and says so", async () => {
   const warnings = [];
   const page = boot();

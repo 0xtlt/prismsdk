@@ -152,6 +152,15 @@ fn without_a_handler_an_action_only_reloads() {
     assert_eq!(reloads(&rt.take_requests()).len(), 1);
 }
 
+/// The key a backend keeps for the app ([`App::set_widget_key`]).
+const KEY: [u8; 32] = [7; 32];
+
+/// The token the widget's button carries in its snapshot (`wa.t`).
+fn snapshot_token(json: &str) -> String {
+    let at = json.find(r#""t":""#).expect("a token") + 5;
+    json[at..at + 32].to_string()
+}
+
 #[test]
 fn the_action_link_runs_the_action_instead_of_navigating() {
     let action = WidgetAction::new("lights", "set level", "a&b=c/50%");
@@ -165,11 +174,21 @@ fn the_action_link_runs_the_action_instead_of_navigating() {
     );
 
     let mut h = app();
+    h.rt.app.set_widget_key(KEY);
     h.rt.take_requests();
     h.rt.app.global::<Gate>().clone().open();
+    let token =
+        h.rt.app
+            .widget_action_link(&WidgetAction::new("lights", "toggle", "kitchen light"))
+            .unwrap()
+            .rsplit_once("&token=")
+            .unwrap()
+            .1
+            .to_string();
     // How the macOS widget extension writes it (Swift percent-encoding).
-    let patches =
-        h.rt.open_link("/__prism/widget-action?kind=lights&action=toggle&payload=kitchen%20light");
+    let patches = h.rt.open_link(&format!(
+        "/__prism/widget-action?kind=lights&action=toggle&payload=kitchen%20light&token={token}"
+    ));
     h.apply(patches);
     let lights = h.root::<Lights>();
     assert_eq!(
@@ -227,4 +246,75 @@ fn live_activity_buttons_carry_the_activity_kind() {
             .to_json()
             .contains(r#""wa":{"k":"timer","a":"pause","p":""}"#)
     );
+}
+
+/// S19: any app or web page can open the app's links; only the app's own
+/// widgets know the tokens that run an action.
+#[test]
+fn s19_only_links_with_the_apps_token_run_an_action() {
+    let mut h = app();
+    h.rt.take_requests();
+    h.rt.app.global::<Gate>().clone().open();
+    let toggle = WidgetAction::new("lights", "toggle", "kitchen");
+    let plain = "/__prism/widget-action?kind=lights&action=toggle&payload=kitchen";
+    let ran = |h: &mut Harness| h.root::<Lights>().read(&h.rt.app).actions.len();
+
+    // Without a key (iOS, Android, the web), no link runs an action.
+    assert_eq!(h.rt.app.widget_action_link(&toggle), None);
+    let patches = h.rt.open_link(plain);
+    h.apply(patches);
+    assert_eq!(ran(&mut h), 0, "an outside link ran the action");
+
+    // The widget's snapshot carries the token; the renderer adds it to the
+    // link it opens.
+    h.rt.app.set_widget_key(KEY);
+    let json = reloads(&h.rt.take_requests()).remove(0);
+    let token = snapshot_token(&json);
+    assert!(
+        json.contains(&format!(
+            r#""wa":{{"k":"lights","a":"toggle","p":"kitchen","t":"{token}"}}"#
+        )),
+        "{json}"
+    );
+    let signed = h.rt.app.widget_action_link(&toggle).unwrap();
+    assert_eq!(signed, format!("{plain}&token={token}"));
+
+    let forged = [
+        // No token, or an empty one.
+        plain.to_string(),
+        format!("{plain}&token="),
+        // Another action, payload or widget with this token.
+        format!("/__prism/widget-action?kind=lights&action=toggle&payload=garage&token={token}"),
+        format!("/__prism/widget-action?kind=lights&action=reset&payload=kitchen&token={token}"),
+        format!("/__prism/widget-action?kind=locks&action=toggle&payload=kitchen&token={token}"),
+        // Fields moved between parts.
+        format!("/__prism/widget-action?kind=lights&action=togglekitchen&payload=&token={token}"),
+        // Part of the token (fewer guesses), or one digit off.
+        format!("{plain}&token={}", &token[..2]),
+        format!("{plain}&token={}", &token[..30]),
+        format!("{plain}&token={}0", &token[..31]),
+        format!("{plain}&token={token}00"),
+        // A token of another key.
+        {
+            let mut other = app();
+            other.rt.app.set_widget_key([8; 32]);
+            other.rt.app.widget_action_link(&toggle).unwrap()
+        },
+    ];
+    for link in &forged {
+        let patches = h.rt.open_link(link);
+        h.apply(patches);
+        assert_eq!(ran(&mut h), 0, "{link} ran the action");
+        assert!(
+            !h.rt
+                .app
+                .current_path()
+                .is_some_and(|p| p.starts_with("/__prism")),
+            "{link} navigated"
+        );
+    }
+
+    let patches = h.rt.open_link(&signed);
+    h.apply(patches);
+    assert_eq!(ran(&mut h), 1, "the widget's own link runs the action");
 }

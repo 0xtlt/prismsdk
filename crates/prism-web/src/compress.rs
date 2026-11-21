@@ -54,6 +54,14 @@ pub enum Frame {
 }
 
 impl Frame {
+    /// Its size in bytes.
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Frame::Text(t) => t.len(),
+            Frame::Binary(b) => b.len(),
+        }
+    }
+
     /// Messages shorter than this (in bytes) stay text frames: most patches
     /// are a few hundred bytes, not worth a round through the decompressor.
     pub const MIN_COMPRESSED: usize = 1024;

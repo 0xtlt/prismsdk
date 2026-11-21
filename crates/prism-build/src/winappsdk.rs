@@ -4,7 +4,7 @@
 //! - [`ensure`] fetches its component packages from nuget.org into a cache
 //!   once (`PRISM_WINAPPSDK_DIR`, else `<target dir>/winappsdk/<version>`),
 //!   with `curl` and `tar` (both part of Windows 10 and 11; `unzip` too
-//!   elsewhere);
+//!   elsewhere), and unpacks each only if its SHA-256 is the pinned one;
 //! - [`deploy`] copies its runtime (DLLs, `resources.pri`) next to the
 //!   app's executable (about 55 MB, x64); [`runtime_files`] lists it;
 //! - [`embed_resources`] gives the executable its manifest, which registers
@@ -77,24 +77,95 @@ pub fn sdk_dir_for(profile_dir: &Path) -> PathBuf {
     }
 }
 
-/// The packages in `sdk`, fetched if missing.
+/// A NuGet package the backend uses, unpacked as `<sdk>/<name>`.
+struct Package {
+    name: &'static str,
+    id: &'static str,
+    version: &'static str,
+    /// The SHA-256 of its `.nupkg` (checked against nuget.org's catalog
+    /// SHA-512 when pinned).
+    sha256: &'static str,
+    /// A path that exists once it is unpacked.
+    marker: &'static str,
+}
+
+/// [`PACKAGES`] and `webview2`, pinned.
+const PINNED: [Package; 4] = [
+    Package {
+        name: "foundation",
+        id: "microsoft.windowsappsdk.foundation",
+        version: VERSION,
+        sha256: "4131660bda7476eef751ce134c9847b5a79e4051809bffbf9dd171f4246afdf8",
+        marker: "runtimes-framework",
+    },
+    Package {
+        name: "interactiveexperiences",
+        id: "microsoft.windowsappsdk.interactiveexperiences",
+        version: VERSION,
+        sha256: "5df51fd9e30a6093f737698ae8ad4e8d62d87f7081b00aa6a4ea0b893f03e1c2",
+        marker: "runtimes-framework",
+    },
+    Package {
+        name: "winui",
+        id: "microsoft.windowsappsdk.winui",
+        version: VERSION,
+        sha256: "027ecdc0c51a2d31fd25985616ef2e9438f02ee3e7b6e72fd0601ddb119688b4",
+        marker: "runtimes-framework",
+    },
+    Package {
+        name: "webview2",
+        id: "microsoft.web.webview2",
+        version: WEBVIEW2_VERSION,
+        sha256: "2f6be3a10a1a8d6d1fde986af4131dab344f8181fffe75590824e0f4b037ed73",
+        marker: "lib/Microsoft.Web.WebView2.Core.winmd",
+    },
+];
+
+/// The file in an unpacked package naming the SHA-256 it was unpacked from.
+const UNPACKED_FROM: &str = ".prism-sha256";
+
+/// The packages in `sdk`, fetched if missing. Each download is checked
+/// against its pinned SHA-256 before it is unpacked, and a package is only
+/// reused if it was unpacked from that archive. A `PRISM_WINAPPSDK_DIR`
+/// you filled yourself is used as it is.
 pub fn ensure(sdk: &Path) {
-    for p in PACKAGES {
-        fetch(
-            sdk,
-            p,
-            &format!("microsoft.windowsappsdk.{p}"),
-            VERSION,
-            "runtimes-framework",
-        );
+    let vendored = std::env::var_os("PRISM_WINAPPSDK_DIR").is_some();
+    for p in &PINNED {
+        if let Err(e) = fetch(sdk, p, vendored, curl) {
+            panic!("{e}");
+        }
     }
-    fetch(
-        sdk,
-        "webview2",
-        "microsoft.web.webview2",
-        WEBVIEW2_VERSION,
-        "lib/Microsoft.Web.WebView2.Core.winmd",
-    );
+}
+
+fn curl(url: &str, to: &Path) -> bool {
+    Command::new("curl")
+        .args(["-sSfL", "--retry", "3", "-o"])
+        .arg(to)
+        .arg(url)
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// The SHA-256 of a file, in hex.
+fn sha256_file(path: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut file = fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut hash = Sha256::new();
+    let mut buf = vec![0; 1 << 16];
+    loop {
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&buf[..n]);
+    }
+    Ok(hash.finalize().iter().fold(String::new(), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    }))
 }
 
 /// `runtimes-framework/<arch>` for the target.
@@ -112,14 +183,26 @@ pub fn arch_of(rust_arch: &str) -> &'static str {
     }
 }
 
-/// Downloads and unpacks package `id` (`version`) into `<sdk>/<name>`
-/// unless it is there (`marker` exists in it).
-fn fetch(sdk: &Path, name: &str, id: &str, version: &str, marker: &str) {
-    let dest = sdk.join(name);
-    if dest.join(marker).exists() {
-        return;
+/// Downloads package `p` with `download`, checks its SHA-256 and unpacks it
+/// into `<sdk>/<name>`, unless it is there: unpacked from the pinned
+/// archive, or anything with its marker in a `vendored` directory.
+fn fetch(
+    sdk: &Path,
+    p: &Package,
+    vendored: bool,
+    download: impl Fn(&str, &Path) -> bool,
+) -> Result<(), String> {
+    let dest = sdk.join(p.name);
+    let ready = |d: &Path| {
+        d.join(p.marker).exists()
+            && (vendored
+                || fs::read_to_string(d.join(UNPACKED_FROM)).is_ok_and(|h| h.trim() == p.sha256))
+    };
+    if ready(&dest) {
+        return Ok(());
     }
-    fs::create_dir_all(sdk).expect("Windows App SDK cache directory");
+    fs::create_dir_all(sdk).map_err(|e| format!("{}: {e}", sdk.display()))?;
+    let (id, version) = (p.id, p.version);
     let url = format!("https://api.nuget.org/v3-flatcontainer/{id}/{version}/{id}.{version}.nupkg");
     // Named after this process: the backend's build script and the app's
     // (`link_app`) may fetch at the same time on a first build.
@@ -129,24 +212,29 @@ fn fetch(sdk: &Path, name: &str, id: &str, version: &str, marker: &str) {
         "cargo:warning=fetching {url} (once, into {})",
         sdk.display()
     );
-    let ok = Command::new("curl")
-        .args(["-sSfL", "--retry", "3", "-o"])
-        .arg(&pkg)
-        .arg(&url)
-        .status()
-        .is_ok_and(|s| s.success());
-    assert!(
-        ok,
-        "prism: could not download {url} with curl. Download the Windows App SDK packages \
-         ({}) version {VERSION} and Microsoft.Web.WebView2 {WEBVIEW2_VERSION} (as webview2) \
-         from nuget.org, unpack each into <dir>/<name>, and set PRISM_WINAPPSDK_DIR=<dir>.",
-        PACKAGES.join(", ")
-    );
+    if !download(&url, &pkg) {
+        let _ = fs::remove_file(&pkg);
+        return Err(format!(
+            "prism: could not download {url} with curl. Download the Windows App SDK packages \
+             ({}) version {VERSION} and Microsoft.Web.WebView2 {WEBVIEW2_VERSION} (as webview2) \
+             from nuget.org, unpack each into <dir>/<name>, and set PRISM_WINAPPSDK_DIR=<dir>.",
+            PACKAGES.join(", ")
+        ));
+    }
+    let got = sha256_file(&pkg);
+    if got.as_deref() != Ok(p.sha256) {
+        let _ = fs::remove_file(&pkg);
+        return Err(format!(
+            "prism: {url} is not the pinned {id} {version} (SHA-256 {}, expected {}): not unpacked",
+            got.unwrap_or_else(|e| e),
+            p.sha256
+        ));
+    }
     // Unpacked beside, then renamed: an interrupted build leaves no half
     // package behind.
-    let tmp = sdk.join(format!("{name}.partial.{tag}"));
+    let tmp = sdk.join(format!("{}.partial.{tag}", p.name));
     let _ = fs::remove_dir_all(&tmp);
-    fs::create_dir_all(&tmp).expect("unpack directory");
+    fs::create_dir_all(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
     let unpacked = Command::new("tar")
         .arg("-xf")
         .arg(&pkg)
@@ -161,20 +249,24 @@ fn fetch(sdk: &Path, name: &str, id: &str, version: &str, marker: &str) {
             .arg(&tmp)
             .status()
             .is_ok_and(|s| s.success());
-    assert!(unpacked, "prism: could not unpack {}", pkg.display());
     let _ = fs::remove_file(&pkg);
-    let complete = |d: &Path| d.join(marker).exists();
-    if !complete(&dest) {
+    if !unpacked || fs::write(tmp.join(UNPACKED_FROM), p.sha256).is_err() {
+        let _ = fs::remove_dir_all(&tmp);
+        return Err(format!("prism: could not unpack {}", pkg.display()));
+    }
+    if !ready(&dest) {
         let _ = fs::remove_dir_all(&dest);
         // Another build script may have renamed its copy in between.
-        if fs::rename(&tmp, &dest).is_err() && !complete(&dest) {
-            panic!(
+        if fs::rename(&tmp, &dest).is_err() && !ready(&dest) {
+            let _ = fs::remove_dir_all(&tmp);
+            return Err(format!(
                 "prism: could not move the Windows App SDK package to {}",
                 dest.display()
-            );
+            ));
         }
     }
     let _ = fs::remove_dir_all(&tmp);
+    Ok(())
 }
 
 /// The `<file>` entries registering the runtime's WinRT classes, from each
@@ -502,6 +594,116 @@ mod tests {
         assert!(m.contains("<description>Tom &amp; Jerry</description>"));
         assert!(m.contains(r#"<requestedExecutionLevel level="asInvoker" uiAccess="false"/>"#));
         assert!(m.contains("<asmv3:file name='x.dll'/>\n</assembly>"));
+    }
+
+    /// A tar archive holding `lib/x.txt` (`tar -xf` reads it like a
+    /// `.nupkg`).
+    fn archive(dir: &Path, text: &str) -> Vec<u8> {
+        let src = dir.join(format!("src-{text}"));
+        fs::create_dir_all(src.join("lib")).unwrap();
+        fs::write(src.join("lib/x.txt"), text).unwrap();
+        let out = dir.join(format!("{text}.tar"));
+        assert!(
+            Command::new("tar")
+                .arg("-cf")
+                .arg(&out)
+                .arg("-C")
+                .arg(&src)
+                .arg("lib")
+                .status()
+                .unwrap()
+                .success()
+        );
+        fs::read(out).unwrap()
+    }
+
+    fn pinned_to(bytes: &[u8], dir: &Path) -> Package {
+        let file = dir.join("pin");
+        fs::write(&file, bytes).unwrap();
+        Package {
+            name: "pkg",
+            id: "test.pkg",
+            version: "1.0",
+            sha256: Box::leak(sha256_file(&file).unwrap().into_boxed_str()),
+            marker: "lib/x.txt",
+        }
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("prism-s24-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn sha256_is_the_standard_one() {
+        let dir = scratch("sha");
+        fs::write(dir.join("abc"), "abc").unwrap();
+        assert_eq!(
+            sha256_file(&dir.join("abc")).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        // The pinned packages, when they are at hand (PRISM_NUPKG_DIR).
+        if let Some(nupkgs) = std::env::var_os("PRISM_NUPKG_DIR") {
+            for p in &PINNED {
+                let file = Path::new(&nupkgs).join(format!("{}.{}.nupkg", p.id, p.version));
+                let started = std::time::Instant::now();
+                assert_eq!(sha256_file(&file).unwrap(), p.sha256, "{}", p.id);
+                eprintln!("{}: {:?}", p.id, started.elapsed());
+            }
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// S24: a different archive under the pinned version (a compromised
+    /// mirror or cache) is never unpacked.
+    #[test]
+    fn s24_a_changed_archive_is_never_unpacked() {
+        let dir = scratch("changed");
+        let p = pinned_to(&archive(&dir, "genuine"), &dir);
+        let changed = archive(&dir, "changed");
+        let sdk = dir.join("sdk");
+        let err = fetch(&sdk, &p, false, |_, to| fs::write(to, &changed).is_ok()).unwrap_err();
+        assert!(err.contains("not the pinned test.pkg 1.0"), "{err}");
+        assert!(!sdk.join("pkg").exists(), "unpacked");
+        let left: Vec<_> = fs::read_dir(&sdk).unwrap().flatten().collect();
+        assert!(left.is_empty(), "{left:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn s24_only_packages_unpacked_from_the_pinned_archive_are_reused() {
+        let dir = scratch("reuse");
+        let genuine = archive(&dir, "genuine");
+        let p = pinned_to(&genuine, &dir);
+        let sdk = dir.join("sdk");
+        let downloads = std::cell::Cell::new(0);
+        let serve = |_: &str, to: &Path| {
+            downloads.set(downloads.get() + 1);
+            fs::write(to, &genuine).is_ok()
+        };
+        fetch(&sdk, &p, false, serve).unwrap();
+        let text = sdk.join("pkg/lib/x.txt");
+        assert_eq!(fs::read_to_string(&text).unwrap(), "genuine");
+        fetch(&sdk, &p, false, serve).unwrap();
+        assert_eq!(downloads.get(), 1, "reused");
+
+        // A cache entry not unpacked by this check (an older cache, or one
+        // changed in place) is fetched again.
+        fs::write(&text, "changed").unwrap();
+        fs::remove_file(sdk.join("pkg").join(UNPACKED_FROM)).unwrap();
+        fetch(&sdk, &p, false, serve).unwrap();
+        assert_eq!(downloads.get(), 2);
+        assert_eq!(fs::read_to_string(&text).unwrap(), "genuine");
+
+        // A directory you provide (PRISM_WINAPPSDK_DIR) is used as it is.
+        let vendor = dir.join("vendor");
+        fs::create_dir_all(vendor.join("pkg/lib")).unwrap();
+        fs::write(vendor.join("pkg/lib/x.txt"), "mine").unwrap();
+        fetch(&vendor, &p, true, serve).unwrap();
+        assert_eq!(downloads.get(), 2);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

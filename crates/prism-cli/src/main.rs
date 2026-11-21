@@ -73,7 +73,7 @@ PUBLISH OPTIONS:
     --rollout <fraction>    Play: staged rollout (0.1 = 10 %)
     --draft                 Play: a draft release
     --notes <text>          Play: release notes (en-US)
-    --service-account <p>   Play: the service account JSON (or PRISM_PLAY_SERVICE_ACCOUNT)
+    --service-account <p>   Play: the service account JSON key's path (or PRISM_PLAY_SERVICE_ACCOUNT)
     --direct                macOS: notarize and staple the Developer ID .dmg
                             App Store Connect: PRISM_ASC_KEY_ID, PRISM_ASC_ISSUER_ID,
                             PRISM_ASC_KEY (.p8); notarization also PRISM_NOTARY_PROFILE
@@ -588,19 +588,24 @@ fn devices() -> Result<(), String> {
         println!("  {}{name}  {udid}", if shutdown { "  " } else { "● " });
     }
     println!("\nDevices (prism run ios --device <name>):");
-    let tmp = std::env::temp_dir().join(format!("prism-devices-{}.json", std::process::id()));
-    let ok = Command::new("xcrun")
-        .args(["devicectl", "list", "devices", "--json-output"])
-        .arg(&tmp)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
+    // A private directory: nothing planted at a guessable name is followed.
+    let scratch = appstore::private_dir().ok();
+    let tmp = scratch
+        .as_ref()
+        .map(|d| d.path().join("devices.json"))
+        .unwrap_or_default();
+    let ok = scratch.is_some()
+        && Command::new("xcrun")
+            .args(["devicectl", "list", "devices", "--json-output"])
+            .arg(&tmp)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
     let json: serde_json::Value = std::fs::read(&tmp)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
-    let _ = std::fs::remove_file(&tmp);
     let mut any = false;
     for d in json["result"]["devices"].as_array().into_iter().flatten() {
         let hw = &d["hardwareProperties"];

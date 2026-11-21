@@ -45,6 +45,10 @@
 //! window.addEventListener("message", (e) => { /* e.data: what the app posted */ });
 //! ```
 //!
+//! Natively, `prismHost` is in the page's main frame only (embedded frames
+//! cannot post as the page). On Android it is added as the page starts
+//! loading: a script that runs earlier waits for the `prismhost` event.
+//!
 //! **Allowed origins** ([`allow_origin`](WebView::allow_origin), by default
 //! the URL's own) are the pages the app talks to: messages from other
 //! origins are dropped, and messages to the page are only delivered while it
@@ -66,7 +70,12 @@ use crate::style::{Style, Styled};
 pub struct WebMessageEvent {
     /// The message, as JSON.
     pub data: String,
-    /// The origin of the page that sent it (`https://example.com`).
+    /// The origin of the page that sent it (`https://example.com`), one the
+    /// view allows. Natively the platform's web view reports it; on the web
+    /// the browser's script does, so a modified page can claim any allowed
+    /// origin. It tells which page talks, not that the page's service
+    /// vouches for the message: before a privileged effect (a payment, a
+    /// grant), confirm with that service, server to server.
     pub origin: String,
 }
 
@@ -263,6 +272,33 @@ impl WebViewConfig {
     }
 }
 
+/// The script a native backend runs in its web view to hand the page the
+/// app's message `json` (valid JSON, so a JavaScript literal) as a
+/// `message` event on `window`.
+///
+/// `origin` is the allowed origin the page showed when the message was
+/// sent. The script runs later, and the view may have moved to another
+/// document by then: it checks, first and without calling anything the
+/// page could replace (only `location`, which a page cannot redefine),
+/// that the page still shows `origin` (`location.protocol + "//" +
+/// location.host`, which is how [`origin_of`] writes it, `file://` too).
+/// `None`: no origin to hold to (the app allows every origin, `*`, and the
+/// page has none, like `about:blank`): whatever page is there gets it.
+///
+/// The Apple (`PrismWebView.swift`) and Android (`PrismWeb.java`) backends
+/// build the same script.
+pub fn message_script(json: &str, origin: Option<&str>) -> String {
+    let dispatch =
+        format!("window.dispatchEvent(new MessageEvent(\"message\", {{ data: {json} }}));");
+    match origin {
+        Some(origin) => format!(
+            "if (location.protocol + \"//\" + location.host === {}) {dispatch}",
+            serde_json::Value::from(origin)
+        ),
+        None => dispatch,
+    }
+}
+
 /// The origin of an absolute URL (`https://example.com:8443`), lower-case,
 /// without the default port. `None` for a relative URL or one without a
 /// host (`about:blank`, `data:`).
@@ -431,5 +467,84 @@ impl IntoElement for WebView {
         let WebView { mut node, config } = self;
         node.config = config.encode();
         Element::Node(Box::new(node))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::message_script;
+
+    /// Runs `script` with node in a page showing `protocol` and `host`;
+    /// returns the `data` of each `message` event it dispatched, as JSON
+    /// (`None` without node).
+    fn run(script: &str, protocol: &str, host: &str) -> Option<String> {
+        const PAGE: &str = r#"
+            const vm = require("node:vm");
+            const [script, protocol, host] = process.argv.slice(1);
+            const got = [];
+            class MessageEvent { constructor(type, init) { this.type = type; this.data = init.data; } }
+            const window = { dispatchEvent: (e) => got.push([e.type, e.data]) };
+            vm.runInNewContext(script, { window, MessageEvent, location: { protocol, host } });
+            process.stdout.write(JSON.stringify(got));
+        "#;
+        let out = match std::process::Command::new("node")
+            .args(["-e", PAGE, script, protocol, host])
+            .output()
+        {
+            Ok(out) => out,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("no node: the delivery script is not run");
+                return None;
+            }
+            Err(e) => panic!("node: {e}"),
+        };
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        Some(String::from_utf8(out.stdout).unwrap())
+    }
+
+    /// S32: a message for a page of one origin, run after the view moved
+    /// to a page of another, is not handed to it.
+    #[test]
+    fn s32_a_message_reaches_only_the_origin_it_was_sent_to() {
+        let json = r#"{"token":"s3cret"}"#;
+        let script = message_script(json, Some("https://app.example:8443"));
+        let Some(same) = run(&script, "https:", "app.example:8443") else {
+            return;
+        };
+        assert_eq!(same, r#"[["message",{"token":"s3cret"}]]"#);
+        for (protocol, host) in [
+            ("https:", "evil.example"),
+            ("https:", "app.example"),
+            ("http:", "app.example:8443"),
+        ] {
+            assert_eq!(
+                run(&script, protocol, host).unwrap(),
+                "[]",
+                "{protocol}//{host}"
+            );
+        }
+        // Local files: `file://`.
+        let file = message_script(json, Some("file://"));
+        assert_eq!(
+            run(&file, "file:", "").unwrap(),
+            r#"[["message",{"token":"s3cret"}]]"#
+        );
+        assert_eq!(run(&file, "https:", "evil.example").unwrap(), "[]");
+        // No origin to hold to (`*`): whatever page is there.
+        let any = message_script(json, None);
+        assert_eq!(
+            run(&any, "https:", "other.example").unwrap(),
+            r#"[["message",{"token":"s3cret"}]]"#
+        );
+        // An origin is a string literal, whatever it holds.
+        let odd = message_script(
+            "1",
+            Some(r#"https://a"); window.dispatchEvent({type:"x",data:2}); ("#),
+        );
+        assert_eq!(run(&odd, "https:", "a").unwrap(), "[]");
     }
 }

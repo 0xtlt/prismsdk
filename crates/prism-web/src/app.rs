@@ -27,6 +27,43 @@ pub struct WebApp {
     pub(crate) inner: Arc<Inner>,
 }
 
+/// Live sessions at once unless [`WebApp::max_sessions`] says otherwise.
+pub const DEFAULT_MAX_SESSIONS: usize = 1024;
+/// The longest message from a page unless [`WebApp::max_message_size`]
+/// says otherwise.
+pub const DEFAULT_MAX_MESSAGE: usize = 8 << 20;
+/// Bytes waiting in each direction of a session unless
+/// [`WebApp::max_queued_bytes`] says otherwise.
+pub const DEFAULT_MAX_QUEUED: usize = 32 << 20;
+/// The largest picture with headers the server fetches for a page, in
+/// bytes, unless [`WebApp::max_picture_bytes`] says otherwise.
+pub const DEFAULT_MAX_PICTURE: u64 = 16 << 20;
+/// The most files one pick, drop or clipboard read uploads unless
+/// [`WebApp::max_upload_files`] says otherwise.
+pub const DEFAULT_MAX_UPLOAD_FILES: usize = 256;
+/// The bytes of uploaded files one browser keeps on the server unless
+/// [`WebApp::max_upload_bytes`] says otherwise (1 GiB).
+pub const DEFAULT_MAX_UPLOAD_BYTES: u64 = 1 << 30;
+/// The bytes all sessions upload at once unless
+/// [`WebApp::max_uploading_bytes`] says otherwise (4 GiB).
+pub const DEFAULT_MAX_UPLOADING_BYTES: u64 = 4 << 30;
+/// How long uploaded files stay on the server unless
+/// [`WebApp::keep_uploads`] says otherwise (24 hours).
+pub const DEFAULT_KEEP_UPLOADS: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// What the browsers may upload (S16).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct UploadLimits {
+    /// Files in one pick, drop or clipboard read.
+    pub files: usize,
+    /// Bytes of files one browser keeps, those arriving included.
+    pub bytes: u64,
+    /// Bytes all sessions receive at once.
+    pub uploading: u64,
+    /// How long a received file stays.
+    pub keep: std::time::Duration,
+}
+
 pub(crate) struct Inner {
     pub config: AppConfig,
     pub init: AppInit,
@@ -45,8 +82,27 @@ pub(crate) struct Inner {
     pub head: crate::host::Head,
     /// Socket origins accepted besides the page's own (`*`: any).
     pub allowed_origins: Vec<String>,
+    /// Where browsers reach the app (`https://app.example.com`), if set:
+    /// `Host` and forwarded headers are then ignored.
+    pub public_origin: Option<String>,
+    /// Origins (`scheme://host:port`) whose pictures and videos with
+    /// headers the server may fetch on a private address.
+    pub media_origins: Vec<String>,
+    /// The largest picture with headers the server fetches, in bytes.
+    pub max_picture: u64,
     /// At most this many live sessions at once.
     pub max_sessions: Option<usize>,
+    /// The longest message a page may send, in bytes.
+    pub max_message: usize,
+    /// The most bytes a session lets wait in either direction: messages the
+    /// session has not handled yet, frames the page has not read yet.
+    pub max_queued: usize,
+    /// What the browsers may upload.
+    pub upload_limits: UploadLimits,
+    /// Bytes being uploaded now, all sessions together.
+    pub uploading: Arc<std::sync::atomic::AtomicU64>,
+    /// When old uploads were last deleted.
+    pub swept: std::sync::Mutex<Option<std::time::Instant>>,
     /// A session that hears nothing from its page for this long ends.
     pub idle_timeout: Option<std::time::Duration>,
     /// Live sessions now.
@@ -54,6 +110,9 @@ pub(crate) struct Inner {
     /// How long a first render waits for the background work it started
     /// (`first_paint_wait`).
     pub first_paint_wait: std::time::Duration,
+    /// 3D scene blobs go to anyone, and shared caches keep them
+    /// (`public_scenes`).
+    pub public_scenes: bool,
 
     // --- Islands: client-side Web Components ---
     /// The WASM islands `prism` built (`PRISM_ISLANDS_DIR`).
@@ -65,6 +124,9 @@ pub(crate) struct Inner {
     pub handoffs: crate::handoff::Handoffs,
     /// Origins web views may show under the strict CSP (`frame_origin`).
     pub frame_origins: Vec<String>,
+    /// Sites that may show the app's pages in a frame, besides the app's
+    /// own origin (`frame_ancestor`).
+    pub frame_ancestors: Vec<String>,
 }
 
 /// Prism's client, its base stylesheet, the app's assets and its islands.
@@ -111,18 +173,37 @@ impl WebApp {
                 vapid_public_key: env("PRISM_VAPID_PUBLIC_KEY"),
                 head: Default::default(),
                 allowed_origins: Vec::new(),
-                max_sessions: None,
+                public_origin: None,
+                media_origins: Vec::new(),
+                max_picture: DEFAULT_MAX_PICTURE,
+                max_sessions: Some(DEFAULT_MAX_SESSIONS),
+                max_message: DEFAULT_MAX_MESSAGE,
+                max_queued: DEFAULT_MAX_QUEUED,
+                upload_limits: UploadLimits {
+                    files: DEFAULT_MAX_UPLOAD_FILES,
+                    bytes: DEFAULT_MAX_UPLOAD_BYTES,
+                    uploading: DEFAULT_MAX_UPLOADING_BYTES,
+                    keep: DEFAULT_KEEP_UPLOADS,
+                },
+                uploading: Default::default(),
+                swept: Default::default(),
                 idle_timeout: None,
                 sessions: Default::default(),
                 first_paint_wait: std::time::Duration::ZERO,
+                public_scenes: false,
                 islands,
                 strict_csp: env("PRISM_STRICT_CSP").is_some_and(|v| v != "0"),
                 handoffs: Default::default(),
                 frame_origins: Vec::new(),
+                frame_ancestors: Vec::new(),
             }),
         };
         let app = match env("PRISM_BASE_PATH") {
             Some(base) => app.base_path(&base),
+            None => app,
+        };
+        let app = match env("PRISM_PUBLIC_ORIGIN") {
+            Some(origin) => app.public_origin(origin),
             None => app,
         };
         match env("PRISM_ASSET_URL") {
@@ -309,7 +390,11 @@ impl WebApp {
     ) -> Response<Vec<u8>> {
         // `cx.set_cookie`: the page redeems its ticket (#91).
         if req.method() == Method::POST && self.app_path(req.uri().path()) == "/_prism/cookie" {
-            return crate::cookies::redeem(req.headers());
+            return crate::cookies::redeem(
+                req.headers(),
+                self.browser(req.headers()),
+                self.public(),
+            );
         }
         if req.method() != Method::GET && req.method() != Method::HEAD {
             return status(StatusCode::METHOD_NOT_ALLOWED);
@@ -318,20 +403,31 @@ impl WebApp {
         let headers = req.headers();
         let mut response = if let Some(id) = path.strip_prefix("/_prism/picture/") {
             // A picture with headers, fetched here for its session.
-            crate::pictures::serve(id, cookie_header(headers).and_then(session_id).as_deref())
+            crate::pictures::serve(
+                id,
+                self.browser(headers).as_deref(),
+                &self.inner.media_origins,
+                self.inner.max_picture,
+            )
         } else if let Some(id) = path.strip_prefix("/_prism/media/") {
             // A video with headers (#207), in ranges.
             let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
             crate::pictures::serve_media(
                 id,
-                cookie_header(headers).and_then(session_id).as_deref(),
+                self.browser(headers).as_deref(),
                 range,
+                &self.inner.media_origins,
             )
         } else if let Some(id) = path.strip_prefix("/_prism/download/") {
             // A file the app handed to this session (#210).
-            crate::downloads::serve(id, cookie_header(headers).and_then(session_id).as_deref())
+            crate::downloads::serve(id, self.browser(headers).as_deref())
         } else if let Some(id) = path.strip_prefix("/_prism/3d/") {
-            scene_blob(id)
+            // A 3D scene's blob, for the browsers it was sent to.
+            crate::scene_blobs::serve(
+                id,
+                self.browser(headers).as_deref(),
+                self.inner.public_scenes,
+            )
         } else if path == "/_prism/auth/callback" {
             // A sign-in provider's redirect: hand it to the session that asked.
             let mut r = Response::new(
@@ -376,6 +472,7 @@ impl WebApp {
             };
             self.page_response(&page, req, context)
         };
+        self.protect(&mut response);
         // Pages and other answers made now: gzipped when the browser accepts it.
         crate::compress::encode_response(headers, &mut response);
         if req.method() == Method::HEAD {
@@ -384,12 +481,44 @@ impl WebApp {
         response
     }
 
+    /// What every answer says to the browser: never sniff it as another
+    /// type and, for an HTML document (a page, the sign-in callback), who
+    /// may show it in a frame: the app's own origin and its
+    /// [`frame_ancestor`](Self::frame_ancestor)s, so another site cannot
+    /// overlay a signed-in page to steer the visitor's clicks.
+    fn protect(&self, r: &mut Response<Vec<u8>>) {
+        let html = r
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|t| t.trim_start().to_ascii_lowercase().starts_with("text/html"));
+        let h = r.headers_mut();
+        h.entry(header::X_CONTENT_TYPE_OPTIONS)
+            .or_insert(HeaderValue::from_static("nosniff"));
+        if !html {
+            return;
+        }
+        // A policy of its own: browsers enforce it with any other (the
+        // strict CSP, a sandbox).
+        let policy = format!("frame-ancestors {}", self.frame_ancestors());
+        if let Ok(v) = HeaderValue::from_str(&policy) {
+            h.append(header::CONTENT_SECURITY_POLICY, v);
+        }
+        // For browsers without `frame-ancestors`; it cannot name other sites.
+        if self.inner.frame_ancestors.is_empty() {
+            h.insert(
+                header::X_FRAME_OPTIONS,
+                HeaderValue::from_static("SAMEORIGIN"),
+            );
+        }
+    }
+
     /// A file this browser uploaded (photos…), private to it.
     fn upload(&self, headers: &HeaderMap, name: &str) -> Response<Vec<u8>> {
-        let Some(sid) = cookie_header(headers).and_then(session_id) else {
+        let Some(sid) = self.browser(headers) else {
             return status(StatusCode::NOT_FOUND);
         };
-        if !crate::assets::safe(name) {
+        if !crate::uploads::stored_name(name) {
             return status(StatusCode::NOT_FOUND);
         }
         match std::fs::read(self.files_dir(&sid).join(name)) {
@@ -406,6 +535,15 @@ impl WebApp {
                     header::CACHE_CONTROL,
                     "private, max-age=31536000, immutable",
                 );
+                // Someone else's file, served from the app's origin: opened
+                // as a document it runs nothing (an SVG's or HTML's
+                // scripts), is never sniffed as another type, and only
+                // pictures and videos show inline; anything else downloads.
+                set(&mut r, header::X_CONTENT_TYPE_OPTIONS, "nosniff");
+                set(&mut r, header::CONTENT_SECURITY_POLICY, SANDBOX);
+                if !inert(crate::assets::content_type(name)) {
+                    set(&mut r, header::CONTENT_DISPOSITION, "attachment");
+                }
                 r
             }
             Err(_) => status(StatusCode::NOT_FOUND),
@@ -419,7 +557,7 @@ impl WebApp {
         context: Option<crate::RequestContext>,
     ) -> Response<Vec<u8>> {
         let headers = req.headers();
-        let origin = crate::host::page_origin(headers, Some(req.uri()));
+        let origin = crate::host::page_origin(headers, Some(req.uri()), self.public());
         let request = crate::host::web_request(
             prism_core::RequestKind::Page,
             self.page_url(&origin, self.app_path(req.uri().path()), req.uri().query()),
@@ -429,7 +567,7 @@ impl WebApp {
         );
         let nonce = req.extensions().get::<crate::CspNonce>();
         let cookies = cookie_header(headers);
-        let (sid, new) = match cookies.and_then(session_id) {
+        let (sid, new) = match self.browser(headers) {
             Some(sid) => (sid, false),
             None => (new_session_id(), true),
         };
@@ -465,8 +603,14 @@ impl WebApp {
             } else {
                 &self.inner.base
             };
-            let cookie =
-                format!("prism_sid={sid}; Path={path}; Max-Age=31536000; SameSite=Lax; HttpOnly");
+            // HTTPS: host-only and `Secure` (`__Host-` needs `Path=/`).
+            let cookie = if self.https(headers) {
+                format!(
+                    "{SECURE_SID}={sid}; Path=/; Max-Age=31536000; Secure; SameSite=Lax; HttpOnly"
+                )
+            } else {
+                format!("{PLAIN_SID}={sid}; Path={path}; Max-Age=31536000; SameSite=Lax; HttpOnly")
+            };
             if let Ok(v) = HeaderValue::from_str(&cookie) {
                 r.headers_mut().insert(header::SET_COOKIE, v);
             }
@@ -559,7 +703,8 @@ impl WebApp {
         nonce: Option<&crate::CspNonce>,
     ) -> (String, u16) {
         let config = &self.inner.config;
-        let asset_urls = self.session_asset_urls(visitor.sid);
+        let sid = visitor.sid;
+        let asset_urls = self.session_asset_urls(sid);
         let mut runtime = Runtime::with_options(
             &self.init_with(request, None),
             self.options(visitor, path.into()),
@@ -600,7 +745,7 @@ impl WebApp {
             layers,
             css: ssr_css,
         } = html.to_page();
-        pin_first_paint(html.take_scenes());
+        crate::scene_blobs::first_paint(sid, html.take_scenes());
         let head = &self.inner.head;
         let page = format!(
             r#"<!doctype html>
@@ -659,7 +804,7 @@ impl WebApp {
         let num = |k: &str| param(k).and_then(|v| v.parse::<f32>().ok());
         let cookies = cookie_header(headers);
         let header = |name: header::HeaderName| headers.get(name).and_then(|v| v.to_str().ok());
-        let sid = cookies.and_then(session_id).unwrap_or_else(new_session_id);
+        let sid = self.browser(headers).unwrap_or_else(new_session_id);
         let path = param("path")
             .map(percent_decode)
             .unwrap_or_else(|| "/".into());
@@ -772,8 +917,7 @@ impl WebApp {
     /// (`https://admin.example.com`; `*` accepts any). By default a
     /// handshake whose `Origin` is not the host it was sent to is refused
     /// (`403`): browsers send cookies with cross-site handshakes. Behind a
-    /// proxy that rewrites `Host` without `X-Forwarded-Host`, list the
-    /// public origin here.
+    /// proxy, set [`public_origin`](Self::public_origin).
     pub fn allow_origins<I, S>(self, origins: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -783,11 +927,139 @@ impl WebApp {
         self.configure(|i| i.allowed_origins.extend(origins))
     }
 
+    /// Lets the server fetch pictures and videos with headers
+    /// (`picture(url).header(…)`) from `origin` (`https://api.internal`,
+    /// `http://10.0.0.5:8080`) although it is on a private, loopback or
+    /// link-local address. Other origins must resolve to public addresses
+    /// only; redirects to another origin are never followed.
+    /// The origin browsers reach the app at (`https://app.example.com`),
+    /// for a server behind a proxy (also `PRISM_PUBLIC_ORIGIN`). It is then
+    /// the page's origin (`cx.request()`, sign-in callbacks, whether the
+    /// browser's id cookie is `Secure`) and, with
+    /// [`allow_origins`](Self::allow_origins), the only origin a live
+    /// session accepts: `Host`, `X-Forwarded-Host`, `X-Forwarded-Proto` and
+    /// `Forwarded` are ignored. Without it they are trusted, so a proxy in
+    /// front must set them (and drop the browser's own).
+    ///
+    /// # Panics
+    ///
+    /// If `origin` is not `http(s)://host[:port]`.
+    pub fn public_origin(self, origin: impl AsRef<str>) -> Self {
+        let (scheme, host, port) = crate::host::origin_parts(origin.as_ref())
+            .unwrap_or_else(|| panic!("public_origin: {:?} is not an origin", origin.as_ref()));
+        let default = if scheme == "https" { 443 } else { 80 };
+        let origin = if port == default {
+            format!("{scheme}://{host}")
+        } else {
+            format!("{scheme}://{host}:{port}")
+        };
+        self.configure(|i| i.public_origin = Some(origin))
+    }
+
+    pub(crate) fn public(&self) -> Option<&str> {
+        self.inner.public_origin.as_deref()
+    }
+
+    pub fn trust_media_origin(self, origin: impl AsRef<str>) -> Self {
+        let origin = crate::pictures::origin(origin.as_ref());
+        self.configure(|i| i.media_origins.extend(origin))
+    }
+
+    /// The largest picture with headers (`picture(url).header(..)`) the
+    /// server fetches for a page, in bytes: a larger one is refused with
+    /// `502` as soon as it passes the limit. 16 MiB by default
+    /// ([`DEFAULT_MAX_PICTURE`]). Videos and audio with headers are
+    /// fetched in ranges of 4 MiB and need no limit.
+    pub fn max_picture_bytes(self, bytes: u64) -> Self {
+        self.configure(|i| i.max_picture = bytes)
+    }
+
     /// At most `n` live sessions at once (each is a thread with its own
     /// runtime): further handshakes are refused with `503`, and the pages
-    /// retry with back-off.
+    /// retry with back-off. 1,024 by default ([`DEFAULT_MAX_SESSIONS`];
+    /// `usize::MAX` for no limit). Each session takes its permit when the
+    /// handshake is checked and frees it when it ends.
     pub fn max_sessions(self, n: usize) -> Self {
         self.configure(|i| i.max_sessions = Some(n))
+    }
+
+    /// The longest message a page may send, in bytes: a longer one ends
+    /// its session (the Axum router also refuses longer WebSocket frames).
+    /// 8 MiB by default ([`DEFAULT_MAX_MESSAGE`]); picked files go in
+    /// chunks of 256 KiB, so only a huge paste comes near it.
+    pub fn max_message_size(self, bytes: usize) -> Self {
+        self.configure(|i| i.max_message = bytes)
+    }
+
+    /// The most bytes a session lets wait, in each direction: messages from
+    /// a page faster than the app handles them, and (with the Axum router)
+    /// patches for a page that stops reading. Past it the session ends and
+    /// the page reconnects. 32 MiB by default ([`DEFAULT_MAX_QUEUED`]).
+    pub fn max_queued_bytes(self, bytes: usize) -> Self {
+        self.configure(|i| i.max_queued = bytes)
+    }
+
+    /// The most files one pick, drop or clipboard read may upload: more
+    /// fail the call before anything is stored. 256 by default
+    /// ([`DEFAULT_MAX_UPLOAD_FILES`]). A pick of a single file takes one,
+    /// and `PickImages::limit` applies too.
+    pub fn max_upload_files(self, n: usize) -> Self {
+        self.configure(|i| i.upload_limits.files = n)
+    }
+
+    /// The most bytes of uploaded files one browser keeps on the server,
+    /// those arriving included: an upload that would pass it fails before
+    /// anything is stored. 1 GiB by default ([`DEFAULT_MAX_UPLOAD_BYTES`]).
+    pub fn max_upload_bytes(self, bytes: u64) -> Self {
+        self.configure(|i| i.upload_limits.bytes = bytes)
+    }
+
+    /// The most bytes all sessions upload at once: an upload that would
+    /// pass it fails ("try again later") before anything is stored. 4 GiB
+    /// by default ([`DEFAULT_MAX_UPLOADING_BYTES`]).
+    pub fn max_uploading_bytes(self, bytes: u64) -> Self {
+        self.configure(|i| i.upload_limits.uploading = bytes)
+    }
+
+    /// How long uploaded files stay on the server: older ones are deleted
+    /// (and `PickedFile::read` no longer finds them), those of browsers
+    /// that never come back included, after a restart too. 24 hours by
+    /// default ([`DEFAULT_KEEP_UPLOADS`]). Copy the files the app keeps to
+    /// its own storage.
+    pub fn keep_uploads(self, keep: std::time::Duration) -> Self {
+        self.configure(|i| i.upload_limits.keep = keep)
+    }
+
+    pub(crate) fn upload_limits(&self) -> UploadLimits {
+        self.inner.upload_limits
+    }
+
+    pub(crate) fn uploading(&self) -> &Arc<std::sync::atomic::AtomicU64> {
+        &self.inner.uploading
+    }
+
+    /// Deletes the expired uploads of every browser on a background thread,
+    /// at most every [`keep_uploads`](Self::keep_uploads) (once a minute to
+    /// once an hour).
+    pub(crate) fn sweep_uploads(&self) {
+        let every = self.inner.upload_limits.keep.clamp(
+            std::time::Duration::from_secs(60),
+            std::time::Duration::from_secs(3600),
+        );
+        let now = std::time::Instant::now();
+        {
+            let Ok(mut swept) = self.inner.swept.lock() else {
+                return;
+            };
+            if swept.is_some_and(|at| now.duration_since(at) < every) {
+                return;
+            }
+            *swept = Some(now);
+        }
+        let app = self.clone();
+        let _ = std::thread::Builder::new()
+            .name("prism-web uploads".into())
+            .spawn(move || crate::uploads::sweep_all(&app, std::time::SystemTime::now()));
     }
 
     /// Ends a session that heard nothing from its page (no event, resize or
@@ -812,6 +1084,15 @@ impl WebApp {
         self.configure(|i| i.first_paint_wait = timeout)
     }
 
+    /// Serves the blobs of 3D scenes (meshes, instance sets, clips, embedded
+    /// images: `<base>/_prism/3d/<id>`) to anyone, and lets shared caches
+    /// such as a CDN keep them. Only for an app whose scenes hold nothing
+    /// private. By default (`false`) a blob goes only to the browsers it
+    /// was sent to, with `Cache-Control: private`.
+    pub fn public_scenes(self, public: bool) -> Self {
+        self.configure(|i| i.public_scenes = public)
+    }
+
     /// Live sessions right now.
     pub fn session_count(&self) -> usize {
         self.inner
@@ -826,7 +1107,7 @@ impl WebApp {
     /// other servers should too (a refused [`connect`](WebApp::connect)
     /// ends at once).
     pub fn accept_socket(&self, headers: &HeaderMap) -> Result<(), StatusCode> {
-        if !crate::host::origin_allowed(headers, &self.inner.allowed_origins) {
+        if !crate::host::origin_allowed(headers, &self.inner.allowed_origins, self.public()) {
             return Err(StatusCode::FORBIDDEN);
         }
         if self
@@ -837,6 +1118,20 @@ impl WebApp {
             return Err(StatusCode::SERVICE_UNAVAILABLE);
         }
         Ok(())
+    }
+
+    /// [`accept_socket`](WebApp::accept_socket), taking the session's
+    /// permit at once: concurrent handshakes never get more permits than
+    /// [`max_sessions`](WebApp::max_sessions).
+    pub(crate) fn reserve_session(
+        &self,
+        headers: &HeaderMap,
+    ) -> Result<crate::session::SessionPermit, StatusCode> {
+        if !crate::host::origin_allowed(headers, &self.inner.allowed_origins, self.public()) {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        crate::session::SessionPermit::take(&self.inner.sessions, self.inner.max_sessions)
+            .ok_or(StatusCode::SERVICE_UNAVAILABLE)
     }
 
     /// [`handle`](WebApp::handle) with the host's context for the app
@@ -880,50 +1175,6 @@ impl VisitorOwned {
 }
 
 // --- HTTP helpers -------------------------------------------------------------------------
-
-/// A 3D scene blob (`prism_core::scene3d::blobs`): a mesh, clip, skin,
-/// environment or embedded image, by its content hash. Never changes, so
-/// browsers and CDNs keep it; gone (404) once no rendered scene holds it.
-/// How long the blobs of a server-rendered page stay fetchable without a
-/// live session holding them: the time for the browser to load the page
-/// and its socket to take over.
-const FIRST_PAINT_PIN: std::time::Duration = std::time::Duration::from_secs(120);
-
-/// Scenes of recent first paints, kept so the blobs they reference (built
-/// during that render: `Instances`, `Mesh::custom`, clips) answer
-/// `/_prism/3d/<id>` until the page's session renders them again.
-type Pinned = std::collections::VecDeque<(std::time::Instant, Vec<prism_core::scene3d::FlatScene>)>;
-static FIRST_PAINT: std::sync::Mutex<Pinned> = std::sync::Mutex::new(Pinned::new());
-
-fn pin_first_paint(scenes: Vec<prism_core::scene3d::FlatScene>) {
-    let now = std::time::Instant::now();
-    let mut pinned = FIRST_PAINT.lock().unwrap_or_else(|e| e.into_inner());
-    while pinned
-        .front()
-        .is_some_and(|(at, _)| now.duration_since(*at) > FIRST_PAINT_PIN)
-    {
-        pinned.pop_front();
-    }
-    if !scenes.is_empty() {
-        pinned.push_back((now, scenes));
-    }
-}
-
-fn scene_blob(id: &str) -> Response<Vec<u8>> {
-    let Some((bytes, mime)) = prism_core::scene3d::blobs::get(id) else {
-        return status(StatusCode::NOT_FOUND);
-    };
-    let mut r = Response::new(bytes.to_vec());
-    if let Ok(v) = HeaderValue::from_str(&mime) {
-        r.headers_mut().insert(header::CONTENT_TYPE, v);
-    }
-    set(
-        &mut r,
-        header::CACHE_CONTROL,
-        "public, max-age=31536000, immutable",
-    );
-    r
-}
 
 fn status(code: StatusCode) -> Response<Vec<u8>> {
     let mut r = Response::new(Vec::new());
@@ -973,38 +1224,76 @@ fn file_response(f: StaticFile, headers: &HeaderMap) -> Response<Vec<u8>> {
     r
 }
 
+/// The policy of a file the app did not make (an upload): no scripts, no
+/// subresources, an opaque origin, whatever the page's own policy is.
+pub(crate) const SANDBOX: &str = "default-src 'none'; sandbox";
+
+/// Whether a browser shows `content_type` without running anything: raster
+/// pictures and videos (not SVG, HTML, PDF…).
+fn inert(content_type: &str) -> bool {
+    (content_type.starts_with("image/") && content_type != "image/svg+xml")
+        || content_type.starts_with("video/")
+}
+
 fn cookie_header(headers: &HeaderMap) -> Option<&str> {
     headers.get(header::COOKIE).and_then(|v| v.to_str().ok())
 }
 
-/// `prism_sid` from a Cookie header, if well-formed.
-pub(crate) fn session_id(cookie_header: &str) -> Option<String> {
+/// The browser's id cookie over HTTPS: host-only, `Secure`, `Path=/`.
+/// Browsers refuse a `__Host-` cookie from a sibling domain or plain HTTP,
+/// so no other site can choose the id (session fixation).
+const SECURE_SID: &str = "__Host-prism_sid";
+/// Over plain HTTP (local development): `Path` is the mount point.
+const PLAIN_SID: &str = "prism_sid";
+
+impl WebApp {
+    /// Whether the browser reached the app over HTTPS: its public origin
+    /// says so, else `X-Forwarded-Proto` or `Forwarded: proto=` from the
+    /// proxy in front.
+    fn https(&self, headers: &HeaderMap) -> bool {
+        match self.public() {
+            Some(origin) => origin.starts_with("https://"),
+            None => crate::host::request_scheme(headers, None) == "https",
+        }
+    }
+
+    /// The browser's id ([`browser_id`]).
+    pub(crate) fn browser(&self, headers: &HeaderMap) -> Option<String> {
+        browser_id(headers, self.https(headers))
+    }
+}
+
+/// The browser's id: its `__Host-prism_sid` cookie, or over plain HTTP its
+/// `prism_sid`. Over HTTPS a plain `prism_sid` is ignored: a sibling site
+/// may have set it.
+pub(crate) fn browser_id(headers: &HeaderMap, https: bool) -> Option<String> {
+    let cookies = cookie_header(headers)?;
+    cookie_id(cookies, SECURE_SID).or_else(|| {
+        if https {
+            None
+        } else {
+            cookie_id(cookies, PLAIN_SID)
+        }
+    })
+}
+
+/// The id in cookie `name` of a Cookie header, if well-formed.
+fn cookie_id(cookie_header: &str, name: &str) -> Option<String> {
     cookie_header
         .split(';')
-        .filter_map(|kv| kv.trim().strip_prefix("prism_sid="))
+        .filter_map(|kv| kv.trim().strip_prefix(name)?.strip_prefix('='))
         .find(|v| v.len() == 32 && v.bytes().all(|b| b.is_ascii_hexdigit()))
         .map(str::to_string)
 }
 
-/// A random 128-bit id (process-random SipHash keys + time + counter).
+/// A random 128-bit id, from the operating system's CSPRNG.
 pub(crate) fn new_session_id() -> String {
-    use std::hash::{BuildHasher, Hasher};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let seed = std::collections::hash_map::RandomState::new();
-    let part = |salt: u64| {
-        let mut h = seed.build_hasher();
-        h.write_u64(salt);
-        h.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));
-        h.write_u128(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos(),
-        );
-        h.finish()
-    };
-    format!("{:016x}{:016x}", part(1), part(2))
+    use ring::rand::SecureRandom;
+    let mut bytes = [0u8; 16];
+    ring::rand::SystemRandom::new()
+        .fill(&mut bytes)
+        .expect("the system random number generator");
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// The browser's UTC offset (seconds east), from the `prism_tz` cookie.
@@ -1259,9 +1548,11 @@ mod tests {
             cx.set_root(root);
         });
         let dir = std::env::temp_dir().join(format!("prism-webapp-pic-{}", std::process::id()));
+        // The upstream is on loopback: the app trusts it.
         let app = WebApp::new(config, init)
             .data_dir(dir.join("data"))
-            .base_path("/app");
+            .base_path("/app")
+            .trust_media_origin(format!("http://{addr}"));
         let page = get(
             &app,
             "/app/",
@@ -1323,8 +1614,14 @@ mod tests {
             cx.set_root(root);
         });
         let dir = std::env::temp_dir().join(format!("prism-webapp-3d-{}", std::process::id()));
-        let app = WebApp::new(AppConfig::default(), init).data_dir(dir.join("data"));
-        let page = String::from_utf8(get(&app, "/", &[]).body().clone()).unwrap();
+        let app = WebApp::new(AppConfig::default(), init.clone()).data_dir(dir.join("data"));
+        let page = get(&app, "/", &[]);
+        let cookie = header(&page, "set-cookie")
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
+        let page = String::from_utf8(page.body().clone()).unwrap();
         let scene = page
             .split("data-scene=\"")
             .nth(1)
@@ -1336,9 +1633,33 @@ mod tests {
             .nth(1)
             .and_then(|s| s.get(..32))
             .unwrap_or_else(|| panic!("an instance blob in {scene}"));
-        let blob = get(&app, &format!("/_prism/3d/{id}"), &[]);
+        let path = format!("/_prism/3d/{id}");
+        let blob = get(&app, &path, &[("cookie", &cookie)]);
         assert_eq!(blob.status(), StatusCode::OK);
         assert!(blob.body().starts_with(b"P3DI"));
+        assert_eq!(
+            header(&blob, "cache-control"),
+            "private, max-age=31536000, immutable"
+        );
+        // S29: another browser, or none, gets nothing, even with the id.
+        let other = format!("prism_sid={}", "ab".repeat(16));
+        assert_eq!(
+            get(&app, &path, &[("cookie", &other)]).status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(get(&app, &path, &[]).status(), StatusCode::NOT_FOUND);
+        // An app whose scenes are public serves them to anyone, and caches
+        // may keep them.
+        let public = WebApp::new(AppConfig::default(), init)
+            .data_dir(dir.join("public"))
+            .public_scenes(true);
+        let _ = get(&public, "/", &[]);
+        let blob = get(&public, &path, &[]);
+        assert_eq!(blob.status(), StatusCode::OK);
+        assert_eq!(
+            header(&blob, "cache-control"),
+            "public, max-age=31536000, immutable"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -188,12 +188,14 @@ impl WinServices {
                 value,
                 options,
             } => {
-                // Credential Manager has no per-item owner check: Hello
-                // guards the value when it is read.
-                if options.biometric && !self.caps.device_auth {
-                    return reply(id, Err(DeviceError::Unavailable));
-                }
-                let value = format!("{}{value}", if options.biometric { GATED } else { "" });
+                // Credential Manager has no per-item owner check: only
+                // `confirm_owner` secrets, guarded by Hello when they are
+                // read (S22).
+                let gated = match options.app_gate(self.caps.device_auth) {
+                    Ok(gated) => gated,
+                    Err(e) => return reply(id, Err(e)),
+                };
+                let value = format!("{}{value}", if gated { GATED } else { "" });
                 reply(
                     id,
                     security::secret_set(&self.app, &key, &value).map(|_| DeviceValue::Done),
@@ -210,8 +212,9 @@ impl WinServices {
                 });
             }
             DeviceCall::Authenticate(r) => {
-                if !r.passcode && self.caps.biometry == prism_core::BiometryKind::None {
-                    // Hello without a sensor is its PIN only.
+                if !r.passcode {
+                    // Hello's consent check lets the user pick the PIN, even
+                    // with a sensor: it cannot promise biometrics only.
                     return reply(id, Err(DeviceError::Unavailable));
                 }
                 security::authenticate(self.hwnd, &r.reason, move |r| reply(id, r));

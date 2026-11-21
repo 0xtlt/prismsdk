@@ -4,7 +4,8 @@
 //! receives the page's messages, so any WebSocket implementation works.
 
 use std::collections::HashMap;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use http::{HeaderMap, Uri};
@@ -30,16 +31,35 @@ pub(crate) enum Inbound {
     CookieSet(u64, prism_core::Cookie),
 }
 
+/// What one waiting message costs besides its text (its queue slot): a
+/// flood of tiny messages fills the budget too.
+const MESSAGE_OVERHEAD: usize = 64;
+
 /// The server side of one open page. Pass it the page's messages; drop it
 /// (or call [`close`](Session::close)) when the socket closes.
 pub struct Session {
     tx: mpsc::Sender<Inbound>,
+    /// Bytes of messages the session has not handled yet.
+    queued: Arc<AtomicUsize>,
+    max_message: usize,
+    max_queued: usize,
 }
 
 impl Session {
-    /// A text message from the page. Returns `false` once the session ended.
+    /// A text message from the page. Returns `false` once the session
+    /// ended, or when it ends it: a message longer than
+    /// [`WebApp::max_message_size`], or one the session cannot keep up
+    /// with ([`WebApp::max_queued_bytes`] waiting).
     pub fn receive(&self, text: impl Into<String>) -> bool {
-        self.tx.send(Inbound::Message(text.into())).is_ok()
+        let text = text.into();
+        let cost = text.len() + MESSAGE_OVERHEAD;
+        if text.len() > self.max_message
+            || self.queued.fetch_add(cost, Ordering::SeqCst) + cost > self.max_queued
+        {
+            self.close();
+            return false;
+        }
+        self.tx.send(Inbound::Message(text)).is_ok()
     }
 
     /// Ends the session (also done on drop).
@@ -70,7 +90,7 @@ impl WebApp {
         headers: &HeaderMap,
         send: impl Fn(String) -> bool + Send + 'static,
     ) -> Session {
-        self.start(uri, headers, None, send)
+        self.start(uri, headers, None, None, send)
     }
 
     /// [`connect`](WebApp::connect) with the host's context for the app
@@ -84,7 +104,7 @@ impl WebApp {
         context: crate::RequestContext,
         send: impl Fn(String) -> bool + Send + 'static,
     ) -> Session {
-        self.start(uri, headers, Some(context), send)
+        self.start(uri, headers, Some(context), None, send)
     }
 
     /// [`connect`](WebApp::connect) for an upgrade request: its URI, headers
@@ -95,7 +115,19 @@ impl WebApp {
         send: impl Fn(String) -> bool + Send + 'static,
     ) -> Session {
         let context = req.extensions().get::<crate::RequestContext>().cloned();
-        self.start(req.uri(), req.headers(), context, send)
+        self.start(req.uri(), req.headers(), context, None, send)
+    }
+
+    /// [`connect_request`](WebApp::connect_request) with the permit the
+    /// handshake took before upgrading.
+    pub(crate) fn connect_reserved<B>(
+        &self,
+        req: &http::Request<B>,
+        permit: SessionPermit,
+        send: impl Fn(String) -> bool + Send + 'static,
+    ) -> Session {
+        let context = req.extensions().get::<crate::RequestContext>().cloned();
+        self.start(req.uri(), req.headers(), context, Some(permit), send)
     }
 
     fn start(
@@ -103,16 +135,30 @@ impl WebApp {
         uri: &Uri,
         headers: &HeaderMap,
         context: Option<crate::RequestContext>,
+        permit: Option<SessionPermit>,
         send: impl Fn(String) -> bool + Send + 'static,
     ) -> Session {
         let (tx, rx) = mpsc::channel();
-        if let Err(status) = self.accept_socket(headers) {
-            // A foreign origin or too many sessions: tell the page, end now.
-            send(json!({ "t": "refused", "status": status.as_u16() }).to_string());
-            return Session { tx };
-        }
+        let session = Session {
+            tx: tx.clone(),
+            queued: Arc::default(),
+            max_message: self.inner.max_message,
+            max_queued: self.inner.max_queued,
+        };
+        // The permit is taken atomically: concurrent handshakes never get
+        // more than `max_sessions`.
+        let permit = match permit.map_or_else(|| self.reserve_session(headers), Ok) {
+            Ok(permit) => permit,
+            Err(status) => {
+                // A foreign origin or too many sessions: tell the page, end now.
+                send(json!({ "t": "refused", "status": status.as_u16() }).to_string());
+                return session;
+            }
+        };
+        // Uploads past `keep_uploads` go, those of browsers gone too.
+        self.sweep_uploads();
         let (sid, path, visitor) = self.socket_visitor(uri, headers);
-        let origin = crate::host::page_origin(headers, Some(uri));
+        let origin = crate::host::page_origin(headers, Some(uri), self.public());
         let search = crate::app::query_param(uri, "search").map(crate::app::percent_decode);
         // The page's first handshake takes its request over (`cx.page_request()`).
         let page_request =
@@ -124,19 +170,24 @@ impl WebApp {
             headers,
             context,
         );
-        let count = SessionCount::new(&self.inner.sessions);
         let idle = self.inner.idle_timeout;
         let app = self.clone();
         let waker = tx.clone();
         let inbox = tx.clone();
+        let queued = session.queued.clone();
+        // One wake-up waits at a time, however often async work wakes us.
+        let wake_pending = Arc::new(AtomicBool::new(false));
+        let woken = wake_pending.clone();
         std::thread::Builder::new()
             .name("prism-session".into())
             .spawn(move || {
-                let _count = count;
+                let _permit = permit;
                 let mut options = app.options(visitor.with_sid(&sid), path);
                 let device = options.device_info.clone();
                 options.wake_ui = Some(std::sync::Arc::new(move || {
-                    let _ = waker.send(Inbound::Wake);
+                    if !wake_pending.swap(true, Ordering::SeqCst) {
+                        let _ = waker.send(Inbound::Wake);
+                    }
                 }));
                 let runtime = Runtime::with_options(&app.init_with(request, page_request), options);
                 Live {
@@ -145,6 +196,7 @@ impl WebApp {
                     encoder: Encoder {
                         asset_urls: Some(app.session_asset_urls(&sid)),
                         module_urls: Some(app.module_urls()),
+                        sid: Some(sid.clone()),
                         ..Default::default()
                     },
                     services: WebServices {
@@ -157,6 +209,7 @@ impl WebApp {
                         base: app.base().to_string(),
                         title: app.config().title.clone(),
                         inbox: Some(inbox),
+                        sign_ins: crate::security::session_key(),
                         sid: Some(sid.clone()),
                         ..app.services()
                     },
@@ -166,11 +219,13 @@ impl WebApp {
                     idle,
                     last_seen: Instant::now(),
                     drops: HashMap::new(),
+                    queued,
+                    woken,
                 }
                 .run(rx);
             })
             .expect("prism-web: cannot start a session thread");
-        Session { tx }
+        session
     }
 }
 
@@ -187,21 +242,42 @@ struct Live {
     last_seen: Instant,
     /// Drops uploading (#111): their number → the target node.
     drops: HashMap<u64, NodeId>,
+    /// Bytes of the page's messages not handled yet (see `Session::receive`).
+    queued: Arc<AtomicUsize>,
+    /// A wake-up is waiting in the inbox.
+    woken: Arc<AtomicBool>,
 }
 
-/// Counts a live session while it exists.
-struct SessionCount(std::sync::Arc<std::sync::atomic::AtomicUsize>);
-
-impl SessionCount {
-    fn new(count: &std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Self {
-        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        SessionCount(count.clone())
+impl Drop for Live {
+    /// The session ended: its sign-ins will not be redeemed.
+    fn drop(&mut self) {
+        crate::security::forget_session(self.services.sign_ins);
     }
 }
 
-impl Drop for SessionCount {
+/// One of the app's [`max_sessions`](WebApp::max_sessions), held by a live
+/// session (or a handshake about to become one) and freed when it ends.
+pub(crate) struct SessionPermit(Arc<AtomicUsize>);
+
+impl SessionPermit {
+    /// A permit, unless `max` are taken: checked and taken in one step.
+    pub(crate) fn take(count: &Arc<AtomicUsize>, max: Option<usize>) -> Option<Self> {
+        let mut n = count.load(Ordering::SeqCst);
+        loop {
+            if max.is_some_and(|max| n >= max) {
+                return None;
+            }
+            match count.compare_exchange_weak(n, n + 1, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => return Some(SessionPermit(count.clone())),
+                Err(now) => n = now,
+            }
+        }
+    }
+}
+
+impl Drop for SessionPermit {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -250,8 +326,14 @@ impl Live {
                 Some(at) => rx.recv_timeout(at.saturating_duration_since(Instant::now())),
                 None => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
             };
-            if let Ok(Inbound::Message(_)) = &inbound {
-                self.last_seen = Instant::now();
+            match &inbound {
+                Ok(Inbound::Message(text)) => {
+                    self.last_seen = Instant::now();
+                    self.queued
+                        .fetch_sub(text.len() + MESSAGE_OVERHEAD, Ordering::SeqCst);
+                }
+                Ok(Inbound::Wake) => self.woken.store(false, Ordering::SeqCst),
+                _ => {}
             }
             let patches = match inbound {
                 // Busy pages still get their timers on time.
@@ -261,11 +343,17 @@ impl Live {
                     patches
                 }
                 Ok(Inbound::Message(text)) => self.message(&text),
-                Ok(Inbound::AuthRedirect(id, url)) => self
-                    .runtime
-                    .device_reply(id, Ok(prism_core::DeviceValue::Text(Some(url)))),
+                Ok(Inbound::AuthRedirect(id, url)) => {
+                    self.services.server_answers.remove(&id);
+                    // Absolute, as the redirect URI (`/_prism/auth/callback?…`
+                    // arrives).
+                    let url = format!("{}{}{url}", self.services.origin, self.services.base);
+                    self.runtime
+                        .device_reply(id, Ok(prism_core::DeviceValue::Text(Some(url))))
+                }
                 // The browser has the cookie: so does the session's request.
                 Ok(Inbound::CookieSet(id, cookie)) => {
+                    self.services.server_answers.remove(&id);
                     let app = &mut self.runtime.app;
                     if let Some(mut request) = app.request().cloned() {
                         request.apply_cookie(&cookie);
@@ -373,11 +461,19 @@ impl Live {
                     };
                     rt.device_reply(id, result)
                 }
-                Some(id) => {
-                    if v.get("err").is_some() {
-                        crate::security::forget_redirect(id);
-                        crate::cookies::forget(id, &self.sid);
+                // A call only the server completes (the browser fetched the
+                // cookie, the provider redirected): the page may fail it, no
+                // more.
+                Some(id) if self.services.server_answers.contains(&id) => {
+                    if v.get("err").is_none() {
+                        return Vec::new();
                     }
+                    self.services.server_answers.remove(&id);
+                    crate::security::forget_redirect(self.services.sign_ins, id);
+                    crate::cookies::forget(id, &self.sid);
+                    rt.device_reply(id, device_result(&v))
+                }
+                Some(id) => {
                     let result = device_result(&v);
                     rt.device_reply(id, result)
                 }
@@ -400,7 +496,16 @@ impl Live {
                     Some((sent, total)) => {
                         rt.device_event(id, prism_core::DeviceEvent::Upload { sent, total })
                     }
-                    None => Vec::new(),
+                    None => {
+                        // Refused (too many files, too many bytes): the page
+                        // stops sending, and the call fails with the reason.
+                        if self.services.uploads.has(key) {
+                            self.services
+                                .outbox
+                                .push(json!({ "t": "device", "id": id, "call": "stop" }));
+                        }
+                        Vec::new()
+                    }
                 }
             }
             Some("upload_chunk") => {
@@ -494,11 +599,8 @@ impl Live {
             // The browser window was resized; `safe`: what the device's
             // notch, bars and rounded corners cover (`env(safe-area-inset-*)`,
             // top, right, bottom, left).
-            Some("viewport") => match (
-                v.get("w").and_then(Value::as_f64),
-                v.get("h").and_then(Value::as_f64),
-            ) {
-                (Some(w), Some(h)) => rt.set_window(w as f32, h as f32, safe_area(&v)),
+            Some("viewport") => match (finite_f32(v.get("w")), finite_f32(v.get("h"))) {
+                (Some(w), Some(h)) if w >= 0. && h >= 0. => rt.set_window(w, h, safe_area(&v)),
                 _ => Vec::new(),
             },
             // The page described its device (on connect, rotation, fold).
@@ -590,6 +692,13 @@ fn message(t: &str, ops: Vec<Value>) -> serde_json::Map<String, Value> {
 
 /// A `change` event's value: a number, or `null` for an optional date
 /// picker the user cleared (`NaN`, #89).
+/// A JSON number as an `f32`, `None` when it is not one or does not fit
+/// (a value past `f32::MAX` would become infinite).
+fn finite_f32(v: Option<&Value>) -> Option<f32> {
+    let n = v?.as_f64()? as f32;
+    n.is_finite().then_some(n)
+}
+
 fn change_value(v: &Value) -> Option<f64> {
     if v.is_null() {
         Some(f64::NAN)
@@ -626,16 +735,16 @@ pub(crate) fn parse_event(v: &Value) -> Option<UiEvent> {
         "layout" => Some(UiEvent::Layout(
             id,
             prism_core::Rect::new(
-                v.get("x")?.as_f64()? as f32,
-                v.get("y")?.as_f64()? as f32,
-                v.get("w")?.as_f64()? as f32,
-                v.get("h")?.as_f64()? as f32,
+                finite_f32(v.get("x"))?,
+                finite_f32(v.get("y"))?,
+                finite_f32(v.get("w"))?,
+                finite_f32(v.get("h"))?,
             ),
         )),
         "scroll" => Some(UiEvent::Scroll(
             id,
-            v.get("o")?.as_f64()? as f32,
-            v.get("v")?.as_f64()? as f32,
+            finite_f32(v.get("o"))?,
+            finite_f32(v.get("v"))?,
         )),
         "swipe" => Some(UiEvent::Swipe(
             id,
@@ -686,7 +795,7 @@ fn parse_input_event(v: &Value) -> Option<UiEvent> {
     use prism_core::{
         DragEvent, DragPhase, KeyEvent, Modifiers, Point, PointerEvent, PointerPhase,
     };
-    let num = |k: &str| v.get(k).and_then(Value::as_f64).map(|n| n as f32);
+    let num = |k: &str| finite_f32(v.get(k));
     let id = v.get("id").and_then(Value::as_u64);
     match v.get("t")?.as_str()? {
         // With the keys held and the click count (#159) when the page says.
@@ -1000,6 +1109,12 @@ pub(crate) struct WebServices {
     pub title: String,
     /// The session's own inbox (sign-in redirects arrive there).
     pub inbox: Option<mpsc::Sender<Inbound>>,
+    /// What the session's sign-ins are filed under
+    /// ([`session_key`](crate::security::session_key)).
+    pub sign_ins: u64,
+    /// Calls the server answers itself when they succeed (a cookie the
+    /// browser fetched, a sign-in's redirect): the page may only fail them.
+    pub server_answers: std::collections::HashSet<u64>,
     /// The browser's `prism_sid` (`None` while rendering a page).
     pub sid: Option<String>,
     /// `cx.reconnect()`: end the session once the page is told.
@@ -1218,7 +1333,16 @@ impl PlatformServices for WebServices {
                         Some("pick_files" | "pick_images" | "pick_folder" | "read_clipboard_item")
                     ) =>
                 {
-                    self.uploads.expect(id);
+                    // How many files it takes: one, unless it said more.
+                    let max = match msg["call"].as_str() {
+                        Some("pick_files") if msg["multiple"] != true => Some(1),
+                        Some("pick_images") => msg["limit"]
+                            .as_u64()
+                            .filter(|n| *n > 0)
+                            .map(|n| usize::try_from(n).unwrap_or(usize::MAX)),
+                        _ => None,
+                    };
+                    self.uploads.expect(id, max);
                     msg
                 }
                 Some(msg) => msg,
@@ -1284,6 +1408,9 @@ pub struct Encoder {
     pub asset_urls: Option<AssetUrls>,
     /// URLs of island modules (none if unset: islands show their fallback).
     pub module_urls: Option<crate::ModuleUrls>,
+    /// The browser's id (its `prism_sid` cookie): the 3D scene blobs sent
+    /// are served to it (`<base>/_prism/3d/<id>`), and to no other.
+    pub sid: Option<String>,
 }
 
 impl Encoder {
@@ -1375,7 +1502,9 @@ impl Encoder {
                     Some(urls) => urls(src),
                     None => crate::html::picture_url(src),
                 });
-                json!({ "op": "scene", "id": id, "u": update.to_value() })
+                let update = update.to_value();
+                crate::scene_blobs::sent(self.sid.as_deref(), &update);
+                json!({ "op": "scene", "id": id, "u": update })
             }
             Patch::SetClickable { id, clickable } => {
                 json!({ "op": "clickable", "id": id, "on": clickable })
@@ -1668,8 +1797,11 @@ pub(crate) fn device_json(id: u64, call: prism_core::DeviceCall) -> Value {
         C::Haptic(h) => json!({ "call": "haptic", "kind": h.name() }),
         C::CopyText(t) => json!({ "call": "copy", "text": t }),
         C::Share(s) => json!({ "call": "share", "text": s.text, "url": s.url }),
-        C::OpenUrl(u) => json!({ "call": "open_url", "url": u }),
-        C::OpenUrlIn(u, target) => json!({ "call": "open_url", "url": u, "target": target.name() }),
+        // Never a URL that would run script in the page (S8): `null`.
+        C::OpenUrl(u) => json!({ "call": "open_url", "url": crate::html::safe_url(&u) }),
+        C::OpenUrlIn(u, target) => {
+            json!({ "call": "open_url", "url": crate::html::safe_url(&u), "target": target.name() })
+        }
         // The app's own relying party (#94): the page runs the ceremony with
         // the server's options and answers the credential as JSON (`text`).
         C::WebAuthn(r) => json!({
@@ -1693,6 +1825,8 @@ pub(crate) enum Gate {
     Owner,
     /// A biometric secret's value.
     Secret(String),
+    /// Stores a biometric secret (the owner enrolls first).
+    Store { key: String, value: String },
 }
 
 type Answer = Result<prism_core::DeviceValue, prism_core::DeviceError>;
@@ -1712,6 +1846,17 @@ impl WebServices {
                 value,
                 options,
             } => {
+                // A biometric secret needs an enrolled owner: the first one
+                // enrolls this browser's authenticator, so reading one never
+                // enrolls whoever reads it first.
+                let enrolled = self.secure.as_ref().map(|s| s.credential().is_some());
+                if options.biometric && enrolled == Some(false) {
+                    if !self.uvpa {
+                        self.reply(id, Err(E::Unavailable));
+                        return None;
+                    }
+                    return self.ceremony(id, String::new(), Gate::Store { key, value });
+                }
                 let r = match &self.secure {
                     Some(s) => s.set(&key, &value, options.biometric).map(|_| V::Done),
                     None => Err("no session".into()),
@@ -1731,7 +1876,7 @@ impl WebServices {
                             return None;
                         }
                         let reason = prompt.unwrap_or_default();
-                        Some(self.ceremony(id, reason, Gate::Secret(secret.value)))
+                        self.ceremony(id, reason, Gate::Secret(secret.value))
                     }
                     Ok(secret) => {
                         self.reply(id, Ok(V::Text(secret.map(|s| s.value))));
@@ -1744,10 +1889,11 @@ impl WebServices {
                 }
             }
             C::SecureDelete { key, .. } => {
-                if let Some(s) = &self.secure {
-                    s.delete(&key);
-                }
-                self.reply(id, Ok(V::Done));
+                let r = match &self.secure {
+                    Some(s) => s.delete(&key).map(|_| V::Done).map_err(E::Failed),
+                    None => Ok(V::Done),
+                };
+                self.reply(id, r);
                 None
             }
             C::BiometryStatus => {
@@ -1762,11 +1908,14 @@ impl WebServices {
                 None
             }
             C::Authenticate(r) => {
-                if !self.uvpa {
+                // WebAuthn's user verification may be the device PIN or
+                // password, and does not say which: it cannot promise
+                // biometrics only.
+                if !self.uvpa || !r.passcode {
                     self.reply(id, Err(E::Unavailable));
                     return None;
                 }
-                Some(self.ceremony(id, r.reason, Gate::Owner))
+                self.ceremony(id, r.reason, Gate::Owner)
             }
             C::SignInWithApple(_) => {
                 // Apple's web sign-in is OAuth: use prism::oauth with its endpoints.
@@ -1779,8 +1928,18 @@ impl WebServices {
                 None
             }
             C::WebAuth(r) => {
+                if crate::html::safe_url(&r.url).is_none() {
+                    self.reply(id, Err(E::Failed("not a sign-in URL".into())));
+                    return None;
+                }
                 match (crate::security::state_of(&r.url), self.inbox.clone()) {
-                    (Some(state), Some(tx)) => crate::security::wait_for_redirect(state, tx, id),
+                    (Some(state), Some(tx)) => {
+                        if !crate::security::wait_for_redirect(state, tx, self.sign_ins, id) {
+                            self.reply(id, Err(E::Failed("too many sign-ins at once".into())));
+                            return None;
+                        }
+                        self.server_answers.insert(id);
+                    }
                     _ => {
                         self.reply(id, Err(E::Failed("the sign-in URL has no state".into())));
                         return None;
@@ -1806,6 +1965,7 @@ impl WebServices {
                     return None;
                 };
                 let ticket = crate::cookies::issue(&sid, cookie, tx, id);
+                self.server_answers.insert(id);
                 Some(json!({
                     "t": "device", "id": id, "call": "set_cookie",
                     "url": format!("{}/_prism/cookie", self.base), "ticket": ticket,
@@ -1879,27 +2039,47 @@ impl WebServices {
     }
 
     /// Starts a WebAuthn ceremony: an assertion with this browser's
-    /// credential, or its registration the first time.
-    fn ceremony(&mut self, id: u64, reason: String, gate: Gate) -> Value {
-        let c = crate::security::Ceremony::new(&self.origin);
+    /// credential, or its enrollment the first time (`authenticate`, or the
+    /// first biometric secret). A biometric secret is never read through an
+    /// enrollment: without a credential it stays closed.
+    fn ceremony(&mut self, id: u64, reason: String, gate: Gate) -> Option<Value> {
+        use crate::security::Mode;
         let credential = self.secure.as_ref().and_then(|s| s.credential());
-        let msg = match credential {
-            Some(cred) => json!({
+        let mode = match (&credential, &gate) {
+            (Some(cred), _) => Mode::Assert(cred.id.clone()),
+            (None, Gate::Secret(_)) => {
+                self.reply(
+                    id,
+                    Err(prism_core::DeviceError::Failed(
+                        "no authenticator is enrolled in this browser: store the secret again"
+                            .into(),
+                    )),
+                );
+                return None;
+            }
+            (None, _) => Mode::Register,
+        };
+        let c = crate::security::Ceremony::new(&self.origin, mode);
+        let msg = match &c.mode {
+            Mode::Assert(cred) => json!({
                 "t": "device", "id": id, "call": "webauthn", "mode": "get",
-                "challenge": c.challenge, "credential": cred.id, "reason": reason,
+                "challenge": c.challenge, "credential": cred, "reason": reason,
             }),
-            None => json!({
+            Mode::Register => json!({
                 "t": "device", "id": id, "call": "webauthn", "mode": "create",
                 "challenge": c.challenge, "user": crate::security::random_id(),
                 "rp": self.title, "name": self.title, "reason": reason,
             }),
         };
         self.ceremonies.insert(id, (c, gate));
-        msg
+        Some(msg)
     }
 
-    /// Checks the page's WebAuthn answer for call `id`.
+    /// Checks the page's WebAuthn answer for call `id`: the operation the
+    /// server chose (an assertion by the enrolled credential, or the first
+    /// enrollment), whatever the page says it did.
     pub(crate) fn finish_ceremony(&mut self, id: u64, v: &Value) -> Answer {
+        use crate::security::Mode;
         use prism_core::{DeviceError as E, DeviceValue as V};
         let Some((c, gate)) = self.ceremonies.remove(&id) else {
             return Err(E::Failed("no ceremony".into()));
@@ -1910,22 +2090,31 @@ impl WebServices {
         let (Some(r), Some(store)) = (v.get("webauthn"), &self.secure) else {
             return Err(E::Failed("webauthn: no answer".into()));
         };
-        let checked = match r.get("type").and_then(Value::as_str) {
-            Some("create") => {
-                crate::security::verify_registration(&c, r).map(|cred| store.save_credential(&cred))
+        let kind = r.get("type").and_then(Value::as_str);
+        let checked = match (&c.mode, kind) {
+            (Mode::Register, Some("create")) => {
+                crate::security::verify_registration(&c, r).and_then(|cred| store.enroll(&cred))
             }
-            _ => match store.credential() {
-                Some(mut cred) => crate::security::verify_assertion(&c, &mut cred, r)
-                    .map(|_| store.save_credential(&cred)),
-                None => Err("webauthn: no credential".into()),
+            (Mode::Assert(enrolled), Some("get")) => match store.credential() {
+                // Still the credential the ceremony was started for.
+                Some(mut cred) if cred.id == *enrolled => {
+                    crate::security::verify_assertion(&c, &mut cred, r)
+                        .and_then(|_| store.save_credential(&cred))
+                }
+                _ => Err("webauthn: the enrolled credential changed".into()),
             },
+            _ => Err("webauthn: wrong ceremony".into()),
         };
-        match checked {
-            Ok(()) => Ok(match gate {
-                Gate::Owner => V::Done,
-                Gate::Secret(value) => V::Text(Some(value)),
-            }),
-            Err(e) => Err(E::from_message(&e)),
+        if let Err(e) = checked {
+            return Err(E::from_message(&e));
+        }
+        match gate {
+            Gate::Owner => Ok(V::Done),
+            Gate::Secret(value) => Ok(V::Text(Some(value))),
+            Gate::Store { key, value } => store
+                .set(&key, &value, true)
+                .map(|_| V::Done)
+                .map_err(E::Failed),
         }
     }
 }
@@ -1934,11 +2123,9 @@ impl WebServices {
 /// absent or malformed.
 fn safe_area(v: &Value) -> prism_core::Edges {
     let side = |i: usize| {
-        v.get("safe")
-            .and_then(|s| s.get(i))
-            .and_then(Value::as_f64)
-            .filter(|x| x.is_finite() && *x >= 0.)
-            .unwrap_or(0.) as f32
+        finite_f32(v.get("safe").and_then(|s| s.get(i)))
+            .filter(|x| *x >= 0.)
+            .unwrap_or(0.)
     };
     prism_core::Edges {
         top: side(0),

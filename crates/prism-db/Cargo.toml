@@ -22,5 +22,9 @@ prism-core.workspace = true
 sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio", "derive"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 
+[target.'cfg(unix)'.dependencies]
+# The user id naming the private fallback directory.
+libc = "0.2"
+
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]

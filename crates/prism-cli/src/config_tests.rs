@@ -253,6 +253,68 @@ fn a_project_needs_a_package_name() {
     assert!(err.contains("package"), "{err}");
 }
 
+/// S23: the package and bundle ID name files and become launcher source,
+/// so they are checked before any command uses them.
+#[test]
+fn s23_identifiers_follow_narrow_grammars() {
+    let dir = TempDir::new("ids");
+    for id in ["com.example.app", "dev.prism.my-app", "org.Example_2.App-3"] {
+        let toml = format!("[app]\nbundle_id = \"{id}\"\n");
+        assert_eq!(project(&dir, Some(&toml), CARGO).unwrap().bundle_id, id);
+    }
+    let long = format!("com.{}", "a".repeat(252));
+    for id in [
+        r#"dev.prism.app\";touch pwned;\""#,
+        "dev.prism.$(touch pwned)",
+        "dev.prism.a pp",
+        "dev..app",
+        ".dev.app",
+        "dev.app.",
+        "app",
+        "../../tmp/app",
+        "com.example.café",
+        long.as_str(),
+    ] {
+        let toml = format!("[app]\nbundle_id = \"{id}\"\n");
+        let err = project(&dir, Some(&toml), CARGO).err();
+        assert!(
+            err.as_deref().is_some_and(|e| e.contains("bundle_id")),
+            "{id}: {err:?}"
+        );
+    }
+    assert_eq!(
+        project(
+            &dir,
+            Some(&format!("[app]\nbundle_id = \"com.{}\"\n", "a".repeat(251))),
+            CARGO
+        )
+        .unwrap()
+        .bundle_id
+        .len(),
+        255
+    );
+
+    for pkg in ["my_app", "my-app", "app2", "_x"] {
+        let toml = format!("[app]\npackage = \"{pkg}\"\n");
+        assert_eq!(project(&dir, Some(&toml), CARGO).unwrap().package, pkg);
+    }
+    for pkg in [
+        "app$(touch pwned)",
+        "../app",
+        "my app",
+        "-p",
+        "a;b",
+        "app\\n",
+    ] {
+        let toml = format!("[app]\npackage = \"{pkg}\"\n");
+        let err = project(&dir, Some(&toml), CARGO).err();
+        assert!(
+            err.as_deref().is_some_and(|e| e.contains("[app] package")),
+            "{pkg}: {err:?}"
+        );
+    }
+}
+
 #[test]
 fn web_islands_and_their_budget() {
     let c =

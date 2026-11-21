@@ -147,6 +147,22 @@ impl ReceiverKeys {
         o
     }
 
+    /// This device's keys, kept in the file `path`: read, or made once and
+    /// kept there, private from creation (see
+    /// [`secret_file::load_or_create`](crate::secret_file::load_or_create)).
+    /// An error when they cannot be read or kept: a subscription announced
+    /// with keys that are lost could never be decrypted.
+    pub fn load_or_create(path: &std::path::Path) -> std::io::Result<Self> {
+        let bytes = crate::secret_file::load_or_create(
+            path,
+            |b| Self::from_bytes(b).is_some(),
+            || Self::generate().to_bytes(),
+        )?;
+        Self::from_bytes(&bytes).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "not Web Push keys")
+        })
+    }
+
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
         if bytes.len() != 48 {
             return None;
@@ -262,7 +278,24 @@ fn origin(url: &str) -> String {
 }
 
 /// The request delivering `push` to a Web Push or UnifiedPush subscription.
+///
+/// The endpoint must be a public HTTPS URL on port 443 (not `localhost`,
+/// not a private or reserved address). Your HTTP client must also refuse
+/// a name that resolves to such an address, and redirects: the subscriber
+/// chose this URL. `Sender` does both, and can trust a
+/// private distributor's origin.
 pub fn request(
+    sub: &Subscription,
+    push: &Push,
+    vapid: Option<(&VapidKey, &str)>,
+    now: SystemTime,
+) -> Result<HttpRequest, PushError> {
+    crate::endpoint::Endpoint::parse(&sub.token)?.check_public()?;
+    build(sub, push, vapid, now)
+}
+
+/// [`request`], with the endpoint already checked.
+pub(crate) fn build(
     sub: &Subscription,
     push: &Push,
     vapid: Option<(&VapidKey, &str)>,

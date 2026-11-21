@@ -37,7 +37,7 @@ cx.reload_web_view("preview");
 
 ## The page's side
 
-The page receives the app's messages as `message` events on `window`, everywhere. To send, it calls `window.parent.postMessage` in a browser frame, and `prismHost.postMessage` in a native web view, which Prism adds to the page before its scripts run (only when the app listens with `on_message`). A page that works in both:
+The page receives the app's messages as `message` events on `window`, everywhere. To send, it calls `window.parent.postMessage` in a browser frame, and `prismHost.postMessage` in a native web view, which Prism adds to the page's main frame (only when the app listens with `on_message`). Embedded frames do not get it: only the main frame speaks for the page. On Apple platforms and Windows, `prismHost` is there before the page's scripts run. On Android it is added as the page starts loading, so a script that runs first may not see it yet: wait for the `prismhost` event on `window` (messages posted before the page finished loading are held until then). A page that works in both:
 
 ```js
 function postToApp(value) {
@@ -55,10 +55,12 @@ The app gets the value as JSON either way (`WebMessageEvent::data::<T>()`, `data
 
 **Allowed origins** are the pages the app talks to: by default the URL's own origin, or the ones given with `.allow_origin("https://cdn.example.com")` (once per origin; `"*"` for any). A `file://` page has no origin of its own: talk to it with `"*"`.
 
-- Messages from other origins are dropped, and messages to the page are delivered only while it shows an allowed origin.
+- Messages from other origins are dropped, and messages to the page are delivered only while it shows an allowed origin. A message is for the origin the page shows when the app sends it: if the page has moved to another origin by the time it arrives, it is dropped.
 - Native web views keep their main frame on them: a link to another origin opens in the system browser. Scripts and redirects may still navigate; their messages are filtered.
+- Natively, nothing opens outside the app unless the user tapped or clicked for it: a link, or a new window (unless a sandbox leaves out `popups()`). Only web links open (in the system browser), and `mailto:` and `tel:` ones (in the mail and phone apps); never another app's own scheme (`intent:`, `market:`, a custom one).
 - On the web, a frame cannot be held back: it may navigate anywhere. Only its messages are filtered.
-- Messages must come from the main frame of the web view (an `<iframe>` inside the page does not speak for it). Android cannot tell frames apart: there the origin is the main frame's URL.
+- Messages must come from the main frame of the web view (an `<iframe>` inside the page does not speak for it).
+- The app checks the origin again before `on_message` runs, whatever the platform reports. On the web the browser's script reports it, so a modified page can claim any origin the view allows: `WebMessageEvent::origin` tells which page talks, not that its service vouches for the message. Before a privileged effect (a payment, a grant), confirm with that service, server to server.
 
 **Sandbox**: without `.sandbox(…)` the page has the rights of its own origin, as in a browser tab. With it, only what the `WebSandbox` allows:
 
@@ -70,7 +72,7 @@ web_view(url).sandbox(WebSandbox::new().scripts().same_origin())
 |---|---|---|---|---|
 | `scripts()` | `allow-scripts` | `allowsContentJavaScript` | `setJavaScriptEnabled` | `IsScriptEnabled` |
 | `forms()` | `allow-forms` | form navigations cancelled otherwise | not enforced | otherwise a script in every frame stops submissions (`submit`, `form.submit()`, `requestSubmit()`) and every POST of a document is answered 403 before it leaves |
-| `popups()` | `allow-popups allow-popups-to-escape-sandbox` | `target="_blank"`, `window.open`: the system browser; ignored otherwise | the same | the same (`NewWindowRequested`) |
+| `popups()` | `allow-popups allow-popups-to-escape-sandbox` | `target="_blank"`, `window.open` after a tap: the system browser; ignored otherwise | the same | the same (`NewWindowRequested`, user-initiated) |
 | `same_origin()` | `allow-same-origin` | otherwise a private, non-persistent data store | otherwise DOM storage off | otherwise InPrivate |
 
 A window the page opens with `popups()` is not sandboxed: on the web it is a normal tab (`allow-popups-to-escape-sandbox`), as natively, where it opens in the system browser.
@@ -84,8 +86,8 @@ Changes to the sandbox apply from the next page the view loads (on Apple platfor
 | | Web | macOS, iOS, iPadOS, visionOS | Android | Windows | tvOS, watchOS, Linux |
 |---|---|---|---|---|---|
 | View | `<iframe>` | `WKWebView` | `android.webkit.WebView` | WinUI `WebView2` (Edge WebView2 Runtime) | an empty box |
-| Page → app | `parent.postMessage` | `prismHost.postMessage` (script message handler) | `prismHost.postMessage` (`@JavascriptInterface`) | `prismHost.postMessage` (`chrome.webview`) | – |
-| App → page | `postMessage` to the frame's origin | `message` event (`evaluateJavaScript`) | `message` event (`evaluateJavascript`) | `message` event (`ExecuteScriptAsync`) | – |
+| Page → app | `parent.postMessage` | `prismHost.postMessage` (script message handler, main frame) | `prismHost.postMessage` (a message port given to the main frame) | `prismHost.postMessage` (`chrome.webview`) | – |
+| App → page | `postMessage` to the frame's origin | `message` event (`evaluateJavaScript`) | `message` event (through the same port) | `message` event (`ExecuteScriptAsync`) | – |
 
 `cx.capabilities().web_view` says whether the platform shows the page. tvOS and watchOS have no WebKit, and Linux has no web view yet (WebKitGTK would add a system dependency): the node is an empty box sized by its style, so show something else there:
 

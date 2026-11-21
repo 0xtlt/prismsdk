@@ -35,4 +35,9 @@ prism-build.workspace = true
 wasm-bindgen-cli-support = "=0.2.130"
 flate2 = "1"
 brotli = "8"
+# Private, randomly named temporary directories for signing checks.
+tempfile = "3"
 
+[dev-dependencies]
+# S33: Android's sign-in callback check, against the core's.
+prism-core.workspace = true

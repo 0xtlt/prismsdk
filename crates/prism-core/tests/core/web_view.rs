@@ -242,3 +242,28 @@ fn web_views_load_only_web_pages() {
         "https://preview.example.com/page/2"
     );
 }
+
+/// S12 (security review): on the web the browser's script reports the
+/// origin of a message, so a modified page can send any. The dispatcher
+/// keeps the web view's own rules: a message whose origin the view does
+/// not allow, or for a view that does not listen, never reaches the app.
+#[test]
+fn messages_from_origins_the_view_does_not_allow_are_dropped() {
+    let mut h = editor();
+    let id = web(&h);
+    for origin in ["https://evil.example", "http://preview.example.com", ""] {
+        h.dispatch(UiEvent::WebMessage(id, r#""forged""#.into(), origin.into()));
+    }
+    assert_eq!(h.root::<Editor>().read(&h.rt.app).selected, None);
+    assert!(h.host.web_messages.is_empty());
+    // Case and a trailing slash do not matter.
+    h.dispatch(UiEvent::WebMessage(
+        id,
+        r#""ok""#.into(),
+        "HTTPS://Preview.Example.com/".into(),
+    ));
+    assert_eq!(
+        h.root::<Editor>().read(&h.rt.app).selected.as_deref(),
+        Some("ok")
+    );
+}

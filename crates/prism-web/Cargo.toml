@@ -36,7 +36,7 @@ ring = "0.17"
 # the tree through prism-http's HTTP client).
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 axum = { version = "0.8", optional = true, default-features = false, features = ["ws", "tokio", "http1", "query"] }
-tokio = { version = "1", optional = true, features = ["rt-multi-thread", "net", "sync"] }
+tokio = { version = "1", optional = true, features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
 futures-util = { version = "0.3", optional = true, default-features = false, features = ["sink"] }
 
 [[example]]

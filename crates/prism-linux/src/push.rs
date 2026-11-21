@@ -72,34 +72,27 @@ pub(crate) fn distributor() -> Option<String> {
     found.into_iter().next()
 }
 
-/// Our registration token (random, kept in the data directory).
-fn token(dir: &Path) -> String {
-    let path = dir.join("prism-push-token");
-    if let Ok(t) = std::fs::read_to_string(&path)
-        && !t.trim().is_empty()
-    {
-        return t.trim().to_string();
-    }
-    let keys = prism_push::webpush::ReceiverKeys::generate();
-    // 16 random bytes, hex (UUID-sized).
-    let t: String = keys.auth.iter().map(|b| format!("{b:02x}")).collect();
-    let _ = std::fs::create_dir_all(dir);
-    let _ = std::fs::write(&path, &t);
-    t
+/// Our registration token (random, made once and kept private in the data
+/// directory).
+fn token(dir: &Path) -> Result<String, DeviceError> {
+    let bytes = prism_push::secret_file::load_or_create(
+        &dir.join("prism-push-token"),
+        |b| std::str::from_utf8(b).is_ok_and(|t| !t.trim().is_empty()),
+        || {
+            // 16 random bytes, hex (UUID-sized).
+            let keys = prism_push::webpush::ReceiverKeys::generate();
+            let t: String = keys.auth.iter().map(|b| format!("{b:02x}")).collect();
+            t.into_bytes()
+        },
+    )
+    .map_err(|e| DeviceError::Failed(format!("push token: {e}")))?;
+    Ok(String::from_utf8_lossy(&bytes).trim().to_string())
 }
 
-fn keys(dir: &Path) -> prism_push::webpush::ReceiverKeys {
-    let path = dir.join("prism-push-keys");
-    if let Some(k) = std::fs::read(&path)
-        .ok()
-        .and_then(|b| prism_push::webpush::ReceiverKeys::from_bytes(&b))
-    {
-        return k;
-    }
-    let k = prism_push::webpush::ReceiverKeys::generate();
-    let _ = std::fs::create_dir_all(dir);
-    let _ = std::fs::write(&path, k.to_bytes());
-    k
+/// This device's Web Push keys, made once and kept private.
+fn keys(dir: &Path) -> Result<prism_push::webpush::ReceiverKeys, DeviceError> {
+    prism_push::webpush::ReceiverKeys::load_or_create(&dir.join("prism-push-keys"))
+        .map_err(|e| DeviceError::Failed(format!("push keys: {e}")))
 }
 
 fn dict(v: &glib::Variant) -> glib::VariantDict {
@@ -125,7 +118,12 @@ pub(crate) fn register(
             "no UnifiedPush distributor on the session bus".into(),
         )));
     };
-    let token = token(&dir);
+    // The token, and the keys the endpoint will be announced with, are
+    // kept before a distributor is asked for one.
+    let token = match token(&dir).and_then(|t| keys(&dir).map(|_| t)) {
+        Ok(t) => t,
+        Err(e) => return on_registered(Err(e)),
+    };
     let on_registered = std::rc::Rc::new(on_registered);
     if REGISTERED.with(|r| r.borrow().is_none()) {
         let node = gio::DBusNodeInfo::for_xml(CONNECTOR_XML).expect("connector XML");
@@ -145,11 +143,13 @@ pub(crate) fn register(
                 match method {
                     "NewEndpoint" => {
                         if let Ok(Some(endpoint)) = args.lookup::<String>("endpoint") {
-                            let k = keys(&dir);
-                            let mut sub = PushSubscription::new(PushService::UnifiedPush, endpoint);
-                            sub.p256dh = Some(k.p256dh());
-                            sub.auth = Some(k.auth());
-                            done(Ok(sub));
+                            done(keys(&dir).map(|k| {
+                                let mut sub =
+                                    PushSubscription::new(PushService::UnifiedPush, endpoint);
+                                sub.p256dh = Some(k.p256dh());
+                                sub.auth = Some(k.auth());
+                                sub
+                            }));
                         }
                         invocation.return_value(Some(&empty_reply()));
                     }
@@ -162,7 +162,13 @@ pub(crate) fn register(
                     "Message" => {
                         let body = args.lookup::<Vec<u8>>("message").ok().flatten();
                         let id = args.lookup::<String>("id").ok().flatten();
-                        match body.map(|b| keys(&dir).decrypt(&b)) {
+                        let plain = body.map(|b| {
+                            keys(&dir).and_then(|k| {
+                                k.decrypt(&b)
+                                    .map_err(|e| DeviceError::Failed(e.to_string()))
+                            })
+                        });
+                        match plain {
                             Some(Ok(plain)) => {
                                 on_message(message(&String::from_utf8_lossy(&plain)))
                             }
@@ -239,8 +245,11 @@ pub(crate) fn unregister(dir: &Path) {
     let (Some(bus), Some(name)) = (session(), distributor()) else {
         return;
     };
+    let Ok(token) = token(dir) else {
+        return;
+    };
     let args = glib::VariantDict::new(None);
-    args.insert("token", token(dir));
+    args.insert("token", token);
     bus.call(
         Some(&name),
         DISTRIBUTOR_PATH,

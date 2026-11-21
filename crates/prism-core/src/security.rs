@@ -7,6 +7,9 @@
 //!     let token = cx.secure_storage().get("token").await?;
 //!     // Only after Face ID / Touch ID / a fingerprint (or the passcode).
 //!     cx.secure_storage().set_with("pin", "1234", SecureOptions::new().biometric()).await?;
+//!     // The same, or the app's own check where the store has none
+//!     // (Windows, Linux).
+//!     cx.secure_storage().set_with("pin", "1234", SecureOptions::new().confirm_owner()).await?;
 //!
 //!     // Is it the owner? (Face ID, Touch ID, Optic ID, fingerprint, passcode)
 //!     cx.authenticate("Unlock your notes").await?;
@@ -39,11 +42,22 @@ use crate::task::AsyncApp;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SecureOptions {
     /// Reading it needs the device owner: biometrics, or the passcode where
-    /// biometrics are missing (Keychain access control, an Android Keystore
-    /// key requiring authentication, WebAuthn on the web). Changing the
-    /// enrolled faces or fingers makes it unreadable on Apple platforms and
-    /// Android: store it again.
+    /// biometrics are missing, checked by the store itself (Keychain access
+    /// control, an Android Keystore key requiring authentication, the
+    /// server after WebAuthn on the web). Changing the enrolled faces or
+    /// fingers makes it unreadable on Apple platforms and Android: store it
+    /// again. Where the store has no such check (Windows Credential
+    /// Manager, the Linux Secret Service, the macOS login keychain of an
+    /// app without a provisioning profile), storing fails with
+    /// [`DeviceError::Unavailable`] and keeps the previous secret: see
+    /// [`confirm_owner`](Self::confirm_owner).
     pub biometric: bool,
+    /// Like [`biometric`](Self::biometric) where the store checks the
+    /// owner; elsewhere Prism asks for the owner (Windows Hello, a
+    /// fingerprint, Touch ID) before handing the value to the app, but the
+    /// store does not: another program of the same user that reads the
+    /// store gets the value without a prompt.
+    pub confirm_owner: bool,
     /// Shared with the app's extensions (widgets): the App Group's keychain
     /// access group on Apple platforms. Elsewhere the app's own store.
     pub shared: bool,
@@ -54,15 +68,38 @@ impl SecureOptions {
     pub fn new() -> Self {
         Self::default()
     }
-    /// Require the device owner to read the secret.
+    /// Require the device owner to read the secret, checked by the store
+    /// ([`biometric`](Self::biometric)).
     pub fn biometric(mut self) -> Self {
         self.biometric = true;
+        self
+    }
+    /// Require the device owner to read the secret, checked by the store
+    /// where it can, else by the app ([`confirm_owner`](Self::confirm_owner)).
+    pub fn confirm_owner(mut self) -> Self {
+        self.confirm_owner = true;
         self
     }
     /// Share the secret with the app's extensions.
     pub fn shared(mut self) -> Self {
         self.shared = true;
         self
+    }
+
+    /// For backends whose store has no owner check of its own (Credential
+    /// Manager, the Secret Service): `Ok(true)` when the value is stored
+    /// with a mark and the backend asks for the owner before returning it
+    /// ([`confirm_owner`](Self::confirm_owner), where the device can
+    /// authenticate), `Ok(false)` when it is stored as it is, and
+    /// `Err(Unavailable)` when the owner check cannot be had (a
+    /// [`biometric`](Self::biometric) secret needs the store's): store
+    /// nothing then, and keep the previous secret.
+    pub fn app_gate(&self, can_authenticate: bool) -> Result<bool, DeviceError> {
+        match (self.biometric || self.confirm_owner, self.confirm_owner) {
+            (false, _) => Ok(false),
+            (true, true) if can_authenticate => Ok(true),
+            (true, _) => Err(DeviceError::Unavailable),
+        }
     }
 }
 
@@ -173,7 +210,10 @@ impl AuthRequest {
             passcode: true,
         }
     }
-    /// Biometrics only (no passcode fallback).
+    /// Biometrics only (no passcode fallback). Where the system's owner
+    /// check cannot be limited to biometrics (the web's WebAuthn, Windows
+    /// Hello, watchOS), it may accept a PIN or password, so the request
+    /// fails with [`DeviceError::Unavailable`] there.
     pub fn biometrics_only(mut self) -> Self {
         self.passcode = false;
         self
@@ -187,9 +227,15 @@ pub struct AppleSignIn {
     pub email: bool,
     /// Ask for the user's full name.
     pub full_name: bool,
-    /// Your server's nonce, hashed (SHA-256, hex) into the identity token.
+    /// The nonce your server handed out for this sign-in, as it handed it
+    /// out. Apple gets its SHA-256 in lower-case hex
+    /// ([`apple_nonce`](Self::apple_nonce)), which the identity token
+    /// carries as its `nonce` claim: the server hashes the nonce it handed
+    /// out and compares, once.
     pub nonce: Option<String>,
-    /// An opaque value returned unchanged in the credential, to tie the response to your request.
+    /// An opaque value returned unchanged in the credential, to tie the
+    /// response to your request: a credential with another `state` is
+    /// refused.
     pub state: Option<String>,
 }
 
@@ -208,10 +254,23 @@ impl AppleSignIn {
         self.full_name = true;
         self
     }
-    /// Sets the nonce your server expects, hashed into the identity token.
+    /// Sets the nonce your server handed out (unhashed): the identity
+    /// token's `nonce` claim is its SHA-256 in lower-case hex.
     pub fn nonce(mut self, nonce: impl Into<String>) -> Self {
         self.nonce = Some(nonce.into());
         self
+    }
+    /// What Apple gets as the request's nonce, and the identity token's
+    /// `nonce` claim: the SHA-256 of [`nonce`](Self::nonce) in lower-case
+    /// hex. Backends pass this, never the nonce itself.
+    pub fn apple_nonce(&self) -> Option<String> {
+        use sha2::{Digest, Sha256};
+        self.nonce.as_deref().map(|n| {
+            Sha256::digest(n.as_bytes())
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        })
     }
     /// Sets the opaque `state` value returned in the credential.
     pub fn state(mut self, state: impl Into<String>) -> Self {
@@ -222,7 +281,7 @@ impl AppleSignIn {
 
 /// The result of Sign in with Apple. Verify `identity_token` (a JWT signed by
 /// Apple) or exchange `authorization_code` on your server before trusting it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct AppleCredential {
     /// Stable per app and Apple ID.
     pub user: String,
@@ -271,6 +330,50 @@ pub struct WebAuthnRequest {
     /// A sign-in offered in a field's suggestions (#203): conditional
     /// mediation, answered when the user picks a passkey there.
     pub conditional: bool,
+}
+
+/// The token and code show hidden (S34).
+impl std::fmt::Debug for AppleCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppleCredential")
+            .field("user", &self.user)
+            .field(
+                "identity_token",
+                &Hidden::opt(self.identity_token.as_deref()),
+            )
+            .field(
+                "authorization_code",
+                &Hidden::opt(self.authorization_code.as_deref()),
+            )
+            .field("email", &self.email)
+            .field("given_name", &self.given_name)
+            .field("family_name", &self.family_name)
+            .field("state", &self.state)
+            .finish()
+    }
+}
+
+/// How `Debug` shows a secret: whether there is one, not what (S34).
+pub(crate) struct Hidden(&'static str);
+
+impl Hidden {
+    pub(crate) fn text(s: &str) -> Self {
+        Hidden(if s.is_empty() { "\"\"" } else { "<redacted>" })
+    }
+
+    pub(crate) fn opt(s: Option<&str>) -> Self {
+        Hidden(if s.is_some() {
+            "Some(<redacted>)"
+        } else {
+            "None"
+        })
+    }
+}
+
+impl std::fmt::Debug for Hidden {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
 }
 
 /// A browser sign-in session (OAuth 2 / OpenID Connect): see `prism::oauth`.
@@ -341,6 +444,8 @@ impl SecureStorage<'_> {
         mut options: SecureOptions,
     ) -> Result<(), DeviceError> {
         options.shared |= self.shared;
+        // The owner's check, by the store where it can (S22).
+        options.biometric |= options.confirm_owner;
         let call = DeviceCall::SecureSet {
             key: key.to_string(),
             value: value.to_string(),
@@ -394,12 +499,28 @@ impl AsyncApp {
     /// Sign in with Apple (`capabilities().sign_in_with_apple`). Needs the
     /// `com.apple.developer.applesignin` entitlement: `[ios] sign_in_with_apple
     /// = true` in Prism.toml and a provisioning profile with the capability.
+    ///
+    /// The identity token carries the SHA-256 of the request's
+    /// [`nonce`](AppleSignIn::nonce) (lower-case hex): verify the token on
+    /// your server (Apple's signature, `iss` `https://appleid.apple.com`,
+    /// `aud` your bundle id, `exp`) and compare that claim with the hash of
+    /// the nonce it handed out. A credential whose `state` is not the
+    /// request's is an error.
     pub async fn sign_in_with_apple(
         &self,
         request: AppleSignIn,
     ) -> Result<AppleCredential, DeviceError> {
+        let state = request.state.clone();
         match self.device(DeviceCall::SignInWithApple(request)).await? {
-            DeviceValue::Fields(f) => Ok(AppleCredential::from_fields(&f)),
+            DeviceValue::Fields(f) => {
+                let credential = AppleCredential::from_fields(&f);
+                if state.is_some() && credential.state != state {
+                    return Err(DeviceError::Failed(
+                        "Sign in with Apple answered another request (its state differs)".into(),
+                    ));
+                }
+                Ok(credential)
+            }
             other => Err(DeviceError::Failed(format!("unexpected answer {other:?}"))),
         }
     }
@@ -508,9 +629,301 @@ impl AsyncApp {
     }
 }
 
+// --- Browser sign-in redirects ----------------------------------------------------------
+
+/// Whether `callback`, a URL the browser came back to, answers the sign-in
+/// that opened the authorization URL `url` with the redirect URI
+/// `redirect` ([`WebAuthRequest`]):
+///
+/// - the same scheme, host, port and path as `redirect` (scheme and host
+///   in any case; the path exactly: `/callback/x` is not `/callback`);
+/// - when `url` carries a `state`, the same `state`, once.
+///
+/// Backends that catch the redirect themselves (a loopback listener, a
+/// deep link) finish the sign-in only with such a callback, and keep
+/// waiting past others: a stray request, or another process's callback,
+/// cannot end it. The app checks the `state` again (`prism::oauth`).
+pub fn is_sign_in_callback(url: &str, redirect: &str, callback: &str) -> bool {
+    if !same_target(redirect, callback) {
+        return false;
+    }
+    let (Some(sent), Some(got)) = (redirect_parts(url), redirect_parts(callback)) else {
+        return false;
+    };
+    let Some(state) = param_values(sent.params, "state").next() else {
+        return true;
+    };
+    let mut states = param_values(got.params, "state");
+    states.next().as_deref() == Some(state.as_str()) && states.next().is_none()
+}
+
+/// Serves a loopback redirect URI (`http://127.0.0.1:<port>/callback`,
+/// RFC 8252 §7.3) on `listener` until the sign-in that opened `url` comes
+/// back to `redirect` ([`is_sign_in_callback`]); its full URL, port
+/// included. Other requests (a favicon, a callback for another attempt)
+/// are answered (`404`, `400`) and the wait goes on.
+/// [`DeviceError::Cancelled`] after `timeout`. The Linux and Windows
+/// backends use it.
+pub fn catch_loopback_redirect(
+    listener: &std::net::TcpListener,
+    url: &str,
+    redirect: &str,
+    timeout: std::time::Duration,
+) -> Result<String, DeviceError> {
+    use std::io::{Read, Write};
+    let origin = redirect_parts(redirect)
+        .and_then(|p| Some(format!("{}://{}", p.scheme, p.authority?)))
+        .ok_or_else(|| DeviceError::Failed(format!("not a loopback redirect: {redirect}")))?;
+    let _ = listener.set_nonblocking(true);
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        let Ok((mut stream, _)) = listener.accept() else {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            continue;
+        };
+        let _ = stream.set_nonblocking(false);
+        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+        // The request line (a request target is short: the rest is not read).
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        while !buf.contains(&b'\n') && buf.len() < 16 * 1024 {
+            match stream.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            }
+        }
+        let request = String::from_utf8_lossy(&buf);
+        let target = request
+            .lines()
+            .next()
+            .and_then(|l| l.strip_prefix("GET "))
+            .and_then(|l| l.split(' ').next())
+            .filter(|t| t.starts_with('/'))
+            .unwrap_or("");
+        let callback = format!("{origin}{target}");
+        if target.is_empty() || !same_target(redirect, &callback) {
+            let _ = stream.write_all(
+                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+            continue;
+        }
+        if !is_sign_in_callback(url, redirect, &callback) {
+            let page = "This link is not for the sign-in in progress.";
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{page}",
+                    page.len()
+                )
+                .as_bytes(),
+            );
+            continue;
+        }
+        let page = "<!doctype html><meta charset=utf-8><title>Signed in</title><p style=\"font:16px system-ui;margin:40px;text-align:center\">Signed in. You can close this tab and return to the app.</p>";
+        let _ = stream.write_all(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{page}",
+                page.len()
+            )
+            .as_bytes(),
+        );
+        return Ok(callback);
+    }
+    Err(DeviceError::Cancelled)
+}
+
+/// Whether `callback` is for the redirect URI `redirect` (its scheme, host,
+/// port and path), whatever its parameters.
+fn same_target(redirect: &str, callback: &str) -> bool {
+    match (redirect_parts(redirect), redirect_parts(callback)) {
+        (Some(want), Some(got)) => {
+            (&want.scheme, &want.authority, want.path) == (&got.scheme, &got.authority, got.path)
+        }
+        _ => false,
+    }
+}
+
+/// A URL as a sign-in redirect is compared.
+struct RedirectParts<'a> {
+    /// Lower-case.
+    scheme: String,
+    /// Host and port, lower-case; `None` without `//` (`app:/oauth`).
+    authority: Option<String>,
+    /// `/` when empty after an authority.
+    path: &'a str,
+    /// The query, or the fragment when there is no query (as
+    /// `prism::oauth` reads the parameters).
+    params: &'a str,
+}
+
+fn redirect_parts(url: &str) -> Option<RedirectParts<'_>> {
+    let (scheme, rest) = url.split_once(':')?;
+    if scheme.is_empty()
+        || !scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    {
+        return None;
+    }
+    let (authority, rest) = match rest.strip_prefix("//") {
+        Some(rest) => {
+            let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+            (Some(rest[..end].to_ascii_lowercase()), &rest[end..])
+        }
+        None => (None, rest),
+    };
+    let end = rest.find(['?', '#']).unwrap_or(rest.len());
+    let path = match &rest[..end] {
+        "" if authority.is_some() => "/",
+        path => path,
+    };
+    let after = &rest[end..];
+    let params = match after.strip_prefix('?') {
+        Some(query) => query.split('#').next().unwrap_or(query),
+        None => after.strip_prefix('#').unwrap_or(""),
+    };
+    Some(RedirectParts {
+        scheme: scheme.to_ascii_lowercase(),
+        authority,
+        path,
+        params,
+    })
+}
+
+/// The values of parameter `name` in `params` (`a=1&b=2`), decoded.
+fn param_values<'a>(params: &'a str, name: &'a str) -> impl Iterator<Item = String> + 'a {
+    params.split('&').filter_map(move |kv| {
+        let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
+        (form_decode(k) == name).then(|| form_decode(v))
+    })
+}
+
+/// A form-encoded value: `%XX` escapes, `+` for a space.
+fn form_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = b
+            .get(i + 1..i + 3)
+            .filter(|h| h.iter().all(u8::is_ascii_hexdigit))
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (b[i], hex) {
+            (b'+', _) => out.push(b' '),
+            (b'%', Some(byte)) => {
+                out.push(byte);
+                i += 2;
+            }
+            (c, _) => out.push(c),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S39: a credential whose `state` is not the request's is refused (it
+    /// answers another request); without a `state` sent, none is checked.
+    #[test]
+    fn s39_a_credential_must_carry_the_request_state() {
+        use std::sync::{Arc, Mutex};
+        type Got = Arc<Mutex<BTreeMap<&'static str, Result<AppleCredential, DeviceError>>>>;
+        let got: Got = Default::default();
+        let out = got.clone();
+        let init: crate::AppInit = Arc::new(move |cx: &mut crate::App| {
+            for (label, state) in [
+                ("other", Some("st-39")),
+                ("none", None),
+                ("same", Some("st-39")),
+            ] {
+                let out = out.clone();
+                let mut request = AppleSignIn::new().nonce("server-nonce-39");
+                if let Some(s) = state {
+                    request = request.state(s);
+                }
+                cx.spawn(move |cx| async move {
+                    let r = cx.sign_in_with_apple(request).await;
+                    out.lock().unwrap().insert(label, r);
+                });
+            }
+        });
+        let mut rt = crate::Runtime::new(&init);
+        rt.poll();
+        let ids: Vec<u64> = rt
+            .take_requests()
+            .into_iter()
+            .filter_map(|r| match r {
+                crate::surfaces::PlatformRequest::Device {
+                    id,
+                    call: DeviceCall::SignInWithApple(_),
+                } => Some(id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids.len(), 3);
+        let answer = |state: &str| {
+            let mut f = BTreeMap::new();
+            f.insert("user".to_string(), "001.abc".to_string());
+            f.insert("state".to_string(), state.to_string());
+            Ok(DeviceValue::Fields(f))
+        };
+        rt.device_reply(ids[0], answer("st-other"));
+        rt.device_reply(ids[1], answer(""));
+        rt.device_reply(ids[2], answer("st-39"));
+        let got = got.lock().unwrap();
+        assert!(got["other"].is_err(), "{:?}", got["other"]);
+        assert_eq!(got["none"].as_ref().unwrap().user, "001.abc");
+        assert_eq!(
+            got["same"].as_ref().unwrap().state.as_deref(),
+            Some("st-39")
+        );
+        // What every backend passes to Apple.
+        assert_eq!(
+            AppleSignIn::new()
+                .nonce("server-nonce-39")
+                .apple_nonce()
+                .as_deref(),
+            Some("3c0f900191b65765eddb001bcd76dc504a5b1a4cc3a231e1463606a05a69e377")
+        );
+        assert_eq!(AppleSignIn::new().apple_nonce(), None);
+    }
+
+    /// S34: Sign in with Apple's token and code do not show when printed.
+    #[test]
+    fn s34_apple_credentials_print_hidden() {
+        let c = AppleCredential {
+            user: "001.abc".into(),
+            identity_token: Some("S34-MARK-IT".into()),
+            authorization_code: Some("S34-MARK-AC".into()),
+            ..Default::default()
+        };
+        for shown in [format!("{c:?}"), format!("{c:#?}")] {
+            assert!(!shown.contains("S34-MARK"), "{shown}");
+        }
+        assert!(format!("{c:?}").contains("001.abc"));
+    }
+
+    /// S22: Credential Manager and the Secret Service give any process of
+    /// the user the stored value: a prompt before Prism returns it does not
+    /// protect it. A `biometric` secret needs the store's own owner check,
+    /// so these stores refuse it; `confirm_owner` asks for the app's check.
+    #[test]
+    fn s22_stores_without_an_owner_check_refuse_biometric_secrets() {
+        let biometric = SecureOptions::new().biometric();
+        assert_eq!(biometric.app_gate(true), Err(DeviceError::Unavailable));
+        assert_eq!(biometric.app_gate(false), Err(DeviceError::Unavailable));
+        assert_eq!(SecureOptions::new().app_gate(true), Ok(false));
+        assert_eq!(SecureOptions::new().app_gate(false), Ok(false));
+        // The app's own check, when the app accepts it.
+        let confirm = SecureOptions::new().confirm_owner();
+        assert_eq!(confirm.app_gate(true), Ok(true));
+        assert_eq!(confirm.app_gate(false), Err(DeviceError::Unavailable));
+        // As `set_with` sends it: both.
+        assert_eq!(confirm.biometric().app_gate(true), Ok(true));
+    }
 
     #[test]
     fn biometry_from_fields() {
@@ -546,5 +959,151 @@ mod tests {
         assert_eq!(c.user, "001.abc");
         assert_eq!(c.email, None);
         assert_eq!(c.identity_token.as_deref(), Some("eyJ"));
+    }
+
+    /// S33: only the callback of the sign-in in progress finishes it: the
+    /// redirect's exact scheme, host, port and path, and its `state`, once.
+    #[test]
+    fn s33_a_sign_in_ends_only_with_its_own_callback() {
+        let url = "https://idp.example/authorize?client_id=c&state=s%2B1&code_challenge=x";
+        let loopback = "http://127.0.0.1:50123/callback";
+        let ok = |callback: &str| is_sign_in_callback(url, loopback, callback);
+        assert!(ok("http://127.0.0.1:50123/callback?code=abc&state=s%2B1"));
+        assert!(ok("HTTP://127.0.0.1:50123/callback?state=s%2B1&code=abc"));
+        // The provider's refusal is for this attempt too.
+        assert!(ok(
+            "http://127.0.0.1:50123/callback?error=access_denied&state=s%2B1"
+        ));
+        for wrong in [
+            // Another attempt, or none.
+            "http://127.0.0.1:50123/callback?code=abc&state=other",
+            "http://127.0.0.1:50123/callback?code=abc",
+            "http://127.0.0.1:50123/callback?code=abc&state=s+1",
+            // Twice, even if one is right.
+            "http://127.0.0.1:50123/callback?state=other&code=abc&state=s%2B1",
+            "http://127.0.0.1:50123/callback?state=s%2B1&state=s%2B1&code=abc",
+            // Elsewhere.
+            "http://127.0.0.1/callback?code=abc&state=s%2B1",
+            "http://127.0.0.1:50124/callback?code=abc&state=s%2B1",
+            "http://localhost:50123/callback?code=abc&state=s%2B1",
+            "https://127.0.0.1:50123/callback?code=abc&state=s%2B1",
+            "http://127.0.0.1:50123/callbackx?code=abc&state=s%2B1",
+            "http://127.0.0.1:50123/callback/x?code=abc&state=s%2B1",
+            "http://127.0.0.1:50123/?code=abc&state=s%2B1",
+            "/callback?code=abc&state=s%2B1",
+            "",
+        ] {
+            assert!(!ok(wrong), "{wrong}");
+        }
+        // A custom scheme (Android), with or without an authority.
+        let app = "com.example.app:/oauth";
+        assert!(is_sign_in_callback(
+            url,
+            app,
+            "com.example.app:/oauth?code=a&state=s%2B1"
+        ));
+        assert!(is_sign_in_callback(
+            url,
+            app,
+            "com.example.app:/oauth#code=a&state=s%2B1"
+        ));
+        assert!(!is_sign_in_callback(
+            url,
+            app,
+            "com.example.app://evil/oauth?state=s%2B1"
+        ));
+        assert!(!is_sign_in_callback(
+            url,
+            app,
+            "com.example.app:/oauth/x?state=s%2B1"
+        ));
+        assert!(!is_sign_in_callback(
+            url,
+            app,
+            "com.example.app:/oauth?state=x"
+        ));
+        let host = "com.example.app://auth/done";
+        assert!(is_sign_in_callback(
+            url,
+            host,
+            "com.example.app://AUTH/done?state=s%2B1"
+        ));
+        assert!(!is_sign_in_callback(
+            url,
+            host,
+            "com.example.app://other/done?state=s%2B1"
+        ));
+        // An authorization URL without `state`: the redirect alone.
+        let bare = "https://idp.example/authorize?client_id=c";
+        assert!(is_sign_in_callback(
+            bare,
+            loopback,
+            "http://127.0.0.1:50123/callback?code=a"
+        ));
+        assert!(!is_sign_in_callback(
+            bare,
+            loopback,
+            "http://127.0.0.1:50123/x?code=a"
+        ));
+    }
+
+    /// S33: the loopback listener answers stray requests and callbacks of
+    /// other attempts, and keeps waiting for the one in progress, port
+    /// included in the URL it returns.
+    #[test]
+    fn s33_the_loopback_waits_past_other_callbacks() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let redirect = format!("http://127.0.0.1:{port}/callback");
+        let url = "https://idp.example/authorize?state=xyz";
+        let client = std::thread::spawn(move || {
+            let mut answers = Vec::new();
+            for target in [
+                "/favicon.ico",
+                "/callbackx?code=evil&state=xyz",
+                "/callback?code=evil&state=guess",
+                "/callback?code=evil",
+                "/callback?code=abc&state=xyz",
+            ] {
+                let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+                s.write_all(format!("GET {target} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes())
+                    .unwrap();
+                let mut page = String::new();
+                let _ = s.read_to_string(&mut page);
+                answers.push(page.lines().next().unwrap_or_default().to_string());
+            }
+            answers
+        });
+        let r = catch_loopback_redirect(
+            &listener,
+            url,
+            &redirect,
+            std::time::Duration::from_secs(20),
+        );
+        assert_eq!(
+            r,
+            Ok(format!(
+                "http://127.0.0.1:{port}/callback?code=abc&state=xyz"
+            ))
+        );
+        assert_eq!(
+            client.join().unwrap(),
+            [
+                "HTTP/1.1 404 Not Found",
+                "HTTP/1.1 404 Not Found",
+                "HTTP/1.1 400 Bad Request",
+                "HTTP/1.1 400 Bad Request",
+                "HTTP/1.1 200 OK",
+            ]
+        );
+        // Nobody comes back: cancelled when the time is up.
+        let r = catch_loopback_redirect(
+            &listener,
+            url,
+            &redirect,
+            std::time::Duration::from_millis(200),
+        );
+        assert_eq!(r, Err(DeviceError::Cancelled));
     }
 }

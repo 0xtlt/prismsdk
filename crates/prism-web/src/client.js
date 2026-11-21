@@ -1274,11 +1274,12 @@
         node.className = "prism-symbol";
         node.setAttribute("aria-hidden", "true");
       } else if (r.l) {
-        const href = r.h && !nested;
+        const url = r.h && !nested ? hrefFor(r.h) : null;
+        const href = url != null;
         node = document.createElement(href ? "a" : "span");
         node.className = "prism-link";
         node.dataset.link = r.l;
-        if (href) node.setAttribute("href", hrefFor(r.h));
+        if (href) node.setAttribute("href", url);
         else if (!nested) { node.setAttribute("role", "link"); node.tabIndex = 0; }
       } else if (css) {
         node = document.createElement("span");
@@ -1308,7 +1309,21 @@
   // An `<a href>`, so the browser opens it in a new tab or window, copies it
   // and shows it on hover; a plain click still navigates in the app.
   const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
-  const hrefFor = (path) => (SCHEME.test(path) ? path : urlFor(path));
+  // Schemes that run script in the page or show content the app did not
+  // serve: such a link gets no href and is never opened (html.rs's
+  // `BLOCKED_SCHEMES`). The URL is read as the browser would: controls and
+  // spaces trimmed at the ends, tabs and newlines dropped (`safe_url`).
+  const BLOCKED = /^(?:javascript|vbscript|data|blob|filesystem):/i;
+  const safeUrl = (url) => {
+    const u = String(url).replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, "").replace(/[\t\n\r]/g, "");
+    return BLOCKED.test(u) ? null : u;
+  };
+  // A link's href (`link_href`): a URL as is, an app path under the mount
+  // point, null for a blocked URL.
+  const hrefFor = (path) => {
+    const u = safeUrl(path);
+    return u == null || SCHEME.test(u) ? u : urlFor(u);
+  };
   // Sent right after "create" (on the web, a node that gains or loses its
   // link is a new node): the element becomes an `<a>`.
   function setLink(el, id, href) {
@@ -1323,8 +1338,14 @@
       el = fresh;
     }
     if (href == null) return;
-    el.setAttribute("href", hrefFor(href));
-    if (SCHEME.test(href)) el.setAttribute("rel", "noopener"); else el.removeAttribute("rel");
+    const url = hrefFor(href);
+    if (url == null) {
+      el.removeAttribute("href");
+      el.removeAttribute("rel");
+      return;
+    }
+    el.setAttribute("href", url);
+    if (SCHEME.test(url)) el.setAttribute("rel", "noopener"); else el.removeAttribute("rel");
   }
   // A click on a link node. With a modifier or another button (new tab, new
   // window, download) the browser follows it: true. A plain click stays in
@@ -6297,7 +6318,7 @@ void main() {
       el = fresh;
     }
     el._island = p;
-    el.prismProps ||= {};
+    el.prismProps ||= Object.create(null);
     // The island's CustomEvents go to the server (its own, not bubbled ones).
     el._ibound ||= new Set();
     for (const name of p.events) {
@@ -6317,14 +6338,33 @@ void main() {
       registry().whenDefined(p.tag).then(() => {
         registry().upgrade(el);
         el._idefined = true;
-        for (const [k, v] of Object.entries(el.prismProps)) el[k] = v;
+        for (const [k, v] of Object.entries(el.prismProps)) if (settableProp(el, k)) el[k] = v;
       });
     }
   }
+  // What a web component's props may change (S20: names can come from
+  // data). An attribute needs an ordinary name, never an event handler,
+  // styles, the element's identity or Prism's own (`reflects_attr` in
+  // html.rs). A property is one the component declares (a setter of its
+  // class, a field of the instance) or one the element has no native
+  // member for, never Prism's own (`_…`, `prism…`): not `innerHTML`, an
+  // `on…` handler or `__proto__`.
   const ATTR_NAME = /^[a-zA-Z_][\w-]*$/;
+  const NOT_ATTR = /^(on|xmlns)|^(style|class|id|is|slot|part|nonce|data-pid|data-kind|data-island)$/i;
+  const reflectsAttr = (k) => ATTR_NAME.test(k) && !NOT_ATTR.test(k);
+  function settableProp(el, k) {
+    if (/^(_|prism)/.test(k)) return false;
+    if (Object.prototype.hasOwnProperty.call(el, k)) return true;
+    const native = typeof HTMLElement === "function" ? HTMLElement.prototype : null;
+    for (let p = Object.getPrototypeOf(el); p && p !== native; p = Object.getPrototypeOf(p)) {
+      const d = Object.getOwnPropertyDescriptor(p, k);
+      if (d) return !!d.set;
+    }
+    return native !== null && !(k in el);
+  }
   function setIslandProps(el, props) {
     if (!el) return;
-    const all = (el.prismProps ||= {});
+    const all = (el.prismProps ||= Object.create(null));
     for (const [k, v] of Object.entries(props)) {
       if (v === null) delete all[k]; else all[k] = v;
     }
@@ -6333,12 +6373,12 @@ void main() {
       return;
     }
     for (const [k, v] of Object.entries(props)) {
-      if (ATTR_NAME.test(k)) {
+      if (reflectsAttr(k)) {
         if (typeof v === "string" || typeof v === "number") el.setAttribute(k, String(v));
         else if (v === true) el.setAttribute(k, "");
         else if (v === false || v === null) el.removeAttribute(k);
       }
-      if (el._idefined) el[k] = v === null ? undefined : v;
+      if (el._idefined && settableProp(el, k)) el[k] = v === null ? undefined : v;
     }
   }
 
@@ -7225,10 +7265,12 @@ void main() {
     bOk.focus();
   }
   function webAuth(msg, reply) {
+    const url = msg.url == null ? null : safeUrl(msg.url);
+    if (url == null) return reply({ err: "not a sign-in URL" });
     const open = () => {
       const w = Math.min(520, screen.width), h = Math.min(680, screen.height);
       const features = `popup,width=${w},height=${h},left=${Math.round((screen.width - w) / 2)},top=${Math.round((screen.height - h) / 2)}`;
-      const popup = window.open(msg.url, "prism-auth", features);
+      const popup = window.open(url, "prism-auth", features);
       if (!popup) return false;
       // The server answers when the provider redirects; a closed popup before
       // that is a cancel (the server ignores it once answered).
@@ -7468,6 +7510,8 @@ void main() {
    * "new") overrides it (`cx.open_url_in`).
    */
   function openUrl(url, target) {
+    url = url == null ? null : safeUrl(url);
+    if (url == null) return;
     let same = false;
     try { same = new URL(url, location.href).origin === location.origin; } catch (e) { same = false; }
     if (target === "same" || (target !== "new" && same)) return location.assign(url);

@@ -1090,6 +1090,65 @@ impl Reconciler {
         })
     }
 
+    /// Whether node `id` is mounted and enabled: a disabled control
+    /// (`accessibility_disabled(true)`) is not clicked, typed into or
+    /// changed, as its platform control would not be. Hosts do not report
+    /// those events; a modified web page could.
+    pub fn is_enabled(&self, id: NodeId) -> bool {
+        self.nodes.get(&id).is_some_and(|m| !m.a11y.disabled)
+    }
+
+    /// Whether node `id` is mounted and reports its scroll offset
+    /// (`on_scroll`, #193).
+    pub fn reports_scroll(&self, id: NodeId) -> bool {
+        self.nodes.get(&id).is_some_and(|m| m.scroll_events)
+    }
+
+    /// The value a change of node `id` to `value` gives its handler, or
+    /// `None` when its control could not have produced it: an index past
+    /// the options of a picker, radio group, tab bar or navigation bar, a
+    /// toggle or checkbox other than 0 or 1, a value that is not finite
+    /// (`NaN` only for an optional date picker, #89), a disabled or
+    /// unmounted control. A slider's value is kept within its range, on
+    /// its steps; a date picker's within its bounds and years 1 to 9999.
+    pub fn change_value(&self, id: NodeId, value: f64) -> Option<f64> {
+        use crate::controls::{DateConfig, PickerConfig, RadioConfig, SliderConfig};
+        /// 0001-01-01 and 9999-12-31T23:59:59 UTC, in Unix seconds.
+        const DATES: (f64, f64) = (-62_135_596_800., 253_402_300_799.);
+        let m = self.nodes.get(&id).filter(|m| !m.a11y.disabled)?;
+        let index = |len: usize| value >= 0. && value.fract() == 0. && value < len as f64;
+        let ok = match m.kind {
+            NodeKind::DatePicker => {
+                let c = DateConfig::decode(&m.config);
+                if value.is_nan() {
+                    return c.optional.then_some(value);
+                }
+                if !(DATES.0..=DATES.1).contains(&value) {
+                    return None;
+                }
+                let v = c.min.map_or(value, |min| value.max(min));
+                return Some(c.max.map_or(v, |max| v.min(max)));
+            }
+            NodeKind::Slider => {
+                if !value.is_finite() {
+                    return None;
+                }
+                let c = SliderConfig::decode(&m.config);
+                let snapped = c.snap(value);
+                // On a step already, give or take rounding: as reported.
+                let off = (snapped - value).abs() > 1e-9 * c.step.abs().max(1.);
+                return Some(if off { snapped } else { value });
+            }
+            NodeKind::Toggle | NodeKind::Checkbox => value == 0. || value == 1.,
+            NodeKind::Picker => index(PickerConfig::decode(&m.config).options.len()),
+            NodeKind::RadioGroup => index(RadioConfig::decode(&m.config).options.len()),
+            NodeKind::Tabs => index(m.children.len()),
+            NodeKind::Screen => index(crate::navbar::ScreenConfig::decode(&m.config).items.len()),
+            _ => value.is_finite(),
+        };
+        ok.then_some(value)
+    }
+
     /// The hover handler of node `id`, if any.
     pub fn hover_handler(&self, id: NodeId) -> Option<Handler<crate::events::HoverEvent>> {
         self.hover.get(&id).cloned()
@@ -1293,6 +1352,25 @@ impl Reconciler {
         id: NodeId,
     ) -> Option<Handler<crate::web_view::WebMessageEvent>> {
         self.web_message.get(&id).cloned()
+    }
+
+    /// Whether a message from `origin` may reach web view `id`'s handler:
+    /// the view is mounted, listens to messages and allows `origin` (its
+    /// configured origins, else its URL's own; a relative URL is the
+    /// page's, `page_origin`). Backends filter too, but on the web the
+    /// browser's script reports `origin`: the dispatcher does not take it
+    /// on trust.
+    pub fn web_message_allowed(&self, id: NodeId, origin: &str, page_origin: Option<&str>) -> bool {
+        let Some(n) = self.nodes.get(&id).filter(|n| n.kind == NodeKind::WebView) else {
+            return false;
+        };
+        let config = crate::web_view::WebViewConfig::decode(&n.config);
+        let url = if crate::web_view::origin_of(&n.text).is_some() {
+            n.text.as_str()
+        } else {
+            page_origin.unwrap_or("")
+        };
+        config.messages && config.allows(url, origin.trim_end_matches('/'))
     }
 
     /// The load handler of web view `id`, if any.
@@ -2257,7 +2335,9 @@ impl Reconciler {
 
     /// Island `id`'s element, changed props and event handlers.
     fn diff_island(&mut self, id: NodeId, spec: Option<Box<crate::island::IslandSpec>>) {
-        let Some(spec) = spec else {
+        // A tag that is not a custom element name (it may come from data)
+        // would be markup in a page: the node stays a plain view (S20).
+        let Some(spec) = spec.filter(|s| crate::island::is_custom_element_name(&s.tag)) else {
             return;
         };
         let crate::island::IslandSpec {

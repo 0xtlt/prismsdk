@@ -19,7 +19,9 @@ name = "prism_http"
 
 [dependencies]
 prism-core.workspace = true
-ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
+# `public_only` plugs a resolver into ureq's unversioned API: pinned to
+# the minor version it was written for.
+ureq = { version = "~3.5.2", default-features = false, features = ["rustls", "gzip"] }
 serde_json.workspace = true
 # OAuth: PKCE (S256) and random state.
 sha2 = "0.10"

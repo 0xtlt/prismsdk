@@ -337,6 +337,25 @@ pub fn register_local_file(url: &str, file: std::path::PathBuf) {
     }
 }
 
+/// Forgets the bytes behind `url` (the web backend deleted an old upload).
+#[doc(hidden)]
+pub fn forget_local_file(url: &str) {
+    if let Ok(mut m) = LOCAL_FILES.lock()
+        && let Some(m) = m.as_mut()
+    {
+        m.remove(url);
+    }
+}
+
+/// Whether [`register_local_file`] knows `url` (tests).
+#[doc(hidden)]
+pub fn has_local_file(url: &str) -> bool {
+    LOCAL_FILES
+        .lock()
+        .ok()
+        .is_some_and(|m| m.as_ref().is_some_and(|m| m.contains_key(url)))
+}
+
 impl PickedFile {
     /// The file's bytes (natively the picked file; on the web the copy the
     /// browser uploaded to the server).
