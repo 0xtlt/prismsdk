@@ -5235,7 +5235,15 @@ impl Widgets for AppKit {
         if a.role == Some(Role::Status) {
             self.announce(view.id(), a.value.as_deref().unwrap_or(""));
         }
-        v.setAccessibilityHidden(a.hidden || crate::interact::in_inert(v));
+        let hidden = a.hidden || crate::interact::in_inert(v);
+        v.setAccessibilityHidden(hidden);
+        // VoiceOver reads a control through its cell, which the view's
+        // label, help and hidden flag do not reach: a picker's label was not
+        // read, and a decorative image read its symbol's name.
+        let cell = v.downcast_ref::<NSControl>().and_then(|c| c.cell());
+        if let Some(cell) = &cell {
+            cell.setAccessibilityElement(!hidden);
+        }
         // Tooltips (#216): AppKit's own, or the label's full text while it
         // is cut short (asked of the label as the pointer rests).
         v.removeAllToolTips();
@@ -5324,8 +5332,14 @@ impl Widgets for AppKit {
         }
         if a.label.is_some() || !native {
             v.setAccessibilityLabel(ns(&a.label).as_deref());
+            if let Some(cell) = &cell {
+                cell.setAccessibilityLabel(ns(&a.label).as_deref());
+            }
         }
         v.setAccessibilityHelp(ns(&a.hint).as_deref());
+        if let Some(cell) = &cell {
+            cell.setAccessibilityHelp(ns(&a.hint).as_deref());
+        }
         // Pop-ups and date pickers read their own (live) selection; sliders
         // go through `PrismSlider::accessibilityValue`.
         let own_value = matches!(
