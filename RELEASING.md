@@ -26,6 +26,7 @@ token for the crates can publish.
    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
    cargo publish --workspace --dry-run    # packages and builds every crate
    mise run docs                          # the book
+   scripts/docs-links.py docs/book        # its links and anchors
    ```
 
    `--dry-run` packages each crate, then builds it from its package against

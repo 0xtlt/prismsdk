@@ -30,6 +30,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Book
         run: mdbook build docs
+      - name: Book links
+        run: python3 scripts/docs-links.py docs/book
       - name: API docs
         env:
           RUSTDOCFLAGS: -D warnings
