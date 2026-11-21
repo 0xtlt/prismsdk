@@ -53,12 +53,14 @@ impl Render for Typography {
             .child(
                 text(strings::typography_clamp(cx))
                     .line_clamp(2)
-                    .leading(1.35),
+                    .leading(1.35)
+                    .tooltip_when_truncated(),
             )
             .child(
                 text(strings::typography_truncate(cx))
                     .truncate()
-                    .text_color(t.muted),
+                    .text_color(t.muted)
+                    .tooltip_when_truncated(),
             )
             .child(
                 div()

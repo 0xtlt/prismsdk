@@ -392,7 +392,9 @@
     "borderless": "No border",
     "outlined": "Outlined, 12 pt inside",
     "off_peak": "OFF-PEAK HOURS",
-    "peak": "PEAK HOURS"
+    "peak": "PEAK HOURS",
+    "avatars": "Ada,Bo,Cy",
+    "avatars_note": "Overlapping avatars, the first drawn on top (z_index): still read and tabbed through first."
   },
   "typography": {
     "title": "Typography",

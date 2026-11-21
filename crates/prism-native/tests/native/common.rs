@@ -44,6 +44,8 @@ pub struct Fake {
     pub placeholders: HashMap<NodeId, String>,
     pub clickable: HashMap<NodeId, bool>,
     pub children: HashMap<NodeId, Vec<NodeId>>,
+    /// The tree's order of children painted in another (`z_index`).
+    pub reading: HashMap<NodeId, Vec<NodeId>>,
     pub root: Option<NodeId>,
     pub a11y: HashMap<NodeId, Accessibility>,
     pub values: HashMap<NodeId, f64>,
@@ -197,6 +199,10 @@ impl Widgets for Fake {
     }
     fn set_children(&mut self, parent: &NodeId, children: &[NodeId]) {
         self.children.insert(*parent, children.to_vec());
+        self.reading.remove(parent);
+    }
+    fn set_reading_order(&mut self, parent: &NodeId, children: &[NodeId]) {
+        self.reading.insert(*parent, children.to_vec());
     }
     fn set_root(&mut self, v: &NodeId) {
         self.root = Some(*v);

@@ -392,7 +392,9 @@
     "borderless": "Sans bordure",
     "outlined": "Bordé, 12 pt à l’intérieur",
     "off_peak": "HEURES CREUSES",
-    "peak": "HEURES PLEINES"
+    "peak": "HEURES PLEINES",
+    "avatars": "Ada,Bo,Cy",
+    "avatars_note": "Des avatars qui se chevauchent, le premier dessiné au-dessus (z_index) : toujours lu et atteint au clavier en premier."
   },
   "typography": {
     "title": "Typographie",

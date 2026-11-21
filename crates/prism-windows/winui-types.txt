@@ -245,6 +245,7 @@ Microsoft.UI.Xaml.Controls.SelectorBarSelectionChangedEventArgs
 Microsoft.UI.Xaml.Style
 Microsoft.UI.Xaml.Controls.ToolTipService
 Microsoft.UI.Xaml.Controls.ToolTip
+Microsoft.UI.Xaml.Controls.IsTextTrimmedChangedEventArgs
 Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowMode
 Microsoft.UI.Xaml.Hosting.XamlSourceFocusNavigationRequest
 Microsoft.UI.Xaml.Hosting.XamlSourceFocusNavigationReason

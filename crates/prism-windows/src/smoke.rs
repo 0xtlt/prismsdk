@@ -14,7 +14,7 @@
 //!   `contrast:night-sky` switches the contrast theme (`PRISM_HIGH_CONTRAST`'s
 //!   values) through the system's settings message; `hover:`,
 //!   `drag:`, `swipe:` and `wheel:` move the real mouse over a view
-//!   (`inject.rs`).
+//!   (`inject.rs`). The window is made the active one first.
 //! - `PRISM_SCROLL=600` scrolls the visible scroll views.
 //! - `PRISM_SNAPSHOT=out.png` then saves the window's XAML, rendered by
 //!   `RenderTargetBitmap`, and what DWM shows of the window
@@ -27,7 +27,10 @@
 
 use prism_core::{NodeKind, UiEvent};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows::Win32::UI::WindowsAndMessaging::{DestroyWindow, KillTimer, PostMessageW, SetTimer};
+use windows::Win32::UI::WindowsAndMessaging::{
+    BringWindowToTop, DestroyWindow, GetForegroundWindow, KillTimer, PostMessageW,
+    SetForegroundWindow, SetTimer,
+};
 use windows_core::Interface;
 
 use crate::imp::{State, dispatch, drain, with_state};
@@ -73,7 +76,26 @@ pub fn automation(main: HWND) {
         .filter(|s| !s.is_empty())
         .map(String::from)
         .collect();
+    if !steps.is_empty() {
+        front(main);
+    }
     steps_then_snapshot(main, steps);
+}
+
+/// The steps act on the active window: a popover (light dismiss) closes
+/// when another window takes the activation, an inactive window's first
+/// click only activates it.
+fn front(main: HWND) {
+    unsafe {
+        if GetForegroundWindow() == main {
+            return;
+        }
+        let _ = BringWindowToTop(main);
+        let _ = SetForegroundWindow(main);
+        if GetForegroundWindow() != main {
+            log!("PRISM_CLICK: the window is not the active one");
+        }
+    }
 }
 
 /// Runs `steps`, then `PRISM_SCROLL` and the snapshot's timer. After a
