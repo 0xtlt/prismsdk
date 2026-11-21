@@ -453,14 +453,15 @@ fn chip_at(runs: &[TextRun], index: usize) -> Option<&TextRun> {
 }
 
 /// Copy or cut in a rich input the app does not take: plain text, each
-/// chip as its label (`false`: not a rich input, UIKit copies).
+/// chip as its label (`false`: not a rich input, or nothing selected, so
+/// UIKit's own copy runs and a cut deletes nothing).
 pub fn copy(tv: &UITextView) -> bool {
     let id = tv.tag() as NodeId;
     if !is_rich(id) {
         return false;
     }
     let Some(range) = tv.selectedTextRange() else {
-        return true;
+        return false;
     };
     let begin = tv.beginningOfDocument();
     let from = tv
@@ -470,7 +471,7 @@ pub fn copy(tv: &UITextView) -> bool {
         .offsetFromPosition_toPosition(&begin, &range.end())
         .max(0) as usize;
     if from >= to {
-        return true;
+        return false;
     }
     let text = tv.text().to_string();
     let runs = shown_runs(id, tv);
