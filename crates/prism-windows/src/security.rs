@@ -3,7 +3,10 @@
 //! - **secure storage**: Credential Manager (`CredWriteW`, `CredReadW`),
 //!   generic credentials of this user named `Prism/<app>/<key>` (Control
 //!   Panel › Credential Manager › Windows Credentials lists them). A value
-//!   longer than one credential holds (2,560 bytes) is split over several;
+//!   longer than one credential holds (2,560 bytes) is split over several.
+//!   A `biometric` secret is stored sealed with a key only Windows Hello
+//!   gives back (`seal`, S22); a `confirm_owner` one is stored as it is,
+//!   and Hello is asked before it is handed to the app;
 //! - **biometrics**: Windows Hello (`UserConsentVerifier`, its prompt owned
 //!   by the app's window), which also accepts the Hello PIN; the sensor
 //!   comes from the Windows Biometric Framework. Without Hello set up,
@@ -17,6 +20,12 @@ use prism_core::{BiometryKind, DeviceError, DeviceValue};
 use windows::Security::Credentials::UI::{
     UserConsentVerificationResult, UserConsentVerifier, UserConsentVerifierAvailability,
 };
+use windows::Security::Credentials::{
+    KeyCredential, KeyCredentialCreationOption, KeyCredentialManager, KeyCredentialStatus,
+};
+use windows::Security::Cryptography::Core::CryptographicPublicKeyBlobType;
+use windows::Security::Cryptography::CryptographicBuffer;
+use windows::Storage::Streams::IBuffer;
 use windows::Win32::Foundation::{ERROR_NO_SUCH_LOGON_SESSION, ERROR_NOT_FOUND, HWND};
 use windows::Win32::Security::Credentials::{
     CRED_MAX_CREDENTIAL_BLOB_SIZE, CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC, CREDENTIALW,
@@ -25,6 +34,7 @@ use windows::Win32::Security::Credentials::{
 use windows::Win32::System::WinRT::IUserConsentVerifierInterop;
 use windows::core::{HRESULT, HSTRING, PWSTR, factory};
 
+use crate::seal;
 use crate::win::{log, wide};
 
 pub type Answer = Result<DeviceValue, DeviceError>;
@@ -337,6 +347,121 @@ pub fn authenticate(owner: HWND, reason: &str, done: impl FnOnce(Answer) + Send 
     });
 }
 
+// --- Secrets only Windows Hello opens (S22; the format: `seal`) ---------------------------
+
+/// The app's Hello key (`KeyCredentialManager`). Windows shows its own
+/// prompt for each signature: the API takes no window.
+struct HelloCredential(KeyCredential);
+
+impl seal::HelloKey for HelloCredential {
+    fn sign(&self, message: &[u8]) -> Result<Vec<u8>, DeviceError> {
+        let data = CryptographicBuffer::CreateFromByteArray(message).map_err(win_failed)?;
+        let r = self
+            .0
+            .RequestSignAsync(&data)
+            .and_then(|op| op.join())
+            .map_err(win_failed)?;
+        match r.Status().map_err(win_failed)? {
+            KeyCredentialStatus::Success => buffer_bytes(&r.Result().map_err(win_failed)?),
+            status => Err(key_error(status)),
+        }
+    }
+
+    fn public_key(&self) -> Result<Vec<u8>, DeviceError> {
+        let key = self
+            .0
+            .RetrievePublicKeyWithBlobType(CryptographicPublicKeyBlobType::Pkcs1RsaPublicKey)
+            .map_err(win_failed)?;
+        buffer_bytes(&key)
+    }
+}
+
+fn win_failed(e: windows::core::Error) -> DeviceError {
+    failed(e.message())
+}
+
+fn buffer_bytes(buffer: &IBuffer) -> Result<Vec<u8>, DeviceError> {
+    let mut bytes = windows::core::Array::<u8>::new();
+    CryptographicBuffer::CopyToByteArray(buffer, &mut bytes).map_err(win_failed)?;
+    Ok(bytes.to_vec())
+}
+
+/// A Hello key operation's failure as Prism's error.
+fn key_error(status: KeyCredentialStatus) -> DeviceError {
+    match status {
+        KeyCredentialStatus::UserCanceled | KeyCredentialStatus::UserPrefersPassword => {
+            DeviceError::Cancelled
+        }
+        // Too many failed attempts: Hello is locked for a while.
+        KeyCredentialStatus::SecurityDeviceLocked => DeviceError::Denied,
+        KeyCredentialStatus::NotFound => {
+            failed("the app's Windows Hello key is gone (Hello was reset): store the secret again")
+        }
+        other => failed(format!("Windows Hello: {other:?}")),
+    }
+}
+
+/// Whether this user has Windows Hello set up (a PIN at least), which
+/// Hello keys need.
+fn hello_keys() -> bool {
+    KeyCredentialManager::IsSupportedAsync()
+        .and_then(|op| op.join())
+        .unwrap_or_else(|e| {
+            log!("Windows Hello keys: {e}");
+            false
+        })
+}
+
+/// `app`'s Hello key; `create`: made the first time (Windows asks the
+/// user). Without Hello: `Unavailable`.
+fn hello_key(app: &str, create: bool) -> Result<HelloCredential, DeviceError> {
+    if !hello_keys() {
+        log!("secure storage: Windows Hello is not set up: no biometric secrets");
+        return Err(DeviceError::Unavailable);
+    }
+    let name = HSTRING::from(seal::key_name(app));
+    let open = || {
+        KeyCredentialManager::OpenAsync(&name)
+            .and_then(|op| op.join())
+            .map_err(win_failed)
+    };
+    let mut r = open()?;
+    if create && r.Status().map_err(win_failed)? == KeyCredentialStatus::NotFound {
+        // Never `ReplaceExisting`: the app's other biometric secrets need
+        // the key.
+        r = KeyCredentialManager::RequestCreateAsync(
+            &name,
+            KeyCredentialCreationOption::FailIfExists,
+        )
+        .and_then(|op| op.join())
+        .map_err(win_failed)?;
+        if r.Status().map_err(win_failed)? == KeyCredentialStatus::CredentialAlreadyExists {
+            // Another thread made it meanwhile.
+            r = open()?;
+        }
+    }
+    match r.Status().map_err(win_failed)? {
+        KeyCredentialStatus::Success => Ok(HelloCredential(r.Credential().map_err(win_failed)?)),
+        status => Err(key_error(status)),
+    }
+}
+
+/// Stores `value` under `key` sealed with the app's Hello key: Windows
+/// asks the user. Blocks: call it off the UI thread. Without Hello, or if
+/// the user cancels, nothing is stored and the previous secret stays.
+pub fn sealed_set(app: &str, key: &str, value: &str) -> Result<(), DeviceError> {
+    let hello = hello_key(app, true)?;
+    let stored = seal::seal(&hello, app, key, value)?;
+    secret_set(app, key, &stored)
+}
+
+/// The secret `sealed_set` stored (`stored`: what Credential Manager
+/// has), opened with the app's Hello key: Windows asks the user. Blocks.
+pub fn sealed_get(app: &str, key: &str, stored: &str) -> Result<String, DeviceError> {
+    let hello = hello_key(app, false)?;
+    seal::open(&hello, app, key, stored)
+}
+
 // --- Loopback redirect (RFC 8252 §7.3) -------------------------------------------------
 
 /// The listener waiting for the next sign-in (an unused one closes after
@@ -402,6 +527,36 @@ mod tests {
         );
         secret_delete(&app, "token").unwrap();
         assert_eq!(secret_get(&app, "token").unwrap(), None);
+        secret_delete(&app, "token").unwrap();
+    }
+
+    /// Without Windows Hello, a biometric secret is not stored, and the
+    /// previous one stays (S22). Where Hello is set up, storing would show
+    /// its prompt: skipped.
+    #[test]
+    fn a_biometric_secret_without_hello_keeps_the_previous_one() {
+        if hello_keys() {
+            eprintln!("skipped: Windows Hello is set up here (storing would ask the user)");
+            return;
+        }
+        let app = format!("prism-test-hello-{}", std::process::id());
+        if secret_set(&app, "token", "previous") == Err(DeviceError::Unavailable) {
+            eprintln!("skipped: no credential store in this logon session (SSH key logon)");
+            return;
+        }
+        assert_eq!(
+            sealed_set(&app, "token", "new"),
+            Err(DeviceError::Unavailable)
+        );
+        assert_eq!(
+            secret_get(&app, "token").unwrap().as_deref(),
+            Some("previous")
+        );
+        // A sealed value cannot be read without Hello either.
+        assert_eq!(
+            sealed_get(&app, "token", &format!("{}00", seal::MARK)),
+            Err(DeviceError::Unavailable)
+        );
         secret_delete(&app, "token").unwrap();
     }
 

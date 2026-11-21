@@ -42,21 +42,25 @@ use crate::task::AsyncApp;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SecureOptions {
     /// Reading it needs the device owner: biometrics, or the passcode where
-    /// biometrics are missing, checked by the store itself (Keychain access
-    /// control, an Android Keystore key requiring authentication, the
-    /// server after WebAuthn on the web). Changing the enrolled faces or
-    /// fingers makes it unreadable on Apple platforms and Android: store it
-    /// again. Where the store has no such check (Windows Credential
-    /// Manager, the Linux Secret Service, the macOS login keychain of an
-    /// app without a provisioning profile), storing fails with
-    /// [`DeviceError::Unavailable`] and keeps the previous secret: see
-    /// [`confirm_owner`](Self::confirm_owner).
+    /// biometrics are missing, checked by the system itself (Keychain
+    /// access control, an Android Keystore key requiring authentication,
+    /// the server after WebAuthn on the web, on Windows a key only Windows
+    /// Hello gives back, which seals the value in Credential Manager).
+    /// Changing the enrolled faces or fingers makes it unreadable on Apple
+    /// platforms and Android, and so does resetting Windows Hello: store it
+    /// again. On Windows, storing it asks for Hello too. Where the system
+    /// has no such check (the Linux Secret Service, the macOS login
+    /// keychain of an app without a provisioning profile, Windows without
+    /// Hello set up), storing fails with [`DeviceError::Unavailable`] and
+    /// keeps the previous secret: see [`confirm_owner`](Self::confirm_owner).
     pub biometric: bool,
-    /// Like [`biometric`](Self::biometric) where the store checks the
-    /// owner; elsewhere Prism asks for the owner (Windows Hello, a
-    /// fingerprint, Touch ID) before handing the value to the app, but the
-    /// store does not: another program of the same user that reads the
-    /// store gets the value without a prompt.
+    /// Like [`biometric`](Self::biometric) on Apple platforms (with a
+    /// provisioning profile), Android and the web. On Windows and Linux the
+    /// value is stored as it is, and Prism asks for the owner (Windows
+    /// Hello, a fingerprint) before handing it to the app, without a prompt
+    /// when storing; the store does not check, so another program of the
+    /// same user that reads it gets the value without a prompt. Same on
+    /// macOS without a provisioning profile (Touch ID, the login keychain).
     pub confirm_owner: bool,
     /// Shared with the app's extensions (widgets): the App Group's keychain
     /// access group on Apple platforms. Elsewhere the app's own store.

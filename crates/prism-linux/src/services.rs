@@ -263,6 +263,13 @@ impl LinuxServices {
             } => {
                 // The keyring has no per-item owner check: only
                 // `confirm_owner` secrets, gated with fprintd (S22).
+                // `biometric` stays `Unavailable` by decision: no Linux
+                // store ties a secret to the user's presence. The Secret
+                // Service unlocks whole collections for every program of
+                // the user, the kernel keyring checks no presence, the TPM
+                // is closed to users on most distributions (and its PIN
+                // would be typed into the app), and fprintd or polkit only
+                // answer the app yes or no, bound to nothing.
                 let gated = match options.app_gate(self.caps.device_auth) {
                     Ok(gated) => gated,
                     Err(e) => return reply(id, Err(e)),
