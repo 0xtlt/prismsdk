@@ -14,7 +14,8 @@
 //!   with Ctrl held (a precision touchpad's pinch comes so);
 //! - `ctrlclick:Label` (`@x,y`) clicks with Ctrl held;
 //! - `chord:ctrl+c` presses keys together (`ctrl`, `shift`, `alt`, a
-//!   letter or a digit, `home`, `end`, `left`, `right`);
+//!   letter or a digit, `home`, `end`, the arrows, `enter`, `backspace`,
+//!   `delete`);
 //! - touches, from a synthetic touch device (`touch.rs`): `pinch:Label=k`
 //!   spreads two fingers around its middle to `k` times their distance
 //!   (below 1: pinches in), `tswipe:Label=dx` flicks a finger, and
@@ -281,6 +282,8 @@ fn chord(keys: &str) -> Option<Vec<u16>> {
                 "up" => 0x26,
                 "down" => 0x28,
                 "enter" => 0x0D,
+                "backspace" => 0x08,
+                "delete" => 0x2E,
                 k if k.len() == 1 && k.chars().all(|c| c.is_ascii_alphanumeric()) => {
                     k.to_ascii_uppercase().as_bytes()[0] as u16
                 }
