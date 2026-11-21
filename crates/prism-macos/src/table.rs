@@ -12,7 +12,8 @@ use objc2::rc::{Retained, Weak};
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
 use objc2_app_kit::{
-    NSAccessibility, NSAccessibilityColumnRole, NSAccessibilityElement, NSControl, NSTextField,
+    NSAccessibility, NSAccessibilityColumnRole, NSAccessibilityElement, NSButton, NSColorWell,
+    NSDatePicker, NSSegmentedControl, NSSlider, NSStepper, NSSwitch, NSTextField, NSTextView,
     NSView,
 };
 use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSRange, NSRect, NSString};
@@ -136,6 +137,27 @@ const ACTIVE: [&str; 13] = [
     "AXMenuButton",
 ];
 
+/// Whether `v` is an AppKit control a user acts on (its role is its
+/// cell's, not the view's): a button (a picker's too), switch, slider,
+/// stepper, segmented control, date picker, color well or editable field.
+/// An image view and a text are controls to AppKit, not to the user: a cell
+/// holding an icon and a text reads its text, and pressing it presses its row.
+pub fn interactive(v: &NSView) -> bool {
+    if let Some(t) = v.downcast_ref::<NSTextField>() {
+        return t.isEditable();
+    }
+    if let Some(t) = v.downcast_ref::<NSTextView>() {
+        return t.isEditable();
+    }
+    v.downcast_ref::<NSButton>().is_some()
+        || v.downcast_ref::<NSSwitch>().is_some()
+        || v.downcast_ref::<NSSlider>().is_some()
+        || v.downcast_ref::<NSStepper>().is_some()
+        || v.downcast_ref::<NSSegmentedControl>().is_some()
+        || v.downcast_ref::<NSDatePicker>().is_some()
+        || v.downcast_ref::<NSColorWell>().is_some()
+}
+
 /// The controls in a table cell (#284), outermost first: buttons, switches,
 /// fields, links, clickable views (what VoiceOver acts on).
 pub fn controls(view: &NSView) -> Vec<Retained<NSView>> {
@@ -146,13 +168,7 @@ pub fn controls(view: &NSView) -> Vec<Retained<NSView>> {
         }
         let role = v.accessibilityRole().map(|r| r.to_string());
         let active = role.is_some_and(|r| ACTIVE.contains(&r.as_str()));
-        // A control (whose cell has the role), unless it is a text: a text
-        // counts when it is a link or a button.
-        let control = v.downcast_ref::<NSControl>().is_some_and(|c| {
-            c.downcast_ref::<NSTextField>()
-                .is_none_or(|t| t.isEditable())
-        });
-        if control || active {
+        if interactive(&v) || active {
             out.push(v.clone());
         } else {
             out.extend(controls(&v));
