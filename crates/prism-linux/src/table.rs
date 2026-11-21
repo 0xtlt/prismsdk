@@ -7,12 +7,23 @@
 //! cell its index (`GTK_ACCESSIBLE_RELATION_ROW_COUNT`, `ROW_INDEX`,
 //! `COL_INDEX`…, counted from 1 as in ARIA).
 //!
-//! GTK 4's AT-SPI bridge doesn't implement the `Table` and `TableCell`
-//! interfaces for app widgets, which Orca asks for a cell's column header.
-//! The closest thing: each cell is described by its column's header
-//! (`DESCRIBED_BY`), which Orca reads after the cell. GTK 4.8's bridge also
-//! exposes `COLUMN_HEADER` as a filler (later versions as a column header):
-//! the header's text is read, not its role.
+//! What reaches screen readers: no GTK 4 (4.8 to 4.25) implements AT-SPI's
+//! `Table` and `TableCell` interfaces (gtk/a11y has no vtable for them),
+//! which Orca needs for a cell's coordinates, its column header and table
+//! navigation; nor does any export the integer counts and indexes above
+//! (gtkatspicontext.c exports `colindextext` and `rowindextext` from 4.14,
+//! `posinset` and `setsize` from 4.22, as attributes). They stay set for
+//! the GTK versions that will. What Orca gets: the table, its rows (named
+//! after their content, see `names.rs` before GTK 4.12) and its cells, each
+//! described by its column's header (`DESCRIBED_BY`), whose text Orca reads
+//! after the cell. GTK up to 4.24 exposes `COLUMN_HEADER` as a filler
+//! (gtkatspiutils.c, `gtk_accessible_role_to_atspi_role`), 4.25 as a column
+//! header: until then the header's text is read, not its role.
+//!
+//! Not set: `COL_INDEX_TEXT` and `ROW_INDEX_TEXT`, which Orca reads as a
+//! spreadsheet cell's coordinates ("Time2"), and `POS_IN_SET`: a row is not
+//! an item of a list. Prism tables have no row headers (`ROW_HEADER`) and
+//! no cell navigation (`GRID`).
 
 use gtk::glib::translate::{ToGlibPtr, ToGlibPtrMut};
 use gtk::prelude::*;
@@ -22,6 +33,7 @@ use prism_core::NodeKind;
 const COL_COUNT: i32 = 1;
 const COL_INDEX: i32 = 2;
 const DESCRIBED_BY: i32 = 6;
+pub const LABELLED_BY: i32 = 10;
 const ROW_COUNT: i32 = 13;
 const ROW_INDEX: i32 = 14;
 
@@ -58,11 +70,12 @@ fn set_ints(w: &gtk::Widget, relations: &[(i32, i32)]) {
     }
 }
 
-/// `w` is described by `by` (`None`: by nothing).
-fn set_described_by(w: &gtk::Widget, by: Option<&gtk::Widget>) {
-    let Some(by) = by else {
+/// `w`'s `relation` (`DESCRIBED_BY`, `LABELLED_BY`) points to `to` (`None`:
+/// to nothing).
+pub fn set_relation(w: &gtk::Widget, relation: i32, to: Option<&gtk::Widget>) {
+    let Some(to) = to else {
         // SAFETY: as above.
-        unsafe { gtk_accessible_reset_relation(accessible(w), DESCRIBED_BY) };
+        unsafe { gtk_accessible_reset_relation(accessible(w), relation) };
         return;
     };
     let mut value = gtk::glib::Value::from_type(gtk::glib::Type::POINTER);
@@ -70,12 +83,12 @@ fn set_described_by(w: &gtk::Widget, by: Option<&gtk::Widget>) {
     // a pointer value, the list (not its widgets) given to GTK (as gtk-rs's
     // `Relation::DescribedBy` does).
     unsafe {
-        let list = gtk::glib::ffi::g_list_prepend(std::ptr::null_mut(), accessible(by));
+        let list = gtk::glib::ffi::g_list_prepend(std::ptr::null_mut(), accessible(to));
         gtk::glib::gobject_ffi::g_value_set_pointer(value.to_glib_none_mut().0, list.cast());
         gtk_accessible_update_relation_value(
             accessible(w),
             1,
-            &DESCRIBED_BY,
+            &relation,
             value.to_glib_none_mut().0,
         );
     }
@@ -111,7 +124,7 @@ pub fn set(table: &gtk::Widget, rows: &[(gtk::Widget, bool, Vec<gtk::Widget>)]) 
         set_ints(row, &[(ROW_INDEX, index)]);
         for (c, cell) in cells.iter().enumerate() {
             set_ints(cell, &[(ROW_INDEX, index), (COL_INDEX, c as i32 + 1)]);
-            set_described_by(cell, headers.get(c).filter(|_| !header));
+            set_relation(cell, DESCRIBED_BY, headers.get(c).filter(|_| !header));
         }
     }
 }

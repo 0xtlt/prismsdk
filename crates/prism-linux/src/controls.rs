@@ -88,7 +88,8 @@ pub fn picker(id: NodeId) -> Rc<Picker> {
     dropdown.set_valign(gtk::Align::Center);
     let empty = empty_label(dropdown.upcast_ref());
     // The list's rows are created when it opens: they follow the
-    // drop-down's direction.
+    // drop-down's direction, and get their names on GTK before 4.12
+    // (`names.rs`).
     let mut child = dropdown.first_child();
     while let Some(c) = child {
         if c.is::<gtk::Popover>() {
@@ -97,6 +98,7 @@ pub fn picker(id: NodeId) -> Rc<Picker> {
                 let Some(d) = d.upgrade() else { return };
                 let (popover, rtl) = (popover.clone(), d.direction() == gtk::TextDirection::Rtl);
                 glib::idle_add_local_once(move || set_direction_deep(&popover, rtl));
+                crate::names::schedule();
             });
         }
         child = c.next_sibling();

@@ -94,7 +94,7 @@ minimum widths and empty cells.
 | macOS | `NSAccessibilityTableRole`, rows, columns and cells; each cell's row, column and column header (`AXColumnHeaderUIElements`), read by VoiceOver |
 | iOS, iPadOS, visionOS | `UIAccessibilityContainerDataTable`: VoiceOver reads the column header when the focus moves to another column, and the row and column counts |
 | Android | `CollectionInfo` (rows, columns) on the table, `CollectionItemInfo` on each cell (row, column, heading for headers, and the column's title from API 33) |
-| Linux (GTK 4) | Roles `TABLE`, `ROW`, `COLUMN_HEADER` and `CELL` with their row and column indexes; each cell is described by its column's header |
+| Linux (GTK 4) | Roles table, row, cell and column header (a filler before GTK 4.25); each row is named by its content, each cell described by its column's header, which Orca reads after the cell's text; a control inside a cell is reached on its own |
 | Windows | UI Automation `Table` with the Grid and Table patterns; cells are `DataItem`s (headers `HeaderItem`s) with the GridItem and TableItem patterns, which give their row, column and column header |
 
 What is not possible everywhere:
@@ -102,11 +102,14 @@ What is not possible everywhere:
 - iOS and Android: a cell is one element, read from its text (`Time, 09:35`).
   A control inside a cell is not reached on its own: put actions on the row
   or next to the table.
-- Linux: GTK 4's AT-SPI bridge doesn't implement the `Table` and `TableCell`
-  interfaces for app widgets, which Orca asks for a cell's column header. The
-  closest thing: each cell is described by its column's header
-  (`DESCRIBED_BY`), which Orca reads after the cell. GTK 4.8 also shows
-  `COLUMN_HEADER` as a filler (later versions as a column header).
+- Linux: no GTK 4 (4.8 to 4.25) implements AT-SPI's `Table` and `TableCell`
+  interfaces, nor exports a cell's row and column numbers or the table's
+  size (Prism sets them, for the GTK versions that will). So Orca can't say
+  a cell's coordinates or the table's size, and its table navigation keys
+  don't move by row or column. It reads the table, each row as its content
+  (`09:35 12 Harbour 3`) and each cell's text, then its column's header
+  (`DESCRIBED_BY`). Up to GTK 4.24 a column header is a filler: its text is
+  read, not "column header"; GTK 4.25 gives it its role.
 - tvOS and watchOS: the layout is the same, the reader gets plain containers
   and reads the cells' text in order.
 

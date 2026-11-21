@@ -424,9 +424,114 @@ mod pass_through {
         fn contains(&self, x: f64, y: f64) -> bool {
             !self.obj().has_css_class(super::PASS_THROUGH) && self.parent_contains(x, y)
         }
+
+        /// Tab reaches a focusable box (a drawn button, a view with
+        /// `on_key_down`), then its children; Shift+Tab its children, then
+        /// the box. GtkBox only moves the focus among its children
+        /// (gtkbox.c, `widget_class->focus = gtk_widget_focus_child`), and
+        /// GtkWidget's own (`gtk_widget_real_focus`) never reaches them.
+        fn focus(&self, direction: gtk::DirectionType) -> bool {
+            let w = self.obj();
+            if !w.is_focusable() {
+                return self.parent_focus(direction);
+            }
+            let forward = matches!(
+                direction,
+                gtk::DirectionType::TabForward
+                    | gtk::DirectionType::Right
+                    | gtk::DirectionType::Down
+            );
+            if w.is_focus() {
+                return forward && self.parent_focus(direction);
+            }
+            // Coming from before the box, forward: the box first.
+            let inside = w
+                .root()
+                .and_then(|r| r.focus())
+                .is_some_and(|f| f.is_ancestor(&*w));
+            if forward && !inside && w.grab_focus() {
+                return true;
+            }
+            // Its children; backward, the box after them.
+            self.parent_focus(direction) || (!forward && w.grab_focus())
+        }
     }
 
     impl BoxImpl for PrismBox {}
+}
+
+/// CSS class of a widget Prism makes take the keyboard focus (a drawn
+/// control, a view with `on_key_down`, a clickable text), which shows it;
+/// a label also needs [`focusable_labels`].
+pub const FOCUSABLE: &str = "prism-keys";
+
+type GrabFocus = unsafe extern "C" fn(*mut gtk::ffi::GtkWidget) -> glib::ffi::gboolean;
+type Focus = unsafe extern "C" fn(
+    *mut gtk::ffi::GtkWidget,
+    gtk::ffi::GtkDirectionType,
+) -> glib::ffi::gboolean;
+
+static LABEL_FOCUS: std::sync::OnceLock<(GrabFocus, Focus)> = std::sync::OnceLock::new();
+
+/// Lets a focusable label with [`FOCUSABLE`] take the focus, from a
+/// click or with Tab: GTK's only does with links or a selection
+/// (gtklabel.c, `gtk_label_grab_focus` and `gtk_label_focus`), and GtkLabel
+/// can't be subclassed (its class is private). GtkLabel's two focus
+/// methods are wrapped once; other labels behave as before.
+pub fn focusable_labels() {
+    use gtk::glib::translate::IntoGlib;
+    LABEL_FOCUS.get_or_init(|| {
+        // SAFETY: GtkLabel's class lives as long as the process (referenced
+        // here, never released); it is patched once, on the main thread
+        // (GTK's), and every label, made before or after, uses the
+        // wrappers. GtkWidgetClass sets both methods.
+        unsafe {
+            let class = glib::gobject_ffi::g_type_class_ref(gtk::Label::static_type().into_glib())
+                as *mut gtk::ffi::GtkWidgetClass;
+            let original = (
+                (*class).grab_focus.expect("GtkWidget sets grab_focus"),
+                (*class).focus.expect("GtkWidget sets focus"),
+            );
+            (*class).grab_focus = Some(label_grab_focus);
+            (*class).focus = Some(label_focus);
+            original
+        }
+    });
+}
+
+unsafe extern "C" fn label_grab_focus(w: *mut gtk::ffi::GtkWidget) -> glib::ffi::gboolean {
+    use gtk::glib::translate::from_glib_borrow;
+    let (grab, _) = LABEL_FOCUS.get().expect("installed with the wrapper");
+    // SAFETY: GTK calls it with a live GtkLabel.
+    if unsafe { grab(w) } != 0 {
+        return 1;
+    }
+    let w: glib::translate::Borrowed<gtk::Widget> = unsafe { from_glib_borrow(w) };
+    // gtkwidget.c, `gtk_widget_grab_focus_self`.
+    match w.root() {
+        Some(root) if w.is_focusable() && w.has_css_class(FOCUSABLE) => {
+            root.set_focus(Some(&*w));
+            1
+        }
+        _ => 0,
+    }
+}
+
+unsafe extern "C" fn label_focus(
+    w: *mut gtk::ffi::GtkWidget,
+    direction: gtk::ffi::GtkDirectionType,
+) -> glib::ffi::gboolean {
+    use gtk::glib::translate::from_glib_borrow;
+    let (_, focus) = LABEL_FOCUS.get().expect("installed with the wrapper");
+    let widget: glib::translate::Borrowed<gtk::Widget> = unsafe { from_glib_borrow(w) };
+    let had = widget.is_focus();
+    // SAFETY: GTK calls it with a live GtkLabel.
+    if unsafe { focus(w, direction) } != 0 {
+        return 1;
+    }
+    // Without links GTK's takes the focus (above) but answers that it
+    // didn't, so Tab went on to the next widget.
+    (widget.has_css_class(FOCUSABLE) && !had && widget.is_focus()).into()
 }
 
 glib::wrapper! {

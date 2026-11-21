@@ -1181,6 +1181,8 @@ fn load_font(s: &mut State, face: prism_core::FontFace) {
 }
 
 fn relayout(s: &mut State) {
+    // GTK before 4.12: names from content, no type names (`names.rs`).
+    crate::names::schedule();
     let (w, h) = s.renderer.widgets.size;
     if w <= 0. {
         return;
@@ -1336,6 +1338,12 @@ pub struct Gtk {
     layers: Vec<gtk::Widget>,
     /// Nodes made inert (hidden from assistive technologies).
     inert: HashSet<NodeId>,
+    /// Nodes the app hid from assistive technologies (`accessibility_hidden`).
+    a11y_hidden: HashSet<NodeId>,
+    /// Containers with an interactive role (a drawn button, link, tab,
+    /// checkbox, radio or switch): they take the keyboard focus, as on the
+    /// web (`tabindex="0"`).
+    pressable: HashSet<NodeId>,
     // --- Adaptive colors (#36) ---
     /// Styles with an adaptive color: their CSS rule picks the light or the
     /// dark variant, so it is rebuilt when the appearance changes.
@@ -1446,6 +1454,7 @@ impl Gtk {
         for (i, tab) in tabs.tabs.borrow().iter().enumerate() {
             tab.widget().set_visible(i == selected);
             let title = self.titles.get(&tab.id()).cloned().unwrap_or_default();
+            let spoken = title.clone();
             let label = match self.icons.get(&tab.id()) {
                 Some(icon) => format!("{}  {title}", prism_core::glyphs::glyph(icon)),
                 None => title,
@@ -1453,10 +1462,27 @@ impl Gtk {
             let text = gtk::Label::new(Some(&label));
             text.set_ellipsize(gtk::pango::EllipsizeMode::End);
             let button = gtk::ToggleButton::new();
+            // A tab of the tab list, named by its title (not the icon's
+            // glyph, nor "GtkToggleButton" on GTK 4.8), selected or not.
+            button.set_property("accessible-role", gtk::AccessibleRole::Tab);
             button.set_child(Some(&text));
             button.set_tooltip_text(Some(&label));
             button.set_active(i == selected);
             button.set_hexpand(true);
+            set_accessible_string(&button, a11y_property::LABEL, &spoken);
+            // The tooltip repeats the name; the selection is the state.
+            reset_accessible_property(&button, a11y_property::DESCRIPTION);
+            reset_accessible_state(&button, a11y_state::PRESSED);
+            set_accessible_selected(&button, i == selected);
+            // The panel is named by its tab, unless the app named it.
+            let panel = tab.widget();
+            if !crate::names::has_label(&panel) {
+                crate::table::set_relation(
+                    &panel,
+                    crate::table::LABELLED_BY,
+                    Some(button.upcast_ref()),
+                );
+            }
             let id = tabs_id(tabs);
             button.connect_clicked(move |_| dispatch(UiEvent::Change(id, i as f64)));
             tabs.bar.append(&button);
@@ -1742,6 +1768,22 @@ impl Widgets for Gtk {
                     }
                 });
                 c.add_controller(gesture);
+                // A drawn button (focusable, see `set_accessibility`): Enter
+                // or Space when it has the focus itself, as on the web.
+                let keys = gtk::EventControllerKey::new();
+                let clickable = self.clickable.clone();
+                keys.connect_key_pressed(move |k, key, _, _| {
+                    let focused = k.widget().is_some_and(|w| w.has_focus());
+                    let activate =
+                        matches!(key, gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::space);
+                    if activate && focused && clickable.borrow().contains(&id) {
+                        dispatch(UiEvent::Click(id));
+                        glib::Propagation::Stop
+                    } else {
+                        glib::Propagation::Proceed
+                    }
+                });
+                c.add_controller(keys);
                 View::Container(id, kind, c)
             }
             NodeKind::Text => {
@@ -1933,6 +1975,7 @@ impl Widgets for Gtk {
                 let bar = gtk::Box::new(gtk::Orientation::Horizontal, 4);
                 bar.set_homogeneous(true);
                 bar.add_css_class("prism-tabbar");
+                bar.set_property("accessible-role", gtk::AccessibleRole::TabList);
                 bar.set_parent(&root);
                 let tabs = Rc::new(TabBar {
                     root,
@@ -2179,7 +2222,7 @@ impl Widgets for Gtk {
             } else {
                 self.inert.remove(&id);
             }
-            set_accessible_hidden(&w, s.inert);
+            set_accessible_hidden(&w, s.inert || self.a11y_hidden.contains(&id));
         }
         layout::stop(&w, layout::Channel::Visual);
         layout::set_visual(
@@ -2540,6 +2583,8 @@ impl Widgets for Gtk {
         self.keys.local.borrow_mut().remove(&id);
         self.keys.global.borrow_mut().remove(&id);
         self.inert.remove(&id);
+        self.a11y_hidden.remove(&id);
+        self.pressable.remove(&id);
         self.layers.retain(|l| *l != view.widget());
         let w = view.widget();
         layout::forget(&w);
@@ -2794,21 +2839,61 @@ impl Widgets for Gtk {
 
     fn set_accessibility(&mut self, view: &View, a11y: &Accessibility) {
         let w = view.widget();
-        if let Some(label) = &a11y.label {
-            let target: gtk::Widget = match view {
-                // The focusable part reads the label.
-                View::Picker(_, p) => p.dropdown.clone().upcast(),
-                View::TextArea(_, t) => t.view.clone().upcast(),
-                _ => w.clone(),
-            };
-            set_accessible_label(&target, label);
+        let id = view.id();
+        // The focusable part reads the label.
+        let target: gtk::Widget = match view {
+            View::Picker(_, p) => p.dropdown.clone().upcast(),
+            View::TextArea(_, t) => t.view.clone().upcast(),
+            _ => w.clone(),
+        };
+        match &a11y.label {
+            Some(label) => {
+                set_accessible_label(&target, label);
+                // A tab panel named by the app, not by its tab
+                // (`refresh_tabs`).
+                if let View::Container(_, NodeKind::Tab, _) = view {
+                    crate::table::set_relation(&w, crate::table::LABELLED_BY, None);
+                }
+            }
+            // A label removed: the widget's own name again.
+            None if crate::names::take_label(&target) => {
+                reset_accessible_property(&target, a11y_property::LABEL)
+            }
+            None => {}
         }
-        if let Some(hint) = &a11y.hint {
-            set_accessible_string(&w, a11y_property::DESCRIPTION, hint);
+        // Out of the tree: decorations, duplicates (an inner text the
+        // element's label already says).
+        if a11y.hidden != self.a11y_hidden.contains(&id) {
+            if a11y.hidden {
+                self.a11y_hidden.insert(id);
+            } else {
+                self.a11y_hidden.remove(&id);
+            }
+            set_accessible_hidden(&w, a11y.hidden || self.inert.contains(&id));
         }
         // A selected item or the current page of a navigation (GTK has no
-        // « current » state).
-        set_accessible_selected(&w, a11y.is_selected());
+        // « current » state). Only what can be selected says it is not: a
+        // SELECTED state makes AT-SPI call any element selectable.
+        if a11y.selected.is_some()
+            || a11y.is_selected()
+            || matches!(a11y.role, Some(prism_core::Role::Tab))
+        {
+            set_accessible_selected(&w, a11y.is_selected());
+        } else {
+            reset_accessible_state(&w, a11y_state::SELECTED);
+        }
+        // A drawn control that is disabled: unavailable for screen readers
+        // (GTK's own controls are made insensitive below).
+        if matches!(
+            view,
+            View::Container(..) | View::Text(..) | View::Image(..) | View::Shape(..)
+        ) {
+            if a11y.disabled {
+                set_accessible_disabled(&w);
+            } else {
+                reset_accessible_state(&w, a11y_state::DISABLED);
+            }
+        }
         // Tooltips (#216): GTK's, or a label's full text while it is
         // ellipsized (asked as the pointer rests).
         match (&a11y.tooltip, view) {
@@ -2835,6 +2920,16 @@ impl Widgets for Gtk {
                 w.remove_css_class("prism-tip-cut");
                 w.set_tooltip_text(None);
             }
+        }
+        // The hint, after the tooltip: GTK before 4.12 makes a tooltip the
+        // description, and no tooltip an empty one (gtkwidget.c,
+        // `gtk_widget_set_tooltip_text`), which erased the hint.
+        match &a11y.hint {
+            Some(hint) => set_accessible_string(&w, a11y_property::DESCRIPTION, hint),
+            None if !matches!(a11y.tooltip, Some(prism_core::Tooltip::Text(_))) => {
+                reset_accessible_property(&w, a11y_property::DESCRIPTION)
+            }
+            None => {}
         }
         match view {
             // GtkScale exposes its own range and value (VALUE_MIN/MAX/NOW,
@@ -2872,23 +2967,75 @@ impl Widgets for Gtk {
                     self.statuses.insert(*id, value);
                 }
             }
-            // Drawn choices (#84): option cards that are radios, custom
-            // checkboxes and switches, with their checked state.
-            View::Container(..) => {
-                let role = match a11y.role {
-                    Some(prism_core::Role::Radio) => gtk::AccessibleRole::Radio,
-                    Some(prism_core::Role::RadioGroup) => gtk::AccessibleRole::RadioGroup,
-                    Some(prism_core::Role::Checkbox) => gtk::AccessibleRole::Checkbox,
-                    Some(prism_core::Role::Switch) => gtk::AccessibleRole::Switch,
-                    _ => return,
-                };
-                // As above: the role can only change before it is realized.
-                if !w.is_realized() && w.property::<gtk::AccessibleRole>("accessible-role") != role
+            // A container takes the role the app or the core gave it: a
+            // drawn button or link, a list, a landmark, drawn choices (#84:
+            // option cards that are radios, custom checkboxes and switches,
+            // with their checked state). Table parts keep the roles they were
+            // created with (`table.rs`); a plain layout box keeps GTK's.
+            View::Container(id, kind, c) => {
+                if let Some(role) = a11y.role.and_then(container_role)
+                    && crate::table::role(*kind).is_none()
+                    // As above: the role can only change before it is
+                    // realized.
+                    && !w.is_realized()
+                    && w.property::<gtk::AccessibleRole>("accessible-role") != role
                 {
                     w.set_property("accessible-role", role);
                 }
-                if role != gtk::AccessibleRole::RadioGroup {
-                    set_accessible_checked(&w, a11y.checked.unwrap_or(false));
+                match a11y.role {
+                    Some(
+                        prism_core::Role::Radio
+                        | prism_core::Role::Checkbox
+                        | prism_core::Role::Switch,
+                    ) => set_accessible_checked(&w, a11y.checked.unwrap_or(false)),
+                    Some(prism_core::Role::Heading(level)) => {
+                        set_accessible_int(&w, a11y_property::LEVEL, level.into())
+                    }
+                    _ => {}
+                }
+                // A drawn control takes the keyboard focus (Tab), shows it,
+                // and Enter or Space presses it.
+                let pressable = a11y.role.is_some_and(prism_core::Role::is_interactive)
+                    && !a11y.hidden
+                    && !a11y.disabled;
+                let was = if pressable {
+                    !self.pressable.insert(*id)
+                } else {
+                    self.pressable.remove(id)
+                };
+                if pressable != was {
+                    let keys = self.keys.local.borrow().contains(id);
+                    c.set_focusable(pressable || keys);
+                    if pressable || keys {
+                        c.add_css_class(layout::FOCUSABLE);
+                    } else {
+                        c.remove_css_class(layout::FOCUSABLE);
+                    }
+                }
+            }
+            // A drawing (a QR code, an SVG, a chart) or a 3D scene is an
+            // image (a "filler" otherwise), or what the app made it; an icon
+            // with a label too.
+            View::Shape(..) | View::Scene(..) | View::Image(..) => {
+                let icon = matches!(view, View::Image(..));
+                if let Some(role) = a11y.role.and_then(container_role)
+                    && (!icon || a11y.label.is_some())
+                    && !w.is_realized()
+                    && w.property::<gtk::AccessibleRole>("accessible-role") != role
+                {
+                    w.set_property("accessible-role", role);
+                }
+            }
+            // A heading's level (GTK 4.16 and later give it to AT-SPI).
+            View::Text(_, l) => {
+                if let Some(prism_core::Role::Heading(level)) = a11y.role {
+                    if !l.is_realized()
+                        && l.property::<gtk::AccessibleRole>("accessible-role")
+                            != gtk::AccessibleRole::Heading
+                    {
+                        l.set_property("accessible-role", gtk::AccessibleRole::Heading);
+                    }
+                    set_accessible_int(l, a11y_property::LEVEL, level.into());
                 }
             }
             _ => {}
@@ -3623,11 +3770,12 @@ impl Widgets for Gtk {
         };
         set(&self.keys.local, local);
         set(&self.keys.global, global);
-        // A view listening to keys can take the focus (Tab, a click).
+        // A view listening to keys can take the focus (Tab, a click), as
+        // can a drawn control.
         if let View::Container(_, _, c) = view {
-            c.set_focusable(local);
+            c.set_focusable(local || self.pressable.contains(&id));
             if local {
-                c.add_css_class("prism-keys");
+                c.add_css_class(layout::FOCUSABLE);
                 let focus = gtk::GestureClick::new();
                 let weak = c.downgrade();
                 focus.connect_pressed(move |_, _, _, _| {
@@ -3640,8 +3788,8 @@ impl Widgets for Gtk {
                 if self.pointer_attached.insert((id, 8)) {
                     c.add_controller(focus);
                 }
-            } else {
-                c.remove_css_class("prism-keys");
+            } else if !self.pressable.contains(&id) {
+                c.remove_css_class(layout::FOCUSABLE);
             }
         }
     }
@@ -3822,10 +3970,47 @@ impl Widgets for Gtk {
     }
 }
 
+/// The GTK role of a container that has Prism role `role` (`None`: GTK's
+/// own, a plain layout box). A role GTK 4.8 lacks maps to the closest one.
+fn container_role(role: prism_core::Role) -> Option<gtk::AccessibleRole> {
+    use gtk::AccessibleRole as G;
+    use prism_core::Role as P;
+    Some(match role {
+        P::Button => G::Button,
+        P::Link => G::Link,
+        P::Heading(_) => G::Heading,
+        P::Image => G::Img,
+        P::Group => G::Group,
+        P::List => G::List,
+        P::ListItem => G::ListItem,
+        P::Switch => G::Switch,
+        P::Checkbox => G::Checkbox,
+        P::Tab => G::Tab,
+        P::TabList => G::TabList,
+        P::TabPanel => G::TabPanel,
+        P::Navigation => G::Navigation,
+        P::Main => G::Main,
+        P::Alert => G::Alert,
+        P::ProgressBar => G::ProgressBar,
+        P::Slider => G::Slider,
+        P::ComboBox => G::ComboBox,
+        P::Status => G::Status,
+        P::Radio => G::Radio,
+        P::RadioGroup => G::RadioGroup,
+        P::Dialog => G::Dialog,
+        P::Table => G::Table,
+        P::Row => G::Row,
+        P::ColumnHeader => G::ColumnHeader,
+        P::Cell => G::Cell,
+        P::Text => return None,
+    })
+}
+
 /// `GtkAccessibleProperty` values (gtkenums.h, counted from 0).
 pub(crate) mod a11y_property {
     pub const DESCRIPTION: i32 = 1;
     pub const LABEL: i32 = 4;
+    pub const LEVEL: i32 = 5;
     pub const PLACEHOLDER: i32 = 10;
     pub const VALUE_TEXT: i32 = 18;
 }
@@ -3840,12 +4025,40 @@ unsafe extern "C" {
     );
 }
 
-/// Sets a string accessible property of `w` (see [`a11y_property`]).
+/// Sets a string accessible property of `w` (see [`a11y_property`]). A
+/// label is Prism's: GTK before 4.12 reads it in its parents' names
+/// (`names.rs`).
 pub(crate) fn set_accessible_string(w: &impl IsA<gtk::Widget>, property: i32, text: &str) {
+    if property == a11y_property::LABEL {
+        crate::names::set_label(w.as_ref(), text);
+    }
+    update_string(w.as_ref(), property, text);
+}
+
+/// Sets a string accessible property of any accessible: a widget, a stack
+/// page (both implement GtkAccessible; gtk-rs's `Accessible` needs 4.10).
+pub(crate) fn update_string(acc: &impl IsA<glib::Object>, property: i32, text: &str) {
     use gtk::glib::translate::{ToGlibPtr, ToGlibPtrMut};
+    debug_assert!(acc.is::<gtk::Widget>() || acc.is::<gtk::StackPage>());
     let mut value = text.to_value();
+    let accessible: *mut glib::gobject_ffi::GObject = acc.as_ref().to_glib_none().0;
+    // SAFETY: a live GtkAccessible (above); one string property.
+    unsafe {
+        gtk_accessible_update_property_value(
+            accessible.cast(),
+            1,
+            &property,
+            value.to_glib_none_mut().0,
+        );
+    }
+}
+
+/// Sets an integer accessible property of `w` (a heading's level).
+fn set_accessible_int(w: &impl IsA<gtk::Widget>, property: i32, n: i32) {
+    use gtk::glib::translate::{ToGlibPtr, ToGlibPtrMut};
+    let mut value = n.to_value();
     let widget: *mut gtk::ffi::GtkWidget = w.as_ref().to_glib_none().0;
-    // SAFETY: every GtkWidget implements GtkAccessible; one string property.
+    // SAFETY: every GtkWidget implements GtkAccessible; one integer property.
     unsafe {
         gtk_accessible_update_property_value(
             widget.cast(),
@@ -3854,6 +4067,51 @@ pub(crate) fn set_accessible_string(w: &impl IsA<gtk::Widget>, property: i32, te
             value.to_glib_none_mut().0,
         );
     }
+}
+
+/// `GtkAccessibleState` values (gtkenums.h, counted from 0).
+pub(crate) mod a11y_state {
+    pub const DISABLED: i32 = 2;
+    pub const PRESSED: i32 = 6;
+    pub const SELECTED: i32 = 7;
+}
+
+/// `GTK_ACCESSIBLE_STATE_DISABLED`: `w` is unavailable (not "sensitive").
+fn set_accessible_disabled(w: &impl IsA<gtk::Widget>) {
+    use gtk::glib::translate::{ToGlibPtr, ToGlibPtrMut};
+    let mut value = true.to_value();
+    let widget: *mut gtk::ffi::GtkWidget = w.as_ref().to_glib_none().0;
+    // SAFETY: every GtkWidget implements GtkAccessible; one boolean state.
+    unsafe {
+        gtk_accessible_update_state_value(
+            widget.cast(),
+            1,
+            &a11y_state::DISABLED,
+            value.to_glib_none_mut().0,
+        );
+    }
+}
+
+/// Removes an accessible state of `w`.
+fn reset_accessible_state(w: &impl IsA<gtk::Widget>, state: i32) {
+    use gtk::glib::translate::ToGlibPtr;
+    let widget: *mut gtk::ffi::GtkWidget = w.as_ref().to_glib_none().0;
+    // SAFETY: every GtkWidget implements GtkAccessible.
+    unsafe { gtk_accessible_reset_state(widget.cast(), state) };
+}
+
+/// Removes an accessible property of `w` (GTK's own value again).
+pub(crate) fn reset_accessible_property(w: &impl IsA<gtk::Widget>, property: i32) {
+    use gtk::glib::translate::ToGlibPtr;
+    let widget: *mut gtk::ffi::GtkWidget = w.as_ref().to_glib_none().0;
+    // SAFETY: every GtkWidget implements GtkAccessible.
+    unsafe { gtk_accessible_reset_property(widget.cast(), property) };
+}
+
+unsafe extern "C" {
+    /// gtkaccessible.h, `GDK_AVAILABLE_IN_ALL` (gtk-rs binds it from 4.10).
+    fn gtk_accessible_reset_property(accessible: *mut std::ffi::c_void, property: i32);
+    fn gtk_accessible_reset_state(accessible: *mut std::ffi::c_void, state: i32);
 }
 
 unsafe extern "C" {
@@ -3871,6 +4129,7 @@ unsafe extern "C" {
 pub(crate) fn set_accessible_hidden(w: &impl IsA<gtk::Widget>, hidden: bool) {
     use gtk::glib::translate::{ToGlibPtr, ToGlibPtrMut};
     const HIDDEN: i32 = 4;
+    crate::names::set_hidden(w.as_ref(), hidden);
     let mut value = hidden.to_value();
     let widget: *mut gtk::ffi::GtkWidget = w.as_ref().to_glib_none().0;
     // SAFETY: every GtkWidget implements GtkAccessible; one boolean state.
@@ -4093,6 +4352,9 @@ fn activate(app: &gtk::Application) {
         glib::Propagation::Stop
     });
 
+    // Clickable texts take the keyboard focus (GTK's labels only do with
+    // links or a selection).
+    layout::focusable_labels();
     let css = gtk::CssProvider::new();
     let base = gtk::CssProvider::new();
     #[allow(deprecated)]
@@ -4211,6 +4473,8 @@ fn activate(app: &gtk::Application) {
         keys: keys.clone(),
         layers: Vec::new(),
         inert: HashSet::new(),
+        a11y_hidden: HashSet::new(),
+        pressable: HashSet::new(),
         adaptive: HashMap::new(),
         drag_preview: None,
     });
@@ -4405,7 +4669,14 @@ impl Gtk {
                 .iter()
                 .any(|r| r.is_link())
         });
-        l.set_focusable(links || self.clickable.borrow().contains(&id));
+        let clickable = self.clickable.borrow().contains(&id);
+        l.set_focusable(links || clickable);
+        // A clickable text takes the focus (Tab), links or not, and shows it.
+        if clickable {
+            l.add_css_class(layout::FOCUSABLE);
+        } else {
+            l.remove_css_class(layout::FOCUSABLE);
+        }
     }
 }
 
