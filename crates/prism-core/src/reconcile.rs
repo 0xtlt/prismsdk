@@ -2239,7 +2239,9 @@ impl Reconciler {
         self.nodes.get_mut(&id).unwrap().children = new_children;
 
         // Accessibility, with defaults resolved here once for every backend.
-        let auto_label = kind == NodeKind::View && clickable && a11y.label.is_none();
+        // A clickable container, or a table cell (#284), reads its text.
+        let auto_label =
+            (kind == NodeKind::View && clickable || kind.is_table_cell()) && a11y.label.is_none();
         let effective = self.effective_a11y(id, a11y, clickable, value);
         let m = self.nodes.get_mut(&id).unwrap();
         m.auto_label = auto_label;
@@ -2456,6 +2458,11 @@ impl Reconciler {
             a.label = match m.kind {
                 // A clickable container reads as one button named by its text.
                 NodeKind::View if clickable => {
+                    Some(self.collect_text(id)).filter(|t| !t.is_empty())
+                }
+                // A table cell (#284) reads as its content on native
+                // platforms, where it is one element ("Time, 09:35").
+                NodeKind::ColumnHeader | NodeKind::TableCell => {
                     Some(self.collect_text(id)).filter(|t| !t.is_empty())
                 }
                 NodeKind::TextInput

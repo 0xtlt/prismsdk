@@ -429,7 +429,7 @@ impl SNode {
             let _ = write!(o, r#","ai":"{a}""#);
         }
         let jc = match s.justify_content {
-            Justify::Start => None,
+            Justify::Start | Justify::Stretch => None,
             Justify::Center => Some("c"),
             Justify::End => Some("e"),
             Justify::SpaceBetween => Some("b"),

@@ -806,6 +806,18 @@ impl Widgets for Win {
         }
     }
 
+    /// A table's rows and cells for UI Automation (#284, `table.rs`).
+    fn set_table(&mut self, table: &NodeId, rows: &[prism_native::table::TableRow<'_, NodeId>]) {
+        let grid = crate::table::Grid {
+            rows: rows
+                .iter()
+                .map(|r| r.cells.iter().map(|c| **c).collect())
+                .collect(),
+            headers: rows.iter().take_while(|r| r.header).count(),
+        };
+        crate::table::set(*table, grid);
+    }
+
     fn set_accessibility(&mut self, view: &NodeId, a11y: &Accessibility) {
         let _t = crate::perf::span(crate::perf::Cost::Style);
         let id = *view;

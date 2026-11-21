@@ -1997,6 +1997,15 @@ impl Widgets for UiKit {
             // tvOS: containers can take the remote's focus when clickable.
             #[cfg(target_os = "tvos")]
             NodeKind::View => View::Container(crate::tv::focus_view(mtm)),
+            // Tables (#284): containers, made a data table by `set_table`.
+            #[cfg(not(target_os = "tvos"))]
+            NodeKind::Table | NodeKind::TableRow | NodeKind::ColumnHeader | NodeKind::TableCell => {
+                View::Container(crate::interaction::container(mtm))
+            }
+            #[cfg(target_os = "tvos")]
+            NodeKind::Table | NodeKind::TableRow | NodeKind::ColumnHeader | NodeKind::TableCell => {
+                View::Container(crate::tv::focus_view(mtm))
+            }
             NodeKind::Screen => View::Screen(UIView::new(mtm)),
             NodeKind::Modal => View::Sheet(UIView::new(mtm)),
             NodeKind::Stack => {
@@ -3269,6 +3278,25 @@ impl Widgets for UiKit {
         }
     }
 
+    fn set_table(&mut self, table: &View, rows: &[prism_native::table::TableRow<'_, View>]) {
+        #[cfg(not(target_os = "tvos"))]
+        {
+            let rows: Vec<(&UIView, bool, Vec<&UIView>)> = rows
+                .iter()
+                .map(|r| {
+                    (
+                        r.view.ui(),
+                        r.header,
+                        r.cells.iter().map(|c| c.ui()).collect(),
+                    )
+                })
+                .collect();
+            crate::table::set(self.mtm, table.ui(), &rows);
+        }
+        #[cfg(target_os = "tvos")]
+        let _ = (table, rows);
+    }
+
     fn set_accessibility(&mut self, view: &View, a: &Accessibility) {
         let mtm = self.mtm;
         let v = view.ui();
@@ -3347,20 +3375,22 @@ impl Widgets for UiKit {
         if !native_control {
             // Operable containers and images are single elements; plain text
             // labels already are; groups gather their children.
-            let element = a
-                .role
-                .is_some_and(|r| r.is_interactive() || r == Role::Image)
-                || matches!(view, View::Label(_));
+            let element = a.role.is_some_and(|r| {
+                r.is_interactive() || matches!(r, Role::Image | Role::Cell | Role::ColumnHeader)
+            }) || matches!(view, View::Label(_));
             v.setIsAccessibilityElement(element && !a.hidden, mtm);
             v.setShouldGroupAccessibilityChildren(a.role == Some(Role::Group), mtm);
             // Drawn choices (#84), like the native radio group: VoiceOver
             // reads the group's label when the focus enters it.
             if let View::Container(_) = view {
                 v.setAccessibilityContainerType(
-                    if a.role == Some(Role::RadioGroup) {
-                        objc2_ui_kit::UIAccessibilityContainerType::SemanticGroup
-                    } else {
-                        objc2_ui_kit::UIAccessibilityContainerType::None
+                    match a.role {
+                        Some(Role::RadioGroup) => {
+                            objc2_ui_kit::UIAccessibilityContainerType::SemanticGroup
+                        }
+                        // Its cells come from `set_table` (#284).
+                        Some(Role::Table) => objc2_ui_kit::UIAccessibilityContainerType::DataTable,
+                        _ => objc2_ui_kit::UIAccessibilityContainerType::None,
                     },
                     mtm,
                 );

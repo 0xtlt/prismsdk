@@ -55,6 +55,15 @@ pub enum Role {
     RadioGroup,
     /// A modal dialog or sheet.
     Dialog,
+    /// A table of data: rows of cells under column headers
+    /// ([`table`](crate::table())).
+    Table,
+    /// One row of a [`Role::Table`].
+    Row,
+    /// The header of a table column: read with each cell of the column.
+    ColumnHeader,
+    /// One cell of a table row.
+    Cell,
 }
 
 impl Role {
@@ -84,6 +93,10 @@ impl Role {
             Role::Radio => "radio",
             Role::RadioGroup => "radiogroup",
             Role::Dialog => "dialog",
+            Role::Table => "table",
+            Role::Row => "row",
+            Role::ColumnHeader => "columnheader",
+            Role::Cell => "cell",
         }
     }
 

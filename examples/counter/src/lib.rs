@@ -29,6 +29,7 @@ mod report;
 mod scene;
 mod security;
 mod strings;
+mod timetable;
 mod typography;
 mod widgets;
 
@@ -112,6 +113,9 @@ pub fn run() {
                 })
                 .route("/focus", move |_, _| focus)
                 .route("/components/list", |cx, _| cx.new_entity(LongList::new))
+                .route("/components/table", |cx, _| {
+                    cx.new_entity(|_| timetable::TimetableScreen)
+                })
                 .route("/components/media", |cx, _| {
                     cx.new_entity(media::MediaDemo::new)
                 })
@@ -823,6 +827,7 @@ impl Render for Gallery {
             body.child(self.decor)
             .child(self.forms)
             .child(report::card())
+            .child(timetable::card(cx))
             .child(self.typography)
             .child(self.scene)
             .child(self.interact)

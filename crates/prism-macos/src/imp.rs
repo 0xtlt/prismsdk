@@ -851,6 +851,12 @@ define_class!(
             }
         }
 
+        /// A table's cell (#284), see `table.rs`.
+        #[unsafe(method_id(accessibilityCellForColumn:row:))]
+        fn accessibility_cell(&self, column: isize, row: isize) -> Option<Retained<AnyObject>> {
+            crate::table::cell_at(self, column, row)
+        }
+
         /// VoiceOver "press" on a clickable view.
         #[unsafe(method(accessibilityPerformPress))]
         fn accessibility_perform_press(&self) -> objc2::runtime::Bool {
@@ -3441,6 +3447,10 @@ impl Widgets for AppKit {
         let empty = NSString::new();
         match kind {
             NodeKind::View => View::Container(PrismView::new(mtm, id)),
+            // Tables (#284): `set_table` gives them their rows and columns.
+            NodeKind::Table | NodeKind::TableRow | NodeKind::ColumnHeader | NodeKind::TableCell => {
+                View::Container(PrismView::new(mtm, id))
+            }
             NodeKind::Screen => View::Screen(PrismView::new(mtm, id)),
             NodeKind::Tab => View::Tab(PrismView::new(mtm, id)),
             NodeKind::Tabs => {
@@ -5151,6 +5161,20 @@ impl Widgets for AppKit {
         self.ix.set_layers(main.as_deref(), views);
     }
 
+    fn set_table(&mut self, table: &View, rows: &[prism_native::table::TableRow<'_, View>]) {
+        let rows: Vec<(&NSView, bool, Vec<&NSView>)> = rows
+            .iter()
+            .map(|r| {
+                (
+                    r.view.ns(),
+                    r.header,
+                    r.cells.iter().map(|c| c.ns()).collect(),
+                )
+            })
+            .collect();
+        crate::table::set(self.mtm, table.ns(), &rows);
+    }
+
     fn set_accessibility(&mut self, view: &View, a: &Accessibility) {
         // A text area is its text view, an input its field (their hosts are
         // just chrome).
@@ -5223,6 +5247,12 @@ impl Widgets for AppKit {
                     Some(Role::Radio) => Some(NSAccessibilityRadioButtonRole),
                     Some(Role::RadioGroup) => Some(objc2_app_kit::NSAccessibilityRadioGroupRole),
                     Some(Role::Dialog) => Some(NSAccessibilityGroupRole),
+                    // Tables (#284): see `table.rs`.
+                    Some(Role::Table) => Some(objc2_app_kit::NSAccessibilityTableRole),
+                    Some(Role::Row) => Some(objc2_app_kit::NSAccessibilityRowRole),
+                    Some(Role::Cell | Role::ColumnHeader) => {
+                        Some(objc2_app_kit::NSAccessibilityCellRole)
+                    }
                     // Status: not an element (its children stay reachable),
                     // its value is announced.
                     _ => None,

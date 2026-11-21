@@ -46,6 +46,10 @@ div()
 
 The same works for `Role::Checkbox` and `Role::Switch` (`accessibility_checked` for their state). Prefer [`radio_group`](forms.md) when its look fits: it is the platform's own control.
 
+## Tables
+
+`table()` gives screen readers a table, rows, column headers and cells on every platform that has them: a reader says a cell with its column's header and moves by row and column. See [Tables](tables.md#screen-readers) for what each platform gets.
+
 ## Selected and current items
 
 A navigation highlights where the user is; say it to screen readers too. `accessibility_current(true)` marks the destination being shown (a sidebar entry, a link of a tab bar, the last crumb), `accessibility_selected(bool)` the chosen item among several (a tab, an option, a row):

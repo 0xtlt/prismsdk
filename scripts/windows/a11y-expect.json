@@ -67,6 +67,19 @@
       ]
     },
     {
+      "name": "table",
+      "path": "/components/table",
+      "named": true,
+      "has": [
+        {"type": "Table", "name": "Timetable", "grid": [6, 4]},
+        {"type": "HeaderItem", "name": "Time", "cell": [0, 0], "columnHeader": null},
+        {"type": "DataItem", "name": "09:35", "cell": [1, 0], "columnHeader": "Time"},
+        {"type": "DataItem", "name": "12", "cell": [1, 1], "columnHeader": "Line"},
+        {"type": "DataItem", "name": "~^Old Town", "cell": [2, 2], "columnHeader": "Destination"},
+        {"type": "DataItem", "name": "43", "cell": [5, 3], "columnHeader": "Min"}
+      ]
+    },
+    {
       "name": "media",
       "path": "/components/media",
       "named": true,

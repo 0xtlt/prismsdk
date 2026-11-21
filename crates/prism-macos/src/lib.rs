@@ -40,6 +40,8 @@ mod services;
 #[cfg(target_os = "macos")]
 mod sticky;
 #[cfg(target_os = "macos")]
+mod table;
+#[cfg(target_os = "macos")]
 mod trace;
 
 #[cfg(target_os = "macos")]

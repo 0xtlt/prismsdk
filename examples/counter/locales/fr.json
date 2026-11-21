@@ -527,5 +527,19 @@
       "cone": "cône",
       "ring": "anneau"
     }
+  },
+  "table": {
+    "title": "Horaires",
+    "note": "Un tableau : chaque colonne aussi large que ses cellules le demandent ; les fenêtres étroites renvoient les destinations à la ligne, jamais les heures.",
+    "time": "Heure",
+    "line": "Ligne",
+    "destination": "Destination",
+    "minutes": "Min",
+    "harbour": "Port",
+    "old_town": "Vieille ville par la place du Marché et l’hôpital universitaire",
+    "airport": "Aéroport terminal 2",
+    "riverside": "Bord de rivière",
+    "north": "Gare du Nord",
+    "open": "Ouvrir les horaires"
   }
 }

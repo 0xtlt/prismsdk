@@ -532,6 +532,8 @@ public final class PrismHost {
                 tooltip(n, p.opt("tip"));
                 break;
             case "children": setChildren(n, p.getJSONArray("children")); break;
+            // A table's rows and cells for TalkBack (#284).
+            case "table": PrismTable.set(n, p.getJSONArray("rows")); break;
             case "frame": {
                 JSONArray f = p.getJSONArray("f");
                 JSONObject anim = p.optJSONObject("anim");

@@ -104,6 +104,11 @@ pub fn apply(v: &View, id: NodeId, a: &Accessibility, text: &str) -> Result<()> 
         if let Err(e) = peers::changed(&target, old.as_ref(), &s) {
             crate::win::log!("automation events of node {id}: {e}");
         }
+        // A table's and its cells' elements, which the table patterns
+        // hand to a reader (#284, `table.rs`).
+        if matches!(a.role, Some(Role::Table | Role::Cell | Role::ColumnHeader)) {
+            crate::table::set_element(id, &target);
+        }
     }
     live(id, a);
     Ok(())
@@ -143,6 +148,7 @@ pub fn forget(id: NodeId) {
     peers::forget(Key::Clickable(id));
     LIVE.with(|l| l.borrow_mut().remove(&id));
     crate::tips::forget(id);
+    crate::table::forget(id);
     dialog_hidden(id);
 }
 

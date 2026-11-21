@@ -21,11 +21,14 @@ that is the control type, "name", #automation id, .class name, bounds
 (physical screen pixels: x,y width x height) and, in braces, what a screen
 reader reads besides: its localized type when it is not the control type's
 own, states (toggle, selected, expanded, disabled), value and range, heading
-level, live region, dialog, landmark, help text, position in its set.
+level, live region, dialog, landmark, help text, position in its set, a
+table's rows and columns (grid), a cell's row and column (cell) and its
+column's header (columnHeader).
 -Json writes the same tree as JSON (name, type, automationId, className,
 bounds [x, y, w, h], localizedType, the states as keys: toggle, selected,
 expanded, value, range [min, max, value], disabled, focusable, heading,
-live, dialog, landmark, help, position [n, of], patterns, children), which
+live, dialog, landmark, help, position [n, of], grid [rows, columns],
+cell [row, column], columnHeader, patterns, children), which
 scripts/windows/a11y-check.py checks.
 
 -Invoke finds the first element whose name is exactly the given text and
@@ -98,6 +101,10 @@ $Props = [ordered]@{
     rangeMax      = [System.Windows.Automation.RangeValuePattern]::MaximumProperty
     rangeValue    = [System.Windows.Automation.RangeValuePattern]::ValueProperty
     invoke        = $Ids::IsInvokePatternAvailableProperty
+    gridRows      = [System.Windows.Automation.GridPattern]::RowCountProperty
+    gridColumns   = [System.Windows.Automation.GridPattern]::ColumnCountProperty
+    cellRow       = [System.Windows.Automation.GridItemPattern]::RowProperty
+    cellColumn    = [System.Windows.Automation.GridItemPattern]::ColumnProperty
 }
 # The landmark (UIA_LandmarkTypePropertyId) has no managed identifier in
 # .NET Framework: registered by id when the runtime allows it.
@@ -162,6 +169,19 @@ function Get-States($element) {
     $of = Get-Cached $element $Props.sizeOfSet
     if ($null -ne $pos -and [int]$pos -gt 0) { $s.position = @([int]$pos, [int]$of) }
     if ((Get-Cached $element $Props.invoke) -eq $true) { $s.invoke = $true }
+    # A table's rows and columns; a cell's row, column and column headers
+    # (what a screen reader reads with the cell).
+    $rows = Get-Cached $element $Props.gridRows
+    if ($null -ne $rows) { $s.grid = @([int]$rows, [int](Get-Cached $element $Props.gridColumns)) }
+    $row = Get-Cached $element $Props.cellRow
+    if ($null -ne $row) {
+        $s.cell = @([int]$row, [int](Get-Cached $element $Props.cellColumn))
+        $item = $null
+        if ($element.TryGetCurrentPattern([System.Windows.Automation.TableItemPattern]::Pattern, [ref]$item)) {
+            $headers = @($item.Current.GetColumnHeaderItems() | ForEach-Object { $_.Current.Name })
+            if ($headers.Count -gt 0) { $s.columnHeader = $headers -join ' ' }
+        }
+    }
     $s
 }
 

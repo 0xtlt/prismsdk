@@ -98,6 +98,13 @@ dialog.prism-sheet > * { flex: 1; }
 .prism-picture { display: block; min-width: 0; min-height: 0; }
 /* A video (#207): its own size, the height following its ratio when only the width is set. */
 .prism-video { display: block; min-width: 0; min-height: 0; max-width: 100%; background: #000; }
+/* Tables (#284): a cell lays its content out like a Prism box, with the
+   cell's direction and alignment; a header cell keeps the cell's weight and
+   start alignment. Texts in cells break between words only: a column is as
+   narrow as its longest word, and `09:35` is never cut. */
+.prism-cell { display: flex; flex-direction: inherit; align-items: inherit; justify-content: inherit; gap: inherit; flex-wrap: inherit; min-width: 0; }
+.prism-table > thead > tr > th { font-weight: inherit; text-align: start; }
+.prism-cell [data-kind="text"] { overflow-wrap: break-word !important; }
 /* Web views (#62): the frame fills its box; its page has no natural size. */
 .prism-web-view { display: block; border: 0; min-width: 0; min-height: 0; background: transparent; }
 /* The grey box only shows while the image loads (the client marks loaded

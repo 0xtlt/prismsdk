@@ -181,6 +181,8 @@ mod stream;
 mod style;
 #[cfg(target_os = "windows")]
 mod system;
+// A table's grid for UI Automation: no Win32, tested everywhere.
+mod table;
 #[cfg(target_os = "windows")]
 mod taskbar;
 #[cfg(target_os = "windows")]

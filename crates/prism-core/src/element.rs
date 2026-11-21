@@ -120,9 +120,38 @@ pub enum NodeKind {
     /// config a [`VideoConfig`](crate::video::VideoConfig). Its natural size
     /// is the video's. Reports `UiEvent::Ended`.
     Video,
+
+    // --- Tables (#284) ---
+    /// A table ([`table`](crate::table())): a `<table>` on the web; on
+    /// native platforms a container whose children are
+    /// [`TableRow`](NodeKind::TableRow)s, the first one the column headers.
+    /// prism-native sizes its columns with the CSS automatic table layout
+    /// (see `prism_native::table`).
+    Table,
+    /// A row of a table (`<tr>`): its children are cells.
+    TableRow,
+    /// The header cell of a column (`<th scope="col">`), in the first row.
+    ColumnHeader,
+    /// A cell of a table row (`<td>`): holds any element.
+    TableCell,
 }
 
 impl NodeKind {
+    /// Whether the node is one of a table's (#284): the table, a row or a
+    /// cell. They lay out and draw as containers.
+    pub fn is_table_part(self) -> bool {
+        matches!(
+            self,
+            NodeKind::Table | NodeKind::TableRow | NodeKind::ColumnHeader | NodeKind::TableCell
+        )
+    }
+
+    /// Whether the node is a table cell: a [`ColumnHeader`](Self::ColumnHeader)
+    /// or a [`TableCell`](Self::TableCell).
+    pub fn is_table_cell(self) -> bool {
+        matches!(self, NodeKind::ColumnHeader | NodeKind::TableCell)
+    }
+
     /// Snake-case name (`"view"`, `"text_input"`…), used in patches and by the web client.
     pub fn name(self) -> &'static str {
         match self {
@@ -154,6 +183,10 @@ impl NodeKind {
             NodeKind::WebView => "web_view",
             NodeKind::RichInput => "rich_input",
             NodeKind::Video => "video",
+            NodeKind::Table => "table",
+            NodeKind::TableRow => "table_row",
+            NodeKind::ColumnHeader => "column_header",
+            NodeKind::TableCell => "table_cell",
         }
     }
 
@@ -171,6 +204,10 @@ impl NodeKind {
             NodeKind::Picture | NodeKind::Shape | NodeKind::Scene3d => Some(Role::Image),
             NodeKind::Checkbox => Some(Role::Checkbox),
             NodeKind::RadioGroup => Some(Role::RadioGroup),
+            NodeKind::Table => Some(Role::Table),
+            NodeKind::TableRow => Some(Role::Row),
+            NodeKind::ColumnHeader => Some(Role::ColumnHeader),
+            NodeKind::TableCell => Some(Role::Cell),
             _ => None,
         }
     }

@@ -43,6 +43,8 @@ mod padding;
 mod scene;
 #[cfg(any(target_os = "ios", target_os = "tvos", target_os = "visionos"))]
 mod services;
+#[cfg(any(target_os = "ios", target_os = "visionos"))]
+mod table;
 #[cfg(target_os = "tvos")]
 mod tv;
 
