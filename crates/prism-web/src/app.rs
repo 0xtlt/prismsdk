@@ -35,6 +35,9 @@ pub const DEFAULT_MAX_MESSAGE: usize = 8 << 20;
 /// Bytes waiting in each direction of a session unless
 /// [`WebApp::max_queued_bytes`] says otherwise.
 pub const DEFAULT_MAX_QUEUED: usize = 32 << 20;
+/// The largest picture with headers the server fetches for a page, in
+/// bytes, unless [`WebApp::max_picture_bytes`] says otherwise.
+pub const DEFAULT_MAX_PICTURE: u64 = 16 << 20;
 /// The most files one pick, drop or clipboard read uploads unless
 /// [`WebApp::max_upload_files`] says otherwise.
 pub const DEFAULT_MAX_UPLOAD_FILES: usize = 256;
@@ -85,6 +88,8 @@ pub(crate) struct Inner {
     /// Origins (`scheme://host:port`) whose pictures and videos with
     /// headers the server may fetch on a private address.
     pub media_origins: Vec<String>,
+    /// The largest picture with headers the server fetches, in bytes.
+    pub max_picture: u64,
     /// At most this many live sessions at once.
     pub max_sessions: Option<usize>,
     /// The longest message a page may send, in bytes.
@@ -164,6 +169,7 @@ impl WebApp {
                 allowed_origins: Vec::new(),
                 public_origin: None,
                 media_origins: Vec::new(),
+                max_picture: DEFAULT_MAX_PICTURE,
                 max_sessions: Some(DEFAULT_MAX_SESSIONS),
                 max_message: DEFAULT_MAX_MESSAGE,
                 max_queued: DEFAULT_MAX_QUEUED,
@@ -393,6 +399,7 @@ impl WebApp {
                 id,
                 self.browser(headers).as_deref(),
                 &self.inner.media_origins,
+                self.inner.max_picture,
             )
         } else if let Some(id) = path.strip_prefix("/_prism/media/") {
             // A video with headers (#207), in ranges.
@@ -909,6 +916,15 @@ impl WebApp {
     pub fn trust_media_origin(self, origin: impl AsRef<str>) -> Self {
         let origin = crate::pictures::origin(origin.as_ref());
         self.configure(|i| i.media_origins.extend(origin))
+    }
+
+    /// The largest picture with headers (`picture(url).header(..)`) the
+    /// server fetches for a page, in bytes: a larger one is refused with
+    /// `502` as soon as it passes the limit. 16 MiB by default
+    /// ([`DEFAULT_MAX_PICTURE`]). Videos and audio with headers are
+    /// fetched in ranges of 4 MiB and need no limit.
+    pub fn max_picture_bytes(self, bytes: u64) -> Self {
+        self.configure(|i| i.max_picture = bytes)
     }
 
     /// At most `n` live sessions at once (each is a thread with its own

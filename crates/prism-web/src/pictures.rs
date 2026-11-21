@@ -13,6 +13,12 @@
 //! - The server connects only to public addresses, unless the app trusts
 //!   the origin (`WebApp::trust_media_origin`), and follows redirects only
 //!   within the origin: a URL cannot reach the server's private network.
+//!   The app's headers are secret headers: no redirect takes them
+//!   elsewhere.
+//! - It reads at most `WebApp::max_picture_bytes` of a picture, and one
+//!   range ([`MEDIA_CHUNK`]) of a video, whose partial answers must be the
+//!   range asked for (S21). The log shows upstream URLs without their
+//!   query or credentials.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, OnceLock};
@@ -80,8 +86,14 @@ pub(crate) fn proxied(base: &str, sid: Option<&str>, src: &str) -> Option<String
     Some(format!("{base}/_prism/picture/{id}"))
 }
 
-/// `GET <base>/_prism/picture/<id>` from the session `sid` (its cookie).
-pub(crate) fn serve(id: &str, sid: Option<&str>, trusted: &[String]) -> Response<Vec<u8>> {
+/// `GET <base>/_prism/picture/<id>` from the session `sid` (its cookie):
+/// at most `max` bytes of it.
+pub(crate) fn serve(
+    id: &str,
+    sid: Option<&str>,
+    trusted: &[String],
+    max: u64,
+) -> Response<Vec<u8>> {
     let src = {
         let r = registry().lock().unwrap();
         match r.entries.get(id) {
@@ -90,13 +102,14 @@ pub(crate) fn serve(id: &str, sid: Option<&str>, trusted: &[String]) -> Response
         }
     };
     let (url, headers) = prism_core::picture_source(&src);
-    let mut request = upstream(url, trusted);
+    let mut request = upstream(url, trusted).max_body(max);
     for (name, value) in headers {
-        request = request.header(name, value);
+        request = request.secret_header(name, value);
     }
+    // Never log the headers, nor the URL's query: they hold tokens.
+    let url = shown(url);
     let res = match request.send_blocking() {
         Ok(res) => res,
-        // Never log the headers: they hold tokens.
         Err(e) => {
             eprintln!("prism-web: picture {url}: {e}");
             return status(StatusCode::BAD_GATEWAY);
@@ -140,8 +153,9 @@ pub(crate) fn serve(id: &str, sid: Option<&str>, trusted: &[String]) -> Response
 }
 
 /// The most bytes one ranged media request fetches (#207): the browser
-/// asks for the rest as it plays.
-const MEDIA_CHUNK: u64 = 4 * 1024 * 1024;
+/// asks for the rest as it plays. An upstream that ignores ranges is read
+/// no further: it serves files of this size at most.
+pub(crate) const MEDIA_CHUNK: u64 = 4 * 1024 * 1024;
 
 /// `GET <base>/_prism/media/<id>` (#207): a video or audio file behind
 /// headers, for the session `sid`, in ranges (`range`: the browser's
@@ -166,10 +180,13 @@ pub(crate) fn serve_media(
         .unwrap_or(start + MEDIA_CHUNK - 1)
         .min(start + MEDIA_CHUNK - 1);
     let (url, headers) = prism_core::picture_source(&src);
-    let mut request = upstream(url, trusted).header("Range", format!("bytes={start}-{last}"));
+    let mut request = upstream(url, trusted)
+        .header("Range", format!("bytes={start}-{last}"))
+        .max_body(MEDIA_CHUNK);
     for (name, value) in headers {
-        request = request.header(name, value);
+        request = request.secret_header(name, value);
     }
+    let url = shown(url);
     let res = match request.send_blocking() {
         Ok(res) => res,
         Err(e) => {
@@ -197,20 +214,31 @@ pub(crate) fn serve_media(
         eprintln!("prism-web: media {url}: not a video ({mime:?})");
         return status(StatusCode::BAD_GATEWAY);
     }
-    // The upstream's range when it answered one; else the whole file came:
+    // The upstream's range when it answered one (exactly the bytes asked
+    // for, or fewer at the end of the file); else the whole file came:
     // pass the asked part on, as a range.
-    let content_range = res.header("content-range").map(str::to_string);
-    let (body, content_range) = match content_range {
-        Some(cr) if res.status == 206 => (res.body, cr),
-        _ => {
-            let total = res.body.len() as u64;
-            if start >= total {
-                return status(StatusCode::RANGE_NOT_SATISFIABLE);
+    let (body, content_range) = if res.status == 206 {
+        let range = res.header("content-range").and_then(content_range);
+        match range {
+            Some((a, b, total))
+                if a == start && b <= last && res.body.len() as u64 == b - a + 1 =>
+            {
+                let total = total.map_or("*".into(), |t| t.to_string());
+                (res.body, format!("bytes {a}-{b}/{total}"))
             }
-            let stop = last.min(total - 1);
-            let part = res.body[start as usize..=stop as usize].to_vec();
-            (part, format!("bytes {start}-{stop}/{total}"))
+            _ => {
+                eprintln!("prism-web: media {url}: not the range asked for");
+                return status(StatusCode::BAD_GATEWAY);
+            }
         }
+    } else {
+        let total = res.body.len() as u64;
+        if start >= total {
+            return status(StatusCode::RANGE_NOT_SATISFIABLE);
+        }
+        let stop = last.min(total - 1);
+        let part = res.body[start as usize..=stop as usize].to_vec();
+        (part, format!("bytes {start}-{stop}/{total}"))
     };
     let mut r = Response::new(body);
     *r.status_mut() = StatusCode::PARTIAL_CONTENT;
@@ -267,6 +295,34 @@ pub(crate) fn origin(url: &str) -> Option<String> {
         "{scheme}://{}:{port}",
         uri.host()?.to_ascii_lowercase()
     ))
+}
+
+/// A partial answer's `Content-Range` (`bytes a-b/total`, `*` for an
+/// unknown total): `(a, b, total)`, `None` unless well formed.
+fn content_range(value: &str) -> Option<(u64, u64, Option<u64>)> {
+    let (span, total) = value.trim().strip_prefix("bytes ")?.split_once('/')?;
+    let (a, b) = span.split_once('-')?;
+    let (a, b) = (a.trim().parse::<u64>().ok()?, b.trim().parse::<u64>().ok()?);
+    let total = match total.trim() {
+        "*" => None,
+        t => Some(t.parse::<u64>().ok()?),
+    };
+    (a <= b && total.is_none_or(|t| b < t)).then_some((a, b, total))
+}
+
+/// An upstream URL as the log shows it: scheme, host, port and path, never
+/// credentials, a query or a fragment (signed URLs keep their tokens there).
+pub(crate) fn shown(url: &str) -> String {
+    let Ok(uri) = url.parse::<http::Uri>() else {
+        return "(an invalid URL)".into();
+    };
+    match (uri.scheme_str(), uri.host()) {
+        (Some(scheme), Some(host)) => {
+            let port = uri.port_u16().map(|p| format!(":{p}")).unwrap_or_default();
+            format!("{scheme}://{host}{port}{}", uri.path())
+        }
+        _ => "(an invalid URL)".into(),
+    }
 }
 
 /// `bytes=start-[end]` (one range; anything else: from the start).
@@ -351,6 +407,8 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
 
+    const MAX: u64 = crate::app::DEFAULT_MAX_PICTURE;
+
     /// The upstreams of these tests are on loopback: the app trusts them.
     fn trust(url: &str) -> Vec<String> {
         origin(url).into_iter().collect()
@@ -406,13 +464,16 @@ mod tests {
         assert_eq!(proxied("/app", Some("sid-a"), &src).unwrap(), url);
         assert_ne!(proxied("/app", Some("sid-b"), &src).unwrap(), url);
         let id = url.rsplit('/').next().unwrap();
-        assert_eq!(serve(id, Some("sid-b"), &t).status(), StatusCode::NOT_FOUND);
-        assert_eq!(serve(id, None, &t).status(), StatusCode::NOT_FOUND);
         assert_eq!(
-            serve("nope", Some("sid-a"), &t).status(),
+            serve(id, Some("sid-b"), &t, MAX).status(),
             StatusCode::NOT_FOUND
         );
-        let ok = serve(id, Some("sid-a"), &t);
+        assert_eq!(serve(id, None, &t, MAX).status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            serve("nope", Some("sid-a"), &t, MAX).status(),
+            StatusCode::NOT_FOUND
+        );
+        let ok = serve(id, Some("sid-a"), &t, MAX);
         assert_eq!(ok.status(), StatusCode::OK);
         assert_eq!(ok.body(), b"img");
         assert_eq!(ok.headers()[header::CONTENT_TYPE], "image/png");
@@ -432,12 +493,15 @@ mod tests {
         let src = format!("{up}\nAuthorization: Bearer s3cret");
         let url = proxied("", Some("s"), &src).unwrap();
         let id = url.rsplit('/').next().unwrap();
-        assert_eq!(serve(id, Some("s"), &t).status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            serve(id, Some("s"), &t, MAX).status(),
+            StatusCode::BAD_GATEWAY
+        );
         // A wrong token upstream: not found.
         let bad = src.replace("s3cret", "wrong");
         let url = proxied("", Some("s"), &bad).unwrap();
         assert_eq!(
-            serve(url.rsplit('/').next().unwrap(), Some("s"), &t).status(),
+            serve(url.rsplit('/').next().unwrap(), Some("s"), &t, MAX).status(),
             StatusCode::NOT_FOUND
         );
     }

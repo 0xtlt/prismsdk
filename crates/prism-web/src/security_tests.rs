@@ -439,6 +439,116 @@ const SCRIPT_LINKS: [&str; 8] = [
     "blob:https://example.com/0f8e",
 ];
 
+// --- S21: what the server reads from a picture or media upstream ------------------------
+
+/// The proxied id of `url` with an app header, and the origin to trust.
+fn proxied_id(url: &str) -> (String, Vec<String>) {
+    let src = format!("{url}\nX-Token: t0ken");
+    let proxied = crate::pictures::proxied("", Some("s21"), &src).unwrap();
+    let id = proxied.rsplit('/').next().unwrap().to_string();
+    (id, crate::pictures::origin(url).into_iter().collect())
+}
+
+/// S21: a picture upstream that sends more than the app accepts (here
+/// without a `Content-Length`) is refused once past the limit, not held
+/// in memory whole.
+#[test]
+fn s21_a_picture_past_the_limit_is_refused() {
+    let mut reply =
+        b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nConnection: close\r\n\r\n".to_vec();
+    reply.resize(
+        reply.len() + crate::app::DEFAULT_MAX_PICTURE as usize + 1,
+        b'x',
+    );
+    let (origin, _, _) = upstream(reply);
+    let (id, trusted) = proxied_id(&format!("{origin}/big.png"));
+    let res = crate::pictures::serve(&id, Some("s21"), &trusted, crate::app::DEFAULT_MAX_PICTURE);
+    assert_eq!(res.status(), http::StatusCode::BAD_GATEWAY);
+    assert!(res.body().is_empty());
+}
+
+/// S21: a media upstream that ignores the range and sends a whole large
+/// file is refused past one range's worth of bytes.
+#[test]
+fn s21_a_media_upstream_ignoring_ranges_is_read_one_range_at_most() {
+    let size = crate::pictures::MEDIA_CHUNK as usize + 1;
+    let mut reply = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nContent-Length: {size}\r\nConnection: close\r\n\r\n"
+    )
+    .into_bytes();
+    reply.resize(reply.len() + size, b'v');
+    let (origin, _, head) = upstream(reply);
+    let (id, trusted) = proxied_id(&format!("{origin}/talk.mp4"));
+    let res = crate::pictures::serve_media(&id, Some("s21"), Some("bytes=0-99"), &trusted);
+    assert!(
+        head.lock()
+            .unwrap()
+            .to_ascii_lowercase()
+            .contains("range: bytes=0-99")
+    );
+    assert_eq!(res.status(), http::StatusCode::BAD_GATEWAY);
+}
+
+/// S21: a partial answer must be the range that was asked for, whole.
+#[test]
+fn s21_a_partial_answer_must_match_its_range() {
+    let partial = |range: &str, body: &str| {
+        format!(
+            "HTTP/1.1 206 Partial Content\r\nContent-Type: video/mp4\r\nContent-Range: {range}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes()
+    };
+    let serve = |reply: Vec<u8>, asked: &str| {
+        let (origin, _, _) = upstream(reply);
+        let (id, trusted) = proxied_id(&format!("{origin}/talk.mp4"));
+        crate::pictures::serve_media(&id, Some("s21"), Some(asked), &trusted)
+    };
+    // Another range than the one asked for, a body that is not the range,
+    // nonsense.
+    for (reply, asked) in [
+        (partial("bytes 0-9/100", "0123456789"), "bytes=50-59"),
+        (partial("bytes 50-59/100", "01234"), "bytes=50-59"),
+        (
+            partial("bytes 50-69/100", "01234567890123456789"),
+            "bytes=50-59",
+        ),
+        (partial("items 50-59/100", "0123456789"), "bytes=50-59"),
+        (partial("bytes 59-50/100", "0123456789"), "bytes=50-59"),
+    ] {
+        let res = serve(reply, asked);
+        assert_eq!(res.status(), http::StatusCode::BAD_GATEWAY, "{asked}");
+    }
+    // A well-formed one passes, shorter than asked included (the end of
+    // the file), with an unknown total.
+    let res = serve(partial("bytes 50-59/100", "0123456789"), "bytes=50-59");
+    assert_eq!(res.status(), http::StatusCode::PARTIAL_CONTENT);
+    assert_eq!(res.body(), b"0123456789");
+    assert_eq!(
+        res.headers()[http::header::CONTENT_RANGE],
+        "bytes 50-59/100"
+    );
+    let res = serve(partial("bytes 95-99/*", "01234"), "bytes=95-120");
+    assert_eq!(res.status(), http::StatusCode::PARTIAL_CONTENT);
+    assert_eq!(res.body(), b"01234");
+}
+
+/// S21: upstream URLs in the server's log keep no query or credentials
+/// (signed URLs carry their tokens there).
+#[test]
+fn s21_logged_upstream_urls_keep_no_secrets() {
+    use crate::pictures::shown;
+    assert_eq!(
+        shown("https://user:pw@cdn.example/a/b.mp4?X-Amz-Signature=abc#t=1"),
+        "https://cdn.example/a/b.mp4"
+    );
+    assert_eq!(
+        shown("http://127.0.0.1:8080/x.png"),
+        "http://127.0.0.1:8080/x.png"
+    );
+    assert_eq!(shown("not a url"), "(an invalid URL)");
+}
+
 /// The server-rendered page of one view, one text and one rich text,
 /// each linking to `href`.
 fn ssr_links(href: &str) -> String {
