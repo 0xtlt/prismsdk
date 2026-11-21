@@ -428,6 +428,13 @@ impl App {
         self.nav_queue.push(NavOp::Push(path.into()));
     }
 
+    /// Opens `path` from a link opened while the app runs
+    /// ([`Runtime::open_link`](crate::Runtime::open_link)): in the tab its
+    /// path belongs to, as a deep link at launch.
+    pub(crate) fn open_route_link(&mut self, path: impl Into<String>) {
+        self.nav_queue.push(NavOp::Link(path.into()));
+    }
+
     /// Pops the top screen.
     pub fn back(&mut self) {
         self.nav_queue.push(NavOp::Back);
