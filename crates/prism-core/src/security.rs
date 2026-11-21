@@ -210,7 +210,10 @@ impl AuthRequest {
             passcode: true,
         }
     }
-    /// Biometrics only (no passcode fallback).
+    /// Biometrics only (no passcode fallback). Where the system's owner
+    /// check cannot be limited to biometrics (the web's WebAuthn, Windows
+    /// Hello, watchOS), it may accept a PIN or password, so the request
+    /// fails with [`DeviceError::Unavailable`] there.
     pub fn biometrics_only(mut self) -> Self {
         self.passcode = false;
         self

@@ -212,8 +212,9 @@ impl WinServices {
                 });
             }
             DeviceCall::Authenticate(r) => {
-                if !r.passcode && self.caps.biometry == prism_core::BiometryKind::None {
-                    // Hello without a sensor is its PIN only.
+                if !r.passcode {
+                    // Hello's consent check lets the user pick the PIN, even
+                    // with a sensor: it cannot promise biometrics only.
                     return reply(id, Err(DeviceError::Unavailable));
                 }
                 security::authenticate(self.hwnd, &r.reason, move |r| reply(id, r));

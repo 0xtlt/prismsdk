@@ -1899,7 +1899,10 @@ impl WebServices {
                 None
             }
             C::Authenticate(r) => {
-                if !self.uvpa {
+                // WebAuthn's user verification may be the device PIN or
+                // password, and does not say which: it cannot promise
+                // biometrics only.
+                if !self.uvpa || !r.passcode {
                     self.reply(id, Err(E::Unavailable));
                     return None;
                 }

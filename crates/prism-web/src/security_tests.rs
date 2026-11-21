@@ -189,6 +189,22 @@ fn s1_a_registration_cannot_answer_authenticate() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// S27: WebAuthn's user verification may be a PIN or a password, and the
+/// page cannot tell: a biometrics-only request is unavailable on the web.
+#[test]
+fn s27_biometrics_only_is_unavailable_on_the_web() {
+    let dir = scratch("s27");
+    let mut s = services(&dir);
+    let only = DeviceCall::Authenticate(AuthRequest::new("Pay").biometrics_only());
+    let msg = call(&mut s, 1, only);
+    assert!(msg.is_none(), "asked the page: {msg:?}");
+    assert_eq!(s.local.pop(), Some((1, Err(DeviceError::Unavailable))));
+    // With the passcode fallback, the ceremony runs.
+    let msg = call(&mut s, 2, DeviceCall::Authenticate(AuthRequest::new("Pay"))).unwrap();
+    assert_eq!(msg["mode"], "create");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// S1: two enrollments started together: the first one wins, the second
 /// fails without replacing it.
 #[test]

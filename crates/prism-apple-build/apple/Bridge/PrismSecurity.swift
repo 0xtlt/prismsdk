@@ -296,7 +296,9 @@ private func laError(_ error: Error) -> String {
 private func ownerCheck(reason: String, passcode: Bool, reply: @escaping (String?) -> Void) {
     let context = LAContext()
     #if os(watchOS)
-    let policy: LAPolicy = .deviceOwnerAuthentication // passcode or wrist detection
+    // No biometrics: the passcode or wrist detection, never biometrics only.
+    guard passcode else { return reply("unavailable") }
+    let policy: LAPolicy = .deviceOwnerAuthentication
     #else
     let policy: LAPolicy = passcode ? .deviceOwnerAuthentication : .deviceOwnerAuthenticationWithBiometrics
     #endif
