@@ -33,7 +33,7 @@ pub(crate) fn link_id(uri: &str) -> Option<u64> {
     uri.strip_prefix(LINK_SCHEME)?.parse().ok()
 }
 
-fn pango_units(points: f32) -> i32 {
+pub(crate) fn pango_units(points: f32) -> i32 {
     (points * pango::SCALE as f32).round() as i32
 }
 
@@ -48,7 +48,7 @@ fn rgba16(c: Color, dark: bool) -> (u16, u16, u16, u16) {
 }
 
 /// Pango family of a Prism family (`None`: the label's own, the system font).
-fn family_name(f: &FontFamily) -> Option<String> {
+pub(crate) fn family_name(f: &FontFamily) -> Option<String> {
     match f {
         FontFamily::System => None,
         FontFamily::Monospace => Some("monospace".into()),
@@ -300,7 +300,7 @@ fn embedded_font_files(
 
 /// Pango's underline for a run's (#221): it has no thick or dashed line
 /// (single), and draws a dotted one as its "error" line.
-fn underline(style: prism_core::UnderlineStyle) -> pango::Underline {
+pub(crate) fn underline(style: prism_core::UnderlineStyle) -> pango::Underline {
     use prism_core::UnderlineStyle as U;
     match style {
         U::Single | U::Thick | U::Dashed => pango::Underline::Single,

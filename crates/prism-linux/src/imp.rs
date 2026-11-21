@@ -1865,9 +1865,13 @@ impl Widgets for Gtk {
                 self.date_pickers.insert(id, p.clone());
                 View::DatePicker(id, p)
             }
-            // GTK edits a rich input as plain text (#115): prism-native
-            // creates a text area for it, never this kind.
-            NodeKind::TextArea | NodeKind::RichInput => View::TextArea(id, controls::text_area(id)),
+            NodeKind::TextArea => View::TextArea(id, controls::text_area(id)),
+            // A text area showing runs as tags, chips at anchors (#115).
+            NodeKind::RichInput => {
+                let t = controls::text_area(id);
+                crate::rich::setup(id, &t.view);
+                View::TextArea(id, t)
+            }
             NodeKind::Spinner => {
                 let s = gtk::Spinner::new();
                 s.set_spinning(true);
@@ -2143,7 +2147,10 @@ impl Widgets for Gtk {
                 css += &crate::padding::css(s);
                 css += crate::padding::entry_css(s);
             }
-            View::TextArea(_, t) => t.set_padding(s.has_padding().then_some(s.padding)),
+            View::TextArea(id, t) => {
+                t.set_padding(s.has_padding().then_some(s.padding));
+                crate::rich::set_style(*id, s);
+            }
             _ => {}
         }
         if s.border_none && !s.borders().iter().any(|b| b.width > 0.) {
@@ -2528,6 +2535,7 @@ impl Widgets for Gtk {
         let id = view.id();
         TYPED.with(|t| t.borrow_mut().remove(&id));
         crate::edit::forget(id);
+        crate::rich::forget(id);
         forget_selection(id);
         crate::carets::forget(id);
         crate::navbar::forget(id);
@@ -2637,9 +2645,10 @@ impl Widgets for Gtk {
             // GtkScale's natural width is its knob: sliders take 200 px.
             (View::Slider(..), m) => m.map_or(200., |m| m.min(200.)),
             // As wide as offered; as tall as its text, at least 3 lines.
-            (View::TextArea(_, t), m) => {
+            (View::TextArea(id, t), m) => {
                 let w = m.unwrap_or(240.).ceil();
-                return (w, (t.measure_height(w + px) - py).max(0.).ceil());
+                let h = t.measure_height(w + px, crate::rich::attributes(*id));
+                return (w, (h - py).max(0.).ceil());
             }
             _ => nat_w,
         };
@@ -3740,6 +3749,17 @@ impl Widgets for Gtk {
         }
     }
 
+    /// Rich inputs edit their runs as tags and chips (#115, `crate::rich`).
+    fn rich_input(&self) -> bool {
+        true
+    }
+
+    fn set_rich_value(&mut self, view: &View, runs: &str) {
+        if let View::TextArea(id, _) = view {
+            crate::rich::set_runs(*id, runs);
+        }
+    }
+
     /// A rich input's editing hooks (#217, `crate::edit`): its text area.
     fn set_edit_events(&mut self, view: &View, mask: u8) {
         if let View::TextArea(id, t) = view {
@@ -3961,6 +3981,7 @@ impl Widgets for Gtk {
                 text::apply(l, state, dark);
             }
         }
+        crate::rich::restyle_all();
         for area in self.shapes.values() {
             area.queue_draw();
         }
@@ -4562,7 +4583,8 @@ fn activate(app: &gtk::Application) {
 /// `fill:Placeholder=text` types into the text input or text area with that
 /// placeholder (or picks option `text` of the picker showing it;
 /// `fill:@slider=40` drags the first slider), `submit:Placeholder` presses
-/// Enter in it.
+/// Enter in it, `type:Placeholder=text` types at the end of the text area
+/// with that placeholder (its other text and chips kept).
 /// `PRISM_SCROLL=600` scrolls the visible scroll views.
 /// `PRISM_SNAPSHOT=out.png` then saves the window (and open popovers) and
 /// quits. `PRISM_DELAY` (seconds, default 1) before.
@@ -4592,6 +4614,10 @@ fn automation(window: gtk::ApplicationWindow) {
                 fill(&root, placeholder, Some(&text.replace("\\n", "\n")))
             } else if let Some(placeholder) = title.strip_prefix("submit:") {
                 fill(&root, placeholder, None)
+            } else if let Some((placeholder, text)) =
+                title.strip_prefix("type:").and_then(|t| t.split_once('='))
+            {
+                type_at_end(&root, placeholder, text)
             } else {
                 press(&root, title)
             };
@@ -4818,6 +4844,36 @@ fn fill(w: &gtk::Widget, placeholder: &str, text: Option<&str>) -> bool {
     let mut child = w.first_child();
     while let Some(c) = child {
         if fill(&c, placeholder, text) {
+            return true;
+        }
+        child = c.next_sibling();
+    }
+    false
+}
+
+/// Types `text` at the end of the text area with `placeholder`, like the
+/// keyboard (one undoable edit, its text and chips kept).
+fn type_at_end(w: &gtk::Widget, placeholder: &str, text: &str) -> bool {
+    if let Some(o) = w.downcast_ref::<gtk::Overlay>()
+        && let Some(view) = o
+            .child()
+            .and_then(|s| s.downcast::<gtk::ScrolledWindow>().ok())
+            .and_then(|s| s.child())
+            .and_then(|v| v.downcast::<gtk::TextView>().ok())
+        && o.last_child()
+            .and_then(|l| l.downcast::<gtk::Label>().ok())
+            .is_some_and(|l| l.text() == placeholder)
+    {
+        let b = view.buffer();
+        b.place_cursor(&b.end_iter());
+        b.begin_user_action();
+        b.insert_interactive_at_cursor(text, true);
+        b.end_user_action();
+        return true;
+    }
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        if type_at_end(&c, placeholder, text) {
             return true;
         }
         child = c.next_sibling();

@@ -65,12 +65,13 @@ pub(crate) fn connect(id: NodeId, view: &gtk::TextView) {
         view.connect_local(signal, false, move |args| {
             let view: gtk::TextView = args[0].get().ok()?;
             if mask(id) & if cut { CUT } else { COPY } == 0 {
-                return None;
+                return plain_copy(id, &view, signal, cut);
             }
             let b = view.buffer();
             let (start, end) = b.selection_bounds()?;
             view.stop_signal_emission_by_name(signal);
-            let text = b.text(&start, &end, false).to_string();
+            // A chip is its U+FFFC, like the offsets (#115).
+            let text = b.slice(&start, &end, false).to_string();
             let (s, e) = (start.offset().max(0) as usize, end.offset().max(0) as usize);
             crate::imp::dispatch(UiEvent::Copy(id, cut, s, e, text));
             if cut {
@@ -82,7 +83,7 @@ pub(crate) fn connect(id: NodeId, view: &gtk::TextView) {
     view.connect_local("paste-clipboard", false, move |args| {
         let view: gtk::TextView = args[0].get().ok()?;
         if mask(id) & PASTE == 0 {
-            return None;
+            return plain_paste(id, &view);
         }
         view.stop_signal_emission_by_name("paste-clipboard");
         let selection = crate::imp::buffer_selection(&view.buffer());
@@ -132,6 +133,49 @@ pub(crate) fn connect(id: NodeId, view: &gtk::TextView) {
         crate::imp::dispatch(UiEvent::SpanClick(id, at, crate::imp::modifiers(mods)));
     });
     view.add_controller(click);
+}
+
+/// A rich input's copy or cut the app does not take (#115): plain text,
+/// each chip as its label, instead of GTK's own buffer (whose tags and
+/// anchors are the view's). Other text areas: GTK's.
+fn plain_copy(id: NodeId, view: &gtk::TextView, signal: &str, cut: bool) -> Option<glib::Value> {
+    if !crate::rich::is_rich(id) {
+        return None;
+    }
+    view.stop_signal_emission_by_name(signal);
+    let b = view.buffer();
+    let (start, end) = b.selection_bounds()?;
+    let text = crate::rich::labelled(id, &b, start.offset(), end.offset());
+    view.clipboard().set_text(&text);
+    if cut {
+        b.delete_selection(true, view.is_editable());
+    }
+    None
+}
+
+/// A rich input's paste the app does not take (#115): the clipboard's
+/// plain text, without object characters (chips come from the app).
+fn plain_paste(id: NodeId, view: &gtk::TextView) -> Option<glib::Value> {
+    if !crate::rich::is_rich(id) {
+        return None;
+    }
+    view.stop_signal_emission_by_name("paste-clipboard");
+    let view = view.clone();
+    glib::MainContext::default().spawn_local(async move {
+        let text = view.clipboard().read_text_future().await.ok().flatten();
+        let Some(text) = text else {
+            return;
+        };
+        let text = text.replace(prism_core::OBJECT_CHAR, "");
+        let b = view.buffer();
+        let editable = view.is_editable();
+        b.begin_user_action();
+        b.delete_selection(true, editable);
+        b.insert_interactive_at_cursor(&text, editable);
+        b.end_user_action();
+        view.scroll_mark_onscreen(&b.get_insert());
+    });
+    None
 }
 
 /// What `clipboard` holds, as a paste over `selection`: its plain text,
