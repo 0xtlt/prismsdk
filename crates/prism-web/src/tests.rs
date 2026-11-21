@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 
 use crate::html::{HtmlBackend, a11y_attrs, escape, picture_url};
 use crate::session::Encoder;
+use crate::temp_dir::TempDir;
 use crate::{WebApp, css};
 
 // --- SSR markup, one node kind at a time ----------------------------------------------
@@ -1482,7 +1483,7 @@ fn scene_updates_go_out_with_textures_resolved_like_pictures() {
 #[test]
 fn s29_blobs_a_session_sends_go_to_its_browser_only() {
     use prism_core::scene3d::{Instances, SceneData, SceneUpdate, cube};
-    let (app, dir) = web_app(counter_init(), "s29-session");
+    let (app, _dir) = web_app(counter_init(), "s29-session");
     let set = Instances::grid([2, 1, 7], [1., 1., 1.]);
     let mut scene = SceneData::default();
     scene.nodes.push(cube(0.5).name("crowd").instances(&set));
@@ -1511,13 +1512,12 @@ fn s29_blobs_a_session_sends_go_to_its_browser_only() {
     assert_eq!(fetch(&mine), StatusCode::OK);
     assert_eq!(fetch(&other), StatusCode::NOT_FOUND);
     drop(set);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn scene_blobs_are_served_by_id() {
     use prism_core::scene3d::blobs::{self, BlobKind};
-    let (app, dir) = web_app(counter_init(), "scene-blobs");
+    let (app, _dir) = web_app(counter_init(), "scene-blobs");
     let blob = blobs::put(BlobKind::Image, "image/png", vec![0x89, b'P', b'N', b'G']);
     let mesh = blobs::put(BlobKind::Mesh, blobs::BINARY_MIME, vec![1, 2, 3, 4]);
     // A live session sent them to this browser.
@@ -1564,7 +1564,6 @@ fn scene_blobs_are_served_by_id() {
         get(&format!("/_prism/3d/{id}")).status(),
         StatusCode::NOT_FOUND
     );
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 // --- The socket protocol: messages in, patches out ----------------------------------------
@@ -1680,8 +1679,27 @@ impl Page {
     }
 }
 
-pub(crate) fn web_app(init: AppInit, tag: &str) -> (WebApp, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("prism-web-{tag}-{}", std::process::id()));
+/// A failing test removes its temp folder too: the guard is dropped while
+/// the panic unwinds.
+#[test]
+fn a_failing_test_leaves_no_temp_folder() {
+    let made = std::sync::Mutex::new(None);
+    let failed = std::panic::catch_unwind(|| {
+        let dir = TempDir::new("guard");
+        std::fs::create_dir_all(dir.join("data")).unwrap();
+        std::fs::write(dir.join("data/file"), "x").unwrap();
+        *made.lock().unwrap() = Some(dir.to_path_buf());
+        panic!("a test that fails (on purpose)");
+    });
+    assert!(failed.is_err());
+    let dir = made.lock().unwrap().take().expect("the folder was made");
+    assert!(!dir.exists(), "{} is left behind", dir.display());
+}
+
+/// An app whose data and assets live in a temp folder, removed when the
+/// returned guard is dropped: bind it for as long as the app is used.
+pub(crate) fn web_app(init: AppInit, tag: &str) -> (WebApp, TempDir) {
+    let dir = TempDir::new(&format!("web-{tag}"));
     let config = AppConfig {
         title: "Test".into(),
         assets: Some(dir.join("assets").to_string_lossy().into()),
@@ -1738,7 +1756,7 @@ fn a_dragged_payload_reaches_the_target_the_page_found() {
         let root = cx.new_entity(|_| Board { log: "-".into() });
         cx.set_root(root);
     });
-    let (app, dir) = web_app(init, "dnd");
+    let (app, _dir) = web_app(init, "dnd");
     let page = Page::open(&app, "/ws?path=%2F&w=1280&h=800");
     let reset = page.next();
     let ops = reset["p"].as_array().unwrap();
@@ -1775,7 +1793,6 @@ fn a_dragged_payload_reaches_the_target_the_page_found() {
         page.next(),
         json!({ "t": "patch", "p": [{ "op": "text", "id": log, "text": "Enter 1" }] })
     );
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// #111: files dropped on a drop target reach its handler, checked by the
@@ -1816,7 +1833,7 @@ fn dropped_files_reach_the_drop_target() {
         });
         cx.set_root(root);
     });
-    let (app, dir) = web_app(init, "drop");
+    let (app, _dir) = web_app(init, "drop");
     let page = Page::open(&app, "/ws?path=%2F&w=1280&h=800");
     let reset = page.next();
     let ops = reset["p"].as_array().unwrap();
@@ -1856,12 +1873,11 @@ fn dropped_files_reach_the_drop_target() {
         json!({ "t": "patch", "p": [{ "op": "text", "id": got, "text": "cat.png 3" }] })
     );
     page.session.close();
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn a_session_resets_the_page_then_answers_events_with_patches() {
-    let (app, dir) = web_app(counter_init(), "session");
+    let (app, _dir) = web_app(counter_init(), "session");
     let page = Page::open(&app, "/ws?path=%2F&w=1280&h=800");
     let reset = page.next();
     assert_eq!(reset["t"], "reset");
@@ -1905,7 +1921,6 @@ fn a_session_resets_the_page_then_answers_events_with_patches() {
         json!([{ "op": "text", "id": count, "text": "Count: 2" }])
     );
     page.session.close();
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// A field with a formatting command (#86): its selection, Bold, and the
@@ -1961,7 +1976,7 @@ fn selections_from_the_page_reach_on_select_and_app_selections_reach_the_page() 
         });
         cx.set_root(root);
     });
-    let (app, dir) = web_app(init, "selection");
+    let (app, _dir) = web_app(init, "selection");
     let page = Page::open(&app, "/ws?path=%2F&w=1280&h=800");
     let reset = page.next();
     let ops = reset["p"].as_array().unwrap();
@@ -2004,7 +2019,6 @@ fn selections_from_the_page_reach_on_select_and_app_selections_reach_the_page() 
     );
     assert!(text < sel, "after the text it selects in");
     page.session.close();
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Starts loading on its first render, with no event after it.
@@ -2036,7 +2050,7 @@ fn a_task_spawned_during_render_reaches_the_page_without_a_message() {
         let root = cx.new_entity(|_| LazyLoad::default());
         cx.set_root(root);
     });
-    let (app, dir) = web_app(init, "render-spawn");
+    let (app, _dir) = web_app(init, "render-spawn");
     let page = Page::open(&app, "/ws?path=%2F&w=1280&h=800");
     let reset = page.next();
     let label = op_with_text(&reset["p"], "loading");
@@ -2046,7 +2060,6 @@ fn a_task_spawned_during_render_reaches_the_page_without_a_message() {
         json!({ "t": "patch", "p": [{ "op": "text", "id": label, "text": "loaded 7" }] })
     );
     page.session.close();
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -2059,14 +2072,13 @@ fn the_first_paint_waits_for_the_data_it_loads() {
         let r = app.handle(&Request::get("/").body(()).unwrap());
         String::from_utf8(r.body().clone()).unwrap()
     };
-    let (app, dir) = web_app(init.clone(), "first-paint-now");
+    let (app, _dir) = web_app(init.clone(), "first-paint-now");
     assert!(
         page(&app).contains(">loading<"),
         "no wait: the loading state"
     );
-    let _ = std::fs::remove_dir_all(dir);
 
-    let (app, dir) = web_app(init, "first-paint-wait");
+    let (app, _dir) = web_app(init, "first-paint-wait");
     let app = app.first_paint_wait(Duration::from_secs(5));
     let html = page(&app);
     assert!(html.contains(">loaded 7<"), "{html}");
@@ -2076,7 +2088,6 @@ fn the_first_paint_waits_for_the_data_it_loads() {
     assert_eq!(reset["t"], "reset");
     op_with_text(&reset["p"], "loaded 7");
     live.session.close();
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 struct Wide;
@@ -2093,7 +2104,7 @@ fn a_session_follows_the_viewport_and_lifecycle() {
         let root = cx.new_entity(|_| Wide);
         cx.set_root(root);
     });
-    let (app, dir) = web_app(init, "viewport");
+    let (app, _dir) = web_app(init, "viewport");
     let page = Page::open(&app, "/ws?w=400&h=800");
     op_with_text(&page.next()["p"], "narrow");
     page.send(json!({ "t": "viewport", "w": 1280, "h": 800 }));
@@ -2103,7 +2114,6 @@ fn a_session_follows_the_viewport_and_lifecycle() {
     page.send(json!({ "t": "viewport", "w": 500 }));
     page.send(json!({ "t": "viewport", "w": 500, "h": 800 }));
     op_with_text(&page.next()["p"], "narrow");
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -2112,7 +2122,7 @@ fn the_viewport_leaves_out_the_reported_safe_area() {
         let root = cx.new_entity(|_| Wide);
         cx.set_root(root);
     });
-    let (app, dir) = web_app(init, "safe-area");
+    let (app, _dir) = web_app(init, "safe-area");
     let page = Page::open(&app, "/ws?w=400&h=800");
     op_with_text(&page.next()["p"], "narrow");
     page.send(json!({ "t": "viewport", "w": 1100, "h": 800, "safe": [0, 0, 0, 0] }));
@@ -2120,7 +2130,6 @@ fn the_viewport_leaves_out_the_reported_safe_area() {
     // 1100 wide, 100 of it under a side bar: 1000 left, under the breakpoint.
     page.send(json!({ "t": "viewport", "w": 1100, "h": 800, "safe": [20, 0, 0, 100] }));
     op_with_text(&page.next()["p"], "narrow");
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -2132,14 +2141,13 @@ fn deep_links_from_the_page_navigate() {
             .build(cx);
         cx.set_root(router);
     });
-    let (app, dir) = web_app(init, "link");
+    let (app, _dir) = web_app(init, "link");
     let page = Page::open(&app, "/ws?path=%2F");
     op_with_text(&page.next()["p"], "Home");
     page.send(json!({ "t": "link", "path": "/welcome" }));
     let pushed = page.next();
     op_with_text(&pushed["p"], "Welcome");
     op_with_text(&pushed["p"], "/welcome");
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 // --- Device calls and services ----------------------------------------------------------
@@ -2232,7 +2240,7 @@ fn device_replies_become_values() {
 #[test]
 fn uploads_arrive_in_chunks_for_pick_calls_only() {
     use crate::uploads::{Key::Call, Uploads};
-    let (app, dir) = web_app(counter_init(), "uploads");
+    let (app, _dir) = web_app(counter_init(), "uploads");
     let sid = "0123456789abcdef0123456789abcdef";
     let files_dir = app.files_dir(sid);
     let count = || std::fs::read_dir(&files_dir).map_or(0, |d| d.count());
@@ -2307,7 +2315,6 @@ fn uploads_arrive_in_chunks_for_pick_calls_only() {
     assert_eq!(count(), 3);
     drop(u);
     assert_eq!(count(), 2);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -2429,7 +2436,7 @@ fn content_types_and_hashed_names() {
 
 #[test]
 fn base_paths_are_normalized() {
-    let (app, dir) = web_app(counter_init(), "bases");
+    let (app, _dir) = web_app(counter_init(), "bases");
     for (given, base) in [
         ("", ""),
         ("/", ""),
@@ -2452,12 +2459,11 @@ fn base_paths_are_normalized() {
         cdn.picture_url("logo.png"),
         "https://cdn.example.com/assets/logo.png"
     );
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn pages_and_files_by_path() {
-    let (app, dir) = web_app(counter_init(), "paths");
+    let (app, _dir) = web_app(counter_init(), "paths");
     let get = |path: &str| app.handle(&Request::get(path).body(()).unwrap());
     let page = get("/anything%20here");
     assert_eq!(page.status(), StatusCode::OK);
@@ -2492,7 +2498,6 @@ fn pages_and_files_by_path() {
             .get("set-cookie")
             .is_some()
     );
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// #154: the app's own title, in the first paint and the live session.
@@ -2509,7 +2514,7 @@ fn the_apps_title_is_the_pages() {
         let root = cx.new_entity(|_| Titled);
         cx.set_root(root);
     });
-    let (app, dir) = web_app(init, "app-title");
+    let (app, _dir) = web_app(init, "app-title");
     let r = app.handle(&Request::get("/").body(()).unwrap());
     let html = String::from_utf8(r.body().clone()).unwrap();
     assert!(html.contains("<title>Orders · Test</title>"), "{html}");
@@ -2520,7 +2525,6 @@ fn the_apps_title_is_the_pages() {
     assert_eq!(reset["title"], "Orders");
     assert_eq!(reset["unsaved"], false, "#158: leaving asks only when told");
     page.session.close();
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -2532,7 +2536,7 @@ fn ssr_pages_are_titled_by_the_visible_screen() {
             .build(cx);
         cx.set_root(router);
     });
-    let (app, dir) = web_app(init, "title");
+    let (app, _dir) = web_app(init, "title");
     let page = |path: &str, lang: &str| {
         let r = app.handle(
             &Request::get(path)
@@ -2550,7 +2554,6 @@ fn ssr_pages_are_titled_by_the_visible_screen() {
     assert_eq!(w.matches("<section").count(), 2, "{w}");
     // Right-to-left languages set the page direction before any script.
     assert!(page("/", "ar-EG,ar;q=0.9").contains(r#"lang="ar-EG" dir="rtl""#));
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -3201,11 +3204,10 @@ fn overlays_take_no_room_and_pickers_keep_their_arrow() {
 
 #[test]
 fn the_page_has_a_layer_host() {
-    let (app, dir) = web_app(counter_init(), "layers");
+    let (app, _dir) = web_app(counter_init(), "layers");
     let r = app.handle(&Request::get("/").body(()).unwrap());
     let page = String::from_utf8(r.body().clone()).unwrap();
     assert!(page.contains(r#"<div id="prism-layers" popover="manual"></div>"#));
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// A message shown at startup, mounted as a layer (`cx.add_layer`).
@@ -3233,7 +3235,7 @@ fn layers_are_in_the_first_paint() {
         let flash = cx.new_entity(|_| Flash);
         cx.add_layer(flash);
     });
-    let (app, dir) = web_app(init, "ssr-layers");
+    let (app, _dir) = web_app(init, "ssr-layers");
     let r = app.handle(&Request::get("/").body(()).unwrap());
     let page = String::from_utf8(r.body().clone()).unwrap();
     let layers = page
@@ -3269,7 +3271,6 @@ fn layers_are_in_the_first_paint() {
     assert!(ssr.contains("background:rgba(34,34,34,1)"), "{ssr}");
     // Its hover state is in the page too.
     assert!(ssr.contains(":hover"), "{ssr}");
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -3504,7 +3505,7 @@ fn pages_open_with_their_query_string() {
             .build(cx);
         cx.set_root(r);
     });
-    let (app, dir) = web_app(init, "query");
+    let (app, _dir) = web_app(init, "query");
     let get = |path: &str| {
         let r = app.handle(&Request::get(path).body(()).unwrap());
         String::from_utf8(r.body().clone()).unwrap()
@@ -3515,7 +3516,6 @@ fn pages_open_with_their_query_string() {
     let uri: Uri = "/ws?path=%2F%3Fperiod%3D30d&w=400&h=800".parse().unwrap();
     let (_, path, _) = app.socket_visitor(&uri, &HeaderMap::new());
     assert_eq!(path, "/?period=30d");
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -3837,7 +3837,7 @@ fn web_sign_in(cx: &mut App) {
 #[test]
 fn a_session_signs_out_and_in_again_without_leftover_screens() {
     let init: AppInit = Arc::new(|cx: &mut App| web_sign_in(cx));
-    let (app, dir) = web_app(init, "signout");
+    let (app, _dir) = web_app(init, "signout");
     let page = Page::open(&app, "/ws?path=%2F&w=390&h=800");
     let reset = page.next();
     // The router and the two tabs' screens.
@@ -3854,7 +3854,6 @@ fn a_session_signs_out_and_in_again_without_leftover_screens() {
     let back_in = page.next();
     op_with_text(&back_in["p"], "in: 3");
     page.session.close();
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -4090,7 +4089,7 @@ fn first_paints_carry_run_time_fonts_and_stylesheets() {
         });
         cx.set_root(picker);
     });
-    let (app, dir) = web_app(init, "runtime-fonts");
+    let (app, _dir) = web_app(init, "runtime-fonts");
     let app = app
         .embedded_assets(prism_core::EmbeddedAssets::new().file("fonts/extra.woff2", &b"wOF2"[..]));
     let page = app.handle(&Request::get("/").body(()).unwrap());
@@ -4116,7 +4115,6 @@ fn first_paints_carry_run_time_fonts_and_stylesheets() {
     );
     // Bytes wait for the live page.
     assert!(!body.contains("Brand"), "{body}");
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 // --- Web views (#62) ----------------------------------------------------------------------
@@ -4246,7 +4244,7 @@ fn a_rich_input_sends_its_runs_and_takes_the_pages_edits_as_spans() {
         });
         cx.set_root(root);
     });
-    let (app, dir) = web_app(init, "rich-input");
+    let (app, _dir) = web_app(init, "rich-input");
     let page = Page::open(&app, "/ws?path=%2F&w=1280&h=800");
     let reset = page.next();
     let ops = reset["p"].as_array().unwrap();
@@ -4290,7 +4288,6 @@ fn a_rich_input_sends_its_runs_and_takes_the_pages_edits_as_spans() {
     page.send(json!({ "t": "submit", "id": input }));
     op_with_text(&page.next()["p"], "2 runs, bold: there!, submits: 1");
     page.session.close();
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -4653,9 +4650,9 @@ fn the_app_locale_wins_over_the_browser() {
         let root = cx.new_entity(|_| Home);
         cx.set_root(root);
     });
-    let (fixed, dir) = web_app(init.clone(), "app-locale");
+    let (fixed, _dir) = web_app(init.clone(), "app-locale");
     let fixed = fixed.locale("fr-FR");
-    let (picked, dir2) = web_app(init, "app-locales");
+    let (picked, _dir2) = web_app(init, "app-locales");
     let picked = picked.supported_locales(["fr-FR", "ar-EG"]);
     let page = |app: &crate::WebApp, lang: &str| {
         let r = app.handle(
@@ -4670,8 +4667,6 @@ fn the_app_locale_wins_over_the_browser() {
     // Among the supported ones: the browser's language, else the first.
     assert!(page(&picked, "ar").contains(r#"lang="ar-EG" dir="rtl""#));
     assert!(page(&picked, "de-DE").contains(r#"lang="fr-FR""#));
-    let _ = std::fs::remove_dir_all(dir);
-    let _ = std::fs::remove_dir_all(dir2);
 }
 
 // --- A rich input's editing hooks (#217) ----------------------------------------

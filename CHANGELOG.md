@@ -393,6 +393,7 @@ The first version, not yet on crates.io.
 
 ### Fixed
 
+- Tests of prism-web and prism-core no longer leave folders in the system's temp directory (`prism-sec-s10-*` and others piled up in `%TEMP%` on Windows): each temp folder is held by a guard (`TempDir`, shared by a crate's unit and integration tests) that removes it when the test ends, also when it fails.
 - Windows: a secure text field leaves no hidden text box behind. Its `TextBox` became a `PasswordBox` but stayed in the node's canvas, under it and still focusable: an extra stop in the tab order and an extra edit field in UI Automation (named after the placeholder, or unnamed when the field was made after the first frame).
 - macOS: a wrapping text's min-content width (the width an `items_start` column, a `MinContent` grid track or a table column shrinks to) includes the label's own inset, so the text measured at that width no longer breaks its longest word (#284).
 - Windows: a wrapping text's min-content width is its longest word (#284). It came out near 0: XAML clips a measured size to the width it is measured at, so the narrowest width is now found from line counts (`Wrap` against `WrapWholeWords`), and a text that cannot break (`09:35`) is its one-line width.
@@ -544,6 +545,7 @@ Fixes from a security review before the first release.
 - OpenID Connect sign-ins require an ID token and check its issuer, audience (and `azp`), expiry, subject, nonce and signing algorithm; refreshed ID tokens are checked too, and discovery documents must name their issuer.
 - OAuth token, refresh, revocation and registration requests follow no redirect, issuer and endpoints must use HTTPS (plain HTTP only to localhost), and metadata and token answers are capped at 1 MiB.
 - Widget-action deep links run only with a token signed by the app, so other apps and web pages cannot trigger widget actions.
+- Widget-action deep links (macOS widget buttons) run once: each token is bound to one drawing of the widgets, a link opened again does nothing, and a link whose drawing the app replaced over an hour ago has expired. The used links are kept next to the key, both in a `widget-links` folder of the app's data directory, out of the app's storage (`widget-link-ledger`), so a captured link cannot be replayed after a restart either, while the first tap on a widget drawn days ago still works. `App::set_widget_key` takes the store of that ledger.
 - Web components reject invalid tag names, and their props can no longer set event handlers, markup, styles or Prism's own attributes and state.
 - The web server reads pictures and videos with headers within size limits (`WebApp::max_picture_bytes`), checks partial answers against the range it asked for, and keeps their URLs' queries out of its log.
 - Biometric secrets are stored only where the store itself checks the owner; elsewhere `set_with` fails with `Unavailable` and keeps the previous secret, and the new `SecureOptions::confirm_owner` opts into the app's own check.

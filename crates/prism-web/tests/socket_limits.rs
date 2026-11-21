@@ -14,6 +14,11 @@ use prism_core::prelude::*;
 use prism_core::{AppConfig, AppInit};
 use prism_web::WebApp;
 
+#[path = "../src/temp_dir.rs"]
+mod temp_dir;
+
+use temp_dir::TempDir;
+
 /// A button whose every click adds a large text: the page must read it.
 struct Big {
     clicks: usize,
@@ -27,17 +32,16 @@ impl Render for Big {
     }
 }
 
-fn app(tag: &str, limit: impl FnOnce(WebApp) -> WebApp) -> WebApp {
+fn app(dir: &TempDir, limit: impl FnOnce(WebApp) -> WebApp) -> WebApp {
     let init: AppInit = Arc::new(|cx: &mut App| {
         let root = cx.new_entity(|_| Big { clicks: 0 });
         cx.set_root(root);
     });
-    let dir = std::env::temp_dir().join(format!("prism-limits-{tag}-{}", std::process::id()));
     let config = AppConfig {
         title: "Limits".into(),
         ..Default::default()
     };
-    limit(WebApp::new(config, init).data_dir(dir))
+    limit(WebApp::new(config, init).data_dir(dir.to_path_buf()))
 }
 
 /// Serves `app` on a free loopback port; returns `host:port`.
@@ -153,7 +157,8 @@ fn more_button(reset: &str) -> u64 {
 
 #[test]
 fn concurrent_handshakes_take_at_most_the_permits() {
-    let app = app("permits", |a| a.max_sessions(2));
+    let dir = TempDir::new("limits-permits");
+    let app = app(&dir, |a| a.max_sessions(2));
     let addr = start(app.clone());
     let handshakes: Vec<_> = (0..8)
         .map(|_| {
@@ -181,7 +186,8 @@ fn concurrent_handshakes_take_at_most_the_permits() {
 
 #[test]
 fn an_oversized_message_ends_its_session() {
-    let app = app("oversized", |a| a);
+    let dir = TempDir::new("limits-oversized");
+    let app = app(&dir, |a| a);
     let addr = start(app.clone());
     let (status, mut ws) = handshake(&addr);
     assert_eq!(status, 101);
@@ -196,7 +202,8 @@ fn an_oversized_message_ends_its_session() {
 
 #[test]
 fn a_page_that_stops_reading_is_disconnected() {
-    let app = app("stalled", |a| a);
+    let dir = TempDir::new("limits-stalled");
+    let app = app(&dir, |a| a);
     let addr = start(app.clone());
     let (status, mut ws) = handshake(&addr);
     assert_eq!(status, 101);

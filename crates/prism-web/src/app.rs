@@ -1401,6 +1401,7 @@ pub(crate) fn percent_decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::temp_dir::TempDir;
     use prism_core::prelude::*;
 
     struct Page;
@@ -1412,8 +1413,8 @@ mod tests {
         }
     }
 
-    fn app(tag: &str) -> (WebApp, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("prism-webapp-{tag}-{}", std::process::id()));
+    fn app(tag: &str) -> (WebApp, TempDir) {
+        let dir = TempDir::new(&format!("webapp-{tag}"));
         std::fs::create_dir_all(dir.join("assets")).unwrap();
         std::fs::write(dir.join("assets/logo.png"), b"png!").unwrap();
         let config = AppConfig {
@@ -1446,7 +1447,7 @@ mod tests {
 
     #[test]
     fn pages_are_private_and_static_files_immutable() {
-        let (app, dir) = app("cache");
+        let (app, _dir) = app("cache");
         let page = get(&app, "/", &[]);
         assert_eq!(page.status(), StatusCode::OK);
         assert_eq!(header(&page, "cache-control"), "private, no-store");
@@ -1490,13 +1491,12 @@ mod tests {
             get(&app, "/files/x.png", &[]).status(),
             StatusCode::NOT_FOUND
         );
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn embedded_assets_need_no_directory() {
         // No assets directory at all: the pictures come from the binary.
-        let dir = std::env::temp_dir().join(format!("prism-webapp-embed-{}", std::process::id()));
+        let dir = TempDir::new("webapp-embed");
         let config = AppConfig {
             title: "Test".into(),
             assets: Some(dir.join("missing").to_string_lossy().into()),
@@ -1528,12 +1528,11 @@ mod tests {
         let out = dir.join("public");
         app.export_static(&out).unwrap();
         assert_eq!(std::fs::read(out.join(&logo[1..])).unwrap(), b"png!");
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn mounted_under_a_prefix_and_on_a_cdn() {
-        let (app, dir) = app("base");
+        let (app, _dir) = app("base");
         let app = app.base_path("/app/").asset_url("https://cdn.example.com/");
         let page = get(&app, "/app/todos", &[]);
         assert_eq!(page.status(), StatusCode::OK);
@@ -1554,7 +1553,6 @@ mod tests {
         assert_eq!(sw.status(), StatusCode::OK);
         assert_eq!(header(&sw, "cache-control"), "no-cache");
         assert!(String::from_utf8_lossy(sw.body()).contains("showNotification"));
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1589,7 +1587,7 @@ mod tests {
             let root = cx.new_entity(|_| Avatar);
             cx.set_root(root);
         });
-        let dir = std::env::temp_dir().join(format!("prism-webapp-pic-{}", std::process::id()));
+        let dir = TempDir::new("webapp-pic");
         // The upstream is on loopback: the app trusts it.
         let app = WebApp::new(config, init)
             .data_dir(dir.join("data"))
@@ -1623,19 +1621,17 @@ mod tests {
         assert_eq!(image.status(), StatusCode::OK);
         assert_eq!(image.body().as_slice(), b"png!");
         assert_eq!(header(&image, "content-type"), "image/png");
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn push_needs_a_vapid_key() {
-        let (app, dir) = app("push");
+        let (app, _dir) = app("push");
         assert_eq!(app.services().capabilities().push, None);
         let app = app.vapid_public_key("BKVqC4g3");
         assert_eq!(
             app.services().capabilities().push,
             Some(prism_core::PushService::WebPush)
         );
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1655,7 +1651,7 @@ mod tests {
             let root = cx.new_entity(|_| Crowd);
             cx.set_root(root);
         });
-        let dir = std::env::temp_dir().join(format!("prism-webapp-3d-{}", std::process::id()));
+        let dir = TempDir::new("webapp-3d");
         let app = WebApp::new(AppConfig::default(), init.clone()).data_dir(dir.join("data"));
         let page = get(&app, "/", &[]);
         let cookie = header(&page, "set-cookie")
@@ -1702,6 +1698,5 @@ mod tests {
             header(&blob, "cache-control"),
             "public, max-age=31536000, immutable"
         );
-        let _ = std::fs::remove_dir_all(dir);
     }
 }

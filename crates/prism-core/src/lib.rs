@@ -53,6 +53,7 @@ mod task;
 pub mod text_edit;
 pub mod video;
 pub mod web_view;
+mod widget_links;
 mod window;
 pub use table::{CELL_PADDING, Column, Table, TableCell, TableRow, cell, column, row, table};
 pub use window::{WindowChrome, WindowControls};
@@ -954,14 +955,22 @@ impl Runtime {
 
     /// Opens a deep link (from a widget, Live Activity or notification tap)
     /// and returns the resulting patches. A widget action's link
-    /// ([`App::widget_action_link`]) runs the action instead of navigating;
-    /// one without the app's token (any app or web page can open an app's
-    /// links) does nothing.
+    /// ([`App::widget_action_link`]) runs the action instead of navigating,
+    /// once. One without a token of the app (any app or web page can open
+    /// an app's links) does nothing; the app's own link opened again, or
+    /// from a drawing of the widgets replaced too long ago, runs nothing
+    /// and redraws the widgets (they showed an old drawing).
     pub fn open_link(&mut self, path: &str) -> Vec<Patch> {
         if let Some(action) = WidgetAction::from_link(path) {
             let token = WidgetAction::link_token(path);
-            if self.app.widget_link_allowed(&action, token.as_deref()) {
-                self.run_widget_action(action);
+            match self.app.check_widget_link(&action, token.as_deref()) {
+                surfaces::LinkCheck::Run => {
+                    self.run_widget_action(action);
+                }
+                surfaces::LinkCheck::Used | surfaces::LinkCheck::Expired => {
+                    self.app.reload_widgets();
+                }
+                surfaces::LinkCheck::Forged => {}
             }
             return self.poll();
         }
@@ -1263,6 +1272,8 @@ pub mod prelude {
     pub use crate::{EndedEvent, video};
 }
 
+#[cfg(test)]
+mod temp_dir;
 #[cfg(test)]
 mod tests;
 

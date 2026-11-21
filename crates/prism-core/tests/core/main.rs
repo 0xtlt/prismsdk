@@ -23,6 +23,8 @@ mod selection;
 mod selection_across;
 mod spawn;
 mod storage;
+#[path = "../../src/temp_dir.rs"]
+mod temp_dir;
 mod typography;
 mod virtual_list;
 mod web_view;

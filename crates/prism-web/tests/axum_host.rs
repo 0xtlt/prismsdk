@@ -17,6 +17,11 @@ use prism_core::prelude::*;
 use prism_core::{AppConfig, AppInit};
 use prism_web::{CspNonce, RequestContext, WebApp};
 
+#[path = "../src/temp_dir.rs"]
+mod temp_dir;
+
+use temp_dir::TempDir;
+
 #[derive(Debug)]
 struct User {
     id: u32,
@@ -207,7 +212,7 @@ fn raw_frame(s: &mut TcpStream) -> (u8, Vec<u8>) {
 
 #[test]
 fn prism_nested_in_a_host_with_its_own_middleware() {
-    let dir = std::env::temp_dir().join(format!("prism-axum-host-{}", std::process::id()));
+    let dir = TempDir::new("axum-host");
     let addr = start(&dir);
     let me = Some("host_session=42");
 
@@ -277,7 +282,6 @@ fn prism_nested_in_a_host_with_its_own_middleware() {
     assert!(texts.contains(&"user 42"), "{texts:?}");
     let url = format!("at http://{addr}/app?q=1");
     assert!(texts.contains(&url.as_str()), "{texts:?}");
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// A GET with extra headers: the answer's head and its raw body.
@@ -310,7 +314,7 @@ fn gunzip(z: &[u8]) -> String {
 
 #[test]
 fn pages_files_and_socket_messages_are_compressed() {
-    let dir = std::env::temp_dir().join(format!("prism-axum-gzip-{}", std::process::id()));
+    let dir = TempDir::new("axum-gzip");
     let addr = start(&dir);
     let gzip = ("Accept-Encoding", "gzip, deflate, br, zstd");
 
@@ -368,12 +372,11 @@ fn pages_files_and_socket_messages_are_compressed() {
     // Without it: text, as before.
     let (_, mut ws) = handshake(&addr, &origin, me);
     assert!(serde_json::from_str::<serde_json::Value>(&frame(&mut ws)).is_ok());
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn the_cookie_endpoint_is_reached_through_the_host_router() {
-    let dir = std::env::temp_dir().join(format!("prism-axum-cookie-{}", std::process::id()));
+    let dir = TempDir::new("axum-cookie");
     let addr = start(&dir);
     let post = |ticket: &str| {
         let mut s = TcpStream::connect(&addr).unwrap();
@@ -394,5 +397,4 @@ fn the_cookie_endpoint_is_reached_through_the_host_router() {
     assert_eq!(r.status, 403, "{}", r.head);
     assert_eq!(r.header("cache-control"), Some("no-store"));
     assert!(r.header("set-cookie").is_none());
-    let _ = std::fs::remove_dir_all(dir);
 }

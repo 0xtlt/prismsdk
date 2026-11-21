@@ -631,7 +631,7 @@ fn hit_test_and_inert_are_styles() {
 
 #[test]
 fn picked_files_read_their_bytes() {
-    let dir = std::env::temp_dir().join(format!("prism-pick-{}", std::process::id()));
+    let dir = crate::temp_dir::TempDir::new("pick");
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("a.txt");
     std::fs::write(&file, b"hello").unwrap();
@@ -656,7 +656,6 @@ fn picked_files_read_their_bytes() {
     assert!(images.accepts("a.PNG", "image/png"));
     assert!(images.accepts("doc.pdf", "application/octet-stream"));
     assert!(!images.accepts("a.txt", "text/plain"));
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 struct Editor {

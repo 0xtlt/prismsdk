@@ -19,6 +19,11 @@ use prism_core::{AppConfig, AppInit, Backend, Runtime};
 use prism_web::{Encoder, Frame, HtmlBackend, WebApp};
 use serde_json::Value;
 
+#[path = "../src/temp_dir.rs"]
+mod temp_dir;
+
+use temp_dir::TempDir;
+
 struct Row {
     n: usize,
     hits: u32,
@@ -115,8 +120,8 @@ fn next(rx: &mpsc::Receiver<String>, t: &str) -> (String, Instant) {
 }
 
 fn run(n: usize) {
-    let dir = std::env::temp_dir().join("prism-web-bench");
-    let app = WebApp::new(AppConfig::default(), init(n)).data_dir(dir);
+    let dir = TempDir::new("web-bench");
+    let app = WebApp::new(AppConfig::default(), init(n)).data_dir(dir.to_path_buf());
     // The page.
     let page = |gzip: bool| {
         let mut req = Request::get("/");

@@ -1,28 +1,11 @@
 //! Key-value storage: memory, files, the app's stores and cloud changes.
 
-use std::path::PathBuf;
-
 use prism_core::prelude::*;
 use prism_core::{FileStorage, MemoryStorage, RuntimeOptions, Storage};
 
 use prism_testing::{Harness, mount};
 
-/// A fresh directory, removed when dropped.
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("prism-test-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        TempDir(dir)
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+use crate::temp_dir::TempDir;
 
 fn sorted(mut v: Vec<String>) -> Vec<String> {
     v.sort();
@@ -47,24 +30,24 @@ fn memory_storage() {
 #[test]
 fn file_storage_persists_across_instances() {
     let dir = TempDir::new("persist");
-    let mut s = FileStorage::new(dir.0.join("nested/dir"));
+    let mut s = FileStorage::new(dir.join("nested/dir"));
     s.set("todos", "[1,2]");
     s.set("todos", "[1,2,3]");
     s.set("ünï/cødé key", "✓");
-    let s2 = FileStorage::new(dir.0.join("nested/dir"));
+    let s2 = FileStorage::new(dir.join("nested/dir"));
     assert_eq!(s2.get("todos").as_deref(), Some("[1,2,3]"));
     assert_eq!(s2.get("ünï/cødé key").as_deref(), Some("✓"));
     assert_eq!(sorted(s2.keys()), ["todos", "ünï/cødé key"]);
     // Keys never escape the directory.
-    assert!(std::fs::read_dir(&dir.0).unwrap().count() == 1);
+    assert!(std::fs::read_dir(&*dir).unwrap().count() == 1);
 }
 
 #[test]
 fn file_storage_removes_and_ignores_temporary_files() {
     let dir = TempDir::new("tmp");
-    let mut s = FileStorage::new(&dir.0);
+    let mut s = FileStorage::new(&*dir);
     s.set("a", "1");
-    std::fs::write(dir.0.join("b.tmp~"), "half-written").unwrap();
+    std::fs::write(dir.join("b.tmp~"), "half-written").unwrap();
     assert_eq!(s.keys(), ["a"]);
     s.remove("a");
     s.remove("a");
@@ -75,10 +58,10 @@ fn file_storage_removes_and_ignores_temporary_files() {
 #[test]
 fn file_storage_lists_stray_files_without_crashing() {
     let dir = TempDir::new("stray");
-    let s = FileStorage::new(&dir.0);
+    let s = FileStorage::new(&*dir);
     // Files the app did not write: a lone `%`, bad escapes, non-ASCII after `%`.
     for name in ["50%", "%zz", "%aé", "%+1", "ok%41"] {
-        std::fs::write(dir.0.join(name), "x").unwrap();
+        std::fs::write(dir.join(name), "x").unwrap();
     }
     assert_eq!(sorted(s.keys()), ["%+1", "%aé", "%zz", "50%", "okA"]);
 }
@@ -86,8 +69,8 @@ fn file_storage_lists_stray_files_without_crashing() {
 #[test]
 fn a_missing_directory_has_no_keys() {
     let dir = TempDir::new("missing");
-    let s = FileStorage::new(&dir.0);
-    std::fs::remove_dir_all(&dir.0).unwrap();
+    let s = FileStorage::new(&*dir);
+    std::fs::remove_dir_all(&*dir).unwrap();
     assert!(s.keys().is_empty());
     assert_eq!(s.get("x"), None);
 }
@@ -157,4 +140,17 @@ fn local_files_follow_a_moved_directory() {
         local_file("/files/s10-b.png").as_deref(),
         Some(Path::new("/data/s10-other/files/s10-b.png"))
     );
+}
+
+#[test]
+fn file_storage_keys_leave_out_folders() {
+    // The data directory holds the storage's files and folders that are
+    // not keys: cloud storage, Prism's own (`widget-links`), the app's.
+    let dir = TempDir::new("folders");
+    let mut s = FileStorage::new(&*dir);
+    s.set("a", "1");
+    std::fs::create_dir_all(dir.join("cloud")).unwrap();
+    std::fs::create_dir_all(dir.join("widget-links")).unwrap();
+    std::fs::write(dir.join("widget-links/widget-link-ledger"), "{}").unwrap();
+    assert_eq!(s.keys(), ["a"]);
 }

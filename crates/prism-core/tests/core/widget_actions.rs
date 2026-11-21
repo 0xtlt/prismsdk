@@ -155,10 +155,55 @@ fn without_a_handler_an_action_only_reloads() {
 /// The key a backend keeps for the app ([`App::set_widget_key`]).
 const KEY: [u8; 32] = [7; 32];
 
-/// The token the widget's button carries in its snapshot (`wa.t`).
+/// The store a backend keeps the ledger of used links in (a file in the
+/// app's data directory on macOS), shared by the runs of the app.
+#[derive(Clone, Default)]
+struct Ledger(Rc<RefCell<std::collections::HashMap<String, String>>>);
+
+impl prism_core::Storage for Ledger {
+    fn get(&self, key: &str) -> Option<String> {
+        self.0.borrow().get(key).cloned()
+    }
+    fn set(&mut self, key: &str, value: &str) {
+        self.0.borrow_mut().insert(key.into(), value.into());
+    }
+    fn remove(&mut self, key: &str) {
+        self.0.borrow_mut().remove(key);
+    }
+    fn keys(&self) -> Vec<String> {
+        self.0.borrow().keys().cloned().collect()
+    }
+}
+
+/// What a macOS backend does at startup.
+fn set_key(h: &mut Harness, ledger: &Ledger) {
+    h.rt.app.set_widget_key(KEY, Box::new(ledger.clone()));
+}
+
+/// The token the widget's button carries in its snapshot (`wa.t`): the
+/// drawing's id (16 hex digits), then the MAC (32).
 fn snapshot_token(json: &str) -> String {
     let at = json.find(r#""t":""#).expect("a token") + 5;
-    json[at..at + 32].to_string()
+    json[at..at + 48].to_string()
+}
+
+/// The link the macOS renderer opens for the toggle button of `json`.
+fn toggle_link(json: &str) -> String {
+    format!(
+        "/__prism/widget-action?kind=lights&action=toggle&payload=kitchen&token={}",
+        snapshot_token(json)
+    )
+}
+
+/// How many times the action ran.
+fn ran(h: &Harness) -> usize {
+    h.root::<Lights>().read(&h.rt.app).actions.len()
+}
+
+/// Opens `link` as the system does when a widget button is tapped.
+fn tap(h: &mut Harness, link: &str) {
+    let patches = h.rt.open_link(link);
+    h.apply(patches);
 }
 
 #[test]
@@ -174,7 +219,7 @@ fn the_action_link_runs_the_action_instead_of_navigating() {
     );
 
     let mut h = app();
-    h.rt.app.set_widget_key(KEY);
+    set_key(&mut h, &Ledger::default());
     h.rt.take_requests();
     h.rt.app.global::<Gate>().clone().open();
     let token =
@@ -267,7 +312,7 @@ fn s19_only_links_with_the_apps_token_run_an_action() {
 
     // The widget's snapshot carries the token; the renderer adds it to the
     // link it opens.
-    h.rt.app.set_widget_key(KEY);
+    set_key(&mut h, &Ledger::default());
     let json = reloads(&h.rt.take_requests()).remove(0);
     let token = snapshot_token(&json);
     assert!(
@@ -291,13 +336,25 @@ fn s19_only_links_with_the_apps_token_run_an_action() {
         format!("/__prism/widget-action?kind=lights&action=togglekitchen&payload=&token={token}"),
         // Part of the token (fewer guesses), or one digit off.
         format!("{plain}&token={}", &token[..2]),
-        format!("{plain}&token={}", &token[..30]),
-        format!("{plain}&token={}0", &token[..31]),
+        format!("{plain}&token={}", &token[..16]),
+        format!("{plain}&token={}", &token[16..]),
+        format!("{plain}&token={}", &token[..46]),
+        format!("{plain}&token={}0", &token[..47]),
         format!("{plain}&token={token}00"),
+        // The MAC with another drawing's id.
+        format!(
+            "{plain}&token={:016x}{}",
+            u64::from_str_radix(&token[..16], 16).unwrap() - 1,
+            &token[16..]
+        ),
         // A token of another key.
         {
             let mut other = app();
-            other.rt.app.set_widget_key([8; 32]);
+            other
+                .rt
+                .app
+                .set_widget_key([8; 32], Box::new(Ledger::default()));
+            other.rt.take_requests();
             other.rt.app.widget_action_link(&toggle).unwrap()
         },
     ];
@@ -317,4 +374,117 @@ fn s19_only_links_with_the_apps_token_run_an_action() {
     let patches = h.rt.open_link(&signed);
     h.apply(patches);
     assert_eq!(ran(&mut h), 1, "the widget's own link runs the action");
+}
+
+/// S19, replays: a link opened once does nothing when opened again (from a
+/// log, or another app that saw it). The action's reload redraws the
+/// widget, and its new link works once.
+#[test]
+fn s19_a_link_runs_its_action_once() {
+    let mut h = app();
+    set_key(&mut h, &Ledger::default());
+    h.rt.app.global::<Gate>().clone().open();
+    let first = toggle_link(&reloads(&h.rt.take_requests()).remove(0));
+
+    tap(&mut h, &first);
+    assert_eq!(ran(&h), 1, "a fresh link runs");
+    // The job's reload: a new drawing, with a new link for the button.
+    let second = toggle_link(&reloads(&h.rt.take_requests()).remove(0));
+    assert_ne!(second, first);
+
+    // The first link, replayed: nothing runs; the widgets are redrawn
+    // (they may show an old drawing).
+    for _ in 0..3 {
+        tap(&mut h, &first);
+        assert_eq!(ran(&h), 1, "a replayed link ran");
+        assert_eq!(reloads(&h.rt.take_requests()).len(), 1);
+    }
+    assert!(
+        !h.rt
+            .app
+            .current_path()
+            .is_some_and(|p| p.starts_with("/__prism")),
+        "no navigation"
+    );
+
+    // The widget's new link works once too (the redraws the replays
+    // caused came after it: it may still be on screen).
+    tap(&mut h, &second);
+    assert_eq!(ran(&h), 2, "a fresh link runs");
+    h.rt.take_requests();
+    tap(&mut h, &second);
+    assert_eq!(ran(&h), 2, "the second link, replayed, ran");
+}
+
+/// S19, expiry: once the widgets were drawn again and again, the links of
+/// an old drawing no longer run, even unused (one captured before the tap
+/// and kept for later). A button the widget still shows a little after a
+/// redraw works.
+#[test]
+fn s19_a_link_of_a_replaced_drawing_expires() {
+    let mut h = app();
+    set_key(&mut h, &Ledger::default());
+    h.rt.app.global::<Gate>().clone().open();
+    let old = toggle_link(&reloads(&h.rt.take_requests()).remove(0));
+    h.rt.app.reload_widgets();
+    let shown = toggle_link(&reloads(&h.rt.take_requests()).remove(0));
+    // Redrawn once more (WidgetKit shows the new drawing a moment later):
+    // the button of the drawing before still works.
+    h.rt.app.reload_widgets();
+    h.rt.take_requests();
+    tap(&mut h, &shown);
+    assert_eq!(ran(&h), 1, "a button shown just before a redraw");
+    h.rt.take_requests();
+
+    // Many redraws later, the first drawing's link has expired. (The time
+    // limit, an hour after a drawing is replaced, is tested by prism-core's
+    // `widget_links` unit tests.)
+    for _ in 0..40 {
+        h.rt.app.reload_widgets();
+        h.rt.take_requests();
+    }
+    tap(&mut h, &old);
+    assert_eq!(ran(&h), 1, "an expired link ran");
+    assert_eq!(
+        reloads(&h.rt.take_requests()).len(),
+        1,
+        "the widgets are redrawn"
+    );
+}
+
+/// S19 across runs: the ledger is kept with the key, so a link used in one
+/// run stays used in the next, and a tap that launches the app (on a widget
+/// drawn by an earlier run) works once.
+#[test]
+fn s19_used_links_stay_used_after_a_restart() {
+    let ledger = Ledger::default();
+    let (used, unused) = {
+        let mut h = app();
+        set_key(&mut h, &ledger);
+        h.rt.app.global::<Gate>().clone().open();
+        let first = toggle_link(&reloads(&h.rt.take_requests()).remove(0));
+        tap(&mut h, &first);
+        assert_eq!(ran(&h), 1);
+        // The redraw after the action: what the widget shows when the app
+        // quits.
+        (
+            first,
+            toggle_link(&reloads(&h.rt.take_requests()).remove(0)),
+        )
+    };
+
+    // A tap launches the app: it draws its widgets as it starts, then opens
+    // the link.
+    let mut h = app();
+    set_key(&mut h, &ledger);
+    h.rt.app.global::<Gate>().clone().open();
+    h.rt.take_requests();
+    tap(&mut h, &used);
+    assert_eq!(ran(&h), 0, "a link used in the previous run ran");
+    h.rt.take_requests();
+    tap(&mut h, &unused);
+    assert_eq!(ran(&h), 1, "the widget's link from the previous run");
+    h.rt.take_requests();
+    tap(&mut h, &unused);
+    assert_eq!(ran(&h), 1, "replayed after the restart");
 }
