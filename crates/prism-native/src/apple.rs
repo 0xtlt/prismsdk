@@ -671,7 +671,8 @@ mod bridge {
                     prism_authenticate(id, c(&r.reason).as_ptr(), r.passcode)
                 }
                 DeviceCall::SignInWithApple(r) => {
-                    let nonce = r.nonce.as_deref().map(c);
+                    // Apple gets the nonce hashed (the token's `nonce` claim).
+                    let nonce = r.apple_nonce().as_deref().map(c);
                     let state = r.state.as_deref().map(c);
                     let ptr =
                         |o: &Option<CString>| o.as_ref().map_or(std::ptr::null(), |s| s.as_ptr());

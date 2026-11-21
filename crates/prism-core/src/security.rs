@@ -227,9 +227,15 @@ pub struct AppleSignIn {
     pub email: bool,
     /// Ask for the user's full name.
     pub full_name: bool,
-    /// Your server's nonce, hashed (SHA-256, hex) into the identity token.
+    /// The nonce your server handed out for this sign-in, as it handed it
+    /// out. Apple gets its SHA-256 in lower-case hex
+    /// ([`apple_nonce`](Self::apple_nonce)), which the identity token
+    /// carries as its `nonce` claim: the server hashes the nonce it handed
+    /// out and compares, once.
     pub nonce: Option<String>,
-    /// An opaque value returned unchanged in the credential, to tie the response to your request.
+    /// An opaque value returned unchanged in the credential, to tie the
+    /// response to your request: a credential with another `state` is
+    /// refused.
     pub state: Option<String>,
 }
 
@@ -248,10 +254,23 @@ impl AppleSignIn {
         self.full_name = true;
         self
     }
-    /// Sets the nonce your server expects, hashed into the identity token.
+    /// Sets the nonce your server handed out (unhashed): the identity
+    /// token's `nonce` claim is its SHA-256 in lower-case hex.
     pub fn nonce(mut self, nonce: impl Into<String>) -> Self {
         self.nonce = Some(nonce.into());
         self
+    }
+    /// What Apple gets as the request's nonce, and the identity token's
+    /// `nonce` claim: the SHA-256 of [`nonce`](Self::nonce) in lower-case
+    /// hex. Backends pass this, never the nonce itself.
+    pub fn apple_nonce(&self) -> Option<String> {
+        use sha2::{Digest, Sha256};
+        self.nonce.as_deref().map(|n| {
+            Sha256::digest(n.as_bytes())
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        })
     }
     /// Sets the opaque `state` value returned in the credential.
     pub fn state(mut self, state: impl Into<String>) -> Self {
@@ -480,12 +499,28 @@ impl AsyncApp {
     /// Sign in with Apple (`capabilities().sign_in_with_apple`). Needs the
     /// `com.apple.developer.applesignin` entitlement: `[ios] sign_in_with_apple
     /// = true` in Prism.toml and a provisioning profile with the capability.
+    ///
+    /// The identity token carries the SHA-256 of the request's
+    /// [`nonce`](AppleSignIn::nonce) (lower-case hex): verify the token on
+    /// your server (Apple's signature, `iss` `https://appleid.apple.com`,
+    /// `aud` your bundle id, `exp`) and compare that claim with the hash of
+    /// the nonce it handed out. A credential whose `state` is not the
+    /// request's is an error.
     pub async fn sign_in_with_apple(
         &self,
         request: AppleSignIn,
     ) -> Result<AppleCredential, DeviceError> {
+        let state = request.state.clone();
         match self.device(DeviceCall::SignInWithApple(request)).await? {
-            DeviceValue::Fields(f) => Ok(AppleCredential::from_fields(&f)),
+            DeviceValue::Fields(f) => {
+                let credential = AppleCredential::from_fields(&f);
+                if state.is_some() && credential.state != state {
+                    return Err(DeviceError::Failed(
+                        "Sign in with Apple answered another request (its state differs)".into(),
+                    ));
+                }
+                Ok(credential)
+            }
             other => Err(DeviceError::Failed(format!("unexpected answer {other:?}"))),
         }
     }
@@ -789,6 +824,72 @@ fn form_decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S39: a credential whose `state` is not the request's is refused (it
+    /// answers another request); without a `state` sent, none is checked.
+    #[test]
+    fn s39_a_credential_must_carry_the_request_state() {
+        use std::sync::{Arc, Mutex};
+        type Got = Arc<Mutex<BTreeMap<&'static str, Result<AppleCredential, DeviceError>>>>;
+        let got: Got = Default::default();
+        let out = got.clone();
+        let init: crate::AppInit = Arc::new(move |cx: &mut crate::App| {
+            for (label, state) in [
+                ("other", Some("st-39")),
+                ("none", None),
+                ("same", Some("st-39")),
+            ] {
+                let out = out.clone();
+                let mut request = AppleSignIn::new().nonce("server-nonce-39");
+                if let Some(s) = state {
+                    request = request.state(s);
+                }
+                cx.spawn(move |cx| async move {
+                    let r = cx.sign_in_with_apple(request).await;
+                    out.lock().unwrap().insert(label, r);
+                });
+            }
+        });
+        let mut rt = crate::Runtime::new(&init);
+        rt.poll();
+        let ids: Vec<u64> = rt
+            .take_requests()
+            .into_iter()
+            .filter_map(|r| match r {
+                crate::surfaces::PlatformRequest::Device {
+                    id,
+                    call: DeviceCall::SignInWithApple(_),
+                } => Some(id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids.len(), 3);
+        let answer = |state: &str| {
+            let mut f = BTreeMap::new();
+            f.insert("user".to_string(), "001.abc".to_string());
+            f.insert("state".to_string(), state.to_string());
+            Ok(DeviceValue::Fields(f))
+        };
+        rt.device_reply(ids[0], answer("st-other"));
+        rt.device_reply(ids[1], answer(""));
+        rt.device_reply(ids[2], answer("st-39"));
+        let got = got.lock().unwrap();
+        assert!(got["other"].is_err(), "{:?}", got["other"]);
+        assert_eq!(got["none"].as_ref().unwrap().user, "001.abc");
+        assert_eq!(
+            got["same"].as_ref().unwrap().state.as_deref(),
+            Some("st-39")
+        );
+        // What every backend passes to Apple.
+        assert_eq!(
+            AppleSignIn::new()
+                .nonce("server-nonce-39")
+                .apple_nonce()
+                .as_deref(),
+            Some("3c0f900191b65765eddb001bcd76dc504a5b1a4cc3a231e1463606a05a69e377")
+        );
+        assert_eq!(AppleSignIn::new().apple_nonce(), None);
+    }
 
     /// S34: Sign in with Apple's token and code do not show when printed.
     #[test]

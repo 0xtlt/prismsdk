@@ -440,6 +440,7 @@ public func prismAppleSignIn(_ id: UInt64, _ email: Bool, _ name: Bool, _ nonce:
     if email { scopes.append(.email) }
     if name { scopes.append(.fullName) }
     request.requestedScopes = scopes
+    // Already the SHA-256 (hex) of the app's nonce: AppleSignIn::apple_nonce.
     request.nonce = str(nonce)
     request.state = str(state)
     let delegate = PrismAppleSignIn(id: id)
