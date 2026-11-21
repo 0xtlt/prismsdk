@@ -1,8 +1,10 @@
 //! The share sheet (`share`): Windows' Share dialog for the app's window,
 //! through `IDataTransferManagerInterop` (`GetForWindow`,
 //! `ShowShareUIForWindow`), the desktop apps' way to `DataTransferManager`;
-//! no package identity needed. Text, a link (`SetWebLink`, and as text
-//! for targets that only read text) and files (read-only `StorageFile`s).
+//! no package identity needed. Text, a link (`SetWebLink`, and after the
+//! text, on its own line, for targets that only read text, as on Android)
+//! and files (read-only `StorageFile`s; one that cannot be read is left
+//! out, and the rest still goes).
 //! As on Apple platforms, nothing answers: the dialog's outcome is the
 //! user's.
 
@@ -125,7 +127,7 @@ fn fill(args: &DataRequestedEventArgs) -> windows::core::Result<()> {
     let data = request.Data()?;
     data.Properties()?
         .SetTitle(&HSTRING::from(c.title.as_str()))?;
-    if let Some(text) = c.text.as_deref().or(c.url.as_deref()) {
+    if let Some(text) = crate::device::share_text(c.text.as_deref(), c.url.as_deref()) {
         data.SetText(&HSTRING::from(text))?;
     }
     if let Some(url) = &c.url {
@@ -134,12 +136,20 @@ fn fill(args: &DataRequestedEventArgs) -> windows::core::Result<()> {
             Err(e) => log!("share: {url}: {}", e.message()),
         }
     }
-    if !c.files.is_empty() {
-        let items: Vec<Option<IStorageItem>> = c
-            .files
-            .iter()
-            .map(|f| f.resolve().and_then(|f| f.cast::<IStorageItem>()).ok())
-            .collect();
+    // A file that cannot be had here is left out: a `None` in the list
+    // would fail `SetStorageItems`, and the share with it.
+    let items: Vec<Option<IStorageItem>> = c
+        .files
+        .iter()
+        .filter_map(|f| {
+            f.resolve()
+                .and_then(|f| f.cast::<IStorageItem>())
+                .map_err(|e| log!("share: a file is left out: {}", e.message()))
+                .ok()
+        })
+        .map(Some)
+        .collect();
+    if !items.is_empty() {
         data.SetStorageItems(&IIterable::<IStorageItem>::from(items), true)?;
     }
     Ok(())

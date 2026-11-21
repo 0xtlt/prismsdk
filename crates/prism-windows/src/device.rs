@@ -1,8 +1,8 @@
 //! The device APIs' pure parts (`location.rs`, `camera.rs`, `haptics.rs`,
 //! `sensors.rs`): accuracy settings, Windows' times and missing values as
 //! Prism's positions, the privacy settings' values as permission states,
-//! haptic patterns as waveforms, sensor readings as motion samples, the
-//! file names logs give. No WinRT: tested on every host.
+//! haptic patterns as waveforms, sensor readings as motion samples, a
+//! share's text, the file names logs give. No WinRT: tested on every host.
 
 #![cfg_attr(not(target_os = "windows"), allow(dead_code))]
 
@@ -242,6 +242,19 @@ impl Fusion {
     }
 }
 
+/// The text a share gives targets that read only text: the text, then
+/// the link on its own line, as on Android; the link alone when there is
+/// no text.
+pub fn share_text(text: Option<&str>, url: Option<&str>) -> Option<String> {
+    match (
+        text.filter(|t| !t.is_empty()),
+        url.filter(|u| !u.is_empty()),
+    ) {
+        (Some(t), Some(u)) => Some(format!("{t}\n{u}")),
+        (t, u) => t.or(u).map(str::to_string),
+    }
+}
+
 /// The last part of a Windows path (`C:\Users\<account>\…\report.json`
 /// is `report.json`): what the logs name, never the folders, which say
 /// whose account it is.
@@ -252,6 +265,25 @@ pub fn file_name(path: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_only_targets_get_the_link_too() {
+        let t = |text, url| share_text(text, url);
+        assert_eq!(
+            t(Some("Look"), Some("https://e.com")).as_deref(),
+            Some("Look\nhttps://e.com")
+        );
+        assert_eq!(
+            t(None, Some("https://e.com")).as_deref(),
+            Some("https://e.com")
+        );
+        assert_eq!(t(Some("Look"), None).as_deref(), Some("Look"));
+        assert_eq!(
+            t(Some(""), Some("https://e.com")).as_deref(),
+            Some("https://e.com")
+        );
+        assert_eq!(t(None, None), None);
+    }
 
     #[test]
     fn logs_name_the_file_only() {
