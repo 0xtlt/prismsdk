@@ -16,8 +16,8 @@ use objc2_ui_kit::{
     UIAccessibilityTraitLink, UIAccessibilityTraitNotEnabled, UIAccessibilityTraitSelected,
     UIAccessibilityTraitStaticText, UIAccessibilityTraitTabBar, UIAccessibilityTraitToggleButton,
     UIAdaptivePresentationControllerDelegate, UIApplication, UIApplicationDelegate, UIButton,
-    UIButtonType, UIColor, UIContextMenuInteractionDelegate, UIControlEvents, UIControlState,
-    UIFont, UIGestureRecognizerDelegate, UIImage, UIImageSymbolConfiguration, UIImageView, UILabel,
+    UIColor, UIContextMenuInteractionDelegate, UIControlEvents, UIControlState, UIFont,
+    UIGestureRecognizerDelegate, UIImage, UIImageSymbolConfiguration, UIImageView, UILabel,
     UINavigationController, UINavigationControllerDelegate, UIProgressView, UIResponder, UIScene,
     UISceneConnectionOptions, UISceneDelegate, UISceneSession, UIScrollView,
     UIScrollViewContentInsetAdjustmentBehavior, UIScrollViewDelegate,
@@ -821,6 +821,16 @@ define_class!(
             touch: &objc2_ui_kit::UITouch,
         ) -> bool {
             crate::interaction::receives_touch(g, touch)
+        }
+
+        #[cfg(target_os = "tvos")]
+        #[unsafe(method(gestureRecognizer:shouldReceivePress:))]
+        fn should_receive_press(
+            &self,
+            g: &objc2_ui_kit::UIGestureRecognizer,
+            press: &objc2_ui_kit::UIPress,
+        ) -> bool {
+            crate::tv::receives_press(g, press)
         }
 
         #[unsafe(method(gestureRecognizer:shouldBeRequiredToFailByGestureRecognizer:))]
@@ -2100,7 +2110,10 @@ impl Widgets for UiKit {
             NodeKind::Toggle => View::Toggle(crate::tv::toggle(mtm, target)),
             NodeKind::Text => View::Label(crate::label::new_label(mtm, id)),
             NodeKind::Button => {
-                let b = UIButton::buttonWithType(UIButtonType::System, mtm);
+                #[cfg(not(target_os = "tvos"))]
+                let b = UIButton::buttonWithType(objc2_ui_kit::UIButtonType::System, mtm);
+                #[cfg(target_os = "tvos")]
+                let b = crate::tv::button(mtm);
                 // tvOS: the remote's select press (there is no touch).
                 let event = if cfg!(target_os = "tvos") {
                     UIControlEvents::PrimaryActionTriggered
@@ -3279,22 +3292,17 @@ impl Widgets for UiKit {
     }
 
     fn set_table(&mut self, table: &View, rows: &[prism_native::table::TableRow<'_, View>]) {
-        #[cfg(not(target_os = "tvos"))]
-        {
-            let rows: Vec<(&UIView, bool, Vec<&UIView>)> = rows
-                .iter()
-                .map(|r| {
-                    (
-                        r.view.ui(),
-                        r.header,
-                        r.cells.iter().map(|c| c.ui()).collect(),
-                    )
-                })
-                .collect();
-            crate::table::set(self.mtm, table.ui(), &rows);
-        }
-        #[cfg(target_os = "tvos")]
-        let _ = (table, rows);
+        let rows: Vec<(&UIView, bool, Vec<&UIView>)> = rows
+            .iter()
+            .map(|r| {
+                (
+                    r.view.ui(),
+                    r.header,
+                    r.cells.iter().map(|c| c.ui()).collect(),
+                )
+            })
+            .collect();
+        crate::table::set(self.mtm, table.ui(), &rows);
     }
 
     fn set_accessibility(&mut self, view: &View, a: &Accessibility) {
@@ -3400,7 +3408,8 @@ impl Widgets for UiKit {
                 traits |= match a.role {
                     Some(Role::Button) => UIAccessibilityTraitButton,
                     Some(Role::Link) => UIAccessibilityTraitLink,
-                    Some(Role::Heading(_)) => UIAccessibilityTraitHeader,
+                    // A table's column headers (#284) read as headers.
+                    Some(Role::Heading(_) | Role::ColumnHeader) => UIAccessibilityTraitHeader,
                     Some(Role::Image) => UIAccessibilityTraitImage,
                     Some(Role::Text) => UIAccessibilityTraitStaticText,
                     Some(Role::Switch | Role::Checkbox) => {

@@ -191,6 +191,17 @@ define_class!(
     pub struct PrismField;
 
     impl PrismField {
+        /// In a table's cell, the cell's row and column (#284).
+        #[unsafe(method(accessibilityRowRange))]
+        fn accessibility_row_range(&self) -> objc2_foundation::NSRange {
+            crate::table::enclosing_range(self, false)
+        }
+
+        #[unsafe(method(accessibilityColumnRange))]
+        fn accessibility_column_range(&self) -> objc2_foundation::NSRange {
+            crate::table::enclosing_range(self, true)
+        }
+
         #[unsafe(method(textRectForBounds:))]
         fn text_rect(&self, bounds: CGRect) -> CGRect {
             match self.text_area(bounds) {

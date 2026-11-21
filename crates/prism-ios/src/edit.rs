@@ -66,6 +66,17 @@ define_class!(
     unsafe impl NSObjectProtocol for PrismTextView {}
 
     impl PrismTextView {
+        /// In a table's cell, the cell's row and column (#284).
+        #[unsafe(method(accessibilityRowRange))]
+        fn accessibility_row_range(&self) -> objc2_foundation::NSRange {
+            crate::table::enclosing_range(self, false)
+        }
+
+        #[unsafe(method(accessibilityColumnRange))]
+        fn accessibility_column_range(&self) -> objc2_foundation::NSRange {
+            crate::table::enclosing_range(self, true)
+        }
+
         #[unsafe(method(copy:))]
         fn copy(&self, sender: Option<&AnyObject>) {
             if !report_copy(self, false) {

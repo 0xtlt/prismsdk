@@ -86,6 +86,18 @@ define_class!(
             }
         }
 
+        /// In a table's cell (a link next to text), the cell's row and
+        /// column (#284).
+        #[unsafe(method(accessibilityRowRange))]
+        fn accessibility_row_range(&self) -> objc2_foundation::NSRange {
+            crate::table::enclosing_range(self, false)
+        }
+
+        #[unsafe(method(accessibilityColumnRange))]
+        fn accessibility_column_range(&self) -> objc2_foundation::NSRange {
+            crate::table::enclosing_range(self, true)
+        }
+
         /// VoiceOver "activate": a clickable text, or its only link.
         #[unsafe(method(accessibilityActivate))]
         fn accessibility_activate(&self) -> Bool {

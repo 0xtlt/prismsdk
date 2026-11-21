@@ -165,33 +165,45 @@ fn opt(s: Option<String>) -> String {
     s.map_or("null".into(), |s| json_str(&s))
 }
 
+/// The macOS-style role of these accessibility traits (`AXButton`,
+/// `AXLink`, `AXHeading`, `AXStaticText`), if any.
+fn role_of(traits: objc2_ui_kit::UIAccessibilityTraits) -> Option<String> {
+    use objc2_ui_kit::{
+        UIAccessibilityTraitButton, UIAccessibilityTraitHeader, UIAccessibilityTraitLink,
+        UIAccessibilityTraitStaticText,
+    };
+    let (button, link, header, text) = unsafe {
+        (
+            UIAccessibilityTraitButton,
+            UIAccessibilityTraitLink,
+            UIAccessibilityTraitHeader,
+            UIAccessibilityTraitStaticText,
+        )
+    };
+    let role = if traits & button != 0 {
+        "AXButton"
+    } else if traits & link != 0 {
+        "AXLink"
+    } else if traits & header != 0 {
+        "AXHeading"
+    } else if traits & text != 0 {
+        "AXStaticText"
+    } else {
+        return None;
+    };
+    Some(role.into())
+}
+
 /// One view and its visible subviews as JSON, in the macOS dump's shape
 /// (`role`: `AXButton`, `AXHeading`… from the accessibility traits).
 fn dump_node(mtm: MainThreadMarker, view: &UIView) -> String {
     use objc2_ui_kit::{
-        NSObjectUIAccessibility, UIAccessibilityTraitButton, UIAccessibilityTraitHeader,
-        UIAccessibilityTraitSelected, UIAccessibilityTraitStaticText, UILabel, UITabBar,
-        UITextField,
+        NSObjectUIAccessibility, UIAccessibilityTraitSelected, UILabel, UITabBar, UITextField,
     };
     let class = view.class().name().to_str().unwrap_or("?").to_string();
     let traits = view.accessibilityTraits(mtm);
-    let (button, header, text, selected) = unsafe {
-        (
-            UIAccessibilityTraitButton,
-            UIAccessibilityTraitHeader,
-            UIAccessibilityTraitStaticText,
-            UIAccessibilityTraitSelected,
-        )
-    };
-    let role = if traits & button != 0 {
-        Some("AXButton".to_string())
-    } else if traits & header != 0 {
-        Some("AXHeading".to_string())
-    } else if traits & text != 0 {
-        Some("AXStaticText".to_string())
-    } else {
-        None
-    };
+    let selected = unsafe { UIAccessibilityTraitSelected };
+    let role = role_of(traits);
     let label = view.accessibilityLabel(mtm).map(|l| l.to_string());
     let title = view
         .downcast_ref::<UIButton>()
@@ -216,8 +228,10 @@ fn dump_node(mtm: MainThreadMarker, view: &UIView) -> String {
             .map_or(-1, |i| i as i64);
         format!(r#"{{"labels":[{}],"selected":{index}}}"#, labels.join(","))
     });
-    // Tables (#284): `"table":{rows, columns, headers}`, `"cell":[row, column]`.
-    #[cfg(not(target_os = "tvos"))]
+    // Tables (#284): `"table":{rows, columns, headers}`, `"cell":[row,
+    // column]`, and a cell holding a control's `"parts"`: the elements
+    // VoiceOver reaches in it, each `{class, role, label, cell}` (`cell`:
+    // the row and column it reports, `null` for a view read as itself).
     let table = match crate::table::dump(mtm, view) {
         Some(crate::table::Dump::Table(rows, columns, headers)) => {
             let headers: Vec<String> = headers.into_iter().map(opt).collect();
@@ -226,11 +240,26 @@ fn dump_node(mtm: MainThreadMarker, view: &UIView) -> String {
                 headers.join(",")
             )
         }
-        Some(crate::table::Dump::Cell(r, c)) => format!(r#","cell":[{r},{c}]"#),
+        Some(crate::table::Dump::Cell(r, c, parts)) => {
+            let parts = parts.map_or_else(String::new, |parts| {
+                let parts: Vec<String> = parts
+                    .into_iter()
+                    .map(|p| {
+                        format!(
+                            r#"{{"class":{},"role":{},"label":{},"cell":{}}}"#,
+                            json_str(&p.class),
+                            opt(role_of(p.traits)),
+                            opt(p.label),
+                            p.at.map_or("null".into(), |(r, c)| format!("[{r},{c}]"))
+                        )
+                    })
+                    .collect();
+                format!(r#","parts":[{}]"#, parts.join(","))
+            });
+            format!(r#","cell":[{r},{c}]{parts}"#)
+        }
         None => String::new(),
     };
-    #[cfg(target_os = "tvos")]
-    let table = String::new();
     let f = view.convertRect_toView(view.bounds(), None);
     let children: Vec<String> = view
         .subviews()
