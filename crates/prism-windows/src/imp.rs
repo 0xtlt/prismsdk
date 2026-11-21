@@ -562,6 +562,19 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     r.bottom - r.top,
                     SWP_NOZORDER | SWP_NOACTIVATE,
                 );
+                if crate::perf::on() {
+                    let mut c = RECT::default();
+                    let _ = GetClientRect(h, &mut c);
+                    let k = dpi as f32 / 96.;
+                    log!(
+                        "DPI {dpi} ({:.0} %): client area {}x{} pixels, {:.0}x{:.0} DIPs",
+                        k * 100.,
+                        c.right,
+                        c.bottom,
+                        c.right as f32 / k,
+                        c.bottom as f32 / k
+                    );
+                }
                 LRESULT(0)
             }
             WM_GETMINMAXINFO => {

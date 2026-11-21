@@ -34,10 +34,18 @@ def image_base(exe):
     return struct.unpack_from("<I", head, pe + 24 + 28)[0]
 
 
+def read_text(path):
+    """A text file in UTF-8 or UTF-16 (PowerShell's `>` writes UTF-16)."""
+    raw = open(path, "rb").read()
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return raw.decode("utf-16")
+    return raw.decode("utf-8", errors="replace")
+
+
 def load_nm(path, base):
     addrs, names = [], []
-    with open(path, encoding="utf-8", errors="replace") as f:
-        for line in f:
+    if True:
+        for line in read_text(path).splitlines():
             m = re.match(r"([0-9a-fA-F]+) [tTwW] (.+)", line.strip())
             if m:
                 addrs.append(int(m.group(1), 16) - base)
@@ -78,7 +86,7 @@ def main():
         return mod
 
     phases = OrderedDict()
-    for line in open(a.stacks, encoding="utf-8", errors="replace"):
+    for line in read_text(a.stacks).splitlines():
         line = line.rstrip("\n")
         if not line:
             continue
