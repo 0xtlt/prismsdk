@@ -147,6 +147,22 @@ impl ReceiverKeys {
         o
     }
 
+    /// This device's keys, kept in the file `path`: read, or made once and
+    /// kept there, private from creation (see
+    /// [`secret_file::load_or_create`](crate::secret_file::load_or_create)).
+    /// An error when they cannot be read or kept: a subscription announced
+    /// with keys that are lost could never be decrypted.
+    pub fn load_or_create(path: &std::path::Path) -> std::io::Result<Self> {
+        let bytes = crate::secret_file::load_or_create(
+            path,
+            |b| Self::from_bytes(b).is_some(),
+            || Self::generate().to_bytes(),
+        )?;
+        Self::from_bytes(&bytes).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "not Web Push keys")
+        })
+    }
+
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
         if bytes.len() != 48 {
             return None;

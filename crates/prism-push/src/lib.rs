@@ -40,6 +40,7 @@ pub mod apns;
 mod endpoint;
 pub mod fcm;
 mod jwt;
+pub mod secret_file;
 pub mod webpush;
 
 #[cfg(feature = "send")]
