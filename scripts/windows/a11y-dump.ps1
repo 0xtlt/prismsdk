@@ -124,4 +124,7 @@ try {
     exit 0
 } finally {
     if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue }
+    # The run's storage goes with it: nothing is left in %TEMP%.
+    $app.WaitForExit(10000) | Out-Null
+    Remove-Item -Recurse -Force -LiteralPath $env:LOCALAPPDATA -ErrorAction SilentlyContinue
 }

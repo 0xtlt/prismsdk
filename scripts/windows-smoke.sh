@@ -97,7 +97,10 @@ run() {
     printf '%s\r\n' "set PRISM_DELAY=1.5"
     printf '%s\r\n' "cd /d \"%~dp0..\\..\\examples\\counter\""
     printf '%s\r\n' "start \"\" /wait /b ..\\..\\target\\$exe\\counter.exe > \"%~dp0$name.log\" 2>&1"
-    printf '%s\r\n' "exit /b %errorlevel%"
+    # The run's storage goes with it: nothing is left in %TEMP%.
+    printf '%s\r\n' "set \"code=%errorlevel%\""
+    printf '%s\r\n' "rmdir /s /q \"%TEMP%\\prism-smoke-$name\" 2>nul"
+    printf '%s\r\n' "exit /b %code%"
     printf '%s\r\n' "'@, [Text.Encoding]::ASCII)"
     if [ "$session" = desktop ]; then
       printf '%s\r\n' "& powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\windows\\run-in-session.ps1 -TimeoutSeconds 120 -Command \"call \`\"\$bat\`\"\""
