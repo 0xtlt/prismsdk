@@ -1288,13 +1288,7 @@ impl Win {
             if was_time != is_time && kind == NodeKind::DatePicker {
                 // A time picker in place of the date picker.
                 if let Some(old) = old {
-                    let _ = crate::view::detach(&old);
-                    if let Ok(coll) = v.outer.Children() {
-                        let mut at = 0u32;
-                        if coll.IndexOf(&old, &mut at).unwrap_or(false) {
-                            let _ = coll.RemoveAt(at);
-                        }
-                    }
+                    unmount(&v.outer, &old);
                 }
                 self.remount_content(id);
             }
@@ -1349,7 +1343,7 @@ impl Win {
             return;
         };
         if let Some(old) = v.content.element() {
-            let _ = crate::view::detach(&old);
+            unmount(&v.outer, &old);
         }
         v.content = content;
         if let Some(c) = v.content.control()
@@ -1381,5 +1375,19 @@ impl Win {
         }
         v.frame = Rect::default();
         let _ = v.place(n, &pal, sticky);
+    }
+}
+
+/// Takes a node's swapped-out content element out of its outer canvas.
+/// `view::detach` alone can leave it there (its `Parent` is not always
+/// set), and a hidden, focusable twin then stays in the tab order and in
+/// UI Automation.
+fn unmount(outer: &Canvas, old: &UIElement) {
+    let _ = crate::view::detach(old);
+    if let Ok(coll) = outer.Children() {
+        let mut at = 0u32;
+        if coll.IndexOf(old, &mut at).unwrap_or(false) {
+            let _ = coll.RemoveAt(at);
+        }
     }
 }
