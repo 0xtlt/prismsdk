@@ -25,9 +25,15 @@ kinds and services come next (see [Not yet](#not-yet)).
 
 - **Layout** is prism-native's flexbox; each node is a few XAML elements
   placed at its frame in `Canvas`es (`Canvas.Left/Top`, width, height), as
-  the other native backends place their views. A pure model of the tree
-  (`scene.rs`) tells which page a stack or tab bar shows and finds nodes by
-  label for the smoke hooks.
+  the other native backends place their views: a `Canvas`, its content (a
+  `TextBlock`, a control), and only what its style needs (a `Border` for a
+  box, shadows, a children `Canvas` once it has children). A pure model of
+  the tree (`scene.rs`) tells which page a stack or tab bar shows and finds
+  nodes by label for the smoke hooks. Text is measured through XAML (what
+  is measured is what is drawn), once per text and width: a text that
+  fits on its lines is not laid out again. New content of a scroll view
+  out of the window waits `Collapsed` until the first frame is shown, then
+  joins a batch per frame (see [Performance](#performance)).
 - **Styles:** a `Border` draws the background (solid, `LinearGradientBrush`,
   `RadialGradientBrush`, `AcrylicBrush` for a backdrop blur, and a conic
   gradient's pixels in a `WriteableBitmap` through an `ImageBrush`), the
@@ -116,8 +122,13 @@ kinds and services come next (see [Not yet](#not-yet)).
   `on_ended` hears the end.
 - **3D scenes** are drawn by prism-native's OpenGL renderer (the GTK
   backend's: `prism_native::gl3d`) in a WGL OpenGL 3.3 core context of the
-  app's, shared by every scene, and shown by an `Image`: WinUI composes
-  with DirectX, so each frame is read back into a `WriteableBitmap`. Drag
+  app's, shared by every scene, and shown by a `SwapChainPanel`: WinUI
+  composes with DirectX, so the GL context shares Direct3D 11 textures
+  (`WGL_NV_DX_interop2`, in AMD, NVIDIA and Intel drivers) and each frame
+  goes to the panel's swap chain without leaving the GPU. A driver without
+  the extension (or `PRISM_3D_READBACK=1`) reads each frame back into a
+  `WriteableBitmap`. OpenGL starts after the window's first frame (the GPU
+  driver takes a while to load). Drag
   to turn (right or Shift drag: pan), the wheel zooms, a click taps
   (`SceneTapEvent`); frames are drawn while something moves, none at
   rest. Textures decode with WIC off the UI thread.
@@ -145,9 +156,12 @@ kinds and services come next (see [Not yet](#not-yet)).
   the app (`RequestedTheme` on the XAML root, a dark title bar), with the
   system accent color in the controls; Mica behind what the app does not
   paint (`PRISM_NO_MICA=1` turns it off).
-- **Windows and DPI:** per-monitor DPI v2 (XAML scales by itself),
-  resizing, a minimum size, the title (`cx.set_title`), a confirmation on
-  close with unsaved changes.
+- **Windows and DPI:** per-monitor DPI v2 (XAML scales by itself; a move
+  to a monitor of another DPI resizes the window to keep its size in
+  DIPs), resizing, a minimum size, the title (`cx.set_title`), a
+  confirmation on close with unsaved changes. `PRISM_SCALE=1.5` runs the
+  app at 150 % on any screen, through the same path as a real DPI (see
+  [Development hooks](#development-hooks)).
 - **Services:** see [Services](#services) below.
 - Storage goes to `%LOCALAPPDATA%\<title>`; the language comes from the
   user's locale, the text size from Settings › Accessibility › Text size
@@ -373,7 +387,7 @@ The same as the other backends, in a desktop session:
 | Variable | |
 |---|---|
 | `PRISM_PATH` | the first route |
-| `PRISM_CLICK` | `+1\|Save`: presses by label (a control's title, an accessibility label, a tab, `Back`, a bar button, a clickable view showing it; buttons through their UI Automation peer); `fill:Placeholder=text` types into a field; `submit:Placeholder` presses Enter in it; `menu:Title` opens a context menu; `scroll:600` scrolls first (a popover then opens on its anchor in view); `key:Escape` (`Tab`, `Enter`) presses a key. Real mouse and keyboard input (`SendInput`, the window kept on top meanwhile; the view scrolled into sight first): `hover:Label`, `click:Label@x,y`, `drag:Label=dx,dy` (`drag:Label@x,y=dx,dy`), `swipe:Label=dx`, `wheel:Label=dy` (`=dx,h` sideways), `type:Label=text` |
+| `PRISM_CLICK` | `+1\|Save`: presses by label (a control's title, an accessibility label, a tab, `Back`, a bar button, a clickable view showing it; buttons through their UI Automation peer); `fill:Placeholder=text` types into a field; `submit:Placeholder` presses Enter in it; `menu:Title` opens a context menu; `scroll:600` scrolls first (a popover then opens on its anchor in view); `wait:500` lets frames run before the next step (ms); `dpi:144` moves the window to a simulated monitor at that DPI (`WM_DPICHANGED`, the suggested rectangle); `key:Escape` (`Tab`, `Enter`) presses a key. Real mouse and keyboard input (`SendInput`, the window kept on top meanwhile; the view scrolled into sight first): `hover:Label`, `click:Label@x,y`, `drag:Label=dx,dy` (`drag:Label@x,y=dx,dy`), `swipe:Label=dx`, `wheel:Label=dy` (`=dx,h` sideways), `type:Label=text` |
 | `PRISM_TRACE_INPUT` | logs the pointer, drag, swipe, wheel and scene tap events sent to the app |
 | `PRISM_SCROLL` | scrolls the visible scroll views to that offset |
 | `PRISM_SNAPSHOT` | saves the window's XAML (`RenderTargetBitmap`) as PNG, and what DWM shows of the window (`PrintWindow`: Mica, shadows, open flyouts) as `<name>-window.png`, then quits |
@@ -381,7 +395,11 @@ The same as the other backends, in a desktop session:
 | `PRISM_WINDOW` | the window's size, `460x720` |
 | `PRISM_APPEARANCE` | `light` or `dark` in place of the system's appearance |
 | `PRISM_REDUCE_MOTION` | `1` (or `0`) in place of « Animation effects » |
-| `PRISM_TRACE` | logs the startup phases, and each notification shown |
+| `PRISM_TRACE` | logs the startup phases (with the UI thread's CPU time), where the backend's time went (create, style, measure, place…), XAML's own layout, the first frame, the XAML elements and the memory then, each update (a click, a tab switch) until the frame showing it, 3D frame times, and each notification shown |
+| `PRISM_PROFILE` | `stacks.txt`: samples the UI thread's stacks every millisecond until the first frame (`PRISM_PROFILE_MS` more), tagged by startup phase; `scripts/perf/profile.py` names them (x64) |
+| `PRISM_SCALE` | `1.25`, `1.5`, `200%`: the app's scale in place of its monitor's (XAML's `OverrideScale` on the island, Prism's pixels per DIP) |
+| `PRISM_DEFER` | `0`: off-screen content joins XAML's layout before the first frame |
+| `PRISM_3D_READBACK` | `1`: 3D frames through the CPU, as without `WGL_NV_DX_interop2` |
 | `PRISM_TRAY_MENU` | `<id>`: that tray item's menu opens by itself, as after a click |
 | `PRISM_NOTIFICATIONS_CLEANUP` | `1`: on quit, the app removes its notification registration and its notifications |
 | `PRISM_BACKGROUND_INTERVAL` | seconds between background task runs |
