@@ -30,7 +30,7 @@
 //! order (`PRAGMA user_version` counts them): only ever append to the list.
 
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use prism_core::{App, AsyncApp, Background};
@@ -59,12 +59,30 @@ pub struct Db {
 impl Db {
     /// Opens (creating it if needed) the SQLite file `name` in the app's
     /// shared data directory, then applies `migrations`.
+    ///
+    /// `name` is a file name (`"app.db"`), not a path: one with a separator
+    /// (`/`, `\`), a drive or stream (`:`), a control character, or `.` or
+    /// `..` is an error, so a name built from a tenant or an import cannot
+    /// reach another database. [`open_path`](Self::open_path) opens a path
+    /// the app chooses. Without a data directory (a headless runtime, such
+    /// as tests) the file goes in a directory only this user can enter, in
+    /// the system's temporary directory.
     pub fn open(cx: &App, name: &str, migrations: &[&str]) -> Result<Db, sqlx::Error> {
-        let dir = cx
-            .shared_data_dir()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(std::env::temp_dir);
-        std::fs::create_dir_all(&dir).map_err(sqlx::Error::Io)?;
+        if !is_file_name(name) {
+            return Err(sqlx::Error::Configuration(
+                format!(
+                    "{name:?} is not a file name: Db::open takes one (Db::open_path takes a path)"
+                )
+                .into(),
+            ));
+        }
+        let dir = match cx.shared_data_dir() {
+            Some(dir) => {
+                std::fs::create_dir_all(dir).map_err(sqlx::Error::Io)?;
+                dir.to_path_buf()
+            }
+            None => private_dir(&std::env::temp_dir()).map_err(sqlx::Error::Io)?,
+        };
         Self::open_path(&dir.join(name), migrations)
     }
 
@@ -154,6 +172,51 @@ impl Db {
 }
 
 /// Applies the migrations not applied yet (`PRAGMA user_version` counts them).
+/// One plain file name on every platform: not empty, `.` or `..`, without a
+/// separator (`/`, `\`), a drive or stream (`:`) or a control character.
+fn is_file_name(name: &str) -> bool {
+    !matches!(name, "" | "." | "..")
+        && !name.contains(|c: char| matches!(c, '/' | '\\' | ':') || c.is_control())
+}
+
+/// `base/prism-db-<uid>`, a directory only this user can enter: made with
+/// mode `0700`, or one already there that is a directory (not a link) this
+/// user owns, its mode set back to `0700`. A shared temporary directory
+/// (`/tmp`) lets other users plant a database or a link at a name; this
+/// one they cannot. Elsewhere (Windows, where the temporary directory is
+/// the user's own) `base/prism-db`.
+fn private_dir(base: &Path) -> std::io::Result<PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let uid = unsafe { libc::geteuid() };
+        let dir = base.join(format!("prism-db-{uid}"));
+        match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+        let meta = std::fs::symlink_metadata(&dir)?;
+        if !meta.is_dir() || meta.uid() != uid {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("{}: not a directory of this user", dir.display()),
+            ));
+        }
+        if meta.mode() & 0o077 != 0 {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(dir)
+    }
+    #[cfg(not(unix))]
+    {
+        let dir = base.join("prism-db");
+        std::fs::create_dir_all(&dir)?;
+        Ok(dir)
+    }
+}
+
 async fn migrate(pool: &SqlitePool, migrations: &[String]) -> Result<(), sqlx::Error> {
     let (done,): (i64,) = sqlx::query_as("PRAGMA user_version")
         .fetch_one(pool)
@@ -172,6 +235,85 @@ async fn migrate(pool: &SqlitePool, migrations: &[String]) -> Result<(), sqlx::E
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S38: `Db::open` takes a file name in the app's data directory, never
+    /// a path out of it (absolute, `..`, through a link): an app that
+    /// derives the name from a tenant or an import cannot be steered to
+    /// another database and run its migrations there. `open_path` still
+    /// opens any path the app chooses.
+    #[test]
+    fn s38_open_stays_in_the_data_directory() {
+        let base = std::env::temp_dir().join(format!("prism-db-s38-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (data, outside) = (base.join("data"), base.join("outside"));
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        // Another database: an empty file is one SQLite would set up.
+        let marker = outside.join("other.db");
+        std::fs::write(&marker, b"").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, data.join("link")).unwrap();
+        let init: prism_core::AppInit = std::sync::Arc::new(|_: &mut App| {});
+        let rt = prism_core::Runtime::with_options(
+            &init,
+            prism_core::RuntimeOptions {
+                data_dir: Some(data.clone()),
+                ..Default::default()
+            },
+        );
+        let table = ["CREATE TABLE t (n INTEGER)"];
+        let absolute = marker.to_string_lossy().into_owned();
+        for name in [
+            absolute.as_str(),
+            "../outside/other.db",
+            "link/other.db",
+            "link\\other.db",
+            "..",
+            ".",
+            "",
+            "C:other.db",
+            "other.db\0",
+        ] {
+            assert!(Db::open(&rt.app, name, &table).is_err(), "{name:?}");
+        }
+        assert_eq!(
+            std::fs::metadata(&marker).unwrap().len(),
+            0,
+            "the other database changed"
+        );
+        // A name opens in the data directory; an explicit path anywhere.
+        Db::open(&rt.app, "app.db", &table).unwrap();
+        assert!(data.join("app.db").exists());
+        Db::open_path(&marker, &table).unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// S38: without a data directory, databases go in a directory of this
+    /// user only, never at a name of the shared temporary directory where
+    /// another user could have planted a link.
+    #[cfg(unix)]
+    #[test]
+    fn s38_the_fallback_directory_is_this_users_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!("prism-db-s38-tmp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = private_dir(&base).unwrap();
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(private_dir(&base).unwrap(), dir);
+        // Opened up by mistake: closed again.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(private_dir(&base).unwrap(), dir);
+        assert_eq!(mode(&dir), 0o700);
+        // A link planted at the name: refused.
+        std::fs::remove_dir(&dir).unwrap();
+        let elsewhere = base.join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &dir).unwrap();
+        assert!(private_dir(&base).is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn migrations_run_once_in_order() {

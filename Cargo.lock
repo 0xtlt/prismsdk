@@ -2409,6 +2409,7 @@ dependencies = [
 name = "prismsdk-db"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "prismsdk-core",
  "sqlx",
  "tokio",
