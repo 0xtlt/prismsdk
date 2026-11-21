@@ -3,8 +3,9 @@
 //! from the PC's GNSS receiver if it has one, else from Wi-Fi networks and
 //! the IP address (Windows' own location provider).
 //!
-//! - **capability**: the location service (`lfsvc`) is there and not
-//!   turned off, no policy turns location off, and the `Geolocator` says
+//! - **capability**: the location service (`lfsvc`) is installed and
+//!   its start type is not « disabled » (it starts on demand, so it need
+//!   not be running), no policy turns location off, and the `Geolocator` says
 //!   it can give positions (`LocationStatus` is not `NotAvailable`);
 //! - **permission**: Settings › Privacy & security › Location, read
 //!   without asking (`AppCapability("location").CheckAccess`): the
