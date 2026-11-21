@@ -410,8 +410,9 @@ define_class!(
         }
 
         /// VoiceOver's double tap: the view's own activation; a button
-        /// sends its action. Otherwise (`false`) VoiceOver taps the view's
-        /// activation point, as for the view itself.
+        /// sends its action, a menu button opens its menu. Otherwise
+        /// (`false`) VoiceOver taps the view's activation point, as for the
+        /// view itself.
         #[unsafe(method(accessibilityActivate))]
         fn accessibility_activate(&self) -> bool {
             self.activate()
@@ -465,6 +466,16 @@ impl CellPart {
             return true;
         }
         match view.downcast_ref::<UIButton>() {
+            // A picker, or a button whose menu is its primary action: its
+            // actions show no menu, its primary action does (iOS 17.4 and
+            // later). Before, VoiceOver taps it, which opens the menu.
+            Some(b) if b.showsMenuAsPrimaryAction() && b.menu().is_some() => {
+                let primary = b.respondsToSelector(objc2::sel!(performPrimaryAction));
+                if b.isEnabled() && primary {
+                    b.performPrimaryAction();
+                }
+                b.isEnabled() && primary
+            }
             Some(b) if b.isEnabled() => {
                 b.sendActionsForControlEvents(
                     UIControlEvents::PrimaryActionTriggered | UIControlEvents::TouchUpInside,
