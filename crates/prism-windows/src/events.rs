@@ -13,7 +13,7 @@ use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXDOUBLECLK, 
 use windows_core::{IInspectable, Interface, Result};
 
 use crate::clicks::{Limits, Series};
-use crate::imp::{defer, dispatch};
+use crate::imp::{defer, dispatch, dispatch_traced};
 use crate::winui::xaml::Controls::Primitives::{ButtonBase, FlyoutBase, FlyoutShowOptions};
 use crate::winui::xaml::Controls::{
     Button, Canvas, MenuFlyout, MenuFlyoutItem, MenuFlyoutSeparator, MenuFlyoutSubItem,
@@ -141,7 +141,7 @@ pub fn clickable(outer: &Canvas, id: NodeId) -> Result<()> {
 
 /// Clickable view `id` tapped at `at` (in it).
 fn tapped(id: NodeId, at: Option<windows::Foundation::Point>) {
-    dispatch(match at {
+    dispatch_traced(match at {
         Some(p) => click_with(
             id,
             Details {
@@ -187,7 +187,7 @@ pub fn button_presses(b: &Button, id: NodeId) -> Result<()> {
             count: p.count,
         };
         if p.clicked {
-            dispatch(click_with(id, d));
+            dispatch_traced(click_with(id, d));
         } else {
             // A click may follow in this turn.
             RELEASED.with(|m| m.borrow_mut().insert(id, d));
@@ -227,8 +227,8 @@ pub fn button_clicked(id: NodeId) {
         return;
     }
     match RELEASED.with(|m| m.borrow_mut().remove(&id)) {
-        Some(d) => dispatch(click_with(id, d)),
-        None => dispatch(UiEvent::Click(id)),
+        Some(d) => dispatch_traced(click_with(id, d)),
+        None => dispatch_traced(UiEvent::Click(id)),
     }
 }
 

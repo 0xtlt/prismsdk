@@ -12,7 +12,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 
 use crate::controls::Content;
-use crate::imp::{State, dispatch};
+use crate::imp::{State, dispatch_traced};
 
 thread_local! {
     /// The keys whose press was reported, until released (#159).
@@ -25,7 +25,7 @@ thread_local! {
 pub fn release_all() {
     let held = HELD.with(|h| h.borrow_mut().take_all());
     for (name, target) in held {
-        dispatch(UiEvent::KeyUp(target, KeyEvent::new(name)));
+        dispatch_traced(UiEvent::KeyUp(target, KeyEvent::new(name)));
     }
 }
 
@@ -77,7 +77,7 @@ pub fn key_event(
                 modifiers: modifiers(),
                 ..KeyEvent::new(name)
             };
-            dispatch(UiEvent::KeyUp(target, key));
+            dispatch_traced(UiEvent::KeyUp(target, key));
         }
         return false;
     }
@@ -124,6 +124,6 @@ pub fn key_event(
     HELD.with(|h| h.borrow_mut().press(code, &name, target));
     let claimed = target.is_some_and(|t| Some(t) == focus && crate::keys::claims(&name));
     let consumed = s.runtime.consumes_key_event(focus, &key);
-    dispatch(UiEvent::Key(target, key));
+    dispatch_traced(UiEvent::Key(target, key));
     claimed || consumed
 }

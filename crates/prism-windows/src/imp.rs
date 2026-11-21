@@ -89,6 +89,16 @@ pub fn dispatch(event: UiEvent) {
     post(WM_PRISM_DISPATCH);
 }
 
+/// [`dispatch`], logged with `PRISM_TRACE_INPUT=1` (what reached the app:
+/// clicks with their position, keys and count; keys with the caret's
+/// edges; key releases).
+pub fn dispatch_traced(event: UiEvent) {
+    if env("PRISM_TRACE_INPUT").is_some() {
+        log!("input: {event:?}");
+    }
+    dispatch(event);
+}
+
 /// Work that needs the state, run from the message loop.
 pub fn defer(f: Deferred) {
     DEFERRED.with(|d| d.borrow_mut().push(f));
