@@ -60,7 +60,7 @@ mod tests;
 mod typography_tests;
 mod uploads;
 
-pub use app::WebApp;
+pub use app::{DEFAULT_MAX_MESSAGE, DEFAULT_MAX_QUEUED, DEFAULT_MAX_SESSIONS, WebApp};
 pub use assets::{IMMUTABLE, REVALIDATE, StaticFile, content_hash};
 pub use compress::Frame;
 pub use css::css;

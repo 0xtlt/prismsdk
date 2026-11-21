@@ -23,6 +23,8 @@ use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use futures_util::{SinkExt, StreamExt};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::WebApp;
 
@@ -67,47 +69,90 @@ async fn page(State(app): State<WebApp>, req: Request) -> Response {
     }
 }
 
+/// The Axum router pings every live page this often; a page that sends
+/// nothing back (not even the browser's automatic pong) for
+/// [`SILENT_PEER`] is gone, and its session ends.
+const PING_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+const SILENT_PEER: std::time::Duration = std::time::Duration::from_secs(75);
+
 async fn socket(State(app): State<WebApp>, parts: Parts, ws: WebSocketUpgrade) -> Response {
-    // A foreign origin (403) or too many sessions (503): no upgrade.
-    if let Err(status) = app.accept_socket(&parts.headers) {
-        return status.into_response();
-    }
+    // A foreign origin (403) or too many sessions (503): no upgrade. The
+    // permit is taken now and moves into the session.
+    let permit = match app.reserve_session(&parts.headers) {
+        Ok(permit) => permit,
+        Err(status) => return status.into_response(),
+    };
+    let max_message = app.inner.max_message;
+    let max_queued = app.inner.max_queued;
     let req = http::Request::from_parts(parts, ());
-    ws.on_upgrade(move |socket| async move {
-        let (mut sink, mut stream) = socket.split();
-        let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<crate::Frame>();
-        // Large messages deflated for pages that can inflate them, on the
-        // session's thread (not the async runtime's).
-        let compress = crate::Frame::negotiated(req.uri());
-        let session = app.connect_request(&req, move |text| {
-            out_tx.send(crate::Frame::encode(text, compress)).is_ok()
-        });
-        let writer = tokio::spawn(async move {
-            while let Some(frame) = out_rx.recv().await {
-                let msg = match frame {
-                    crate::Frame::Text(text) => Message::Text(text.into()),
-                    crate::Frame::Binary(bytes) => Message::Binary(bytes.into()),
-                };
-                if sink.send(msg).await.is_err() {
-                    break;
+    ws.max_message_size(max_message)
+        .max_frame_size(max_message)
+        .on_upgrade(move |socket| async move {
+            let (mut sink, mut stream) = socket.split();
+            let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<crate::Frame>();
+            // Bytes sent to the writer and not written yet: a page that
+            // stops reading ends its session past `max_queued_bytes`.
+            let unsent = Arc::new(AtomicUsize::new(0));
+            let written = unsent.clone();
+            // Large messages deflated for pages that can inflate them, on the
+            // session's thread (not the async runtime's).
+            let compress = crate::Frame::negotiated(req.uri());
+            let session = app.connect_reserved(&req, permit, move |text| {
+                let frame = crate::Frame::encode(text, compress);
+                let n = frame.len();
+                if unsent.fetch_add(n, Ordering::SeqCst) + n > max_queued {
+                    return false;
                 }
-            }
-            let _ = sink.close().await;
-        });
-        while let Some(Ok(msg)) = stream.next().await {
-            match msg {
-                Message::Text(text) => {
-                    if !session.receive(text.as_str()) {
-                        break;
+                out_tx.send(frame).is_ok()
+            });
+            let mut writer = tokio::spawn(async move {
+                let mut ping = tokio::time::interval(PING_EVERY);
+                ping.tick().await;
+                loop {
+                    tokio::select! {
+                        frame = out_rx.recv() => {
+                            let Some(frame) = frame else { break };
+                            let n = frame.len();
+                            let msg = match frame {
+                                crate::Frame::Text(text) => Message::Text(text.into()),
+                                crate::Frame::Binary(bytes) => Message::Binary(bytes.into()),
+                            };
+                            let sent = sink.send(msg).await;
+                            written.fetch_sub(n, Ordering::SeqCst);
+                            if sent.is_err() {
+                                break;
+                            }
+                        }
+                        _ = ping.tick() => {
+                            if sink.send(Message::Ping(Default::default())).await.is_err() {
+                                break;
+                            }
+                        }
                     }
                 }
-                Message::Close(_) => break,
-                _ => {}
+                let _ = sink.close().await;
+            });
+            loop {
+                tokio::select! {
+                    msg = tokio::time::timeout(SILENT_PEER, stream.next()) => match msg {
+                        Ok(Some(Ok(Message::Text(text)))) => {
+                            if !session.receive(text.as_str()) {
+                                break;
+                            }
+                        }
+                        // Pongs and pings say the page is there.
+                        Ok(Some(Ok(Message::Ping(_) | Message::Pong(_) | Message::Binary(_)))) => {}
+                        // Closed, broken, or silent for too long.
+                        _ => break,
+                    },
+                    // The writer stopped (the page is gone, or stopped
+                    // reading): stop reading too, so the session ends now.
+                    _ = &mut writer => break,
+                }
             }
-        }
-        drop(session);
-        writer.abort();
-    })
+            drop(session);
+            writer.abort();
+        })
 }
 
 /// Serves `app` alone on `addr` until the process stops.

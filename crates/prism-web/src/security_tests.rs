@@ -261,3 +261,66 @@ fn s2_a_deeply_nested_push_payload_is_refused() {
     assert_eq!(second.next()["t"], "reset");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// --- S3: session limits on any transport ----------------------------------------------------
+
+/// A button whose click keeps the session busy for a while.
+struct Slow;
+
+impl prism_core::prelude::Render for Slow {
+    fn render(
+        &mut self,
+        cx: &mut prism_core::prelude::Context<Self>,
+    ) -> impl prism_core::prelude::IntoElement {
+        use prism_core::prelude::*;
+        div().child(button("slow").on_click(cx.listener(|_: &mut Self, _, _| {
+            std::thread::sleep(std::time::Duration::from_millis(500))
+        })))
+    }
+}
+
+fn wait_until(what: &str, mut ok: impl FnMut() -> bool) {
+    let start = std::time::Instant::now();
+    while !ok() {
+        assert!(start.elapsed().as_secs() < 10, "{what}");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// S3: `WebApp::connect` (any WebSocket stack) enforces the message size
+/// and the backlog a session lets build up, and frees its permit.
+#[test]
+fn s3_connect_bounds_message_size_and_backlog() {
+    use crate::tests::{Page, op_with_text};
+    let init: prism_core::AppInit = std::sync::Arc::new(|cx: &mut prism_core::App| {
+        let root = cx.new_entity(|_| Slow);
+        cx.set_root(root);
+    });
+    let dir = scratch("s3");
+    let app = crate::WebApp::new(prism_core::AppConfig::default(), init)
+        .data_dir(dir.join("data"))
+        .max_message_size(1024)
+        .max_queued_bytes(4096)
+        .max_sessions(1);
+
+    let page = Page::open(&app, "/ws?path=%2F");
+    page.next();
+    assert_eq!(app.session_count(), 1);
+    // One permit: a second page is refused.
+    let refused = Page::open(&app, "/ws?path=%2F");
+    assert_eq!(refused.next()["t"], "refused");
+    assert!(!page.session.receive("x".repeat(2048)), "oversized");
+    wait_until("the permit is freed", || app.session_count() == 0);
+
+    // A page sending faster than its session handles messages.
+    let page = Page::open(&app, "/ws?path=%2F");
+    let slow = op_with_text(&page.next()["p"], "slow");
+    page.send(json!({ "t": "click", "id": slow }));
+    let small = json!({ "t": "viewport", "w": 100, "h": 100 }).to_string();
+    let accepted = (0..100)
+        .take_while(|_| page.session.receive(small.clone()))
+        .count();
+    assert!(accepted < 100, "the backlog is bounded");
+    wait_until("the permit is freed", || app.session_count() == 0);
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -4,7 +4,8 @@
 //! receives the page's messages, so any WebSocket implementation works.
 
 use std::collections::HashMap;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use http::{HeaderMap, Uri};
@@ -30,16 +31,35 @@ pub(crate) enum Inbound {
     CookieSet(u64, prism_core::Cookie),
 }
 
+/// What one waiting message costs besides its text (its queue slot): a
+/// flood of tiny messages fills the budget too.
+const MESSAGE_OVERHEAD: usize = 64;
+
 /// The server side of one open page. Pass it the page's messages; drop it
 /// (or call [`close`](Session::close)) when the socket closes.
 pub struct Session {
     tx: mpsc::Sender<Inbound>,
+    /// Bytes of messages the session has not handled yet.
+    queued: Arc<AtomicUsize>,
+    max_message: usize,
+    max_queued: usize,
 }
 
 impl Session {
-    /// A text message from the page. Returns `false` once the session ended.
+    /// A text message from the page. Returns `false` once the session
+    /// ended, or when it ends it: a message longer than
+    /// [`WebApp::max_message_size`], or one the session cannot keep up
+    /// with ([`WebApp::max_queued_bytes`] waiting).
     pub fn receive(&self, text: impl Into<String>) -> bool {
-        self.tx.send(Inbound::Message(text.into())).is_ok()
+        let text = text.into();
+        let cost = text.len() + MESSAGE_OVERHEAD;
+        if text.len() > self.max_message
+            || self.queued.fetch_add(cost, Ordering::SeqCst) + cost > self.max_queued
+        {
+            self.close();
+            return false;
+        }
+        self.tx.send(Inbound::Message(text)).is_ok()
     }
 
     /// Ends the session (also done on drop).
@@ -70,7 +90,7 @@ impl WebApp {
         headers: &HeaderMap,
         send: impl Fn(String) -> bool + Send + 'static,
     ) -> Session {
-        self.start(uri, headers, None, send)
+        self.start(uri, headers, None, None, send)
     }
 
     /// [`connect`](WebApp::connect) with the host's context for the app
@@ -84,7 +104,7 @@ impl WebApp {
         context: crate::RequestContext,
         send: impl Fn(String) -> bool + Send + 'static,
     ) -> Session {
-        self.start(uri, headers, Some(context), send)
+        self.start(uri, headers, Some(context), None, send)
     }
 
     /// [`connect`](WebApp::connect) for an upgrade request: its URI, headers
@@ -95,7 +115,19 @@ impl WebApp {
         send: impl Fn(String) -> bool + Send + 'static,
     ) -> Session {
         let context = req.extensions().get::<crate::RequestContext>().cloned();
-        self.start(req.uri(), req.headers(), context, send)
+        self.start(req.uri(), req.headers(), context, None, send)
+    }
+
+    /// [`connect_request`](WebApp::connect_request) with the permit the
+    /// handshake took before upgrading.
+    pub(crate) fn connect_reserved<B>(
+        &self,
+        req: &http::Request<B>,
+        permit: SessionPermit,
+        send: impl Fn(String) -> bool + Send + 'static,
+    ) -> Session {
+        let context = req.extensions().get::<crate::RequestContext>().cloned();
+        self.start(req.uri(), req.headers(), context, Some(permit), send)
     }
 
     fn start(
@@ -103,14 +135,26 @@ impl WebApp {
         uri: &Uri,
         headers: &HeaderMap,
         context: Option<crate::RequestContext>,
+        permit: Option<SessionPermit>,
         send: impl Fn(String) -> bool + Send + 'static,
     ) -> Session {
         let (tx, rx) = mpsc::channel();
-        if let Err(status) = self.accept_socket(headers) {
-            // A foreign origin or too many sessions: tell the page, end now.
-            send(json!({ "t": "refused", "status": status.as_u16() }).to_string());
-            return Session { tx };
-        }
+        let session = Session {
+            tx: tx.clone(),
+            queued: Arc::default(),
+            max_message: self.inner.max_message,
+            max_queued: self.inner.max_queued,
+        };
+        // The permit is taken atomically: concurrent handshakes never get
+        // more than `max_sessions`.
+        let permit = match permit.map_or_else(|| self.reserve_session(headers), Ok) {
+            Ok(permit) => permit,
+            Err(status) => {
+                // A foreign origin or too many sessions: tell the page, end now.
+                send(json!({ "t": "refused", "status": status.as_u16() }).to_string());
+                return session;
+            }
+        };
         let (sid, path, visitor) = self.socket_visitor(uri, headers);
         let origin = crate::host::page_origin(headers, Some(uri));
         let search = crate::app::query_param(uri, "search").map(crate::app::percent_decode);
@@ -124,19 +168,24 @@ impl WebApp {
             headers,
             context,
         );
-        let count = SessionCount::new(&self.inner.sessions);
         let idle = self.inner.idle_timeout;
         let app = self.clone();
         let waker = tx.clone();
         let inbox = tx.clone();
+        let queued = session.queued.clone();
+        // One wake-up waits at a time, however often async work wakes us.
+        let wake_pending = Arc::new(AtomicBool::new(false));
+        let woken = wake_pending.clone();
         std::thread::Builder::new()
             .name("prism-session".into())
             .spawn(move || {
-                let _count = count;
+                let _permit = permit;
                 let mut options = app.options(visitor.with_sid(&sid), path);
                 let device = options.device_info.clone();
                 options.wake_ui = Some(std::sync::Arc::new(move || {
-                    let _ = waker.send(Inbound::Wake);
+                    if !wake_pending.swap(true, Ordering::SeqCst) {
+                        let _ = waker.send(Inbound::Wake);
+                    }
                 }));
                 let runtime = Runtime::with_options(&app.init_with(request, page_request), options);
                 Live {
@@ -166,11 +215,13 @@ impl WebApp {
                     idle,
                     last_seen: Instant::now(),
                     drops: HashMap::new(),
+                    queued,
+                    woken,
                 }
                 .run(rx);
             })
             .expect("prism-web: cannot start a session thread");
-        Session { tx }
+        session
     }
 }
 
@@ -187,21 +238,35 @@ struct Live {
     last_seen: Instant,
     /// Drops uploading (#111): their number → the target node.
     drops: HashMap<u64, NodeId>,
+    /// Bytes of the page's messages not handled yet (see `Session::receive`).
+    queued: Arc<AtomicUsize>,
+    /// A wake-up is waiting in the inbox.
+    woken: Arc<AtomicBool>,
 }
 
-/// Counts a live session while it exists.
-struct SessionCount(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+/// One of the app's [`max_sessions`](WebApp::max_sessions), held by a live
+/// session (or a handshake about to become one) and freed when it ends.
+pub(crate) struct SessionPermit(Arc<AtomicUsize>);
 
-impl SessionCount {
-    fn new(count: &std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Self {
-        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        SessionCount(count.clone())
+impl SessionPermit {
+    /// A permit, unless `max` are taken: checked and taken in one step.
+    pub(crate) fn take(count: &Arc<AtomicUsize>, max: Option<usize>) -> Option<Self> {
+        let mut n = count.load(Ordering::SeqCst);
+        loop {
+            if max.is_some_and(|max| n >= max) {
+                return None;
+            }
+            match count.compare_exchange_weak(n, n + 1, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => return Some(SessionPermit(count.clone())),
+                Err(now) => n = now,
+            }
+        }
     }
 }
 
-impl Drop for SessionCount {
+impl Drop for SessionPermit {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -250,8 +315,14 @@ impl Live {
                 Some(at) => rx.recv_timeout(at.saturating_duration_since(Instant::now())),
                 None => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
             };
-            if let Ok(Inbound::Message(_)) = &inbound {
-                self.last_seen = Instant::now();
+            match &inbound {
+                Ok(Inbound::Message(text)) => {
+                    self.last_seen = Instant::now();
+                    self.queued
+                        .fetch_sub(text.len() + MESSAGE_OVERHEAD, Ordering::SeqCst);
+                }
+                Ok(Inbound::Wake) => self.woken.store(false, Ordering::SeqCst),
+                _ => {}
             }
             let patches = match inbound {
                 // Busy pages still get their timers on time.

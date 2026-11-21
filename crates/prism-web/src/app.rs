@@ -27,6 +27,15 @@ pub struct WebApp {
     pub(crate) inner: Arc<Inner>,
 }
 
+/// Live sessions at once unless [`WebApp::max_sessions`] says otherwise.
+pub const DEFAULT_MAX_SESSIONS: usize = 1024;
+/// The longest message from a page unless [`WebApp::max_message_size`]
+/// says otherwise.
+pub const DEFAULT_MAX_MESSAGE: usize = 8 << 20;
+/// Bytes waiting in each direction of a session unless
+/// [`WebApp::max_queued_bytes`] says otherwise.
+pub const DEFAULT_MAX_QUEUED: usize = 32 << 20;
+
 pub(crate) struct Inner {
     pub config: AppConfig,
     pub init: AppInit,
@@ -47,6 +56,11 @@ pub(crate) struct Inner {
     pub allowed_origins: Vec<String>,
     /// At most this many live sessions at once.
     pub max_sessions: Option<usize>,
+    /// The longest message a page may send, in bytes.
+    pub max_message: usize,
+    /// The most bytes a session lets wait in either direction: messages the
+    /// session has not handled yet, frames the page has not read yet.
+    pub max_queued: usize,
     /// A session that hears nothing from its page for this long ends.
     pub idle_timeout: Option<std::time::Duration>,
     /// Live sessions now.
@@ -111,7 +125,9 @@ impl WebApp {
                 vapid_public_key: env("PRISM_VAPID_PUBLIC_KEY"),
                 head: Default::default(),
                 allowed_origins: Vec::new(),
-                max_sessions: None,
+                max_sessions: Some(DEFAULT_MAX_SESSIONS),
+                max_message: DEFAULT_MAX_MESSAGE,
+                max_queued: DEFAULT_MAX_QUEUED,
                 idle_timeout: None,
                 sessions: Default::default(),
                 first_paint_wait: std::time::Duration::ZERO,
@@ -785,9 +801,27 @@ impl WebApp {
 
     /// At most `n` live sessions at once (each is a thread with its own
     /// runtime): further handshakes are refused with `503`, and the pages
-    /// retry with back-off.
+    /// retry with back-off. 1,024 by default ([`DEFAULT_MAX_SESSIONS`];
+    /// `usize::MAX` for no limit). Each session takes its permit when the
+    /// handshake is checked and frees it when it ends.
     pub fn max_sessions(self, n: usize) -> Self {
         self.configure(|i| i.max_sessions = Some(n))
+    }
+
+    /// The longest message a page may send, in bytes: a longer one ends
+    /// its session (the Axum router also refuses longer WebSocket frames).
+    /// 8 MiB by default ([`DEFAULT_MAX_MESSAGE`]); picked files go in
+    /// chunks of 256 KiB, so only a huge paste comes near it.
+    pub fn max_message_size(self, bytes: usize) -> Self {
+        self.configure(|i| i.max_message = bytes)
+    }
+
+    /// The most bytes a session lets wait, in each direction: messages from
+    /// a page faster than the app handles them, and (with the Axum router)
+    /// patches for a page that stops reading. Past it the session ends and
+    /// the page reconnects. 32 MiB by default ([`DEFAULT_MAX_QUEUED`]).
+    pub fn max_queued_bytes(self, bytes: usize) -> Self {
+        self.configure(|i| i.max_queued = bytes)
     }
 
     /// Ends a session that heard nothing from its page (no event, resize or
@@ -837,6 +871,20 @@ impl WebApp {
             return Err(StatusCode::SERVICE_UNAVAILABLE);
         }
         Ok(())
+    }
+
+    /// [`accept_socket`](WebApp::accept_socket), taking the session's
+    /// permit at once: concurrent handshakes never get more permits than
+    /// [`max_sessions`](WebApp::max_sessions).
+    pub(crate) fn reserve_session(
+        &self,
+        headers: &HeaderMap,
+    ) -> Result<crate::session::SessionPermit, StatusCode> {
+        if !crate::host::origin_allowed(headers, &self.inner.allowed_origins) {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        crate::session::SessionPermit::take(&self.inner.sessions, self.inner.max_sessions)
+            .ok_or(StatusCode::SERVICE_UNAVAILABLE)
     }
 
     /// [`handle`](WebApp::handle) with the host's context for the app
