@@ -389,6 +389,7 @@ The first version, not yet on crates.io.
   container. On iOS, `start_activity` needs `cx.enable_live_activities()` (or
   a widget, or `on_activity_push_token`). Android already added widget
   receivers only for registered widgets. (#35)
+- Linux: tray icons no longer use `ksni`. prism-linux serves the StatusNotifierItem and its `com.canonical.dbusmenu` menu itself, over GDBus (the D-Bus library GTK already links), on a thread of their own. 36 crates leave the lock file, among them zbus 5 and its unmaintained `zvariant`, `zvariant_derive` and `zbus_names` (RUSTSEC-2026-0370, RUSTSEC-2026-0372, RUSTSEC-2026-0371), and none join it: `cargo audit` reports no warnings. A click on the tray icon now brings the app's window forward (it did nothing), with the panel's activation token on Wayland.
 
 ### Fixed
 
@@ -517,6 +518,7 @@ The first version, not yet on crates.io.
   bars).
 - Tasks spawned by a screen built during navigation (a first load in its
   constructor) start at once instead of at the next event. (#23)
+- Linux: a tray set while no panel shows trays appears when one starts (it stayed hidden until the app set it again), and registers again when the panel restarts. Underscores in its menu titles show instead of marking access keys. Setting a tray no longer waits for the panel's answer on GTK's thread.
 
 ### Security
 

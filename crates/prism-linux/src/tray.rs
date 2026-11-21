@@ -1,30 +1,23 @@
 //! Tray icons (`cx.set_tray`): the StatusNotifierItem protocol (KDE, GNOME
-//! with the AppIndicator extension, most Linux panels), through `ksni`.
-//! Menu items come back to the app as `UiEvent::MenuSelect`.
+//! with the AppIndicator extension, most Linux panels), with the menu over
+//! `com.canonical.dbusmenu`. Prism serves both itself, over GDBus, on a
+//! thread of their own (item.rs). Menu items come back to the app as
+//! `UiEvent::MenuSelect`; a click on the icon brings the window forward.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
+mod dbusmenu;
+mod item;
+#[cfg(test)]
+mod tests;
+
+use std::sync::Arc;
 
 use gtk::glib;
-use ksni::blocking::TrayMethods;
+use gtk::prelude::*;
 use prism_core::UiEvent;
 use prism_core::menu::{MenuItemSpec, MenuSpec, TraySpec};
 
-/// A menu item the tray thread can own.
-#[derive(Clone)]
-enum Item {
-    Action {
-        id: u64,
-        title: String,
-        enabled: bool,
-        checked: Option<bool>,
-    },
-    Separator,
-    Sub {
-        title: String,
-        items: Vec<Item>,
-    },
-}
+use dbusmenu::Item;
+use item::{Action, Tray};
 
 fn items(spec: &MenuSpec) -> Vec<Item> {
     spec.items
@@ -53,82 +46,26 @@ fn items(spec: &MenuSpec) -> Vec<Item> {
         .collect()
 }
 
-struct PrismTray {
-    id: String,
-    title: String,
-    tooltip: String,
-    icon: String,
-    items: Vec<Item>,
-}
-
-/// Menu choices run on GTK's thread.
-fn select(id: u64) {
-    glib::MainContext::default().invoke(move || crate::imp::dispatch(UiEvent::MenuSelect(id)));
-}
-
-fn ksni_items(items: &[Item]) -> Vec<ksni::MenuItem<PrismTray>> {
-    items
-        .iter()
-        .map(|i| match i.clone() {
-            Item::Action {
-                id,
-                title,
-                enabled,
-                checked: Some(on),
-            } => ksni::menu::CheckmarkItem {
-                label: title,
-                enabled,
-                checked: on,
-                activate: Box::new(move |_| select(id)),
-                ..Default::default()
-            }
-            .into(),
-            Item::Action {
-                id,
-                title,
-                enabled,
-                checked: None,
-            } => ksni::menu::StandardItem {
-                label: title,
-                enabled,
-                activate: Box::new(move |_| select(id)),
-                ..Default::default()
-            }
-            .into(),
-            Item::Separator => ksni::MenuItem::Separator,
-            Item::Sub { title, items } => ksni::menu::SubMenu {
-                label: title,
-                submenu: ksni_items(&items),
-                ..Default::default()
-            }
-            .into(),
-        })
-        .collect()
-}
-
-impl ksni::Tray for PrismTray {
-    fn id(&self) -> String {
-        self.id.clone()
-    }
-    fn title(&self) -> String {
-        self.title.clone()
-    }
-    fn icon_name(&self) -> String {
-        self.icon.clone()
-    }
-    fn tool_tip(&self) -> ksni::ToolTip {
-        ksni::ToolTip {
-            title: self.tooltip.clone(),
-            ..Default::default()
-        }
-    }
-    fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
-        ksni_items(&self.items)
-    }
-}
-
 thread_local! {
-    static TRAYS: RefCell<HashMap<String, ksni::blocking::Handle<PrismTray>>> = RefCell::new(HashMap::new());
+    /// The window a click on the icon brings forward.
+    static WINDOW: glib::WeakRef<gtk::ApplicationWindow> = glib::WeakRef::new();
+}
+
+/// Runs on the tray thread: the app hears it on GTK's.
+fn act(action: Action) {
+    glib::MainContext::default().invoke(move || match action {
+        Action::Select(id) => crate::imp::dispatch(UiEvent::MenuSelect(id)),
+        Action::Activate { token } => {
+            let Some(window) = WINDOW.with(|w| w.upgrade()) else {
+                return;
+            };
+            if let Some(token) = token {
+                // Wayland: the panel's activation token lets it come forward.
+                window.set_startup_id(&token);
+            }
+            window.present();
+        }
+    });
 }
 
 /// An icon the desktop's theme has: the SF Symbol's name or its first word
@@ -151,8 +88,9 @@ fn icon_name(symbol: Option<&str>) -> String {
         .unwrap_or_else(|| "application-x-executable".into())
 }
 
-pub(crate) fn set(_services: &mut crate::services::LinuxServices, spec: TraySpec) {
-    let tray = PrismTray {
+pub(crate) fn set(services: &mut crate::services::LinuxServices, spec: TraySpec) {
+    WINDOW.with(|w| w.set(Some(&services.window)));
+    let tray = Tray {
         id: format!("prism-{}", spec.id),
         title: spec.title.clone().unwrap_or_default(),
         tooltip: spec
@@ -163,26 +101,9 @@ pub(crate) fn set(_services: &mut crate::services::LinuxServices, spec: TraySpec
         icon: icon_name(spec.icon.as_deref()),
         items: items(&spec.menu),
     };
-    TRAYS.with(|t| {
-        let mut trays = t.borrow_mut();
-        if let Some(handle) = trays.get(&spec.id) {
-            handle.update(move |old| *old = tray);
-            return;
-        }
-        match tray.spawn() {
-            Ok(handle) => {
-                trays.insert(spec.id.clone(), handle);
-            }
-            // No StatusNotifierWatcher (no panel supporting trays).
-            Err(e) => eprintln!("prism-linux: tray {:?} not shown: {e}", spec.id),
-        }
-    });
+    item::set(spec.id, tray, Arc::new(act));
 }
 
 pub(crate) fn remove(id: &str) {
-    TRAYS.with(|t| {
-        if let Some(handle) = t.borrow_mut().remove(id) {
-            let _ = handle.shutdown();
-        }
-    });
+    item::remove(id.to_string());
 }
