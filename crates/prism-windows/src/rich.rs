@@ -206,7 +206,7 @@ fn format(
             if cf.Underline()? != line {
                 cf.SetUnderline(line)?;
             }
-            let fg = r.color.map_or(auto, |c| win_color(pal.resolve(c)));
+            let fg = r.color.map_or(auto, |c| win_color(pal.ink(c)));
             if cf.ForegroundColor()? != fg {
                 cf.SetForegroundColor(fg)?;
             }
@@ -214,7 +214,7 @@ fn format(
             let background = r
                 .background
                 .or_else(|| chip.then(|| pal.accent.with_alpha(0.2)));
-            let bg = background.map_or(auto, |c| win_color(pal.resolve(c)));
+            let bg = background.map_or(auto, |c| win_color(pal.fill(c)));
             if cf.BackgroundColor()? != bg {
                 cf.SetBackgroundColor(bg)?;
             }

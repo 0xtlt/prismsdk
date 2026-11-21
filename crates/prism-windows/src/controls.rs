@@ -387,7 +387,7 @@ pub fn date_time(unix: f64) -> DateTime {
 
 /// The node's text color, resolved (`None` in the style: the theme's).
 pub fn text_color(s: &Style, pal: &Palette) -> Color {
-    s.text_color.map_or(pal.text, |c| pal.resolve(c))
+    pal.ink(s.text_color.unwrap_or(pal.text))
 }
 
 /// Lightweight styling: these theme resources of one control, every state
@@ -485,7 +485,7 @@ pub fn style(c: &Content, n: &Node, pal: &Palette) -> Result<()> {
                 r.SetFontSize(s.font_size as f64)?;
                 r.SetIsEnabled(!n.a11y.disabled)?;
                 if let Some(c) = s.text_color {
-                    r.SetForeground(&brush(pal.resolve(c))?)?;
+                    r.SetForeground(&brush(pal.ink(c))?)?;
                 }
             }
         }
@@ -503,12 +503,12 @@ pub fn style(c: &Content, n: &Node, pal: &Palette) -> Result<()> {
         Content::Time(t) => t.SetIsEnabled(!n.a11y.disabled)?,
         Content::Progress(p) => {
             if let Some(c) = s.text_color {
-                p.SetForeground(&brush(pal.resolve(c))?)?;
+                p.SetForeground(&brush(pal.ink(c))?)?;
             }
         }
         Content::Ring(r) => {
             if let Some(c) = s.text_color {
-                r.SetForeground(&brush(pal.resolve(c))?)?;
+                r.SetForeground(&brush(pal.ink(c))?)?;
             }
         }
         Content::Rich(r) => {
@@ -565,7 +565,8 @@ fn field_look(c: Control, n: &Node, color: Color) -> Result<()> {
 /// inside, Invoke, keyboard activation, focus visuals and UI Automation
 /// from WinUI; Prism draws the look (box, states) under it.
 pub fn clickable_host(id: NodeId) -> Result<Button> {
-    let b = Button::new()?;
+    // Its custom automation peer gives it the node's role (`peers.rs`).
+    let b = crate::peers::button(id)?;
     override_brushes(&b.Resources()?, &BUTTON_CHROME, &transparent()?.cast()?)?;
     b.SetBorderThickness(uniform(0.))?;
     b.SetPadding(uniform(0.))?;
@@ -830,10 +831,10 @@ pub fn set_paths(c: &Content, paths: &[prism_core::Path], pal: &Palette) -> Resu
         let path = XPath::new()?;
         path.SetData(&geometry)?;
         if let Some(f) = p.fill {
-            path.SetFill(&brush(pal.resolve(f))?)?;
+            path.SetFill(&brush(pal.graphic(f))?)?;
         }
         if let Some(s) = p.stroke {
-            path.SetStroke(&brush(pal.resolve(s))?)?;
+            path.SetStroke(&brush(pal.graphic(s))?)?;
             path.SetStrokeThickness(p.width as f64)?;
             if p.round {
                 path.SetStrokeStartLineCap(PenLineCap::Round)?;

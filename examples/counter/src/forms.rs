@@ -342,6 +342,8 @@ impl Forms {
                 text_area()
                     .value(draft)
                     .rows(2)
+                    // Its visible title, for screen readers too.
+                    .accessibility_label(strings::forms_shared(cx))
                     .remote_carets(carets)
                     .on_input(
                         cx.listener(|this, e: &InputEvent, _| this.shared = Some(e.value.clone())),

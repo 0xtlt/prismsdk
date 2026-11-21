@@ -63,9 +63,15 @@ pub struct View {
 
 impl View {
     pub fn new(id: NodeId, kind: NodeKind) -> Result<View> {
-        let outer = Canvas::new()?;
-        let kids = Canvas::new()?;
         let content = controls::create(id, kind)?;
+        // A container stands for its node in UI Automation: its custom
+        // peer gives it the node's role (`peers.rs`).
+        let outer = if content.element().is_none() {
+            crate::peers::canvas(crate::peers::Key::Node(id))?
+        } else {
+            Canvas::new()?
+        };
+        let kids = Canvas::new()?;
         let mut scroll = None;
         if kind == NodeKind::Scroll {
             let sv = ScrollViewer::new()?;
@@ -268,7 +274,13 @@ impl View {
     /// Makes the view a button (`set_clickable`): its children go inside a
     /// chrome-less WinUI `Button` in their place.
     pub fn make_button(&mut self, id: NodeId) -> Result<Option<Button>> {
-        if self.button.is_some() || self.scroll.is_some() || self.kind == NodeKind::Overlay {
+        // A native button is clicked through itself: another button around
+        // it would be an empty Tab stop, nameless for screen readers.
+        if self.button.is_some()
+            || self.scroll.is_some()
+            || self.kind == NodeKind::Overlay
+            || matches!(self.content, Content::Button(..))
+        {
             return Ok(None);
         }
         let b = controls::clickable_host(id)?;

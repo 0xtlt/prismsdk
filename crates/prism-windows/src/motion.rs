@@ -584,13 +584,14 @@ impl crate::widgets::Win {
 
     /// Draws node `id` at frame `r` (its layout frame stays).
     pub fn place_at(&mut self, id: NodeId, r: Rect) {
+        let pal = self.palette_for(id);
         let (Some(n), Some(v)) = (self.scene.get(id), self.views.get_mut(&id)) else {
             return;
         };
         let sticky = self.scene.sticky_offset(n);
         let mut at = n.clone();
         at.frame = r;
-        if let Err(e) = v.place(&at, &self.palette, sticky) {
+        if let Err(e) = v.place(&at, &pal, sticky) {
             crate::win::log!("frame of node {id}: {e}");
         }
     }

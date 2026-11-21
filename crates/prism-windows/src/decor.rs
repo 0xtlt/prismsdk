@@ -92,7 +92,7 @@ impl Decor {
                     if pts.len() < 3 {
                         continue;
                     }
-                    let color = side.color.map_or(text, |c| pal.resolve(c));
+                    let color = pal.edge(side.color.unwrap_or(text));
                     coll.Append(&polygon(pts, color)?)?;
                 }
             }
@@ -285,7 +285,7 @@ impl Inset {
                 Z: 0.,
             })?;
             l.shadow.SetBlurRadius(sh.blur)?;
-            l.shadow.SetColor(win_color(pal.resolve(sh.color)))?;
+            l.shadow.SetColor(win_color(pal.shadow(sh.color)))?;
         }
         Ok(())
     }
@@ -312,7 +312,7 @@ pub fn conic(g: &Gradient, pal: &Palette, w: f32, h: f32) -> Result<Brush> {
         .stops
         .iter()
         .map(|s| {
-            let c = pal.resolve(s.color);
+            let c = pal.fill(s.color);
             Stop {
                 at: s.at.clamp(0., 1.),
                 rgba: [c.r, c.g, c.b, c.a],

@@ -72,7 +72,7 @@ pub fn sync(slot: &mut Option<FontIcon>, outer: &Canvas, n: &Node, pal: &Palette
         .style
         .text_color
         .map_or(pal.text_secondary, |c| c.with_alpha(c.a * 0.6));
-    icon.SetForeground(&brush(color)?)?;
+    icon.SetForeground(&brush(pal.ink(color))?)?;
     let e: UIElement = icon.cast()?;
     let lead = leading(n);
     Canvas::SetLeft(

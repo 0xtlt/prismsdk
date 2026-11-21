@@ -245,6 +245,7 @@ impl TabBar {
             for (text, icon) in &want {
                 let item = SelectorBarItem::new()?;
                 item.SetText(&h(text))?;
+                crate::a11y::tab_item(&item)?;
                 if let Some(g) = crate::keys::fluent_icon(icon) {
                     let fi = FontIcon::new()?;
                     fi.SetFontFamily(&font(ICON_FONT)?)?;

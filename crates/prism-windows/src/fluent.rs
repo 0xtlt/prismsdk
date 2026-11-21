@@ -7,6 +7,8 @@
 
 use prism_core::Color;
 
+use crate::contrast::{Forced, Scheme, SystemColors};
+
 const fn rgba(hex: u32, a: f32) -> Color {
     Color {
         r: ((hex >> 16) & 0xff) as f32 / 255.,
@@ -115,6 +117,9 @@ pub struct Palette {
     pub scrollbar: Color,
     /// The selection highlight of text fields.
     pub selection: Color,
+    /// A contrast theme is on: the app's colors give way to its system
+    /// colors (`contrast.rs`), here for one node (`Win::palette_for`).
+    pub forced: Option<Forced>,
 }
 
 impl Palette {
@@ -151,6 +156,7 @@ impl Palette {
                 focus_inner: rgba(0x000000, 0.7),
                 scrollbar: rgba(0xFFFFFF, 0.545),
                 selection: accent.light1,
+                forced: None,
             }
         } else {
             let a = accent.dark1;
@@ -184,7 +190,52 @@ impl Palette {
                 focus_inner: rgb(0xFFFFFF),
                 scrollbar: rgba(0x000000, 0.447),
                 selection: accent.base,
+                forced: None,
             }
+        }
+    }
+
+    /// A contrast theme's palette: its system colors everywhere (WinUI's
+    /// `HighContrast` theme resources), the app's colors forced to them.
+    pub fn high_contrast(sys: SystemColors) -> Palette {
+        let dark = sys.dark();
+        let clear = Color::TRANSPARENT;
+        Palette {
+            dark,
+            window: sys.window,
+            layer: sys.window,
+            card: sys.window,
+            text: sys.window_text,
+            text_secondary: sys.window_text,
+            text_tertiary: sys.window_text,
+            text_disabled: sys.gray_text,
+            control: sys.button_face,
+            control_hover: sys.button_face,
+            control_pressed: sys.button_face,
+            control_disabled: sys.window,
+            input_active: sys.window,
+            stroke: sys.button_text,
+            stroke_secondary: sys.button_text,
+            strong_stroke: sys.window_text,
+            strong_fill: sys.window_text,
+            alt_fill: sys.window,
+            subtle_hover: clear,
+            subtle_pressed: clear,
+            divider: sys.window_text,
+            accent: sys.highlight,
+            accent_hover: sys.highlight,
+            accent_pressed: sys.highlight,
+            on_accent: sys.highlight_text,
+            focus_outer: sys.window_text,
+            focus_inner: sys.window,
+            scrollbar: sys.window_text,
+            selection: sys.highlight,
+            forced: Some(Forced {
+                sys,
+                scheme: Scheme::default(),
+                // What the app's colors were made for.
+                reference: Palette::new(dark, Accent::default()).window,
+            }),
         }
     }
 
@@ -194,6 +245,49 @@ impl Palette {
             c.dark_variant()
         } else {
             c.light_variant()
+        }
+    }
+
+    /// A background or gradient color of the app's.
+    pub fn fill(&self, c: Color) -> Color {
+        let c = self.resolve(c);
+        self.forced.map_or(c, |f| f.fill(c))
+    }
+
+    /// A text or icon color of the app's.
+    pub fn ink(&self, c: Color) -> Color {
+        let c = self.resolve(c);
+        self.forced.map_or(c, |f| f.ink(c))
+    }
+
+    /// A link's color in a text.
+    pub fn link(&self, c: Color) -> Color {
+        let c = self.resolve(c);
+        self.forced.map_or(c, |f| f.sys.hotlight)
+    }
+
+    /// A border or outline color of the app's.
+    pub fn edge(&self, c: Color) -> Color {
+        let c = self.resolve(c);
+        self.forced.map_or(c, |f| f.edge(c))
+    }
+
+    /// A shadow's color: none under a contrast theme.
+    pub fn shadow(&self, c: Color) -> Color {
+        if self.forced.is_some() {
+            Color::TRANSPARENT
+        } else {
+            self.resolve(c)
+        }
+    }
+
+    /// A drawing's fill or stroke (shapes, charts): kept while it shows on
+    /// the contrast theme's background, else the text's color.
+    pub fn graphic(&self, c: Color) -> Color {
+        let c = self.resolve(c);
+        match self.forced {
+            Some(f) if crate::contrast::contrast(c.with_alpha(1.), f.sys.window) < 3. => f.ink(c),
+            _ => c,
         }
     }
 }

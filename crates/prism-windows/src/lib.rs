@@ -11,7 +11,8 @@
 //! shadows and transforms map to XAML brushes, `Border`s and Composition,
 //! animations to Composition keyframe animations; dialogs and sheets have
 //! `ContentDialog`'s look, popovers are `Flyout`s, alerts `ContentDialog`s.
-//! WinUI's own UI Automation peers expose the tree to screen readers.
+//! WinUI's own UI Automation peers expose the tree to screen readers;
+//! custom peers give the views Prism draws itself their role and states.
 //!
 //! WinUI renders through DWM, so only in a desktop session: over SSH
 //! (session 0) the tree is built and laid out but nothing shows.
@@ -33,6 +34,7 @@
 //! | `motion` | transitions, enter and exit poses, loops, moving frames |
 //! | `overlay` | sheets and dialogs (`ContentDialog`'s look), popovers (`Flyout`) |
 //! | `alert` | `cx.show_alert` as a `ContentDialog` |
+//! | `a11y`, `peers` | roles, states, live regions and dialogs for UI Automation; custom automation peers |
 //! | `text` | `TextBlock`s from `StyledText`; measuring |
 //! | `controls` | Prism's controls as WinUI controls, their events and sizes |
 //! | `bars` | a stack's header, a tab bar |
@@ -56,9 +58,15 @@
 //! | `fonts` | run-time fonts |
 //! | `shell` | the services' hidden window: modal UI, timers, threads |
 //! | `system` | theme, accent, locale, DPI |
-//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel` | pure helpers, tested on every host |
+//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access` | pure helpers, tested on every host |
 
+// Roles and states for UI Automation: no Win32, tested everywhere.
+mod access;
+// High contrast's forced colors: no Win32, tested everywhere.
+mod contrast;
 // Menu shortcuts as accelerators: no Win32, tested everywhere.
+#[cfg(target_os = "windows")]
+mod a11y;
 mod accel;
 #[cfg(target_os = "windows")]
 mod alert;
@@ -110,6 +118,8 @@ mod outer;
 mod overlay;
 #[cfg(target_os = "windows")]
 mod package;
+#[cfg(target_os = "windows")]
+mod peers;
 // Conic gradient pixels, per-side border outlines: no Win32, tested everywhere.
 mod paint;
 #[cfg(target_os = "windows")]

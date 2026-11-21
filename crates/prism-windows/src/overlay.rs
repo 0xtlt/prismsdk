@@ -71,6 +71,10 @@ fn animates(w: &Win) -> bool {
 /// The dialog's colors: the smoke, the panel, its edge.
 fn colors(pal: &Palette) -> (Color, Color, Color) {
     let c = prism_core::rgba;
+    // A contrast theme's: the window's color, edged with its text's.
+    if let Some(f) = pal.forced {
+        return (c(0x000000, 0.3), f.sys.window, f.sys.window_text);
+    }
     // `SmokeFillColorDefault`, `LayerFillColorAlt` over
     // `SolidBackgroundFillColorBase`, `SurfaceStrokeColorDefault`.
     if pal.dark {
@@ -163,7 +167,8 @@ impl Overlay {
             outside(id);
             Ok(())
         }))?;
-        let card = Canvas::new()?;
+        // A dialog window for UI Automation while shown (`a11y.rs`).
+        let card = crate::peers::canvas(crate::peers::Key::Dialog(id))?;
         card.SetVisibility(Visibility::Collapsed)?;
         // Tab and the arrows stay inside while it is open.
         card.SetTabFocusNavigation(KeyboardNavigationMode::Cycle)?;
@@ -199,6 +204,7 @@ impl Overlay {
     /// Takes its elements out of the window.
     pub fn remove(&self) {
         STATES.with(|s| s.borrow_mut().remove(&self.id));
+        crate::a11y::dialog_hidden(self.id);
         if let Some(f) = &self.flyout {
             self.state.by_app.set(true);
             let _ = f.Hide();
@@ -476,6 +482,9 @@ impl Win {
         let (size, pal, dark) = (self.size, self.palette, self.dark());
         let anchor = n.parent.and_then(|p| self.outer(p));
         let rtl = self.env.direction == prism_core::Direction::Rtl;
+        let name = (want == Some(Mode::Panel))
+            .then(|| crate::a11y::dialog_name(&self.scene, id))
+            .flatten();
         let Some(o) = self.layers.get_mut(&id) else {
             return Ok(());
         };
@@ -484,7 +493,10 @@ impl Win {
         if o.shown.is_some() && o.shown != want {
             match o.shown {
                 Some(Mode::Flyout) => o.hide_flyout(),
-                Some(Mode::Panel) => close_panel(o, animate)?,
+                Some(Mode::Panel) => {
+                    crate::a11y::dialog_hidden(id);
+                    close_panel(o, animate)?
+                }
                 None => {}
             }
             o.shown = None;
@@ -504,6 +516,7 @@ impl Win {
                 o.shown = Some(Mode::Panel);
                 style_panel(o, &n, &c, config, size, &pal)?;
                 o.panel_visible(true)?;
+                crate::a11y::dialog_shown(id, &o.card, name.as_deref());
                 if opening {
                     open_panel(o, config, animate)?;
                 }
