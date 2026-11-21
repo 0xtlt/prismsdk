@@ -329,9 +329,22 @@ final class PrismWeb {
             if (allows(s, s.portOrigin)) s.port.postMessage(new WebMessage(json));
             return;
         }
-        if (!allows(s, origin(w.getUrl()))) return;
+        String origin = origin(w.getUrl());
+        if (!allows(s, origin)) return;
         // `json` is valid JSON (checked by Prism), so a JavaScript literal.
-        w.evaluateJavascript("window.dispatchEvent(new MessageEvent(\"message\", { data: " + json + " }));", null);
+        w.evaluateJavascript(messageScript(json, origin), null);
+    }
+
+    /**
+     * The script handing the page the app's message as a `message` event, only if the page
+     * still shows `origin` when it runs (it runs later: the view may have moved to another
+     * document). null: no origin to hold to (every origin allowed). The same script as Rust's
+     * `prism_core::web_view::message_script`.
+     */
+    static String messageScript(String json, String origin) {
+        String dispatch = "window.dispatchEvent(new MessageEvent(\"message\", { data: " + json + " }));";
+        if (origin == null) return dispatch;
+        return "if (location.protocol + \"//\" + location.host === " + JSONObject.quote(origin) + ") " + dispatch;
     }
 
     static void reload(PrismHost.Node n) {

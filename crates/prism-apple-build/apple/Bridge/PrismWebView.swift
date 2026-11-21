@@ -34,6 +34,19 @@ func prismOrigin(_ url: URL?) -> String? {
     return "\(scheme)://\(shown)"
 }
 
+/// The script handing the page the app's message `json` (valid JSON, so a
+/// JavaScript literal) as a `message` event, only if the page still shows
+/// `origin` when it runs (it runs later: the view may have moved to another
+/// document). `nil`: no origin to hold to (every origin allowed). The same
+/// script as Rust's `prism_core::web_view::message_script`.
+func prismMessageScript(_ json: String, _ origin: String?) -> String {
+    let dispatch = "window.dispatchEvent(new MessageEvent(\"message\", { data: \(json) }));"
+    guard let origin = origin else { return dispatch }
+    guard let data = try? JSONSerialization.data(withJSONObject: origin, options: [.fragmentsAllowed]),
+          let literal = String(data: data, encoding: .utf8) else { return "" }
+    return "if (location.protocol + \"//\" + location.host === \(literal)) \(dispatch)"
+}
+
 /// The script message handler, held weakly (WebKit retains its handlers).
 private final class PrismWeakHandler: NSObject, WKScriptMessageHandler {
     weak var host: PrismWebHost?
@@ -205,9 +218,10 @@ final class PrismWebHost: PrismWebBase, WKNavigationDelegate, WKUIDelegate {
     }
 
     private func deliver(_ json: String, _ view: WKWebView) {
-        guard allows(prismOrigin(view.url)) else { return }
+        let origin = prismOrigin(view.url)
+        guard allows(origin) else { return }
         // `json` is valid JSON (checked by Prism), so a JavaScript literal.
-        view.evaluateJavaScript("window.dispatchEvent(new MessageEvent(\"message\", { data: \(json) }));", completionHandler: nil)
+        view.evaluateJavaScript(prismMessageScript(json, origin), completionHandler: nil)
     }
 
     fileprivate func received(_ message: WKScriptMessage) {

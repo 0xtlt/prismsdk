@@ -55,7 +55,7 @@ The app gets the value as JSON either way (`WebMessageEvent::data::<T>()`, `data
 
 **Allowed origins** are the pages the app talks to: by default the URL's own origin, or the ones given with `.allow_origin("https://cdn.example.com")` (once per origin; `"*"` for any). A `file://` page has no origin of its own: talk to it with `"*"`.
 
-- Messages from other origins are dropped, and messages to the page are delivered only while it shows an allowed origin.
+- Messages from other origins are dropped, and messages to the page are delivered only while it shows an allowed origin. A message is for the origin the page shows when the app sends it: if the page has moved to another origin by the time it arrives, it is dropped.
 - Native web views keep their main frame on them: a link to another origin opens in the system browser. Scripts and redirects may still navigate; their messages are filtered.
 - On the web, a frame cannot be held back: it may navigate anywhere. Only its messages are filtered.
 - Messages must come from the main frame of the web view (an `<iframe>` inside the page does not speak for it).

@@ -526,15 +526,15 @@ fn navigate(core: &CoreWebView2, url: &str) {
 }
 
 /// Delivers `json` to the page as a `message` event, if it shows an
-/// allowed origin.
+/// allowed origin, and still shows it when the script runs.
 fn deliver(state: &Rc<RefCell<State>>, core: &CoreWebView2, json: &str) {
     let source = core.Source().map(|s| s.to_string()).unwrap_or_default();
-    if !state.borrow().allows(page_origin(&source).as_deref()) {
+    let origin = page_origin(&source);
+    if !state.borrow().allows(origin.as_deref()) {
         return;
     }
     // `json` is valid JSON (checked by Prism), so a JavaScript literal.
-    let script =
-        format!("window.dispatchEvent(new MessageEvent(\"message\", {{ data: {json} }}));");
+    let script = prism_core::web_view::message_script(json, origin.as_deref());
     let _ = core.ExecuteScriptAsync(&h(&script));
 }
 
