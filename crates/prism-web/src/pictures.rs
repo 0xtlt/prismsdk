@@ -10,6 +10,9 @@
 //! - Only `image/*` answers are passed on, with `nosniff` and a sandboxing
 //!   CSP (an SVG opened on its own runs no script on the app's origin), and
 //!   `Cache-Control: private` (never on a shared cache or CDN).
+//! - The server connects only to public addresses, unless the app trusts
+//!   the origin (`WebApp::trust_media_origin`), and follows redirects only
+//!   within the origin: a URL cannot reach the server's private network.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, OnceLock};
@@ -78,7 +81,7 @@ pub(crate) fn proxied(base: &str, sid: Option<&str>, src: &str) -> Option<String
 }
 
 /// `GET <base>/_prism/picture/<id>` from the session `sid` (its cookie).
-pub(crate) fn serve(id: &str, sid: Option<&str>) -> Response<Vec<u8>> {
+pub(crate) fn serve(id: &str, sid: Option<&str>, trusted: &[String]) -> Response<Vec<u8>> {
     let src = {
         let r = registry().lock().unwrap();
         match r.entries.get(id) {
@@ -87,7 +90,7 @@ pub(crate) fn serve(id: &str, sid: Option<&str>) -> Response<Vec<u8>> {
         }
     };
     let (url, headers) = prism_core::picture_source(&src);
-    let mut request = prism_http::Request::get(url);
+    let mut request = upstream(url, trusted);
     for (name, value) in headers {
         request = request.header(name, value);
     }
@@ -145,7 +148,12 @@ const MEDIA_CHUNK: u64 = 4 * 1024 * 1024;
 /// `Range` header). The id is the one [`proxied`] gives (the same
 /// registry); the upstream gets the headers and a range of at most
 /// [`MEDIA_CHUNK`] bytes.
-pub(crate) fn serve_media(id: &str, sid: Option<&str>, range: Option<&str>) -> Response<Vec<u8>> {
+pub(crate) fn serve_media(
+    id: &str,
+    sid: Option<&str>,
+    range: Option<&str>,
+    trusted: &[String],
+) -> Response<Vec<u8>> {
     let src = {
         let r = registry().lock().unwrap();
         match r.entries.get(id) {
@@ -158,8 +166,7 @@ pub(crate) fn serve_media(id: &str, sid: Option<&str>, range: Option<&str>) -> R
         .unwrap_or(start + MEDIA_CHUNK - 1)
         .min(start + MEDIA_CHUNK - 1);
     let (url, headers) = prism_core::picture_source(&src);
-    let mut request =
-        prism_http::Request::get(url).header("Range", format!("bytes={start}-{last}"));
+    let mut request = upstream(url, trusted).header("Range", format!("bytes={start}-{last}"));
     for (name, value) in headers {
         request = request.header(name, value);
     }
@@ -224,7 +231,42 @@ pub(crate) fn serve_media(id: &str, sid: Option<&str>, range: Option<&str>) -> R
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
+    h.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("default-src 'none'; sandbox"),
+    );
     r
+}
+
+/// The request for `url` (a picture or video with headers): redirects
+/// within its origin only, and public addresses only unless the app trusts
+/// the origin.
+fn upstream(url: &str, trusted: &[String]) -> prism_http::Request {
+    let request = prism_http::Request::get(url).redirects(prism_http::Redirects::SameOrigin);
+    match origin(url) {
+        Some(o) if trusted.contains(&o) => request,
+        _ => request.public_only(),
+    }
+}
+
+/// `scheme://host:port` of an HTTP(S) URL, lowercase, with the default port
+/// written out; `None` for anything else.
+pub(crate) fn origin(url: &str) -> Option<String> {
+    let uri: http::Uri = url.parse().ok()?;
+    let scheme = uri.scheme_str()?.to_ascii_lowercase();
+    let port = match (scheme.as_str(), uri.port_u16()) {
+        (_, Some(p)) => p,
+        ("https", None) => 443,
+        ("http", None) => 80,
+        _ => return None,
+    };
+    if scheme != "https" && scheme != "http" {
+        return None;
+    }
+    Some(format!(
+        "{scheme}://{}:{port}",
+        uri.host()?.to_ascii_lowercase()
+    ))
 }
 
 /// `bytes=start-[end]` (one range; anything else: from the start).
@@ -290,22 +332,44 @@ mod tests {
             }
         });
         let src = format!("http://{addr}/talk.mp4\nAuthorization: Bearer s3cret");
+        // Loopback: trusted.
+        let t = trust(&format!("http://{addr}"));
         let url = proxied("/app", Some("sid-a"), &src).unwrap();
         let id = url.rsplit('/').next().unwrap();
         assert_eq!(
-            serve_media(id, Some("sid-b"), None).status(),
+            serve_media(id, Some("sid-b"), None, &t).status(),
             StatusCode::NOT_FOUND
         );
-        let r = serve_media(id, Some("sid-a"), Some("bytes=2-5"));
+        let r = serve_media(id, Some("sid-a"), Some("bytes=2-5"), &t);
         assert_eq!(r.status(), StatusCode::PARTIAL_CONTENT);
         assert_eq!(r.body(), b"2345");
         assert_eq!(r.headers()[header::CONTENT_RANGE], "bytes 2-5/10");
         assert_eq!(r.headers()[header::CONTENT_TYPE], "video/mp4");
-        let all = serve_media(id, Some("sid-a"), None);
+        let all = serve_media(id, Some("sid-a"), None, &t);
         assert_eq!(all.body(), b"0123456789");
     }
     use std::io::{Read, Write};
     use std::net::TcpListener;
+
+    /// The upstreams of these tests are on loopback: the app trusts them.
+    fn trust(url: &str) -> Vec<String> {
+        origin(url).into_iter().collect()
+    }
+
+    #[test]
+    fn origins_are_normalized() {
+        assert_eq!(
+            origin("HTTPS://API.example/x").unwrap(),
+            "https://api.example:443"
+        );
+        assert_eq!(
+            origin("http://10.0.0.5:8080").unwrap(),
+            "http://10.0.0.5:8080"
+        );
+        assert_eq!(origin("http://[::1]/a").unwrap(), "http://[::1]:80");
+        assert_eq!(origin("ftp://x.example/"), None);
+        assert_eq!(origin("logo.png"), None);
+    }
 
     fn upstream(n: usize, ctype: &'static str) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -331,7 +395,9 @@ mod tests {
 
     #[test]
     fn proxies_with_the_headers_for_its_session_only() {
-        let src = format!("{}\nAuthorization: Bearer s3cret", upstream(1, "image/png"));
+        let up = upstream(1, "image/png");
+        let t = trust(&up);
+        let src = format!("{up}\nAuthorization: Bearer s3cret");
         assert_eq!(proxied("/app", Some("a"), "https://x/y.png"), None);
         let url = proxied("/app", Some("sid-a"), &src).unwrap();
         assert!(url.starts_with("/app/_prism/picture/"));
@@ -340,10 +406,13 @@ mod tests {
         assert_eq!(proxied("/app", Some("sid-a"), &src).unwrap(), url);
         assert_ne!(proxied("/app", Some("sid-b"), &src).unwrap(), url);
         let id = url.rsplit('/').next().unwrap();
-        assert_eq!(serve(id, Some("sid-b")).status(), StatusCode::NOT_FOUND);
-        assert_eq!(serve(id, None).status(), StatusCode::NOT_FOUND);
-        assert_eq!(serve("nope", Some("sid-a")).status(), StatusCode::NOT_FOUND);
-        let ok = serve(id, Some("sid-a"));
+        assert_eq!(serve(id, Some("sid-b"), &t).status(), StatusCode::NOT_FOUND);
+        assert_eq!(serve(id, None, &t).status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            serve("nope", Some("sid-a"), &t).status(),
+            StatusCode::NOT_FOUND
+        );
+        let ok = serve(id, Some("sid-a"), &t);
         assert_eq!(ok.status(), StatusCode::OK);
         assert_eq!(ok.body(), b"img");
         assert_eq!(ok.headers()[header::CONTENT_TYPE], "image/png");
@@ -358,15 +427,17 @@ mod tests {
 
     #[test]
     fn refuses_what_is_not_an_image() {
-        let src = format!("{}\nAuthorization: Bearer s3cret", upstream(2, "text/html"));
+        let up = upstream(2, "text/html");
+        let t = trust(&up);
+        let src = format!("{up}\nAuthorization: Bearer s3cret");
         let url = proxied("", Some("s"), &src).unwrap();
         let id = url.rsplit('/').next().unwrap();
-        assert_eq!(serve(id, Some("s")).status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(serve(id, Some("s"), &t).status(), StatusCode::BAD_GATEWAY);
         // A wrong token upstream: not found.
         let bad = src.replace("s3cret", "wrong");
         let url = proxied("", Some("s"), &bad).unwrap();
         assert_eq!(
-            serve(url.rsplit('/').next().unwrap(), Some("s")).status(),
+            serve(url.rsplit('/').next().unwrap(), Some("s"), &t).status(),
             StatusCode::NOT_FOUND
         );
     }

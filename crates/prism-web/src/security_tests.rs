@@ -324,3 +324,104 @@ fn s3_connect_bounds_message_size_and_backlog() {
     wait_until("the permit is freed", || app.session_count() == 0);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// --- S6: pictures fetched by the server ------------------------------------------------------
+
+/// An upstream on a loopback port answering every request with `reply`:
+/// its origin, how many requests reached it, and the last one's head.
+fn upstream(
+    reply: Vec<u8>,
+) -> (
+    String,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    std::sync::Arc<std::sync::Mutex<String>>,
+) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let head = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let (count, last) = (hits.clone(), head.clone());
+    std::thread::spawn(move || {
+        for mut s in listener.incoming().flatten() {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut buf = [0u8; 4096];
+            let n = s.read(&mut buf).unwrap_or(0);
+            *last.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).into_owned();
+            let _ = s.write_all(&reply);
+        }
+    });
+    (origin, hits, head)
+}
+
+/// A page showing `url` with header `X-Token`: the proxied picture's
+/// answer, from the browser that rendered it.
+fn fetch_picture(tag: &str, url: &str, trust: Option<&str>) -> http::Response<Vec<u8>> {
+    use prism_core::prelude::*;
+    struct Pic(String);
+    impl Render for Pic {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            picture(self.0.clone()).header("X-Token", "t0ken")
+        }
+    }
+    let url = url.to_string();
+    let init: prism_core::AppInit = std::sync::Arc::new(move |cx: &mut App| {
+        let url = url.clone();
+        let root = cx.new_entity(|_| Pic(url));
+        cx.set_root(root);
+    });
+    let mut app = crate::WebApp::new(prism_core::AppConfig::default(), init).data_dir(scratch(tag));
+    if let Some(origin) = trust {
+        app = app.trust_media_origin(origin);
+    }
+    let cookie = ("cookie", "prism_sid=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let get = |path: &str| {
+        let req = http::Request::get(path)
+            .header(cookie.0, cookie.1)
+            .body(())
+            .unwrap();
+        app.handle(&req)
+    };
+    let html = String::from_utf8(get("/").body().clone()).unwrap();
+    let id = html
+        .split("/_prism/picture/")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .expect("a proxied picture");
+    get(&format!("/_prism/picture/{id}"))
+}
+
+const PNG: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 4\r\nConnection: close\r\n\r\npng!";
+
+#[test]
+fn s6_a_picture_with_headers_reaches_no_private_origin_unless_trusted() {
+    let (origin, hits, _) = upstream(PNG.to_vec());
+    let url = format!("{origin}/a.png");
+    let res = fetch_picture("s6-private", &url, None);
+    assert_eq!(res.status(), http::StatusCode::BAD_GATEWAY);
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+    // `localhost` is no way around it.
+    let local = url.replace("127.0.0.1", "localhost");
+    let res = fetch_picture("s6-localhost", &local, None);
+    assert_eq!(res.status(), http::StatusCode::BAD_GATEWAY);
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+    // Trusted: one request, with the header the app gave.
+    let res = fetch_picture("s6-trusted", &url, Some(&origin));
+    assert_eq!(res.status(), http::StatusCode::OK);
+    assert_eq!(res.body().as_slice(), b"png!");
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn s6_a_trusted_origin_cannot_redirect_elsewhere() {
+    let (target, redirected, _) = upstream(PNG.to_vec());
+    let (origin, hits, _) = upstream(
+        format!("HTTP/1.1 302 Found\r\nLocation: {target}/b.png\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .into_bytes(),
+    );
+    let res = fetch_picture("s6-redirect", &format!("{origin}/a.png"), Some(&origin));
+    assert_eq!(res.status(), http::StatusCode::BAD_GATEWAY);
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(redirected.load(std::sync::atomic::Ordering::SeqCst), 0);
+}

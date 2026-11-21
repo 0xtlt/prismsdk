@@ -86,3 +86,28 @@ fn headers_travel_with_a_remote_picture() {
         ("logo.png", Vec::new())
     );
 }
+
+/// S6 (security review): line breaks in a plain URL (content an app shows
+/// as is) never become headers; only `header` adds them, as tokens.
+#[test]
+fn a_plain_url_never_carries_headers() {
+    let mut app = App::new();
+    let url = "https://evil.example/x.png\nAuthorization: Bearer stolen\r\nX-A:\tb";
+    let node = snapshot_one(&mut app, picture(url));
+    assert_eq!(prism_core::picture_source(&node.text).1, Vec::new());
+    assert!(!node.text.contains(['\n', '\r', '\t']), "{:?}", node.text);
+    let node = snapshot_one(&mut app, video(url));
+    assert_eq!(prism_core::picture_source(&node.text).1, Vec::new());
+    // A header name is a token: no separator, space or colon.
+    let node = snapshot_one(
+        &mut app,
+        picture("https://api.example/me.png")
+            .header("X-A: b", "c")
+            .header("Bad Name", "c")
+            .header("X-Ok", "v"),
+    );
+    assert_eq!(
+        prism_core::picture_source(&node.text).1,
+        vec![("X-Ok", "v")]
+    );
+}

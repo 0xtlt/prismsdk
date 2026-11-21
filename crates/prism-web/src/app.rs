@@ -54,6 +54,9 @@ pub(crate) struct Inner {
     pub head: crate::host::Head,
     /// Socket origins accepted besides the page's own (`*`: any).
     pub allowed_origins: Vec<String>,
+    /// Origins (`scheme://host:port`) whose pictures and videos with
+    /// headers the server may fetch on a private address.
+    pub media_origins: Vec<String>,
     /// At most this many live sessions at once.
     pub max_sessions: Option<usize>,
     /// The longest message a page may send, in bytes.
@@ -125,6 +128,7 @@ impl WebApp {
                 vapid_public_key: env("PRISM_VAPID_PUBLIC_KEY"),
                 head: Default::default(),
                 allowed_origins: Vec::new(),
+                media_origins: Vec::new(),
                 max_sessions: Some(DEFAULT_MAX_SESSIONS),
                 max_message: DEFAULT_MAX_MESSAGE,
                 max_queued: DEFAULT_MAX_QUEUED,
@@ -334,7 +338,11 @@ impl WebApp {
         let headers = req.headers();
         let mut response = if let Some(id) = path.strip_prefix("/_prism/picture/") {
             // A picture with headers, fetched here for its session.
-            crate::pictures::serve(id, cookie_header(headers).and_then(session_id).as_deref())
+            crate::pictures::serve(
+                id,
+                cookie_header(headers).and_then(session_id).as_deref(),
+                &self.inner.media_origins,
+            )
         } else if let Some(id) = path.strip_prefix("/_prism/media/") {
             // A video with headers (#207), in ranges.
             let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
@@ -342,6 +350,7 @@ impl WebApp {
                 id,
                 cookie_header(headers).and_then(session_id).as_deref(),
                 range,
+                &self.inner.media_origins,
             )
         } else if let Some(id) = path.strip_prefix("/_prism/download/") {
             // A file the app handed to this session (#210).
@@ -797,6 +806,16 @@ impl WebApp {
     {
         let origins: Vec<String> = origins.into_iter().map(Into::into).collect();
         self.configure(|i| i.allowed_origins.extend(origins))
+    }
+
+    /// Lets the server fetch pictures and videos with headers
+    /// (`picture(url).header(…)`) from `origin` (`https://api.internal`,
+    /// `http://10.0.0.5:8080`) although it is on a private, loopback or
+    /// link-local address. Other origins must resolve to public addresses
+    /// only; redirects to another origin are never followed.
+    pub fn trust_media_origin(self, origin: impl AsRef<str>) -> Self {
+        let origin = crate::pictures::origin(origin.as_ref());
+        self.configure(|i| i.media_origins.extend(origin))
     }
 
     /// At most `n` live sessions at once (each is a thread with its own
@@ -1307,9 +1326,11 @@ mod tests {
             cx.set_root(root);
         });
         let dir = std::env::temp_dir().join(format!("prism-webapp-pic-{}", std::process::id()));
+        // The upstream is on loopback: the app trusts it.
         let app = WebApp::new(config, init)
             .data_dir(dir.join("data"))
-            .base_path("/app");
+            .base_path("/app")
+            .trust_media_origin(format!("http://{addr}"));
         let page = get(
             &app,
             "/app/",

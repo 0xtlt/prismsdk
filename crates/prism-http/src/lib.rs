@@ -60,6 +60,8 @@ pub struct Request {
     pub secret_headers: Vec<String>,
     /// The largest response body accepted, in bytes (#250).
     pub max_body: Option<u64>,
+    /// Connect only to publicly routable addresses ([`Request::public_only`]).
+    pub public_only: bool,
 }
 
 /// Headers a redirect to another origin always drops (#250), like browsers.
@@ -76,6 +78,7 @@ impl Request {
             redirects: Redirects::default(),
             secret_headers: Vec::new(),
             max_body: None,
+            public_only: false,
         }
     }
     pub fn get(url: impl Into<String>) -> Self {
@@ -105,6 +108,16 @@ impl Request {
         self.secret_headers.push(name.to_ascii_lowercase());
         self.header(name, value)
     }
+    /// Connects only to publicly routable addresses: every address the host
+    /// resolves to (at each redirect too) must be public, not loopback,
+    /// private, link-local or reserved, IPv4 written as IPv6 included.
+    /// Proxy environment variables are ignored, since the check needs the
+    /// destination's address. For URLs that come from users.
+    pub fn public_only(mut self) -> Self {
+        self.public_only = true;
+        self
+    }
+
     /// Which redirects to follow (#250): [`Redirects::Follow`]`(10)` by
     /// default.
     pub fn redirects(mut self, redirects: Redirects) -> Self {
@@ -189,12 +202,20 @@ impl Request {
     /// none, so secret headers are dropped when one leaves the origin.
     #[allow(clippy::type_complexity)]
     fn open(self) -> Result<(u16, Vec<(String, String)>, ureq::http::Response<ureq::Body>), Error> {
-        let agent: ureq::Agent = ureq::Agent::config_builder()
+        let config = ureq::Agent::config_builder()
             .timeout_global(Some(self.timeout))
             .http_status_as_error(false)
-            .max_redirects(0)
-            .build()
-            .into();
+            .max_redirects(0);
+        let agent: ureq::Agent = if self.public_only {
+            // No proxy: the resolver must see the destination.
+            ureq::Agent::with_parts(
+                config.proxy(None).build(),
+                ureq::unversioned::transport::DefaultConnector::new(),
+                PublicOnly::default(),
+            )
+        } else {
+            config.build().into()
+        };
         let origin = origin_of(&self.url);
         let (mut method, mut url, mut headers, mut body) =
             (self.method, self.url, self.headers, self.body);
@@ -409,6 +430,79 @@ impl FetchStream for AsyncApp {
         on_chunk: impl FnMut(&[u8], Progress) -> bool + Send + 'static,
     ) -> Background<Result<ResponseHead, Error>> {
         self.background(move || request.send_stream_blocking(on_chunk))
+    }
+}
+
+/// The resolver of [`Request::public_only`]: the system's answer, refused
+/// when any address in it is not public (a name can mix them).
+#[derive(Debug, Default)]
+struct PublicOnly(ureq::unversioned::resolver::DefaultResolver);
+
+impl ureq::unversioned::resolver::Resolver for PublicOnly {
+    fn resolve(
+        &self,
+        uri: &ureq::http::Uri,
+        config: &ureq::config::Config,
+        timeout: ureq::unversioned::transport::NextTimeout,
+    ) -> Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
+        let addrs = self.0.resolve(uri, config, timeout)?;
+        screen(uri.host().unwrap_or(""), &addrs)?;
+        Ok(addrs)
+    }
+}
+
+/// An error unless every address of `host` is public.
+fn screen(host: &str, addrs: &[std::net::SocketAddr]) -> Result<(), ureq::Error> {
+    if addrs.is_empty() || addrs.iter().any(|a| !is_public(a.ip())) {
+        return Err(ureq::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("{host}: not a public address"),
+        )));
+    }
+    Ok(())
+}
+
+/// Whether `ip` is a publicly routable unicast address (the rules of
+/// `prism-push`'s endpoint check): not loopback, private, shared,
+/// link-local, multicast, documentation or reserved, in IPv4 or IPv6,
+/// including IPv4 written as IPv6 (mapped, NAT64, 6to4).
+fn is_public(ip: std::net::IpAddr) -> bool {
+    use std::net::{IpAddr, Ipv4Addr};
+    fn v4(ip: Ipv4Addr) -> bool {
+        let [a, b, c, _] = ip.octets();
+        !(a == 0
+            || a == 10
+            || a == 127
+            || (a == 100 && (64..128).contains(&b))
+            || (a == 169 && b == 254)
+            || (a == 172 && (16..32).contains(&b))
+            || (a == 192 && b == 0 && (c == 0 || c == 2))
+            || (a == 192 && b == 88 && c == 99)
+            || (a == 192 && b == 168)
+            || (a == 198 && (b == 18 || b == 19))
+            || (a == 198 && b == 51 && c == 100)
+            || (a == 203 && b == 0 && c == 113)
+            || a >= 224)
+    }
+    match ip {
+        IpAddr::V4(ip) => v4(ip),
+        IpAddr::V6(ip) => {
+            let s = ip.segments();
+            let embedded = |hi: u16, lo: u16| v4(Ipv4Addr::from(((hi as u32) << 16) | lo as u32));
+            if s[..5] == [0; 5] && s[5] == 0xffff {
+                return embedded(s[6], s[7]);
+            }
+            if s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+                return embedded(s[6], s[7]);
+            }
+            if s[0] == 0x2002 {
+                return embedded(s[1], s[2]);
+            }
+            (s[0] & 0xe000) == 0x2000
+                && !(s[0] == 0x2001 && s[1] < 0x0200)
+                && !(s[0] == 0x2001 && s[1] == 0x0db8)
+                && !(s[0] == 0x3fff && s[1] < 0x1000)
+        }
     }
 }
 
@@ -643,5 +737,45 @@ mod tests {
         );
         assert_eq!(resolve(base, "http://x.org/e").unwrap(), "http://x.org/e");
         assert_eq!(resolve(base, " "), None);
+    }
+
+    /// S6 (security review): a public-only request never connects to a
+    /// private address, whatever the name or the redirect.
+    #[test]
+    fn s6_public_only_requests_reach_public_addresses_only() {
+        let addr = |s: &str| std::net::SocketAddr::new(s.parse().unwrap(), 443);
+        assert!(screen("p.example", &[addr("8.8.8.8"), addr("2a00:1450::1")]).is_ok());
+        for bad in [
+            vec![addr("127.0.0.1")],
+            vec![addr("10.1.2.3")],
+            vec![addr("169.254.169.254")],
+            vec![addr("::1")],
+            vec![addr("fd00::1")],
+            vec![addr("::ffff:192.168.1.1")],
+            vec![addr("64:ff9b::a00:1")],
+            // A changed answer that adds a private address.
+            vec![addr("8.8.8.8"), addr("192.168.1.1")],
+            vec![],
+        ] {
+            assert!(screen("p.example", &bad).is_err(), "{bad:?}");
+        }
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        for url in [
+            format!("http://127.0.0.1:{port}/"),
+            format!("http://localhost:{port}/"),
+            format!("http://[::ffff:127.0.0.1]:{port}/"),
+        ] {
+            let err = Request::get(&url)
+                .public_only()
+                .send_blocking()
+                .unwrap_err();
+            assert!(err.0.contains("not a public address"), "{url}: {}", err.0);
+        }
+        assert!(
+            listener.accept().is_err(),
+            "a public-only request connected"
+        );
     }
 }

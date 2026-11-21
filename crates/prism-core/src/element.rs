@@ -2269,7 +2269,7 @@ pub fn cover_crop(image: (f32, f32), frame: (f32, f32), at: (f32, f32)) -> (f32,
 /// from `assets/`). Decorative unless given [`Picture::alt`].
 pub fn picture(src: impl Into<String>) -> Picture {
     let mut n = VNode::new(NodeKind::Picture);
-    n.text = src.into();
+    n.text = media_url(src.into());
     n.value = Some(0.);
     n.a11y.hidden = true;
     Picture(n)
@@ -2399,20 +2399,42 @@ impl Picture {
     /// of the on-disk image cache). On the web the server fetches it: the
     /// page gets a same-origin URL that only this browser's session can load,
     /// and the header never reaches the browser. Ignored for assets, files,
-    /// `data:` URLs and SVG. Line breaks in `name` or `value` are dropped.
+    /// `data:` URLs and SVG. `name` must be an HTTP token (else the header is
+    /// dropped); control characters leave `value`.
     pub fn header(mut self, name: impl AsRef<str>, value: impl AsRef<str>) -> Self {
-        let clean = |s: &str| s.replace(['\r', '\n'], "");
-        let (name, value) = (clean(name.as_ref()), clean(value.as_ref()));
-        let remote = self.0.text.starts_with("http://") || self.0.text.starts_with("https://");
-        if self.0.kind == NodeKind::Picture && remote && !name.trim().is_empty() {
-            // The source is the URL, then one `name: value` line per header
-            // (URLs and header values never contain line breaks).
-            self.0.text.push('\n');
-            self.0.text.push_str(name.trim());
-            self.0.text.push_str(": ");
-            self.0.text.push_str(value.trim());
+        if self.0.kind == NodeKind::Picture {
+            push_header(&mut self.0.text, name.as_ref(), value.as_ref());
         }
         self
+    }
+}
+
+/// A picture or video URL as its node keeps it: without control characters
+/// (browsers drop line breaks and tabs from URLs too), so only a header
+/// added with `header` starts a new line.
+pub(crate) fn media_url(src: String) -> String {
+    if src.contains(char::is_control) {
+        src.replace(char::is_control, "")
+    } else {
+        src
+    }
+}
+
+/// Adds header `name: value` to a remote media source: the source is the
+/// URL, then one `name: value` line per header ([`picture_source`]). The
+/// name must be an HTTP token; control characters leave the value.
+pub(crate) fn push_header(text: &mut String, name: &str, value: &str) {
+    let name = name.trim();
+    let token = !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b));
+    let remote = text.starts_with("http://") || text.starts_with("https://");
+    if token && remote {
+        text.push('\n');
+        text.push_str(name);
+        text.push_str(": ");
+        text.push_str(media_url(value.to_string()).trim());
     }
 }
 
