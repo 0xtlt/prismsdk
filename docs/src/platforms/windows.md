@@ -285,6 +285,12 @@ kinds and services come next (see [Not yet](#not-yet)).
 | Clipboard | text, HTML (`HTML Format`), RTF, pictures (`PNG` and `CF_DIBV5`, read back from either or from a plain DIB), files (`CF_HDROP` as `text/uri-list`), other MIME types as formats of their name |
 | Run-time fonts | written to `%LOCALAPPDATA%\<app>\prism-fonts` and named `ms-appx:///prism-fonts/<hash>.ttf#Family`. XAML loads font files by URI only, and an unpackaged app's `ms-appx:///` is its executable's folder (absolute paths, `file:` URIs and `AddFontResourceEx` are ignored): the app hands XAML its resource manager (`Application.ResourceManagerRequested`), the default one with a fallback (`ResourceManager.ResourceNotFound`) that resolves `prism-fonts/…` to the file in the data folder. So an app installed in a read-only folder (`C:\Program Files`) loads fonts too, nothing is installed, and the font is the app's alone |
 | Background tasks | timers while the app runs, like on Linux (`PRISM_BACKGROUND_INTERVAL` shortens them) |
+| Location | `Geolocator`, Windows' location service (a GNSS receiver where the PC has one, else Wi-Fi networks and the IP address). `capabilities().location` when the location service (`lfsvc`) is installed and not disabled (it starts on demand, so it need not be running), no policy turns location off and the service has a provider. The permission is Settings › Privacy & security › Location, read without asking (`AppCapability::CheckAccess`: the device's switch, the user's, the desktop apps' one); `LocationAlways` is the same permission (a desktop app has no background limit). `request_permission` asks with `RequestAccessAsync` (Windows 11 24H2 and later show a prompt, once per app). Positions with the web's settings (`Coarse`: a kilometer and ten minutes, `Balanced`: 100 m and 30 s, `Best`: the best and 30 s; 20 s at most); a watch is `PositionChanged` with a movement threshold. Refused is `Denied`, no provider `Unavailable`, no position in time "location unknown" |
+| Motion | `Windows.Devices.Sensors`, which tablets and 2-in-1s have: `Accelerometer` (its fused gravity and linear readings where Windows has them, else gravity is the accelerometer low-pass filtered), `Gyrometer`, `Inclinometer`, read every `interval` on a thread of the watch's own, in Apple's units and axes. No permission. `capabilities().motion` when the PC has an accelerometer or a gyrometer |
+| Taking a photo | the Windows Camera app's capture UI, launched for a result (`microsoft.windows.camera.picker:`, the protocol `CameraCaptureUI` drives), modal to the window: the app hands it an empty file under its data directory (`<data>\picked`) through a `SharedStorageAccessManager` token, and the Camera app writes the photo (JPEG) into it. Closing it is `Cancelled`. `capabilities().camera` when the PC has a camera and the Camera app; the permission is the Camera app's camera access. See [Device APIs without a package](#device-apis-without-a-package) |
+| Share sheet | Windows' Share dialog for the window (`IDataTransferManagerInterop::GetForWindow`, `ShowShareUIForWindow`): the window's title, the text, a link (`SetWebLink`, and after the text, on its own line, for targets that read only text, as on Android) and files (read-only `StorageFile`s; a file that cannot be read is left out, and the text, the link and the other files still go). As on Apple platforms, it answers nothing |
+| Passkeys | `webauthn.dll` (Windows 10 1903 and later), the API browsers use: `WebAuthNAuthenticatorMakeCredential` and `GetAssertion` with the relying party, the user, the challenge, the algorithms, `excludeCredentials` and `allowCredentials` with their transports, user verification, the attachment, resident keys, attestation and the timeout of the WebAuthn JSON. The client data is a browser's (`origin` `https://<rpId>`), so a server checks it as it checks a browser's. Windows' own dialog, owned by the window: Windows Hello, security keys, phones. A new ceremony cancels the open one (`WebAuthNCancelCurrentOperation`: `Cancelled`) and starts once that one has returned (Windows runs one at a time; 5 s at most), and only the newest waits; errors carry the web's names as on the web and Android (`WebAuthNGetErrorName`: `NotAllowedError` is `Cancelled`; `InvalidStateError` for an excluded credential, `ConstraintError` and `NotSupportedError`, a request Windows refuses, stay `Platform` errors with that name; none is `Unavailable`). `capabilities().passkeys` when the DLL loads; `webauthn_autofill` answers `Unavailable` (no conditional mediation for apps) |
+| Haptics | the PC's vibration device (`VibrationDevice`, its `SimpleHapticsController`): click, press, success and error waveforms, with intensity and repeats. Most PCs have none: `capabilities().haptics` is false and `haptic` does nothing. A pen's haptics (only while it touches the screen, and `haptic` names no pointer) and haptic touchpads (Windows plays their feedback, apps have no API) are not used |
 | Push | « unavailable »: Windows push notifications (WNS) need package identity (an MSIX or a sparse package), so an unpackaged app gets no channel |
 
 **Notification registration.** `AppNotificationManager::Register` gives the
@@ -300,6 +306,43 @@ rest (`UnregisterAll`, which leaves the key naming the app by its path,
 `HKCU\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings`).
 With `PRISM_NOTIFICATIONS_CLEANUP=1` the app does all of that itself on quit
 and also clears its notifications: tests leave nothing behind.
+
+### Device APIs without a package
+
+Prism apps on Windows are unpackaged (no MSIX, no package identity), and
+every device API above works so. What needs a package, and what Prism does
+instead:
+
+- **The camera.** `Windows.Media.Capture.CameraCaptureUI` is for UWP apps
+  (a `CoreWindow`), and the Windows App SDK's (1.7 and later) makes its
+  file in `ApplicationData::Current()`, which fails without a package
+  (`APPMODEL_ERROR_NO_PACKAGE`). Prism launches the capture UI those
+  classes show, the Camera app's, itself, and hands it a file of its own.
+  Capturing frames with `MediaCapture` would need a camera UI of Prism's
+  own. A PC without the Camera app (Windows N editions, or the app
+  removed) has no `take_photo`.
+- **Push.** WNS gives no channel to an unpackaged app (see Services).
+- **Prompts.** Windows asks no one for the camera, motion, sharing or
+  haptics; the Camera app asks for the camera itself. Location is one
+  switch for all desktop apps (« Let desktop apps access your location »),
+  and Windows 11 24H2 and later also ask once per app, listing it by its
+  executable's path.
+- **Passkeys.** Windows lets a desktop app name any relying party, as it
+  lets a browser, so no domain association is needed; the server checks
+  the client data's origin, `https://<rpId>`. Conditional mediation
+  (passkeys in a field's suggestions) has no API for apps, packaged or not.
+
+What the PC has (Windows Hello and each device API) is checked in the
+background from the start, each check on its own thread, and nothing
+waits for them: the first frame comes first. A capability is false until
+its check answers (tens of milliseconds, seconds for Windows Hello when
+cold); then the app gets the new capabilities and re-renders. A call made
+before then tries the API itself, so a slow check never turns an API off.
+`PRISM_TRACE` logs when each check answers.
+
+`PRISM_DEVICE_REPORT` and `scripts/windows-device-apis.sh` (see
+[Development hooks](#development-hooks)) show what a PC has, without a
+prompt.
 
 ### The menu bar
 
@@ -519,7 +562,7 @@ The same as the other backends, in a desktop session:
 | `PRISM_APPEARANCE` | `light` or `dark` in place of the system's appearance |
 | `PRISM_REDUCE_MOTION` | `1` (or `0`) in place of « Animation effects » |
 | `PRISM_HIGH_CONTRAST` | in place of the contrast theme, for this app only: `0` (off), `1` (on, with the system colors as they are), or one of Windows 11's themes by name, with its colors: `aquatic`, `desert`, `dusk`, `night-sky`. `PRISM_CLICK=contrast:dusk` changes it while the app runs, through the system's own settings message |
-| `PRISM_TRACE` | logs the startup phases (with the UI thread's CPU time), where the backend's time went (create, style, measure, place…), XAML's own layout, the first frame, the XAML elements and the memory then, each update (a click, a tab switch) until the frame showing it, 3D frame times, and each notification shown |
+| `PRISM_TRACE` | logs the startup phases (with the UI thread's CPU time), where the backend's time went (create, style, measure, place…), XAML's own layout, the first frame, when each startup check (Windows Hello, the device APIs) answers and when its capabilities reach the app, the XAML elements and the memory then, each update (a click, a tab switch) until the frame showing it, 3D frame times, and each notification shown |
 | `PRISM_PROFILE` | `stacks.txt`: samples the UI thread's stacks every millisecond until the first frame (`PRISM_PROFILE_MS` more), tagged by startup phase; `scripts/perf/profile.py` names them (x64) |
 | `PRISM_SCALE` | `1.25`, `1.5`, `200%`: the app's scale in place of its monitor's (XAML's `OverrideScale` on the island, Prism's pixels per DIP) |
 | `PRISM_DEFER` | `0`: every XAML element, off-screen ones too, is made and laid out before the first frame |
@@ -528,10 +571,19 @@ The same as the other backends, in a desktop session:
 | `PRISM_TRAY_MENU` | `<id>`: that tray item's menu opens by itself, as after a click |
 | `PRISM_NOTIFICATIONS_CLEANUP` | `1`: on quit, the app removes its notification registration and its notifications |
 | `PRISM_BACKGROUND_INTERVAL` | seconds between background task runs |
+| `PRISM_DEVICE_REPORT` | `<file.json>`: at startup, once every check has answered (15 s at most; one that has not is `null` and logged), writes what each device API sees, without a prompt or system UI: the capabilities and the checks behind them; location's policy, service, status and setting, and, when access is already allowed, a position's and a watch's accuracy and age (never where the PC is); the motion sensors and a first sample; the cameras, the Camera app's capture UI and a file token's round trip; the window's Share manager; `webauthn.dll`'s API version, its platform authenticator and its error names as Prism's errors; the vibration devices |
 
 Every run logs when WinUI is ready, the first layout and the first frame
 (from the process's creation), and the memory at the first frame and at
 the snapshot; `PRISM_TRACE` says more (see [Performance](#performance)).
+
+`scripts/windows-device-apis.sh` runs the counter with
+`PRISM_DEVICE_REPORT` on a Windows machine and checks the report here
+(`scripts/windows/device-report-check.py`): each capability says what its
+checks saw, the parts that need no prompt work, the passkey errors map to
+Prism's, nothing says where the PC is; with location refused, it also
+presses « Locate » (`Denied` through the app). Its header lists what only a
+person at the unlocked PC can prove (the dialogs).
 
 `scripts/windows-smoke.sh` runs the counter on its six routes on a Windows
 machine (`scripts/windows-remote.sh`, see Contributing › Windows), through
@@ -655,12 +707,15 @@ step moves the window to a simulated monitor through `WM_DPICHANGED`
 - **Embedded content and input:** a precision touchpad's
   pinch is only handled as the Ctrl + wheel Windows sends apps (touchpads
   cannot be injected).
-- **Services:** push (WNS needs package identity), location, motion, the
-  camera, the share sheet (`DataTransferManager`), haptics and passkeys
-  answer « unavailable »; notification banners and the Hello prompt are
-  untested on screen (the test PC shows no banners from any app and has no
-  Hello device: delivery, clicks and the « unavailable » answer are
-  tested).
+- **Services:** push answers « unavailable » (WNS needs package
+  identity); notification banners and the Hello prompt are untested on
+  screen (the test PC shows no banners from any app and has no Hello
+  device: delivery, clicks and the « unavailable » answer are tested). The
+  device APIs' dialogs (the Share dialog, the Camera app's capture UI,
+  Windows' passkey dialog, the location prompt) are not run on screen:
+  `scripts/windows-device-apis.sh` checks everything up to them, without a
+  prompt; motion and haptics are untested on a PC with the sensors or a
+  vibration device.
 - **Packaging:** an MSIX with the Windows App Runtime as a framework
   dependency ([MSIX](#msix)); an installer (Start menu shortcut, file
   associations, uninstall entry): the zip is a portable app; code signing;

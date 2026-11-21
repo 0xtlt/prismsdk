@@ -63,6 +63,13 @@
 //! | `notify`, `toast` | app notifications (Windows App SDK) |
 //! | `taskbar` | the badge on the taskbar button |
 //! | `security` | Credential Manager, Windows Hello, loopback sign-in |
+//! | `webauthn`, `passkey` | passkeys: `webauthn.dll`; the WebAuthn JSON, client data, errors |
+//! | `location` | `Geolocator`: positions, watches, the location setting |
+//! | `camera` | taking a photo with the Camera app's capture UI |
+//! | `share` | the Share dialog (`DataTransferManager` for a window) |
+//! | `haptics` | a vibration device's waveforms |
+//! | `sensors` | motion: accelerometer, gyrometer, inclinometer |
+//! | `probe`, `device` | which device APIs the PC has, asked in the background from startup; their pure parts |
 //! | `seal` | biometric secrets: sealed with a key only Windows Hello gives back |
 //! | `tray`, `icons` | notification area icons and their menus |
 //! | `menubar`, `accel` | the window's menu bar, keyboard accelerators |
@@ -70,7 +77,7 @@
 //! | `fonts` | run-time fonts |
 //! | `shell` | the services' hidden window: modal UI, timers, threads |
 //! | `system` | theme, accent, locale, DPI |
-//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access`, `pinch`, `seal` | pure helpers, tested on every host |
+//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access`, `pinch`, `seal`, `passkey`, `device` | pure helpers, tested on every host |
 
 // Roles and states for UI Automation: no Win32, tested everywhere.
 mod access;
@@ -89,6 +96,8 @@ mod bars;
 #[cfg(target_os = "windows")]
 mod boxed;
 #[cfg(target_os = "windows")]
+mod camera;
+#[cfg(target_os = "windows")]
 mod capture;
 #[cfg(target_os = "windows")]
 mod carets;
@@ -104,6 +113,9 @@ mod controls;
 mod decor;
 #[cfg(target_os = "windows")]
 mod defer;
+// Positions, privacy settings, haptic patterns, motion samples: no WinRT,
+// tested everywhere.
+mod device;
 #[cfg(target_os = "windows")]
 mod drops;
 #[cfg(target_os = "windows")]
@@ -119,6 +131,8 @@ mod fluent;
 #[cfg(target_os = "windows")]
 mod fonts;
 #[cfg(target_os = "windows")]
+mod haptics;
+#[cfg(target_os = "windows")]
 mod host;
 #[cfg(target_os = "windows")]
 mod icons;
@@ -132,6 +146,8 @@ mod inject;
 mod keyboard;
 // Key names and icon glyphs: no Win32, tested everywhere.
 mod keys;
+#[cfg(target_os = "windows")]
+mod location;
 #[cfg(target_os = "windows")]
 mod media;
 #[cfg(target_os = "windows")]
@@ -150,14 +166,18 @@ mod package;
 mod peers;
 // Conic gradient pixels, per-side border outlines: no Win32, tested everywhere.
 mod paint;
-// Two-finger pinches: no Win32, tested everywhere.
+// Passkeys' WebAuthn JSON, client data and errors: no Win32, tested everywhere.
+mod passkey;
 #[cfg(target_os = "windows")]
 mod perf;
 #[cfg(target_os = "windows")]
 mod pickers;
+// Two-finger pinches: no Win32, tested everywhere.
 mod pinch;
 #[cfg(target_os = "windows")]
 mod pointer;
+#[cfg(target_os = "windows")]
+mod probe;
 #[cfg(target_os = "windows")]
 mod profile;
 #[cfg(target_os = "windows")]
@@ -171,7 +191,11 @@ mod seal;
 #[cfg(target_os = "windows")]
 mod security;
 #[cfg(target_os = "windows")]
+mod sensors;
+#[cfg(target_os = "windows")]
 mod services;
+#[cfg(target_os = "windows")]
+mod share;
 #[cfg(target_os = "windows")]
 mod shell;
 #[cfg(target_os = "windows")]
@@ -204,6 +228,8 @@ mod tray;
 mod view;
 #[cfg(target_os = "windows")]
 mod web;
+#[cfg(target_os = "windows")]
+mod webauthn;
 #[cfg(target_os = "windows")]
 mod wic;
 #[cfg(target_os = "windows")]

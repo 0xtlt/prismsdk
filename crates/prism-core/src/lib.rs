@@ -1157,6 +1157,14 @@ impl Runtime {
         self.poll()
     }
 
+    /// What the platform supports changed after startup (`cx.capabilities()`:
+    /// a check that answered late, a device plugged in). Re-renders
+    /// everything if anything differs. Returns the resulting patches.
+    pub fn set_capabilities(&mut self, caps: Capabilities) -> Vec<Patch> {
+        self.app.update_capabilities(caps);
+        self.poll()
+    }
+
     /// Another device changed these synced keys. Returns the resulting patches.
     pub fn cloud_changed(&mut self, keys: &[String]) -> Vec<Patch> {
         self.app.cloud_changed(keys);

@@ -20,12 +20,12 @@
 //!
 //! | | iOS | macOS | Web | Android | Linux | Windows |
 //! |---|---|---|---|---|---|---|
-//! | Location | CoreLocation | CoreLocation | `navigator.geolocation` | `LocationManager` | GeoClue2 | — |
-//! | Motion | CoreMotion | — | `devicemotion` / `deviceorientation` | `SensorManager` | — | — |
+//! | Location | CoreLocation | CoreLocation | `navigator.geolocation` | `LocationManager` | GeoClue2 | `Geolocator` |
+//! | Motion | CoreMotion | — | `devicemotion` / `deviceorientation` | `SensorManager` | — | `Windows.Devices.Sensors` |
 //! | Photos | PHPicker | open panel | `<input type=file>` | photo picker | file chooser | `IFileOpenDialog` |
-//! | Camera | UIImagePickerController | — | `capture` input (mobile) | `ACTION_IMAGE_CAPTURE` | — | — |
-//! | Haptics | UIFeedbackGenerator | trackpad (NSHapticFeedback) | `navigator.vibrate` | `VibrationEffect` | — | — |
-//! | Clipboard, share, URLs | UIPasteboard, share sheet, `open` | NSPasteboard, sharing picker, NSWorkspace | Clipboard API, Web Share, `window.open` | `ClipboardManager`, `ACTION_SEND`, intents | GDK clipboard, —, the default app | Win32 clipboard, —, `ShellExecuteW` |
+//! | Camera | UIImagePickerController | — | `capture` input (mobile) | `ACTION_IMAGE_CAPTURE` | — | the Camera app's capture UI |
+//! | Haptics | UIFeedbackGenerator | trackpad (NSHapticFeedback) | `navigator.vibrate` | `VibrationEffect` | — | `VibrationDevice` |
+//! | Clipboard, share, URLs | UIPasteboard, share sheet, `open` | NSPasteboard, sharing picker, NSWorkspace | Clipboard API, Web Share, `window.open` | `ClipboardManager`, `ACTION_SEND`, intents | GDK clipboard, —, the default app | Win32 clipboard, Share dialog, `ShellExecuteW` |
 //!
 //! On Apple platforms, each permission needs a usage text in Info.plist:
 //! `prism` adds them from `[permissions]` in `Prism.toml`.

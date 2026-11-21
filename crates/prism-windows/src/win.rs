@@ -53,6 +53,20 @@ pub fn env_secs(name: &str, default: f64) -> f64 {
     env(name).and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
+/// `op.when(then)`, without ever losing `then`: when windows-rs cannot
+/// wait for `op` (it then drops the closure and returns the error), `then`
+/// gets that error, at once, on this thread (`device::answered`).
+pub fn when<T: windows::core::RuntimeType + 'static>(
+    what: &str,
+    op: &windows_future::IAsyncOperation<T>,
+    then: impl FnOnce(windows::core::Result<T>) + Send + 'static,
+) {
+    crate::device::answered(then, |cb| {
+        op.when(cb)
+            .inspect_err(|e| log!("{what}: cannot wait for the answer: {e}"))
+    });
+}
+
 /// Logs to stderr, like the other backends (`prism-windows: …`).
 macro_rules! log {
     ($($t:tt)*) => { eprintln!("prism-windows: {}", format!($($t)*)) };

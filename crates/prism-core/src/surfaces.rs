@@ -2056,6 +2056,15 @@ impl App {
         self.surfaces.capabilities = caps;
     }
 
+    /// What the platform supports changed after startup: re-renders
+    /// everything if anything differs.
+    pub(crate) fn update_capabilities(&mut self, caps: Capabilities) {
+        if self.surfaces.capabilities != caps {
+            self.surfaces.capabilities = caps;
+            self.refresh();
+        }
+    }
+
     /// True while a widget, Live Activity or other static surface is being
     /// rendered: nothing there is tappable except links, nothing animates,
     /// and sizes relative to the parent are not kept. Components use it to

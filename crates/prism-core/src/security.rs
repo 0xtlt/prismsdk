@@ -542,9 +542,11 @@ impl AsyncApp {
     /// wants a fresh tap, the page asks for one); Apple platforms:
     /// `ASAuthorizationPlatformPublicKeyCredentialProvider`, which needs the
     /// `webcredentials:` associated domain of the relying party; Android
-    /// 14+: the Credential Manager. `Err(Unavailable)` where there are no
-    /// passkeys (`capabilities().passkeys`: Linux, Windows, watchOS, older
-    /// Android), `Err(Cancelled)` when the user
+    /// 14+: the Credential Manager; Windows: `webauthn.dll`, Windows' own
+    /// dialog (the client data's origin is `https://<rpId>`, as a
+    /// browser's). `Err(Unavailable)` where there are no passkeys
+    /// (`capabilities().passkeys`: Linux, watchOS, older Android, a PC
+    /// without `webauthn.dll`), `Err(Cancelled)` when the user
     /// declines.
     pub async fn webauthn_create(&self, options: impl Into<String>) -> Result<String, DeviceError> {
         self.webauthn(true, false, options.into()).await
@@ -572,8 +574,8 @@ impl AsyncApp {
     /// `ASAuthorizationController.performAutoFillAssistedRequests` (the
     /// field gets `textContentType = .username` from its `autocomplete`).
     /// `Err(Unavailable)` elsewhere (macOS, Android, Linux, Windows, older
-    /// browsers): keep a
-    /// « Sign in with a passkey » button calling `webauthn_get`.
+    /// browsers): keep a « Sign in with a passkey » button calling
+    /// `webauthn_get`.
     pub async fn webauthn_autofill(
         &self,
         options: impl Into<String>,

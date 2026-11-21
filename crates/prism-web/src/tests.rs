@@ -2117,6 +2117,31 @@ fn a_session_follows_the_viewport_and_lifecycle() {
 }
 
 #[test]
+fn a_late_platform_authenticator_report_re_renders() {
+    struct Auth;
+    impl Render for Auth {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            text(if cx.capabilities().device_auth {
+                "authenticate"
+            } else {
+                "no authenticator"
+            })
+        }
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Auth);
+        cx.set_root(root);
+    });
+    let (app, _dir) = web_app(init, "uvpa");
+    let page = Page::open(&app, "/ws?w=400&h=800");
+    op_with_text(&page.next()["p"], "no authenticator");
+    // The device first, then the same device with its authenticator.
+    page.send(json!({ "t": "device", "touch": false }));
+    page.send(json!({ "t": "device", "touch": false, "uvpa": true }));
+    op_with_text(&page.next()["p"], "authenticate");
+}
+
+#[test]
 fn the_viewport_leaves_out_the_reported_safe_area() {
     let init: AppInit = Arc::new(|cx: &mut App| {
         let root = cx.new_entity(|_| Wide);

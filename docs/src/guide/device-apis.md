@@ -19,11 +19,13 @@ On the web `open_url` keeps a URL of the page's own origin in the tab (the host'
 
 | | iOS | macOS | Web | Android | Linux | Windows |
 |---|---|---|---|---|---|---|
-| Permissions | system prompts (location, camera, photos, microphone, motion, notifications) | same (bundled app) | Permissions API, `getUserMedia` | runtime permissions (`requestPermissions`) | — | — |
-| Location | CoreLocation | CoreLocation (bundled app) | `navigator.geolocation` | `LocationManager` | GeoClue2 | — |
-| Motion | CoreMotion (device only) | — | `devicemotion` | `SensorManager` | — | — |
-| Photos / camera | PHPicker (no permission needed) / camera | open panel / — | `<input type=file>`, uploaded to the session | photo picker (`ACTION_PICK_IMAGES`) / `ACTION_IMAGE_CAPTURE` | file chooser / — | `IFileOpenDialog` / — |
-| Haptics, clipboard, share, URLs | UIFeedbackGenerator, UIPasteboard, share sheet | trackpad, NSPasteboard, sharing picker | `vibrate`, Clipboard API, Web Share | `VibrationEffect`, `ClipboardManager`, `ACTION_SEND` chooser | —, the display's clipboard, —, the default app | —, the Win32 clipboard, —, `ShellExecuteW` |
+| Permissions | system prompts (location, camera, photos, microphone, motion, notifications) | same (bundled app) | Permissions API, `getUserMedia` | runtime permissions (`requestPermissions`) | — | Settings › Privacy & security, read without asking; a location prompt (Windows 11 24H2 and later) |
+| Location | CoreLocation | CoreLocation (bundled app) | `navigator.geolocation` | `LocationManager` | GeoClue2 | `Geolocator` |
+| Motion | CoreMotion (device only) | — | `devicemotion` | `SensorManager` | — | `Windows.Devices.Sensors` (tablets, 2-in-1s) |
+| Photos / camera | PHPicker (no permission needed) / camera | open panel / — | `<input type=file>`, uploaded to the session | photo picker (`ACTION_PICK_IMAGES`) / `ACTION_IMAGE_CAPTURE` | file chooser / — | `IFileOpenDialog` / the Camera app's capture UI |
+| Haptics, clipboard, share, URLs | UIFeedbackGenerator, UIPasteboard, share sheet | trackpad, NSPasteboard, sharing picker | `vibrate`, Clipboard API, Web Share | `VibrationEffect`, `ClipboardManager`, `ACTION_SEND` chooser | —, the display's clipboard, —, the default app | a vibration device (most PCs have none), the Win32 clipboard, the Share dialog, `ShellExecuteW` |
+
+On Windows every one works in an unpackaged app; [Windows › Device APIs without a package](../platforms/windows.md#device-apis-without-a-package) says how, and what `capabilities()` checks at startup.
 
 Usage texts go in `Prism.toml`; `prism` writes them to Info.plist (iOS refuses to ask without them):
 
