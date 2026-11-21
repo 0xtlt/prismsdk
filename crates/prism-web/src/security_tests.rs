@@ -233,3 +233,31 @@ fn s1_reading_a_biometric_secret_never_enrolls() {
     assert_eq!(s.local.pop(), Some((2, Err(DeviceError::Unavailable))));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// --- S2: nested push payloads -----------------------------------------------------------------
+
+/// S2: a push payload nested far deeper than any real one is refused like
+/// malformed JSON; the session (and the next one) keep working.
+#[test]
+fn s2_a_deeply_nested_push_payload_is_refused() {
+    use crate::tests::{Page, counter_init, op_with_text, web_app};
+    let (app, dir) = web_app(counter_init(), "s2");
+    let page = Page::open(&app, "/ws?path=%2F&w=1280&h=800");
+    let reset = page.next();
+    let count = op_with_text(&reset["p"], "Count: 0");
+    let plus = op_with_text(&reset["p"], "+1");
+    let deep = format!(
+        "{{\"title\":\"hi\",\"data\":{}{}}}",
+        "[".repeat(200_000),
+        "]".repeat(200_000)
+    );
+    page.send(json!({ "t": "push", "event": "received", "payload": deep }));
+    page.send(json!({ "t": "click", "id": plus }));
+    assert_eq!(
+        page.next()["p"],
+        json!([{ "op": "text", "id": count, "text": "Count: 1" }])
+    );
+    let second = Page::open(&app, "/ws?path=%2F&w=1280&h=800");
+    assert_eq!(second.next()["t"], "reset");
+    let _ = std::fs::remove_dir_all(dir);
+}

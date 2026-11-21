@@ -594,7 +594,7 @@ impl Render for Counter {
     }
 }
 
-fn counter_init() -> AppInit {
+pub(crate) fn counter_init() -> AppInit {
     Arc::new(|cx: &mut App| {
         let root = cx.new_entity(|_| Counter {
             count: 0,
@@ -1593,13 +1593,13 @@ fn uploads_decode_standard_and_url_safe_base64() {
 }
 
 /// A live session over channels: what the page receives, as JSON.
-struct Page {
-    session: crate::Session,
+pub(crate) struct Page {
+    pub(crate) session: crate::Session,
     inbox: mpsc::Receiver<String>,
 }
 
 impl Page {
-    fn open(app: &WebApp, uri: &str) -> Page {
+    pub(crate) fn open(app: &WebApp, uri: &str) -> Page {
         let (tx, inbox) = mpsc::channel();
         let session = app.connect(
             &uri.parse::<Uri>().unwrap(),
@@ -1609,7 +1609,7 @@ impl Page {
         Page { session, inbox }
     }
 
-    fn next(&self) -> Value {
+    pub(crate) fn next(&self) -> Value {
         let msg = self
             .inbox
             .recv_timeout(Duration::from_secs(10))
@@ -1617,12 +1617,12 @@ impl Page {
         serde_json::from_str(&msg).unwrap()
     }
 
-    fn send(&self, msg: Value) {
+    pub(crate) fn send(&self, msg: Value) {
         assert!(self.session.receive(msg.to_string()));
     }
 }
 
-fn web_app(init: AppInit, tag: &str) -> (WebApp, std::path::PathBuf) {
+pub(crate) fn web_app(init: AppInit, tag: &str) -> (WebApp, std::path::PathBuf) {
     let dir = std::env::temp_dir().join(format!("prism-web-{tag}-{}", std::process::id()));
     let config = AppConfig {
         title: "Test".into(),
@@ -1632,7 +1632,7 @@ fn web_app(init: AppInit, tag: &str) -> (WebApp, std::path::PathBuf) {
     (WebApp::new(config, init).data_dir(dir.join("data")), dir)
 }
 
-fn op_with_text(patches: &Value, text: &str) -> u64 {
+pub(crate) fn op_with_text(patches: &Value, text: &str) -> u64 {
     patches
         .as_array()
         .unwrap()

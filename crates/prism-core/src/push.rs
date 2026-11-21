@@ -529,9 +529,13 @@ impl AsyncApp {
 }
 
 // ---------------------------------------------------------------------------
-// A small JSON reader (payloads, subscriptions): prism-core has no
-// dependencies.
+// A small JSON reader (payloads, subscriptions, widget actions).
 // ---------------------------------------------------------------------------
+
+/// How deep arrays and objects may nest in [`Json::parse`]: payloads come
+/// from the network (a browser reports its pushes), and the reader is
+/// recursive. Real payloads nest a few levels.
+pub(crate) const MAX_JSON_DEPTH: usize = 64;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Json {
@@ -544,10 +548,17 @@ pub(crate) enum Json {
 }
 
 impl Json {
+    /// Reads `s`; `None` when malformed or nested deeper than
+    /// [`MAX_JSON_DEPTH`].
     pub(crate) fn parse(s: &str) -> Option<Json> {
+        Self::parse_with_depth(s, MAX_JSON_DEPTH)
+    }
+
+    pub(crate) fn parse_with_depth(s: &str, max_depth: usize) -> Option<Json> {
         let mut p = Parser {
             s: s.as_bytes(),
             i: 0,
+            depth: max_depth,
         };
         let v = p.value()?;
         p.ws();
@@ -608,6 +619,8 @@ impl Json {
 struct Parser<'a> {
     s: &'a [u8],
     i: usize,
+    /// How many more arrays or objects may open.
+    depth: usize,
 }
 
 impl Parser<'_> {
@@ -628,7 +641,19 @@ impl Parser<'_> {
 
     fn value(&mut self) -> Option<Json> {
         self.ws();
-        match *self.s.get(self.i)? {
+        let c = *self.s.get(self.i)?;
+        if matches!(c, b'{' | b'[') {
+            // Too deep: refused before descending (the stack is bounded).
+            self.depth = self.depth.checked_sub(1)?;
+            let v = self.container(c);
+            self.depth += 1;
+            return v;
+        }
+        self.scalar(c)
+    }
+
+    fn container(&mut self, c: u8) -> Option<Json> {
+        match c {
             b'{' => {
                 self.i += 1;
                 let mut items = Vec::new();
@@ -673,6 +698,12 @@ impl Parser<'_> {
                     }
                 }
             }
+            _ => None,
+        }
+    }
+
+    fn scalar(&mut self, c: u8) -> Option<Json> {
+        match c {
             b'"' => self.string().map(Json::String),
             b't' if self.eat("true") => Some(Json::Bool(true)),
             b'f' if self.eat("false") => Some(Json::Bool(false)),
@@ -741,6 +772,22 @@ impl Parser<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S2: nesting is bounded before descending; at the limit it reads.
+    #[test]
+    fn nesting_deeper_than_the_limit_is_refused() {
+        let nested = |n: usize| format!("{}{}", "[".repeat(n), "]".repeat(n));
+        assert!(Json::parse_with_depth(&nested(3), 3).is_some());
+        assert!(Json::parse_with_depth(&nested(4), 3).is_none());
+        let obj = r#"{"a":{"b":{"c":1}}}"#;
+        assert!(Json::parse_with_depth(obj, 3).is_some());
+        assert!(Json::parse_with_depth(obj, 2).is_none());
+        // Far deeper than the stack would take: an error, not an abort.
+        assert!(Json::parse(&nested(1_000_000)).is_none());
+        assert!(Json::parse(&nested(MAX_JSON_DEPTH)).is_some());
+        let payload = format!(r#"{{"title":"t","data":{}}}"#, nested(500_000));
+        assert!(PushMessage::from_payload(PushEvent::Received, &payload).is_none());
+    }
 
     #[test]
     fn subscription_round_trips() {
