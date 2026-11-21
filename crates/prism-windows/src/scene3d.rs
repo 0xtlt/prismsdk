@@ -331,6 +331,8 @@ struct State {
     /// The panel's swap chain (frames on the GPU), until it fails.
     surface: Option<crate::dxgl::Surface>,
     gpu_failed: bool,
+    /// The rounded clip on the panel: size and radius (DIPs).
+    clipped: Option<(f32, f32, f32)>,
     /// Else an image in the panel, and its bitmap.
     image: Option<Image>,
     bitmap: Option<(WriteableBitmap, (i32, i32))>,
@@ -382,6 +384,7 @@ impl SceneView {
             panel: element.clone(),
             surface: None,
             gpu_failed: false,
+            clipped: None,
             image: None,
             bitmap: None,
             frames: (0, 0., None),
@@ -538,7 +541,18 @@ fn frame() {
         ids.iter()
             .filter_map(|id| {
                 let n = w.scene.get(*id)?;
-                Some((*id, (n.frame.w, n.frame.h), k, dark))
+                let (fw, fh) = (n.frame.w, n.frame.h);
+                let box_ = Look {
+                    background: n.style.background.map(|c| {
+                        let c = w.palette.fill(c);
+                        [c.r * c.a, c.g * c.a, c.b * c.a, c.a]
+                    }),
+                    radius: match crate::style::corners(&n.style, fw, fh) {
+                        (a, b, c, d) if a == b && b == c && c == d => a,
+                        _ => 0.,
+                    },
+                };
+                Some((*id, (fw, fh), k, dark, box_))
             })
             .collect::<Vec<_>>()
     });
@@ -548,11 +562,11 @@ fn frame() {
         return;
     };
     let mut again = Vec::new();
-    for (id, size, k, dark) in info {
+    for (id, size, k, dark, look) in info {
         let Some(state) = SCENES.with(|s| s.borrow().get(&id).and_then(Weak::upgrade)) else {
             continue;
         };
-        if render(&state, size, k, dark) {
+        if render(&state, size, k, dark, look) {
             again.push(id);
         }
     }
@@ -567,7 +581,14 @@ fn frame() {
 
 /// Draws a scene `size` DIPs big (`k` pixels per DIP) into its bitmap.
 /// Returns whether it moves (draw again next frame).
-fn render(state: &Rc<RefCell<State>>, size: (f32, f32), k: f32, dark: bool) -> bool {
+/// A scene node's box: its background (premultiplied) and corner radius.
+#[derive(Clone, Copy, PartialEq)]
+struct Look {
+    background: Option<[f32; 4]>,
+    radius: f32,
+}
+
+fn render(state: &Rc<RefCell<State>>, size: (f32, f32), k: f32, dark: bool, look: Look) -> bool {
     let (w, h) = (
         (size.0 * k).round().max(1.) as i32,
         (size.1 * k).round().max(1.) as i32,
@@ -611,12 +632,14 @@ fn render(state: &Rc<RefCell<State>>, size: (f32, f32), k: f32, dark: bool) -> b
         panel,
         surface,
         gpu_failed,
+        clipped,
         image,
         bitmap,
         frames,
         ..
     } = &mut *st;
     let Some(gpu) = gpu else { return false };
+    let gpu_path = ctx.interop.is_some() && !*gpu_failed;
     let mut lost = Vec::new();
     // SAFETY (here and below): the context is current.
     unsafe {
@@ -629,7 +652,16 @@ fn render(state: &Rc<RefCell<State>>, size: (f32, f32), k: f32, dark: bool) -> b
         match player {
             Some(player) => {
                 player.advance(now());
-                let frame = player.frame(size.0, size.1, dark);
+                let mut frame = player.frame(size.0, size.1, dark);
+                // A swap chain's transparent pixels show what is behind the
+                // window, not the box under the scene: on the GPU path the
+                // box's background is the frame's.
+                if gpu_path
+                    && frame.clear[3] == 0.
+                    && let Some(bg) = look.background
+                {
+                    frame.clear = bg;
+                }
                 gpu.draw((w, h), &frame, player, images, &mut lost);
                 *animating = frame.animating;
             }
@@ -655,7 +687,17 @@ fn render(state: &Rc<RefCell<State>>, size: (f32, f32), k: f32, dark: bool) -> b
         if let Some(s) = surface {
             // SAFETY: the context is current.
             match unsafe { s.present(interop, &gl, fb, (w, h), k) } {
-                Ok(()) => shown = true,
+                Ok(()) => {
+                    shown = true;
+                    // The box's rounded corners clip the swap chain.
+                    let clip = (size.0, size.1, look.radius);
+                    if *clipped != Some(clip) {
+                        if let Err(e) = round(panel, clip) {
+                            log!("3D scene {id}: clip: {e}");
+                        }
+                        *clipped = Some(clip);
+                    }
+                }
                 Err(e) => {
                     // Once: the read-back takes over.
                     log!("3D scene {id}: present: {e}; frames read back");
@@ -763,6 +805,24 @@ fn show(
     }
     buffer.SetLength(len as u32)?;
     wb.Invalidate()
+}
+
+/// Clips `panel` to a `w` × `h` rounded rectangle of radius `r` (DIPs; no
+/// clip without a radius): Composition, which clips the swap chain too.
+fn round(panel: &SwapChainPanel, (w, h, r): (f32, f32, f32)) -> Result<()> {
+    use crate::winui::xaml::Hosting::ElementCompositionPreview;
+    use windows_numerics::Vector2;
+    let e: UIElement = panel.cast()?;
+    let visual = ElementCompositionPreview::GetElementVisual(&e)?;
+    if r <= 0. {
+        return visual
+            .SetClip(None::<&crate::winui::bindings::Microsoft::UI::Composition::CompositionClip>);
+    }
+    let comp = visual.Compositor()?;
+    let g = comp.CreateRoundedRectangleGeometry()?;
+    g.SetSize(Vector2 { X: w, Y: h })?;
+    g.SetCornerRadius(Vector2 { X: r, Y: r })?;
+    visual.SetClip(&comp.CreateGeometricClipWithGeometry(&g)?)
 }
 
 /// The panel's image shows `bitmap` (made the first time; the bitmap
