@@ -2512,6 +2512,15 @@ define_class!(
             };
             let _: () = unsafe { msg_send![super(self), setScrollerStyle: style] };
         }
+
+        /// A pull past the top refreshes (`crate::refresh`).
+        #[unsafe(method(scrollWheel:))]
+        fn scroll_wheel(&self, event: &NSEvent) {
+            let _: () = unsafe { msg_send![super(self), scrollWheel: event] };
+            if let Some(doc) = self.documentView().and_then(|d| d.downcast::<PrismView>().ok()) {
+                crate::refresh::scroll_wheel(node_id(&doc), self, event);
+            }
+        }
     }
 );
 
@@ -3977,6 +3986,10 @@ impl Widgets for AppKit {
     }
 
     fn set_clickable(&mut self, view: &View, clickable: bool) {
+        // A "clickable" scroll view refreshes (`crate::refresh`).
+        if let View::Scroll(sc) = view {
+            crate::refresh::set_refreshable(view.id(), &sc.scroll, clickable);
+        }
         if let View::Container(v) = view {
             v.ivars().clickable.set(clickable);
             if let Some(w) = v.window() {
@@ -4113,6 +4126,7 @@ impl Widgets for AppKit {
         crate::dates::forget(view.id());
         crate::navbar::forget(view.id());
         crate::padding::forget(view.id());
+        crate::refresh::forget(view.id());
         self.hover_areas.remove(&view.id());
         if let Some(v) = view.prism_view() {
             crate::decor::detach(&v.ivars().decor.borrow());
@@ -4420,6 +4434,7 @@ impl Widgets for AppKit {
                 }
             }
             View::Progress(p) => p.setDoubleValue(value),
+            View::Scroll(sc) => crate::refresh::set_refreshing(view.id(), &sc.scroll, value != 0.),
             View::Picture(v) => {
                 v.ivars().fit.set(value == 1.);
                 v.setNeedsDisplay(true);
