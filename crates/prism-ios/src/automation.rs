@@ -228,16 +228,35 @@ fn dump_node(mtm: MainThreadMarker, view: &UIView) -> String {
             .map_or(-1, |i| i as i64);
         format!(r#"{{"labels":[{}],"selected":{index}}}"#, labels.join(","))
     });
-    // Tables (#284): `"table":{rows, columns, headers}`, `"cell":[row,
-    // column]`, and a cell holding a control's `"parts"`: the elements
-    // VoiceOver reaches in it, each `{class, role, label, cell}` (`cell`:
-    // the row and column it reports, `null` for a view read as itself).
+    // Tables (#284): `"table":{rows, columns, headers, answers}` (answers:
+    // the element the table gives VoiceOver for each cell, row by row, as
+    // `{class, element}`), `"cell":[row, column]`, and a cell holding a
+    // control's `"parts"`: the elements VoiceOver reaches in it, each
+    // `{class, role, label, cell}` (`cell`: the row and column it reports,
+    // `null` for a view read as itself).
     let table = match crate::table::dump(mtm, view) {
-        Some(crate::table::Dump::Table(rows, columns, headers)) => {
+        Some(crate::table::Dump::Table(rows, columns, headers, answers)) => {
             let headers: Vec<String> = headers.into_iter().map(opt).collect();
+            let answers: Vec<String> = answers
+                .into_iter()
+                .map(|row| {
+                    let row: Vec<String> = row
+                        .iter()
+                        .map(|a| {
+                            format!(
+                                r#"{{"class":{},"element":{}}}"#,
+                                json_str(&a.class),
+                                a.element
+                            )
+                        })
+                        .collect();
+                    format!("[{}]", row.join(","))
+                })
+                .collect();
             format!(
-                r#","table":{{"rows":{rows},"columns":{columns},"headers":[{}]}}"#,
-                headers.join(",")
+                r#","table":{{"rows":{rows},"columns":{columns},"headers":[{}],"answers":[{}]}}"#,
+                headers.join(","),
+                answers.join(",")
             )
         }
         Some(crate::table::Dump::Cell(r, c, parts)) => {

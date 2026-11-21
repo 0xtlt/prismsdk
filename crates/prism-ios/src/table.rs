@@ -108,14 +108,37 @@ pub fn column_count(t: &TableIvars) -> isize {
     t.rows.borrow().iter().map(Vec::len).max().unwrap_or(0) as isize
 }
 
-/// The element VoiceOver lands on for a cell: the cell, or the first of
-/// its parts that knows its row and column.
+/// The element VoiceOver lands on for a cell (the table's answer for its
+/// row and column, or a column's header): the cell when it is one element,
+/// else the first of its parts that is an element (a [`CellPart`], a field,
+/// or on tvOS the control itself), else the first element of a container
+/// among them. Never the cell holding a control, which is a container.
 fn element_of(mtm: MainThreadMarker, cell: &UIView) -> Retained<AnyObject> {
-    let first = ivars(cell).and_then(|t| parts(mtm, cell, t)).and_then(|p| {
-        p.into_iter()
-            .find(|p| p.downcast_ref::<CellPart>().is_some())
-    });
-    first.unwrap_or_else(|| as_object(cell))
+    let Some(parts) = ivars(cell).and_then(|t| parts(mtm, cell, t)) else {
+        return as_object(cell);
+    };
+    let first_inside = |p: &AnyObject| -> Option<Retained<AnyObject>> {
+        // SAFETY: UIAccessibilityContainer's getter, on elements and views.
+        let inside: Option<Retained<NSArray>> = unsafe { msg_send![p, accessibilityElements] };
+        inside?.to_vec().into_iter().find(|e| reads_as_element(e))
+    };
+    parts
+        .iter()
+        .find(|p| reads_as_element(p))
+        .cloned()
+        .or_else(|| parts.iter().find_map(|p| first_inside(p)))
+        .unwrap_or_else(|| as_object(cell))
+}
+
+/// Whether VoiceOver reads `p` as one element: an element, or a control
+/// or field, which UIKit makes one only while VoiceOver runs (a dump
+/// without VoiceOver gets the same answer).
+fn reads_as_element(p: &AnyObject) -> bool {
+    // SAFETY: UIAccessibility's getter, on elements and views.
+    let element: bool = unsafe { msg_send![p, isAccessibilityElement] };
+    element
+        || p.downcast_ref::<UIView>()
+            .is_some_and(|v| is_element(v) || is_text_entry(v))
 }
 
 pub fn cell(
@@ -465,8 +488,10 @@ impl CellPart {
 
 /// What the accessibility dump shows of a table or a cell.
 pub enum Dump {
-    /// A table's row and column counts and its header cells' labels.
-    Table(isize, isize, Vec<Option<String>>),
+    /// A table's row and column counts, its header cells' labels, and what
+    /// it answers VoiceOver for each cell, row by row
+    /// (`accessibilityDataTableCellElementForRow:column:`).
+    Table(isize, isize, Vec<Option<String>>, Vec<Vec<Answer>>),
     /// A cell's row and column, and its parts when it holds a control.
     Cell(usize, usize, Option<Vec<PartDump>>),
 }
@@ -479,6 +504,14 @@ pub struct PartDump {
     pub at: Option<(usize, usize)>,
     /// The class of the view it is (or stands for).
     pub class: String,
+}
+
+/// The element a table answers for one of its cells.
+pub struct Answer {
+    /// Its class (a [`CellPart`]'s own, not its view's).
+    pub class: String,
+    /// Whether VoiceOver reads it as one element (not a container).
+    pub element: bool,
 }
 
 /// The row and column a view that stays itself answers VoiceOver with.
@@ -541,5 +574,19 @@ pub fn dump(mtm: MainThreadMarker, view: &UIView) -> Option<Dump> {
         .flatten()
         .map(|h| h.accessibilityLabel(mtm).map(|l| l.to_string()))
         .collect();
-    Some(Dump::Table(row_count(t), column_count(t), headers))
+    let answers = rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|c| {
+                    let e = element_of(mtm, c);
+                    Answer {
+                        class: e.class().name().to_string_lossy().into_owned(),
+                        element: reads_as_element(&e),
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    Some(Dump::Table(row_count(t), column_count(t), headers, answers))
 }
