@@ -116,5 +116,11 @@ prism-build.workspace = true
 windows-bindgen = "=0.65.0"
 
 [package.metadata.docs.rs]
-targets = ["x86_64-pc-windows-msvc"]
+# docs.rs builds on Linux, without network access (the build script fetches
+# the Windows App SDK from nuget.org) or an MSVC toolchain for C dependencies
+# (ring, through prism-http). This crate's only public item is `run`, which the
+# `prism` facade calls on Windows; on the default target the page shows the
+# crate overview. `cargo doc --target x86_64-pc-windows-msvc` documents it
+# locally, on Windows.
+targets = []
 rustdoc-args = ["--cfg", "docsrs"]

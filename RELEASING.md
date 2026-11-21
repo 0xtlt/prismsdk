@@ -105,7 +105,7 @@ crates.io names.
 ## After publishing
 
 - docs.rs builds every crate within minutes (<https://docs.rs/crate/prismsdk/latest/builds>).
-  The Apple and Android backends are documented on docs.rs' Linux target (see
+  The Apple, Android and Windows backends are documented on docs.rs' Linux target (see
   their `[package.metadata.docs.rs]`).
 - The book and the `main` API docs are deployed by `.github/workflows/docs.yml`
   on every push to `main`.
