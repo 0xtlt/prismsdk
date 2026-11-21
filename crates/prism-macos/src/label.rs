@@ -728,10 +728,19 @@ pub fn press_in(view: &NSView, title: &str) -> bool {
 }
 
 /// The label's longest word, as drawn (CSS min-content): a squeezed text
-/// wraps down to it before breaking words.
+/// wraps down to it before breaking words. The cell's own inset (its line
+/// fragment padding) is added, or measuring the label at this width would
+/// break the word.
 pub fn min_content_width(l: &PrismLabel) -> f64 {
     use objc2_app_kit::NSAttributedStringNSStringDrawing;
     let shown = l.attributedStringValue();
+    let unbounded = NSRect::new(NSPoint::ZERO, NSSize::new(f64::MAX / 4., f64::MAX / 4.));
+    let inset = l
+        .cell()
+        .map_or(0., |c| {
+            c.cellSizeForBounds(unbounded).width - shown.size().width
+        })
+        .max(0.);
     let text = shown.string().to_string();
     let mut widest = 0f64;
     for word in text.split_whitespace() {
@@ -741,5 +750,8 @@ pub fn min_content_width(l: &PrismLabel) -> f64 {
         let range = NSRange::new(at, word.encode_utf16().count());
         widest = widest.max(shown.attributedSubstringFromRange(range).size().width);
     }
-    widest.ceil()
+    if widest == 0. {
+        return 0.;
+    }
+    (widest + inset).ceil()
 }
