@@ -12,16 +12,7 @@ use sha2::{Digest, Sha256};
 
 use crate::security::{SecureStore, base64url, base64url_decode};
 use crate::session::WebServices;
-
-fn scratch(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "prism-sec-{tag}-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    dir
-}
+use crate::temp_dir::TempDir;
 
 // --- S1: WebAuthn ceremonies ----------------------------------------------------------------
 
@@ -148,7 +139,7 @@ fn enroll(s: &mut WebServices, a: &Authenticator) {
 /// a registration answered instead neither replaces it nor opens the gate.
 #[test]
 fn s1_a_registration_cannot_answer_a_protected_read() {
-    let dir = scratch("s1-read");
+    let dir = TempDir::new("sec-s1-read");
     let mut s = services(&dir);
     let owner = Authenticator::new("owner");
     let intruder = Authenticator::new("intruder");
@@ -168,13 +159,12 @@ fn s1_a_registration_cannot_answer_a_protected_read() {
         s.finish_ceremony(3, &owner.assert(&challenge, 1)),
         Ok(DeviceValue::Text(Some("1234".into())))
     );
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// S1: `authenticate` once a credential is enrolled is an assertion too.
 #[test]
 fn s1_a_registration_cannot_answer_authenticate() {
-    let dir = scratch("s1-auth");
+    let dir = TempDir::new("sec-s1-auth");
     let mut s = services(&dir);
     let owner = Authenticator::new("owner");
     let intruder = Authenticator::new("intruder");
@@ -186,14 +176,13 @@ fn s1_a_registration_cannot_answer_authenticate() {
             .is_err()
     );
     assert_eq!(enrolled_id(&s).as_deref(), Some("owner"));
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// S27: WebAuthn's user verification may be a PIN or a password, and the
 /// page cannot tell: a biometrics-only request is unavailable on the web.
 #[test]
 fn s27_biometrics_only_is_unavailable_on_the_web() {
-    let dir = scratch("s27");
+    let dir = TempDir::new("sec-s27");
     let mut s = services(&dir);
     let only = DeviceCall::Authenticate(AuthRequest::new("Pay").biometrics_only());
     let msg = call(&mut s, 1, only);
@@ -202,14 +191,13 @@ fn s27_biometrics_only_is_unavailable_on_the_web() {
     // With the passcode fallback, the ceremony runs.
     let msg = call(&mut s, 2, DeviceCall::Authenticate(AuthRequest::new("Pay"))).unwrap();
     assert_eq!(msg["mode"], "create");
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// S1: two enrollments started together: the first one wins, the second
 /// fails without replacing it.
 #[test]
 fn s1_concurrent_enrollments_keep_the_first() {
-    let dir = scratch("s1-race");
+    let dir = TempDir::new("sec-s1-race");
     let mut s = services(&dir);
     let (a, b) = (Authenticator::new("first"), Authenticator::new("second"));
     let auth = || DeviceCall::Authenticate(AuthRequest::new("Unlock"));
@@ -227,14 +215,13 @@ fn s1_concurrent_enrollments_keep_the_first() {
     );
     assert!(s.finish_ceremony(2, &b.register(&c2)).is_err());
     assert_eq!(enrolled_id(&s).as_deref(), Some("first"));
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// S1: a biometric secret is stored once this browser's owner enrolled, so
 /// reading one never enrolls whoever reads it first.
 #[test]
 fn s1_reading_a_biometric_secret_never_enrolls() {
-    let dir = scratch("s1-tofu");
+    let dir = TempDir::new("sec-s1-tofu");
     let mut s = services(&dir);
     // Stored behind the server's back (or the credential was lost).
     s.secure.as_ref().unwrap().set("pin", "1234", true).unwrap();
@@ -247,7 +234,6 @@ fn s1_reading_a_biometric_secret_never_enrolls() {
     s.uvpa = false;
     assert!(call(&mut s, 2, set_secret("other", "x")).is_none());
     assert_eq!(s.local.pop(), Some((2, Err(DeviceError::Unavailable))));
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 // --- S2: nested push payloads -----------------------------------------------------------------
@@ -257,7 +243,7 @@ fn s1_reading_a_biometric_secret_never_enrolls() {
 #[test]
 fn s2_a_deeply_nested_push_payload_is_refused() {
     use crate::tests::{Page, counter_init, op_with_text, web_app};
-    let (app, dir) = web_app(counter_init(), "s2");
+    let (app, _dir) = web_app(counter_init(), "s2");
     let page = Page::open(&app, "/ws?path=%2F&w=1280&h=800");
     let reset = page.next();
     let count = op_with_text(&reset["p"], "Count: 0");
@@ -275,7 +261,6 @@ fn s2_a_deeply_nested_push_payload_is_refused() {
     );
     let second = Page::open(&app, "/ws?path=%2F&w=1280&h=800");
     assert_eq!(second.next()["t"], "reset");
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 // --- S3: session limits on any transport ----------------------------------------------------
@@ -312,7 +297,7 @@ fn s3_connect_bounds_message_size_and_backlog() {
         let root = cx.new_entity(|_| Slow);
         cx.set_root(root);
     });
-    let dir = scratch("s3");
+    let dir = TempDir::new("sec-s3");
     let app = crate::WebApp::new(prism_core::AppConfig::default(), init)
         .data_dir(dir.join("data"))
         .max_message_size(1024)
@@ -338,7 +323,6 @@ fn s3_connect_bounds_message_size_and_backlog() {
         .count();
     assert!(accepted < 100, "the backlog is bounded");
     wait_until("the permit is freed", || app.session_count() == 0);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 // --- S6: pictures fetched by the server ------------------------------------------------------
@@ -386,7 +370,9 @@ fn fetch_picture(tag: &str, url: &str, trust: Option<&str>) -> http::Response<Ve
         let root = cx.new_entity(|_| Pic(url));
         cx.set_root(root);
     });
-    let mut app = crate::WebApp::new(prism_core::AppConfig::default(), init).data_dir(scratch(tag));
+    let dir = TempDir::new(&format!("sec-{tag}"));
+    let mut app =
+        crate::WebApp::new(prism_core::AppConfig::default(), init).data_dir(dir.to_path_buf());
     if let Some(origin) = trust {
         app = app.trust_media_origin(origin);
     }
@@ -645,7 +631,8 @@ fn s8_the_page_is_never_told_to_open_a_script_url() {
 /// script when opened as a document, and a PNG. Their URL paths.
 const SID: &str = "5e55105e55105e55105e55105e55105e";
 
-fn uploads_app(tag: &str, strict: bool) -> (crate::WebApp, String, String) {
+/// `dir` holds the app's data: bind it for as long as the app is used.
+fn uploads_app(dir: &TempDir, strict: bool) -> (crate::WebApp, String, String) {
     use prism_core::prelude::*;
     struct Blank;
     impl Render for Blank {
@@ -657,7 +644,8 @@ fn uploads_app(tag: &str, strict: bool) -> (crate::WebApp, String, String) {
         let root = cx.new_entity(|_| Blank);
         cx.set_root(root);
     });
-    let mut app = crate::WebApp::new(prism_core::AppConfig::default(), init).data_dir(scratch(tag));
+    let mut app =
+        crate::WebApp::new(prism_core::AppConfig::default(), init).data_dir(dir.to_path_buf());
     if strict {
         app = app.strict_csp();
     }
@@ -680,7 +668,8 @@ fn sandboxed(csp: &str) -> bool {
 
 #[test]
 fn s9_uploads_never_run_as_documents() {
-    let (app, svg, png) = uploads_app("s9-headers", false);
+    let dir = TempDir::new("sec-s9-headers");
+    let (app, svg, png) = uploads_app(&dir, false);
     let get = |path: &str, sid: &str| {
         let req = http::Request::get(path)
             .header("cookie", format!("prism_sid={sid}"))
@@ -757,7 +746,8 @@ fn served_head(app: crate::WebApp, paths: &[&str]) -> Vec<String> {
 #[cfg(feature = "server")]
 #[test]
 fn s9_the_strict_page_policy_keeps_the_upload_sandbox() {
-    let (app, svg, png) = uploads_app("s9-strict", true);
+    let dir = TempDir::new("sec-s9-strict");
+    let (app, svg, png) = uploads_app(&dir, true);
     let heads = served_head(app, &[&svg, &png, "/"]);
     // Browsers enforce every policy sent.
     let csp = |head: &str| policies(head).iter().any(|p| sandboxed(p));
@@ -794,7 +784,8 @@ fn page_cookie(app: &crate::WebApp, path: &str, headers: &[(&str, &str)]) -> Opt
 
 #[test]
 fn s10_https_pages_set_a_host_only_secure_cookie() {
-    let (app, _, _) = uploads_app("s10-https", false);
+    let dir = TempDir::new("sec-s10-https");
+    let (app, _, _) = uploads_app(&dir, false);
     let https = [("x-forwarded-proto", "https")];
     let cookie = page_cookie(&app, "/", &https).unwrap();
     assert!(cookie.starts_with("__Host-prism_sid="), "{cookie}");
@@ -803,7 +794,8 @@ fn s10_https_pages_set_a_host_only_secure_cookie() {
         "{cookie}"
     );
     // A mounted app too: `__Host-` needs `Path=/`.
-    let mounted = uploads_app("s10-mounted", false).0.base_path("/app");
+    let mounted_dir = TempDir::new("sec-s10-mounted");
+    let mounted = uploads_app(&mounted_dir, false).0.base_path("/app");
     let cookie = page_cookie(&mounted, "/app", &https).unwrap();
     assert!(
         cookie.starts_with("__Host-prism_sid=") && cookie.contains("; Path=/;"),
@@ -819,7 +811,8 @@ fn s10_https_pages_set_a_host_only_secure_cookie() {
 
 #[test]
 fn s10_a_planted_cookie_cannot_choose_the_browser_on_https() {
-    let (app, svg, _) = uploads_app("s10-fixation", false);
+    let dir = TempDir::new("sec-s10-fixation");
+    let (app, svg, _) = uploads_app(&dir, false);
     // A sibling site set `prism_sid` (here SID, whose files exist) before
     // the first visit: the page ignores it and issues its own id.
     let planted = format!("prism_sid={SID}");
@@ -947,7 +940,7 @@ fn s10_a_sign_in_leaves_a_planted_browser_id_empty() {
         let root = cx.new_entity(|_| Shop::default());
         cx.set_root(root);
     });
-    let (app, dir) = web_app(init, "s10-sign-in");
+    let (app, _dir) = web_app(init, "s10-sign-in");
     let planted = "5100000000000000000000000000a001";
     // The attacker's own page, on the id they planted.
     let attacker = Page::open_with(&app, "/ws?path=%2F&w=1280&h=800", &with_browser(planted));
@@ -1000,7 +993,6 @@ fn s10_a_sign_in_leaves_a_planted_browser_id_empty() {
     wait_for_text(&back, "user=alice cart=book");
     wait_for_text(&back, r#"<Ok(Some(\"p\")) Ok(Some(\"t0k3n\"))>"#);
     drop((attacker, victim, back));
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// S10: `cx.renew_browser_id()` for an app's own sign-in. Cookies asked for
@@ -1041,7 +1033,7 @@ fn s10_renew_browser_id_keeps_the_order_of_cookies() {
         let root = cx.new_entity(|_| SignIn::default());
         cx.set_root(root);
     });
-    let (app, dir) = web_app(init, "s10-renew");
+    let (app, _dir) = web_app(init, "s10-renew");
     let old = "5100000000000000000000000000a002";
     let other = Page::open_with(&app, "/ws?path=%2F&w=1280&h=800", &with_browser(old));
     other.next();
@@ -1084,7 +1076,6 @@ fn s10_renew_browser_id_keeps_the_order_of_cookies() {
     // The browser's other page reconnects (with the new id).
     assert_eq!(next_service(&other), json!({ "t": "reconnect" }));
     drop((other, page));
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// S10: a passkey of the app's relying party signs the user in: once the
@@ -1117,7 +1108,7 @@ fn s10_a_passkey_sign_in_renews_the_browser_id() {
         let root = cx.new_entity(|_| Passkey::default());
         cx.set_root(root);
     });
-    let (app, dir) = web_app(init, "s10-passkey");
+    let (app, _dir) = web_app(init, "s10-passkey");
     let old = "5100000000000000000000000000a003";
     let page = Page::open_with(&app, "/ws?path=%2F&w=1280&h=800", &with_browser(old));
     let get = next_service(&page);
@@ -1133,7 +1124,6 @@ fn s10_a_passkey_sign_in_renews_the_browser_id() {
     wait_for_text(&page, "<false true>");
     assert!(!app.session_dir(old).exists());
     drop(page);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 fn socket_accepted(app: &crate::WebApp, headers: &[(&str, &str)]) -> bool {
@@ -1149,7 +1139,8 @@ fn socket_accepted(app: &crate::WebApp, headers: &[(&str, &str)]) -> bool {
 
 #[test]
 fn s11_socket_origins_are_compared_whole() {
-    let app = uploads_app("s11-origins", false).0;
+    let dir = TempDir::new("sec-s11-origins");
+    let app = uploads_app(&dir, false).0;
     // Behind a TLS proxy that says so.
     let https = |origin: &str| {
         socket_accepted(
@@ -1200,7 +1191,8 @@ fn s11_socket_origins_are_compared_whole() {
 #[test]
 fn s11_a_loopback_server_refuses_rebound_host_names() {
     use std::io::{Read, Write};
-    let app = uploads_app("s11-rebinding", false).0;
+    let dir = TempDir::new("sec-s11-rebinding");
+    let app = uploads_app(&dir, false).0;
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
@@ -1239,7 +1231,8 @@ fn s11_a_loopback_server_refuses_rebound_host_names() {
 
 #[test]
 fn s11_a_public_origin_ignores_host_and_forwarded_headers() {
-    let app = uploads_app("s11-public", false)
+    let dir = TempDir::new("sec-s11-public");
+    let app = uploads_app(&dir, false)
         .0
         .public_origin("https://App.example.com:443/")
         .allow_origins(["https://admin.example.com"]);
@@ -1279,7 +1272,8 @@ fn s11_a_public_origin_ignores_host_and_forwarded_headers() {
 #[test]
 #[should_panic(expected = "is not an origin")]
 fn s11_a_public_origin_must_be_an_origin() {
-    let _ = uploads_app("s11-bad", false)
+    let dir = TempDir::new("sec-s11-bad");
+    let _ = uploads_app(&dir, false)
         .0
         .public_origin("app.example.com/path");
 }
@@ -1311,7 +1305,7 @@ fn s12_web_messages_keep_their_view_allowed_origins() {
         let root = cx.new_entity(|_| Host { got: "-".into() });
         cx.set_root(root);
     });
-    let (app, dir) = web_app(init, "s12");
+    let (app, _dir) = web_app(init, "s12");
     let page = Page::open(&app, "/ws?path=%2F&w=1280&h=800");
     let reset = page.next();
     let got = op_with_text(&reset["p"], "-");
@@ -1331,7 +1325,6 @@ fn s12_web_messages_keep_their_view_allowed_origins() {
         page.next(),
         json!({ "t": "patch", "p": [{ "op": "text", "id": got, "text": "\"ok\" http://localhost" }] })
     );
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// S13: numbers past `f32::MAX` would reach the app as infinities; the
@@ -1377,7 +1370,7 @@ fn s19_a_link_from_the_page_runs_no_widget_action() {
         cx.set_root(router);
         cx.on_widget_action(|_, _| async { RAN.store(true, Ordering::SeqCst) });
     });
-    let (app, dir) = web_app(init, "s19");
+    let (app, _dir) = web_app(init, "s19");
     let page = Page::open(&app, "/ws?path=%2F");
     page.next();
     page.send(json!({ "t": "link", "path": "/__prism/widget-action?kind=w&action=go&payload=1" }));
@@ -1396,7 +1389,6 @@ fn s19_a_link_from_the_page_runs_no_widget_action() {
         !RAN.load(Ordering::SeqCst),
         "a page link ran a widget action"
     );
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// S20: a web component's tag and prop names can come from data (a CMS).
@@ -1568,7 +1560,7 @@ fn s15_the_page_cannot_complete_a_cookie_or_a_sign_in() {
         let root = cx.new_entity(|_| Calls::default());
         cx.set_root(root);
     });
-    let (app, dir) = web_app(init, "s15");
+    let (app, _dir) = web_app(init, "s15");
     let sid = "0123456789abcdef0123456789abcdef";
     let mut headers = http::HeaderMap::new();
     headers.insert("cookie", format!("prism_sid={sid}").parse().unwrap());
@@ -1614,7 +1606,6 @@ fn s15_the_page_cannot_complete_a_cookie_or_a_sign_in() {
         page.next(),
         json!({ "t": "patch", "p": [{ "op": "text", "id": cookie, "text": "[cookie Ok(())]" }] })
     );
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 fn upload_file(name: &str, size: u64) -> Value {
@@ -1633,7 +1624,8 @@ fn stored_files(app: &crate::WebApp, sid: &str) -> usize {
 fn s16_uploads_past_the_limits_are_refused_before_anything_is_stored() {
     use crate::uploads::{Key, Uploads};
     use std::sync::atomic::Ordering::SeqCst;
-    let (app, _, _) = uploads_app("s16-limits", false);
+    let dir = TempDir::new("sec-s16-limits");
+    let (app, _, _) = uploads_app(&dir, false);
     let app = app
         .max_upload_files(2)
         .max_upload_bytes(10)
@@ -1697,7 +1689,8 @@ fn s16_uploads_past_the_limits_are_refused_before_anything_is_stored() {
 #[test]
 fn s16_a_chunk_beyond_its_budget_fails_the_upload() {
     use crate::uploads::{CHUNK, Key, Uploads};
-    let (app, _, _) = uploads_app("s16-chunks", false);
+    let dir = TempDir::new("sec-s16-chunks");
+    let (app, _, _) = uploads_app(&dir, false);
     let sid = "5e16c05e16c05e16c05e16c05e16c05e";
     let mut up = Uploads::default();
     up.expect(1, None);
@@ -1732,7 +1725,8 @@ fn s16_received_files_expire_with_their_urls() {
     use crate::uploads::{Key, Uploads, sweep, sweep_all};
     use prism_core::device::has_local_file;
     use std::time::{Duration, SystemTime};
-    let (app, _, _) = uploads_app("s16-expiry", false);
+    let dir = TempDir::new("sec-s16-expiry");
+    let (app, _, _) = uploads_app(&dir, false);
     let app = app
         .keep_uploads(Duration::from_secs(3600))
         .max_upload_bytes(10);
@@ -1798,7 +1792,7 @@ fn s16_a_refused_pick_stops_the_page_and_says_why() {
         let root = cx.new_entity(|_| Pick::default());
         cx.set_root(root);
     });
-    let (app, dir) = web_app(init, "s16-pick");
+    let (app, _dir) = web_app(init, "s16-pick");
     let sid = "5e16e05e16e05e16e05e16e05e16e05e";
     let mut headers = http::HeaderMap::new();
     headers.insert("cookie", format!("prism_sid={sid}").parse().unwrap());
@@ -1830,7 +1824,6 @@ fn s16_a_refused_pick_stops_the_page_and_says_why() {
             "text": "[picked Err(Failed(\"too many files (at most 1)\"))]" }] })
     );
     assert_eq!(stored_files(&app, sid), 0);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Every value of header `name`.
@@ -1859,7 +1852,8 @@ fn ancestors(policies: &[String]) -> Vec<String> {
 /// keep their sandbox.
 #[test]
 fn s35_only_the_app_frames_its_pages() {
-    let (app, svg, png) = uploads_app("s35-headers", false);
+    let dir = TempDir::new("sec-s35-headers");
+    let (app, svg, png) = uploads_app(&dir, false);
     let download = crate::downloads::offer(
         "",
         Some(SID),
@@ -1905,7 +1899,8 @@ fn s35_only_the_app_frames_its_pages() {
     }
     // A portal the app's owner trusts may frame its pages: the policy names
     // it, and `X-Frame-Options`, which cannot, is left out.
-    let portal = uploads_app("s35-portal", false)
+    let portal_dir = TempDir::new("sec-s35-portal");
+    let portal = uploads_app(&portal_dir, false)
         .0
         .frame_ancestor("https://portal.example/")
         .frame_ancestor("https://portal.example")
@@ -1929,7 +1924,8 @@ fn s35_only_the_app_frames_its_pages() {
 #[test]
 fn s35_the_strict_policy_frames_as_configured_and_keeps_sandboxes() {
     for portal in [false, true] {
-        let (mut app, svg, png) = uploads_app(&format!("s35-strict-{portal}"), true);
+        let dir = TempDir::new(&format!("sec-s35-strict-{portal}"));
+        let (mut app, svg, png) = uploads_app(&dir, true);
         let want = if portal {
             app = app.frame_ancestor("https://portal.example");
             "'self' https://portal.example"

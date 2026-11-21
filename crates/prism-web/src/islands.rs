@@ -228,10 +228,11 @@ fn origin_of(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::temp_dir::TempDir;
 
     #[test]
     fn the_manifest_lists_modules_and_files() {
-        let dir = std::env::temp_dir().join(format!("prism-islands-{}", std::process::id()));
+        let dir = TempDir::new("islands");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("manifest.json"),
@@ -255,7 +256,6 @@ mod tests {
         );
         assert!(islands.any());
         assert!(!Islands::load(&dir.join("nope")).any());
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     use prism_core::prelude::*;
@@ -374,7 +374,7 @@ mod tests {
 
     #[test]
     fn built_islands_are_served_immutable_and_need_wasm_in_the_csp() {
-        let dir = std::env::temp_dir().join(format!("prism-islands-app-{}", std::process::id()));
+        let dir = TempDir::new("islands-app");
         let built = dir.join("islands");
         std::fs::create_dir_all(&built).unwrap();
         std::fs::write(
@@ -437,7 +437,6 @@ mod tests {
             manifest.contains(r#""islands/chart": "_prism/islands/prism-island-chart.abc.js""#),
             "{manifest}"
         );
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

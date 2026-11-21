@@ -1779,16 +1779,32 @@ fn cancelled_tasks_never_run() {
     assert!(!flag.get());
 }
 
+/// A failing test removes its temp folder too: the guard is dropped while
+/// the panic unwinds.
+#[test]
+fn a_failing_test_leaves_no_temp_folder() {
+    let made = std::sync::Mutex::new(None);
+    let failed = std::panic::catch_unwind(|| {
+        let dir = crate::temp_dir::TempDir::new("guard");
+        std::fs::create_dir_all(dir.join("data")).unwrap();
+        std::fs::write(dir.join("data/file"), "x").unwrap();
+        *made.lock().unwrap() = Some(dir.to_path_buf());
+        panic!("a test that fails (on purpose)");
+    });
+    assert!(failed.is_err());
+    let dir = made.lock().unwrap().take().expect("the folder was made");
+    assert!(!dir.exists(), "{} is left behind", dir.display());
+}
+
 #[test]
 fn file_storage_round_trips_odd_keys() {
-    let dir = std::env::temp_dir().join(format!("prism-storage-{}", std::process::id()));
-    let mut s = FileStorage::new(&dir);
+    let dir = crate::temp_dir::TempDir::new("storage");
+    let mut s = FileStorage::new(dir.to_path_buf());
     s.set("todos/v1 é", "a\nb");
     assert_eq!(s.get("todos/v1 é").as_deref(), Some("a\nb"));
     assert_eq!(s.keys(), vec!["todos/v1 é".to_string()]);
     s.remove("todos/v1 é");
     assert!(s.get("todos/v1 é").is_none());
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 // --- Menus, alerts, tray, sheets ----------------------------------------------
@@ -4620,7 +4636,7 @@ fn clipboard_items_are_read_and_written() {
             })
             .unwrap()
     };
-    let dir = std::env::temp_dir().join(format!("prism-clip-test-{}", std::process::id()));
+    let dir = crate::temp_dir::TempDir::new("clip-test");
     std::fs::create_dir_all(&dir).unwrap();
     let file = |n: &str, ty: &str, data: &[u8]| {
         let path = dir.join(n);
@@ -4658,7 +4674,6 @@ fn clipboard_items_are_read_and_written() {
         ),
         "3: text/html None None",
     );
-    let _ = std::fs::remove_dir_all(&dir);
 
     let mut app = App::new();
     app.write_clipboard(ClipboardItem::new().text("a").html("<i>a</i>"));

@@ -8,6 +8,7 @@ use prism_core::{
 
 use crate::css::{css, run_css};
 use crate::html::{HtmlBackend, runs_html};
+use crate::temp_dir::TempDir;
 
 /// #95: balanced and pretty wrapping, on texts only.
 #[test]
@@ -318,14 +319,14 @@ fn ssr_rich_text_and_clickable_text() {
 
 #[test]
 fn bundled_fonts_are_font_faces_of_the_base_stylesheet() {
-    let dir = std::env::temp_dir().join(format!("prism-web-fonts-{}", std::process::id()));
+    let dir = TempDir::new("web-fonts");
     std::fs::create_dir_all(dir.join("fonts")).unwrap();
     std::fs::write(dir.join("fonts/Brand-BoldItalic.woff2"), b"wOF2").unwrap();
     std::fs::write(dir.join("logo.png"), b"png").unwrap();
     let assets = crate::assets::Assets::new(
         "js".into(),
         "body{}".into(),
-        Some(dir.clone()),
+        Some(dir.to_path_buf()),
         Default::default(),
     );
     let css_path = assets.css().to_string();
@@ -338,7 +339,6 @@ fn bundled_fonts_are_font_faces_of_the_base_stylesheet() {
         )),
         "{css}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]

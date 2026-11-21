@@ -9,6 +9,7 @@ use prism_core::prelude::*;
 use prism_core::{AppConfig, AppInit};
 use serde_json::Value;
 
+use crate::temp_dir::TempDir;
 use crate::{CspNonce, RequestContext, WebApp};
 
 /// The signed-in user, as a host would attach it.
@@ -48,8 +49,8 @@ impl Render for Whoami {
     }
 }
 
-fn app(tag: &str, init: AppInit) -> (WebApp, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("prism-host-{tag}-{}", std::process::id()));
+fn app(tag: &str, init: AppInit) -> (WebApp, TempDir) {
+    let dir = TempDir::new(&format!("host-{tag}"));
     std::fs::create_dir_all(dir.join("assets")).unwrap();
     std::fs::write(dir.join("assets/icon.png"), b"png").unwrap();
     std::fs::write(dir.join("assets/app.css"), b"body{}").unwrap();
@@ -85,7 +86,7 @@ fn body(r: &Response<Vec<u8>>) -> String {
 
 #[test]
 fn the_app_adds_fonts_icons_metas_styles_and_scripts_to_the_head() {
-    let (app, dir) = app("head", whoami());
+    let (app, _dir) = app("head", whoami());
     let app = app
         .favicon("icon.png")
         .apple_touch_icon("/static/touch.png")
@@ -142,12 +143,11 @@ fn the_app_adds_fonts_icons_metas_styles_and_scripts_to_the_head() {
     // Prism's own tags carry the nonce too.
     assert!(page.contains(r#"<style id="prism-ssr" nonce="n0nce">"#));
     assert!(page.contains(r#" nonce="n0nce"></script>"#), "{page}");
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn the_first_paint_has_no_style_attribute() {
-    let (app, dir) = app("csp", whoami());
+    let (app, _dir) = app("csp", whoami());
     let page = body(&app.handle(&Request::get("/").body(()).unwrap()));
     assert!(!page.contains("style="), "{page}");
     assert!(
@@ -182,7 +182,6 @@ fn the_first_paint_has_no_style_attribute() {
     );
     // Text cannot close the style element.
     assert_eq!(crate::host::css_text("a</style>"), "a\\3c /style>");
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// An order screen: `404` when its record is missing.
@@ -219,7 +218,7 @@ fn a_matched_route_answers_the_status_it_sets() {
             .build(cx);
         cx.set_root(root);
     });
-    let (app, dir) = app("status", init);
+    let (app, _dir) = app("status", init);
     let found = app.handle(&Request::get("/orders/3").body(()).unwrap());
     assert_eq!(found.status(), StatusCode::OK);
     assert!(body(&found).contains("order 3"));
@@ -239,13 +238,12 @@ fn a_matched_route_answers_the_status_it_sets() {
             .status(),
         StatusCode::FORBIDDEN
     );
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn unknown_paths_answer_404_with_the_not_found_screen() {
     for custom in [false, true] {
-        let (app, dir) = app(&format!("404-{custom}"), routed(custom));
+        let (app, _dir) = app(&format!("404-{custom}"), routed(custom));
         let ok = app.handle(&Request::get("/").body(()).unwrap());
         assert_eq!(ok.status(), StatusCode::OK);
         let missing = app.handle(&Request::get("/nope/nope").body(()).unwrap());
@@ -260,18 +258,16 @@ fn unknown_paths_answer_404_with_the_not_found_screen() {
         }
         let head = app.handle(&Request::head("/nope").body(()).unwrap());
         assert_eq!(head.status(), StatusCode::NOT_FOUND);
-        let _ = std::fs::remove_dir_all(dir);
     }
     // Without a router, every path is the app.
-    let (app, dir) = app("404-none", whoami());
+    let (app, _dir) = app("404-none", whoami());
     let any = app.handle(&Request::get("/whatever").body(()).unwrap());
     assert_eq!(any.status(), StatusCode::OK);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn the_page_knows_its_request_origin_and_the_host_context() {
-    let (app, dir) = app("context", whoami());
+    let (app, _dir) = app("context", whoami());
     let app = app.base_path("/dash");
     // Behind a proxy, mounted with `nest` (the prefix stripped).
     let mut req = Request::get("/orders?page=2")
@@ -306,7 +302,6 @@ fn the_page_knows_its_request_origin_and_the_host_context() {
         page.contains("nobody") && page.contains("origin http://x"),
         "{page}"
     );
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// A live session over channels.
@@ -350,7 +345,7 @@ fn texts(v: &Value) -> Vec<String> {
 
 #[test]
 fn a_session_sees_its_handshake_and_context() {
-    let (app, dir) = app("socket", whoami());
+    let (app, _dir) = app("socket", whoami());
     let rx = open(
         &app,
         "/ws?path=%2Forders&search=%3Fpage%3D2&w=800&h=600",
@@ -373,7 +368,6 @@ fn a_session_sees_its_handshake_and_context() {
         "{t:?}"
     );
     assert!(t.contains(&"kind socket theme light".to_string()), "{t:?}");
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// The page's `data-page` id.
@@ -384,7 +378,7 @@ fn page_id(page: &str) -> String {
 
 #[test]
 fn the_first_session_takes_the_page_request_over_once() {
-    let (app, dir) = app("handoff", whoami());
+    let (app, _dir) = app("handoff", whoami());
     let sid = "0123456789abcdef0123456789abcdef";
     let cookie = format!("prism_sid={sid}");
     let page_for = |user: u32| {
@@ -432,7 +426,6 @@ fn the_first_session_takes_the_page_request_over_once() {
         .unwrap();
     assert_eq!(app.handle(&head).status(), StatusCode::OK);
     assert_eq!(app.inner.handoffs.len(), waiting);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -499,7 +492,6 @@ fn foreign_origins_are_refused_unless_allowed() {
         any.accept_socket(&headers("https://evil.example", "app.example.com")),
         Ok(())
     );
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 fn app_any(dir: &std::path::Path) -> WebApp {
@@ -510,7 +502,7 @@ fn app_any(dir: &std::path::Path) -> WebApp {
 
 #[test]
 fn sessions_are_capped_and_idle_ones_end() {
-    let (app, dir) = app("limits", whoami());
+    let (app, _dir) = app("limits", whoami());
     let app = app.max_sessions(1).idle_timeout(Duration::from_millis(300));
     let first = open(&app, "/ws?path=%2F", &[], None);
     assert_eq!(next(&first)["t"], "reset");
@@ -534,7 +526,6 @@ fn sessions_are_capped_and_idle_ones_end() {
     }
     assert_eq!(app.session_count(), 0);
     assert_eq!(app.accept_socket(&HeaderMap::new()), Ok(()));
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -551,7 +542,7 @@ fn open_url_in_tells_the_page_where() {
 
 #[test]
 fn the_reconnecting_banner_follows_the_language() {
-    let (app, dir) = app("banner", whoami());
+    let (app, _dir) = app("banner", whoami());
     let page = |lang: &str| {
         body(
             &app.handle(
@@ -566,7 +557,6 @@ fn the_reconnecting_banner_follows_the_language() {
         r#"<div id="prism-connection" role="status" aria-live="polite" hidden>Reconnecting…</div>"#
     ));
     assert!(page("fr-FR").contains(">Reconnexion…</div>"));
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Sets a session cookie on its first render and shows the outcome.
@@ -636,7 +626,7 @@ fn redeem(app: &WebApp, ticket: Option<&str>, headers: &[(&str, &str)]) -> Respo
 
 #[test]
 fn a_session_sets_a_cookie_through_a_one_time_ticket() {
-    let (app, dir) = app("cookie", signs_in());
+    let (app, _dir) = app("cookie", signs_in());
     let cookie = format!("prism_sid={SID}; theme=dark");
     let rx = open(
         &app,
@@ -704,12 +694,11 @@ fn a_session_sets_a_cookie_through_a_one_time_ticket() {
         redeem(&app, Some(&ticket), &page).status(),
         StatusCode::FORBIDDEN
     );
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn a_ticket_works_for_its_own_browser_only() {
-    let (app, dir) = app("cookie-sid", signs_in());
+    let (app, _dir) = app("cookie-sid", signs_in());
     let cookie = format!("prism_sid={SID}");
     let rx = open(
         &app,
@@ -739,12 +728,11 @@ fn a_ticket_works_for_its_own_browser_only() {
     );
     // Seen by another browser: spent.
     assert_eq!(page(&cookie), StatusCode::FORBIDDEN);
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn a_secure_cookie_on_plain_http_fails_instead_of_vanishing() {
-    let (app, dir) = app("cookie-http", signs_in());
+    let (app, _dir) = app("cookie-http", signs_in());
     let cookie = format!("prism_sid={SID}");
     let rx = open(
         &app,
@@ -763,7 +751,6 @@ fn a_secure_cookie_on_plain_http_fails_instead_of_vanishing() {
             break;
         }
     }
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
@@ -773,7 +760,7 @@ fn reconnect_tells_the_page_and_ends_the_session() {
         cx.set_root(root);
         cx.reconnect();
     });
-    let (app, dir) = app("reconnect", init);
+    let (app, _dir) = app("reconnect", init);
     let rx = open(&app, "/ws?path=%2F", &[], None);
     assert_eq!(next(&rx)["t"], "reset");
     assert_eq!(next(&rx), serde_json::json!({ "t": "reconnect" }));
@@ -787,5 +774,4 @@ fn reconnect_tells_the_page_and_ends_the_session() {
     // The first paint has no session to renew: it renders as usual.
     let page = app.handle(&Request::get("/").body(()).unwrap());
     assert_eq!(page.status(), StatusCode::OK);
-    let _ = std::fs::remove_dir_all(dir);
 }

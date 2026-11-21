@@ -683,19 +683,14 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::temp_dir::TempDir;
     use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair};
-
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("prism-s25-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        dir
-    }
 
     /// S25: workers sharing a data directory (processes; here threads, past
     /// the per-process cache) all seal with the one key that is persisted.
     #[test]
     fn s25_workers_share_one_persisted_key() {
-        let root = scratch("workers");
+        let root = TempDir::new("s25-workers");
         for round in 0..20 {
             let dir = root.join(round.to_string());
             let start = std::sync::Arc::new(std::sync::Barrier::new(8));
@@ -720,12 +715,11 @@ mod tests {
                 .collect();
             assert_eq!(names, [".secret-key"], "round {round}");
         }
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn s25_a_key_that_does_not_parse_is_an_error() {
-        let dir = scratch("bad-key");
+        let dir = TempDir::new("s25-bad-key");
         assert!(key_from(Some("not hex".into()), &dir).is_err());
         assert!(key_from(Some("ab".repeat(31)), &dir).is_err());
         assert_eq!(key_from(Some("ab".repeat(32)), &dir).unwrap(), [0xab; 32]);
@@ -744,12 +738,11 @@ mod tests {
         let err = s.set("token", "v", false).unwrap_err();
         assert!(err.contains("PRISM_SECRET_KEY"), "{err}");
         assert!(s.get("token").is_err());
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn s25_failed_writes_and_deletes_are_errors() {
-        let dir = scratch("failures");
+        let dir = TempDir::new("s25-failures");
         let s = SecureStore::new(&dir, "sid", Ok([7; 32]));
         s.set("token", "old", false).unwrap();
         // The secret's path becomes a directory with something in it: it can
@@ -765,7 +758,6 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
         assert!(names.iter().all(|n| !n.ends_with("tmp~")), "{names:?}");
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[cfg(unix)]
@@ -773,7 +765,7 @@ mod tests {
     fn s25_secrets_are_private_from_creation() {
         use std::os::unix::fs::PermissionsExt;
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-        let dir = scratch("private");
+        let dir = TempDir::new("s25-private");
         std::fs::create_dir_all(&dir).unwrap();
         // Created private, not made private after (whatever the umask).
         let tmp = write_aside(&dir.join("k"), b"x").unwrap();
@@ -786,7 +778,6 @@ mod tests {
         s.set("token", "v", false).unwrap();
         assert_eq!(mode(&data.join("sid/secure")), 0o700);
         assert_eq!(mode(&s.path("token")), 0o600);
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn auth_data(rp: &str, flags: u8, count: u32) -> Vec<u8> {
@@ -804,7 +795,7 @@ mod tests {
 
     #[test]
     fn secrets_are_encrypted_and_bound_to_the_session() {
-        let dir = std::env::temp_dir().join(format!("prism-secure-{}", std::process::id()));
+        let dir = TempDir::new("secure");
         let key = [7u8; 32];
         let a = SecureStore::new(&dir.join("a"), "sid-a", Ok(key));
         a.set("token", "s3cret", false).unwrap();
@@ -823,7 +814,6 @@ mod tests {
         a.delete("token").unwrap();
         assert!(a.get("token").unwrap().is_none());
         a.delete("token").unwrap();
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

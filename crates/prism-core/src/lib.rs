@@ -1273,6 +1273,8 @@ pub mod prelude {
 }
 
 #[cfg(test)]
+mod temp_dir;
+#[cfg(test)]
 mod tests;
 
 /// The nodes an answer of `dispatch` (a selection, a highlight, a clipboard

@@ -489,6 +489,7 @@ fn walk_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::temp_dir::TempDir;
 
     #[test]
     fn names_carry_the_content_hash() {
@@ -535,7 +536,9 @@ mod tests {
             assert_eq!(strings.next().unwrap().unwrap(), glsl, "{name}");
         }
         // Still a script (checked when `node` is installed).
-        let file = std::env::temp_dir().join(format!("prism-client-{}.js", std::process::id()));
+        let dir = TempDir::new("client");
+        std::fs::create_dir_all(&*dir).unwrap();
+        let file = dir.join("client.js");
         std::fs::write(&file, &served).unwrap();
         if let Ok(out) = std::process::Command::new("node")
             .arg("--check")
@@ -548,20 +551,19 @@ mod tests {
                 String::from_utf8_lossy(&out.stderr)
             );
         }
-        let _ = std::fs::remove_file(file);
         // The stylesheet too.
         assert!(compact_css(crate::PRISM_CSS).len() < crate::PRISM_CSS.len() * 9 / 10);
     }
 
     #[test]
     fn hashed_files_are_immutable_and_exportable() {
-        let dir = std::env::temp_dir().join(format!("prism-assets-{}", std::process::id()));
+        let dir = TempDir::new("assets");
         std::fs::create_dir_all(dir.join("img")).unwrap();
         std::fs::write(dir.join("img/logo.png"), b"png").unwrap();
         let assets = Assets::new(
             "js".into(),
             "css".into(),
-            Some(dir.clone()),
+            Some(dir.to_path_buf()),
             EmbeddedAssets::new(),
         );
         let path = assets.app_path("img/logo.png");
@@ -584,17 +586,16 @@ mod tests {
         assert!(out.join(&path).exists() && out.join(assets.client()).exists());
         let manifest = std::fs::read_to_string(out.join("manifest.json")).unwrap();
         assert!(manifest.contains(&path));
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn embedded_files_win_over_the_directory() {
-        let dir = std::env::temp_dir().join(format!("prism-assets-embed-{}", std::process::id()));
+        let dir = TempDir::new("assets-embed");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("logo.png"), b"disk").unwrap();
         std::fs::write(dir.join("other.png"), b"other").unwrap();
         let embedded = EmbeddedAssets::new().file("logo.png", &b"binary"[..]);
-        let assets = Assets::new("js".into(), "css".into(), Some(dir.clone()), embedded);
+        let assets = Assets::new("js".into(), "css".into(), Some(dir.to_path_buf()), embedded);
         let logo = assets.app_path("logo.png");
         assert_eq!(logo, format!("assets/logo.{}.png", content_hash(b"binary")));
         assert_eq!(assets.get(&logo).unwrap().body, b"binary");
@@ -607,7 +608,6 @@ mod tests {
         let out = dir.join("public");
         assert_eq!(assets.export(&out).unwrap(), 5);
         assert_eq!(std::fs::read(out.join(&logo)).unwrap(), b"binary");
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// S4 (security review): a requested name is checked as text, the same
@@ -686,8 +686,7 @@ mod tests {
     /// nothing a link takes out of the directory.
     #[test]
     fn s4_the_fallback_serves_only_published_files() {
-        let root = std::env::temp_dir().join(format!("prism-assets-s4-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = TempDir::new("assets-s4");
         let (dir, outside) = (root.join("assets"), root.join("outside"));
         std::fs::create_dir_all(dir.join("img")).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
@@ -706,7 +705,7 @@ mod tests {
         let assets = Assets::new(
             "js".into(),
             "css".into(),
-            Some(dir.clone()),
+            Some(dir.to_path_buf()),
             EmbeddedAssets::new(),
         );
         assert_eq!(assets.get("assets/img/logo.png").unwrap().body, b"logo");
@@ -730,6 +729,5 @@ mod tests {
                 assets.app.keys()
             );
         }
-        let _ = std::fs::remove_dir_all(root);
     }
 }

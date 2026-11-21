@@ -58,6 +58,8 @@ mod session;
 #[cfg(test)]
 mod table_tests;
 #[cfg(test)]
+mod temp_dir;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod typography_tests;
