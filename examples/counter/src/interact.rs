@@ -100,6 +100,8 @@ impl Interact {
             .accessibility_role(Role::Slider)
             .accessibility_label(strings::interact_level(cx))
             .accessibility_value(format!("{pct} %"))
+            // Dragged sideways: left-right arrows, not the clickable hand.
+            .cursor(Cursor::ResizeHorizontal)
             .on_click(cx.listener(|this, e: &ClickEvent, _| {
                 if let Some(p) = e.position {
                     this.set_level(p.x);

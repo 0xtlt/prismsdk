@@ -73,7 +73,10 @@ kinds and services come next (see [Not yet](#not-yet)).
   rectangle, as Windows counts a double click), read from the button's
   press and release (`handledEventsToo`); clickable views without a
   button take `Tapped` and `DoubleTapped`. Enter, Space and UI
-  Automation's Invoke click without a position, as on macOS.
+  Automation's Invoke click without a position, as on macOS. The pointer
+  shows a hand over them, and a view's `.cursor(..)` over it
+  (`ProtectedCursor`, a system cursor: the move arrows for an open or
+  closed hand, the arrow for zoom, as Windows has neither).
 - **Navigation:** a `SelectorBar` (the Windows 11 top tabs) for a tab bar,
   and a header per stack with Back (`NavigationBackButtonNormalStyle`), the
   title and the screen's bar buttons.
@@ -654,8 +657,8 @@ step moves the window to a simulated monitor through `WM_DPICHANGED`
 
 ## Not yet
 
-- **Views and input:** `.cursor(..)`, `object_position`, `Scrollbar::Hidden`, `tabular_nums` and underline
-  colors are ignored; custom window chrome; the runtime's layers (toasts)
+- **Views and input:** `object_position`, `Scrollbar::Hidden`,
+  `tabular_nums` and underline colors are ignored; custom window chrome; the runtime's layers (toasts)
   draw under sheets and dialogs.
 - **Forms and navigation:** keyboard types, capitalization, autocorrect and
   suggestions; clearing an optional date; a date and time picker shows the

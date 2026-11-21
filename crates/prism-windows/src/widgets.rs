@@ -74,6 +74,8 @@ pub struct Win {
     /// Nodes with events already wired: clicks, hover and press.
     clicks: IdSet<NodeId>,
     hovers: IdSet<NodeId>,
+    /// The cursor each view shows (`cursors.rs`).
+    cursors: crate::cursors::Shapes,
 }
 
 impl Win {
@@ -121,6 +123,7 @@ impl Win {
             layers: IdMap::default(),
             clicks: IdSet::default(),
             hovers: IdSet::default(),
+            cursors: crate::cursors::Shapes::default(),
         };
         w.theme_root()?;
         Ok(w)
@@ -321,8 +324,14 @@ impl Win {
             || n.reports.contains(prism_core::Interaction::Active);
         let pointer = crate::pointer::wants(id);
         let keys = n.keys_local;
-        let wants =
-            n.clickable || hover || n.menu.is_some() || n.pointer_mask != 0 || pointer || keys;
+        let cursor = n.style.cursor;
+        let wants = n.clickable
+            || hover
+            || n.menu.is_some()
+            || n.pointer_mask != 0
+            || pointer
+            || keys
+            || cursor.is_some();
         let clickable = n.clickable;
         let Some(v) = self.views.get_mut(&id) else {
             return;
@@ -369,6 +378,15 @@ impl Win {
             }
             Ok(false) => {}
             Err(e) => log!("keyboard focus of node {id}: {e}"),
+        }
+        // The style's cursor, or a hand over a clickable view (once its
+        // button is made: the element under the pointer).
+        let shape = crate::cursors::shape(cursor, clickable);
+        let changed = self.cursors.set(id, shape);
+        if (changed || made)
+            && let Err(e) = set_cursor(v, shape)
+        {
+            log!("cursor of node {id}: {e}");
         }
         // Under a contrast theme a button's colors are the button ones.
         if made && self.palette.forced.is_some() {
@@ -507,6 +525,7 @@ impl Widgets for Win {
             return;
         };
         let axis = n.style.scroll_axis != style.scroll_axis;
+        let cursor = n.style.cursor != style.cursor;
         n.style = style.clone();
         if !matches!(n.kind, NodeKind::Text | NodeKind::Timer) {
             // A text's sizes stay while its text and font do (`Measurer`).
@@ -518,6 +537,9 @@ impl Widgets for Win {
             let _ = scroll_axis(sv, style.scroll_axis == prism_core::ScrollAxis::Vertical);
         }
         self.restyle_tree(id);
+        if cursor {
+            self.update_hit(id);
+        }
     }
 
     fn set_text(&mut self, view: &NodeId, text: &str) {
@@ -668,6 +690,7 @@ impl Widgets for Win {
         self.select_events.remove(&id);
         self.clicks.remove(&id);
         self.hovers.remove(&id);
+        self.cursors.forget(id);
         self.overlay_origins.remove(&id);
         crate::motion::forget(id);
         if self.focus == Some(id) {
@@ -1401,6 +1424,7 @@ impl Win {
                     self.bars.insert(id);
                 }
                 self.views.insert(id, v);
+                self.cursors.forget(id);
                 if kind == NodeKind::Overlay {
                     self.new_overlay(id);
                 }
@@ -1458,6 +1482,26 @@ impl Win {
 /// `view::detach` alone can leave it there (its `Parent` is not always
 /// set), and a hidden, focusable twin then stays in the tab order and in
 /// UI Automation.
+/// Shows `shape` over a view (`cursors.rs`), or the cursor of what is
+/// around it (`None`): on its canvas and on its button, the element under
+/// the pointer.
+fn set_cursor(v: &View, shape: Option<crate::cursors::Shape>) -> Result<()> {
+    use crate::winui::bindings::Microsoft::UI::Input::{
+        InputCursor, InputSystemCursor, InputSystemCursorShape,
+    };
+    let cursor = match shape {
+        Some(s) => Some(
+            InputSystemCursor::Create(InputSystemCursorShape(s as i32))?.cast::<InputCursor>()?,
+        ),
+        None => None,
+    };
+    v.outer.SetProtectedCursor(cursor.as_ref())?;
+    if let Some(b) = &v.button {
+        b.SetProtectedCursor(cursor.as_ref())?;
+    }
+    Ok(())
+}
+
 fn unmount(outer: &Canvas, old: &UIElement) {
     let _ = crate::view::detach(old);
     if let Ok(coll) = outer.Children() {
