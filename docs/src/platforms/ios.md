@@ -32,7 +32,7 @@ languages, background tasks) and bundles the app.
 The Swift bridge is compiled by `prism-ios`'s build script (Xcode required).
 The same backend serves [tvOS](tvos.md) and [visionOS](visionos.md).
 
-**Deployment target.** Apps are built for iOS and iPadOS 17 and later. `prism`
+<a id="deployment-target"></a>**Deployment target.** Apps are built for iOS and iPadOS 17 and later. `prism`
 sets `IPHONEOS_DEPLOYMENT_TARGET` for every `cargo` it runs, and writes it as
 the bundle's `MinimumOSVersion`. To change it, set it in `Prism.toml`:
 

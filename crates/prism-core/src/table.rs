@@ -115,7 +115,7 @@ impl From<String> for Column {
     }
 }
 
-/// A table: [`column`]s with headers, then [`row`]s of cells. See the
+/// A table: [`column`](fn@column)s with headers, then [`row`]s of cells. See the
 /// [module docs](self).
 pub struct Table {
     node: VNode,
@@ -127,7 +127,7 @@ pub struct Table {
 }
 
 /// A table of data: columns with headers, then rows of cells, with real
-/// table semantics on every platform. See the [module docs](crate::table).
+/// table semantics on every platform. See the [module docs](mod@crate::table).
 pub fn table() -> Table {
     Table {
         node: VNode::new(NodeKind::Table),
@@ -140,7 +140,7 @@ pub fn table() -> Table {
 }
 
 impl Table {
-    /// Adds a column: a header string, or a [`column`] with options.
+    /// Adds a column: a header string, or a [`column`](fn@column) with options.
     pub fn column(mut self, column: impl Into<Column>) -> Self {
         self.columns.push(column.into());
         self

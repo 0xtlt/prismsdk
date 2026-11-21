@@ -11,7 +11,7 @@
 //!   the runtime's WinRT classes (reg-free activation, what the SDK's
 //!   MSBuild targets generate), DPI awareness and the Windows versions XAML
 //!   islands need, its icon and its version information
-//!   ([`winres`](crate::winres));
+//!   ([`winres`]);
 //! - [`gui_subsystem`] makes release builds Windows (GUI) programs, which
 //!   open no console.
 //!
@@ -418,7 +418,7 @@ fn manifest_with(files: &str, app: &AppInfo) -> String {
 /// Embeds the app's resources in the package's executables: its manifest
 /// (resource 1, `RT_MANIFEST`), its icon (`PRISM_ICON`, a PNG or an
 /// `.ico`) and its version information, written as one `.res` file
-/// ([`winres`](crate::winres)) and linked by the target's toolchain:
+/// ([`winres`]) and linked by the target's toolchain:
 ///
 /// - MSVC: `link.exe` takes the `.res` itself (it converts it with
 ///   `cvtres`), with `/MANIFEST:NO` so it adds no manifest of its own;

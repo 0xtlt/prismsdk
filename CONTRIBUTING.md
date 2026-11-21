@@ -22,7 +22,7 @@ then run `cargo` inside it as the CI does (`.github/workflows/ci.yml`).
 ## Windows
 
 The native backend is `crates/prism-windows` (WinUI 3 from the Windows App
-SDK, self-contained, see [Windows](docs/src/platforms/windows.md)): its
+SDK, self-contained, see [Windows](https://github.com/0xtlt/prismsdk/blob/main/docs/src/platforms/windows.md)): its
 build script fetches the SDK's packages from nuget.org once (`curl` and
 `tar`, part of Windows), into `target/winappsdk` or `PRISM_WINAPPSDK_DIR`.
 The whole workspace builds, passes clippy and its tests on Windows (the
@@ -43,7 +43,7 @@ x86_64-pc-windows-gnu`), or in the `prism-windows-cross` Docker image
 without it. arm64 (`aarch64-pc-windows-gnullvm`, a user-level `rustup
 target add`) needs llvm-mingw's clang for `ring`'s C, even to check: see
 [Windows › Architectures and
-MSVC](docs/src/platforms/windows.md#architectures-and-msvc).
+MSVC](https://github.com/0xtlt/prismsdk/blob/main/docs/src/platforms/windows.md#architectures-and-msvc).
 
 **Symbolic links.** Each crate's `LICENSE-APACHE` and `LICENSE-MIT`, and the
 `docker` directory at the root, are symbolic links (so `cargo package` puts

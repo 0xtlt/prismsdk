@@ -22,7 +22,7 @@
 - **`prism-macos`** / **`prism-ios`**: `Widgets` implementations over objc2. **`prism-watchos`** and **`prism-android`** keep the tree in Rust and send it to a host (SwiftUI, Java) that draws it at the computed frames. **`prism-linux`**: GTK 4 widgets placed by a small layout manager.
 - **`prism-ui`**: component library on top of the core (themes, overrides, native escape hatch).
 - **`prism`**: facade; picks the backend from features (`web`, `native`) and the target OS.
-- **`prism-push`**: for your server: sends pushes to APNs, FCM and Web Push / UnifiedPush (see [Remote push](#remote-push-notifications)).
+- **`prism-push`**: for your server: sends pushes to APNs, FCM and Web Push / UnifiedPush (see [Remote push](guide/push.md)).
 - **`prism-http`**, **`prism-db`**: HTTP and SQL, resolved on the UI thread.
 - **`prism-build`**: typed translations from `locales/*.json`, in `build.rs`, and `link_app()`: the link settings of the app's own binary (Apple: Swift's rpath, deployment target), which the backends' build scripts cannot give it.
 - **`prism-apple-build`**: compiles the Swift sources (`apple/`) in the Apple backends' build scripts.
