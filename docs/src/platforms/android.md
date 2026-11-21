@@ -5,7 +5,7 @@
 The app runs in Rust, and a small Java host (`crates/prism-cli/platform/android`) creates real Android views and places them at the frames Rust computes.
 
 - **Layout:** prism-native's flexbox in dp; the zoom is the screen density, and Java measures text. Navigation stacks get a header with Back (also the system back gesture), tabs a bottom bar, and modals a full-screen dialog.
-- **Look:** light/dark follows the system or `cx.set_appearance` (the header, bars and system bars included). Right-to-left languages mirror the layout, the header and the tab bar.
+- **Look:** light/dark follows the system or `cx.set_appearance` (the header, bars and system bars included), also when it changes while the app runs. Text without a color of its own takes the theme's primary text color (`textColorPrimary`). Right-to-left languages mirror the layout, the header and the tab bar.
 - **Setup (mise):** Java 21, the Android SDK (`ANDROID_HOME`), `cargo-ndk`, the `aarch64-linux-android` target. Install the SDK packages and create an emulator:
   ```sh
   sdkmanager "platform-tools" "emulator" "platforms;android-36" "build-tools;37.0.0" "ndk;30.0.16248370" "system-images;android-36;google_apis;arm64-v8a"

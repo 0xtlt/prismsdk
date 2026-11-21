@@ -974,7 +974,7 @@ impl Runtime {
             }
             return self.poll();
         }
-        self.app.navigate(path);
+        self.app.open_route_link(path);
         task::poll_tasks(&mut self.app);
         self.app.flush_effects();
         self.render_dirty()

@@ -515,15 +515,16 @@ public final class PrismHost {
             case "clickable": n.clickable = p.optBoolean("on"); setClickable(n); applyCursor(n); break;
             case "display": n.view.setVisibility(p.optBoolean("hidden") ? View.GONE : View.VISIBLE); break;
             case "a11y":
-                String label = p.optString("label", null);
-                if (label != null && !label.equals("null")) {
-                    n.view.setContentDescription(label);
-                    n.a11yLabel = label;
-                }
+                // A label that went away (a cell emptied) goes with it.
+                String label = p.isNull("label") ? null : p.optString("label");
+                n.view.setContentDescription(label);
+                n.a11yLabel = label;
                 n.a11yHidden = p.optBoolean("hidden");
                 n.view.setImportantForAccessibility(n.a11yHidden || n.inert
-                        ? View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS : View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
+                        ? View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS : shownImportance(n));
                 n.a11yRole = p.isNull("role") ? null : p.optString("role", null);
+                // `.heading(n)`: TalkBack says « heading » and jumps between them.
+                n.view.setAccessibilityHeading("heading".equals(n.a11yRole));
                 n.a11yChecked = p.isNull("checked") ? null : p.optBoolean("checked");
                 // A selected item or the current page: TalkBack says « selected ».
                 if (n.view.isSelected() != p.optBoolean("selected")) n.view.setSelected(p.optBoolean("selected"));
@@ -635,11 +636,12 @@ public final class PrismHost {
                 TextView t = new TextView(activity);
                 t.setPadding(0, 0, 0, 0);
                 t.setIncludeFontPadding(true);
+                t.setTextColor(primaryText());
                 n.view = t;
                 break;
             }
             case "button": {
-                Button b = new Button(activity);
+                Button b = new Button(themed()); // In the app's light or dark mode, like PrismForms' controls.
                 b.setAllCaps(false);
                 b.setOnClickListener(v -> send(event("click", id)));
                 n.view = b;
@@ -647,7 +649,7 @@ public final class PrismHost {
             }
             case "text_input": {
                 // Completes from the config's suggestions (an EditText without them).
-                android.widget.AutoCompleteTextView e = new android.widget.AutoCompleteTextView(activity) {
+                android.widget.AutoCompleteTextView e = new android.widget.AutoCompleteTextView(themed()) {
                     @Override protected void onSelectionChanged(int start, int end) {
                         super.onSelectionChanged(start, end);
                         PrismInput.selectionChanged(this);
@@ -674,7 +676,7 @@ public final class PrismHost {
                 break;
             }
             case "toggle": {
-                Switch s = new Switch(activity);
+                Switch s = new Switch(themed());
                 s.setOnCheckedChangeListener((b, on) -> {
                     if (updating) return;
                     JSONObject ev = event("change", id);
@@ -694,6 +696,7 @@ public final class PrismHost {
                 TextView t = new TextView(activity);
                 t.setPadding(0, 0, 0, 0);
                 t.setGravity(Gravity.CENTER);
+                t.setTextColor(primaryText());
                 n.view = t;
                 break;
             }
@@ -963,10 +966,12 @@ public final class PrismHost {
         return true;
     }
 
+    /** A color of the theme in the app's light or dark mode (the activity's own follows the system's). */
     static int themeColor(int attr) {
+        android.content.Context c = themed();
         TypedValue v = new TypedValue();
-        activity.getTheme().resolveAttribute(attr, v, true);
-        return v.resourceId != 0 ? activity.getColor(v.resourceId) : v.data;
+        c.getTheme().resolveAttribute(attr, v, true);
+        return v.resourceId != 0 ? c.getColor(v.resourceId) : v.data;
     }
 
     static int accent() { return themeColor(android.R.attr.colorAccent); }
@@ -1111,6 +1116,48 @@ public final class PrismHost {
                 ? android.R.style.Theme_DeviceDefault : android.R.style.Theme_DeviceDefault_Light);
     }
 
+    /** {@link #primaryText()}, for the mode in {@link #primaryTextDark}; null after a theme change. */
+    private static android.content.res.ColorStateList primaryTextColor;
+    private static boolean primaryTextDark;
+
+    /**
+     * The theme's primary text color ({@code textColorPrimary}) in the app's
+     * light or dark mode: a text, timer or symbol without a color of its own.
+     * A bare {@code TextView} takes the theme's small text appearance, whose
+     * color is the secondary (gray) one.
+     */
+    static android.content.res.ColorStateList primaryText() {
+        boolean d = dark();
+        if (primaryTextColor == null || primaryTextDark != d) {
+            android.content.res.TypedArray a = themed().obtainStyledAttributes(new int[]{android.R.attr.textColorPrimary});
+            try {
+                primaryTextColor = a.getColorStateList(0);
+            } finally {
+                a.recycle();
+            }
+            if (primaryTextColor == null) primaryTextColor = android.content.res.ColorStateList.valueOf(d ? Color.WHITE : Color.BLACK);
+            primaryTextDark = d;
+        }
+        return primaryTextColor;
+    }
+
+    /** A text, timer or symbol (drawn as a glyph): the views that take {@link #primaryText()} by default. */
+    static boolean plainText(Node n) {
+        return n.view instanceof TextView
+                && (n.kind.equals("text") || n.kind.equals("timer") || n.kind.equals("image"));
+    }
+
+    /**
+     * A shown view's importance for accessibility. A text or a timer keeps
+     * a {@code TextView}'s own (yes): left to Android (auto), a text is not
+     * important and TalkBack, which only asks for important views, never
+     * reads it. Other views are left to Android.
+     */
+    static int shownImportance(Node n) {
+        return n.kind.equals("text") || n.kind.equals("timer")
+                ? View.IMPORTANT_FOR_ACCESSIBILITY_YES : View.IMPORTANT_FOR_ACCESSIBILITY_AUTO;
+    }
+
     /** The language's direction: headers, tab bars and Back mirror; frames come mirrored. */
     static void setEnvironment(JSONObject p) {
         rtl = p.optBoolean("rtl");
@@ -1130,9 +1177,12 @@ public final class PrismHost {
 
     /** Light/dark changed (the app's choice or the system's): every color again. */
     static void restyle() {
+        primaryTextColor = null;
         for (Node n : nodes.values()) {
+            PrismForms.retheme(n);
             if (n.style.length() > 0) applyStyle(n);
             else PrismForms.style(n);
+            if (n.style.length() == 0 && plainText(n)) ((TextView) n.view).setTextColor(primaryText());
             if (n.kind.equals("stack") || n.kind.equals("tabs")) styleChrome(n);
             if (n.kind.equals("tabs")) refreshTabs(n);
             if (n.view instanceof PrismShape) n.view.invalidate();
@@ -1202,6 +1252,7 @@ public final class PrismHost {
             TextView t = (TextView) n.view;
             Integer fg = color(s.optJSONArray("color"));
             if (fg != null) t.setTextColor(fg);
+            else if (plainText(n)) t.setTextColor(primaryText());
             float size = (float) s.optDouble("font", 0);
             if (size > 0) t.setTextSize(TypedValue.COMPLEX_UNIT_PX, size);
             t.setTypeface(PrismText.font(s.optString("ff", "system"), s.optInt("weight", 400), s.optBoolean("it")));

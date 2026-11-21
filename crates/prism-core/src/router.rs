@@ -273,6 +273,9 @@ pub fn normalize_path(path: &str) -> String {
 
 pub(crate) enum NavOp {
     Push(String),
+    /// A link opened from outside while the app runs: like a deep link at
+    /// launch, it opens in the tab its path belongs to, `/` included.
+    Link(String),
     Replace(String),
     Reset(String),
     Back,
@@ -439,7 +442,7 @@ impl Router {
             }
             NavOp::Dismiss => self.dismiss(cx),
             // While a sheet is up, navigation happens inside it.
-            NavOp::Push(path) if !self.modal.is_empty() => {
+            NavOp::Push(path) | NavOp::Link(path) if !self.modal.is_empty() => {
                 let path = normalize_path(&path);
                 if self.modal.last().is_some_and(|e| e.path == path) {
                     return;
@@ -454,18 +457,28 @@ impl Router {
                 let depth = self.modal.len() - 1;
                 self.truncate_modal(depth, cx);
             }
-            NavOp::Push(path) => self.push(&path, cx),
+            NavOp::Push(path) => self.push(&path, false, cx),
+            NavOp::Link(path) => self.push(&path, true, cx),
             NavOp::Replace(path) => {
                 let path = normalize_path(&path);
                 let tab = self.selected;
-                if let Some(old) = self.tabs[tab].entries.pop() {
+                let owner = self.owning_tab(&path, false).unwrap_or(tab);
+                // A path of another tab opens there, selecting it; this tab
+                // keeps at least its root.
+                if (owner == tab || self.tabs[tab].entries.len() > 1)
+                    && let Some(old) = self.tabs[tab].entries.pop()
+                {
                     release_screen(&self.shared, old.entity, cx);
                 }
-                let entity = self.open(&path, cx);
-                self.tabs[tab].entries.push(Entry {
-                    path,
-                    entity: Some(entity),
-                });
+                if owner == tab {
+                    let entity = self.open(&path, cx);
+                    self.tabs[tab].entries.push(Entry {
+                        path,
+                        entity: Some(entity),
+                    });
+                } else {
+                    self.push(&path, false, cx);
+                }
             }
             NavOp::Reset(path) => self.reset(&path, cx),
             NavOp::Back => {
@@ -476,16 +489,38 @@ impl Router {
         cx.notify();
     }
 
-    /// Pushes `path` on the current tab, or switches tab if `path` is a tab's
-    /// root (and pushes it there if it carries a query the tab doesn't show).
-    fn push(&mut self, path: &str, cx: &mut Context<Self>) {
+    /// The tab whose root best matches `path` (its query aside): the
+    /// longest root that is `path` or one of its parents. A `/` root is
+    /// every path's parent only for a `link` (a deep link, at launch or
+    /// while the app runs: it has no tab of its own to stay in); within the
+    /// app, a path under no other tab's root (a screen several tabs show,
+    /// `/items/7`) stays in the selected tab, as on iOS. None without a tab
+    /// bar, or when no root matches.
+    fn owning_tab(&self, path: &str, link: bool) -> Option<usize> {
+        if !self.tab_bar {
+            return None;
+        }
+        let path = split_query(path).0;
+        self.tabs
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| {
+                path == t.root
+                    || (t.root == "/" && link)
+                    || (t.root != "/" && path.starts_with(&format!("{}/", t.root)))
+            })
+            .max_by_key(|(_, t)| t.root.len())
+            .map(|(i, _)| i)
+    }
+
+    /// Pushes `path` on the tab it belongs to ([`owning_tab`](Self::owning_tab)),
+    /// selecting that tab: the tab bar follows the route, whether a deep
+    /// `link`, the app or the user changed it. A tab's root only switches
+    /// to its tab (keeping the screens pushed there); with a query the tab
+    /// doesn't show, it is pushed there too.
+    fn push(&mut self, path: &str, link: bool, cx: &mut Context<Self>) {
         let path = normalize_path(path);
-        if self.tab_bar
-            && let Some(i) = self
-                .tabs
-                .iter()
-                .position(|t| t.root == split_query(&path).0)
-        {
+        if let Some(i) = self.owning_tab(&path, link) {
             self.selected = i;
             if path == self.tabs[i].root {
                 return;
@@ -597,15 +632,7 @@ impl Router {
         let full = normalize_path(path);
         // Tabs and their roots are matched on the path, without the query.
         let path = split_query(&full).0.to_string();
-        let tab = self
-            .tabs
-            .iter()
-            .enumerate()
-            .filter(|(_, t)| {
-                t.root == "/" || path == t.root || path.starts_with(&format!("{}/", t.root))
-            })
-            .max_by_key(|(_, t)| t.root.len())
-            .map_or(0, |(i, _)| i);
+        let tab = self.owning_tab(&path, true).unwrap_or(0);
         for i in 0..self.tabs.len() {
             // Fresh screens: only eager tabs (and the selected one) render.
             self.tabs[i].shown = self.tabs[i].eager;
@@ -888,7 +915,7 @@ fn tab_stack(
         .header(header)
         .path(t.entries.last().map_or("/", |e| e.path.as_str()))
         .on_back(cx.listener(move |this, e: &BackEvent, cx| this.truncate(index, e.depth, cx)))
-        .on_navigate(cx.listener(|this, e: &NavigateEvent, cx| this.push(&e.path, cx)))
+        .on_navigate(cx.listener(|this, e: &NavigateEvent, cx| this.push(&e.path, false, cx)))
         // Lazy tabs: no screens until the tab is first selected.
         .children(
             t.entries
