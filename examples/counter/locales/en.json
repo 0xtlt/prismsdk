@@ -527,5 +527,19 @@
       "cone": "cone",
       "ring": "ring"
     }
+  },
+  "table": {
+    "title": "Timetable",
+    "note": "A table: columns as wide as their cells ask; narrow windows wrap the destinations, never the times.",
+    "time": "Time",
+    "line": "Line",
+    "destination": "Destination",
+    "minutes": "Min",
+    "harbour": "Harbour",
+    "old_town": "Old Town via Market Square and University Hospital",
+    "airport": "Airport Terminal 2",
+    "riverside": "Riverside",
+    "north": "North Station",
+    "open": "Open the timetable"
   }
 }
