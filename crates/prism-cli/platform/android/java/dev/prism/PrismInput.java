@@ -1044,7 +1044,7 @@ final class PrismInput {
             v.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
         } else if (was) {
             v.setImportantForAccessibility(n.a11yHidden
-                    ? View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS : View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
+                    ? View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS : PrismHost.shownImportance(n));
             if (n.keysLocal || n.clickable) v.setFocusable(true);
         }
     }

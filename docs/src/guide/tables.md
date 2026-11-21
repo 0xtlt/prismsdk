@@ -93,13 +93,13 @@ minimum widths and empty cells.
 | Web | `<table>`, `<th scope="col">`, `<td>`: the browser's own table semantics |
 | macOS | `NSAccessibilityTableRole`, rows, columns and cells; each cell's row, column and column header (`AXColumnHeaderUIElements`), read by VoiceOver |
 | iOS, iPadOS, visionOS | `UIAccessibilityContainerDataTable`: VoiceOver reads the column header when the focus moves to another column, and the row and column counts |
-| Android | `CollectionInfo` (rows, columns) on the table, `CollectionItemInfo` on each cell (row, column, heading for headers, and the column's title from API 33) |
+| Android | `CollectionInfo` (rows, columns) on the table, `CollectionItemInfo` on each cell (row, column, heading for headers, and the column's title from API 33). A cell is one element, read from its text (`09:35`); a cell holding a control (a button, a link, a field) is not: TalkBack moves to each control and text in it, reads them with the cell's row and column, and activates the controls |
 | Linux (GTK 4) | Roles `TABLE`, `ROW`, `COLUMN_HEADER` and `CELL` with their row and column indexes; each cell is described by its column's header |
 | Windows | UI Automation `Table` with the Grid and Table patterns; cells are `DataItem`s (headers `HeaderItem`s) with the GridItem and TableItem patterns, which give their row, column and column header |
 
 What is not possible everywhere:
 
-- iOS and Android: a cell is one element, read from its text (`Time, 09:35`).
+- iOS: a cell is one element, read from its text (`Time, 09:35`).
   A control inside a cell is not reached on its own: put actions on the row
   or next to the table.
 - Linux: GTK 4's AT-SPI bridge doesn't implement the `Table` and `TableCell`

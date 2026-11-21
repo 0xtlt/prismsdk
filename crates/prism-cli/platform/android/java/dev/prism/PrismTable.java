@@ -1,8 +1,12 @@
 package dev.prism;
 
 import android.os.Build;
+import android.text.Spanned;
+import android.text.style.ClickableSpan;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.widget.TextView;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -18,7 +22,9 @@ import java.util.List;
  * {@link AccessibilityNodeInfo.CollectionItemInfo} (its row and column, a
  * heading in the header row) and, from API 33, its column's title, which
  * TalkBack reads when the focus moves to another column. A cell is one
- * focus stop, read from its label (its text).
+ * focus stop, read from its label (its text), unless it holds a control (a
+ * button, a link, a field): then TalkBack reaches its content one by one,
+ * each with the cell's row and column, and activates the control.
  */
 final class PrismTable {
     private PrismTable() {}
@@ -59,11 +65,19 @@ final class PrismTable {
     }
 
     private static void describe(PrismHost.Node cell, int row, int column, boolean heading, PrismHost.Node title) {
-        if (Build.VERSION.SDK_INT >= 28) cell.view.setScreenReaderFocusable(true);
         cell.view.setAccessibilityDelegate(new View.AccessibilityDelegate() {
             @SuppressWarnings("deprecation") // CollectionItemInfo.obtain: its builder is API 33
             @Override public void onInitializeAccessibilityNodeInfo(View host, AccessibilityNodeInfo info) {
                 super.onInitializeAccessibilityNodeInfo(host, info);
+                // Checked each time TalkBack asks: a cell's content can
+                // change without a new `table` op.
+                if (hasControl(host)) {
+                    // Not a stop of its own, and no label repeating its
+                    // controls: TalkBack moves to each control and text.
+                    info.setContentDescription(null);
+                } else if (Build.VERSION.SDK_INT >= 28) {
+                    info.setScreenReaderFocusable(true);
+                }
                 if (Build.VERSION.SDK_INT >= 33) {
                     AccessibilityNodeInfo.CollectionItemInfo.Builder b = new AccessibilityNodeInfo.CollectionItemInfo.Builder()
                             .setRowIndex(row).setRowSpan(1)
@@ -77,5 +91,28 @@ final class PrismTable {
                 }
             }
         });
+    }
+
+    /**
+     * Whether a cell holds a control TalkBack can activate: a shown view
+     * that is clickable, long-clickable or focusable (a button, a field, a
+     * clickable text), or a text with links.
+     */
+    static boolean hasControl(View v) {
+        if (!(v instanceof ViewGroup)) return false;
+        ViewGroup g = (ViewGroup) v;
+        for (int i = 0; i < g.getChildCount(); i++) {
+            View c = g.getChildAt(i);
+            if (c.getVisibility() != View.VISIBLE
+                    || c.getImportantForAccessibility() == View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS) continue;
+            if (c.isClickable() || c.isLongClickable() || c.isFocusable() || hasLinks(c) || hasControl(c)) return true;
+        }
+        return false;
+    }
+
+    private static boolean hasLinks(View v) {
+        if (!(v instanceof TextView) || !(((TextView) v).getText() instanceof Spanned)) return false;
+        Spanned text = (Spanned) ((TextView) v).getText();
+        return text.getSpans(0, text.length(), ClickableSpan.class).length > 0;
     }
 }

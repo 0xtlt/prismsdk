@@ -515,15 +515,16 @@ public final class PrismHost {
             case "clickable": n.clickable = p.optBoolean("on"); setClickable(n); applyCursor(n); break;
             case "display": n.view.setVisibility(p.optBoolean("hidden") ? View.GONE : View.VISIBLE); break;
             case "a11y":
-                String label = p.optString("label", null);
-                if (label != null && !label.equals("null")) {
-                    n.view.setContentDescription(label);
-                    n.a11yLabel = label;
-                }
+                // A label that went away (a cell emptied) goes with it.
+                String label = p.isNull("label") ? null : p.optString("label");
+                n.view.setContentDescription(label);
+                n.a11yLabel = label;
                 n.a11yHidden = p.optBoolean("hidden");
                 n.view.setImportantForAccessibility(n.a11yHidden || n.inert
-                        ? View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS : View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
+                        ? View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS : shownImportance(n));
                 n.a11yRole = p.isNull("role") ? null : p.optString("role", null);
+                // `.heading(n)`: TalkBack says « heading » and jumps between them.
+                n.view.setAccessibilityHeading("heading".equals(n.a11yRole));
                 n.a11yChecked = p.isNull("checked") ? null : p.optBoolean("checked");
                 // A selected item or the current page: TalkBack says « selected ».
                 if (n.view.isSelected() != p.optBoolean("selected")) n.view.setSelected(p.optBoolean("selected"));
@@ -1144,6 +1145,17 @@ public final class PrismHost {
     static boolean plainText(Node n) {
         return n.view instanceof TextView
                 && (n.kind.equals("text") || n.kind.equals("timer") || n.kind.equals("image"));
+    }
+
+    /**
+     * A shown view's importance for accessibility. A text or a timer keeps
+     * a {@code TextView}'s own (yes): left to Android (auto), a text is not
+     * important and TalkBack, which only asks for important views, never
+     * reads it. Other views are left to Android.
+     */
+    static int shownImportance(Node n) {
+        return n.kind.equals("text") || n.kind.equals("timer")
+                ? View.IMPORTANT_FOR_ACCESSIBILITY_YES : View.IMPORTANT_FOR_ACCESSIBILITY_AUTO;
     }
 
     /** The language's direction: headers, tab bars and Back mirror; frames come mirrored. */
