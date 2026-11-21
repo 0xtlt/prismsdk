@@ -18,6 +18,7 @@ pub mod gl3d;
 pub mod images;
 pub mod remote;
 pub mod save;
+pub mod table;
 pub mod text;
 
 pub use extras::Sticky;
@@ -26,6 +27,8 @@ pub use extras::Sticky;
 mod bench;
 #[cfg(test)]
 mod padding_tests;
+#[cfg(test)]
+mod table_tests;
 
 use prism_core::{
     Accessibility, Align, Appearance, Backend, Direction, FlexDirection, IdMap, IdSet, Justify,
@@ -58,6 +61,14 @@ pub trait Widgets {
     /// focus order follow their subviews' order keep the tree's order and
     /// paint by the other.
     fn set_reading_order(&mut self, _parent: &Self::View, _children: &[Self::View]) {}
+    /// A table's rows or cells changed (#284), after their
+    /// `set_children` and `set_accessibility`: `rows` are its rows in
+    /// order, the header row first, each with its cells. Backends whose
+    /// screen readers know tables give the table its rows, columns and
+    /// column headers, and each cell its row and column, so a reader
+    /// announces a cell with its column's header. Default: nothing (the
+    /// roles alone, from `set_accessibility`).
+    fn set_table(&mut self, _table: &Self::View, _rows: &[table::TableRow<'_, Self::View>]) {}
     /// Mount `view` as the root, replacing the previous one.
     fn set_root(&mut self, view: &Self::View);
     fn destroy(&mut self, view: &Self::View);
@@ -457,6 +468,10 @@ fn is_container(kind: NodeKind) -> bool {
             | NodeKind::Tab
             | NodeKind::Modal
             | NodeKind::Overlay
+            | NodeKind::Table
+            | NodeKind::TableRow
+            | NodeKind::ColumnHeader
+            | NodeKind::TableCell
     )
 }
 
@@ -604,6 +619,8 @@ pub struct NativeRenderer<W: Widgets> {
     dnd: dnd::Dnd,
     /// Lists `place_children` reuses.
     child_lists: Vec<Vec<NodeId>>,
+    /// Tables and their columns (#284).
+    tables: table::Tables,
 }
 
 /// What the platform insets a scroll view's content by, at the top and the
@@ -649,6 +666,7 @@ impl<W: Widgets> NativeRenderer<W> {
             keyboard_bars: IdMap::default(),
             dnd: dnd::Dnd::default(),
             child_lists: Vec::new(),
+            tables: table::Tables::default(),
         }
     }
 
@@ -694,7 +712,7 @@ impl<W: Widgets> NativeRenderer<W> {
 
     fn effective_one(&self, style: &Style, kind: NodeKind) -> Style {
         let mut s = style.scaled(self.zoom).with_current_color(label_color());
-        if kind != NodeKind::View && self.env.text_scale != 1. {
+        if kind != NodeKind::View && !kind.is_table_part() && self.env.text_scale != 1. {
             s.font_size = (s.font_size * self.env.text_scale).round();
             // Spacing in points grows with the text (fractions follow the size).
             if let Length::Px(lh) = s.line_height {
@@ -885,6 +903,8 @@ impl<W: Widgets> NativeRenderer<W> {
             ..Default::default()
         };
         let _ = self.taffy.set_style(self.viewport, viewport_style);
+        // Tables size their columns from their cells first (#284).
+        self.measure_tables();
         self.shift_root_fixed();
         if self.compute_with_rules(self.viewport, width, height)
             && let Some(root) = self.root
@@ -986,6 +1006,18 @@ impl<W: Widgets> NativeRenderer<W> {
 
     /// Runs flexbox on the subtree at `node`, measuring leaves natively.
     fn compute(&mut self, node: taffy::NodeId, width: f32, height: f32) -> bool {
+        self.compute_in(
+            node,
+            Size {
+                width: AvailableSpace::Definite(width),
+                height: AvailableSpace::Definite(height),
+            },
+        )
+    }
+
+    /// Runs flexbox on the subtree at `node` in `available` space
+    /// (min- or max-content too: table cells, #284).
+    fn compute_in(&mut self, node: taffy::NodeId, available: Size<AvailableSpace>) -> bool {
         let widgets = &mut self.widgets;
         let baselines = self.extras.baselines;
         let (by_layout, nodes) = (&self.by_layout, &self.nodes);
@@ -996,90 +1028,85 @@ impl<W: Widgets> NativeRenderer<W> {
         // does not change, so each native measure runs once.
         let mut sizes: IdMap<(taffy::NodeId, Option<u32>), (f32, f32)> = IdMap::default();
         let mut min_widths: IdMap<taffy::NodeId, f32> = IdMap::default();
-        let result = self.taffy.compute_layout_with_measure(
-            node,
-            Size {
-                width: AvailableSpace::Definite(width),
-                height: AvailableSpace::Definite(height),
-            },
-            |input, node, view, style| {
-                let view: Option<&W::View> = view.map(|v| &*v);
-                // The leaf's padding: taffy adds it around the content size
-                // we measure (known sizes include it).
-                let pad = by_layout
-                    .get(&node)
-                    .and_then(|id| nodes.get(id))
-                    .map_or(prism_core::Edges::default(), |e| e.style.padding);
-                let (pad_x, pad_y) = ((pad.left + pad.right) * zoom, (pad.top + pad.bottom) * zoom);
-                // Leaf layout (style size, min/max, padding) is taffy's; we only
-                // provide the content size of native leaves.
-                let mut out = taffy::compute_leaf_layout(
-                    input,
-                    style,
-                    |_, _| 0.0,
-                    |known, available| {
-                        let Some(view) = view else {
-                            return Size::ZERO;
-                        };
-                        let known = Size {
-                            width: known.width.map(|w| (w - pad_x).max(0.)),
-                            height: known.height.map(|h| (h - pad_y).max(0.)),
-                        };
-                        // Single-line text (see `to_taffy`): its natural width,
-                        // cut by its frame.
-                        let single_line = style.overflow.y == taffy::Overflow::Hidden;
-                        let max_width =
-                            known
-                                .width
-                                .filter(|_| !single_line)
-                                .or(match available.width {
-                                    _ if single_line => None,
-                                    AvailableSpace::Definite(w) => Some(w),
-                                    AvailableSpace::MinContent => Some(
-                                        *min_widths
-                                            .entry(node)
-                                            .or_insert_with(|| widgets.measure_min_content(view)),
-                                    ),
-                                    AvailableSpace::MaxContent => None,
-                                });
-                        let (w, h) = *sizes
-                            .entry((node, max_width.map(f32::to_bits)))
-                            .or_insert_with(|| widgets.measure(view, max_width));
-                        // A picture given a width and no height: its height
-                        // follows the image's own ratio at that width, wider
-                        // than the image included (#208).
-                        let picture = by_layout
-                            .get(&node)
-                            .and_then(|id| nodes.get(id))
-                            .is_some_and(|e| e.kind == NodeKind::Picture);
-                        let h = match known.width {
-                            Some(kw) if picture && w > 0. => h * kw / w,
-                            _ => h,
-                        };
-                        Size {
-                            width: known.width.unwrap_or(w),
-                            height: known.height.unwrap_or(h),
-                        }
-                    },
-                );
-                // `items_baseline()`: where the first line of text sits.
-                if baselines && let Some(view) = view {
-                    // Measured in the content box, below the top padding.
-                    let (w, h) = (
-                        (out.size.width - pad_x).max(0.),
-                        (out.size.height - pad_y).max(0.),
-                    );
-                    out.baselines.first = widgets
-                        .baseline(view, w, h)
-                        .or_else(|| {
-                            let e = by_layout.get(&node).and_then(|id| nodes.get(id))?;
-                            extras::estimated_baseline(e.kind, e.style.font_size * font, h)
-                        })
-                        .map(|b| b + pad.top * zoom);
-                }
-                out
-            },
-        );
+        let result =
+            self.taffy
+                .compute_layout_with_measure(node, available, |input, node, view, style| {
+                    let view: Option<&W::View> = view.map(|v| &*v);
+                    // The leaf's padding: taffy adds it around the content size
+                    // we measure (known sizes include it).
+                    let pad = by_layout
+                        .get(&node)
+                        .and_then(|id| nodes.get(id))
+                        .map_or(prism_core::Edges::default(), |e| e.style.padding);
+                    let (pad_x, pad_y) =
+                        ((pad.left + pad.right) * zoom, (pad.top + pad.bottom) * zoom);
+                    // Leaf layout (style size, min/max, padding) is taffy's; we only
+                    // provide the content size of native leaves.
+                    let mut out =
+                        taffy::compute_leaf_layout(
+                            input,
+                            style,
+                            |_, _| 0.0,
+                            |known, available| {
+                                let Some(view) = view else {
+                                    return Size::ZERO;
+                                };
+                                let known = Size {
+                                    width: known.width.map(|w| (w - pad_x).max(0.)),
+                                    height: known.height.map(|h| (h - pad_y).max(0.)),
+                                };
+                                // Single-line text (see `to_taffy`): its natural width,
+                                // cut by its frame.
+                                let single_line = style.overflow.y == taffy::Overflow::Hidden;
+                                let max_width = known.width.filter(|_| !single_line).or(
+                                    match available.width {
+                                        _ if single_line => None,
+                                        AvailableSpace::Definite(w) => Some(w),
+                                        AvailableSpace::MinContent => {
+                                            Some(*min_widths.entry(node).or_insert_with(|| {
+                                                widgets.measure_min_content(view)
+                                            }))
+                                        }
+                                        AvailableSpace::MaxContent => None,
+                                    },
+                                );
+                                let (w, h) = *sizes
+                                    .entry((node, max_width.map(f32::to_bits)))
+                                    .or_insert_with(|| widgets.measure(view, max_width));
+                                // A picture given a width and no height: its height
+                                // follows the image's own ratio at that width, wider
+                                // than the image included (#208).
+                                let picture = by_layout
+                                    .get(&node)
+                                    .and_then(|id| nodes.get(id))
+                                    .is_some_and(|e| e.kind == NodeKind::Picture);
+                                let h = match known.width {
+                                    Some(kw) if picture && w > 0. => h * kw / w,
+                                    _ => h,
+                                };
+                                Size {
+                                    width: known.width.unwrap_or(w),
+                                    height: known.height.unwrap_or(h),
+                                }
+                            },
+                        );
+                    // `items_baseline()`: where the first line of text sits.
+                    if baselines && let Some(view) = view {
+                        // Measured in the content box, below the top padding.
+                        let (w, h) = (
+                            (out.size.width - pad_x).max(0.),
+                            (out.size.height - pad_y).max(0.),
+                        );
+                        out.baselines.first = widgets
+                            .baseline(view, w, h)
+                            .or_else(|| {
+                                let e = by_layout.get(&node).and_then(|id| nodes.get(id))?;
+                                extras::estimated_baseline(e.kind, e.style.font_size * font, h)
+                            })
+                            .map(|b| b + pad.top * zoom);
+                    }
+                    out
+                });
         match result {
             Ok(()) => true,
             Err(err) => {
@@ -1242,6 +1269,7 @@ impl<W: Widgets> NativeRenderer<W> {
         for e in self.nodes.values() {
             let _ = self.taffy.mark_dirty(e.layout);
         }
+        self.tables.all_stale();
     }
 
     /// The layout nodes of `ids`, sorted by their `order` (stable: the
@@ -1311,6 +1339,11 @@ impl<W: Widgets> NativeRenderer<W> {
             // A row that scrolls: children keep their size.
             style.flex_shrink = 0.;
         }
+        // A table cell takes its column's width (#284).
+        if let Some(column) = self.tables.cells.get(&id) {
+            column.apply(&mut style);
+        }
+        self.tables.apply_min(id, &mut style);
         // A scroll view under bars: its content is laid out between them.
         if let Some(u) = self.under_bars.get(&id) {
             style.padding.top = LengthPercentage::length(zoomed.padding.top + u.top);
@@ -1338,12 +1371,15 @@ impl<W: Widgets> NativeRenderer<W> {
         let Ok(l) = self.taffy.layout(entry.layout) else {
             return;
         };
-        let (mut x, mut y, w, h) = (
+        let (mut x, mut y, mut w, h) = (
             l.location.x,
             l.location.y - shift,
             l.size.width,
             l.size.height,
         );
+        if matches!(entry.kind, NodeKind::TableCell | NodeKind::ColumnHeader) {
+            (x, w) = self.cell_span(entry.layout);
+        }
         if self.env.direction == Direction::Rtl {
             x = parent_width - x - w;
         }
@@ -1764,6 +1800,9 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                     }
                     .expect("taffy node");
                     self.by_layout.insert(layout, *id);
+                    if *kind == NodeKind::Table {
+                        self.tables.ids.insert(*id);
+                    }
                     self.nodes.insert(
                         *id,
                         Entry {
@@ -2039,6 +2078,7 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
                     }
                 }
                 Patch::Destroy { id } => {
+                    self.tables.forget(*id);
                     self.forget_extras(*id);
                     self.dnd.forget(*id);
                     self.layout_reports.remove(id);
@@ -2171,6 +2211,11 @@ impl<W: Widgets> Backend for NativeRenderer<W> {
             self.rehoist();
         }
         self.flush_restack();
+        // Tables whose cells changed size their columns again; their
+        // structure goes to the platform's accessibility (#284).
+        if !self.tables.ids.is_empty() {
+            self.note_table_patches(patches);
+        }
         // Which bar serves each field changes with the tree and the bars.
         if patches.iter().any(|p| {
             matches!(
@@ -2379,6 +2424,9 @@ pub fn to_taffy(s: &Style, kind: NodeKind) -> taffy::Style {
             Justify::SpaceBetween => taffy::JustifyContent::SPACE_BETWEEN,
             Justify::SpaceAround => taffy::JustifyContent::SPACE_AROUND,
             Justify::SpaceEvenly => taffy::JustifyContent::SPACE_EVENLY,
+            // A grid's `auto` tracks fill it, like CSS (#284); a flex
+            // container packs at the start (taffy, like CSS).
+            Justify::Stretch => taffy::JustifyContent::STRETCH,
         }),
         gap: Size {
             width: LengthPercentage::length(s.gap),
@@ -2446,6 +2494,7 @@ pub fn to_taffy(s: &Style, kind: NodeKind) -> taffy::Style {
         ..Default::default()
     };
     extras::apply(&mut style, s, kind);
+    table::apply(&mut style, kind);
     style
 }
 

@@ -133,6 +133,7 @@
     spinner: "span", overlay: "div", checkbox: "label", radio_group: "div", scene3d: "div",
     rich_input: "div", video: "video",
     web_view: "iframe",
+    table: "table", table_row: "tr", column_header: "th", table_cell: "td",
   };
   // SF Symbol names → glyphs (table generated from Rust: glyphs.rs).
   const glyphs = __GLYPHS__;
@@ -1387,6 +1388,16 @@
       });
     } else if (kind === "spinner") {
       el.className = "prism-spinner";
+    } else if (kind === "table") {
+      // Rows of column headers go in its head, the others in its body (#284).
+      el.className = "prism-table";
+      el._head = el.appendChild(document.createElement("thead"));
+      el._rows = el.appendChild(document.createElement("tbody"));
+    } else if (kind === "column_header" || kind === "table_cell") {
+      // A cell's content is laid out in its box (`prism.css`).
+      if (kind === "column_header") el.scope = "col";
+      el._cell = el.appendChild(document.createElement("div"));
+      el._cell.className = "prism-cell";
     } else if (kind === "web_view") {
       webViewInit(el, id);
     } else if (kind === "toggle") {
@@ -1623,6 +1634,13 @@
     });
   }
   const nextPrism = (n) => { let c = n.nextElementSibling; while (c && !c.dataset.pid) c = c.nextElementSibling; return c; };
+  /** A table's rows (#284): rows of column headers in `<thead>`, the others in `<tbody>`. */
+  function tableRows(table, ids) {
+    table._ids = ids;
+    const head = ids.filter((i) => nodes.get(i)?.firstElementChild?.localName === "th");
+    setChildren(table._head, head);
+    setChildren(table._rows, ids.filter((i) => !head.includes(i)));
+  }
 
 
   // Header texts in the app's language (sent with the environment).
@@ -3215,6 +3233,14 @@
     applyTip(el, a);
     if (kind === "stack" || kind === "tabs" || kind === "tab" || kind === "screen") return;
     if (kind === "overlay") return;
+    // A table's parts (#284) have their roles by their tags; a cell is read
+    // from its content (its label is for native screen readers).
+    const tablePart = { table: "table", table_row: "row", column_header: "columnheader", table_cell: "cell" }[kind];
+    if (tablePart) {
+      set("role", a.role && a.role !== tablePart ? a.role : null);
+      set("aria-label", kind === "table" || kind === "table_row" ? a.label || null : null);
+      return;
+    }
     if (kind === "checkbox") {
       // A native checkbox: its label is the visible text unless overridden.
       const input = el._input;
@@ -3429,8 +3455,15 @@
           if (!el._box) overlayBox(el, "sheet");
           setChildren(el._box, p.children);
           if (el._open) requestAnimationFrame(() => placeOverlay(el));
+        } else if (el._head) {
+          tableRows(el, p.children);
+        } else if (el._cell) {
+          setChildren(el._cell, p.children);
         } else {
           setChildren(el, p.children);
+          // A row that became (or stopped being) a row of headers.
+          const table = el.localName === "tr" && el.parentNode?.parentNode;
+          if (table?._ids) tableRows(table, table._ids);
         }
         return;
       case "root": mount.replaceChildren(el); return retitle();

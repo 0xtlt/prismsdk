@@ -45,11 +45,7 @@ pub fn set_content(e: &impl Interface) {
 /// else its control or text, else its canvas. `text` is the node's own
 /// (a clickable text's button is named by it).
 pub fn apply(v: &View, id: NodeId, a: &Accessibility, text: &str) -> Result<()> {
-    let target: UIElement = match (&v.button, v.content.element()) {
-        (Some(b), _) => b.cast()?,
-        (None, Some(e)) => e,
-        (None, None) => v.outer(),
-    };
+    let target = target(v)?;
     let own = (v.button.is_some() && v.content.element().is_some()).then_some(text);
     let name = a.label.as_deref().or(own).unwrap_or("");
     AutomationProperties::SetName(&target, &h(name))?;
@@ -109,6 +105,16 @@ pub fn apply(v: &View, id: NodeId, a: &Accessibility, text: &str) -> Result<()> 
     Ok(())
 }
 
+/// The element a reader sees for a node: its clickable button, else its
+/// control or text, else its canvas.
+pub fn target(v: &View) -> Result<UIElement> {
+    Ok(match (&v.button, v.content.element()) {
+        (Some(b), _) => b.cast()?,
+        (None, Some(e)) => e,
+        (None, None) => v.outer(),
+    })
+}
+
 /// A live region's new value is announced (status: after what the reader
 /// is saying; alert: in its place).
 fn live(id: NodeId, a: &Accessibility) {
@@ -143,6 +149,7 @@ pub fn forget(id: NodeId) {
     peers::forget(Key::Clickable(id));
     LIVE.with(|l| l.borrow_mut().remove(&id));
     crate::tips::forget(id);
+    crate::table::forget(id);
     dialog_hidden(id);
 }
 

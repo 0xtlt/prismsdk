@@ -286,6 +286,17 @@ pub fn a11y_attrs(kind: NodeKind, a: &Accessibility) -> String {
     ) {
         return out;
     }
+    // A table's parts (#284) have their roles by their tags, and a cell is
+    // read from its content (its label is for native screen readers).
+    if kind.is_table_part() {
+        if let Some(role) = a.role.filter(|r| Some(*r) != kind.default_role()) {
+            let _ = write!(out, r#" role="{}""#, role.aria());
+        }
+        if let Some(label) = a.label.as_ref().filter(|_| !kind.is_table_cell()) {
+            let _ = write!(out, r#" aria-label="{}""#, escape(label));
+        }
+        return out;
+    }
     let native = match kind {
         NodeKind::Button => Some(Role::Button),
         NodeKind::Toggle => Some(Role::Switch),
@@ -824,6 +835,45 @@ impl HtmlBackend {
                     self.write(*c, false, out);
                 }
                 out.push_str("</dialog>");
+            }
+            // A table (#284): its rows of column headers in `<thead>`.
+            NodeKind::Table => {
+                let header = |r: &NodeId| {
+                    self.nodes
+                        .get(r)
+                        .and_then(|row| row.children.first())
+                        .is_some_and(|c| self.kind(*c) == Some(NodeKind::ColumnHeader))
+                };
+                let (head, body): (Vec<NodeId>, Vec<NodeId>) =
+                    n.children.iter().partition(|r| header(r));
+                let _ = write!(out, r#"<table {attrs} class="prism-table"><thead>"#);
+                for c in &head {
+                    self.write(*c, false, out);
+                }
+                out.push_str("</thead><tbody>");
+                for c in &body {
+                    self.write(*c, false, out);
+                }
+                out.push_str("</tbody></table>");
+            }
+            NodeKind::TableRow => {
+                let _ = write!(out, "<tr {attrs}>");
+                for c in &n.children {
+                    self.write(*c, false, out);
+                }
+                out.push_str("</tr>");
+            }
+            NodeKind::ColumnHeader | NodeKind::TableCell => {
+                let tag = if kind == NodeKind::ColumnHeader {
+                    r#"th scope="col""#
+                } else {
+                    "td"
+                };
+                let _ = write!(out, r#"<{tag} {attrs}><div class="prism-cell">"#);
+                for c in &n.children {
+                    self.write(*c, false, out);
+                }
+                let _ = write!(out, "</div></{}>", &tag[..2]);
             }
             NodeKind::Tab => {
                 let _ = write!(

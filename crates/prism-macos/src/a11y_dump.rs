@@ -5,7 +5,7 @@
 use objc2::rc::Retained;
 use objc2_app_kit::{NSAccessibility, NSButton, NSSegmentedControl, NSTextField, NSView};
 
-fn json_str(s: &str) -> String {
+pub(crate) fn json_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {
@@ -23,7 +23,7 @@ fn json_str(s: &str) -> String {
     out
 }
 
-fn opt(s: Option<String>) -> String {
+pub(crate) fn opt(s: Option<String>) -> String {
     s.map_or("null".into(), |s| json_str(&s))
 }
 
@@ -47,6 +47,7 @@ fn node(view: &NSView) -> String {
             s.selectedSegment()
         )
     });
+    let table = crate::table::dump(view);
     let f = view.convertRect_toView(view.bounds(), None);
     let children: Vec<String> = view
         .subviews()
@@ -55,7 +56,7 @@ fn node(view: &NSView) -> String {
         .map(|c| node(&c))
         .collect();
     format!(
-        r#"{{"class":{},"role":{},"label":{},"title":{},"value":{},"segments":{},"a11y_element":{},"frame":[{},{},{},{}],"children":[{}]}}"#,
+        r#"{{"class":{},"role":{},"label":{},"title":{},"value":{},"segments":{},"a11y_element":{}{table},"frame":[{},{},{},{}],"children":[{}]}}"#,
         json_str(&class),
         opt(role),
         opt(label),

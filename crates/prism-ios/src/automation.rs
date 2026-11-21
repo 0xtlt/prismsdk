@@ -216,6 +216,21 @@ fn dump_node(mtm: MainThreadMarker, view: &UIView) -> String {
             .map_or(-1, |i| i as i64);
         format!(r#"{{"labels":[{}],"selected":{index}}}"#, labels.join(","))
     });
+    // Tables (#284): `"table":{rows, columns, headers}`, `"cell":[row, column]`.
+    #[cfg(not(target_os = "tvos"))]
+    let table = match crate::table::dump(mtm, view) {
+        Some(crate::table::Dump::Table(rows, columns, headers)) => {
+            let headers: Vec<String> = headers.into_iter().map(opt).collect();
+            format!(
+                r#","table":{{"rows":{rows},"columns":{columns},"headers":[{}]}}"#,
+                headers.join(",")
+            )
+        }
+        Some(crate::table::Dump::Cell(r, c)) => format!(r#","cell":[{r},{c}]"#),
+        None => String::new(),
+    };
+    #[cfg(target_os = "tvos")]
+    let table = String::new();
     let f = view.convertRect_toView(view.bounds(), None);
     let children: Vec<String> = view
         .subviews()
@@ -224,7 +239,7 @@ fn dump_node(mtm: MainThreadMarker, view: &UIView) -> String {
         .map(|c| dump_node(mtm, &c))
         .collect();
     format!(
-        r#"{{"class":{},"role":{},"label":{},"title":{},"value":{},"segments":{},"selected":{},"a11y_element":{},"frame":[{},{},{},{}],"children":[{}]}}"#,
+        r#"{{"class":{},"role":{},"label":{},"title":{},"value":{},"segments":{},"selected":{},"a11y_element":{}{table},"frame":[{},{},{},{}],"children":[{}]}}"#,
         json_str(&class),
         opt(role),
         opt(label),

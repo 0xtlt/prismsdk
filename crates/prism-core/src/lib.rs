@@ -48,11 +48,13 @@ pub mod storage;
 mod style;
 pub mod surfaces;
 pub mod svg;
+pub mod table;
 mod task;
 pub mod text_edit;
 pub mod video;
 pub mod web_view;
 mod window;
+pub use table::{CELL_PADDING, Column, Table, TableCell, TableRow, cell, column, row, table};
 pub use window::{WindowChrome, WindowControls};
 
 pub use a11y::{Accessibility, Accessible, Role, Tooltip};
@@ -1188,6 +1190,8 @@ pub mod prelude {
     pub use crate::{
         GridTrack, ScrollAxis, Scrollbar, auto_fill, auto_fit, fr, minmax, repeat, scroll_x,
     };
+    // Tables (#284).
+    pub use crate::{cell, column, row, table};
     // App assets compiled into the binary (#61).
     pub use crate::EmbeddedAssets;
     // Typography and rich text.

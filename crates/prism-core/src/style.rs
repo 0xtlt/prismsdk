@@ -244,6 +244,10 @@ pub enum Justify {
     SpaceAround,
     /// Equal space between children and at the edges.
     SpaceEvenly,
+    /// A grid's `auto` columns grow to fill its width (CSS
+    /// `justify-content: stretch`, #284); flex containers pack their
+    /// children at the start, as with [`Start`](Justify::Start).
+    Stretch,
 }
 
 /// Font weight: the CSS scale from 100 (thin) to 900 (black). Any number
@@ -1515,6 +1519,12 @@ pub trait Styled: Sized {
     /// Equal space between children and at the edges.
     fn justify_evenly(self) -> Self {
         self.with_style(|s| s.justify_content = Justify::SpaceEvenly)
+    }
+    /// On a grid, `auto` columns grow to fill its width (CSS
+    /// `justify-content: stretch`, #284), on the web and natively alike.
+    /// Flex containers pack their children at the start.
+    fn justify_stretch(self) -> Self {
+        self.with_style(|s| s.justify_content = Justify::Stretch)
     }
 
     // Flex item

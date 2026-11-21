@@ -34,6 +34,8 @@ use objc2::{
     ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel,
 };
 use objc2_core_foundation::{CGPoint, CGRect};
+#[cfg(not(target_os = "tvos"))]
+use objc2_foundation::{NSArray, NSRange};
 use objc2_foundation::{NSObject, NSObjectProtocol, NSSet, NSString};
 #[cfg_attr(target_os = "tvos", allow(unused_imports))]
 use objc2_ui_kit::{
@@ -401,6 +403,8 @@ pub struct ContainerIvars {
     keys: Cell<bool>,
     pass_through: Cell<bool>,
     clickable: Cell<bool>,
+    /// A table or one of its cells (#284).
+    table: crate::table::TableIvars,
 }
 
 #[cfg(not(target_os = "tvos"))]
@@ -483,15 +487,53 @@ define_class!(
             crate::decor::press(self.tag() as NodeId, false);
         }
 
-        /// VoiceOver's double tap is a click without a position.
+        /// VoiceOver's double tap is a click without a position. A table's
+        /// cell clicks its row.
         #[unsafe(method(accessibilityActivate))]
         fn accessibility_activate(&self) -> bool {
             if self.ivars().clickable.get() {
                 crate::imp::dispatch(UiEvent::Click(self.tag() as NodeId));
                 true
+            } else if let Some(row) = crate::table::row_of(&self.ivars().table)
+                .filter(|r| ivars(r).is_some_and(|i| i.clickable.get()))
+            {
+                crate::imp::dispatch(UiEvent::Click(row.tag() as NodeId));
+                true
             } else {
                 false
             }
+        }
+
+        // Tables (#284): `UIAccessibilityContainerDataTable` and its cells,
+        // see `table.rs`.
+        #[unsafe(method(accessibilityRowCount))]
+        fn accessibility_row_count(&self) -> isize {
+            crate::table::row_count(&self.ivars().table)
+        }
+
+        #[unsafe(method(accessibilityColumnCount))]
+        fn accessibility_column_count(&self) -> isize {
+            crate::table::column_count(&self.ivars().table)
+        }
+
+        #[unsafe(method_id(accessibilityDataTableCellElementForRow:column:))]
+        fn accessibility_cell(&self, row: usize, column: usize) -> Option<Retained<UIView>> {
+            crate::table::cell(&self.ivars().table, row, column)
+        }
+
+        #[unsafe(method_id(accessibilityHeaderElementsForColumn:))]
+        fn accessibility_headers(&self, column: usize) -> Option<Retained<NSArray<UIView>>> {
+            crate::table::headers(&self.ivars().table, column)
+        }
+
+        #[unsafe(method(accessibilityRowRange))]
+        fn accessibility_row_range(&self) -> NSRange {
+            crate::table::row_range(&self.ivars().table)
+        }
+
+        #[unsafe(method(accessibilityColumnRange))]
+        fn accessibility_column_range(&self) -> NSRange {
+            crate::table::column_range(&self.ivars().table)
         }
     }
 );
@@ -507,6 +549,12 @@ pub fn container(mtm: MainThreadMarker) -> Retained<UIView> {
 #[cfg(not(target_os = "tvos"))]
 fn ivars(view: &UIView) -> Option<&ContainerIvars> {
     view.downcast_ref::<ContainerView>().map(|c| c.ivars())
+}
+
+/// The table ivars of `view`, if it is a Prism container (#284).
+#[cfg(not(target_os = "tvos"))]
+pub(crate) fn table_ivars(view: &UIView) -> Option<&crate::table::TableIvars> {
+    ivars(view).map(|i| &i.table)
 }
 
 /// The view can become first responder (or take the TV focus) and reports keys.

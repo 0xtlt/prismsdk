@@ -65,6 +65,29 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
         // windows: `prism.css` decides (a media query), so no direction here
         // (a node's rules would win over it).
         NodeKind::Tabs => w.push_str("display:flex;"),
+        // Tables (#284): the browser's table layout sizes the columns. A
+        // cell's content is laid out by its `.prism-cell` box, which takes
+        // the cell's direction and alignment (`prism.css`); its vertical
+        // alignment is the cell's `vertical-align`.
+        NodeKind::Table => w.push_str("display:table;border-collapse:separate;border-spacing:0;"),
+        NodeKind::TableRow => w.push_str("display:table-row;"),
+        NodeKind::ColumnHeader | NodeKind::TableCell => {
+            let valign = match s.justify_content {
+                Justify::Start | Justify::Stretch => "top",
+                Justify::End => "bottom",
+                _ => "middle",
+            };
+            let dir = match s.direction {
+                FlexDirection::Row => "row",
+                FlexDirection::Column => "column",
+                FlexDirection::RowReverse => "row-reverse",
+                FlexDirection::ColumnReverse => "column-reverse",
+            };
+            let _ = write!(
+                w,
+                "display:table-cell;vertical-align:{valign};flex-direction:{dir};"
+            );
+        }
         _ if s.grid => w.push_str("display:grid;justify-items:stretch;"),
         // A box and its label on one line.
         NodeKind::Checkbox => w.push_str("display:flex;flex-direction:row;"),
@@ -96,6 +119,7 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
         Justify::SpaceBetween => "space-between",
         Justify::SpaceAround => "space-around",
         Justify::SpaceEvenly => "space-evenly",
+        Justify::Stretch => "stretch",
     };
     let _ = write!(w, "justify-content:{justify};");
     if s.gap > 0. {
@@ -256,7 +280,7 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
         );
     }
 
-    if kind != NodeKind::View {
+    if kind != NodeKind::View && !kind.is_table_part() {
         // rem: follows the browser's text size setting (web Dynamic Type).
         let _ = write!(
             w,
@@ -350,7 +374,7 @@ pub fn css(kind: NodeKind, s: &Style) -> String {
     {
         w.push_str("outline:none;");
     }
-    if kind != NodeKind::View {
+    if kind != NodeKind::View && !kind.is_table_part() {
         typography(kind, s, w);
     }
     if let Some(cursor) = s.cursor {

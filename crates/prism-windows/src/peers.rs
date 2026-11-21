@@ -23,7 +23,9 @@
 //! - The peer (`ButtonAutomationPeer`, `FrameworkElementAutomationPeer`)
 //!   overrides seven of `IAutomationPeerOverrides`' 47 methods (the
 //!   others call the base class's) and provides `IToggleProvider`,
-//!   `ISelectionItemProvider` and `IValueProvider`.
+//!   `ISelectionItemProvider`, `IValueProvider` and, for a table and its
+//!   cells (`table.rs`), `IGridProvider`, `ITableProvider`,
+//!   `IGridItemProvider` and `ITableItemProvider`.
 //!
 //! Both read the element's [`Semantics`] when asked, from a table the
 //! widgets keep up to date ([`set`]): they hold no XAML object.
@@ -52,11 +54,12 @@ use crate::winui::xaml::Automation::Peers::{
     IFrameworkElementAutomationPeerFactory, PatternInterface,
 };
 use crate::winui::xaml::Automation::Provider::{
-    IInvokeProvider, ISelectionItemProvider, IToggleProvider, IValueProvider,
+    IGridItemProvider, IGridProvider, IInvokeProvider, IRawElementProviderSimple,
+    ISelectionItemProvider, ITableItemProvider, ITableProvider, IToggleProvider, IValueProvider,
 };
 use crate::winui::xaml::Automation::{
-    AutomationElementIdentifiers, SelectionItemPatternIdentifiers, TogglePatternIdentifiers,
-    ValuePatternIdentifiers,
+    AutomationElementIdentifiers, RowOrColumnMajor, SelectionItemPatternIdentifiers,
+    TogglePatternIdentifiers, ValuePatternIdentifiers,
 };
 use crate::winui::xaml::Controls::{Button, Canvas, IButtonFactory, ICanvasFactory};
 use crate::winui::xaml::{FrameworkElement, IUIElementOverrides, UIElement};
@@ -256,11 +259,11 @@ enum Kind {
 }
 
 /// An outer object: its interfaces' vtables first (the identity, then up
-/// to four interfaces it implements), so that an interface pointer is the
+/// to eight interfaces it implements), so that an interface pointer is the
 /// address of its vtable pointer.
 #[repr(C)]
 struct Outer {
-    vtables: [*const c_void; 5],
+    vtables: [*const c_void; 9],
     refs: AtomicU32,
     /// The inner (non-delegating) object, the base class.
     inner: UnsafeCell<Option<IInspectable>>,
@@ -301,6 +304,10 @@ fn slot_of(kind: Kind, iid: &GUID) -> Option<usize> {
             IToggleProvider::IID,
             ISelectionItemProvider::IID,
             IValueProvider::IID,
+            IGridProvider::IID,
+            ITableProvider::IID,
+            IGridItemProvider::IID,
+            ITableItemProvider::IID,
         ]
         .iter()
         .position(|i| i == iid)
@@ -313,6 +320,7 @@ const E_FAIL: HRESULT = HRESULT(0x8000_4005_u32 as i32);
 const E_POINTER: HRESULT = HRESULT(0x8000_4003_u32 as i32);
 const E_NOINTERFACE: HRESULT = HRESULT(0x8000_4002_u32 as i32);
 const E_ACCESSDENIED: HRESULT = HRESULT(0x8007_0005_u32 as i32);
+const E_INVALIDARG: HRESULT = HRESULT(0x8007_0057_u32 as i32);
 
 /// The outer object behind interface pointer `this`, its slot `K`.
 unsafe fn outer<'a, const K: usize>(this: *mut c_void) -> &'a Outer {
@@ -426,6 +434,10 @@ struct Tables {
     toggle: Vtbl<2>,
     selection: Vtbl<5>,
     value: Vtbl<3>,
+    grid: Vtbl<3>,
+    table: Vtbl<3>,
+    grid_item: Vtbl<5>,
+    table_item: Vtbl<2>,
 }
 
 fn tables() -> &'static Tables {
@@ -522,6 +534,39 @@ fn tables() -> &'static Tables {
                 set_value as *const () as usize,
             ],
         },
+        grid: Vtbl {
+            base: inspectable::<5>(),
+            methods: [
+                column_count as *const () as usize,
+                row_count as *const () as usize,
+                grid_item as *const () as usize, // GetItem
+            ],
+        },
+        table: Vtbl {
+            base: inspectable::<6>(),
+            methods: [
+                row_major as *const () as usize,
+                column_headers as *const () as usize,
+                no_headers as *const () as usize, // GetRowHeaders
+            ],
+        },
+        grid_item: Vtbl {
+            base: inspectable::<7>(),
+            methods: [
+                item_column as *const () as usize,
+                span as *const () as usize, // ColumnSpan
+                containing_grid as *const () as usize,
+                item_row as *const () as usize,
+                span as *const () as usize, // RowSpan
+            ],
+        },
+        table_item: Vtbl {
+            base: inspectable::<8>(),
+            methods: [
+                column_header_items as *const () as usize,
+                no_headers as *const () as usize, // GetRowHeaderItems
+            ],
+        },
     })
 }
 
@@ -536,19 +581,22 @@ fn compose(
     let t = tables();
     let vt = |v: &'static IInspectable_Vtbl| v as *const IInspectable_Vtbl as *const c_void;
     let vtables = match kind {
-        Kind::Button | Kind::Canvas => [
-            vt(&t.identity),
-            vt(&t.element.base),
-            core::ptr::null(),
-            core::ptr::null(),
-            core::ptr::null(),
-        ],
+        Kind::Button | Kind::Canvas => {
+            let mut v = [core::ptr::null(); 9];
+            v[0] = vt(&t.identity);
+            v[1] = vt(&t.element.base);
+            v
+        }
         Kind::ButtonPeer | Kind::CanvasPeer => [
             vt(&t.identity),
             vt(&t.peer.base),
             vt(&t.toggle.base),
             vt(&t.selection.base),
             vt(&t.value.base),
+            vt(&t.grid.base),
+            vt(&t.table.base),
+            vt(&t.grid_item.base),
+            vt(&t.table_item.base),
         ],
     };
     let o = Box::into_raw(Box::new(Outer {
@@ -695,9 +743,19 @@ unsafe extern "system" fn pattern(this: *mut c_void, which: i32, out: *mut *mut 
         let o = outer::<1>(this);
         if let Some(s) = lookup(o.key) {
             let which = PatternInterface(which);
+            let id = node(o.key);
+            let grid = id
+                .and_then(|t| crate::table::with_grid(t, |_| ()))
+                .is_some();
+            let item = id.and_then(crate::table::place).is_some();
             let mine = (which == PatternInterface::Toggle && s.toggled.is_some())
                 || (which == PatternInterface::SelectionItem && s.selected.is_some())
-                || (which == PatternInterface::Value && s.value.is_some());
+                || (which == PatternInterface::Value && s.value.is_some())
+                || (matches!(which, PatternInterface::Grid | PatternInterface::Table) && grid)
+                || (matches!(
+                    which,
+                    PatternInterface::GridItem | PatternInterface::TableItem
+                ) && item);
             if mine {
                 return provide(o, out);
             }
@@ -715,7 +773,9 @@ fn control(c: Control) -> AutomationControlType {
         Control::Button => AutomationControlType::Button,
         Control::CheckBox => AutomationControlType::CheckBox,
         Control::ComboBox => AutomationControlType::ComboBox,
+        Control::DataItem => AutomationControlType::DataItem,
         Control::Group => AutomationControlType::Group,
+        Control::HeaderItem => AutomationControlType::HeaderItem,
         Control::Hyperlink => AutomationControlType::Hyperlink,
         Control::Image => AutomationControlType::Image,
         Control::List => AutomationControlType::List,
@@ -725,6 +785,7 @@ fn control(c: Control) -> AutomationControlType {
         Control::Slider => AutomationControlType::Slider,
         Control::Tab => AutomationControlType::Tab,
         Control::TabItem => AutomationControlType::TabItem,
+        Control::Table => AutomationControlType::Table,
         Control::Text => AutomationControlType::Text,
         Control::Window => AutomationControlType::Window,
     }
@@ -897,4 +958,171 @@ unsafe extern "system" fn value(this: *mut c_void, out: *mut *mut c_void) -> HRE
 
 unsafe extern "system" fn set_value(_: *mut c_void, _: *mut c_void) -> HRESULT {
     E_ACCESSDENIED
+}
+
+// ---------------------------------------------------------------------------
+// Tables (#284): the table's Grid and Table patterns, its cells' GridItem
+// and TableItem (see `table.rs`)
+// ---------------------------------------------------------------------------
+
+/// The node an element's peer stands for.
+fn node(key: Key) -> Option<NodeId> {
+    match key {
+        Key::Node(id) | Key::Clickable(id) => Some(id),
+        _ => None,
+    }
+}
+
+/// The provider a client gets for node `id`'s element: its peer's, from
+/// peer `o` (`ProviderFromPeer` is a peer's own method).
+fn provider_of(o: &Outer, id: NodeId) -> Option<IRawElementProviderSimple> {
+    let element = crate::table::element(id)?;
+    let peer = FrameworkElementAutomationPeer::CreatePeerForElement(&element).ok()?;
+    let identity = o.identity();
+    // SAFETY: our own identity, alive while a client calls us.
+    let me: AutomationPeer = unsafe { IInspectable::from_raw_borrowed(&identity) }?
+        .cast()
+        .ok()?;
+    me.ProviderFromPeer(&peer).ok()
+}
+
+/// Hands a client the providers of `ids`' elements (a received array).
+unsafe fn providers(
+    o: &Outer,
+    ids: &[NodeId],
+    len: *mut u32,
+    out: *mut *mut *mut c_void,
+) -> HRESULT {
+    let found: Vec<Option<IRawElementProviderSimple>> = ids
+        .iter()
+        .filter_map(|id| provider_of(o, *id))
+        .map(Some)
+        .collect();
+    let (data, n) = windows_core::Array::<IRawElementProviderSimple>::from_slice(&found).into_abi();
+    unsafe {
+        *out = data;
+        *len = n;
+    }
+    S_OK
+}
+
+/// What `f` says of the table a Grid or Table provider stands for.
+fn of_grid<R>(o: &Outer, f: impl FnOnce(&crate::table::Grid) -> R) -> Option<R> {
+    crate::table::with_grid(node(o.key)?, f)
+}
+
+unsafe extern "system" fn column_count(this: *mut c_void, out: *mut i32) -> HRESULT {
+    let n = of_grid(unsafe { outer::<5>(this) }, |g| g.column_count());
+    unsafe { *out = n.unwrap_or(0) as i32 };
+    S_OK
+}
+
+unsafe extern "system" fn row_count(this: *mut c_void, out: *mut i32) -> HRESULT {
+    let n = of_grid(unsafe { outer::<5>(this) }, |g| g.row_count());
+    unsafe { *out = n.unwrap_or(0) as i32 };
+    S_OK
+}
+
+unsafe extern "system" fn grid_item(
+    this: *mut c_void,
+    row: i32,
+    column: i32,
+    out: *mut *mut c_void,
+) -> HRESULT {
+    unsafe {
+        *out = null_mut();
+        let o = outer::<5>(this);
+        let (Ok(row), Ok(column)) = (usize::try_from(row), usize::try_from(column)) else {
+            return E_INVALIDARG;
+        };
+        let Some(cell) = of_grid(o, |g| g.at(row, column)) else {
+            return E_FAIL;
+        };
+        match cell {
+            Some(cell) => {
+                if let Some(p) = provider_of(o, cell) {
+                    *out = p.into_raw();
+                }
+                S_OK
+            }
+            None => E_INVALIDARG,
+        }
+    }
+}
+
+unsafe extern "system" fn row_major(_: *mut c_void, out: *mut i32) -> HRESULT {
+    unsafe { *out = RowOrColumnMajor::RowMajor.0 };
+    S_OK
+}
+
+unsafe extern "system" fn column_headers(
+    this: *mut c_void,
+    len: *mut u32,
+    out: *mut *mut *mut c_void,
+) -> HRESULT {
+    unsafe {
+        let o = outer::<6>(this);
+        let ids = of_grid(o, |g| g.column_headers()).unwrap_or_default();
+        providers(o, &ids, len, out)
+    }
+}
+
+/// No row headers (a table's, a cell's): a table has none.
+unsafe extern "system" fn no_headers(
+    _: *mut c_void,
+    len: *mut u32,
+    out: *mut *mut *mut c_void,
+) -> HRESULT {
+    unsafe {
+        *len = 0;
+        *out = null_mut();
+    }
+    S_OK
+}
+
+/// Where the cell a GridItem or TableItem provider stands for is.
+fn place_of(o: &Outer) -> Option<crate::table::Place> {
+    crate::table::place(node(o.key)?)
+}
+
+unsafe extern "system" fn item_column(this: *mut c_void, out: *mut i32) -> HRESULT {
+    let at = place_of(unsafe { outer::<7>(this) });
+    unsafe { *out = at.map_or(0, |p| p.column as i32) };
+    S_OK
+}
+
+unsafe extern "system" fn item_row(this: *mut c_void, out: *mut i32) -> HRESULT {
+    let at = place_of(unsafe { outer::<7>(this) });
+    unsafe { *out = at.map_or(0, |p| p.row as i32) };
+    S_OK
+}
+
+/// A cell spans one row and one column.
+unsafe extern "system" fn span(_: *mut c_void, out: *mut i32) -> HRESULT {
+    unsafe { *out = 1 };
+    S_OK
+}
+
+unsafe extern "system" fn containing_grid(this: *mut c_void, out: *mut *mut c_void) -> HRESULT {
+    unsafe {
+        let o = outer::<7>(this);
+        *out = place_of(o)
+            .and_then(|p| provider_of(o, p.table))
+            .map_or(null_mut(), Interface::into_raw);
+    }
+    S_OK
+}
+
+unsafe extern "system" fn column_header_items(
+    this: *mut c_void,
+    len: *mut u32,
+    out: *mut *mut *mut c_void,
+) -> HRESULT {
+    unsafe {
+        let o = outer::<8>(this);
+        let ids = place_of(o)
+            .and_then(|p| crate::table::with_grid(p.table, |g| g.headers_of(p.row, p.column)))
+            .unwrap_or_default();
+        providers(o, &ids, len, out)
+    }
 }

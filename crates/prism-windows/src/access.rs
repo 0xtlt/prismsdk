@@ -17,7 +17,11 @@ pub enum Control {
     Button,
     CheckBox,
     ComboBox,
+    /// A table row or cell (#284), as browsers map ARIA's.
+    DataItem,
     Group,
+    /// A table's column header (#284), as WinUI's own data grid.
+    HeaderItem,
     Hyperlink,
     Image,
     List,
@@ -28,6 +32,9 @@ pub enum Control {
     /// A tab bar (UI Automation's `Tab` is the bar, `TabItem` one tab).
     Tab,
     TabItem,
+    /// A table (#284): its cells give their row, column and header
+    /// (Table and Grid patterns, see `peers`).
+    Table,
     Text,
     Window,
 }
@@ -107,6 +114,9 @@ pub fn semantics(a: &Accessibility, clickable: bool) -> Semantics {
         Some(Role::ComboBox) => Some(Control::ComboBox),
         Some(Role::Radio) => Some(Control::RadioButton),
         Some(Role::Dialog) => Some(Control::Window),
+        Some(Role::Table) => Some(Control::Table),
+        Some(Role::Row | Role::Cell) => Some(Control::DataItem),
+        Some(Role::ColumnHeader) => Some(Control::HeaderItem),
         // A live region is no element of its own: its children stay
         // reachable, its value is announced.
         Some(Role::Status) => None,
@@ -218,6 +228,10 @@ mod tests {
             (Role::Radio, Control::RadioButton),
             (Role::RadioGroup, Control::Group),
             (Role::Dialog, Control::Window),
+            (Role::Table, Control::Table),
+            (Role::Row, Control::DataItem),
+            (Role::ColumnHeader, Control::HeaderItem),
+            (Role::Cell, Control::DataItem),
         ];
         for (role, control) in cases {
             assert_eq!(

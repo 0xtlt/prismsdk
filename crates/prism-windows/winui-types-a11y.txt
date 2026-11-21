@@ -13,6 +13,14 @@ Microsoft.UI.Xaml.Automation.Provider.IValueProvider
 Microsoft.UI.Xaml.Automation.Provider.IRangeValueProvider
 Microsoft.UI.Xaml.Automation.Provider.IExpandCollapseProvider
 Microsoft.UI.Xaml.Automation.Provider.IRawElementProviderSimple
+# Tables (#284, `table.rs`): Grid and Table patterns, cells' GridItem and
+# TableItem, providers from peers.
+Microsoft.UI.Xaml.Automation.Provider.IGridProvider
+Microsoft.UI.Xaml.Automation.Provider.ITableProvider
+Microsoft.UI.Xaml.Automation.Provider.IGridItemProvider
+Microsoft.UI.Xaml.Automation.Provider.ITableItemProvider
+Microsoft.UI.Xaml.Automation.Peers.IAutomationPeerProtected
+Microsoft.UI.Xaml.Automation.RowOrColumnMajor
 Microsoft.UI.Xaml.Automation.ToggleState
 Microsoft.UI.Xaml.Automation.ExpandCollapseState
 Microsoft.UI.Xaml.Automation.AutomationProperty

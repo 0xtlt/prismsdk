@@ -1721,8 +1721,18 @@ impl Widgets for Gtk {
 
     fn create(&mut self, id: NodeId, kind: NodeKind) -> View {
         let view = match kind {
-            NodeKind::View | NodeKind::Screen | NodeKind::Tab => {
+            NodeKind::View
+            | NodeKind::Screen
+            | NodeKind::Tab
+            | NodeKind::Table
+            | NodeKind::TableRow
+            | NodeKind::ColumnHeader
+            | NodeKind::TableCell => {
                 let c = layout::container();
+                // Tables (#284): their roles, see `table.rs`.
+                if let Some(role) = crate::table::role(kind) {
+                    c.set_property("accessible-role", role);
+                }
                 let gesture = gtk::GestureClick::new();
                 let clickable = self.clickable.clone();
                 gesture.connect_released(move |g, n, x, y| {
@@ -2592,14 +2602,21 @@ impl Widgets for Gtk {
         (width.ceil(), (nat_h as f32 - py).max(0.))
     }
 
-    /// GTK's minimum width of a wrapping label is its longest word.
+    /// A wrapping label's longest word. Labels fall back to breaking
+    /// between characters when a word doesn't fit (`WordChar`), so GTK's
+    /// own minimum is one character: the label's layout is measured with
+    /// word wrapping alone, which keeps `09:35` and `Line` whole.
     fn measure_min_content(&mut self, view: &View) -> f32 {
-        let (min_w, nat_w, _, _) = view.widget().measure(gtk::Orientation::Horizontal, -1);
-        if matches!(view, View::Text(..)) {
-            min_w as f32
-        } else {
-            nat_w as f32
+        if let View::Text(_, l) = view {
+            let layout = l.layout().copy();
+            layout.set_wrap(gtk::pango::WrapMode::Word);
+            layout.set_ellipsize(gtk::pango::EllipsizeMode::None);
+            layout.set_height(-1);
+            // As narrow as it gets (as GtkLabel measures its minimum).
+            layout.set_width(0);
+            return layout.pixel_extents().1.width() as f32;
         }
+        view.widget().measure(gtk::Orientation::Horizontal, -1).1 as f32
     }
 
     fn set_frame(&mut self, view: &View, x: f32, y: f32, w: f32, h: f32) {
@@ -2759,6 +2776,20 @@ impl Widgets for Gtk {
                 insets: Insets::default(),
             },
         }
+    }
+
+    fn set_table(&mut self, table: &View, rows: &[prism_native::table::TableRow<'_, View>]) {
+        let rows: Vec<(gtk::Widget, bool, Vec<gtk::Widget>)> = rows
+            .iter()
+            .map(|r| {
+                (
+                    r.view.widget(),
+                    r.header,
+                    r.cells.iter().map(|c| c.widget()).collect(),
+                )
+            })
+            .collect();
+        crate::table::set(&table.widget(), &rows);
     }
 
     fn set_accessibility(&mut self, view: &View, a11y: &Accessibility) {

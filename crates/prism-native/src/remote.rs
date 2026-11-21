@@ -30,6 +30,7 @@
 //! | `webpost` | `data`: a message (JSON text) for a `web_view`'s page (#62) |
 //! | `webreload` | reload a `web_view`'s page |
 //! | `kbar` | `bar`: the keyboard overlay shown above the IME while this text field has the focus (null: none, #242) |
+//! | `table` | `rows`: a table's rows (#284), each `{id, header, cells: [ids]}`, the header row first: the host gives the table its rows and columns, each cell its row, column and header (kinds `table`, `table_row`, `column_header`, `table_cell`) |
 //!
 //! Hosts report the new input events as `{"t":"click","id","x","y","mods","n"}`
 //! (position, keys and click count optional, #159), `{"t":"pointer","id","phase","x","y"}`,
@@ -993,6 +994,15 @@ impl Widgets for RemoteWidgets {
             None => {}
         }
         self.ops.push(op);
+    }
+
+    fn set_table(&mut self, table: &NodeId, rows: &[crate::table::TableRow<'_, NodeId>]) {
+        let rows: Vec<Value> = rows
+            .iter()
+            .map(|r| json!({ "id": r.view, "header": r.header, "cells": r.cells }))
+            .collect();
+        self.ops
+            .push(json!({ "op": "table", "id": table, "rows": rows }));
     }
 
     fn set_value(&mut self, id: &NodeId, value: f64) {
