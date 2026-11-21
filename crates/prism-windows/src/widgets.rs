@@ -852,13 +852,6 @@ impl Widgets for Win {
                 .collect(),
             headers: rows.iter().take_while(|r| r.header).count(),
         };
-        for id in std::iter::once(*table).chain(grid.rows.iter().flatten().copied()) {
-            if let Some(v) = self.views.get(&id)
-                && let Ok(e) = crate::a11y::target(v)
-            {
-                crate::table::set_element(id, &e);
-            }
-        }
         crate::table::set(*table, grid);
     }
 

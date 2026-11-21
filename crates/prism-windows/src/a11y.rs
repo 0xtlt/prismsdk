@@ -45,7 +45,11 @@ pub fn set_content(e: &impl Interface) {
 /// else its control or text, else its canvas. `text` is the node's own
 /// (a clickable text's button is named by it).
 pub fn apply(v: &View, id: NodeId, a: &Accessibility, text: &str) -> Result<()> {
-    let target = target(v)?;
+    let target: UIElement = match (&v.button, v.content.element()) {
+        (Some(b), _) => b.cast()?,
+        (None, Some(e)) => e,
+        (None, None) => v.outer(),
+    };
     let own = (v.button.is_some() && v.content.element().is_some()).then_some(text);
     let name = a.label.as_deref().or(own).unwrap_or("");
     AutomationProperties::SetName(&target, &h(name))?;
@@ -100,19 +104,14 @@ pub fn apply(v: &View, id: NodeId, a: &Accessibility, text: &str) -> Result<()> 
         if let Err(e) = peers::changed(&target, old.as_ref(), &s) {
             crate::win::log!("automation events of node {id}: {e}");
         }
+        // A table's and its cells' elements, which the table patterns
+        // hand to a reader (#284, `table.rs`).
+        if matches!(a.role, Some(Role::Table | Role::Cell | Role::ColumnHeader)) {
+            crate::table::set_element(id, &target);
+        }
     }
     live(id, a);
     Ok(())
-}
-
-/// The element a reader sees for a node: its clickable button, else its
-/// control or text, else its canvas.
-pub fn target(v: &View) -> Result<UIElement> {
-    Ok(match (&v.button, v.content.element()) {
-        (Some(b), _) => b.cast()?,
-        (None, Some(e)) => e,
-        (None, None) => v.outer(),
-    })
 }
 
 /// A live region's new value is announced (status: after what the reader

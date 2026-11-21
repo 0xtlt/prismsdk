@@ -4,8 +4,9 @@
 //! headers), each cell's peer the GridItem and TableItem patterns (its row
 //! and column, its table, its column's header), so that Narrator reads a
 //! cell's column header with it. `set_table` keeps each table's grid here,
-//! by node (no Win32 types: tested on every host); `peers` answers the
-//! patterns from it, with the elements standing for the nodes.
+//! by node (no Win32 types: tested on every host), and `a11y::apply` the
+//! element standing for the table and each cell, whenever it is made;
+//! `peers` answers the patterns from both.
 
 #![cfg_attr(not(target_os = "windows"), allow(dead_code))]
 
