@@ -49,7 +49,7 @@ cx.scroll_to("list", 0., 0., true);                             // back to the t
 | tvOS | — | — | — | Siri Remote presses | focus engine, `scrollRectToVisible` |
 | Linux | `GestureClick` | `EventControllerMotion` | `GestureDrag` | `EventControllerKey` | `grab_focus`, scrolled window adjustment |
 | Android | touch up | hover events; touches | touch listener with touch slop | key events, D-pad | `requestFocus`, `requestRectangleOnScreen` |
-| Windows | not reported yet (`Tapped`) | `PointerEntered` / `PointerMoved` | pointer capture past the system's drag distance | the message loop's `WM_KEYDOWN`, before XAML | `Focus`, `StartBringIntoView` |
+| Windows | `Tapped` / `DoubleTapped`; a clickable view's button: its press and release (`handledEventsToo`) | `PointerEntered` / `PointerMoved` | pointer capture past the system's drag distance | the message loop's `WM_KEYDOWN`, before XAML | `Focus`, `StartBringIntoView` |
 | watchOS | `SpatialTapGesture` | — (moves while touching) | `DragGesture` | — | `@FocusState`, `ScrollViewReader` |
 
 tvOS has no pointer over views, the watch neither hover nor keys: those handlers simply never run there. On tvOS, a focused view with `on_key_down` keeps left / right for the app while up / down still move the focus.
@@ -153,7 +153,7 @@ never sticks.
 | Linux (GTK) | `GestureClick`'s `n_press` and the event's state | `EventControllerKey` releases, matched to their press by hardware key; the window turning inactive releases held keys |
 | iOS, iPadOS, visionOS | `UITouch.tapCount`, the tap's `modifierFlags` (a hardware keyboard, an iPad pointer) | `pressesEnded:` / `pressesCancelled:`; the app turning inactive releases held keys |
 | Android | taps counted with the system's double-tap timeout and slop; the event's meta state | `KeyEvent.ACTION_UP`; the window losing the focus releases held keys |
-| Windows | not yet: a click has no keys and counts 1 | `WM_KEYUP`; held keys are not released yet when the window turns inactive |
+| Windows | the keys held; presses counted with `GetDoubleClickTime` and the double-click rectangle (`SM_CXDOUBLECLK`) | `WM_KEYUP`; held keys are not released yet when the window turns inactive |
 
 tvOS counts presses of the remote's select button as single clicks; watchOS reports count 1 and no keys.
 

@@ -71,7 +71,7 @@
 //! | `fonts` | run-time fonts |
 //! | `shell` | the services' hidden window: modal UI, timers, threads |
 //! | `system` | theme, accent, locale, DPI |
-//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access`, `pinch`, `seal` | pure helpers, tested on every host |
+//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access`, `pinch`, `seal`, `clicks` | pure helpers, tested on every host |
 
 // Roles and states for UI Automation: no Win32, tested everywhere.
 mod access;
@@ -95,6 +95,8 @@ mod capture;
 mod carets;
 #[cfg(target_os = "windows")]
 mod chips;
+// Clicks counted in quick series: no Win32, tested everywhere.
+mod clicks;
 #[cfg(target_os = "windows")]
 mod clip;
 #[cfg(target_os = "windows")]

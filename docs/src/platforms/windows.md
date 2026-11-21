@@ -67,7 +67,13 @@ kinds and services come next (see [Not yet](#not-yet)).
 - **Clickable views** (`on_click`, `ui::button`, list rows) hold their
   children in a chrome-less WinUI `Button`: Invoke, Enter and Space, the
   focus rectangle and the UI Automation peer come from WinUI; hover and
-  pressed refinements are Prism's.
+  pressed refinements are Prism's. A click by the pointer carries where
+  it landed, the keys held and its number in a quick series (presses on
+  the same view within `GetDoubleClickTime` and the double-click
+  rectangle, as Windows counts a double click), read from the button's
+  press and release (`handledEventsToo`); clickable views without a
+  button take `Tapped` and `DoubleTapped`. Enter, Space and UI
+  Automation's Invoke click without a position, as on macOS.
 - **Navigation:** a `SelectorBar` (the Windows 11 top tabs) for a tab bar,
   and a header per stack with Back (`NavigationBackButtonNormalStyle`), the
   title and the screen's bar buttons.
@@ -644,8 +650,7 @@ step moves the window to a simulated monitor through `WM_DPICHANGED`
 
 ## Not yet
 
-- **Views and input:** clicks carry no position, keys or
-  count; `consume_key_at` gets no caret edges; held keys are not released
+- **Views and input:** `consume_key_at` gets no caret edges; held keys are not released
   when the window turns inactive; no lifecycle phases; `.cursor(..)`,
   `object_position`, `Scrollbar::Hidden`, `tabular_nums` and underline
   colors are ignored; custom window chrome; the runtime's layers (toasts)

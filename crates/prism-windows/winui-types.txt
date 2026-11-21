@@ -55,6 +55,8 @@ Microsoft.UI.Xaml.Input.PointerRoutedEventArgs
 Microsoft.UI.Xaml.Input.KeyEventHandler
 Microsoft.UI.Xaml.Input.KeyRoutedEventArgs
 Microsoft.UI.Xaml.Input.TappedEventHandler
+Microsoft.UI.Xaml.Input.DoubleTappedEventHandler
+Microsoft.UI.Xaml.Input.DoubleTappedRoutedEventArgs
 Microsoft.UI.Xaml.Input.TappedRoutedEventArgs
 Microsoft.UI.Xaml.Input.Pointer
 Microsoft.UI.Xaml.Input.FocusManager

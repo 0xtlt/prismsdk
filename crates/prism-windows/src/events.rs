@@ -1,35 +1,235 @@
 //! XAML input on Prism's own views (controls report theirs in
-//! `controls.rs`): clicks on clickable views, the pointer over and
-//! pressing a view (interaction states), the keyboard focus, scrolling,
-//! context and pop-up menus.
+//! `controls.rs`): clicks on clickable views with their position, keys
+//! and count, the pointer over and pressing a view (interaction states),
+//! the keyboard focus, scrolling, context and pop-up menus.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 use prism_core::menu::{MenuItemSpec, MenuSpec};
-use prism_core::{Interaction, NodeId, UiEvent};
-use windows_core::{Interface, Result};
+use prism_core::{ClickEvent, Interaction, Modifiers, NodeId, Point, PointerButton, UiEvent};
+use windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime;
+use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXDOUBLECLK, SM_CYDOUBLECLK};
+use windows_core::{IInspectable, Interface, Result};
 
+use crate::clicks::{Limits, Series};
 use crate::imp::{defer, dispatch};
 use crate::winui::xaml::Controls::Primitives::{ButtonBase, FlyoutBase, FlyoutShowOptions};
 use crate::winui::xaml::Controls::{
     Button, Canvas, MenuFlyout, MenuFlyoutItem, MenuFlyoutSeparator, MenuFlyoutSubItem,
     ScrollViewer, ScrollViewerViewChangedEventArgs, ToggleMenuFlyoutItem,
 };
-use crate::winui::xaml::Input::{PointerEventHandler, TappedEventHandler};
+use crate::winui::xaml::Input::{
+    DoubleTappedEventHandler, PointerEventHandler, PointerRoutedEventArgs, TappedEventHandler,
+};
 use crate::winui::xaml::{DependencyPropertyChangedCallback, RoutedEventHandler, UIElement};
 use crate::winui::{h, xaml};
 
-/// A clickable view: a tap (or a click) reports `UiEvent::Click`.
-pub fn clickable(outer: &Canvas, id: NodeId) -> Result<()> {
-    outer.Tapped(&TappedEventHandler::new(move |_, a| {
-        if let Some(a) = a.as_ref() {
-            if a.Handled()? {
-                return Ok(());
-            }
-            a.SetHandled(true)?;
+/// A click's position (in its view), keys and count, from the pointer.
+#[derive(Clone, Copy, Debug)]
+struct Details {
+    at: Point,
+    modifiers: Modifiers,
+    count: u32,
+}
+
+/// A clickable button's press, until its release.
+#[derive(Clone, Copy, Debug)]
+struct Pending {
+    modifiers: Modifiers,
+    count: u32,
+    /// The button clicked before the release was heard.
+    clicked: bool,
+}
+
+thread_local! {
+    /// The last press on a clickable view, and its number in its series.
+    static SERIES: RefCell<Series> = RefCell::new(Series::default());
+    /// Clickable buttons pressed with the pointer, until released.
+    static PENDING: RefCell<HashMap<NodeId, Pending>> = RefCell::default();
+    /// A button's release heard before its click (until the next turn).
+    static RELEASED: RefCell<HashMap<NodeId, Details>> = RefCell::default();
+}
+
+fn click_with(id: NodeId, d: Details) -> UiEvent {
+    UiEvent::ClickWith(
+        id,
+        ClickEvent {
+            position: Some(d.at),
+            modifiers: d.modifiers,
+            count: d.count,
+            button: PointerButton::Primary,
+            text_offset: None,
+        },
+    )
+}
+
+/// The system's double-click time and rectangle, in DIPs.
+fn limits() -> Limits {
+    let scale = crate::imp::with_state(|s| s.renderer.widgets.scale()).unwrap_or(1.);
+    unsafe {
+        Limits {
+            time: GetDoubleClickTime() as u64,
+            width: GetSystemMetrics(SM_CXDOUBLECLK).max(1) as f32 / scale,
+            height: GetSystemMetrics(SM_CYDOUBLECLK).max(1) as f32 / scale,
         }
-        dispatch(UiEvent::Click(id));
+    }
+}
+
+/// A primary press (the left button, a finger, a pen's tip) on clickable
+/// view (or field) `id`: its number in its series.
+pub(crate) fn count_press(id: NodeId, a: &PointerRoutedEventArgs) -> Option<u32> {
+    let p = a.GetCurrentPoint(None::<&UIElement>).ok()?;
+    if !p.Properties().ok()?.IsLeftButtonPressed().ok()? {
+        return None;
+    }
+    let at = p.Position().ok()?;
+    let (pointer, time) = (p.PointerId().ok()?, p.Timestamp().ok()?);
+    let limits = limits();
+    Some(SERIES.with(|s| {
+        s.borrow_mut()
+            .press(id, pointer, time, (at.X, at.Y), limits)
+    }))
+}
+
+/// Where the pointer is in element `e`.
+fn position(e: Option<&IInspectable>, a: &PointerRoutedEventArgs) -> Option<Point> {
+    let e: UIElement = e?.cast().ok()?;
+    let p = a.GetCurrentPoint(&e).ok()?.Position().ok()?;
+    Some(Point { x: p.X, y: p.Y })
+}
+
+/// A clickable view: a tap (or a click) reports `UiEvent::ClickWith`
+/// with where it landed, the keys held and its number in a quick series
+/// (a double tap is the second click, as on macOS).
+pub fn clickable(outer: &Canvas, id: NodeId) -> Result<()> {
+    outer.PointerPressed(&PointerEventHandler::new(move |_, a| {
+        if let Some(a) = a.as_ref() {
+            count_press(id, a);
+        }
+        Ok(())
+    }))?;
+    outer.Tapped(&TappedEventHandler::new(move |s, a| {
+        let Some(a) = a.as_ref() else {
+            tapped(id, None);
+            return Ok(());
+        };
+        if a.Handled()? {
+            return Ok(());
+        }
+        a.SetHandled(true)?;
+        let e: Option<UIElement> = s.as_ref().and_then(|s| s.cast().ok());
+        tapped(id, a.GetPosition(e.as_ref()).ok());
+        Ok(())
+    }))?;
+    // XAML sends a double tap's second tap as `DoubleTapped` alone.
+    outer.DoubleTapped(&DoubleTappedEventHandler::new(move |s, a| {
+        let Some(a) = a.as_ref() else {
+            tapped(id, None);
+            return Ok(());
+        };
+        if a.Handled()? {
+            return Ok(());
+        }
+        a.SetHandled(true)?;
+        let e: Option<UIElement> = s.as_ref().and_then(|s| s.cast().ok());
+        tapped(id, a.GetPosition(e.as_ref()).ok());
         Ok(())
     }))?;
     Ok(())
+}
+
+/// Clickable view `id` tapped at `at` (in it).
+fn tapped(id: NodeId, at: Option<windows::Foundation::Point>) {
+    dispatch(match at {
+        Some(p) => click_with(
+            id,
+            Details {
+                at: Point { x: p.X, y: p.Y },
+                modifiers: crate::keyboard::modifiers(),
+                count: SERIES.with(|c| c.borrow().count(id)),
+            },
+        ),
+        None => UiEvent::Click(id),
+    });
+}
+
+/// A clickable view's button: its presses and releases, heard though the
+/// button handles them (`handledEventsToo`), give its clicks their
+/// position, keys and count ([`button_clicked`]).
+pub fn button_presses(b: &Button, id: NodeId) -> Result<()> {
+    let e: UIElement = b.cast()?;
+    let pressed = PointerEventHandler::new(move |_, a| {
+        if let Some(a) = a.as_ref()
+            && let Some(count) = count_press(id, a)
+        {
+            let p = Pending {
+                modifiers: crate::pointer::modifiers(a),
+                count,
+                clicked: false,
+            };
+            PENDING.with(|m| m.borrow_mut().insert(id, p));
+        }
+        Ok(())
+    });
+    // The press ends: released, canceled or its capture lost (the button
+    // lets go of it as it clicks), in whichever order XAML sends them.
+    let ended = PointerEventHandler::new(move |s, a| {
+        let Some(p) = PENDING.with(|m| m.borrow_mut().remove(&id)) else {
+            return Ok(());
+        };
+        let Some(at) = a.as_ref().and_then(|a| position(s.as_ref(), a)) else {
+            return Ok(());
+        };
+        let d = Details {
+            at,
+            modifiers: p.modifiers,
+            count: p.count,
+        };
+        if p.clicked {
+            dispatch(click_with(id, d));
+        } else {
+            // A click may follow in this turn.
+            RELEASED.with(|m| m.borrow_mut().insert(id, d));
+            defer(Box::new(move |_| {
+                RELEASED.with(|m| m.borrow_mut().remove(&id));
+            }));
+        }
+        Ok(())
+    });
+    e.AddHandler(
+        &UIElement::PointerPressedEvent()?,
+        &crate::boxed::boxed(pressed),
+        true,
+    )?;
+    for event in [
+        UIElement::PointerReleasedEvent()?,
+        UIElement::PointerCanceledEvent()?,
+        UIElement::PointerCaptureLostEvent()?,
+    ] {
+        e.AddHandler(&event, &crate::boxed::boxed(ended.clone()), true)?;
+    }
+    Ok(())
+}
+
+/// Clickable view `id`'s button clicked: with the pointer's position,
+/// keys and count when a press led to it, else (Space, Enter, UI
+/// Automation's Invoke) without.
+pub fn button_clicked(id: NodeId) {
+    let pressed = PENDING.with(|m| {
+        m.borrow_mut()
+            .get_mut(&id)
+            .map(|p| p.clicked = true)
+            .is_some()
+    });
+    if pressed {
+        // Reported with the release's position, once heard.
+        return;
+    }
+    match RELEASED.with(|m| m.borrow_mut().remove(&id)) {
+        Some(d) => dispatch(click_with(id, d)),
+        None => dispatch(UiEvent::Click(id)),
+    }
 }
 
 /// The pointer over and pressing the view, reported to prism-native

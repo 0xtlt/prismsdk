@@ -292,7 +292,7 @@ fn pressed(id: NodeId, r: &RichEditBox, a: &PointerRoutedEventArgs) -> Result<()
             ClickEvent {
                 position: Some(Point { x, y }),
                 modifiers,
-                count: 1,
+                count: crate::events::count_press(id, a).unwrap_or(1),
                 button: PointerButton::Primary,
                 text_offset: Some(at),
             },
