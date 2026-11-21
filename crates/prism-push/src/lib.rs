@@ -37,6 +37,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 pub mod apns;
+mod endpoint;
 pub mod fcm;
 mod jwt;
 pub mod webpush;
@@ -118,8 +119,16 @@ pub struct Subscription {
 }
 
 impl Subscription {
+    /// Parses what the app reported. A Web Push or UnifiedPush endpoint
+    /// must be an HTTP(S) URL without credentials; where it may point is
+    /// checked again when sending (see `Sender::trust_origin`).
     pub fn from_json(json: &str) -> Result<Self, PushError> {
-        serde_json::from_str(json).map_err(|e| PushError::Config(format!("subscription: {e}")))
+        let sub: Self = serde_json::from_str(json)
+            .map_err(|e| PushError::Config(format!("subscription: {e}")))?;
+        if matches!(sub.service, Service::WebPush | Service::UnifiedPush) {
+            endpoint::Endpoint::parse(&sub.token)?;
+        }
+        Ok(sub)
     }
 }
 

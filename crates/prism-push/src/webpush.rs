@@ -262,7 +262,24 @@ fn origin(url: &str) -> String {
 }
 
 /// The request delivering `push` to a Web Push or UnifiedPush subscription.
+///
+/// The endpoint must be a public HTTPS URL on port 443 (not `localhost`,
+/// not a private or reserved address). Your HTTP client must also refuse
+/// a name that resolves to such an address, and redirects: the subscriber
+/// chose this URL. `Sender` does both, and can trust a
+/// private distributor's origin.
 pub fn request(
+    sub: &Subscription,
+    push: &Push,
+    vapid: Option<(&VapidKey, &str)>,
+    now: SystemTime,
+) -> Result<HttpRequest, PushError> {
+    crate::endpoint::Endpoint::parse(&sub.token)?.check_public()?;
+    build(sub, push, vapid, now)
+}
+
+/// [`request`], with the endpoint already checked.
+pub(crate) fn build(
     sub: &Subscription,
     push: &Push,
     vapid: Option<(&VapidKey, &str)>,
