@@ -206,6 +206,7 @@ impl WebApp {
                         base: app.base().to_string(),
                         title: app.config().title.clone(),
                         inbox: Some(inbox),
+                        sign_ins: crate::security::session_key(),
                         sid: Some(sid.clone()),
                         ..app.services()
                     },
@@ -242,6 +243,13 @@ struct Live {
     queued: Arc<AtomicUsize>,
     /// A wake-up is waiting in the inbox.
     woken: Arc<AtomicBool>,
+}
+
+impl Drop for Live {
+    /// The session ended: its sign-ins will not be redeemed.
+    fn drop(&mut self) {
+        crate::security::forget_session(self.services.sign_ins);
+    }
 }
 
 /// One of the app's [`max_sessions`](WebApp::max_sessions), held by a live
@@ -332,11 +340,14 @@ impl Live {
                     patches
                 }
                 Ok(Inbound::Message(text)) => self.message(&text),
-                Ok(Inbound::AuthRedirect(id, url)) => self
-                    .runtime
-                    .device_reply(id, Ok(prism_core::DeviceValue::Text(Some(url)))),
+                Ok(Inbound::AuthRedirect(id, url)) => {
+                    self.services.server_answers.remove(&id);
+                    self.runtime
+                        .device_reply(id, Ok(prism_core::DeviceValue::Text(Some(url))))
+                }
                 // The browser has the cookie: so does the session's request.
                 Ok(Inbound::CookieSet(id, cookie)) => {
+                    self.services.server_answers.remove(&id);
                     let app = &mut self.runtime.app;
                     if let Some(mut request) = app.request().cloned() {
                         request.apply_cookie(&cookie);
@@ -444,11 +455,19 @@ impl Live {
                     };
                     rt.device_reply(id, result)
                 }
-                Some(id) => {
-                    if v.get("err").is_some() {
-                        crate::security::forget_redirect(id);
-                        crate::cookies::forget(id, &self.sid);
+                // A call only the server completes (the browser fetched the
+                // cookie, the provider redirected): the page may fail it, no
+                // more.
+                Some(id) if self.services.server_answers.contains(&id) => {
+                    if v.get("err").is_none() {
+                        return Vec::new();
                     }
+                    self.services.server_answers.remove(&id);
+                    crate::security::forget_redirect(self.services.sign_ins, id);
+                    crate::cookies::forget(id, &self.sid);
+                    rt.device_reply(id, device_result(&v))
+                }
+                Some(id) => {
                     let result = device_result(&v);
                     rt.device_reply(id, result)
                 }
@@ -1075,6 +1094,12 @@ pub(crate) struct WebServices {
     pub title: String,
     /// The session's own inbox (sign-in redirects arrive there).
     pub inbox: Option<mpsc::Sender<Inbound>>,
+    /// What the session's sign-ins are filed under
+    /// ([`session_key`](crate::security::session_key)).
+    pub sign_ins: u64,
+    /// Calls the server answers itself when they succeed (a cookie the
+    /// browser fetched, a sign-in's redirect): the page may only fail them.
+    pub server_answers: std::collections::HashSet<u64>,
     /// The browser's `prism_sid` (`None` while rendering a page).
     pub sid: Option<String>,
     /// `cx.reconnect()`: end the session once the page is told.
@@ -1875,7 +1900,13 @@ impl WebServices {
                     return None;
                 }
                 match (crate::security::state_of(&r.url), self.inbox.clone()) {
-                    (Some(state), Some(tx)) => crate::security::wait_for_redirect(state, tx, id),
+                    (Some(state), Some(tx)) => {
+                        if !crate::security::wait_for_redirect(state, tx, self.sign_ins, id) {
+                            self.reply(id, Err(E::Failed("too many sign-ins at once".into())));
+                            return None;
+                        }
+                        self.server_answers.insert(id);
+                    }
                     _ => {
                         self.reply(id, Err(E::Failed("the sign-in URL has no state".into())));
                         return None;
@@ -1901,6 +1932,7 @@ impl WebServices {
                     return None;
                 };
                 let ticket = crate::cookies::issue(&sid, cookie, tx, id);
+                self.server_answers.insert(id);
                 Some(json!({
                     "t": "device", "id": id, "call": "set_cookie",
                     "url": format!("{}/_prism/cookie", self.base), "ticket": ticket,

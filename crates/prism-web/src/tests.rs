@@ -1600,12 +1600,15 @@ pub(crate) struct Page {
 
 impl Page {
     pub(crate) fn open(app: &WebApp, uri: &str) -> Page {
+        Page::open_with(app, uri, &HeaderMap::new())
+    }
+
+    /// [`open`](Self::open) with the handshake's `headers` (a cookie…).
+    pub(crate) fn open_with(app: &WebApp, uri: &str, headers: &HeaderMap) -> Page {
         let (tx, inbox) = mpsc::channel();
-        let session = app.connect(
-            &uri.parse::<Uri>().unwrap(),
-            &HeaderMap::new(),
-            move |msg| tx.send(msg).is_ok(),
-        );
+        let session = app.connect(&uri.parse::<Uri>().unwrap(), headers, move |msg| {
+            tx.send(msg).is_ok()
+        });
         Page { session, inbox }
     }
 

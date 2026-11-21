@@ -16,7 +16,9 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock, mpsc};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError, mpsc};
+use std::time::{Duration, Instant};
 
 use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
 use ring::rand::{SecureRandom, SystemRandom};
@@ -385,26 +387,91 @@ fn spki_key(der: &[u8]) -> Option<Vec<u8>> {
 
 // --- OAuth popups -------------------------------------------------------------------------
 
-/// Sessions waiting for a provider's redirect, by `state`.
-type Waiting = HashMap<String, (mpsc::Sender<crate::session::Inbound>, u64)>;
+/// How long a sign-in popup has to come back; its `state` is forgotten
+/// after.
+pub(crate) const REDIRECT_TTL: Duration = Duration::from_secs(10 * 60);
+/// Sign-ins one session, and all of them, may have waiting at once.
+const REDIRECTS_PER_SESSION: usize = 8;
+const REDIRECTS: usize = 4096;
 
-fn waiting() -> &'static Mutex<Waiting> {
-    static W: OnceLock<Mutex<Waiting>> = OnceLock::new();
+/// A session's call waiting for a provider's redirect.
+struct Waiting {
+    tx: mpsc::Sender<crate::session::Inbound>,
+    /// The session ([`session_key`]) and its call.
+    session: u64,
+    id: u64,
+    since: Instant,
+}
+
+/// Sign-ins waiting for their redirect, by `state`.
+fn waiting() -> MutexGuard<'static, HashMap<String, Waiting>> {
+    static W: OnceLock<Mutex<HashMap<String, Waiting>>> = OnceLock::new();
     W.get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
 }
 
-pub(crate) fn wait_for_redirect(state: String, tx: mpsc::Sender<crate::session::Inbound>, id: u64) {
-    waiting().lock().unwrap().insert(state, (tx, id));
+/// A number of its own for each live session: its sign-ins are filed under
+/// it, as call numbers start again in each session.
+pub(crate) fn session_key() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-pub(crate) fn forget_redirect(id: u64) {
-    waiting().lock().unwrap().retain(|_, (_, i)| *i != id);
+/// Files call `id` of `session` under `state` until the provider
+/// redirects. `false` when the session has too many sign-ins waiting, or
+/// the server, or another session waits on that `state`.
+pub(crate) fn wait_for_redirect(
+    state: String,
+    tx: mpsc::Sender<crate::session::Inbound>,
+    session: u64,
+    id: u64,
+) -> bool {
+    let now = Instant::now();
+    let mut w = waiting();
+    w.retain(|_, p| now.duration_since(p.since) < REDIRECT_TTL);
+    let mine = w.values().filter(|p| p.session == session).count();
+    let taken = w.get(&state).is_some_and(|p| p.session != session);
+    if taken || mine >= REDIRECTS_PER_SESSION || w.len() >= REDIRECTS {
+        return false;
+    }
+    let since = now;
+    w.insert(
+        state,
+        Waiting {
+            tx,
+            session,
+            id,
+            since,
+        },
+    );
+    true
+}
+
+/// Forgets call `id` of `session` (its page could not open the popup).
+pub(crate) fn forget_redirect(session: u64, id: u64) {
+    waiting().retain(|_, p| !(p.session == session && p.id == id));
+}
+
+/// Forgets every sign-in of `session` (it ended).
+pub(crate) fn forget_session(session: u64) {
+    waiting().retain(|_, p| p.session != session);
+}
+
+/// The sign-in waiting on `state`, once: `None` if there is none or it
+/// waited [`REDIRECT_TTL`] by `now`.
+pub(crate) fn take_redirect(
+    state: &str,
+    now: Instant,
+) -> Option<(mpsc::Sender<crate::session::Inbound>, u64)> {
+    let p = waiting().remove(state)?;
+    (now.duration_since(p.since) < REDIRECT_TTL).then_some((p.tx, p.id))
 }
 
 /// `GET <base>/_prism/auth/callback?…`: hands the URL to its session.
 pub(crate) fn redirect_page(query: &str, nonce: Option<&crate::CspNonce>) -> String {
     let state = query_map(query).remove("state").unwrap_or_default();
-    let found = waiting().lock().unwrap().remove(&state);
+    let found = take_redirect(&state, Instant::now());
     let delivered = found.is_some_and(|(tx, id)| {
         tx.send(crate::session::Inbound::AuthRedirect(
             id,

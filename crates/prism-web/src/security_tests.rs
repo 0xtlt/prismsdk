@@ -926,3 +926,160 @@ fn s13_reports_with_numbers_past_f32_are_dropped() {
     ));
     assert!(parse_event(&json!({ "t": "scroll", "id": 1, "o": 12.5, "v": 300 })).is_some());
 }
+
+// --- S14, S15: sign-ins and cookies the server completes ------------------------------------
+
+/// S14: two sessions wait for sign-ins under the same call number. One
+/// page's failure, or a stray one, cancels only its own sign-in; a
+/// redirect is redeemed once.
+#[test]
+fn s14_a_sign_in_is_cancelled_only_by_its_own_session() {
+    use crate::security::{
+        forget_redirect, random_id, redirect_page, session_key, wait_for_redirect,
+    };
+    use crate::session::Inbound;
+    let (a, b) = (session_key(), session_key());
+    let (tx_a, rx_a) = std::sync::mpsc::channel();
+    let (tx_b, rx_b) = std::sync::mpsc::channel();
+    let (state_a, state_b) = (random_id(), random_id());
+    assert!(wait_for_redirect(state_a.clone(), tx_a, a, 1));
+    assert!(wait_for_redirect(state_b.clone(), tx_b, b, 1));
+    // Another session cannot take a waiting state over.
+    let (tx_c, _rx_c) = std::sync::mpsc::channel();
+    assert!(!wait_for_redirect(state_a.clone(), tx_c, session_key(), 1));
+    // B's page reports its call 1 failed; a session that never called too.
+    forget_redirect(b, 1);
+    forget_redirect(session_key(), 1);
+    let page = redirect_page(&format!("code=c&state={state_a}"), None);
+    assert!(page.contains("Signed in"), "{page}");
+    assert!(matches!(rx_a.try_recv(), Ok(Inbound::AuthRedirect(1, _))));
+    assert!(redirect_page(&format!("code=c&state={state_a}"), None).contains("expired"));
+    assert!(redirect_page(&format!("code=c&state={state_b}"), None).contains("expired"));
+    assert!(rx_b.try_recv().is_err());
+}
+
+/// S14: sign-ins left waiting expire, end with their session, and a
+/// session cannot keep more than a few waiting.
+#[test]
+fn s14_abandoned_sign_ins_expire_and_end_with_their_session() {
+    use crate::security::{
+        REDIRECT_TTL, forget_session, random_id, session_key, take_redirect, wait_for_redirect,
+    };
+    let session = session_key();
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let states: Vec<String> = (0..8).map(|_| random_id()).collect();
+    for (id, state) in states.iter().enumerate() {
+        assert!(wait_for_redirect(
+            state.clone(),
+            tx.clone(),
+            session,
+            id as u64
+        ));
+    }
+    assert!(!wait_for_redirect(random_id(), tx.clone(), session, 8));
+    // The session ends: none of its sign-ins can be redeemed.
+    forget_session(session);
+    let now = std::time::Instant::now();
+    assert!(states.iter().all(|s| take_redirect(s, now).is_none()));
+    // Ten minutes later, a sign-in left open has expired.
+    let state = random_id();
+    assert!(wait_for_redirect(state.clone(), tx.clone(), session, 9));
+    let later = std::time::Instant::now() + REDIRECT_TTL;
+    assert!(take_redirect(&state, later).is_none());
+    let state = random_id();
+    assert!(wait_for_redirect(state.clone(), tx, session, 10));
+    assert!(take_redirect(&state, std::time::Instant::now()).is_some());
+}
+
+/// S15: the page cannot answer a cookie or a sign-in in the server's
+/// place: its success is ignored, its failure cancels. The cookie
+/// succeeds once the browser fetched its ticket.
+#[test]
+fn s15_the_page_cannot_complete_a_cookie_or_a_sign_in() {
+    use crate::tests::{Page, op_with_text, web_app};
+    use prism_core::prelude::*;
+
+    #[derive(Default)]
+    struct Calls {
+        started: bool,
+        cookie: String,
+        sign_in: String,
+    }
+    impl Render for Calls {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            if !std::mem::replace(&mut self.started, true) {
+                cx.spawn(async move |this, cx| {
+                    let r = cx
+                        .set_cookie(prism_core::Cookie::new("theme", "dark"))
+                        .await;
+                    cx.update_entity(&this, |c, _| c.cookie = format!("cookie {r:?}"));
+                });
+                cx.spawn(async move |this, cx| {
+                    let r = cx
+                        .web_auth(prism_core::WebAuthRequest {
+                            url: "https://id.example/authorize?state=s15-state".into(),
+                            redirect: String::new(),
+                            ephemeral: false,
+                            provider: "Example".into(),
+                        })
+                        .await;
+                    cx.update_entity(&this, |c, _| c.sign_in = format!("sign-in {r:?}"));
+                });
+            }
+            div()
+                .child(text(format!("[{}]", self.cookie)))
+                .child(text(format!("<{}>", self.sign_in)))
+        }
+    }
+    let init: prism_core::AppInit = std::sync::Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Calls::default());
+        cx.set_root(root);
+    });
+    let (app, dir) = web_app(init, "s15");
+    let sid = "0123456789abcdef0123456789abcdef";
+    let mut headers = http::HeaderMap::new();
+    headers.insert("cookie", format!("prism_sid={sid}").parse().unwrap());
+    let page = Page::open_with(&app, "/ws?path=%2F&w=1280&h=800", &headers);
+    let reset = page.next();
+    let (cookie, sign_in) = (
+        op_with_text(&reset["p"], "[]"),
+        op_with_text(&reset["p"], "<>"),
+    );
+    let mut calls = std::collections::HashMap::new();
+    while calls.len() < 2 {
+        let m = page.next();
+        if m["t"] == "device" {
+            calls.insert(m["call"].as_str().unwrap().to_string(), m);
+        }
+    }
+    let (set, auth) = (&calls["set_cookie"], &calls["web_auth"]);
+    // The page claims both succeeded: ignored.
+    page.send(json!({ "t": "device_reply", "id": set["id"] }));
+    page.send(json!({ "t": "device_reply", "id": auth["id"],
+        "text": "https://app.example/_prism/auth/callback?code=forged&state=s15-state" }));
+    // Its failure cancels the sign-in (the first patch since: nothing
+    // completed the cookie).
+    page.send(json!({ "t": "device_reply", "id": auth["id"], "err": "cancelled" }));
+    assert_eq!(
+        page.next(),
+        json!({ "t": "patch", "p": [{ "op": "text", "id": sign_in,
+            "text": "<sign-in Err(Cancelled)>" }] })
+    );
+    // The browser fetches the cookie: now it succeeds.
+    let mut fetch = http::HeaderMap::new();
+    for (k, v) in [
+        ("host", "localhost"),
+        ("origin", "http://localhost"),
+        ("sec-fetch-site", "same-origin"),
+        ("x-prism-cookie", set["ticket"].as_str().unwrap()),
+    ] {
+        fetch.insert(k, v.parse().unwrap());
+    }
+    let answer = crate::cookies::redeem(&fetch, Some(sid.into()), None);
+    assert_eq!(answer.status(), http::StatusCode::NO_CONTENT);
+    assert_eq!(
+        page.next(),
+        json!({ "t": "patch", "p": [{ "op": "text", "id": cookie, "text": "[cookie Ok(())]" }] })
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
