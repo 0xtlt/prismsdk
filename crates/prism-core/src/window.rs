@@ -66,14 +66,16 @@ pub enum WindowChrome {
     Standard,
     /// No title bar: the content fills the window from its top edge and the
     /// app draws its own (tabs, a sidebar reaching the top). The system's
-    /// window buttons (the macOS traffic lights) stay, drawn over the
-    /// content; mark the app's title bar with
+    /// window buttons (the macOS traffic lights, Windows' caption buttons)
+    /// stay, drawn over the content; mark the app's title bar with
     /// [`window_drag`](crate::Styled::window_drag) so it moves the window.
     ///
-    /// macOS only; other platforms keep their standard frame.
+    /// macOS and Windows (whose caption buttons stay at the top right);
+    /// other platforms keep their standard frame.
     Custom {
         /// Where the window buttons' top-left corner goes, in points from
         /// the window's top-left corner. `None`: where the system puts them.
+        /// macOS only: Windows puts its caption buttons at the top right.
         traffic_lights: Option<crate::events::Point>,
     },
 }
@@ -85,17 +87,18 @@ impl WindowChrome {
     }
 }
 
-/// Where the system's window buttons (the macOS traffic lights) sit over
-/// the content of a window with a [`WindowChrome::Custom`] chrome, in points
-/// from the window's top-left corner: leave room for them in the app's
-/// title bar.
+/// Where the system's window buttons (the macOS traffic lights, Windows'
+/// caption buttons) sit over the content of a window with a
+/// [`WindowChrome::Custom`] chrome, in points from the window's top-left
+/// corner: leave room for them in the app's title bar
+/// ([`insets`](Self::insets)).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct WindowControls {
     /// Distance of their left edge from the window's left edge.
     pub x: f32,
     /// Distance of their top edge from the window's top edge.
     pub y: f32,
-    /// Width of the three buttons and the gaps between them.
+    /// Width of the three buttons (and the gaps between them).
     pub width: f32,
     /// Height of a button.
     pub height: f32,
@@ -111,6 +114,27 @@ impl WindowControls {
     /// Distance of their bottom edge from the window's top edge.
     pub fn bottom(&self) -> f32 {
         self.y + self.height
+    }
+
+    /// The room they take at the left and right ends of a title bar as
+    /// wide as the window (`window_width`, as
+    /// [`App::window_size`](crate::App::window_size)): macOS's traffic
+    /// lights at the left (`(right(), 0)`), Windows' caption buttons at the
+    /// right (`(0, window_width - x)`).
+    ///
+    /// ```
+    /// # use prism_core::WindowControls;
+    /// let lights = WindowControls { x: 16., y: 13., width: 52., height: 14. };
+    /// assert_eq!(lights.insets(800.), (68., 0.));
+    /// let buttons = WindowControls { x: 662., y: 0., width: 138., height: 32. };
+    /// assert_eq!(buttons.insets(800.), (0., 138.));
+    /// ```
+    pub fn insets(&self, window_width: f32) -> (f32, f32) {
+        if self.x + self.width / 2. <= window_width / 2. {
+            (self.right(), 0.)
+        } else {
+            (0., (window_width - self.x).max(0.))
+        }
     }
 }
 
@@ -158,12 +182,14 @@ impl App {
     }
 
     /// Where the system's window buttons sit over the content: `Some` only
-    /// for a [`WindowChrome::Custom`] window out of full screen (macOS).
-    /// Changes re-render.
+    /// for a [`WindowChrome::Custom`] window out of full screen (macOS,
+    /// Windows). Changes re-render.
     ///
     /// ```ignore
-    /// let lead = cx.window_controls().map_or(12., |c| c.right() + 12.);
-    /// div().h(40.).pl(lead).window_drag().child(tabs)
+    /// let (left, right) = cx
+    ///     .window_controls()
+    ///     .map_or((0., 0.), |c| c.insets(cx.window_size().0));
+    /// div().h(40.).pl(left + 12.).pr(right + 12.).window_drag().child(tabs)
     /// ```
     pub fn window_controls(&self) -> Option<WindowControls> {
         self.window.controls

@@ -327,8 +327,9 @@ Explorer on Windows 11, not menus drawn in the title bar (Paint's way):
 - WinUI's `MenuBar` is made for that row ("typically" at the top of the
   window, says the design guidance), 40 px tall, with its own hover,
   pressed and keyboard states;
-- the title bar stays the system's: its caption buttons, drag, double
-  click, the window menu and snap layouts need no code of Prism's
+- the title bar stays the system's (unless the app draws its own:
+  [Custom window chrome](#custom-window-chrome)): its caption buttons, drag,
+  double click, the window menu and snap layouts need no code of Prism's
   (menus in the title bar mean `ExtendsContentIntoTitleBar`, drawing the
   icon and the title, and keeping the hit-test regions of every menu up to
   date, and its colors are ignored on Windows 10);
@@ -338,6 +339,35 @@ Explorer on Windows 11, not menus drawn in the title bar (Paint's way):
 The row is on the window's solid color (`SolidBackgroundFillColorBase`,
 the color of Prism's tab bars and stack headers under it), so the title
 bar alone shows Mica and the menus read as part of the window's chrome.
+
+### Custom window chrome
+
+`WindowChrome::Custom` works as on macOS
+([macOS › Custom window chrome](macos.md#custom-window-chrome)), through the
+window's `AppWindow`:
+
+- its title bar goes (`AppWindowTitleBar::ExtendsContentIntoTitleBar`): the
+  content is laid out from the window's top edge; the title still names the
+  window in the taskbar and Alt+Tab;
+- the system still draws the caption buttons (minimize, maximize with its
+  snap layouts, close) over the content's top right corner, on a
+  transparent background, in the app's light or dark theme. Windows places
+  them: `traffic_lights` is ignored. `cx.window_controls()` is their frame
+  (`RightInset` and the title bar's `Height`, 32 px); `is_fullscreen()`
+  stays `false`;
+- `.window_drag()` views are the window's caption regions
+  (`InputNonClientPointerSource`): a press moves the window, a double click
+  maximizes or restores it, a right click opens the window menu. Buttons,
+  controls, `on_click`, draggable views and context menus inside are
+  passthrough regions and keep their clicks; the rest of the top strip is
+  the app's. The regions follow layouts and scrolls, and there are none
+  while a dialog, sheet or popover is open. The system takes the pointer
+  over a drag region: hover refinements inside it don't apply;
+- with a menu bar, its row is the window's top edge, under the caption
+  buttons, and the app's views start under it.
+
+`PRISM_CHROME=custom cargo run -p counter` shows it: the home screen draws a
+title bar that moves the window, with a button that keeps its clicks.
 
 ## The Windows App SDK
 
@@ -658,7 +688,7 @@ step moves the window to a simulated monitor through `WM_DPICHANGED`
 ## Not yet
 
 - **Views and input:** `object_position`, `Scrollbar::Hidden`,
-  `tabular_nums` and underline colors are ignored; custom window chrome; the runtime's layers (toasts)
+  `tabular_nums` and underline colors are ignored; the runtime's layers (toasts)
   draw under sheets and dialogs.
 - **Forms and navigation:** keyboard types, capitalization, autocorrect and
   suggestions; clearing an optional date; a date and time picker shows the

@@ -168,7 +168,7 @@ impl Drop for Island {
     }
 }
 
-fn window_id(hwnd: HWND) -> Result<WindowId> {
+pub(crate) fn window_id(hwnd: HWND) -> Result<WindowId> {
     unsafe {
         let dll = LoadLibraryW(w!("Microsoft.Internal.FrameworkUdk.dll"))?;
         let f = GetProcAddress(dll, s!("Windowing_GetWindowIdFromWindow"))

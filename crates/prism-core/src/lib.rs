@@ -212,7 +212,8 @@ pub struct AppConfig {
     /// found before the files of [`assets`](Self::assets).
     pub embedded_assets: EmbeddedAssets,
     /// The desktop window's frame: the system's title bar, or none
-    /// (`WindowChrome::Custom`, macOS). Ignored on the web and mobile.
+    /// (`WindowChrome::Custom`, macOS and Windows). Ignored on the web,
+    /// mobile and Linux.
     pub window_chrome: WindowChrome,
 }
 

@@ -18,7 +18,10 @@ Platforms: `Ios`, `Android`, `Macos`, `Windows`, `Linux`, `Web`; sets with `|` o
 ## Desktop window chrome
 
 `Application::window_chrome(WindowChrome::Custom { traffic_lights })` removes
-the macOS title bar so the app draws its own; `.window_drag()` marks the
-regions that move the window, and `cx.window_controls()` / `cx.is_fullscreen()`
-say how much room the traffic lights need. Other platforms ignore them. See
-[macOS › Custom window chrome](../platforms/macos.md#custom-window-chrome).
+the title bar on macOS and Windows so the app draws its own; `.window_drag()`
+marks the regions that move the window, and `cx.window_controls()` /
+`cx.is_fullscreen()` say how much room the window's buttons need
+(`insets(width)`: the traffic lights at the left, Windows' caption buttons at
+the right). Other platforms ignore them. See
+[macOS › Custom window chrome](../platforms/macos.md#custom-window-chrome) and
+[Windows › Custom window chrome](../platforms/windows.md#custom-window-chrome).

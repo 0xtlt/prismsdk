@@ -213,6 +213,8 @@ pub fn relayout(s: &mut State) {
         }
     }
     crate::perf::layout(|| s.renderer.widgets.flush());
+    // A custom title bar's drag regions (`titlebar.rs`).
+    crate::titlebar::update_regions(s);
     UPDATING.set(was);
 }
 
@@ -358,6 +360,7 @@ pub fn scrolled(id: NodeId, x: f32, y: f32) {
         let report = n.scroll_events;
         let h = n.frame.h;
         w.flush();
+        crate::titlebar::update_regions(s);
         if report {
             dispatch(UiEvent::Scroll(id, y, h));
         }
@@ -427,6 +430,7 @@ pub fn send_contrast_changed(h: HWND) {
 }
 
 pub fn set_dark_title_bar(h: HWND, dark: bool) {
+    crate::titlebar::set_dark(dark);
     let on = BOOL::from(dark);
     unsafe {
         let _ = DwmSetWindowAttribute(
@@ -595,6 +599,7 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     return LRESULT(0);
                 }
                 let (pw, ph) = (loword(lp.0 as usize) as i32, hiword(lp.0 as usize) as i32);
+                crate::titlebar::invalidate();
                 with_state(|s| {
                     let w = &mut s.renderer.widgets;
                     let k = w.scale();
@@ -603,6 +608,7 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     }
                     w.resize(pw as f32 / k, ph as f32 / k);
                     relayout(s);
+                    crate::titlebar::report_controls(s);
                 });
                 LRESULT(0)
             }
@@ -925,6 +931,11 @@ pub fn run(config: AppConfig, init: AppInit) {
                 Ok(i) => win.island = Some(i),
                 Err(e) => log!("XAML island: {e}"),
             }
+            // No title bar (`WindowChrome::Custom`): the client area
+            // grows to the window's top edge before the first layout.
+            if config.window_chrome.is_custom() {
+                crate::titlebar::install(main, win.palette.dark);
+            }
             // XAML laid the tree out, then the first frame.
             let _ = win
                 .root
@@ -993,6 +1004,8 @@ pub fn run(config: AppConfig, init: AppInit) {
             if let Some(i) = &s.renderer.widgets.island {
                 i.show();
             }
+            // The caption buttons are laid out once shown.
+            crate::titlebar::report_controls(s);
         });
         crate::smoke::start(main);
 

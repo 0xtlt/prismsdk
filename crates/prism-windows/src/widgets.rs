@@ -394,6 +394,24 @@ impl Win {
         }
     }
 
+    /// Whether node `id` keeps its own presses in a `.window_drag()`
+    /// region (`chrome.rs`): buttons, controls, `on_click`, draggable and
+    /// pointer-listening views, context menus, key views.
+    pub(crate) fn keeps_presses(&self, id: NodeId) -> bool {
+        let Some(n) = self.scene.get(id) else {
+            return false;
+        };
+        n.clickable
+            || n.pointer_mask != 0
+            || n.menu.is_some()
+            || crate::pointer::wants(id)
+            || crate::keyview::is(id)
+            || self
+                .views
+                .get(&id)
+                .is_some_and(|v| v.button.is_some() || v.content.control().is_some())
+    }
+
     /// A field's text from the app, unless it is the echo of typing.
     pub(crate) fn set_field_text(&mut self, id: NodeId, text: &str) {
         let Some(v) = self.views.get(&id) else { return };

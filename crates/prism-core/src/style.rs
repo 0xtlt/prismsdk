@@ -2511,10 +2511,11 @@ pub trait Styled: Sized {
     /// Makes the element a title bar for the window: dragging it moves the
     /// window, and a double click does what the user chose in System
     /// Settings (« Double-click a window's title bar »: zoom by default,
-    /// minimize, or nothing). Clickable descendants (buttons, tabs,
-    /// `on_click` views) keep their clicks; put it on a container (on a
-    /// clickable element the click wins). Pairs with a custom window chrome
-    /// (`Application::window_chrome`). macOS only: ignored elsewhere.
+    /// minimize, or nothing; on Windows it maximizes or restores).
+    /// Clickable descendants (buttons, tabs, `on_click` views) keep their
+    /// clicks; put it on a container (on a clickable element the click
+    /// wins). Pairs with a custom window chrome
+    /// (`Application::window_chrome`). macOS and Windows: ignored elsewhere.
     fn window_drag(self) -> Self {
         self.with_style(|s| s.window_drag = true)
     }

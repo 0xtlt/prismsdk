@@ -74,6 +74,7 @@ pub fn run() {
         .title("Prism")
         .size(460., 720.)
         .assets(concat!(env!("CARGO_MANIFEST_DIR"), "/assets"))
+        .window_chrome(window_chrome())
         .web_head()
         .run(|cx| {
             strings::install(cx);
@@ -131,6 +132,42 @@ pub fn run() {
 }
 
 /// A screen with the theme's background and a scrollable body.
+/// `PRISM_CHROME=custom`: the window has no title bar (macOS, Windows);
+/// the home screen draws one (`custom_title_bar`).
+fn window_chrome() -> WindowChrome {
+    match std::env::var("PRISM_CHROME").as_deref() {
+        Ok("custom") => WindowChrome::Custom {
+            traffic_lights: None,
+        },
+        _ => WindowChrome::Standard,
+    }
+}
+
+/// The app's own title bar, with custom window chrome: it moves the
+/// window and keeps room for the window's buttons (at the left on macOS,
+/// the right on Windows); its button keeps its clicks.
+fn custom_title_bar(cx: &mut Context<Home>) -> Option<prism::Div> {
+    let controls = cx.window_controls()?;
+    let (left, right) = controls.insets(cx.window_size().0);
+    Some(
+        div()
+            .h(px(controls.bottom().max(40.)))
+            .pl(left + 12.)
+            .pr(right + 12.)
+            .flex_row()
+            .items_center()
+            .gap(8.)
+            .window_drag()
+            .child(text("Prism").semibold().flex_1())
+            .child(
+                ui::button(strings::todos_new(cx))
+                    .small()
+                    .ghost()
+                    .on_click(cx.listener(|_, _, cx| cx.present("/todos/new"))),
+            ),
+    )
+}
+
 fn page(title: impl Into<String>, cx: &App) -> (prism::Screen, prism::Scroll) {
     let t = Theme::of(cx);
     (
@@ -271,6 +308,7 @@ impl Render for Home {
             info = format!("{info} · {}", strings::home_synced(cx, self.synced));
         }
         let today = cx.format_date(strings::now(), DateStyle::Long);
+        let title_bar = custom_title_bar(cx);
         screen
             // A "+" in the navigation bar opens the new todo sheet (#30).
             .trailing(
@@ -294,6 +332,7 @@ impl Render for Home {
                             });
                         });
                     }))
+                    .when_some(title_bar, |b, bar| b.child(bar))
                     .child(text(info).text_size(14.).text_color(t.muted))
                     .child(
                         text(background::summary(cx))
