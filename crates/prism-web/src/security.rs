@@ -130,10 +130,42 @@ fn write_private(path: &Path, data: &[u8]) -> Result<(), String> {
     })
 }
 
+/// The file in a browser's `secure/` naming the id its secrets are sealed
+/// for, once the browser's id changed (S10): they keep it.
+const BINDING: &str = ".binding";
+
+/// Moves the data of the browser `old` (`from`, its session directory) to
+/// its new id's directory `to` (S10): one rename, so nothing is left half
+/// moved and pages still on the old id find nothing there. Its secrets
+/// keep the id they were sealed for ([`BINDING`]). A directory that does
+/// not exist has nothing to move. Windows refuses to rename a directory
+/// while a file inside is open (another page of the old id writing): the
+/// rename is tried a few times, then fails, and the data stays.
+pub(crate) fn move_browser(from: &Path, to: &Path, old: &str) -> Result<(), String> {
+    let secure = from.join("secure");
+    if secure.is_dir() && !secure.join(BINDING).exists() {
+        write_private(&secure.join(BINDING), old.as_bytes())?;
+    }
+    let mut tries = 0u64;
+    loop {
+        match std::fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && !from.exists() => return Ok(()),
+            Err(_) if tries < 5 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20 * tries));
+            }
+            Err(e) => return Err(format!("the browser's data cannot move: {e}")),
+        }
+    }
+}
+
 /// One browser's secrets: `<session>/secure/<sha256(key)>`, each
 /// `nonce ‖ AES-256-GCM(flags ‖ value)`, bound to the session and key.
 pub(crate) struct SecureStore {
     dir: PathBuf,
+    /// The id the secrets are sealed for: the browser's, or the one it had
+    /// when they were first written ([`BINDING`]).
     sid: String,
     /// The server key, or why there is none (every operation fails then).
     key: Result<LessSafeKey, String>,
@@ -147,9 +179,13 @@ pub(crate) struct Secret {
 
 impl SecureStore {
     pub fn new(session_dir: &Path, sid: &str, key: Result<[u8; 32], String>) -> Self {
+        let dir = session_dir.join("secure");
+        let bound = std::fs::read_to_string(dir.join(BINDING))
+            .ok()
+            .filter(|id| id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()));
         SecureStore {
-            dir: session_dir.join("secure"),
-            sid: sid.to_string(),
+            sid: bound.unwrap_or_else(|| sid.to_string()),
+            dir,
             key: key.map(|k| LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &k).expect("AES key"))),
         }
     }

@@ -64,6 +64,16 @@ pub(crate) fn offer(
     format!("{base}/_prism/download/{id}")
 }
 
+/// The browser `old` now has the id `new` (S10): its downloads follow it.
+pub(crate) fn renamed(old: &str, new: &str) {
+    let mut s = store().lock().unwrap_or_else(|e| e.into_inner());
+    for e in s.iter_mut() {
+        if e.sid.as_deref() == Some(old) {
+            e.sid = Some(new.to_string());
+        }
+    }
+}
+
 /// `GET <base>/_prism/download/<id>` from the session `sid` (its cookie).
 pub(crate) fn serve(id: &str, sid: Option<&str>) -> Response<Vec<u8>> {
     let found = {
@@ -129,6 +139,24 @@ fn disposition(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn s10_a_download_follows_its_browser_to_its_new_id() {
+        let url = offer(
+            "",
+            Some("s10-dl-old"),
+            "a.txt".into(),
+            "text/plain".into(),
+            b"a".to_vec(),
+        );
+        let id = url.strip_prefix("/_prism/download/").unwrap();
+        renamed("s10-dl-old", "s10-dl-new");
+        assert_eq!(
+            serve(id, Some("s10-dl-old")).status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(serve(id, Some("s10-dl-new")).status(), StatusCode::OK);
+    }
 
     #[test]
     fn a_download_is_served_once_offered_to_its_session_only() {

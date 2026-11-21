@@ -1302,6 +1302,36 @@ test("set_cookie posts each ticket in a header, one after the other, and reports
   assert.deepEqual(replies, [{ t: "device_reply", id: 8, err: "the cookie was refused (403)" }]);
 });
 
+test("browser_id stores the new id after the cookies before it, and holds the next messages until then", async () => {
+  const answers = [];
+  const page = live([create(1, "text"), textOp(1, "before"), root(1)],
+    { fetch: (url, init) => new Promise((resolve) => answers.push({ url, init, resolve })) });
+  const flush = () => new Promise((r) => setImmediate(r));
+  const shown = () => page.document.querySelector('[data-pid="1"]').textContent;
+  page.ws.deliver({ t: "device", id: 7, call: "set_cookie", url: "/_prism/cookie", ticket: "T1" });
+  page.ws.deliver({ t: "browser_id", url: "/_prism/cookie", ticket: "T2" });
+  page.ws.deliver({ t: "patch", p: [textOp(1, "after")] });
+  await flush();
+  // The cookie asked for first is bound to the old id: it goes first.
+  assert.equal(answers.length, 1);
+  assert.equal(answers[0].init.headers["X-Prism-Cookie"], "T1");
+  answers[0].resolve({ status: 204 });
+  await flush();
+  assert.equal(answers.length, 2);
+  const { url, init } = answers[1];
+  assert.equal(url, "/_prism/cookie");
+  assert.equal(init.method, "POST");
+  assert.equal(init.credentials, "same-origin");
+  assert.equal(init.headers["X-Prism-Cookie"], "T2");
+  // What the server sent after it waits for the new id.
+  assert.equal(shown(), "before");
+  answers[1].resolve({ status: 204 });
+  await flush();
+  assert.equal(shown(), "after");
+  // Nothing to answer: the server renewed the id before telling the page.
+  assert.deepEqual(page.ws.sent.filter((m) => m.t === "device_reply"), []);
+});
+
 test("reconnect waits for the cookies, then opens a new session at once without the banner", async () => {
   const answers = [];
   const page = live([create(1, "text"), root(1)], { fetch: () => new Promise((resolve) => answers.push(resolve)) });

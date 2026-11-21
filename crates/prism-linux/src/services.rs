@@ -291,6 +291,8 @@ impl LinuxServices {
             // No cookies here (secure storage keeps secrets), no live session.
             DeviceCall::SetCookie(_) => reply(id, Err(DeviceError::Unavailable)),
             DeviceCall::Reconnect => {}
+            // No browser id natively: nothing to renew.
+            DeviceCall::RenewBrowserId => reply(id, Ok(DeviceValue::Done)),
         }
     }
 

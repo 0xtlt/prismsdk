@@ -136,3 +136,25 @@ fn the_app_reads_its_stores_and_hears_about_cloud_changes() {
     // Unrelated keys re-render nothing.
     assert!(h.rt.cloud_changed(&["other".into()]).is_empty());
 }
+
+/// S10: a browser's uploads moved with its data: their URLs keep working.
+#[test]
+fn local_files_follow_a_moved_directory() {
+    use prism_core::device::{local_file, move_local_files, register_local_file};
+    use std::path::Path;
+    let (from, to) = (Path::new("/data/s10-old"), Path::new("/data/s10-new"));
+    register_local_file("/files/s10-a.png", from.join("files/s10-a.png"));
+    register_local_file(
+        "/files/s10-b.png",
+        Path::new("/data/s10-other/files/s10-b.png").into(),
+    );
+    move_local_files(from, to);
+    assert_eq!(
+        local_file("/files/s10-a.png").as_deref(),
+        Some(to.join("files/s10-a.png").as_path())
+    );
+    assert_eq!(
+        local_file("/files/s10-b.png").as_deref(),
+        Some(Path::new("/data/s10-other/files/s10-b.png"))
+    );
+}

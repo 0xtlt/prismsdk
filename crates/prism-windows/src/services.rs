@@ -235,6 +235,8 @@ impl WinServices {
                 reply(id, Err(DeviceError::Unavailable));
             }
             DeviceCall::StopWatch | DeviceCall::Reconnect => {}
+            // No browser id natively: nothing to renew.
+            DeviceCall::RenewBrowserId => reply(id, Ok(DeviceValue::Done)),
             // No haptics or share sheet yet; Apple's sign-in and passkeys
             // are other platforms'; cookies are the web's.
             DeviceCall::Haptic(_)

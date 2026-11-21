@@ -695,6 +695,10 @@ mod bridge {
                     send(DeviceMessage::Reply(id, Err(DeviceError::Unavailable)));
                 }
                 DeviceCall::Reconnect => {}
+                // No browser id natively: nothing to renew.
+                DeviceCall::RenewBrowserId => {
+                    send(DeviceMessage::Reply(id, Ok(DeviceValue::Done)));
+                }
             }
         }
     }

@@ -394,6 +394,7 @@ impl WebApp {
                 req.headers(),
                 self.browser(req.headers()),
                 self.public(),
+                |sid| self.browser_cookie(req.headers(), sid),
             );
         }
         if req.method() != Method::GET && req.method() != Method::HEAD {
@@ -597,25 +598,25 @@ impl WebApp {
         set(&mut r, header::CONTENT_TYPE, "text/html; charset=utf-8");
         // Rendered for this browser: never stored by a CDN or the browser.
         set(&mut r, header::CACHE_CONTROL, "private, no-store");
-        if new {
+        if new && let Ok(v) = HeaderValue::from_str(&self.browser_cookie(headers, &sid)) {
+            r.headers_mut().insert(header::SET_COOKIE, v);
+        }
+        r
+    }
+
+    /// The `Set-Cookie` that gives the browser the id `sid`.
+    pub(crate) fn browser_cookie(&self, headers: &HeaderMap, sid: &str) -> String {
+        // HTTPS: host-only and `Secure` (`__Host-` needs `Path=/`).
+        if self.https(headers) {
+            format!("{SECURE_SID}={sid}; Path=/; Max-Age=31536000; Secure; SameSite=Lax; HttpOnly")
+        } else {
             let path = if self.inner.base.is_empty() {
                 "/"
             } else {
                 &self.inner.base
             };
-            // HTTPS: host-only and `Secure` (`__Host-` needs `Path=/`).
-            let cookie = if self.https(headers) {
-                format!(
-                    "{SECURE_SID}={sid}; Path=/; Max-Age=31536000; Secure; SameSite=Lax; HttpOnly"
-                )
-            } else {
-                format!("{PLAIN_SID}={sid}; Path={path}; Max-Age=31536000; SameSite=Lax; HttpOnly")
-            };
-            if let Ok(v) = HeaderValue::from_str(&cookie) {
-                r.headers_mut().insert(header::SET_COOKIE, v);
-            }
+            format!("{PLAIN_SID}={sid}; Path={path}; Max-Age=31536000; SameSite=Lax; HttpOnly")
         }
-        r
     }
 
     /// Platform services for one browser session.
@@ -1242,9 +1243,9 @@ fn cookie_header(headers: &HeaderMap) -> Option<&str> {
 /// The browser's id cookie over HTTPS: host-only, `Secure`, `Path=/`.
 /// Browsers refuse a `__Host-` cookie from a sibling domain or plain HTTP,
 /// so no other site can choose the id (session fixation).
-const SECURE_SID: &str = "__Host-prism_sid";
+pub(crate) const SECURE_SID: &str = "__Host-prism_sid";
 /// Over plain HTTP (local development): `Path` is the mount point.
-const PLAIN_SID: &str = "prism_sid";
+pub(crate) const PLAIN_SID: &str = "prism_sid";
 
 impl WebApp {
     /// Whether the browser reached the app over HTTPS: its public origin

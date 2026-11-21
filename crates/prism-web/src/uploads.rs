@@ -168,6 +168,20 @@ impl Uploads {
         true
     }
 
+    /// The browser's data moved from `from` to `to` (S10): so did the
+    /// files on their way.
+    pub(crate) fn moved(&mut self, from: &Path, to: &Path) {
+        for call in self.calls.values_mut() {
+            if let Call::Receiving(batch) = call {
+                for f in &mut batch.files {
+                    if let Ok(rest) = f.path.strip_prefix(from) {
+                        f.path = to.join(rest);
+                    }
+                }
+            }
+        }
+    }
+
     /// Whether `key` is an upload still waiting for its files.
     pub(crate) fn has(&self, key: Key) -> bool {
         self.calls.contains_key(&key)

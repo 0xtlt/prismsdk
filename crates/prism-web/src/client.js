@@ -7537,6 +7537,29 @@ void main() {
     return cookies;
   }
 
+  /**
+   * S10: a sign-in gave the browser a new id. The page stores it with its
+   * one-time ticket, in the order of the cookies (those asked for before it
+   * are bound to the old id), and applies the server's next messages once
+   * it has it: what they show (pictures, files of this browser) is fetched
+   * with the new id. A fetch that never ends stops holding them after 10 s.
+   */
+  function renewBrowserId(msg) {
+    if (typeof fetch !== "function") return;
+    const signal = typeof AbortSignal === "function" && AbortSignal.timeout
+      ? AbortSignal.timeout(10000) : undefined;
+    cookies = cookies.then(() => fetch(msg.url, {
+      method: "POST", credentials: "same-origin", cache: "no-store", redirect: "error", signal,
+      headers: { "X-Prism-Cookie": msg.ticket },
+    })).then((r) => {
+      if (r.status !== 204) console.warn(`prism: the browser's new id was refused (${r.status})`);
+    }, (e) => console.warn("prism: the browser's new id was not stored", e));
+    const stored = cookies;
+    const step = (inbox || Promise.resolve()).then(() => stored);
+    inbox = step;
+    step.then(() => { if (inbox === step) inbox = null; });
+  }
+
   function service(msg) {
     switch (msg.t) {
       // The session ended for lack of activity: reconnect at the next one.
@@ -7552,6 +7575,7 @@ void main() {
         return;
       }
       case "device": return device(msg);
+      case "browser_id": return renewBrowserId(msg);
       case "activity": return showActivity(msg.id, msg.c);
       case "activity_end": {
         // Show the final state for a moment, like the lock screen does.

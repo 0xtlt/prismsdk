@@ -308,3 +308,60 @@ fn set_cookie_and_reconnect_are_device_calls() {
         ]
     );
 }
+
+/// S10: natively there is no browser id, so `renew_browser_id` answers at
+/// once without a device call; on the web it asks the backend.
+#[test]
+fn renew_browser_id_asks_the_web_backend_only() {
+    #[derive(Default)]
+    struct Renews(Option<String>);
+    impl Render for Renews {
+        fn render(&mut self, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+    for platform in [prism_core::Platform::Linux, prism_core::Platform::Web] {
+        let slot: Arc<std::sync::Mutex<Option<Entity<Renews>>>> = Default::default();
+        let out = slot.clone();
+        let init: prism_core::AppInit = Arc::new(move |cx: &mut App| {
+            let root = cx.new_entity(|cx: &mut Context<Renews>| {
+                cx.spawn(async move |this, cx| {
+                    let r = cx.renew_browser_id().await;
+                    cx.update_entity(&this, |s, _| s.0 = Some(format!("{r:?}")));
+                });
+                Renews::default()
+            });
+            *out.lock().unwrap() = Some(root);
+            cx.set_root(root);
+        });
+        let mut rt = Runtime::with_options(
+            &init,
+            prism_core::RuntimeOptions {
+                path: "/".into(),
+                platform: Some(platform),
+                ..Default::default()
+            },
+        );
+        rt.render();
+        rt.poll();
+        let calls: Vec<(u64, DeviceCall)> = rt
+            .take_requests()
+            .into_iter()
+            .filter_map(|r| match r {
+                PlatformRequest::Device { id, call } => Some((id, call)),
+                _ => None,
+            })
+            .collect();
+        let root = slot.lock().unwrap().unwrap();
+        if platform == prism_core::Platform::Web {
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].1, DeviceCall::RenewBrowserId);
+            assert_eq!(root.read(&rt.app).0, None, "waits for the backend");
+            rt.device_reply(calls[0].0, Ok(prism_core::DeviceValue::Done));
+            rt.poll();
+        } else {
+            assert!(calls.is_empty(), "{calls:?}");
+        }
+        assert_eq!(root.read(&rt.app).0.as_deref(), Some("Ok(())"));
+    }
+}

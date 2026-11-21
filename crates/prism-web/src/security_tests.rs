@@ -845,6 +845,297 @@ fn s10_a_planted_cookie_cannot_choose_the_browser_on_https() {
     assert_eq!(page_cookie(&app, "/", &[("cookie", &planted)]), None);
 }
 
+/// A socket handshake's headers with the browser id `sid`.
+fn with_browser(sid: &str) -> http::HeaderMap {
+    let mut headers = http::HeaderMap::new();
+    headers.insert("cookie", format!("prism_sid={sid}").parse().unwrap());
+    headers
+}
+
+/// The page redeems `ticket` at `/_prism/cookie` with the browser id `sid`:
+/// the answer's status and `Set-Cookie`.
+fn redeem_ticket(app: &crate::WebApp, sid: &str, ticket: &str) -> (http::StatusCode, String) {
+    let req = http::Request::post("/_prism/cookie")
+        .header("host", "localhost")
+        .header("origin", "http://localhost")
+        .header("sec-fetch-site", "same-origin")
+        .header("cookie", format!("prism_sid={sid}"))
+        .header("x-prism-cookie", ticket)
+        .body(())
+        .unwrap();
+    let r = app.handle(&req);
+    let cookie = r
+        .headers()
+        .get("set-cookie")
+        .map(|v| v.to_str().unwrap().to_string())
+        .unwrap_or_default();
+    (r.status(), cookie)
+}
+
+/// The next message of `page` that is not a tree (a reset or a patch).
+fn next_service(page: &crate::tests::Page) -> Value {
+    loop {
+        let m = page.next();
+        if m["t"] != "patch" && m["t"] != "reset" {
+            return m;
+        }
+    }
+}
+
+/// The page's patches until one shows `text`.
+fn wait_for_text(page: &crate::tests::Page, text: &str) {
+    loop {
+        let m = page.next();
+        if m.to_string().contains(text) {
+            return;
+        }
+    }
+}
+
+/// S10: an attacker plants their browser id in the victim's browser, the
+/// victim signs in (OAuth through `web_auth`): the browser gets a new id and
+/// its data moves there. The planted id opens an empty session; the
+/// attacker's page on it reconnects into that empty session.
+#[test]
+fn s10_a_sign_in_leaves_a_planted_browser_id_empty() {
+    use crate::tests::{Page, web_app};
+    use prism_core::prelude::*;
+
+    #[derive(Default)]
+    struct Shop {
+        started: bool,
+        status: String,
+    }
+    impl Render for Shop {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            if !std::mem::replace(&mut self.started, true) {
+                if cx.request().is_some_and(|r| r.url.contains("/signin")) {
+                    // Before signing in: a cart and a secret (they move).
+                    cx.storage().set("cart", "book");
+                    cx.spawn(async move |this, cx| {
+                        let pre = cx.secure_storage().set("pre", "p").await;
+                        let r = cx
+                            .web_auth(prism_core::WebAuthRequest {
+                                url: "https://id.example/authorize?state=s10-sign-in".into(),
+                                redirect: String::new(),
+                                ephemeral: false,
+                                provider: "Example".into(),
+                            })
+                            .await;
+                        // Signed in: what proves it is stored now.
+                        cx.update(|app| app.storage().set("user", "alice"));
+                        let token = cx.secure_storage().set("token", "t0k3n").await;
+                        let status = format!("signed in {pre:?} {:?} {token:?}", r.is_ok());
+                        cx.update_entity(&this, |s, _| s.status = status);
+                    });
+                } else {
+                    cx.spawn(async move |this, cx| {
+                        let s = cx.secure_storage();
+                        let (pre, token) = (s.get("pre").await, s.get("token").await);
+                        cx.update_entity(&this, |s, _| s.status = format!("{pre:?} {token:?}"));
+                    });
+                }
+            }
+            let user = cx.storage().get("user").unwrap_or_default();
+            let cart = cx.storage().get("cart").unwrap_or_default();
+            div()
+                .child(text(format!("user={user} cart={cart}")))
+                .child(text(format!("<{}>", self.status)))
+        }
+    }
+    let init: prism_core::AppInit = std::sync::Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Shop::default());
+        cx.set_root(root);
+    });
+    let (app, dir) = web_app(init, "s10-sign-in");
+    let planted = "5100000000000000000000000000a001";
+    // The attacker's own page, on the id they planted.
+    let attacker = Page::open_with(&app, "/ws?path=%2F&w=1280&h=800", &with_browser(planted));
+    wait_for_text(&attacker, "<Ok(None) Ok(None)>");
+    // The victim signs in on it.
+    let victim = Page::open_with(
+        &app,
+        "/ws?path=%2Fsignin&w=1280&h=800",
+        &with_browser(planted),
+    );
+    let auth = next_service(&victim);
+    assert_eq!(auth["call"], "web_auth", "{auth}");
+    assert!(app.session_dir(planted).join("cart").exists());
+    let page = crate::security::redirect_page("code=c&state=s10-sign-in", None);
+    assert!(page.contains("Signed in"), "{page}");
+    // The page gets the new id before the sign-in completes.
+    let renew = next_service(&victim);
+    assert_eq!(renew["t"], "browser_id", "{renew}");
+    assert_eq!(renew["url"], "/_prism/cookie");
+    wait_for_text(&victim, "<signed in Ok(()) true Ok(())>");
+    // Nothing is left under the planted id: not the cart from before, not
+    // the user or the token from after.
+    assert!(!app.session_dir(planted).exists());
+    // The browser redeems its ticket (with the id it still has).
+    let ticket = renew["ticket"].as_str().unwrap();
+    let (status, cookie) = redeem_ticket(&app, planted, ticket);
+    assert_eq!(status, http::StatusCode::NO_CONTENT);
+    let new = cookie
+        .strip_prefix("prism_sid=")
+        .and_then(|c| c.split(';').next())
+        .expect(&cookie)
+        .to_string();
+    assert!(
+        new.len() == 32 && new != planted && cookie.contains("; HttpOnly"),
+        "{cookie}"
+    );
+    // A ticket works once.
+    assert_eq!(
+        redeem_ticket(&app, planted, ticket).0,
+        http::StatusCode::FORBIDDEN
+    );
+    // The attacker's page still ran on the planted id: it reconnects...
+    assert_eq!(next_service(&attacker), json!({ "t": "reconnect" }));
+    // ...into an empty session.
+    let attacker = Page::open_with(&app, "/ws?path=%2F&w=1280&h=800", &with_browser(planted));
+    wait_for_text(&attacker, "user= cart=");
+    wait_for_text(&attacker, "<Ok(None) Ok(None)>");
+    // The victim's browser, on its new id, has everything.
+    let back = Page::open_with(&app, "/ws?path=%2F&w=1280&h=800", &with_browser(&new));
+    wait_for_text(&back, "user=alice cart=book");
+    wait_for_text(&back, r#"<Ok(Some(\"p\")) Ok(Some(\"t0k3n\"))>"#);
+    drop((attacker, victim, back));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// S10: `cx.renew_browser_id()` for an app's own sign-in. Cookies asked for
+/// before it are bound to the old id, those after it to the new one, and
+/// the page stores them in that order; the session's request shows the new
+/// id; the browser's other pages reconnect once it has it.
+#[test]
+fn s10_renew_browser_id_keeps_the_order_of_cookies() {
+    use crate::tests::{Page, web_app};
+    use prism_core::prelude::*;
+
+    #[derive(Default)]
+    struct SignIn {
+        started: bool,
+        status: String,
+    }
+    impl Render for SignIn {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            if !std::mem::replace(&mut self.started, true)
+                && cx.request().is_some_and(|r| r.url.contains("/signin"))
+            {
+                cx.spawn(async move |this, cx| {
+                    cx.update(|app| app.set_cookie(prism_core::Cookie::new("before", "1")));
+                    let r = cx.renew_browser_id().await;
+                    let sid = cx.update(|app| {
+                        app.set_cookie(prism_core::Cookie::new("after", "1"));
+                        app.request()
+                            .and_then(|r| r.cookie("prism_sid").map(str::to_string))
+                    });
+                    let status = format!("renewed {r:?} {}", sid.unwrap_or_default());
+                    cx.update_entity(&this, |s, _| s.status = status);
+                });
+            }
+            div().child(text(format!("<{}>", self.status)))
+        }
+    }
+    let init: prism_core::AppInit = std::sync::Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| SignIn::default());
+        cx.set_root(root);
+    });
+    let (app, dir) = web_app(init, "s10-renew");
+    let old = "5100000000000000000000000000a002";
+    let other = Page::open_with(&app, "/ws?path=%2F&w=1280&h=800", &with_browser(old));
+    other.next();
+    let page = Page::open_with(&app, "/ws?path=%2Fsignin&w=1280&h=800", &with_browser(old));
+    let (mut calls, mut shown) = (Vec::new(), String::new());
+    while calls.len() < 3 {
+        let m = page.next();
+        match m["t"].as_str() {
+            Some("patch" | "reset") => shown.push_str(&m.to_string()),
+            _ => calls.push(m),
+        }
+    }
+    let [before, renew, after] = <[Value; 3]>::try_from(calls).unwrap();
+    assert_eq!(before["call"], "set_cookie", "{before}");
+    assert_eq!(renew["t"], "browser_id", "{renew}");
+    assert_eq!(after["call"], "set_cookie", "{after}");
+    let ticket = |m: &Value| m["ticket"].as_str().unwrap().to_string();
+    // The page redeems them in order: the first with the old id...
+    let (status, cookie) = redeem_ticket(&app, old, &ticket(&before));
+    assert_eq!(
+        (status, cookie.as_str()),
+        (
+            http::StatusCode::NO_CONTENT,
+            "before=1; Path=/; HttpOnly; Secure; SameSite=Lax"
+        )
+    );
+    let (status, cookie) = redeem_ticket(&app, old, &ticket(&renew));
+    assert_eq!(status, http::StatusCode::NO_CONTENT);
+    let new = cookie["prism_sid=".len()..32 + "prism_sid=".len()].to_string();
+    // ...the last with the new one only.
+    assert_eq!(
+        redeem_ticket(&app, old, &ticket(&after)).0,
+        http::StatusCode::FORBIDDEN
+    );
+    // The app's request has the new id.
+    let status = format!("<renewed Ok(()) {new}>");
+    if !shown.contains(&status) {
+        wait_for_text(&page, &status);
+    }
+    // The browser's other page reconnects (with the new id).
+    assert_eq!(next_service(&other), json!({ "t": "reconnect" }));
+    drop((other, page));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// S10: a passkey of the app's relying party signs the user in: once the
+/// page answers it, the browser's id renews before the app sees the
+/// credential. A cancelled one renews nothing.
+#[test]
+fn s10_a_passkey_sign_in_renews_the_browser_id() {
+    use crate::tests::{Page, web_app};
+    use prism_core::prelude::*;
+
+    #[derive(Default)]
+    struct Passkey {
+        started: bool,
+        status: String,
+    }
+    impl Render for Passkey {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            if !std::mem::replace(&mut self.started, true) {
+                cx.spawn(async move |this, cx| {
+                    let first = cx.webauthn_get(r#"{"challenge":"AA"}"#).await;
+                    let second = cx.webauthn_get(r#"{"challenge":"AA"}"#).await;
+                    let status = format!("{:?} {:?}", first.is_ok(), second.is_ok());
+                    cx.update_entity(&this, |s, _| s.status = status);
+                });
+            }
+            div().child(text(format!("<{}>", self.status)))
+        }
+    }
+    let init: prism_core::AppInit = std::sync::Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Passkey::default());
+        cx.set_root(root);
+    });
+    let (app, dir) = web_app(init, "s10-passkey");
+    let old = "5100000000000000000000000000a003";
+    let page = Page::open_with(&app, "/ws?path=%2F&w=1280&h=800", &with_browser(old));
+    let get = next_service(&page);
+    assert_eq!(get["call"], "webauthn_rp", "{get}");
+    page.send(json!({ "t": "device_reply", "id": get["id"], "err": "cancelled" }));
+    // Cancelled: the next call, no new id.
+    let get = next_service(&page);
+    assert_eq!(get["call"], "webauthn_rp", "{get}");
+    assert!(app.session_dir(old).exists());
+    page.send(json!({ "t": "device_reply", "id": get["id"], "text": "{\"id\":\"cred\"}" }));
+    let renew = next_service(&page);
+    assert_eq!(renew["t"], "browser_id", "{renew}");
+    wait_for_text(&page, "<false true>");
+    assert!(!app.session_dir(old).exists());
+    drop(page);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 fn socket_accepted(app: &crate::WebApp, headers: &[(&str, &str)]) -> bool {
     let mut h = http::HeaderMap::new();
     for (k, v) in headers {
@@ -1317,7 +1608,7 @@ fn s15_the_page_cannot_complete_a_cookie_or_a_sign_in() {
     ] {
         fetch.insert(k, v.parse().unwrap());
     }
-    let answer = crate::cookies::redeem(&fetch, Some(sid.into()), None);
+    let answer = crate::cookies::redeem(&fetch, Some(sid.into()), None, |_| unreachable!());
     assert_eq!(answer.status(), http::StatusCode::NO_CONTENT);
     assert_eq!(
         page.next(),

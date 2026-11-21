@@ -262,6 +262,41 @@ impl crate::AsyncApp {
             other => Err(DeviceError::Failed(format!("unexpected answer {other:?}"))),
         }
     }
+
+    /// Gives this browser a new id once your app signed the user in by
+    /// itself, and moves its data to the new id: the old one opens nothing
+    /// any more. Prism's own sign-ins ([`crate::security`]: OAuth and
+    /// OpenID Connect through [`web_auth`](crate::AsyncApp::web_auth),
+    /// passkeys of your relying party) do it for you.
+    ///
+    /// Someone who planted their id in the browser before the user signed
+    /// in (session fixation) is left with an empty session: the browser's
+    /// storage, cloud storage, secrets, uploads and
+    /// [`data_dir`](App::data_dir) follow the new id, and the browser's
+    /// other live pages reconnect with it. Call it after checking the
+    /// user's credentials and before storing anything that proves the
+    /// sign-in (a token, a session cookie). The browser gets the new id
+    /// before any cookie set after it ([`set_cookie`](App::set_cookie)) and
+    /// before a [`reconnect`](App::reconnect).
+    ///
+    /// # Platforms
+    ///
+    /// The web backend only: native apps have no browser id, so the call
+    /// answers `Ok(())` at once. On the web it fails with
+    /// [`DeviceError::Unavailable`] while the first paint renders (no live
+    /// session yet) and with [`DeviceError::Failed`] when the data cannot
+    /// move (the old id then stays, with its data). The browser's pages
+    /// that another process of the server runs are not told: they show an
+    /// empty session until they reload.
+    pub async fn renew_browser_id(&self) -> Result<(), DeviceError> {
+        if self.update(|app| app.platform()) != crate::Platform::Web {
+            return Ok(());
+        }
+        match self.device(DeviceCall::RenewBrowserId).await? {
+            DeviceValue::Done => Ok(()),
+            other => Err(DeviceError::Failed(format!("unexpected answer {other:?}"))),
+        }
+    }
 }
 
 /// A cookie's `SameSite` attribute: when the browser sends it with requests
