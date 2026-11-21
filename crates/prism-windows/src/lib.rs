@@ -30,12 +30,14 @@
 //! | `style` | backgrounds, gradients, borders, radii, shadows, transforms |
 //! | `decor` | inset shadows, conic gradients, sides of several colors, rounded clips |
 //! | `defer` | off-screen content joins XAML's layout after the first frame |
+//! | `stacking` | paint order (`z_index`, sticky views) apart from the reading and Tab order |
 //! | `clip` | clips whose corners differ (a Direct2D path for Composition) |
 //! | `fieldicon` | a one-line field's leading icon |
 //! | `motion` | transitions, enter and exit poses, loops, moving frames |
 //! | `overlay` | sheets and dialogs (`ContentDialog`'s look), popovers (`Flyout`) |
 //! | `alert` | `cx.show_alert` as a `ContentDialog` |
 //! | `a11y`, `peers` | roles, states, live regions and dialogs for UI Automation; custom automation peers |
+//! | `tips` | tooltips, a truncated text's full content while it is trimmed |
 //! | `text` | `TextBlock`s from `StyledText`; measuring |
 //! | `controls` | Prism's controls as WinUI controls, their events and sizes |
 //! | `bars` | a stack's header, a tab bar |
@@ -172,6 +174,8 @@ mod shell;
 #[cfg(target_os = "windows")]
 mod smoke;
 #[cfg(target_os = "windows")]
+mod stacking;
+#[cfg(target_os = "windows")]
 mod stream;
 #[cfg(target_os = "windows")]
 mod style;
@@ -182,6 +186,8 @@ mod taskbar;
 #[cfg(target_os = "windows")]
 mod text;
 // Notifications as toast XML: no Win32, tested everywhere.
+#[cfg(target_os = "windows")]
+mod tips;
 mod toast;
 #[cfg(target_os = "windows")]
 mod touch;

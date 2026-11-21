@@ -169,6 +169,50 @@ pub fn card(cx: &App, taps: u32, on_tap: Handler<ClickEvent>) -> ui::Card {
                     )
             }),
         ))
+        // Avatars overlapping, the first on top: painted by `z_index`,
+        // read and focused in the tree's order.
+        .child(
+            div()
+                .flex_row()
+                .items_center()
+                .gap(12.)
+                .child(
+                    div().flex_row().children(
+                        strings::layout_avatars(cx)
+                            .split(',')
+                            .zip([t.accent, t.success, t.danger])
+                            .enumerate()
+                            .map(|(i, (name, tint))| {
+                                let initial: String = name.chars().take(1).collect();
+                                div()
+                                    .size(px(36.))
+                                    .rounded(18.)
+                                    .ml(if i > 0 { -10. } else { 0. })
+                                    .z_index(3 - i as i32)
+                                    .bg(tint)
+                                    .border(2.)
+                                    .border_color(t.surface)
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        text(initial)
+                                            .text_size(13.)
+                                            .semibold()
+                                            .text_color(t.on_accent),
+                                    )
+                                    .accessibility_role(Role::Button)
+                                    .accessibility_label(name.to_string())
+                                    .on_click(on_tap.clone())
+                            }),
+                    ),
+                )
+                .child(
+                    text(strings::layout_avatars_note(cx))
+                        .text_size(13.)
+                        .text_color(t.muted)
+                        .flex_1(),
+                ),
+        )
         // Rearranges by its own width, whatever the window.
         .child(
             div()

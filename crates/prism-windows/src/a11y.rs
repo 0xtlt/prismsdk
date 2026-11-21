@@ -19,13 +19,13 @@ use crate::peers::{self, Key};
 use crate::scene::Scene;
 use crate::view::View;
 use crate::widgets::Win;
+use crate::winui::h;
 use crate::winui::xaml::Automation::AutomationProperties;
 use crate::winui::xaml::Automation::Peers::{
     AccessibilityView, AutomationHeadingLevel, AutomationLandmarkType, AutomationLiveSetting,
 };
-use crate::winui::xaml::Controls::{Canvas, ToolTipService};
+use crate::winui::xaml::Controls::Canvas;
 use crate::winui::xaml::UIElement;
-use crate::winui::{boxed, h};
 
 thread_local! {
     /// The app's content: live regions speak from its peer.
@@ -77,9 +77,7 @@ pub fn apply(v: &View, id: NodeId, a: &Accessibility, text: &str) -> Result<()> 
             AccessibilityView::Content
         },
     )?;
-    if let Some(prism_core::Tooltip::Text(t)) = &a.tooltip {
-        ToolTipService::SetToolTip(&target, &boxed(t)?)?;
-    }
+    crate::tips::apply(v, id, &target, a.tooltip.as_ref(), text)?;
     // Drawn by Prism (a clickable view, a container): the role and states
     // through its custom peer. WinUI's controls describe themselves.
     // A stack's or a tab bar's container is no element (its header and
@@ -144,6 +142,7 @@ pub fn forget(id: NodeId) {
     peers::forget(Key::Node(id));
     peers::forget(Key::Clickable(id));
     LIVE.with(|l| l.borrow_mut().remove(&id));
+    crate::tips::forget(id);
     dialog_hidden(id);
 }
 

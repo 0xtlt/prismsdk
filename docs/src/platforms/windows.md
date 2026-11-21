@@ -59,7 +59,8 @@ kinds and services come next (see [Not yet](#not-yet)).
   boxes, radio buttons, sliders, progress bars and rings, combo boxes
   (`picker`), `CalendarDatePicker` and `TimePicker` (`date_picker`), symbol
   images (`FontIcon`, Segoe Fluent Icons for common SF Symbol names),
-  pictures (`Image`, decoded by WIC) and shapes (`Path`). A button or a
+  pictures (`Image`, decoded by WIC, clipped to their view's rounded
+  corners) and shapes (`Path`). A button or a
   field the app styles (a background, a border, `.border(0.)`) keeps the
   real control with its chrome made transparent (lightweight styling): the
   node's `Border` draws the app's look under it.
@@ -110,7 +111,9 @@ kinds and services come next (see [Not yet](#not-yet)).
   italic, underline (single, thick, double, dotted, dashed),
   strikethrough, colors, background, font and size are RichEdit character
   formats, applied in place when the app's runs hold the text shown (the
-  echo of typing: caret and undo untouched). Edits reach the app as plain
+  echo of typing: caret and undo untouched). Text without a color of its
+  own takes the theme's text color, again when the theme changes
+  (RichEdit's automatic color is black, even in a dark theme). Edits reach the app as plain
   text, like on macOS; Return submits, Shift+Return breaks the line,
   pastes are plain text. A chip is a picture embedded in the text
   (`InsertImage`: its Segoe Fluent icon and label in a rounded box, drawn
@@ -224,7 +227,11 @@ kinds and services come next (see [Not yet](#not-yet)).
   inside (Tab already cycles inside); popovers are WinUI flyouts, read as
   WinUI's own. A status's new value is announced (`RaiseNotificationEvent`,
   after what the reader is saying; an alert's in its place). Prism's label,
-  hint, heading level, live region and tooltip are `AutomationProperties`.
+  hint, heading level, live region and tooltip are `AutomationProperties`;
+  tooltips are WinUI's (`ToolTipService`), and `tooltip_when_truncated`
+  shows a text's full content while XAML trims it (`IsTextTrimmed`). A view
+  lifted with `z_index` is drawn above its siblings (`Canvas.ZIndex`) but
+  keeps its place in the source for UI Automation and Tab.
 - **High contrast:** under a contrast theme (Settings › Accessibility ›
   Contrast themes) the app's colors give way to the theme's system colors,
   as WinUI's controls do theirs and as Edge forces a page's (`contrast.rs`):
@@ -497,7 +504,7 @@ The same as the other backends, in a desktop session:
 | Variable | |
 |---|---|
 | `PRISM_PATH` | the first route |
-| `PRISM_CLICK` | `+1\|Save`: presses by label (a control's title, an accessibility label, a tab, `Back`, a bar button, a clickable view showing it; buttons through their UI Automation peer); `fill:Placeholder=text` types into a field; `submit:Placeholder` presses Enter in it; `menu:Title` opens a context menu; `scroll:600` scrolls first (a popover then opens on its anchor in view); `wait:500` lets frames run before the next step (ms); `dpi:144` moves the window to a simulated monitor at that DPI (`WM_DPICHANGED`, the suggested rectangle); `key:Escape` (`Tab`, `Enter`) presses a key. Real mouse and keyboard input (`SendInput`, the window kept on top meanwhile; the view scrolled into sight first; a press goes only where the app's window is under the point and active, keys only while it has the keyboard, so other apps on a shared desktop get none): `hover:Label`, `click:Label@x,y`, `ctrlclick:Label`, `drag:Label=dx,dy` (`drag:Label@x,y=dx,dy`), `swipe:Label=dx`, `wheel:Label=dy` (`=dx,h` sideways), `zoom:Label=dy` (Ctrl + wheel), `type:Label=text`, `chord:ctrl+c`; touches from a synthetic touch device: `pinch:Label=k`, `tswipe:Label=dx`, `tdrag:Label=dx,dy`; the steps after them and `PRISM_AFTER` wait until that input has played (`click:Filters\|key:Escape`) |
+| `PRISM_CLICK` | `+1\|Save`: presses by label (a control's title, an accessibility label, a tab, `Back`, a bar button, a clickable view showing it; buttons through their UI Automation peer); `fill:Placeholder=text` types into a field; `submit:Placeholder` presses Enter in it; `menu:Title` opens a context menu; `scroll:600` scrolls first (a popover then opens on its anchor in view); `wait:500` lets frames run before the next step (ms); `dpi:144` moves the window to a simulated monitor at that DPI (`WM_DPICHANGED`, the suggested rectangle); `key:Escape` (`Tab`, `Enter`) presses a key. Real mouse and keyboard input (`SendInput`, the window kept on top meanwhile; the view scrolled into sight first; a press goes only where the app's window is under the point and active, keys only while it has the keyboard, so other apps on a shared desktop get none): `hover:Label`, `click:Label@x,y`, `ctrlclick:Label`, `drag:Label=dx,dy` (`drag:Label@x,y=dx,dy`), `swipe:Label=dx`, `wheel:Label=dy` (`=dx,h` sideways), `zoom:Label=dy` (Ctrl + wheel), `type:Label=text`, `chord:ctrl+c`; touches from a synthetic touch device: `pinch:Label=k`, `tswipe:Label=dx`, `tdrag:Label=dx,dy`; the steps after them and `PRISM_AFTER` wait until that input has played (`click:Filters\|key:Escape`). The window is made the active one before the steps (a popover closes when another window takes the activation) |
 | `PRISM_TRACE_INPUT` | logs the pointer, drag, swipe, wheel and scene tap events sent to the app |
 | `PRISM_SCROLL` | scrolls the visible scroll views to that offset |
 | `PRISM_SNAPSHOT` | saves the window's XAML (`RenderTargetBitmap`) as PNG, and what DWM shows of the window (`PrintWindow`: Mica, shadows, open flyouts) as `<name>-window.png`, then quits |
@@ -530,7 +537,8 @@ the session, presses the counter's button through UI Automation; with
 `scripts/windows-a11y.sh` (`PRISM_SMOKE_A11Y=1 scripts/windows-smoke.sh`
 runs it too) opens the counter's six routes, a dialog, a sheet and a
 popover in the session, presses drawn switches, check boxes and swatches
-through UI Automation as a screen reader does, dumps each tree and checks
+through UI Automation as a screen reader does, dumps each tree (once what
+a case waits for shows: `waitFor`, the popover's `Popup`) and checks
 the roles, names, states and reading order of
 `scripts/windows/a11y-expect.json` (`scripts/windows/a11y-check.py`), and
 that every control has a name. Narrator is never started: it would speak
@@ -586,7 +594,9 @@ What the backend does for it:
   nearest first (a subtree too big for one batch is split), and at once
   when scrolled to, focused, used as a popover's anchor, or reached by a
   `PRISM_CLICK` step. Each node is made with its state replayed from the
-  scene (style, text, value, accessibility, pointer input), and with its
+  scene (style, text, value, accessibility, pointer input), joins its
+  parent in the tree's order (a `z_index` sibling keeps its paint order
+  through `Canvas.ZIndex`), and comes with its
   UI Automation peer: containers and clickable views keep their custom
   peers, so the UI Automation tree is complete once the batches are done
   (about 1.2 s after the start on the counter's components screen).
@@ -641,12 +651,8 @@ step moves the window to a simulated monitor through `WM_DPICHANGED`
   not with Narrator listening (it speaks aloud); `PRISM_HIGH_CONTRAST`
   forces Prism's colors and WinUI's light or dark theme, but WinUI's own
   controls take their contrast colors from the system alone (a text box
-  stays Fluent's under the override); `tooltip_when_truncated` shows no
-  tooltip;
-  a view lifted with `z_index` comes later in the focus and reading order
-  than its place in the source.
-- **Performance:** a picture's rounded corners are not clipped; a busy
-  machine stretches the first frame (the measurements above come from a
-  PC shared with other agents); a screen reader that starts reading in
-  the first second or two of a long screen finds its off-screen part
-  missing until the batches are done.
+  stays Fluent's under the override).
+- **Performance:** a busy machine stretches the first frame (the
+  measurements above come from a PC shared with other agents); a screen
+  reader that starts reading in the first second or two of a long screen
+  finds its off-screen part missing until the batches are done.

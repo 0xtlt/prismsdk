@@ -11,6 +11,11 @@ Automation sees a WinUI window only there. The app gets fresh storage
 its log goes next to the JSON (<out>.log). Text that cmd.exe would mangle
 (the click labels, "Delete…") comes base64-encoded (UTF-8).
 
+-WaitFor waits (up to -WaitSeconds) for an element of that class name in
+the app's windows before the dump, for what opens after the clicks (a
+popover's "Popup"); without it by then, the dump goes on and the checks
+tell.
+
 Exit codes: 0 dumped, 1 the app never showed its first frame or the dump
 failed, 2 bad arguments.
 
@@ -33,6 +38,9 @@ param(
     # Seconds to wait after the first frame, for PRISM_CLICK's steps
     # (PRISM_DELAY after the start) to run.
     [double] $Settle = 4,
+    # A class name to wait for before the dump (a popover's "Popup").
+    [string] $WaitFor = '',
+    [double] $WaitSeconds = 15,
     [double] $TimeoutSeconds = 90
 )
 
@@ -86,6 +94,27 @@ try {
             exit 1
         }
         Start-Sleep -Milliseconds 1200
+    }
+    if ($WaitFor) {
+        Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+        $AE = [System.Windows.Automation.AutomationElement]
+        $Scope = [System.Windows.Automation.TreeScope]
+        $byPid = New-Object System.Windows.Automation.PropertyCondition $AE::ProcessIdProperty, $app.Id
+        $byClass = New-Object System.Windows.Automation.PropertyCondition $AE::ClassNameProperty, $WaitFor
+        $until = [DateTime]::UtcNow.AddSeconds($WaitSeconds)
+        $found = $false
+        while (-not $found -and -not $app.HasExited -and [DateTime]::UtcNow -lt $until) {
+            foreach ($w in $AE::RootElement.FindAll($Scope::Children, $byPid)) {
+                if ($null -ne $w.FindFirst($Scope::Descendants, $byClass)) { $found = $true; break }
+            }
+            if (-not $found) { Start-Sleep -Milliseconds 250 }
+        }
+        if ($found) {
+            # Its content laid out and announced.
+            Start-Sleep -Milliseconds 500
+        } else {
+            [Console]::Error.WriteLine("a11y-dump: no $WaitFor after $WaitSeconds s")
+        }
     }
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'uia-dump.ps1') -Id $app.Id -Json $Out | Out-Null
     if (-not (Test-Path -LiteralPath $Out)) {

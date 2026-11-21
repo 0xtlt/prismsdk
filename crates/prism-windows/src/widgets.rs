@@ -185,6 +185,12 @@ impl Win {
             {
                 let _ = controls::set_paths(&v.content, &n.paths, &self.palette_for(id));
             }
+            if let (Some(n), Some(Content::Rich(r))) =
+                (self.scene.get(id), self.views.get(&id).map(|v| &v.content))
+                && let Err(e) = r.retheme(&n.style, &self.palette_for(id), self.scale())
+            {
+                log!("rich input {id}: {e}");
+            }
         }
     }
 
@@ -504,6 +510,7 @@ impl Widgets for Win {
         }
         n.text = text.to_string();
         self.measurer.forget(id);
+        crate::tips::retext(id, text);
         match kind {
             NodeKind::Picture => {
                 let wic = self.wic.clone();
@@ -558,7 +565,10 @@ impl Widgets for Win {
         // A closing panel keeps its content while it animates out.
         self.overlay_children(id, children);
         self.scene.set_children(id, children);
+        // In paint order, until `set_reading_order` says otherwise.
+        crate::stacking::read_in(id, None);
         self.link_children(id, children);
+        crate::stacking::restack(self, id);
         // A lazy child moved here waits or gets its elements as new ones do.
         for c in children {
             crate::defer::joined(*c);
@@ -570,6 +580,24 @@ impl Widgets for Win {
         {
             self.bars.insert(id);
         }
+    }
+
+    /// The elements back in the tree's order (UI Automation and the Tab
+    /// key follow it), painted in `set_children`'s (`stacking.rs`).
+    fn set_reading_order(&mut self, parent: &NodeId, children: &[NodeId]) {
+        let id = *parent;
+        // Kept for the lazy children, linked when they get their elements.
+        crate::stacking::read_in(id, Some(children));
+        let list: Vec<(NodeId, UIElement)> = children
+            .iter()
+            .filter_map(|c| self.outer(*c).map(|e| (*c, e)))
+            .collect();
+        if let Some(v) = self.views.get_mut(&id)
+            && let Err(e) = v.set_children(&list)
+        {
+            log!("reading order of node {id}: {e}");
+        }
+        crate::stacking::restack(self, id);
     }
 
     fn set_root(&mut self, view: &NodeId) {
@@ -585,6 +613,7 @@ impl Widgets for Win {
         self.scene.remove(id);
         self.drop_overlay(id);
         crate::a11y::forget(id);
+        crate::stacking::forget(id);
         if let Some(v) = self.views.remove(&id) {
             // A leaving node (or what it holds) stays until its exit animation ends.
             if !crate::motion::take_ghost(id) {
@@ -984,6 +1013,10 @@ impl Widgets for Win {
             n.sticky = sticky.map(|(s, st)| (*s, st));
         }
         self.restyle(*view);
+        // Drawn above its siblings.
+        if let Some(p) = self.scene.get(*view).and_then(|n| n.parent) {
+            crate::stacking::restack(self, p);
+        }
     }
 
     fn set_interactions(&mut self, view: &NodeId, states: Interactions) {

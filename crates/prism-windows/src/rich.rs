@@ -15,6 +15,11 @@
 //! (`chips.rs`): one character the caret jumps over.
 //! The editing hooks (#217: copies, pastes, clicks, the selection's
 //! rectangle) are `edit.rs`'.
+//!
+//! Text without a color of its own gets the theme's text color, set on
+//! each run and as the document's default (what typing into an empty
+//! field takes), and again when the theme changes: RichEdit's "auto"
+//! color is the system's window text, black even in a dark theme.
 
 use std::cell::RefCell;
 
@@ -45,6 +50,8 @@ pub struct Rich {
     replace: RefCell<Option<String>>,
     /// The chips shown, in order.
     chips: RefCell<Vec<crate::chips::Look>>,
+    /// The runs last shown (encoded), formatted again in a new theme.
+    runs: RefCell<String>,
 }
 
 impl Rich {
@@ -113,6 +120,7 @@ impl Rich {
             element: r,
             replace: RefCell::new(None),
             chips: RefCell::new(Vec::new()),
+            runs: RefCell::new(String::new()),
         })
     }
 
@@ -137,6 +145,7 @@ impl Rich {
     /// Shows `runs` (`set_rich_value`) in `style`, its colors from `pal`,
     /// its chips drawn at `scale` (pixels per DIP).
     pub fn set_runs(&self, runs: &str, style: &Style, pal: &Palette, scale: f32) -> Result<()> {
+        runs.clone_into(&mut self.runs.borrow_mut());
         let runs: Vec<TextRun> = decode_runs(runs);
         let shown: String = runs.iter().map(|r| r.text.as_str()).collect();
         let doc = self.element.Document()?;
@@ -162,8 +171,20 @@ impl Rich {
             ..style.clone()
         };
         let st = StyledText::from_runs(&shown, &runs, &style);
+        let ink = pal.ink(style.text_color.unwrap_or(pal.text));
+        let default = doc.GetDefaultCharacterFormat()?;
+        if default.ForegroundColor()? != win_color(ink) {
+            default.SetForegroundColor(win_color(ink))?;
+            doc.SetDefaultCharacterFormat(&default)?;
+        }
         format(&doc, &st, &runs, pal)?;
         self.place_chips(&doc, &st, &runs, pal, scale, replaced)
+    }
+
+    /// The theme changed: the runs' colors (and chips) again.
+    pub fn retheme(&self, style: &Style, pal: &Palette, scale: f32) -> Result<()> {
+        let runs = self.runs.borrow().clone();
+        self.set_runs(&runs, style, pal, scale)
     }
 
     /// Puts the chips' pictures in place of their characters: all of them
@@ -285,7 +306,7 @@ fn format(
             if cf.Underline()? != line {
                 cf.SetUnderline(line)?;
             }
-            let fg = r.color.map_or(auto, |c| win_color(pal.ink(c)));
+            let fg = win_color(pal.ink(r.color.unwrap_or(pal.text)));
             if cf.ForegroundColor()? != fg {
                 cf.SetForegroundColor(fg)?;
             }

@@ -534,13 +534,14 @@ impl Win {
                 if !done.insert(p) {
                     continue;
                 }
-                let children = self
-                    .scene
-                    .get(p)
-                    .map(|n| n.children.clone())
+                // In the tree's order where `z_index` paints them in another
+                // (`stacking.rs`).
+                let children = crate::stacking::reading_order(p)
+                    .or_else(|| self.scene.get(p).map(|n| n.children.clone()))
                     .unwrap_or_default();
                 if !children.is_empty() {
                     self.link_children(p, &children);
+                    crate::stacking::restack(self, p);
                 }
             }
         }

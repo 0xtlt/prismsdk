@@ -12,6 +12,9 @@
 #   PRISM_WINDOWS_HOST=… scripts/windows-a11y.sh [out-dir] [case…]   (default target/windows-a11y)
 #   scripts/windows-a11y.sh --check target/windows-a11y [case…]      (only the checks)
 #
+# A case's "waitFor" (a class name: a popover's "Popup") holds the dump
+# until such an element shows, as the clicks open it (up to 15 s).
+#
 # The app runs in English (PRISM_LOCALE=en-US), so the names do not depend
 # on the machine's language. The user of the remote helper must be signed
 # in on the machine (see scripts/windows/run-in-session.ps1).
@@ -66,18 +69,20 @@ for c in json.load(open(sys.argv[1], encoding="utf-8"))["cases"]:
     env = {"PRISM_LOCALE": "en-US", "PRISM_APPEARANCE": "light", "PRISM_DELAY": "4", **c.get("env", {})}
     lines = "".join(f"{k}={v}\n" for k, v in env.items())
     press = "".join(f"{p}\n" for p in c.get("press", []))
-    print("\t".join([c["name"], c.get("path", "/"), b64(c.get("click", "")) or "-", b64(lines), b64(press) or "-"]))
+    print("\t".join([c["name"], c.get("path", "/"), b64(c.get("click", "")) or "-", b64(lines), b64(press) or "-", c.get("waitFor", "-")]))
 EOF
 
 tab=$(printf '\t')
-while IFS="$tab" read -r name path click env press; do
+while IFS="$tab" read -r name path click env press wait; do
   [ "$click" = - ] && click=
   [ "$press" = - ] && press=
+  [ "$wait" = - ] && wait=
   rm -f "$out/$name.json" "$out/$name.err"
   {
     printf '%s\r\n' "\$line = 'powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\windows\\a11y-dump.ps1 -Exe target\\$exe\\counter.exe -WorkingDirectory examples\\counter -Path $path -Out target\\windows-a11y\\$name.json -EnvBase64 $env'"
     [ -n "$click" ] && printf '%s\r\n' "\$line += ' -ClickBase64 $click'"
     [ -n "$press" ] && printf '%s\r\n' "\$line += ' -PressBase64 $press'"
+    [ -n "$wait" ] && printf '%s\r\n' "\$line += ' -WaitFor $wait'"
     printf '%s\r\n' "& powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\windows\\run-in-session.ps1 -TimeoutSeconds 150 -Command \$line"
     printf '%s\r\n' "exit \$LASTEXITCODE"
   } >"$script"
