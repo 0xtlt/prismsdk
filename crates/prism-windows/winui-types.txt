@@ -299,3 +299,9 @@ Microsoft.UI.Xaml.GridUnitType
 Microsoft.UI.Xaml.Input.InputScope
 Microsoft.UI.Xaml.Input.InputScopeName
 Microsoft.UI.Xaml.Input.InputScopeNameValue
+# Tabular figures (text.rs)
+Microsoft.UI.Xaml.Documents.Typography
+Microsoft.UI.Xaml.FontNumeralAlignment
+# Drawn underlines (underlay.rs)
+Microsoft.UI.Xaml.Documents.TextPointer
+Microsoft.UI.Xaml.Documents.LogicalDirection

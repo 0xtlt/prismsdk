@@ -21,9 +21,13 @@ use windows_core::Result;
 
 use crate::fluent::Palette;
 use crate::winui::xaml::Controls::TextBlock;
-use crate::winui::xaml::Documents::{Hyperlink, HyperlinkClickEventArgs, Run, UnderlineStyle};
+use crate::winui::xaml::Documents::{
+    Hyperlink, HyperlinkClickEventArgs, Run, Typography, UnderlineStyle,
+};
 use crate::winui::xaml::Media::FontFamily as XamlFont;
-use crate::winui::xaml::{LineStackingStrategy, TextAlignment, TextTrimming, TextWrapping};
+use crate::winui::xaml::{
+    FontNumeralAlignment, LineStackingStrategy, TextAlignment, TextTrimming, TextWrapping,
+};
 use crate::winui::{brush, h};
 
 /// The fonts of Windows 11, with Windows 10's as fallbacks (XAML takes a
@@ -112,6 +116,8 @@ struct Paragraph {
     max_lines: Option<u32>,
     line_height: Option<f32>,
     spacing: i32,
+    /// Digits of equal width (the font's `tnum`).
+    tabular: bool,
 }
 
 impl Paragraph {
@@ -134,6 +140,7 @@ impl Paragraph {
             line_height: st.line_height,
             // XAML spaces characters in thousandths of an em.
             spacing: (st.letter_spacing / size * 1000.).round() as i32,
+            tabular: first.font.tabular,
         }
     }
 
@@ -170,7 +177,15 @@ impl Paragraph {
                 tb.SetLineStackingStrategy(LineStackingStrategy::MaxHeight)?;
             }
         }
-        tb.SetCharacterSpacing(self.spacing)
+        tb.SetCharacterSpacing(self.spacing)?;
+        Typography::SetNumeralAlignment(
+            tb,
+            if self.tabular {
+                FontNumeralAlignment::Tabular
+            } else {
+                FontNumeralAlignment::Normal
+            },
+        )
     }
 }
 
@@ -218,7 +233,10 @@ fn set_runs(tb: &TextBlock, st: &StyledText, pal: Option<&Palette>) -> Result<()
             run.SetForeground(&brush(pal.ink(c))?)?;
         }
         let mut deco = TextDecorations::None;
-        if r.underline {
+        // Underlines of a color or line XAML lacks are drawn over the
+        // text (`underlay.rs`).
+        let underline = r.underline && !crate::underline::drawn(r, false);
+        if underline {
             deco |= TextDecorations::Underline;
         }
         if r.strikethrough {
@@ -226,7 +244,7 @@ fn set_runs(tb: &TextBlock, st: &StyledText, pal: Option<&Palette>) -> Result<()
         }
         match link {
             Some(link) => {
-                let a = hyperlink(link, r, pal)?;
+                let a = hyperlink(link, underline, r, pal)?;
                 // Its underline is the run's (Prism styles links itself).
                 run.SetTextDecorations(deco & !TextDecorations::Underline)?;
                 a.Inlines()?.Append(&run)?;
@@ -244,9 +262,14 @@ fn set_runs(tb: &TextBlock, st: &StyledText, pal: Option<&Palette>) -> Result<()
 /// A link run as a `Hyperlink`: focusable with Tab, activated with Enter
 /// or a click (`UiEvent::MenuSelect(link)`), a link for UI Automation. It
 /// keeps the run's own color and underline instead of the accent's.
-fn hyperlink(link: u64, r: &StyledRun, pal: Option<&Palette>) -> Result<Hyperlink> {
+fn hyperlink(
+    link: u64,
+    underline: bool,
+    r: &StyledRun,
+    pal: Option<&Palette>,
+) -> Result<Hyperlink> {
     let a = Hyperlink::new()?;
-    a.SetUnderlineStyle(if r.underline {
+    a.SetUnderlineStyle(if underline {
         UnderlineStyle::Single
     } else {
         UnderlineStyle::None

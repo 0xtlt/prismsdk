@@ -1,6 +1,7 @@
-//! Other people's carets and selections in text fields (#240), and a
-//! field's part of a selection across a selection group (#231), as GTK and
-//! macOS draw them: a `Canvas` over the field (`TextBox` or `RichEditBox`),
+//! Other people's carets and selections in text fields (#240), a field's
+//! part of a selection across a selection group (#231), as GTK and macOS
+//! draw them, and a rich input's colored underlines (#221, which RichEdit
+//! lacks; `underlay.rs`): a `Canvas` over the field (`TextBox` or `RichEditBox`),
 //! never hit, clipped to it. Each caret is a thin bar in its color with a
 //! name tag above the line (under it on the first line; gone when idle),
 //! its selection tinted boxes, one per line; the group's part is boxes in
@@ -62,6 +63,8 @@ struct Layer {
     carets: Vec<RemoteCaret>,
     /// The group's part, in characters (`start == end`: none).
     highlight: (usize, usize),
+    /// Underlines drawn under the text, and their colors.
+    underlines: Vec<(crate::underline::Mark, Color)>,
     /// The field's scroll viewer is listened to.
     scroll_wired: bool,
 }
@@ -89,6 +92,21 @@ pub fn set_highlight(
     pal: &Palette,
 ) {
     update(id, outer, field, pal, |l| l.highlight = (start, end));
+}
+
+/// Draws `marks` under the text of rich input `field` (none: no layer
+/// needed for them).
+pub fn set_underlines(
+    id: NodeId,
+    outer: &Canvas,
+    field: Field,
+    marks: Vec<(crate::underline::Mark, Color)>,
+    pal: &Palette,
+) {
+    if marks.is_empty() && !LAYERS.with(|l| l.borrow().contains_key(&id)) {
+        return;
+    }
+    update(id, outer, field, pal, |l| l.underlines = marks);
 }
 
 fn update(id: NodeId, outer: &Canvas, field: Field, pal: &Palette, f: impl FnOnce(&mut Layer)) {
@@ -133,6 +151,7 @@ fn new_layer(id: NodeId, outer: &Canvas, field: Field) -> Result<Layer> {
         field,
         carets: Vec::new(),
         highlight: (0, 0),
+        underlines: Vec::new(),
         scroll_wired: false,
     })
 }
@@ -400,10 +419,24 @@ fn paint(layer: &Layer, pal: &Palette) -> Result<()> {
         Height: (hh - 2.).max(0.),
     })?;
     layer.canvas.SetClip(&clip)?;
-    if layer.carets.is_empty() && layer.highlight.0 == layer.highlight.1 {
+    if layer.carets.is_empty()
+        && layer.highlight.0 == layer.highlight.1
+        && layer.underlines.is_empty()
+    {
         return Ok(());
     }
     let m = Measure::new(&layer.field)?;
+    // Underlines, at the baseline: a line's bottom less the font's
+    // descent (a quarter of its size, Segoe UI's).
+    for (mark, c) in &layer.underlines {
+        let end = (mark.end as i32).min(m.len());
+        let boxes =
+            (mark.start as i32..end.min(mark.start as i32 + 4096)).filter_map(|i| m.char_box(i));
+        let lines = crate::underline::segments(boxes);
+        crate::underlay::add_path(&kids, &lines, mark, *c, |s| {
+            s.top + s.height - mark.size * 0.25
+        })?;
+    }
     // The group's part, like a selection.
     let (a, b) = layer.highlight;
     if a < b {

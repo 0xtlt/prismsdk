@@ -17,6 +17,7 @@
 //! canvas in the tree still costs XAML a layout and a visual).
 
 use prism_core::{NodeId, NodeKind};
+use prism_native::text::StyledText;
 use windows_core::{Interface, Result};
 
 use crate::bars::{self, Header, TabBar};
@@ -42,6 +43,7 @@ pub enum Bar {
 }
 
 pub struct View {
+    pub id: NodeId,
     pub kind: NodeKind,
     pub outer: Canvas,
     pub shadows: Option<Shadows>,
@@ -111,6 +113,7 @@ impl View {
             _ => Bar::None,
         };
         Ok(View {
+            id,
             kind,
             outer,
             shadows: None,
@@ -236,6 +239,11 @@ impl View {
         };
         self.decor.apply(&self.outer, under, n, pal, text)?;
         controls::style(&self.content, n, pal)?;
+        // Underlines XAML cannot draw (a color, a thick or dotted line).
+        if let Content::Text(t) = &self.content {
+            let st = StyledText::new(&n.text, &n.config, s);
+            crate::underlay::sync(self.id, &self.outer, t, &st, pal, text)?;
+        }
         crate::fieldicon::sync(&mut self.field_icon, &self.outer, n, pal)?;
         style::apply_transform(&self.outer, s, r, sticky)?;
         self.clip(n)?;

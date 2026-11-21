@@ -39,6 +39,7 @@
 //! | `a11y`, `peers` | roles, states, live regions and dialogs for UI Automation; custom automation peers |
 //! | `tips` | tooltips, a truncated text's full content while it is trimmed |
 //! | `text` | `TextBlock`s from `StyledText`; measuring |
+//! | `underline`, `underlay` | underlines XAML cannot draw (colors, lines), drawn over the text |
 //! | `controls` | Prism's controls as WinUI controls, their events and sizes |
 //! | `bars` | a stack's header, a tab bar |
 //! | `events` | clicks, hover and press, focus, scrolling, menus |
@@ -70,7 +71,7 @@
 //! | `fonts`, `faces` | bundled and run-time fonts, a family's files |
 //! | `shell` | the services' hidden window: modal UI, timers, threads |
 //! | `system` | theme, accent, locale, DPI |
-//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access`, `pinch`, `seal`, `dates`, `inputs`, `monitor`, `faces` | pure helpers, tested on every host |
+//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access`, `pinch`, `seal`, `dates`, `inputs`, `monitor`, `faces`, `underline` | pure helpers, tested on every host |
 
 // Roles and states for UI Automation: no Win32, tested everywhere.
 mod access;
@@ -212,6 +213,10 @@ mod toast;
 mod touch;
 #[cfg(target_os = "windows")]
 mod tray;
+// Underlines Prism draws (colors, lines): no Win32, tested everywhere.
+#[cfg(target_os = "windows")]
+mod underlay;
+mod underline;
 #[cfg(target_os = "windows")]
 mod view;
 #[cfg(target_os = "windows")]
