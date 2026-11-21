@@ -9,11 +9,11 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-use objc2::rc::{Retained, Weak};
 use objc2::MainThreadMarker;
+use objc2::rc::{Retained, Weak};
 use objc2_app_kit::{
-    NSAccessibility, NSAutoresizingMaskOptions, NSEvent, NSEventModifierFlags, NSEventPhase, NSEventType,
-    NSProgressIndicator, NSProgressIndicatorStyle, NSScrollView,
+    NSAccessibility, NSAutoresizingMaskOptions, NSEvent, NSEventModifierFlags, NSEventPhase,
+    NSEventType, NSProgressIndicator, NSProgressIndicatorStyle, NSScrollView,
 };
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 use prism_core::{NodeId, UiEvent};
@@ -272,8 +272,14 @@ mod tests {
         let changed = NSEventPhase::Changed;
         assert!(pull_refreshes(changed, none, false, PULL));
         assert!(pull_refreshes(NSEventPhase::Began, none, false, PULL + 20.));
-        assert!(!pull_refreshes(changed, none, false, PULL - 1.), "not far enough");
-        assert!(!pull_refreshes(changed, none, true, PULL * 2.), "once per gesture");
+        assert!(
+            !pull_refreshes(changed, none, false, PULL - 1.),
+            "not far enough"
+        );
+        assert!(
+            !pull_refreshes(changed, none, true, PULL * 2.),
+            "once per gesture"
+        );
         // Momentum after the fingers lifted, a wheel without phases, the
         // gesture's end: never.
         assert!(!pull_refreshes(none, changed, false, PULL * 2.));
@@ -303,10 +309,22 @@ mod tests {
         };
         let cmd = NSEventModifierFlags::Command;
         assert!(is_reload(&key(cmd, "r", false)));
-        assert!(is_reload(&key(cmd | NSEventModifierFlags::CapsLock, "R", false)));
+        assert!(is_reload(&key(
+            cmd | NSEventModifierFlags::CapsLock,
+            "R",
+            false
+        )));
         assert!(!is_reload(&key(cmd, "r", true)), "held down");
-        assert!(!is_reload(&key(cmd | NSEventModifierFlags::Shift, "r", false)));
-        assert!(!is_reload(&key(cmd | NSEventModifierFlags::Option, "r", false)));
+        assert!(!is_reload(&key(
+            cmd | NSEventModifierFlags::Shift,
+            "r",
+            false
+        )));
+        assert!(!is_reload(&key(
+            cmd | NSEventModifierFlags::Option,
+            "r",
+            false
+        )));
         assert!(!is_reload(&key(NSEventModifierFlags::empty(), "r", false)));
         assert!(!is_reload(&key(cmd, "t", false)));
     }
