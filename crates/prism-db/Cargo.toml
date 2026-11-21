@@ -27,9 +27,5 @@ sqlx = { version = "0.9.1", default-features = false, features = ["sqlite-bundle
 libsqlite3-sys = { version = ">=0.39.0, <0.41", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 
-[target.'cfg(unix)'.dependencies]
-# The user id naming the private fallback directory.
-libc = "0.2"
-
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]
