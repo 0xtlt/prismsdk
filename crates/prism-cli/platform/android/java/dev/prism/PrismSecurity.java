@@ -499,14 +499,25 @@ final class PrismSecurity {
         if (pending < 0 || intent == null || intent.getData() == null) return false;
         String uri = intent.getData().toString();
         if (!PrismSignIn.sameTarget(pendingRedirect, uri)) return false;
-        if (!PrismSignIn.answers(pendingUrl, pendingRedirect, uri)) {
-            refusedAt = SystemClock.uptimeMillis();
-            return true;
-        }
+        if (refuses(intent.getData())) return true;
         long id = pending;
         pending = -1;
         away = false;
         PrismDevice.reply(id, "text", uri);
+        return true;
+    }
+
+    /**
+     * {@code data} is a deep link to the redirect URI of the sign-in in progress that does not
+     * answer it: dropped, and the sign-in goes on. PrismLinkActivity drops it before the app comes
+     * forward, so the browser (a Custom Tab above the app) stays open.
+     */
+    static boolean refuses(Uri data) {
+        if (pending < 0 || data == null) return false;
+        String uri = data.toString();
+        if (!PrismSignIn.sameTarget(pendingRedirect, uri)
+                || PrismSignIn.answers(pendingUrl, pendingRedirect, uri)) return false;
+        refusedAt = SystemClock.uptimeMillis();
         return true;
     }
 

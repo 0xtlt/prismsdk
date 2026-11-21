@@ -14,6 +14,14 @@
 //! tokens on a background thread (`refresh_blocking`).
 //! `PRISM_OAUTH_TOKEN` starts with that access token (for screenshots:
 //! `mock-oidc.py --token <it>` accepts it).
+//!
+//! Tests: with `PRISM_AUTH` set, « Verify » asks even where the app's
+//! capabilities say the device cannot (the call's own « unavailable »);
+//! `PRISM_AUTH=biometrics` asks for biometrics only
+//! (`AuthRequest::biometrics_only`), which fails with « unavailable » where
+//! the system check could accept a PIN (the web, Windows Hello, watchOS).
+//! `PRISM_APPLE_NONCE` and `PRISM_APPLE_STATE` show « Sign in with Apple »
+//! even without the entitlement, and pass that nonce and state.
 
 use prism::oauth::OAuth;
 use prism::prelude::*;
@@ -76,7 +84,11 @@ impl SecurityDemo {
     fn verify(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             let reason = cx.update(|app| strings::security_reason(app));
-            let r = cx.authenticate(reason).await;
+            let mut request = AuthRequest::new(reason);
+            if std::env::var("PRISM_AUTH").is_ok_and(|v| v == "biometrics") {
+                request = request.biometrics_only();
+            }
+            let r = cx.authenticate_with(request).await;
             cx.update_entity(&this, |d, cx| {
                 d.status = Some(match r {
                     Ok(()) => strings::security_verified(cx),
@@ -136,9 +148,14 @@ impl SecurityDemo {
 
     fn apple(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
-            let r = cx
-                .sign_in_with_apple(AppleSignIn::new().email().full_name())
-                .await;
+            let mut request = AppleSignIn::new().email().full_name();
+            if let Ok(nonce) = std::env::var("PRISM_APPLE_NONCE") {
+                request = request.nonce(nonce);
+            }
+            if let Ok(state) = std::env::var("PRISM_APPLE_STATE") {
+                request = request.state(state);
+            }
+            let r = cx.sign_in_with_apple(request).await;
             cx.update_entity(&this, |d, cx| match r {
                 Ok(c) => d.user = Some(c.email.unwrap_or(c.user)),
                 Err(e) => d.status = Some(Self::error(cx, &e)),
@@ -253,7 +270,7 @@ impl Render for SecurityDemo {
             .child(
                 ui::button(strings::security_verify(cx))
                     .small()
-                    .disabled(!caps.device_auth)
+                    .disabled(!caps.device_auth && std::env::var_os("PRISM_AUTH").is_none())
                     .on_click(cx.listener(|this, _, cx| this.verify(cx))),
             )
             .child(ui::divider())
@@ -326,13 +343,16 @@ impl Render for SecurityDemo {
                     .flex_row()
                     .flex_wrap()
                     .gap(8.)
-                    .when(caps.sign_in_with_apple, |d| {
-                        d.child(
-                            ui::button(strings::security_apple(cx))
-                                .small()
-                                .on_click(cx.listener(|this, _, cx| this.apple(cx))),
-                        )
-                    })
+                    .when(
+                        caps.sign_in_with_apple || std::env::var_os("PRISM_APPLE_NONCE").is_some(),
+                        |d| {
+                            d.child(
+                                ui::button(strings::security_apple(cx))
+                                    .small()
+                                    .on_click(cx.listener(|this, _, cx| this.apple(cx))),
+                            )
+                        },
+                    )
                     .when(caps.web_auth, |d| {
                         d.child(
                             ui::button(strings::security_oauth(cx))
