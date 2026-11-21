@@ -13,6 +13,8 @@
 //!   (100 a notch), `wheel:Label=dy,h` sideways; `zoom:Label=dy` the same
 //!   with Ctrl held (a precision touchpad's pinch comes so);
 //! - `ctrlclick:Label` (`@x,y`) clicks with Ctrl held;
+//! - `dblclick:Label` (`@x,y`) clicks twice, 120 ms apart (a double
+//!   click: two `click:` steps come slower than the double-click time);
 //! - `chord:ctrl+c` presses keys together (`ctrl`, `shift`, `alt`, a
 //!   letter or a digit, `home`, `end`, the arrows, `enter`, `backspace`,
 //!   `delete`, `f1` to `f12`: `chord:alt+f4` closes the window);
@@ -95,6 +97,7 @@ pub fn step(step: &str) -> Option<bool> {
             | "wheel"
             | "zoom"
             | "ctrlclick"
+            | "dblclick"
             | "chord"
             | "pinch"
             | "tswipe"
@@ -200,6 +203,12 @@ fn aim(step: &str) -> Vec<(Act, u32)> {
             if let [dx, dy] = nums[..] {
                 acts = vec![(Act::Move(x + px(dx), y + px(dy)), 60)];
             }
+        }
+        "dblclick" => {
+            acts.push((Act::Down, 60));
+            acts.push((Act::Up, 60));
+            acts.push((Act::Down, 60));
+            acts.push((Act::Up, 120));
         }
         "ctrlclick" => {
             acts.push((Act::Key(0x11, false), 40));
