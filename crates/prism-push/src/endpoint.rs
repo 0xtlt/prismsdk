@@ -84,6 +84,7 @@ impl Endpoint {
     }
 
     /// The origin, as `trust_origin` compares it: scheme, host and port.
+    #[cfg(any(feature = "send", test))]
     pub fn origin(&self) -> (bool, String, u16) {
         let host = match &self.host {
             Host::Name(n) => n.clone(),
