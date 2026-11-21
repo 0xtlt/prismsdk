@@ -19,11 +19,12 @@ use windows::Win32::Foundation::{HANDLE, HMODULE};
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_11_0};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-    D3D11_CREATE_DEVICE_SINGLETHREADED, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
-    D3D11_USAGE_DEFAULT, D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
+    D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11CreateDevice, ID3D11Device,
+    ID3D11DeviceContext, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC,
+    DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM,
+    DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
     DXGI_MATRIX_3X2_F, DXGI_PRESENT, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
@@ -57,7 +58,57 @@ mod native {
 }
 use native::{ISwapChainPanelNative, set_swap_chain};
 
-const WGL_ACCESS_WRITE_DISCARD_NV: u32 = 0x0002;
+const WGL_ACCESS_READ_WRITE_NV: u32 = 0x0001;
+const D3D11_RESOURCE_MISC_SHARED: u32 = 0x2;
+
+/// How this driver shares a texture: as a GL texture or renderbuffer, in
+/// which format, shared or not (drivers differ: probed once).
+#[derive(Clone, Copy, Debug)]
+struct Kind {
+    texture: bool,
+    format: DXGI_FORMAT,
+    misc: u32,
+}
+
+const KINDS: [Kind; 6] = [
+    Kind {
+        texture: true,
+        format: DXGI_FORMAT_R8G8B8A8_UNORM,
+        misc: 0,
+    },
+    Kind {
+        texture: true,
+        format: DXGI_FORMAT_B8G8R8A8_UNORM,
+        misc: 0,
+    },
+    Kind {
+        texture: true,
+        format: DXGI_FORMAT_R8G8B8A8_UNORM,
+        misc: D3D11_RESOURCE_MISC_SHARED,
+    },
+    Kind {
+        texture: true,
+        format: DXGI_FORMAT_B8G8R8A8_UNORM,
+        misc: D3D11_RESOURCE_MISC_SHARED,
+    },
+    Kind {
+        texture: false,
+        format: DXGI_FORMAT_R8G8B8A8_UNORM,
+        misc: 0,
+    },
+    Kind {
+        texture: false,
+        format: DXGI_FORMAT_B8G8R8A8_UNORM,
+        misc: 0,
+    },
+];
+
+/// GL's name for a shared texture.
+#[derive(Clone, Copy)]
+enum Name {
+    Texture(glow::Texture),
+    Renderbuffer(glow::Renderbuffer),
+}
 
 type OpenDevice = unsafe extern "system" fn(*mut c_void) -> HANDLE;
 type CloseDevice = unsafe extern "system" fn(HANDLE) -> i32;
@@ -68,6 +119,7 @@ type ExtensionsString = unsafe extern "system" fn(HDC) -> *const i8;
 
 /// The Direct3D 11 device GL shares textures with.
 pub struct Interop {
+    kind: Kind,
     device: ID3D11Device,
     context: ID3D11DeviceContext,
     factory: IDXGIFactory2,
@@ -88,6 +140,7 @@ impl Interop {
     pub unsafe fn new(
         hdc: HDC,
         address: impl Fn(&CStr) -> *const c_void,
+        gl: &glow::Context,
     ) -> std::result::Result<Interop, String> {
         unsafe {
             let ext = address(c"wglGetExtensionsStringARB");
@@ -131,7 +184,7 @@ impl Interop {
                 None,
                 D3D_DRIVER_TYPE_HARDWARE,
                 HMODULE::default(),
-                D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_SINGLETHREADED,
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
                 Some(&[D3D_FEATURE_LEVEL_11_0]),
                 D3D11_SDK_VERSION,
                 Some(&mut device),
@@ -152,7 +205,8 @@ impl Interop {
             if handle.is_invalid() || handle.0.is_null() {
                 return Err("wglDXOpenDeviceNV failed".into());
             }
-            Ok(Interop {
+            let mut interop = Interop {
+                kind: KINDS[0],
                 device,
                 context,
                 factory,
@@ -162,8 +216,46 @@ impl Interop {
                 unregister: std::mem::transmute::<*const c_void, UnregisterObject>(unregister),
                 lock: std::mem::transmute::<*const c_void, LockObjects>(lock),
                 unlock: std::mem::transmute::<*const c_void, LockObjects>(unlock),
-            })
+            };
+            // What this driver can share: a small texture of each kind,
+            // registered, locked and let go.
+            let mut why = String::new();
+            for kind in KINDS {
+                interop.kind = kind;
+                match share(&interop, gl, (16, 16)) {
+                    Ok(mut sh) => {
+                        let ok = sh.lock(&interop);
+                        if ok {
+                            sh.unlock(&interop);
+                        }
+                        sh.delete(&interop, gl);
+                        if ok {
+                            return Ok(interop);
+                        }
+                        why = format!("{kind:?}: lock failed");
+                    }
+                    Err(e) => why = format!("{kind:?}: {e}"),
+                }
+            }
+            Err(format!("no texture to share ({why})"))
         }
+    }
+
+    /// How textures are shared (for the log).
+    pub fn describe(&self) -> String {
+        format!(
+            "{} {}",
+            if self.kind.texture {
+                "texture"
+            } else {
+                "renderbuffer"
+            },
+            if self.kind.format == DXGI_FORMAT_B8G8R8A8_UNORM {
+                "BGRA"
+            } else {
+                "RGBA"
+            }
+        )
     }
 }
 
@@ -188,10 +280,33 @@ pub struct Surface {
 struct Shared {
     texture: ID3D11Texture2D,
     object: HANDLE,
-    rb: glow::Renderbuffer,
+    name: Name,
     fb: glow::Framebuffer,
-    /// The renderbuffer is on the framebuffer (done while locked).
+    /// The texture is on the framebuffer (done while locked).
     attached: bool,
+}
+
+impl Shared {
+    unsafe fn lock(&mut self, interop: &Interop) -> bool {
+        unsafe { (interop.lock)(interop.handle, 1, &mut self.object) != 0 }
+    }
+
+    unsafe fn unlock(&mut self, interop: &Interop) {
+        unsafe {
+            (interop.unlock)(interop.handle, 1, &mut self.object);
+        }
+    }
+
+    unsafe fn delete(self, interop: &Interop, gl: &glow::Context) {
+        unsafe {
+            (interop.unregister)(interop.handle, self.object);
+            gl.delete_framebuffer(self.fb);
+            match self.name {
+                Name::Texture(t) => gl.delete_texture(t),
+                Name::Renderbuffer(r) => gl.delete_renderbuffer(r),
+            }
+        }
+    }
 }
 
 impl Surface {
@@ -205,7 +320,7 @@ impl Surface {
         let desc = DXGI_SWAP_CHAIN_DESC1 {
             Width: size.0.max(1) as u32,
             Height: size.1.max(1) as u32,
-            Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+            Format: interop.kind.format,
             Stereo: false.into(),
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: 1,
@@ -266,7 +381,7 @@ impl Surface {
                     0,
                     size.0.max(1) as u32,
                     size.1.max(1) as u32,
-                    DXGI_FORMAT_R8G8B8A8_UNORM,
+                    interop.kind.format,
                     DXGI_SWAP_CHAIN_FLAG(0),
                 )?;
                 self.size = size;
@@ -279,18 +394,26 @@ impl Surface {
             let Some(sh) = &mut self.shared else {
                 return Ok(());
             };
-            let mut object = sh.object;
-            if (interop.lock)(interop.handle, 1, &mut object) == 0 {
+            if !sh.lock(interop) {
                 return Err(windows_core::Error::from_thread());
             }
             if !std::mem::replace(&mut sh.attached, true) {
                 gl.bind_framebuffer(glow::FRAMEBUFFER, Some(sh.fb));
-                gl.framebuffer_renderbuffer(
-                    glow::FRAMEBUFFER,
-                    glow::COLOR_ATTACHMENT0,
-                    glow::RENDERBUFFER,
-                    Some(sh.rb),
-                );
+                match sh.name {
+                    Name::Texture(t) => gl.framebuffer_texture_2d(
+                        glow::FRAMEBUFFER,
+                        glow::COLOR_ATTACHMENT0,
+                        glow::TEXTURE_2D,
+                        Some(t),
+                        0,
+                    ),
+                    Name::Renderbuffer(r) => gl.framebuffer_renderbuffer(
+                        glow::FRAMEBUFFER,
+                        glow::COLOR_ATTACHMENT0,
+                        glow::RENDERBUFFER,
+                        Some(r),
+                    ),
+                }
             }
             gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(from));
             gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(sh.fb));
@@ -308,7 +431,7 @@ impl Surface {
                 glow::NEAREST,
             );
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-            (interop.unlock)(interop.handle, 1, &mut object);
+            sh.unlock(interop);
             let back: ID3D11Texture2D = self.swap.GetBuffer(0)?;
             interop.context.CopyResource(&back, &sh.texture);
             self.swap.Present(0, DXGI_PRESENT(0)).ok()
@@ -317,12 +440,7 @@ impl Surface {
 
     unsafe fn release(&mut self, interop: &Interop, gl: &glow::Context) {
         if let Some(sh) = self.shared.take() {
-            unsafe {
-                (interop.unregister)(interop.handle, sh.object);
-                gl.delete_framebuffer(sh.fb);
-                gl.delete_renderbuffer(sh.rb);
-            }
-            drop(sh.texture);
+            unsafe { sh.delete(interop, gl) };
         }
     }
 
@@ -343,7 +461,7 @@ unsafe fn share(interop: &Interop, gl: &glow::Context, size: (i32, i32)) -> Resu
             Height: size.1.max(1) as u32,
             MipLevels: 1,
             ArraySize: 1,
-            Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+            Format: interop.kind.format,
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: 1,
                 Quality: 0,
@@ -351,32 +469,49 @@ unsafe fn share(interop: &Interop, gl: &glow::Context, size: (i32, i32)) -> Resu
             Usage: D3D11_USAGE_DEFAULT,
             BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
             CPUAccessFlags: 0,
-            MiscFlags: 0,
+            MiscFlags: interop.kind.misc,
         };
         let mut texture = None;
         interop
             .device
             .CreateTexture2D(&desc, None, Some(&mut texture))?;
         let texture = texture.ok_or_else(windows_core::Error::empty)?;
-        let (Ok(rb), Ok(fb)) = (gl.create_renderbuffer(), gl.create_framebuffer()) else {
+        let Ok(fb) = gl.create_framebuffer() else {
             return Err(windows_core::Error::empty());
+        };
+        let (name, raw, target) = if interop.kind.texture {
+            let Ok(t) = gl.create_texture() else {
+                gl.delete_framebuffer(fb);
+                return Err(windows_core::Error::empty());
+            };
+            (Name::Texture(t), t.0.get(), glow::TEXTURE_2D)
+        } else {
+            let Ok(r) = gl.create_renderbuffer() else {
+                gl.delete_framebuffer(fb);
+                return Err(windows_core::Error::empty());
+            };
+            (Name::Renderbuffer(r), r.0.get(), glow::RENDERBUFFER)
         };
         let object = (interop.register)(
             interop.handle,
             texture.as_raw(),
-            rb.0.get(),
-            glow::RENDERBUFFER,
-            WGL_ACCESS_WRITE_DISCARD_NV,
+            raw,
+            target,
+            WGL_ACCESS_READ_WRITE_NV,
         );
         if object.is_invalid() || object.0.is_null() {
-            gl.delete_renderbuffer(rb);
+            let e = windows_core::Error::from_thread();
             gl.delete_framebuffer(fb);
-            return Err(windows_core::Error::from_thread());
+            match name {
+                Name::Texture(t) => gl.delete_texture(t),
+                Name::Renderbuffer(r) => gl.delete_renderbuffer(r),
+            }
+            return Err(e);
         }
         Ok(Shared {
             texture,
             object,
-            rb,
+            name,
             fb,
             attached: false,
         })
