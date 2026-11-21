@@ -41,6 +41,8 @@ mod services;
 mod sticky;
 #[cfg(target_os = "macos")]
 mod table;
+#[cfg(all(test, target_os = "macos"))]
+mod temp_dir;
 #[cfg(target_os = "macos")]
 mod trace;
 #[cfg(target_os = "macos")]

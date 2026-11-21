@@ -118,14 +118,12 @@ fn write_aside(path: &Path, data: &[u8]) -> io::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use crate::temp_dir::TempDir;
     use crate::webpush::ReceiverKeys;
-    use std::path::PathBuf;
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("prism-push-s31-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        dir
+    /// A folder for one test, removed when it ends (failed too).
+    fn scratch(name: &str) -> TempDir {
+        TempDir::new(&format!("push-s31-{name}"))
     }
 
     /// S31: receiver keys are private from creation, whatever the umask,
@@ -139,7 +137,7 @@ mod tests {
         let path = dir.join("data/push/prism-push-keys");
         let keys = ReceiverKeys::load_or_create(&path).unwrap();
         assert_eq!(mode(&path), 0o600);
-        for d in [dir.clone(), dir.join("data"), dir.join("data/push")] {
+        for d in [dir.to_path_buf(), dir.join("data"), dir.join("data/push")] {
             assert_eq!(mode(&d), 0o700, "{}", d.display());
         }
         let left: Vec<_> = std::fs::read_dir(dir.join("data/push"))
@@ -150,7 +148,6 @@ mod tests {
         assert_eq!(left, ["prism-push-keys"], "a temporary file was left");
         let again = ReceiverKeys::load_or_create(&path).unwrap();
         assert_eq!(again.to_bytes(), keys.to_bytes());
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// S31: processes (threads here) using push for the first time at once
@@ -177,7 +174,6 @@ mod tests {
             );
             assert_eq!(std::fs::read(&path).unwrap(), all[0]);
         }
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// S31: keys that cannot be kept, or a file that holds no keys, are an
@@ -207,6 +203,20 @@ mod tests {
             }
             std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
-        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_failing_test_leaves_no_temp_folder() {
+        let made = std::sync::Mutex::new(None);
+        let failed = std::panic::catch_unwind(|| {
+            let dir = crate::temp_dir::TempDir::new("guard");
+            std::fs::create_dir_all(dir.join("data")).unwrap();
+            std::fs::write(dir.join("data/file"), "x").unwrap();
+            *made.lock().unwrap() = Some(dir.to_path_buf());
+            panic!("a test that fails (on purpose)");
+        });
+        assert!(failed.is_err());
+        let dir = made.lock().unwrap().take().expect("the folder was made");
+        assert!(!dir.exists(), "{} is left behind", dir.display());
     }
 }

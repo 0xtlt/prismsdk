@@ -422,6 +422,8 @@ fn env_or(key: &str, default: &str) -> String {
 }
 
 #[cfg(test)]
+mod temp_dir;
+#[cfg(test)]
 mod tests {
     #[test]
     fn clamps_deployment_targets() {
@@ -481,5 +483,20 @@ mod tests {
         ] {
             assert_eq!(super::clang_runtime(target), lib, "{target}");
         }
+    }
+
+    #[test]
+    fn a_failing_test_leaves_no_temp_folder() {
+        let made = std::sync::Mutex::new(None);
+        let failed = std::panic::catch_unwind(|| {
+            let dir = crate::temp_dir::TempDir::new("guard");
+            std::fs::create_dir_all(dir.join("data")).unwrap();
+            std::fs::write(dir.join("data/file"), "x").unwrap();
+            *made.lock().unwrap() = Some(dir.to_path_buf());
+            panic!("a test that fails (on purpose)");
+        });
+        assert!(failed.is_err());
+        let dir = made.lock().unwrap().take().expect("the folder was made");
+        assert!(!dir.exists(), "{} is left behind", dir.display());
     }
 }

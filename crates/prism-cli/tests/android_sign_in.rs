@@ -12,6 +12,10 @@ use std::process::{Command, Stdio};
 
 use prism_core::security::is_sign_in_callback;
 
+#[path = "../src/temp_dir.rs"]
+mod temp_dir;
+use temp_dir::TempDir;
+
 const URL: &str = "https://idp.example/authorize?client_id=c&state=s%2B1&code_challenge=x";
 const APP: &str = "prism-my-app:/oauth";
 const HOST: &str = "com.example.app://auth/done";
@@ -87,9 +91,8 @@ const CASES: &[(&str, &str, &str)] = &[
 
 /// `PrismSignIn.java` and a small `main` reading cases (tab-separated) on
 /// stdin, compiled; `None` without a JDK.
-fn compiled() -> Option<std::path::PathBuf> {
-    let dir = std::env::temp_dir().join(format!("prism-cli-s33-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn compiled() -> Option<TempDir> {
+    let dir = TempDir::new("cli-s33");
     std::fs::create_dir_all(&dir).unwrap();
     let source = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("platform/android/java/dev/prism/PrismSignIn.java");
@@ -116,7 +119,7 @@ public class SignInCheck {
     .unwrap();
     let javac = Command::new("javac")
         .arg("-d")
-        .arg(&dir)
+        .arg(&*dir)
         .arg(&source)
         .arg(&check)
         .output();
@@ -144,7 +147,7 @@ fn s33_android_takes_only_the_callback_of_the_sign_in() {
     };
     let mut java = Command::new("java")
         .arg("-cp")
-        .arg(&dir)
+        .arg(&*dir)
         .arg("dev.prism.SignInCheck")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -180,5 +183,4 @@ fn s33_android_takes_only_the_callback_of_the_sign_in() {
     assert_eq!(lines[0], "true true");
     assert_eq!(lines[4], "false true");
     assert_eq!(lines[9], "false false");
-    let _ = std::fs::remove_dir_all(dir);
 }

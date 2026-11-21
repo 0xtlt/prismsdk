@@ -4,12 +4,16 @@
 //! `java` and `curl` are stubs here.
 #![cfg(unix)]
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
-fn setup(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("prism-s24-bt-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+#[path = "../src/temp_dir.rs"]
+mod temp_dir;
+
+use temp_dir::TempDir;
+
+fn setup(name: &str) -> TempDir {
+    let dir = TempDir::new(&format!("s24-bt-{name}"));
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     for (tool, body) in [
@@ -67,7 +71,6 @@ fn s24_a_changed_cached_bundletool_never_runs() {
     }
     // The changed jar is gone; the download (other bytes) was refused too.
     assert!(!jar.exists());
-    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -82,7 +85,6 @@ fn s24_a_changed_download_never_runs() {
         .map(|e| e.file_name())
         .collect();
     assert!(left.is_empty(), "{left:?}");
-    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -98,5 +100,4 @@ fn an_explicit_bundletool_is_used_as_is() {
     assert!(ok, "{stderr}");
     let log = std::fs::read_to_string(dir.join("java.log")).unwrap();
     assert_eq!(log.trim(), format!("-jar {} version", mine.display()));
-    std::fs::remove_dir_all(&dir).unwrap();
 }

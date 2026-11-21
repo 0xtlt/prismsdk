@@ -14,6 +14,10 @@
 use std::path::Path;
 use std::process::Command;
 
+#[path = "../src/temp_dir.rs"]
+mod temp_dir;
+use temp_dir::TempDir;
+
 const SECRET: &str = "S36-SECRET";
 
 fn script() -> String {
@@ -35,8 +39,7 @@ fn section(script: &str, from: &str, to: &str) -> String {
 
 #[test]
 fn s36_installing_a_bundle_never_writes_or_shows_the_store_passwords() {
-    let dir = std::env::temp_dir().join(format!("prism-cli-s36-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = TempDir::new("cli-s36");
     for d in ["tmp", "out"] {
         std::fs::create_dir_all(dir.join(d)).unwrap();
     }
@@ -108,5 +111,4 @@ BUNDLETOOL=(bash "{stub}")
         ) && script.contains("-storepass:env PRISM_KS_PASS -keypass:env PRISM_KEY_PASS"),
         "the bundle is no longer signed with the store key"
     );
-    let _ = std::fs::remove_dir_all(dir);
 }

@@ -57,8 +57,7 @@ mod tests {
 
     #[test]
     fn the_key_is_private_and_kept_between_runs() {
-        let dir = std::env::temp_dir().join(format!("prism-widget-key-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::temp_dir::TempDir::new("widget-key");
         let key = load(&dir);
         assert_ne!(key, [0; 32]);
         let mode = std::fs::metadata(dir.join(FILE))
@@ -72,6 +71,20 @@ mod tests {
         let other = load(&dir);
         assert_ne!(other, key);
         assert_eq!(load(&dir), other);
-        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failing_test_leaves_no_temp_folder() {
+        let made = std::sync::Mutex::new(None);
+        let failed = std::panic::catch_unwind(|| {
+            let dir = crate::temp_dir::TempDir::new("guard");
+            std::fs::create_dir_all(dir.join("data")).unwrap();
+            std::fs::write(dir.join("data/file"), "x").unwrap();
+            *made.lock().unwrap() = Some(dir.to_path_buf());
+            panic!("a test that fails (on purpose)");
+        });
+        assert!(failed.is_err());
+        let dir = made.lock().unwrap().take().expect("the folder was made");
+        assert!(!dir.exists(), "{} is left behind", dir.display());
     }
 }

@@ -188,6 +188,8 @@ mod system;
 mod table;
 #[cfg(target_os = "windows")]
 mod taskbar;
+#[cfg(all(test, target_os = "windows"))]
+mod temp_dir;
 #[cfg(target_os = "windows")]
 mod text;
 // Notifications as toast XML: no Win32, tested everywhere.

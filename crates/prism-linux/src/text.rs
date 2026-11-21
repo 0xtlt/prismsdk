@@ -315,7 +315,7 @@ mod tests {
 
     #[test]
     fn embedded_fonts_are_written_once_for_fontconfig() {
-        let cache = std::env::temp_dir().join(format!("prism-linux-fonts-{}", std::process::id()));
+        let cache = crate::temp_dir::TempDir::new("linux-fonts");
         let embedded = prism_core::EmbeddedAssets::new()
             .file("fonts/sub/Brand.ttf", &b"font"[..])
             .file("logo.png", &b"png"[..]);
@@ -324,7 +324,6 @@ mod tests {
         assert!(files[0].ends_with("Brand.ttf") && files[0].starts_with(cache.join("prism-fonts")));
         assert_eq!(std::fs::read(&files[0]).unwrap(), b"font");
         assert_eq!(embedded_font_files(&embedded, &cache), files);
-        let _ = std::fs::remove_dir_all(cache);
     }
 
     #[test]
@@ -367,5 +366,20 @@ mod tests {
         );
         assert_eq!(family_name(&FontFamily::System), None);
         assert_eq!(family_name(&"Inter".into()).as_deref(), Some("Inter"));
+    }
+
+    #[test]
+    fn a_failing_test_leaves_no_temp_folder() {
+        let made = std::sync::Mutex::new(None);
+        let failed = std::panic::catch_unwind(|| {
+            let dir = crate::temp_dir::TempDir::new("guard");
+            std::fs::create_dir_all(dir.join("data")).unwrap();
+            std::fs::write(dir.join("data/file"), "x").unwrap();
+            *made.lock().unwrap() = Some(dir.to_path_buf());
+            panic!("a test that fails (on purpose)");
+        });
+        assert!(failed.is_err());
+        let dir = made.lock().unwrap().take().expect("the folder was made");
+        assert!(!dir.exists(), "{} is left behind", dir.display());
     }
 }

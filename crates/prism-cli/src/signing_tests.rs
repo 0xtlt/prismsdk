@@ -5,6 +5,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::temp_dir::TempDir;
+
 const TEAM: &str = "PRISMTEST1";
 const BUNDLE: &str = "dev.prism.counter";
 
@@ -81,8 +83,9 @@ fn run(dir: &Path, profile: &Path, bundle: &str, role: &str, env: &[(&str, &str)
     })
 }
 
-fn temp(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("prism-signing-{}-{name}", std::process::id()));
+/// A fresh folder for one test, removed when it ends (skipped or failed too).
+fn temp(name: &str) -> TempDir {
+    let dir = TempDir::new(&format!("signing-{name}"));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -110,7 +113,6 @@ fn push_note_comes_from_the_app_profile_only() {
     .unwrap();
     assert_eq!(w.notes, "", "no push note for the extension");
     assert!(!w.entitlements.contains("aps-environment"));
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// An app profile without the capability still gets the note, naming it.
@@ -129,7 +131,6 @@ fn push_note_when_the_app_profile_lacks_it() {
     // Without [push], no note at all.
     let quiet = run(&dir, &app, BUNDLE, "app", &[]).unwrap();
     assert_eq!(quiet.notes, "");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// iCloud and Sign in with Apple: noted for the app only, like push.
@@ -156,7 +157,6 @@ fn other_capability_notes_are_the_apps() {
     assert_eq!(a.notes.lines().count(), 3, "{}", a.notes);
     assert!(a.notes.contains("has no iCloud"));
     assert!(a.notes.contains("has no Sign in with Apple"));
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The signing entitlements: this bundle's identifier (a wildcard profile
@@ -180,7 +180,6 @@ fn entitlements_for_the_bundle() {
     );
     assert!(!w.entitlements.contains("keychain-access-groups"));
     assert!(w.entitlements.contains("group.dev.prism.counter"));
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -201,5 +200,4 @@ fn unknown_role_fails() {
         .output()
         .unwrap();
     assert!(!out.status.success());
-    std::fs::remove_dir_all(&dir).ok();
 }

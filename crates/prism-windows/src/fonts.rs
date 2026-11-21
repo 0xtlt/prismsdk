@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn resolves_only_plain_files_under_prism_fonts() {
-        let dir = std::env::temp_dir().join(format!("prism-fonts-test-{}", std::process::id()));
+        let dir = crate::temp_dir::TempDir::new("fonts-test");
         let fonts = dir.join("prism-fonts");
         std::fs::create_dir_all(&fonts).unwrap();
         std::fs::write(fonts.join("abc.ttf"), b"x").unwrap();
@@ -161,6 +161,20 @@ mod tests {
         assert_eq!(resolve("Files/prism-fonts/../abc.ttf"), None);
         assert_eq!(resolve("Files/prism-fonts/sub/abc.ttf"), None);
         assert_eq!(resolve("Files/Assets/abc.ttf"), None);
-        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failing_test_leaves_no_temp_folder() {
+        let made = std::sync::Mutex::new(None);
+        let failed = std::panic::catch_unwind(|| {
+            let dir = crate::temp_dir::TempDir::new("guard");
+            std::fs::create_dir_all(dir.join("data")).unwrap();
+            std::fs::write(dir.join("data/file"), "x").unwrap();
+            *made.lock().unwrap() = Some(dir.to_path_buf());
+            panic!("a test that fails (on purpose)");
+        });
+        assert!(failed.is_err());
+        let dir = made.lock().unwrap().take().expect("the folder was made");
+        assert!(!dir.exists(), "{} is left behind", dir.display());
     }
 }

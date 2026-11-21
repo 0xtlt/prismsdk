@@ -4,7 +4,9 @@
 
 use std::path::Path;
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[path = "../src/temp_dir.rs"]
+mod temp_dir;
 
 /// Runs the script on `widgets`, in a directory of its own: the tests run in
 /// parallel, and two calls for the same platform must not share a file (#123).
@@ -13,12 +15,7 @@ fn generate(widgets: &str, platform: &str) -> Option<String> {
         eprintln!("python3 not found: skipped");
         return None;
     }
-    static CALLS: AtomicUsize = AtomicUsize::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "prism-generate-widgets-{}-{}",
-        std::process::id(),
-        CALLS.fetch_add(1, Ordering::Relaxed)
-    ));
+    let dir = temp_dir::TempDir::new("generate-widgets");
     std::fs::create_dir_all(&dir).unwrap();
     let json = dir.join("widgets.json");
     std::fs::write(&json, widgets).unwrap();
@@ -28,7 +25,6 @@ fn generate(widgets: &str, platform: &str) -> Option<String> {
         .arg(&json)
         .arg(platform)
         .output();
-    std::fs::remove_dir_all(&dir).ok();
     let out = out.ok()?;
     assert!(
         out.status.success(),
