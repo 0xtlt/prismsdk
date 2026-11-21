@@ -13,7 +13,7 @@
 //!   (100 a notch), `wheel:Label=dy,h` sideways; `zoom:Label=dy` the same
 //!   with Ctrl held (a precision touchpad's pinch comes so);
 //! - `ctrlclick:Label` (`@x,y`) clicks with Ctrl held;
-//! - `dblclick:Label` (`@x,y`) clicks twice, 120 ms apart (a double
+//! - `dblclick:Label` (`@x,y`) clicks twice, 60 ms apart (a double
 //!   click: two `click:` steps come slower than the double-click time);
 //! - `chord:ctrl+c` presses keys together (`ctrl`, `shift`, `alt`, a
 //!   letter or a digit, `home`, `end`, the arrows, `enter`, `backspace`,
@@ -65,6 +65,11 @@ enum Act {
     Move(i32, i32),
     Down,
     Up,
+    /// A double click: press, release, press, release, 60 ms apart, from
+    /// a thread of its own (a press on a caption region holds the UI
+    /// thread in the system's drag loop, where this timer's next input
+    /// would come too late to count).
+    Double,
     Wheel(i32, bool),
     /// A virtual key, down or up (`true`).
     Key(u16, bool),
@@ -177,7 +182,18 @@ fn aim(step: &str) -> Vec<(Act, u32)> {
         return Vec::new();
     };
     if crate::win::env("PRISM_TRACE_INPUT").is_some() {
-        log!("PRISM_CLICK: {kind} on {label:?} from ({x}, {y}) px");
+        // The view found too: a label on a page or a screen can hide the
+        // control of the same name.
+        let view = find(label)
+            .and_then(|id| {
+                with_state(|s| {
+                    let n = s.renderer.widgets.scene.get(id)?;
+                    Some(format!("{:?} {id}, {:?}", n.kind, n.frame))
+                })
+                .flatten()
+            })
+            .unwrap_or_default();
+        log!("PRISM_CLICK: {kind} on {label:?} ({view}) from ({x}, {y}) px");
     }
     let nums: Vec<f32> = args
         .split(',')
@@ -205,10 +221,7 @@ fn aim(step: &str) -> Vec<(Act, u32)> {
             }
         }
         "dblclick" => {
-            acts.push((Act::Down, 60));
-            acts.push((Act::Up, 60));
-            acts.push((Act::Down, 60));
-            acts.push((Act::Up, 120));
+            acts.push((Act::Double, 400));
         }
         "ctrlclick" => {
             acts.push((Act::Key(0x11, false), 40));
@@ -473,6 +486,7 @@ fn allowed(act: &Act) -> bool {
             ok
         }
         Act::Up => !DROPPED.replace(false),
+        Act::Double => ours_at(cursor()) && active(),
         Act::Touch(contacts) => match contacts.first() {
             Some(c) if c.phase == crate::touch::Phase::Down => {
                 let ok = ours_at(POINT { x: c.x, y: c.y });
@@ -499,6 +513,26 @@ fn allowed(act: &Act) -> bool {
         log!("PRISM_CLICK: another window has the point or the keyboard: {act:?} dropped");
     }
     ok
+}
+
+/// The left button pressed or released where the pointer is.
+fn button(flags: MOUSE_EVENT_FLAGS) {
+    let input = INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                dx: 0,
+                dy: 0,
+                mouseData: 0,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    if unsafe { SendInput(&[input], size_of::<INPUT>() as i32) } != 1 {
+        log!("PRISM_CLICK: the input was not sent ({flags:?})");
+    }
 }
 
 fn send(act: &Act) {
@@ -532,6 +566,18 @@ fn send(act: &Act) {
             if !contacts.is_empty() {
                 crate::touch::frame(contacts);
             }
+            return;
+        }
+        Act::Double => {
+            std::thread::spawn(|| {
+                let clicks = [MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP];
+                for (i, flags) in clicks.into_iter().chain(clicks).enumerate() {
+                    if i > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(60));
+                    }
+                    button(flags);
+                }
+            });
             return;
         }
         Act::Aim(_) | Act::Settle(..) => return,
