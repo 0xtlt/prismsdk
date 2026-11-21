@@ -31,11 +31,12 @@ pub struct Win {
     pub hwnd: HWND,
     pub scene: Scene,
     pub views: IdMap<NodeId, View>,
-    /// The island's content: the app (root view and layers), then the
-    /// open overlays above it.
+    /// The island's content: the app's root view, the open overlays
+    /// above it, then the runtime's layers (toasts) above everything.
     pub root: Canvas,
     pub app: Canvas,
     pub overlays: Canvas,
+    pub top: Canvas,
     pub island: Option<Island>,
     pub measurer: Measurer,
     pub images: Images,
@@ -84,8 +85,12 @@ impl Win {
         let app = crate::peers::canvas(crate::peers::Key::Content)?;
         crate::a11y::set_content(&app);
         let overlays = Canvas::new()?;
+        // The layers' canvas leaves UI Automation with the content while a
+        // modal panel is open (the same peer), so a reader stays inside.
+        let top = crate::peers::canvas(crate::peers::Key::Content)?;
         root.Children()?.Append(&app)?;
         root.Children()?.Append(&overlays)?;
+        root.Children()?.Append(&top)?;
         let mut w = Win {
             hwnd,
             scene: Scene::default(),
@@ -93,6 +98,7 @@ impl Win {
             root,
             app,
             overlays,
+            top,
             island: None,
             measurer: Measurer::new()?,
             images,
@@ -298,16 +304,19 @@ impl Win {
         }
     }
 
-    /// The app's root and layers in the window.
+    /// The app's root in the window, its layers above the overlays
+    /// (`Widgets::set_layers`: above sheets and dialogs too).
     fn mount(&mut self) {
-        let Ok(coll) = self.app.Children() else {
+        let (Ok(app), Ok(top)) = (self.app.Children(), self.top.Children()) else {
             return;
         };
-        let _ = coll.Clear();
+        let _ = app.Clear();
+        let _ = top.Clear();
+        let root = self.scene.root;
         for id in self.scene.roots().collect::<Vec<_>>() {
             if let Some(e) = self.outer(id) {
                 let _ = crate::view::detach(&e);
-                let _ = coll.Append(&e);
+                let _ = if Some(id) == root { &app } else { &top }.Append(&e);
             }
         }
     }
