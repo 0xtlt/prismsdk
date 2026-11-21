@@ -449,13 +449,32 @@ impl Measurer {
             .map_or((0., 0.), |s| (s.Width, s.Height))
     }
 
-    /// The narrowest the text can be: its longest word.
+    /// The narrowest the text can be: its longest word (CSS min-content,
+    /// #284). XAML clips a measured size to the width it is measured at,
+    /// so the width comes from line counts instead: narrower than the
+    /// longest word, `Wrap` breaks that word (one more line) where
+    /// `WrapWholeWords` lets it stick out; from the longest word on, both
+    /// break alike. A binary search finds where they start to agree. A
+    /// text that cannot break (`09:35`, `N7`) is its one-line width.
     fn min_width(&self, st: &StyledText) -> f32 {
-        if self.load(st).is_err() {
-            return 0.;
+        let natural = self.measure(st, None).0.ceil();
+        if natural <= 1. || !breakable(st) || self.load(st).is_err() {
+            return natural;
         }
-        let _ = self.tb.SetTextWrapping(TextWrapping::WrapWholeWords);
-        let w = self.desired(0.).0;
+        let height = |wrapping, width| {
+            let _ = self.tb.SetTextWrapping(wrapping);
+            self.desired(width).1
+        };
+        let (mut lo, mut hi) = (0f32, natural);
+        while hi - lo > 1. {
+            let mid = (lo + hi) / 2.;
+            let broken = height(TextWrapping::Wrap, mid);
+            if (broken - height(TextWrapping::WrapWholeWords, mid)).abs() < 0.5 {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
         // Back to the cached settings' wrapping.
         if let Some(p) = self.paragraph.borrow().as_ref() {
             let _ = self.tb.SetTextWrapping(if p.no_wrap {
@@ -464,7 +483,7 @@ impl Measurer {
                 TextWrapping::Wrap
             });
         }
-        w
+        hi.ceil()
     }
 
     /// Distance from the top to the first baseline of `st` at `width`. A
@@ -500,6 +519,16 @@ fn uniform(st: &StyledText) -> bool {
         .all(|r| r.icon.is_none() && (r.font.size - size).abs() < 0.01)
 }
 
+/// Whether `st` may break between lines somewhere: a space, a hyphen, a
+/// slash, a script that breaks between characters (Thai, CJK…). Times,
+/// numbers and single words cannot (`09:35`, `N7`, `Line`, `+3,5 %`).
+fn breakable(st: &StyledText) -> bool {
+    st.runs.iter().flat_map(|r| r.text.chars()).any(|c| {
+        !((c.is_alphanumeric() && c < '\u{0E00}')
+            || matches!(c, ':' | '.' | ',' | '\'' | '%' | '#' | '+' | '°'))
+    })
+}
+
 /// A one-run text in a control's font: a button's title, a picker's
 /// option, a tab's label.
 pub fn label(text: &str, s: &prism_core::Style) -> StyledText {
@@ -508,4 +537,20 @@ pub fn label(text: &str, s: &prism_core::Style) -> StyledText {
     st.no_wrap = true;
     st.max_lines = None;
     st
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn times_numbers_and_words_cannot_break() {
+        let st = |t: &str| StyledText::new(t, "", &prism_core::Style::default());
+        for t in ["09:35", "N7", "Line", "Départ", "43", "+3,5%", "Москва"] {
+            assert!(!breakable(&st(t)), "{t}");
+        }
+        for t in ["Old Town", "well-known", "a/b", "東京駅", "x\ny"] {
+            assert!(breakable(&st(t)), "{t}");
+        }
+    }
 }
