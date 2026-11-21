@@ -496,6 +496,7 @@ mod bridge {
             key: *const c_char,
             value: *const c_char,
             biometric: bool,
+            confirm_owner: bool,
             shared: bool,
         );
         fn prism_secure_delete(id: u64, key: *const c_char, shared: bool);
@@ -658,7 +659,8 @@ mod bridge {
                     id,
                     c(&key).as_ptr(),
                     c(&value).as_ptr(),
-                    options.biometric,
+                    options.biometric || options.confirm_owner,
+                    options.confirm_owner,
                     options.shared,
                 ),
                 DeviceCall::SecureDelete { key, shared } => {

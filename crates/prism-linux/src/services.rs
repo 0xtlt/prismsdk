@@ -261,16 +261,18 @@ impl LinuxServices {
                 value,
                 options,
             } => {
-                // The keyring has no per-item owner check: gate it with fprintd.
-                if options.biometric && !self.caps.device_auth {
-                    return reply(id, Err(DeviceError::Unavailable));
-                }
+                // The keyring has no per-item owner check: only
+                // `confirm_owner` secrets, gated with fprintd (S22).
+                let gated = match options.app_gate(self.caps.device_auth) {
+                    Ok(gated) => gated,
+                    Err(e) => return reply(id, Err(e)),
+                };
                 let label = self
                     .window
                     .title()
                     .map(|t| t.to_string())
                     .unwrap_or_default();
-                let value = format!("{}{value}", if options.biometric { GATED } else { "" });
+                let value = format!("{}{value}", if gated { GATED } else { "" });
                 self.secret(id, key, SecretOp::Set { label, value }, None)
             }
             DeviceCall::SecureDelete { key, .. } => self.secret(id, key, SecretOp::Delete, None),

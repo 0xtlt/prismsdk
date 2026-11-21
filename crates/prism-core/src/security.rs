@@ -7,6 +7,9 @@
 //!     let token = cx.secure_storage().get("token").await?;
 //!     // Only after Face ID / Touch ID / a fingerprint (or the passcode).
 //!     cx.secure_storage().set_with("pin", "1234", SecureOptions::new().biometric()).await?;
+//!     // The same, or the app's own check where the store has none
+//!     // (Windows, Linux).
+//!     cx.secure_storage().set_with("pin", "1234", SecureOptions::new().confirm_owner()).await?;
 //!
 //!     // Is it the owner? (Face ID, Touch ID, Optic ID, fingerprint, passcode)
 //!     cx.authenticate("Unlock your notes").await?;
@@ -39,11 +42,22 @@ use crate::task::AsyncApp;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SecureOptions {
     /// Reading it needs the device owner: biometrics, or the passcode where
-    /// biometrics are missing (Keychain access control, an Android Keystore
-    /// key requiring authentication, WebAuthn on the web). Changing the
-    /// enrolled faces or fingers makes it unreadable on Apple platforms and
-    /// Android: store it again.
+    /// biometrics are missing, checked by the store itself (Keychain access
+    /// control, an Android Keystore key requiring authentication, the
+    /// server after WebAuthn on the web). Changing the enrolled faces or
+    /// fingers makes it unreadable on Apple platforms and Android: store it
+    /// again. Where the store has no such check (Windows Credential
+    /// Manager, the Linux Secret Service, the macOS login keychain of an
+    /// app without a provisioning profile), storing fails with
+    /// [`DeviceError::Unavailable`] and keeps the previous secret: see
+    /// [`confirm_owner`](Self::confirm_owner).
     pub biometric: bool,
+    /// Like [`biometric`](Self::biometric) where the store checks the
+    /// owner; elsewhere Prism asks for the owner (Windows Hello, a
+    /// fingerprint, Touch ID) before handing the value to the app, but the
+    /// store does not: another program of the same user that reads the
+    /// store gets the value without a prompt.
+    pub confirm_owner: bool,
     /// Shared with the app's extensions (widgets): the App Group's keychain
     /// access group on Apple platforms. Elsewhere the app's own store.
     pub shared: bool,
@@ -54,15 +68,38 @@ impl SecureOptions {
     pub fn new() -> Self {
         Self::default()
     }
-    /// Require the device owner to read the secret.
+    /// Require the device owner to read the secret, checked by the store
+    /// ([`biometric`](Self::biometric)).
     pub fn biometric(mut self) -> Self {
         self.biometric = true;
+        self
+    }
+    /// Require the device owner to read the secret, checked by the store
+    /// where it can, else by the app ([`confirm_owner`](Self::confirm_owner)).
+    pub fn confirm_owner(mut self) -> Self {
+        self.confirm_owner = true;
         self
     }
     /// Share the secret with the app's extensions.
     pub fn shared(mut self) -> Self {
         self.shared = true;
         self
+    }
+
+    /// For backends whose store has no owner check of its own (Credential
+    /// Manager, the Secret Service): `Ok(true)` when the value is stored
+    /// with a mark and the backend asks for the owner before returning it
+    /// ([`confirm_owner`](Self::confirm_owner), where the device can
+    /// authenticate), `Ok(false)` when it is stored as it is, and
+    /// `Err(Unavailable)` when the owner check cannot be had (a
+    /// [`biometric`](Self::biometric) secret needs the store's): store
+    /// nothing then, and keep the previous secret.
+    pub fn app_gate(&self, can_authenticate: bool) -> Result<bool, DeviceError> {
+        match (self.biometric || self.confirm_owner, self.confirm_owner) {
+            (false, _) => Ok(false),
+            (true, true) if can_authenticate => Ok(true),
+            (true, _) => Err(DeviceError::Unavailable),
+        }
     }
 }
 
@@ -341,6 +378,8 @@ impl SecureStorage<'_> {
         mut options: SecureOptions,
     ) -> Result<(), DeviceError> {
         options.shared |= self.shared;
+        // The owner's check, by the store where it can (S22).
+        options.biometric |= options.confirm_owner;
         let call = DeviceCall::SecureSet {
             key: key.to_string(),
             value: value.to_string(),
@@ -511,6 +550,25 @@ impl AsyncApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S22: Credential Manager and the Secret Service give any process of
+    /// the user the stored value: a prompt before Prism returns it does not
+    /// protect it. A `biometric` secret needs the store's own owner check,
+    /// so these stores refuse it; `confirm_owner` asks for the app's check.
+    #[test]
+    fn s22_stores_without_an_owner_check_refuse_biometric_secrets() {
+        let biometric = SecureOptions::new().biometric();
+        assert_eq!(biometric.app_gate(true), Err(DeviceError::Unavailable));
+        assert_eq!(biometric.app_gate(false), Err(DeviceError::Unavailable));
+        assert_eq!(SecureOptions::new().app_gate(true), Ok(false));
+        assert_eq!(SecureOptions::new().app_gate(false), Ok(false));
+        // The app's own check, when the app accepts it.
+        let confirm = SecureOptions::new().confirm_owner();
+        assert_eq!(confirm.app_gate(true), Ok(true));
+        assert_eq!(confirm.app_gate(false), Err(DeviceError::Unavailable));
+        // As `set_with` sends it: both.
+        assert_eq!(confirm.biometric().app_gate(true), Ok(true));
+    }
 
     #[test]
     fn biometry_from_fields() {
