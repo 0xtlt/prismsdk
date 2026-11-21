@@ -527,6 +527,11 @@ struct Node {
     /// A 3D scene: a count of its updates (`scene` ops, applied to its
     /// `PrismSceneHost` as they come).
     var sceneVersion = 0
+    /// A table's cells (`table` op, #284), to forget their place when the
+    /// table changes.
+    var tableCells: [UInt64] = []
+    /// A table's view, one of its rows, or one of its cells.
+    var tablePart: PrismTablePart?
 
     /// `hit_test(false)`: the subtree takes no touch.
     var noHit: Bool { (style["hit"] as? Bool) == false }
@@ -660,6 +665,27 @@ final class PrismStore: ObservableObject {
             case "alert": alert = p["alert"] as? [String: Any]
             case "pointer": nodes[id]?.pointerMask = (p["mask"] as? NSNumber)?.intValue ?? 0
             // No keyboard on a watch (and the Digital Crown scrolls): keys never come.
+            case "table":
+                // A table's rows (#284), the header rows first: each cell's
+                // row and column, and the header cell of its column.
+                for c in nodes[id]?.tableCells ?? [] { nodes[c]?.tablePart = nil }
+                let rows = p["rows"] as? [[String: Any]] ?? []
+                let cellsOf = { (row: [String: Any]) in (row["cells"] as? [NSNumber] ?? []).map(\.uint64Value) }
+                let isHeader = { (row: [String: Any]) in row["header"] as? Bool ?? false }
+                let headers = rows.prefix(while: isHeader).last.map(cellsOf) ?? []
+                var all: [UInt64] = []
+                for (r, row) in rows.enumerated() {
+                    let rowId = (row["id"] as? NSNumber)?.uint64Value ?? 0
+                    nodes[rowId]?.tablePart = .row
+                    for (c, cell) in cellsOf(row).enumerated() {
+                        let header = isHeader(row) ? nil : (c < headers.count ? headers[c] : nil)
+                        nodes[cell]?.tablePart = .cell(PrismCell(row: r, column: c, header: isHeader(row),
+                                                                 columnHeader: header, rowId: rowId))
+                        all.append(cell)
+                    }
+                }
+                nodes[id]?.tableCells = all
+                nodes[id]?.tablePart = .table
             case "keys": break
             case "focus": focus = (id, focus.n + 1)
             // `cx.dismiss_keyboard()` (#29): every field lets go.
@@ -899,7 +925,9 @@ struct NodeView: View {
                     if dx < 0 && n.swipeLeft { send(["t": "swipe", "id": id, "dir": "left"]) }
                     if dx > 0 && n.swipeRight { send(["t": "swipe", "id": id, "dir": "right"]) }
                 }, including: n.swipeLeft || n.swipeRight ? .all : .subviews)
-                .accessibilityLabel(n.label ?? "")
+                .modifier(A11yNode(id: id, node: n))
+                // A heading, a table's column header: the header trait.
+                .accessibilityAddTraits(n.role == "heading" || n.role == "columnheader" ? .isHeader : [])
                 // A drawn radio (#84): a button, selected when it is the choice.
                 .accessibilityAddTraits(n.role == "radio" ? (n.checked == true ? [.isButton, .isSelected] : .isButton) : [])
                 .accessibilityHidden(n.a11yHidden || n.inert)
@@ -1150,6 +1178,141 @@ struct ControlEnvironment: ViewModifier {
         let current = Locale.current
         guard !lang.isEmpty, current.language.languageCode?.identifier != lang else { return current }
         return Locale(identifier: current.region.map { "\(lang)_\($0.identifier)" } ?? lang)
+    }
+}
+
+/// A table's part (#284): the `table` op names the table, its rows and its
+/// cells.
+enum PrismTablePart {
+    case table, row
+    case cell(PrismCell)
+}
+
+/// A table's cell: its row and column, whether it is in a header row, its
+/// column's header cell (none in a header row) and its row.
+struct PrismCell {
+    let row: Int
+    let column: Int
+    let header: Bool
+    let columnHeader: UInt64?
+    let rowId: UInt64
+}
+
+private struct PrismColumnHeaderKey: EnvironmentKey {
+    static let defaultValue: String? = nil
+}
+
+extension EnvironmentValues {
+    /// The column header of the table cell a view sits in (#284).
+    var prismColumnHeader: String? {
+        get { self[PrismColumnHeaderKey.self] }
+        set { self[PrismColumnHeaderKey.self] = newValue }
+    }
+}
+
+/// What VoiceOver reads of a node: its label (none: SwiftUI's own, a
+/// text's words). Tables (#284): watchOS has no data table for VoiceOver
+/// (`UIAccessibilityContainerDataTable` and `accessibilityContainerType` are
+/// `API_UNAVAILABLE(watchos)`, SwiftUI's `Table` too), so a table is a
+/// container of its cells, row by row. A cell of text is one element (a
+/// header cell with the header trait); a cell holding a control is a
+/// container, so each control is reached and activated on its own. Each
+/// element of a cell lists its column's header in VoiceOver's More Content
+/// rotor (`accessibilityCustomContent`), and a cell of a clickable row
+/// clicks the row.
+struct A11yNode: ViewModifier {
+    @ObservedObject var store = PrismStore.shared
+    @Environment(\.prismColumnHeader) var columnHeader
+    let id: UInt64
+    let node: Node
+
+    /// Kinds VoiceOver reads as elements of their own.
+    static let leaves: Set<String> = ["text", "button", "toggle", "text_input", "text_area", "slider", "picker",
+                                      "date_picker", "checkbox", "radio_group", "image", "timer", "progress", "spinner"]
+    static let controls: Set<String> = ["button", "toggle", "text_input", "text_area", "slider", "picker",
+                                        "date_picker", "checkbox", "radio_group"]
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        switch node.tablePart {
+        case .table:
+            content.accessibilityElement(children: .contain).modifier(A11yLabel(label: node.label))
+        case .row:
+            content
+        case .cell(let cell):
+            let header = cell.columnHeader.flatMap(spoken)
+            if holdsControl(node) {
+                content.accessibilityElement(children: .contain)
+                    .environment(\.prismColumnHeader, header)
+            } else {
+                let rowClickable = store.nodes[cell.rowId]?.clickable == true
+                content.accessibilityElement(children: node.label == nil ? .combine : .ignore)
+                    .modifier(A11yLabel(label: node.label))
+                    .accessibilityAddTraits(cell.header ? .isHeader : [])
+                    .modifier(ColumnHeaderContent(header: header, value: node.label ?? spoken(id)))
+                    .modifier(RowClick(row: rowClickable ? cell.rowId : nil))
+            }
+        case nil:
+            content.modifier(A11yLabel(label: node.label))
+                .modifier(ColumnHeaderContent(header: Self.leaves.contains(node.kind) ? columnHeader : nil,
+                                              value: node.label ?? node.text))
+        }
+    }
+
+    /// A control (or a link, a clickable view) below `n`.
+    private func holdsControl(_ n: Node) -> Bool {
+        n.children.contains { c in
+            guard let child = store.nodes[c], !child.hidden, !child.a11yHidden else { return false }
+            return Self.controls.contains(child.kind) || child.clickable || child.role == "link" || holdsControl(child)
+        }
+    }
+
+    /// What a cell says: its label, else its texts.
+    private func spoken(_ id: UInt64) -> String? {
+        guard let n = store.nodes[id] else { return nil }
+        if let label = n.label, !label.isEmpty { return label }
+        if n.kind == "text" { return n.text }
+        let words = n.children.compactMap(spoken).filter { !$0.isEmpty }
+        return words.isEmpty ? nil : words.joined(separator: ", ")
+    }
+}
+
+/// A node's own label; none leaves SwiftUI's (a text's words).
+struct A11yLabel: ViewModifier {
+    let label: String?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let label { content.accessibilityLabel(label) } else { content }
+    }
+}
+
+/// A table cell's column header, in VoiceOver's More Content rotor.
+struct ColumnHeaderContent: ViewModifier {
+    let header: String?
+    let value: String?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let header, !header.isEmpty {
+            content.accessibilityCustomContent(Text(header), Text(value ?? ""))
+        } else {
+            content
+        }
+    }
+}
+
+/// VoiceOver's activation of a cell of a clickable row clicks the row.
+struct RowClick: ViewModifier {
+    let row: UInt64?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let row {
+            content.accessibilityAction { send(["t": "click", "id": row]) }
+        } else {
+            content
+        }
     }
 }
 
