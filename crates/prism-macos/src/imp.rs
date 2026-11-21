@@ -5754,8 +5754,6 @@ fn press_segment(view: &NSView, title: &str) -> bool {
     false
 }
 
-/// The visible view whose accessibility label, button title or placeholder
-/// is `label` (dev hooks).
 /// The first accessibility element under `o` labelled (or titled) `label`,
 /// down the accessibility children as VoiceOver goes.
 fn find_element(o: &AnyObject, label: &str, depth: usize) -> Option<Retained<AnyObject>> {
@@ -5781,6 +5779,8 @@ fn find_element(o: &AnyObject, label: &str, depth: usize) -> Option<Retained<Any
     None
 }
 
+/// The visible view whose accessibility label, button title or placeholder
+/// is `label` (dev hooks).
 fn find_labelled(view: &NSView, label: &str) -> Option<Retained<NSView>> {
     for sub in view.subviews().iter() {
         if sub.isHiddenOrHasHiddenAncestor() {
