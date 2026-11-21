@@ -169,6 +169,8 @@ fn run_step(step: &str) -> bool {
         scroll(y);
         return true;
     }
+    // What waits off screen is made now: the step may look for it.
+    with_state(|s| crate::defer::show_all(&mut s.renderer.widgets));
     // `hover:`, `drag:`, `swipe:`, `wheel:`: real mouse input.
     if let Some(found) = crate::inject::step(step) {
         return found;

@@ -241,8 +241,9 @@ impl Win {
     pub fn flush(&mut self) {
         let _t = crate::perf::span(crate::perf::Cost::Flush);
         // New nodes out of view wait; those scrolled into view show.
-        crate::defer::collapse_fresh(self);
+        crate::defer::settle(self);
         crate::defer::scrolled(self);
+        crate::defer::anchors(self);
         let bars: Vec<NodeId> = self.bars.drain().collect();
         for id in bars {
             let (Some(n), Some(v)) = (self.scene.get(id), self.views.get_mut(&id)) else {
@@ -307,7 +308,7 @@ impl Win {
 
     /// Wires clicks, hover and press once a node needs them; makes the
     /// node hit-testable.
-    fn update_hit(&mut self, id: NodeId) {
+    pub(crate) fn update_hit(&mut self, id: NodeId) {
         let Some(n) = self.scene.get(id) else { return };
         let hover = n.reports.contains(prism_core::Interaction::Hover)
             || n.reports.contains(prism_core::Interaction::Active);
@@ -353,7 +354,7 @@ impl Win {
     }
 
     /// A field's text from the app, unless it is the echo of typing.
-    fn set_field_text(&mut self, id: NodeId, text: &str) {
+    pub(crate) fn set_field_text(&mut self, id: NodeId, text: &str) {
         let Some(v) = self.views.get(&id) else { return };
         let current = controls::field_text(&v.content).unwrap_or_default();
         let takes = self
@@ -452,28 +453,14 @@ impl Widgets for Win {
     fn create(&mut self, id: NodeId, kind: NodeKind) -> NodeId {
         let _t = crate::perf::span(crate::perf::Cost::Create);
         self.scene.create(id, kind);
-        crate::defer::created(id);
         if kind == NodeKind::DatePicker
             && let Some(n) = self.scene.get_mut(id)
         {
             n.value = f64::NAN;
         }
-        match View::new(id, kind) {
-            Ok(v) => {
-                if let Some(c) = v.content.control()
-                    && let Ok(e) = ui(&c)
-                {
-                    let _ = events::focus(&e, id);
-                }
-                if matches!(kind, NodeKind::Scroll | NodeKind::Stack | NodeKind::Tabs) {
-                    self.bars.insert(id);
-                }
-                self.views.insert(id, v);
-                if kind == NodeKind::Overlay {
-                    self.new_overlay(id);
-                }
-            }
-            Err(e) => log!("node {id} ({kind:?}): {e}"),
+        // Off-screen content gets its elements later (`defer.rs`).
+        if !crate::defer::created(id, kind) {
+            self.make_view(id, kind);
         }
         id
     }
@@ -547,6 +534,9 @@ impl Widgets for Win {
             self.measurer.forget(id);
         }
         let value = n.value;
+        if matches!(n.kind, NodeKind::Picker | NodeKind::DatePicker) {
+            crate::defer::mark(id, crate::defer::VALUE);
+        }
         self.restyle(id);
         if let (Some(n), Some(v)) = (self.scene.get(id), self.views.get(&id))
             && matches!(n.kind, NodeKind::Picker | NodeKind::DatePicker)
@@ -568,43 +558,10 @@ impl Widgets for Win {
         // A closing panel keeps its content while it animates out.
         self.overlay_children(id, children);
         self.scene.set_children(id, children);
-        let list: Vec<(NodeId, UIElement)> = children
-            .iter()
-            .filter_map(|c| self.outer(*c).map(|e| (*c, e)))
-            .collect();
-        // Children moving here from another parent (a fixed node hoisted to
-        // its screen) leave it first; those leaving go nowhere yet.
-        for (c, e) in &list {
-            if let Some(old) = self.parents.insert(*c, id)
-                && old != id
-                && let Some(v) = self.views.get_mut(&old)
-            {
-                let _ = v.remove_child(*c, e);
-            }
-        }
-        let gone: Vec<NodeId> = self
-            .views
-            .get(&id)
-            .map(|v| {
-                v.children
-                    .iter()
-                    .filter(|c| !children.contains(c))
-                    .copied()
-                    .collect()
-            })
-            .unwrap_or_default();
-        for c in gone {
-            if self.parents.get(&c) == Some(&id) {
-                self.parents.remove(&c);
-            }
-        }
-        if let Some(v) = self.views.get_mut(&id)
-            && let Err(e) = v.set_children(&list)
-        {
-            log!("children of node {id}: {e}");
-        }
+        self.link_children(id, children);
+        // A lazy child moved here waits or gets its elements as new ones do.
         for c in children {
-            self.update_visibility(*c);
+            crate::defer::joined(*c);
         }
         if self
             .scene
@@ -617,6 +574,8 @@ impl Widgets for Win {
 
     fn set_root(&mut self, view: &NodeId) {
         self.scene.root = Some(*view);
+        // The window's content has its elements at once.
+        self.ensure_view(*view);
         self.mount();
     }
 
@@ -828,6 +787,7 @@ impl Widgets for Win {
         let enabled_changed = n.a11y.disabled != a11y.disabled
             || (self.palette.forced.is_some() && n.a11y.is_selected() != a11y.is_selected());
         n.a11y = a11y.clone();
+        crate::defer::mark(id, crate::defer::A11Y);
         if let Some(v) = self.views.get(&id)
             && let Err(e) = crate::a11y::apply(v, id, a11y, &n.text)
         {
@@ -849,6 +809,7 @@ impl Widgets for Win {
         }
         let kind = n.kind;
         n.value = value;
+        crate::defer::mark(id, crate::defer::VALUE);
         if kind == NodeKind::Timer {
             n.text = prism_core::timer_text(value, &n.placeholder);
             self.measurer.forget(id);
@@ -900,55 +861,8 @@ impl Widgets for Win {
             return;
         }
         n.config = config.to_string();
-        let field = n.is_text_field();
         self.measurer.forget(id);
-        if field {
-            let swap = self.views.get(&id).and_then(|v| {
-                controls::configure_field(&v.content, id, config)
-                    .ok()
-                    .flatten()
-            });
-            if let Some(content) = swap {
-                self.replace_content(id, content);
-            }
-        } else if let Some(v) = self.views.get_mut(&id) {
-            let was_time = matches!(v.content, Content::Time(_));
-            let old = v.content.element();
-            if let Err(e) = controls::configure(&mut v.content, id, kind, config) {
-                log!("config of node {id}: {e}");
-            }
-            let is_time = matches!(v.content, Content::Time(_));
-            if was_time != is_time && kind == NodeKind::DatePicker {
-                // A time picker in place of the date picker.
-                if let Some(old) = old {
-                    let _ = crate::view::detach(&old);
-                    if let Ok(coll) = v.outer.Children() {
-                        let mut at = 0u32;
-                        if coll.IndexOf(&old, &mut at).unwrap_or(false) {
-                            let _ = coll.RemoveAt(at);
-                        }
-                    }
-                }
-                self.remount_content(id);
-            }
-        }
-        if kind == NodeKind::Video {
-            // The poster.
-            self.show_video(id);
-        }
-        let value = self.scene.get(id).map_or(0., |n| n.value);
-        if let (Some(n), Some(v)) = (self.scene.get(id), self.views.get(&id)) {
-            let _ = controls::set_value(&v.content, n, value);
-        }
-        if self
-            .scene
-            .get(id)
-            .is_some_and(|n| n.kind == NodeKind::Screen)
-            && let Some(p) = self.scene.get(id).and_then(|n| n.parent)
-        {
-            self.bars.insert(p);
-        }
-        self.restyle(id);
+        self.config_view(id, kind);
     }
 
     fn set_icon(&mut self, view: &NodeId, icon: &str) {
@@ -998,6 +912,9 @@ impl Widgets for Win {
         menu: &prism_core::menu::MenuSpec,
         at: Option<(f32, f32)>,
     ) {
+        if let Some(v) = view {
+            crate::defer::reveal(self, *v);
+        }
         let (target, x, y) = match view.and_then(|v| self.outer(*v).map(|e| (*v, e))) {
             Some((v, e)) => {
                 let (x, y) = at.unwrap_or_else(|| {
@@ -1081,6 +998,7 @@ impl Widgets for Win {
             n.pointer_mask = mask;
         }
         crate::pointer::set_mask(*view, mask);
+        crate::defer::mark(*view, crate::defer::POINTER);
         if let Some(v) = self.views.get(view) {
             // Pinches and touch swipes keep their touches.
             let _ = crate::pointer::wire_swipes(&v.outer(), *view);
@@ -1090,6 +1008,7 @@ impl Widgets for Win {
 
     fn set_swipe(&mut self, view: &NodeId, left: bool, right: bool) {
         crate::pointer::set_swipe(*view, left, right);
+        crate::defer::mark(*view, crate::defer::POINTER);
         if let Some(v) = self.views.get(view)
             && let Err(e) = crate::pointer::wire_swipes(&v.outer(), *view)
         {
@@ -1103,6 +1022,7 @@ impl Widgets for Win {
     }
 
     fn set_drop_target(&mut self, view: &NodeId, types: Option<&[String]>) {
+        self.ensure_view(*view);
         if let Some(v) = self.views.get(view)
             && let Err(e) = crate::drops::set_target(&v.outer, *view, types)
         {
@@ -1112,6 +1032,7 @@ impl Widgets for Win {
     }
 
     fn set_drag_preview(&mut self, view: &NodeId, at: Option<(f32, f32)>) {
+        self.ensure_view(*view);
         self.drag_preview(*view, at);
     }
 
@@ -1145,6 +1066,7 @@ impl Widgets for Win {
     }
 
     fn set_remote_carets(&mut self, view: &NodeId, carets: &[prism_core::RemoteCaret]) {
+        self.ensure_view(*view);
         if let Some(v) = self.views.get(view)
             && let Some(f) = crate::carets::Field::of(&v.content)
         {
@@ -1153,6 +1075,7 @@ impl Widgets for Win {
     }
 
     fn set_selection_highlight(&mut self, view: &NodeId, start: usize, end: usize) {
+        self.ensure_view(*view);
         if let Some(v) = self.views.get(view)
             && let Some(f) = crate::carets::Field::of(&v.content)
         {
@@ -1180,6 +1103,7 @@ impl Widgets for Win {
     }
 
     fn set_selection(&mut self, view: &NodeId, start: usize, end: usize) {
+        self.ensure_view(*view);
         match self.views.get(view).map(|v| &v.content) {
             Some(Content::Field(t)) => {
                 let text = t.Text().map(|s| s.to_string()).unwrap_or_default();
@@ -1246,6 +1170,9 @@ impl Widgets for Win {
 
     fn set_layers(&mut self, layers: &[NodeId]) {
         self.scene.layers = layers.to_vec();
+        for l in layers {
+            self.ensure_view(*l);
+        }
         self.mount();
     }
 
@@ -1283,11 +1210,139 @@ impl Widgets for Win {
         style: &Style,
         repeat: Option<(prism_core::Pose, prism_core::Transition)>,
     ) {
+        if repeat.is_some() {
+            self.ensure_view(*view);
+        }
         self.repeat_style(*view, style, repeat);
     }
 }
 
 impl Win {
+    /// The elements of node `id`'s children in its own, in order: those
+    /// that have elements (a lazy child joins once made, `defer.rs`).
+    pub(crate) fn link_children(&mut self, id: NodeId, children: &[NodeId]) {
+        let list: Vec<(NodeId, UIElement)> = children
+            .iter()
+            .filter_map(|c| self.outer(*c).map(|e| (*c, e)))
+            .collect();
+        // Children moving here from another parent (a fixed node hoisted to
+        // its screen) leave it first; those leaving go nowhere yet.
+        for (c, e) in &list {
+            if let Some(old) = self.parents.insert(*c, id)
+                && old != id
+                && let Some(v) = self.views.get_mut(&old)
+            {
+                let _ = v.remove_child(*c, e);
+            }
+        }
+        let gone: Vec<NodeId> = self
+            .views
+            .get(&id)
+            .map(|v| {
+                v.children
+                    .iter()
+                    .filter(|c| !children.contains(c))
+                    .copied()
+                    .collect()
+            })
+            .unwrap_or_default();
+        for c in gone {
+            if self.parents.get(&c) == Some(&id) {
+                self.parents.remove(&c);
+            }
+        }
+        if let Some(v) = self.views.get_mut(&id)
+            && let Err(e) = v.set_children(&list)
+        {
+            log!("children of node {id}: {e}");
+        }
+        for c in children {
+            self.update_visibility(*c);
+        }
+    }
+
+    /// Node `id`'s config on its elements (`Widgets::set_config`).
+    pub(crate) fn config_view(&mut self, id: NodeId, kind: NodeKind) {
+        let Some(n) = self.scene.get(id) else {
+            return;
+        };
+        let field = n.is_text_field();
+        let config = n.config.clone();
+        let config = config.as_str();
+        if field {
+            let swap = self.views.get(&id).and_then(|v| {
+                controls::configure_field(&v.content, id, config)
+                    .ok()
+                    .flatten()
+            });
+            if let Some(content) = swap {
+                self.replace_content(id, content);
+            }
+        } else if let Some(v) = self.views.get_mut(&id) {
+            let was_time = matches!(v.content, Content::Time(_));
+            let old = v.content.element();
+            if let Err(e) = controls::configure(&mut v.content, id, kind, config) {
+                log!("config of node {id}: {e}");
+            }
+            let is_time = matches!(v.content, Content::Time(_));
+            if was_time != is_time && kind == NodeKind::DatePicker {
+                // A time picker in place of the date picker.
+                if let Some(old) = old {
+                    let _ = crate::view::detach(&old);
+                    if let Ok(coll) = v.outer.Children() {
+                        let mut at = 0u32;
+                        if coll.IndexOf(&old, &mut at).unwrap_or(false) {
+                            let _ = coll.RemoveAt(at);
+                        }
+                    }
+                }
+                self.remount_content(id);
+            }
+        }
+        if kind == NodeKind::Video {
+            // The poster.
+            self.show_video(id);
+        }
+        let value = self.scene.get(id).map_or(0., |n| n.value);
+        if let (Some(n), Some(v)) = (self.scene.get(id), self.views.get(&id)) {
+            let _ = controls::set_value(&v.content, n, value);
+        }
+        if self
+            .scene
+            .get(id)
+            .is_some_and(|n| n.kind == NodeKind::Screen)
+            && let Some(p) = self.scene.get(id).and_then(|n| n.parent)
+        {
+            self.bars.insert(p);
+        }
+        self.restyle(id);
+    }
+
+    /// Node `id`'s elements (`Widgets::create`, or later for a lazy node).
+    pub(crate) fn make_view(&mut self, id: NodeId, kind: NodeKind) -> bool {
+        match View::new(id, kind) {
+            Ok(v) => {
+                if let Some(c) = v.content.control()
+                    && let Ok(e) = ui(&c)
+                {
+                    let _ = events::focus(&e, id);
+                }
+                if matches!(kind, NodeKind::Scroll | NodeKind::Stack | NodeKind::Tabs) {
+                    self.bars.insert(id);
+                }
+                self.views.insert(id, v);
+                if kind == NodeKind::Overlay {
+                    self.new_overlay(id);
+                }
+                true
+            }
+            Err(e) => {
+                log!("node {id} ({kind:?}): {e}");
+                false
+            }
+        }
+    }
+
     /// A field's content became another control (secure ↔ plain).
     fn replace_content(&mut self, id: NodeId, content: Content) {
         let Some(v) = self.views.get_mut(&id) else {
