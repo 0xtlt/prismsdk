@@ -27,6 +27,7 @@
 //! | tvOS | Keychain | — (no LocalAuthentication) | AuthenticationServices | `ASWebAuthenticationSession` |
 //! | Android | Keystore (AES-GCM) | `BiometricPrompt` | — | Custom Tab or browser + deep link |
 //! | Linux | Secret Service (D-Bus) | fprintd (fingerprint) | — | browser + loopback redirect |
+//! | Windows | Credential Manager | Windows Hello | — | browser + loopback redirect |
 //! | Web | the server, per browser | WebAuthn (platform authenticator) | — | popup + server callback |
 //!
 //! [`Capabilities`](crate::Capabilities) say what the current platform has
@@ -541,7 +542,9 @@ impl AsyncApp {
     /// wants a fresh tap, the page asks for one); Apple platforms:
     /// `ASAuthorizationPlatformPublicKeyCredentialProvider`, which needs the
     /// `webcredentials:` associated domain of the relying party; Android
-    /// 14+: the Credential Manager. `Err(Unavailable)` where there are no
+    /// 14+: the Credential Manager; Windows: `webauthn.dll`, Windows' own
+    /// dialog (the client data's origin is `https://<rpId>`, as a
+    /// browser's). `Err(Unavailable)` where there are no
     /// passkeys (`capabilities().passkeys`), `Err(Cancelled)` when the user
     /// declines.
     pub async fn webauthn_create(&self, options: impl Into<String>) -> Result<String, DeviceError> {
@@ -569,8 +572,9 @@ impl AsyncApp {
     /// the browser has it; iOS, iPadOS, visionOS:
     /// `ASAuthorizationController.performAutoFillAssistedRequests` (the
     /// field gets `textContentType = .username` from its `autocomplete`).
-    /// `Err(Unavailable)` elsewhere (macOS, Android, older browsers): keep a
-    /// « Sign in with a passkey » button calling `webauthn_get`.
+    /// `Err(Unavailable)` elsewhere (macOS, Windows, Android, older
+    /// browsers): keep a « Sign in with a passkey » button calling
+    /// `webauthn_get`.
     pub async fn webauthn_autofill(
         &self,
         options: impl Into<String>,

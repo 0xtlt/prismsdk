@@ -18,14 +18,14 @@
 //! cx.share(Share::text("Look").url("https://example.com"));
 //! ```
 //!
-//! | | iOS | macOS | Web |
-//! |---|---|---|---|
-//! | Location | CoreLocation | CoreLocation | `navigator.geolocation` |
-//! | Motion | CoreMotion | — | `devicemotion` / `deviceorientation` |
-//! | Photos | PHPicker | open panel | `<input type=file>` |
-//! | Camera | UIImagePickerController | — | `capture` input (mobile) |
-//! | Haptics | UIFeedbackGenerator | trackpad (NSHapticFeedback) | `navigator.vibrate` |
-//! | Clipboard, share, URLs | UIPasteboard, share sheet, `open` | NSPasteboard, sharing picker, NSWorkspace | Clipboard API, Web Share, `window.open` |
+//! | | iOS | macOS | Windows | Web |
+//! |---|---|---|---|---|
+//! | Location | CoreLocation | CoreLocation | `Geolocator` | `navigator.geolocation` |
+//! | Motion | CoreMotion | — | `Windows.Devices.Sensors` | `devicemotion` / `deviceorientation` |
+//! | Photos | PHPicker | open panel | file dialog | `<input type=file>` |
+//! | Camera | UIImagePickerController | — | the Camera app's capture UI | `capture` input (mobile) |
+//! | Haptics | UIFeedbackGenerator | trackpad (NSHapticFeedback) | `VibrationDevice` | `navigator.vibrate` |
+//! | Clipboard, share, URLs | UIPasteboard, share sheet, `open` | NSPasteboard, sharing picker, NSWorkspace | clipboard, Share dialog, `ShellExecuteW` | Clipboard API, Web Share, `window.open` |
 //!
 //! On Apple platforms, each permission needs a usage text in Info.plist:
 //! `prism` adds them from `[permissions]` in `Prism.toml`.
