@@ -517,7 +517,7 @@ pub fn attributed(t: &StyledText) -> Retained<NSAttributedString> {
 }
 
 /// An SF Symbol at the run's size and weight, in its color.
-fn symbol(name: &str, font: &FontSpec, color: &UIColor) -> Option<Retained<UIImage>> {
+pub(crate) fn symbol(name: &str, font: &FontSpec, color: &UIColor) -> Option<Retained<UIImage>> {
     let config = UIImageSymbolConfiguration::configurationWithPointSize_weight(
         font.size as f64,
         crate::imp::symbol_weight_for(font.weight),
