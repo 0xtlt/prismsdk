@@ -6,7 +6,8 @@
 //! Inline links (and a clickable text) react to clicks, take keyboard focus
 //! with Full Keyboard Access (Tab moves from link to link, Space or Return
 //! activates), and are VoiceOver actions of the paragraph, which reads as one
-//! element.
+//! element. A link or a clickable text is that element itself (with its role,
+//! label and press), not AppKit's `NSTextFieldCell`, which reads as plain text.
 
 use std::cell::{Cell, RefCell};
 
@@ -162,6 +163,45 @@ define_class!(
             }
         }
 
+        // A link or a clickable text is the element VoiceOver reads: AppKit
+        // would hand it the text field's cell instead (an `NSTextFieldCell`,
+        // static text without the role, label, press and link actions set
+        // here), so a link read as plain text and could not be pressed.
+        #[unsafe(method(isAccessibilityElement))]
+        fn is_accessibility_element(&self) -> bool {
+            self.interactive() || unsafe { msg_send![super(self), isAccessibilityElement] }
+        }
+
+        #[unsafe(method(accessibilityIsIgnored))]
+        fn accessibility_is_ignored(&self) -> bool {
+            !self.interactive() && unsafe { msg_send![super(self), accessibilityIsIgnored] }
+        }
+
+        #[unsafe(method_id(accessibilityChildren))]
+        fn accessibility_children(&self) -> Option<Retained<NSArray>> {
+            if self.interactive() {
+                Some(NSArray::new())
+            } else {
+                unsafe { msg_send![super(self), accessibilityChildren] }
+            }
+        }
+
+        /// Its own label, else for a link or a button its text (a text
+        /// reads its value).
+        #[unsafe(method_id(accessibilityLabel))]
+        fn accessibility_label(&self) -> Option<Retained<NSString>> {
+            let own: Option<Retained<NSString>> =
+                unsafe { msg_send![super(self), accessibilityLabel] };
+            if own.as_ref().is_some_and(|l| l.length() > 0)
+                || !self.interactive()
+                || self.reads_value()
+            {
+                own
+            } else {
+                Some(NSString::from_str(&self.ivars().text.borrow()))
+            }
+        }
+
         #[unsafe(method(focusRingMaskBounds))]
         fn focus_ring_mask_bounds(&self) -> NSRect {
             self.bounds()
@@ -248,6 +288,14 @@ impl PrismLabel {
         } else if self.ivars().clickable.get() {
             dispatch(UiEvent::Click(self.ivars().id.get()));
         }
+    }
+
+    /// A text (not a link or a button): VoiceOver reads its value.
+    fn reads_value(&self) -> bool {
+        use objc2_app_kit::NSAccessibility;
+        let view: &NSView = self;
+        view.accessibilityRole().as_deref()
+            == Some(unsafe { objc2_app_kit::NSAccessibilityStaticTextRole })
     }
 
     fn interactive(&self) -> bool {

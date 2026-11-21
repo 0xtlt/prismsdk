@@ -857,14 +857,25 @@ define_class!(
             crate::table::cell_at(self, column, row)
         }
 
-        /// VoiceOver "press" on a clickable view.
+        /// A table cell holding a control (#284) has no label of its own:
+        /// VoiceOver reads what it holds ("Track, button"), not its text.
+        #[unsafe(method_id(accessibilityLabel))]
+        fn accessibility_label(&self) -> Option<Retained<NSString>> {
+            if self.is_cell() && !crate::table::controls(self).is_empty() {
+                None
+            } else {
+                unsafe { msg_send![super(self), accessibilityLabel] }
+            }
+        }
+
+        /// VoiceOver "press" on a clickable view, or on a table cell (#284).
         #[unsafe(method(accessibilityPerformPress))]
         fn accessibility_perform_press(&self) -> objc2::runtime::Bool {
-            if !self.ivars().clickable.get() {
-                return objc2::runtime::Bool::NO;
+            if self.ivars().clickable.get() {
+                dispatch(UiEvent::Click(self.ivars().id.get()));
+                return objc2::runtime::Bool::YES;
             }
-            dispatch(UiEvent::Click(self.ivars().id.get()));
-            objc2::runtime::Bool::YES
+            objc2::runtime::Bool::new(self.is_cell() && self.press_cell())
         }
 
         // Like native buttons (#177): clickable views take the focus (a
@@ -1290,6 +1301,41 @@ fn gesture_phase(
 }
 
 impl PrismView {
+    fn is_cell(&self) -> bool {
+        self.accessibilityRole().as_deref()
+            == Some(unsafe { objc2_app_kit::NSAccessibilityCellRole })
+    }
+
+    /// VoiceOver's press on a table cell (#284): the control it holds when
+    /// it holds one, else its row when the row is clickable.
+    fn press_cell(&self) -> bool {
+        match &crate::table::controls(self)[..] {
+            [control] => {
+                let done: objc2::runtime::Bool =
+                    unsafe { msg_send![&**control, accessibilityPerformPress] };
+                done.as_bool()
+            }
+            [] => {
+                let row = unsafe { objc2_app_kit::NSAccessibilityRowRole };
+                // SAFETY: the view's superview, on the main thread.
+                let Some(up) = (unsafe { self.superview() }) else {
+                    return false;
+                };
+                match up.downcast_ref::<PrismView>() {
+                    Some(up)
+                        if up.accessibilityRole().as_deref() == Some(row)
+                            && up.ivars().clickable.get() =>
+                    {
+                        dispatch(UiEvent::Click(up.ivars().id.get()));
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
     /// Reports the pointer entering, moving over or leaving the view.
     fn pointer(&self, phase: PointerPhase, event: &NSEvent) {
         use prism_core::events::pointer_mask::{HOVER, MOVE};
@@ -5710,6 +5756,31 @@ fn press_segment(view: &NSView, title: &str) -> bool {
 
 /// The visible view whose accessibility label, button title or placeholder
 /// is `label` (dev hooks).
+/// The first accessibility element under `o` labelled (or titled) `label`,
+/// down the accessibility children as VoiceOver goes.
+fn find_element(o: &AnyObject, label: &str, depth: usize) -> Option<Retained<AnyObject>> {
+    if depth > 64 {
+        return None;
+    }
+    // SAFETY: NSAccessibility getters of views and accessibility elements.
+    let children: Option<Retained<NSArray>> = unsafe { msg_send![o, accessibilityChildren] };
+    for c in children?.to_vec() {
+        let named: [Option<Retained<NSString>>; 2] = unsafe {
+            [
+                msg_send![&*c, accessibilityLabel],
+                msg_send![&*c, accessibilityTitle],
+            ]
+        };
+        if named.iter().flatten().any(|s| s.to_string() == label) {
+            return Some(c);
+        }
+        if let Some(found) = find_element(&c, label, depth + 1) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 fn find_labelled(view: &NSView, label: &str) -> Option<Retained<NSView>> {
     for sub in view.subviews().iter() {
         if sub.isHiddenOrHasHiddenAncestor() {
@@ -6035,6 +6106,31 @@ fn run_automation(mtm: MainThreadMarker) {
                     );
                 }
                 None => eprintln!("prism-macos: PRISM_INCREMENT: nothing labelled {label:?}"),
+            }
+        }
+    }
+
+    // `PRISM_A11Y_PRESS="Rebook|Boarding"`: VoiceOver's press on the first
+    // element labelled (or titled) so, reached the way VoiceOver reaches it:
+    // down the accessibility children, not the views.
+    thread_local! {
+        static A11Y_PRESSED: Cell<bool> = const { Cell::new(false) };
+    }
+    if let Ok(labels) = std::env::var("PRISM_A11Y_PRESS")
+        && !A11Y_PRESSED.with(|c| c.replace(true))
+    {
+        for label in labels.split('|').filter(|t| !t.is_empty()) {
+            match find_element(&root, label, 0) {
+                Some(e) => {
+                    let done: objc2::runtime::Bool =
+                        unsafe { msg_send![&*e, accessibilityPerformPress] };
+                    println!(
+                        "prism-macos: PRISM_A11Y_PRESS: {label:?} ({}) returned {}",
+                        e.class().name().to_str().unwrap_or("?"),
+                        done.as_bool()
+                    );
+                }
+                None => eprintln!("prism-macos: PRISM_A11Y_PRESS: nothing labelled {label:?}"),
             }
         }
     }
