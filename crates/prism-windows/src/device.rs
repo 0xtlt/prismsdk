@@ -2,7 +2,7 @@
 //! `sensors.rs`): accuracy settings, Windows' times and missing values as
 //! Prism's positions, the privacy settings' values as permission states,
 //! haptic patterns as waveforms, sensor readings as motion samples, a
-//! share's text, the file names logs give. No WinRT: tested on every host.
+//! share's text, the file names logs give, async answers given once. No WinRT: tested on every host.
 
 #![cfg_attr(not(target_os = "windows"), allow(dead_code))]
 
@@ -242,6 +242,30 @@ impl Fusion {
     }
 }
 
+/// Gives `then` the result of an async call started by `start`, exactly
+/// once. `start` gets the callback to hand the call (windows-rs `when`);
+/// when it fails, it has dropped that callback without calling it, so
+/// `then` gets `start`'s error instead: a device call always answers.
+pub fn answered<R, E, F, S>(then: F, start: S)
+where
+    F: FnOnce(Result<R, E>) + Send + 'static,
+    S: FnOnce(Box<dyn FnOnce(Result<R, E>) + Send>) -> Result<(), E>,
+{
+    let slot = std::sync::Arc::new(std::sync::Mutex::new(Some(then)));
+    let take = |s: &std::sync::Mutex<Option<F>>| s.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let ours = slot.clone();
+    let r = start(Box::new(move |r| {
+        if let Some(then) = take(&ours) {
+            then(r);
+        }
+    }));
+    if let Err(e) = r
+        && let Some(then) = take(&slot)
+    {
+        then(Err(e));
+    }
+}
+
 /// The text a share gives targets that read only text: the text, then
 /// the link on its own line, as on Android; the link alone when there is
 /// no text.
@@ -265,6 +289,57 @@ pub fn file_name(path: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_async_call_always_answers_once() {
+        use std::sync::mpsc::channel;
+        type Done = Box<dyn FnOnce(Result<i32, &'static str>) + Send>;
+        // Answered by the call, now or later.
+        let (tx, rx) = channel();
+        answered(
+            move |r| tx.send(r).unwrap(),
+            |cb: Done| {
+                cb(Ok(1));
+                Ok(())
+            },
+        );
+        assert_eq!(rx.try_iter().collect::<Vec<_>>(), [Ok(1)]);
+        let (tx, rx) = channel();
+        let mut later = None;
+        answered(
+            move |r| tx.send(r).unwrap(),
+            |cb: Done| {
+                later = Some(cb);
+                Ok(())
+            },
+        );
+        assert!(rx.try_recv().is_err());
+        later.unwrap()(Ok(2));
+        assert_eq!(rx.try_iter().collect::<Vec<_>>(), [Ok(2)]);
+        // The call could not be waited on: windows-rs dropped the callback.
+        let (tx, rx) = channel();
+        answered(
+            move |r| tx.send(r).unwrap(),
+            |cb: Done| {
+                drop(cb);
+                Err("SetCompleted failed")
+            },
+        );
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            [Err("SetCompleted failed")]
+        );
+        // Never twice.
+        let (tx, rx) = channel();
+        answered(
+            move |r| tx.send(r).unwrap(),
+            |cb: Done| {
+                cb(Ok(3));
+                Err("late")
+            },
+        );
+        assert_eq!(rx.try_iter().collect::<Vec<_>>(), [Ok(3)]);
+    }
 
     #[test]
     fn text_only_targets_get_the_link_too() {

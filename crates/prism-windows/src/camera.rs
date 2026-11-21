@@ -277,9 +277,8 @@ pub fn take_photo(
                     );
                 }
             };
-            let t = token.clone();
-            let p = path.clone();
-            let r = op.when(move |r| {
+            // Always answers: the token and an empty file go either way.
+            crate::win::when("camera", &op, move |r| {
                 let answer = match r {
                     Ok(r) => answer(&r),
                     Err(e) => Err(DeviceError::Failed(format!("camera: {}", e.message()))),
@@ -287,16 +286,13 @@ pub fn take_photo(
                 // Redeeming waits: off Windows' callback thread.
                 std::thread::spawn(move || {
                     let r = match answer {
-                        Ok(Some(selected)) => photo(&p, &selected),
+                        Ok(Some(selected)) => photo(&path, &selected),
                         Ok(None) => Err(DeviceError::Cancelled),
                         Err(e) => Err(e),
                     };
-                    finish(r, t, p);
+                    finish(r, token, path);
                 });
             });
-            if let Err(e) = r {
-                log!("camera: {e}");
-            }
         });
     });
 }

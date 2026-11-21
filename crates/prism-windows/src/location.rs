@@ -187,18 +187,16 @@ pub fn request(done: impl FnOnce(PermissionState) + Send + 'static) {
             return done(permission());
         }
     };
-    let r = op.when(move |r| {
+    // Always answers, so a watch waiting for it is started or removed.
+    crate::win::when("location", &op, move |r| {
         let state = match r {
             Ok(GeolocationAccessStatus::Allowed) => PermissionState::Granted,
             Ok(GeolocationAccessStatus::Denied) => PermissionState::Denied,
-            // Unspecified: what the settings say.
+            // Unspecified, or no answer: what the settings say.
             _ => permission(),
         };
         crate::shell::on_ui(move || done(state));
     });
-    if let Err(e) = r {
-        log!("location: {e}");
-    }
 }
 
 fn locator(s: &Settings) -> windows::core::Result<Geolocator> {

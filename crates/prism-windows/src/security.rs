@@ -325,7 +325,7 @@ pub fn authenticate(owner: HWND, reason: &str, done: impl FnOnce(Answer) + Send 
                 Ok(op) => op,
                 Err(e) => return done(Err(failed(e.message()))),
             };
-            let r = op.when(move |r| {
+            crate::win::when("Windows Hello", &op, move |r| {
                 let answer = match r {
                     Ok(UserConsentVerificationResult::Verified) => Ok(DeviceValue::Done),
                     Ok(UserConsentVerificationResult::Canceled) => Err(DeviceError::Cancelled),
@@ -340,9 +340,6 @@ pub fn authenticate(owner: HWND, reason: &str, done: impl FnOnce(Answer) + Send 
                 };
                 crate::shell::on_ui(move || done(answer));
             });
-            if let Err(e) = r {
-                log!("Windows Hello: {e}");
-            }
         });
     });
 }
