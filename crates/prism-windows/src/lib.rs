@@ -67,10 +67,10 @@
 //! | `tray`, `icons` | notification area icons and their menus |
 //! | `menubar`, `accel` | the window's menu bar, keyboard accelerators |
 //! | `clipboard` | the clipboard in all its types |
-//! | `fonts` | run-time fonts |
+//! | `fonts`, `faces` | bundled and run-time fonts, a family's files |
 //! | `shell` | the services' hidden window: modal UI, timers, threads |
 //! | `system` | theme, accent, locale, DPI |
-//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access`, `pinch`, `seal`, `dates`, `inputs`, `monitor` | pure helpers, tested on every host |
+//! | `scene`, `keys`, `fluent`, `paint`, `toast`, `accel`, `access`, `pinch`, `seal`, `dates`, `inputs`, `monitor`, `faces` | pure helpers, tested on every host |
 
 // Roles and states for UI Automation: no Win32, tested everywhere.
 mod access;
@@ -116,6 +116,8 @@ mod dxgl;
 mod edit;
 #[cfg(target_os = "windows")]
 mod events;
+// Which file of a font family draws a weight: no Win32, tested everywhere.
+mod faces;
 #[cfg(target_os = "windows")]
 mod fieldicon;
 // Theme colors and control metrics: no Win32, tested everywhere.

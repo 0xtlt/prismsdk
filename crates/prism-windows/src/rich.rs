@@ -207,7 +207,12 @@ impl Rich {
             .filter_map(|(i, r)| {
                 let t = runs.get(i).filter(|t| t.chip.is_some())?;
                 let color = pal.ink(r.color.unwrap_or(pal.text));
-                let family = crate::text::family_name(&r.font.family, r.font.size);
+                let family = crate::text::family_name(
+                    &r.font.family,
+                    r.font.size,
+                    r.font.weight.css(),
+                    r.font.italic,
+                );
                 let look = crate::chips::Look {
                     label: t.chip_label.clone().unwrap_or_default(),
                     icon: t.chip_icon.as_deref().and_then(crate::keys::fluent_icon),
@@ -279,7 +284,12 @@ fn format(
             let cf = doc.GetRange(start, end)?.CharacterFormat()?;
             // RichEdit takes one face (XAML a fallback list) and points
             // (XAML DIPs: 96 a inch, points 72).
-            let family = crate::text::family_name(&r.font.family, r.font.size);
+            let family = crate::text::family_name(
+                &r.font.family,
+                r.font.size,
+                r.font.weight.css(),
+                r.font.italic,
+            );
             let name = h(family.split(',').next().unwrap_or("").trim());
             if cf.Name()? != name {
                 cf.SetName(&name)?;

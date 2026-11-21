@@ -501,6 +501,8 @@ fn field_look(c: Control, n: &Node, color: Color) -> Result<()> {
     c.SetFontFamily(&font(&crate::text::family_name(
         &s.font_family,
         s.font_size,
+        s.font_weight.css(),
+        s.italic,
     ))?)?;
     c.SetFontWeight(weight(s.font_weight))?;
     c.SetIsEnabled(!n.a11y.disabled)?;

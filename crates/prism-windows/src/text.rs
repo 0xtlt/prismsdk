@@ -32,8 +32,9 @@ pub const TEXT_FONT: &str = "Segoe UI Variable Text, Segoe UI";
 pub const DISPLAY_FONT: &str = "Segoe UI Variable Display, Segoe UI";
 pub const ICON_FONT: &str = "Segoe Fluent Icons, Segoe MDL2 Assets";
 
-/// The XAML font family for a Prism family at `size`.
-pub fn family_name(family: &FontFamily, size: f32) -> String {
+/// The XAML font family for a Prism family at `size`, `weight` (CSS) and
+/// `italic` (which file of a bundled or run-time family).
+pub fn family_name(family: &FontFamily, size: f32, weight: u16, italic: bool) -> String {
     match prism_native::fonts::resolve(family) {
         FontFamily::System | FontFamily::Rounded => {
             if size >= 20. {
@@ -44,8 +45,8 @@ pub fn family_name(family: &FontFamily, size: f32) -> String {
         }
         FontFamily::Monospace => "Cascadia Mono, Consolas, Courier New".into(),
         FontFamily::Serif => "Georgia, Cambria, Times New Roman".into(),
-        // A run-time font by its file (`fonts.rs`).
-        FontFamily::Named(name) => match crate::fonts::source(&name) {
+        // A bundled or run-time font by its file (`fonts.rs`).
+        FontFamily::Named(name) => match crate::fonts::source(&name, weight, italic) {
             Some(file) => format!("{file}, Segoe UI"),
             None => format!("{name}, Segoe UI"),
         },
@@ -119,7 +120,12 @@ impl Paragraph {
         let size = first.font.size.max(1.);
         Paragraph {
             size,
-            family: family_name(&first.font.family, size),
+            family: family_name(
+                &first.font.family,
+                size,
+                first.font.weight.css(),
+                first.font.italic,
+            ),
             weight: first.font.weight.css(),
             italic: first.font.italic,
             align: st.align,
@@ -203,7 +209,7 @@ fn set_runs(tb: &TextBlock, st: &StyledText, pal: Option<&Palette>) -> Result<()
         let name = if icon {
             ICON_FONT.to_string()
         } else {
-            family_name(&r.font.family, size)
+            family_name(&r.font.family, size, r.font.weight.css(), r.font.italic)
         };
         run.SetFontFamily(&font(&name)?)?;
         run.SetFontWeight(weight(r.font.weight))?;
