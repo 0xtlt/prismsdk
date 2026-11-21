@@ -16,6 +16,7 @@ pub mod fonts;
 #[cfg(feature = "gl3d")]
 pub mod gl3d;
 pub mod images;
+mod leftovers;
 pub mod remote;
 pub mod save;
 pub mod table;
@@ -29,6 +30,8 @@ mod bench;
 mod padding_tests;
 #[cfg(test)]
 mod table_tests;
+#[cfg(test)]
+mod temp_dir;
 
 use prism_core::{
     Accessibility, Align, Appearance, Backend, Direction, FlexDirection, IdMap, IdSet, Justify,

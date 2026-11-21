@@ -19,3 +19,5 @@ mod patches;
 mod remote_ops;
 #[path = "native/states.rs"]
 mod states;
+#[path = "../src/temp_dir.rs"]
+mod temp_dir;
