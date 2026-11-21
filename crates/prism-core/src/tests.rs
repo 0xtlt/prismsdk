@@ -3420,6 +3420,29 @@ fn device_info_drives_rendering_and_styles() {
 }
 
 #[test]
+fn capabilities_found_after_startup_re_render() {
+    struct Page;
+    impl Render for Page {
+        fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+            let camera = cx.capabilities().camera;
+            text(if camera { "camera" } else { "no camera" })
+        }
+    }
+    let init: AppInit = Arc::new(|cx: &mut App| {
+        let root = cx.new_entity(|_| Page);
+        cx.set_root(root);
+    });
+    let mut rt = Runtime::with_options(&init, crate::RuntimeOptions::default());
+    find_text(&rt.render(), "no camera");
+    let mut caps = rt.app.capabilities();
+    caps.camera = true;
+    find_text(&rt.set_capabilities(caps), "camera");
+    assert!(rt.app.capabilities().camera);
+    // The same capabilities again change nothing.
+    assert!(rt.set_capabilities(caps).is_empty());
+}
+
+#[test]
 fn user_agents_describe_the_visitor_device() {
     use crate::DeviceKind;
     use crate::device_info::{Engine, OsName, Version, parse_user_agent};
