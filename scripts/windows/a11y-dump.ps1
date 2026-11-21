@@ -1,7 +1,8 @@
 <#
 .SYNOPSIS
 Starts a Prism app, waits for its first frame and its PRISM_CLICK steps,
-dumps its UI Automation tree as JSON (uia-dump.ps1 -Json) and stops it.
+presses elements through UI Automation if asked, dumps its UI Automation
+tree as JSON (uia-dump.ps1 -Json) and stops it.
 
 .DESCRIPTION
 Runs in the desktop session (through run-in-session.ps1 from SSH): UI
@@ -25,8 +26,13 @@ param(
     [string] $ClickBase64 = '',
     # More variables, base64 of UTF-8 "NAME=value" lines.
     [string] $EnvBase64 = '',
-    # Seconds to wait after the first frame (the clicks run 1 s after it).
-    [double] $Settle = 3,
+    # Elements to press through UI Automation first, as a screen reader
+    # does (Invoke, else Toggle, else Select): base64 of UTF-8 names, one
+    # per line.
+    [string] $PressBase64 = '',
+    # Seconds to wait after the first frame, for PRISM_CLICK's steps
+    # (PRISM_DELAY after the start) to run.
+    [double] $Settle = 4,
     [double] $TimeoutSeconds = 90
 )
 
@@ -44,7 +50,7 @@ $Out = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($
 $log = [IO.Path]::ChangeExtension($Out, '.log')
 $err = [IO.Path]::ChangeExtension($Out, '.err')
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Out) | Out-Null
-Remove-Item -LiteralPath $Out, $log, $err -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $Out, $log, $err, ([IO.Path]::ChangeExtension($Out, '.press.txt')) -ErrorAction SilentlyContinue
 
 # The app inherits this process's environment.
 $name = [IO.Path]::GetFileNameWithoutExtension($Out)
@@ -71,6 +77,16 @@ try {
         exit 1
     }
     Start-Sleep -Milliseconds ([int]($Settle * 1000))
+    $dump = Join-Path $PSScriptRoot 'uia-dump.ps1'
+    foreach ($name in ((Decode $PressBase64) -split "`r?`n" | Where-Object { $_ })) {
+        $said = & powershell -NoProfile -ExecutionPolicy Bypass -File $dump -Id $app.Id -Invoke $name
+        Add-Content -LiteralPath ([IO.Path]::ChangeExtension($Out, '.press.txt')) -Value "$said"
+        if ($LASTEXITCODE -ne 0) {
+            [Console]::Error.WriteLine("a11y-dump: could not press $name through UI Automation")
+            exit 1
+        }
+        Start-Sleep -Milliseconds 1200
+    }
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'uia-dump.ps1') -Id $app.Id -Json $Out | Out-Null
     if (-not (Test-Path -LiteralPath $Out)) {
         [Console]::Error.WriteLine("a11y-dump: uia-dump wrote nothing for $Exe")

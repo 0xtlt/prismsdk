@@ -110,7 +110,9 @@ fn run_step(step: &str) -> bool {
     // as the app runs, through the system's own message.
     if let Some(value) = step.strip_prefix("contrast:") {
         crate::system::override_contrast(value);
-        return with_state(|s| crate::imp::post_contrast_changed(s.renderer.widgets.hwnd))
+        log!("PRISM_CLICK: contrast theme {value}");
+        return with_state(|s| s.renderer.widgets.hwnd)
+            .map(crate::imp::send_contrast_changed)
             .is_some();
     }
     // `key:Escape`, `key:Tab`, `key:Enter`: the key, as the keyboard sends

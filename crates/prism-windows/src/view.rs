@@ -270,7 +270,13 @@ impl View {
     /// Makes the view a button (`set_clickable`): its children go inside a
     /// chrome-less WinUI `Button` in their place.
     pub fn make_button(&mut self, id: NodeId) -> Result<Option<Button>> {
-        if self.button.is_some() || self.scroll.is_some() || self.kind == NodeKind::Overlay {
+        // A native button is clicked through itself: another button around
+        // it would be an empty Tab stop, nameless for screen readers.
+        if self.button.is_some()
+            || self.scroll.is_some()
+            || self.kind == NodeKind::Overlay
+            || matches!(self.content, Content::Button(..))
+        {
             return Ok(None);
         }
         let b = controls::clickable_host(id)?;

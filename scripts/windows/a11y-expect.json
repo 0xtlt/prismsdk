@@ -4,17 +4,18 @@
     {
       "name": "home",
       "path": "/",
+      "named": true,
       "has": [
         {"type": "Button", "name": "+1", "invoke": true},
-        {"type": "Button", "name": "-1", "invoke": true},
+        {"type": "Button", "name": "−1", "invoke": true},
         {"type": "Edit", "name": "New todo"},
         {"type": "Text", "name": "Todos", "heading": 2},
         {"type": "Button", "name": "~^Try Prism on the web", "invoke": true},
-        {"type": "ListItem", "name": "Todos", "selected": true},
-        {"type": "ListItem", "name": "Settings", "selected": false}
+        {"type": "TabItem", "name": "Todos", "selected": true, "position": [1, 4]},
+        {"type": "TabItem", "name": "Settings", "selected": false}
       ],
       "order": [
-        {"name": "-1"},
+        {"name": "−1"},
         {"name": "+1"},
         {"type": "Edit", "name": "New todo"},
         {"type": "Button", "name": "Add"}
@@ -26,20 +27,22 @@
     {
       "name": "focus",
       "path": "/focus",
+      "named": true,
       "has": [
         {"type": "Group", "name": "Duration"},
         {"type": "Button", "name": "25 min", "within": {"type": "Group", "name": "Duration"}},
         {"type": "Button", "name": "Start focus", "invoke": true},
-        {"type": "ListItem", "name": "Focus", "selected": true}
+        {"type": "TabItem", "name": "Focus", "selected": true}
       ]
     },
     {
       "name": "components",
       "path": "/components",
+      "named": true,
       "has": [
         {"type": "Hyperlink", "name": "Jump to the search field", "invoke": true},
         {"type": "CheckBox", "name": "I accept the terms", "toggle": "Off", "invoke": false},
-        {"type": "Button", "name": "Wi-Fi (custom)", "toggle": "On", "invoke": false},
+        {"type": "Button", "name": "Wi-Fi (custom)", "toggle": "Off", "invoke": false},
         {"type": "Slider", "name": "Level", "value": "~%"},
         {"type": "Button", "name": "Disabled", "disabled": true},
         {"type": "Group", "name": "Frequency"},
@@ -54,26 +57,50 @@
       ]
     },
     {
+      "name": "components_pressed",
+      "path": "/components",
+      "press": ["Wi-Fi (custom)", "I accept the terms"],
+      "named": true,
+      "has": [
+        {"type": "Button", "name": "Wi-Fi (custom)", "toggle": "On"},
+        {"type": "CheckBox", "name": "I accept the terms", "toggle": "On"}
+      ]
+    },
+    {
       "name": "media",
       "path": "/components/media",
+      "named": true,
       "has": [
-        {"type": "ListItem", "name": "Components", "selected": true}
+        {"type": "TabItem", "name": "Components", "selected": true}
       ]
     },
     {
       "name": "settings",
       "path": "/settings",
+      "named": true,
       "has": [
         {"type": "Group", "name": "Appearance"},
         {"type": "Group", "name": "Language"},
+        {"type": "Button", "name": "Blue", "toggle": "Off", "invoke": false},
+        {"type": "Button", "name": "Use native controls", "toggle": "Off"},
+        {"type": "Text", "name": "Accent color", "heading": 2},
+        {"type": "TabItem", "name": "Settings", "selected": true}
+      ]
+    },
+    {
+      "name": "settings_pressed",
+      "path": "/settings",
+      "press": ["Blue", "Square corners"],
+      "named": true,
+      "has": [
         {"type": "Button", "name": "Blue", "toggle": "On"},
-        {"type": "Button", "name": "Purple", "toggle": "Off"},
-        {"type": "ListItem", "name": "Settings", "selected": true}
+        {"type": "Button", "name": "Square corners", "toggle": "On"}
       ]
     },
     {
       "name": "new_todo",
       "path": "/todos/new",
+      "named": true,
       "has": [
         {"type": "Edit"}
       ]
@@ -82,6 +109,7 @@
       "name": "dialog",
       "path": "/components",
       "click": "Delete…",
+      "named": true,
       "has": [
         {"type": "Window", "dialog": true, "name": "Delete this draft?", "count": 1},
         {"type": "Text", "name": "Delete this draft?", "heading": 3, "within": {"type": "Window", "dialog": true}},
@@ -103,6 +131,7 @@
       "name": "sheet",
       "path": "/components",
       "click": "Open a sheet",
+      "named": true,
       "has": [
         {"type": "Window", "dialog": true, "name": "Pick a picture", "count": 1},
         {"type": "Button", "name": "Close", "within": {"type": "Window", "dialog": true}}
@@ -116,13 +145,15 @@
       "name": "popover",
       "path": "/components",
       "click": "Filters",
+      "named": true,
       "has": [
+        {"type": "Window", "className": "Popup"},
         {"type": "Pane", "className": "Flyout"},
         {"type": "CheckBox", "name": "Email me updates", "within": {"type": "Pane", "className": "Flyout"}},
         {"type": "Group", "name": "Frequency", "within": {"type": "Pane", "className": "Flyout"}}
       ],
       "lacks": [
-        {"type": "Window", "dialog": true}
+        {"type": "Window", "dialog": true, "className": ""}
       ]
     }
   ]

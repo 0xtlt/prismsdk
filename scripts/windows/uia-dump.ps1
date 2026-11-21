@@ -129,13 +129,18 @@ function Get-States($element) {
     $s = [ordered]@{}
     $type = $element.Cached.ControlType
     $lt = Get-Cached $element $Props.localizedType
-    if ($lt -and $lt -ne $type.LocalizedControlType) { $s.localizedType = $lt }
+    if ($lt -and ($null -eq $type -or $lt -ne $type.LocalizedControlType)) { $s.localizedType = $lt }
     if ((Get-Cached $element $Props.enabled) -eq $false) { $s.disabled = $true }
     if ((Get-Cached $element $Props.focusable) -eq $true) { $s.focusable = $true }
     $help = Get-Cached $element $Props.help
     if ($help) { $s.help = $help }
+    # 1 to 9 (.NET's AutomationHeadingLevel, or UI Automation's ids from 80050).
     $h = Get-Cached $element $Props.heading
-    if ($null -ne $h -and [int]$h -gt 80050) { $s.heading = [int]$h - 80050 }
+    if ($null -ne $h) {
+        $level = [int]$h
+        if ($level -ge 80050) { $level -= 80050 }
+        if ($level -gt 0) { $s.heading = $level }
+    }
     if ((Get-Cached $element $Props.dialog) -eq $true) { $s.dialog = $true }
     $live = Get-Cached $element $Props.live
     if ($null -ne $live -and [int]$live -gt 0) { $s.live = @('off', 'polite', 'assertive')[[int]$live] }
@@ -189,9 +194,12 @@ function ConvertTo-Node($element, [int] $level) {
             $child = $Walker.GetNextSibling($child, $Cache)
         }
     }
+    # Windows of other frameworks inside (WebView2's) may have none.
+    $type = 'Unknown'
+    if ($null -ne $c.ControlType) { $type = $c.ControlType.ProgrammaticName -replace '^ControlType\.', '' }
     $node = [ordered]@{
         name         = $c.Name
-        type         = $c.ControlType.ProgrammaticName -replace '^ControlType\.', ''
+        type         = $type
         automationId = $c.AutomationId
         className    = $c.ClassName
         bounds       = $bounds

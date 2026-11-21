@@ -149,7 +149,8 @@ impl Win {
                 .root
                 .SetBackground(None::<&crate::winui::xaml::Media::Brush>)?,
         }
-        self.root.SetRequestedTheme(if self.dark() {
+        // The palette's: a contrast theme's darkness wins over the app's.
+        self.root.SetRequestedTheme(if self.palette.dark {
             ElementTheme::Dark
         } else {
             ElementTheme::Light
@@ -168,7 +169,7 @@ impl Win {
     /// The theme changed (system, app, accent): every color again.
     pub fn retheme(&mut self) {
         self.palette = crate::a11y::palette(self.dark(), self.accent);
-        crate::imp::set_dark_title_bar(self.hwnd, self.dark());
+        crate::imp::set_dark_title_bar(self.hwnd, self.palette.dark);
         let _ = self.theme_root();
         let ids: Vec<NodeId> = self.views.keys().copied().collect();
         for id in ids {
@@ -312,18 +313,22 @@ impl Win {
             return;
         };
         let _ = v.set_hit(wants);
+        let mut made = false;
         if clickable && self.clicks.insert(id) {
             match v.make_button(id) {
                 Ok(Some(b)) => {
+                    made = true;
                     if let Ok(e) = ui(&b) {
                         let _ = events::focus(&e, id);
                     }
                     let _ = events::pressed(&b, id);
                     // The name, role and states go on the button.
                     if let Some(n) = self.scene.get(id) {
-                        let _ = crate::a11y::apply(v, id, &n.a11y);
+                        let _ = crate::a11y::apply(v, id, &n.a11y, &n.text);
                     }
                 }
+                // A native button clicks by itself.
+                Ok(None) if matches!(v.content, Content::Button(..)) => {}
                 // Scroll views and leaves: clicked where nothing else is.
                 _ => {
                     let _ = events::clickable(&v.outer, id);
@@ -335,6 +340,10 @@ impl Win {
         }
         if pointer && let Err(e) = crate::pointer::wire(&v.outer, &v.kids, v.button.is_some(), id) {
             log!("pointer input of node {id}: {e}");
+        }
+        // Under a contrast theme a button's colors are the button ones.
+        if made && self.palette.forced.is_some() {
+            self.restyle_tree(id);
         }
     }
 
@@ -794,7 +803,7 @@ impl Widgets for Win {
             || (self.palette.forced.is_some() && n.a11y.is_selected() != a11y.is_selected());
         n.a11y = a11y.clone();
         if let Some(v) = self.views.get(&id)
-            && let Err(e) = crate::a11y::apply(v, id, a11y)
+            && let Err(e) = crate::a11y::apply(v, id, a11y, &n.text)
         {
             log!("accessibility of node {id}: {e}");
         }

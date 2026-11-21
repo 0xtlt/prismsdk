@@ -10,7 +10,9 @@ and checks that:
   that many);
 - no pattern of "lacks" matches an element;
 - the elements of "order" come in that order in the tree (the reading
-  order, and the order the Tab key follows in XAML).
+  order, and the order the Tab key follows in XAML);
+- with "named": true, every control (button, link, field, check box,
+  radio, combo box, slider, tab, list or menu item) has a name.
 
 A pattern is an object of an element's keys (name, type, localizedType,
 toggle, selected, expanded, value, range, disabled, focusable, invoke,
@@ -30,6 +32,10 @@ import re
 import sys
 
 FLAGS = ("disabled", "focusable", "invoke", "dialog")
+CONTROLS = {
+    "Button", "Hyperlink", "Edit", "CheckBox", "RadioButton", "ComboBox", "Slider",
+    "TabItem", "ListItem", "MenuItem", "SplitButton",
+}
 
 
 def flatten(nodes, ancestors=()):
@@ -98,6 +104,11 @@ def check_case(case, tree):
             failures.append(f"reading order: {pattern} comes {where}")
             break
         at = hits[0]
+    if case.get("named"):
+        for n, a in elements:
+            if n.get("type") in CONTROLS and not (n.get("name") or "").strip():
+                where = next((x.get("name") for x in reversed(a) if x.get("name")), "the window")
+                failures.append(f"a {n['type']} without a name, in {where!r}: {describe(n)}")
     for pattern in case.get("lacks", []):
         hits = [n for n, a in elements if matches(n, a, pattern)]
         if hits:
@@ -125,6 +136,7 @@ def main(argv):
         failures = check_case(case, tree)
         checked += 1
         n = len(case.get("has", [])) + len(case.get("lacks", [])) + bool(case.get("order"))
+        n += bool(case.get("named"))
         if failures:
             failed += 1
             for f in failures:

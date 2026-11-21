@@ -23,3 +23,7 @@ Microsoft.UI.Xaml.Automation.AutomationElementIdentifiers
 Microsoft.UI.Xaml.IUIElementOverrides
 Microsoft.UI.Xaml.Controls.IButtonFactory
 Microsoft.UI.Xaml.Controls.ICanvasFactory
+# WinUI's words for a tab item (`TabViewItem`'s peer).
+Microsoft.UI.Xaml.Controls.TabViewItem
+Microsoft.UI.Xaml.Controls.ListViewItem
+Microsoft.UI.Xaml.Controls.Primitives.SelectorItem

@@ -3,13 +3,14 @@
 //! do and as Edge forces a page's colors.
 //!
 //! - **Fills** become the window's color (a clickable view's: the button
-//!   face), keeping their opacity; a strong fill (an accent, a badge, the
-//!   knob of a switch: one that stands out from the theme's background
-//!   the app was made for) and the fill of a selected item become the
-//!   highlight.
-//! - **Text** is the window text; on a highlight, the highlight text; in
-//!   a link, the link color; in a clickable view, the button text; when
-//!   disabled, the gray text.
+//!   face), keeping their opacity. A strong fill (one that stands out from
+//!   the theme's background the app was made for) stays visible: a colored
+//!   one (an accent, a badge) and the fill of a selected item become the
+//!   highlight, a gray or black one (a switch's knob) the text's color, as
+//!   in WinUI's controls. A disabled view's never stands out.
+//! - **Text** is the window text; on a highlight, the highlight text; on
+//!   a text-colored fill, the window's color; in a link, the link color;
+//!   in a clickable view, the button text; when disabled, the gray text.
 //! - **Borders** take the text's color (gray when disabled), **shadows**
 //!   go. Pictures, videos, web pages and 3D scenes keep theirs.
 //!
@@ -90,6 +91,32 @@ impl SystemColors {
     }
 }
 
+/// What a fill becomes under a contrast theme.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Fill {
+    /// The window's color (the button face for a button): a card, a chip.
+    #[default]
+    Window,
+    /// The highlight: an accent, a colored badge, a selected item.
+    Highlight,
+    /// The text's color: a strong gray or black (a knob, a dark badge).
+    Ink,
+}
+
+/// What fill `c` becomes: strong ones stay visible, colored ones as the
+/// highlight, gray ones as the text's color.
+pub fn classify(c: Color, reference: Color) -> Fill {
+    if !strong(c, reference) {
+        return Fill::Window;
+    }
+    let chroma = c.r.max(c.g).max(c.b) - c.r.min(c.g).min(c.b);
+    if chroma < 0.15 {
+        Fill::Ink
+    } else {
+        Fill::Highlight
+    }
+}
+
 /// Where a node stands, for the colors it gets.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Scheme {
@@ -103,9 +130,9 @@ pub struct Scheme {
     pub disabled: bool,
     /// Selected (or the current page): its fill is the highlight.
     pub selected: bool,
-    /// Its text is drawn on a highlight (its own fill's, or the nearest
-    /// fill behind it).
-    pub on_highlight: bool,
+    /// What its text is drawn on: its own fill, or the nearest one behind
+    /// it.
+    pub behind: Fill,
 }
 
 /// Colors forced to a contrast theme's, for one node.
@@ -127,15 +154,32 @@ impl Forced {
         if c.a < CLEAR {
             return c;
         }
-        if self.scheme.selected || strong(c, self.reference) {
-            return self.sys.highlight;
-        }
-        let base = if self.scheme.button {
+        let s = self.scheme;
+        let base = if s.button {
             self.sys.button_face
         } else {
             self.sys.window
         };
-        base.with_alpha(c.a)
+        if s.disabled {
+            return base.with_alpha(c.a);
+        }
+        if s.selected {
+            return self.sys.highlight;
+        }
+        match classify(c, self.reference) {
+            Fill::Window => base.with_alpha(c.a),
+            Fill::Highlight => self.sys.highlight,
+            Fill::Ink => self.text(),
+        }
+    }
+
+    /// The text color where nothing stands out: in a button, its text.
+    fn text(&self) -> Color {
+        if self.scheme.in_button {
+            self.sys.button_text
+        } else {
+            self.sys.window_text
+        }
     }
 
     /// Text, glyphs, icons.
@@ -145,15 +189,14 @@ impl Forced {
         }
         let s = self.scheme;
         if s.disabled {
-            self.sys.gray_text
-        } else if s.on_highlight {
-            self.sys.highlight_text
-        } else if s.link {
-            self.sys.hotlight
-        } else if s.in_button {
-            self.sys.button_text
-        } else {
-            self.sys.window_text
+            return self.sys.gray_text;
+        }
+        match s.behind {
+            Fill::Highlight => self.sys.highlight_text,
+            Fill::Ink if s.in_button => self.sys.button_face,
+            Fill::Ink => self.sys.window,
+            Fill::Window if s.link => self.sys.hotlight,
+            Fill::Window => self.text(),
         }
     }
 
@@ -270,6 +313,22 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(selected.fill(rgb(0xF0F0F0)), t.highlight);
+        // A gray knob takes the text's color; a disabled accent stands out
+        // no more.
+        assert_eq!(plain.fill(rgb(0x8A8A8A)), t.window_text);
+        let in_button = forced(Scheme {
+            in_button: true,
+            ..Default::default()
+        });
+        assert_eq!(in_button.fill(rgb(0x5C5C5C)), t.button_text);
+        let disabled = forced(Scheme {
+            disabled: true,
+            ..Default::default()
+        });
+        assert_eq!(disabled.fill(rgb(0x005FB8)), t.window);
+        assert_eq!(classify(rgb(0x005FB8), LIGHT), Fill::Highlight);
+        assert_eq!(classify(rgb(0x5C5C5C), LIGHT), Fill::Ink);
+        assert_eq!(classify(rgb(0xFFFFFF), LIGHT), Fill::Window);
     }
 
     #[test]
@@ -290,14 +349,20 @@ mod tests {
         };
         assert_eq!(ink(link), t.hotlight);
         let on = Scheme {
-            on_highlight: true,
+            behind: Fill::Highlight,
             link: true,
             ..Default::default()
         };
         assert_eq!(ink(on), t.highlight_text);
+        // On a knob-like fill, the window's color.
+        let knob = Scheme {
+            behind: Fill::Ink,
+            ..Default::default()
+        };
+        assert_eq!(ink(knob), t.window);
         let off = Scheme {
             disabled: true,
-            on_highlight: true,
+            behind: Fill::Highlight,
             ..Default::default()
         };
         assert_eq!(ink(off), t.gray_text);

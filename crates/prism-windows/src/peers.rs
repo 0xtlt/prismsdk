@@ -80,6 +80,8 @@ thread_local! {
     static MODAL: Cell<bool> = const { Cell::new(false) };
     /// WinUI's words for a toggle switch, in the user's language.
     static SWITCH_WORDS: RefCell<Option<HSTRING>> = const { RefCell::new(None) };
+    /// WinUI's words for a tab (`TabViewItem`), in the user's language.
+    static TAB_WORDS: RefCell<Option<HSTRING>> = const { RefCell::new(None) };
 }
 
 /// An element's semantics; returns the previous ones.
@@ -105,19 +107,35 @@ pub fn set_modal(on: bool) {
     MODAL.set(on);
 }
 
-/// « toggle switch » as WinUI says it for its `ToggleSwitch`.
-fn switch_words() -> Option<HSTRING> {
-    SWITCH_WORDS.with(|w| {
+/// The localized control type WinUI's peer of `element` says, asked once.
+fn words_of<E: Interface>(
+    cell: &'static std::thread::LocalKey<RefCell<Option<HSTRING>>>,
+    element: impl FnOnce() -> Result<E>,
+) -> Option<HSTRING> {
+    cell.with(|w| {
         let mut w = w.borrow_mut();
         if w.is_none() {
-            let words = (|| {
-                let ts = crate::winui::xaml::Controls::ToggleSwitch::new()?;
-                FrameworkElementAutomationPeer::CreatePeerForElement(&ts)?.GetLocalizedControlType()
-            })();
+            let words = element().and_then(|e| {
+                let e: UIElement = e.cast()?;
+                FrameworkElementAutomationPeer::CreatePeerForElement(&e)?.GetLocalizedControlType()
+            });
             *w = words.ok().filter(|s| !s.is_empty());
         }
         w.clone()
     })
+}
+
+/// « toggle switch » as WinUI says it for its `ToggleSwitch`.
+fn switch_words() -> Option<HSTRING> {
+    words_of(
+        &SWITCH_WORDS,
+        crate::winui::xaml::Controls::ToggleSwitch::new,
+    )
+}
+
+/// « tab item » as WinUI says it for its `TabViewItem`.
+pub fn tab_words() -> Option<HSTRING> {
+    words_of(&TAB_WORDS, crate::winui::xaml::Controls::TabViewItem::new)
 }
 
 /// A clickable view's button: its peer is [`Key::Clickable`]'s.
@@ -702,7 +720,6 @@ fn control(c: Control) -> AutomationControlType {
         Control::Image => AutomationControlType::Image,
         Control::List => AutomationControlType::List,
         Control::ListItem => AutomationControlType::ListItem,
-        Control::Pane => AutomationControlType::Pane,
         Control::ProgressBar => AutomationControlType::ProgressBar,
         Control::RadioButton => AutomationControlType::RadioButton,
         Control::Slider => AutomationControlType::Slider,

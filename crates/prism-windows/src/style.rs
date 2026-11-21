@@ -144,9 +144,26 @@ pub fn border(s: &Style, pal: &Palette, text: Color) -> Option<(Color, [f32; 4])
     }
     let sides = s.borders();
     let widths = sides.map(|b| b.width.max(0.));
-    let first = sides.iter().find(|b| b.width > 0.)?;
+    let Some(first) = sides.iter().find(|b| b.width > 0.) else {
+        return outline(s, pal);
+    };
     let color = pal.edge(first.color.unwrap_or(text));
     Some((color, widths))
+}
+
+/// Under a contrast theme, a box shown only by its fill or its shadow (a
+/// card, a chip) keeps a 1-pixel outline, as WinUI's cards do: its fill
+/// became the window's and its shadow went.
+fn outline(s: &Style, pal: &Palette) -> Option<(Color, [f32; 4])> {
+    let f = pal.forced?;
+    let fill = s.background.filter(|c| c.a >= 0.02)?;
+    let rounded = s.corner_radius > 0. && s.rounded_corners != Corners::NONE;
+    let shadowed = s.shadows.iter().any(|sh| sh.color.a > 0.);
+    // A strong fill shows by itself (unless disabled: it no longer does).
+    let plain = f.scheme.disabled
+        || crate::contrast::classify(pal.resolve(fill), f.reference)
+            == crate::contrast::Fill::Window;
+    ((rounded || shadowed) && plain).then(|| (pal.edge(Color::BLACK), [1.; 4]))
 }
 
 /// Sets `b` up as the node's box.

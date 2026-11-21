@@ -71,6 +71,10 @@ fn animates(w: &Win) -> bool {
 /// The dialog's colors: the smoke, the panel, its edge.
 fn colors(pal: &Palette) -> (Color, Color, Color) {
     let c = prism_core::rgba;
+    // A contrast theme's: the window's color, edged with its text's.
+    if let Some(f) = pal.forced {
+        return (c(0x000000, 0.3), f.sys.window, f.sys.window_text);
+    }
     // `SmokeFillColorDefault`, `LayerFillColorAlt` over
     // `SolidBackgroundFillColorBase`, `SurfaceStrokeColorDefault`.
     if pal.dark {

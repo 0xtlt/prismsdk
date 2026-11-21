@@ -149,7 +149,7 @@ kinds and services come next (see [Not yet](#not-yet)).
   | `Button` (a clickable view) | `Button`, Invoke; pressed (`accessibility_checked`): Toggle |
   | `Link` | `Hyperlink`, Invoke |
   | `Checkbox`, `Switch` | `CheckBox`, `Button` read « toggle switch » (WinUI's words for `ToggleSwitch`, in the user's language); Toggle |
-  | `Tab`, `TabList`, `TabPanel` | `TabItem` (SelectionItem), `Tab`, `Pane` |
+  | `Tab`, `TabList`, `TabPanel` | `TabItem` (SelectionItem), `Tab`, `Group`; the tab bar's own items (WinUI's `SelectorBar`) are tab items too |
   | `List`, `ListItem` | `List`, `ListItem` (SelectionItem when selected or current) |
   | `Radio`, `RadioGroup` | `RadioButton` (SelectionItem), `Group` |
   | `Slider`, `ProgressBar`, `ComboBox` | the same control types; their value through the Value pattern |
@@ -169,12 +169,17 @@ kinds and services come next (see [Not yet](#not-yet)).
 - **High contrast:** under a contrast theme (Settings › Accessibility ›
   Contrast themes) the app's colors give way to the theme's system colors,
   as WinUI's controls do theirs and as Edge forces a page's (`contrast.rs`):
-  fills become the window's color (a clickable view's, the button face),
-  strong fills (accents, badges, a switch's knob) and selected items the
-  highlight; text is the window text (the highlight text on a highlight,
-  the link color in a link, the button text in a clickable view, the gray
-  text when disabled); borders take the text's color, shadows go; pictures,
-  videos, web pages and 3D scenes keep theirs. The theme is read at start
+  fills become the window's color (a clickable view's, the button face);
+  strong fills stay visible, colored ones (accents, badges) and selected
+  items as the highlight, gray ones (a switch's knob) in the text's color,
+  except in disabled views; text is the window text (the highlight text on
+  a highlight, the link color in a link, the button text in a button, the
+  gray text when disabled); borders take the text's color; shadows go, so
+  a card or a chip shown by its fill or its shadow gets a 1-pixel outline,
+  as WinUI's cards do; drawings keep their colors where they show on the
+  theme's background; pictures, videos, web pages and 3D scenes keep
+  theirs. The window is the theme's color (no Mica), and WinUI's controls
+  take the theme's lightness. The theme is read at start
   (`SPI_GETHIGHCONTRAST`, `GetSysColor`) and again when it changes
   (`WM_SETTINGCHANGE`, `WM_SYSCOLORCHANGE`). `PRISM_HIGH_CONTRAST` stands
   in for the system's setting (below).
@@ -436,11 +441,13 @@ the session, presses the counter's button through UI Automation; with
 `-Json` it writes the tree with what a screen reader reads of each element
 (role, name, states, value, heading level, live region, dialog, landmark).
 `scripts/windows-a11y.sh` (`PRISM_SMOKE_A11Y=1 scripts/windows-smoke.sh`
-runs it too) opens the counter's six routes, a dialog, a sheet, a popover
-and a contrast theme in the session, dumps each tree and checks the roles,
-names and states of `scripts/windows/a11y-expect.json`
-(`scripts/windows/a11y-check.py`). Narrator is never started: it would
-speak aloud.
+runs it too) opens the counter's six routes, a dialog, a sheet and a
+popover in the session, presses drawn switches, check boxes and swatches
+through UI Automation as a screen reader does, dumps each tree and checks
+the roles, names, states and reading order of
+`scripts/windows/a11y-expect.json` (`scripts/windows/a11y-check.py`), and
+that every control has a name. Narrator is never started: it would speak
+aloud.
 
 ## Not yet
 

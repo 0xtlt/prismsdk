@@ -42,14 +42,17 @@ pub fn set_content(e: &impl Interface) {
 }
 
 /// Prism's accessibility on node `id`'s element: its clickable button,
-/// else its control or text, else its canvas.
-pub fn apply(v: &View, id: NodeId, a: &Accessibility) -> Result<()> {
+/// else its control or text, else its canvas. `text` is the node's own
+/// (a clickable text's button is named by it).
+pub fn apply(v: &View, id: NodeId, a: &Accessibility, text: &str) -> Result<()> {
     let target: UIElement = match (&v.button, v.content.element()) {
         (Some(b), _) => b.cast()?,
         (None, Some(e)) => e,
         (None, None) => v.outer(),
     };
-    AutomationProperties::SetName(&target, &h(a.label.as_deref().unwrap_or("")))?;
+    let own = (v.button.is_some() && v.content.element().is_some()).then_some(text);
+    let name = a.label.as_deref().or(own).unwrap_or("");
+    AutomationProperties::SetName(&target, &h(name))?;
     AutomationProperties::SetHelpText(&target, &h(a.hint.as_deref().unwrap_or("")))?;
     AutomationProperties::SetHeadingLevel(
         &target,
@@ -79,7 +82,10 @@ pub fn apply(v: &View, id: NodeId, a: &Accessibility) -> Result<()> {
     }
     // Drawn by Prism (a clickable view, a container): the role and states
     // through its custom peer. WinUI's controls describe themselves.
-    if v.button.is_some() || v.content.element().is_none() {
+    // A stack's or a tab bar's container is no element (its header and
+    // its bar are WinUI's), as on macOS.
+    let bare = matches!(v.kind, NodeKind::Stack | NodeKind::Tabs) && v.button.is_none();
+    if !bare && (v.button.is_some() || v.content.element().is_none()) {
         let s = access::semantics(a, v.button.is_some());
         AutomationProperties::SetLandmarkType(
             &target,
@@ -201,7 +207,7 @@ impl Win {
             return pal;
         };
         let mut s = Scheme {
-            button: n.clickable,
+            button: self.is_button(id),
             selected: n.a11y.is_selected(),
             ..Default::default()
         };
@@ -211,7 +217,7 @@ impl Win {
         while let Some(m) = at.and_then(|i| self.scene.get(i)) {
             s.disabled |= m.a11y.disabled;
             s.link |= m.a11y.role == Some(Role::Link);
-            s.in_button |= m.clickable;
+            s.in_button |= at.is_some_and(|i| self.is_button(i));
             let fill = m.style.background.or_else(|| {
                 m.style
                     .gradient
@@ -221,12 +227,25 @@ impl Win {
             if !behind && let Some(c) = fill.filter(|c| c.a >= 0.02) {
                 behind = true;
                 let c = self.palette.resolve(c);
-                s.on_highlight = m.a11y.is_selected() || contrast::strong(c, f.reference);
+                s.behind = if m.a11y.is_selected() && !s.disabled {
+                    contrast::Fill::Highlight
+                } else {
+                    contrast::classify(c, f.reference)
+                };
             }
             at = m.parent;
         }
         f.scheme = s;
         pal
+    }
+
+    /// Whether node `id` is a button: a clickable view (drawn by Prism in a
+    /// button of its own) or a native one; not a clickable scroll view.
+    fn is_button(&self, id: NodeId) -> bool {
+        self.scene
+            .get(id)
+            .is_some_and(|n| n.kind == NodeKind::Button)
+            || self.views.get(&id).is_some_and(|v| v.button.is_some())
     }
 
     /// Restyles node `id`; under a contrast theme its descendants too
@@ -248,4 +267,16 @@ impl Win {
             }
         }
     }
+}
+
+/// An item of the tab bar (WinUI's `SelectorBar`, whose items say
+/// « SelectorBarItem »): a tab item, in WinUI's words for one.
+pub fn tab_item(item: &impl Interface) -> Result<()> {
+    use crate::winui::xaml::Automation::Peers::AutomationControlType;
+    let e: UIElement = item.cast()?;
+    AutomationProperties::SetAutomationControlType(&e, AutomationControlType::TabItem)?;
+    if let Some(words) = peers::tab_words() {
+        AutomationProperties::SetLocalizedControlType(&e, &words)?;
+    }
+    Ok(())
 }

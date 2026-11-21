@@ -90,11 +90,12 @@ Contrast themes replace an app's colors with a few system colors chosen by
 the user. On the web the browser does it (`forced-colors`); on Windows,
 under a contrast theme (Settings › Accessibility › Contrast themes), Prism
 does it for the views it draws, as WinUI does for its controls: fills
-become the window's color (the button face for a clickable view), strong
-fills (an accent, a badge, a knob) and selected items the highlight, text
-the window text (the highlight text on a highlight, the link color in a
-link, the gray text when disabled), borders the text's color; shadows go,
-pictures keep their colors. Nothing to do in the app; give state to
+become the window's color (the button face for a clickable view); colored
+strong fills (an accent, a badge) and selected items the highlight, gray
+ones (a knob) the text's color; text the window text (the highlight text
+on a highlight, the link color in a link, the gray text when disabled),
+borders the text's color; shadows go (a card keeps an outline), pictures
+keep their colors. Nothing to do in the app; give state to
 assistive technologies (`accessibility_selected`, `accessibility_disabled`)
 and it shows in the theme too. `PRISM_HIGH_CONTRAST=night-sky` (or
 `aquatic`, `desert`, `dusk`) tries a theme on one app without changing the

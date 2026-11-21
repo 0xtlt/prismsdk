@@ -61,18 +61,23 @@ b64 = lambda s: base64.b64encode(s.encode("utf-8")).decode("ascii")
 for c in json.load(open(sys.argv[1], encoding="utf-8"))["cases"]:
     if only and c["name"] not in only:
         continue
-    env = {"PRISM_LOCALE": "en-US", "PRISM_APPEARANCE": "light", **c.get("env", {})}
+    # The clicks wait for the first frame (a debug build's comes after 3 s):
+    # a popover opens on its laid-out anchor.
+    env = {"PRISM_LOCALE": "en-US", "PRISM_APPEARANCE": "light", "PRISM_DELAY": "4", **c.get("env", {})}
     lines = "".join(f"{k}={v}\n" for k, v in env.items())
-    print("\t".join([c["name"], c.get("path", "/"), b64(c.get("click", "")) or "-", b64(lines)]))
+    press = "".join(f"{p}\n" for p in c.get("press", []))
+    print("\t".join([c["name"], c.get("path", "/"), b64(c.get("click", "")) or "-", b64(lines), b64(press) or "-"]))
 EOF
 
 tab=$(printf '\t')
-while IFS="$tab" read -r name path click env; do
+while IFS="$tab" read -r name path click env press; do
   [ "$click" = - ] && click=
+  [ "$press" = - ] && press=
   rm -f "$out/$name.json" "$out/$name.err"
   {
     printf '%s\r\n' "\$line = 'powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\windows\\a11y-dump.ps1 -Exe target\\$exe\\counter.exe -WorkingDirectory examples\\counter -Path $path -Out target\\windows-a11y\\$name.json -EnvBase64 $env'"
     [ -n "$click" ] && printf '%s\r\n' "\$line += ' -ClickBase64 $click'"
+    [ -n "$press" ] && printf '%s\r\n' "\$line += ' -PressBase64 $press'"
     printf '%s\r\n' "& powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\windows\\run-in-session.ps1 -TimeoutSeconds 150 -Command \$line"
     printf '%s\r\n' "exit \$LASTEXITCODE"
   } >"$script"
