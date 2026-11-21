@@ -10,7 +10,8 @@ use prism_core::{App, Appearance, Color, Element, adaptive, rgb};
 use crate::Component;
 
 /// Look and feel of every `prism-ui` component. Install it with
-/// `cx.set_global(Theme::light().accent(rgb(0x0A84FF)))`.
+/// `ui::set_theme(cx, Theme::light().accent(rgb(0x0A84FF)))`; without one,
+/// components use [`Theme::system`].
 #[derive(Clone)]
 pub struct Theme {
     /// Main color: primary buttons, switches, links, the first chart series.
@@ -51,14 +52,16 @@ pub struct Theme {
 
 type Override<C> = Rc<dyn Fn(C, &mut App) -> Element>;
 
+/// [`Theme::system`]: an app without a theme follows the system's light or
+/// dark appearance, as the native text, chrome and controls do.
 impl Default for Theme {
     fn default() -> Self {
-        Theme::light()
+        Theme::system()
     }
 }
 
 impl Theme {
-    /// The default light theme.
+    /// The light theme.
     pub fn light() -> Self {
         Theme {
             accent: rgb(0x5B5BD6),
@@ -166,7 +169,9 @@ impl Theme {
             .cloned()
     }
 
-    /// The installed theme, or the light theme.
+    /// The installed theme, or [`Theme::system`]. (A fixed light default
+    /// put white system text on light cards wherever the system was dark:
+    /// always on watchOS.)
     pub fn of(cx: &App) -> Theme {
         cx.try_global::<Theme>().cloned().unwrap_or_default()
     }
@@ -193,4 +198,32 @@ pub fn update_theme(cx: &mut App, f: impl FnOnce(&mut Theme)) {
     let mut theme = Theme::of(cx);
     f(&mut theme);
     set_theme(cx, theme);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Without a theme, components follow the system's appearance, as text
+    /// without a color and the native chrome do: no light card under white
+    /// system text in dark mode.
+    #[test]
+    fn without_a_theme_components_follow_the_system() {
+        let app = App::new();
+        let t = Theme::of(&app);
+        assert!(t.follows_system && !t.dark);
+        assert_eq!(app.appearance(), Appearance::System);
+        let (l, d) = (Theme::light(), Theme::dark());
+        assert_eq!(t.surface, adaptive(l.surface, d.surface));
+        assert_eq!(t.text, adaptive(l.text, d.text));
+        assert_eq!(t.background, adaptive(l.background, d.background));
+    }
+
+    #[test]
+    fn an_installed_theme_wins() {
+        let mut app = App::new();
+        set_theme(&mut app, Theme::light());
+        assert!(!Theme::of(&app).follows_system);
+        assert_eq!(app.appearance(), Appearance::Light);
+    }
 }

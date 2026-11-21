@@ -11,8 +11,12 @@
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
-use objc2_app_kit::{NSAccessibility, NSAccessibilityColumnRole, NSAccessibilityElement, NSView};
-use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSRange, NSRect};
+use objc2_app_kit::{
+    NSAccessibility, NSAccessibilityColumnRole, NSAccessibilityElement, NSButton, NSColorWell,
+    NSDatePicker, NSSegmentedControl, NSSlider, NSStepper, NSSwitch, NSTextField, NSTextView,
+    NSView,
+};
+use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSRange, NSRect, NSString};
 
 pub struct ColumnIvars {
     header: Weak<NSView>,
@@ -116,6 +120,63 @@ pub fn set(mtm: MainThreadMarker, table: &NSView, rows: &[(&NSView, bool, Vec<&N
     }
 }
 
+/// Roles of the elements a VoiceOver user acts on.
+const ACTIVE: [&str; 13] = [
+    "AXButton",
+    "AXCheckBox",
+    "AXRadioButton",
+    "AXRadioGroup",
+    "AXLink",
+    "AXTextField",
+    "AXTextArea",
+    "AXComboBox",
+    "AXPopUpButton",
+    "AXSlider",
+    "AXIncrementor",
+    "AXDateTimeArea",
+    "AXMenuButton",
+];
+
+/// Whether `v` is an AppKit control a user acts on (its role is its
+/// cell's, not the view's): a button (a picker's too), switch, slider,
+/// stepper, segmented control, date picker, color well or editable field.
+/// An image view and a text are controls to AppKit, not to the user: a cell
+/// holding an icon and a text reads its text, and pressing it presses its row.
+pub fn interactive(v: &NSView) -> bool {
+    if let Some(t) = v.downcast_ref::<NSTextField>() {
+        return t.isEditable();
+    }
+    if let Some(t) = v.downcast_ref::<NSTextView>() {
+        return t.isEditable();
+    }
+    v.downcast_ref::<NSButton>().is_some()
+        || v.downcast_ref::<NSSwitch>().is_some()
+        || v.downcast_ref::<NSSlider>().is_some()
+        || v.downcast_ref::<NSStepper>().is_some()
+        || v.downcast_ref::<NSSegmentedControl>().is_some()
+        || v.downcast_ref::<NSDatePicker>().is_some()
+        || v.downcast_ref::<NSColorWell>().is_some()
+}
+
+/// The controls in a table cell (#284), outermost first: buttons, switches,
+/// fields, links, clickable views (what VoiceOver acts on).
+pub fn controls(view: &NSView) -> Vec<Retained<NSView>> {
+    let mut out = Vec::new();
+    for v in view.subviews().iter() {
+        if v.isHidden() {
+            continue;
+        }
+        let role = v.accessibilityRole().map(|r| r.to_string());
+        let active = role.is_some_and(|r| ACTIVE.contains(&r.as_str()));
+        if interactive(&v) || active {
+            out.push(v.clone());
+        } else {
+            out.extend(controls(&v));
+        }
+    }
+    out
+}
+
 /// The cell at `column` and `row` of a table's view.
 pub fn cell_at(table: &NSView, column: isize, row: isize) -> Option<Retained<AnyObject>> {
     let rows = table.accessibilityRows()?;
@@ -132,9 +193,45 @@ fn label(o: &AnyObject) -> Option<String> {
     v.accessibilityLabel().map(|l| l.to_string())
 }
 
+/// What the accessibility dump says of an element under a cell: its class,
+/// role, label (else title), value, and whether VoiceOver can press it.
+fn part(o: &AnyObject) -> String {
+    use crate::a11y_dump::{json_str, opt};
+    let text = |sel: objc2::runtime::Sel| -> Option<String> {
+        if !o.class().responds_to(sel) {
+            return None;
+        }
+        // SAFETY: an NSAccessibility getter; its value is any object or nil.
+        let v: Option<Retained<AnyObject>> = unsafe { msg_send![o, performSelector: sel] };
+        let v = v?;
+        let s = match v.downcast_ref::<NSString>() {
+            Some(s) => s.to_string(),
+            None => v
+                .downcast_ref::<objc2_foundation::NSNumber>()?
+                .stringValue()
+                .to_string(),
+        };
+        (!s.is_empty()).then_some(s)
+    };
+    let label =
+        text(objc2::sel!(accessibilityLabel)).or_else(|| text(objc2::sel!(accessibilityTitle)));
+    let press = objc2::sel!(accessibilityPerformPress);
+    // SAFETY: NSAccessibility's check of the actions an element allows.
+    let pressable = o.class().responds_to(press)
+        && unsafe { msg_send![o, isAccessibilitySelectorAllowed: press] };
+    format!(
+        r#"{{"class":{},"role":{},"label":{},"value":{},"press":{pressable}}}"#,
+        json_str(o.class().name().to_str().unwrap_or("?")),
+        opt(text(objc2::sel!(accessibilityRole))),
+        opt(label),
+        opt(text(objc2::sel!(accessibilityValue))),
+    )
+}
+
 /// For the accessibility dump: a table's `"table"` entry (row and column
-/// counts, its column headers' labels), a cell's `"cell"` one (row, column)
-/// and `"header"` (its column header's label).
+/// counts, its column headers' labels), a cell's `"cell"` one (row, column),
+/// `"header"` (its column header's label) and `"parts"` (the elements
+/// VoiceOver reaches inside it: its controls and texts).
 pub fn dump(view: &NSView) -> String {
     use crate::a11y_dump::opt;
     let role = view.accessibilityRole().map(|r| r.to_string());
@@ -159,11 +256,19 @@ pub fn dump(view: &NSView) -> String {
                 .accessibilityColumnHeaderUIElements()
                 .and_then(|h| h.to_vec().first().cloned())
                 .and_then(|h| label(&h));
+            let parts: Vec<String> = view
+                .accessibilityChildren()
+                .map(|c| c.to_vec())
+                .unwrap_or_default()
+                .iter()
+                .map(|c| part(c))
+                .collect();
             format!(
-                r#","cell":[{},{}],"header":{}"#,
+                r#","cell":[{},{}],"header":{},"parts":[{}]"#,
                 view.accessibilityRowIndexRange().location,
                 view.accessibilityColumnIndexRange().location,
-                opt(header)
+                opt(header),
+                parts.join(",")
             )
         }
         Some("AXRow") => format!(r#","index":{}"#, view.accessibilityIndex()),

@@ -517,13 +517,13 @@ define_class!(
         }
 
         #[unsafe(method_id(accessibilityDataTableCellElementForRow:column:))]
-        fn accessibility_cell(&self, row: usize, column: usize) -> Option<Retained<UIView>> {
-            crate::table::cell(&self.ivars().table, row, column)
+        fn accessibility_cell(&self, row: usize, column: usize) -> Option<Retained<AnyObject>> {
+            crate::table::cell(self.mtm(), &self.ivars().table, row, column)
         }
 
         #[unsafe(method_id(accessibilityHeaderElementsForColumn:))]
-        fn accessibility_headers(&self, column: usize) -> Option<Retained<NSArray<UIView>>> {
-            crate::table::headers(&self.ivars().table, column)
+        fn accessibility_headers(&self, column: usize) -> Option<Retained<NSArray<AnyObject>>> {
+            crate::table::headers(self.mtm(), &self.ivars().table, column)
         }
 
         #[unsafe(method(accessibilityRowRange))]
@@ -534,6 +534,46 @@ define_class!(
         #[unsafe(method(accessibilityColumnRange))]
         fn accessibility_column_range(&self) -> NSRange {
             crate::table::column_range(&self.ivars().table)
+        }
+
+        // A cell holding a control is a container of its parts.
+        #[unsafe(method(isAccessibilityElement))]
+        fn is_accessibility_element(&self) -> bool {
+            let own: bool = unsafe { msg_send![super(self), isAccessibilityElement] };
+            own && !crate::table::has_parts(self.mtm(), self, &self.ivars().table)
+        }
+
+        #[unsafe(method_id(accessibilityElements))]
+        fn accessibility_elements(&self) -> Option<Retained<NSArray>> {
+            crate::table::parts_array(self.mtm(), self, &self.ivars().table)
+                .or_else(|| unsafe { msg_send![super(self), accessibilityElements] })
+        }
+
+        #[unsafe(method(accessibilityElementCount))]
+        fn accessibility_element_count(&self) -> isize {
+            match crate::table::parts(self.mtm(), self, &self.ivars().table) {
+                Some(parts) => parts.len() as isize,
+                None => unsafe { msg_send![super(self), accessibilityElementCount] },
+            }
+        }
+
+        #[unsafe(method_id(accessibilityElementAtIndex:))]
+        fn accessibility_element_at(&self, index: isize) -> Option<Retained<AnyObject>> {
+            match crate::table::parts(self.mtm(), self, &self.ivars().table) {
+                Some(parts) => usize::try_from(index).ok().and_then(|i| parts.get(i).cloned()),
+                None => unsafe { msg_send![super(self), accessibilityElementAtIndex: index] },
+            }
+        }
+
+        #[unsafe(method(indexOfAccessibilityElement:))]
+        fn index_of_accessibility_element(&self, element: &AnyObject) -> isize {
+            match crate::table::parts(self.mtm(), self, &self.ivars().table) {
+                Some(parts) => parts
+                    .iter()
+                    .position(|p| std::ptr::eq(&**p, element))
+                    .map_or(objc2_foundation::NSNotFound, |i| i as isize),
+                None => unsafe { msg_send![super(self), indexOfAccessibilityElement: element] },
+            }
         }
     }
 );

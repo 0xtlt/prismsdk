@@ -7,6 +7,7 @@ watchOS has no UIKit views (`UIView` is `API_UNAVAILABLE(watchos)` in the SDK), 
 - Layout is prism-native's flexbox, as on iOS and macOS. Swift measures text (UIKit string drawing) and places each node at its frame, so layouts match the other platforms.
 - Navigation stacks are `NavigationStack`, tabs are vertical pages (Digital Crown), toggles are SwiftUI toggles.
 - Styles are zoomed like tvOS (body text size ÷ 17); `cx.device_info()` reports the watch (model and screen from Xcode's profiles).
+- Light and dark: SwiftUI draws text and controls in the app's appearance (`cx.set_appearance`, or a theme's), as on the other platforms; without one it follows the system, which is dark on a watch. A screen's background fills the whole display, under the title and the clock and at both ends of a scroll (the clock itself is the system's, white).
 - Device APIs: location (Core Location), motion (Core Motion), the photo picker (PhotosUI's `PhotosPicker`), haptics (`WKInterfaceDevice.play`), sharing (`ShareLink`), links and the microphone permission.
 - Also on the watch: notifications with actions, alerts, and context menus (press and hold opens a dialog, since SwiftUI's `contextMenu` is deprecated on watchOS). It also handles swipes, scroll events, pull to refresh, the scene lifecycle, Dynamic Type and iCloud key-value storage.
 - Background tasks use WatchKit's `scheduleBackgroundRefresh`, because `BGTaskScheduler` is `API_UNAVAILABLE(watchos)`.

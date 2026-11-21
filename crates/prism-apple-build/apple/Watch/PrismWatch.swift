@@ -527,6 +527,11 @@ struct Node {
     /// A 3D scene: a count of its updates (`scene` ops, applied to its
     /// `PrismSceneHost` as they come).
     var sceneVersion = 0
+    /// A table's cells (`table` op, #284), to forget their place when the
+    /// table changes.
+    var tableCells: [UInt64] = []
+    /// A table's view, one of its rows, or one of its cells.
+    var tablePart: PrismTablePart?
 
     /// `hit_test(false)`: the subtree takes no touch.
     var noHit: Bool { (style["hit"] as? Bool) == false }
@@ -571,6 +576,10 @@ final class PrismStore: ObservableObject {
     /// mirror and format dates in it. Layout is already mirrored by Rust.
     @Published var rtl = false
     @Published var lang = ""
+    /// The app's appearance (`cx.set_appearance`, a theme's): light or dark
+    /// text, controls and color variants; `nil` follows the system (dark on
+    /// a watch).
+    @Published var scheme: ColorScheme?
     /// The action emptying an optional date picker (#89), in the app's language.
     @Published var clear = "Clear"
     /// Runtime layers (the toaster), above everything.
@@ -660,7 +669,31 @@ final class PrismStore: ObservableObject {
             case "alert": alert = p["alert"] as? [String: Any]
             case "pointer": nodes[id]?.pointerMask = (p["mask"] as? NSNumber)?.intValue ?? 0
             // No keyboard on a watch (and the Digital Crown scrolls): keys never come.
+            case "table":
+                // A table's rows (#284), the header rows first: each cell's
+                // row and column, and the header cell of its column.
+                for c in nodes[id]?.tableCells ?? [] { nodes[c]?.tablePart = nil }
+                let rows = p["rows"] as? [[String: Any]] ?? []
+                let cellsOf = { (row: [String: Any]) in (row["cells"] as? [NSNumber] ?? []).map(\.uint64Value) }
+                let isHeader = { (row: [String: Any]) in row["header"] as? Bool ?? false }
+                let headers = rows.prefix(while: isHeader).last.map(cellsOf) ?? []
+                var all: [UInt64] = []
+                for (r, row) in rows.enumerated() {
+                    let rowId = (row["id"] as? NSNumber)?.uint64Value ?? 0
+                    nodes[rowId]?.tablePart = .row
+                    for (c, cell) in cellsOf(row).enumerated() {
+                        let header = isHeader(row) ? nil : (c < headers.count ? headers[c] : nil)
+                        nodes[cell]?.tablePart = .cell(PrismCell(row: r, column: c, header: isHeader(row),
+                                                                 columnHeader: header, rowId: rowId))
+                        all.append(cell)
+                    }
+                }
+                nodes[id]?.tableCells = all
+                nodes[id]?.tablePart = .table
             case "keys": break
+            case "appearance":
+                let mode = p["mode"] as? String
+                scheme = mode == "light" ? .light : mode == "dark" ? .dark : nil
             case "focus": focus = (id, focus.n + 1)
             // `cx.dismiss_keyboard()` (#29): every field lets go.
             case "blur": blur += 1
@@ -713,7 +746,7 @@ extension PrismStore {
     func exit(_ id: UInt64, _ p: [String: Any]) {
         guard let n = nodes[id], n.frame.width > 0, n.frame.height > 0,
               let parent = (p["parent"] as? NSNumber)?.uint64Value else { return }
-        let renderer = ImageRenderer(content: NodeView(id: id).environment(\.colorScheme, .dark))
+        let renderer = ImageRenderer(content: NodeView(id: id).environment(\.colorScheme, scheme ?? .dark))
         renderer.scale = WKInterfaceDevice.current().screenScale
         guard let image = renderer.uiImage else { return }
         let anim = p["anim"] as? [String: Any] ?? [:]
@@ -858,7 +891,9 @@ struct NodeView: View {
                 // The content inside its padding; the box around it.
                 .padding(n.padding)
                 .frame(width: n.frame.width, height: height, alignment: .topLeading)
-                .background(BoxFill(node: n, dark: dark))
+                // A screen's background fills the display, under its title
+                // and the screen's corners, where its content scrolls too.
+                .background { BoxFill(node: n, dark: dark).ignoresSafeArea(edges: n.kind == "screen" ? .all : []) }
                 .overlay(BoxBorder(node: n, dark: dark))
                 .modifier(RoundedClip(radius: n.num("radius"), clip: n.style["clip"] as? Bool ?? false, shape: n.box()))
                 .background(DropShadows(node: n, dark: dark))
@@ -899,7 +934,9 @@ struct NodeView: View {
                     if dx < 0 && n.swipeLeft { send(["t": "swipe", "id": id, "dir": "left"]) }
                     if dx > 0 && n.swipeRight { send(["t": "swipe", "id": id, "dir": "right"]) }
                 }, including: n.swipeLeft || n.swipeRight ? .all : .subviews)
-                .accessibilityLabel(n.label ?? "")
+                .modifier(A11yNode(id: id, node: n))
+                // A heading, a table's column header: the header trait.
+                .accessibilityAddTraits(n.role == "heading" || n.role == "columnheader" ? .isHeader : [])
                 // A drawn radio (#84): a button, selected when it is the choice.
                 .accessibilityAddTraits(n.role == "radio" ? (n.checked == true ? [.isButton, .isSelected] : .isButton) : [])
                 .accessibilityHidden(n.a11yHidden || n.inert)
@@ -1153,13 +1190,170 @@ struct ControlEnvironment: ViewModifier {
     }
 }
 
-/// `a11y.value` (e.g. "40 %") read out instead of the control's own value.
+/// A table's part (#284): the `table` op names the table, its rows and its
+/// cells.
+enum PrismTablePart {
+    case table, row
+    case cell(PrismCell)
+}
+
+/// A table's cell: its row and column, whether it is in a header row, its
+/// column's header cell (none in a header row) and its row.
+struct PrismCell {
+    let row: Int
+    let column: Int
+    let header: Bool
+    let columnHeader: UInt64?
+    let rowId: UInt64
+}
+
+private struct PrismColumnHeaderKey: EnvironmentKey {
+    static let defaultValue: String? = nil
+}
+
+extension EnvironmentValues {
+    /// The column header of the table cell a view sits in (#284).
+    var prismColumnHeader: String? {
+        get { self[PrismColumnHeaderKey.self] }
+        set { self[PrismColumnHeaderKey.self] = newValue }
+    }
+}
+
+/// What VoiceOver reads of a node: its label (none: SwiftUI's own, a
+/// text's words). Tables (#284): watchOS has no data table for VoiceOver
+/// (`UIAccessibilityContainerDataTable` and `accessibilityContainerType` are
+/// `API_UNAVAILABLE(watchos)`, SwiftUI's `Table` too), so a table is a
+/// container of its cells, row by row. A cell of text is one element (a
+/// header cell with the header trait); a cell holding a control is a
+/// container, so each control is reached and activated on its own. Each
+/// element of a cell lists its column's header in VoiceOver's More Content
+/// rotor (`accessibilityCustomContent`), and a cell of a clickable row
+/// clicks the row.
+///
+/// Each part is one chain of modifiers whose values change, never its
+/// structure: a label, a control or a clickable row coming or going keeps
+/// the node's views and their state (focus, a loaded picture). A node's part
+/// comes with its table's patch, in the batch that creates the node.
+struct A11yNode: ViewModifier {
+    @ObservedObject var store = PrismStore.shared
+    @Environment(\.prismColumnHeader) var columnHeader
+    let id: UInt64
+    let node: Node
+
+    /// Kinds VoiceOver reads as elements of their own.
+    static let leaves: Set<String> = ["text", "button", "toggle", "text_input", "text_area", "slider", "picker",
+                                      "date_picker", "checkbox", "radio_group", "image", "timer", "progress", "spinner"]
+    static let controls: Set<String> = ["button", "toggle", "text_input", "text_area", "slider", "picker",
+                                        "date_picker", "checkbox", "radio_group"]
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        switch node.tablePart {
+        case .table:
+            content.accessibilityElement(children: .contain).modifier(A11yLabel(label: node.label))
+        case .row:
+            content
+        case .cell(let cell):
+            // A cell holding a control is a container whose elements list the
+            // column header themselves; any other cell is one element.
+            let holds = holdsControl(node)
+            let header = cell.columnHeader.flatMap(spoken)
+            let rowClickable = !holds && store.nodes[cell.rowId]?.clickable == true
+            content.accessibilityElement(children: holds ? .contain : node.label == nil ? .combine : .ignore)
+                .modifier(A11yLabel(label: holds ? nil : node.label))
+                .accessibilityAddTraits(!holds && cell.header ? .isHeader : [])
+                .modifier(ColumnHeaderContent(id: id, header: holds ? nil : header, value: node.label ?? spoken(id)))
+                .modifier(RowClick(row: rowClickable ? cell.rowId : nil))
+                .environment(\.prismColumnHeader, holds ? header : nil)
+        case nil:
+            content.modifier(A11yLabel(label: node.label))
+                .modifier(ColumnHeaderContent(id: id, header: Self.leaves.contains(node.kind) ? columnHeader : nil,
+                                              value: node.label ?? node.text))
+        }
+    }
+
+    /// A control (or a link, a clickable view) below `n`.
+    private func holdsControl(_ n: Node) -> Bool {
+        n.children.contains { c in
+            guard let child = store.nodes[c], !child.hidden, !child.a11yHidden else { return false }
+            return Self.controls.contains(child.kind) || child.clickable || child.role == "link" || holdsControl(child)
+        }
+    }
+
+    /// What a cell says: its label, else its texts.
+    private func spoken(_ id: UInt64) -> String? {
+        guard let n = store.nodes[id] else { return nil }
+        if let label = n.label, !label.isEmpty { return label }
+        if n.kind == "text" { return n.text }
+        let words = n.children.compactMap(spoken).filter { !$0.isEmpty }
+        return words.isEmpty ? nil : words.joined(separator: ", ")
+    }
+}
+
+/// A node's own label; none leaves SwiftUI's (a text's words). The label
+/// is switched on and off (`isEnabled`, watchOS 11+), so the views keep
+/// their identity when it comes or goes. Only watchOS 10 simulators lack it
+/// (watches run watchOS 26+, see `docs/src/platforms/watchos.md`): there a
+/// label coming or going rebuilds the node's views.
+struct A11yLabel: ViewModifier {
+    let label: String?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(watchOS 11.0, *) {
+            content.accessibilityLabel(Text(label ?? ""), isEnabled: label != nil)
+        } else if let label {
+            content.accessibilityLabel(label)
+        } else {
+            content
+        }
+    }
+}
+
+/// A table cell's column header, in VoiceOver's More Content rotor. No
+/// header gives no value, which removes the entry: the views stay. The key
+/// is the node's own: on a stack, which is no element, the entry reaches
+/// every element inside, and an empty one must not remove theirs.
+struct ColumnHeaderContent: ViewModifier {
+    let id: UInt64
+    let header: String?
+    let value: String?
+
+    func body(content: Content) -> some View {
+        let shown = header.map { !$0.isEmpty } ?? false
+        let key = AccessibilityCustomContentKey(Text(header ?? ""), id: "prism.column.\(id)")
+        return content.accessibilityCustomContent(key, shown ? Text(value ?? "") : nil)
+    }
+}
+
+/// VoiceOver's activation of a cell of a clickable row clicks the row. The
+/// action is always there, so the views stay when the row's click comes or
+/// goes; outside a clickable row it does nothing and the cell drops the
+/// button trait the action gives (SwiftUI gives every element a press).
+struct RowClick: ViewModifier {
+    let row: UInt64?
+
+    func body(content: Content) -> some View {
+        content.accessibilityAction { if let row { send(["t": "click", "id": row]) } }
+            .accessibilityRemoveTraits(row == nil ? .isButton : [])
+    }
+}
+
+/// `a11y.value` (e.g. "40 %") read out instead of the control's own value,
+/// switched on and off like `A11yLabel`.
 struct A11yValue: ViewModifier {
     let value: String?
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        if let value, !value.isEmpty { content.accessibilityValue(value) } else { content }
+        let shown = value.map { !$0.isEmpty } ?? false
+        if #available(watchOS 11.0, *) {
+            content.accessibilityValue(Text(value ?? ""), isEnabled: shown)
+        } else if shown, let value {
+            content.accessibilityValue(value)
+        } else {
+            content
+        }
     }
 }
 
@@ -2182,6 +2376,7 @@ private func frameAlign(_ a: String?) -> Alignment {
 struct PrismRootView: View {
     @ObservedObject var store = PrismStore.shared
     @Environment(\.scenePhase) var phase
+    @Environment(\.colorScheme) var system
 
     var body: some View {
         Color.clear
@@ -2199,6 +2394,9 @@ struct PrismRootView: View {
             }
             .modifier(ReportSize(event: ["t": "resize"]))
             .modifier(Presented())
+            // The app's appearance: a light theme's text and controls are
+            // dark (SwiftUI's own colors are the system's, white on a watch).
+            .environment(\.colorScheme, store.scheme ?? system)
             .onChange(of: phase) { _, p in
                 send(["t": "lifecycle", "state": p == .active ? "active" : p == .inactive ? "inactive" : "background"])
             }
@@ -2276,7 +2474,7 @@ private func snapshotIfAsked(size: CGSize) {
             .frame(width: size.width, height: height, alignment: .topLeading)
             .clipped()
         .background(Color.black)
-        .environment(\.colorScheme, .dark)
+        .environment(\.colorScheme, store.scheme ?? .dark)
         let renderer = ImageRenderer(content: content)
         renderer.scale = WKInterfaceDevice.current().screenScale
         if let image = renderer.uiImage, let png = image.pngData() {

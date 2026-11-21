@@ -10,9 +10,11 @@ use std::cell::Cell;
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2::{
+    ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel,
+};
 use objc2_core_foundation::{CGAffineTransform, CGSize};
-use objc2_foundation::{NSArray, NSNumber, NSObjectProtocol, NSString};
+use objc2_foundation::{NSArray, NSNumber, NSObjectProtocol, NSRange, NSString};
 use objc2_ui_kit::{
     UIButton, UIButtonType, UIControlEvents, UIControlState, UIFocusAnimationCoordinator,
     UIFocusUpdateContext, UIImage, UIResponder, UITapGestureRecognizer, UIView,
@@ -44,6 +46,8 @@ pub struct FocusIvars {
     focusable: Cell<bool>,
     /// Reports the remote's presses while focused (`on_key_down`).
     keys: Cell<bool>,
+    /// A table or one of its cells (#284).
+    table: crate::table::TableIvars,
 }
 
 define_class!(
@@ -58,7 +62,11 @@ define_class!(
     impl FocusView {
         #[unsafe(method(canBecomeFocused))]
         fn can_become_focused(&self) -> bool {
-            self.ivars().focusable.get() || self.ivars().keys.get()
+            if self.takes_focus() {
+                !self.yields_focus()
+            } else {
+                self.stands_for_row()
+            }
         }
 
         #[unsafe(method(setPrismFocusable:))]
@@ -89,6 +97,9 @@ define_class!(
 
         #[unsafe(method(pressesEnded:withEvent:))]
         fn presses_ended(&self, presses: &NSSet<UIPress>, event: Option<&UIPressesEvent>) {
+            if self.click_row(presses) {
+                return;
+            }
             let local = self.ivars().keys.get().then_some(self.tag() as NodeId);
             if local.is_none() || !crate::interaction::handle_presses(presses, self, local, false) {
                 let _: () = unsafe { msg_send![super(self), pressesEnded: presses, withEvent: event] };
@@ -107,6 +118,104 @@ define_class!(
             raise(self, self.isFocused());
             // `.focus(|s| …)`, `.hover(|s| …)`: the focused view hovers too.
             crate::decor::tv_focus(self.tag() as NodeId, self.isFocused());
+        }
+
+        /// VoiceOver's activation of a table's cell clicks its row when the
+        /// row is clickable (#284), as on iOS.
+        #[unsafe(method(accessibilityActivate))]
+        fn accessibility_activate(&self) -> bool {
+            match crate::table::row_of(&self.ivars().table)
+                .filter(|r| table_row_clickable(r))
+            {
+                Some(row) => {
+                    crate::imp::dispatch(UiEvent::Click(row.tag() as NodeId));
+                    true
+                }
+                None => unsafe { msg_send![super(self), accessibilityActivate] },
+            }
+        }
+
+        // Tables (#284): `UIAccessibilityContainerDataTable` and its cells,
+        // see `table.rs`.
+        #[unsafe(method(accessibilityRowCount))]
+        fn accessibility_row_count(&self) -> isize {
+            crate::table::row_count(&self.ivars().table)
+        }
+
+        #[unsafe(method(accessibilityColumnCount))]
+        fn accessibility_column_count(&self) -> isize {
+            crate::table::column_count(&self.ivars().table)
+        }
+
+        #[unsafe(method_id(accessibilityDataTableCellElementForRow:column:))]
+        fn accessibility_cell(&self, row: usize, column: usize) -> Option<Retained<AnyObject>> {
+            crate::table::cell(self.mtm(), &self.ivars().table, row, column)
+        }
+
+        #[unsafe(method_id(accessibilityHeaderElementsForColumn:))]
+        fn accessibility_headers(&self, column: usize) -> Option<Retained<NSArray<AnyObject>>> {
+            crate::table::headers(self.mtm(), &self.ivars().table, column)
+        }
+
+        /// A cell's row and column; a clickable view inside a cell, which
+        /// the focus lands on, answers with the cell's.
+        #[unsafe(method(accessibilityRowRange))]
+        fn accessibility_row_range(&self) -> NSRange {
+            let own = crate::table::row_range(&self.ivars().table);
+            if own.length > 0 || !self.takes_focus() {
+                return own;
+            }
+            crate::table::enclosing_range(self, false)
+        }
+
+        #[unsafe(method(accessibilityColumnRange))]
+        fn accessibility_column_range(&self) -> NSRange {
+            let own = crate::table::column_range(&self.ivars().table);
+            if own.length > 0 || !self.takes_focus() {
+                return own;
+            }
+            crate::table::enclosing_range(self, true)
+        }
+
+        // A cell holding a control is a container of its views, which the
+        // remote focuses.
+        #[unsafe(method(isAccessibilityElement))]
+        fn is_accessibility_element(&self) -> bool {
+            let own: bool = unsafe { msg_send![super(self), isAccessibilityElement] };
+            own && !crate::table::has_parts(self.mtm(), self, &self.ivars().table)
+        }
+
+        #[unsafe(method_id(accessibilityElements))]
+        fn accessibility_elements(&self) -> Option<Retained<NSArray>> {
+            crate::table::parts_array(self.mtm(), self, &self.ivars().table)
+                .or_else(|| unsafe { msg_send![super(self), accessibilityElements] })
+        }
+
+        #[unsafe(method(accessibilityElementCount))]
+        fn accessibility_element_count(&self) -> isize {
+            match crate::table::parts(self.mtm(), self, &self.ivars().table) {
+                Some(parts) => parts.len() as isize,
+                None => unsafe { msg_send![super(self), accessibilityElementCount] },
+            }
+        }
+
+        #[unsafe(method_id(accessibilityElementAtIndex:))]
+        fn accessibility_element_at(&self, index: isize) -> Option<Retained<AnyObject>> {
+            match crate::table::parts(self.mtm(), self, &self.ivars().table) {
+                Some(parts) => usize::try_from(index).ok().and_then(|i| parts.get(i).cloned()),
+                None => unsafe { msg_send![super(self), accessibilityElementAtIndex: index] },
+            }
+        }
+
+        #[unsafe(method(indexOfAccessibilityElement:))]
+        fn index_of_accessibility_element(&self, element: &AnyObject) -> isize {
+            match crate::table::parts(self.mtm(), self, &self.ivars().table) {
+                Some(parts) => parts
+                    .iter()
+                    .position(|p| std::ptr::eq(&**p, element))
+                    .map_or(objc2_foundation::NSNotFound, |i| i as isize),
+                None => unsafe { msg_send![super(self), indexOfAccessibilityElement: element] },
+            }
         }
     }
 );
@@ -138,6 +247,74 @@ pub fn focus_view(mtm: MainThreadMarker) -> Retained<UIView> {
     Retained::into_super(view)
 }
 
+/// Whether a table's row takes clicks (it is then focusable).
+fn table_row_clickable(row: &UIView) -> bool {
+    row.downcast_ref::<FocusView>()
+        .is_some_and(|r| r.ivars().focusable.get())
+}
+
+// The focus engine never moves into a focusable view, so a clickable table
+// row whose cells hold a control (a button in its last column) would hide
+// that control from the remote (#284). Such a row hands the focus to its
+// cells instead: its controls take their own, and each of its other cells
+// takes the focus for the row and clicks it on select.
+
+/// Whether `view` or a view below it takes the focus on its own.
+fn holds_focusable(view: &UIView) -> bool {
+    view.subviews().iter().any(|v| {
+        !v.isHidden()
+            && match v.downcast_ref::<FocusView>() {
+                Some(f) => f.takes_focus() || holds_focusable(&v),
+                None => v.canBecomeFocused() || holds_focusable(&v),
+            }
+    })
+}
+
+impl FocusView {
+    /// Clickable, or listening to the remote's keys.
+    fn takes_focus(&self) -> bool {
+        self.ivars().focusable.get() || self.ivars().keys.get()
+    }
+
+    /// A clickable table row with a control in a cell.
+    fn yields_focus(&self) -> bool {
+        crate::table::is_row(&self.ivars().table) && holds_focusable(self)
+    }
+
+    /// The row this cell takes the focus for (see above).
+    fn yielding_row(&self) -> Option<Retained<UIView>> {
+        crate::table::row_of(&self.ivars().table).filter(|row| {
+            row.downcast_ref::<FocusView>()
+                .is_some_and(|r| r.ivars().focusable.get() && r.yields_focus())
+        })
+    }
+
+    fn stands_for_row(&self) -> bool {
+        self.yielding_row().is_some() && !holds_focusable(self)
+    }
+
+    /// The select press on a cell standing for its row clicks the row (not
+    /// a press a control in the cell passed on).
+    fn click_row(&self, presses: &NSSet<UIPress>) -> bool {
+        if self.takes_focus()
+            || !self.isFocused()
+            || !presses.iter().any(|p| p.r#type().0 == PRESS_SELECT)
+        {
+            return false;
+        }
+        let Some(row) = self.yielding_row() else {
+            return false;
+        };
+        crate::imp::dispatch(UiEvent::Click(row.tag() as NodeId));
+        true
+    }
+}
+
+/// The table ivars of `view`, if it is a Prism container (#284).
+pub(crate) fn table_ivars(view: &UIView) -> Option<&crate::table::TableIvars> {
+    view.downcast_ref::<FocusView>().map(|v| &v.ivars().table)
+}
+
 /// Lets the remote focus `view` (only `PrismFocusView`s).
 pub fn set_focusable(view: &UIView, on: bool) {
     if view.respondsToSelector(sel!(setPrismFocusable:)) {
@@ -153,15 +330,98 @@ pub fn set_keys(view: &UIView, on: bool) {
     }
 }
 
+/// A clickable container's tap hears the select press only while the
+/// container holds the focus itself: not while a control in one of its
+/// cells does (a clickable table row hands the focus to its cells, #284),
+/// which acts on its own.
+pub fn receives_press(g: &objc2_ui_kit::UIGestureRecognizer, press: &UIPress) -> bool {
+    let (Some(view), Some(responder)) = (g.view(), press.responder(g.mtm())) else {
+        return true;
+    };
+    let view: &UIResponder = &view;
+    std::ptr::eq(&*responder, view)
+}
+
 /// Taps fire on the remote's select press only (not the arrows or Menu).
 pub fn select_press_only(tap: &UITapGestureRecognizer) {
     let select = NSNumber::new_isize(PRESS_SELECT);
     tap.setAllowedPressTypes(&NSArray::from_retained_slice(&[select]));
 }
 
+define_class!(
+    /// A button (and a toggle): in a table's cell, where the focus lands on
+    /// it, it answers VoiceOver with the cell's row and column (#284).
+    #[unsafe(super(UIButton, objc2_ui_kit::UIControl, UIView, UIResponder, objc2_foundation::NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PrismTVButton"]
+    pub struct TvButton;
+
+    unsafe impl NSObjectProtocol for TvButton {}
+
+    impl TvButton {
+        #[unsafe(method(accessibilityRowRange))]
+        fn accessibility_row_range(&self) -> NSRange {
+            crate::table::enclosing_range(self, false)
+        }
+
+        #[unsafe(method(accessibilityColumnRange))]
+        fn accessibility_column_range(&self) -> NSRange {
+            crate::table::enclosing_range(self, true)
+        }
+    }
+);
+
+/// A system button (see [`TvButton`]).
+pub fn button(_mtm: MainThreadMarker) -> Retained<UIButton> {
+    // `buttonWithType:` makes an instance of the class it is sent to.
+    let b: Retained<UIButton> =
+        unsafe { msg_send![TvButton::class(), buttonWithType: UIButtonType::System] };
+    // tvOS's tint is white in both appearances, and an unfocused system
+    // button draws its title and image in it: white on its pale platter in
+    // light mode. The label color reads in both (focused, the system draws
+    // dark on white).
+    unsafe { b.setTintColor(Some(&UIColor::labelColor())) };
+    b
+}
+
+/// A button made from `config` (a picker's), of [`TvButton`]'s class: in a
+/// table's cell it answers VoiceOver with the cell's row and column, and it
+/// is tinted like [`button`], whose reasons it shares.
+pub fn configured_button(config: &objc2_ui_kit::UIButtonConfiguration) -> Retained<UIButton> {
+    let none: Option<&objc2_ui_kit::UIAction> = None;
+    // `buttonWithConfiguration:primaryAction:` makes an instance of the
+    // class it is sent to.
+    let b: Retained<UIButton> = unsafe {
+        msg_send![TvButton::class(), buttonWithConfiguration: config, primaryAction: none]
+    };
+    unsafe { b.setTintColor(Some(&UIColor::labelColor())) };
+    b
+}
+
+/// A text field's placeholder, in the placeholder color of the field's own
+/// appearance: tvOS draws a plain placeholder in the system's, white on a
+/// light theme's field when the system is dark.
+pub fn set_placeholder(f: &objc2_ui_kit::UITextField, text: &str) {
+    use objc2::AllocAnyThread;
+    use objc2_foundation::{NSMutableAttributedString, NSRange};
+    let s = NSMutableAttributedString::initWithString(
+        NSMutableAttributedString::alloc(),
+        &NSString::from_str(text),
+    );
+    let color = UIColor::placeholderTextColor();
+    unsafe {
+        s.addAttribute_value_range(
+            objc2_ui_kit::NSForegroundColorAttributeName,
+            &color,
+            NSRange::new(0, s.length()),
+        )
+    };
+    f.setAttributedPlaceholder(Some(&s));
+}
+
 /// A toggle: a button showing an empty or checked circle.
 pub fn toggle(mtm: MainThreadMarker, target: &AnyObject) -> Retained<UIButton> {
-    let b = UIButton::buttonWithType(UIButtonType::System, mtm);
+    let b = button(mtm);
     let image = |name: &str| UIImage::systemImageNamed(&NSString::from_str(name));
     b.setImage_forState(image("circle").as_deref(), UIControlState::Normal);
     b.setImage_forState(

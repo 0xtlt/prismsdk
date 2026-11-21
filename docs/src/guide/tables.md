@@ -50,7 +50,9 @@ screen of its own at `/components/table`.
   padding, an accessibility label (`cell(text("Cancelled")).bg(..)`).
 - A row can take `.on_click(..)` and `.context_menu(..)`. Keyboard and
   screen reader users reach a row through its cells: put a link or a button
-  in a cell as well when the action matters.
+  in a cell as well when the action matters. On Apple platforms, VoiceOver's
+  activation of a cell without a control clicks its row, and on tvOS the
+  remote focuses such a cell (Select clicks the row).
 
 ## The table
 
@@ -91,17 +93,16 @@ minimum widths and empty cells.
 | Platform | What the reader gets |
 |---|---|
 | Web | `<table>`, `<th scope="col">`, `<td>`: the browser's own table semantics |
-| macOS | `NSAccessibilityTableRole`, rows, columns and cells; each cell's row, column and column header (`AXColumnHeaderUIElements`), read by VoiceOver |
-| iOS, iPadOS, visionOS | `UIAccessibilityContainerDataTable`: VoiceOver reads the column header when the focus moves to another column, and the row and column counts |
+| macOS | `NSAccessibilityTableRole`, rows, columns and cells; each cell's row, column and column header (`AXColumnHeaderUIElements`), read by VoiceOver. A cell's controls (buttons, switches, links, text fields, pickers) are its children, reached by interacting with the cell; a cell holding one reads what it holds (`Track, button`), and pressing it presses its control (a picker opens its menu). An icon is no control: a cell of an icon and a text reads as text, and pressing it clicks a clickable row |
+| iOS, iPadOS, visionOS | `UIAccessibilityContainerDataTable`: VoiceOver reads the column header when the focus moves to another column, and the row and column counts. A cell of text is one element (`Time, 09:35`); each control in a cell (a button, a switch, a link, a text field, a picker) is an element of its own, in the cell's row and column, and activating a picker opens its menu. The table answers an element for every cell, never a container, so VoiceOver's table navigation always lands on something it reads |
+| tvOS | The same data table. The remote focuses each control in a cell (a picker too), and the cells of a clickable row (a row whose cells hold a control hands the focus to them) |
+| watchOS | No data table (see below). The table is a container of its cells, row by row: header cells have the header trait, a cell of text is one element, each control in a cell is an element of its own, and each element gives its column header in VoiceOver's More Content rotor |
 | Android | `CollectionInfo` (rows, columns) on the table, `CollectionItemInfo` on each cell (row, column, heading for headers, and the column's title from API 33). A cell is one element, read from its text (`09:35`); a cell holding a control (a button, a link, a field) is not: TalkBack moves to each control and text in it, reads them with the cell's row and column, and activates the controls |
 | Linux (GTK 4) | Roles table, row, cell and column header (a filler before GTK 4.25); each row is named by its content, each cell described by its column's header, which Orca reads after the cell's text; a control inside a cell is reached on its own |
 | Windows | UI Automation `Table` with the Grid and Table patterns; cells are `DataItem`s (headers `HeaderItem`s) with the GridItem and TableItem patterns, which give their row, column and column header |
 
 What is not possible everywhere:
 
-- iOS: a cell is one element, read from its text (`Time, 09:35`).
-  A control inside a cell is not reached on its own: put actions on the row
-  or next to the table.
 - Linux: no GTK 4 (4.8 to 4.25) implements AT-SPI's `Table` and `TableCell`
   interfaces, nor exports a cell's row and column numbers or the table's
   size (Prism sets them, for the GTK versions that will). So Orca can't say
@@ -110,12 +111,16 @@ What is not possible everywhere:
   (`09:35 12 Harbour 3`) and each cell's text, then its column's header
   (`DESCRIBED_BY`). Up to GTK 4.24 a column header is a filler: its text is
   read, not "column header"; GTK 4.25 gives it its role.
-- tvOS and watchOS: the layout is the same, the reader gets plain containers
-  and reads the cells' text in order.
+- watchOS: `UIAccessibilityContainerDataTable`, `UIAccessibilityContainerDataTableCell`
+  and `accessibilityContainerType` are `API_UNAVAILABLE(watchos)`
+  (`UIAccessibilityContainer.h`), and the watch app's host is SwiftUI, which
+  has no row or column API (its `Table` is unavailable on watchOS). VoiceOver
+  reads no row or column number there; the column header is in the More
+  Content rotor (`accessibilityCustomContent`), not read on its own.
 
 ## Backends
 
-| | Web | macOS | iOS · visionOS | tvOS · watchOS | Linux | Android | Windows |
-|---|---|---|---|---|---|---|---|
-| Table layout | CSS | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Table semantics | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ |
+| | Web | macOS | iOS · visionOS | tvOS | watchOS | Linux | Android | Windows |
+|---|---|---|---|---|---|---|---|---|
+| Table layout | CSS | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Table semantics | ✓ | ✓ | ✓ | ✓ | Headers, column header as custom content | ✓ | ✓ | ✓ |

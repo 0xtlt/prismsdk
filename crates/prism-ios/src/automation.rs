@@ -3,12 +3,19 @@
 //!
 //! - `PRISM_CLICK="+1|Save"` presses buttons by title, or clickable views
 //!   by accessibility label, in order;
+//! - `PRISM_A11Y_PRESS="Track|cell:5,3"` then activates elements as
+//!   VoiceOver does (`accessibilityActivate`), by accessibility label or
+//!   button title, or `cell:R,C` for the first table's answer for row R,
+//!   column C, and prints what each returned;
 //! - `PRISM_SNAPSHOT=/abs/out.png` then writes the window to a PNG and quits;
 //! - `PRISM_A11Y_DUMP=/abs/tree.json` writes the visible view tree with what
 //!   VoiceOver sees (label, traits as roles, title, text, frame) before the
 //!   snapshot (and quits if there is none);
 //! - `PRISM_DELAY` (seconds, default 1) before clicking, `PRISM_AFTER`
 //!   (default 0.5) between the clicks and the snapshot.
+//!
+//! Without a snapshot or a dump the app keeps running after the clicks and
+//! presses, for a look from outside (a screenshot of a menu they opened).
 
 use std::time::Duration;
 
@@ -39,7 +46,8 @@ pub(crate) fn schedule() {
     let snapshot = std::env::var("PRISM_SNAPSHOT").ok();
     let clicks = std::env::var("PRISM_CLICK").ok();
     let dump = std::env::var("PRISM_A11Y_DUMP").ok();
-    if snapshot.is_none() && clicks.is_none() && dump.is_none() {
+    let presses = std::env::var("PRISM_A11Y_PRESS").ok();
+    if snapshot.is_none() && clicks.is_none() && dump.is_none() && presses.is_none() {
         return;
     }
     after(seconds("PRISM_DELAY", 1.), move || {
@@ -52,6 +60,13 @@ pub(crate) fn schedule() {
             if !press(mtm, title) {
                 eprintln!("prism-ios: PRISM_CLICK: nothing labelled {title:?}");
             }
+        }
+        for what in presses
+            .iter()
+            .flat_map(|p| p.split('|'))
+            .filter(|t| !t.is_empty())
+        {
+            a11y_press(mtm, what);
         }
         if snapshot.is_none() && dump.is_none() {
             return;
@@ -100,6 +115,79 @@ fn press(mtm: MainThreadMarker, title: &str) -> bool {
         crate::imp::dispatch_event(UiEvent::Click(view.tag() as NodeId));
     }
     true
+}
+
+/// VoiceOver's activation of the element `what` names (`PRISM_A11Y_PRESS`).
+/// A `false` answer is where VoiceOver would tap the element's activation
+/// point instead.
+fn a11y_press(mtm: MainThreadMarker, what: &str) {
+    let Some(window) = key_window(mtm) else {
+        return;
+    };
+    let found = match what.strip_prefix("cell:") {
+        Some(at) => {
+            let mut at = at.split(',').map(|n| n.trim().parse::<usize>().ok());
+            match (at.next().flatten(), at.next().flatten()) {
+                (Some(row), Some(column)) => crate::table::find_table(&window).and_then(|t| {
+                    // SAFETY: the table's `UIAccessibilityContainerDataTable`
+                    // getter, the one VoiceOver's table navigation calls.
+                    unsafe {
+                        msg_send![&*t, accessibilityDataTableCellElementForRow: row, column: column]
+                    }
+                }),
+                _ => None,
+            }
+        }
+        None => find_element(&window, what),
+    };
+    let Some(element) = found else {
+        eprintln!("prism-ios: PRISM_A11Y_PRESS: nothing labelled {what:?}");
+        return;
+    };
+    // SAFETY: UIAccessibilityAction's method, on any element or view.
+    let done: bool = unsafe { msg_send![&*element, accessibilityActivate] };
+    println!(
+        "prism-ios: PRISM_A11Y_PRESS: {what:?} ({}) returned {done}",
+        element.class().name().to_string_lossy()
+    );
+}
+
+/// The first visible element labelled (or a button titled) `label`, down
+/// the accessibility elements of containers and the subviews.
+fn find_element(view: &UIView, label: &str) -> Option<Retained<AnyObject>> {
+    let labelled = |e: &AnyObject| {
+        // SAFETY: UIAccessibility's getter, on any element or view.
+        let l: Option<Retained<NSString>> = unsafe { msg_send![e, accessibilityLabel] };
+        l.is_some_and(|l| l.to_string() == label)
+            || e.downcast_ref::<UIButton>().is_some_and(|b| {
+                b.titleForState(UIControlState::Normal)
+                    .is_some_and(|t| t.to_string() == label)
+            })
+    };
+    // SAFETY: UIAccessibilityContainer's getter, on any view.
+    let elements: Option<Retained<objc2_foundation::NSArray>> =
+        unsafe { msg_send![view, accessibilityElements] };
+    if let Some(e) = elements
+        .iter()
+        .flat_map(|a| a.to_vec())
+        .find(|e| labelled(e))
+    {
+        return Some(e);
+    }
+    for sub in view.subviews().iter() {
+        if sub.isHidden() || sub.alpha() < 0.01 {
+            continue;
+        }
+        if labelled(&sub) {
+            return Some(Retained::into_super(Retained::into_super(
+                Retained::into_super(sub.clone()),
+            )));
+        }
+        if let Some(found) = find_element(&sub, label) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 fn find(view: &UIView, title: &str) -> Option<Retained<UIView>> {
@@ -165,33 +253,45 @@ fn opt(s: Option<String>) -> String {
     s.map_or("null".into(), |s| json_str(&s))
 }
 
+/// The macOS-style role of these accessibility traits (`AXButton`,
+/// `AXLink`, `AXHeading`, `AXStaticText`), if any.
+fn role_of(traits: objc2_ui_kit::UIAccessibilityTraits) -> Option<String> {
+    use objc2_ui_kit::{
+        UIAccessibilityTraitButton, UIAccessibilityTraitHeader, UIAccessibilityTraitLink,
+        UIAccessibilityTraitStaticText,
+    };
+    let (button, link, header, text) = unsafe {
+        (
+            UIAccessibilityTraitButton,
+            UIAccessibilityTraitLink,
+            UIAccessibilityTraitHeader,
+            UIAccessibilityTraitStaticText,
+        )
+    };
+    let role = if traits & button != 0 {
+        "AXButton"
+    } else if traits & link != 0 {
+        "AXLink"
+    } else if traits & header != 0 {
+        "AXHeading"
+    } else if traits & text != 0 {
+        "AXStaticText"
+    } else {
+        return None;
+    };
+    Some(role.into())
+}
+
 /// One view and its visible subviews as JSON, in the macOS dump's shape
 /// (`role`: `AXButton`, `AXHeading`… from the accessibility traits).
 fn dump_node(mtm: MainThreadMarker, view: &UIView) -> String {
     use objc2_ui_kit::{
-        NSObjectUIAccessibility, UIAccessibilityTraitButton, UIAccessibilityTraitHeader,
-        UIAccessibilityTraitSelected, UIAccessibilityTraitStaticText, UILabel, UITabBar,
-        UITextField,
+        NSObjectUIAccessibility, UIAccessibilityTraitSelected, UILabel, UITabBar, UITextField,
     };
     let class = view.class().name().to_str().unwrap_or("?").to_string();
     let traits = view.accessibilityTraits(mtm);
-    let (button, header, text, selected) = unsafe {
-        (
-            UIAccessibilityTraitButton,
-            UIAccessibilityTraitHeader,
-            UIAccessibilityTraitStaticText,
-            UIAccessibilityTraitSelected,
-        )
-    };
-    let role = if traits & button != 0 {
-        Some("AXButton".to_string())
-    } else if traits & header != 0 {
-        Some("AXHeading".to_string())
-    } else if traits & text != 0 {
-        Some("AXStaticText".to_string())
-    } else {
-        None
-    };
+    let selected = unsafe { UIAccessibilityTraitSelected };
+    let role = role_of(traits);
     let label = view.accessibilityLabel(mtm).map(|l| l.to_string());
     let title = view
         .downcast_ref::<UIButton>()
@@ -216,21 +316,57 @@ fn dump_node(mtm: MainThreadMarker, view: &UIView) -> String {
             .map_or(-1, |i| i as i64);
         format!(r#"{{"labels":[{}],"selected":{index}}}"#, labels.join(","))
     });
-    // Tables (#284): `"table":{rows, columns, headers}`, `"cell":[row, column]`.
-    #[cfg(not(target_os = "tvos"))]
+    // Tables (#284): `"table":{rows, columns, headers, answers}` (answers:
+    // the element the table gives VoiceOver for each cell, row by row, as
+    // `{class, element}`), `"cell":[row, column]`, and a cell holding a
+    // control's `"parts"`: the elements VoiceOver reaches in it, each
+    // `{class, role, label, cell}` (`cell`: the row and column it reports,
+    // `null` for a view read as itself).
     let table = match crate::table::dump(mtm, view) {
-        Some(crate::table::Dump::Table(rows, columns, headers)) => {
+        Some(crate::table::Dump::Table(rows, columns, headers, answers)) => {
             let headers: Vec<String> = headers.into_iter().map(opt).collect();
+            let answers: Vec<String> = answers
+                .into_iter()
+                .map(|row| {
+                    let row: Vec<String> = row
+                        .iter()
+                        .map(|a| {
+                            format!(
+                                r#"{{"class":{},"element":{}}}"#,
+                                json_str(&a.class),
+                                a.element
+                            )
+                        })
+                        .collect();
+                    format!("[{}]", row.join(","))
+                })
+                .collect();
             format!(
-                r#","table":{{"rows":{rows},"columns":{columns},"headers":[{}]}}"#,
-                headers.join(",")
+                r#","table":{{"rows":{rows},"columns":{columns},"headers":[{}],"answers":[{}]}}"#,
+                headers.join(","),
+                answers.join(",")
             )
         }
-        Some(crate::table::Dump::Cell(r, c)) => format!(r#","cell":[{r},{c}]"#),
+        Some(crate::table::Dump::Cell(r, c, parts)) => {
+            let parts = parts.map_or_else(String::new, |parts| {
+                let parts: Vec<String> = parts
+                    .into_iter()
+                    .map(|p| {
+                        format!(
+                            r#"{{"class":{},"role":{},"label":{},"cell":{}}}"#,
+                            json_str(&p.class),
+                            opt(role_of(p.traits)),
+                            opt(p.label),
+                            p.at.map_or("null".into(), |(r, c)| format!("[{r},{c}]"))
+                        )
+                    })
+                    .collect();
+                format!(r#","parts":[{}]"#, parts.join(","))
+            });
+            format!(r#","cell":[{r},{c}]{parts}"#)
+        }
         None => String::new(),
     };
-    #[cfg(target_os = "tvos")]
-    let table = String::new();
     let f = view.convertRect_toView(view.bounds(), None);
     let children: Vec<String> = view
         .subviews()

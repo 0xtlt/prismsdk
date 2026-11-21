@@ -857,14 +857,25 @@ define_class!(
             crate::table::cell_at(self, column, row)
         }
 
-        /// VoiceOver "press" on a clickable view.
+        /// A table cell holding a control (#284) has no label of its own:
+        /// VoiceOver reads what it holds ("Track, button"), not its text.
+        #[unsafe(method_id(accessibilityLabel))]
+        fn accessibility_label(&self) -> Option<Retained<NSString>> {
+            if self.is_cell() && !crate::table::controls(self).is_empty() {
+                None
+            } else {
+                unsafe { msg_send![super(self), accessibilityLabel] }
+            }
+        }
+
+        /// VoiceOver "press" on a clickable view, or on a table cell (#284).
         #[unsafe(method(accessibilityPerformPress))]
         fn accessibility_perform_press(&self) -> objc2::runtime::Bool {
-            if !self.ivars().clickable.get() {
-                return objc2::runtime::Bool::NO;
+            if self.ivars().clickable.get() {
+                dispatch(UiEvent::Click(self.ivars().id.get()));
+                return objc2::runtime::Bool::YES;
             }
-            dispatch(UiEvent::Click(self.ivars().id.get()));
-            objc2::runtime::Bool::YES
+            objc2::runtime::Bool::new(self.is_cell() && self.press_cell())
         }
 
         // Like native buttons (#177): clickable views take the focus (a
@@ -1290,6 +1301,37 @@ fn gesture_phase(
 }
 
 impl PrismView {
+    fn is_cell(&self) -> bool {
+        self.accessibilityRole().as_deref()
+            == Some(unsafe { objc2_app_kit::NSAccessibilityCellRole })
+    }
+
+    /// VoiceOver's press on a table cell (#284): the control it holds when
+    /// it holds one, else its row when the row is clickable.
+    fn press_cell(&self) -> bool {
+        match &crate::table::controls(self)[..] {
+            [control] => press_control(control),
+            [] => {
+                let row = unsafe { objc2_app_kit::NSAccessibilityRowRole };
+                // SAFETY: the view's superview, on the main thread.
+                let Some(up) = (unsafe { self.superview() }) else {
+                    return false;
+                };
+                match up.downcast_ref::<PrismView>() {
+                    Some(up)
+                        if up.accessibilityRole().as_deref() == Some(row)
+                            && up.ivars().clickable.get() =>
+                    {
+                        dispatch(UiEvent::Click(up.ivars().id.get()));
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
     /// Reports the pointer entering, moving over or leaving the view.
     fn pointer(&self, phase: PointerPhase, event: &NSEvent) {
         use prism_core::events::pointer_mask::{HOVER, MOVE};
@@ -5193,7 +5235,15 @@ impl Widgets for AppKit {
         if a.role == Some(Role::Status) {
             self.announce(view.id(), a.value.as_deref().unwrap_or(""));
         }
-        v.setAccessibilityHidden(a.hidden || crate::interact::in_inert(v));
+        let hidden = a.hidden || crate::interact::in_inert(v);
+        v.setAccessibilityHidden(hidden);
+        // VoiceOver reads a control through its cell, which the view's
+        // label, help and hidden flag do not reach: a picker's label was not
+        // read, and a decorative image read its symbol's name.
+        let cell = v.downcast_ref::<NSControl>().and_then(|c| c.cell());
+        if let Some(cell) = &cell {
+            cell.setAccessibilityElement(!hidden);
+        }
         // Tooltips (#216): AppKit's own, or the label's full text while it
         // is cut short (asked of the label as the pointer rests).
         v.removeAllToolTips();
@@ -5282,8 +5332,14 @@ impl Widgets for AppKit {
         }
         if a.label.is_some() || !native {
             v.setAccessibilityLabel(ns(&a.label).as_deref());
+            if let Some(cell) = &cell {
+                cell.setAccessibilityLabel(ns(&a.label).as_deref());
+            }
         }
         v.setAccessibilityHelp(ns(&a.hint).as_deref());
+        if let Some(cell) = &cell {
+            cell.setAccessibilityHelp(ns(&a.hint).as_deref());
+        }
         // Pop-ups and date pickers read their own (live) selection; sliders
         // go through `PrismSlider::accessibilityValue`.
         let own_value = matches!(
@@ -5708,6 +5764,88 @@ fn press_segment(view: &NSView, title: &str) -> bool {
     false
 }
 
+/// VoiceOver's press on a table cell's only control (#284), and whether it
+/// acted. AppKit's buttons, switches and pickers act on
+/// `accessibilityPerformPress` but answer NO, a failed press to VoiceOver:
+/// a button or switch is clicked instead (its action runs, the press
+/// succeeded), a picker opens its menu once the press returns, and a field
+/// takes the focus to be typed in.
+fn press_control(control: &NSView) -> bool {
+    let Some(c) = control.downcast_ref::<NSControl>() else {
+        // A link, or a clickable view: its own press answers.
+        let done: objc2::runtime::Bool = unsafe { msg_send![control, accessibilityPerformPress] };
+        return done.as_bool();
+    };
+    if !c.isEnabled() {
+        return false;
+    }
+    if c.downcast_ref::<NSPopUpButton>().is_some() {
+        // Its click tracks the menu until it closes: it is the next turn's,
+        // and the press returns now.
+        let none: Option<&AnyObject> = None;
+        // SAFETY: `performClick:` takes a sender, nil here.
+        let _: () = unsafe {
+            msg_send![c, performSelector: sel!(performClick:), withObject: none, afterDelay: 0.0f64]
+        };
+        return true;
+    }
+    if c.downcast_ref::<NSButton>().is_some() || c.downcast_ref::<NSSwitch>().is_some() {
+        // SAFETY: the control's own click, on the main thread.
+        unsafe { c.performClick(None) };
+        return true;
+    }
+    if c.downcast_ref::<NSTextField>().is_some() || c.downcast_ref::<NSDatePicker>().is_some() {
+        return c.window().is_some_and(|w| w.makeFirstResponder(Some(c)));
+    }
+    let done: objc2::runtime::Bool = unsafe { msg_send![c, accessibilityPerformPress] };
+    done.as_bool()
+}
+
+/// The first accessibility element under `o` labelled (or titled) `label`,
+/// down the accessibility children as VoiceOver goes.
+fn find_element(o: &AnyObject, label: &str, depth: usize) -> Option<Retained<AnyObject>> {
+    if depth > 64 {
+        return None;
+    }
+    // SAFETY: NSAccessibility getters of views and accessibility elements.
+    let children: Option<Retained<NSArray>> = unsafe { msg_send![o, accessibilityChildren] };
+    for c in children?.to_vec() {
+        let named: [Option<Retained<NSString>>; 2] = unsafe {
+            [
+                msg_send![&*c, accessibilityLabel],
+                msg_send![&*c, accessibilityTitle],
+            ]
+        };
+        if named.iter().flatten().any(|s| s.to_string() == label) {
+            return Some(c);
+        }
+        if let Some(found) = find_element(&c, label, depth + 1) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// The cell at `"ROW,COLUMN"` of the first table under `view`, by the
+/// table's `accessibilityCellForColumn:row:` (dev hooks).
+fn table_cell(view: &NSView, at: &str) -> Option<Retained<AnyObject>> {
+    fn table(view: &NSView) -> Option<Retained<NSView>> {
+        view.subviews().iter().find_map(|sub| {
+            let role = sub.accessibilityRole().map(|r| r.to_string());
+            if role.as_deref() == Some("AXTable") {
+                Some(sub.clone())
+            } else {
+                table(&sub)
+            }
+        })
+    }
+    let (row, column) = at.split_once(',')?;
+    let (row, column): (isize, isize) = (row.trim().parse().ok()?, column.trim().parse().ok()?);
+    let table = table(view)?;
+    // SAFETY: NSAccessibility's table navigation; the cell or nil.
+    unsafe { msg_send![&*table, accessibilityCellForColumn: column, row: row] }
+}
+
 /// The visible view whose accessibility label, button title or placeholder
 /// is `label` (dev hooks).
 fn find_labelled(view: &NSView, label: &str) -> Option<Retained<NSView>> {
@@ -6039,11 +6177,43 @@ fn run_automation(mtm: MainThreadMarker) {
         }
     }
 
-    // `PRISM_AFTER=<seconds>`: let async answers arrive before the snapshot.
+    // `PRISM_A11Y_PRESS="Rebook|Boarding|cell:1,3"`: VoiceOver's press on
+    // the first element labelled (or titled) so, reached the way VoiceOver
+    // reaches it: down the accessibility children, not the views; `cell:R,C`
+    // is the first table's cell at row R, column C, as VoiceOver's table
+    // navigation reaches it.
+    thread_local! {
+        static A11Y_PRESSED: Cell<bool> = const { Cell::new(false) };
+    }
+    if let Ok(labels) = std::env::var("PRISM_A11Y_PRESS")
+        && !A11Y_PRESSED.with(|c| c.replace(true))
+    {
+        for label in labels.split('|').filter(|t| !t.is_empty()) {
+            let found = match label.strip_prefix("cell:") {
+                Some(at) => table_cell(&root, at),
+                None => find_element(&root, label, 0),
+            };
+            match found {
+                Some(e) => {
+                    let done: objc2::runtime::Bool =
+                        unsafe { msg_send![&*e, accessibilityPerformPress] };
+                    println!(
+                        "prism-macos: PRISM_A11Y_PRESS: {label:?} ({}) returned {}",
+                        e.class().name().to_str().unwrap_or("?"),
+                        done.as_bool()
+                    );
+                }
+                None => eprintln!("prism-macos: PRISM_A11Y_PRESS: nothing labelled {label:?}"),
+            }
+        }
+    }
+
+    // `PRISM_AFTER=<seconds>`: let async answers (and a press's menu)
+    // arrive before the snapshot.
     if let Some(after) = std::env::var("PRISM_AFTER")
         .ok()
         .and_then(|s| s.parse::<f64>().ok())
-        && CLICKED.with(|c| c.get())
+        && (CLICKED.with(|c| c.get()) || A11Y_PRESSED.with(|c| c.get()))
     {
         thread_local! {
             static WAITED: Cell<bool> = const { Cell::new(false) };

@@ -433,13 +433,12 @@ pub fn encode_mesh(mesh: &MeshBlob) -> Vec<u8> {
     w.u32(flags);
     w.f32s(&super::math::aabb_of(mesh.positions.iter().copied()));
     w.f32s(mesh.positions.iter().flatten());
-    let normals_ok = mesh.normals.len() == n;
-    for i in 0..n {
-        w.f32s(if normals_ok {
-            &mesh.normals[i]
-        } else {
-            &[0., 1., 0.]
-        });
+    if mesh.normals.len() == n {
+        w.f32s(mesh.normals.iter().flatten());
+    } else {
+        for _ in 0..n {
+            w.f32s(&[0., 1., 0.]);
+        }
     }
     if uv {
         w.f32s(mesh.uvs.iter().flatten());

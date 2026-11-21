@@ -386,7 +386,10 @@ pub fn picker(mtm: MainThreadMarker) -> Retained<UIButton> {
         config.setImagePlacement(objc2_ui_kit::NSDirectionalRectEdge::Trailing);
         config.setImagePadding(8.);
     }
+    #[cfg(not(target_os = "tvos"))]
     let b = UIButton::buttonWithConfiguration_primaryAction(&config, None);
+    #[cfg(target_os = "tvos")]
+    let b = crate::tv::configured_button(&config);
     b.setShowsMenuAsPrimaryAction(true);
     b
 }
