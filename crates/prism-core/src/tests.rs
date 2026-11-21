@@ -757,6 +757,84 @@ fn deep_link_selects_the_matching_tab_and_navigating_to_a_root_switches_tab() {
     assert_eq!(rt.app.current_path(), Some("/"));
 }
 
+#[test]
+fn a_link_while_running_opens_in_its_tab_and_selects_it() {
+    let (mut rt, first) = tabbed("/");
+    let tabs = tabs_id(&first);
+    let linked = rt.open_link("/settings/5");
+    assert!(linked.contains(&Patch::SetValue {
+        id: tabs,
+        value: 1.
+    }));
+    assert_eq!(rt.app.current_path(), Some("/settings/5"));
+    // Back stays in that tab, on its root.
+    rt.app.back();
+    let back = rt.render();
+    assert!(
+        !back
+            .iter()
+            .any(|p| matches!(p, Patch::SetValue { id, .. } if *id == tabs))
+    );
+    assert_eq!(rt.app.current_path(), Some("/settings"));
+    // A link to a screen of the first tab selects it again.
+    let home = rt.open_link("/items/7");
+    assert!(home.contains(&Patch::SetValue {
+        id: tabs,
+        value: 0.
+    }));
+    assert_eq!(rt.app.current_path(), Some("/items/7"));
+}
+
+#[test]
+fn navigating_to_a_screen_of_another_tab_selects_that_tab() {
+    let (mut rt, first) = tabbed("/");
+    let tabs = tabs_id(&first);
+    rt.dispatch(UiEvent::Change(tabs, 1.));
+    rt.app.navigate("/items/3");
+    let patches = rt.render();
+    assert!(patches.contains(&Patch::SetValue {
+        id: tabs,
+        value: 0.
+    }));
+    assert_eq!(rt.app.current_path(), Some("/items/3"));
+    // The Settings tab's stack did not get the screen.
+    rt.dispatch(UiEvent::Change(tabs, 1.));
+    assert_eq!(rt.app.current_path(), Some("/settings"));
+    // A path of the selected tab is pushed there, as before.
+    rt.app.navigate("/settings/4");
+    let same = rt.render();
+    assert!(
+        !same
+            .iter()
+            .any(|p| matches!(p, Patch::SetValue { id, .. } if *id == tabs))
+    );
+    assert_eq!(rt.app.current_path(), Some("/settings/4"));
+}
+
+#[test]
+fn replacing_with_a_screen_of_another_tab_selects_that_tab() {
+    let (mut rt, first) = tabbed("/");
+    let tabs = tabs_id(&first);
+    rt.dispatch(UiEvent::Click(find_text(&first, "open 7")));
+    assert_eq!(rt.app.current_path(), Some("/items/7"));
+    rt.app.replace("/settings/2");
+    let patches = rt.render();
+    assert!(patches.contains(&Patch::SetValue {
+        id: tabs,
+        value: 1.
+    }));
+    assert_eq!(rt.app.current_path(), Some("/settings/2"));
+    // The screen it replaced is gone from the first tab, its root stays.
+    rt.dispatch(UiEvent::Change(tabs, 0.));
+    assert_eq!(rt.app.current_path(), Some("/"));
+    // From a tab's root, the root stays too.
+    rt.app.replace("/settings/3");
+    rt.render();
+    assert_eq!(rt.app.current_path(), Some("/settings/3"));
+    rt.dispatch(UiEvent::Change(tabs, 0.));
+    assert_eq!(rt.app.current_path(), Some("/"));
+}
+
 // --- Lazy tabs ---------------------------------------------------------------
 
 fn has_text(patches: &[Patch], text: &str) -> bool {
