@@ -1116,15 +1116,18 @@ fn runs_html_with(
                 r#"<span class="prism-symbol" aria-hidden="true"{editable}{style}>{glyph}</span>"#
             );
         } else if let Some(link) = r.link {
-            match (&r.href, base) {
-                (Some(href), Some(base)) => {
+            let href = base
+                .zip(r.href.as_deref())
+                .and_then(|(b, h)| link_href(b, h));
+            match (href, base) {
+                (Some(href), _) => {
                     let _ = write!(
                         out,
                         r#"<a class="prism-link" href="{}" data-link="{link}"{style}>{text}</a>"#,
-                        escape(&link_href(base, href))
+                        escape(&href)
                     );
                 }
-                (_, None) => {
+                (None, None) => {
                     let _ = write!(
                         out,
                         r#"<span class="prism-link" data-link="{link}"{style}>{text}</span>"#
@@ -1194,18 +1197,42 @@ pub(crate) fn scene_urls<'a>(
     std::borrow::Cow::Owned(update)
 }
 
-/// A link's `href` (mirrors `urlFor` in client.js): a URL (`https:`,
-/// `mailto:`…) as is, an app path under the mount point `base`.
-pub fn link_href(base: &str, path: &str) -> String {
-    if has_scheme(path) {
-        return path.to_string();
+/// Schemes a link or `open_url` never gets: they run script in the page
+/// (`javascript:`, `vbscript:`) or show content the app did not serve
+/// (`data:`, `blob:`, `filesystem:`). Other schemes (`mailto:`, `tel:`,
+/// another app's own) are the browser's to hand over.
+const BLOCKED_SCHEMES: [&str; 5] = ["javascript", "vbscript", "data", "blob", "filesystem"];
+
+/// `url` as a browser reads it (leading and trailing controls and spaces
+/// trimmed, tabs and newlines dropped), or `None` if its scheme is a
+/// [blocked](BLOCKED_SCHEMES) one. Mirrors `safeUrl` in client.js.
+pub(crate) fn safe_url(url: &str) -> Option<String> {
+    let url: String = url
+        .trim_matches(|c: char| c <= ' ')
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect();
+    let blocked = has_scheme(&url)
+        && url.split_once(':').is_some_and(|(scheme, _)| {
+            BLOCKED_SCHEMES.contains(&scheme.to_ascii_lowercase().as_str())
+        });
+    (!blocked).then_some(url)
+}
+
+/// A link's `href` (mirrors `hrefFor` in client.js): a URL (`https:`,
+/// `mailto:`…) as is, an app path under the mount point `base`; `None` for
+/// a URL that would run script ([`safe_url`]).
+pub fn link_href(base: &str, path: &str) -> Option<String> {
+    let path = safe_url(path)?;
+    if has_scheme(&path) {
+        return Some(path);
     }
     let (p, query) = path.split_at(path.find('?').unwrap_or(path.len()));
-    if p == "/" && !base.is_empty() {
+    Some(if p == "/" && !base.is_empty() {
         format!("{base}{query}")
     } else {
         format!("{base}{p}{query}")
-    }
+    })
 }
 
 /// `scheme:` at the start (`/^[a-z][a-z0-9+.-]*:/i` in client.js).
@@ -1218,14 +1245,18 @@ fn has_scheme(path: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
 }
 
-/// ` href="…"` of a node made a link, with `rel="noopener"` for a URL.
+/// ` href="…"` of a node made a link, with `rel="noopener"` for a URL;
+/// nothing for a URL that would run script.
 fn link_attrs(base: &str, path: &str) -> String {
-    let rel = if has_scheme(path) {
+    let Some(href) = link_href(base, path) else {
+        return String::new();
+    };
+    let rel = if has_scheme(&href) {
         r#" rel="noopener""#
     } else {
         ""
     };
-    format!(r#" href="{}"{rel}"#, escape(&link_href(base, path)))
+    format!(r#" href="{}"{rel}"#, escape(&href))
 }
 
 /// Remote URLs as-is; anything else is an app asset under `/assets/`.

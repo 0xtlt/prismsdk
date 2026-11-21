@@ -1273,11 +1273,12 @@
         node.className = "prism-symbol";
         node.setAttribute("aria-hidden", "true");
       } else if (r.l) {
-        const href = r.h && !nested;
+        const url = r.h && !nested ? hrefFor(r.h) : null;
+        const href = url != null;
         node = document.createElement(href ? "a" : "span");
         node.className = "prism-link";
         node.dataset.link = r.l;
-        if (href) node.setAttribute("href", hrefFor(r.h));
+        if (href) node.setAttribute("href", url);
         else if (!nested) { node.setAttribute("role", "link"); node.tabIndex = 0; }
       } else if (css) {
         node = document.createElement("span");
@@ -1307,7 +1308,21 @@
   // An `<a href>`, so the browser opens it in a new tab or window, copies it
   // and shows it on hover; a plain click still navigates in the app.
   const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
-  const hrefFor = (path) => (SCHEME.test(path) ? path : urlFor(path));
+  // Schemes that run script in the page or show content the app did not
+  // serve: such a link gets no href and is never opened (html.rs's
+  // `BLOCKED_SCHEMES`). The URL is read as the browser would: controls and
+  // spaces trimmed at the ends, tabs and newlines dropped (`safe_url`).
+  const BLOCKED = /^(?:javascript|vbscript|data|blob|filesystem):/i;
+  const safeUrl = (url) => {
+    const u = String(url).replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, "").replace(/[\t\n\r]/g, "");
+    return BLOCKED.test(u) ? null : u;
+  };
+  // A link's href (`link_href`): a URL as is, an app path under the mount
+  // point, null for a blocked URL.
+  const hrefFor = (path) => {
+    const u = safeUrl(path);
+    return u == null || SCHEME.test(u) ? u : urlFor(u);
+  };
   // Sent right after "create" (on the web, a node that gains or loses its
   // link is a new node): the element becomes an `<a>`.
   function setLink(el, id, href) {
@@ -1322,8 +1337,14 @@
       el = fresh;
     }
     if (href == null) return;
-    el.setAttribute("href", hrefFor(href));
-    if (SCHEME.test(href)) el.setAttribute("rel", "noopener"); else el.removeAttribute("rel");
+    const url = hrefFor(href);
+    if (url == null) {
+      el.removeAttribute("href");
+      el.removeAttribute("rel");
+      return;
+    }
+    el.setAttribute("href", url);
+    if (SCHEME.test(url)) el.setAttribute("rel", "noopener"); else el.removeAttribute("rel");
   }
   // A click on a link node. With a modifier or another button (new tab, new
   // window, download) the browser follows it: true. A plain click stays in
@@ -7192,10 +7213,12 @@ void main() {
     bOk.focus();
   }
   function webAuth(msg, reply) {
+    const url = msg.url == null ? null : safeUrl(msg.url);
+    if (url == null) return reply({ err: "not a sign-in URL" });
     const open = () => {
       const w = Math.min(520, screen.width), h = Math.min(680, screen.height);
       const features = `popup,width=${w},height=${h},left=${Math.round((screen.width - w) / 2)},top=${Math.round((screen.height - h) / 2)}`;
-      const popup = window.open(msg.url, "prism-auth", features);
+      const popup = window.open(url, "prism-auth", features);
       if (!popup) return false;
       // The server answers when the provider redirects; a closed popup before
       // that is a cancel (the server ignores it once answered).
@@ -7435,6 +7458,8 @@ void main() {
    * "new") overrides it (`cx.open_url_in`).
    */
   function openUrl(url, target) {
+    url = url == null ? null : safeUrl(url);
+    if (url == null) return;
     let same = false;
     try { same = new URL(url, location.href).origin === location.origin; } catch (e) { same = false; }
     if (target === "same" || (target !== "new" && same)) return location.assign(url);

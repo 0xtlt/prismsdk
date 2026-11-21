@@ -1739,8 +1739,11 @@ pub(crate) fn device_json(id: u64, call: prism_core::DeviceCall) -> Value {
         C::Haptic(h) => json!({ "call": "haptic", "kind": h.name() }),
         C::CopyText(t) => json!({ "call": "copy", "text": t }),
         C::Share(s) => json!({ "call": "share", "text": s.text, "url": s.url }),
-        C::OpenUrl(u) => json!({ "call": "open_url", "url": u }),
-        C::OpenUrlIn(u, target) => json!({ "call": "open_url", "url": u, "target": target.name() }),
+        // Never a URL that would run script in the page (S8): `null`.
+        C::OpenUrl(u) => json!({ "call": "open_url", "url": crate::html::safe_url(&u) }),
+        C::OpenUrlIn(u, target) => {
+            json!({ "call": "open_url", "url": crate::html::safe_url(&u), "target": target.name() })
+        }
         // The app's own relying party (#94): the page runs the ceremony with
         // the server's options and answers the credential as JSON (`text`).
         C::WebAuthn(r) => json!({
@@ -1863,6 +1866,10 @@ impl WebServices {
                 None
             }
             C::WebAuth(r) => {
+                if crate::html::safe_url(&r.url).is_none() {
+                    self.reply(id, Err(E::Failed("not a sign-in URL".into())));
+                    return None;
+                }
                 match (crate::security::state_of(&r.url), self.inbox.clone()) {
                     (Some(state), Some(tx)) => crate::security::wait_for_redirect(state, tx, id),
                     _ => {

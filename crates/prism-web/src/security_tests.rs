@@ -425,3 +425,92 @@ fn s6_a_trusted_origin_cannot_redirect_elsewhere() {
     assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(redirected.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
+
+/// Links whose target would run script in the app's page, as a browser
+/// reads them (case, leading controls and spaces, tabs and newlines inside).
+const SCRIPT_LINKS: [&str; 8] = [
+    "javascript:alert(1)",
+    "JaVaScRiPt:alert(1)",
+    " javascript:alert(1)",
+    "\u{1}javascript:alert(1)",
+    "java\tscr\nipt:alert(1)",
+    "vbscript:msgbox(1)",
+    "data:text/html,<script>alert(1)</script>",
+    "blob:https://example.com/0f8e",
+];
+
+/// The server-rendered page of one view, one text and one rich text,
+/// each linking to `href`.
+fn ssr_links(href: &str) -> String {
+    use prism_core::{Backend, NodeKind, Patch, TextRun, encode_runs};
+    let mut b = crate::html::HtmlBackend::default();
+    b.base = "/app".into();
+    let create = |id, kind| Patch::Create { id, kind };
+    let link = |id| Patch::SetLink {
+        id,
+        href: Some(href.into()),
+    };
+    b.apply(&[
+        create(1, NodeKind::View),
+        create(2, NodeKind::View),
+        link(2),
+        create(3, NodeKind::Text),
+        link(3),
+        create(4, NodeKind::Text),
+        Patch::SetConfig {
+            id: 4,
+            config: encode_runs(&[TextRun {
+                text: "x".into(),
+                link: Some(42),
+                href: Some(href.into()),
+                ..TextRun::default()
+            }]),
+        },
+        Patch::SetChildren {
+            id: 1,
+            children: vec![2, 3, 4],
+        },
+        Patch::SetRoot { id: 1 },
+    ]);
+    b.to_html()
+}
+
+#[test]
+fn s8_script_links_get_no_href() {
+    for href in SCRIPT_LINKS {
+        let html = ssr_links(href);
+        assert!(!html.contains("href="), "{href:?}: {html}");
+    }
+    for (href, expect) in [
+        ("/settings", "/app/settings"),
+        ("https://example.com/docs", "https://example.com/docs"),
+        ("mailto:ada@example.com", "mailto:ada@example.com"),
+        ("tel:+33123456789", "tel:+33123456789"),
+        (
+            "zoommtg://zoom.us/join?confno=1",
+            "zoommtg://zoom.us/join?confno=1",
+        ),
+    ] {
+        let html = ssr_links(href);
+        assert_eq!(
+            html.matches(&format!("href=\"{expect}\"")).count(),
+            3,
+            "{href:?}: {html}"
+        );
+    }
+}
+
+#[test]
+fn s8_the_page_is_never_told_to_open_a_script_url() {
+    for url in SCRIPT_LINKS {
+        for call in [
+            DeviceCall::OpenUrl(url.into()),
+            DeviceCall::OpenUrlIn(url.into(), prism_core::UrlTarget::SameTab),
+        ] {
+            let v = crate::session::device_json(1, call);
+            assert_eq!(v["url"], Value::Null, "{url:?}: {v}");
+        }
+    }
+    let v = crate::session::device_json(1, DeviceCall::OpenUrl("/logout".into()));
+    assert_eq!(v["url"], "/logout");
+}

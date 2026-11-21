@@ -109,7 +109,7 @@ Values are decoded (`%20`, `+`); `p.parse_query::<u32>("room")` parses the first
 
 ## Links
 
-`.link(path)` makes a row, a card or a text a link: activating it navigates in the app (`navigate(path)`), or opens a URL (`https:`, `mailto:`, `tel:`) in the browser. It is announced as a link and reachable from the keyboard.
+`.link(path)` makes a row, a card or a text a link: activating it navigates in the app (`navigate(path)`), or opens a URL (`https:`, `mailto:`, `tel:`) in the browser. It is announced as a link and reachable from the keyboard. On the web, a URL that would run script or show content the app did not serve (`javascript:`, `vbscript:`, `data:`, `blob:`, `filesystem:`, in any case and with any surrounding spaces) gets no `href`, so a link built from user data cannot run code in the app's page.
 
 ```rust
 div().link(format!("/orders/{}", order.id)).child(text(&order.title))  // a row of a list
